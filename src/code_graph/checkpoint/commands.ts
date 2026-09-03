@@ -1,4 +1,5 @@
-import {Console, Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
+import {succeedUndefined} from '../../effect/optional.js';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {runBinaryCommandEffect, runCommandEffect} from '../../effect/command.js';
 import {writeFinalCliOutput} from '../../effect/cli_output.js';
@@ -52,9 +53,13 @@ const CHECKPOINT_GIT_OUTPUT_BYTES_MAXIMUM = 16 * 1_024 * 1_024;
 const CHECKPOINT_GIT_TREE_FORMAT = '%(objectmode)%x09%(objecttype)%x09%(objectname)%x09%(objectsize)%x09%(path)';
 const CHECKPOINT_SNAPSHOT_DOMAIN = 'threadnote-code-graph-checkpoint-local-snapshot-v1\0';
 
-export class CodeGraphCheckpointCommandError extends Error {
-  override readonly name = 'CodeGraphCheckpointCommandError';
-}
+export class CodeGraphCheckpointCommandError extends Schema.TaggedError<CodeGraphCheckpointCommandError>()(
+  'CodeGraphCheckpointCommandError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export interface CodeGraphCheckpointArtifactOptions {
   readonly expectedDigest?: string;
@@ -186,7 +191,7 @@ export const runCodeGraphCheckpointExport = Effect.fn('codeGraph.checkpoint.expo
         writeMetadata: metadata =>
           Effect.sync(() => {
             if (encoder !== undefined)
-              throw new CodeGraphCheckpointCommandError('Checkpoint metadata was emitted twice.');
+              throw CodeGraphCheckpointCommandError.make({message: 'Checkpoint metadata was emitted twice.'});
             encoder = new CodeGraphCheckpointStreamEncoderV1(metadata);
           }),
         writeRecords: records =>
@@ -199,9 +204,9 @@ export const runCodeGraphCheckpointExport = Effect.fn('codeGraph.checkpoint.expo
               yield* attemptCheckpoint(() =>
                 encoder!.write([record], chunk => {
                   if (emitted.length > 0) {
-                    throw new CodeGraphCheckpointCommandError(
-                      'Checkpoint encoder emitted more than one chunk for one record.',
-                    );
+                    throw CodeGraphCheckpointCommandError.make({
+                      message: 'Checkpoint encoder emitted more than one chunk for one record.',
+                    });
                   }
                   emitted.push(chunk.bytes);
                 }),
@@ -443,7 +448,9 @@ function decodeCheckpointInput<E, R>(
           expectedDescriptor: inspection.descriptor,
           onVerifiedChunk: chunk => {
             if (verifiedChunks.length > 0) {
-              throw new CodeGraphCheckpointCommandError('Checkpoint decoder emitted more than one chunk per frame.');
+              throw CodeGraphCheckpointCommandError.make({
+                message: 'Checkpoint decoder emitted more than one chunk per frame.',
+              });
             }
             verifiedChunks.push(chunk);
           },
@@ -566,7 +573,9 @@ function validateCheckpointReceiver(
     header.repository.objectFormat !== identity.objectFormat ||
     header.repository.caseMode !== identity.caseMode
   ) {
-    throw new CodeGraphCheckpointCommandError('Checkpoint repository identity does not match this checkout.');
+    throw CodeGraphCheckpointCommandError.make({
+      message: 'Checkpoint repository identity does not match this checkout.',
+    });
   }
   const compatibility = inspectCodeGraphCheckpointCompatibilityV1(header.abi.input, registry);
   if (!compatibility.compatible) {
@@ -574,7 +583,7 @@ function validateCheckpointReceiver(
       compatibility.code === 'language-pack-unavailable'
         ? ` Missing packs: ${checkpointTerminalText(compatibility.unavailablePackIds?.join(', ') ?? 'unknown')}.`
         : '';
-    throw new CodeGraphCheckpointCommandError(`Checkpoint runtime ABI is incompatible.${detail}`);
+    throw CodeGraphCheckpointCommandError.make({message: `Checkpoint runtime ABI is incompatible.${detail}`});
   }
 }
 
@@ -747,7 +756,7 @@ function requireCheckpointEof(file: FileSystem.File) {
 }
 
 function parseExpectedDigest(value: string | undefined) {
-  if (value === undefined) return Effect.succeed(undefined);
+  if (value === undefined) return succeedUndefined;
   const normalized = value.trim().toLowerCase();
   const prefixed = normalized.startsWith('sha256:') ? normalized : `sha256:${normalized}`;
   return isCheckpointSha256(prefixed)
@@ -918,13 +927,13 @@ function attemptCheckpoint<A>(attempt: () => A) {
 }
 
 function checkpointFailure(message: string): Effect.Effect<never, CodeGraphCheckpointCommandError> {
-  return Effect.fail(new CodeGraphCheckpointCommandError(message));
+  return Effect.fail(CodeGraphCheckpointCommandError.make({message: message}));
 }
 
 function checkpointCommandError(message: string, cause: unknown): CodeGraphCheckpointCommandError {
-  if (cause instanceof CodeGraphCheckpointCommandError) return cause;
-  return new CodeGraphCheckpointCommandError(
-    cause instanceof Error && cause.message.length > 0 ? `${message} ${cause.message}` : message,
-    {cause},
-  );
+  if (Schema.is(CodeGraphCheckpointCommandError)(cause)) return cause;
+  return CodeGraphCheckpointCommandError.make({
+    cause,
+    message: cause instanceof Error && cause.message.length > 0 ? `${message} ${cause.message}` : message,
+  });
 }

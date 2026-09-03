@@ -1,4 +1,4 @@
-import {Clock, Context, Crypto, Deferred, Effect, Exit, FileSystem, Layer, Path, SynchronizedRef} from 'effect';
+import {Clock, Context, Crypto, Deferred, Effect, Exit, FileSystem, Layer, Path, SynchronizedRef, Schema} from 'effect';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {maintainCodeGraphBuildHistoryUnit} from './build_status.js';
@@ -19,7 +19,12 @@ import {
   CodeGraphMaintenanceActiveError,
   withCodeGraphTargetWorktreeLock,
 } from './maintenance_gate.js';
-import {CodeGraphStoreBusyError, CodeGraphStoreError, type RepositoryIdentity} from './types.js';
+import {
+  CodeGraphStoreBusyError,
+  CodeGraphStoreError,
+  type RepositoryIdentity,
+  type CodeGraphStoreFailure,
+} from './types.js';
 import {
   CODE_GRAPH_ORDINARY_VECTOR_UNIT_DEADLINE_MILLISECONDS,
   type CodeGraphOrdinaryVectorMaintenanceUnitResult,
@@ -68,24 +73,24 @@ export interface CodeGraphMaintenanceCoordinatorShape {
   /** Run exactly one nonblocking Store routine unit without entering a target-worktree lane. */
   readonly kickOrdinary: (
     input: CodeGraphRoutineMaintenanceTick,
-  ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>;
+  ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure>;
   /** Run exactly one nonblocking missing-worktree reconciliation unit without rotating through other lanes. */
   readonly kickReconciliation: (
     input: CodeGraphRoutineMaintenanceTick,
-  ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>;
+  ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure>;
   /** Run exactly one nonblocking residual unit without starting a full maintenance round. */
   readonly kickResidual: (
     input: CodeGraphRoutineMaintenanceTick,
-  ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>;
+  ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure>;
   readonly request: (input: CodeGraphRoutineMaintenanceTick) => Effect.Effect<void>;
   readonly tick: (
     input: CodeGraphRoutineMaintenanceTick,
-  ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>;
+  ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure>;
 }
 
 export type CodeGraphRoutineMaintenanceRun = (
   input: CodeGraphRoutineMaintenanceTick,
-) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>;
+) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure>;
 
 export interface CodeGraphMaintenanceLaneRuns {
   readonly ordinary: CodeGraphRoutineMaintenanceRun;
@@ -97,12 +102,12 @@ export interface CodeGraphOrdinaryMaintenanceRuns {
   readonly routine: CodeGraphRoutineMaintenanceRun;
   readonly vector: (
     input: CodeGraphRoutineMaintenanceTick,
-  ) => Effect.Effect<CodeGraphOrdinaryVectorMaintenanceUnitResult, CodeGraphStoreError>;
+  ) => Effect.Effect<CodeGraphOrdinaryVectorMaintenanceUnitResult, CodeGraphStoreFailure>;
 }
 
 export type CodeGraphRoutineMaintenanceIntentCheck = (
   threadnoteHome: string,
-) => Effect.Effect<boolean, CodeGraphStoreError>;
+) => Effect.Effect<boolean, CodeGraphStoreFailure>;
 
 export interface CodeGraphMaintenanceCoordinatorInterlocks {
   /** @internal Deterministic cancellation barrier after request admission and before child handoff. */
@@ -110,12 +115,12 @@ export interface CodeGraphMaintenanceCoordinatorInterlocks {
   /** @internal Deterministic monotonic clock for automatic-tail budget tests. */
   readonly monotonicMilliseconds?: () => number;
   /** @internal Closed terminal observation for detached maintenance work. */
-  readonly onDeferredFailure?: (error: CodeGraphStoreError) => Effect.Effect<void>;
+  readonly onDeferredFailure?: (error: CodeGraphStoreFailure) => Effect.Effect<void>;
 }
 
 interface ActiveMaintenanceTick {
   readonly budget: MaintenanceExecutionBudget;
-  readonly completion: Deferred.Deferred<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>;
+  readonly completion: Deferred.Deferred<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure>;
   readonly databasePath: string;
   readonly input: CodeGraphRoutineMaintenanceTick;
 }
@@ -168,7 +173,7 @@ type MaintenanceRequestDecision =
 export class CodeGraphMaintenanceCoordinator extends Context.Service<
   CodeGraphMaintenanceCoordinator,
   CodeGraphMaintenanceCoordinatorShape
->()('threadnote/codeGraph/CodeGraphMaintenanceCoordinator') {
+>()('threadnote/code_graph/maintenance_coordinator/CodeGraphMaintenanceCoordinator') {
   static readonly layer = Layer.effect(
     CodeGraphMaintenanceCoordinator,
     Effect.gen(function* () {
@@ -218,10 +223,10 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
         Effect.gen(function* () {
           const inspected = yield* inspectCodeGraphViewDatabaseTarget(input.threadnoteHome, input.checkoutId);
           if (inspected.state !== 'ready' || inspected.databasePath !== input.databasePath) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph cleanup database target changed.'));
+            return yield* CodeGraphStoreError.of('Code graph cleanup database target changed.');
           }
           if (yield* codeGraphMaintenanceIntentActive(input.threadnoteHome)) {
-            return yield* Effect.fail(new CodeGraphMaintenanceActiveError());
+            return yield* CodeGraphMaintenanceActiveError.of();
           }
         }).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
@@ -374,12 +379,10 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
               Effect.gen(function* () {
                 const inspected = yield* inspectCodeGraphViewDatabaseTarget(input.threadnoteHome, input.checkoutId);
                 if (inspected.state !== 'ready' || inspected.databasePath !== input.databasePath) {
-                  return yield* Effect.fail(
-                    new CodeGraphStoreError('Code graph database target changed before index preparation.'),
-                  );
+                  return yield* CodeGraphStoreError.of('Code graph database target changed before index preparation.');
                 }
                 if (yield* codeGraphMaintenanceIntentActive(input.threadnoteHome)) {
-                  return yield* Effect.fail(new CodeGraphMaintenanceActiveError());
+                  return yield* CodeGraphMaintenanceActiveError.of();
                 }
               }).pipe(
                 Effect.provideService(FileSystem.FileSystem, fs),
@@ -389,7 +392,7 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
             waitTimeoutMilliseconds: 0,
           })
           .pipe(
-            Effect.flatMap((result): Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError> =>
+            Effect.flatMap((result): Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure> =>
               result.state === 'prepared'
                 ? Effect.succeed({
                     cleanup: 'reconciliation-index',
@@ -415,9 +418,9 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
                     : runReconciliation(input),
             ),
             Effect.catch((error): Effect.Effect<CodeGraphRoutineMaintenanceResult> =>
-              error instanceof CodeGraphMaintenanceActiveError
+              Schema.is(CodeGraphMaintenanceActiveError)(error)
                 ? Effect.succeed({reason: 'external-maintenance', state: 'deferred'} as const)
-                : error instanceof CodeGraphStoreBusyError
+                : Schema.is(CodeGraphStoreBusyError)(error)
                   ? Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const)
                   : Effect.succeed({reason: 'schema-unavailable', state: 'skipped'} as const),
             ),
@@ -450,7 +453,7 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
           Effect.provideService(SystemInfo, system),
-          Effect.mapError(() => new CodeGraphStoreError('Could not maintain code graph vector retirement.')),
+          Effect.mapError(() => CodeGraphStoreError.of('Could not maintain code graph vector retirement.')),
         );
       const runOrdinaryMaintenance = yield* makeCodeGraphOrdinaryMaintenanceRunner({
         routine: runRoutineMaintenance,
@@ -468,7 +471,7 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
             Effect.provideService(FileSystem.FileSystem, fs),
             Effect.provideService(Path.Path, path),
             Effect.provideService(SystemInfo, system),
-            Effect.mapError(() => new CodeGraphStoreError('Could not inspect code graph maintenance coordination.')),
+            Effect.mapError(() => CodeGraphStoreError.of('Could not inspect code graph maintenance coordination.')),
           ),
         {
           onDeferredFailure: error =>
@@ -526,7 +529,7 @@ export const makeCodeGraphMaintenanceLaneRunner = Effect.fn('codeGraph.makeMaint
   });
   return (
     input: CodeGraphRoutineMaintenanceTick,
-  ): Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError> =>
+  ): Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure> =>
     Effect.gen(function* () {
       const selection = yield* SynchronizedRef.modify<MaintenanceLaneRunnerState, MaintenanceLaneSelection>(
         runnerState,
@@ -578,7 +581,7 @@ export const makeCodeGraphOrdinaryMaintenanceRunner = Effect.fn('codeGraph.makeO
   const state = yield* SynchronizedRef.make(new Map<string, OrdinaryMaintenanceRunnerEntry>());
   return (
     input: CodeGraphRoutineMaintenanceTick,
-  ): Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError> =>
+  ): Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure> =>
     Effect.uninterruptibleMask(restore =>
       Effect.gen(function* () {
         const key = maintenanceLaneDatabaseKey(input);
@@ -746,12 +749,12 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
     input: CodeGraphRoutineMaintenanceTick,
     completion: ActiveMaintenanceTick['completion'],
     budget: MaintenanceExecutionBudget,
-  ): Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError> =>
+  ): Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure> =>
     Effect.uninterruptibleMask(restore =>
       Effect.gen(function* () {
         const exit = yield* restore(
           externalMaintenanceActive(input.threadnoteHome).pipe(
-            Effect.flatMap((active): Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError> =>
+            Effect.flatMap((active): Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure> =>
               active
                 ? Effect.succeed({
                     reason: 'external-maintenance',
@@ -771,7 +774,7 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
           ] === true ||
             ('remaining' in exit.value && exit.value.remaining === true));
         yield* Deferred.done(completion, exit);
-        const nextCompletion = yield* Deferred.make<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>();
+        const nextCompletion = yield* Deferred.make<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure>();
         const next = yield* SynchronizedRef.modify<
           Map<string, HomeMaintenanceState>,
           ActiveMaintenanceTick | undefined
@@ -809,7 +812,7 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
                 Effect.andThen(
                   onDeferredFailure === undefined
                     ? Effect.void
-                    : Effect.suspend(() => onDeferredFailure(error)).pipe(Effect.catchCause(() => Effect.void)),
+                    : Effect.suspend(() => onDeferredFailure(error)).pipe(Effect.ignoreCause),
                 ),
               ),
             ),
@@ -825,7 +828,7 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
   const tick = (input: CodeGraphRoutineMaintenanceTick) =>
     Effect.uninterruptibleMask(restore =>
       Effect.gen(function* () {
-        const candidate = yield* Deferred.make<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>();
+        const candidate = yield* Deferred.make<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure>();
         const budget = newBudget();
         const decision = yield* SynchronizedRef.modify<Map<string, HomeMaintenanceState>, MaintenanceTickDecision>(
           stateByHome,
@@ -896,7 +899,7 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
   const request = (input: CodeGraphRoutineMaintenanceTick) =>
     Effect.uninterruptibleMask(() =>
       Effect.gen(function* () {
-        const candidate = yield* Deferred.make<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>();
+        const candidate = yield* Deferred.make<CodeGraphRoutineMaintenanceResult, CodeGraphStoreFailure>();
         const budget = newBudget();
         const decision = yield* SynchronizedRef.modify<Map<string, HomeMaintenanceState>, MaintenanceRequestDecision>(
           stateByHome,

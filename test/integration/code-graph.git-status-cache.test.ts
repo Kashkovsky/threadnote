@@ -266,7 +266,7 @@ function result(stdout: string, exitCode = 0) {
 }
 
 function commandFailure(args: readonly string[]) {
-  return new CommandFailed({
+  return CommandFailed.make({
     args,
     executable: 'git',
     exitCode: 1,

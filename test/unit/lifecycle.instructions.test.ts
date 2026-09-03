@@ -60,8 +60,8 @@ describe('agent instruction lifecycle', () => {
             diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
             embedMany: ({inputs, manifest}) =>
               Effect.succeed(inputs.map(() => [1, ...new Array<number>((manifest.dimensions ?? 1) - 1).fill(0)])),
-            generate: () => Effect.die(new TestError('Unexpected generation')),
-            rerank: () => Effect.die(new TestError('Unexpected reranking')),
+            generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+            rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
           });
           const commandShim = path.join(userHome, '.local', 'bin', 'threadnote');
           const legacyCursorRule = path.join(userHome, '.cursor', 'rules', 'threadnote.md');

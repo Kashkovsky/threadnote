@@ -10,7 +10,7 @@ import {
 } from './store_build_core.js';
 import {type EdgeRow} from './store_internal_models.js';
 import {chunk} from './store_utilities.js';
-import {CodeGraphStoreError} from './types.js';
+import {CodeGraphStoreError, isCodeGraphStoreError, type CodeGraphStoreFailure} from './types.js';
 import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
 
 const PERSISTENT_LOOKUP_PAIR_BATCH_ROWS = 256;
@@ -252,7 +252,7 @@ export const resolvePersistedFullReferencePage = Effect.fn('codeGraph.resolvePer
 
 function decodePersistedReferencePage(
   references: readonly PersistedFullReferencePageRow[],
-): Effect.Effect<readonly DecodedPersistedReference[], CodeGraphStoreError> {
+): Effect.Effect<readonly DecodedPersistedReference[], CodeGraphStoreFailure> {
   return Effect.try({
     try: () =>
       references.map(reference => {
@@ -264,24 +264,24 @@ function decodePersistedReferencePage(
           reference.candidate_payload_bytes < 0 ||
           reference.candidate_payload_bytes > PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES
         ) {
-          throw new CodeGraphStoreError('Stored reference candidate metadata is invalid.');
+          throw CodeGraphStoreError.of('Stored reference candidate metadata is invalid.');
         }
         if (reference.lookup_tiers_json.length > PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES) {
-          throw new CodeGraphStoreError('Stored reference candidate payload exceeds its byte budget.');
+          throw CodeGraphStoreError.of('Stored reference candidate payload exceeds its byte budget.');
         }
         const actualPayloadBytes = referenceCandidateEncoder.encode(reference.lookup_tiers_json).byteLength;
         if (
           actualPayloadBytes > PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES ||
           actualPayloadBytes !== reference.candidate_payload_bytes
         ) {
-          throw new CodeGraphStoreError('Stored reference candidate metadata does not match its payload.');
+          throw CodeGraphStoreError.of('Stored reference candidate metadata does not match its payload.');
         }
         const parsed: unknown = JSON.parse(reference.lookup_tiers_json);
         if (
           !Array.isArray(parsed) ||
           !parsed.every(tier => Array.isArray(tier) && tier.every(lookupKey => typeof lookupKey === 'string'))
         ) {
-          throw new CodeGraphStoreError('Stored reference lookup tiers are invalid.');
+          throw CodeGraphStoreError.of('Stored reference lookup tiers are invalid.');
         }
         let candidateCount = 0;
         for (const tier of parsed) {
@@ -291,19 +291,19 @@ function decodePersistedReferencePage(
               candidateCount > PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES ||
               (index > 0 && compareCodeUnits(tier[index - 1], tier[index]) >= 0)
             ) {
-              throw new CodeGraphStoreError('Stored reference candidate payload is not canonical.');
+              throw CodeGraphStoreError.of('Stored reference candidate payload is not canonical.');
             }
           }
         }
         if (candidateCount !== reference.candidate_count) {
-          throw new CodeGraphStoreError('Stored reference candidate metadata does not match its payload.');
+          throw CodeGraphStoreError.of('Stored reference candidate metadata does not match its payload.');
         }
         return {edgeId: reference.edge_id, lookupTiers: parsed};
       }),
     catch: cause =>
-      cause instanceof CodeGraphStoreError
+      isCodeGraphStoreError(cause)
         ? cause
-        : new CodeGraphStoreError('Stored reference candidate payload could not be decoded.'),
+        : CodeGraphStoreError.of('Stored reference candidate payload could not be decoded.'),
   });
 }
 

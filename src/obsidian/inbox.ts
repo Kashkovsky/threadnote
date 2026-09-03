@@ -1,4 +1,4 @@
-import {Clock, Console, Crypto, Effect, FileSystem, Path} from 'effect';
+import {Console, Crypto, DateTime, Effect, FileSystem, Path, Schema} from 'effect';
 import * as yaml from 'js-yaml';
 import {
   buildCandidateReview,
@@ -16,9 +16,10 @@ import {scrubberBlocker} from '../share/scrubber.js';
 import type {MemoryKind, RuntimeConfig} from '../types.js';
 import {isJsonObject, toPosixPath} from '../utils.js';
 
-class ObsidianInboxError extends Error {
-  readonly _tag = 'ObsidianInboxError' as const;
-}
+class ObsidianInboxError extends Schema.TaggedError<ObsidianInboxError>()('ObsidianInboxError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export interface ObsidianInboxScanOptions {
   readonly apply?: boolean;
@@ -67,15 +68,15 @@ export const runObsidianInboxScan = Effect.fn('obsidian.inboxScan')(function* (
   const apply = options.apply === true && options.dryRun !== true;
   const source = requireObsidianSource(yield* readObsidianConfiguration(config), options.source);
   if (!source.inbox) {
-    return yield* Effect.fail(
-      new ObsidianInboxError(`Obsidian source "${source.id}" has no Inbox. Configure one with source add --inbox.`),
-    );
+    return yield* ObsidianInboxError.make({
+      message: `Obsidian source "${source.id}" has no Inbox. Configure one with source add --inbox.`,
+    });
   }
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const inboxRoot = pathService.join(source.vault, ...source.inbox.split('/'));
   if (!(yield* fs.exists(inboxRoot))) {
-    return yield* Effect.fail(new ObsidianInboxError(`Configured Obsidian Inbox does not exist: ${source.inbox}`));
+    return yield* ObsidianInboxError.make({message: `Configured Obsidian Inbox does not exist: ${source.inbox}`});
   }
   const statePath = yield* inboxStatePath(config, source.id);
   return yield* withExclusiveFileLock(
@@ -92,7 +93,7 @@ export const runObsidianInboxScan = Effect.fn('obsidian.inboxScan')(function* (
         yield* Console.log(`Obsidian Inbox "${source.inbox}" contains no eligible Markdown notes.`);
         return [] satisfies readonly CandidateReview[];
       }
-      const now = new Date(yield* Clock.currentTimeMillis);
+      const now = yield* DateTime.nowAsDate;
       const nextEntries = {...state.entries};
       const reviews: CandidateReview[] = [];
       for (const file of files) {
@@ -106,9 +107,9 @@ export const runObsidianInboxScan = Effect.fn('obsidian.inboxScan')(function* (
         const parsed = yield* Effect.try({
           try: () => parseObsidianInboxNote(content, relativePath),
           catch: cause =>
-            cause instanceof ObsidianInboxError
+            Schema.is(ObsidianInboxError)(cause)
               ? cause
-              : new ObsidianInboxError(cause instanceof Error ? cause.message : String(cause), {cause}),
+              : ObsidianInboxError.make({cause, message: cause instanceof Error ? cause.message : String(cause)}),
         }).pipe(
           Effect.catch(error => Console.log(`SKIP ${relativePath}: ${error.message}`).pipe(Effect.as(undefined))),
         );
@@ -163,14 +164,14 @@ export const runObsidianInboxScan = Effect.fn('obsidian.inboxScan')(function* (
 export function parseObsidianInboxNote(content: string, label = 'Inbox note'): ParsedInboxNote {
   const match = FRONTMATTER_PATTERN.exec(content);
   if (!match) {
-    throw new ObsidianInboxError('missing YAML frontmatter');
+    throw ObsidianInboxError.make({message: 'missing YAML frontmatter'});
   }
   const loaded = yaml.load(match[1] ?? '');
   if (!isJsonObject(loaded)) {
-    throw new ObsidianInboxError('frontmatter must be an object');
+    throw ObsidianInboxError.make({message: 'frontmatter must be an object'});
   }
   if (loaded.threadnote_candidate !== true) {
-    throw new ObsidianInboxError('threadnote_candidate must be true');
+    throw ObsidianInboxError.make({message: 'threadnote_candidate must be true'});
   }
   const kind = inboxKind(loaded.kind);
   const project = requiredMetadataString(loaded.project, 'project');
@@ -181,7 +182,7 @@ export function parseObsidianInboxNote(content: string, label = 'Inbox note'): P
       : loaded.category === 'decision' || loaded.category === 'invariant'
         ? loaded.category
         : (() => {
-            throw new ObsidianInboxError('category must be decision or invariant');
+            throw ObsidianInboxError.make({message: 'category must be decision or invariant'});
           })();
   const evidence =
     loaded.evidence === undefined
@@ -189,11 +190,11 @@ export function parseObsidianInboxNote(content: string, label = 'Inbox note'): P
       : Array.isArray(loaded.evidence) && loaded.evidence.every(value => typeof value === 'string')
         ? loaded.evidence.map(value => value.trim()).filter(Boolean)
         : (() => {
-            throw new ObsidianInboxError('evidence must be a string array');
+            throw ObsidianInboxError.make({message: 'evidence must be a string array'});
           })();
   const body = content.slice(match[0].length).trim();
   if (!body) {
-    throw new ObsidianInboxError(`${label} has an empty body`);
+    throw ObsidianInboxError.make({message: `${label} has an empty body`});
   }
   return {body, category, evidence, kind, project, topic};
 }
@@ -253,9 +254,9 @@ const readInboxState = Effect.fn('obsidian.readInboxState')(function* (path: str
   return yield* Effect.try({
     try: () => parseInboxState(JSON.parse(raw), sourceId),
     catch: cause =>
-      cause instanceof ObsidianInboxError
+      Schema.is(ObsidianInboxError)(cause)
         ? cause
-        : new ObsidianInboxError(cause instanceof Error ? cause.message : String(cause), {cause}),
+        : ObsidianInboxError.make({cause, message: cause instanceof Error ? cause.message : String(cause)}),
   });
 });
 
@@ -268,7 +269,7 @@ const writeInboxState = Effect.fn('obsidian.writeInboxState')(function* (path: s
   yield* fs.writeFileString(temporaryPath, `${JSON.stringify(state, undefined, 2)}\n`, {mode: INBOX_FILE_MODE});
   yield* fs
     .rename(temporaryPath, path)
-    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
+    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.ignore)));
   yield* fs.chmod(path, INBOX_FILE_MODE);
 });
 
@@ -284,7 +285,7 @@ function parseInboxState(value: unknown, sourceId: string): ObsidianInboxState {
     typeof value.entries !== 'object' ||
     value.entries === null
   ) {
-    throw new ObsidianInboxError(`Invalid Obsidian Inbox state for "${sourceId}".`);
+    throw ObsidianInboxError.make({message: `Invalid Obsidian Inbox state for "${sourceId}".`});
   }
   const entries: Record<string, ObsidianInboxStateEntry> = {};
   for (const [relativePath, entry] of Object.entries(value.entries)) {
@@ -298,7 +299,7 @@ function parseInboxState(value: unknown, sourceId: string): ObsidianInboxState {
       !('reviewedAt' in entry) ||
       typeof entry.reviewedAt !== 'string'
     ) {
-      throw new ObsidianInboxError(`Invalid Obsidian Inbox state entry "${relativePath}".`);
+      throw ObsidianInboxError.make({message: `Invalid Obsidian Inbox state entry "${relativePath}".`});
     }
     entries[relativePath] = {
       contentHash: entry.contentHash,
@@ -317,12 +318,12 @@ function inboxKind(value: unknown): ParsedInboxNote['kind'] {
   if (value === 'durable' || value === 'handoff' || value === 'preference') {
     return value;
   }
-  throw new ObsidianInboxError('kind must be durable, handoff, or preference');
+  throw ObsidianInboxError.make({message: 'kind must be durable, handoff, or preference'});
 }
 
 function requiredMetadataString(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new ObsidianInboxError(`${label} must be a non-empty string`);
+    throw ObsidianInboxError.make({message: `${label} must be a non-empty string`});
   }
   return value.trim();
 }

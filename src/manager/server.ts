@@ -3,6 +3,7 @@ import {
   Cause,
   Console,
   Crypto,
+  DateTime,
   Effect,
   Encoding,
   Exit,
@@ -13,6 +14,7 @@ import {
   Predicate,
   Ref,
   Result,
+  Schema,
   Scope,
 } from 'effect';
 import * as HttpServer from 'effect/unstable/http/HttpServer';
@@ -170,12 +172,15 @@ interface ManagerDirectoryEntry {
   readonly isDirectory: () => boolean;
   readonly isFile: () => boolean;
 }
-class ManagerOperationError extends Error {
-  readonly _tag = 'ManagerOperationError' as const;
-}
+class ManagerOperationError extends Schema.TaggedError<ManagerOperationError>()('ManagerOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 function managerOperationError(cause: unknown): ManagerOperationError {
-  return cause instanceof ManagerOperationError ? cause : new ManagerOperationError(errorMessage(cause), {cause});
+  return Schema.is(ManagerOperationError)(cause)
+    ? cause
+    : ManagerOperationError.make({cause, message: errorMessage(cause)});
 }
 const pathJoin = Effect.fn('manager.pathJoin')(function* (...parts: readonly string[]) {
   const path = yield* Path.Path;
@@ -197,7 +202,7 @@ const lstat = Effect.fn('manager.lstat')(function* (target: string) {
   return {
     isDirectory: () => link._tag === 'None' && info.type === 'Directory',
     isFile: () => link._tag === 'None' && info.type === 'File',
-    mtime: info.mtime._tag === 'Some' ? info.mtime.value : new Date(0),
+    mtime: info.mtime._tag === 'Some' ? info.mtime.value : DateTime.toDateUtc(DateTime.makeUnsafe(0)),
     name: path.basename(target),
     size: Number(info.size),
   };
@@ -267,13 +272,21 @@ interface ApiContext {
   readonly token: string;
 }
 
-class ManagerGraphViewActionBusyError extends Error {
-  override readonly name = 'ManagerGraphViewActionBusyError';
-}
+class ManagerGraphViewActionBusyError extends Schema.TaggedError<ManagerGraphViewActionBusyError>()(
+  'ManagerGraphViewActionBusyError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
-class ManagerGraphViewActionError extends Error {
-  override readonly name = 'ManagerGraphViewActionError';
-}
+class ManagerGraphViewActionError extends Schema.TaggedError<ManagerGraphViewActionError>()(
+  'ManagerGraphViewActionError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 interface ManagerRequest {
   readonly body: Effect.Effect<Record<string, unknown>, unknown>;
@@ -341,7 +354,7 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
       Effect.flatMap(context =>
         Effect.gen(function* () {
           if (yield* codeGraphMaintenanceIntentActive(config.agentContextHome)) {
-            return yield* Effect.fail(new ManagerOperationError(GRAPH_MAINTENANCE_BUSY_MESSAGE));
+            return yield* ManagerOperationError.make({message: GRAPH_MAINTENANCE_BUSY_MESSAGE});
           }
           const crypto = yield* Crypto.Crypto;
           const lifecycleMaintenance = yield* CodeGraphMaintenanceCoordinator;
@@ -379,15 +392,7 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
   );
 }
 
-type ManagerRequestEffect = Effect.Effect<void, never, ApplicationServices>;
-
-export function createManagerServer(
-  context: ApiContext,
-): Effect.Effect<
-  HttpServerResponse.HttpServerResponse,
-  never,
-  ApplicationServices | HttpServerRequest.HttpServerRequest
-> {
+export function createManagerServer(context: ApiContext) {
   return Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const response: ManagerResponseSink = {};
@@ -396,7 +401,7 @@ export function createManagerServer(
         Effect.flatMap(parsed =>
           Predicate.isObject(parsed)
             ? Effect.succeed(parsed)
-            : Effect.fail(new ManagerOperationError('Expected a JSON object body.')),
+            : Effect.fail(ManagerOperationError.make({message: 'Expected a JSON object body.'})),
         ),
       ),
       headers: request.headers,
@@ -428,11 +433,11 @@ export const readManagedMemory = Effect.fn('manager.readManagedMemory')(function
   assertResourceUri(uri);
   const path = yield* localPathForMemoryUri(config, uri);
   if (!path) {
-    return yield* Effect.fail(new ManagerOperationError(`Manager can only read current-user memory URIs: ${uri}`));
+    return yield* ManagerOperationError.make({message: `Manager can only read current-user memory URIs: ${uri}`});
   }
   const pathStat = yield* lstat(path);
   if (!pathStat.isFile()) {
-    return yield* Effect.fail(new ManagerOperationError(`Manager can only read regular memory files: ${uri}`));
+    return yield* ManagerOperationError.make({message: `Manager can only read regular memory files: ${uri}`});
   }
   const content = yield* readFile(path, 'utf8');
   const relativePath = (yield* pathRelative(yield* localMemoriesRoot(config), path))
@@ -477,13 +482,9 @@ export const readContextUri = Effect.fn('manager.readContextUri')(function* (
 
 export {detectConsolidationAgents} from './state.js';
 
-function handleRequestEffect(
-  context: ApiContext,
-  request: ManagerRequest,
-  response: ManagerResponseSink,
-): ManagerRequestEffect {
+function handleRequestEffect(context: ApiContext, request: ManagerRequest, response: ManagerResponseSink) {
   const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-  let requestEffect: Effect.Effect<void, unknown, ApplicationServices>;
+  let requestEffect;
   if (request.method === 'GET' && url.pathname === '/api/state') {
     requestEffect = Effect.gen(function* () {
       if (!isAuthorized(context, request)) {
@@ -513,11 +514,11 @@ function handleRequestEffect(
   return requestEffect.pipe(
     Effect.catch(error =>
       Effect.sync(() => {
-        if (error instanceof ManagerGraphBusyError) {
+        if (Schema.is(ManagerGraphBusyError)(error)) {
           writeJson(response, 409, {error: error.message, retryAfterMilliseconds: 1_000});
           return;
         }
-        if (error instanceof ManagerGraphViewActionBusyError) {
+        if (Schema.is(ManagerGraphViewActionBusyError)(error)) {
           writeJson(response, 409, {
             code: 'graph-view-busy',
             error: error.message,
@@ -525,13 +526,13 @@ function handleRequestEffect(
           });
           return;
         }
-        if (error instanceof ManagerGraphViewUnavailableError) {
+        if (Schema.is(ManagerGraphViewUnavailableError)(error)) {
           writeJson(response, 409, {code: 'graph-view-stale', error: error.message, retryAfterMilliseconds: 0});
           return;
         }
         if (error instanceof ManagerMemoryRelationsError)
           return writeJson(response, error.status, {code: error.code, error: error.message, retryAfterMilliseconds: 0});
-        if (error instanceof graphProjects.ManagerGraphProjectActionError)
+        if (Schema.is(graphProjects.ManagerGraphProjectActionError)(error))
           return writeJson(response, 409, {code: error.code, error: error.message, retryAfterMilliseconds: 0});
         writeJson(response, 500, {error: errorMessage(error)});
       }),
@@ -1020,12 +1021,12 @@ const readTree: (
     const isDir = pathStat.isDirectory();
     if (!isDir) {
       if (!pathStat.isFile()) {
-        throw new ManagerOperationError(`Manager can only read regular files or directories: ${uri}`);
+        throw ManagerOperationError.make({message: `Manager can only read regular files or directories: ${uri}`});
       }
       const record =
         options.parseMemoryDocuments === false
           ? undefined
-          : parseMemoryDocument(uri, yield* readFile(path, 'utf8').pipe(Effect.catch(() => Effect.succeed(''))));
+          : parseMemoryDocument(uri, yield* readFile(path, 'utf8').pipe(Effect.orElseSucceed(() => '')));
       return {
         isDir: false,
         isShared: isInSharedNamespace(config, uri),
@@ -1116,9 +1117,7 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
     if (isInSharedNamespace(config, canonicalUri)) {
       const teamName = sharedTeamNameForUri(config, canonicalUri);
       if (!teamName) {
-        return yield* Effect.fail(
-          new ManagerOperationError(`${canonicalUri} is not in a configured shared namespace.`),
-        );
+        return yield* ManagerOperationError.make({message: `${canonicalUri} is not in a configured shared namespace.`});
       }
       const team = yield* resolveTeam(config, teamName);
       const existing = yield* readManagedMemory(config, canonicalUri);
@@ -1172,9 +1171,9 @@ const moveMemory = Effect.fn('manager.moveMemory')(function* (
     if (isInSharedNamespace(config, sourceUri)) {
       const team = sharedTeamNameForUri(config, sourceUri);
       if (team !== targetTeam) {
-        throw new ManagerOperationError(
-          'Cross-team shared moves are not supported in V1. Copy/unpublish, then publish to the target team.',
-        );
+        throw ManagerOperationError.make({
+          message: 'Cross-team shared moves are not supported in V1. Copy/unpublish, then publish to the target team.',
+        });
       }
       const sharedTargetUri = sharedMemoryUriFor(config, targetTeam, metadata);
       const output = yield* runCaptured(
@@ -1189,11 +1188,9 @@ const moveMemory = Effect.fn('manager.moveMemory')(function* (
     }
     const citationBlocker = memoryCodeCitationContentSharingBlocker(sourceUri, source.content);
     if (citationBlocker) {
-      return yield* Effect.fail(
-        new ManagerOperationError(
-          `Refusing to move ${sourceUri} into shared memory: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
-        ),
-      );
+      return yield* ManagerOperationError.make({
+        message: `Refusing to move ${sourceUri} into shared memory: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+      });
     }
     if (personalTargetUri === sourceUri) {
       const published = yield* runCaptured(() => runSharePublish(config, sourceUri, {team: targetTeam}), runEffect);
@@ -1230,7 +1227,7 @@ const moveMemory = Effect.fn('manager.moveMemory')(function* (
       if (Cause.hasInterrupts(publishExit.cause)) {
         return yield* Effect.failCause(publishExit.cause);
       }
-      return yield* Effect.fail(managerOperationError(Cause.squash(publishExit.cause)));
+      return yield* managerOperationError(Cause.squash(publishExit.cause));
     }
     const published = publishExit.value;
     return {
@@ -1265,24 +1262,24 @@ const removeManagedFolder = Effect.fn('manager.removeManagedFolder')(function* (
   assertResourceUri(uri);
   const rootUri = `threadnote://user/${uriSegment(config.user)}/memories`;
   if (uri === rootUri) {
-    throw new ManagerOperationError('Refusing to remove the root memories folder.');
+    throw ManagerOperationError.make({message: 'Refusing to remove the root memories folder.'});
   }
   if (isInSharedNamespace(config, uri)) {
-    throw new ManagerOperationError(
-      'Shared folders are managed from Sharing. Remove the share or unpublish selected memories.',
-    );
+    throw ManagerOperationError.make({
+      message: 'Shared folders are managed from Sharing. Remove the share or unpublish selected memories.',
+    });
   }
   const path = yield* localPathForMemoryUri(config, uri);
   if (!path) {
-    throw new ManagerOperationError(`Manager can only remove current-user memory folders: ${uri}`);
+    throw ManagerOperationError.make({message: `Manager can only remove current-user memory folders: ${uri}`});
   }
   const pathStat = yield* lstat(path);
   if (!pathStat.isDirectory()) {
-    throw new ManagerOperationError(`Not a folder: ${uri}`);
+    throw ManagerOperationError.make({message: `Not a folder: ${uri}`});
   }
   const relativePath = yield* pathRelative(yield* localMemoriesRoot(config), path);
   if (!relativePath || relativePath.startsWith('..') || relativePath.split(yield* pathSeparator).includes('..')) {
-    throw new ManagerOperationError('Refusing to remove a folder outside the memories tree.');
+    throw ManagerOperationError.make({message: 'Refusing to remove a folder outside the memories tree.'});
   }
   const fileUris = yield* fileUrisUnderFolder(config, path);
   for (const fileUri of fileUris) {
@@ -1334,7 +1331,7 @@ const runBulk = Effect.fn('manager.runBulk')(function* (
             runEffect,
           )).output;
         } else {
-          return yield* Effect.fail(new ManagerOperationError(`Unsupported bulk action: ${action}`));
+          return yield* ManagerOperationError.make({message: `Unsupported bulk action: ${action}`});
         }
         return output;
       }),
@@ -1361,7 +1358,7 @@ function createConsolidation(context: ApiContext, body: Record<string, unknown>)
     });
     const job: ConsolidationJob = {
       agent: input.agent,
-      createdAt: new Date().toISOString(),
+      createdAt: DateTime.formatIso(yield* DateTime.now),
       id: yield* crypto.randomUUIDv4,
       sourceUris: input.sourceUris,
       status: 'running',
@@ -1393,10 +1390,10 @@ const applyConsolidation = Effect.fn('manager.applyConsolidation')(function* (
 ) {
   const job = jobs.get(id);
   if (!job) {
-    throw new ManagerOperationError('Consolidation job not found.');
+    throw ManagerOperationError.make({message: 'Consolidation job not found.'});
   }
   if (job.status !== 'completed' || !job.draft) {
-    throw new ManagerOperationError('Consolidation job is not completed.');
+    throw ManagerOperationError.make({message: 'Consolidation job is not completed.'});
   }
   const draft = optionalString(body.draft) ?? job.draft;
   const target = targetFromBody({...job.target, ...body});
@@ -1443,23 +1440,22 @@ function runConsolidationAgent(
       const native = yield* runNativeAiConsolidation(runtimeConfig, prompt);
       return (
         native ??
-        (yield* Effect.fail(
-          new ManagerOperationError(
+        (yield* ManagerOperationError.make({
+          message:
             'No generation model is selected. Install and select one with `threadnote models`, or configure an explicit remote Effect AI provider.',
-          ),
-        ))
+        }))
       );
     });
   }
   if (agent !== 'codex' && agent !== 'claude') {
     return Effect.fail(
-      new ManagerOperationError(`${agent} does not expose a supported non-interactive consolidation mode.`),
+      ManagerOperationError.make({message: `${agent} does not expose a supported non-interactive consolidation mode.`}),
     );
   }
   return Effect.gen(function* () {
     const executable = yield* findExecutable([agent]);
     if (!executable) {
-      return yield* Effect.fail(new ManagerOperationError(`${agent} executable was not found.`));
+      return yield* ManagerOperationError.make({message: `${agent} executable was not found.`});
     }
     return yield* Effect.scoped(
       Effect.gen(function* () {
@@ -1474,15 +1470,13 @@ function runConsolidationAgent(
           timeoutMs: 10 * 60 * 1000,
         });
         if (result.exitCode !== 0) {
-          return yield* Effect.fail(
-            new ManagerOperationError(
-              result.stderr.trim() || result.stdout.trim() || `${agent} exited with ${result.exitCode}`,
-            ),
-          );
+          return yield* ManagerOperationError.make({
+            message: result.stderr.trim() || result.stdout.trim() || `${agent} exited with ${result.exitCode}`,
+          });
         }
         const draft = result.stdout.trim();
         if (!draft) {
-          return yield* Effect.fail(new ManagerOperationError(`${agent} returned an empty consolidation draft.`));
+          return yield* ManagerOperationError.make({message: `${agent} returned an empty consolidation draft.`});
         }
         return draft;
       }),
@@ -1497,7 +1491,9 @@ export function consolidationAgentScript(agent: AgentClient, executable: string)
   if (agent === 'claude') {
     return `${shellQuote(executable)} --print --permission-mode default < "$1"`;
   }
-  throw new ManagerOperationError(`${agent} does not expose a supported non-interactive consolidation mode.`);
+  throw ManagerOperationError.make({
+    message: `${agent} does not expose a supported non-interactive consolidation mode.`,
+  });
 }
 
 function consolidationPrompt(sources: readonly {readonly content: string; readonly node: ManagerTreeNode}[]): string {
@@ -1650,11 +1646,9 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
     const target = {checkoutId, snapshotId: expectedSnapshotId, worktreeId};
     const approvalDigest = yield* managerGraphViewRemovalApprovalDigest(target);
     if (!dryRun && body.approvalDigest !== approvalDigest) {
-      return yield* Effect.fail(
-        new ManagerOperationError(
-          'Preview this exact graph view removal and provide its approval digest before applying.',
-        ),
-      );
+      return yield* ManagerOperationError.make({
+        message: 'Preview this exact graph view removal and provide its approval digest before applying.',
+      });
     }
     const path = yield* Path.Path;
     const maintenance = yield* CodeGraphMaintenanceCoordinator;
@@ -1672,13 +1666,14 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
       apply: !dryRun,
     }).pipe(
       Effect.mapError(error =>
-        error instanceof CodeGraphStoreBusyError
-          ? new ManagerGraphViewActionBusyError(
-              'The selected graph view is busy. Retry after the active graph operation completes.',
-            )
-          : new ManagerGraphViewActionError(
-              'The selected graph view could not be inspected or removed safely. Run threadnote doctor --dry-run and retry.',
-            ),
+        Schema.is(CodeGraphStoreBusyError)(error)
+          ? ManagerGraphViewActionBusyError.make({
+              message: 'The selected graph view is busy. Retry after the active graph operation completes.',
+            })
+          : ManagerGraphViewActionError.make({
+              message:
+                'The selected graph view could not be inspected or removed safely. Run threadnote doctor --dry-run and retry.',
+            }),
       ),
     );
     const applied = dryRun
@@ -1754,7 +1749,7 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
         runEffect,
       );
     default:
-      return yield* Effect.fail(new ManagerOperationError(`Unsupported graph Manager action: ${action}`));
+      return yield* ManagerOperationError.make({message: `Unsupported graph Manager action: ${action}`});
   }
 });
 
@@ -1766,14 +1761,16 @@ const resolveManagerGraphActionCwd = Effect.fn('manager.resolveGraphActionCwd')(
   if (suppliedCwd) {
     const path = yield* Path.Path;
     if (!path.isAbsolute(suppliedCwd)) {
-      return yield* Effect.fail(new ManagerOperationError('Supply cwd as an absolute local worktree path.'));
+      return yield* ManagerOperationError.make({message: 'Supply cwd as an absolute local worktree path.'});
     }
     const {identity} = yield* resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, suppliedCwd, {
       validateIdentity: identity =>
         repositoryIdentityMatchesExpectation(identity, expectedIdentity)
           ? Effect.void
           : Effect.fail(
-              new ManagerOperationError('The supplied worktree path does not match the selected graph identity.'),
+              ManagerOperationError.make({
+                message: 'The supplied worktree path does not match the selected graph identity.',
+              }),
             ),
     });
     return identity.repoRoot;
@@ -1785,7 +1782,9 @@ const resolveManagerGraphActionCwd = Effect.fn('manager.resolveGraphActionCwd')(
         repositoryIdentityMatchesExpectation(identity, expectedIdentity)
           ? Effect.void
           : Effect.fail(
-              new ManagerOperationError('The persisted worktree path no longer matches the selected graph identity.'),
+              ManagerOperationError.make({
+                message: 'The persisted worktree path no longer matches the selected graph identity.',
+              }),
             ),
     }).pipe(Effect.option);
     if (Option.isSome(observed)) return observed.value.identity.repoRoot;
@@ -1806,30 +1805,30 @@ const resolveManagerGraphActionCwd = Effect.fn('manager.resolveGraphActionCwd')(
           repositoryIdentityMatchesExpectation(identity, expectedIdentity)
             ? Effect.void
             : Effect.fail(
-                new ManagerOperationError('Manager graph context no longer matches the selected graph identity.'),
+                ManagerOperationError.make({
+                  message: 'Manager graph context no longer matches the selected graph identity.',
+                }),
               ),
       },
     ).pipe(Effect.option);
     if (Option.isSome(observed)) return observed.value.identity.repoRoot;
   }
-  return yield* Effect.fail(
-    new ManagerOperationError(
-      'The selected graph has no current local worktree target. Supply cwd and refresh graph diagnostics.',
-    ),
-  );
+  return yield* ManagerOperationError.make({
+    message: 'The selected graph has no current local worktree target. Supply cwd and refresh graph diagnostics.',
+  });
 });
 
 function requireGraphIdentity(value: unknown, name: string): string {
   const identity = requireString(value, name);
   if (!/^[0-9a-f]{64}$/.test(identity))
-    throw new ManagerOperationError(`Provide ${name} as a 64-character graph identity.`);
+    throw ManagerOperationError.make({message: `Provide ${name} as a 64-character graph identity.`});
   return identity;
 }
 
 function requireGraphSnapshotIdentity(value: unknown): string {
   const identity = requireString(value, 'expectedSnapshotId');
   if (!/^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/.test(identity)) {
-    throw new ManagerOperationError('Provide expectedSnapshotId as an exact code graph snapshot identity.');
+    throw ManagerOperationError.make({message: 'Provide expectedSnapshotId as an exact code graph snapshot identity.'});
   }
   return identity;
 }
@@ -1877,7 +1876,7 @@ function sharedMemoryUriFor(
   },
 ): string {
   if (metadata.kind !== 'durable') {
-    throw new ManagerOperationError('Only durable memories can be moved into shared team memory.');
+    throw ManagerOperationError.make({message: 'Only durable memories can be moved into shared team memory.'});
   }
   return `threadnote://user/${uriSegment(config.user)}/memories/shared/${uriSegment(team)}/durable/projects/${uriSegment(metadata.project)}/${uriSegment(metadata.topic)}.md`;
 }
@@ -1932,7 +1931,7 @@ const localPathForMemoryUri = Effect.fn('manager.localPathForMemoryUri')(functio
 const localPathToMemoryUri = Effect.fn('manager.localPathToMemoryUri')(function* (config: RuntimeConfig, path: string) {
   const relativePath = yield* pathRelative(yield* localMemoriesRoot(config), path);
   if (!relativePath || relativePath.startsWith('..') || relativePath.split(yield* pathSeparator).includes('..')) {
-    throw new ManagerOperationError(`Path is outside the memories tree: ${path}`);
+    throw ManagerOperationError.make({message: `Path is outside the memories tree: ${path}`});
   }
   return `threadnote://user/${uriSegment(config.user)}/memories/${relativePath.split(yield* pathSeparator).join('/')}`;
 });

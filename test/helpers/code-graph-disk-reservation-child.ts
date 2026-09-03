@@ -1,6 +1,6 @@
 import {provideTestLayer} from './effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Effect, FileSystem, Layer, Path} from 'effect';
+import {Clock, Effect, FileSystem, Layer, Path} from 'effect';
 import {withCodeGraphDiskReservation} from '../../src/code_graph/disk_reservation.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
@@ -85,14 +85,14 @@ const program = awaitFirstClaimBarrier.pipe(
           options,
           Effect.gen(function* () {
             process.stdout.write(
-              `${JSON.stringify({acquisitionMilliseconds: Date.now() - attemptStartedAt, at: Date.now(), event: 'acquired', iteration, mode, processId: process.pid})}\n`,
+              `${JSON.stringify({acquisitionMilliseconds: (yield* Clock.currentTimeMillis) - attemptStartedAt, at: yield* Clock.currentTimeMillis, event: 'acquired', iteration, mode, processId: process.pid})}\n`,
             );
             if (mode === 'forever') {
               while (true) yield* Effect.sleep(60_000);
             }
             yield* Effect.sleep(holdMilliseconds);
             process.stdout.write(
-              `${JSON.stringify({at: Date.now(), event: 'leaving', iteration, processId: process.pid})}\n`,
+              `${JSON.stringify({at: yield* Clock.currentTimeMillis, event: 'leaving', iteration, processId: process.pid})}\n`,
             );
           }),
         );
@@ -101,9 +101,11 @@ const program = awaitFirstClaimBarrier.pipe(
     ),
   ),
   Effect.andThen(
-    Effect.sync(() => {
-      process.stdout.write(`${JSON.stringify({at: Date.now(), event: 'complete', processId: process.pid})}\n`);
-    }),
+    Clock.currentTimeMillis.pipe(
+      Effect.map(at => {
+        process.stdout.write(`${JSON.stringify({at, event: 'complete', processId: process.pid})}\n`);
+      }),
+    ),
   ),
   provideTestLayer(layer),
 );

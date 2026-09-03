@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Path, Schema} from 'effect';
 import {LocalModelCatalog, type LocalModelManifest} from '../models/catalog.js';
 import {readModelSelection} from '../models/selection.js';
 import {LocalModelStore} from '../models/store.js';
@@ -29,9 +29,13 @@ interface ActiveMcpRecallRefresh {
 
 const activeRefreshes = new Map<string, ActiveMcpRecallRefresh>();
 
-class McpRecallBackgroundRefreshBlocked extends Error {
-  override readonly name = 'McpRecallBackgroundRefreshBlocked';
-}
+class McpRecallBackgroundRefreshBlocked extends Schema.TaggedError<McpRecallBackgroundRefreshBlocked>()(
+  'McpRecallBackgroundRefreshBlocked',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 /**
  * Start one process-local derived-index refresh without joining it to the MCP
@@ -48,7 +52,7 @@ export const scheduleMcpRecallBackgroundRefresh = Effect.fn('recall.scheduleMcpB
   const path = yield* Path.Path;
   const canonicalHome = yield* fs
     .realPath(config.agentContextHome)
-    .pipe(Effect.catch(() => Effect.succeed(path.resolve(config.agentContextHome))));
+    .pipe(Effect.orElseSucceed(() => path.resolve(config.agentContextHome)));
   return yield* Effect.uninterruptible(
     Effect.gen(function* () {
       const candidate: ActiveMcpRecallRefresh = {config, manifest, pending: false};
@@ -137,7 +141,7 @@ export const refreshRecallDerivedIndexesFromSelection = Effect.fn('recall.refres
       const vectorStatus = yield* vectorIndexStatus(config.agentContextHome, manifest);
       if (!vectorStatus.ready && vectorStatus.reason === 'not built') return;
       yield* refreshRecallVectorIndex(config, manifest, index);
-    }).pipe(Effect.catchCause(() => Effect.void));
+    }).pipe(Effect.ignoreCause);
   },
 );
 
@@ -147,7 +151,7 @@ const refreshRecallLexicalIndex = Effect.fn('recall.refreshDerivedLexicalIndex')
 ) {
   const lexicalStatus = yield* recallIndexStatus(config, false);
   if (lexicalRefreshDisposition(lexicalStatus) === 'unsafe') {
-    return yield* Effect.fail(new McpRecallBackgroundRefreshBlocked());
+    return yield* McpRecallBackgroundRefreshBlocked.make({message: ''});
   }
   return yield* loadRecallIndexData(config, {forceRefresh, includeInactive: false});
 });
@@ -159,10 +163,10 @@ const refreshRecallVectorIndex = Effect.fn('recall.refreshDerivedVectorIndex')(f
 ) {
   const vectorStatus = yield* vectorIndexStatus(config.agentContextHome, manifest);
   if (!vectorStatus.ready && vectorStatus.reason !== 'not built') {
-    return yield* Effect.fail(new McpRecallBackgroundRefreshBlocked());
+    return yield* McpRecallBackgroundRefreshBlocked.make({message: ''});
   }
   const readiness = yield* vectorIndexGenerationReadiness(config.agentContextHome, manifest, index.generation);
-  if (readiness === 'corrupt') return yield* Effect.fail(new McpRecallBackgroundRefreshBlocked());
+  if (readiness === 'corrupt') return yield* McpRecallBackgroundRefreshBlocked.make({message: ''});
   if (readiness === 'current') return;
   yield* ensureVectorIndex(config, manifest, index.candidates, {
     corpusGeneration: index.generation,

@@ -1,13 +1,14 @@
-import {Option} from 'effect';
+import {Option, Schema} from 'effect';
 import type {ConsolidationAgent, MemoryKind, MemoryStatus} from '../types.js';
 
-class ManagerRequestInputError extends Error {
-  override readonly name = 'ManagerRequestInputError';
-}
+class ManagerRequestInputError extends Schema.TaggedError<ManagerRequestInputError>()('ManagerRequestInputError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export function requiredQuery(url: URL, name: string): string {
   const value = url.searchParams.get(name);
-  if (!value) throw new ManagerRequestInputError(`Missing query parameter: ${name}`);
+  if (!value) throw ManagerRequestInputError.make({message: `Missing query parameter: ${name}`});
   return value;
 }
 
@@ -34,7 +35,7 @@ export function optionalNonEmptyQuery(url: URL, name: string): Option.Option<str
 
 export function requireString(value: unknown, name: string): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new ManagerRequestInputError(`Provide ${name}.`);
+    throw ManagerRequestInputError.make({message: `Provide ${name}.`});
   }
   return value;
 }
@@ -45,13 +46,13 @@ export function optionalString(value: unknown): string | undefined {
 
 export function requireStringArray(value: unknown, name: string): readonly string[] {
   if (!Array.isArray(value) || value.length === 0 || !value.every(item => typeof item === 'string')) {
-    throw new ManagerRequestInputError(`Provide ${name} as a non-empty string array.`);
+    throw ManagerRequestInputError.make({message: `Provide ${name} as a non-empty string array.`});
   }
   return value;
 }
 
 export function requireConfirm(body: Record<string, unknown>): void {
-  if (body.confirm !== true) throw new ManagerRequestInputError('Set confirm=true for this action.');
+  if (body.confirm !== true) throw ManagerRequestInputError.make({message: 'Set confirm=true for this action.'});
 }
 
 export function memoryKind(value: unknown): MemoryKind | undefined {
@@ -74,7 +75,7 @@ export function consolidationAgent(value: string): ConsolidationAgent {
   if (value === 'codex' || value === 'claude' || value === 'cursor' || value === 'copilot' || value === 'effect-ai') {
     return value;
   }
-  throw new ManagerRequestInputError(`Unsupported consolidation agent: ${value}`);
+  throw ManagerRequestInputError.make({message: `Unsupported consolidation agent: ${value}`});
 }
 
 export function cleanupMode(value: unknown): 'archive' | 'forget' | 'keep' {

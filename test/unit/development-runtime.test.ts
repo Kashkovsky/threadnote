@@ -954,7 +954,7 @@ describe('exact-head development runtime', () => {
                       : `threadnote v${version}\n`,
                 });
               },
-              executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),
+              executeStreaming: () => Effect.die(TestError.make({message: 'Unexpected streaming command'})),
             });
             const installed = yield* activateLocalStandaloneRelease({
               canonicalInstallRoot: yield* fs.realPath(installRoot),
@@ -1055,7 +1055,7 @@ describe('exact-head development runtime', () => {
               }
               return Effect.succeed({exitCode: 0, stderr: '', stdout: `threadnote v${version}\n`});
             },
-            executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),
+            executeStreaming: () => Effect.die(TestError.make({message: 'Unexpected streaming command'})),
           });
           const installed = yield* activateLocalStandaloneRelease({
             canonicalInstallRoot: yield* fs.realPath(installRoot),
@@ -1162,7 +1162,7 @@ describe('exact-head development runtime', () => {
             }
             return Effect.succeed({exitCode: 0, stderr: '', stdout: `threadnote v${version}\n`});
           },
-          executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),
+          executeStreaming: () => Effect.die(TestError.make({message: 'Unexpected streaming command'})),
         });
         const failure = yield* activateLocalStandaloneRelease({
           canonicalInstallRoot: yield* fs.realPath(installRoot),
@@ -1359,7 +1359,7 @@ describe('exact-head development runtime', () => {
             processStartIdentity: processId => Effect.succeed(identities.get(processId)),
             signalProcess: (processId, signal) => {
               if (!terminationRequested) {
-                throw new TestError('Installer must not signal processes without --terminate-superseded');
+                throw TestError.make({message: 'Installer must not signal processes without --terminate-superseded'});
               }
               signals.push([processId, signal]);
               running.delete(processId);
@@ -1772,7 +1772,7 @@ function versionCommandExecutor(version: string) {
             ? 'Running Threadnote doctor checks.\nSummary: 0 failure(s), 0 warning(s)\n'
             : `threadnote v${version}\n`,
       }),
-    executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),
+    executeStreaming: () => Effect.die(TestError.make({message: 'Unexpected streaming command'})),
   });
 }
 

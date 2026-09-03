@@ -33,21 +33,19 @@ describe('code graph inventory admission policy', () => {
       const excludedBlobIds = new Set(excludedPaths.map(path => git(root, ['rev-parse', `HEAD:${path}`])));
       const requestedBlobIds: string[] = [];
 
-      const clean = yield* Effect.gen(function* () {
-        const identity = yield* resolveRepositoryIdentity(root);
-        const command = yield* CommandExecutor;
-        const wrappedCommand = CommandExecutor.of({
-          ...command,
-          executeBytes: (executable, args, options) => {
-            if (executable === 'git' && args.includes('cat-file') && args.includes('--batch')) {
-              const input = new TextDecoder().decode(options?.input ?? new Uint8Array());
-              requestedBlobIds.push(...input.split('\n').filter(Boolean));
-            }
-            return command.executeBytes!(executable, args, options);
-          },
-        });
-        return yield* inventoryRepository(identity).pipe(Effect.provideService(CommandExecutor, wrappedCommand));
+      const identity = yield* resolveRepositoryIdentity(root);
+      const command = yield* CommandExecutor;
+      const wrappedCommand = CommandExecutor.of({
+        ...command,
+        executeBytes: (executable, args, options) => {
+          if (executable === 'git' && args.includes('cat-file') && args.includes('--batch')) {
+            const input = new TextDecoder().decode(options?.input ?? new Uint8Array());
+            requestedBlobIds.push(...input.split('\n').filter(Boolean));
+          }
+          return command.executeBytes!(executable, args, options);
+        },
       });
+      const clean = yield* inventoryRepository(identity).pipe(Effect.provideService(CommandExecutor, wrappedCommand));
 
       expect(clean.files.map(file => file.path)).toEqual(['data/small.json', 'package.json', 'src/index.ts']);
       expect(requestedBlobIds.filter(blobId => excludedBlobIds.has(blobId))).toEqual([]);

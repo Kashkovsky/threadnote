@@ -1,6 +1,7 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, Exit, FileSystem, Fiber} from 'effect';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {TestClock} from 'effect/testing';
 import {
   makeContextBriefCitationRssObserverController,
@@ -39,7 +40,7 @@ describe('Context Brief citation RSS parent controller', () => {
     Effect.gen(function* () {
       const earlyExit = yield* waitForContextBriefCitationRssReady({
         childExitCode: () => 17,
-        readReady: Effect.succeed(undefined),
+        readReady: succeedUndefined,
         stderr: Promise.resolve('early diagnostic'),
         timeoutMilliseconds: 100,
       }).pipe(Effect.flip);
@@ -172,7 +173,7 @@ describe('Context Brief citation RSS parent controller', () => {
         const harness = controllerHarness({barrierFailure: failure === 'use' ? undefined : failure});
         const use = Effect.gen(function* () {
           harness.events.push('use');
-          if (failure === 'use') return yield* Effect.fail(new ScriptError('use failed'));
+          if (failure === 'use') return yield* ScriptError.make({message: 'use failed'});
         });
         const result = yield* Effect.acquireUseRelease(
           Effect.succeed(harness.controller),
@@ -249,7 +250,7 @@ function controllerHarness(
       Effect.gen(function* () {
         events.push(`barrier:${request.operation}`);
         if (request.operation === options.barrierFailure) {
-          return yield* Effect.fail(new ScriptError(`${request.operation} failed`));
+          return yield* ScriptError.make({message: `${request.operation} failed`});
         }
       }),
     childExitCode: () => exitCode,

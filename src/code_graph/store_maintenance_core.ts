@@ -1,4 +1,4 @@
-import {Clock, Effect, Option} from 'effect';
+import {Clock, DateTime, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {SystemInfo} from '../effect/system.js';
 import {classifyCodeGraphBuildOwner} from './build_owner.js';
@@ -48,7 +48,7 @@ export function codeGraphRoutineFileBlobCleanupPageStatement(
   readonly text: string;
 } {
   if (candidates.length === 0 || candidates.length > CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE) {
-    throw new CodeGraphStoreError('File fact cache cleanup candidates are invalid.');
+    throw CodeGraphStoreError.of('File fact cache cleanup candidates are invalid.');
   }
   return {
     parameters: [
@@ -89,7 +89,7 @@ export function codeGraphRoutineMaterializedShardCleanupPageStatement(
   readonly text: string;
 } {
   if (candidates.length === 0 || candidates.length > CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE) {
-    throw new CodeGraphStoreError('Materialized shard cache cleanup candidates are invalid.');
+    throw CodeGraphStoreError.of('Materialized shard cache cleanup candidates are invalid.');
   }
   return {
     parameters: [...candidates, eligibleBefore],
@@ -418,7 +418,7 @@ const selectRoutineCacheCleanupState = Effect.fn('codeGraph.selectRoutineCacheCl
   );
   const state = rows[0] === undefined ? undefined : decodeRoutineCacheCleanupState(rows[0]);
   if (rows.length !== 1 || state === undefined) {
-    return yield* Effect.fail(new CodeGraphStoreError('Routine code graph cache cleanup state is invalid.'));
+    return yield* CodeGraphStoreError.of('Routine code graph cache cleanup state is invalid.');
   }
   return state;
 });
@@ -446,7 +446,7 @@ const updateRoutineCacheCleanupState = Effect.fn('codeGraph.updateRoutineCacheCl
     ],
   );
   if ((yield* lastStatementChangeCount(sql)) !== 1) {
-    return yield* Effect.fail(new CodeGraphStoreError('Routine code graph cache cleanup state changed.'));
+    return yield* CodeGraphStoreError.of('Routine code graph cache cleanup state changed.');
   }
 });
 
@@ -479,7 +479,7 @@ const selectRoutineFileBlobCacheCandidates = Effect.fn('codeGraph.selectRoutineF
       !validRoutineCacheCursorText(row.extractor_set, 4_096) ||
       !validRoutineCacheCursorText(row.path_hint)
     ) {
-      return yield* Effect.fail(new CodeGraphStoreError('File fact cache cleanup cursor is invalid.'));
+      return yield* CodeGraphStoreError.of('File fact cache cleanup cursor is invalid.');
     }
     candidates.push({
       contentHash: row.content_hash,
@@ -504,7 +504,7 @@ const selectRoutineMaterializedShardCacheCandidates = Effect.fn(
   const candidates: string[] = [];
   for (const row of rows) {
     if (!validRoutineCacheCursorText(row.id, 1_024)) {
-      return yield* Effect.fail(new CodeGraphStoreError('Materialized shard cache cleanup cursor is invalid.'));
+      return yield* CodeGraphStoreError.of('Materialized shard cache cleanup cursor is invalid.');
     }
     candidates.push(row.id);
   }
@@ -516,14 +516,14 @@ const deleteRoutineFileBlobCacheCandidates = Effect.fn('codeGraph.deleteRoutineF
   candidates: readonly RoutineFileBlobCacheKey[],
 ) {
   if (candidates.length === 0) return 0;
-  const eligibleBefore = new Date(
-    (yield* Clock.currentTimeMillis) - CODE_GRAPH_ROUTINE_CACHE_MINIMUM_AGE_MILLISECONDS,
-  ).toISOString();
+  const eligibleBefore = DateTime.formatIso(
+    DateTime.makeUnsafe((yield* Clock.currentTimeMillis) - CODE_GRAPH_ROUTINE_CACHE_MINIMUM_AGE_MILLISECONDS),
+  );
   const statement = codeGraphRoutineFileBlobCleanupPageStatement(candidates, eligibleBefore);
   yield* sql.unsafe(statement.text, statement.parameters);
   const deleted = yield* lastStatementChangeCount(sql);
   if (!Number.isSafeInteger(deleted) || deleted < 0 || deleted > candidates.length) {
-    return yield* Effect.fail(new CodeGraphStoreError('File fact cache cleanup returned an invalid row count.'));
+    return yield* CodeGraphStoreError.of('File fact cache cleanup returned an invalid row count.');
   }
   return deleted;
 });
@@ -532,14 +532,14 @@ const deleteRoutineMaterializedShardCacheCandidates = Effect.fn(
   'codeGraph.deleteRoutineMaterializedShardCacheCandidates',
 )(function* (sql: SqlClient.SqlClient, candidates: readonly string[]) {
   if (candidates.length === 0) return 0;
-  const eligibleBefore = new Date(
-    (yield* Clock.currentTimeMillis) - CODE_GRAPH_ROUTINE_CACHE_MINIMUM_AGE_MILLISECONDS,
-  ).toISOString();
+  const eligibleBefore = DateTime.formatIso(
+    DateTime.makeUnsafe((yield* Clock.currentTimeMillis) - CODE_GRAPH_ROUTINE_CACHE_MINIMUM_AGE_MILLISECONDS),
+  );
   const statement = codeGraphRoutineMaterializedShardCleanupPageStatement(candidates, eligibleBefore);
   yield* sql.unsafe(statement.text, statement.parameters);
   const deleted = yield* lastStatementChangeCount(sql);
   if (!Number.isSafeInteger(deleted) || deleted < 0 || deleted > candidates.length) {
-    return yield* Effect.fail(new CodeGraphStoreError('Materialized shard cache cleanup returned an invalid count.'));
+    return yield* CodeGraphStoreError.of('Materialized shard cache cleanup returned an invalid count.');
   }
   return deleted;
 });

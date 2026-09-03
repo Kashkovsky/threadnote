@@ -166,7 +166,7 @@ describe('Effect MCP initialization instructions', () => {
       'threadnote://user/test-user/memories/durable/projects/threadnote/moved-contract.md',
     );
     expect(recovery).toBeDefined();
-    if (recovery === undefined) throw new TestError('Expected canonical memory recovery.');
+    if (recovery === undefined) throw TestError.make({message: 'Expected canonical memory recovery.'});
     const resourceNotFoundWithRecovery = JSON.stringify({
       error: {
         _tag: 'Cause',
@@ -227,7 +227,7 @@ describe('Effect MCP initialization instructions', () => {
     const recovery = memoryReadRecoveryForRequestedUri(
       'threadnote://user/test-user/memories/durable/projects/threadnote/moved-contract.md',
     );
-    if (recovery === undefined) throw new TestError('Expected canonical memory recovery.');
+    if (recovery === undefined) throw TestError.make({message: 'Expected canonical memory recovery.'});
     const invalidCandidates = [
       {...recovery, unexpected: true},
       {...recovery, nextAction: {...recovery.nextAction, unexpected: true}},
@@ -479,11 +479,11 @@ describe('Effect MCP resource interruption', () => {
 
   effectIt.effect('preserves an ordinary typed resource protocol failure', () =>
     Effect.gen(function* () {
-      const expected = new McpSchema.InvalidParams({
+      const expected = McpSchema.InvalidParams.make({
         data: MCP_RESOURCE_ERROR_DATA,
         message: 'bounded fixture failure',
       });
-      const exit = yield* Effect.fail(expected).pipe(Effect.catchCause(mcpResourceFailureResult), Effect.exit);
+      const exit = yield* expected.pipe(Effect.catchCause(mcpResourceFailureResult), Effect.exit);
 
       expect(Exit.isFailure(exit)).toBe(true);
       if (Exit.isFailure(exit)) {
@@ -494,7 +494,7 @@ describe('Effect MCP resource interruption', () => {
 
   effectIt.effect('maps defects to a bounded protocol error without exposing their details', () =>
     Effect.gen(function* () {
-      const exit = yield* Effect.die(new TestError('/private/path: secret fixture')).pipe(
+      const exit = yield* Effect.die(TestError.make({message: '/private/path: secret fixture'})).pipe(
         Effect.catchCause(mcpResourceFailureResult),
         Effect.exit,
       );
@@ -561,7 +561,7 @@ describe('Effect MCP tool interruption', () => {
 
   effectIt.effect('still converts ordinary tool failures into an isError payload', () =>
     Effect.gen(function* () {
-      const result = yield* Effect.fail(new TestError('bounded fixture failure')).pipe(
+      const result = yield* TestError.make({message: 'bounded fixture failure'}).pipe(
         Effect.catchCause(mcpToolFailureResult),
       );
 
@@ -883,7 +883,7 @@ describe('Effect MCP tool progress', () => {
     const original = target.callTool;
     const server = new Proxy(target, {
       defineProperty(object, property, descriptor) {
-        if (property === 'initializedClients') throw new TestError('fixture rejects recipient binding');
+        if (property === 'initializedClients') throw TestError.make({message: 'fixture rejects recipient binding'});
         return Reflect.defineProperty(object, property, descriptor);
       },
       set(object, property, value) {
@@ -1052,7 +1052,7 @@ describe('Effect MCP tool progress', () => {
     Effect.gen(function* () {
       let phaseInvocations = 0;
       const progress = makeMcpToolProgress('disconnected-token', () =>
-        Effect.fail(new TestError('/private/progress-transport-fixture')),
+        Effect.fail(TestError.make({message: '/private/progress-transport-fixture'})),
       );
 
       const result = yield* withMcpProgressHeartbeat(
@@ -1136,7 +1136,7 @@ function fakeEffectMcpServer(): EffectMcpServer {
     marker: 'receiver-preserved',
     notifications: {'notifications/progress': () => Effect.void},
     callTool(this: {readonly marker: string}) {
-      return Effect.succeed(new McpSchema.CallToolResult({content: [{type: 'text', text: this.marker}]}));
+      return Effect.succeed(McpSchema.CallToolResult.make({content: [{type: 'text', text: this.marker}]}));
     },
   };
   return server as unknown as EffectMcpServer;

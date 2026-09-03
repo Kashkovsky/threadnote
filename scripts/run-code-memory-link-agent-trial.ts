@@ -83,22 +83,22 @@ const program = Effect.gen(function* () {
   const assignment = parseCodeMemoryLinkAgentAbAssignmentV1(assignmentInput);
   const manifest = parseCodeMemoryLinkAgentAbManifestV1(manifestInput);
   if (manifest.candidate.commit !== options.candidateCommit) {
-    return yield* Effect.fail(new ScriptError('The trial manifest does not name --candidate-commit.'));
+    return yield* ScriptError.make({message: 'The trial manifest does not name --candidate-commit.'});
   }
   if (manifest.harnessGovernanceCommit === undefined) {
-    return yield* Effect.fail(new ScriptError('The trial manifest does not bind a protocol-v2 harness commit.'));
+    return yield* ScriptError.make({message: 'The trial manifest does not bind a protocol-v2 harness commit.'});
   }
   const governance = yield* verifyApprovalCheckout(sourceRoot, manifest.harnessGovernanceCommit);
   if (governance.commit !== options.approvalCommit) {
-    return yield* Effect.fail(
-      new ScriptError('The trial runner requires the exact clean reviewed --approval-commit checkout.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The trial runner requires the exact clean reviewed --approval-commit checkout.',
+    });
   }
   if (!CODE_MEMORY_LINK_AGENT_AB_APPROVED_MANIFEST_HASHES.includes(manifest.manifestHash)) {
-    return yield* Effect.fail(new ScriptError('The trial manifest is not approved in the reviewed harness checkout.'));
+    return yield* ScriptError.make({message: 'The trial manifest is not approved in the reviewed harness checkout.'});
   }
   const rosteredClient = manifest.clients.find(client => client.clientId === options.clientId);
-  if (!rosteredClient) return yield* Effect.fail(new ScriptError('--client-id is outside the manifest roster.'));
+  if (!rosteredClient) return yield* ScriptError.make({message: '--client-id is outside the manifest roster.'});
   const descriptor = parseCodeMemoryLinkClientImplementationDescriptorV1(descriptorInput);
   const descriptorHash = assertCodeMemoryLinkClientImplementationBinding({
     clientId: options.clientId,
@@ -134,9 +134,9 @@ const program = Effect.gen(function* () {
           trials: existing,
         });
         if (recovered.pending.trial.clientId !== options.clientId) {
-          return yield* Effect.fail(
-            new ScriptError(`Pending recovery requires client ${recovered.pending.trial.clientId}.`),
-          );
+          return yield* ScriptError.make({
+            message: `Pending recovery requires client ${recovered.pending.trial.clientId}.`,
+          });
         }
         assertCodeMemoryLinkAgentAbTrialLedgerPrefixV1({assignment, manifest, trials: recovered.trials});
         assertCodeMemoryLinkAgentEvidenceLedgerV1({
@@ -176,17 +176,15 @@ const program = Effect.gen(function* () {
       });
       assertRetryAcknowledgement(options, attemptState.requiredRetry);
       if (existing.length >= manifest.schedule.length) {
-        return yield* Effect.fail(new ScriptError('The preregistered trial ledger is already complete.'));
+        return yield* ScriptError.make({message: 'The preregistered trial ledger is already complete.'});
       }
       const scheduled = manifest.schedule[existing.length];
       const task = manifest.tasks.find(candidate => candidate.taskId === scheduled.taskId)!;
       const arm = assignment.labels[scheduled.blindLabel];
       if (scheduled.clientId !== options.clientId) {
-        return yield* Effect.fail(
-          new ScriptError(
-            `The next frozen schedule entry requires client ${scheduled.clientId}, not ${options.clientId}.`,
-          ),
-        );
+        return yield* ScriptError.make({
+          message: `The next frozen schedule entry requires client ${scheduled.clientId}, not ${options.clientId}.`,
+        });
       }
       const resolved = yield* Effect.tryPromise({
         try: () =>
@@ -195,7 +193,7 @@ const program = Effect.gen(function* () {
             executableSha256: options.candidateExecutableSha256,
             sourceCommit: options.candidateCommit,
           }),
-        catch: cause => new ScriptError('The evaluated subject failed pre-run verification.', {cause}),
+        catch: cause => ScriptError.make({message: 'The evaluated subject failed pre-run verification.', cause}),
       });
       assertCodeMemoryLinkAgentAbRuntimeIdentity(manifest.candidate, resolved.identity);
       const attemptId = randomOpaqueId('attempt');
@@ -301,20 +299,23 @@ const program = Effect.gen(function* () {
               maxOutputBytes: 8 * 1024 * 1024,
               timeoutMilliseconds: options.timeoutMilliseconds,
             }),
-          catch: cause => new ScriptError('The reviewed external client process boundary failed.', {cause}),
+          catch: cause => ScriptError.make({message: 'The reviewed external client process boundary failed.', cause}),
         });
         if (command.exitCode !== 0) {
           const terminal = parseCodeMemoryLinkCodexTerminalReceipt(command.stderr);
           const receipt = terminal ?? createCodeMemoryLinkCodexTerminalReceipt('process-exit');
           failureKind = retryReasonForTerminalKind(receipt.kind);
           failureDiagnosticHash = receipt.diagnosticHash;
-          return yield* Effect.fail(new ScriptError(`The reviewed external client terminated with ${receipt.kind}.`));
+          return yield* ScriptError.make({message: `The reviewed external client terminated with ${receipt.kind}.`});
         }
         failureKind = 'client-output';
         const clientOutput = yield* Effect.try({
           try: () => parseCodeMemoryLinkAgentClientOutputV1(JSON.parse(command.stdout) as unknown),
           catch: cause =>
-            new ScriptError('The external client must emit one strict trial and retained-evidence envelope.', {cause}),
+            ScriptError.make({
+              message: 'The external client must emit one strict trial and retained-evidence envelope.',
+              cause,
+            }),
         });
         failureKind = 'post-run-verification';
         const [after, collectedAfter, governanceAfter] = yield* Effect.all(
@@ -326,7 +327,7 @@ const program = Effect.gen(function* () {
                   executableSha256: options.candidateExecutableSha256,
                   sourceCommit: options.candidateCommit,
                 }),
-              catch: cause => new ScriptError('The evaluated subject failed post-run verification.', {cause}),
+              catch: cause => ScriptError.make({message: 'The evaluated subject failed post-run verification.', cause}),
             }),
             collectCodeMemoryLinkClientImplementation(options),
             verifyApprovalCheckout(sourceRoot, manifest.harnessGovernanceCommit),
@@ -338,9 +339,9 @@ const program = Effect.gen(function* () {
           governanceAfter.commit !== options.approvalCommit ||
           JSON.stringify(collectedAfter) !== JSON.stringify(collectedBefore)
         ) {
-          return yield* Effect.fail(
-            new ScriptError('The reviewed harness or client implementation changed during trial.'),
-          );
+          return yield* ScriptError.make({
+            message: 'The reviewed harness or client implementation changed during trial.',
+          });
         }
         failureKind = 'receipt-validation';
         const previousReceiptDigest =
@@ -498,7 +499,7 @@ function parseArguments(args: readonly string[]): Options {
       ].includes(argument)
     ) {
       values[argument] = required(args[++index], argument);
-    } else throw new ScriptError(`Unknown Code Memory Link trial harness option: ${argument}`);
+    } else throw ScriptError.make({message: `Unknown Code Memory Link trial harness option: ${argument}`});
   }
   const assignmentPath = required(values['--assignment'], '--assignment');
   const approvalCommit = required(values['--approval-commit'], '--approval-commit');
@@ -519,19 +520,23 @@ function parseArguments(args: readonly string[]): Options {
   const manifestPath = required(values['--manifest'], '--manifest');
   const trialsPath = required(values['--trials'], '--trials');
   if (clientArtifactBindings.length === 0 || clientBinaryBindings.length === 0) {
-    throw new ScriptError('--client-artifact-binding and --client-binary-binding require at least one value each.');
+    throw ScriptError.make({
+      message: '--client-artifact-binding and --client-binary-binding require at least one value each.',
+    });
   }
   const timeoutMilliseconds = parsePositiveInteger(values['--timeout-ms'] ?? '1800000', '--timeout-ms');
   const retryAttemptId = values['--retry-of'];
   const retryReason = values['--retry-reason'];
   if ((retryAttemptId === undefined) !== (retryReason === undefined)) {
-    throw new ScriptError('--retry-of and --retry-reason must be supplied together.');
+    throw ScriptError.make({message: '--retry-of and --retry-reason must be supplied together.'});
   }
   if (
     retryReason !== undefined &&
     !CODE_MEMORY_LINK_AGENT_RETRY_REASONS.includes(retryReason as CodeMemoryLinkAgentRetryReason)
   ) {
-    throw new ScriptError(`--retry-reason must be one of: ${CODE_MEMORY_LINK_AGENT_RETRY_REASONS.join(', ')}.`);
+    throw ScriptError.make({
+      message: `--retry-reason must be one of: ${CODE_MEMORY_LINK_AGENT_RETRY_REASONS.join(', ')}.`,
+    });
   }
   return {
     approvalCommit,
@@ -564,14 +569,16 @@ function assertRetryAcknowledgement(
 ): void {
   if (requiredRetry === null) {
     if (options.retryAttemptId !== undefined || options.retryReason !== undefined) {
-      throw new ScriptError('Retry acknowledgement was supplied, but the ledger has no unresolved attempt.');
+      throw ScriptError.make({
+        message: 'Retry acknowledgement was supplied, but the ledger has no unresolved attempt.',
+      });
     }
     return;
   }
   if (options.retryAttemptId !== requiredRetry.attemptId || options.retryReason !== requiredRetry.reason) {
-    throw new ScriptError(
-      `Retry requires --retry-of ${requiredRetry.attemptId} --retry-reason ${requiredRetry.reason}.`,
-    );
+    throw ScriptError.make({
+      message: `Retry requires --retry-of ${requiredRetry.attemptId} --retry-reason ${requiredRetry.reason}.`,
+    });
   }
 }
 
@@ -584,25 +591,26 @@ function assertDescriptorMatches(
   actual: CodeMemoryLinkClientImplementationDescriptorV1,
 ): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new ScriptError(
-      'The invoked client bytes, arguments, artifacts, or configuration do not match the descriptor.',
-    );
+    throw ScriptError.make({
+      message: 'The invoked client bytes, arguments, artifacts, or configuration do not match the descriptor.',
+    });
   }
 }
 
 function parsePositiveInteger(value: string, option: string): number {
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1) throw new ScriptError(`${option} must be a positive integer.`);
+  if (!Number.isSafeInteger(parsed) || parsed < 1)
+    throw ScriptError.make({message: `${option} must be a positive integer.`});
   return parsed;
 }
 
 function parseFileBinding(value: string, option: string): {readonly path: string; readonly role: string} {
   const separator = value.indexOf('=');
-  if (separator < 1) throw new ScriptError(`${option} requires role=/absolute/path.`);
+  if (separator < 1) throw ScriptError.make({message: `${option} requires role=/absolute/path.`});
   const role = value.slice(0, separator);
   const path = value.slice(separator + 1);
   if (!/^[a-z][a-z0-9-]{0,63}$/u.test(role) || !path.startsWith('/') || path.includes('\0')) {
-    throw new ScriptError(`${option} requires one portable role and absolute path.`);
+    throw ScriptError.make({message: `${option} requires one portable role and absolute path.`});
   }
   return {path, role};
 }
@@ -613,7 +621,7 @@ function randomOpaqueId(prefix: string): string {
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 

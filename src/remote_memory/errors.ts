@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 export type RemoteMemoryErrorCode =
   | 'attestation_required'
   | 'conflict'
@@ -9,17 +10,37 @@ export type RemoteMemoryErrorCode =
   | 'service_unavailable'
   | 'unauthorized';
 
-export class RemoteMemoryError extends Error {
-  readonly name = 'RemoteMemoryError';
-
-  constructor(
-    readonly code: RemoteMemoryErrorCode,
+export class RemoteMemoryError extends Schema.TaggedError<RemoteMemoryError>()('RemoteMemoryError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  code: Schema.Literals([
+    'attestation_required',
+    'conflict',
+    'forbidden',
+    'idempotency_mismatch',
+    'invalid_request',
+    'not_found',
+    'rate_limited',
+    'service_unavailable',
+    'unauthorized',
+  ]),
+  details: Schema.Any,
+  message: Schema.String,
+  status: Schema.Finite,
+}) {
+  static of(
+    code: RemoteMemoryErrorCode,
     message: string,
-    readonly status: number,
-    readonly details: Readonly<Record<string, boolean | number | string>> = {},
+    status: number,
+    details: Readonly<Record<string, boolean | number | string>> = {},
     options?: ErrorOptions,
-  ) {
-    super(message, options);
+  ): RemoteMemoryError {
+    return RemoteMemoryError.make({
+      code,
+      details,
+      message,
+      status,
+      ...(options?.cause === undefined ? {} : {cause: options.cause}),
+    });
   }
 }
 
@@ -28,11 +49,11 @@ export function remoteMemoryError(
   message: string,
   details: Readonly<Record<string, boolean | number | string>> = {},
 ): RemoteMemoryError {
-  return new RemoteMemoryError(code, message, statusForCode(code), details);
+  return RemoteMemoryError.of(code, message, statusForCode(code), details);
 }
 
 export function publicRemoteMemoryError(cause: unknown): RemoteMemoryError {
-  if (cause instanceof RemoteMemoryError) return cause;
+  if (Schema.is(RemoteMemoryError)(cause)) return cause;
   return remoteMemoryError('service_unavailable', 'Remote memory could not complete the request.');
 }
 

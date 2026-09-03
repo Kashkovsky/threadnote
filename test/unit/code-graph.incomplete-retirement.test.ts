@@ -1,7 +1,7 @@
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
 import {afterEach, describe, expect, it} from 'vitest';
-import {Deferred, Effect, Fiber, Ref} from 'effect';
+import {Clock, DateTime, Deferred, Effect, Fiber, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
@@ -92,6 +92,8 @@ describe('code graph incomplete snapshot retirement', () => {
         yield* store.markBuilding(databasePath, identity, snapshots.active);
         yield* store.markBuilding(databasePath, identity, snapshots.leased);
         yield* store.markBuilding(databasePath, otherWorktree, snapshots.other);
+        const activatedAt = DateTime.formatIso(yield* DateTime.now);
+        const expiresAt = (yield* Clock.currentTimeMillis) + 60_000;
         yield* Effect.sync(() => {
           const database = new Database(databasePath);
           try {
@@ -103,10 +105,10 @@ describe('code graph incomplete snapshot retirement', () => {
               .run(snapshots.active.id);
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(identity.worktreeId, snapshots.active.id, new Date().toISOString());
+              .run(identity.worktreeId, snapshots.active.id, activatedAt);
             database
               .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
-              .run('leased-test-snapshot', snapshots.leased.id, Date.now() + 60_000);
+              .run('leased-test-snapshot', snapshots.leased.id, expiresAt);
           } finally {
             database.close();
           }

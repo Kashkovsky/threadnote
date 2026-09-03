@@ -1,5 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
-import {Clock, Crypto, Effect, FileSystem, Option, Predicate, Result} from 'effect';
+import {Clock, Crypto, DateTime, Effect, FileSystem, Option, Predicate, Result, Schema} from 'effect';
 import {
   activePersonalMemoryUrisFromText,
   existingReferencedUris,
@@ -264,7 +264,7 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
           );
         }
         const existing = yield* readActiveProjectMemories(config, closeout.input.project);
-        const now = new Date(yield* Clock.currentTimeMillis);
+        const now = yield* DateTime.nowAsDate;
         const review = yield* buildCandidateReview(closeout.input, existing, now);
         yield* saveCandidateReview(config.agentContextHome, review);
         return candidateReviewResult(review);
@@ -427,7 +427,7 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
           if (candidate.state === 'applied' || candidate.state === 'conflict' || candidate.state === 'rejected') {
             return argumentError(`Candidate ${candidate.candidateId} is already ${candidate.state}.`);
           }
-          const at = new Date(yield* Clock.currentTimeMillis).toISOString();
+          const at = DateTime.formatIso(yield* DateTime.now);
           if (action === 'defer' || action === 'reject') {
             if (candidate.state === 'applying') {
               return argumentError(
@@ -813,7 +813,7 @@ export function registerSearchTool(
         Effect.flatMap(withStaleVersionNotice),
         Effect.catch(error =>
           Effect.succeed(
-            error instanceof AgentResponseBudgetTooSmallError ? argumentError(error.message) : mcpErrorResult(error),
+            Schema.is(AgentResponseBudgetTooSmallError)(error) ? argumentError(error.message) : mcpErrorResult(error),
           ),
         ),
       );
@@ -1056,7 +1056,7 @@ function runRecallTool(
           includeInactive: params.includeArchived,
           project: recallProjectName,
           rankedCandidates: recallSections.expansionCandidates,
-        }).pipe(Effect.catch(() => Effect.succeed([])))
+        }).pipe(Effect.orElseSucceed(() => []))
       : [];
     const fallbackExpansionQueries = needsFallbackExpansion
       ? yield* expandWeakRecallQueryEffect(
@@ -1149,9 +1149,9 @@ function runRecallTool(
           {budgetTokens: params.budgetTokens, explain: params.explain},
         ),
       catch: error =>
-        error instanceof AgentResponseBudgetTooSmallError
+        Schema.is(AgentResponseBudgetTooSmallError)(error)
           ? error
-          : new McpServerOperationError('Recall response projection failed.', {cause: error}),
+          : McpServerOperationError.make({message: 'Recall response projection failed.', cause: error}),
     });
     return {
       content: [{type: 'text' as const, text: projected.text}],
@@ -1497,9 +1497,9 @@ function parseCandidatePolicy(value: string | undefined): 'handoff-only' | 'off'
   if (normalized === 'suggest' || normalized === 'handoff-only' || normalized === 'off') {
     return normalized;
   }
-  throw new McpServerOperationError(
-    `Invalid THREADNOTE_CANDIDATE_POLICY=${normalized}. Expected suggest, handoff-only, or off.`,
-  );
+  throw McpServerOperationError.make({
+    message: `Invalid THREADNOTE_CANDIDATE_POLICY=${normalized}. Expected suggest, handoff-only, or off.`,
+  });
 }
 
 function scrubSessionCloseout(
@@ -1536,7 +1536,7 @@ function scrubSessionCloseout(
     for (const value of values) {
       const scrubbed = scrubText(value);
       if (scrubbed.blocker) {
-        throw new McpServerOperationError(`${key} may contain ${scrubbed.blocker}`);
+        throw McpServerOperationError.make({message: `${key} may contain ${scrubbed.blocker}`});
       }
       result.push(scrubbed.cleaned);
     }
@@ -1682,7 +1682,7 @@ function persistCandidateConflict(
       'conflict',
       {
         action: 'conflict',
-        at: new Date(yield* Clock.currentTimeMillis).toISOString(),
+        at: DateTime.formatIso(yield* DateTime.now),
         memoryUri: candidate.applyTargetUri,
       },
     );
@@ -1760,7 +1760,7 @@ export function registerRecallFeedbackTool(server: EffectMcpServerAdapter, confi
         return argumentError('recall_feedback requires project when action is pin; pins are never global.');
       }
       return Effect.gen(function* () {
-        const timestamp = new Date(yield* Clock.currentTimeMillis).toISOString();
+        const timestamp = DateTime.formatIso(yield* DateTime.now);
         const result = yield* recordRecallFeedback(config.agentContextHome, {
           action,
           project: normalizedProject,
@@ -1817,10 +1817,10 @@ export function registerArchiveTool(
         }
         const sourceContent = sourceRecord.content;
         yield* Effect.try({
-          catch: error => new McpServerOperationError(errorMessage(error)),
+          catch: error => McpServerOperationError.make({message: errorMessage(error)}),
           try: () => assertMemoryRecordArchivable(sourceRecord),
         });
-        const timestamp = new Date().toISOString();
+        const timestamp = DateTime.formatIso(yield* DateTime.now);
         const archiveResult = yield* writeDurableMemory(config, {
           bodyText: memoryArchiveBody(sourceRecord.body),
           expectedSourceContent: [{content: sourceContent, uri: checkedUri.value}],

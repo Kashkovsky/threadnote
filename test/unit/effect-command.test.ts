@@ -110,7 +110,7 @@ describe('Effect CommandExecutor', () => {
           const deadline = (yield* Clock.currentTimeMillis) + 5000;
           let pid: number | undefined;
           while ((yield* Clock.currentTimeMillis) < deadline) {
-            const content = yield* fs.readFileString(pidPath).pipe(Effect.catch(() => Effect.succeed(undefined)));
+            const content = yield* fs.readFileString(pidPath).pipe(Effect.orElseSucceed(() => undefined));
             const candidate = Number(content);
             if (Number.isInteger(candidate) && candidate > 0) {
               pid = candidate;
@@ -119,7 +119,7 @@ describe('Effect CommandExecutor', () => {
             yield* Effect.sleep(10);
           }
           if (pid === undefined) {
-            return yield* Effect.fail(new TestError('Streaming child did not report readiness.'));
+            return yield* TestError.make({message: 'Streaming child did not report readiness.'});
           }
           yield* Fiber.interrupt(fiber);
           return pid;
@@ -237,7 +237,7 @@ async function readCompleteEnvironmentReceipt(path: string): Promise<Record<stri
     }
     await new Promise(resolve => setTimeout(resolve, 10));
   }
-  throw new TestError('Detached child did not publish a complete environment receipt.');
+  throw TestError.make({message: 'Detached child did not publish a complete environment receipt.'});
 }
 
 function isProcessRunning(pid: number): boolean {

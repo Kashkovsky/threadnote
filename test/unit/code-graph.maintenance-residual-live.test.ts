@@ -1,7 +1,7 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Clock, Effect, FileSystem, Path} from 'effect';
+import {Clock, DateTime, Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import type {CodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
 import {
@@ -309,7 +309,7 @@ function seedVectorDatabase(fs: FileSystem.FileSystem, path: Path.Path, home: st
                template_version, count, state, created_at
              ) VALUES (?, ?, 'model-live', ?, 384, 1, 0, 'ready', ?)`,
           )
-          .run('generation-live', SNAPSHOT_ID, '9'.repeat(64), new Date(0).toISOString());
+          .run('generation-live', SNAPSHOT_ID, '9'.repeat(64), DateTime.formatIso(DateTime.makeUnsafe(0)));
         database
           .query('INSERT INTO vector_pointers (worktree_id, generation) VALUES (?, ?)')
           .run(WORKTREE_ID, 'generation-live');
@@ -362,7 +362,7 @@ function seedExactProvenance(fs: FileSystem.FileSystem, path: Path.Path, home: s
         canonicalWorktreePath: path.join(home, 'missing-worktree'),
         checkoutId: CHECKOUT_ID,
         headCommit: 'f'.repeat(40),
-        observedAt: new Date(0).toISOString(),
+        observedAt: DateTime.formatIso(DateTime.makeUnsafe(0)),
         registration: {kind: 'main'},
         repositoryId: REPOSITORY_ID,
         schemaVersion: 2,
@@ -422,7 +422,7 @@ function seedPoisonProvenance(
             canonicalWorktreePath: path.join(home, 'missing-worktree'),
             checkoutId: CHECKOUT_ID,
             headCommit: 'f'.repeat(40),
-            observedAt: new Date(0).toISOString(),
+            observedAt: DateTime.formatIso(DateTime.makeUnsafe(0)),
             repositoryId: REPOSITORY_ID,
             schemaVersion: 1,
             worktreeId: WORKTREE_ID,

@@ -103,7 +103,7 @@ describe('code graph persistent schema migration', () => {
       ),
       {numRuns: 100},
     );
-    expect(new CodeGraphRuntimeReconnectRequiredError()).toMatchObject({recovery: 'reconnect-runtime'});
+    expect(CodeGraphRuntimeReconnectRequiredError.of()).toMatchObject({recovery: 'reconnect-runtime'});
   });
 
   it('keeps repeated current-schema initialization idempotent', async () => {
@@ -368,7 +368,7 @@ describe('code graph persistent schema migration', () => {
         store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
           onPersistentSchemaMigrationPhase: phase =>
             phase === 'migrated-query-indexes'
-              ? Effect.die(new TestError('fault after revision 9 query-index migration'))
+              ? Effect.die(TestError.make({message: 'fault after revision 9 query-index migration'}))
               : Effect.void,
         }),
       );
@@ -726,7 +726,7 @@ describe('code graph persistent schema migration', () => {
           yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
             onPersistentSchemaMigrationPhase: phase =>
               phase === 'retired-incompatible-ready'
-                ? Effect.die(new TestError('fault after ready lexical retirement'))
+                ? Effect.die(TestError.make({message: 'fault after ready lexical retirement'}))
                 : Effect.void,
           });
         }),
@@ -1070,7 +1070,7 @@ describe('code graph persistent schema migration', () => {
           yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
             onPersistentSchemaMigrationPhase: phase =>
               phase === 'created-extensions'
-                ? Effect.die(new TestError('fault after compact reference schema creation'))
+                ? Effect.die(TestError.make({message: 'fault after compact reference schema creation'}))
                 : Effect.void,
           });
         }),
@@ -1200,7 +1200,7 @@ describe('code graph persistent schema migration', () => {
         .withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
           onPersistentSchemaMigrationPhase: phase =>
             phase === 'added-removed-view-cleanup'
-              ? Effect.die(new TestError('fault after cleanup publication'))
+              ? Effect.die(TestError.make({message: 'fault after cleanup publication'}))
               : Effect.void,
         })
         .pipe(Effect.exit);
@@ -1304,7 +1304,7 @@ describe('code graph persistent schema migration', () => {
         .withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
           onPersistentSchemaMigrationPhase: phase =>
             phase === 'added-build-owner-instance'
-              ? Effect.die(new TestError('fault after owner instance creation'))
+              ? Effect.die(TestError.make({message: 'fault after owner instance creation'}))
               : Effect.void,
         })
         .pipe(Effect.exit);
@@ -1353,7 +1353,7 @@ describe('code graph persistent schema migration', () => {
           yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
             onPersistentSchemaMigrationPhase: phase =>
               phase === 'added-materialization-plan'
-                ? Effect.die(new TestError('fault after additive materialization plan'))
+                ? Effect.die(TestError.make({message: 'fault after additive materialization plan'}))
                 : Effect.void,
           });
         }),
@@ -1512,7 +1512,7 @@ describe('code graph persistent schema migration', () => {
             const store = yield* CodeGraphStore;
             yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
               onPersistentSchemaMigrationPhase: phase =>
-                phase === faultPhase ? Effect.die(new TestError(`fault after ${phase}`)) : Effect.void,
+                phase === faultPhase ? Effect.die(TestError.make({message: `fault after ${phase}`})) : Effect.void,
             });
           }),
         ),

@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option} from 'effect';
+import {Effect, FileSystem, Option, Schema} from 'effect';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {ResourceStore, type ResourceStoreShape} from '../effect/resource-store.js';
 import type {CompactPlan, ForgetAction, KeepUpdateAction, MemoryRecord} from './hygiene.js';
@@ -7,9 +7,13 @@ import {discardMemoryRelocation} from './relocation.js';
 import {resourceStoreLocation} from './migrations.js';
 import type {RuntimeConfig} from '../types.js';
 
-export class MemoryHygieneApplyConflict extends Error {
-  readonly _tag = 'MemoryHygieneApplyConflict' as const;
-}
+export class MemoryHygieneApplyConflict extends Schema.TaggedError<MemoryHygieneApplyConflict>()(
+  'MemoryHygieneApplyConflict',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 interface ExactDuplicateApplyGroup {
   readonly keepUpdate?: KeepUpdateAction;
@@ -44,25 +48,19 @@ export const applyAtomicExactDuplicateActions = Effect.fn('memoryHygiene.applyAt
     const survivorUris = [...new Set(action.sourceUris.filter(uri => uri !== action.uri))];
     const survivorUri = survivorUris[0];
     if (survivorUris.length !== 1 || !survivorUri) {
-      return yield* Effect.fail(
-        conflict(
-          `Exact-duplicate action for ${action.uri} does not identify one survivor. No duplicate was removed; re-run compact.`,
-        ),
+      return yield* conflict(
+        `Exact-duplicate action for ${action.uri} does not identify one survivor. No duplicate was removed; re-run compact.`,
       );
     }
     const survivorExpectedContent = recordContentByUri.get(survivorUri);
     if (survivorExpectedContent === undefined) {
-      return yield* Effect.fail(
-        conflict(
-          `Exact-duplicate survivor ${survivorUri} is no longer in the hygiene snapshot. No duplicate was removed; re-run compact.`,
-        ),
+      return yield* conflict(
+        `Exact-duplicate survivor ${survivorUri} is no longer in the hygiene snapshot. No duplicate was removed; re-run compact.`,
       );
     }
     const existing = groupsBySurvivor.get(survivorUri);
     if (existing && existing.survivorExpectedContent !== survivorExpectedContent) {
-      return yield* Effect.fail(
-        conflict(`Exact-duplicate survivor ${survivorUri} has conflicting snapshots. Re-run compact.`),
-      );
+      return yield* conflict(`Exact-duplicate survivor ${survivorUri} has conflicting snapshots. Re-run compact.`);
     }
     groupsBySurvivor.set(survivorUri, {
       keepUpdate: keepUpdateByUri.get(survivorUri),
@@ -74,8 +72,8 @@ export const applyAtomicExactDuplicateActions = Effect.fn('memoryHygiene.applyAt
   const retiredUris = new Set(plan.forgets.map(action => action.uri));
   for (const survivorUri of groupsBySurvivor.keys()) {
     if (retiredUris.has(survivorUri)) {
-      return yield* Effect.fail(
-        conflict(`Memory ${survivorUri} is both an exact-duplicate survivor and retirement target. Re-run compact.`),
+      return yield* conflict(
+        `Memory ${survivorUri} is both an exact-duplicate survivor and retirement target. Re-run compact.`,
       );
     }
   }
@@ -179,13 +177,11 @@ function requireExpectedContent(
       Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none<string>())),
     );
     if (Option.isNone(current) || current.value !== expectedContent) {
-      return yield* Effect.fail(
-        conflict(`Memory ${uri} ${reason}. Its exact duplicate was preserved; re-run compact.`),
-      );
+      return yield* conflict(`Memory ${uri} ${reason}. Its exact duplicate was preserved; re-run compact.`);
     }
   });
 }
 
 function conflict(message: string): MemoryHygieneApplyConflict {
-  return new MemoryHygieneApplyConflict(message);
+  return MemoryHygieneApplyConflict.make({message: message});
 }

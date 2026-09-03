@@ -41,7 +41,7 @@ import {persistedFullBatchFingerprint} from './store_staging_core.js';
 import type {CodeGraphStoreRuntime} from './store_runtime.js';
 import {classifyCodeGraphStoreFailure} from './store_failure.js';
 import {codeGraphSqliteGet} from './sqlite_statement.js';
-import {CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError} from './types.js';
+import {CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError, type CodeGraphStoreFailure} from './types.js';
 
 interface PersistentSpoolSnapshotRow {
   readonly extractor_set: string;
@@ -78,7 +78,7 @@ export const appendPersistentMaterializationSpoolFactBatches = Effect.fn(
     const full = preparation.batches[index];
     const partition = yield* Effect.try({
       try: () => partitionPersistedReferenceEdges(batch.edges, full.boundedReferences),
-      catch: () => new CodeGraphStoreError('Persistent materialization spool edges could not be partitioned.'),
+      catch: () => CodeGraphStoreError.of('Persistent materialization spool edges could not be partitioned.'),
     });
     const spool = prepareCodeGraphMaterializationSpoolFactBatch({
       directEdges: partition.directEdges,
@@ -173,7 +173,7 @@ export const finalizePersistentMaterializationSpool = Effect.fn('codeGraph.final
         'SELECT COALESCE(SUM(fact_bytes), 0) AS fact_bytes, COALESCE(SUM(row_count), 0) AS row_count FROM materialization_spool_batches',
       );
       if (totals === null) {
-        throw new CodeGraphStoreError('Persistent materialization spool totals are missing.');
+        throw CodeGraphStoreError.of('Persistent materialization spool totals are missing.');
       }
       return {
         finalFactBytes: Number(totals.fact_bytes),
@@ -292,7 +292,7 @@ const persistentSpoolHeader = Effect.fn('codeGraph.persistentSpoolHeader')(funct
     runtime.path.basename(context.repositoryRoot) !== context.checkoutId ||
     runtime.path.basename(databasePath) !== `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool layout is invalid.'));
+    return yield* CodeGraphStoreError.of('Persistent materialization spool layout is invalid.');
   }
   const rows = yield* sql.unsafe<PersistentSpoolSnapshotRow>(
     `SELECT repository_id, graph_content_id, extractor_set
@@ -300,7 +300,7 @@ const persistentSpoolHeader = Effect.fn('codeGraph.persistentSpoolHeader')(funct
     [snapshotId],
   );
   if (rows.length !== 1) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool snapshot is invalid.'));
+    return yield* CodeGraphStoreError.of('Persistent materialization spool snapshot is invalid.');
   }
   return {
     checkoutId: context.checkoutId,
@@ -316,12 +316,12 @@ function usePersistentSpool<Value>(
   header: CodeGraphMaterializationSpoolHeader,
   context: CodeGraphMaterializationSpoolContext,
   use: (database: Database) => Value,
-): Effect.Effect<Value, CodeGraphStoreError> {
+): Effect.Effect<Value, CodeGraphStoreFailure> {
   const spoolPath = codeGraphMaterializationSpoolPath(runtime.path, context, header.snapshotId);
   return Effect.acquireUseRelease(
     Effect.try({
       try: () => new Database(spoolPath, {create: true, strict: true}),
-      catch: () => new CodeGraphStoreError('Persistent materialization spool could not be opened.'),
+      catch: () => CodeGraphStoreError.of('Persistent materialization spool could not be opened.'),
     }),
     database =>
       Effect.try({
@@ -330,12 +330,12 @@ function usePersistentSpool<Value>(
           initializeCodeGraphMaterializationSpoolDatabase(database, header);
           return use(database);
         },
-        catch: () => new CodeGraphStoreError('Persistent materialization spool operation failed.'),
+        catch: () => CodeGraphStoreError.of('Persistent materialization spool operation failed.'),
       }),
     database =>
       Effect.try({
         try: () => database.close(true),
-        catch: () => new CodeGraphStoreError('Persistent materialization spool could not be closed.'),
+        catch: () => CodeGraphStoreError.of('Persistent materialization spool could not be closed.'),
       }),
   );
 }

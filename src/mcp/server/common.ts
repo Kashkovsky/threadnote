@@ -1,5 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
-import {Clock, Effect} from 'effect';
+import {Clock, Effect, Schema} from 'effect';
 import type {ProjectManifest, ResolvedWorkset} from '../../types.js';
 import {
   errorMessage,
@@ -66,9 +66,10 @@ export type CheckedOptionalTextArray =
 // reconnect — otherwise they silently keep hitting stale code.
 let mcpStartupVersion: string | undefined;
 let staleNoticeCache: {readonly checkedAtMs: number; readonly notice: string | undefined} | undefined;
-export class McpServerOperationError extends Error {
-  readonly _tag = 'McpServerOperationError' as const;
-}
+export class McpServerOperationError extends Schema.TaggedError<McpServerOperationError>()('McpServerOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const STALE_NOTICE_TTL_MS = 60_000;
 

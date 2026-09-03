@@ -592,5 +592,5 @@ function treeSitterEdgeId(
 }
 
 function languageError(message: string, cause?: unknown): CodeGraphLanguagePackError {
-  return new CodeGraphLanguagePackError(message, cause === undefined ? undefined : {cause});
+  return CodeGraphLanguagePackError.make({message: message, cause: cause === undefined ? undefined : {cause}});
 }

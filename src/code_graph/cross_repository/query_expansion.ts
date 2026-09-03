@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {Effect, Schema} from 'effect';
 import {
   codeGraphEvidenceCardId,
   type CodeGraphEvidenceCardV1,
@@ -16,9 +16,13 @@ import {
   type CodeGraphCrossRepositoryBridgeCursorV1,
 } from './store.js';
 
-class CodeGraphQueryExpansionError extends Error {
-  readonly _tag = 'CodeGraphQueryExpansionError' as const;
-}
+class CodeGraphQueryExpansionError extends Schema.TaggedError<CodeGraphQueryExpansionError>()(
+  'CodeGraphQueryExpansionError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 const DEFAULT_SEED_REPOSITORIES = 16;
 const MAXIMUM_BRIDGES_PER_SEED_DIRECTION = 64;
@@ -77,15 +81,15 @@ export const readCodeGraphWorksetQueryBridgeExpansion = Effect.fn(
       const member = memberByKey.get(seed.repositoryKey);
       if (member === undefined || member.repositoryId !== seed.repositoryId || member.snapshotId !== seed.snapshotId) {
         return Effect.fail(
-          new CodeGraphQueryExpansionError('A routed bridge seed does not match the published generation.'),
+          CodeGraphQueryExpansionError.make({message: 'A routed bridge seed does not match the published generation.'}),
         );
       }
       return Effect.forEach(
         ['outgoing', 'incoming'] as const,
         direction =>
           readSeedDirection(threadnoteHome, published, member, direction, bridgeSet).pipe(
-            Effect.mapError(
-              cause => new CodeGraphQueryExpansionError('Could not read the published bridge expansion.', {cause}),
+            Effect.mapError(cause =>
+              CodeGraphQueryExpansionError.make({cause, message: 'Could not read the published bridge expansion.'}),
             ),
           ),
         {concurrency: 2},
@@ -103,7 +107,9 @@ export const readCodeGraphWorksetQueryBridgeExpansion = Effect.fn(
   }
   const bridges = [...byId.values()].sort(compareBridge);
   if (bridges.length > MAXIMUM_EXPANSION_BRIDGES) {
-    throw new CodeGraphQueryExpansionError('Workset query bridge expansion exceeded its deterministic bound.');
+    throw CodeGraphQueryExpansionError.make({
+      message: 'Workset query bridge expansion exceeded its deterministic bound.',
+    });
   }
   return {
     bridgeSet,
@@ -262,7 +268,7 @@ export function materializeCodeGraphWorksetBridgeEndpointCards(
   maximumCards = 4,
 ): readonly CodeGraphEvidenceCardV1[] {
   if (!Number.isSafeInteger(maximumCards) || maximumCards < 0 || maximumCards > 32) {
-    throw new CodeGraphQueryExpansionError('Workset bridge endpoint card limit is invalid.');
+    throw CodeGraphQueryExpansionError.make({message: 'Workset bridge endpoint card limit is invalid.'});
   }
   if (maximumCards === 0) return [];
   const members = new Map(published.members.map(member => [member.repositoryKey, member] as const));
@@ -276,7 +282,9 @@ export function materializeCodeGraphWorksetBridgeEndpointCards(
         member.repositoryId !== endpoint.repositoryId ||
         member.snapshotId !== endpoint.snapshotId
       ) {
-        throw new CodeGraphQueryExpansionError('A bridge endpoint card is outside its published generation.');
+        throw CodeGraphQueryExpansionError.make({
+          message: 'A bridge endpoint card is outside its published generation.',
+        });
       }
       if (byRef.has(endpoint.reference.ref)) continue;
       const qualifiedName = bridge.identity.replace(/^protobuf:[^:]+:/u, '');
@@ -316,7 +324,7 @@ export function mergeCodeGraphWorksetBridgeEndpointCards(
   maximumCards: number,
 ): readonly CodeGraphEvidenceCardV1[] {
   if (!Number.isSafeInteger(maximumCards) || maximumCards < 1 || maximumCards > 512) {
-    throw new CodeGraphQueryExpansionError('Workset evidence card limit is invalid.');
+    throw CodeGraphQueryExpansionError.make({message: 'Workset evidence card limit is invalid.'});
   }
   const output: CodeGraphEvidenceCardV1[] = [];
   const refs = new Set<string>();
@@ -367,9 +375,9 @@ function readSeedDirection(
         page.totalBridges !== bridgeSet.totalBridges ||
         page.coverage.state !== 'complete'
       ) {
-        throw new CodeGraphQueryExpansionError(
-          'The published bridge set changed or became incomplete during query expansion.',
-        );
+        throw CodeGraphQueryExpansionError.make({
+          message: 'The published bridge set changed or became incomplete during query expansion.',
+        });
       }
       bridges.push(...page.bridges);
       after = page.next;
@@ -395,7 +403,7 @@ function registerBridgeCandidate(
 ): void {
   const member = publishedByKey.get(repositoryKey);
   if (member === undefined)
-    throw new CodeGraphQueryExpansionError('A bridge neighbor is absent from its published generation.');
+    throw CodeGraphQueryExpansionError.make({message: 'A bridge neighbor is absent from its published generation.'});
   const existing = additions.get(repositoryKey);
   if (existing === undefined) {
     additions.set(repositoryKey, {
@@ -424,20 +432,20 @@ function validateExpansion(
   expansion: CodeGraphWorksetQueryBridgeExpansionV1,
 ): void {
   if (!Array.isArray(expansion.bridges) || expansion.bridges.length > MAXIMUM_EXPANSION_BRIDGES) {
-    throw new CodeGraphQueryExpansionError('Workset query bridge expansion exceeds its supported bound.');
+    throw CodeGraphQueryExpansionError.make({message: 'Workset query bridge expansion exceeds its supported bound.'});
   }
   if (
     !Number.isSafeInteger(expansion.seededRepositories) ||
     expansion.seededRepositories < 0 ||
     expansion.seededRepositories > Math.min(DEFAULT_SEED_REPOSITORIES, router.repositories.length)
   ) {
-    throw new CodeGraphQueryExpansionError('Workset query bridge seed coverage is invalid.');
+    throw CodeGraphQueryExpansionError.make({message: 'Workset query bridge seed coverage is invalid.'});
   }
   if (expansion.bridges.length > 0 && expansion.bridgeSet === undefined) {
-    throw new CodeGraphQueryExpansionError('Workset query bridges have no generation receipt.');
+    throw CodeGraphQueryExpansionError.make({message: 'Workset query bridges have no generation receipt.'});
   }
   if (expansion.bridgeSet !== undefined && expansion.bridgeSet.generationId !== published.id) {
-    throw new CodeGraphQueryExpansionError('Workset query bridges belong to another generation.');
+    throw CodeGraphQueryExpansionError.make({message: 'Workset query bridges belong to another generation.'});
   }
   const members = new Map(
     published.members.map(member => [`${member.repositoryId}\0${member.snapshotId}`, member] as const),
@@ -446,16 +454,20 @@ function validateExpansion(
   const seen = new Set<string>();
   for (const bridge of expansion.bridges) {
     if (seen.has(bridge.id))
-      throw new CodeGraphQueryExpansionError('Workset query bridge expansion contains a duplicate edge.');
+      throw CodeGraphQueryExpansionError.make({message: 'Workset query bridge expansion contains a duplicate edge.'});
     seen.add(bridge.id);
     for (const endpoint of [bridge.source, bridge.target]) {
       const member = members.get(`${endpoint.repositoryId}\0${endpoint.snapshotId}`);
       if (member === undefined || member.repositoryKey !== endpoint.repositoryKey) {
-        throw new CodeGraphQueryExpansionError('Workset query bridge endpoint is outside the published generation.');
+        throw CodeGraphQueryExpansionError.make({
+          message: 'Workset query bridge endpoint is outside the published generation.',
+        });
       }
     }
     if (!seeds.has(bridge.source.repositoryKey) && !seeds.has(bridge.target.repositoryKey)) {
-      throw new CodeGraphQueryExpansionError('Workset query bridge is not adjacent to a routed repository.');
+      throw CodeGraphQueryExpansionError.make({
+        message: 'Workset query bridge is not adjacent to a routed repository.',
+      });
     }
   }
 }

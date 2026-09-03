@@ -1,11 +1,15 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path, Predicate} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path, Predicate, Schema} from 'effect';
 import {syncDirectoryBestEffort, syncWritableFile} from '../effect/file_durability.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {codeGraphRepositoriesRoot, codeGraphRepositoryRoot} from './layout.js';
 
-class CodeGraphAutomaticCompactionReceiptError extends Error {
-  readonly _tag = 'CodeGraphAutomaticCompactionReceiptError' as const;
-}
+class CodeGraphAutomaticCompactionReceiptError extends Schema.TaggedError<CodeGraphAutomaticCompactionReceiptError>()(
+  'CodeGraphAutomaticCompactionReceiptError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export const CODE_GRAPH_AUTOMATIC_COMPACTION_COOLDOWN_MILLISECONDS = 24 * 60 * 60 * 1_000;
 export const CODE_GRAPH_AUTOMATIC_COMPACTION_LOW_YIELD_COOLDOWN_MILLISECONDS = 7 * 24 * 60 * 60 * 1_000;
@@ -91,7 +95,7 @@ export const claimCodeGraphAutomaticCompactionCandidate = Effect.fn('codeGraph.c
         });
         return true;
       }),
-    ).pipe(Effect.catch(() => Effect.succeed(false)));
+    ).pipe(Effect.orElseSucceed(() => false));
   },
 );
 
@@ -121,7 +125,7 @@ export const recordCodeGraphAutomaticCompactionAttempt = Effect.fn('codeGraph.re
           version: 1,
         });
       }),
-    ).pipe(Effect.catch(() => Effect.void));
+    ).pipe(Effect.ignore);
   },
 );
 
@@ -163,7 +167,7 @@ function automaticCompactionReceiptAllows(
     }
     const receipt = decodeAutomaticCompactionReceipt(content, checkoutId);
     return receipt === undefined ? malformedAllowed : now >= receipt.retryAfterMilliseconds;
-  }).pipe(Effect.catch(() => Effect.succeed(false)));
+  }).pipe(Effect.orElseSucceed(() => false));
 }
 
 const writeAutomaticCompactionReceipt = Effect.fn('codeGraph.writeAutomaticCompactionReceipt')(function* (
@@ -177,11 +181,11 @@ const writeAutomaticCompactionReceipt = Effect.fn('codeGraph.writeAutomaticCompa
   const root = authority.root;
   const target = path.join(root, CODE_GRAPH_AUTOMATIC_COMPACTION_RECEIPT_FILE);
   if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-    return yield* Effect.fail(new CodeGraphAutomaticCompactionReceiptError('Compaction receipt is not a file.'));
+    return yield* CodeGraphAutomaticCompactionReceiptError.make({message: 'Compaction receipt is not a file.'});
   }
   const content = `${JSON.stringify(receipt)}\n`;
   if (new TextEncoder().encode(content).byteLength > CODE_GRAPH_AUTOMATIC_COMPACTION_RECEIPT_BYTES_MAXIMUM) {
-    return yield* Effect.fail(new CodeGraphAutomaticCompactionReceiptError('Compaction receipt is too large.'));
+    return yield* CodeGraphAutomaticCompactionReceiptError.make({message: 'Compaction receipt is too large.'});
   }
   const temporary = path.join(
     root,
@@ -192,16 +196,16 @@ const writeAutomaticCompactionReceipt = Effect.fn('codeGraph.writeAutomaticCompa
     yield* syncWritableFile(fs, temporary);
     const revalidated = yield* inspectAutomaticCompactionReceiptRoot(fs, path, threadnoteHome, receipt.checkoutId);
     if (!sameAutomaticCompactionReceiptRoot(authority, revalidated)) {
-      return yield* Effect.fail(
-        new CodeGraphAutomaticCompactionReceiptError('Compaction receipt directory changed during publication.'),
-      );
+      return yield* CodeGraphAutomaticCompactionReceiptError.make({
+        message: 'Compaction receipt directory changed during publication.',
+      });
     }
     if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-      return yield* Effect.fail(new CodeGraphAutomaticCompactionReceiptError('Compaction receipt is not a file.'));
+      return yield* CodeGraphAutomaticCompactionReceiptError.make({message: 'Compaction receipt is not a file.'});
     }
     yield* fs.rename(temporary, target);
     yield* syncDirectoryBestEffort(fs, root);
-  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
 });
 
 interface AutomaticCompactionReceiptRoot {
@@ -222,14 +226,14 @@ function inspectAutomaticCompactionReceiptRoot(
     const declaredRoot = codeGraphRepositoryRoot(path, threadnoteHome, checkoutId);
     const declaredParent = codeGraphRepositoriesRoot(path, threadnoteHome);
     if (Option.isSome(yield* fs.readLink(declaredParent).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphAutomaticCompactionReceiptError('Compaction repositories directory is a symbolic link.'),
-      );
+      return yield* CodeGraphAutomaticCompactionReceiptError.make({
+        message: 'Compaction repositories directory is a symbolic link.',
+      });
     }
     if (Option.isSome(yield* fs.readLink(declaredRoot).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphAutomaticCompactionReceiptError('Compaction receipt directory is a symbolic link.'),
-      );
+      return yield* CodeGraphAutomaticCompactionReceiptError.make({
+        message: 'Compaction receipt directory is a symbolic link.',
+      });
     }
     const canonicalHome = yield* fs.realPath(threadnoteHome);
     const canonicalParent = yield* fs.realPath(declaredParent);
@@ -243,9 +247,9 @@ function inspectAutomaticCompactionReceiptRoot(
       path.dirname(root) !== canonicalParent ||
       path.basename(root) !== checkoutId
     ) {
-      return yield* Effect.fail(
-        new CodeGraphAutomaticCompactionReceiptError('Compaction receipt directory escaped graph storage.'),
-      );
+      return yield* CodeGraphAutomaticCompactionReceiptError.make({
+        message: 'Compaction receipt directory escaped graph storage.',
+      });
     }
     return {
       dev: info.dev,
@@ -255,9 +259,11 @@ function inspectAutomaticCompactionReceiptRoot(
       root,
     };
   }).pipe(
-    Effect.mapError(
-      cause =>
-        new CodeGraphAutomaticCompactionReceiptError('Could not safely inspect compaction receipt storage.', {cause}),
+    Effect.mapError(cause =>
+      CodeGraphAutomaticCompactionReceiptError.make({
+        cause,
+        message: 'Could not safely inspect compaction receipt storage.',
+      }),
     ),
   );
 }

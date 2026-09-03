@@ -1,6 +1,6 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref} from 'effect';
+import {Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -37,9 +37,13 @@ const AutomaticCompactionIsolatedTestLayer = CommandExecutor.layer.pipe(
   Layer.provideMerge(BunServices.layer),
 );
 
-class AutomaticCompactionTestError extends Error {
-  readonly _tag = 'AutomaticCompactionTestError' as const;
-}
+class AutomaticCompactionTestError extends Schema.TaggedError<AutomaticCompactionTestError>()(
+  'AutomaticCompactionTestError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 function availableStorage(
   checkoutId: string,
@@ -376,7 +380,8 @@ describe('automatic code graph compaction', () => {
                 }),
               }),
             ),
-          executeStreaming: () => Effect.die(new AutomaticCompactionTestError('unexpected streaming command')),
+          executeStreaming: () =>
+            Effect.die(AutomaticCompactionTestError.make({message: 'unexpected streaming command'})),
         });
 
         expect(
@@ -721,7 +726,7 @@ describe('automatic code graph compaction', () => {
       const failed = yield* Deferred.make<{readonly checkoutId?: string; readonly state: string}>();
       const fiber = yield* runCodeGraphAutomaticCompactionLoopWith(
         {
-          compact: () => Effect.fail(new AutomaticCompactionTestError('expected compaction failure')),
+          compact: () => Effect.fail(AutomaticCompactionTestError.make({message: 'expected compaction failure'})),
           inspect: () =>
             Effect.succeed(availableStorage(checkoutId, {availableBytes: 16 * GIB, opportunityBytes: 2 * GIB})),
           listCheckoutIds: () => Effect.succeed([checkoutId]),

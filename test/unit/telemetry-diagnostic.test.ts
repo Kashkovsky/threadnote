@@ -19,7 +19,7 @@ import {
 describe('anonymous telemetry diagnostics', () => {
   it('keeps a stable tagged failure instead of traversing into a private generic cause', () => {
     const diagnostic = anonymousTelemetryDiagnosticFromError(
-      new InsufficientMemory({
+      InsufficientMemory.make({
         cause: new Error('allocation failed at /Users/private/model.gguf'),
         message: 'Private model failure',
         modelId: 'private-model-id',
@@ -32,7 +32,7 @@ describe('anonymous telemetry diagnostics', () => {
 
   it.each([
     {
-      error: new HomeMigrationInsufficientSpace({
+      error: HomeMigrationInsufficientSpace.make({
         availableBytes: 1,
         message: 'private home migration path',
         requiredBytes: 2,
@@ -40,18 +40,18 @@ describe('anonymous telemetry diagnostics', () => {
       errorType: 'HomeMigrationInsufficientSpace',
     },
     {
-      error: new StorageLayoutMigrationConflict({
+      error: StorageLayoutMigrationConflict.make({
         message: 'private storage layout conflict',
         path: '/Users/private/threadnote',
       }),
       errorType: 'StorageLayoutMigrationConflict',
     },
     {
-      error: new ReportIssueCreateFailed({message: 'private report issue body'}),
+      error: ReportIssueCreateFailed.make({message: 'private report issue body'}),
       errorType: 'ReportIssueCreateFailed',
     },
     {
-      error: new CursorAttestationError('private cursor attestation response'),
+      error: CursorAttestationError.make({message: 'private cursor attestation response'}),
       errorType: 'CursorAttestationError',
     },
   ])('projects $errorType through the closed error-type registry', ({error, errorType}) => {
@@ -62,11 +62,11 @@ describe('anonymous telemetry diagnostics', () => {
   });
 
   it('projects a structured storage failure through an ApplicationError wrapper', () => {
-    const storageError = new CodeGraphStoreError(
+    const storageError = CodeGraphStoreError.of(
       'load code graph adjacency failed at /private/repository/store.sqlite for secret query',
       {code: 'unknown', operation: 'load code graph adjacency', recovery: 'diagnose', retryable: false},
     );
-    const error = new ApplicationError({
+    const error = ApplicationError.make({
       cause: storageError,
       message: storageError.message,
       operation: 'inspect graph',
@@ -87,7 +87,7 @@ describe('anonymous telemetry diagnostics', () => {
   it('attaches the diagnostic without changing the MCP wire result', () => {
     const result = attachAnonymousTelemetryError(
       {content: [{type: 'text', text: 'safe user-facing error'}], isError: true},
-      new CodeGraphStoreError('private native message', {
+      CodeGraphStoreError.of('private native message', {
         code: 'transient-io',
         operation: 'load code graph adjacency',
         recovery: 'retry-read-only',
@@ -109,7 +109,7 @@ describe('anonymous telemetry diagnostics', () => {
     expect(anonymousTelemetryDiagnosticFromError(privateError)).toEqual({errorType: 'Error'});
     expect(JSON.stringify(anonymousTelemetryDiagnosticFromError(privateError))).not.toContain('/Users/private');
 
-    const storageError = new CodeGraphStoreError('private', {operation: '/Users/private/repository'});
+    const storageError = CodeGraphStoreError.of('private', {operation: '/Users/private/repository'});
     expect(anonymousTelemetryDiagnosticFromError(storageError)?.operation).toBeUndefined();
   });
 
@@ -117,7 +117,7 @@ describe('anonymous telemetry diagnostics', () => {
     const source = attachAnonymousTelemetryReportedOutcome(
       attachAnonymousTelemetryError(
         {content: [{type: 'text', text: 'safe retry response'}]},
-        new CodeGraphStoreError('private native message'),
+        CodeGraphStoreError.of('private native message'),
       ),
       'timed-out',
     );

@@ -42,7 +42,7 @@ function parseArguments(args: readonly string[]) {
       ].includes(argument)
     ) {
       values[argument] = required(args[++index], argument);
-    } else throw new ScriptError(`Unknown Code Memory Link client descriptor option: ${argument}`);
+    } else throw ScriptError.make({message: `Unknown Code Memory Link client descriptor option: ${argument}`});
   }
   return {
     clientArtifactBindings,
@@ -58,12 +58,12 @@ function parseArguments(args: readonly string[]) {
 
 function parseBinding(value: string, option: string): {readonly path: string; readonly role: string} {
   const separator = value.indexOf('=');
-  if (separator < 1) throw new ScriptError(`${option} requires role=/absolute/path.`);
+  if (separator < 1) throw ScriptError.make({message: `${option} requires role=/absolute/path.`});
   return {path: value.slice(separator + 1), role: value.slice(0, separator)};
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 

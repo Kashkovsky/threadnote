@@ -57,7 +57,7 @@ export interface LocalModelRuntimeShape {
  * Effect AI or node-llama-cpp directly. Tests can replace it with a pure Layer.
  */
 export class LocalModelRuntime extends Context.Service<LocalModelRuntime, LocalModelRuntimeShape>()(
-  'threadnote/effect/ai/LocalModelRuntime',
+  'threadnote/effect/ai/local-model-runtime/LocalModelRuntime',
 ) {
   static readonly nativeLayer = localModelRuntimeLayer();
 }

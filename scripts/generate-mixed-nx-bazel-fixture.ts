@@ -35,9 +35,9 @@ export function parseMixedNxBazelFixtureArguments(args: readonly string[]): Mixe
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === '--output') output = args[++index];
-    else throw new ScriptError(`Unknown mixed-monorepo fixture option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown mixed-monorepo fixture option: ${argument}`});
   }
-  if (!output?.trim()) throw new ScriptError('--output requires a path.');
+  if (!output?.trim()) throw ScriptError.make({message: '--output requires a path.'});
   return {output};
 }
 
@@ -48,7 +48,7 @@ export const generateMixedNxBazelFixture = Effect.fn('mixedNxBazelFixture.genera
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const output = path.resolve(options.output);
-  if (yield* fs.exists(output)) throw new ScriptError(`Fixture output already exists: ${output}`);
+  if (yield* fs.exists(output)) throw ScriptError.make({message: `Fixture output already exists: ${output}`});
 
   const [nx, rulesJs, angular] = MIXED_NX_BAZEL_FIXTURE_SOURCES;
   yield* cloneExact(nx.repository, nx.commit, output);
@@ -108,7 +108,8 @@ const cloneExact = Effect.fn('mixedNxBazelFixture.cloneExact')(function* (
   if (sparsePaths) yield* runGit(target, ['sparse-checkout', 'set', '--no-cone', ...sparsePaths]);
   yield* runGit(target, ['checkout', '--quiet', commit], 10 * 60_000);
   const resolved = (yield* runGit(target, ['rev-parse', 'HEAD'])).stdout.trim();
-  if (resolved !== commit) throw new ScriptError(`Fixture source resolved ${resolved} instead of ${commit}.`);
+  if (resolved !== commit)
+    throw ScriptError.make({message: `Fixture source resolved ${resolved} instead of ${commit}.`});
 });
 
 const runGit = (cwd: string, args: readonly string[], timeoutMs = 60_000) =>

@@ -1,13 +1,14 @@
-import {Effect, Layer} from 'effect';
+import {Effect, Layer, Schema} from 'effect';
 
 /** Typed failure used at executable-script Effect boundaries. */
-export class ScriptError extends Error {
-  readonly _tag = 'ScriptError' as const;
-}
+export class ScriptError extends Schema.TaggedError<ScriptError>()('ScriptError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export function scriptError(cause: unknown, fallback = 'Threadnote script operation failed.'): ScriptError {
-  if (cause instanceof ScriptError) return cause;
-  return new ScriptError(cause instanceof Error ? cause.message : fallback, {cause});
+  if (Schema.is(ScriptError)(cause)) return cause;
+  return ScriptError.make({cause, message: cause instanceof Error ? cause.message : fallback});
 }
 
 /** Build a script's terminal service graph with one scoped lifetime boundary. */

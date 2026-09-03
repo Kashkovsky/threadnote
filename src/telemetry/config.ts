@@ -1,4 +1,4 @@
-import {Crypto, Effect, Encoding, FileSystem, Option, Path, Result} from 'effect';
+import {Crypto, Effect, Encoding, FileSystem, Option, Path, Result, Schema} from 'effect';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import type {RuntimeConfig} from '../types.js';
@@ -40,9 +40,13 @@ export interface TelemetryConsentRenewal {
 
 export type TelemetryEnvironmentOptOut = 'DNT' | 'DO_NOT_TRACK' | 'THREADNOTE_TELEMETRY';
 
-export class TelemetryConfigurationError extends Error {
-  readonly _tag = 'TelemetryConfigurationError' as const;
-}
+export class TelemetryConfigurationError extends Schema.TaggedError<TelemetryConfigurationError>()(
+  'TelemetryConfigurationError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 const TELEMETRY_DIRECTORY_NAME = 'telemetry';
 const TELEMETRY_CONFIGURATION_FILE_NAME = 'config.json';
@@ -72,9 +76,9 @@ export const readTelemetryConfiguration = Effect.fn('telemetry.readConfiguration
   return yield* Effect.try({
     try: () => parseTelemetryConfiguration(document.raw, document.file),
     catch: cause =>
-      cause instanceof TelemetryConfigurationError
+      Schema.is(TelemetryConfigurationError)(cause)
         ? cause
-        : new TelemetryConfigurationError('Telemetry configuration could not be parsed.', {cause}),
+        : TelemetryConfigurationError.make({cause, message: 'Telemetry configuration could not be parsed.'}),
   });
 });
 
@@ -98,7 +102,7 @@ export const resolveTelemetryConfiguration = Effect.fn('telemetry.resolveConfigu
   if (telemetryEnvironmentOptOut(system.environment()) !== undefined) return undefined;
   return yield* readTelemetryConfiguration(config).pipe(
     Effect.map(value => (value?.enabled === true ? value : undefined)),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
 });
 
@@ -120,15 +124,13 @@ export const writeTelemetryConfiguration = Effect.fn('telemetry.writeConfigurati
     Effect.gen(function* () {
       yield* assertRegularTelemetryDirectory(fs, directory);
       if ((yield* fs.exists(file)) && Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
-        return yield* Effect.fail(
-          new TelemetryConfigurationError('Telemetry configuration must not be a symbolic link.'),
-        );
+        return yield* TelemetryConfigurationError.make({
+          message: 'Telemetry configuration must not be a symbolic link.',
+        });
       }
       const temporary = path.join(directory, `.config.${yield* crypto.randomUUIDv4}.tmp`);
       yield* fs.writeFileString(temporary, serialized, {mode: TELEMETRY_CONFIGURATION_FILE_MODE});
-      yield* fs
-        .rename(temporary, file)
-        .pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+      yield* fs.rename(temporary, file).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
       yield* fs.chmod(file, TELEMETRY_CONFIGURATION_FILE_MODE);
       yield* fs.chmod(directory, TELEMETRY_DIRECTORY_MODE);
     }),
@@ -178,8 +180,8 @@ export function parseTelemetryConfiguration(
   try {
     return parseTelemetryConfigurationValue(JSON.parse(raw) as unknown, source);
   } catch (cause) {
-    if (cause instanceof TelemetryConfigurationError) throw cause;
-    throw new TelemetryConfigurationError(`Telemetry configuration is not valid JSON: ${source}`, {cause});
+    if (Schema.is(TelemetryConfigurationError)(cause)) throw cause;
+    throw TelemetryConfigurationError.make({cause, message: `Telemetry configuration is not valid JSON: ${source}`});
   }
 }
 
@@ -236,23 +238,27 @@ export function renderTelemetryConfiguration(value: TelemetryConfiguration): str
 export function normalizeTelemetryEndpoint(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length === 0 || trimmed.length > TELEMETRY_ENDPOINT_MAX_CHARACTERS) {
-    throw new TelemetryConfigurationError('Telemetry endpoint must be a non-empty bounded URL.');
+    throw TelemetryConfigurationError.make({message: 'Telemetry endpoint must be a non-empty bounded URL.'});
   }
   let endpoint: URL;
   try {
     endpoint = new URL(trimmed);
   } catch (cause) {
-    throw new TelemetryConfigurationError('Telemetry endpoint must be an absolute URL.', {cause});
+    throw TelemetryConfigurationError.make({cause, message: 'Telemetry endpoint must be an absolute URL.'});
   }
   if (endpoint.username || endpoint.password) {
-    throw new TelemetryConfigurationError('Telemetry endpoint must not contain credentials.');
+    throw TelemetryConfigurationError.make({message: 'Telemetry endpoint must not contain credentials.'});
   }
   if (endpoint.search || endpoint.hash) {
-    throw new TelemetryConfigurationError('Telemetry endpoint must not contain a query string or fragment.');
+    throw TelemetryConfigurationError.make({
+      message: 'Telemetry endpoint must not contain a query string or fragment.',
+    });
   }
   const loopback = isLoopbackHostname(endpoint.hostname);
   if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && loopback)) {
-    throw new TelemetryConfigurationError('Telemetry endpoint must use HTTPS, except for a loopback HTTP collector.');
+    throw TelemetryConfigurationError.make({
+      message: 'Telemetry endpoint must use HTTPS, except for a loopback HTTP collector.',
+    });
   }
   return endpoint.toString();
 }
@@ -264,7 +270,9 @@ export function normalizeTelemetrySessionSalt(value: string): string {
     decoded.success.byteLength !== TELEMETRY_SESSION_SALT_BYTES ||
     Encoding.encodeBase64Url(decoded.success) !== value
   ) {
-    throw new TelemetryConfigurationError('Telemetry session salt must be canonical base64url for 32 random bytes.');
+    throw TelemetryConfigurationError.make({
+      message: 'Telemetry session salt must be canonical base64url for 32 random bytes.',
+    });
   }
   return value;
 }
@@ -280,12 +288,12 @@ export function telemetryEnvironmentOptOut(
 
 function parseTelemetryConfigurationValue(value: unknown, source: string): TelemetryConfiguration {
   if (!isJsonObject(value)) {
-    throw new TelemetryConfigurationError(`Telemetry configuration must be an object: ${source}`);
+    throw TelemetryConfigurationError.make({message: `Telemetry configuration must be an object: ${source}`});
   }
   if (value.version !== TELEMETRY_CONFIGURATION_VERSION) {
-    throw new TelemetryConfigurationError(
-      `Unsupported telemetry configuration version in ${source}. Expected ${TELEMETRY_CONFIGURATION_VERSION}.`,
-    );
+    throw TelemetryConfigurationError.make({
+      message: `Unsupported telemetry configuration version in ${source}. Expected ${TELEMETRY_CONFIGURATION_VERSION}.`,
+    });
   }
   if (value.enabled === false) {
     assertCurrentTelemetryConsentVersion(value.consentVersion, source);
@@ -295,7 +303,7 @@ function parseTelemetryConfigurationValue(value: unknown, source: string): Telem
   if (value.enabled === true) {
     const autoAccept = value.autoAccept;
     if (autoAccept !== undefined && typeof autoAccept !== 'boolean') {
-      throw new TelemetryConfigurationError(`Telemetry auto-accept must be a boolean: ${source}`);
+      throw TelemetryConfigurationError.make({message: `Telemetry auto-accept must be a boolean: ${source}`});
     }
     if (
       value.consentVersion !== TELEMETRY_CONSENT_VERSION &&
@@ -316,14 +324,16 @@ function parseTelemetryConfigurationValue(value: unknown, source: string): Telem
       source,
     );
     if (typeof value.endpoint !== 'string' || typeof value.sessionSalt !== 'string') {
-      throw new TelemetryConfigurationError(
-        `Enabled telemetry configuration requires an endpoint and local session salt: ${source}`,
-      );
+      throw TelemetryConfigurationError.make({
+        message: `Enabled telemetry configuration requires an endpoint and local session salt: ${source}`,
+      });
     }
     return enabledTelemetryConfiguration(value.endpoint, value.sessionSalt, autoAccept === true);
   }
   assertCurrentTelemetryConsentVersion(value.consentVersion, source);
-  throw new TelemetryConfigurationError(`Telemetry configuration requires a boolean enabled field: ${source}`);
+  throw TelemetryConfigurationError.make({
+    message: `Telemetry configuration requires a boolean enabled field: ${source}`,
+  });
 }
 
 function assertCurrentTelemetryConsentVersion(value: unknown, source: string): void {
@@ -335,16 +345,16 @@ function isEarlierTelemetryConsentVersion(value: unknown): value is number {
 }
 
 function unsupportedTelemetryConsentVersion(source: string): TelemetryConfigurationError {
-  return new TelemetryConfigurationError(
-    `Unsupported telemetry consent version in ${source}. Expected ${TELEMETRY_CONSENT_VERSION}.`,
-  );
+  return TelemetryConfigurationError.make({
+    message: `Unsupported telemetry consent version in ${source}. Expected ${TELEMETRY_CONSENT_VERSION}.`,
+  });
 }
 
 function assertExactKeys(value: Record<string, unknown>, expected: readonly string[], source: string): void {
   const actual = Object.keys(value).sort();
   const sortedExpected = [...expected].sort();
   if (actual.length !== sortedExpected.length || actual.some((key, index) => key !== sortedExpected[index])) {
-    throw new TelemetryConfigurationError(`Telemetry configuration contains unsupported fields: ${source}`);
+    throw TelemetryConfigurationError.make({message: `Telemetry configuration contains unsupported fields: ${source}`});
   }
 }
 
@@ -367,7 +377,7 @@ function isLoopbackHostname(value: string): boolean {
 function prepareTelemetryDirectory(fs: FileSystem.FileSystem, directory: string) {
   return Effect.gen(function* () {
     if ((yield* fs.exists(directory)) && Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(new TelemetryConfigurationError('Telemetry directory must not be a symbolic link.'));
+      return yield* TelemetryConfigurationError.make({message: 'Telemetry directory must not be a symbolic link.'});
     }
     yield* fs.makeDirectory(directory, {mode: TELEMETRY_DIRECTORY_MODE, recursive: true});
     yield* assertRegularTelemetryDirectory(fs, directory);
@@ -384,13 +394,13 @@ const readTelemetryConfigurationDocument = Effect.fn('telemetry.readConfiguratio
   if (!(yield* fs.exists(file))) return undefined;
   yield* assertRegularTelemetryDirectory(fs, path.dirname(file));
   if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
-    return yield* Effect.fail(new TelemetryConfigurationError('Telemetry configuration must not be a symbolic link.'));
+    return yield* TelemetryConfigurationError.make({message: 'Telemetry configuration must not be a symbolic link.'});
   }
   const info = yield* fs.stat(file);
   if (info.type !== 'File' || Number(info.size) > TELEMETRY_CONFIGURATION_MAX_BYTES) {
-    return yield* Effect.fail(
-      new TelemetryConfigurationError('Telemetry configuration must be a bounded regular file.'),
-    );
+    return yield* TelemetryConfigurationError.make({
+      message: 'Telemetry configuration must be a bounded regular file.',
+    });
   }
   return {file, raw: yield* fs.readFileString(file)};
 });
@@ -398,11 +408,11 @@ const readTelemetryConfigurationDocument = Effect.fn('telemetry.readConfiguratio
 function assertRegularTelemetryDirectory(fs: FileSystem.FileSystem, directory: string) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(new TelemetryConfigurationError('Telemetry directory must not be a symbolic link.'));
+      return yield* TelemetryConfigurationError.make({message: 'Telemetry directory must not be a symbolic link.'});
     }
     const info = yield* fs.stat(directory);
     if (info.type !== 'Directory') {
-      return yield* Effect.fail(new TelemetryConfigurationError('Telemetry directory must be a regular directory.'));
+      return yield* TelemetryConfigurationError.make({message: 'Telemetry directory must be a regular directory.'});
     }
   });
 }

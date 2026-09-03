@@ -1,4 +1,4 @@
-import {Effect, Option} from 'effect';
+import {DateTime, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import * as SqlError from 'effect/unstable/sql/SqlError';
 import {
@@ -82,20 +82,18 @@ const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedV
 ) {
   const removedViewAuthority = yield* removedViewAuthorityTableState(sql);
   if (removedViewAuthority === 'incompatible') {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority schema is incompatible.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view authority schema is incompatible.');
   }
   const schema = yield* removedViewCleanupSchemaState(sql);
   if (schema === 'incompatible') {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is incompatible.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup schema is incompatible.');
   }
   const revision = yield* removedViewCleanupRecordedRevision(sql);
   const recordedRevision = revision.state === 'recorded' ? revision.value : undefined;
   const revisionObservation = observeCodeGraphPersistentSchemaRevision(recordedRevision);
   if (revisionObservation.state === 'newer') {
-    return yield* Effect.fail(
-      new CodeGraphStoreError(
-        `Code graph persistent extension schema ${revisionObservation.value} is newer than ${CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION}.`,
-      ),
+    return yield* CodeGraphStoreError.of(
+      `Code graph persistent extension schema ${revisionObservation.value} is newer than ${CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION}.`,
     );
   }
   const leaseObjects = yield* sql.unsafe<{readonly name: unknown; readonly type: unknown}>(
@@ -108,17 +106,17 @@ const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedV
     leaseObjects.length > 1 ||
     (leaseObjects.length === 1 && (leaseObjects[0]?.name !== 'snapshot_leases' || leaseObjects[0]?.type !== 'table'))
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease schema is incompatible.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot lease schema is incompatible.');
   }
   if (leaseObjects.length === 1) {
     const expiryIndexState = yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX);
     if (expiryIndexState === 'incompatible') {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease expiry index is incompatible.'));
+      return yield* CodeGraphStoreError.of('Code graph snapshot lease expiry index is incompatible.');
     }
     if (expiryIndexState === 'missing') {
       const rows = yield* sql.unsafe('SELECT 1 FROM snapshot_leases LIMIT 1');
       if (revision.state !== 'missing' || rows.length !== 0) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease expiry index is unavailable.'));
+        return yield* CodeGraphStoreError.of('Code graph snapshot lease expiry index is unavailable.');
       }
     }
   }
@@ -177,7 +175,7 @@ const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedV
     ownerInstanceMarkerObjects.length > 0 ||
     !coreAuthorityCurrent
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is incompatible.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup schema is incompatible.');
   }
   // Table and index creation plus the authority revision are one transaction.
   // Later additive extension revisions may retain this exact verified schema;
@@ -205,7 +203,7 @@ const ensureRemovedViewCleanupSchema = Effect.fn('codeGraph.ensureRemovedViewCle
   yield* sql.unsafe(REMOVED_VIEW_CLEANUP_DUE_INDEX_SQL);
   for (const trigger of REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS) yield* sql.unsafe(trigger.sql);
   if (!(yield* removedViewCleanupSchemaCurrent(sql))) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is incompatible.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup schema is incompatible.');
   }
 });
 
@@ -248,14 +246,12 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       const revisionPlan = planCodeGraphPersistentSchemaUpgrade(revision[0]?.value);
       const recordedRevision = codeGraphPersistentSchemaRevisionValue(revision[0]?.value);
       if (revisionPlan.state === 'reject-newer') {
-        return yield* Effect.fail(
-          new CodeGraphStoreError(
-            `Code graph persistent extension schema ${revisionPlan.value} is newer than ${CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION}.`,
-          ),
+        return yield* CodeGraphStoreError.of(
+          `Code graph persistent extension schema ${revisionPlan.value} is newer than ${CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION}.`,
         );
       }
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, true, false))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph cleanup authority schema is incompatible.'));
+        return yield* CodeGraphStoreError.of('Code graph cleanup authority schema is incompatible.');
       }
       yield* ensureCodeGraphSnapshotFileCitationSchema(sql, snapshotFileCitationAuthorization);
       const cleanupSchemaState = yield* removedViewCleanupSchemaState(sql);
@@ -276,7 +272,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           table => table.name === 'snapshot_build_owner_instances',
         );
         if (ownerInstances === undefined) {
-          return yield* Effect.fail(new CodeGraphStoreError('Persistent build owner instance schema is unavailable.'));
+          return yield* CodeGraphStoreError.of('Persistent build owner instance schema is unavailable.');
         }
         const inspection = yield* persistentExtensionTableInspection(sql, ownerInstances);
         if (!inspection.exists) {
@@ -292,9 +288,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
         for (const table of checkpointTables) {
           const inspection = yield* persistentExtensionTableInspection(sql, table);
           if (inspection.exists && !inspection.compatible) {
-            return yield* Effect.fail(
-              new CodeGraphStoreError(`Code graph checkpoint import schema ${table.name} is incompatible.`),
-            );
+            return yield* CodeGraphStoreError.of(`Code graph checkpoint import schema ${table.name} is incompatible.`);
           }
           if (!inspection.exists) yield* sql.unsafe(table.createSql);
         }
@@ -302,7 +296,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       }
       const legacyBuildOwners = yield* persistentExtensionTableInspection(sql, LEGACY_SNAPSHOT_BUILD_OWNERS_CONTRACT);
       if (legacyBuildOwners.compatible) {
-        const completedAt = new Date().toISOString();
+        const completedAt = DateTime.formatIso(yield* DateTime.now);
         yield* sql`
           UPDATE snapshots
           SET state = 'retired',
@@ -329,7 +323,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
         const legacyReferences = yield* persistentExtensionTableInspection(sql, LEGACY_BUILDING_REFERENCES_V3_CONTRACT);
         const alreadyRenamed = yield* tableExists(sql, LEGACY_BUILDING_REFERENCES_V3_TABLE);
         if (legacyReferences.compatible && !alreadyRenamed) {
-          const completedAt = new Date().toISOString();
+          const completedAt = DateTime.formatIso(yield* DateTime.now);
           yield* sql`
             UPDATE snapshots
             SET state = 'retired',
@@ -349,7 +343,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           yield* sql.unsafe(`ALTER TABLE building_references RENAME TO ${LEGACY_BUILDING_REFERENCES_V3_TABLE}`);
           const currentReferences = PERSISTENT_EXTENSION_TABLES.find(table => table.name === 'building_references');
           if (currentReferences === undefined) {
-            return yield* Effect.fail(new CodeGraphStoreError('Current persistent reference schema is unavailable.'));
+            return yield* CodeGraphStoreError.of('Current persistent reference schema is unavailable.');
           }
           yield* sql.unsafe(currentReferences.createSql);
         }
@@ -369,7 +363,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           yield* observe?.('recorded-revision') ?? Effect.void;
         }
         if (!(yield* codeGraphRemovedViewCleanupSchemaAdmission(sql)).current) {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
+          return yield* CodeGraphStoreError.of('Code graph removed view cleanup schema is unavailable.');
         }
         return;
       }
@@ -399,7 +393,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       // before replacing its build-only schema. Retired rows are reclaimed by
       // the normal bounded collector instead of one unbounded cascade here.
       if (hasIncompleteSnapshots && (missingTable || incompatibleGroups.size > 0)) {
-        const completedAt = new Date().toISOString();
+        const completedAt = DateTime.formatIso(yield* DateTime.now);
         yield* sql`
           UPDATE snapshots
           SET state = 'retired',
@@ -428,7 +422,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
         yield* sql`
           UPDATE snapshots
           SET state = 'retired',
-              completed_at = COALESCE(completed_at, ${new Date().toISOString()}),
+              completed_at = COALESCE(completed_at, ${DateTime.formatIso(yield* DateTime.now)}),
               failure_summary = COALESCE(
                 failure_summary,
                 'Cross-repository declaration storage changed; rebuild required.'
@@ -457,7 +451,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
         yield* sql`
           UPDATE snapshots
           SET state = 'retired',
-              completed_at = COALESCE(completed_at, ${new Date().toISOString()}),
+              completed_at = COALESCE(completed_at, ${DateTime.formatIso(yield* DateTime.now)}),
               failure_summary = COALESCE(
                 failure_summary,
                 'Compact lexical storage schema changed; rebuild required.'
@@ -485,7 +479,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       `;
       yield* observe?.('recorded-revision') ?? Effect.void;
       if (!(yield* codeGraphRemovedViewCleanupSchemaAdmission(sql)).current) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
+        return yield* CodeGraphStoreError.of('Code graph removed view cleanup schema is unavailable.');
       }
     }),
   );

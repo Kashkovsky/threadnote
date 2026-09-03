@@ -74,11 +74,10 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
   const selectedGeneration = yield* resolveSelectedLocalModel(config.agentContextHome, 'generation');
   if (!selectedGeneration) {
     if (options.installLocalAi !== true) {
-      return yield* Effect.fail(
-        new MemoryOperationError(
+      return yield* MemoryOperationError.make({
+        message:
           'No local generation model is selected. Use `threadnote models install` and `threadnote models select generation`, or rerun with `--install-local-ai`.',
-        ),
-      );
+      });
     }
     yield* Console.log(
       'Installing the pinned compatibility generation model before enrichment; the one-time download is 4.59 GB.',
@@ -161,19 +160,17 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
       Effect.gen(function* () {
         const currentContent = yield* fs.readFileString(candidate.path);
         if (canonicalMemoryDocumentContent(currentContent) !== canonicalMemoryDocumentContent(record.content)) {
-          return yield* Effect.fail(
-            new MemoryOperationError(
-              `Memory changed during enrichment; left untouched so the migration can be retried.`,
-            ),
-          );
+          return yield* MemoryOperationError.make({
+            message: `Memory changed during enrichment; left untouched so the migration can be retried.`,
+          });
         }
         const content = formatMemoryDocumentWithKeywords(currentContent, keywords);
         if (sharedTeam) {
           const scrub = applyScrubber(content, {redact: false});
           if (scrub.blocker) {
-            return yield* Effect.fail(
-              new MemoryOperationError(`Refusing to enrich shared memory ${candidate.uri}: possible ${scrub.blocker}.`),
-            );
+            return yield* MemoryOperationError.make({
+              message: `Refusing to enrich shared memory ${candidate.uri}: possible ${scrub.blocker}.`,
+            });
           }
           const team = yield* resolveTeam(config, sharedTeam);
           yield* assertSharedWorktreeFileReady(
@@ -220,11 +217,9 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
     );
   }
   if (failed > 0) {
-    return yield* Effect.fail(
-      new MemoryOperationError(
-        `${failed} memory enrichment operation(s) failed. Rerun the command to resume remaining memories.`,
-      ),
-    );
+    return yield* MemoryOperationError.make({
+      message: `${failed} memory enrichment operation(s) failed. Rerun the command to resume remaining memories.`,
+    });
   }
 });
 

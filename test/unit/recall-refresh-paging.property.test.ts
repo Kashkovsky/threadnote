@@ -167,7 +167,7 @@ function withRecallHome<A, E, R>(
     const path = yield* Path.Path;
     const home = yield* fs.makeTempDirectory({prefix: 'threadnote-recall-refresh-paging-'});
     return yield* use(home, fs, path).pipe(
-      Effect.ensuring(fs.remove(home, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void))),
+      Effect.ensuring(fs.remove(home, {force: true, recursive: true}).pipe(Effect.ignore)),
     );
   });
 }

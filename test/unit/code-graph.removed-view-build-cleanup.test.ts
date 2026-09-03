@@ -117,7 +117,7 @@ describe('removed view build-status cleanup', () => {
               afterManagerContextRemoval: () =>
                 Effect.sync(() => {
                   interrupted = true;
-                }).pipe(Effect.andThen(Effect.fail(new TestError('interrupt')))),
+                }).pipe(Effect.andThen(Effect.fail(TestError.make({message: 'interrupt'})))),
             },
           );
 

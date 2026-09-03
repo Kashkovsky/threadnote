@@ -1,4 +1,4 @@
-import {Console, Effect} from 'effect';
+import {Console, Effect, Schema} from 'effect';
 import {MCP_PROCESS_LIFECYCLE_PROBE_ENV} from '../../constants.js';
 import {
   DEFAULT_MCP_TOOLSET,
@@ -97,9 +97,9 @@ export const mcpServerEffect = withAnonymousTelemetry(
         const toolset = yield* Effect.try({
           try: () => parseMcpToolset(system.environment()[MCP_TOOLSET_ENV] ?? DEFAULT_MCP_TOOLSET),
           catch: cause =>
-            cause instanceof McpServerOperationError
+            Schema.is(McpServerOperationError)(cause)
               ? cause
-              : new McpServerOperationError(cause instanceof Error ? cause.message : String(cause), {cause}),
+              : McpServerOperationError.make({message: cause instanceof Error ? cause.message : String(cause), cause}),
         });
         const recallProgressTiming: RecallProgressTiming = {
           heartbeatMilliseconds: mcpProgressHeartbeatMilliseconds(system.environment()),
@@ -108,7 +108,7 @@ export const mcpServerEffect = withAnonymousTelemetry(
         const memoryScope = isCursorCloudPersonalToolset(toolset)
           ? yield* resolveCursorCloudMemoryScope(config, system.environment())
           : undefined;
-        setMcpStartupVersion(yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined))));
+        setMcpStartupVersion(yield* currentPackageVersion().pipe(Effect.orElseSucceed(() => undefined)));
         const instructions = memoryScope
           ? `Personal Cursor Cloud uses one MCP bounded to these Git memory shares: ${memoryScope.shares.map(share => `${share.team} (${share.root})`).join(', ')}. Call recall_context with an absolute callerCwd; optionally pass team to narrow recall. Results are unread pointers, not evidence, so read relevant threadnote:// URIs with read_context. With multiple shares, durable remember_context writes require team; writes are committed and pushed only to that share. Memory tools reject URIs outside the configured share set. Use inspect_code_graph and analyze_code_graph only for the local checkout; worksets are disabled.`
           : toolset === CURSOR_CLOUD_LOCAL_MCP_TOOLSET
@@ -180,9 +180,9 @@ function registerCursorCloudLocalTools(server: EffectMcpServerAdapter, config: R
       const system = yield* SystemInfo;
       const endpoint = system.environment()[CURSOR_CLOUD_MEMORY_ENDPOINT_ENV]?.trim();
       if (!endpoint) {
-        throw new McpServerOperationError(
-          `${CURSOR_CLOUD_MEMORY_ENDPOINT_ENV} is required when ${CURSOR_CLOUD_LOCAL_MCP_TOOLSET} is selected.`,
-        );
+        throw McpServerOperationError.make({
+          message: `${CURSOR_CLOUD_MEMORY_ENDPOINT_ENV} is required when ${CURSOR_CLOUD_LOCAL_MCP_TOOLSET} is selected.`,
+        });
       }
       const receipt = yield* cursorCloudRemoteHybridStatus(config, {cwd: checkedCwd.value, endpoint});
       return {
@@ -210,9 +210,9 @@ function registerCursorCloudLocalTools(server: EffectMcpServerAdapter, config: R
       const system = yield* SystemInfo;
       const endpoint = system.environment()[CURSOR_CLOUD_MEMORY_ENDPOINT_ENV]?.trim();
       if (!endpoint) {
-        throw new McpServerOperationError(
-          `${CURSOR_CLOUD_MEMORY_ENDPOINT_ENV} is required when ${CURSOR_CLOUD_LOCAL_MCP_TOOLSET} is selected.`,
-        );
+        throw McpServerOperationError.make({
+          message: `${CURSOR_CLOUD_MEMORY_ENDPOINT_ENV} is required when ${CURSOR_CLOUD_LOCAL_MCP_TOOLSET} is selected.`,
+        });
       }
       const receipt = yield* runCursorAttestationChallenge(challenge, endpoint);
       return {

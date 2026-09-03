@@ -71,13 +71,13 @@ export const recordMemoryRelocation = Effect.fn('memoryRelocation.record')(funct
   const fromRecord = parseMemoryDocument(fromUri, input.fromContent);
   const toRecord = parseMemoryDocument(toUri, input.toContent);
   if (!fromRecord || !toRecord) {
-    return yield* Effect.fail(relocationError('Relocation receipts require canonical memory documents.'));
+    return yield* relocationError('Relocation receipts require canonical memory documents.');
   }
   const fromId = fromRecord.metadata.memoryId;
   const toId = toRecord.metadata.memoryId;
   if (fromId === undefined || toId === undefined) return false;
   if (!validMemoryId(fromId) || fromId !== toId) {
-    return yield* Effect.fail(relocationError('Relocation source and destination memory_id values must match.'));
+    return yield* relocationError('Relocation source and destination memory_id values must match.');
   }
   const receipt: MemoryRelocationReceiptV1 = {
     fromUri,
@@ -103,7 +103,7 @@ export const discardMemoryRelocation = Effect.fn('memoryRelocation.discard')(fun
   if (root === undefined) return;
   const target = yield* memoryRelocationReceiptPath(root, canonicalUri);
   if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-    return yield* Effect.fail(relocationError('Memory relocation receipt must not be a symbolic link.'));
+    return yield* relocationError('Memory relocation receipt must not be a symbolic link.');
   }
   yield* fs.remove(target, {force: true});
 });
@@ -151,17 +151,17 @@ export const readMemoryWithRelocations = Effect.fn('memoryRelocation.read')(func
             message: `Memory resource does not exist: ${requestedUri}`,
             uri: requestedUri,
           })
-        : yield* Effect.fail(relocationError('Memory relocation chain is incomplete.'));
+        : yield* relocationError('Memory relocation chain is incomplete.');
     }
     if (receipt.fromUri !== currentUri) {
-      return yield* Effect.fail(relocationError('Memory relocation receipt source does not match its lookup URI.'));
+      return yield* relocationError('Memory relocation receipt source does not match its lookup URI.');
     }
     if (expectedMemoryId !== undefined && receipt.memoryId !== expectedMemoryId) {
-      return yield* Effect.fail(relocationError('Memory relocation chain changed memory_id.'));
+      return yield* relocationError('Memory relocation chain changed memory_id.');
     }
     expectedMemoryId = receipt.memoryId;
     if (visited.has(receipt.toUri)) {
-      return yield* Effect.fail(relocationError('Memory relocation chain contains a loop.'));
+      return yield* relocationError('Memory relocation chain contains a loop.');
     }
     visited.add(receipt.toUri);
     // Private relocation receipts may cross share boundaries. Authorization
@@ -181,9 +181,7 @@ export const readMemoryWithRelocations = Effect.fn('memoryRelocation.read')(func
     if (Option.isSome(destination)) {
       const record = parseMemoryDocument(receipt.toUri, destination.value);
       if (!record || (record.metadata.memoryId !== undefined && record.metadata.memoryId !== receipt.memoryId)) {
-        return yield* Effect.fail(
-          relocationError('Memory relocation destination failed its memory_id identity fence.'),
-        );
+        return yield* relocationError('Memory relocation destination failed its memory_id identity fence.');
       }
       return {
         canonicalUri: receipt.toUri,
@@ -195,9 +193,7 @@ export const readMemoryWithRelocations = Effect.fn('memoryRelocation.read')(func
     }
     currentUri = receipt.toUri;
   }
-  return yield* Effect.fail(
-    relocationError(`Memory relocation chain exceeds the maximum depth of ${MAX_MEMORY_RELOCATION_DEPTH}.`),
-  );
+  return yield* relocationError(`Memory relocation chain exceeds the maximum depth of ${MAX_MEMORY_RELOCATION_DEPTH}.`);
 });
 
 /**
@@ -222,10 +218,8 @@ export const loadMemoryRelocationIdentityWitnesses = Effect.fn('memoryRelocation
   const path = yield* Path.Path;
   const entries = (yield* fs.readDirectory(root)).filter(entry => entry.endsWith('.json')).sort();
   if (entries.length > MAX_MEMORY_RELOCATION_RECEIPT_COUNT) {
-    return yield* Effect.fail(
-      relocationError(
-        `Memory relocation identity scan exceeds the maximum receipt count of ${MAX_MEMORY_RELOCATION_RECEIPT_COUNT}.`,
-      ),
+    return yield* relocationError(
+      `Memory relocation identity scan exceeds the maximum receipt count of ${MAX_MEMORY_RELOCATION_RECEIPT_COUNT}.`,
     );
   }
 
@@ -239,10 +233,8 @@ export const loadMemoryRelocationIdentityWitnesses = Effect.fn('memoryRelocation
     const info = yield* fs.stat(target);
     scannedBytes += Number(info.size);
     if (scannedBytes > MAX_MEMORY_RELOCATION_RECEIPT_TOTAL_BYTES) {
-      return yield* Effect.fail(
-        relocationError(
-          `Memory relocation identity scan exceeds the ${MAX_MEMORY_RELOCATION_RECEIPT_TOTAL_BYTES}-byte aggregate limit.`,
-        ),
+      return yield* relocationError(
+        `Memory relocation identity scan exceeds the ${MAX_MEMORY_RELOCATION_RECEIPT_TOTAL_BYTES}-byte aggregate limit.`,
       );
     }
     const receipt = yield* readMemoryRelocationReceiptFile(target);
@@ -250,7 +242,7 @@ export const loadMemoryRelocationIdentityWitnesses = Effect.fn('memoryRelocation
     const canonicalFrom = yield* canonicalManagedMemoryUri(config, receipt.fromUri);
     const canonicalTo = yield* canonicalManagedMemoryUri(config, receipt.toUri);
     if (canonicalFrom !== receipt.fromUri || canonicalTo !== receipt.toUri) {
-      return yield* Effect.fail(relocationError('Memory relocation receipt contains a non-canonical URI.'));
+      return yield* relocationError('Memory relocation receipt contains a non-canonical URI.');
     }
     receipts.push(receipt);
     if (requestedDestinationUris.has(receipt.toUri)) requestedMemoryIds.add(receipt.memoryId);
@@ -308,12 +300,12 @@ const writeMemoryRelocationReceipt = Effect.fn('memoryRelocation.writeReceipt')(
   const target = yield* memoryRelocationReceiptPath(root, receipt.fromUri);
   const content = `${JSON.stringify(receipt, undefined, 2)}\n`;
   if (new TextEncoder().encode(content).byteLength > MAX_MEMORY_RELOCATION_RECEIPT_BYTES) {
-    return yield* Effect.fail(relocationError('Memory relocation receipt exceeds its size limit.'));
+    return yield* relocationError('Memory relocation receipt exceeds its size limit.');
   }
   const existing = yield* readMemoryRelocationReceiptFile(target);
   if (existing !== undefined) {
     if (sameReceipt(existing, receipt)) return;
-    return yield* Effect.fail(relocationError(`A different relocation already exists for ${receipt.fromUri}.`));
+    return yield* relocationError(`A different relocation already exists for ${receipt.fromUri}.`);
   }
   yield* fs
     .writeFileString(target, content, {flag: 'wx', mode: 0o600})
@@ -327,12 +319,12 @@ const writeMemoryRelocationReceipt = Effect.fn('memoryRelocation.writeReceipt')(
       ),
     );
   if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-    return yield* Effect.fail(relocationError('Memory relocation receipt must not be a symbolic link.'));
+    return yield* relocationError('Memory relocation receipt must not be a symbolic link.');
   }
   if (runtimePlatform !== 'win32') yield* fs.chmod(target, 0o600);
   const persisted = yield* readMemoryRelocationReceiptFile(target);
   if (persisted === undefined || !sameReceipt(persisted, receipt)) {
-    return yield* Effect.fail(relocationError('Memory relocation receipt failed post-write verification.'));
+    return yield* relocationError('Memory relocation receipt failed post-write verification.');
   }
 });
 
@@ -349,7 +341,7 @@ const readMemoryRelocationReceipt = Effect.fn('memoryRelocation.readReceipt')(fu
   const canonicalFrom = yield* canonicalManagedMemoryUri(config, receipt.fromUri);
   const canonicalTo = yield* canonicalManagedMemoryUri(config, receipt.toUri);
   if (canonicalFrom !== receipt.fromUri || canonicalTo !== receipt.toUri) {
-    return yield* Effect.fail(relocationError('Memory relocation receipt contains a non-canonical URI.'));
+    return yield* relocationError('Memory relocation receipt contains a non-canonical URI.');
   }
   return receipt;
 });
@@ -357,16 +349,16 @@ const readMemoryRelocationReceipt = Effect.fn('memoryRelocation.readReceipt')(fu
 const readMemoryRelocationReceiptFile = Effect.fn('memoryRelocation.readReceiptFile')(function* (target: string) {
   const fs = yield* FileSystem.FileSystem;
   if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-    return yield* Effect.fail(relocationError('Memory relocation receipt must not be a symbolic link.'));
+    return yield* relocationError('Memory relocation receipt must not be a symbolic link.');
   }
   if (!(yield* fs.exists(target))) return undefined;
   const info = yield* fs.stat(target);
   if (info.type !== 'File' || !fileSystemModeIsPrivate(runtimePlatform, info.mode)) {
-    return yield* Effect.fail(relocationError('Memory relocation receipt must be a private regular file.'));
+    return yield* relocationError('Memory relocation receipt must be a private regular file.');
   }
   const content = yield* fs.readFileString(target);
   if (new TextEncoder().encode(content).byteLength > MAX_MEMORY_RELOCATION_RECEIPT_BYTES) {
-    return yield* Effect.fail(relocationError('Memory relocation receipt exceeds its size limit.'));
+    return yield* relocationError('Memory relocation receipt exceeds its size limit.');
   }
   return yield* Effect.try({
     catch: cause =>
@@ -457,17 +449,17 @@ const ensurePrivateMemoryRelocationRoot = Effect.fn('memoryRelocation.ensurePriv
   const fs = yield* FileSystem.FileSystem;
   const root = yield* memoryRelocationRoot(config);
   if (Option.isSome(yield* fs.readLink(root).pipe(Effect.option))) {
-    return yield* Effect.fail(relocationError('Memory relocation store must not be a symbolic link.'));
+    return yield* relocationError('Memory relocation store must not be a symbolic link.');
   }
   const before = yield* fs.stat(root).pipe(Effect.option);
   if (Option.isSome(before) && before.value.type !== 'Directory') {
-    return yield* Effect.fail(relocationError('Memory relocation store must be a private directory.'));
+    return yield* relocationError('Memory relocation store must be a private directory.');
   }
   yield* fs.makeDirectory(root, {recursive: true, mode: 0o700});
   if (runtimePlatform !== 'win32') yield* fs.chmod(root, 0o700);
   const after = yield* fs.stat(root);
   if (after.type !== 'Directory' || !fileSystemModeIsPrivate(runtimePlatform, after.mode)) {
-    return yield* Effect.fail(relocationError('Memory relocation store must be a private directory.'));
+    return yield* relocationError('Memory relocation store must be a private directory.');
   }
   return root;
 });
@@ -478,12 +470,12 @@ const existingPrivateMemoryRelocationRoot = Effect.fn('memoryRelocation.existing
   const fs = yield* FileSystem.FileSystem;
   const root = yield* memoryRelocationRoot(config);
   if (Option.isSome(yield* fs.readLink(root).pipe(Effect.option))) {
-    return yield* Effect.fail(relocationError('Memory relocation store must not be a symbolic link.'));
+    return yield* relocationError('Memory relocation store must not be a symbolic link.');
   }
   const info = yield* fs.stat(root).pipe(Effect.option);
   if (Option.isNone(info)) return undefined;
   if (info.value.type !== 'Directory' || !fileSystemModeIsPrivate(runtimePlatform, info.value.mode)) {
-    return yield* Effect.fail(relocationError('Memory relocation store must be a private directory.'));
+    return yield* relocationError('Memory relocation store must be a private directory.');
   }
   return root;
 });

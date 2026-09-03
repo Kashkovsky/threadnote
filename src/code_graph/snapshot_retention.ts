@@ -179,7 +179,7 @@ export const retireExcessReadySnapshotsPage = Effect.fn('codeGraph.retireExcessR
     now,
   );
   if (retired !== retire.length) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot retention authority changed.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot retention authority changed.');
   }
   return {remaining: retire.length === CODE_GRAPH_RETENTION_RETIRE_PAGE_SIZE, retired};
 });

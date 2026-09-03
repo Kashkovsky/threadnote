@@ -103,7 +103,7 @@ export const ensureCodeGraphFileBlobAuthority = Effect.fn('codeGraph.ensureFileB
     return contract === undefined || row.type !== contract.type;
   });
   if (conflictingObject) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph file cache authority schema is incompatible.'));
+    return yield* CodeGraphStoreError.of('Code graph file cache authority schema is incompatible.');
   }
   const current =
     observed.length === expected.size &&

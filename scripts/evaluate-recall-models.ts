@@ -1,6 +1,6 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Effect, FileSystem, Path} from 'effect';
+import {DateTime, Effect, FileSystem, Path} from 'effect';
 import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
 import {sha256FileHex} from '../src/effect/digest.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
@@ -35,18 +35,16 @@ const evaluateModels = Effect.gen(function* () {
   const hash = yield* fixtureHash(serializeRecallEvaluationFixtureV2Identity(fixture));
   const baseline = parseRecallEvaluationBaselineV1(yield* readJsonFile(options.baseline));
   if (baseline.fixture.hash !== hash) {
-    return yield* Effect.fail(
-      new ScriptError(
-        `Recall baseline fixture hash ${baseline.fixture.hash} does not match generated fixture hash ${hash}.`,
-      ),
-    );
+    return yield* ScriptError.make({
+      message: `Recall baseline fixture hash ${baseline.fixture.hash} does not match generated fixture hash ${hash}.`,
+    });
   }
   const embeddingManifest = options.embedding ? builtinManifest(options.embedding, 'embedding') : undefined;
   const localRerankerManifest = options.rerankerManifest
     ? parseLocalModelManifest(yield* readJsonFile(options.rerankerManifest))
     : undefined;
   if (localRerankerManifest && localRerankerManifest.role !== 'reranker') {
-    return yield* Effect.fail(new ScriptError(`Local model ${localRerankerManifest.id} is not a reranker.`));
+    return yield* ScriptError.make({message: `Local model ${localRerankerManifest.id} is not a reranker.`});
   }
   const rerankerManifest =
     localRerankerManifest ?? (options.reranker ? builtinManifest(options.reranker, 'reranker') : undefined);
@@ -54,11 +52,10 @@ const evaluateModels = Effect.gen(function* () {
     (value): value is LocalModelManifest => value !== undefined,
   );
   if (manifests.length === 0) {
-    return yield* Effect.fail(
-      new ScriptError(
+    return yield* ScriptError.make({
+      message:
         'Pass --embedding <model-id>, --reranker <model-id>, or a local --reranker-manifest/--reranker-path pair.',
-      ),
-    );
+    });
   }
 
   const evaluationArtifact = yield* Effect.scoped(
@@ -120,7 +117,7 @@ const evaluateModels = Effect.gen(function* () {
                 explicitProject: query.project,
                 originalQuery: query.query,
               }),
-              now: query.now ? new Date(query.now) : undefined,
+              now: query.now ? DateTime.toDateUtc(DateTime.makeUnsafe(query.now)) : undefined,
               project: query.project,
               seedUris: query.seedUris,
             },
@@ -198,7 +195,7 @@ const evaluateModels = Effect.gen(function* () {
 
 function builtinManifest(id: string, role: 'embedding' | 'reranker'): LocalModelManifest {
   const candidate = BUILTIN_MODEL_MANIFESTS.find(value => value.id === id);
-  if (!candidate || candidate.role !== role) throw new ScriptError(`Unknown ${role} model: ${id}`);
+  if (!candidate || candidate.role !== role) throw ScriptError.make({message: `Unknown ${role} model: ${id}`});
   return candidate;
 }
 
@@ -244,13 +241,13 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
     else if (argument === '--reranker-manifest') rerankerManifest = resolve(required(args[++index], argument));
     else if (argument === '--reranker-path') rerankerPath = resolve(required(args[++index], argument));
     else if (argument === '--summary-output') summaryOutput = required(args[++index], argument);
-    else throw new ScriptError(`Unknown model-evaluation option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown model-evaluation option: ${argument}`});
   }
   if ((rerankerManifest === undefined) !== (rerankerPath === undefined)) {
-    throw new ScriptError('--reranker-manifest and --reranker-path must be passed together.');
+    throw ScriptError.make({message: '--reranker-manifest and --reranker-path must be passed together.'});
   }
   if (reranker && rerankerManifest) {
-    throw new ScriptError('--reranker cannot be combined with --reranker-manifest.');
+    throw ScriptError.make({message: '--reranker cannot be combined with --reranker-manifest.'});
   }
   return {
     baseline,
@@ -272,18 +269,23 @@ const verifyLocalModelArtifact = Effect.fn('evaluateRecallModels.verifyLocalMode
 ) {
   const fs = yield* FileSystem.FileSystem;
   const info = yield* fs.stat(modelPath);
-  if (info.type !== 'File') throw new ScriptError(`Local reranker artifact is not a regular file: ${modelPath}`);
+  if (info.type !== 'File')
+    throw ScriptError.make({message: `Local reranker artifact is not a regular file: ${modelPath}`});
   if (Number(info.size) !== manifest.size) {
-    throw new ScriptError(`Local reranker size ${info.size} does not match manifest size ${manifest.size}.`);
+    throw ScriptError.make({
+      message: `Local reranker size ${info.size} does not match manifest size ${manifest.size}.`,
+    });
   }
   const digest = yield* sha256FileHex(modelPath);
   if (digest !== manifest.sha256) {
-    throw new ScriptError(`Local reranker SHA-256 ${digest} does not match manifest SHA-256 ${manifest.sha256}.`);
+    throw ScriptError.make({
+      message: `Local reranker SHA-256 ${digest} does not match manifest SHA-256 ${manifest.sha256}.`,
+    });
   }
 });
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 

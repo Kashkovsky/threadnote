@@ -1,4 +1,4 @@
-import {Effect, FileSystem} from 'effect';
+import {Effect, FileSystem, Schema} from 'effect';
 import * as yaml from 'js-yaml';
 import type {JsonObject, ProjectManifest, ResolvedWorkset, SeedManifest, WorksetManifest} from './types.js';
 import {parseResourceId} from './storage/resource-id.js';
@@ -12,9 +12,10 @@ export function uriSegment(value: string): string {
   return normalized.length > 0 ? normalized : 'unknown';
 }
 
-class ManifestOperationError extends Error {
-  readonly _tag = 'ManifestOperationError' as const;
-}
+class ManifestOperationError extends Schema.TaggedError<ManifestOperationError>()('ManifestOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const GENERIC_PROJECT_NAME_SEGMENTS = new Set([
   'application',
@@ -120,7 +121,7 @@ export const requireWorkset = Effect.fn('manifest.requireWorkset')(function* (
   const manifest = yield* readSeedManifest(manifestPath);
   const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === worksetName.toLowerCase());
   if (!workset) {
-    return yield* Effect.fail(new ManifestOperationError(`No workset named "${worksetName}" in ${manifestPath}.`));
+    return yield* ManifestOperationError.make({message: `No workset named "${worksetName}" in ${manifestPath}.`});
   }
   return resolveWorksetProjects(manifest, workset);
 });
@@ -161,26 +162,26 @@ export const readSeedManifest = Effect.fn('manifest.readSeedManifest')(function*
   return yield* Effect.try({
     try: () => parseSeedManifest(raw, path),
     catch: cause =>
-      cause instanceof ManifestOperationError
+      Schema.is(ManifestOperationError)(cause)
         ? cause
-        : new ManifestOperationError(cause instanceof Error ? cause.message : String(cause), {cause}),
+        : ManifestOperationError.make({cause, message: cause instanceof Error ? cause.message : String(cause)}),
   });
 });
 
 export function parseSeedManifest(raw: string, path: string): SeedManifest {
   const loaded = yaml.load(raw);
   if (!isJsonObject(loaded)) {
-    throw new ManifestOperationError(`Manifest must be an object: ${path}`);
+    throw ManifestOperationError.make({message: `Manifest must be an object: ${path}`});
   }
   const version = readNumber(loaded, 'version');
   const projectsValue = loaded.projects;
   if (!Array.isArray(projectsValue)) {
-    throw new ManifestOperationError(`Manifest projects must be an array: ${path}`);
+    throw ManifestOperationError.make({message: `Manifest projects must be an array: ${path}`});
   }
   const projects: ProjectManifest[] = [];
   for (const projectValue of projectsValue) {
     if (!isJsonObject(projectValue)) {
-      throw new ManifestOperationError(`Manifest project must be an object: ${path}`);
+      throw ManifestOperationError.make({message: `Manifest project must be an object: ${path}`});
     }
     const seed = readStringArray(projectValue, 'seed');
     projects.push({
@@ -202,11 +203,11 @@ export function parseSeedManifest(raw: string, path: string): SeedManifest {
   let worksets: readonly WorksetManifest[] | undefined;
   if (loaded.worksets !== undefined) {
     if (!Array.isArray(loaded.worksets)) {
-      throw new ManifestOperationError(`Manifest worksets must be an array: ${path}`);
+      throw ManifestOperationError.make({message: `Manifest worksets must be an array: ${path}`});
     }
     worksets = loaded.worksets.map(worksetValue => {
       if (!isJsonObject(worksetValue)) {
-        throw new ManifestOperationError(`Manifest workset must be an object: ${path}`);
+        throw ManifestOperationError.make({message: `Manifest workset must be an object: ${path}`});
       }
       return {
         description: readOptionalString(worksetValue, 'description'),
@@ -224,7 +225,7 @@ function readOptionalString(object: JsonObject, key: string): string | undefined
     return undefined;
   }
   if (typeof value !== 'string') {
-    throw new ManifestOperationError(`Expected string for ${key}`);
+    throw ManifestOperationError.make({message: `Expected string for ${key}`});
   }
   return value;
 }
@@ -232,7 +233,7 @@ function readOptionalString(object: JsonObject, key: string): string | undefined
 function readString(object: JsonObject, key: string): string {
   const value = object[key];
   if (typeof value !== 'string' || value.length === 0) {
-    throw new ManifestOperationError(`Expected non-empty string for ${key}`);
+    throw ManifestOperationError.make({message: `Expected non-empty string for ${key}`});
   }
   return value;
 }
@@ -240,7 +241,7 @@ function readString(object: JsonObject, key: string): string {
 function readNumber(object: JsonObject, key: string): number {
   const value = object[key];
   if (typeof value !== 'number') {
-    throw new ManifestOperationError(`Expected number for ${key}`);
+    throw ManifestOperationError.make({message: `Expected number for ${key}`});
   }
   return value;
 }
@@ -248,7 +249,7 @@ function readNumber(object: JsonObject, key: string): number {
 function readStringArray(object: JsonObject, key: string): readonly string[] {
   const value = object[key];
   if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) {
-    throw new ManifestOperationError(`Expected string array for ${key}`);
+    throw ManifestOperationError.make({message: `Expected string array for ${key}`});
   }
   return value;
 }

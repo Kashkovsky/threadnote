@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 import {Gunzip, gzipSync} from 'fflate';
 import {canonicalJson, parseCanonicalJson} from './canonical_json.js';
 import {
@@ -128,9 +129,13 @@ export interface CodeGraphCheckpointVerificationV1 {
   readonly verification: 'full';
 }
 
-export class CodeGraphCheckpointPackError extends Error {
-  override readonly name = 'CodeGraphCheckpointPackError';
-}
+export class CodeGraphCheckpointPackError extends Schema.TaggedError<CodeGraphCheckpointPackError>()(
+  'CodeGraphCheckpointPackError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 /** Exact bounded-read lengths for replaying one independently verifiable frame at a time. */
 export function codeGraphCheckpointReadPlanV1(header: CodeGraphCheckpointHeaderV1): CodeGraphCheckpointReadPlanV1 {
@@ -198,25 +203,27 @@ export class CodeGraphCheckpointStreamEncoderV1 {
     records: Iterable<CodeGraphCheckpointRecordV1>,
     emit: (chunk: CodeGraphCheckpointEncodedChunkV1) => void,
   ): void {
-    if (this.#finished) throw new CodeGraphCheckpointPackError('Checkpoint encoder is already finished.');
+    if (this.#finished) throw CodeGraphCheckpointPackError.make({message: 'Checkpoint encoder is already finished.'});
     for (const candidate of records) {
       const record = parseCodeGraphCheckpointRecordV1(candidate);
       const orderKey = codeGraphCheckpointRecordOrderKey(record);
       if (this.#previousOrderKey) {
         const order = compareCodeGraphCheckpointRecordOrderKeys(this.#previousOrderKey, orderKey);
-        if (order === 0) throw new CodeGraphCheckpointPackError('Checkpoint contains a duplicate record identity.');
-        if (order > 0) throw new CodeGraphCheckpointPackError('Checkpoint records are not in canonical order.');
+        if (order === 0)
+          throw CodeGraphCheckpointPackError.make({message: 'Checkpoint contains a duplicate record identity.'});
+        if (order > 0)
+          throw CodeGraphCheckpointPackError.make({message: 'Checkpoint records are not in canonical order.'});
       }
       const recordBytes = canonicalBytes(record, this.#limits.maximumRecordBytes, 'Checkpoint record');
       const framedBytes = checkedAdd(4, recordBytes.byteLength, 'Checkpoint record frame');
       if (framedBytes > this.#limits.maximumUncompressedChunkBytes) {
-        throw new CodeGraphCheckpointPackError('Checkpoint record does not fit in a bounded chunk.');
+        throw CodeGraphCheckpointPackError.make({message: 'Checkpoint record does not fit in a bounded chunk.'});
       }
       if (this.#chunkRecords > 0 && this.#chunkBytes + framedBytes > this.#limits.targetUncompressedChunkBytes) {
         this.#flush(emit);
       }
       if (this.#recordCount >= this.#limits.maximumRecords) {
-        throw new CodeGraphCheckpointPackError('Checkpoint exceeds the record-count limit.');
+        throw CodeGraphCheckpointPackError.make({message: 'Checkpoint exceeds the record-count limit.'});
       }
       const frame = joinBytes([u32(recordBytes.byteLength), recordBytes]);
       this.#chunkFrames.push(frame);
@@ -231,7 +238,7 @@ export class CodeGraphCheckpointStreamEncoderV1 {
   }
 
   finish(emit: (chunk: CodeGraphCheckpointEncodedChunkV1) => void): CodeGraphCheckpointPreparedPackV1 {
-    if (this.#finished) throw new CodeGraphCheckpointPackError('Checkpoint encoder is already finished.');
+    if (this.#finished) throw CodeGraphCheckpointPackError.make({message: 'Checkpoint encoder is already finished.'});
     this.#finished = true;
     if (this.#chunkRecords > 0) this.#flush(emit);
     verifyFileFactParity(
@@ -267,16 +274,16 @@ export class CodeGraphCheckpointStreamEncoderV1 {
 
   #flush(emit: (chunk: CodeGraphCheckpointEncodedChunkV1) => void): void {
     if (this.#chunkDescriptors.length >= this.#limits.maximumChunks) {
-      throw new CodeGraphCheckpointPackError('Checkpoint exceeds the chunk-count limit.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint exceeds the chunk-count limit.'});
     }
     const ordinal = this.#chunkDescriptors.length;
     const uncompressed = joinBytes(this.#chunkFrames, this.#chunkBytes);
     if (uncompressed.byteLength > this.#limits.maximumUncompressedChunkBytes) {
-      throw new CodeGraphCheckpointPackError('Checkpoint chunk exceeds the uncompressed-byte limit.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint chunk exceeds the uncompressed-byte limit.'});
     }
     const compressed = gzipSync(uncompressed, {level: 6, mtime: 0});
     if (compressed.byteLength > this.#limits.maximumCompressedChunkBytes) {
-      throw new CodeGraphCheckpointPackError('Checkpoint chunk exceeds the compressed-byte limit.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint chunk exceeds the compressed-byte limit.'});
     }
     const descriptor: CodeGraphCheckpointChunkDescriptorV1 = {
       compressedBytes: compressed.byteLength,
@@ -301,7 +308,9 @@ export class CodeGraphCheckpointStreamEncoderV1 {
     }
     if (record.kind !== 'file-fact') return;
     if (record.path === this.#previousFactPath) {
-      throw new CodeGraphCheckpointPackError('Checkpoint contains more than one materialized fact for a file.');
+      throw CodeGraphCheckpointPackError.make({
+        message: 'Checkpoint contains more than one materialized fact for a file.',
+      });
     }
     this.#previousFactPath = record.path;
     updateFramedText(this.#factPaths, record.path);
@@ -329,7 +338,7 @@ export class CodeGraphCheckpointArtifactWriterV1 {
     validateHeaderBounds(this.#header, this.#limits);
     this.#prefix = encodePrefix(this.#header, this.#limits);
     if (!equalBytes(this.#prefix, prepared.prefix)) {
-      throw new CodeGraphCheckpointPackError('Prepared checkpoint prefix does not match its header.');
+      throw CodeGraphCheckpointPackError.make({message: 'Prepared checkpoint prefix does not match its header.'});
     }
     this.#expectedSpoolDigest = parseBareDigest(prepared.spoolDigest, 'Prepared spool digest');
     this.#appendArtifact(this.#prefix);
@@ -340,13 +349,14 @@ export class CodeGraphCheckpointArtifactWriterV1 {
   }
 
   write(chunk: CodeGraphCheckpointEncodedChunkV1 | Uint8Array): Uint8Array {
-    if (this.#finished) throw new CodeGraphCheckpointPackError('Checkpoint artifact writer is already finished.');
+    if (this.#finished)
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact writer is already finished.'});
     const bytes = chunk instanceof Uint8Array ? chunk : chunk.bytes;
     if (!(chunk instanceof Uint8Array) && chunk.ordinal !== this.#nextOrdinal) {
-      throw new CodeGraphCheckpointPackError('Spool chunk ordinal is out of order.');
+      throw CodeGraphCheckpointPackError.make({message: 'Spool chunk ordinal is out of order.'});
     }
     const descriptor = this.#header.chunks[this.#nextOrdinal];
-    if (!descriptor) throw new CodeGraphCheckpointPackError('Checkpoint spool contains an extra chunk.');
+    if (!descriptor) throw CodeGraphCheckpointPackError.make({message: 'Checkpoint spool contains an extra chunk.'});
     validateChunkFrame(bytes, descriptor);
     this.#spool.update(bytes);
     this.#appendArtifact(bytes);
@@ -355,13 +365,14 @@ export class CodeGraphCheckpointArtifactWriterV1 {
   }
 
   finish(): CodeGraphCheckpointDescriptorV1 {
-    if (this.#finished) throw new CodeGraphCheckpointPackError('Checkpoint artifact writer is already finished.');
+    if (this.#finished)
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact writer is already finished.'});
     this.#finished = true;
     if (this.#nextOrdinal !== this.#header.chunks.length) {
-      throw new CodeGraphCheckpointPackError('Checkpoint spool ended before every declared chunk.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint spool ended before every declared chunk.'});
     }
     if (digestHex(this.#spool) !== this.#expectedSpoolDigest) {
-      throw new CodeGraphCheckpointPackError('Checkpoint spool digest does not match the prepared pack.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint spool digest does not match the prepared pack.'});
     }
     return descriptor(this.#artifactBytes, digestHex(this.#artifact));
   }
@@ -369,7 +380,7 @@ export class CodeGraphCheckpointArtifactWriterV1 {
   #appendArtifact(bytes: Uint8Array): void {
     this.#artifactBytes = checkedAdd(this.#artifactBytes, bytes.byteLength, 'Checkpoint artifact size');
     if (this.#artifactBytes > this.#limits.maximumArtifactBytes) {
-      throw new CodeGraphCheckpointPackError('Checkpoint artifact exceeds the byte limit.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact exceeds the byte limit.'});
     }
     this.#artifact.update(bytes);
   }
@@ -384,12 +395,14 @@ export function encodeCodeGraphCheckpointPackV1(
   const chunks: CodeGraphCheckpointEncodedChunkV1[] = [];
   const encoder = new CodeGraphCheckpointStreamEncoderV1(metadata, options);
   encoder.write(
-    [...records].map(parseCodeGraphCheckpointRecordV1).sort((left, right) => {
-      return compareCodeGraphCheckpointRecordOrderKeys(
-        codeGraphCheckpointRecordOrderKey(left),
-        codeGraphCheckpointRecordOrderKey(right),
-      );
-    }),
+    [...records]
+      .map(parseCodeGraphCheckpointRecordV1)
+      .sort((left, right) =>
+        compareCodeGraphCheckpointRecordOrderKeys(
+          codeGraphCheckpointRecordOrderKey(left),
+          codeGraphCheckpointRecordOrderKey(right),
+        ),
+      ),
     chunk => chunks.push(chunk),
   );
   const prepared = encoder.finish(chunk => chunks.push(chunk));
@@ -449,32 +462,33 @@ export class CodeGraphCheckpointStreamDecoderV1 {
       this.#expectedDigest &&
       this.#expectedDescriptor.digest !== `sha256:${this.#expectedDigest}`
     ) {
-      throw new CodeGraphCheckpointPackError('Expected checkpoint digests disagree.');
+      throw CodeGraphCheckpointPackError.make({message: 'Expected checkpoint digests disagree.'});
     }
     this.#onRecord = options.onRecord;
     this.#onVerifiedChunk = options.onVerifiedChunk;
   }
 
   push(bytes: Uint8Array): void {
-    if (this.#finished) throw new CodeGraphCheckpointPackError('Checkpoint decoder is already finished.');
-    if (!(bytes instanceof Uint8Array)) throw new CodeGraphCheckpointPackError('Checkpoint input must be bytes.');
+    if (this.#finished) throw CodeGraphCheckpointPackError.make({message: 'Checkpoint decoder is already finished.'});
+    if (!(bytes instanceof Uint8Array))
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint input must be bytes.'});
     this.#artifactBytes = checkedAdd(this.#artifactBytes, bytes.byteLength, 'Checkpoint artifact size');
     if (this.#artifactBytes > this.#limits.maximumArtifactBytes) {
-      throw new CodeGraphCheckpointPackError('Checkpoint artifact exceeds the byte limit.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact exceeds the byte limit.'});
     }
     if (this.#expectedDescriptor && this.#artifactBytes > this.#expectedDescriptor.size) {
-      throw new CodeGraphCheckpointPackError('Checkpoint artifact exceeds its expected size.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact exceeds its expected size.'});
     }
     this.#artifact.update(bytes);
     this.#feed(bytes);
   }
 
   finish(): CodeGraphCheckpointVerificationV1 {
-    if (this.#finished) throw new CodeGraphCheckpointPackError('Checkpoint decoder is already finished.');
+    if (this.#finished) throw CodeGraphCheckpointPackError.make({message: 'Checkpoint decoder is already finished.'});
     this.#drain();
     this.#finished = true;
     if (this.#state !== 'done' || this.#queue.size !== 0 || !this.#header || !this.#logical) {
-      throw new CodeGraphCheckpointPackError('Checkpoint artifact ended before its declared framing.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact ended before its declared framing.'});
     }
     verifyFileFactParity(
       this.#counts,
@@ -485,11 +499,11 @@ export class CodeGraphCheckpointStreamDecoderV1 {
     verifyAttributionFileCoverage(this.#attributionFiles ?? new Map());
     for (const kind of CODE_GRAPH_CHECKPOINT_RECORD_KINDS) {
       if (this.#counts[kind] !== this.#header.counts[kind]) {
-        throw new CodeGraphCheckpointPackError(`Checkpoint ${kind} count does not match its header.`);
+        throw CodeGraphCheckpointPackError.make({message: `Checkpoint ${kind} count does not match its header.`});
       }
     }
     if (digestHex(this.#logical) !== this.#header.logical.digest) {
-      throw new CodeGraphCheckpointPackError('Checkpoint logical digest does not match its records.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint logical digest does not match its records.'});
     }
     const resultDescriptor = descriptor(this.#artifactBytes, digestHex(this.#artifact));
     verifyExpectedArtifact(resultDescriptor, this.#expectedDescriptor, this.#expectedDigest);
@@ -502,15 +516,15 @@ export class CodeGraphCheckpointStreamDecoderV1 {
         const bytes = this.#queue.take(PRELUDE_BYTES);
         if (!bytes) return;
         if (!equalBytes(bytes.subarray(0, CHECKPOINT_MAGIC.byteLength), CHECKPOINT_MAGIC)) {
-          throw new CodeGraphCheckpointPackError('Checkpoint magic is invalid.');
+          throw CodeGraphCheckpointPackError.make({message: 'Checkpoint magic is invalid.'});
         }
         const view = dataView(bytes);
         if (view.getUint32(16, false) !== CODE_GRAPH_CHECKPOINT_FORMAT_VERSION) {
-          throw new CodeGraphCheckpointPackError('Checkpoint prelude version is unsupported.');
+          throw CodeGraphCheckpointPackError.make({message: 'Checkpoint prelude version is unsupported.'});
         }
         this.#headerBytes = view.getUint32(20, false);
         if (this.#headerBytes === 0 || this.#headerBytes > this.#limits.maximumHeaderBytes) {
-          throw new CodeGraphCheckpointPackError('Checkpoint header exceeds the byte limit.');
+          throw CodeGraphCheckpointPackError.make({message: 'Checkpoint header exceeds the byte limit.'});
         }
         this.#state = 'header';
         continue;
@@ -532,7 +546,7 @@ export class CodeGraphCheckpointStreamDecoderV1 {
         const bytes = this.#queue.take(CHUNK_FRAME_HEADER_BYTES);
         if (!bytes) return;
         const expected = this.#header!.chunks[this.#nextChunk];
-        if (!expected) throw new CodeGraphCheckpointPackError('Checkpoint contains an undeclared chunk.');
+        if (!expected) throw CodeGraphCheckpointPackError.make({message: 'Checkpoint contains an undeclared chunk.'});
         validateChunkFrameHeader(bytes, expected);
         this.#currentChunk = expected;
         this.#state = 'chunk-payload';
@@ -544,7 +558,7 @@ export class CodeGraphCheckpointStreamDecoderV1 {
         if (!compressed) return;
         const uncompressed = inflateSingleMember(compressed, descriptor.uncompressedBytes);
         if (chunkDigest(descriptor.ordinal, descriptor.recordCount, uncompressed).digest !== descriptor.digest.digest) {
-          throw new CodeGraphCheckpointPackError('Checkpoint chunk digest does not match its payload.');
+          throw CodeGraphCheckpointPackError.make({message: 'Checkpoint chunk digest does not match its payload.'});
         }
         const records = this.#decodeRecords(uncompressed, descriptor);
         this.#onVerifiedChunk?.({descriptor, records});
@@ -554,7 +568,8 @@ export class CodeGraphCheckpointStreamDecoderV1 {
         this.#state = this.#nextChunk === this.#header!.chunks.length ? 'done' : 'chunk-header';
         continue;
       }
-      if (this.#queue.size > 0) throw new CodeGraphCheckpointPackError('Checkpoint artifact has trailing bytes.');
+      if (this.#queue.size > 0)
+        throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact has trailing bytes.'});
       return;
     }
   }
@@ -574,11 +589,11 @@ export class CodeGraphCheckpointStreamDecoderV1 {
     let offset = 0;
     for (let index = 0; index < descriptor.recordCount; index += 1) {
       if (bytes.byteLength - offset < 4)
-        throw new CodeGraphCheckpointPackError('Checkpoint record frame is truncated.');
+        throw CodeGraphCheckpointPackError.make({message: 'Checkpoint record frame is truncated.'});
       const length = dataView(bytes, offset, 4).getUint32(0, false);
       offset += 4;
       if (length === 0 || length > this.#limits.maximumRecordBytes || length > bytes.byteLength - offset) {
-        throw new CodeGraphCheckpointPackError('Checkpoint record length is invalid.');
+        throw CodeGraphCheckpointPackError.make({message: 'Checkpoint record length is invalid.'});
       }
       const recordBytes = bytes.subarray(offset, offset + length);
       offset += length;
@@ -586,11 +601,13 @@ export class CodeGraphCheckpointStreamDecoderV1 {
       const orderKey = codeGraphCheckpointRecordOrderKey(record);
       if (this.#previousOrderKey) {
         const order = compareCodeGraphCheckpointRecordOrderKeys(this.#previousOrderKey, orderKey);
-        if (order === 0) throw new CodeGraphCheckpointPackError('Checkpoint contains a duplicate record identity.');
-        if (order > 0) throw new CodeGraphCheckpointPackError('Checkpoint records are not in canonical order.');
+        if (order === 0)
+          throw CodeGraphCheckpointPackError.make({message: 'Checkpoint contains a duplicate record identity.'});
+        if (order > 0)
+          throw CodeGraphCheckpointPackError.make({message: 'Checkpoint records are not in canonical order.'});
       }
       if (this.#recordCount >= this.#limits.maximumRecords) {
-        throw new CodeGraphCheckpointPackError('Checkpoint exceeds the record-count limit.');
+        throw CodeGraphCheckpointPackError.make({message: 'Checkpoint exceeds the record-count limit.'});
       }
       this.#recordCount += 1;
       this.#counts[record.kind] += 1;
@@ -600,7 +617,8 @@ export class CodeGraphCheckpointStreamDecoderV1 {
       this.#previousOrderKey = orderKey;
       records.push(record);
     }
-    if (offset !== bytes.byteLength) throw new CodeGraphCheckpointPackError('Checkpoint chunk has extra record bytes.');
+    if (offset !== bytes.byteLength)
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint chunk has extra record bytes.'});
     return records;
   }
 
@@ -611,7 +629,9 @@ export class CodeGraphCheckpointStreamDecoderV1 {
     }
     if (record.kind !== 'file-fact') return;
     if (record.path === this.#previousFactPath) {
-      throw new CodeGraphCheckpointPackError('Checkpoint contains more than one materialized fact for a file.');
+      throw CodeGraphCheckpointPackError.make({
+        message: 'Checkpoint contains more than one materialized fact for a file.',
+      });
     }
     this.#previousFactPath = record.path;
     updateFramedText(this.#factPaths, record.path);
@@ -658,19 +678,20 @@ export class CodeGraphCheckpointStreamInspectorV1 {
       this.#expectedDigest &&
       this.#expectedDescriptor.digest !== `sha256:${this.#expectedDigest}`
     ) {
-      throw new CodeGraphCheckpointPackError('Expected checkpoint digests disagree.');
+      throw CodeGraphCheckpointPackError.make({message: 'Expected checkpoint digests disagree.'});
     }
   }
 
   push(bytes: Uint8Array): void {
-    if (this.#finished) throw new CodeGraphCheckpointPackError('Checkpoint inspector is already finished.');
-    if (!(bytes instanceof Uint8Array)) throw new CodeGraphCheckpointPackError('Checkpoint input must be bytes.');
+    if (this.#finished) throw CodeGraphCheckpointPackError.make({message: 'Checkpoint inspector is already finished.'});
+    if (!(bytes instanceof Uint8Array))
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint input must be bytes.'});
     this.#artifactBytes = checkedAdd(this.#artifactBytes, bytes.byteLength, 'Checkpoint artifact size');
     if (this.#artifactBytes > this.#limits.maximumArtifactBytes) {
-      throw new CodeGraphCheckpointPackError('Checkpoint artifact exceeds the byte limit.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact exceeds the byte limit.'});
     }
     if (this.#expectedDescriptor && this.#artifactBytes > this.#expectedDescriptor.size) {
-      throw new CodeGraphCheckpointPackError('Checkpoint artifact exceeds its expected size.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact exceeds its expected size.'});
     }
     this.#artifact.update(bytes);
     for (let offset = 0; offset < bytes.byteLength; offset += STREAM_FEED_BYTES) {
@@ -680,11 +701,11 @@ export class CodeGraphCheckpointStreamInspectorV1 {
   }
 
   finish(): CodeGraphCheckpointInspectionV1 {
-    if (this.#finished) throw new CodeGraphCheckpointPackError('Checkpoint inspector is already finished.');
+    if (this.#finished) throw CodeGraphCheckpointPackError.make({message: 'Checkpoint inspector is already finished.'});
     this.#drain();
     this.#finished = true;
     if (this.#state !== 'done' || this.#queue.size !== 0 || !this.#header) {
-      throw new CodeGraphCheckpointPackError('Checkpoint artifact ended before its declared framing.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact ended before its declared framing.'});
     }
     const artifactDescriptor = descriptor(this.#artifactBytes, digestHex(this.#artifact));
     verifyExpectedArtifact(artifactDescriptor, this.#expectedDescriptor, this.#expectedDigest);
@@ -697,15 +718,15 @@ export class CodeGraphCheckpointStreamInspectorV1 {
         const bytes = this.#queue.take(PRELUDE_BYTES);
         if (!bytes) return;
         if (!equalBytes(bytes.subarray(0, CHECKPOINT_MAGIC.byteLength), CHECKPOINT_MAGIC)) {
-          throw new CodeGraphCheckpointPackError('Checkpoint magic is invalid.');
+          throw CodeGraphCheckpointPackError.make({message: 'Checkpoint magic is invalid.'});
         }
         const view = dataView(bytes);
         if (view.getUint32(16, false) !== CODE_GRAPH_CHECKPOINT_FORMAT_VERSION) {
-          throw new CodeGraphCheckpointPackError('Checkpoint prelude version is unsupported.');
+          throw CodeGraphCheckpointPackError.make({message: 'Checkpoint prelude version is unsupported.'});
         }
         this.#headerBytes = view.getUint32(20, false);
         if (this.#headerBytes === 0 || this.#headerBytes > this.#limits.maximumHeaderBytes) {
-          throw new CodeGraphCheckpointPackError('Checkpoint header exceeds the byte limit.');
+          throw CodeGraphCheckpointPackError.make({message: 'Checkpoint header exceeds the byte limit.'});
         }
         this.#state = 'header';
         continue;
@@ -721,7 +742,7 @@ export class CodeGraphCheckpointStreamInspectorV1 {
         const bytes = this.#queue.take(CHUNK_FRAME_HEADER_BYTES);
         if (!bytes) return;
         const expected = this.#header!.chunks[this.#nextChunk];
-        if (!expected) throw new CodeGraphCheckpointPackError('Checkpoint contains an undeclared chunk.');
+        if (!expected) throw CodeGraphCheckpointPackError.make({message: 'Checkpoint contains an undeclared chunk.'});
         validateChunkFrameHeader(bytes, expected);
         this.#payloadRemaining = expected.compressedBytes;
         this.#gzipPrefix = [];
@@ -738,13 +759,14 @@ export class CodeGraphCheckpointStreamInspectorV1 {
         this.#payloadRemaining -= consumed;
         if (this.#payloadRemaining > 0) continue;
         if (this.#gzipPrefix[0] !== 0x1f || this.#gzipPrefix[1] !== 0x8b || this.#gzipPrefix[2] !== 8) {
-          throw new CodeGraphCheckpointPackError('Checkpoint chunk is not a gzip member.');
+          throw CodeGraphCheckpointPackError.make({message: 'Checkpoint chunk is not a gzip member.'});
         }
         this.#nextChunk += 1;
         this.#state = this.#nextChunk === this.#header!.chunks.length ? 'done' : 'chunk-header';
         continue;
       }
-      if (this.#queue.size > 0) throw new CodeGraphCheckpointPackError('Checkpoint artifact has trailing bytes.');
+      if (this.#queue.size > 0)
+        throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact has trailing bytes.'});
       return;
     }
   }
@@ -785,13 +807,13 @@ function encodeChunkFrame(descriptor: CodeGraphCheckpointChunkDescriptorV1, comp
 function validateChunkFrame(bytes: Uint8Array, descriptor: CodeGraphCheckpointChunkDescriptorV1): void {
   const expectedLength = checkedAdd(CHUNK_FRAME_HEADER_BYTES, descriptor.compressedBytes, 'Checkpoint chunk frame');
   if (bytes.byteLength !== expectedLength)
-    throw new CodeGraphCheckpointPackError('Spool chunk frame length is invalid.');
+    throw CodeGraphCheckpointPackError.make({message: 'Spool chunk frame length is invalid.'});
   validateChunkFrameHeader(bytes.subarray(0, CHUNK_FRAME_HEADER_BYTES), descriptor);
 }
 
 function validateChunkFrameHeader(bytes: Uint8Array, expected: CodeGraphCheckpointChunkDescriptorV1): void {
   if (bytes.byteLength !== CHUNK_FRAME_HEADER_BYTES || !equalBytes(bytes.subarray(0, 4), CHUNK_MAGIC)) {
-    throw new CodeGraphCheckpointPackError('Checkpoint chunk magic is invalid.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint chunk magic is invalid.'});
   }
   const view = dataView(bytes);
   if (
@@ -801,7 +823,7 @@ function validateChunkFrameHeader(bytes: Uint8Array, expected: CodeGraphCheckpoi
     view.getUint32(16, false) !== expected.recordCount ||
     !equalBytes(bytes.subarray(20, 52), hexBytes(expected.digest.digest))
   ) {
-    throw new CodeGraphCheckpointPackError('Checkpoint chunk frame does not match its descriptor.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint chunk frame does not match its descriptor.'});
   }
 }
 
@@ -810,23 +832,23 @@ function decodeHeader(bytes: Uint8Array, limits: CodeGraphCheckpointPackLimits):
   validateHeaderBounds(header, limits);
   const actualAbi = codeGraphCheckpointAbiDigestV1(header.abi.input);
   if (actualAbi.digest !== header.abi.digest) {
-    throw new CodeGraphCheckpointPackError('Checkpoint ABI digest does not match its input.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint ABI digest does not match its input.'});
   }
   return header;
 }
 
 function validateHeaderBounds(header: CodeGraphCheckpointHeaderV1, limits: CodeGraphCheckpointPackLimits): void {
   if (header.chunks.length > limits.maximumChunks) {
-    throw new CodeGraphCheckpointPackError('Checkpoint header exceeds the chunk-count limit.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint header exceeds the chunk-count limit.'});
   }
   let totalRecords = 0;
   let lowerBoundBytes = PRELUDE_BYTES;
   for (const chunk of header.chunks) {
     if (chunk.compressedBytes > limits.maximumCompressedChunkBytes) {
-      throw new CodeGraphCheckpointPackError('Checkpoint declares an oversized compressed chunk.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint declares an oversized compressed chunk.'});
     }
     if (chunk.uncompressedBytes > limits.maximumUncompressedChunkBytes) {
-      throw new CodeGraphCheckpointPackError('Checkpoint declares an oversized uncompressed chunk.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint declares an oversized uncompressed chunk.'});
     }
     totalRecords = checkedAdd(totalRecords, chunk.recordCount, 'Checkpoint record count');
     lowerBoundBytes = checkedAdd(
@@ -836,44 +858,46 @@ function validateHeaderBounds(header: CodeGraphCheckpointHeaderV1, limits: CodeG
     );
   }
   if (totalRecords > limits.maximumRecords)
-    throw new CodeGraphCheckpointPackError('Checkpoint exceeds the record limit.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint exceeds the record limit.'});
   if (lowerBoundBytes > limits.maximumArtifactBytes) {
-    throw new CodeGraphCheckpointPackError('Checkpoint declarations exceed the artifact byte limit.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint declarations exceed the artifact byte limit.'});
   }
 }
 
 function inflateSingleMember(compressed: Uint8Array, expectedBytes: number): Uint8Array {
-  if (compressed.byteLength < 18) throw new CodeGraphCheckpointPackError('Checkpoint gzip member is truncated.');
+  if (compressed.byteLength < 18)
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint gzip member is truncated.'});
   const output = new Uint8Array(expectedBytes);
   let offset = 0;
   let final = false;
   const gunzip = new Gunzip((data, isFinal) => {
     if (data.byteLength > output.byteLength - offset) {
-      throw new CodeGraphCheckpointPackError('Checkpoint gzip member expands beyond its declared size.');
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint gzip member expands beyond its declared size.'});
     }
     output.set(data, offset);
     offset += data.byteLength;
     final = isFinal;
   });
   gunzip.onmember = () => {
-    throw new CodeGraphCheckpointPackError('Checkpoint chunk contains concatenated gzip members.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint chunk contains concatenated gzip members.'});
   };
   try {
     gunzip.push(compressed, true);
   } catch (cause) {
-    if (cause instanceof CodeGraphCheckpointPackError) throw cause;
-    throw new CodeGraphCheckpointPackError(
-      cause instanceof Error
-        ? `Checkpoint gzip member is invalid: ${cause.message}`
-        : 'Checkpoint gzip member is invalid.',
-    );
+    if (Schema.is(CodeGraphCheckpointPackError)(cause)) throw cause;
+    throw CodeGraphCheckpointPackError.make({
+      message:
+        cause instanceof Error
+          ? `Checkpoint gzip member is invalid: ${cause.message}`
+          : 'Checkpoint gzip member is invalid.',
+    });
   }
   if (!final || offset !== expectedBytes) {
-    throw new CodeGraphCheckpointPackError('Checkpoint gzip member size does not match its descriptor.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint gzip member size does not match its descriptor.'});
   }
   const trailer = dataView(compressed, compressed.byteLength - 8, 8);
   if (trailer.getUint32(0, true) !== crc32(output) || trailer.getUint32(4, true) !== output.byteLength >>> 0) {
-    throw new CodeGraphCheckpointPackError('Checkpoint gzip member checksum or size is invalid.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint gzip member checksum or size is invalid.'});
   }
   return output;
 }
@@ -921,18 +945,18 @@ function consumeAttributionFile(
     record.mode !== expected.mode ||
     record.source !== expected.source
   ) {
-    throw new CodeGraphCheckpointPackError(
-      `Checkpoint attribution context does not match its file record: ${record.path}`,
-    );
+    throw CodeGraphCheckpointPackError.make({
+      message: `Checkpoint attribution context does not match its file record: ${record.path}`,
+    });
   }
   remaining.delete(record.path);
 }
 
 function verifyAttributionFileCoverage(remaining: ReadonlyMap<string, CodeGraphCheckpointAttributionFileV1>): void {
   if (remaining.size > 0) {
-    throw new CodeGraphCheckpointPackError(
-      'Checkpoint attribution context is not covered by exact graph file records.',
-    );
+    throw CodeGraphCheckpointPackError.make({
+      message: 'Checkpoint attribution context is not covered by exact graph file records.',
+    });
   }
 }
 
@@ -943,10 +967,12 @@ function verifyFileFactParity(
   factPathDigest: string,
 ): void {
   if (counts.file !== eligibleFiles || counts['file-fact'] !== eligibleFiles) {
-    throw new CodeGraphCheckpointPackError('Checkpoint must contain one materialized fact for every eligible file.');
+    throw CodeGraphCheckpointPackError.make({
+      message: 'Checkpoint must contain one materialized fact for every eligible file.',
+    });
   }
   if (filePathDigest !== factPathDigest) {
-    throw new CodeGraphCheckpointPackError('Checkpoint file and materialized-fact path sets differ.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint file and materialized-fact path sets differ.'});
   }
 }
 
@@ -961,21 +987,21 @@ function parseCanonicalBytes(bytes: Uint8Array, label: string): unknown {
   try {
     text = UTF8_FATAL.decode(bytes);
   } catch {
-    throw new CodeGraphCheckpointPackError(`${label} is not valid UTF-8.`);
+    throw CodeGraphCheckpointPackError.make({message: `${label} is not valid UTF-8.`});
   }
   try {
     return parseCanonicalJson(text);
   } catch (cause) {
-    throw new CodeGraphCheckpointPackError(
-      cause instanceof Error ? `${label} is invalid: ${cause.message}` : `${label} is invalid.`,
-    );
+    throw CodeGraphCheckpointPackError.make({
+      message: cause instanceof Error ? `${label} is invalid: ${cause.message}` : `${label} is invalid.`,
+    });
   }
 }
 
 function canonicalBytes(value: unknown, maximumBytes = UINT32_MAXIMUM, label = 'Canonical JSON'): Uint8Array {
   const bytes = UTF8.encode(canonicalJson(value));
   if (bytes.byteLength === 0 || bytes.byteLength > maximumBytes || bytes.byteLength > UINT32_MAXIMUM) {
-    throw new CodeGraphCheckpointPackError(`${label} exceeds its UTF-8 byte limit.`);
+    throw CodeGraphCheckpointPackError.make({message: `${label} exceeds its UTF-8 byte limit.`});
   }
   return bytes;
 }
@@ -984,14 +1010,14 @@ function resolveLimits(overrides: Partial<CodeGraphCheckpointPackLimits> = {}): 
   const limits = {...DEFAULT_CODE_GRAPH_CHECKPOINT_PACK_LIMITS, ...overrides};
   for (const [name, value] of Object.entries(limits)) {
     if (!Number.isSafeInteger(value) || value <= 0 || value > UINT32_MAXIMUM) {
-      throw new CodeGraphCheckpointPackError(`${name} must be a positive uint32.`);
+      throw CodeGraphCheckpointPackError.make({message: `${name} must be a positive uint32.`});
     }
   }
   if (limits.targetUncompressedChunkBytes > limits.maximumUncompressedChunkBytes) {
-    throw new CodeGraphCheckpointPackError('Checkpoint target chunk size exceeds the maximum chunk size.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint target chunk size exceeds the maximum chunk size.'});
   }
   if (limits.maximumRecordBytes + 4 > limits.maximumUncompressedChunkBytes) {
-    throw new CodeGraphCheckpointPackError('Checkpoint record limit does not fit within the chunk limit.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint record limit does not fit within the chunk limit.'});
   }
   return limits;
 }
@@ -1001,10 +1027,10 @@ function validateExpectedDescriptor(
   limits: CodeGraphCheckpointPackLimits,
 ): void {
   if (value.mediaType !== CODE_GRAPH_CHECKPOINT_MEDIA_TYPE) {
-    throw new CodeGraphCheckpointPackError('Expected checkpoint media type is invalid.');
+    throw CodeGraphCheckpointPackError.make({message: 'Expected checkpoint media type is invalid.'});
   }
   if (!Number.isSafeInteger(value.size) || value.size <= 0 || value.size > limits.maximumArtifactBytes) {
-    throw new CodeGraphCheckpointPackError('Expected checkpoint size is invalid.');
+    throw CodeGraphCheckpointPackError.make({message: 'Expected checkpoint size is invalid.'});
   }
   parsePrefixedDigest(value.digest, 'Expected descriptor digest');
 }
@@ -1020,22 +1046,22 @@ function verifyExpectedArtifact(
       actual.size !== expectedDescriptor.size ||
       actual.digest !== expectedDescriptor.digest)
   ) {
-    throw new CodeGraphCheckpointPackError('Checkpoint artifact does not match its expected descriptor.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact does not match its expected descriptor.'});
   }
   if (expectedDigest && actual.digest !== `sha256:${expectedDigest}`) {
-    throw new CodeGraphCheckpointPackError('Checkpoint artifact does not match its expected digest.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact does not match its expected digest.'});
   }
 }
 
 function parseBareDigest(value: CodeGraphCheckpointDigestV1, label: string): string {
   if (value.algorithm !== 'sha256' || !/^[0-9a-f]{64}$/u.test(value.digest)) {
-    throw new CodeGraphCheckpointPackError(`${label} is invalid.`);
+    throw CodeGraphCheckpointPackError.make({message: `${label} is invalid.`});
   }
   return value.digest;
 }
 
 function parsePrefixedDigest(value: string, label: string): string {
-  if (!/^sha256:[0-9a-f]{64}$/u.test(value)) throw new CodeGraphCheckpointPackError(`${label} is invalid.`);
+  if (!/^sha256:[0-9a-f]{64}$/u.test(value)) throw CodeGraphCheckpointPackError.make({message: `${label} is invalid.`});
   return value.slice('sha256:'.length);
 }
 
@@ -1063,7 +1089,7 @@ function digestHex(hasher: Bun.CryptoHasher): string {
 
 function u32(value: number): Uint8Array {
   if (!Number.isSafeInteger(value) || value < 0 || value > UINT32_MAXIMUM) {
-    throw new CodeGraphCheckpointPackError('Checkpoint uint32 value is out of range.');
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint uint32 value is out of range.'});
   }
   const bytes = new Uint8Array(4);
   dataView(bytes).setUint32(0, value, false);
@@ -1071,7 +1097,8 @@ function u32(value: number): Uint8Array {
 }
 
 function hexBytes(value: string): Uint8Array {
-  if (!/^[0-9a-f]{64}$/u.test(value)) throw new CodeGraphCheckpointPackError('Checkpoint digest is invalid.');
+  if (!/^[0-9a-f]{64}$/u.test(value))
+    throw CodeGraphCheckpointPackError.make({message: 'Checkpoint digest is invalid.'});
   return Uint8Array.from({length: 32}, (_, index) => Number.parseInt(value.slice(index * 2, index * 2 + 2), 16));
 }
 
@@ -1081,7 +1108,7 @@ function dataView(bytes: Uint8Array, offset = 0, length = bytes.byteLength - off
 
 function checkedAdd(left: number, right: number, label: string): number {
   if (!Number.isSafeInteger(left) || !Number.isSafeInteger(right) || right > Number.MAX_SAFE_INTEGER - left) {
-    throw new CodeGraphCheckpointPackError(`${label} overflows.`);
+    throw CodeGraphCheckpointPackError.make({message: `${label} overflows.`});
   }
   return left + right;
 }
@@ -1092,11 +1119,12 @@ function joinBytes(parts: readonly Uint8Array[], expected?: number): Uint8Array 
   let offset = 0;
   for (const part of parts) {
     if (part.byteLength > output.byteLength - offset)
-      throw new CodeGraphCheckpointPackError('Byte sequence length is invalid.');
+      throw CodeGraphCheckpointPackError.make({message: 'Byte sequence length is invalid.'});
     output.set(part, offset);
     offset += part.byteLength;
   }
-  if (offset !== output.byteLength) throw new CodeGraphCheckpointPackError('Byte sequence length is invalid.');
+  if (offset !== output.byteLength)
+    throw CodeGraphCheckpointPackError.make({message: 'Byte sequence length is invalid.'});
   return output;
 }
 

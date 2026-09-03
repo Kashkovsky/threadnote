@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path, Predicate, Stdio, Stream} from 'effect';
+import {Clock, Crypto, DateTime, Effect, FileSystem, Option, Path, Predicate, Schema, Stdio, Stream} from 'effect';
 import {CommandExecutor, type CommandExecutionError} from '../effect/command.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {CODE_GRAPH_COMPACTION_WORKER_ARGUMENT} from '../worker_protocol.js';
@@ -24,9 +24,13 @@ import {
   type CodeGraphCompactionSummary,
 } from './storage.js';
 
-class CodeGraphAutomaticCompactionError extends Error {
-  readonly _tag = 'CodeGraphAutomaticCompactionError' as const;
-}
+class CodeGraphAutomaticCompactionError extends Schema.TaggedError<CodeGraphAutomaticCompactionError>()(
+  'CodeGraphAutomaticCompactionError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export const CODE_GRAPH_AUTOMATIC_COMPACTION_INITIAL_DELAY_MILLISECONDS = 15_000;
 export const CODE_GRAPH_AUTOMATIC_COMPACTION_INTERVAL_MILLISECONDS = 60_000;
@@ -203,7 +207,7 @@ export const runCodeGraphAutomaticCompactionPassWith = Effect.fn('codeGraph.auto
     checkoutId =>
       dependencies.inspect(threadnoteHome, checkoutId).pipe(
         Effect.map(storage => ({checkoutId, storage})),
-        Effect.catch(() => Effect.succeed(undefined)),
+        Effect.orElseSucceed(() => undefined),
       ),
     {concurrency: 2},
   );
@@ -306,7 +310,7 @@ export const compactCodeGraphStorageIsolated: (
   });
   const response = decodeAutomaticCompactionWorkerResponse(result.stdout, checkoutId);
   if (response === undefined || !response.ok) {
-    return yield* Effect.fail(new CodeGraphAutomaticCompactionError('Isolated code graph compaction failed.'));
+    return yield* CodeGraphAutomaticCompactionError.make({message: 'Isolated code graph compaction failed.'});
   }
   return response.result;
 });
@@ -366,7 +370,7 @@ export const runCodeGraphAutomaticCompactionLoopWith = Effect.fn('codeGraph.auto
   let offset = 0;
   while (true) {
     const startedAtMilliseconds = yield* Clock.currentTimeMillis;
-    const startedAt = new Date(startedAtMilliseconds).toISOString();
+    const startedAt = DateTime.formatIso(DateTime.makeUnsafe(startedAtMilliseconds));
     yield* onStatus({startedAt, state: 'inspecting'});
     let attemptedCandidate: CodeGraphAutomaticCompactionCandidate | undefined;
     const outcome: CodeGraphAutomaticCompactionPassResult | undefined = yield* runCodeGraphAutomaticCompactionPassWith(
@@ -387,7 +391,7 @@ export const runCodeGraphAutomaticCompactionLoopWith = Effect.fn('codeGraph.auto
       threadnoteHome,
       {offset},
     ).pipe(Effect.match({onFailure: () => undefined, onSuccess: result => result}));
-    const completedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    const completedAt = DateTime.formatIso(yield* DateTime.now);
     if (outcome === undefined) {
       yield* onStatus({
         ...(attemptedCandidate === undefined ? {} : {checkoutId: attemptedCandidate.checkoutId}),
@@ -480,18 +484,16 @@ export const listCodeGraphAutomaticCompactionCheckoutIds = Effect.fn('codeGraph.
     const path = yield* Path.Path;
     const repositories = codeGraphRepositoriesRoot(path, threadnoteHome);
     if (Option.isSome(yield* fs.readLink(repositories).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphAutomaticCompactionError('Code graph repository storage is not a directory.'),
-      );
+      return yield* CodeGraphAutomaticCompactionError.make({
+        message: 'Code graph repository storage is not a directory.',
+      });
     }
     if (!(yield* fs.exists(repositories))) return [];
     const page = yield* runtimeTextDirectoryNamePage(repositories, CODE_GRAPH_AUTOMATIC_COMPACTION_DATABASE_LIMIT);
     if (page.overflow) {
-      return yield* Effect.fail(
-        new CodeGraphAutomaticCompactionError(
-          'Automatic code graph compaction inventory exceeded its bounded repository limit.',
-        ),
-      );
+      return yield* CodeGraphAutomaticCompactionError.make({
+        message: 'Automatic code graph compaction inventory exceeded its bounded repository limit.',
+      });
     }
     const checkoutIds: string[] = [];
     for (const checkoutId of page.names.filter(name => /^[0-9a-f]{64}$/u.test(name)).sort(compareCodeUnits)) {
@@ -537,7 +539,7 @@ export const codeGraphAutomaticCompactionWorkerProgram = Effect.gen(function* ()
     Stream.make(new TextEncoder().encode(`${JSON.stringify(response)}\n`)),
     stdio.stdout({endOnDone: false}),
   );
-}).pipe(Effect.catch(() => Effect.void));
+}).pipe(Effect.ignore);
 
 function automaticCompactionWorkerFailure(): CodeGraphAutomaticCompactionWorkerResponse {
   return {ok: false, protocol: CODE_GRAPH_AUTOMATIC_COMPACTION_PROTOCOL};
@@ -567,7 +569,9 @@ function readBoundedAutomaticCompactionWorkerInput(stdio: Stdio.Stdio): Effect.E
       (state, chunk) => {
         const size = state.size + encoder.encode(chunk).byteLength;
         if (size > CODE_GRAPH_AUTOMATIC_COMPACTION_INPUT_BYTES_MAXIMUM) {
-          return Effect.fail(new CodeGraphAutomaticCompactionError('Code graph compaction request was too large.'));
+          return Effect.fail(
+            CodeGraphAutomaticCompactionError.make({message: 'Code graph compaction request was too large.'}),
+          );
         }
         state.chunks.push(chunk);
         return Effect.succeed({chunks: state.chunks, size});

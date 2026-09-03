@@ -1,5 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect} from 'effect';
+import {Clock, DateTime, Effect} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
@@ -86,16 +86,17 @@ describe('Cursor Cloud workload attestation', () => {
         [];
       const command = CommandExecutor.of({
         execute: (_executable, args, options = {}) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             const body = new TextDecoder().decode(options.input);
             requests.push({args, body, options});
+            const now = yield* Clock.currentTimeMillis;
             return {
               exitCode: 0,
               stderr: '',
               stdout:
                 requests.length === 1
-                  ? `${JSON.stringify({expires_at: Math.floor((Date.now() + 300_000) / 1_000), token})}\n200`
-                  : `${JSON.stringify({attestationId: 'attestation_direct', expiresAt: new Date(Date.now() + 240_000).toISOString()})}\n200`,
+                  ? `${JSON.stringify({expires_at: Math.floor((now + 300_000) / 1_000), token})}\n200`
+                  : `${JSON.stringify({attestationId: 'attestation_direct', expiresAt: DateTime.formatIso(DateTime.makeUnsafe(now + 240_000))})}\n200`,
             };
           }),
         executeStreaming: () => Effect.die('not used'),
@@ -106,7 +107,7 @@ describe('Cursor Cloud workload attestation', () => {
       });
       const liveChallenge = {
         ...challenge,
-        expiresAt: new Date(Date.now() + 300_000).toISOString(),
+        expiresAt: DateTime.formatIso(DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 300_000)),
       };
 
       const receipt = yield* runCursorAttestationChallenge(liveChallenge, endpoint).pipe(
@@ -135,7 +136,10 @@ describe('Cursor Cloud workload attestation', () => {
         execute: () => Effect.succeed({exitCode: 0, stderr: '', stdout: 'not-a-framed-response'}),
         executeStreaming: () => Effect.die('not used'),
       });
-      const liveChallenge = {...challenge, expiresAt: new Date(Date.now() + 300_000).toISOString()};
+      const liveChallenge = {
+        ...challenge,
+        expiresAt: DateTime.formatIso(DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 300_000)),
+      };
 
       const result = yield* runCursorAttestationChallenge(liveChallenge, endpoint).pipe(
         Effect.match({
@@ -161,7 +165,7 @@ describe('Cursor Cloud workload attestation', () => {
       const client: CursorAttestationExchangeClient = {
         complete: () =>
           fails
-            ? Effect.fail(new CursorAttestationError(`remote response included ${token}`))
+            ? Effect.fail(CursorAttestationError.make({message: `remote response included ${token}`}))
             : Effect.succeed({attestationId: 'attestation_property'}),
         mint: () => Effect.succeed({expiresAt: Math.floor((now + 300_000) / 1_000), token}),
       };

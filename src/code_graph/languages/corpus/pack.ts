@@ -15,7 +15,7 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
     extract: (file, context) =>
       fromPromiseInterruptible(
         signal => extractCorpusFile(file, {signal}, context),
-        cause => new CodeGraphLanguagePackError(`Could not extract corpus facts from ${file.path}.`, {cause}),
+        cause => CodeGraphLanguagePackError.make({message: `Could not extract corpus facts from ${file.path}.`, cause}),
       ),
     version: sha256HexSync('threadnote-corpus-extractor-v4-mobile-resource-wiring'),
   },

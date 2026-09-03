@@ -5,9 +5,13 @@ import {CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT} from '../worker_protocol.js
 import {type CodeGraphDatabaseHealth} from './store_models.js';
 import {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
 
-class CodeGraphDeepDiagnosticsError extends Error {
-  readonly _tag = 'CodeGraphDeepDiagnosticsError' as const;
-}
+class CodeGraphDeepDiagnosticsError extends Schema.TaggedError<CodeGraphDeepDiagnosticsError>()(
+  'CodeGraphDeepDiagnosticsError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 const CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL = 1;
 const NonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -82,7 +86,7 @@ export const diagnoseCodeGraphDatabaseDeepIsolated: (
   });
   const response = decodeDeepDiagnosticsResponse(result.stdout);
   if (response === undefined || !response.ok) {
-    return yield* Effect.fail(new CodeGraphDeepDiagnosticsError('Isolated code graph deep diagnostics failed.'));
+    return yield* CodeGraphDeepDiagnosticsError.make({message: 'Isolated code graph deep diagnostics failed.'});
   }
   return response.health;
 });
@@ -149,7 +153,7 @@ export const codeGraphDeepDiagnosticsWorkerProgram: Effect.Effect<void, never, S
     Stream.make(new TextEncoder().encode(`${JSON.stringify(response)}\n`)),
     stdio.stdout({endOnDone: false}),
   );
-}).pipe(Effect.catch(() => Effect.void));
+}).pipe(Effect.ignore);
 
 function readBoundedWorkerInput(stdio: Stdio.Stdio): Effect.Effect<string, Error> {
   const encoder = new TextEncoder();
@@ -161,7 +165,9 @@ function readBoundedWorkerInput(stdio: Stdio.Stdio): Effect.Effect<string, Error
         const size = state.size + encoder.encode(chunk).byteLength;
         if (size > CODE_GRAPH_DEEP_DIAGNOSTICS_INPUT_BYTES_MAXIMUM) {
           return Effect.fail(
-            new CodeGraphDeepDiagnosticsError('Code graph deep diagnostics request exceeded its input limit.'),
+            CodeGraphDeepDiagnosticsError.make({
+              message: 'Code graph deep diagnostics request exceeded its input limit.',
+            }),
           );
         }
         state.chunks.push(chunk);

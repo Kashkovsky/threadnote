@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 import type {CodeGraphScanningMetrics, CodeGraphSourceSizeBucket} from './progress_telemetry.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 
@@ -694,13 +695,21 @@ export interface CodeGraphLanguagePackStatus {
   readonly workspaceDetection: boolean;
 }
 
-export class CodeGraphRepositoryError extends Error {
-  override readonly name = 'CodeGraphRepositoryError';
-}
+export class CodeGraphRepositoryError extends Schema.TaggedError<CodeGraphRepositoryError>()(
+  'CodeGraphRepositoryError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
-export class CodeGraphSnapshotUnavailable extends Error {
-  override readonly name = 'CodeGraphSnapshotUnavailable';
-}
+export class CodeGraphSnapshotUnavailable extends Schema.TaggedError<CodeGraphSnapshotUnavailable>()(
+  'CodeGraphSnapshotUnavailable',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export type CodeGraphStoreFailureCode =
   | 'busy'
@@ -730,88 +739,285 @@ export interface CodeGraphStoreErrorMetadata {
   readonly retryable?: boolean;
 }
 
-export class CodeGraphStoreError extends Error {
-  override readonly name: string = 'CodeGraphStoreError';
-  readonly code: CodeGraphStoreFailureCode;
-  readonly operation: string;
-  readonly recovery: CodeGraphStoreRecovery;
-  readonly retryable: boolean;
+const CodeGraphStoreFailureCodeSchema = Schema.Literals([
+  'busy',
+  'confirmed-corruption',
+  'incompatible-schema',
+  'no-space',
+  'permission',
+  'schema-additive',
+  'transient-io',
+  'unknown',
+]);
+const CodeGraphStoreRecoverySchema = Schema.Literals([
+  'defer',
+  'diagnose',
+  'fix-permissions',
+  'free-space',
+  'manual-migration',
+  'manual-rebuild',
+  'migrate-additive',
+  'reconnect-runtime',
+  'retry-read-only',
+]);
 
-  constructor(message: string, metadata: CodeGraphStoreErrorMetadata = {}) {
-    super(message);
-    this.code = metadata.code ?? 'unknown';
-    this.operation = metadata.operation ?? 'code graph storage';
-    this.recovery = metadata.recovery ?? 'diagnose';
-    this.retryable = metadata.retryable ?? false;
+export class CodeGraphStoreError extends Schema.TaggedError<CodeGraphStoreError>()('CodeGraphStoreError', {
+  code: CodeGraphStoreFailureCodeSchema,
+  message: Schema.String,
+  operation: Schema.String,
+  recovery: CodeGraphStoreRecoverySchema,
+  retryable: Schema.Boolean,
+}) {
+  static of(message: string, metadata: CodeGraphStoreErrorMetadata = {}): CodeGraphStoreError {
+    return CodeGraphStoreError.make({
+      code: metadata.code ?? 'unknown',
+      message,
+      operation: metadata.operation ?? 'code graph storage',
+      recovery: metadata.recovery ?? 'diagnose',
+      retryable: metadata.retryable ?? false,
+    });
   }
 }
 
-export class CodeGraphStoreBusyError extends CodeGraphStoreError {
-  override readonly name = 'CodeGraphStoreBusyError';
+export class CodeGraphStoreBusyError extends Schema.TaggedError<CodeGraphStoreBusyError>()('CodeGraphStoreBusyError', {
+  message: Schema.String,
+  operation: Schema.String,
+}) {
+  readonly code = 'busy' as const;
+  readonly recovery = 'defer' as const;
+  readonly retryable = true as const;
 
-  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
-    super(message, {...metadata, code: 'busy', recovery: 'defer', retryable: true});
+  static of(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}): CodeGraphStoreBusyError {
+    return CodeGraphStoreBusyError.make({
+      message,
+      operation: metadata.operation ?? 'code graph storage',
+    });
   }
 }
 
-export class CodeGraphStoreSchemaAdditiveError extends CodeGraphStoreError {
-  override readonly name = 'CodeGraphStoreSchemaAdditiveError';
+export class CodeGraphStoreSchemaAdditiveError extends Schema.TaggedError<CodeGraphStoreSchemaAdditiveError>()(
+  'CodeGraphStoreSchemaAdditiveError',
+  {
+    message: Schema.String,
+    operation: Schema.String,
+  },
+) {
+  readonly code = 'schema-additive' as const;
+  readonly recovery = 'migrate-additive' as const;
+  readonly retryable = false as const;
 
-  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
-    super(message, {...metadata, code: 'schema-additive', recovery: 'migrate-additive', retryable: false});
+  static of(
+    message: string,
+    metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {},
+  ): CodeGraphStoreSchemaAdditiveError {
+    return CodeGraphStoreSchemaAdditiveError.make({
+      message,
+      operation: metadata.operation ?? 'code graph storage',
+    });
   }
 }
 
-export class CodeGraphStoreNoSpaceError extends CodeGraphStoreError {
-  override readonly name = 'CodeGraphStoreNoSpaceError';
+export class CodeGraphStoreNoSpaceError extends Schema.TaggedError<CodeGraphStoreNoSpaceError>()(
+  'CodeGraphStoreNoSpaceError',
+  {
+    message: Schema.String,
+    operation: Schema.String,
+  },
+) {
+  readonly code = 'no-space' as const;
+  readonly recovery = 'free-space' as const;
+  readonly retryable = false as const;
 
-  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
-    super(message, {...metadata, code: 'no-space', recovery: 'free-space', retryable: false});
+  static of(
+    message: string,
+    metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {},
+  ): CodeGraphStoreNoSpaceError {
+    return CodeGraphStoreNoSpaceError.make({
+      message,
+      operation: metadata.operation ?? 'code graph storage',
+    });
   }
 }
 
-export class CodeGraphStorePermissionError extends CodeGraphStoreError {
-  override readonly name = 'CodeGraphStorePermissionError';
+export class CodeGraphStorePermissionError extends Schema.TaggedError<CodeGraphStorePermissionError>()(
+  'CodeGraphStorePermissionError',
+  {
+    message: Schema.String,
+    operation: Schema.String,
+  },
+) {
+  readonly code = 'permission' as const;
+  readonly recovery = 'fix-permissions' as const;
+  readonly retryable = false as const;
 
-  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
-    super(message, {...metadata, code: 'permission', recovery: 'fix-permissions', retryable: false});
+  static of(
+    message: string,
+    metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {},
+  ): CodeGraphStorePermissionError {
+    return CodeGraphStorePermissionError.make({
+      message,
+      operation: metadata.operation ?? 'code graph storage',
+    });
   }
 }
 
-export class CodeGraphStoreTransientIoError extends CodeGraphStoreError {
-  override readonly name = 'CodeGraphStoreTransientIoError';
+export class CodeGraphStoreTransientIoError extends Schema.TaggedError<CodeGraphStoreTransientIoError>()(
+  'CodeGraphStoreTransientIoError',
+  {
+    message: Schema.String,
+    operation: Schema.String,
+  },
+) {
+  readonly code = 'transient-io' as const;
+  readonly recovery = 'retry-read-only' as const;
+  readonly retryable = true as const;
 
-  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
-    super(message, {...metadata, code: 'transient-io', recovery: 'retry-read-only', retryable: true});
+  static of(
+    message: string,
+    metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {},
+  ): CodeGraphStoreTransientIoError {
+    return CodeGraphStoreTransientIoError.make({
+      message,
+      operation: metadata.operation ?? 'code graph storage',
+    });
   }
 }
 
-export class CodeGraphStoreCorruptionError extends CodeGraphStoreError {
-  override readonly name = 'CodeGraphStoreCorruptionError';
+export class CodeGraphStoreCorruptionError extends Schema.TaggedError<CodeGraphStoreCorruptionError>()(
+  'CodeGraphStoreCorruptionError',
+  {
+    message: Schema.String,
+    operation: Schema.String,
+  },
+) {
+  readonly code = 'confirmed-corruption' as const;
+  readonly recovery = 'manual-rebuild' as const;
+  readonly retryable = false as const;
 
-  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
-    super(message, {...metadata, code: 'confirmed-corruption', recovery: 'manual-rebuild', retryable: false});
+  static of(
+    message: string,
+    metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {},
+  ): CodeGraphStoreCorruptionError {
+    return CodeGraphStoreCorruptionError.make({
+      message,
+      operation: metadata.operation ?? 'code graph storage',
+    });
   }
 }
 
-export class CodeGraphStoreIncompatibleSchemaError extends CodeGraphStoreError {
-  override readonly name = 'CodeGraphStoreIncompatibleSchemaError';
+export class CodeGraphStoreIncompatibleSchemaError extends Schema.TaggedError<CodeGraphStoreIncompatibleSchemaError>()(
+  'CodeGraphStoreIncompatibleSchemaError',
+  {
+    message: Schema.String,
+    operation: Schema.String,
+  },
+) {
+  readonly code = 'incompatible-schema' as const;
+  readonly recovery = 'manual-migration' as const;
+  readonly retryable = false as const;
 
-  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
-    super(message, {...metadata, code: 'incompatible-schema', recovery: 'manual-migration', retryable: false});
+  static of(
+    message: string,
+    metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {},
+  ): CodeGraphStoreIncompatibleSchemaError {
+    return CodeGraphStoreIncompatibleSchemaError.make({
+      message,
+      operation: metadata.operation ?? 'code graph storage',
+    });
   }
 }
 
 /** A long-lived process observed storage written by a newer Threadnote runtime. */
-export class CodeGraphRuntimeReconnectRequiredError extends CodeGraphStoreError {
-  override readonly name = 'CodeGraphRuntimeReconnectRequiredError';
+export class CodeGraphRuntimeReconnectRequiredError extends Schema.TaggedError<CodeGraphRuntimeReconnectRequiredError>()(
+  'CodeGraphRuntimeReconnectRequiredError',
+  {
+    message: Schema.String,
+    operation: Schema.String,
+  },
+) {
+  readonly code = 'incompatible-schema' as const;
+  readonly recovery = 'reconnect-runtime' as const;
+  readonly retryable = false as const;
 
-  constructor(metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
-    super('Code graph storage was upgraded by a newer Threadnote runtime. Reconnect this Threadnote process.', {
-      ...metadata,
-      code: 'incompatible-schema',
-      recovery: 'reconnect-runtime',
-      retryable: false,
+  static of(metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}): CodeGraphRuntimeReconnectRequiredError {
+    return CodeGraphRuntimeReconnectRequiredError.make({
+      message: 'Code graph storage was upgraded by a newer Threadnote runtime. Reconnect this Threadnote process.',
+      operation: metadata.operation ?? 'code graph storage',
     });
   }
 }
+
+export class CodeGraphMaintenanceActiveError extends Schema.TaggedError<CodeGraphMaintenanceActiveError>()(
+  'CodeGraphMaintenanceActiveError',
+  {
+    message: Schema.String,
+    operation: Schema.String,
+  },
+) {
+  readonly code = 'busy' as const;
+  readonly recovery = 'defer' as const;
+  readonly retryable = true as const;
+
+  static of(): CodeGraphMaintenanceActiveError {
+    return CodeGraphMaintenanceActiveError.make({
+      message: 'Code graph maintenance is active.',
+      operation: 'coordinate code graph maintenance',
+    });
+  }
+}
+
+export class CodeGraphDiskCapacityObservationError extends Schema.TaggedError<CodeGraphDiskCapacityObservationError>()(
+  'CodeGraphDiskCapacityObservationError',
+  {
+    message: Schema.String,
+    operation: Schema.String,
+  },
+) {
+  readonly code = 'transient-io' as const;
+  readonly recovery = 'retry-read-only' as const;
+  readonly retryable = true as const;
+
+  static of(): CodeGraphDiskCapacityObservationError {
+    return CodeGraphDiskCapacityObservationError.make({
+      message: 'Code graph storage capacity could not be observed; the bounded write was not started.',
+      operation: 'observe code graph storage capacity',
+    });
+  }
+}
+
+export class CodeGraphDiskCapacityPressureError extends Schema.TaggedError<CodeGraphDiskCapacityPressureError>()(
+  'CodeGraphDiskCapacityPressureError',
+  {
+    message: Schema.String,
+    operation: Schema.String,
+  },
+) {
+  readonly code = 'no-space' as const;
+  readonly recovery = 'free-space' as const;
+  readonly retryable = false as const;
+
+  static of(operation: string): CodeGraphDiskCapacityPressureError {
+    return CodeGraphDiskCapacityPressureError.make({
+      message: 'Code graph storage capacity is insufficient; the bounded write was not started.',
+      operation,
+    });
+  }
+}
+
+export const AnyCodeGraphStoreError = Schema.Union([
+  CodeGraphStoreError,
+  CodeGraphStoreBusyError,
+  CodeGraphStoreSchemaAdditiveError,
+  CodeGraphStoreNoSpaceError,
+  CodeGraphStorePermissionError,
+  CodeGraphStoreTransientIoError,
+  CodeGraphStoreCorruptionError,
+  CodeGraphStoreIncompatibleSchemaError,
+  CodeGraphRuntimeReconnectRequiredError,
+  CodeGraphMaintenanceActiveError,
+  CodeGraphDiskCapacityObservationError,
+  CodeGraphDiskCapacityPressureError,
+]);
+
+export const isCodeGraphStoreError = Schema.is(AnyCodeGraphStoreError);
+export type CodeGraphStoreFailure = typeof AnyCodeGraphStoreError.Type;

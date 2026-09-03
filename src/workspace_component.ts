@@ -30,7 +30,7 @@ export const findWorkspaceComponentManifest = Effect.fn('workspaceComponent.find
       path,
     };
   }
-  const projectFile = (yield* fs.readDirectory(directory).pipe(Effect.catch(() => Effect.succeed([]))))
+  const projectFile = (yield* fs.readDirectory(directory).pipe(Effect.orElseSucceed(() => [])))
     .filter(name => /\.csproj$/i.test(name))
     .sort()[0];
   if (projectFile) {

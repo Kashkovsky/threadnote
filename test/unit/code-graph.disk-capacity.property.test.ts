@@ -407,11 +407,11 @@ describe('code graph disk capacity properties', () => {
     expect(isCodeGraphCapacityPause(failure)).toBe(true);
     expect(
       isCodeGraphCapacityPause(
-        new CodeGraphStoreTransientIoError('fixture', {operation: 'observe code graph storage capacity'}),
+        CodeGraphStoreTransientIoError.of('fixture', {operation: 'observe code graph storage capacity'}),
       ),
     ).toBe(false);
     expect(
-      isCodeGraphCapacityPause(new CodeGraphStoreNoSpaceError('classified write-time no-space', {operation: 'write'})),
+      isCodeGraphCapacityPause(CodeGraphStoreNoSpaceError.of('classified write-time no-space', {operation: 'write'})),
     ).toBe(false);
   });
 

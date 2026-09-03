@@ -4,7 +4,7 @@ import {mkdir, mkdtemp, rm, utimes, writeFile} from '../helpers/node-fs-promises
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
-import {Cause, Effect, Exit, Fiber, Layer, Option, Semaphore} from 'effect';
+import {Cause, DateTime, Effect, Exit, Fiber, Layer, Option, Semaphore} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
@@ -312,7 +312,7 @@ describe('recall runtime orchestration', () => {
   );
   effectIt.effect('reports the first semantic failure without retrying it', () =>
     Effect.gen(function* () {
-      const firstFailure = new TestError('first semantic failure');
+      const firstFailure = TestError.make({message: 'first semantic failure'});
       let invocations = 0;
       const result = yield* boundedRecallSemanticRetrieval(
         Effect.sync(() => {
@@ -535,7 +535,7 @@ describe('recall runtime orchestration', () => {
       const storeLayer = Layer.succeed(
         LocalModelStore,
         LocalModelStore.of({
-          install: () => Effect.die(new TestError('Unexpected install')),
+          install: () => Effect.die(TestError.make({message: 'Unexpected install'})),
           path: () => installation.path,
           remove: () => Effect.succeed(false),
           status: () => Effect.succeed(installation),
@@ -550,9 +550,9 @@ describe('recall runtime orchestration', () => {
             buildType: 'prebuilt',
             cpuMathCores: 4,
           }),
-          embedMany: () => Effect.die(new TestError('synthetic semantic runtime failure')),
-          generate: () => Effect.die(new TestError('Unexpected generation')),
-          rerank: () => Effect.die(new TestError('Unexpected reranking')),
+          embedMany: () => Effect.die(TestError.make({message: 'synthetic semantic runtime failure'})),
+          generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+          rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
         }),
       );
       const recalled = yield* Effect.gen(function* () {
@@ -715,7 +715,7 @@ describe('recall runtime orchestration', () => {
           ),
         ),
       );
-      const oldTimestamp = new Date('2020-01-01T00:00:00.000Z');
+      const oldTimestamp = DateTime.toDateUtc(DateTime.makeUnsafe('2020-01-01T00:00:00.000Z'));
       yield* Effect.promise(() => Promise.all(targetPaths.map(path => utimes(path, oldTimestamp, oldTimestamp))));
       const hiddenMemory = join(
         home,

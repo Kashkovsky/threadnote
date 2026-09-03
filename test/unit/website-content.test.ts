@@ -142,7 +142,7 @@ type DisplayedTool = keyof typeof toolKeys;
 function toolName(actor: string): DisplayedTool {
   const name = actor.split(' · ', 1)[0];
   if (!name || !(name in toolKeys)) {
-    throw new TestError(`Website scenario uses an unverified tool contract: ${actor}`);
+    throw TestError.make({message: `Website scenario uses an unverified tool contract: ${actor}`});
   }
   return name as DisplayedTool;
 }
@@ -150,7 +150,7 @@ function toolName(actor: string): DisplayedTool {
 function parseToolPayload(text: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(text);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new TestError(`Tool payload must be a JSON object: ${text}`);
+    throw TestError.make({message: `Tool payload must be a JSON object: ${text}`});
   }
   return parsed as Record<string, unknown>;
 }
@@ -1115,7 +1115,7 @@ The body remains ordinary **Markdown**.
 
     expect(worksetArticle).toBeDefined();
     expect(mcpExample?.type).toBe('code');
-    if (!mcpExample || mcpExample.type !== 'code') throw new TestError('Missing workset MCP example.');
+    if (!mcpExample || mcpExample.type !== 'code') throw TestError.make({message: 'Missing workset MCP example.'});
     expect(content).toContain('threadnote workset status checkout');
     expect(content).toContain('threadnote workset prepare checkout --concurrency 4');
     expect(content).toContain('threadnote graph query');
@@ -1664,7 +1664,7 @@ Measure the system before changing its implementation language.
       ...loaders,
       faq: async () => {
         faqAttempts += 1;
-        if (faqAttempts === 1) throw new TestError('transient chunk failure');
+        if (faqAttempts === 1) throw TestError.make({message: 'transient chunk failure'});
         return 'faq';
       },
     });
@@ -1760,7 +1760,7 @@ Measure the system before changing its implementation language.
       fc.property(fc.constantFrom(...targets), fc.integer({min: -1_000, max: 1_000}), ([name, limit], delta) => {
         const fixture = verifiedPerformanceFixture();
         const measurement = (fixture.measurements as Record<string, unknown>[]).find(row => row.name === name);
-        if (measurement === undefined) throw new TestError(`Missing fixture measurement ${name}.`);
+        if (measurement === undefined) throw TestError.make({message: `Missing fixture measurement ${name}.`});
         const observed = limit + delta;
         for (const field of ['maximum', 'mean', 'minimum', 'p50', 'p95', 'p99'] as const) {
           measurement[field] = observed;
@@ -1798,7 +1798,7 @@ Measure the system before changing its implementation language.
     ] as const) {
       const fixture = verifiedPerformanceFixture();
       const measurement = (fixture.measurements as Record<string, unknown>[]).find(row => row.name === name);
-      if (measurement === undefined) throw new TestError(`Missing fixture measurement ${name}.`);
+      if (measurement === undefined) throw TestError.make({message: `Missing fixture measurement ${name}.`});
       for (const field of ['maximum', 'mean', 'minimum', 'p50', 'p95', 'p99'] as const) measurement[field] = 90;
       const artifactBytes = fixtureBytes(fixture);
 
@@ -1820,7 +1820,7 @@ Measure the system before changing its implementation language.
     const measurement = (fixture.measurements as Record<string, unknown>[]).find(
       row => row.name === 'one-file-reindex-incremental-work-probed-dependency-paths-n1',
     );
-    if (measurement === undefined) throw new TestError('Missing dependency-probe fixture measurement.');
+    if (measurement === undefined) throw TestError.make({message: 'Missing dependency-probe fixture measurement.'});
     for (const field of ['maximum', 'mean', 'minimum', 'p50', 'p95', 'p99'] as const) measurement[field] = 0;
     const artifactBytes = fixtureBytes(fixture);
     const evidence = bindRetainedPerformanceArtifact({
@@ -2316,7 +2316,7 @@ Measure the system before changing its implementation language.
     expect(content).toContain('Import never deletes the source, never dual-writes');
 
     if (!mcpConfiguration || mcpConfiguration.type !== 'code') {
-      throw new TestError('Missing Cursor Cloud MCP configuration.');
+      throw TestError.make({message: 'Missing Cursor Cloud MCP configuration.'});
     }
     const parsedMcpConfiguration = JSON.parse(mcpConfiguration.code);
     expect(parsedMcpConfiguration).toEqual({
@@ -2343,7 +2343,7 @@ Measure the system before changing its implementation language.
     expect(JSON.stringify(parsedMcpConfiguration)).not.toMatch(/authorization|bearer|token|secret/i);
 
     if (!provisioning || provisioning.type !== 'code') {
-      throw new TestError('Missing remote-memory provisioning document.');
+      throw TestError.make({message: 'Missing remote-memory provisioning document.'});
     }
     expect(JSON.parse(provisioning.code)).toMatchObject({
       tenantId: 'tenant-acme',
@@ -2354,7 +2354,7 @@ Measure the system before changing its implementation language.
     });
 
     if (!recallPayload || recallPayload.type !== 'code') {
-      throw new TestError('Missing remote-memory recall payload.');
+      throw TestError.make({message: 'Missing remote-memory recall payload.'});
     }
     expect(JSON.parse(recallPayload.code)).toEqual({
       version: 1,
@@ -2363,7 +2363,7 @@ Measure the system before changing its implementation language.
     });
 
     if (!cloudVerification || cloudVerification.type !== 'code') {
-      throw new TestError('Missing Cursor Cloud in-VM verification commands.');
+      throw TestError.make({message: 'Missing Cursor Cloud in-VM verification commands.'});
     }
     expect(cloudVerification.code).toContain('test -x "$HOME/.local/bin/threadnote-mcp-server"');
     expect(cloudVerification.code).toContain('test -d "$HOME/.threadnote"');
@@ -2408,7 +2408,7 @@ Measure the system before changing its implementation language.
     expect(content).not.toContain('Git beta');
 
     if (!mcpConfiguration || mcpConfiguration.type !== 'code') {
-      throw new TestError('Missing Personal Cursor Cloud MCP configuration.');
+      throw TestError.make({message: 'Missing Personal Cursor Cloud MCP configuration.'});
     }
     expect(JSON.parse(mcpConfiguration.code)).toEqual({
       type: 'stdio',
@@ -2423,7 +2423,8 @@ Measure the system before changing its implementation language.
         THREADNOTE_USER: 'cursor-cloud',
       },
     });
-    if (!install || install.type !== 'code') throw new TestError('Missing Personal Cursor Cloud install command.');
+    if (!install || install.type !== 'code')
+      throw TestError.make({message: 'Missing Personal Cursor Cloud install command.'});
     expect(install.code.match(/cloud cursor bootstrap/gu)).toHaveLength(2);
     expect(install.code).toContain('$HOME/.cursor/skills/threadnote-memory/SKILL.md');
     expect(

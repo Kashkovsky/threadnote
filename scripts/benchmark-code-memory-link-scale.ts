@@ -28,7 +28,7 @@ export const buildCodeMemoryLinkScaleTarget = Effect.fn('codeMemoryLinkScale.bui
     yield* fs.readFileString(path.join(path.dirname(target), '..', 'package.json')),
   ) as {readonly version?: unknown};
   if (typeof packageManifest.version !== 'string' || packageManifest.version.length === 0) {
-    return yield* Effect.fail(new ScriptError('package.json does not declare a scale benchmark source version.'));
+    return yield* ScriptError.make({message: 'package.json does not declare a scale benchmark source version.'});
   }
   const executablePath = path.join(outputDirectory, 'code-memory-link-inverse-scale.mjs');
   const result = yield* Effect.tryPromise({
@@ -44,17 +44,16 @@ export const buildCodeMemoryLinkScaleTarget = Effect.fn('codeMemoryLinkScale.bui
         sourcemap: 'none',
         target: 'bun',
       }),
-    catch: cause => new ScriptError('Could not build the inverse-selector scale benchmark target.', {cause}),
+    catch: cause => ScriptError.make({message: 'Could not build the inverse-selector scale benchmark target.', cause}),
   });
   if (!result.success) {
-    return yield* Effect.fail(
-      new ScriptError(
+    return yield* ScriptError.make({
+      message:
         result.logs
           .map(log => log.message)
           .filter(Boolean)
           .join('\n') || 'Benchmark build failed.',
-      ),
-    );
+    });
   }
   return {
     executablePath,
@@ -78,7 +77,7 @@ const program = Effect.scoped(
     const system = yield* SystemInfo;
     const args = yield* scriptArguments();
     if (args.includes('--built-artifact-sha256')) {
-      return yield* Effect.fail(new ScriptError('--built-artifact-sha256 is reserved for the benchmark wrapper.'));
+      return yield* ScriptError.make({message: '--built-artifact-sha256 is reserved for the benchmark wrapper.'});
     }
     const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-memory-link-scale-build-'});
     const built = yield* buildCodeMemoryLinkScaleTarget(root);

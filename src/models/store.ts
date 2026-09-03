@@ -73,7 +73,7 @@ export interface LocalModelStoreShape {
 }
 
 export class LocalModelStore extends Context.Service<LocalModelStore, LocalModelStoreShape>()(
-  'threadnote/models/LocalModelStore',
+  'threadnote/models/store/LocalModelStore',
 ) {
   static layerWith(options: LocalModelStoreLayerOptions = {}) {
     return Layer.effect(
@@ -180,7 +180,7 @@ function makeLocalModelStore(
     Effect.gen(function* () {
       const current = yield* status(home, manifest);
       if (!current.installed) {
-        return yield* new ModelNotInstalled({
+        return yield* ModelNotInstalled.make({
           message: `Model ${manifest.id} is not installed.`,
           modelId: manifest.id,
           path: current.path,
@@ -240,8 +240,8 @@ function makeLocalModelStore(
           if (Result.isSuccess(verified)) {
             return {...verified.success, resumed: false, sourceUrl};
           }
-          if (!(verified.failure instanceof ModelChecksumMismatch)) {
-            return yield* Effect.fail(verified.failure);
+          if (!Schema.is(ModelChecksumMismatch)(verified.failure)) {
+            return yield* verified.failure;
           }
           yield* fs.remove(modelPath(home, manifest), {force: true});
           yield* fs.remove(path.join(directory, 'manifest.json'), {force: true});
@@ -257,14 +257,13 @@ function makeLocalModelStore(
           offset = 0;
         }
         const availableBytes = yield* system.availableDiskBytes(directory).pipe(
-          Effect.mapError(
-            cause =>
-              new ModelStoreIoFailed({
-                cause,
-                message: `Could not inspect free space before downloading ${manifest.id}.`,
-                modelId: manifest.id,
-                operation: 'disk-space-preflight',
-              }),
+          Effect.mapError(cause =>
+            ModelStoreIoFailed.make({
+              cause,
+              message: `Could not inspect free space before downloading ${manifest.id}.`,
+              modelId: manifest.id,
+              operation: 'disk-space-preflight',
+            }),
           ),
         );
         if (availableBytes !== undefined) {
@@ -278,32 +277,30 @@ function makeLocalModelStore(
           sourcePath === undefined
             ? yield* http.downloadToFile(sourceUrl, partial, {offset}).pipe(
                 Effect.map(response => offset > 0 && response.resumed),
-                Effect.mapError(
-                  cause =>
-                    new ModelDownloadFailed({
-                      cause,
-                      message: `Could not download model ${manifest.id}: ${cause.message}`,
-                      modelId: manifest.id,
-                    }),
+                Effect.mapError(cause =>
+                  ModelDownloadFailed.make({
+                    cause,
+                    message: `Could not download model ${manifest.id}: ${cause.message}`,
+                    modelId: manifest.id,
+                  }),
                 ),
               )
             : yield* (layerOptions.extractBundledSource ?? extractBundledModelSource)(sourcePath, partial).pipe(
                 Effect.tapError(() => fs.remove(partial, {force: true}).pipe(Effect.ignore)),
-                Effect.mapError(
-                  cause =>
-                    new ModelStoreIoFailed({
-                      cause,
-                      message: `Could not extract bundled model ${manifest.id}.`,
-                      modelId: manifest.id,
-                      operation: 'extract-bundled-source',
-                    }),
+                Effect.mapError(cause =>
+                  ModelStoreIoFailed.make({
+                    cause,
+                    message: `Could not extract bundled model ${manifest.id}.`,
+                    modelId: manifest.id,
+                    operation: 'extract-bundled-source',
+                  }),
                 ),
                 Effect.as(false),
               );
         const downloadedBytes = Number((yield* fs.stat(partial)).size);
         if (downloadedBytes !== manifest.size) {
           if (sourcePath !== undefined) yield* fs.remove(partial, {force: true});
-          return yield* new ModelDownloadFailed({
+          return yield* ModelDownloadFailed.make({
             cause: {actualBytes: downloadedBytes, expectedBytes: manifest.size},
             message:
               sourcePath === undefined
@@ -382,7 +379,7 @@ function modelDirectory(path: Path.Path, home: string, manifest: LocalModelManif
 }
 
 function checksumMismatch(manifest: LocalModelManifest, actual: string): ModelChecksumMismatch {
-  return new ModelChecksumMismatch({
+  return ModelChecksumMismatch.make({
     actual,
     expected: manifest.sha256,
     message: `Model ${manifest.id} checksum does not match its immutable manifest.`,
@@ -408,13 +405,13 @@ function mapStoreIoError(manifest: LocalModelManifest, operation: string) {
   return <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, LocalModelStoreError, R> =>
     effect.pipe(
       Effect.mapError(error =>
-        error instanceof ModelChecksumMismatch ||
-        error instanceof InsufficientDiskSpace ||
-        error instanceof ModelDownloadFailed ||
-        error instanceof ModelNotInstalled ||
-        error instanceof ModelStoreIoFailed
+        Schema.is(ModelChecksumMismatch)(error) ||
+        Schema.is(InsufficientDiskSpace)(error) ||
+        Schema.is(ModelDownloadFailed)(error) ||
+        Schema.is(ModelNotInstalled)(error) ||
+        Schema.is(ModelStoreIoFailed)(error)
           ? error
-          : new ModelStoreIoFailed({
+          : ModelStoreIoFailed.make({
               cause: error,
               message: `Local model ${operation} failed for ${manifest.id}.`,
               modelId: manifest.id,
@@ -433,7 +430,7 @@ export function assertSufficientModelDiskSpace(
   return availableBytes >= requiredBytes
     ? Effect.void
     : Effect.fail(
-        new InsufficientDiskSpace({
+        InsufficientDiskSpace.make({
           availableBytes,
           message: `Model ${manifest.id} needs ${requiredBytes} free bytes to download and promote safely; only ${availableBytes} are available.`,
           modelId: manifest.id,

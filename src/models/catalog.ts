@@ -43,7 +43,7 @@ export interface LocalModelCatalogShape {
 }
 
 export class LocalModelCatalog extends Context.Service<LocalModelCatalog, LocalModelCatalogShape>()(
-  'threadnote/models/LocalModelCatalog',
+  'threadnote/models/catalog/LocalModelCatalog',
 ) {
   static layer(manifests: readonly unknown[], selected: Readonly<Partial<Record<LocalModelRole, string>>> = {}) {
     return Layer.effect(LocalModelCatalog, makeLocalModelCatalog(manifests, selected));
@@ -54,7 +54,7 @@ export function parseLocalModelManifest(value: unknown): LocalModelManifest {
   const manifest = Schema.decodeUnknownSync(LocalModelManifestSchema)(value);
   const problem = validateManifest(manifest);
   if (problem) {
-    throw new ModelManifestInvalid({
+    throw ModelManifestInvalid.make({
       message: problem,
       modelId: manifest.id,
     });
@@ -72,7 +72,7 @@ function makeLocalModelCatalog(
       const byId = new Map<string, LocalModelManifest>();
       for (const manifest of manifests) {
         if (byId.has(manifest.id)) {
-          throw new ModelManifestInvalid({
+          throw ModelManifestInvalid.make({
             message: `Duplicate local model ID: ${manifest.id}.`,
             modelId: manifest.id,
           });
@@ -82,7 +82,7 @@ function makeLocalModelCatalog(
       for (const [role, id] of Object.entries(selected)) {
         const manifest = id ? byId.get(id) : undefined;
         if (!manifest || manifest.role !== role) {
-          throw new ModelManifestInvalid({
+          throw ModelManifestInvalid.make({
             message: `Selected ${role} model ${id ?? '(missing)'} does not exist with that role.`,
             modelId: id ?? '',
           });
@@ -94,7 +94,7 @@ function makeLocalModelCatalog(
           return manifest
             ? Effect.succeed(manifest)
             : Effect.fail(
-                new ModelManifestInvalid({
+                ModelManifestInvalid.make({
                   message: `Unknown local model: ${modelId}.`,
                   modelId,
                 }),
@@ -112,7 +112,7 @@ function makeLocalModelCatalog(
           return manifest
             ? Effect.succeed(manifest)
             : Effect.fail(
-                new ModelManifestInvalid({
+                ModelManifestInvalid.make({
                   message: `No default ${role} model has been selected by the measured model bake-off.`,
                   modelId: id ?? '',
                 }),
@@ -121,9 +121,9 @@ function makeLocalModelCatalog(
       });
     },
     catch: cause =>
-      cause instanceof ModelManifestInvalid
+      Schema.is(ModelManifestInvalid)(cause)
         ? cause
-        : new ModelManifestInvalid({
+        : ModelManifestInvalid.make({
             message: cause instanceof Error ? cause.message : String(cause),
             modelId: '',
           }),

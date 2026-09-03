@@ -56,21 +56,21 @@ const CommandFields = {
 
 export class CommandFailed extends Schema.TaggedError<CommandFailed>()('CommandFailed', {
   ...CommandFields,
-  exitCode: Schema.Number,
+  exitCode: Schema.Finite,
   stderr: Schema.String,
   stdout: Schema.String,
 }) {}
 
 export class CommandTimedOut extends Schema.TaggedError<CommandTimedOut>()('CommandTimedOut', {
   ...CommandFields,
-  timeoutMs: Schema.Number,
+  timeoutMs: Schema.Finite,
 }) {}
 
 export class CommandOutputLimitExceeded extends Schema.TaggedError<CommandOutputLimitExceeded>()(
   'CommandOutputLimitExceeded',
   {
     ...CommandFields,
-    maxOutputBytes: Schema.Number,
+    maxOutputBytes: Schema.Finite,
   },
 ) {}
 
@@ -105,7 +105,7 @@ export class CommandExecutor extends Context.Service<
       options?: DetachedCommandOptions,
     ) => Effect.Effect<boolean>;
   }
->()('threadnote/effect/CommandExecutor') {
+>()('threadnote/effect/command/CommandExecutor') {
   static readonly layer = Layer.effect(
     CommandExecutor,
     Effect.gen(function* () {
@@ -151,14 +151,12 @@ export const runBinaryCommandEffect = Effect.fn('runBinaryCommandEffect')(functi
 ) {
   const command = yield* CommandExecutor;
   if (!command.executeBytes) {
-    return yield* Effect.fail(
-      new CommandSpawnFailed({
-        args,
-        cause: new Error('The configured command adapter does not support binary output.'),
-        executable,
-        message: 'The configured command adapter does not support binary output.',
-      }),
-    );
+    return yield* CommandSpawnFailed.make({
+      args,
+      cause: new Error('The configured command adapter does not support binary output.'),
+      executable,
+      message: 'The configured command adapter does not support binary output.',
+    });
   }
   return yield* command.executeBytes(executable, args, options);
 });
@@ -217,7 +215,7 @@ const executeCommand = Effect.fn('CommandExecutor.execute')(function* (
   const safeArgs = redactCommandArgs(args);
   const safeExecutable = redactSensitiveText(executable);
   const spawnFailed = (cause: unknown) => commandSpawnFailure(command, safeExecutable, safeArgs, cause);
-  const outputExceeded = new CommandOutputLimitExceeded({
+  const outputExceeded = CommandOutputLimitExceeded.make({
     args: safeArgs,
     executable: safeExecutable,
     maxOutputBytes,
@@ -245,10 +243,10 @@ const executeCommand = Effect.fn('CommandExecutor.execute')(function* (
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
           collectCommandOutput(handle.stdout, maxOutputBytes, outputExceeded).pipe(
-            Effect.mapError(cause => (cause instanceof CommandOutputLimitExceeded ? cause : spawnFailed(cause))),
+            Effect.mapError(cause => (Schema.is(CommandOutputLimitExceeded)(cause) ? cause : spawnFailed(cause))),
           ),
           collectCommandOutput(handle.stderr, maxOutputBytes, outputExceeded).pipe(
-            Effect.mapError(cause => (cause instanceof CommandOutputLimitExceeded ? cause : spawnFailed(cause))),
+            Effect.mapError(cause => (Schema.is(CommandOutputLimitExceeded)(cause) ? cause : spawnFailed(cause))),
           ),
           handle.exitCode.pipe(Effect.map(Number), Effect.mapError(spawnFailed)),
         ],
@@ -258,7 +256,7 @@ const executeCommand = Effect.fn('CommandExecutor.execute')(function* (
       if (exitCode === 0) {
         return result;
       }
-      return yield* new CommandFailed({
+      return yield* CommandFailed.make({
         args: safeArgs,
         executable: safeExecutable,
         exitCode,
@@ -268,7 +266,7 @@ const executeCommand = Effect.fn('CommandExecutor.execute')(function* (
       });
     }),
   );
-  const timedOut = new CommandTimedOut({
+  const timedOut = CommandTimedOut.make({
     args: safeArgs,
     executable: safeExecutable,
     message: `${command} timed out after ${timeoutMs}ms`,
@@ -301,7 +299,7 @@ const executeBinaryCommand = Effect.fn('CommandExecutor.executeBinary')(function
   const safeArgs = redactCommandArgs(args);
   const safeExecutable = redactSensitiveText(executable);
   const spawnFailed = (cause: unknown) => commandSpawnFailure(command, safeExecutable, safeArgs, cause);
-  const outputExceeded = new CommandOutputLimitExceeded({
+  const outputExceeded = CommandOutputLimitExceeded.make({
     args: safeArgs,
     executable: safeExecutable,
     maxOutputBytes,
@@ -329,10 +327,10 @@ const executeBinaryCommand = Effect.fn('CommandExecutor.executeBinary')(function
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
           collectCommandBytes(handle.stdout, maxOutputBytes, outputExceeded).pipe(
-            Effect.mapError(cause => (cause instanceof CommandOutputLimitExceeded ? cause : spawnFailed(cause))),
+            Effect.mapError(cause => (Schema.is(CommandOutputLimitExceeded)(cause) ? cause : spawnFailed(cause))),
           ),
           collectCommandOutput(handle.stderr, maxOutputBytes, outputExceeded).pipe(
-            Effect.mapError(cause => (cause instanceof CommandOutputLimitExceeded ? cause : spawnFailed(cause))),
+            Effect.mapError(cause => (Schema.is(CommandOutputLimitExceeded)(cause) ? cause : spawnFailed(cause))),
           ),
           handle.exitCode.pipe(Effect.map(Number), Effect.mapError(spawnFailed)),
         ],
@@ -342,7 +340,7 @@ const executeBinaryCommand = Effect.fn('CommandExecutor.executeBinary')(function
         return {exitCode, stderr, stdout};
       }
       const decoded = new TextDecoder().decode(stdout);
-      return yield* new CommandFailed({
+      return yield* CommandFailed.make({
         args: safeArgs,
         executable: safeExecutable,
         exitCode,
@@ -352,7 +350,7 @@ const executeBinaryCommand = Effect.fn('CommandExecutor.executeBinary')(function
       });
     }),
   );
-  const timedOut = new CommandTimedOut({
+  const timedOut = CommandTimedOut.make({
     args: safeArgs,
     executable: safeExecutable,
     message: `${command} timed out after ${timeoutMs}ms`,
@@ -444,7 +442,7 @@ const spawnDetachedCommand = Effect.fn('CommandExecutor.spawnDetached')(function
       yield* handle.unref.pipe(Effect.asVoid);
       return true;
     }),
-  ).pipe(Effect.catch(() => Effect.succeed(false)));
+  ).pipe(Effect.orElseSucceed(() => false));
 });
 
 function collectCommandOutput(
@@ -521,7 +519,7 @@ function commandSpawnFailure(
   cause: unknown,
 ): CommandSpawnFailed {
   const message = causeMessage(cause);
-  return new CommandSpawnFailed({
+  return CommandSpawnFailed.make({
     args: safeArgs,
     cause: new Error(redactSensitiveText(message)),
     executable: safeExecutable,

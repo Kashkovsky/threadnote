@@ -1,4 +1,5 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError, Predicate} from 'effect';
+import {Clock, Crypto, DateTime, Effect, FileSystem, Option, Path, PlatformError, Predicate, Schema} from 'effect';
+import {succeedUndefined} from './optional.js';
 import {sha256Hex} from './digest.js';
 import {SystemInfo, type SystemInfoShape} from './system.js';
 
@@ -23,11 +24,15 @@ export interface ExclusiveFileLockOptions {
   readonly waitTimeoutMilliseconds: number;
 }
 
-export class FileLockTimeout extends Error {
-  override readonly name = 'FileLockTimeout';
-
-  constructor(readonly lockPath: string) {
-    super(`Timed out waiting for local lock ${lockPath}.`);
+export class FileLockTimeout extends Schema.TaggedError<FileLockTimeout>()('FileLockTimeout', {
+  lockPath: Schema.String,
+  message: Schema.String,
+}) {
+  static of(lockPath: string): FileLockTimeout {
+    return FileLockTimeout.make({
+      lockPath,
+      message: `Timed out waiting for local lock ${lockPath}.`,
+    });
   }
 }
 
@@ -54,11 +59,11 @@ export const readExclusiveFileLockOwner = Effect.fn('fileLock.readOwner')(functi
     const info = yield* fs.stat(lockPath);
     if (info.type !== 'File' || Number(info.size) > 4_096) return Option.none<FileLockOwner>();
     return Option.fromUndefinedOr(fileLockOwner((yield* fs.readFileString(lockPath)).trim()));
-  }).pipe(Effect.catch(() => Effect.succeed(Option.none<FileLockOwner>())));
+  }).pipe(Effect.orElseSucceed(() => Option.none<FileLockOwner>()));
 });
 
 export function isFileLockTimeout(cause: unknown): cause is FileLockTimeout {
-  return cause instanceof FileLockTimeout;
+  return Schema.is(FileLockTimeout)(cause);
 }
 
 /**
@@ -105,7 +110,7 @@ export function withExclusiveFileLock<A, E, R>(
       }
       const now = yield* Clock.currentTimeMillis;
       if (now - startedAt >= options.waitTimeoutMilliseconds) {
-        return yield* Effect.fail(new FileLockTimeout(lockPath));
+        return yield* FileLockTimeout.of(lockPath);
       }
       yield* Effect.sleep(options.retryIntervalMilliseconds);
     }
@@ -160,7 +165,7 @@ function recoverStaleFileLock(
         yield* releaseFileLock(fs, lockPath, observedToken);
       }
     }).pipe(Effect.ensuring(releaseFileLock(fs, guardPath, guardToken)));
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }
 
 function acquireRecoveryGuard(
@@ -265,7 +270,7 @@ function tryWriteLockToken(
         return false;
       }
       if (retry >= retryLimit || !isWindowsSharingViolation(attempted.error, system.platform)) {
-        return yield* Effect.fail(attempted.error);
+        return yield* attempted.error;
       }
       yield* Effect.sleep(retryIntervalMilliseconds);
     }
@@ -311,10 +316,10 @@ function refreshFileLockLease(
       if (content.trim() !== token) {
         return;
       }
-      const now = new Date(yield* Clock.currentTimeMillis);
+      const now = yield* DateTime.nowAsDate;
       yield* fs.utimes(lockPath, now, now);
     }
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }
 
 const fileLockToken = Effect.fn('fileLock.token')(function* (useCanonicalProcessStartIdentity: boolean) {
@@ -335,7 +340,7 @@ const fileLockToken = Effect.fn('fileLock.token')(function* (useCanonicalProcess
 
 function selectedProcessStartIdentity(system: SystemInfoShape, processId: number, canonical: boolean) {
   if (!canonical) return system.processStartIdentity(processId);
-  return system.canonicalProcessStartIdentity?.(processId) ?? Effect.succeed(undefined);
+  return system.canonicalProcessStartIdentity?.(processId) ?? succeedUndefined;
 }
 
 function fileLockOwner(token: string): FileLockOwner | undefined {
@@ -377,5 +382,5 @@ function releaseFileLock(fs: FileSystem.FileSystem, lockPath: string, token: str
     if (content.trim() === token) {
       yield* fs.remove(lockPath, {force: true});
     }
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }

@@ -1,4 +1,4 @@
-import {Effect, Option} from 'effect';
+import {Effect, Option, Schema} from 'effect';
 import {verifyIndexInput} from './indexer_materialization.js';
 import {WorktreeChangedDuringIndex} from './indexer_shared.js';
 import {reserveCodeGraphRetainedBase} from './retained_base_reservation.js';
@@ -18,7 +18,7 @@ export const verifyCommittedIndexInput = Effect.fn('codeGraph.verifyCommittedInd
 }) {
   return yield* verifyIndexInput(input.identity, true, input.threadnoteHome, input.requestedOverlay).pipe(
     Effect.catchIf(
-      cause => cause instanceof WorktreeChangedDuringIndex,
+      cause => Schema.is(WorktreeChangedDuringIndex)(cause),
       cause =>
         Effect.gen(function* () {
           const lease = yield* input.store
@@ -26,16 +26,16 @@ export const verifyCommittedIndexInput = Effect.fn('codeGraph.verifyCommittedInd
               retainedBase: true,
             })
             .pipe(Effect.option);
-          if (Option.isNone(lease)) return yield* Effect.fail(cause);
+          if (Option.isNone(lease)) return yield* cause;
           const reserved = yield* reserveCodeGraphRetainedBase({
             durationMilliseconds: CODE_GRAPH_RETAINED_BASE_LEASE_MILLISECONDS,
             physicalSnapshotId: input.physicalSnapshotId ?? input.snapshotId,
             threadnoteHome: input.threadnoteHome,
-          }).pipe(Effect.catch(() => Effect.succeed(false)));
+          }).pipe(Effect.orElseSucceed(() => false));
           if (!reserved) {
             yield* input.store.releaseSnapshotLease(input.databasePath, lease.value).pipe(Effect.ignore);
           }
-          return yield* Effect.fail(cause);
+          return yield* cause;
         }),
     ),
   );

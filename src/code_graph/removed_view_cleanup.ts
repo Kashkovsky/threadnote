@@ -204,9 +204,7 @@ const runClaimedUnit = Effect.fn('codeGraph.runRemovedViewCleanupUnit')(function
       authorizedEntry: CodeGraphRemovedViewCleanupEntry,
     ) => Effect.Effect<CodeGraphRemovedViewCleanupPageResult, unknown>,
   ) =>
-    runAuthorizedCleanupUnit(dependencies, input, entry, cleanup).pipe(
-      Effect.catch(() => Effect.succeed('deferred' as const)),
-    );
+    runAuthorizedCleanupUnit(dependencies, input, entry, cleanup).pipe(Effect.orElseSucceed(() => 'deferred' as const));
   if (entry.cursorToken !== undefined && !validPhaseCursor(entry.phase, entry.cursorToken)) {
     return yield* execute(() => Effect.succeed(invalidSidecarPage()));
   }
@@ -215,7 +213,7 @@ const runClaimedUnit = Effect.fn('codeGraph.runRemovedViewCleanupUnit')(function
   }
   return yield* dependencies
     .withPreparedVectorUnit(input, entry, preparation, commit => execute(() => commit))
-    .pipe(Effect.catch(() => Effect.succeed('deferred' as const)));
+    .pipe(Effect.orElseSucceed(() => 'deferred' as const));
 });
 
 const runAuthorizedCleanupUnit = Effect.fn('codeGraph.runAuthorizedRemovedViewCleanupUnit')(function* (
@@ -234,7 +232,7 @@ const runAuthorizedCleanupUnit = Effect.fn('codeGraph.runAuthorizedRemovedViewCl
       if (authorization.state === 'stale') return 'stale' as const;
       if (authorization.state === 'active-pointer-changed') return 'deferred' as const;
 
-      const page = yield* cleanup(authorization.entry).pipe(Effect.catch(() => Effect.succeed(ioFailurePage())));
+      const page = yield* cleanup(authorization.entry).pipe(Effect.orElseSucceed(() => ioFailurePage()));
       const normalized = normalizePageResult(authorization.entry, page);
       const now = yield* dependencies.nowMilliseconds;
       const update = updateForPageResult(authorization.entry, normalized, now);

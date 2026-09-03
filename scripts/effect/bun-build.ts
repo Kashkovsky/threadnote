@@ -14,12 +14,12 @@ export function runBunBuild(options: Bun.BuildConfig, build: BunBuild = Bun.buil
       result.success
         ? Effect.void
         : Effect.fail(
-            new ScriptError(
-              result.logs
+            ScriptError.make({
+              message: result.logs
                 .map(log => log.message)
                 .filter(Boolean)
                 .join('\n'),
-            ),
+            }),
           ),
     ),
   );
@@ -27,7 +27,7 @@ export function runBunBuild(options: Bun.BuildConfig, build: BunBuild = Bun.buil
 
 function bunBuildScriptError(cause: unknown): ScriptError {
   const diagnostics = cause instanceof AggregateError ? cause.errors.map(renderBuildDiagnostic).filter(Boolean) : [];
-  return new ScriptError(renderBuildFailure(diagnostics), {cause});
+  return ScriptError.make({message: renderBuildFailure(diagnostics), cause});
 }
 
 function renderBuildFailure(diagnostics: ReadonlyArray<string>): string {

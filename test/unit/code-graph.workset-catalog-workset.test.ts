@@ -145,20 +145,22 @@ describe('code graph workset preparation and status', () => {
   });
 
   it('preserves typed pathless status failures instead of calling every failure an invalid repository', () => {
-    expect(classifyCodeGraphWorksetStatusFailure('api', new CodeGraphRepositoryError('/secret/repo failed'))).toEqual({
+    expect(
+      classifyCodeGraphWorksetStatusFailure('api', CodeGraphRepositoryError.make({message: '/secret/repo failed'})),
+    ).toEqual({
       detail: {code: 'repository', retryable: false},
       project: 'api',
       reason: 'invalid-repository',
       state: 'failed',
     });
-    expect(classifyCodeGraphWorksetStatusFailure('api', new CodeGraphStoreBusyError('/secret/db busy'))).toEqual({
+    expect(classifyCodeGraphWorksetStatusFailure('api', CodeGraphStoreBusyError.of('/secret/db busy'))).toEqual({
       detail: {code: 'busy', recovery: 'defer', retryable: true},
       project: 'api',
       reason: 'status-unavailable',
       state: 'failed',
     });
     expect(
-      classifyCodeGraphWorksetStatusFailure('api', new CodeGraphStoreCorruptionError('/secret/db corrupt')),
+      classifyCodeGraphWorksetStatusFailure('api', CodeGraphStoreCorruptionError.of('/secret/db corrupt')),
     ).toEqual({
       detail: {code: 'confirmed-corruption', recovery: 'manual-rebuild', retryable: false},
       project: 'api',

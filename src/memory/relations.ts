@@ -114,14 +114,14 @@ export const resolveAuthoredMemoryRelations = Effect.fn('memory.resolveAuthoredR
   if (relations.length === 0) return {relations: undefined, targets: []} satisfies ResolvedAuthoredMemoryRelations;
   const allowedUriScopes = options.allowedUriScopes.map(scope => parseResourceId(scope).canonicalUri);
   if (allowedUriScopes.length === 0) {
-    return yield* Effect.fail(relationError('Relation resolution requires an explicit authorized memory scope.'));
+    return yield* relationError('Relation resolution requires an explicit authorized memory scope.');
   }
   for (const relation of relations) {
     if (
       memoryIdFromIdentityAlias(relation.uri) === undefined &&
       !allowedUriScopes.some(scope => resourceIdIsWithin(relation.uri, scope))
     ) {
-      return yield* Effect.fail(relationError('Relation targets must stay inside the authorized memory scope.'));
+      return yield* relationError('Relation targets must stay inside the authorized memory scope.');
     }
   }
 
@@ -134,16 +134,12 @@ export const resolveAuthoredMemoryRelations = Effect.fn('memory.resolveAuthoredR
     Effect.gen(function* () {
       const live = yield* readMemoryWithRelocations(config, resolved.canonicalUri, {allowedUriScopes});
       if (!allowedUriScopes.some(scope => resourceIdIsWithin(live.canonicalUri, scope))) {
-        return yield* Effect.fail(
-          relationError('Relation target does not resolve inside the authorized active memory scope.'),
-        );
+        return yield* relationError('Relation target does not resolve inside the authorized active memory scope.');
       }
       yield* verifyResolvedMemoryIdentity(resolved, live.canonicalUri, live.content);
       const record = parseMemoryDocument(live.canonicalUri, live.content);
       if (!record || record.metadata.status !== 'active' || !isMemoryId(record.metadata.memoryId ?? '')) {
-        return yield* Effect.fail(
-          relationError('Relation targets must resolve to one active, identity-bearing canonical memory.'),
-        );
+        return yield* relationError('Relation targets must resolve to one active, identity-bearing canonical memory.');
       }
       return {
         content: live.content,
@@ -166,18 +162,16 @@ export const resolveAuthoredMemoryRelations = Effect.fn('memory.resolveAuthoredR
   for (const [index, target] of liveTargets.entries()) {
     const identity = identityChecks[index];
     if (identity.canonicalUri !== target.uri) {
-      return yield* Effect.fail(
-        relationError('Relation target identity changed during validation; refresh memory and retry.'),
-      );
+      return yield* relationError('Relation target identity changed during validation; refresh memory and retry.');
     }
     yield* verifyResolvedMemoryIdentity(identity, target.uri, target.content);
     if (options.sourceMemoryId !== undefined && target.memoryId === options.sourceMemoryId) {
-      return yield* Effect.fail(relationError('A memory cannot relate to itself.'));
+      return yield* relationError('A memory cannot relate to itself.');
     }
     const uri = memoryIdentityAlias(target.memoryId);
     const key = `${target.relation.type}\n${uri}`;
     if (seen.has(key)) {
-      return yield* Effect.fail(relationError('Duplicate memory relations are not allowed.'));
+      return yield* relationError('Duplicate memory relations are not allowed.');
     }
     seen.add(key);
     output.push({type: target.relation.type, uri});
@@ -215,7 +209,7 @@ export const verifyAuthoredMemoryRelationTargetIdentities = Effect.fn('memory.ve
         .read({account: config.account, home: config.agentContextHome, user: config.user}, target.uri)
         .pipe(Effect.mapError(() => relationError('A relation target changed during the write; refresh and retry.')));
       if (liveContent !== target.content) {
-        return yield* Effect.fail(relationError('A relation target changed during the write; refresh and retry.'));
+        return yield* relationError('A relation target changed during the write; refresh and retry.');
       }
       if (!target.memoryId || !target.allowedUriScopes?.length) continue;
       const key = JSON.stringify(target.allowedUriScopes);
@@ -236,8 +230,8 @@ export const verifyAuthoredMemoryRelationTargetIdentities = Effect.fn('memory.ve
       for (const [index, target] of targetsInScope.entries()) {
         const identity = resolved[index];
         if (identity.canonicalUri !== target.uri) {
-          return yield* Effect.fail(
-            relationError('A relation target identity became ambiguous or moved during the write; refresh and retry.'),
+          return yield* relationError(
+            'A relation target identity became ambiguous or moved during the write; refresh and retry.',
           );
         }
         yield* verifyResolvedMemoryIdentity(identity, target.uri, target.content).pipe(

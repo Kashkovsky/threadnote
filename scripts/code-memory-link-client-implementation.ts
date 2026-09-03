@@ -41,7 +41,7 @@ export const collectCodeMemoryLinkClientImplementation = Effect.fn('codeMemoryLi
   function* (input: CodeMemoryLinkClientImplementationInput) {
     const path = yield* Path.Path;
     if (!path.isAbsolute(input.clientCommand)) {
-      return yield* Effect.fail(new ScriptError('--client-command must be an absolute reviewed executable path.'));
+      return yield* ScriptError.make({message: '--client-command must be an absolute reviewed executable path.'});
     }
     const command = yield* canonicalClientFile(input.clientCommand, 'client command');
     const artifactBindings = yield* collectBindings(input.clientArtifactBindings, 'artifact');
@@ -56,14 +56,14 @@ export const collectCodeMemoryLinkClientImplementation = Effect.fn('codeMemoryLi
     const parsedConfig = yield* parseJsonFile(fs, configuration, 'client configuration');
     const config = yield* Effect.try({
       try: () => parseCodeMemoryLinkCodexClientConfigV1(parsedConfig),
-      catch: cause => new ScriptError('The reviewed client configuration is invalid.', {cause}),
+      catch: cause => ScriptError.make({message: 'The reviewed client configuration is invalid.', cause}),
     });
     const parsedProjection = yield* parseJsonFile(fs, configurationProjection, 'client configuration projection');
     const expectedProjection = projectCodeMemoryLinkCodexClientConfigV1(config);
     if (JSON.stringify(parsedProjection) !== JSON.stringify(expectedProjection)) {
-      return yield* Effect.fail(
-        new ScriptError('The retained client configuration projection differs from the exact private configuration.'),
-      );
+      return yield* ScriptError.make({
+        message: 'The retained client configuration projection differs from the exact private configuration.',
+      });
     }
     const bundle = exactlyOneRole(artifactBindings, 'client-bundle');
     const entrypoint = exactlyOneRole(artifactBindings, 'client-entrypoint');
@@ -72,10 +72,10 @@ export const collectCodeMemoryLinkClientImplementation = Effect.fn('codeMemoryLi
     exactlyOneRole(binaryBindings, 'codex-app-server');
     exactlyOneRole(binaryBindings, 'git');
     if (runtime.path !== command) {
-      return yield* Effect.fail(new ScriptError('The invoked client command differs from its client-runtime role.'));
+      return yield* ScriptError.make({message: 'The invoked client command differs from its client-runtime role.'});
     }
     if (input.clientArguments.length !== 1 || input.clientArguments[0] !== bundle.path) {
-      return yield* Effect.fail(new ScriptError('The client must execute exactly the reviewed client-bundle path.'));
+      return yield* ScriptError.make({message: 'The client must execute exactly the reviewed client-bundle path.'});
     }
     const expectedClientProjection = {
       appServerVersion: config.appServer.version.replace('codex-cli ', ''),
@@ -113,7 +113,7 @@ const collectBindings = Effect.fn('codeMemoryLinkClientImplementation.collectBin
   label: string,
 ) {
   if (values.length === 0 || values.length > 64) {
-    return yield* Effect.fail(new ScriptError(`--client-${label} requires a bounded non-empty roster.`));
+    return yield* ScriptError.make({message: `--client-${label} requires a bounded non-empty roster.`});
   }
   const collected = yield* Effect.forEach(
     values,
@@ -131,14 +131,15 @@ const collectBindings = Effect.fn('codeMemoryLinkClientImplementation.collectBin
   );
   collected.sort((left, right) => (left.role < right.role ? -1 : left.role > right.role ? 1 : 0));
   if (new Set(collected.map(binding => binding.role)).size !== collected.length) {
-    return yield* Effect.fail(new ScriptError(`Client ${label} binding roles must be unique.`));
+    return yield* ScriptError.make({message: `Client ${label} binding roles must be unique.`});
   }
   return collected;
 });
 
 function exactlyOneRole(bindings: readonly CollectedBinding[], role: string): CollectedBinding {
   const matching = bindings.filter(binding => binding.role === role);
-  if (matching.length !== 1) throw new ScriptError(`Client implementation requires exactly one ${role} binding.`);
+  if (matching.length !== 1)
+    throw ScriptError.make({message: `Client implementation requires exactly one ${role} binding.`});
   return matching[0];
 }
 
@@ -150,16 +151,16 @@ const canonicalClientFile = Effect.fn('codeMemoryLinkClientImplementation.canoni
   const path = yield* Path.Path;
   const resolved = path.resolve(file);
   if (Option.isSome(yield* fs.readLink(resolved).pipe(Effect.option))) {
-    return yield* Effect.fail(new ScriptError(`The reviewed ${label} must not be a symbolic link.`));
+    return yield* ScriptError.make({message: `The reviewed ${label} must not be a symbolic link.`});
   }
   const canonical = yield* fs.realPath(resolved);
   const metadata = yield* fs.stat(canonical);
   if (metadata.type !== 'File') {
-    return yield* Effect.fail(new ScriptError(`The reviewed ${label} must be a regular file.`));
+    return yield* ScriptError.make({message: `The reviewed ${label} must be a regular file.`});
   }
   const linkCount = Option.getOrUndefined(metadata.nlink);
   if (linkCount !== undefined && linkCount > 1) {
-    return yield* Effect.fail(new ScriptError(`The reviewed ${label} must not be hard-linked.`));
+    return yield* ScriptError.make({message: `The reviewed ${label} must not be hard-linked.`});
   }
   return canonical;
 });
@@ -172,6 +173,6 @@ const parseJsonFile = Effect.fn('codeMemoryLinkClientImplementation.parseJsonFil
   const content = yield* fs.readFileString(file);
   return yield* Effect.try({
     try: () => JSON.parse(content) as unknown,
-    catch: cause => new ScriptError(`The reviewed ${label} is not valid JSON.`, {cause}),
+    catch: cause => ScriptError.make({message: `The reviewed ${label} is not valid JSON.`, cause}),
   });
 });

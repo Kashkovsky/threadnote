@@ -139,8 +139,9 @@ describe('runShareUnpublish preflight and resume', () => {
     homes.push(fixture.config.agentContextHome);
     mockGit(fixture);
 
-    const preview = await runEffect(
-      captureConsole(runShareUnpublishEffect(fixture.config, SOURCE_URI, {dryRun: true, push: false})),
+    const preview = await runShareUnpublishEffect(fixture.config, SOURCE_URI, {dryRun: true, push: false}).pipe(
+      captureConsole,
+      runEffect,
     );
 
     expect(preview.output).toContain(`Would write native resource: ${TARGET_URI} --mode create`);
@@ -181,15 +182,19 @@ describe('runShareUnpublish preflight and resume', () => {
     await writeCanonicalResource(fixture.config.agentContextHome, TARGET_URI, PERSONAL_CONTENT);
     mockGit(fixture);
 
-    const preview = await runEffect(
-      captureConsole(runShareUnpublishEffect(fixture.config, SOURCE_URI, {dryRun: true, push: false})),
+    const preview = await runShareUnpublishEffect(fixture.config, SOURCE_URI, {dryRun: true, push: false}).pipe(
+      captureConsole,
+      runEffect,
     );
     expect(preview.output).toContain(`Would resume unpublish with byte-identical personal memory: ${TARGET_URI}`);
     expect(preview.output).toContain(`Would unpublish ${SOURCE_URI} -> ${TARGET_URI} --mode resume`);
     expect(existsSync(fixture.sourcePath)).toBe(true);
     expect(existsSync(fixture.worktreePath)).toBe(true);
 
-    const result = await runEffect(captureConsole(runShareUnpublishEffect(fixture.config, SOURCE_URI, {push: false})));
+    const result = await runShareUnpublishEffect(fixture.config, SOURCE_URI, {push: false}).pipe(
+      captureConsole,
+      runEffect,
+    );
 
     expect(result.output).toContain(`Resuming unpublish with byte-identical personal memory: ${TARGET_URI}`);
     expect(result.output).toContain(`Unpublished ${SOURCE_URI} -> ${TARGET_URI} --mode resume`);
@@ -214,7 +219,10 @@ describe('runShareUnpublish preflight and resume', () => {
     await rm(fixture.worktreePath);
     mockGit(fixture, {tracked: false});
 
-    const result = await runEffect(captureConsole(runShareUnpublishEffect(fixture.config, SOURCE_URI, {push: false})));
+    const result = await runShareUnpublishEffect(fixture.config, SOURCE_URI, {push: false}).pipe(
+      captureConsole,
+      runEffect,
+    );
 
     expect(result.output).toContain(`Shared Git path is already removed; continuing cleanup: ${RELATIVE_PATH}`);
     expect(existsSync(fixture.sourcePath)).toBe(false);

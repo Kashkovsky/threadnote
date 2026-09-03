@@ -178,17 +178,17 @@ const observeCodeGraphVectorRetirementCapacity = Effect.fn('codeGraph.observeVec
       [
         input.fs.stat(durableRoot).pipe(Effect.option),
         input.fs.stat(input.temporaryDirectory).pipe(Effect.option),
-        input.probe(durableRoot, input.boundary).pipe(Effect.catch(() => Effect.succeed(undefined))),
-        input.probe(input.temporaryDirectory, input.boundary).pipe(Effect.catch(() => Effect.succeed(undefined))),
+        input.probe(durableRoot, input.boundary).pipe(Effect.orElseSucceed(() => undefined)),
+        input.probe(input.temporaryDirectory, input.boundary).pipe(Effect.orElseSucceed(() => undefined)),
         inspectCodeGraphVectorPageStorage(input.databasePath).pipe(Effect.option),
       ] as const,
       {concurrency: 2},
     );
     const pageStorage = Option.getOrUndefined(storage);
     if (pageStorage === undefined || !sameVectorPageStorage(input.storage, pageStorage)) {
-      return yield* Effect.fail(
-        new CodeGraphVectorRetirementError('Code graph vector page storage changed before reservation.'),
-      );
+      return yield* CodeGraphVectorRetirementError.make({
+        message: 'Code graph vector page storage changed before reservation.',
+      });
     }
     const durableDevice = Option.isSome(durableInfo) ? durableInfo.value.dev : undefined;
     const temporaryDevice = Option.isSome(temporaryInfo) ? temporaryInfo.value.dev : undefined;
@@ -285,21 +285,21 @@ const observeVectorPointerRetirement = Effect.fn('codeGraph.observeVectorPointer
     typeof row.generation !== 'string' ||
     typeof row.snapshot_id !== 'string'
   ) {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector pointer retirement authority is invalid.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector pointer retirement authority is invalid.',
+    });
   }
   if (row.snapshot_id !== input.expectedSnapshotId) return undefined;
   const generationManifest = yield* inspectBoundedVectorGenerationManifest(sql, row.generation);
   if (generationManifest.snapshotId !== input.expectedSnapshotId) {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector pointer retirement authority changed.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector pointer retirement authority changed.',
+    });
   }
   if ((yield* selectVectorRetirementMarker(sql, row.generation)) !== undefined) {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector pointer retirement marker is already authoritative.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector pointer retirement marker is already authoritative.',
+    });
   }
   return {generationManifest, worktreeId: input.worktreeId} satisfies CodeGraphVectorPointerRetirementObservation;
 });
@@ -319,9 +319,9 @@ export const planCodeGraphVectorPointerRetirement = Effect.fn('codeGraph.planVec
   input: CodeGraphVectorPointerRetirementInput,
 ) {
   if (!/^[0-9a-f]{64}$/.test(input.worktreeId) || !validBoundedText(input.expectedSnapshotId, VECTOR_SNAPSHOT_BYTES)) {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector pointer retirement target is invalid.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector pointer retirement target is invalid.',
+    });
   }
   return yield* useExistingVectorDatabase(
     databasePath,
@@ -333,9 +333,9 @@ export const planCodeGraphVectorPointerRetirement = Effect.fn('codeGraph.planVec
         !(yield* codeGraphVectorCoreSchemaCurrent(sql)) ||
         (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready'
       ) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement schema is incompatible.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement schema is incompatible.',
+        });
       }
       const observation = yield* observeVectorPointerRetirement(sql, input);
       if (observation === undefined) {
@@ -378,16 +378,16 @@ export const commitCodeGraphVectorPointerRetirement = Effect.fn('codeGraph.commi
             (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready' ||
             !sameVectorPageStorage(plan.storage, yield* inspectVectorPageStorageSql(sql))
           ) {
-            return yield* Effect.fail(
-              new CodeGraphVectorRetirementError('Code graph vector pointer retirement authority changed.'),
-            );
+            return yield* CodeGraphVectorRetirementError.make({
+              message: 'Code graph vector pointer retirement authority changed.',
+            });
           }
           const observed = yield* observeVectorPointerRetirement(sql, plan.input);
           if (observed === undefined) return 0;
           if (!sameVectorPointerRetirementObservation(plan.observation, observed)) {
-            return yield* Effect.fail(
-              new CodeGraphVectorRetirementError('Code graph vector pointer retirement plan changed.'),
-            );
+            return yield* CodeGraphVectorRetirementError.make({
+              message: 'Code graph vector pointer retirement plan changed.',
+            });
           }
           yield* sql.unsafe(
             `UPDATE vector_retirement_state
@@ -401,18 +401,18 @@ export const commitCodeGraphVectorPointerRetirement = Effect.fn('codeGraph.commi
             [plan.input.worktreeId, observed.generationManifest.generation, observed.generationManifest.snapshotId],
           );
           if ((yield* lastStatementChangeCount(sql)) !== 1) {
-            return yield* Effect.fail(
-              new CodeGraphVectorRetirementError('Code graph vector pointer retirement authority is busy.'),
-            );
+            return yield* CodeGraphVectorRetirementError.make({
+              message: 'Code graph vector pointer retirement authority is busy.',
+            });
           }
           yield* sql.unsafe('DELETE FROM vector_pointers WHERE worktree_id = ? AND generation = ?', [
             plan.input.worktreeId,
             observed.generationManifest.generation,
           ]);
           if ((yield* lastStatementChangeCount(sql)) !== 1) {
-            return yield* Effect.fail(
-              new CodeGraphVectorRetirementError('Code graph vector pointer retirement target changed.'),
-            );
+            return yield* CodeGraphVectorRetirementError.make({
+              message: 'Code graph vector pointer retirement target changed.',
+            });
           }
           const authority = yield* sql.unsafe(
             `SELECT 1 FROM vector_retirement_state
@@ -423,9 +423,9 @@ export const commitCodeGraphVectorPointerRetirement = Effect.fn('codeGraph.commi
              LIMIT 1`,
           );
           if (authority.length !== 1) {
-            return yield* Effect.fail(
-              new CodeGraphVectorRetirementError('Code graph vector pointer retirement authority was retained.'),
-            );
+            return yield* CodeGraphVectorRetirementError.make({
+              message: 'Code graph vector pointer retirement authority was retained.',
+            });
           }
           return 1;
         }),
@@ -461,9 +461,9 @@ export const deleteCodeGraphVectorPointerWithRetirement = Effect.fn('codeGraph.d
       !/^[0-9a-f]{64}$/.test(input.worktreeId) ||
       !validBoundedText(input.expectedSnapshotId, VECTOR_SNAPSHOT_BYTES)
     ) {
-      return yield* Effect.fail(
-        new CodeGraphVectorRetirementError('Code graph vector pointer retirement target is invalid.'),
-      );
+      return yield* CodeGraphVectorRetirementError.make({
+        message: 'Code graph vector pointer retirement target is invalid.',
+      });
     }
     return yield* useExistingVectorDatabase(
       databasePath,
@@ -475,9 +475,9 @@ export const deleteCodeGraphVectorPointerWithRetirement = Effect.fn('codeGraph.d
           !(yield* codeGraphVectorCoreSchemaCurrent(sql)) ||
           (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready'
         ) {
-          return yield* Effect.fail(
-            new CodeGraphVectorRetirementError('Code graph vector retirement schema is incompatible.'),
-          );
+          return yield* CodeGraphVectorRetirementError.make({
+            message: 'Code graph vector retirement schema is incompatible.',
+          });
         }
         return yield* deleteCodeGraphVectorPointerWithRetirementSql(sql, input);
       }),
@@ -494,9 +494,9 @@ export const deleteCodeGraphVectorPointerWithRetirementSql = Effect.fn(
         !(yield* codeGraphVectorCoreSchemaCurrent(sql)) ||
         (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready'
       ) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement schema is incompatible.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement schema is incompatible.',
+        });
       }
       const rows = yield* sql.unsafe<{
         readonly generation: unknown;
@@ -524,9 +524,9 @@ export const deleteCodeGraphVectorPointerWithRetirementSql = Effect.fn(
       if (rows.length === 0) return 0;
       const row = rows[0];
       if (rows.length !== 1 || typeof row?.generation !== 'string' || typeof row.snapshot_id !== 'string') {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector pointer retirement authority is invalid.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector pointer retirement authority is invalid.',
+        });
       }
       if (row.snapshot_id !== input.expectedSnapshotId) return 0;
       yield* sql.unsafe(
@@ -541,18 +541,18 @@ export const deleteCodeGraphVectorPointerWithRetirementSql = Effect.fn(
         [input.worktreeId, row.generation, row.snapshot_id],
       );
       if ((yield* lastStatementChangeCount(sql)) !== 1) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector pointer retirement authority is busy.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector pointer retirement authority is busy.',
+        });
       }
       yield* sql.unsafe('DELETE FROM vector_pointers WHERE worktree_id = ? AND generation = ?', [
         input.worktreeId,
         row.generation,
       ]);
       if ((yield* lastStatementChangeCount(sql)) !== 1) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector pointer retirement target changed.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector pointer retirement target changed.',
+        });
       }
       const authority = yield* sql.unsafe(
         `SELECT 1 FROM vector_retirement_state
@@ -563,9 +563,9 @@ export const deleteCodeGraphVectorPointerWithRetirementSql = Effect.fn(
          LIMIT 1`,
       );
       if (authority.length !== 1) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector pointer retirement authority was retained.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector pointer retirement authority was retained.',
+        });
       }
       return 1;
     }),
@@ -593,23 +593,23 @@ export const planCodeGraphVectorRetirementPreparation = Effect.fn('codeGraph.pla
         yield* sql.unsafe('PRAGMA busy_timeout = 0');
         const versions = yield* sql.unsafe<{readonly user_version: unknown}>('PRAGMA user_version');
         if (versions.length !== 1 || versions[0]?.user_version !== 2) {
-          return yield* Effect.fail(
-            new CodeGraphVectorRetirementError('Code graph vector database version is unsupported.'),
-          );
+          return yield* CodeGraphVectorRetirementError.make({
+            message: 'Code graph vector database version is unsupported.',
+          });
         }
         const coreState = yield* codeGraphVectorCoreSchemaState(sql);
         if (coreState === 'incompatible') {
-          return yield* Effect.fail(
-            new CodeGraphVectorRetirementError('Code graph vector database authority is incompatible.'),
-          );
+          return yield* CodeGraphVectorRetirementError.make({
+            message: 'Code graph vector database authority is incompatible.',
+          });
         }
         if (coreState === 'ready') {
           const retirementState = yield* codeGraphVectorRetirementSchemaState(sql);
           if (retirementState === 'ready') return {state: 'ready'} as const;
           if (retirementState === 'incompatible') {
-            return yield* Effect.fail(
-              new CodeGraphVectorRetirementError('Code graph vector retirement schema is incompatible.'),
-            );
+            return yield* CodeGraphVectorRetirementError.make({
+              message: 'Code graph vector retirement schema is incompatible.',
+            });
           }
           return {
             coreState,
@@ -619,9 +619,9 @@ export const planCodeGraphVectorRetirementPreparation = Effect.fn('codeGraph.pla
           } as const;
         }
         if ((yield* codeGraphVectorRetirementSchemaState(sql)) !== 'absent') {
-          return yield* Effect.fail(
-            new CodeGraphVectorRetirementError('Code graph vector retirement authority is incomplete.'),
-          );
+          return yield* CodeGraphVectorRetirementError.make({
+            message: 'Code graph vector retirement authority is incomplete.',
+          });
         }
         const legacy = yield* inspectLegacyPointerIndexPlan(sql);
         return {
@@ -668,30 +668,30 @@ export const commitCodeGraphVectorRetirementPreparation = Effect.fn('codeGraph.c
               coreState !== plan.coreState ||
               !sameVectorPageStorage(plan.storage, yield* inspectVectorPageStorageSql(sql))
             ) {
-              return yield* Effect.fail(
-                new CodeGraphVectorRetirementError('Code graph vector database authority changed during setup.'),
-              );
+              return yield* CodeGraphVectorRetirementError.make({
+                message: 'Code graph vector database authority changed during setup.',
+              });
             }
             if ((yield* codeGraphVectorRetirementSchemaState(sql)) !== plan.retirementState) {
-              return yield* Effect.fail(
-                new CodeGraphVectorRetirementError('Code graph vector retirement authority changed during setup.'),
-              );
+              return yield* CodeGraphVectorRetirementError.make({
+                message: 'Code graph vector retirement authority changed during setup.',
+              });
             }
             if (coreState === 'missing-pointer-index') {
               const revalidated = yield* inspectLegacyPointerIndexPlan(sql);
               if (plan.legacy === undefined || !sameLegacyPointerIndexPlan(plan.legacy, revalidated)) {
-                return yield* Effect.fail(
-                  new CodeGraphVectorRetirementError('Code graph vector pointer index plan changed during setup.'),
-                );
+                return yield* CodeGraphVectorRetirementError.make({
+                  message: 'Code graph vector pointer index plan changed during setup.',
+                });
               }
               yield* sql.unsafe('PRAGMA temp_store = MEMORY');
               yield* sql.unsafe(CODE_GRAPH_VECTOR_POINTER_GENERATION_INDEX_SQL);
             }
             const result = yield* publishCodeGraphVectorRetirementSchema(sql);
             if (!(yield* codeGraphVectorCoreSchemaCurrent(sql))) {
-              return yield* Effect.fail(
-                new CodeGraphVectorRetirementError('Code graph vector database authority changed during setup.'),
-              );
+              return yield* CodeGraphVectorRetirementError.make({
+                message: 'Code graph vector database authority changed during setup.',
+              });
             }
             return result;
           }),
@@ -717,16 +717,16 @@ export const prepareCodeGraphVectorRetirement = Effect.fn('codeGraph.prepareVect
 export const initializeCodeGraphVectorRetirementSchema = Effect.fn('codeGraph.initializeVectorRetirementSchema')(
   function* (sql: SqlClient.SqlClient) {
     if (!(yield* codeGraphVectorCoreSchemaCurrent(sql))) {
-      return yield* Effect.fail(
-        new CodeGraphVectorRetirementError('Code graph vector database authority is incompatible.'),
-      );
+      return yield* CodeGraphVectorRetirementError.make({
+        message: 'Code graph vector database authority is incompatible.',
+      });
     }
     const state = yield* codeGraphVectorRetirementSchemaState(sql);
     if (state === 'ready') return {state: 'ready'} as const;
     if (state === 'incompatible') {
-      return yield* Effect.fail(
-        new CodeGraphVectorRetirementError('Code graph vector retirement schema is incompatible.'),
-      );
+      return yield* CodeGraphVectorRetirementError.make({
+        message: 'Code graph vector retirement schema is incompatible.',
+      });
     }
     return yield* sql.withTransaction(publishCodeGraphVectorRetirementSchema(sql));
   },
@@ -739,9 +739,9 @@ export const requireCodeGraphVectorRetirementSchema = Effect.fn('codeGraph.requi
     !(yield* codeGraphVectorCoreSchemaCurrent(sql)) ||
     (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready'
   ) {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector retirement schema requires explicit preparation.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector retirement schema requires explicit preparation.',
+    });
   }
 });
 
@@ -755,9 +755,9 @@ const publishCodeGraphVectorRetirementSchema = Effect.fn('codeGraph.publishVecto
   yield* sql.unsafe(CODE_GRAPH_VECTOR_RETIREMENT_ASSOCIATION_INDEX_SQL);
   for (const trigger of CODE_GRAPH_VECTOR_RETIREMENT_TRIGGER_DEFINITIONS) yield* sql.unsafe(trigger.sql);
   if ((yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready') {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector retirement schema changed during setup.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector retirement schema changed during setup.',
+    });
   }
   return {state: 'prepared'} as const;
 });
@@ -835,9 +835,7 @@ const inspectBoundedVectorRetirementPage = Effect.fn('codeGraph.inspectBoundedVe
       !Number.isSafeInteger(manifest.fingerprint_bytes) ||
       !Number.isSafeInteger(manifest.vector_bytes)
     ) {
-      return yield* Effect.fail(
-        new CodeGraphVectorRetirementError('Code graph vector retirement manifest is invalid.'),
-      );
+      return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector retirement manifest is invalid.'});
     }
     const rowBytes =
       Number(manifest.symbol_bytes) +
@@ -846,9 +844,7 @@ const inspectBoundedVectorRetirementPage = Effect.fn('codeGraph.inspectBoundedVe
       generationBytes +
       64;
     if (!Number.isSafeInteger(rowBytes) || rowBytes <= 0) {
-      return yield* Effect.fail(
-        new CodeGraphVectorRetirementError('Code graph vector retirement manifest is invalid.'),
-      );
+      return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector retirement manifest is invalid.'});
     }
     if (finalFactBytes + rowBytes > CODE_GRAPH_VECTOR_RETIREMENT_PAGE_BYTES) break;
     finalFactBytes += rowBytes;
@@ -856,9 +852,9 @@ const inspectBoundedVectorRetirementPage = Effect.fn('codeGraph.inspectBoundedVe
     rowCount += 1;
   }
   if (manifests.length > 0 && lastSymbolId === undefined) {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector retirement page exceeds its byte bound.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector retirement page exceeds its byte bound.',
+    });
   }
   return {finalFactBytes, lastSymbolId, rowCount} satisfies BoundedVectorRetirementPage;
 });
@@ -929,7 +925,7 @@ const inspectBoundedVectorGenerationManifest = Effect.fn('codeGraph.inspectBound
     (row.bounded_state !== 'building' && row.bounded_state !== 'ready') ||
     typeof row.bounded_created_at !== 'string'
   ) {
-    return yield* Effect.fail(new CodeGraphVectorRetirementError('Code graph vector generation manifest is invalid.'));
+    return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector generation manifest is invalid.'});
   }
   const strings = [
     row.bounded_generation,
@@ -941,7 +937,7 @@ const inspectBoundedVectorGenerationManifest = Effect.fn('codeGraph.inspectBound
   ];
   const finalFactBytes = strings.reduce((total, value) => total + new TextEncoder().encode(value).byteLength, 128);
   if (!Number.isSafeInteger(finalFactBytes)) {
-    return yield* Effect.fail(new CodeGraphVectorRetirementError('Code graph vector generation manifest is invalid.'));
+    return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector generation manifest is invalid.'});
   }
   return {
     count: Number(row.bounded_count),
@@ -985,7 +981,7 @@ export const planCodeGraphVectorRetirementPage = Effect.fn('codeGraph.planVector
     !Number.isSafeInteger(expectedRetirementId) ||
     Number(expectedRetirementId) <= 0
   ) {
-    return yield* Effect.fail(new CodeGraphVectorRetirementError('Code graph vector retirement candidate is invalid.'));
+    return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector retirement candidate is invalid.'});
   }
   const requestedLimit = input.requestedLimit ?? CODE_GRAPH_VECTOR_RETIREMENT_PAGE_ROWS;
   const limit = boundedRetirementLimit(requestedLimit);
@@ -999,9 +995,9 @@ export const planCodeGraphVectorRetirementPage = Effect.fn('codeGraph.planVector
         !(yield* codeGraphVectorCoreSchemaCurrent(sql)) ||
         (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready'
       ) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement schema is incompatible.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement schema is incompatible.',
+        });
       }
       const marker = yield* selectVectorRetirementMarker(sql, input.generation);
       if (marker === undefined || marker.retirementId !== expectedRetirementId) {
@@ -1011,9 +1007,9 @@ export const planCodeGraphVectorRetirementPage = Effect.fn('codeGraph.planVector
         } satisfies CodeGraphVectorRetirementPagePlan;
       }
       if (marker.deleteAuthorized) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement authorization is invalid.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement authorization is invalid.',
+        });
       }
       const pointers = yield* sql.unsafe(
         `SELECT 1 FROM vector_pointers INDEXED BY vector_pointer_generation_lookup
@@ -1026,15 +1022,13 @@ export const planCodeGraphVectorRetirementPage = Effect.fn('codeGraph.planVector
         state: 'retired-generation',
       });
       if (lifecycle.disposition !== 'reclaim') {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement still has a live pointer.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement still has a live pointer.',
+        });
       }
       const generationManifest = yield* inspectBoundedVectorGenerationManifest(sql, marker.generation);
       if (generationManifest.snapshotId !== marker.snapshotId) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector generation authority changed.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector generation authority changed.'});
       }
       const page = yield* inspectBoundedVectorRetirementPage(sql, marker.generation, limit);
       return {
@@ -1073,12 +1067,12 @@ export const commitCodeGraphVectorRetirementPage = Effect.fn('codeGraph.commitVe
             !(yield* codeGraphVectorCoreSchemaCurrent(sql)) ||
             (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready'
           ) {
-            return yield* Effect.fail(
-              new CodeGraphVectorRetirementError('Code graph vector retirement schema is incompatible.'),
-            );
+            return yield* CodeGraphVectorRetirementError.make({
+              message: 'Code graph vector retirement schema is incompatible.',
+            });
           }
           if (!sameVectorPageStorage(plan.storage, yield* inspectVectorPageStorageSql(sql))) {
-            return yield* Effect.fail(new CodeGraphVectorRetirementError('Code graph vector page storage changed.'));
+            return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector page storage changed.'});
           }
           const marker = yield* selectVectorRetirementMarker(sql, plan.generation);
           if (
@@ -1091,9 +1085,9 @@ export const commitCodeGraphVectorRetirementPage = Effect.fn('codeGraph.commitVe
             return {remaining: false, rowsDeleted: 0, state: 'stale'} as const;
           }
           if (marker.deleteAuthorized) {
-            return yield* Effect.fail(
-              new CodeGraphVectorRetirementError('Code graph vector retirement authorization is invalid.'),
-            );
+            return yield* CodeGraphVectorRetirementError.make({
+              message: 'Code graph vector retirement authorization is invalid.',
+            });
           }
           const pointers = yield* sql.unsafe(
             `SELECT 1 FROM vector_pointers INDEXED BY vector_pointer_generation_lookup
@@ -1106,15 +1100,15 @@ export const commitCodeGraphVectorRetirementPage = Effect.fn('codeGraph.commitVe
             state: 'retired-generation',
           });
           if (lifecycle.disposition !== 'reclaim') {
-            return yield* Effect.fail(
-              new CodeGraphVectorRetirementError('Code graph vector retirement still has a live pointer.'),
-            );
+            return yield* CodeGraphVectorRetirementError.make({
+              message: 'Code graph vector retirement still has a live pointer.',
+            });
           }
           const generationManifest = yield* inspectBoundedVectorGenerationManifest(sql, marker.generation);
           if (!sameVectorGenerationManifest(plan.generationManifest, generationManifest)) {
-            return yield* Effect.fail(
-              new CodeGraphVectorRetirementError('Code graph vector generation manifest changed.'),
-            );
+            return yield* CodeGraphVectorRetirementError.make({
+              message: 'Code graph vector generation manifest changed.',
+            });
           }
           const page = yield* inspectBoundedVectorRetirementPage(sql, marker.generation, plan.requestedLimit);
           if (
@@ -1123,7 +1117,7 @@ export const commitCodeGraphVectorRetirementPage = Effect.fn('codeGraph.commitVe
             page.rowCount !== plan.selectedRowCount ||
             page.lastSymbolId !== plan.lastSymbolId
           ) {
-            return yield* Effect.fail(new CodeGraphVectorRetirementError('Code graph vector retirement page changed.'));
+            return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector retirement page changed.'});
           }
           let rowsDeleted = 0;
           if (page.lastSymbolId !== undefined) {
@@ -1134,9 +1128,9 @@ export const commitCodeGraphVectorRetirementPage = Effect.fn('codeGraph.commitVe
             );
             rowsDeleted = yield* lastStatementChangeCount(sql);
             if (rowsDeleted !== page.rowCount) {
-              return yield* Effect.fail(
-                new CodeGraphVectorRetirementError('Code graph vector retirement page changed.'),
-              );
+              return yield* CodeGraphVectorRetirementError.make({
+                message: 'Code graph vector retirement page changed.',
+              });
             }
           }
           const remaining = yield* sql.unsafe(
@@ -1153,9 +1147,9 @@ export const commitCodeGraphVectorRetirementPage = Effect.fn('codeGraph.commitVe
               [marker.generation, marker.retirementId, marker.pageRevision],
             );
             if ((yield* lastStatementChangeCount(sql)) !== 1) {
-              return yield* Effect.fail(
-                new CodeGraphVectorRetirementError('Code graph vector retirement marker changed.'),
-              );
+              return yield* CodeGraphVectorRetirementError.make({
+                message: 'Code graph vector retirement marker changed.',
+              });
             }
             return {
               marker: {...marker, pageRevision: marker.pageRevision + 1},
@@ -1172,15 +1166,15 @@ export const commitCodeGraphVectorRetirementPage = Effect.fn('codeGraph.commitVe
             [marker.generation, marker.retirementId, marker.pageRevision],
           );
           if ((yield* lastStatementChangeCount(sql)) !== 1) {
-            return yield* Effect.fail(
-              new CodeGraphVectorRetirementError('Code graph vector retirement authorization changed.'),
-            );
+            return yield* CodeGraphVectorRetirementError.make({
+              message: 'Code graph vector retirement authorization changed.',
+            });
           }
           yield* sql.unsafe('DELETE FROM vector_generations WHERE generation = ?', [marker.generation]);
           if ((yield* lastStatementChangeCount(sql)) !== 1) {
-            return yield* Effect.fail(
-              new CodeGraphVectorRetirementError('Code graph vector retirement generation changed.'),
-            );
+            return yield* CodeGraphVectorRetirementError.make({
+              message: 'Code graph vector retirement generation changed.',
+            });
           }
           return {remaining: false, rowsDeleted, state: 'complete'} as const;
         }),
@@ -1292,9 +1286,9 @@ const observeVectorRetirementAdmission = Effect.fn('codeGraph.observeVectorRetir
       Number(rawCleanGenerationRevision) === Number(rawGenerationRevision) &&
       (rawCursor !== null || rawAdmissionScanRevision !== null))
   ) {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector retirement admission state is invalid.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector retirement admission state is invalid.',
+    });
   }
   const cursor = typeof rawCursor === 'string' ? rawCursor : undefined;
   const generationRevision = Number(rawGenerationRevision);
@@ -1331,9 +1325,9 @@ const observeVectorRetirementAdmission = Effect.fn('codeGraph.observeVectorRetir
   }
   const generation = rows[0]?.generation;
   if (typeof generation !== 'string') {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector retirement admission row is invalid.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector retirement admission row is invalid.',
+    });
   }
   const candidate = yield* inspectBoundedVectorGenerationManifest(sql, generation);
   const marker = yield* selectVectorRetirementMarker(sql, generation);
@@ -1343,14 +1337,14 @@ const observeVectorRetirementAdmission = Effect.fn('codeGraph.observeVectorRetir
     [generation],
   );
   if (marker !== undefined && pointers.length !== 0) {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector retirement admission authority is invalid.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector retirement admission authority is invalid.',
+    });
   }
   if (marker !== undefined && (marker.snapshotId !== candidate.snapshotId || marker.deleteAuthorized)) {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector retirement admission marker is invalid.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector retirement admission marker is invalid.',
+    });
   }
   return {
     ...(admissionScanRevision === undefined ? {} : {admissionScanRevision}),
@@ -1423,9 +1417,9 @@ const applyVectorRetirementAdmissionObservation = Effect.fn('codeGraph.applyVect
         exactStateParameters,
       );
       if ((yield* lastStatementChangeCount(sql)) !== 1) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement admission revision changed.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement admission revision changed.',
+        });
       }
       return {state: 'restarted'} as const;
     }
@@ -1446,9 +1440,9 @@ const applyVectorRetirementAdmissionObservation = Effect.fn('codeGraph.applyVect
         exactStateParameters,
       );
       if ((yield* lastStatementChangeCount(sql)) !== 1) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement admission cursor changed.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement admission cursor changed.',
+        });
       }
       return {state: 'wrapped'} as const;
     }
@@ -1462,9 +1456,9 @@ const applyVectorRetirementAdmissionObservation = Effect.fn('codeGraph.applyVect
       );
       marker = yield* selectVectorRetirementMarker(sql, observed.candidate.generation);
       if (marker === undefined) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement marker was not published.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement marker was not published.',
+        });
       }
     }
     yield* sql.unsafe(
@@ -1482,9 +1476,9 @@ const applyVectorRetirementAdmissionObservation = Effect.fn('codeGraph.applyVect
       [observed.candidate.generation, ...exactStateParameters],
     );
     if ((yield* lastStatementChangeCount(sql)) !== 1) {
-      return yield* Effect.fail(
-        new CodeGraphVectorRetirementError('Code graph vector retirement admission cursor changed.'),
-      );
+      return yield* CodeGraphVectorRetirementError.make({
+        message: 'Code graph vector retirement admission cursor changed.',
+      });
     }
     return marker === undefined
       ? ({generation: observed.candidate.generation, state: 'advanced'} as const)
@@ -1505,9 +1499,9 @@ export const planCodeGraphVectorRetirementAdmission = Effect.fn('codeGraph.planV
         !(yield* codeGraphVectorCoreSchemaCurrent(sql)) ||
         (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready'
       ) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement schema is incompatible.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement schema is incompatible.',
+        });
       }
       const observation: CodeGraphVectorRetirementAdmissionObservation = yield* observeVectorRetirementAdmission(sql);
       if (
@@ -1556,16 +1550,16 @@ export const commitCodeGraphVectorRetirementAdmission = Effect.fn('codeGraph.com
               (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready' ||
               !sameVectorPageStorage(plan.storage, yield* inspectVectorPageStorageSql(sql))
             ) {
-              return yield* Effect.fail(
-                new CodeGraphVectorRetirementError('Code graph vector retirement admission authority changed.'),
-              );
+              return yield* CodeGraphVectorRetirementError.make({
+                message: 'Code graph vector retirement admission authority changed.',
+              });
             }
             const observed: CodeGraphVectorRetirementAdmissionObservation =
               yield* observeVectorRetirementAdmission(sql);
             if (!sameVectorRetirementAdmissionObservation(plan.observation, observed)) {
-              return yield* Effect.fail(
-                new CodeGraphVectorRetirementError('Code graph vector retirement admission plan changed.'),
-              );
+              return yield* CodeGraphVectorRetirementError.make({
+                message: 'Code graph vector retirement admission plan changed.',
+              });
             }
             return yield* applyVectorRetirementAdmissionObservation(sql, observed);
           }),
@@ -1635,7 +1629,7 @@ export const inspectCodeGraphVectorSnapshotUsage = Effect.fn('codeGraph.inspectV
   snapshotId: string,
 ) {
   if (!validBoundedText(snapshotId, VECTOR_SNAPSHOT_BYTES)) {
-    return yield* Effect.fail(new CodeGraphVectorRetirementError('Code graph vector snapshot identity is invalid.'));
+    return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector snapshot identity is invalid.'});
   }
   return yield* useReadOnlyVectorDatabase(
     databasePath,
@@ -1646,9 +1640,9 @@ export const inspectCodeGraphVectorSnapshotUsage = Effect.fn('codeGraph.inspectV
         !(yield* codeGraphVectorCoreSchemaCurrent(sql)) ||
         (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready'
       ) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement schema is incompatible.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement schema is incompatible.',
+        });
       }
       const boundedLimit = CODE_GRAPH_VECTOR_SNAPSHOT_USAGE_LIMIT + 1;
       const generationRows = yield* sql.unsafe<{
@@ -1684,9 +1678,9 @@ export const inspectCodeGraphVectorSnapshotUsage = Effect.fn('codeGraph.inspectV
         generationRows.length > CODE_GRAPH_VECTOR_SNAPSHOT_USAGE_LIMIT ||
         pointerRows.length > CODE_GRAPH_VECTOR_SNAPSHOT_USAGE_LIMIT
       ) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector snapshot evidence exceeded its bound.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector snapshot evidence exceeded its bound.',
+        });
       }
       const generations = generationRows.map(row => {
         if (
@@ -1731,9 +1725,7 @@ export const inspectCodeGraphVectorSnapshotUsage = Effect.fn('codeGraph.inspectV
         return [row.generation, row.worktree_id] as const;
       });
       if (generations.some(row => row === undefined) || pointers.some(row => row === undefined)) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector snapshot evidence is invalid.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector snapshot evidence is invalid.'});
       }
       return {
         activePointerCount: pointers.length,
@@ -1758,9 +1750,9 @@ export const inspectCodeGraphVectorRetirementWork = Effect.fn('codeGraph.inspect
         !(yield* codeGraphVectorCoreSchemaCurrent(sql)) ||
         (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready'
       ) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement schema is incompatible.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement schema is incompatible.',
+        });
       }
       const revisionStatement = codeGraphVectorRetirementCleanRevisionProbeStatement();
       const revisionRows = yield* sql.unsafe<{readonly clean: unknown}>(
@@ -1768,9 +1760,9 @@ export const inspectCodeGraphVectorRetirementWork = Effect.fn('codeGraph.inspect
         revisionStatement.parameters,
       );
       if (revisionRows.length !== 1 || (revisionRows[0]?.clean !== 0 && revisionRows[0]?.clean !== 1)) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement clean revision is invalid.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement clean revision is invalid.',
+        });
       }
       if (revisionRows[0].clean === 0) return {state: 'admission'} as const;
 
@@ -1783,15 +1775,15 @@ export const inspectCodeGraphVectorRetirementWork = Effect.fn('codeGraph.inspect
       const generation = markerRows[0]?.generation;
       const retirementId = markerRows[0]?.retirement_id;
       if (typeof generation !== 'string' || !Number.isSafeInteger(retirementId) || Number(retirementId) <= 0) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement marker probe is invalid.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement marker probe is invalid.',
+        });
       }
       const marker = yield* selectVectorRetirementMarker(sql, generation);
       if (marker === undefined || marker.retirementId !== retirementId) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement marker authority changed.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement marker authority changed.',
+        });
       }
       return {generation, state: 'marker'} as const;
     }),
@@ -1849,9 +1841,9 @@ export const selectCodeGraphVectorRetirementMarkerCandidate = Effect.fn(
     (input.retiredByWorktreeId !== undefined && !/^[0-9a-f]{64}$/.test(input.retiredByWorktreeId)) ||
     (input.snapshotId !== undefined && !validBoundedText(input.snapshotId, VECTOR_SNAPSHOT_BYTES))
   ) {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector retirement marker selector is invalid.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector retirement marker selector is invalid.',
+    });
   }
   return yield* useReadOnlyVectorDatabase(
     databasePath,
@@ -1861,9 +1853,9 @@ export const selectCodeGraphVectorRetirementMarkerCandidate = Effect.fn(
         !(yield* codeGraphVectorCoreSchemaCurrent(sql)) ||
         (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready'
       ) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement schema is incompatible.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement schema is incompatible.',
+        });
       }
       const statement = codeGraphVectorRetirementMarkerPageStatement(input);
       const rows = yield* sql.unsafe<{readonly generation: unknown; readonly retirement_id: unknown}>(
@@ -1874,9 +1866,9 @@ export const selectCodeGraphVectorRetirementMarkerCandidate = Effect.fn(
       const generation = rows[0]?.generation;
       const retirementId = rows[0]?.retirement_id;
       if (typeof generation !== 'string' || !Number.isSafeInteger(retirementId) || Number(retirementId) <= 0) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement marker selector is invalid.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement marker selector is invalid.',
+        });
       }
       const marker = yield* selectVectorRetirementMarker(sql, generation);
       if (
@@ -1885,9 +1877,9 @@ export const selectCodeGraphVectorRetirementMarkerCandidate = Effect.fn(
         (input.retiredByWorktreeId !== undefined &&
           (marker.retiredByWorktreeId !== input.retiredByWorktreeId || marker.snapshotId !== input.snapshotId))
       ) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement marker authority changed.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement marker authority changed.',
+        });
       }
       return marker;
     }),
@@ -1904,9 +1896,9 @@ export const admitOneCodeGraphVectorRetirement = Effect.fn('codeGraph.admitVecto
         !(yield* codeGraphVectorCoreSchemaCurrent(sql)) ||
         (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready'
       ) {
-        return yield* Effect.fail(
-          new CodeGraphVectorRetirementError('Code graph vector retirement schema is incompatible.'),
-        );
+        return yield* CodeGraphVectorRetirementError.make({
+          message: 'Code graph vector retirement schema is incompatible.',
+        });
       }
       const observed = yield* observeVectorRetirementAdmission(sql);
       return yield* applyVectorRetirementAdmissionObservation(sql, observed);

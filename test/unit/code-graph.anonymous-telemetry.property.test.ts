@@ -1,4 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import fc from 'fast-check';
 import {Cause, Effect, Exit, Tracer} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -334,7 +335,7 @@ describe('code graph anonymous telemetry', () => {
 
   effectIt.effect('emits one failure terminal without a false success surface', () => {
     const capture = capturingTracer();
-    const failure = new CodeGraphStorePermissionError('private failure at /Users/private/graph.sqlite', {
+    const failure = CodeGraphStorePermissionError.of('private failure at /Users/private/graph.sqlite', {
       operation: 'stage code graph facts',
     });
 
@@ -447,7 +448,7 @@ describe('code graph anonymous telemetry', () => {
         'cli',
         'graph-maintenance',
         anonymousTelemetryDiagnosticFromError(
-          new CodeGraphStorePermissionError('private failure at /Users/private/graph.sqlite', {
+          CodeGraphStorePermissionError.of('private failure at /Users/private/graph.sqlite', {
             operation: 'run routine code graph maintenance',
           }),
         ),
@@ -666,7 +667,7 @@ function capturingTracer(): {
 function systemInfoStub(): SystemInfoShape {
   return {
     architecture: 'arm64',
-    availableDiskBytes: () => Effect.succeed(undefined),
+    availableDiskBytes: () => succeedUndefined,
     currentDirectory: () => '/',
     environment: () => ({}),
     executablePath: '/opt/threadnote/bin/threadnote',
@@ -683,7 +684,7 @@ function systemInfoStub(): SystemInfoShape {
     platform: 'darwin',
     processArguments: ['/opt/threadnote/bin/threadnote'],
     processId: 1,
-    processStartIdentity: () => Effect.succeed(undefined),
+    processStartIdentity: () => succeedUndefined,
     readLine: () => () => undefined,
     runtimeVersion: 'test',
     setEnvironmentVariable: () => undefined,

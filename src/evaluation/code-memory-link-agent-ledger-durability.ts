@@ -56,7 +56,7 @@ export const durablyReplaceCodeMemoryLinkAgentLedger = Effect.fn('codeMemoryLink
     yield* syncWritableFile(fs, temporary);
     yield* fs.rename(temporary, target);
     yield* syncDirectoryStrict(fs, directory);
-  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
 });
 
 /** Remove a governed ledger marker, then make the unlink durable in its containing directory. */

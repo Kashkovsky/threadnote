@@ -1,4 +1,4 @@
-import {Clock, Context, Effect, FileSystem, Scope} from 'effect';
+import {Clock, Context, DateTime, Effect, FileSystem, Scope} from 'effect';
 import {CodeGraphStore} from '../code_graph/store.js';
 import type {CodeGraphStoreShape} from '../code_graph/store_shape.js';
 import {SystemInfo} from '../effect/system.js';
@@ -329,7 +329,7 @@ export const evaluateContextBriefCitationScale = Effect.fn('evaluation.contextBr
     }
   }
   return {
-    createdAt: new Date().toISOString(),
+    createdAt: DateTime.formatIso(yield* DateTime.now),
     evidenceClass: options.invocationMode,
     environment,
     execution: {
@@ -553,7 +553,7 @@ export interface ContextBriefCitationScaleGraphInstrumentationShape {
 export class ContextBriefCitationScaleGraphInstrumentation extends Context.Service<
   ContextBriefCitationScaleGraphInstrumentation,
   ContextBriefCitationScaleGraphInstrumentationShape
->()('threadnote/evaluation/ContextBriefCitationScaleGraphInstrumentation') {}
+>()('threadnote/evaluation/context-brief-citation-scale/ContextBriefCitationScaleGraphInstrumentation') {}
 
 /** Instrument the real graph store boundary without replacing any SQLite behavior. */
 export function makeContextBriefCitationScaleGraphInstrumentation(): ContextBriefCitationScaleGraphInstrumentationShape {

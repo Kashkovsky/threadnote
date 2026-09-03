@@ -109,7 +109,7 @@ function decodeSegment(raw: string, input: string, label: string): string {
   try {
     return validatePortableSegment(decoded, input);
   } catch (cause) {
-    if (cause instanceof InvalidResourceId) {
+    if (Schema.is(InvalidResourceId)(cause)) {
       return invalid(input, `${label}: ${cause.reason}`);
     }
     throw cause;
@@ -136,7 +136,7 @@ function hasControlCharacter(value: string): boolean {
 }
 
 function invalid(input: string, reason: string): never {
-  throw new InvalidResourceId({
+  throw InvalidResourceId.make({
     input,
     message: `Invalid resource identifier "${input}": ${reason}.`,
     reason,

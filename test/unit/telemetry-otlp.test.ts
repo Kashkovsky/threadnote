@@ -44,7 +44,7 @@ describe('anonymous telemetry OTLP transport', () => {
           yield* withAnonymousTelemetry(
             {component: 'cli', operation: 'graph-build'},
             Effect.withSpan(
-              Effect.fail(new TestError('secret at /Users/private/repository/graph.sqlite')),
+              Effect.fail(TestError.make({message: 'secret at /Users/private/repository/graph.sqlite'})),
               'private-application-span',
               {attributes: {'private.path': '/Users/private/repository'}},
             ),

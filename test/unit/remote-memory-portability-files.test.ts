@@ -1,4 +1,4 @@
-import {BunFileSystem, BunPath} from '@effect/platform-bun';
+import {BunCrypto, BunFileSystem, BunPath} from '@effect/platform-bun';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -57,7 +57,7 @@ describe('remote memory portability filesystem boundaries', () => {
         const duplicate = yield* Effect.exit(writeRemoteMemoryExportBundle(target, exportPlan));
         expect(duplicate._tag).toBe('Failure');
       }),
-    ).pipe(provideTestLayer(BunFileSystem.layer), provideTestLayer(BunPath.layer)),
+    ).pipe(provideTestLayer(BunCrypto.layer), provideTestLayer(BunFileSystem.layer), provideTestLayer(BunPath.layer)),
   );
 
   effectIt.effect('does not follow source symlinks and writes operator JSON exclusively', () =>
@@ -96,7 +96,7 @@ describe('remote memory portability filesystem boundaries', () => {
         const duplicate = yield* Effect.exit(writeOperatorJsonExclusive(output, {version: 2}));
         expect(duplicate._tag).toBe('Failure');
       }),
-    ).pipe(provideTestLayer(BunFileSystem.layer), provideTestLayer(BunPath.layer)),
+    ).pipe(provideTestLayer(BunCrypto.layer), provideTestLayer(BunFileSystem.layer), provideTestLayer(BunPath.layer)),
   );
 });
 

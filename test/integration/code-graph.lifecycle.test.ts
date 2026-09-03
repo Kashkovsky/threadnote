@@ -20,7 +20,7 @@ import {join} from '../helpers/node-path.js';
 import {execFileSync, spawn} from '../helpers/node-child-process.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
-import {Context, Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref} from 'effect';
+import {Clock, Context, DateTime, Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
@@ -208,7 +208,9 @@ describe('native code graph lifecycle', () => {
                 Effect.sleep(5_000).pipe(
                   Effect.andThen(Ref.get(selected)),
                   Effect.flatMap(count =>
-                    Effect.die(new TestError(`Only ${count} of 8 parallel queries selected the ready snapshot.`)),
+                    Effect.die(
+                      TestError.make({message: `Only ${count} of 8 parallel queries selected the ready snapshot.`}),
+                    ),
                   ),
                 ),
               ),
@@ -951,10 +953,10 @@ describe('native code graph lifecycle', () => {
       const dirtyReceipt = yield* store.reusableBaseReceipt(databasePath, dirtyRoot.snapshot.id, {
         allowDirtyRoot: true,
       });
-      if (!dirtyReceipt) return yield* Effect.fail(new TestError('Expected the dirty root to have a reuse receipt.'));
+      if (!dirtyReceipt) return yield* TestError.make({message: 'Expected the dirty root to have a reuse receipt.'});
       const overlayFingerprint = dirtyRoot.snapshot.overlayFingerprint;
       if (!overlayFingerprint) {
-        return yield* Effect.fail(new TestError('Expected the dirty root to have an overlay fingerprint.'));
+        return yield* TestError.make({message: 'Expected the dirty root to have an overlay fingerprint.'});
       }
       const dirtyCandidate = yield* store.reusableOverlayBase!(
         databasePath,
@@ -963,7 +965,7 @@ describe('native code graph lifecycle', () => {
         overlayFingerprint,
       );
       if (!dirtyCandidate) {
-        return yield* Effect.fail(new TestError('Expected the dirty root to remain reusable.'));
+        return yield* TestError.make({message: 'Expected the dirty root to remain reusable.'});
       }
       const aliasCandidate = {
         baseSnapshotId: dirtyRoot.snapshot.id,
@@ -1438,7 +1440,8 @@ describe('native code graph lifecycle', () => {
           const missing = database
             .query<{readonly id: string}, [string]>('SELECT id FROM materialized_file_shards WHERE path_hint = ?')
             .get('src/file-001.ts');
-          if (!bytes || !missing) throw new TestError('Expected complete materialized and raw fact cache rows.');
+          if (!bytes || !missing)
+            throw TestError.make({message: 'Expected complete materialized and raw fact cache rows.'});
           database.query('DELETE FROM materialized_file_shards WHERE id = ?').run(missing.id);
           return bytes;
         } finally {
@@ -1482,7 +1485,7 @@ describe('native code graph lifecycle', () => {
           const caller = database
             .query<{readonly id: string}, [string]>('SELECT id FROM materialized_file_shards WHERE path_hint = ?')
             .get('src/caller.ts');
-          if (!caller) throw new TestError('Expected the caller materialized shard to remove.');
+          if (!caller) throw TestError.make({message: 'Expected the caller materialized shard to remove.'});
           database.query('DELETE FROM materialized_file_shards WHERE id = ?').run(caller.id);
         } finally {
           database.close();
@@ -1793,12 +1796,13 @@ describe('native code graph lifecycle', () => {
       const first = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: home});
       const databasePath = codeGraphDatabasePath(home, first);
       const receipt = yield* store.reusableBaseReceipt(databasePath, first.snapshot.id);
-      if (!receipt) return yield* Effect.fail(new TestError('Expected a reusable base receipt.'));
+      if (!receipt) return yield* TestError.make({message: 'Expected a reusable base receipt.'});
       const v3Derivation = materializedShardDerivationIdentity(
         first.snapshot.extractorSet,
         receipt.workspaceFingerprint,
         first.snapshot.graphContentId ?? first.snapshot.id,
       );
+      const now = DateTime.formatIso(yield* DateTime.now);
       yield* Effect.sync(() => {
         const database = new Database(databasePath);
         try {
@@ -1831,7 +1835,6 @@ describe('native code graph lifecycle', () => {
           );
           for (const row of rows) {
             const id = materializedFileShardIdentity(row.contentHash, row.extractorSet, v3Derivation, row.path);
-            const now = new Date().toISOString();
             insertShard.run(id, row.contentHash, row.extractorSet, v3Derivation, row.path, row.factsJson, now, now);
             associate.run(first.snapshot.id, row.path, id);
           }
@@ -3040,8 +3043,8 @@ describe('native code graph lifecycle', () => {
           )
           .get(staleSnapshotId!);
         expect(retainedLease?.token).toMatch(/^retained-base:/u);
-        expect(Number(retainedLease?.expires_at) - Date.now()).toBeGreaterThan(32 * 60_000);
-        expect(Number(retainedLease?.expires_at) - Date.now()).toBeLessThanOrEqual(45 * 60_000);
+        expect(Number(retainedLease?.expires_at) - (yield* Clock.currentTimeMillis)).toBeGreaterThan(32 * 60_000);
+        expect(Number(retainedLease?.expires_at) - (yield* Clock.currentTimeMillis)).toBeLessThanOrEqual(45 * 60_000);
       } finally {
         database.close();
       }
@@ -3896,7 +3899,7 @@ describe('native code graph lifecycle', () => {
         .get(indexed.snapshot.id, 'withExclusiveFileLock');
       expect(source?.id).toBeDefined();
       expect(target?.id).toBeDefined();
-      if (!source || !target) throw new TestError('Fixture graph symbols were not indexed.');
+      if (!source || !target) throw TestError.make({message: 'Fixture graph symbols were not indexed.'});
       const insert = database.query(
         `INSERT INTO edges (
           snapshot_id, id, source_id, source_name, relation, target_id, target_name,
@@ -4345,7 +4348,7 @@ describe('native code graph lifecycle', () => {
         });
       } catch (error) {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-        throw new TestError(`Forced-build child did not reach a committed batch: ${stderr}`, {cause: error});
+        throw TestError.make({message: `Forced-build child did not reach a committed batch: ${stderr}`, cause: error});
       }
 
       const markerProgress = JSON.parse(readFileSync(marker, 'utf8')) as {
@@ -4575,7 +4578,7 @@ describe('native code graph lifecycle', () => {
           readyDatabase.close();
         }
       } catch (error) {
-        throw new TestError(`Clean-build resume fixture failed: ${stderr}`, {cause: error});
+        throw TestError.make({message: `Clean-build resume fixture failed: ${stderr}`, cause: error});
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       }
@@ -4901,7 +4904,7 @@ describe('native code graph lifecycle', () => {
         ...store,
         cacheMaterializedFileShardBatches: () =>
           Effect.fail(
-            new CodeGraphStoreNoSpaceError('Classified SQLite full during materialized-shard write.', {
+            CodeGraphStoreNoSpaceError.of('Classified SQLite full during materialized-shard write.', {
               operation: 'cache code graph materialized shards',
             }),
           ),
@@ -5100,7 +5103,7 @@ describe('native code graph lifecycle', () => {
       expect(owners).toHaveLength(2);
       expect(new Set(owners.map(build => build.identity.worktreeId)).size).toBe(2);
       const checkoutId = owners[0]?.identity.checkoutId;
-      if (!checkoutId) throw new TestError('Linked-worktree builders did not publish a checkout identity.');
+      if (!checkoutId) throw TestError.make({message: 'Linked-worktree builders did not publish a checkout identity.'});
       expect(await runEffect(compactCodeGraphStorage(home, checkoutId, {dryRun: false, force: true}))).toMatchObject({
         action: 'deferred',
         reason: 'active-build',
@@ -5291,7 +5294,7 @@ describe('native code graph lifecycle', () => {
           reclaimedDatabase.close();
         }
       } catch (error) {
-        throw new TestError(`Removed-worktree cleanup fixture failed: ${stderr}`, {cause: error});
+        throw TestError.make({message: `Removed-worktree cleanup fixture failed: ${stderr}`, cause: error});
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
         if (existsSync(orphanWorktree)) {
@@ -5664,6 +5667,7 @@ describe('native code graph lifecycle', () => {
           id: `${indexed.snapshot.id}-interrupted`,
           state: 'building',
         });
+        const createdAt = DateTime.formatIso(yield* DateTime.now);
         yield* Effect.sync(() => {
           const database = new Database(before.databasePath);
           try {
@@ -5672,7 +5676,8 @@ describe('native code graph lifecycle', () => {
                 'SELECT content_hash, path FROM snapshot_files ORDER BY path LIMIT 1',
               )
               .get();
-            if (!active) throw new TestError('Ready graph did not retain a file for cache maintenance coverage.');
+            if (!active)
+              throw TestError.make({message: 'Ready graph did not retain a file for cache maintenance coverage.'});
             database
               .query(
                 'INSERT INTO file_blobs (content_hash, extractor_set, path_hint, facts_json, created_at) VALUES (?, ?, ?, ?, ?)',
@@ -5682,7 +5687,7 @@ describe('native code graph lifecycle', () => {
                 'orphaned-extractor',
                 'orphaned.ts',
                 '{"diagnostics":[],"edges":[],"path":"orphaned.ts","symbols":[]}',
-                new Date().toISOString(),
+                createdAt,
               );
             database
               .query(
@@ -5693,7 +5698,7 @@ describe('native code graph lifecycle', () => {
                 'obsolete-extractor-generation',
                 active.path,
                 JSON.stringify({diagnostics: [], edges: [], path: active.path, symbols: []}),
-                new Date().toISOString(),
+                createdAt,
               );
           } finally {
             database.close();
@@ -6246,7 +6251,7 @@ function materializedShardFacts(databasePath: string, path: string) {
         'SELECT facts_json AS factsJson FROM materialized_file_shards WHERE path_hint = ?',
       )
       .get(path);
-    if (!row) throw new TestError(`Expected a materialized shard for ${path}.`);
+    if (!row) throw TestError.make({message: `Expected a materialized shard for ${path}.`});
     return decodeStoredCodeGraphFact(row.factsJson, path).facts;
   } finally {
     database.close();
@@ -6277,7 +6282,7 @@ async function awaitCompletedBuildCleanup(databasePath: string, snapshotId: stri
         .get(snapshotId, snapshotId);
       if ((rows?.owners ?? 0) === 0 && (rows?.batches ?? 0) === 0) return;
       if (Date.now() >= deadline) {
-        throw new TestError(`Timed out waiting for completed build cleanup: ${JSON.stringify(rows)}.`);
+        throw TestError.make({message: `Timed out waiting for completed build cleanup: ${JSON.stringify(rows)}.`});
       }
     } finally {
       database.close();
@@ -6329,7 +6334,7 @@ function finalFullMaterializationMetrics(progress: readonly CodeGraphProgress[])
     )
     .flatMap(current => (current.metrics?.mode === 'full' ? [current.metrics] : []))
     .at(-1);
-  if (metrics === undefined) throw new TestError('Expected terminal full-materialization metrics.');
+  if (metrics === undefined) throw TestError.make({message: 'Expected terminal full-materialization metrics.'});
   return metrics;
 }
 
@@ -6387,7 +6392,7 @@ function startCodeGraphIndexProcess(
     child.once('error', reject);
     child.once('exit', (code, signal) => {
       if (code === 0) resolve(stdout);
-      else reject(new TestError(`Code graph child exited ${code ?? signal}: ${stderr || stdout}`));
+      else reject(TestError.make({message: `Code graph child exited ${code ?? signal}: ${stderr || stdout}`}));
     });
   });
   return {
@@ -6400,7 +6405,7 @@ function startCodeGraphIndexProcess(
 async function waitForPath(path: string, timeoutMilliseconds = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMilliseconds;
   while (!existsSync(path)) {
-    if (Date.now() >= deadline) throw new TestError(`Timed out waiting for child process marker: ${path}`);
+    if (Date.now() >= deadline) throw TestError.make({message: `Timed out waiting for child process marker: ${path}`});
     await new Promise(resolve => setTimeout(resolve, 25));
   }
 }
@@ -6430,7 +6435,8 @@ function codeGraphProcessSummary(output: string): {
     .filter(Boolean)
     .map(line => JSON.parse(line) as {readonly summary?: unknown; readonly type?: string})
     .find(message => message.type === 'summary')?.summary;
-  if (!summary || typeof summary !== 'object') throw new TestError(`Child process did not emit a summary: ${output}`);
+  if (!summary || typeof summary !== 'object')
+    throw TestError.make({message: `Child process did not emit a summary: ${output}`});
   return summary as {
     readonly identity: {readonly checkoutId: string; readonly worktreeId: string};
     readonly materialization?: {readonly mode: string; readonly stagedFiles: number};
@@ -6466,7 +6472,7 @@ function snapshotFileHash(databasePath: string, snapshotId: string, sourcePath: 
         'SELECT content_hash FROM snapshot_files WHERE snapshot_id = ? AND path = ?',
       )
       .get(snapshotId, sourcePath);
-    if (!row) throw new TestError(`Snapshot ${snapshotId} has no row for ${sourcePath}.`);
+    if (!row) throw TestError.make({message: `Snapshot ${snapshotId} has no row for ${sourcePath}.`});
     return row.content_hash;
   } finally {
     database.close();
@@ -6497,7 +6503,7 @@ function effectiveSnapshotFileHash(databasePath: string, snapshotId: string, sou
         .get(current)?.base_snapshot_id;
       current = typeof baseSnapshotId === 'string' ? baseSnapshotId : undefined;
     }
-    throw new TestError(`Snapshot ${snapshotId} has no effective row for ${sourcePath}.`);
+    throw TestError.make({message: `Snapshot ${snapshotId} has no effective row for ${sourcePath}.`});
   } finally {
     database.close();
   }

@@ -80,7 +80,7 @@ describe('core embedding provisioning', () => {
             install: (_home, manifest) =>
               corrupt
                 ? Effect.fail(
-                    new ModelChecksumMismatch({
+                    ModelChecksumMismatch.make({
                       actual: 'corrupt',
                       expected: manifest.sha256,
                       message: 'corrupt fixture',

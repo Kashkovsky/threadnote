@@ -11,6 +11,7 @@ import {
 } from './store_models.js';
 import {
   CodeGraphStoreError,
+  isCodeGraphStoreError,
   type CodeGraphEdge,
   type CodeGraphFileFacts,
   type CodeGraphInventoryFile,
@@ -72,7 +73,7 @@ const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const MAXIMUM_CHECKPOINT_TEXT_BYTES = 16 * 1_048_576;
 
 function invalid(message: string): CodeGraphStoreError {
-  return new CodeGraphStoreError(message);
+  return CodeGraphStoreError.of(message);
 }
 
 function boundedNonEmptyText(value: string, maximumBytes: number): boolean {
@@ -386,7 +387,7 @@ const selectCheckpointImportRow = Effect.fn('codeGraph.selectCheckpointImportRow
      FROM ${table} WHERE snapshot_id = ? LIMIT 2`,
     [snapshotId],
   );
-  if (rows.length > 1) return yield* Effect.fail(invalid('Code graph checkpoint import authority is invalid.'));
+  if (rows.length > 1) return yield* invalid('Code graph checkpoint import authority is invalid.');
   return rows[0] ? receiptFromRow(rows[0]) : undefined;
 });
 
@@ -411,9 +412,7 @@ const assertSnapshotAuthority = Effect.fn('codeGraph.assertCheckpointSnapshotAut
     row.commit_id !== input.source.commit ||
     row.graph_content_id !== input.source.graphContentId
   ) {
-    return yield* Effect.fail(
-      invalid(`Code graph checkpoint receipt requires a matching ${acceptedState} clean root.`),
-    );
+    return yield* invalid(`Code graph checkpoint receipt requires a matching ${acceptedState} clean root.`);
   }
 });
 
@@ -424,8 +423,7 @@ export const bindCheckpointImportBuild = Effect.fn('codeGraph.bindCheckpointImpo
   startedAt: string,
 ) {
   const prepared = yield* Effect.try({
-    catch: cause =>
-      cause instanceof CodeGraphStoreError ? cause : invalid('Code graph checkpoint receipt is invalid.'),
+    catch: cause => (isCodeGraphStoreError(cause) ? cause : invalid('Code graph checkpoint receipt is invalid.')),
     try: () => ({
       columns: receiptColumns(input),
       countsJson: encodedRecordCounts(input),
@@ -442,7 +440,7 @@ export const bindCheckpointImportBuild = Effect.fn('codeGraph.bindCheckpointImpo
     RETURNING expected_batch_count
   `;
   if (owner.length !== 1 || Number(owner[0]?.expected_batch_count) !== input.batchCount) {
-    return yield* Effect.fail(invalid('Checkpoint import requires a matching persistent build owner plan.'));
+    return yield* invalid('Checkpoint import requires a matching persistent build owner plan.');
   }
   yield* sql`
     INSERT INTO building_lexical_counters (
@@ -470,7 +468,7 @@ export const bindCheckpointImportBuild = Effect.fn('codeGraph.bindCheckpointImpo
     ) {
       return {state: 'already-bound'} as const;
     }
-    return yield* Effect.fail(invalid(`Checkpoint import ${snapshotId} is already bound to different content.`));
+    return yield* invalid(`Checkpoint import ${snapshotId} is already bound to different content.`);
   }
   yield* sql`
     INSERT INTO checkpoint_import_builds (
@@ -497,14 +495,13 @@ export const assertCheckpointImportBuild = Effect.fn('codeGraph.assertCheckpoint
   input: CodeGraphCheckpointImportReceiptInput,
 ) {
   yield* Effect.try({
-    catch: cause =>
-      cause instanceof CodeGraphStoreError ? cause : invalid('Code graph checkpoint receipt is invalid.'),
+    catch: cause => (isCodeGraphStoreError(cause) ? cause : invalid('Code graph checkpoint receipt is invalid.')),
     try: () => validateCodeGraphCheckpointImportReceiptInput(input),
   });
   yield* assertSnapshotAuthority(sql, snapshotId, input, 'building');
   const binding = yield* selectCheckpointImportRow(sql, 'checkpoint_import_builds', snapshotId);
   if (binding === undefined || !sameReceiptInput(binding, input)) {
-    return yield* Effect.fail(invalid(`Checkpoint import ${snapshotId} has no matching build binding.`));
+    return yield* invalid(`Checkpoint import ${snapshotId} has no matching build binding.`);
   }
 });
 
@@ -518,11 +515,11 @@ const checkpointImportBuildPlan = Effect.fn('codeGraph.checkpointImportBuildPlan
     [snapshotId],
   );
   if (rows.length !== 1) {
-    return yield* Effect.fail(invalid(`Checkpoint import ${snapshotId} has no unique build plan.`));
+    return yield* invalid(`Checkpoint import ${snapshotId} has no unique build plan.`);
   }
   const expectedBatchCount = Number(rows[0]?.expected_batch_count);
   if (!Number.isSafeInteger(expectedBatchCount) || expectedBatchCount < 0) {
-    return yield* Effect.fail(invalid('Stored code graph checkpoint batch count is invalid.'));
+    return yield* invalid('Stored code graph checkpoint batch count is invalid.');
   }
   return {
     expectedBatchCount,
@@ -599,7 +596,7 @@ const stageCheckpointSupplementalRecord = Effect.fn('codeGraph.stageCheckpointSu
         WHERE snapshot_id = ${snapshotId} AND path = ${record.path} LIMIT 2
       `;
       if (files.length !== 1 || record.facts.path !== record.path) {
-        return yield* Effect.fail(invalid(`Checkpoint file fact ${record.path} has no matching inventory row.`));
+        return yield* invalid(`Checkpoint file fact ${record.path} has no matching inventory row.`);
       }
       const bounded = yield* Effect.try({
         catch: () => invalid(`Checkpoint file fact ${record.path} exceeds the materialized fact boundary.`),
@@ -641,7 +638,7 @@ const stageCheckpointSupplementalRecord = Effect.fn('codeGraph.stageCheckpointSu
         !storedMetadataMatches ||
         !checkpointStoredFactMatches(stored[0].facts_json, encoded.json, bounded.facts, record.path)
       ) {
-        return yield* Effect.fail(invalid(`Checkpoint file fact ${record.path} conflicts with cached content.`));
+        return yield* invalid(`Checkpoint file fact ${record.path} conflicts with cached content.`);
       }
       yield* sql`
         INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id)
@@ -726,7 +723,7 @@ const stageCheckpointSupplementalRecord = Effect.fn('codeGraph.stageCheckpointSu
         rows[0]?.evidence_edge_id !== (record.evidenceEdgeId ?? null) ||
         rows[0]?.evidence_path !== (record.evidencePath ?? null)
       ) {
-        return yield* Effect.fail(invalid('Checkpoint symbol lookup conflicts with materialized graph facts.'));
+        return yield* invalid('Checkpoint symbol lookup conflicts with materialized graph facts.');
       }
       return;
     }
@@ -754,7 +751,7 @@ const stageCheckpointSupplementalRecord = Effect.fn('codeGraph.stageCheckpointSu
         [snapshotId, record.term, record.symbolId],
       );
       if (rows.length !== 1 || Number(rows[0]?.weight) !== record.weight) {
-        return yield* Effect.fail(invalid('Checkpoint lexical record differs from ABI-compatible materialization.'));
+        return yield* invalid('Checkpoint lexical record differs from ABI-compatible materialization.');
       }
       return;
     }
@@ -802,14 +799,14 @@ export const stageCheckpointImportRecordPage = Effect.fn('codeGraph.stageCheckpo
     page.digest.algorithm !== 'sha256' ||
     !SHA256_HEX.test(page.digest.digest)
   ) {
-    return yield* Effect.fail(invalid('Code graph checkpoint import record page is invalid.'));
+    return yield* invalid('Code graph checkpoint import record page is invalid.');
   }
   const records = yield* Effect.try({
     catch: () => invalid('Code graph checkpoint import record page is invalid.'),
     try: () => page.records.map(record => parseCodeGraphCheckpointRecordV1(record)),
   });
   if (records.length === 0) {
-    return yield* Effect.fail(invalid('Code graph checkpoint import record page must not be empty.'));
+    return yield* invalid('Code graph checkpoint import record page must not be empty.');
   }
   const plan = yield* checkpointImportBuildPlan(sql, snapshotId);
   const expectedPacks = new Map(plan.packProvenance.map(pack => [pack.id, pack] as const));
@@ -817,7 +814,7 @@ export const stageCheckpointImportRecordPage = Effect.fn('codeGraph.stageCheckpo
     if (record.kind !== 'pack-provenance') continue;
     const expected = expectedPacks.get(record.id);
     if (expected === undefined || !samePackProvenance(record, expected)) {
-      return yield* Effect.fail(invalid('Checkpoint record pack provenance differs from its immutable build plan.'));
+      return yield* invalid('Checkpoint record pack provenance differs from its immutable build plan.');
     }
   }
   const existing = yield* sql.unsafe<{
@@ -838,10 +835,10 @@ export const stageCheckpointImportRecordPage = Effect.fn('codeGraph.stageCheckpo
     ) {
       return {records: records.length, state: 'already-staged'} as const;
     }
-    return yield* Effect.fail(invalid(`Checkpoint import batch ${page.batchIndex} conflicts with durable content.`));
+    return yield* invalid(`Checkpoint import batch ${page.batchIndex} conflicts with durable content.`);
   }
   if (page.batchIndex >= plan.expectedBatchCount) {
-    return yield* Effect.fail(invalid(`Checkpoint import batch ${page.batchIndex} exceeds its build plan.`));
+    return yield* invalid(`Checkpoint import batch ${page.batchIndex} exceeds its build plan.`);
   }
   const authority = yield* sql.unsafe<{
     readonly extractor_set: unknown;
@@ -861,7 +858,7 @@ export const stageCheckpointImportRecordPage = Effect.fn('codeGraph.stageCheckpo
     authority[0]?.owner_token !== ownerToken ||
     typeof authority[0]?.extractor_set !== 'string'
   ) {
-    return yield* Effect.fail(invalid('Code graph checkpoint import build ownership changed.'));
+    return yield* invalid('Code graph checkpoint import build ownership changed.');
   }
   const staged = yield* sql.unsafe<{
     readonly count: unknown;
@@ -879,7 +876,7 @@ export const stageCheckpointImportRecordPage = Effect.fn('codeGraph.stageCheckpo
       ? staged[0]?.minimum !== null || staged[0]?.maximum !== null
       : Number(staged[0]?.minimum) !== 0 || Number(staged[0]?.maximum) !== stagedCount - 1)
   ) {
-    return yield* Effect.fail(invalid('Checkpoint import batches must be staged in contiguous order.'));
+    return yield* invalid('Checkpoint import batches must be staged in contiguous order.');
   }
   const symbols = records.filter(
     (record): record is Extract<CodeGraphCheckpointRecordV1, {readonly kind: 'symbol'}> => record.kind === 'symbol',
@@ -945,11 +942,11 @@ export const verifyCheckpointImportRecordCounts = Effect.fn('codeGraph.verifyChe
   );
   const row = rows[0];
   if (row === undefined || Number(row.batches) !== plan.expectedBatchCount) {
-    return yield* Effect.fail(invalid('Checkpoint import has incomplete record batches.'));
+    return yield* invalid('Checkpoint import has incomplete record batches.');
   }
   for (const kind of CODE_GRAPH_CHECKPOINT_RECORD_KINDS) {
     if (Number(row[kind]) !== plan.recordCounts[kind]) {
-      return yield* Effect.fail(invalid(`Checkpoint import ${kind} record count does not match its header.`));
+      return yield* invalid(`Checkpoint import ${kind} record count does not match its header.`);
     }
   }
   const persistedPacks = yield* sql<{
@@ -978,7 +975,7 @@ export const verifyCheckpointImportRecordCounts = Effect.fn('codeGraph.verifyChe
       );
     })
   ) {
-    return yield* Effect.fail(invalid('Checkpoint import pack provenance does not match its immutable build plan.'));
+    return yield* invalid('Checkpoint import pack provenance does not match its immutable build plan.');
   }
   const invalidEndpoints = yield* sql.unsafe<{readonly count: unknown}>(
     `SELECT
@@ -1042,7 +1039,7 @@ export const verifyCheckpointImportRecordCounts = Effect.fn('codeGraph.verifyChe
   );
   const invalidEndpointCount = Number(invalidEndpoints[0]?.count ?? -1);
   if (!Number.isSafeInteger(invalidEndpointCount) || invalidEndpointCount !== 0) {
-    return yield* Effect.fail(invalid('Checkpoint import contains dangling relational endpoints.'));
+    return yield* invalid('Checkpoint import contains dangling relational endpoints.');
   }
 });
 
@@ -1062,7 +1059,7 @@ export const publishCheckpointImportReceipt = Effect.fn('codeGraph.publishCheckp
   const existing = yield* selectCheckpointImportRow(sql, 'checkpoint_import_receipts', snapshotId);
   if (existing !== undefined) {
     if (sameReceiptInput(existing, input)) return existing;
-    return yield* Effect.fail(invalid(`Checkpoint import receipt ${snapshotId} conflicts with immutable content.`));
+    return yield* invalid(`Checkpoint import receipt ${snapshotId} conflicts with immutable content.`);
   }
   yield* sql`
     INSERT INTO checkpoint_import_receipts (
@@ -1091,7 +1088,7 @@ export const recordReadyCheckpointImportReceipt = Effect.fn('codeGraph.recordRea
   const existing = yield* selectCheckpointImportRow(sql, 'checkpoint_import_receipts', snapshotId);
   if (existing !== undefined) {
     if (!sameReceiptInput(receiptInputFromReceipt(existing), input)) {
-      return yield* Effect.fail(invalid(`Checkpoint import receipt ${snapshotId} conflicts with immutable content.`));
+      return yield* invalid(`Checkpoint import receipt ${snapshotId} conflicts with immutable content.`);
     }
     return {receipt: existing, state: 'already-recorded'} as const;
   }
@@ -1113,7 +1110,7 @@ export const selectReadySnapshotByLogicalDigest = Effect.fn('codeGraph.selectRea
   abiDigest?: string,
 ) {
   if (!SHA256_HEX.test(repositoryId) || !SHA256_HEX.test(logicalDigest) || (abiDigest && !SHA256_HEX.test(abiDigest))) {
-    return yield* Effect.fail(invalid('Code graph checkpoint logical-digest lookup is invalid.'));
+    return yield* invalid('Code graph checkpoint logical-digest lookup is invalid.');
   }
   const rows = yield* sql.unsafe<{
     readonly base_snapshot_id: string | null;

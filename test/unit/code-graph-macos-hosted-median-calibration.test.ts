@@ -4,13 +4,13 @@ import {describe, expect, it} from 'vitest';
 import {enforceCodeGraphBenchmarkBudget} from '../../scripts/benchmark-code-graph.js';
 import type {BenchmarkArtifactV1, BenchmarkMeasurementV1} from '../../src/evaluation/benchmark.js';
 
-const Positive = Schema.Number.check(Schema.isGreaterThan(0));
+const Positive = Schema.Finite.check(Schema.isGreaterThan(0));
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const GitObjectId = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/u));
 const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const RunnerIdentity = Schema.String.check(Schema.isPattern(/^runner-[0-9a-f]{16}$/u));
 
-const calibration = Schema.decodeUnknownSync(
+const calibration = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       codeGraphSourceTree: Schema.Literal('9278a440106017f54944df66885831518ff9e863'),

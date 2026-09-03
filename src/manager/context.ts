@@ -1,4 +1,5 @@
-import {Cause, Effect} from 'effect';
+import {Cause, Effect, Schema} from 'effect';
+import {succeedUndefined} from '../effect/optional.js';
 import {compileContextBrief} from '../context_brief/index.js';
 import {
   CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS,
@@ -170,15 +171,13 @@ interface ParsedRecallPointer {
   readonly warnings: readonly string[];
 }
 
-class ManagerContextApiError extends Error {
-  override readonly name = 'ManagerContextApiError';
-
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
+class ManagerContextApiError extends Schema.TaggedError<ManagerContextApiError>()('ManagerContextApiError', {
+  code: Schema.String,
+  message: Schema.String,
+  status: Schema.Finite,
+}) {
+  static of(code: string, message: string, status: number): ManagerContextApiError {
+    return ManagerContextApiError.make({code, message, status});
   }
 }
 
@@ -193,8 +192,8 @@ export function isManagerContextApiPath(pathname: string): boolean {
 
 export const handleManagerContextRequest = Effect.fn('managerContext.handleRequest')(function* (
   request: ManagerContextApiRequest,
-): Effect.fn.Return<ManagerContextApiResponse | undefined, never, ApplicationServices> {
-  if (!isManagerContextApiPath(request.url.pathname)) return undefined;
+) {
+  if (!isManagerContextApiPath(request.url.pathname)) return yield* succeedUndefined;
   return yield* routeManagerContextRequest(request).pipe(
     Effect.catchCause(cause => Effect.succeed(managerContextErrorResponse(Cause.squash(cause)))),
   );
@@ -204,7 +203,7 @@ function routeManagerContextRequest(request: ManagerContextApiRequest) {
   return Effect.gen(function* () {
     if (request.method !== 'POST') return response(404, {error: 'Not found'});
     const body = yield* request.body.pipe(
-      Effect.mapError(() => new ManagerContextApiError('invalid-json', 'Provide a JSON object request body.', 400)),
+      Effect.mapError(() => ManagerContextApiError.of('invalid-json', 'Provide a JSON object request body.', 400)),
     );
     switch (request.url.pathname) {
       case '/api/context/brief':
@@ -295,14 +294,14 @@ export const readManagerContextPage = Effect.fn('managerContext.read')(function*
   const page = optionalInteger(body.page, 'page', 0, 10_000) ?? 0;
   const resource = parseResourceId(requestedUri);
   if (resource.namespace === 'user' && resource.segments[0] !== uriSegment(config.user)) {
-    throw new ManagerContextApiError('read-forbidden', 'Manager can only read the current user context.', 403);
+    throw ManagerContextApiError.of('read-forbidden', 'Manager can only read the current user context.', 403);
   }
   const resolved = yield* readManagerContextUri(config, requestedUri);
   const managedMemory = resourceIdIsManagedMemoryNamespace(resolved.canonicalUri);
   const memory = managedMemory ? parseMemoryDocument(resolved.canonicalUri, resolved.content) : undefined;
   const pages = chunkUtf8(memory?.body ?? resolved.content, MANAGER_CONTEXT_READ_PAGE_BYTES);
   if (page >= pages.length) {
-    throw new ManagerContextApiError('read-page-not-found', 'That context page does not exist.', 404);
+    throw ManagerContextApiError.of('read-page-not-found', 'That context page does not exist.', 404);
   }
   return {
     canonicalUri: resolved.canonicalUri,
@@ -392,7 +391,7 @@ export function managerContextBriefInput(body: Record<string, unknown>): {
   const workset = optionalText(body.workset, 'workset', MANAGER_CONTEXT_SCOPE_MAXIMUM_BYTES);
   const callerCwd = optionalAbsolutePath(body.callerCwd, 'callerCwd');
   if ((workset === undefined) === (callerCwd === undefined)) {
-    throw new ManagerContextApiError(
+    throw ManagerContextApiError.of(
       'invalid-context-scope',
       'Choose exactly one scope: an absolute caller workspace or a Workset.',
       400,
@@ -420,7 +419,7 @@ export function managerContextBriefInput(body: Record<string, unknown>): {
     const validated = parseContextBriefRequestV1(request);
     return {...validated, codeRefs: validated.codeRefs ?? []};
   } catch (cause) {
-    throw new ManagerContextApiError(
+    throw ManagerContextApiError.of(
       'invalid-context-brief',
       cause instanceof Error ? cause.message : 'Invalid Context Brief request.',
       400,
@@ -461,7 +460,7 @@ function managerRecallInput(body: Record<string, unknown>) {
   const callerCwd = optionalAbsolutePath(body.callerCwd, 'callerCwd');
   const workset = optionalText(body.workset, 'workset', MANAGER_CONTEXT_SCOPE_MAXIMUM_BYTES);
   if (callerCwd !== undefined && workset !== undefined) {
-    throw new ManagerContextApiError('invalid-recall-scope', 'Choose a caller workspace or a Workset, not both.', 400);
+    throw ManagerContextApiError.of('invalid-recall-scope', 'Choose a caller workspace or a Workset, not both.', 400);
   }
   return {
     callerCwd,
@@ -489,18 +488,16 @@ const hydrateRecallPointers = Effect.fn('managerContext.hydrateRecallPointers')(
                 parseMemoryDocument(resolved.canonicalUri, resolved.content),
               ),
             ),
-            Effect.catch(() =>
-              Effect.succeed(
-                recallResult(
-                  {
-                    ...pointer,
-                    warnings: [
-                      ...pointer.warnings,
-                      'Canonical metadata could not be hydrated; open this pointer for the authoritative read error.',
-                    ],
-                  },
-                  pointer.uri,
-                ),
+            Effect.orElseSucceed(() =>
+              recallResult(
+                {
+                  ...pointer,
+                  warnings: [
+                    ...pointer.warnings,
+                    'Canonical metadata could not be hydrated; open this pointer for the authoritative read error.',
+                  ],
+                },
+                pointer.uri,
               ),
             ),
           )
@@ -585,23 +582,19 @@ function projectMemoryMetadata(metadata: MemoryMetadata): ManagerRecallResultMet
 }
 
 function managerContextOperationError(cause: unknown, code: string): ManagerContextApiError {
-  return cause instanceof ManagerContextApiError
+  return Schema.is(ManagerContextApiError)(cause)
     ? cause
-    : new ManagerContextApiError(
-        code,
-        'Threadnote could not complete this context operation. Retry or narrow it.',
-        500,
-      );
+    : ManagerContextApiError.of(code, 'Threadnote could not complete this context operation. Retry or narrow it.', 500);
 }
 
 function managerContextErrorResponse(error: unknown): ManagerContextApiResponse {
-  if (error instanceof ManagerContextApiError) {
+  if (Schema.is(ManagerContextApiError)(error)) {
     return response(error.status, {code: error.code, error: error.message, retryAfterMilliseconds: 0});
   }
-  if (error instanceof ResourceNotFound || error instanceof MemoryPointerNotFound) {
+  if (Schema.is(ResourceNotFound)(error) || error instanceof MemoryPointerNotFound) {
     return response(404, {code: 'context-not-found', error: 'The requested context does not exist.'});
   }
-  if (error instanceof MemoryIdentityResolutionError) {
+  if (Schema.is(MemoryIdentityResolutionError)(error)) {
     return response(error.reason === 'not-found' ? 404 : 409, {
       code: error.reason === 'not-found' ? 'memory-identity-not-found' : 'memory-identity-conflict',
       error: error.message,
@@ -632,7 +625,7 @@ function canonicalContextUri(value: string): string {
   try {
     return parseResourceId(value).canonicalUri;
   } catch {
-    throw new ManagerContextApiError('invalid-context-uri', 'Provide a valid threadnote:// URI.', 400);
+    throw ManagerContextApiError.of('invalid-context-uri', 'Provide a valid threadnote:// URI.', 400);
   }
 }
 
@@ -641,21 +634,21 @@ function optionalMode(value: unknown): ContextBriefMode {
   if (typeof value === 'string' && isContextBriefMode(value)) {
     return value;
   }
-  throw new ManagerContextApiError('invalid-mode', `Mode must be one of ${CONTEXT_BRIEF_MODES.join(', ')}.`, 400);
+  throw ManagerContextApiError.of('invalid-mode', `Mode must be one of ${CONTEXT_BRIEF_MODES.join(', ')}.`, 400);
 }
 
 function requiredText(value: unknown, label: string, maximumBytes: number): string {
   const text = optionalText(value, label, maximumBytes);
-  if (text === undefined) throw new ManagerContextApiError('invalid-request', `${label} is required.`, 400);
+  if (text === undefined) throw ManagerContextApiError.of('invalid-request', `${label} is required.`, 400);
   return text;
 }
 
 function optionalText(value: unknown, label: string, maximumBytes: number): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
-  if (typeof value !== 'string') throw new ManagerContextApiError('invalid-request', `${label} must be text.`, 400);
+  if (typeof value !== 'string') throw ManagerContextApiError.of('invalid-request', `${label} must be text.`, 400);
   const normalized = value.normalize('NFKC').replace(/\s+/gu, ' ').trim();
   if (!normalized || new TextEncoder().encode(normalized).byteLength > maximumBytes || hasControl(normalized)) {
-    throw new ManagerContextApiError(
+    throw ManagerContextApiError.of(
       'invalid-request',
       `${label} must be bounded text without control characters.`,
       400,
@@ -666,7 +659,7 @@ function optionalText(value: unknown, label: string, maximumBytes: number): stri
 
 function optionalAbsolutePath(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
-  if (typeof value !== 'string') throw new ManagerContextApiError('invalid-request', `${label} must be text.`, 400);
+  if (typeof value !== 'string') throw ManagerContextApiError.of('invalid-request', `${label} must be text.`, 400);
   const path = value.trim();
   if (
     !path ||
@@ -674,21 +667,21 @@ function optionalAbsolutePath(value: unknown, label: string): string | undefined
     hasControl(path) ||
     (!path.startsWith('/') && !/^[A-Za-z]:[\\/]/u.test(path))
   ) {
-    throw new ManagerContextApiError('invalid-request', `${label} must be a bounded absolute path.`, 400);
+    throw ManagerContextApiError.of('invalid-request', `${label} must be a bounded absolute path.`, 400);
   }
   return path;
 }
 
 function optionalBoolean(value: unknown, label: string): boolean | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== 'boolean') throw new ManagerContextApiError('invalid-request', `${label} must be boolean.`, 400);
+  if (typeof value !== 'boolean') throw ManagerContextApiError.of('invalid-request', `${label} must be boolean.`, 400);
   return value;
 }
 
 function optionalInteger(value: unknown, label: string, minimum: number, maximum: number): number | undefined {
   if (value === undefined) return undefined;
   if (!Number.isSafeInteger(value) || Number(value) < minimum || Number(value) > maximum) {
-    throw new ManagerContextApiError(
+    throw ManagerContextApiError.of(
       'invalid-request',
       `${label} must be an integer from ${minimum} to ${maximum}.`,
       400,
@@ -700,7 +693,7 @@ function optionalInteger(value: unknown, label: string, minimum: number, maximum
 function optionalNumber(value: unknown, label: string, minimum: number, maximum: number): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) {
-    throw new ManagerContextApiError('invalid-request', `${label} must be from ${minimum} to ${maximum}.`, 400);
+    throw ManagerContextApiError.of('invalid-request', `${label} must be from ${minimum} to ${maximum}.`, 400);
   }
   return value;
 }
@@ -708,7 +701,7 @@ function optionalNumber(value: unknown, label: string, minimum: number, maximum:
 function optionalTextArray(value: unknown, label: string, maximumItems: number): readonly string[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length > maximumItems) {
-    throw new ManagerContextApiError(
+    throw ManagerContextApiError.of(
       'invalid-request',
       `${label} must be an array with at most ${maximumItems} entries.`,
       400,
@@ -722,7 +715,7 @@ function exactKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>,
     .filter(key => !allowed.has(key))
     .sort();
   if (unsupported.length > 0) {
-    throw new ManagerContextApiError('invalid-request', `${label} has unsupported field ${unsupported[0]}.`, 400);
+    throw ManagerContextApiError.of('invalid-request', `${label} has unsupported field ${unsupported[0]}.`, 400);
   }
 }
 

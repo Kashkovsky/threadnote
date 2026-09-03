@@ -230,7 +230,7 @@ export const runCodeGraphWorksetQueryV2Core = Effect.fn('codeGraphWorksetV2.runC
           attemptedRepositoryKeys.add(repository.repositoryKey);
           return yield* dependencies.deepQuery(repository).pipe(
             Effect.map(graph => ({graph, repository, state: 'ready' as const})),
-            Effect.catch(() => Effect.succeed({repository, state: 'failed' as const})),
+            Effect.orElseSucceed(() => ({repository, state: 'failed' as const})),
             Effect.timeoutOrElse({
               duration: taskRemaining,
               orElse: () => Effect.succeed({repository, state: 'timed-out' as const}),
@@ -387,7 +387,7 @@ export const executeCodeGraphWorksetV2 = Effect.fn('codeGraphWorksetV2.execute')
         const member = runtime.deepMembers.get(repository.repositoryKey);
         if (member === undefined)
           return Effect.fail(
-            new CodeGraphWorksetCatalogError('missing', 'The routed repository has no validated ready snapshot.'),
+            CodeGraphWorksetCatalogError.of('missing', 'The routed repository has no validated ready snapshot.'),
           );
         return queryService.inspect({
           cwd: member.cwd,
@@ -420,13 +420,14 @@ export const executeCodeGraphWorksetV2 = Effect.fn('codeGraphWorksetV2.execute')
         }),
       readBridgeExpansion: router =>
         readCodeGraphWorksetQueryBridgeExpansion(config.agentContextHome, runtime.input.published, router).pipe(
-          Effect.catch(() =>
-            Effect.succeed({
-              bridges: [],
-              complete: false,
-              seededRepositories: Math.min(16, router.repositories.length),
-              warnings: ['Cross-repository contract-neighbor expansion was unavailable for this query.'],
-            } satisfies CodeGraphWorksetQueryBridgeExpansionV1),
+          Effect.orElseSucceed(
+            () =>
+              ({
+                bridges: [],
+                complete: false,
+                seededRepositories: Math.min(16, router.repositories.length),
+                warnings: ['Cross-repository contract-neighbor expansion was unavailable for this query.'],
+              }) satisfies CodeGraphWorksetQueryBridgeExpansionV1,
           ),
         ),
       route: routeCodeGraphWorksetCatalogCandidates(source, {
@@ -548,7 +549,7 @@ export const resolveCodeGraphQualifiedRefTargets = Effect.fn('codeGraphWorksetV2
             CODE_GRAPH_QUALIFIED_REF_TARGET_STATUS_OPTIONS,
           );
           return status.readySnapshot === undefined ? undefined : ({...candidate, status} as const);
-        }).pipe(Effect.catch(() => Effect.succeed(undefined))),
+        }).pipe(Effect.orElseSucceed(() => undefined)),
       {concurrency: 4},
     );
     const available = matches.filter((value): value is NonNullable<typeof value> => value !== undefined);
@@ -873,19 +874,15 @@ function prepareRuntimeQuery(
     const manifestDigest = codeGraphWorksetManifestDigest(workset);
     const published = yield* readPublishedCodeGraphWorksetCatalogGeneration(config.agentContextHome, workset.name);
     if (published === undefined) {
-      return yield* Effect.fail(
-        new CodeGraphWorksetCatalogError(
-          'missing',
-          `No published routing catalog exists for ${workset.name}; run \`threadnote workset prepare ${workset.name}\`.`,
-        ),
+      return yield* CodeGraphWorksetCatalogError.of(
+        'missing',
+        `No published routing catalog exists for ${workset.name}; run \`threadnote workset prepare ${workset.name}\`.`,
       );
     }
     if (!codeGraphWorksetCatalogGenerationMatches(workset, manifestDigest, published)) {
-      return yield* Effect.fail(
-        new CodeGraphWorksetCatalogError(
-          'stale',
-          `The published routing catalog for ${workset.name} is stale; run \`threadnote workset prepare ${workset.name}\`.`,
-        ),
+      return yield* CodeGraphWorksetCatalogError.of(
+        'stale',
+        `The published routing catalog for ${workset.name} is stale; run \`threadnote workset prepare ${workset.name}\`.`,
       );
     }
     const publishedByKey = new Map(published.members.map(member => [member.repositoryKey, member]));
@@ -1015,21 +1012,19 @@ function observeRuntimeMember(
       } satisfies CodeGraphWorksetQueryV2MemberV1,
     };
   }).pipe(
-    Effect.catch(() =>
-      Effect.succeed({
-        member: {
-          deepQueryEligible: false,
-          ...(published === undefined ? {} : {published}),
-          receipt: {
-            considered: false,
-            deepQueried: false,
-            repositoryId: fallbackRepositoryId,
-            state: 'failed',
-          },
-          repositoryKey,
-        } satisfies CodeGraphWorksetQueryV2MemberV1,
-      }),
-    ),
+    Effect.orElseSucceed(() => ({
+      member: {
+        deepQueryEligible: false,
+        ...(published === undefined ? {} : {published}),
+        receipt: {
+          considered: false,
+          deepQueried: false,
+          repositoryId: fallbackRepositoryId,
+          state: 'failed',
+        },
+        repositoryKey,
+      } satisfies CodeGraphWorksetQueryV2MemberV1,
+    })),
   );
 }
 

@@ -1,6 +1,6 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {DateTime, Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -865,7 +865,7 @@ describe('OpenViking home migration', () => {
                 defaultTeam: 'default',
                 teams: {
                   default: {
-                    addedAt: new Date(0).toISOString(),
+                    addedAt: DateTime.formatIso(DateTime.makeUnsafe(0)),
                     gitdir: legacyGitdir,
                     name: 'default',
                     remote: 'git@example.invalid:team/memories.git',
@@ -1116,7 +1116,7 @@ describe('OpenViking home migration', () => {
               defaultTeam: 'default',
               teams: {
                 default: {
-                  addedAt: new Date(0).toISOString(),
+                  addedAt: DateTime.formatIso(DateTime.makeUnsafe(0)),
                   gitdir: legacyGitdir,
                   name: 'default',
                   remote: 'git@example.invalid:team/memories.git',
@@ -1275,7 +1275,7 @@ describe('OpenViking home migration', () => {
               defaultTeam: 'default',
               teams: {
                 default: {
-                  addedAt: new Date(0).toISOString(),
+                  addedAt: DateTime.formatIso(DateTime.makeUnsafe(0)),
                   gitdir: legacyGitdir,
                   name: 'default',
                   remote: 'git@example.invalid:team/memories.git',

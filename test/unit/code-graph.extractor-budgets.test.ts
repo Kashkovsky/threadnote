@@ -44,7 +44,7 @@ describe('code graph per-file extraction budgets', () => {
     const file = sourceFile('data/object.json', 'json', JSON.stringify({root: {first: 1, second: 2}}));
     const extracted = extractStructuredSchemaFacts(file, {packageName: Option.none(), project: Option.none()});
     const [facts] = createResolutionAttributor([file])([extracted]);
-    if (!facts) throw new TestError('missing resolved structured facts');
+    if (!facts) throw TestError.make({message: 'missing resolved structured facts'});
     const leaves = facts.symbols.filter(symbol => symbol.kind === 'property');
 
     expect(leaves.length).toBeGreaterThan(0);

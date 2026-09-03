@@ -1,5 +1,6 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Crypto, Effect, Layer} from 'effect';
+import {succeedUndefined} from './optional.js';
 import {CommandExecutor} from './command.js';
 import {CliOutput} from './cli_output.js';
 import {HttpService} from './http.js';
@@ -120,7 +121,7 @@ function telemetryLayerForHome(home: string, fallbackScope: 'broker' | 'invocati
       if (configuration === undefined) return anonymousTelemetryLayer();
       const randomBytes = yield* crypto.randomBytes(16).pipe(
         Effect.map(bytes => bytes as Uint8Array | undefined),
-        Effect.catchCause(() => Effect.succeed(undefined)),
+        Effect.catchCause(() => succeedUndefined),
       );
       if (randomBytes === undefined) return anonymousTelemetryLayer();
       const session = resolveAgentSession({
@@ -138,7 +139,7 @@ function telemetryLayerForHome(home: string, fallbackScope: 'broker' | 'invocati
         session,
         bridgeToBrokerProgram && configuration !== undefined ? 'mcp-broker-runtime' : undefined,
       );
-      const serviceVersion = yield* getThreadnoteVersion().pipe(Effect.catch(() => Effect.succeed('unknown')));
+      const serviceVersion = yield* getThreadnoteVersion().pipe(Effect.orElseSucceed(() => 'unknown'));
       const consentIdentity = `${configuration.endpoint}\0${configuration.sessionSalt}`;
       const runtimeContext = yield* Effect.context<Layer.Success<typeof StandaloneBrokerLayer>>();
       const isEnabled = boundedTelemetryConfiguration(home).pipe(
@@ -168,9 +169,9 @@ function boundedTelemetryConfiguration(home: string) {
   return resolveTelemetryConfiguration({agentContextHome: home}).pipe(
     Effect.timeoutOrElse({
       duration: TELEMETRY_CONFIGURATION_READ_TIMEOUT,
-      orElse: () => Effect.succeed(undefined),
+      orElse: () => succeedUndefined,
     }),
-    Effect.catchCause(() => Effect.succeed(undefined)),
+    Effect.catchCause(() => succeedUndefined),
   );
 }
 

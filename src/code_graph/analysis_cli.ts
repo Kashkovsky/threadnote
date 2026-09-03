@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {Effect, Schema} from 'effect';
 import type {RuntimeConfig} from '../types.js';
 import type {CodeGraphAnalysisView} from './analysis_render.js';
 import {
@@ -10,9 +10,13 @@ import {
 import {CodeGraphQueryService} from './query.js';
 import type {CodeGraphStatus} from './types.js';
 
-class CodeGraphAnalysisCommandError extends Error {
-  readonly _tag = 'CodeGraphAnalysisCommandError' as const;
-}
+class CodeGraphAnalysisCommandError extends Schema.TaggedError<CodeGraphAnalysisCommandError>()(
+  'CodeGraphAnalysisCommandError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export interface CodeGraphCliAnalysisState {
   readonly budgetMilliseconds?: number;
@@ -140,16 +144,15 @@ export function resolveCodeGraphAnalysisSnapshot<RefreshError, RefreshRequiremen
       status = yield* query.status(config.agentContextHome, cwd, {requestMaintenance: false});
     }
     if (freshnessPolicy === 'current' && (status.stale || status.freshness !== 'current')) {
-      return yield* Effect.fail(
-        new CodeGraphAnalysisCommandError(
+      return yield* CodeGraphAnalysisCommandError.make({
+        message:
           'A current native code graph snapshot is unavailable after indexing; the worktree may have changed during the refresh.',
-        ),
-      );
+      });
     }
     if (!status.readySnapshot) {
-      return yield* Effect.fail(
-        new CodeGraphAnalysisCommandError('No ready native code graph snapshot exists after indexing.'),
-      );
+      return yield* CodeGraphAnalysisCommandError.make({
+        message: 'No ready native code graph snapshot exists after indexing.',
+      });
     }
     return {
       databasePath: status.databasePath,

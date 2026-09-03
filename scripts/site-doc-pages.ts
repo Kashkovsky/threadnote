@@ -38,13 +38,15 @@ function replaceTagAttribute(
   );
   const tag = html.match(tagPattern)?.[0];
   if (!tag)
-    throw new ScriptError(`Docs HTML template is missing ${tagName}[${identifyingAttribute}="${identifyingValue}"]`);
+    throw ScriptError.make({
+      message: `Docs HTML template is missing ${tagName}[${identifyingAttribute}="${identifyingValue}"]`,
+    });
 
   const attributePattern = new RegExp(`\\b${escapeRegExp(updatedAttribute)}="[^"]*"`, 'i');
   if (!attributePattern.test(tag)) {
-    throw new ScriptError(
-      `Docs HTML template ${tagName}[${identifyingAttribute}="${identifyingValue}"] is missing ${updatedAttribute}`,
-    );
+    throw ScriptError.make({
+      message: `Docs HTML template ${tagName}[${identifyingAttribute}="${identifyingValue}"] is missing ${updatedAttribute}`,
+    });
   }
   const updatedTag = tag.replace(attributePattern, `${updatedAttribute}="${escapeHtml(updatedValue)}"`);
   return html.replace(tagPattern, updatedTag);
@@ -66,7 +68,8 @@ export function renderDocsArticleHtml(
   html = replaceTagAttribute(html, 'meta', 'property', 'og:url', 'content', canonicalUrl);
   html = replaceTagAttribute(html, 'meta', 'name', 'twitter:title', 'content', pageTitle);
   html = replaceTagAttribute(html, 'meta', 'name', 'twitter:description', 'content', article.summary);
-  if (!/<title>[^<]*<\/title>/i.test(html)) throw new ScriptError('Docs HTML template is missing its title');
+  if (!/<title>[^<]*<\/title>/i.test(html))
+    throw ScriptError.make({message: 'Docs HTML template is missing its title'});
   return html.replace(/<title>[^<]*<\/title>/i, `<title>${escapeHtml(pageTitle)}</title>`);
 }
 
@@ -80,7 +83,7 @@ export function renderDocsSitemap(sitemap: string, articles: readonly Pick<DocsA
     `${escapeRegExp(generatedSitemapStart)}[\\s\\S]*?${escapeRegExp(generatedSitemapEnd)}`,
   );
   if (generatedPattern.test(sitemap)) return sitemap.replace(generatedPattern, generated);
-  if (!sitemap.includes('</urlset>')) throw new ScriptError('Website sitemap is missing </urlset>');
+  if (!sitemap.includes('</urlset>')) throw ScriptError.make({message: 'Website sitemap is missing </urlset>'});
   return sitemap.replace('</urlset>', `${generated}\n</urlset>`);
 }
 
@@ -100,9 +103,9 @@ export const generateDocsArticlePages = Effect.fn('siteDocs.generateArticlePages
     article =>
       Effect.gen(function* () {
         if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(article.id)) {
-          throw new ScriptError(`Docs article id is not a URL-safe slug: ${article.id}`);
+          throw ScriptError.make({message: `Docs article id is not a URL-safe slug: ${article.id}`});
         }
-        if (articleIds.has(article.id)) throw new ScriptError(`Duplicate docs article id: ${article.id}`);
+        if (articleIds.has(article.id)) throw ScriptError.make({message: `Duplicate docs article id: ${article.id}`});
         articleIds.add(article.id);
         const outputPath = path.join(outputRoot, docsArticlePath(article.id), 'index.html');
         yield* fs.makeDirectory(path.dirname(outputPath), {recursive: true});

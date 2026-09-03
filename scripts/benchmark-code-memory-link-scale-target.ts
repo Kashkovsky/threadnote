@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Effect} from 'effect';
+import {DateTime, Effect} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
 import {
@@ -50,20 +50,20 @@ const program = Effect.scoped(
     const observedCommit = gitText(['rev-parse', 'HEAD']);
     const dirty = gitText(CONFIG_NEUTRAL_GIT_STATUS_ARGUMENTS).length > 0;
     if (observedCommit.length !== 40) {
-      return yield* Effect.fail(new ScriptError('Could not resolve the exact benchmark source commit.'));
+      return yield* ScriptError.make({message: 'Could not resolve the exact benchmark source commit.'});
     }
     if (!options.developmentSmoke && observedCommit !== options.candidateCommit) {
-      return yield* Effect.fail(
-        new ScriptError(`Observed commit ${observedCommit}; required exact candidate ${options.candidateCommit}.`),
-      );
+      return yield* ScriptError.make({
+        message: `Observed commit ${observedCommit}; required exact candidate ${options.candidateCommit}.`,
+      });
     }
     if (!options.developmentSmoke && dirty) {
-      return yield* Effect.fail(
-        new ScriptError('Release-scale evidence requires an exact clean checkout (dirty=false).'),
-      );
+      return yield* ScriptError.make({
+        message: 'Release-scale evidence requires an exact clean checkout (dirty=false).',
+      });
     }
     if (!options.developmentSmoke && !/^[0-9a-f]{64}$/u.test(options.builtArtifactSha256)) {
-      return yield* Effect.fail(new ScriptError('Release-scale evidence requires the built target SHA-256 digest.'));
+      return yield* ScriptError.make({message: 'Release-scale evidence requires the built target SHA-256 digest.'});
     }
     const capture = yield* runCodeMemoryLinkScaleWorkload({
       memoryCandidates: options.memoryCandidates,
@@ -75,7 +75,7 @@ const program = Effect.scoped(
     const artifact = evaluateCodeMemoryLinkScaleCapture({
       budget,
       capture,
-      createdAt: new Date().toISOString(),
+      createdAt: DateTime.formatIso(yield* DateTime.now),
       identity: {
         architecture: system.architecture,
         builtArtifactSha256: options.builtArtifactSha256,
@@ -97,7 +97,7 @@ const program = Effect.scoped(
     }
     yield* printJson(verified);
     if (!options.developmentSmoke && !verified.gate.passed) {
-      return yield* Effect.fail(new ScriptError(verified.gate.failures.join('\n')));
+      return yield* ScriptError.make({message: verified.gate.failures.join('\n')});
     }
   }),
 );
@@ -121,13 +121,13 @@ export function parseCodeMemoryLinkScaleTargetArguments(args: readonly string[])
     else if (argument === '--output') outputPath = required(args[++index], argument);
     else if (argument === '--samples') samples = positiveInteger(args[++index], argument);
     else if (argument === '--warmups') warmups = nonNegativeInteger(args[++index], argument);
-    else throw new ScriptError(`Unknown inverse-selector scale benchmark option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown inverse-selector scale benchmark option: ${argument}`});
   }
-  if (!candidateCommit) throw new ScriptError('--candidate-commit is required.');
+  if (!candidateCommit) throw ScriptError.make({message: '--candidate-commit is required.'});
   if (!developmentSmoke && (memoryCandidates !== undefined || samples !== undefined || warmups !== undefined)) {
-    throw new ScriptError(
-      '--memory-candidates, --samples, and --warmups require --development-smoke; release scale is fixed.',
-    );
+    throw ScriptError.make({
+      message: '--memory-candidates, --samples, and --warmups require --development-smoke; release scale is fixed.',
+    });
   }
   return {
     budgetPath,
@@ -149,26 +149,27 @@ function gitText(args: readonly string[]): string {
 
 function commit(value: string | undefined, option: string): string {
   const parsed = required(value, option);
-  if (!/^[0-9a-f]{40}$/u.test(parsed)) throw new ScriptError(`${option} requires exactly 40 lowercase hex characters.`);
+  if (!/^[0-9a-f]{40}$/u.test(parsed))
+    throw ScriptError.make({message: `${option} requires exactly 40 lowercase hex characters.`});
   return parsed;
 }
 
 function positiveInteger(value: string | undefined, option: string): number {
   const parsed = nonNegativeInteger(value, option);
-  if (parsed < 1) throw new ScriptError(`${option} requires a positive integer.`);
+  if (parsed < 1) throw ScriptError.make({message: `${option} requires a positive integer.`});
   return parsed;
 }
 
 function nonNegativeInteger(value: string | undefined, option: string): number {
   const raw = required(value, option);
-  if (!/^\d+$/u.test(raw)) throw new ScriptError(`${option} requires a non-negative integer.`);
+  if (!/^\d+$/u.test(raw)) throw ScriptError.make({message: `${option} requires a non-negative integer.`});
   const parsed = Number(raw);
-  if (!Number.isSafeInteger(parsed)) throw new ScriptError(`${option} exceeds the safe integer range.`);
+  if (!Number.isSafeInteger(parsed)) throw ScriptError.make({message: `${option} exceeds the safe integer range.`});
   return parsed;
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 

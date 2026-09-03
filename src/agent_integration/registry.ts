@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path, Predicate} from 'effect';
+import {Effect, FileSystem, Path, Predicate, Schema} from 'effect';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {parseMcpToolset, type McpToolset} from '../mcp/toolset.js';
@@ -42,9 +42,13 @@ export interface AgentIntegrationRegistry {
   readonly version: typeof AGENT_INTEGRATION_REGISTRY_VERSION;
 }
 
-class AgentIntegrationRegistryError extends Error {
-  readonly _tag = 'AgentIntegrationRegistryError' as const;
-}
+class AgentIntegrationRegistryError extends Schema.TaggedError<AgentIntegrationRegistryError>()(
+  'AgentIntegrationRegistryError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export const readAgentIntegrationRegistry = Effect.fn('agentIntegrations.readRegistry')(function* (
   config: Pick<RuntimeConfig, 'agentContextHome'>,
@@ -54,12 +58,10 @@ export const readAgentIntegrationRegistry = Effect.fn('agentIntegrations.readReg
   if (content === undefined) return undefined;
   const parsed = yield* Effect.try({
     try: () => JSON.parse(content) as unknown,
-    catch: cause => new AgentIntegrationRegistryError(`Could not parse ${target}: ${errorMessage(cause)}`),
+    catch: cause => AgentIntegrationRegistryError.make({message: `Could not parse ${target}: ${errorMessage(cause)}`}),
   });
   if (!isAgentIntegrationRegistry(parsed)) {
-    return yield* Effect.fail(
-      new AgentIntegrationRegistryError(`${target} is not a valid agent integration registry.`),
-    );
+    return yield* AgentIntegrationRegistryError.make({message: `${target} is not a valid agent integration registry.`});
   }
   return parsed;
 });

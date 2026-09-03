@@ -1,9 +1,9 @@
-import {Effect} from 'effect';
+import {DateTime, Effect} from 'effect';
 import type * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {codeGraphMaterializationApplyPages} from './materialization_spool.js';
 import {CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES} from './materialization_spool_apply_surfaces.js';
 import {assertPersistentBuildOwner, assertPersistentMaterializationComplete} from './store_build_core.js';
-import {CodeGraphStoreError} from './types.js';
+import {CodeGraphStoreError, type CodeGraphStoreFailure} from './types.js';
 
 export interface CodeGraphMaterializationSpoolSurfacePlan {
   readonly name: string;
@@ -45,8 +45,8 @@ export const registerCodeGraphMaterializationSpoolApply = Effect.fn('codeGraph.r
         const existing = yield* readSurfaceRows(sql, snapshotId);
         if (existing.length > 0) {
           if (!surfaceRowsMatch(existing, spoolIdentity, surfaces)) {
-            return yield* Effect.fail(
-              new CodeGraphStoreError('Persistent materialization spool apply plan changed; discard and rebuild it.'),
+            return yield* CodeGraphStoreError.of(
+              'Persistent materialization spool apply plan changed; discard and rebuild it.',
             );
           }
           return 'resumed' as const;
@@ -89,7 +89,7 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
     surfaceIndex < 0 ||
     surfaceIndex >= CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.length
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool surface index is invalid.'));
+    return yield* CodeGraphStoreError.of('Persistent materialization spool surface index is invalid.');
   }
   return yield* sql.withTransaction(
     Effect.gen(function* () {
@@ -106,7 +106,7 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
         rows.some(row => row.spool_identity !== spoolIdentity) ||
         rows.slice(0, surfaceIndex).some(row => row.complete !== 1)
       ) {
-        return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool apply state is invalid.'));
+        return yield* CodeGraphStoreError.of('Persistent materialization spool apply state is invalid.');
       }
       if (current.complete === 1) {
         return {
@@ -123,18 +123,16 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
           : scheduledPages;
       const page = pages[current.next_page_index];
       if (page === undefined) {
-        return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool apply cursor is invalid.'));
+        return yield* CodeGraphStoreError.of('Persistent materialization spool apply cursor is invalid.');
       }
       yield* writePage(page).pipe(
-        Effect.mapError(() => new CodeGraphStoreError('Persistent materialization spool page could not be applied.')),
+        Effect.mapError(() => CodeGraphStoreError.of('Persistent materialization spool page could not be applied.')),
       );
       const changes = yield* sql.unsafe<{readonly count: number | bigint}>('SELECT changes() AS count');
       const inserted = Number(changes[0]?.count ?? -1);
       if (inserted !== page.rowCount) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError(
-            `Persistent materialization spool page lost ${Math.max(0, page.rowCount - inserted)} row(s).`,
-          ),
+        return yield* CodeGraphStoreError.of(
+          `Persistent materialization spool page lost ${Math.max(0, page.rowCount - inserted)} row(s).`,
         );
       }
       const appliedRowCount = current.applied_row_count + inserted;
@@ -158,7 +156,7 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
       );
       const updates = yield* sql.unsafe<{readonly count: number | bigint}>('SELECT changes() AS count');
       if (Number(updates[0]?.count ?? 0) !== 1) {
-        return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool apply cursor changed.'));
+        return yield* CodeGraphStoreError.of('Persistent materialization spool apply cursor changed.');
       }
       yield* observeTransaction?.() ?? Effect.void;
       return {
@@ -182,7 +180,7 @@ export const writeCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
 ) {
   const surface = CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES[surfaceIndex];
   if (surface === undefined || !Number.isSafeInteger(page.afterRowid) || page.afterRowid < 0 || page.rowCount <= 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool page is invalid.'));
+    return yield* CodeGraphStoreError.of('Persistent materialization spool page is invalid.');
   }
   const upperRowid = page.afterRowid + page.rowCount;
   switch (surface.name) {
@@ -310,7 +308,7 @@ export const assertCodeGraphMaterializationSpoolApplyComplete = Effect.fn(
         row.applied_row_count !== row.row_count,
     )
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool apply is incomplete.'));
+    return yield* CodeGraphStoreError.of('Persistent materialization spool apply is incomplete.');
   }
 });
 
@@ -333,9 +331,7 @@ export const finalizeCodeGraphMaterializationSpoolReceipts = Effect.fn(
       );
       const expectedBatchCount = Number(expectedRows[0]?.count ?? -1);
       if (!Number.isSafeInteger(expectedBatchCount) || expectedBatchCount < 0) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError('Persistent materialization spool receipt count is invalid.'),
-        );
+        return yield* CodeGraphStoreError.of('Persistent materialization spool receipt count is invalid.');
       }
       const existing = yield* sql.unsafe<{
         readonly analysis_count: number | bigint;
@@ -350,9 +346,7 @@ export const finalizeCodeGraphMaterializationSpoolReceipts = Effect.fn(
       const materializationCount = Number(existing[0]?.materialization_count ?? -1);
       if (analysisCount !== 0 || materializationCount !== 0) {
         if (analysisCount !== expectedBatchCount || materializationCount !== expectedBatchCount) {
-          return yield* Effect.fail(
-            new CodeGraphStoreError('Persistent materialization spool receipts are incomplete.'),
-          );
+          return yield* CodeGraphStoreError.of('Persistent materialization spool receipts are incomplete.');
         }
         const mismatches = yield* sql.unsafe<{readonly count: number | bigint}>(
           `SELECT COUNT(*) AS count
@@ -375,7 +369,7 @@ export const finalizeCodeGraphMaterializationSpoolReceipts = Effect.fn(
           [snapshotId, snapshotId],
         );
         if (Number(mismatches[0]?.count ?? -1) !== 0) {
-          return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool receipts changed.'));
+          return yield* CodeGraphStoreError.of('Persistent materialization spool receipts changed.');
         }
         const lexical = yield* sql.unsafe<{
           readonly completed_batch_count: number | bigint;
@@ -401,9 +395,7 @@ export const finalizeCodeGraphMaterializationSpoolReceipts = Effect.fn(
           Number(lexical[0]?.symbol_count ?? -1) !== Number(expectedLexical[0]?.symbol_count ?? -2) ||
           Number(lexical[0]?.term_count ?? -1) !== Number(expectedLexical[0]?.term_count ?? -2)
         ) {
-          return yield* Effect.fail(
-            new CodeGraphStoreError('Persistent materialization spool lexical receipt changed.'),
-          );
+          return yield* CodeGraphStoreError.of('Persistent materialization spool lexical receipt changed.');
         }
         yield* assertPersistentMaterializationComplete(sql, snapshotId, ownerToken);
         return 'resumed' as const;
@@ -433,7 +425,7 @@ export const finalizeCodeGraphMaterializationSpoolReceipts = Effect.fn(
          GROUP BY provenance, relation, confidence, endpoint_state`,
         [snapshotId, snapshotId, snapshotId],
       );
-      const completedAt = new Date().toISOString();
+      const completedAt = DateTime.formatIso(yield* DateTime.now);
       yield* sql.unsafe(
         `INSERT INTO building_analysis_batches (
            snapshot_id, batch_index, batch_fingerprint, symbol_count, edge_count, completed_at
@@ -460,9 +452,7 @@ export const finalizeCodeGraphMaterializationSpoolReceipts = Effect.fn(
       );
       const lexicalUpdates = yield* sql.unsafe<{readonly count: number | bigint}>('SELECT changes() AS count');
       if (Number(lexicalUpdates[0]?.count ?? 0) !== 1) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError('Persistent materialization spool lexical receipt is missing.'),
-        );
+        return yield* CodeGraphStoreError.of('Persistent materialization spool lexical receipt is missing.');
       }
       yield* sql.unsafe(
         `INSERT INTO building_materialization_batches (
@@ -477,7 +467,7 @@ export const finalizeCodeGraphMaterializationSpoolReceipts = Effect.fn(
       );
       const receiptChanges = yield* sql.unsafe<{readonly count: number | bigint}>('SELECT changes() AS count');
       if (Number(receiptChanges[0]?.count ?? -1) !== expectedBatchCount) {
-        return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool receipts lost rows.'));
+        return yield* CodeGraphStoreError.of('Persistent materialization spool receipts lost rows.');
       }
       yield* assertPersistentMaterializationComplete(sql, snapshotId, ownerToken);
       yield* observeTransaction?.() ?? Effect.void;
@@ -497,15 +487,15 @@ function readSurfaceRows(sql: SqlClient.SqlClient, snapshotId: string) {
   );
 }
 
-function validateApplyIdentity(spoolIdentity: string): Effect.Effect<void, CodeGraphStoreError> {
+function validateApplyIdentity(spoolIdentity: string): Effect.Effect<void, CodeGraphStoreFailure> {
   return /^[0-9a-f]{64}$/u.test(spoolIdentity)
     ? Effect.void
-    : Effect.fail(new CodeGraphStoreError('Persistent materialization spool identity is invalid.'));
+    : Effect.fail(CodeGraphStoreError.of('Persistent materialization spool identity is invalid.'));
 }
 
 function validateSurfacePlan(
   surfaces: readonly CodeGraphMaterializationSpoolSurfacePlan[],
-): Effect.Effect<void, CodeGraphStoreError> {
+): Effect.Effect<void, CodeGraphStoreFailure> {
   return surfaces.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.length ||
     surfaces.some(
       (surface, index) =>
@@ -513,7 +503,7 @@ function validateSurfacePlan(
         !Number.isSafeInteger(surface.rowCount) ||
         surface.rowCount < 0,
     )
-    ? Effect.fail(new CodeGraphStoreError('Persistent materialization spool surface plan is invalid.'))
+    ? Effect.fail(CodeGraphStoreError.of('Persistent materialization spool surface plan is invalid.'))
     : Effect.void;
 }
 

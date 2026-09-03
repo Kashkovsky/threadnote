@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 import {sha256HexSync} from '../src/crypto/sha256.js';
 
 export const CODE_MEMORY_LINK_CODEX_TERMINAL_VERSION = 1 as const;
@@ -41,19 +42,20 @@ export interface CodeMemoryLinkCodexTerminalReceiptV1 {
   readonly version: typeof CODE_MEMORY_LINK_CODEX_TERMINAL_VERSION;
 }
 
-export class CodeMemoryLinkCodexTerminalError extends Error {
-  readonly diagnostics: CodeMemoryLinkCodexTerminalDiagnosticsV1 | null;
-  readonly kind: CodeMemoryLinkCodexTerminalKind;
-
-  constructor(
+export class CodeMemoryLinkCodexTerminalError extends Schema.TaggedError<CodeMemoryLinkCodexTerminalError>()(
+  'CodeMemoryLinkCodexTerminalError',
+  {
+    diagnostics: Schema.NullOr(Schema.Any),
+    kind: Schema.Literals([...CODE_MEMORY_LINK_CODEX_TERMINAL_KINDS]),
+    message: Schema.String,
+  },
+) {
+  static of(
     kind: CodeMemoryLinkCodexTerminalKind,
     message: string,
     diagnostics: CodeMemoryLinkCodexTerminalDiagnosticsV1 | null = null,
-  ) {
-    super(message);
-    this.name = 'CodeMemoryLinkCodexTerminalError';
-    this.diagnostics = diagnostics;
-    this.kind = kind;
+  ): CodeMemoryLinkCodexTerminalError {
+    return CodeMemoryLinkCodexTerminalError.make({diagnostics, kind, message});
   }
 }
 
@@ -68,7 +70,7 @@ export function createCodeMemoryLinkCodexTerminalReceipt(
 }
 
 export function classifyCodeMemoryLinkCodexTerminal(error: unknown): CodeMemoryLinkCodexTerminalKind {
-  if (error instanceof CodeMemoryLinkCodexTerminalError) return error.kind;
+  if (Schema.is(CodeMemoryLinkCodexTerminalError)(error)) return error.kind;
   const message = error instanceof Error ? error.message : String(error);
   if (
     /timed out waiting for (?:a )?Codex app-server|timed out waiting for a Codex app-server notification/iu.test(

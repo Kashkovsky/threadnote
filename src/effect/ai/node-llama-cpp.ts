@@ -177,12 +177,11 @@ export function nodeLlamaCppEngineLayer(options: NodeLlamaCppLayerOptions = {}) 
           const nativeModuleUrl = yield* path
             .toFileUrl(path.join(path.dirname(system.executablePath), 'runtime', 'node-llama-cpp.js'))
             .pipe(
-              Effect.mapError(
-                cause =>
-                  new NativeRuntimeUnavailable({
-                    cause,
-                    message: 'Could not resolve the bundled node-llama-cpp runtime.',
-                  }),
+              Effect.mapError(cause =>
+                NativeRuntimeUnavailable.make({
+                  cause,
+                  message: 'Could not resolve the bundled node-llama-cpp runtime.',
+                }),
               ),
             );
           moduleSpecifier = nativeModuleUrl.href;
@@ -192,7 +191,7 @@ export function nodeLlamaCppEngineLayer(options: NodeLlamaCppLayerOptions = {}) 
       const module = yield* fromPromiseInterruptible(
         () => loadModule(),
         cause =>
-          new NativeRuntimeUnavailable({
+          NativeRuntimeUnavailable.make({
             cause,
             message: `Could not load the node-llama-cpp runtime: ${errorMessage(cause)}`,
           }),
@@ -211,12 +210,12 @@ export function nodeLlamaCppEngineLayer(options: NodeLlamaCppLayerOptions = {}) 
             }),
           cause =>
             isNoBinaryFound(cause)
-              ? new UnsupportedNativeRuntime({
+              ? UnsupportedNativeRuntime.make({
                   cause,
                   message:
                     'No compatible prebuilt node-llama-cpp binary is available. Threadnote will not compile llama.cpp automatically.',
                 })
-              : new NativeRuntimeUnavailable({
+              : NativeRuntimeUnavailable.make({
                   cause,
                   message: `Could not initialize node-llama-cpp: ${errorMessage(cause)}`,
                 }),
@@ -251,7 +250,7 @@ function makeEngine(
               ? parseEmbeddingContextPoolSize(embeddingPolicy.contextPoolSizeEnvironment)
               : (options.embeddingContextPoolSize ?? parseEmbeddingContextPoolSize(undefined))),
           catch: cause =>
-            new ModelLoadFailed({
+            ModelLoadFailed.make({
               cause,
               message: `${THREADNOTE_EMBEDDING_CONTEXTS_ENV} must be one of 1, 2, 4, or 8.`,
               modelId: options.modelId,
@@ -325,7 +324,7 @@ function makeEngine(
       Effect.gen(function* () {
         const model = yield* acquireModel(llama, options);
         if (!model.createContext || !llama.createGrammarForJsonSchema || !module.LlamaChatSession) {
-          return yield* new ModelLoadFailed({
+          return yield* ModelLoadFailed.make({
             cause: new Error('Installed node-llama-cpp runtime does not expose structured generation APIs.'),
             message: `Could not load structured generation for ${options.modelId}.`,
             modelId: options.modelId,
@@ -415,7 +414,7 @@ function generationSession(
           const createContext = model.createContext;
           const createGrammar = llama.createGrammarForJsonSchema;
           if (!createContext || !createGrammar) {
-            return yield* new GenerationFailed({
+            return yield* GenerationFailed.make({
               cause: new Error('Structured generation APIs became unavailable.'),
               message: `Structured generation with ${options.modelId} is unavailable.`,
               modelId: options.modelId,
@@ -434,19 +433,18 @@ function generationSession(
             ),
             native => disposeIgnoringFailure(native),
           ).pipe(
-            Effect.mapError(
-              cause =>
-                new GenerationFailed({
-                  cause,
-                  message: `Could not create a generation context for ${options.modelId}: ${errorMessage(cause)}`,
-                  modelId: options.modelId,
-                }),
+            Effect.mapError(cause =>
+              GenerationFailed.make({
+                cause,
+                message: `Could not create a generation context for ${options.modelId}: ${errorMessage(cause)}`,
+                modelId: options.modelId,
+              }),
             ),
           );
           const grammar = yield* fromPromiseInterruptible(
             () => createGrammar.call(llama, request.jsonSchema),
             cause =>
-              new GenerationFailed({
+              GenerationFailed.make({
                 cause,
                 message: `Could not create JSON grammar for ${options.modelId}.`,
                 modelId: options.modelId,
@@ -473,12 +471,12 @@ function generationSession(
               }),
             cause =>
               isAbortError(cause)
-                ? new InferenceInterrupted({
+                ? InferenceInterrupted.make({
                     message: `Generation with ${options.modelId} was interrupted.`,
                     modelId: options.modelId,
                     operation: 'generate',
                   })
-                : new GenerationFailed({
+                : GenerationFailed.make({
                     cause,
                     message: `Generation with ${options.modelId} failed: ${errorMessage(cause)}`,
                     modelId: options.modelId,
@@ -487,7 +485,7 @@ function generationSession(
           return yield* Effect.try({
             try: () => grammar.parse(output),
             catch: () =>
-              new InvalidModelOutput({
+              InvalidModelOutput.make({
                 message: `Generation model ${options.modelId} returned output that did not match its JSON schema.`,
                 modelId: options.modelId,
               }),
@@ -535,12 +533,12 @@ function embeddingSession(
         },
         cause =>
           isAbortError(cause)
-            ? new InferenceInterrupted({
+            ? InferenceInterrupted.make({
                 message: `Embedding with ${options.modelId} was interrupted.`,
                 modelId: options.modelId,
                 operation: 'embed',
               })
-            : new EmbeddingFailed({
+            : EmbeddingFailed.make({
                 cause,
                 message: `Embedding with ${options.modelId} failed: ${errorMessage(cause)}`,
                 modelId: options.modelId,
@@ -553,7 +551,7 @@ function embeddingSession(
           );
           return invalid
             ? Effect.fail(
-                new EmbeddingFailed({
+                EmbeddingFailed.make({
                   cause: invalid,
                   message: `Embedding model ${options.modelId} returned an invalid vector; expected ${options.dimensions} finite dimensions.`,
                   modelId: options.modelId,
@@ -720,12 +718,12 @@ function rankingSession(options: LocalModelLoadOptions, context: NativeRankingCo
         },
         cause =>
           isAbortError(cause)
-            ? new InferenceInterrupted({
+            ? InferenceInterrupted.make({
                 message: `Reranking with ${options.modelId} was interrupted.`,
                 modelId: options.modelId,
                 operation: 'rerank',
               })
-            : new RerankingFailed({
+            : RerankingFailed.make({
                 cause,
                 message: `Reranking with ${options.modelId} failed: ${errorMessage(cause)}`,
                 modelId: options.modelId,
@@ -734,7 +732,7 @@ function rankingSession(options: LocalModelLoadOptions, context: NativeRankingCo
         Effect.flatMap(scores =>
           scores.length !== documents.length || scores.some(score => !Number.isFinite(score))
             ? Effect.fail(
-                new RerankingFailed({
+                RerankingFailed.make({
                   cause: scores,
                   message: `Reranker ${options.modelId} returned ${scores.length} invalid scores for ${documents.length} documents.`,
                   modelId: options.modelId,
@@ -748,20 +746,20 @@ function rankingSession(options: LocalModelLoadOptions, context: NativeRankingCo
 
 function modelLoadError(options: LocalModelLoadOptions, cause: unknown, resource: string) {
   if (isMissingFile(cause)) {
-    return new ModelNotInstalled({
+    return ModelNotInstalled.make({
       message: `Model ${options.modelId} is not installed.`,
       modelId: options.modelId,
       path: options.modelPath,
     });
   }
   if (isInsufficientMemory(cause)) {
-    return new InsufficientMemory({
+    return InsufficientMemory.make({
       cause,
       message: `There is not enough memory to load the ${resource} for ${options.modelId}.`,
       modelId: options.modelId,
     });
   }
-  return new ModelLoadFailed({
+  return ModelLoadFailed.make({
     cause,
     message: `Could not load the ${resource} for ${options.modelId}: ${errorMessage(cause)}`,
     modelId: options.modelId,

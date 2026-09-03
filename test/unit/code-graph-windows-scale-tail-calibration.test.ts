@@ -39,7 +39,7 @@ const ScalePerformanceBudget = Schema.Struct({
   wholeGraphAnalysisP95MillisecondsMaximum: PositiveFinite,
 });
 
-const budgetFile = Schema.decodeUnknownSync(
+const budgetFile = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       developmentPerformance: GuardedHotQueryBudget,
@@ -85,7 +85,7 @@ const Observation = Schema.Struct({
   runId: PositiveInteger,
 });
 
-const calibration = Schema.decodeUnknownSync(
+const calibration = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       candidateBudgetArtifact: BenchmarkArtifactSchemaV1,
@@ -138,7 +138,7 @@ const calibration = Schema.decodeUnknownSync(
   ),
 )(await Bun.file('test/evaluation/baselines/code-graph-v1/windows-scale-10k-hosted-tail-calibration-v1.json').text());
 
-const quantileCalibration = Schema.decodeUnknownSync(
+const quantileCalibration = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       candidateCommit: GitCommit,

@@ -178,7 +178,7 @@ describe('code graph ordinary vector retirement maintenance', () => {
                     receiptOperations = operations;
                   }),
                 ),
-                Effect.andThen(Effect.fail(new TestError('simulated crash after protected intent'))),
+                Effect.andThen(Effect.fail(TestError.make({message: 'simulated crash after protected intent'}))),
               ),
           });
 
@@ -227,7 +227,7 @@ describe('code graph ordinary vector retirement maintenance', () => {
               afterModelCommitBeforeFinalCursorCas: () =>
                 Effect.suspend(() => {
                   interrupted += 1;
-                  return Effect.fail(new TestError(`simulated ${scenario} post-commit crash`));
+                  return Effect.fail(TestError.make({message: `simulated ${scenario} post-commit crash`}));
                 }),
             });
 
@@ -832,7 +832,7 @@ function prepareRetirementUntilReady(databasePath: string) {
       });
       if (result.state === 'ready') return;
     }
-    return yield* Effect.die(new TestError('Vector retirement schema did not become ready.'));
+    return yield* Effect.die(TestError.make({message: 'Vector retirement schema did not become ready.'}));
   });
 }
 

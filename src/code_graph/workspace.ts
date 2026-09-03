@@ -261,28 +261,26 @@ export function createWorkspaceAttributor(
     workspace.projects.filter(project => project.buildSystem === 'node' || project.buildSystem === 'pnpm'),
   );
   return facts =>
-    facts.map(file => {
-      return {
-        ...file,
-        references: file.references?.map(reference =>
-          Option.match(findProject(file.path, reference.resolutionDomain), {
-            onNone: () => reference,
-            onSome: project => attributeReference(reference, project, projectsById),
-          }),
+    facts.map(file => ({
+      ...file,
+      references: file.references?.map(reference =>
+        Option.match(findProject(file.path, reference.resolutionDomain), {
+          onNone: () => reference,
+          onSome: project => attributeReference(reference, project, projectsById),
+        }),
+      ),
+      symbols: file.symbols.map(symbol =>
+        Option.match(
+          symbol.kind === 'package' && symbol.resolutionDomain === 'workspace'
+            ? findPackageProject(file.path)
+            : findProject(file.path, symbol.resolutionDomain),
+          {
+            onNone: () => symbol,
+            onSome: project => attributeSymbol(symbol, project),
+          },
         ),
-        symbols: file.symbols.map(symbol =>
-          Option.match(
-            symbol.kind === 'package' && symbol.resolutionDomain === 'workspace'
-              ? findPackageProject(file.path)
-              : findProject(file.path, symbol.resolutionDomain),
-            {
-              onNone: () => symbol,
-              onSome: project => attributeSymbol(symbol, project),
-            },
-          ),
-        ),
-      };
-    });
+      ),
+    }));
 }
 
 export function projectForPath(

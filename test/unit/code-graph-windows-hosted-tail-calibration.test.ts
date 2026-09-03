@@ -31,7 +31,7 @@ const PerformanceBudget = Schema.Struct({
   wholeGraphAnalysisP95MillisecondsMaximum: PositiveFinite,
 });
 
-const budgetFile = Schema.decodeUnknownSync(
+const budgetFile = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       developmentPerformance: PerformanceBudget,
@@ -87,7 +87,7 @@ const Observation = Schema.Struct({
   runId: PositiveInteger,
 });
 
-const calibration = Schema.decodeUnknownSync(
+const calibration = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       candidateBudgetArtifact: Schema.Struct({

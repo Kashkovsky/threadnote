@@ -109,7 +109,7 @@ export const moveManagerSharedMemoryWithinTeam = Effect.fn('manager.moveSharedMe
       yield* assertSharedWorktreeFileReady(team.config.worktree, targetRelativePath, content);
       const existingTarget = yield* readRawMemoryContent(config, targetUri);
       if (existingTarget !== undefined && existingTarget !== content) {
-        return yield* Effect.fail(new MemoryOperationError(`${targetUri} already exists with different content.`));
+        return yield* MemoryOperationError.make({message: `${targetUri} already exists with different content.`});
       }
       if (existingTarget === undefined) {
         yield* ensureSharedDirectoryChain(config, NATIVE_RESOURCE_BACKEND, targetUri, false);
@@ -117,11 +117,9 @@ export const moveManagerSharedMemoryWithinTeam = Effect.fn('manager.moveSharedMe
       }
       const existingWorktreeTarget = yield* readSharedWorktreeFile(team.config.worktree, targetRelativePath);
       if (existingWorktreeTarget !== undefined && existingWorktreeTarget !== content) {
-        return yield* Effect.fail(
-          new MemoryOperationError(
-            `Shared move target ${targetRelativePath} changed while recovery was being prepared.`,
-          ),
-        );
+        return yield* MemoryOperationError.make({
+          message: `Shared move target ${targetRelativePath} changed while recovery was being prepared.`,
+        });
       }
       yield* writeSharedWorktreeFile(team.config.worktree, targetRelativePath, content);
 
@@ -172,7 +170,7 @@ export const removeManagerSharedMemorySource = Effect.fn('manager.removeSharedMe
   expectedTargetContent: string,
 ) {
   const teamName = sharedTeamNameForUri(config, sourceUri);
-  if (!teamName) return yield* Effect.fail(new MemoryOperationError(`${sourceUri} is not a shared memory.`));
+  if (!teamName) return yield* MemoryOperationError.make({message: `${sourceUri} is not a shared memory.`});
   const fs = yield* FileSystem.FileSystem;
   return yield* withMemoryUriLocks(
     fs,
@@ -196,9 +194,9 @@ export const removeManagerSharedMemorySource = Effect.fn('manager.removeSharedMe
       const relativePath = resourceUriToWorktreeRelative(config, sourceUri, team.name);
       yield* assertSharedWorktreeFileReady(team.config.worktree, relativePath, expectedSourceContent);
       if ((yield* readSharedWorktreeFile(team.config.worktree, relativePath)) !== expectedSourceContent) {
-        return yield* Effect.fail(
-          new MemoryOperationError(`Shared move source ${relativePath} changed before removal; it was preserved.`),
-        );
+        return yield* MemoryOperationError.make({
+          message: `Shared move source ${relativePath} changed before removal; it was preserved.`,
+        });
       }
       yield* publishShareGitChange(team.config.worktree, relativePath, `share: remove ${relativePath}`, {verb: 'rm'});
       const target = yield* readExactMoveSource(
@@ -225,7 +223,7 @@ export const removeManagerPersonalMemorySource = Effect.fn('manager.removePerson
   expectedSourceContent: string,
 ) {
   if (isInSharedNamespace(config, sourceUri)) {
-    return yield* Effect.fail(new MemoryOperationError(`${sourceUri} is not a personal memory.`));
+    return yield* MemoryOperationError.make({message: `${sourceUri} is not a personal memory.`});
   }
   const fs = yield* FileSystem.FileSystem;
   return yield* withMemoryUriLocks(
@@ -264,11 +262,9 @@ export const publishStagedManagerPersonalMemoryMove = Effect.fn('manager.publish
       [sourceUri, stagedUri, sharedTargetUri],
       Effect.gen(function* () {
         if (yield* hasDeferredCodeAnchorIntent(config, sourceUri)) {
-          return yield* Effect.fail(
-            new MemoryOperationError(
-              `Refusing to publish moved memory ${sourceUri}: code citations are still pending. Finalize or explicitly replace the source without code references before moving it into shared memory.`,
-            ),
-          );
+          return yield* MemoryOperationError.make({
+            message: `Refusing to publish moved memory ${sourceUri}: code citations are still pending. Finalize or explicitly replace the source without code references before moving it into shared memory.`,
+          });
         }
         yield* readExactMoveSource(config, sourceUri, expectedSourceContent, 'before publication; it was preserved');
         yield* readExactMoveSource(config, stagedUri, expectedStagedContent, 'before publication');
@@ -281,9 +277,9 @@ export const publishStagedManagerPersonalMemoryMove = Effect.fn('manager.publish
         );
         const sharedTargetContent = yield* readRawMemoryContent(config, sharedTargetUri);
         if (sharedTargetContent === undefined) {
-          return yield* Effect.fail(
-            new MemoryOperationError(`Published move target ${sharedTargetUri} is missing; source was preserved.`),
-          );
+          return yield* MemoryOperationError.make({
+            message: `Published move target ${sharedTargetUri} is missing; source was preserved.`,
+          });
         }
         yield* recordMemoryRelocation(config, {
           fromContent: sourceBeforeRemoval.content,
@@ -306,7 +302,7 @@ const readExactMoveSource = Effect.fn('manager.readExactMoveSource')(function* (
   const [source] = yield* readMemoryRecordsByUri(config, [sourceUri]);
   const rawSource = yield* readRawMemoryContent(config, sourceUri);
   if (!source || rawSource !== expectedSourceContent) {
-    return yield* Effect.fail(new MemoryOperationError(`${sourceUri} changed ${phase}.`));
+    return yield* MemoryOperationError.make({message: `${sourceUri} changed ${phase}.`});
   }
   return source;
 });
@@ -342,14 +338,14 @@ const assertExactSharedSourceOrRecoveryTarget = Effect.fn('manager.assertExactSh
 ) {
   const source = yield* readSharedWorktreeFile(worktree, sourceRelativePath);
   if (source !== undefined && source !== expectedSourceContent) {
-    return yield* Effect.fail(
-      new MemoryOperationError(`Shared move source ${sourceRelativePath} changed before removal; it was preserved.`),
-    );
+    return yield* MemoryOperationError.make({
+      message: `Shared move source ${sourceRelativePath} changed before removal; it was preserved.`,
+    });
   }
   if (source === undefined && (yield* readSharedWorktreeFile(worktree, targetRelativePath)) !== expectedTargetContent) {
-    return yield* Effect.fail(
-      new MemoryOperationError(`Shared move source ${sourceRelativePath} disappeared before its target was durable.`),
-    );
+    return yield* MemoryOperationError.make({
+      message: `Shared move source ${sourceRelativePath} disappeared before its target was durable.`,
+    });
   }
 });
 
@@ -359,16 +355,14 @@ const isGitTracked = Effect.fn('manager.isSharedMovePathTracked')(function* (wor
   });
   if (result.exitCode === 0) return true;
   if (result.exitCode === 1) return false;
-  return yield* Effect.fail(
-    new MemoryOperationError(
-      `Could not inspect shared move source ${relativePath}: ${result.stderr.trim() || result.stdout.trim() || 'git ls-files failed'}.`,
-    ),
-  );
+  return yield* MemoryOperationError.make({
+    message: `Could not inspect shared move source ${relativePath}: ${result.stderr.trim() || result.stdout.trim() || 'git ls-files failed'}.`,
+  });
 });
 
 const validateArchivable = Effect.fn('manager.validateMoveSource')(function* (source: MemoryRecord) {
   return yield* Effect.try({
-    catch: cause => new MemoryOperationError(cause instanceof Error ? cause.message : String(cause)),
+    catch: cause => MemoryOperationError.make({message: cause instanceof Error ? cause.message : String(cause)}),
     try: () => assertMemoryRecordArchivable(source),
   });
 });
@@ -380,7 +374,7 @@ const prepareSharedMoveContent = Effect.fn('manager.prepareSharedMoveContent')(f
 ) {
   const address = sharedMemoryUriParts(config, targetUri);
   if (address?.kind !== 'durable' || !address.project || !address.topic) {
-    return yield* Effect.fail(new MemoryOperationError(`${targetUri} is not a canonical shared durable memory URI.`));
+    return yield* MemoryOperationError.make({message: `${targetUri} is not a canonical shared durable memory URI.`});
   }
   const metadata: MemoryMetadata = {
     ...source.metadata,
@@ -391,17 +385,15 @@ const prepareSharedMoveContent = Effect.fn('manager.prepareSharedMoveContent')(f
   };
   const citationBlocker = memoryCodeCitationSharingBlocker(metadata);
   if (citationBlocker) {
-    return yield* Effect.fail(
-      new MemoryOperationError(
-        `Refusing to move shared memory ${targetUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
-      ),
-    );
+    return yield* MemoryOperationError.make({
+      message: `Refusing to move shared memory ${targetUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+    });
   }
   const scrub = applyScrubber(formatMemoryDocument('MEMORY', metadata, source.body), {redact: false});
   if (scrub.blocker) {
-    return yield* Effect.fail(
-      new MemoryOperationError(`Refusing to move shared memory ${targetUri}: possible ${scrub.blocker}.`),
-    );
+    return yield* MemoryOperationError.make({
+      message: `Refusing to move shared memory ${targetUri}: possible ${scrub.blocker}.`,
+    });
   }
   return scrub.cleaned;
 });

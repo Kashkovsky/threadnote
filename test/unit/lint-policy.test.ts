@@ -1,5 +1,5 @@
 import {describe, expect, it} from '@effect/vitest';
-import {antipattern} from '@effect/tsgo/oxlint-presets';
+import {antipattern, correctness, effectNative, style} from '@effect/tsgo/oxlint-presets';
 import * as FC from 'effect/testing/FastCheck';
 import {
   isEffectRuntimeMember,
@@ -8,20 +8,65 @@ import {
 } from '../../config/lint/threadnote-plugin.js';
 import {changedTypeScriptLines, LINT_TARGETS, STRICT_LINT_ARGUMENTS, lint} from '../../scripts/lint.js';
 
+const EFFECT_PRESET_PATHS = [
+  './node_modules/@effect/tsgo/oxlint-presets/correctness.json',
+  './node_modules/@effect/tsgo/oxlint-presets/antipattern.json',
+  './node_modules/@effect/tsgo/oxlint-presets/effect-native.json',
+  './node_modules/@effect/tsgo/oxlint-presets/style.json',
+] as const;
+
+/** Official Effect rules that stay off because they rewrite non-Effect surfaces or default-off mega-channels. */
+const EFFECT_APPLICATION_BOUNDARY_RULES = [
+  'effecttsgo/any-unknown-in-error-context',
+  'effecttsgo/async-function',
+  'effecttsgo/global-date',
+  'effecttsgo/global-fetch',
+  'effecttsgo/global-timers',
+  'effecttsgo/missing-pipeable-signature',
+  'effecttsgo/prefer-schema-over-json',
+  'effecttsgo/process-env',
+  'effecttsgo/strict-boolean-expressions',
+] as const;
+
+function officialEffectRules(): readonly string[] {
+  return [
+    ...new Set([
+      ...Object.keys(correctness.rules ?? {}),
+      ...Object.keys(antipattern.rules ?? {}),
+      ...Object.keys(effectNative.rules ?? {}),
+      ...Object.keys(style.rules ?? {}),
+    ]),
+  ].sort();
+}
+
 describe('lint policy', () => {
-  it('enforces every official Effect anti-pattern rule for the full repository', async () => {
+  it('enforces every official Effect lint category at error except documented application boundaries', async () => {
     const baseConfig = (await Bun.file(new URL('../../.oxlintrc.json', import.meta.url)).json()) as {
       readonly extends?: readonly string[];
+      readonly rules?: Readonly<Record<string, string>>;
     };
     const strictConfig = (await Bun.file(new URL('../../.oxlintrc.strict.json', import.meta.url)).json()) as {
       readonly rules?: Readonly<Record<string, string>>;
     };
-    const antipatternRules = Object.keys(antipattern.rules ?? {});
+    const officialRules = officialEffectRules();
+    const offRules = new Set<string>(EFFECT_APPLICATION_BOUNDARY_RULES);
 
-    expect(baseConfig.extends).toContain('./node_modules/@effect/tsgo/oxlint-presets/antipattern.json');
-    expect(antipatternRules.filter(rule => strictConfig.rules?.[rule] !== 'error')).toEqual([]);
+    expect(baseConfig.extends).toEqual([...EFFECT_PRESET_PATHS]);
+    expect(officialRules.filter(rule => !offRules.has(rule) && strictConfig.rules?.[rule] !== 'error')).toEqual([]);
+    expect(EFFECT_APPLICATION_BOUNDARY_RULES.filter(rule => strictConfig.rules?.[rule] !== 'off')).toEqual([]);
+    expect(EFFECT_APPLICATION_BOUNDARY_RULES.filter(rule => baseConfig.rules?.[rule] !== 'off')).toEqual([]);
     expect(strictConfig.rules?.['effecttsgo/node-builtin-import']).toBe('error');
+    expect(strictConfig.rules?.['effecttsgo/global-date-in-effect']).toBe('error');
+    expect(strictConfig.rules?.['effecttsgo/process-env-in-effect']).toBe('error');
   });
+
+  it.prop(
+    'documents only official Effect rules as application boundaries',
+    {rule: FC.constantFrom(...EFFECT_APPLICATION_BOUNDARY_RULES)},
+    ({rule}) => {
+      expect(officialEffectRules()).toContain(rule);
+    },
+  );
 
   it('runs one deterministic full-repository pass that rejects every warning', () => {
     const calls: Array<readonly string[]> = [];

@@ -23,18 +23,17 @@ export function verifyCodeGraphWorksetCatalogDiskCapacity(
   operation: string,
 ) {
   return probe(target).pipe(
-    Effect.mapError(
-      cause =>
-        new CodeGraphWorksetCatalogError(
-          'storage',
-          `Could not inspect free disk space before ${operation}. Verify at least ${String(requiredBytes)} bytes are free and retry; the requested data was not staged.`,
-          {cause},
-        ),
+    Effect.mapError(cause =>
+      CodeGraphWorksetCatalogError.of(
+        'storage',
+        `Could not inspect free disk space before ${operation}. Verify at least ${String(requiredBytes)} bytes are free and retry; the requested data was not staged.`,
+        {cause},
+      ),
     ),
     Effect.flatMap(availableBytes => {
       if (availableBytes === undefined || !Number.isSafeInteger(availableBytes) || availableBytes < 0) {
         return Effect.fail(
-          new CodeGraphWorksetCatalogError(
+          CodeGraphWorksetCatalogError.of(
             'storage',
             `Could not determine free disk space before ${operation}. Verify at least ${String(requiredBytes)} bytes are free and retry; the requested data was not staged.`,
           ),
@@ -42,7 +41,7 @@ export function verifyCodeGraphWorksetCatalogDiskCapacity(
       }
       if (availableBytes < requiredBytes) {
         return Effect.fail(
-          new CodeGraphWorksetCatalogError(
+          CodeGraphWorksetCatalogError.of(
             'capacity',
             `${operation} needs ${String(requiredBytes)} bytes free, but only ${String(availableBytes)} bytes are available. Free disk space and retry; the requested data was not staged.`,
           ),
@@ -54,5 +53,5 @@ export function verifyCodeGraphWorksetCatalogDiskCapacity(
 }
 
 function invalidCapacityInput() {
-  return new CodeGraphWorksetCatalogError('invalid-input', 'Workset catalog storage estimate is invalid.');
+  return CodeGraphWorksetCatalogError.of('invalid-input', 'Workset catalog storage estimate is invalid.');
 }

@@ -1,4 +1,4 @@
-import {Cause, Clock, Console, Effect, Option, Result} from 'effect';
+import {Cause, Console, DateTime, Effect, Option, Result, Schema} from 'effect';
 import {MAX_RECALL_SELECTION_CANDIDATES, type RecallSelectionCandidate} from '../effect/ai/recall.js';
 import {uriSegment} from '../manifest.js';
 import type {MemoryRecord, MemoryRelationType} from '../memory/document.js';
@@ -245,7 +245,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
     ]),
   ];
   const records = yield* input.readRecords(rankingUris);
-  const now = new Date(yield* Clock.currentTimeMillis);
+  const now = yield* DateTime.nowAsDate;
   const queryVariants = recallQueryVariants(input.query, input.queryVariants);
   const indexQueries = navigationOnly ? [] : [input.query, ...queryVariants];
   const scopeSets: ReadonlyArray<readonly string[] | undefined> = input.allowedUriScopes?.length
@@ -718,7 +718,7 @@ const loadCurrentSemanticScores = Effect.fn('recall.loadCurrentSemanticScores')(
       allowedUriScopes,
     ).pipe(Effect.result);
     if (Result.isSuccess(attempt)) return attempt.success;
-    if (attempt.failure instanceof VectorCorpusGenerationChanged && retry < SEMANTIC_GENERATION_RETRY_LIMIT) {
+    if (Schema.is(VectorCorpusGenerationChanged)(attempt.failure) && retry < SEMANTIC_GENERATION_RETRY_LIMIT) {
       continue;
     }
     return yield* Effect.fail(attempt.failure);
@@ -758,7 +758,7 @@ const loadSemanticScoresAttempt = Effect.fn('recall.loadSemanticScoresAttempt')(
   }).pipe(
     Effect.map(scores => ({corpusGeneration, scores})),
     Effect.catchIf(
-      (error): error is VectorIndexCorrupt => error instanceof VectorIndexCorrupt,
+      (error): error is VectorIndexCorrupt => Schema.is(VectorIndexCorrupt)(error),
       () =>
         Effect.gen(function* () {
           const index = yield* loadRecallIndexData(config, {includeInactive: false});

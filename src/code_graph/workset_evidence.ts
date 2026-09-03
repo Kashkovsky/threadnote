@@ -435,7 +435,7 @@ export function projectCodeGraphWorksetEvidence(
     if (measurement.totalBytes <= maximumBytes) selectedCount = count;
   }
   if (selectedCount === undefined) {
-    throw new AgentResponseBudgetTooSmallError(maximumBytes, minimumBytes);
+    throw AgentResponseBudgetTooSmallError.of(maximumBytes, minimumBytes);
   }
   const continuationCursor =
     selectedCount < totalCards && options.continuationForOffset !== undefined

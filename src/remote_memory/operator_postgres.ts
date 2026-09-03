@@ -1,5 +1,6 @@
 import type {Sql, TransactionSql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
+import {randomUuidV4} from '../crypto/uuid.js';
 import {parseRemoteShareAddress} from '../memory_domain/address.js';
 import {parseRemoteCanonicalMemoryDocument} from '../memory_domain/content.js';
 import {parseResourceId} from '../storage/resource-id.js';
@@ -194,8 +195,8 @@ async function importRecord(
       version: REMOTE_MEMORY_PORTABILITY_VERSION,
     };
   }
-  const headId = crypto.randomUUID();
-  const revisionId = crypto.randomUUID();
+  const headId = randomUuidV4();
+  const revisionId = randomUuidV4();
   const generations = await transaction<{indexed_generation: string | number; share_generation: string | number}[]>`
     UPDATE remote_memory.shares SET share_generation = share_generation + 1
     WHERE tenant_id = ${tenantId} AND id = ${shareId} AND status = 'active'
@@ -226,7 +227,7 @@ async function importRecord(
   await upsertAliases(transaction, tenantId, shareId, record, plan.aliasCompatibilityEndsAt);
   await transaction`
         INSERT INTO remote_memory.outbox_events(tenant_id, share_id, id, generation, event_type, aggregate_id)
-        VALUES (${tenantId}, ${shareId}, ${crypto.randomUUID()}, ${generation}, 'memory_head_changed', ${headId})
+        VALUES (${tenantId}, ${shareId}, ${randomUuidV4()}, ${generation}, 'memory_head_changed', ${headId})
       `;
   const migrationPrincipalId = 'system:migration';
   const migrationPolicyVersion = 'system:migration-v1';
@@ -250,7 +251,7 @@ async function importRecord(
       tenant_id, share_id, id, request_id, principal_id, operation, result,
       policy_version, share_policy_version, generation
     )
-    SELECT ${tenantId}, ${shareId}, ${crypto.randomUUID()}, ${plan.planId}, ${migrationPrincipalId},
+    SELECT ${tenantId}, ${shareId}, ${randomUuidV4()}, ${plan.planId}, ${migrationPrincipalId},
       'git_beta_import', 'committed', ${migrationPolicyVersion}, policy_version, ${generation}
     FROM remote_memory.shares WHERE tenant_id = ${tenantId} AND id = ${shareId}
   `;

@@ -1,4 +1,4 @@
-import {Clock, Effect, Predicate} from 'effect';
+import {Clock, DateTime, Effect, Predicate} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import * as SqlError from 'effect/unstable/sql/SqlError';
 import {
@@ -142,7 +142,7 @@ const admitOrRecoverWorktreeReconciliationSchema = Effect.fn('codeGraph.admitOrR
       WORKTREE_RECONCILIATION_LEGACY_MAXIMUM_METADATA_ROWS,
     );
     if (cursor.state === 'invalid') {
-      return yield* Effect.fail(worktreeReconciliationCursorStructuralError());
+      return yield* worktreeReconciliationCursorStructuralError();
     }
     if (cursor.state === 'missing') return false;
     yield* clearWorktreeReconciliationCursor(sql, cursor.value);
@@ -155,7 +155,7 @@ const inspectWorktreeReconciliationCursor = Effect.fn('codeGraph.inspectWorktree
 ) {
   const inspection = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
   if (inspection.state === 'invalid') {
-    return yield* Effect.fail(worktreeReconciliationCursorStructuralError());
+    return yield* worktreeReconciliationCursorStructuralError();
   }
   if (inspection.state === 'missing') {
     return {recorded: false, value: undefined} satisfies WorktreeReconciliationCursorState;
@@ -178,11 +178,11 @@ const clearWorktreeReconciliationCursor = Effect.fn('codeGraph.clearWorktreeReco
     [WORKTREE_RECONCILIATION_CURSOR_KEY, recordedCursor],
   );
   if ((yield* lastStatementChangeCount(sql)) !== 1) {
-    return yield* Effect.fail(worktreeReconciliationCursorChangedError());
+    return yield* worktreeReconciliationCursorChangedError();
   }
   const clearedCursor = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
   if (clearedCursor.state !== 'missing') {
-    return yield* Effect.fail(worktreeReconciliationCursorChangedError());
+    return yield* worktreeReconciliationCursorChangedError();
   }
 });
 
@@ -203,7 +203,7 @@ const recordWorktreeReconciliationCursor = Effect.fn('codeGraph.recordWorktreeRe
     const metadataRowCount = yield* inspectBoundedSchemaMetadataRowCount(sql);
     const cleanupCursor = yield* inspectRemovedViewCleanupAdmissionCursor(sql);
     if (metadataRowCount === undefined || !cleanupCursor.current) {
-      return yield* Effect.fail(worktreeReconciliationCursorCapacityError());
+      return yield* worktreeReconciliationCursorCapacityError();
     }
     const maximumRows =
       REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS - (cleanupCursor.cursor === undefined ? 1 : 0);
@@ -216,11 +216,11 @@ const recordWorktreeReconciliationCursor = Effect.fn('codeGraph.recordWorktreeRe
     );
   }
   if ((yield* lastStatementChangeCount(sql)) !== 1) {
-    return yield* Effect.fail(worktreeReconciliationCursorChangedError());
+    return yield* worktreeReconciliationCursorChangedError();
   }
   const advancedCursor = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
   if (advancedCursor.state !== 'recorded' || advancedCursor.value !== nextCursor) {
-    return yield* Effect.fail(worktreeReconciliationCursorChangedError());
+    return yield* worktreeReconciliationCursorChangedError();
   }
 });
 
@@ -232,7 +232,7 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* admitOrRecoverWorktreeReconciliationSchema(sql))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation schema is unavailable.'));
+        return yield* CodeGraphStoreError.of('Code graph reconciliation schema is unavailable.');
       }
       const cursorState = yield* inspectWorktreeReconciliationCursor(sql);
       const cursor = cursorState.value;
@@ -263,7 +263,7 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
             (Number(row.tombstoned) !== 0 && Number(row.tombstoned) !== 1),
         )
       ) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation candidate is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph reconciliation candidate is invalid.');
       }
       if (nextCursor !== undefined) {
         yield* recordWorktreeReconciliationCursor(sql, cursorState, nextCursor);
@@ -280,13 +280,13 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
 });
 
 function worktreeReconciliationCursorStructuralError(): CodeGraphStoreCorruptionError {
-  return new CodeGraphStoreCorruptionError('Code graph reconciliation cursor metadata is structurally invalid.', {
+  return CodeGraphStoreCorruptionError.of('Code graph reconciliation cursor metadata is structurally invalid.', {
     operation: WORKTREE_RECONCILIATION_CURSOR_OPERATION,
   });
 }
 
-function worktreeReconciliationCursorChangedError(): CodeGraphStoreError {
-  return new CodeGraphStoreCorruptionError(
+function worktreeReconciliationCursorChangedError(): CodeGraphStoreCorruptionError {
+  return CodeGraphStoreCorruptionError.of(
     'Code graph reconciliation cursor metadata changed before it could advance.',
     {
       operation: WORKTREE_RECONCILIATION_CURSOR_OPERATION,
@@ -295,7 +295,7 @@ function worktreeReconciliationCursorChangedError(): CodeGraphStoreError {
 }
 
 function worktreeReconciliationCursorCapacityError(): CodeGraphStoreIncompatibleSchemaError {
-  return new CodeGraphStoreIncompatibleSchemaError(
+  return CodeGraphStoreIncompatibleSchemaError.of(
     'Code graph reconciliation cursor metadata capacity is unavailable.',
     {
       operation: WORKTREE_RECONCILIATION_CURSOR_OPERATION,
@@ -312,11 +312,11 @@ const claimOrphanProvenanceCandidates = Effect.fn('codeGraph.claimOrphanProvenan
     requestedWorktreeIds.length > ORPHAN_PROVENANCE_WORKTREE_ID_LIMIT ||
     requestedWorktreeIds.some(worktreeId => !/^[0-9a-f]{64}$/.test(worktreeId))
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph provenance candidate inventory is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph provenance candidate inventory is invalid.');
   }
   const worktreeIds = [...new Set(requestedWorktreeIds)].sort();
   if (worktreeIds.length !== requestedWorktreeIds.length) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph provenance candidate inventory is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph provenance candidate inventory is invalid.');
   }
   if (worktreeIds.length === 0) {
     return {worktreeIds: []} as const satisfies CodeGraphOrphanProvenanceCandidatePage;
@@ -327,13 +327,11 @@ const claimOrphanProvenanceCandidates = Effect.fn('codeGraph.claimOrphanProvenan
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation schema is unavailable.'));
+        return yield* CodeGraphStoreError.of('Code graph reconciliation schema is unavailable.');
       }
       const cursorInspection = yield* inspectBoundedSchemaMetadataValue(sql, ORPHAN_PROVENANCE_CURSOR_KEY, 64);
       if (cursorInspection.state === 'invalid') {
-        return yield* Effect.fail(
-          new CodeGraphStoreError('Code graph provenance reconciliation cursor metadata is invalid.'),
-        );
+        return yield* CodeGraphStoreError.of('Code graph provenance reconciliation cursor metadata is invalid.');
       }
       const cursor =
         cursorInspection.state === 'recorded' && /^[0-9a-f]{64}$/u.test(cursorInspection.value)
@@ -370,9 +368,7 @@ const claimOrphanProvenanceCandidates = Effect.fn('codeGraph.claimOrphanProvenan
           !/^[0-9a-f]{64}$/.test(row.worktree_id) ||
           !worktreeIdSet.has(row.worktree_id)
         ) {
-          return yield* Effect.fail(
-            new CodeGraphStoreError('Code graph provenance reconciliation candidate is invalid.'),
-          );
+          return yield* CodeGraphStoreError.of('Code graph provenance reconciliation candidate is invalid.');
         }
         selected.push(row.worktree_id);
       }
@@ -390,8 +386,8 @@ const claimOrphanProvenanceCandidates = Effect.fn('codeGraph.claimOrphanProvenan
             !removedViewAdmissionCursor.current ||
             metadataRowCount >= metadataRowLimit
           ) {
-            return yield* Effect.fail(
-              new CodeGraphStoreError('Code graph provenance reconciliation cursor metadata has no capacity.'),
+            return yield* CodeGraphStoreError.of(
+              'Code graph provenance reconciliation cursor metadata has no capacity.',
             );
           }
           yield* sql.unsafe(`INSERT INTO schema_metadata (key, value) VALUES (?, ?)`, [
@@ -405,7 +401,7 @@ const claimOrphanProvenanceCandidates = Effect.fn('codeGraph.claimOrphanProvenan
             cursorInspection.value,
           ]);
           if ((yield* lastStatementChangeCount(sql)) !== 1) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph provenance reconciliation cursor changed.'));
+            return yield* CodeGraphStoreError.of('Code graph provenance reconciliation cursor changed.');
           }
         }
       } else if (cursorRecovery !== undefined && cursorInspection.state === 'recorded') {
@@ -414,7 +410,7 @@ const claimOrphanProvenanceCandidates = Effect.fn('codeGraph.claimOrphanProvenan
           cursorInspection.value,
         ]);
         if ((yield* lastStatementChangeCount(sql)) !== 1) {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph provenance reconciliation cursor changed.'));
+          return yield* CodeGraphStoreError.of('Code graph provenance reconciliation cursor changed.');
         }
       }
       return {
@@ -430,12 +426,12 @@ const observeOrphanProvenanceView = Effect.fn('codeGraph.observeOrphanProvenance
   worktreeId: string,
 ) {
   if (!/^[0-9a-f]{64}$/.test(worktreeId)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph worktree identity is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph worktree identity is invalid.');
   }
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation schema is unavailable.'));
+        return yield* CodeGraphStoreError.of('Code graph reconciliation schema is unavailable.');
       }
       const rows = yield* sql.unsafe<{readonly snapshot_id: unknown}>(
         `SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
@@ -446,7 +442,7 @@ const observeOrphanProvenanceView = Effect.fn('codeGraph.observeOrphanProvenance
         rows.length > 1 ||
         (snapshotId !== undefined && (typeof snapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(snapshotId)))
       ) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph view authority is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph view authority is invalid.');
       }
       return snapshotId === undefined
         ? ({state: 'absent'} as const satisfies CodeGraphOrphanProvenanceViewObservation)
@@ -704,7 +700,7 @@ const markSnapshotLeaseRetirementBaton = Effect.fn('codeGraph.markSnapshotLeaseR
     !Number.isSafeInteger(rowid) ||
     rowid <= 0
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease baton is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot lease baton is invalid.');
   }
   yield* sql`
     UPDATE snapshot_leases
@@ -735,7 +731,7 @@ const ensureRemovedViewCleanupEpoch = Effect.fn('codeGraph.ensureRemovedViewClea
           AND revision = ${existing.revision}
       `;
       if ((yield* lastStatementChangeCount(sql)) !== 1) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup epoch changed.'));
+        return yield* CodeGraphStoreError.of('Code graph removed view cleanup epoch changed.');
       }
     } else {
       if (
@@ -746,7 +742,7 @@ const ensureRemovedViewCleanupEpoch = Effect.fn('codeGraph.ensureRemovedViewClea
           existing.provenanceRecordDigest !== evidence.recordDigest ||
           existing.provenanceRecordIdentity !== evidence.recordIdentity)
       ) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup evidence changed.'));
+        return yield* CodeGraphStoreError.of('Code graph removed view cleanup evidence changed.');
       }
       // Epoch evidence is immutable. A later retry cannot attach current
       // sidecar evidence to a legacy tombstone that predates that evidence.
@@ -872,7 +868,7 @@ const admitRemovedViewCleanupEpoch = Effect.fn('codeGraph.admitRemovedViewCleanu
 ) {
   const cursorInspection = yield* inspectRemovedViewCleanupAdmissionCursor(sql);
   if (!cursorInspection.current) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup admission cursor is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup admission cursor is invalid.');
   }
   const cursor = cursorInspection.cursor;
   const selectPage = (boundary: 'after' | 'through', limit: number) => {
@@ -902,7 +898,7 @@ const admitRemovedViewCleanupEpoch = Effect.fn('codeGraph.admitRemovedViewCleanu
       typeof row.removed_at !== 'string' ||
       !validCanonicalTimestamp(row.removed_at)
     ) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup admission row is invalid.'));
+      return yield* CodeGraphStoreError.of('Code graph removed view cleanup admission row is invalid.');
     }
     tombstones.push({
       expectedSnapshotId: row.expected_snapshot_id,
@@ -947,13 +943,13 @@ const claimRemovedViewCleanupCandidates = Effect.fn('codeGraph.claimRemovedViewC
     !Number.isSafeInteger(requestedLimit) ||
     requestedLimit <= 0
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup claim time is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup claim time is invalid.');
   }
   const nextAttemptAt = nowMilliseconds + CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
+        return yield* CodeGraphStoreError.of('Code graph removed view cleanup schema is unavailable.');
       }
       yield* admitRemovedViewCleanupEpoch(sql);
       const statement = codeGraphRemovedViewCleanupDuePageStatement(nowMilliseconds, requestedLimit);
@@ -962,13 +958,15 @@ const claimRemovedViewCleanupCandidates = Effect.fn('codeGraph.claimRemovedViewC
       for (const row of rows) {
         const entry = decodeRemovedViewCleanupRow(row);
         if (entry === undefined || entry.revision >= Number.MAX_SAFE_INTEGER) {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup claim row is invalid.'));
+          return yield* CodeGraphStoreError.of('Code graph removed view cleanup claim row is invalid.');
         }
         entries.push(entry);
       }
       const claimed: CodeGraphRemovedViewCleanupEntry[] = [];
       for (const entry of entries) {
-        const claimedAt = new Date(Math.max(nowMilliseconds, Date.parse(entry.updatedAt))).toISOString();
+        const claimedAt = DateTime.formatIso(
+          DateTime.makeUnsafe(Math.max(nowMilliseconds, Date.parse(entry.updatedAt))),
+        );
         yield* sql.unsafe(
           `UPDATE removed_view_cleanup
            SET revision = ?, next_attempt_at = ?, updated_at = ?
@@ -976,7 +974,7 @@ const claimRemovedViewCleanupCandidates = Effect.fn('codeGraph.claimRemovedViewC
           [entry.revision + 1, nextAttemptAt, claimedAt, ...removedViewCleanupEntryCasParameters(entry)],
         );
         if ((yield* lastStatementChangeCount(sql)) !== 1) {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup claim changed.'));
+          return yield* CodeGraphStoreError.of('Code graph removed view cleanup claim changed.');
         }
         claimed.push({...entry, nextAttemptAt, revision: entry.revision + 1, updatedAt: claimedAt});
       }
@@ -990,12 +988,12 @@ const authorizeRemovedViewCleanup = Effect.fn('codeGraph.authorizeRemovedViewCle
   entry: CodeGraphRemovedViewCleanupEntry,
 ) {
   if (!validRemovedViewCleanupEntry(entry) || entry.phase === 'complete') {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup candidate is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup candidate is invalid.');
   }
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
+        return yield* CodeGraphStoreError.of('Code graph removed view cleanup schema is unavailable.');
       }
       const current = yield* selectRemovedViewCleanupEntry(sql, entry.worktreeId, entry.expectedSnapshotId);
       if (current === undefined || !sameRemovedViewCleanupEntry(current, entry)) return {state: 'stale'} as const;
@@ -1017,12 +1015,12 @@ const updateRemovedViewCleanup = Effect.fn('codeGraph.updateRemovedViewCleanup')
   update: CodeGraphRemovedViewCleanupUpdate,
 ) {
   if (!validRemovedViewCleanupEntry(entry) || !validRemovedViewCleanupUpdate(entry, update)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup update is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup update is invalid.');
   }
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
+        return yield* CodeGraphStoreError.of('Code graph removed view cleanup schema is unavailable.');
       }
       const current = yield* selectRemovedViewCleanupEntry(sql, entry.worktreeId, entry.expectedSnapshotId);
       if (current === undefined || !sameRemovedViewCleanupEntry(current, entry)) return {state: 'stale'} as const;
@@ -1049,12 +1047,12 @@ const updateRemovedViewCleanup = Effect.fn('codeGraph.updateRemovedViewCleanup')
         ],
       );
       if ((yield* lastStatementChangeCount(sql)) !== 1) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup update changed.'));
+        return yield* CodeGraphStoreError.of('Code graph removed view cleanup update changed.');
       }
       yield* removeMatchingLegacyCleanupPointer(sql, entry, authority.matchingActivePointer);
       const updated = yield* selectRemovedViewCleanupEntry(sql, entry.worktreeId, entry.expectedSnapshotId);
       if (updated === undefined) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup update disappeared.'));
+        return yield* CodeGraphStoreError.of('Code graph removed view cleanup update disappeared.');
       }
       return {entry: updated, state: 'updated'} as const;
     }),

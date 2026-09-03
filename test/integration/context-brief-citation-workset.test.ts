@@ -1,5 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {DateTime, Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {
@@ -27,13 +27,13 @@ describe('Context Brief published Workset citation validation', () => {
       Effect.acquireUseRelease(
         Effect.tryPromise({
           try: () => prepareCodeGraphWorksetFixture({size: 1, stateProfile: 'all-clean'}),
-          catch: cause => new TestError('Could not prepare the citation Workset fixture.', {cause}),
+          catch: cause => TestError.make({message: 'Could not prepare the citation Workset fixture.', cause}),
         }),
         fixture =>
           Effect.gen(function* () {
             const repository = fixture.repositories[0];
             if (repository === undefined)
-              return yield* Effect.fail(new TestError('Citation Workset fixture has no repository.'));
+              return yield* TestError.make({message: 'Citation Workset fixture has no repository.'});
             const config = codeGraphWorksetRuntimeConfig(fixture);
             const fs = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
@@ -123,7 +123,7 @@ describe('Context Brief published Workset citation validation', () => {
                     changedActivationFenceRead = undefined;
                     return {
                       ...fence,
-                      activatedAt: new Date(Date.parse(fence.activatedAt) + 1).toISOString(),
+                      activatedAt: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(fence.activatedAt) + 1)),
                     };
                   }
                   return fence;
@@ -221,7 +221,7 @@ describe('Context Brief published Workset citation validation', () => {
         fixture =>
           Effect.tryPromise({
             try: () => removePreparedCodeGraphWorksetFixture(fixture),
-            catch: cause => new TestError('Could not remove the citation Workset fixture.', {cause}),
+            catch: cause => TestError.make({message: 'Could not remove the citation Workset fixture.', cause}),
           }),
       ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     {timeout: 120_000},

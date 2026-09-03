@@ -37,13 +37,13 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
   const pageCountRows = yield* sql.unsafe<{readonly page_count: number}>('PRAGMA main.page_count');
   const pageCount = Number(pageCountRows[0]?.page_count ?? -1);
   if (!Number.isSafeInteger(pageCount) || pageCount < 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph SQLite page count is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph SQLite page count is invalid.');
   }
   if (pageCount === 0) yield* sql.unsafe(`PRAGMA main.page_size = ${CODE_GRAPH_DATABASE_PAGE_SIZE_BYTES}`);
   const pageSizeRows = yield* sql.unsafe<{readonly page_size: number}>('PRAGMA main.page_size');
   const pageSize = Number(pageSizeRows[0]?.page_size ?? 0);
   if (!Number.isSafeInteger(pageSize) || pageSize < 512 || pageSize > 65_536 || (pageSize & (pageSize - 1)) !== 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph SQLite page size is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph SQLite page size is invalid.');
   }
   // A matching receipt binds the last complete validation to SQLite's
   // persistent main-schema cookie and separately revalidates mutable authority
@@ -83,10 +83,8 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
   `;
   const admittedSchemaVersion = yield* inspectBoundedSchemaMetadataValue(sql, 'schema_version', 16);
   if (admittedSchemaVersion.state !== 'recorded' || admittedSchemaVersion.value !== String(CODE_GRAPH_SCHEMA_VERSION)) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError(
-        `Code graph schema ${admittedSchemaVersion.state === 'recorded' ? admittedSchemaVersion.value : 'unknown'} is incompatible with ${CODE_GRAPH_SCHEMA_VERSION}.`,
-      ),
+    return yield* CodeGraphStoreError.of(
+      `Code graph schema ${admittedSchemaVersion.state === 'recorded' ? admittedSchemaVersion.value : 'unknown'} is incompatible with ${CODE_GRAPH_SCHEMA_VERSION}.`,
     );
   }
   const snapshotFileCitationAuthorization = yield* assertCodeGraphSnapshotFileCitationSchemaMigratable(sql);
@@ -606,10 +604,8 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
     SELECT value FROM schema_metadata WHERE key = 'schema_version'
   `;
   if (rows[0]?.value !== String(CODE_GRAPH_SCHEMA_VERSION)) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError(
-        `Code graph schema ${rows[0]?.value ?? 'unknown'} is incompatible with ${CODE_GRAPH_SCHEMA_VERSION}.`,
-      ),
+    return yield* CodeGraphStoreError.of(
+      `Code graph schema ${rows[0]?.value ?? 'unknown'} is incompatible with ${CODE_GRAPH_SCHEMA_VERSION}.`,
     );
   }
 });

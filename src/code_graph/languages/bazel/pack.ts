@@ -23,7 +23,10 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
       Effect.try({
         try: () => extractBazelFacts(file, context),
         catch: cause =>
-          new CodeGraphLanguagePackError(`Could not extract bounded Bazel/Starlark facts from ${file.path}.`, {cause}),
+          CodeGraphLanguagePackError.make({
+            message: `Could not extract bounded Bazel/Starlark facts from ${file.path}.`,
+            cause,
+          }),
       }),
     version: sha256HexSync('threadnote-bazel-starlark-static-extractor-v1'),
   },

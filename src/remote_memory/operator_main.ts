@@ -1,5 +1,5 @@
 import * as z from 'zod/v4';
-import {Cause, Console, Effect, FileSystem, Path, Schema} from 'effect';
+import {Cause, Console, Crypto, Effect, FileSystem, Path, Schema} from 'effect';
 import {fromPromiseInterruptibleAwaiting} from '../effect/errors.js';
 import {createRemoteMemorySql, type RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
 import {
@@ -182,7 +182,7 @@ export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(fu
             );
             return 0;
           }
-          return yield* Effect.fail(operatorInvocationError('Unknown remote memory operator command.'));
+          return yield* operatorInvocationError('Unknown remote memory operator command.');
         }),
       adapter => (adapter.close ? operatorPromise(() => adapter.close!()) : Effect.void),
     );
@@ -268,14 +268,14 @@ function operatorDatabaseUrl(value: string | undefined): string {
 }
 
 function operatorInvocationError(message: string): RemoteMemoryOperatorInvocationError {
-  return new RemoteMemoryOperatorInvocationError({message});
+  return RemoteMemoryOperatorInvocationError.make({message});
 }
 
 function operatorFailureMessage(cause: unknown): string {
   if (
-    cause instanceof RemoteMemoryOperatorInvocationError ||
-    cause instanceof RemoteMemoryOperatorFileError ||
-    cause instanceof RemoteMemoryOperatorError
+    Schema.is(RemoteMemoryOperatorInvocationError)(cause) ||
+    Schema.is(RemoteMemoryOperatorFileError)(cause) ||
+    Schema.is(RemoteMemoryOperatorError)(cause)
   ) {
     return cause.message;
   }
@@ -300,4 +300,4 @@ function operatorHelp(): string {
   ].join('\n');
 }
 
-export type RemoteMemoryOperatorFileServices = FileSystem.FileSystem | Path.Path;
+export type RemoteMemoryOperatorFileServices = Crypto.Crypto | FileSystem.FileSystem | Path.Path;

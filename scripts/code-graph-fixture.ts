@@ -134,7 +134,7 @@ export const prepareCodeGraphFixture = Effect.fn('codeGraphFixture.prepare')(fun
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   if (!/^code-graph-[a-z0-9-]+$/.test(fixture)) {
-    return yield* Effect.fail(new ScriptError(`Invalid code graph fixture name: ${fixture}.`));
+    return yield* ScriptError.make({message: `Invalid code graph fixture name: ${fixture}.`});
   }
   const source = yield* path.fromFileUrl(
     new URL(`../test/evaluation/fixtures/${fixture}/repository/`, import.meta.url),
@@ -167,7 +167,7 @@ export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prep
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   if (!Number.isSafeInteger(targetSymbols) || targetSymbols < 1) {
-    return yield* Effect.fail(new ScriptError('Generated code graph target must be a positive safe integer.'));
+    return yield* ScriptError.make({message: 'Generated code graph target must be a positive safe integer.'});
   }
   const root = yield* makeOwnedTempDirectoryScoped('threadnote-code-graph-scale-');
   const repository = path.join(root, 'repository');
@@ -246,9 +246,9 @@ export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prep
   }
   const symbolsPerFile = 100;
   if (includeStaticReexportControl && targetSymbols <= symbolsPerFile) {
-    return yield* Effect.fail(
-      new ScriptError(`Generated static re-export control requires at least ${symbolsPerFile + 1} symbols.`),
-    );
+    return yield* ScriptError.make({
+      message: `Generated static re-export control requires at least ${symbolsPerFile + 1} symbols.`,
+    });
   }
   const fileCount = Math.ceil(targetSymbols / symbolsPerFile);
   yield* Effect.forEach(
@@ -535,12 +535,12 @@ export function productionSymbolName(index: number, workspaceIndex: number): str
 
 export function productionWorkspaceRoots(count: number, activeExcludedCount = 0): readonly string[] {
   if (!Number.isSafeInteger(count) || count < 1) {
-    throw new ScriptError('Production code graph workspace count must be a positive safe integer.');
+    throw ScriptError.make({message: 'Production code graph workspace count must be a positive safe integer.'});
   }
   if (!Number.isSafeInteger(activeExcludedCount) || activeExcludedCount < 0 || activeExcludedCount >= count) {
-    throw new ScriptError(
-      'Production code graph active workspace-excluded package count must leave one included package.',
-    );
+    throw ScriptError.make({
+      message: 'Production code graph active workspace-excluded package count must leave one included package.',
+    });
   }
   const includedCount = count - activeExcludedCount;
   const fixedCandidates = [
@@ -597,17 +597,21 @@ export function validateProductionProfile(
   };
   for (const [name, value] of Object.entries(scalarCounts)) {
     if (!Number.isSafeInteger(value) || value < 1) {
-      throw new ScriptError(`Production code graph profile ${name} must be a positive safe integer.`);
+      throw ScriptError.make({message: `Production code graph profile ${name} must be a positive safe integer.`});
     }
   }
   for (const [name, value] of Object.entries(profile.classMix)) {
     if (!Number.isSafeInteger(value) || value < 1) {
-      throw new ScriptError(`Production code graph profile class mix ${name} must be a positive safe integer.`);
+      throw ScriptError.make({
+        message: `Production code graph profile class mix ${name} must be a positive safe integer.`,
+      });
     }
   }
   for (const [name, value] of Object.entries(profile.duplicateBlobs)) {
     if (!Number.isSafeInteger(value) || value < 1) {
-      throw new ScriptError(`Production code graph profile duplicate blob ${name} must be a positive safe integer.`);
+      throw ScriptError.make({
+        message: `Production code graph profile duplicate blob ${name} must be a positive safe integer.`,
+      });
     }
   }
   if (
@@ -615,66 +619,72 @@ export function validateProductionProfile(
     profile.version !== 2 ||
     profile.surrogate !== 'threadnote-4.1.0-beta.1-public-monorepo'
   ) {
-    throw new ScriptError('Unsupported production code graph fixture profile.');
+    throw ScriptError.make({message: 'Unsupported production code graph fixture profile.'});
   }
   if (profile.worktreeChurnScenarioCount !== PRODUCTION_WORKTREE_CHURN_SCENARIOS.length) {
-    throw new ScriptError(
-      'Production code graph fixture must declare the reviewed six-scenario worktree churn matrix.',
-    );
+    throw ScriptError.make({
+      message: 'Production code graph fixture must declare the reviewed six-scenario worktree churn matrix.',
+    });
   }
   if (profile.declarationSymbols < profile.sourceFiles) {
-    throw new ScriptError('Production code graph fixture requires at least one declaration per source file.');
+    throw ScriptError.make({
+      message: 'Production code graph fixture requires at least one declaration per source file.',
+    });
   }
   if (profile.classMix.typescriptSourceFiles + profile.classMix.tsxSourceFiles !== profile.sourceFiles) {
-    throw new ScriptError('Production code graph source class counts must equal sourceFiles.');
+    throw ScriptError.make({message: 'Production code graph source class counts must equal sourceFiles.'});
   }
   if (productionRepositoryFileCount(profile.classMix) !== profile.targetRepositoryFiles) {
-    throw new ScriptError('Production code graph class mix must equal targetRepositoryFiles.');
+    throw ScriptError.make({message: 'Production code graph class mix must equal targetRepositoryFiles.'});
   }
   if (productionEligibleFileCount(profile.classMix) !== profile.targetEligibleFiles) {
-    throw new ScriptError('Production code graph eligible class mix must equal targetEligibleFiles.');
+    throw ScriptError.make({message: 'Production code graph eligible class mix must equal targetEligibleFiles.'});
   }
   if (profile.classMix.packageManifestFiles !== profile.workspaceCount + 1) {
-    throw new ScriptError('Production code graph package manifest count must cover the root and every package.');
+    throw ScriptError.make({
+      message: 'Production code graph package manifest count must cover the root and every package.',
+    });
   }
   if (profile.classMix.workspaceManifestFiles !== 1) {
-    throw new ScriptError('Production code graph fixture requires exactly one pnpm workspace manifest.');
+    throw ScriptError.make({message: 'Production code graph fixture requires exactly one pnpm workspace manifest.'});
   }
   if (profile.classMix.tsconfigFiles > profile.workspaceCount + 1) {
-    throw new ScriptError('Production code graph tsconfig count exceeds the root and package count.');
+    throw ScriptError.make({message: 'Production code graph tsconfig count exceeds the root and package count.'});
   }
   if (profile.classMix.nxProjectFiles > profile.workspaceCount) {
-    throw new ScriptError('Production code graph Nx project count exceeds the package count.');
+    throw ScriptError.make({message: 'Production code graph Nx project count exceeds the package count.'});
   }
   if (profile.activeWorkspaceExcludedSourceFiles >= profile.sourceFiles) {
-    throw new ScriptError(
-      'Production code graph active workspace-excluded source count must leave included sourceFiles.',
-    );
+    throw ScriptError.make({
+      message: 'Production code graph active workspace-excluded source count must leave included sourceFiles.',
+    });
   }
   if (profile.duplicateBlobs.generatedSvgVariants > profile.classMix.generatedSvgFiles) {
-    throw new ScriptError('Production code graph generated SVG variants exceed generated SVG files.');
+    throw ScriptError.make({message: 'Production code graph generated SVG variants exceed generated SVG files.'});
   }
   if (profile.duplicateBlobs.heavyJsonVariants > profile.classMix.duplicateHeavyJsonFiles) {
-    throw new ScriptError('Production code graph heavy JSON variants exceed duplicate heavy JSON files.');
+    throw ScriptError.make({message: 'Production code graph heavy JSON variants exceed duplicate heavy JSON files.'});
   }
   if (profile.duplicateBlobs.heavyJsonPayloadBytes > 16 * 1_048_576) {
-    throw new ScriptError('Production code graph heavy JSON payload exceeds the bounded surrogate limit.');
+    throw ScriptError.make({message: 'Production code graph heavy JSON payload exceeds the bounded surrogate limit.'});
   }
   if (profile.duplicateBlobs.heavyJsonPayloadBytes < profile.lowSignalJsonExclusionThresholdBytes) {
-    throw new ScriptError('Production code graph heavy JSON payload must reach its declared exclusion threshold.');
+    throw ScriptError.make({
+      message: 'Production code graph heavy JSON payload must reach its declared exclusion threshold.',
+    });
   }
   if (profile.lowSignalJsonExclusionThresholdBytes >= profile.highSignalConfigHardCapBytes) {
-    throw new ScriptError(
-      'Production code graph low-signal threshold must remain below the high-signal config hard cap.',
-    );
+    throw ScriptError.make({
+      message: 'Production code graph low-signal threshold must remain below the high-signal config hard cap.',
+    });
   }
   if (
     profile.lowSignalJsonExclusionThresholdBytes !== CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES ||
     profile.highSignalConfigHardCapBytes !== CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES
   ) {
-    throw new ScriptError(
-      'Production code graph eligibility targets must match the runtime inventory admission policy.',
-    );
+    throw ScriptError.make({
+      message: 'Production code graph eligibility targets must match the runtime inventory admission policy.',
+    });
   }
   productionWorkspaceRoots(profile.workspaceCount, profile.activeWorkspaceExcludedPackageCount);
   return profile;

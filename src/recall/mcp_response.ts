@@ -169,7 +169,7 @@ export function projectRecallMcpResponse(
       }
     }
   }
-  if (selected === undefined) throw new AgentResponseBudgetTooSmallError(projectionMaximumBytes, minimumBytes);
+  if (selected === undefined) throw AgentResponseBudgetTooSmallError.of(projectionMaximumBytes, minimumBytes);
   return {
     maximumBytes,
     measurement: selected.measurement,

@@ -1,4 +1,4 @@
-import {Effect, Option} from 'effect';
+import {DateTime, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {codeGraphContentIdentity} from './graph_identity.js';
 import {
@@ -100,7 +100,7 @@ const recordSnapshotAnalysisReceipt = Effect.fn('codeGraph.recordSnapshotAnalysi
     WHERE snapshot_id = ${snapshot.id} AND count <= 0
   `;
   if (Number(invalidHistogram[0]?.count ?? 0) > 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph analysis histogram contains invalid counts.'));
+    return yield* CodeGraphStoreError.of('Code graph analysis histogram contains invalid counts.');
   }
   const [symbolRows, edgeRows] = yield* Effect.all(
     [
@@ -123,11 +123,9 @@ const recordSnapshotAnalysisReceipt = Effect.fn('codeGraph.recordSnapshotAnalysi
   const symbolCount = symbols.reduce((total, row) => total + row.count, 0);
   const edgeCount = edges.reduce((total, row) => total + row.count, 0);
   if (symbolCount !== snapshot.symbolCount || edgeCount !== snapshot.edgeCount) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError(
-        `Code graph analysis totals do not match the snapshot (${symbolCount}/${snapshot.symbolCount} symbols, ` +
-          `${edgeCount}/${snapshot.edgeCount} edges).`,
-      ),
+    return yield* CodeGraphStoreError.of(
+      `Code graph analysis totals do not match the snapshot (${symbolCount}/${snapshot.symbolCount} symbols, ` +
+        `${edgeCount}/${snapshot.edgeCount} edges).`,
     );
   }
   yield* sql`
@@ -135,7 +133,7 @@ const recordSnapshotAnalysisReceipt = Effect.fn('codeGraph.recordSnapshotAnalysi
       snapshot_id, version, symbol_count, edge_count, digest, created_at
     ) VALUES (
       ${snapshot.id}, 1, ${symbolCount}, ${edgeCount},
-      ${codeGraphAnalysisSummaryDigest(symbols, edges)}, ${new Date().toISOString()}
+      ${codeGraphAnalysisSummaryDigest(symbols, edges)}, ${DateTime.formatIso(yield* DateTime.now)}
     )
     ON CONFLICT(snapshot_id) DO UPDATE SET
       version = excluded.version,
@@ -158,7 +156,7 @@ const ensureReadySnapshotAnalysisSummary = Effect.fn('codeGraph.ensureReadySnaps
   const existingComponentEdges = yield* selectPersistedSnapshotComponentEdges(snapshotId);
   if (Option.isSome(existing) && Option.isSome(existingComponentEdges)) return false;
   const rows = yield* sql<SnapshotRow>`SELECT * FROM snapshots WHERE id = ${snapshotId} AND state = 'ready' LIMIT 1`;
-  if (!rows[0]) return yield* Effect.fail(new CodeGraphStoreError(`Ready snapshot ${snapshotId} was not found.`));
+  if (!rows[0]) return yield* CodeGraphStoreError.of(`Ready snapshot ${snapshotId} was not found.`);
   const snapshot = snapshotFromRow(rows[0]);
   const baseSnapshotId = Option.getOrUndefined(sqlTextOption(rows[0].base_snapshot_id));
   if (Option.isNone(existing)) {
@@ -170,10 +168,8 @@ const ensureReadySnapshotAnalysisSummary = Effect.fn('codeGraph.ensureReadySnaps
         `;
         const base = baseRows[0];
         if (!base || Option.isSome(sqlTextOption(base.base_snapshot_id))) {
-          return yield* Effect.fail(
-            new CodeGraphStoreError(
-              'Nested legacy overlays require a clean code graph rebuild before summary backfill.',
-            ),
+          return yield* CodeGraphStoreError.of(
+            'Nested legacy overlays require a clean code graph rebuild before summary backfill.',
           );
         }
         const baseSnapshot = snapshotFromRow(base);
@@ -203,7 +199,7 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
   const existing = yield* sql<{readonly started_at: string}>`
     SELECT started_at FROM snapshots WHERE id = ${snapshot.id} LIMIT 1
   `;
-  const startedAt = existing[0]?.started_at ?? new Date().toISOString();
+  const startedAt = existing[0]?.started_at ?? DateTime.formatIso(yield* DateTime.now);
   yield* clearCompactLexicalSnapshotRows(sql, snapshot.id);
   yield* sql.withTransaction(
     Effect.gen(function* () {
@@ -286,7 +282,7 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
   );
   yield* observe('copying-files', 'completed', copiedFiles.rows);
   if (copiedFiles.rows !== snapshot.fileCount) {
-    return yield* Effect.fail(new CodeGraphStoreError('Staged file count does not match the ready snapshot.'));
+    return yield* CodeGraphStoreError.of('Staged file count does not match the ready snapshot.');
   }
   yield* observe('copying-symbols', 'started');
   const copiedSymbols = yield* copyPersistentActivationRows(
@@ -298,13 +294,13 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
   );
   yield* observe('copying-symbols', 'completed', copiedSymbols.rows);
   if (copiedSymbols.rows !== snapshot.symbolCount) {
-    return yield* Effect.fail(new CodeGraphStoreError('Staged symbol count does not match the ready snapshot.'));
+    return yield* CodeGraphStoreError.of('Staged symbol count does not match the ready snapshot.');
   }
   yield* observe('copying-terms', 'started');
   const copiedTerms = yield* copyActivationCompactLexicalFacts(sql, snapshot.id, 'all');
   yield* observe('copying-terms', 'completed', copiedTerms.postingCount);
   if (copiedTerms.symbolCount !== snapshot.symbolCount) {
-    return yield* Effect.fail(new CodeGraphStoreError('Compact lexical symbol count does not match the snapshot.'));
+    return yield* CodeGraphStoreError.of('Compact lexical symbol count does not match the snapshot.');
   }
   yield* observe('copying-edges', 'started');
   const copiedEdges = yield* copyPersistentActivationRows(
@@ -316,7 +312,7 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
   );
   yield* observe('copying-edges', 'completed', copiedEdges.rows);
   if (copiedEdges.rows !== snapshot.edgeCount || copiedEdges.rows !== validatedEdges) {
-    return yield* Effect.fail(new CodeGraphStoreError('Staged edge count does not match the ready snapshot.'));
+    return yield* CodeGraphStoreError.of('Staged edge count does not match the ready snapshot.');
   }
   let copiedLookupKeys: PersistentActivationCopyResult = {rows: 0, talliedRows: 0};
   let copiedReexports: PersistentActivationCopyResult = {rows: 0, talliedRows: 0};
@@ -361,7 +357,7 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
             ${reusableBaseReceipt.workspaceFingerprint}, ${reusableBaseReceipt.fileSetFingerprint},
             ${copiedLookupKeys.rows}, ${copiedLookupKeys.talliedRows}, ${copiedReexports.rows},
             ${encodeCodeGraphInventoryReuseReceipt(reusableBaseReceipt.inventory)},
-            ${new Date().toISOString()}
+            ${DateTime.formatIso(yield* DateTime.now)}
           )
         `;
       }
@@ -369,7 +365,7 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
       yield* observe('recording-completion', 'started');
       yield* sql`
         UPDATE snapshots
-        SET state = 'ready', completed_at = ${new Date().toISOString()}
+        SET state = 'ready', completed_at = ${DateTime.formatIso(yield* DateTime.now)}
         WHERE id = ${snapshot.id} AND state = 'building'
       `;
       yield* observe('recording-completion', 'completed', 1);
@@ -481,23 +477,21 @@ const validatePersistedFullEdgeSymbols = Effect.fn('codeGraph.validatePersistedF
         rowsExamined < 0 ||
         rowsExamined > rawRows
       ) {
-        return yield* Effect.fail(new CodeGraphStoreError('Persistent edge validation returned an invalid row count.'));
+        return yield* CodeGraphStoreError.of('Persistent edge validation returned an invalid row count.');
       }
       if (page?.invalid_symbol_id) {
         const edgeStatement = persistedEndpointEdgeStatement(snapshotId, endpoint, page.invalid_symbol_id);
         const edgeRows = yield* sql.unsafe<{readonly id: string}>(edgeStatement.text, edgeStatement.parameters);
         const edgeId = edgeRows[0]?.id;
-        return yield* Effect.fail(
-          new CodeGraphStoreError(
-            edgeId
-              ? `Code graph edge ${edgeId} references a missing symbol (${endpoint} endpoint ${page.invalid_symbol_id}).`
-              : `Code graph ${endpoint} endpoint ${page.invalid_symbol_id} references a missing symbol.`,
-          ),
+        return yield* CodeGraphStoreError.of(
+          edgeId
+            ? `Code graph edge ${edgeId} references a missing symbol (${endpoint} endpoint ${page.invalid_symbol_id}).`
+            : `Code graph ${endpoint} endpoint ${page.invalid_symbol_id} references a missing symbol.`,
         );
       }
       if (rawRows === 0) break;
       if (typeof page?.cursor !== 'string' || (Option.isSome(cursor) && page.cursor <= cursor.value)) {
-        return yield* Effect.fail(new CodeGraphStoreError('Persistent edge validation cursor did not advance.'));
+        return yield* CodeGraphStoreError.of('Persistent edge validation cursor did not advance.');
       }
       cursor = Option.some(page.cursor);
       examined += rowsExamined;
@@ -510,7 +504,7 @@ const validatePersistedFullEdgeSymbols = Effect.fn('codeGraph.validatePersistedF
   `;
   const edgeCount = Number(countRows[0]?.count ?? -1);
   if (!Number.isSafeInteger(edgeCount) || edgeCount < 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent edge validation returned an invalid edge count.'));
+    return yield* CodeGraphStoreError.of('Persistent edge validation returned an invalid edge count.');
   }
   return edgeCount;
 });
@@ -560,7 +554,7 @@ const drainCompletedPersistentBuildRows = Effect.fn('codeGraph.drainCompletedPer
         ),
       );
       if (!Number.isSafeInteger(deleted) || deleted < 0) {
-        return yield* Effect.fail(new CodeGraphStoreError('Completed build cleanup returned an invalid count.'));
+        return yield* CodeGraphStoreError.of('Completed build cleanup returned an invalid count.');
       }
       if (deleted === 0) break;
       totalDeleted += deleted;
@@ -644,9 +638,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
   yield* assertPersistentBuildOwner(sql, snapshot.id, ownerToken);
   yield* observe('validating-input', 'started');
   if (snapshot.baseSnapshotId !== undefined) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError('Persistent full activation only accepts self-contained snapshots.'),
-    );
+    return yield* CodeGraphStoreError.of('Persistent full activation only accepts self-contained snapshots.');
   }
   // A self-contained full dirty snapshot may publish the same bounded reuse
   // receipt as a clean root. Layered snapshots remain rejected above, so this
@@ -656,7 +648,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
     readonly state: CodeGraphSnapshot['state'];
   }>`SELECT repository_id, state FROM snapshots WHERE id = ${snapshot.id} LIMIT 1`;
   if (stateRows[0]?.state !== 'building' || stateRows[0]?.repository_id !== identity.repositoryId) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent full-build snapshot is not active.'));
+    return yield* CodeGraphStoreError.of('Persistent full-build snapshot is not active.');
   }
   if (checkpointImportReceipt !== undefined) {
     yield* assertCheckpointImportBuild(sql, snapshot.id, checkpointImportReceipt);
@@ -665,7 +657,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
   yield* assertPersistentMaterializationComplete(sql, snapshot.id, ownerToken);
   const validatedEdges = yield* validatePersistedFullEdgeSymbols(sql, snapshot.id, observe);
   if (validatedEdges !== snapshot.edgeCount) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent edge count does not match the ready snapshot.'));
+    return yield* CodeGraphStoreError.of('Persistent edge count does not match the ready snapshot.');
   }
   const counts = yield* sql<{
     readonly completed_batches: number;
@@ -689,7 +681,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
     Number(counts[0]?.symbols ?? -1) !== snapshot.symbolCount ||
     Number(counts[0]?.completed_batches ?? -1) < 0
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent full-build fact counts do not match the snapshot.'));
+    return yield* CodeGraphStoreError.of('Persistent full-build fact counts do not match the snapshot.');
   }
   const compactLexicalReceipt = {
     postingCount: Number(counts[0]?.postings ?? -1),
@@ -701,7 +693,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
       count => !Number.isSafeInteger(count) || count < 0,
     )
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent compact lexical row count is invalid.'));
+    return yield* CodeGraphStoreError.of('Persistent compact lexical row count is invalid.');
   }
   const reuseRows = reusableBaseReceipt
     ? yield* countPersistedFullReuseRows(sql, snapshot.id, observe)
@@ -762,7 +754,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
             ${reusableBaseReceipt.workspaceFingerprint}, ${reusableBaseReceipt.fileSetFingerprint},
             ${reuseRows.lookupCount}, ${reuseRows.aliasCount}, ${reuseRows.reexportCount},
             ${encodeCodeGraphInventoryReuseReceipt(reusableBaseReceipt.inventory)},
-            ${new Date().toISOString()}
+            ${DateTime.formatIso(yield* DateTime.now)}
           )
         `;
           }
@@ -770,7 +762,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
           const completed = yield* sql<{readonly id: string}>`
         UPDATE snapshots
         SET state = 'ready', file_count = ${snapshot.fileCount}, symbol_count = ${snapshot.symbolCount},
-          edge_count = ${snapshot.edgeCount}, completed_at = ${new Date().toISOString()}, failure_summary = NULL
+          edge_count = ${snapshot.edgeCount}, completed_at = ${DateTime.formatIso(yield* DateTime.now)}, failure_summary = NULL
         WHERE id = ${snapshot.id}
           AND state = 'building'
           AND EXISTS (
@@ -781,10 +773,15 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
         RETURNING id
       `;
           if (!completed[0]) {
-            return yield* Effect.fail(new CodeGraphStoreError('Persistent full-build promotion lost ownership.'));
+            return yield* CodeGraphStoreError.of('Persistent full-build promotion lost ownership.');
           }
           if (checkpointImportReceipt !== undefined) {
-            yield* publishCheckpointImportReceipt(sql, snapshot.id, checkpointImportReceipt, new Date().toISOString());
+            yield* publishCheckpointImportReceipt(
+              sql,
+              snapshot.id,
+              checkpointImportReceipt,
+              DateTime.formatIso(yield* DateTime.now),
+            );
           }
           yield* sql`
         DELETE FROM snapshot_build_owners
@@ -862,7 +859,7 @@ const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAli
 ) {
   yield* configureConnection(sql);
   if (snapshot.dirty || snapshot.baseSnapshotId !== baseSnapshotId) {
-    return yield* Effect.fail(new CodeGraphStoreError('Clean snapshot alias has the wrong base snapshot.'));
+    return yield* CodeGraphStoreError.of('Clean snapshot alias has the wrong base snapshot.');
   }
   const baseRows = yield* sql<SnapshotRow>`
     SELECT * FROM snapshots
@@ -884,7 +881,7 @@ const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAli
     Number(base.edge_count) !== snapshot.edgeCount ||
     !baseReceipt
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError(`Reusable clean base ${baseSnapshotId} is unavailable.`));
+    return yield* CodeGraphStoreError.of(`Reusable clean base ${baseSnapshotId} is unavailable.`);
   }
   const baseGraphContentId = Option.getOrUndefined(sqlTextOption(base.graph_content_id)) ?? base.id;
   if (dirtyBase) {
@@ -899,12 +896,10 @@ const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAli
       !sameCodeGraphPackProvenance(baseReceipt.packProvenance, currentSnapshotReceipt.packProvenance) ||
       !(yield* exactSnapshotFilesMatch(sql, baseSnapshotId, exactDirtyBaseFiles))
     ) {
-      return yield* Effect.fail(
-        new CodeGraphStoreError('Committed dirty graph does not exactly match the clean snapshot alias.'),
-      );
+      return yield* CodeGraphStoreError.of('Committed dirty graph does not exactly match the clean snapshot alias.');
     }
   } else if (snapshot.graphContentId !== undefined && snapshot.graphContentId !== baseGraphContentId) {
-    return yield* Effect.fail(new CodeGraphStoreError('Clean snapshot alias has different graph content.'));
+    return yield* CodeGraphStoreError.of('Clean snapshot alias has different graph content.');
   }
   const prior = yield* sql<SnapshotRow>`SELECT * FROM snapshots WHERE id = ${snapshot.id} LIMIT 1`;
   if (prior[0]?.state === 'ready') {
@@ -919,11 +914,9 @@ const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAli
     ) {
       return;
     }
-    return yield* Effect.fail(
-      new CodeGraphStoreError(`Snapshot alias ${snapshot.id} already has incompatible content.`),
-    );
+    return yield* CodeGraphStoreError.of(`Snapshot alias ${snapshot.id} already has incompatible content.`);
   }
-  const completedAt = new Date().toISOString();
+  const completedAt = DateTime.formatIso(yield* DateTime.now);
   yield* sql.withTransaction(
     Effect.gen(function* () {
       yield* upsertRepository(sql, identity);

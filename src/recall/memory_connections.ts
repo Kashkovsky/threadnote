@@ -1,4 +1,4 @@
-import {Clock, Effect} from 'effect';
+import {DateTime, Effect} from 'effect';
 import {
   MEMORY_RELATION_TYPES,
   isMemoryRelationType,
@@ -221,7 +221,7 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
   if (input.allowedUriScopes.length === 0) {
     throw new Error('Recall memory connections require at least one authorized URI scope.');
   }
-  const now = input.now ?? new Date(yield* Clock.currentTimeMillis);
+  const now = input.now ?? (yield* DateTime.nowAsDate);
   const limit = boundedConnectionResultLimit(input.limit);
   const requestedCanonicalUris = parsed.memoryRefs
     .map(ref => parseResourceId(ref).canonicalUri)
@@ -261,11 +261,11 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
     return record ? [record] : [];
   });
   const verifiedPremises = verifyLiveRecallCandidates(premiseCandidates, premiseLiveRecords, input);
-  const premiseSeeds = requestedPremises.flatMap(({memoryId}, requestedOrdinal) => {
-    return memoryId && verifiedPremises.liveCandidateById.has(memoryId) && !verifiedPremises.conflictIds.has(memoryId)
+  const premiseSeeds = requestedPremises.flatMap(({memoryId}, requestedOrdinal) =>
+    memoryId && verifiedPremises.liveCandidateById.has(memoryId) && !verifiedPremises.conflictIds.has(memoryId)
       ? [{memoryId, requestedOrdinal}]
-      : [];
-  });
+      : [],
+  );
   const witnessedPremiseSources = requestedPremises.flatMap((premise, requestedOrdinal) =>
     premise.memoryId !== undefined && premise.witnessedRecord !== undefined
       ? [{memoryId: premise.memoryId, requestedOrdinal, uri: premise.witnessedRecord.uri}]

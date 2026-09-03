@@ -1,4 +1,17 @@
-import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, Predicate, Queue, Stdio, Stream} from 'effect';
+import {
+  Context,
+  Crypto,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Predicate,
+  Queue,
+  Stdio,
+  Stream,
+  Schema,
+} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {fromPromise, fromPromiseInterruptible} from '../effect/errors.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
@@ -66,14 +79,30 @@ export interface ParserWorkerSourceByteBudget {
   readonly observedBytes: number;
 }
 
-class ParserWorkerError extends Error {
-  override readonly name = 'ParserWorkerError';
-
-  constructor(
-    readonly reason: ParserWorkerFailureReason,
-    readonly budget?: ParserWorkerBudgetDiagnostic,
-  ) {
-    super(parserWorkerFailureSummary(reason));
+class ParserWorkerError extends Schema.TaggedError<ParserWorkerError>()('ParserWorkerError', {
+  budget: Schema.optionalKey(Schema.Any),
+  message: Schema.String,
+  reason: Schema.Literals([
+    'abort',
+    'allocation',
+    'exit',
+    'fact-bytes',
+    'operation',
+    'protocol',
+    'rss',
+    'source-bytes',
+    'spawn',
+    'symbols',
+    'timeout',
+    'write',
+  ]),
+}) {
+  static of(reason: ParserWorkerFailureReason, budget?: ParserWorkerBudgetDiagnostic): ParserWorkerError {
+    return ParserWorkerError.make({
+      message: parserWorkerFailureSummary(reason),
+      reason,
+      ...(budget === undefined ? {} : {budget}),
+    });
   }
 }
 
@@ -173,7 +202,7 @@ export interface ParserWorkerCapacityInput {
 }
 
 export class CodeGraphParserPool extends Context.Service<CodeGraphParserPool, CodeGraphParserPoolShape>()(
-  'threadnote/codeGraph/CodeGraphParserPool',
+  'threadnote/code_graph/parser_worker/CodeGraphParserPool',
 ) {
   static get layer() {
     return codeGraphParserPoolLayer();
@@ -203,7 +232,7 @@ export function codeGraphParserPoolLayer(
                 hardwareConcurrency: currentHardwareConcurrency(),
               }),
             ),
-            Effect.catch(() => Effect.succeed(1)),
+            Effect.orElseSucceed(() => 1),
           ));
         const requestTimeoutMilliseconds = positiveInteger(
           options.requestTimeoutMilliseconds,
@@ -247,7 +276,7 @@ export function codeGraphParserPoolLayer(
                   degraded: true,
                   facts: degradedFacts(
                     file,
-                    new ParserWorkerError('source-bytes', {
+                    ParserWorkerError.of('source-bytes', {
                       code: 'source-bytes',
                       maximum: sourceByteBudget.maximumBytes,
                       observed: sourceByteBudget.observedBytes,
@@ -270,7 +299,7 @@ export function codeGraphParserPoolLayer(
                     slot.extract(file, threadnoteHome),
                   ).pipe(
                     Effect.catch(cause => {
-                      const reason = cause instanceof ParserWorkerError ? cause.reason : 'protocol';
+                      const reason = Schema.is(ParserWorkerError)(cause) ? cause.reason : 'protocol';
                       return Effect.succeed({
                         degradationReason: reason,
                         degraded: true,
@@ -288,7 +317,7 @@ export function codeGraphParserPoolLayer(
                 Effect.forEach(idleSlots, slot => fromPromise('trim idle parser worker', () => slot.trimIdle()), {
                   concurrency: 'unbounded',
                   discard: true,
-                }).pipe(Effect.catch(() => Effect.void)),
+                }).pipe(Effect.ignore),
               idleSlots => Queue.offerAll(available, idleSlots),
             ).pipe(Effect.asVoid),
           }),
@@ -299,7 +328,7 @@ export function codeGraphParserPoolLayer(
         Effect.forEach(slots, slot => fromPromise('close parser worker', () => slot.close()), {
           concurrency: 'unbounded',
           discard: true,
-        }).pipe(Effect.catch(() => Effect.void)),
+        }).pipe(Effect.ignore),
     ).pipe(Effect.map(({service}) => service)),
   );
 }
@@ -366,10 +395,10 @@ class ParserWorkerSlot {
   extract(file: CodeGraphInventoryFile, threadnoteHome: string): Effect.Effect<CodeGraphParserResult, Error> {
     return fromPromiseInterruptible(
       async signal => {
-        if (this.closed) throw new ParserWorkerError('exit');
+        if (this.closed) throw ParserWorkerError.of('exit');
         this.cancelIdleEviction();
         try {
-          if (file.bytes !== undefined) throw new ParserWorkerError('operation');
+          if (file.bytes !== undefined) throw ParserWorkerError.of('operation');
           for (let attempt = 0; attempt < 2; attempt += 1) {
             let connection = Option.none<ParserWorkerConnection>();
             try {
@@ -384,7 +413,7 @@ class ParserWorkerSlot {
                 this.timeoutMilliseconds,
                 signal,
               );
-              if (!response.ok) throw new ParserWorkerError('operation');
+              if (!response.ok) throw ParserWorkerError.of('operation');
               if (response.recycle) await this.discard(active).catch(() => undefined);
               return {
                 ...(response.degradationReason === undefined
@@ -397,11 +426,11 @@ class ParserWorkerSlot {
                 parseMilliseconds: response.parseMilliseconds,
               };
             } catch (cause) {
-              if (Option.isSome(connection) && cause instanceof ParserWorkerError && cause.reason !== 'operation') {
+              if (Option.isSome(connection) && Schema.is(ParserWorkerError)(cause) && cause.reason !== 'operation') {
                 await this.discard(connection.value);
               }
               if (
-                !(cause instanceof ParserWorkerError) ||
+                !Schema.is(ParserWorkerError)(cause) ||
                 cause.reason === 'operation' ||
                 attempt === 1 ||
                 signal.aborted
@@ -410,12 +439,12 @@ class ParserWorkerSlot {
               }
             }
           }
-          throw new ParserWorkerError('exit');
+          throw ParserWorkerError.of('exit');
         } finally {
           this.scheduleIdleEviction();
         }
       },
-      cause => (cause instanceof Error ? cause : new ParserWorkerError('protocol')),
+      cause => (cause instanceof Error ? cause : ParserWorkerError.of('protocol')),
     );
   }
 
@@ -438,10 +467,10 @@ class ParserWorkerSlot {
   }
 
   private async activeConnection(threadnoteHome: string): Promise<ParserWorkerConnection> {
-    if (this.closed) throw new ParserWorkerError('exit');
+    if (this.closed) throw ParserWorkerError.of('exit');
     const eviction = this.evictingConnection;
     if (eviction) await eviction.catch(() => undefined);
-    if (this.closed) throw new ParserWorkerError('exit');
+    if (this.closed) throw ParserWorkerError.of('exit');
     if (
       Option.isSome(this.connection) &&
       Option.contains(this.connectionHome, threadnoteHome) &&
@@ -454,7 +483,7 @@ class ParserWorkerSlot {
     try {
       worker = await this.spawnWorker(parserWorkerSpawnOptions(this.system, threadnoteHome));
     } catch {
-      throw new ParserWorkerError('spawn');
+      throw ParserWorkerError.of('spawn');
     }
     const connection = new ParserWorkerConnection(worker, this.maxProtocolLineBytes, this.maxStderrBytes);
     this.connection = Option.some(connection);
@@ -552,10 +581,10 @@ class ParserWorkerConnection {
     timeoutMilliseconds: number,
     signal: AbortSignal,
   ): Promise<ParserWorkerResponse> {
-    if (signal.aborted) throw new ParserWorkerError('abort');
+    if (signal.aborted) throw ParserWorkerError.of('abort');
     const encoded = `${JSON.stringify(request)}\n`;
     if (this.encoder.encode(encoded).byteLength > this.maxProtocolLineBytes) {
-      throw new ParserWorkerError('protocol');
+      throw ParserWorkerError.of('protocol');
     }
     const response = await raceWorkerResponse(this.writeAndRead(encoded), timeoutMilliseconds, signal, () => {
       try {
@@ -566,7 +595,7 @@ class ParserWorkerConnection {
     });
     const decoded = decodeResponse(response, request.id, request.file.path);
     if (decoded === undefined) {
-      throw new ParserWorkerError('protocol');
+      throw ParserWorkerError.of('protocol');
     }
     return decoded;
   }
@@ -596,7 +625,7 @@ class ParserWorkerConnection {
     try {
       await this.worker.write(encoded);
     } catch {
-      throw new ParserWorkerError('write');
+      throw ParserWorkerError.of('write');
     }
     return this.readLine();
   }
@@ -614,12 +643,12 @@ class ParserWorkerConnection {
       try {
         chunk = await this.reader.next();
       } catch {
-        throw new ParserWorkerError('exit');
+        throw ParserWorkerError.of('exit');
       }
-      if (chunk.done) throw new ParserWorkerError('exit');
+      if (chunk.done) throw ParserWorkerError.of('exit');
       const bytes = typeof chunk.value === 'string' ? this.encoder.encode(chunk.value) : chunk.value;
       this.bufferBytes += bytes.byteLength;
-      if (this.bufferBytes > this.maxProtocolLineBytes) throw new ParserWorkerError('protocol');
+      if (this.bufferBytes > this.maxProtocolLineBytes) throw ParserWorkerError.of('protocol');
       this.buffer += typeof chunk.value === 'string' ? chunk.value : this.decoder.decode(chunk.value, {stream: true});
     }
   }
@@ -699,29 +728,25 @@ async function raceWorkerResponse<A>(
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
   try {
-    return await Promise.race([
-      response,
-      new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => {
-          abort();
-          reject(
-            new ParserWorkerError('timeout', {
-              code: 'elapsed',
-              maximum: timeoutMilliseconds,
-              observed: timeoutMilliseconds,
-              unit: 'milliseconds',
-            }),
-          );
-        }, timeoutMilliseconds);
-      }),
-      new Promise<never>((_, reject) => {
-        onAbort = () => {
-          abort();
-          reject(new ParserWorkerError('abort'));
-        };
-        signal.addEventListener('abort', onAbort, {once: true});
-      }),
-    ]);
+    const timeoutDeferred = Promise.withResolvers<never>();
+    const abortDeferred = Promise.withResolvers<never>();
+    timeout = setTimeout(() => {
+      abort();
+      timeoutDeferred.reject(
+        ParserWorkerError.of('timeout', {
+          code: 'elapsed',
+          maximum: timeoutMilliseconds,
+          observed: timeoutMilliseconds,
+          unit: 'milliseconds',
+        }),
+      );
+    }, timeoutMilliseconds);
+    onAbort = () => {
+      abort();
+      abortDeferred.reject(ParserWorkerError.of('abort'));
+    };
+    signal.addEventListener('abort', onAbort, {once: true});
+    return await Promise.race([response, timeoutDeferred.promise, abortDeferred.promise]);
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
     if (onAbort) signal.removeEventListener('abort', onAbort);
@@ -731,14 +756,14 @@ async function raceWorkerResponse<A>(
 async function completesBeforeDeadline(promise: Promise<unknown>, timeoutMilliseconds: number): Promise<boolean> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
+    const timeoutDeferred = Promise.withResolvers<false>();
+    timeout = setTimeout(() => timeoutDeferred.resolve(false), timeoutMilliseconds);
     return await Promise.race([
       promise.then(
         () => true,
         () => true,
       ),
-      new Promise<false>(resolve => {
-        timeout = setTimeout(() => resolve(false), timeoutMilliseconds);
-      }),
+      timeoutDeferred.promise,
     ]);
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
@@ -774,12 +799,12 @@ export const codeGraphParserWorkerServer: Effect.Effect<void, never, Stdio.Stdio
             bufferedBytes -= encoder.encode(lineWithNewline).byteLength;
             buffered = buffered.slice(newline + 1);
             if (encoder.encode(line).byteLength > MAX_PROTOCOL_LINE_BYTES) {
-              return yield* Effect.fail(new ParserWorkerError('protocol'));
+              return yield* ParserWorkerError.of('protocol');
             }
             if (line) yield* processLine(line);
           }
           if (bufferedBytes > MAX_PROTOCOL_LINE_BYTES) {
-            return yield* Effect.fail(new ParserWorkerError('protocol'));
+            return yield* ParserWorkerError.of('protocol');
           }
         }),
       ),
@@ -787,10 +812,10 @@ export const codeGraphParserWorkerServer: Effect.Effect<void, never, Stdio.Stdio
 
     buffered += decoder.decode();
     if (encoder.encode(buffered).byteLength > MAX_PROTOCOL_LINE_BYTES) {
-      return yield* Effect.fail(new ParserWorkerError('protocol'));
+      return yield* ParserWorkerError.of('protocol');
     }
     if (buffered.trim()) yield* processLine(buffered.trim());
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 
 function handleParserWorkerLine(
   line: string,
@@ -814,7 +839,7 @@ function handleParserWorkerLine(
       return {
         degradationReason,
         degraded: true,
-        facts: degradedFacts(request.file, new ParserWorkerError(degradationReason, resourceBudget)),
+        facts: degradedFacts(request.file, ParserWorkerError.of(degradationReason, resourceBudget)),
         id: request.id,
         ok: true,
         parseMilliseconds,
@@ -1028,9 +1053,9 @@ function isStringArray(value: unknown): value is readonly string[] {
 }
 
 function degradedFacts(file: CodeGraphInventoryFile, cause: unknown): CodeGraphFileFacts {
-  const reason = cause instanceof ParserWorkerError ? cause.reason : 'protocol';
+  const reason = Schema.is(ParserWorkerError)(cause) ? cause.reason : 'protocol';
   const budgetDiagnostic =
-    cause instanceof ParserWorkerError && cause.budget !== undefined
+    Schema.is(ParserWorkerError)(cause) && cause.budget !== undefined
       ? ` [code-graph-budget code=${cause.budget.code} status=exhausted observed-${cause.budget.unit}=${cause.budget.observed} maximum-${cause.budget.unit}=${cause.budget.maximum}]`
       : '';
   const diagnostic = `${file.path}: parser extraction degraded this file to searchable metadata (${parserWorkerFailureSummary(reason)})${budgetDiagnostic}`;
@@ -1067,7 +1092,7 @@ export function budgetParserWorkerFacts(
       degraded: true,
       facts: degradedFacts(
         file,
-        new ParserWorkerError('symbols', {
+        ParserWorkerError.of('symbols', {
           code: 'symbols',
           maximum: maximumSymbols,
           observed: facts.symbols.length,
@@ -1088,7 +1113,7 @@ export function budgetParserWorkerFacts(
         degraded: true,
         facts: degradedFacts(
           file,
-          new ParserWorkerError('fact-bytes', {
+          ParserWorkerError.of('fact-bytes', {
             code: 'fact-bytes',
             maximum: maximumFactBytes,
             observed: observedBytes,

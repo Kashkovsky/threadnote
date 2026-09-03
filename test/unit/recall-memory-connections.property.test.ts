@@ -1,5 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {DateTime, Effect, FileSystem, Path} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {describe, expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -49,7 +49,7 @@ describe('recall memory connection properties', () => {
     },
     ({activeSupersederCount, offsetDays, state}) =>
       Effect.sync(() => {
-        const timestamp = new Date(NOW.getTime() + offsetDays * 86_400_000).toISOString();
+        const timestamp = DateTime.formatIso(DateTime.makeUnsafe(NOW.getTime() + offsetDays * 86_400_000));
         expect(classifyRecallMemoryPremiseState({resolved: false, validFrom: timestamp}, NOW)).toBe('unresolved');
         expect(
           classifyRecallMemoryPremiseState({identityConflict: true, resolved: true, validFrom: timestamp}, NOW),

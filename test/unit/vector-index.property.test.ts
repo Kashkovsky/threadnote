@@ -83,7 +83,7 @@ const generationRequestScenario = FC.record({
 const modelStoreLayer = Layer.succeed(
   LocalModelStore,
   LocalModelStore.of({
-    install: () => Effect.die(new TestError('Unexpected install')),
+    install: () => Effect.die(TestError.make({message: 'Unexpected install'})),
     path: home => `${home}/models/property.gguf`,
     remove: () => Effect.succeed(false),
     status: home => Effect.succeed(installation(home)),
@@ -391,8 +391,8 @@ function deterministicRuntimeLayer(onEmbed: (inputs: readonly string[]) => void)
         onEmbed(inputs);
         return Effect.succeed(inputs.map(input => deterministicVector(requested.dimensions ?? 0, input)));
       },
-      generate: () => Effect.die(new TestError('Unexpected generation')),
-      rerank: () => Effect.die(new TestError('Unexpected reranking')),
+      generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+      rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
     }),
   );
 }
@@ -419,7 +419,7 @@ function decodeVector(value: unknown): readonly number[] {
         : ArrayBuffer.isView(value)
           ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
           : undefined;
-  if (!bytes) throw new TestError('Stored vector is not a binary SQLite value.');
+  if (!bytes) throw TestError.make({message: 'Stored vector is not a binary SQLite value.'});
   expect(bytes.byteLength).toBe(manifest.dimensions * 4);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return Array.from({length: manifest.dimensions}, (_, index) => view.getFloat32(index * 4, true));

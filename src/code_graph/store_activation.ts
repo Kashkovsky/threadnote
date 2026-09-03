@@ -1,4 +1,4 @@
-import {Effect, Option} from 'effect';
+import {DateTime, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
   CODE_GRAPH_FOLD_FORWARD_RECEIPT_VERSION,
@@ -277,14 +277,12 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
       SELECT id FROM snapshots WHERE id = ${baseSnapshotId} AND state = 'ready' LIMIT 1
     `;
     if (!base[0]) {
-      return yield* Effect.fail(
-        new CodeGraphStoreError(`Base snapshot ${baseSnapshotId} is not ready for a dirty overlay.`),
-      );
+      return yield* CodeGraphStoreError.of(`Base snapshot ${baseSnapshotId} is not ready for a dirty overlay.`);
     }
   }
   const validatedEdges = yield* validateStagedEdgeSymbols(sql, observe);
   if (validatedEdges !== snapshot.edgeCount) {
-    return yield* Effect.fail(new CodeGraphStoreError('Staged edge count does not match the ready snapshot.'));
+    return yield* CodeGraphStoreError.of('Staged edge count does not match the ready snapshot.');
   }
   if (!baseSnapshotId) {
     const ready = yield* sql<{readonly id: string}>`
@@ -335,7 +333,7 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
     Number(counts.edges) !== snapshot.edgeCount ||
     Number(counts.edges) !== validatedEdges
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Staged code graph counts do not match the ready snapshot.'));
+    return yield* CodeGraphStoreError.of('Staged code graph counts do not match the ready snapshot.');
   }
   yield* observe('validating-input', 'completed', counts.files + counts.symbols + counts.edges);
   const priorSnapshot = yield* sql<{readonly state: CodeGraphSnapshot['state']}>`
@@ -354,7 +352,7 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
         SELECT state, started_at FROM snapshots WHERE id = ${snapshot.id} LIMIT 1
       `;
       if (existing[0]?.state !== 'ready') {
-        const startedAt = existing[0]?.started_at ?? new Date().toISOString();
+        const startedAt = existing[0]?.started_at ?? DateTime.formatIso(yield* DateTime.now);
         yield* purgeSnapshotTerms(sql, snapshot.id);
         yield* sql`DELETE FROM snapshots WHERE id = ${snapshot.id}`;
         yield* sql`
@@ -556,7 +554,7 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           'activation symbol count',
         );
         if (compactLexicalReceipt.symbolCount !== expectedCompactSymbols) {
-          return yield* Effect.fail(new CodeGraphStoreError('Compact lexical activation symbol count changed.'));
+          return yield* CodeGraphStoreError.of('Compact lexical activation symbol count changed.');
         }
         yield* recordCompactLexicalFormat(
           sql,
@@ -611,16 +609,21 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
             COUNT(*), COALESCE(SUM(CASE WHEN provenance = 'alias' THEN 1 ELSE 0 END), 0),
             (SELECT COUNT(*) FROM activation_reexport_provenance),
             ${encodeCodeGraphInventoryReuseReceipt(reusableBaseReceipt.inventory)},
-            ${new Date().toISOString()}
+            ${DateTime.formatIso(yield* DateTime.now)}
           FROM activation_symbol_lookup
         `;
       }
       if (activated && baseSnapshotId && !snapshot.dirty && reusableBaseReceipt) {
-        yield* recordLayeredSnapshotInventoryReceipt(sql, snapshot, reusableBaseReceipt, new Date().toISOString());
+        yield* recordLayeredSnapshotInventoryReceipt(
+          sql,
+          snapshot,
+          reusableBaseReceipt,
+          DateTime.formatIso(yield* DateTime.now),
+        );
       }
       yield* insertActivationLease(sql, snapshot.id, promotionLease);
       if (activated) {
-        const completedAt = new Date().toISOString();
+        const completedAt = DateTime.formatIso(yield* DateTime.now);
         yield* observe('recording-completion', 'started');
         yield* sql`
           UPDATE snapshots
@@ -675,9 +678,9 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
   yield* configureConnection(sql);
   yield* observe('validating-input', 'started');
   if (snapshot.baseSnapshotId !== baseSnapshotId) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental activation has the wrong base snapshot.'));
+    return yield* CodeGraphStoreError.of('Persisted incremental activation has the wrong base snapshot.');
   }
-  const completedAt = new Date().toISOString();
+  const completedAt = DateTime.formatIso(yield* DateTime.now);
   const priorSnapshot = yield* sql<{readonly state: CodeGraphSnapshot['state']}>`
     SELECT state FROM snapshots WHERE id = ${snapshot.id} LIMIT 1
   `;
@@ -688,22 +691,20 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
     Effect.gen(function* () {
       const rootReceipt = yield* selectReusableBaseReceipt(baseSnapshotId, true);
       if (!rootReceipt) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError(`Reusable base receipt ${baseSnapshotId} is unavailable or incomplete.`),
-        );
+        return yield* CodeGraphStoreError.of(`Reusable base receipt ${baseSnapshotId} is unavailable or incomplete.`);
       }
       const closureRows = yield* sql<{readonly value: string}>`
         SELECT value FROM activation_state WHERE key = 'resolution_closure' LIMIT 1
       `;
       const resolutionClosure = closureRows[0]?.value;
       if (!isPersistedIncrementalResolutionClosure(resolutionClosure)) {
-        return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental resolution closure is invalid.'));
+        return yield* CodeGraphStoreError.of('Persisted incremental resolution closure is invalid.');
       }
       if (resolutionClosure === 'changed' && !(yield* persistedIncrementalSurfaceMatches(sql, baseSnapshotId))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental resolution surface changed.'));
+        return yield* CodeGraphStoreError.of('Persisted incremental resolution surface changed.');
       }
       if (resolutionClosure === 'project' && !(yield* persistedIncrementalProjectFilesMatch(sql, baseSnapshotId))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Persisted project closure changed the base file set.'));
+        return yield* CodeGraphStoreError.of('Persisted project closure changed the base file set.');
       }
       const changedPathsOnly = yield* sql<{readonly id: string}>`
         SELECT edge.id
@@ -716,7 +717,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
         LIMIT 1
       `;
       if (changedPathsOnly[0]) {
-        return yield* Effect.fail(new CodeGraphStoreError('Incremental facts escaped the changed-file boundary.'));
+        return yield* CodeGraphStoreError.of('Incremental facts escaped the changed-file boundary.');
       }
       const invalidEdges = yield* sql<{readonly id: string}>`
         SELECT edge.id
@@ -742,8 +743,8 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
         LIMIT 1
       `;
       if (invalidEdges[0]) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError(`Code graph edge ${invalidEdges[0].id} references a missing effective symbol.`),
+        return yield* CodeGraphStoreError.of(
+          `Code graph edge ${invalidEdges[0].id} references a missing effective symbol.`,
         );
       }
       const counts = yield* persistedIncrementalFactCounts(sql, baseSnapshotId);
@@ -752,9 +753,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
         counts.symbols !== snapshot.symbolCount ||
         counts.edges !== snapshot.edgeCount
       ) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError('Persisted incremental counts do not match the ready snapshot.'),
-        );
+        return yield* CodeGraphStoreError.of('Persisted incremental counts do not match the ready snapshot.');
       }
       const stagedRows = yield* sql<{
         readonly edges: number;
@@ -881,7 +880,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
         yield* observe('copying-terms', 'started');
         const compact = yield* copyActivationCompactLexicalFacts(sql, snapshot.id, 'all');
         if (compact.symbolCount !== Number(staged.symbols) || compact.postingCount !== Number(staged.terms)) {
-          return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental compact lexical rows changed.'));
+          return yield* CodeGraphStoreError.of('Persisted incremental compact lexical rows changed.');
         }
         compactLexicalReceipt = Option.some(compact);
         yield* observe('copying-terms', 'completed', compact.postingCount);
@@ -903,7 +902,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
       }
       if (existing[0]?.state !== 'ready') {
         if (Option.isNone(compactLexicalReceipt)) {
-          return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental lexical receipt is unavailable.'));
+          return yield* CodeGraphStoreError.of('Persisted incremental lexical receipt is unavailable.');
         }
         yield* recordCompactLexicalFormat(
           sql,

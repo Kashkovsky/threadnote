@@ -1,10 +1,14 @@
-import {Clock, Crypto, Effect, Exit, FileSystem, Option, Path} from 'effect';
+import {Crypto, DateTime, Effect, Exit, FileSystem, Option, Path, Schema} from 'effect';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {compareVersions} from '../release/version_compare.js';
 
-class StandaloneProcessLeaseError extends Error {
-  readonly _tag = 'StandaloneProcessLeaseError' as const;
-}
+class StandaloneProcessLeaseError extends Schema.TaggedError<StandaloneProcessLeaseError>()(
+  'StandaloneProcessLeaseError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 const THREADNOTE_COMMAND = 'threadnote';
 const PROCESS_LEASE_HEARTBEAT_MILLISECONDS = 30_000;
@@ -114,7 +118,7 @@ export function withStandaloneProcessLease<A, E, R>(
             processId: system.processId,
             processStartIdentity,
             retirementPolicy: options.retirementPolicy ?? 'terminate',
-            startedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+            startedAt: DateTime.formatIso(yield* DateTime.now),
             token,
             version: release.version,
           },
@@ -155,7 +159,7 @@ export function readValidatedRelease(
     return normalize(expectedRoot) === normalize(resolvedRoot)
       ? ({releaseRoot: resolvedRoot, version: value.version} satisfies StandaloneActiveRelease)
       : undefined;
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  }).pipe(Effect.orElseSucceed(() => undefined));
 }
 
 export const readLiveStandaloneProcessLeases = Effect.fn('installations.readLiveProcessLeases')(function* () {
@@ -225,11 +229,9 @@ export const liveReleaseLeaseVersions = Effect.fn('installations.liveLeaseVersio
     Option.some(PROCESS_LEASE_DIAGNOSTIC_SCAN_LIMIT),
   );
   if (scan.truncated) {
-    return yield* Effect.fail(
-      new StandaloneProcessLeaseError(
-        'Standalone release pruning could not completely inspect the live process leases.',
-      ),
-    );
+    return yield* StandaloneProcessLeaseError.make({
+      message: 'Standalone release pruning could not completely inspect the live process leases.',
+    });
   }
   return [...new Set(scan.leases.map(lease => lease.version))];
 });
@@ -246,9 +248,9 @@ export const terminateSupersededStandaloneProcesses = Effect.fn('installations.t
     const path = yield* Path.Path;
     const system = yield* SystemInfo;
     if (!STANDALONE_RELEASE_VERSION_PATTERN.test(activeVersion)) {
-      return yield* Effect.fail(
-        new StandaloneProcessLeaseError('Cannot terminate processes for an invalid active release version.'),
-      );
+      return yield* StandaloneProcessLeaseError.make({
+        message: 'Cannot terminate processes for an invalid active release version.',
+      });
     }
     const scan = yield* liveStandaloneProcessLeases(
       fs,
@@ -258,11 +260,9 @@ export const terminateSupersededStandaloneProcesses = Effect.fn('installations.t
       Option.some(PROCESS_LEASE_DIAGNOSTIC_SCAN_LIMIT),
     );
     if (scan.truncated) {
-      return yield* Effect.fail(
-        new StandaloneProcessLeaseError(
-          'Cannot terminate superseded processes because live lease inspection was incomplete.',
-        ),
-      );
+      return yield* StandaloneProcessLeaseError.make({
+        message: 'Cannot terminate superseded processes because live lease inspection was incomplete.',
+      });
     }
     const superseded = scan.leases.filter(
       lease => lease.version !== activeVersion && lease.processId !== system.processId,
@@ -353,7 +353,7 @@ const liveStandaloneProcessLeases = Effect.fn('installations.liveProcessLeases')
       const lease = yield* readProcessLease(fs, leasePath);
       if (Option.isNone(lease) || lease.value.processId !== processId || lease.value.version !== version) {
         if (system.isProcessRunning(processId)) truncated = true;
-        else yield* fs.remove(leasePath, {force: true}).pipe(Effect.catch(() => Effect.void));
+        else yield* fs.remove(leasePath, {force: true}).pipe(Effect.ignore);
         continue;
       }
       const processIsRunning = system.isProcessRunning(processId);
@@ -378,7 +378,7 @@ const liveStandaloneProcessLeases = Effect.fn('installations.liveProcessLeases')
           version,
         });
       } else {
-        yield* fs.remove(leasePath, {force: true}).pipe(Effect.catch(() => Effect.void));
+        yield* fs.remove(leasePath, {force: true}).pipe(Effect.ignore);
       }
     }
   }
@@ -439,7 +439,7 @@ function signalLeaseIfStillOwned(
         return true;
       },
       catch: () => false,
-    }).pipe(Effect.catch(() => Effect.succeed(false)));
+    }).pipe(Effect.orElseSucceed(() => false));
   });
 }
 
@@ -467,16 +467,16 @@ function refreshProcessLease(fs: FileSystem.FileSystem, leasePath: string, token
       yield* Effect.sleep(PROCESS_LEASE_HEARTBEAT_MILLISECONDS);
       const lease = yield* readLeaseToken(fs, leasePath);
       if (lease !== token) return;
-      const now = new Date(yield* Clock.currentTimeMillis);
+      const now = yield* DateTime.nowAsDate;
       yield* fs.utimes(leasePath, now, now);
     }
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }
 
 function removeOwnedLease(fs: FileSystem.FileSystem, leasePath: string, token: string) {
   return Effect.gen(function* () {
     if ((yield* readLeaseToken(fs, leasePath)) === token) yield* fs.remove(leasePath, {force: true});
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }
 
 function readLeaseToken(fs: FileSystem.FileSystem, leasePath: string) {
@@ -537,6 +537,6 @@ function readProcessLease(fs: FileSystem.FileSystem, leasePath: string) {
         version: value.version,
       } satisfies ProcessLeaseFile);
     }),
-    Effect.catch(() => Effect.succeed(Option.none<ProcessLeaseFile>())),
+    Effect.orElseSucceed(() => Option.none<ProcessLeaseFile>()),
   );
 }

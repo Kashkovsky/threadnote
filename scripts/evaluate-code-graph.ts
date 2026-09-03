@@ -141,7 +141,7 @@ const evaluateNativeCodeGraph = Effect.scoped(
         metrics,
         observations,
       });
-      return yield* Effect.fail(new ScriptError(gateFailures.join('\n')));
+      return yield* ScriptError.make({message: gateFailures.join('\n')});
     }
     const baseline: CodeGraphEvaluationBaselineV1 = {
       createdAt: options.createdAt,
@@ -207,14 +207,15 @@ function parseArguments(args: readonly string[]): {
     if (argument === '--output') outputPath = required(args[++index], argument);
     else if (argument === '--fixture') fixture = required(args[++index], argument);
     else if (argument === '--created-at') createdAt = new Date(required(args[++index], argument)).toISOString();
-    else throw new ScriptError(`Unknown code graph evaluation option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown code graph evaluation option: ${argument}`});
   }
-  if (!/^code-graph-[a-z0-9-]+$/.test(fixture)) throw new ScriptError(`Invalid code graph fixture name: ${fixture}.`);
+  if (!/^code-graph-[a-z0-9-]+$/.test(fixture))
+    throw ScriptError.make({message: `Invalid code graph fixture name: ${fixture}.`});
   return {createdAt, fixture, outputPath};
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 
@@ -226,7 +227,7 @@ const replaceContractSymbol = Effect.fn('codeGraphEvaluation.replaceContractSymb
 ) {
   const content = yield* fs.readFileString(target);
   if (!content.includes(from))
-    return yield* Effect.fail(new ScriptError(`Evaluation fixture does not contain ${from}.`));
+    return yield* ScriptError.make({message: `Evaluation fixture does not contain ${from}.`});
   yield* fs.writeFileString(target, content.replaceAll(from, to));
 });
 

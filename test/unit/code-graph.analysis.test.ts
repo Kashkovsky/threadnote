@@ -381,7 +381,7 @@ describe('code graph analysis', () => {
       const failed = leasedAnalysisStore(
         {
           ...pagedAnalysisStore([symbol], []),
-          loadSymbolPage: () => Effect.fail(new TestError('read failed')),
+          loadSymbolPage: () => Effect.fail(TestError.make({message: 'read failed'})),
         } as unknown as CodeGraphStoreShape,
         failedEvents,
       );
@@ -503,18 +503,16 @@ describe('code graph analysis', () => {
 
   it.effect('remains cooperatively cancellable while a page read is pending', () =>
     Effect.gen(function* () {
-      yield* Effect.gen(function* () {
-        const requested = yield* Deferred.make<void>();
-        const store = {
-          loadSymbolPage: () => Deferred.succeed(requested, undefined).pipe(Effect.andThen(Effect.never)),
-        } as unknown as CodeGraphStoreShape;
-        const fiber = yield* analyzeCodeGraph(store, {
-          databasePath: '/analysis/graph.sqlite',
-          snapshot: {...analysisSnapshot([], []), symbolCount: 1},
-        }).pipe(Effect.forkChild);
-        yield* Deferred.await(requested);
-        yield* Fiber.interrupt(fiber);
-      });
+      const requested = yield* Deferred.make<void>();
+      const store = {
+        loadSymbolPage: () => Deferred.succeed(requested, undefined).pipe(Effect.andThen(Effect.never)),
+      } as unknown as CodeGraphStoreShape;
+      const fiber = yield* analyzeCodeGraph(store, {
+        databasePath: '/analysis/graph.sqlite',
+        snapshot: {...analysisSnapshot([], []), symbolCount: 1},
+      }).pipe(Effect.forkChild);
+      yield* Deferred.await(requested);
+      yield* Fiber.interrupt(fiber);
     }),
   );
 });

@@ -241,7 +241,7 @@ describe('bounded code graph build-status maintenance', () => {
             identity.worktreeId,
             currentBuildId,
             undefined,
-            {afterManagerContextRemoval: () => Effect.fail(new TestError('interrupt'))},
+            {afterManagerContextRemoval: () => Effect.fail(TestError.make({message: 'interrupt'}))},
           );
 
           expect(interrupted).toEqual({blockedCode: 'io-error', retryAfterMilliseconds: 1_000, state: 'deferred'});

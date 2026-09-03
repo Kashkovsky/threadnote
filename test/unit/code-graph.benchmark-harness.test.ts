@@ -291,7 +291,7 @@ describe('code graph external benchmark harness', () => {
                     }),
                 };
               }),
-              () => Effect.fail(new TestError('index failed')),
+              () => Effect.fail(TestError.make({message: 'index failed'})),
               Effect.sync(() => events.push('final-index-storage-sampled')),
             ),
           () => Effect.sync(() => events.push('overlay-restored')),
@@ -369,16 +369,16 @@ describe('code graph external benchmark harness', () => {
   });
 
   it('preserves the governed Linux RSS ceiling while expressing it in bytes', () => {
-    const ratchet = Schema.decodeUnknownSync(
+    const ratchet = Schema.decodeSync(
       Schema.fromJsonString(
         Schema.Struct({
           measurements: Schema.Struct({
             'cold-process-peak-rss': Schema.Struct({
-              p95Maximum: Schema.Number,
+              p95Maximum: Schema.Finite,
               unit: Schema.Literal('bytes'),
             }),
             'incremental-process-peak-rss': Schema.Struct({
-              p95Maximum: Schema.Number,
+              p95Maximum: Schema.Finite,
               unit: Schema.Literal('bytes'),
             }),
           }),
@@ -400,8 +400,8 @@ describe('code graph external benchmark harness', () => {
       'validateBenchmarkRuntimeProvenance(threadnoteSourceRoot)',
       'verifyBenchmarkSourceUnchanged(threadnoteSourceRoot, commit)',
       'atomicWrite(options.outputPath',
-      'if (budgetFailure) return yield* Effect.fail(budgetFailure)',
-      'if (ratchetFailure) return yield* Effect.fail(ratchetFailure)',
+      'if (budgetFailure) return yield* budgetFailure',
+      'if (ratchetFailure) return yield* ratchetFailure',
     ]);
   });
 
@@ -1118,7 +1118,7 @@ describe('code graph external benchmark harness', () => {
               Effect.retry({
                 schedule: Schedule.spaced(25),
                 times: 20,
-                while: error => error instanceof CodeGraphStoreBusyError,
+                while: error => Schema.is(CodeGraphStoreBusyError)(error),
               }),
             );
           const pinned = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId, {

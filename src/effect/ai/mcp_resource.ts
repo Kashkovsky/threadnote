@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {Effect, Schema} from 'effect';
 import {McpSchema} from 'effect/unstable/ai';
 import {
   isMemoryRelocationUri,
@@ -44,7 +44,7 @@ export function readThreadnoteMcpResource(config: McpResourceConfig, uri: string
     );
     const canonicalUri = identity.canonicalUri;
     if (scopeRoots && !scopeRoots.some(scopeRoot => resourceIdIsWithin(canonicalUri, scopeRoot))) {
-      return yield* new McpSchema.InvalidParams({
+      return yield* McpSchema.InvalidParams.make({
         data: MCP_RESOURCE_ERROR_DATA,
         message: 'The requested resource is outside the active Cursor Cloud memory scope.',
       });
@@ -53,7 +53,7 @@ export function readThreadnoteMcpResource(config: McpResourceConfig, uri: string
     const location = {account: config.account, home: config.agentContextHome, user: config.user};
     const exact = yield* store.readBounded(location, canonicalUri, MCP_RESOURCE_READ_MAX_BYTES).pipe(
       Effect.map(read => ({canonicalUri, read})),
-      Effect.catchTag('ResourceNotFound', () => Effect.succeed(undefined)),
+      Effect.catchTag('ResourceNotFound', () => Effect.void),
     );
     const resolved =
       exact ??
@@ -64,12 +64,12 @@ export function readThreadnoteMcpResource(config: McpResourceConfig, uri: string
               read: {content: memory.content, truncated: false},
             })),
           )
-        : yield* new ResourceNotFound({
+        : yield* ResourceNotFound.make({
             message: `Resource does not exist: ${canonicalUri}`,
             uri: canonicalUri,
           }));
     if (scopeRoots && !scopeRoots.some(scopeRoot => resourceIdIsWithin(resolved.canonicalUri, scopeRoot))) {
-      return yield* new McpSchema.InvalidParams({
+      return yield* McpSchema.InvalidParams.make({
         data: MCP_RESOURCE_ERROR_DATA,
         message: 'The relocated resource is outside the active Cursor Cloud memory scope.',
       });
@@ -90,7 +90,7 @@ export function readThreadnoteMcpResource(config: McpResourceConfig, uri: string
           uri: identity.expectedMemoryId === undefined ? resolved.canonicalUri : identity.requestedUri,
         },
       ],
-    } satisfies typeof McpSchema.ReadResourceResult.Type;
+    } satisfies McpSchema.ReadResourceResult;
   }).pipe(Effect.mapError(error => mcpResourceReadError(config, error)));
 }
 
@@ -104,7 +104,7 @@ function canonicalThreadnoteUri(uri: string): Effect.Effect<string, McpSchema.In
       return parsed.canonicalUri;
     },
     catch: () =>
-      new McpSchema.InvalidParams({
+      McpSchema.InvalidParams.make({
         data: MCP_RESOURCE_ERROR_DATA,
         message: 'Expected a canonical threadnote:// URI.',
       }),
@@ -112,7 +112,7 @@ function canonicalThreadnoteUri(uri: string): Effect.Effect<string, McpSchema.In
 }
 
 function resourceTooLarge(): McpSchema.InvalidParams {
-  return new McpSchema.InvalidParams({
+  return McpSchema.InvalidParams.make({
     data: MCP_RESOURCE_ERROR_DATA,
     message: `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context pagination.`,
   });
@@ -122,18 +122,18 @@ function mcpResourceReadError(
   config: McpResourceConfig,
   error: unknown,
 ): McpSchema.InternalError | McpSchema.InvalidParams {
-  if (error instanceof McpSchema.InvalidParams || error instanceof McpSchema.InternalError) {
+  if (Schema.is(McpSchema.InvalidParams)(error) || Schema.is(McpSchema.InternalError)(error)) {
     return error;
   }
   if (error instanceof MemoryRelocationError) {
-    return new McpSchema.InternalError({
+    return McpSchema.InternalError.make({
       data: MCP_RESOURCE_ERROR_DATA,
       message: 'Threadnote memory relocation could not be verified safely.',
     });
   }
   if (error instanceof MemoryPointerNotFound) {
     const recovery = memoryReadRecoveryForError(config, error);
-    return new McpSchema.InvalidParams({
+    return McpSchema.InvalidParams.make({
       data: recovery === undefined ? MCP_RESOURCE_NOT_FOUND_ERROR_DATA : mcpResourceNotFoundRecoveryErrorData(recovery),
       message:
         recovery === undefined
@@ -141,42 +141,42 @@ function mcpResourceReadError(
           : `Threadnote resource was not found. Recovery: ${memoryReadRecoveryText(recovery)}`,
     });
   }
-  if (error instanceof MemoryIdentityResolutionError) {
-    return new McpSchema.InvalidParams({
+  if (Schema.is(MemoryIdentityResolutionError)(error)) {
+    return McpSchema.InvalidParams.make({
       data: error.reason === 'not-found' ? MCP_RESOURCE_NOT_FOUND_ERROR_DATA : MCP_RESOURCE_ERROR_DATA,
       message: error.message,
     });
   }
-  if (error instanceof ResourceNotFound) {
-    return new McpSchema.InvalidParams({
+  if (Schema.is(ResourceNotFound)(error)) {
+    return McpSchema.InvalidParams.make({
       data: MCP_RESOURCE_NOT_FOUND_ERROR_DATA,
       message: 'Threadnote resource was not found.',
     });
   }
   if (typeof error !== 'object' || error === null || !('_tag' in error)) {
-    return new McpSchema.InternalError({
+    return McpSchema.InternalError.make({
       data: MCP_RESOURCE_ERROR_DATA,
       message: 'Threadnote resource could not be read safely.',
     });
   }
   switch (error._tag) {
     case 'InvalidResourceId':
-      return new McpSchema.InvalidParams({
+      return McpSchema.InvalidParams.make({
         data: MCP_RESOURCE_ERROR_DATA,
         message: 'Expected a canonical threadnote:// URI.',
       });
     case 'ResourceAccessDenied':
-      return new McpSchema.InvalidParams({
+      return McpSchema.InvalidParams.make({
         data: MCP_RESOURCE_ERROR_DATA,
         message: 'Threadnote resource is not readable in the active account.',
       });
     case 'ResourceNotFound':
-      return new McpSchema.InvalidParams({
+      return McpSchema.InvalidParams.make({
         data: MCP_RESOURCE_NOT_FOUND_ERROR_DATA,
         message: 'Threadnote resource was not found.',
       });
     default:
-      return new McpSchema.InternalError({
+      return McpSchema.InternalError.make({
         data: MCP_RESOURCE_ERROR_DATA,
         message: 'Threadnote resource could not be read safely.',
       });

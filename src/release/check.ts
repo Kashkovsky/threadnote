@@ -1,4 +1,5 @@
-import {Effect, FileSystem, Path, Predicate, Result} from 'effect';
+import {Clock, DateTime, Effect, FileSystem, Path, Predicate, Result} from 'effect';
+import {succeedUndefined} from '../effect/optional.js';
 import {SystemInfo} from '../effect/system.js';
 import {selectUpdateChannel, type UpdateChannel} from './channel.js';
 import {fetchLatestVersion, releaseSource} from './index.js';
@@ -34,24 +35,24 @@ export interface UpdateCheckResult {
  */
 export function checkForThreadnoteUpdate(args: {readonly cachePath: string; readonly currentVersion: string}) {
   if (args.currentVersion === 'unknown') {
-    return Effect.succeed(undefined);
+    return succeedUndefined;
   }
   return Effect.gen(function* () {
     const channel = selectUpdateChannel(args.currentVersion);
     const cached = yield* readUpdateCache(args.cachePath);
     const channelCache = cached?.channel === channel ? cached : undefined;
-    if (channelCache && isCacheFresh(channelCache)) {
+    if (channelCache && (yield* isCacheFresh(channelCache))) {
       return toUpdateCheckResult(args.currentVersion, channelCache.latestVersion);
     }
     const system = yield* SystemInfo;
     const fresh = yield* fetchLatestVersion(releaseSource(system.environment()), channel).pipe(
       Effect.timeout(FETCH_TIMEOUT_MS),
-      Effect.catch(() => Effect.succeed(undefined)),
+      Effect.orElseSucceed(() => undefined),
     );
     if (fresh) {
       yield* writeUpdateCache(args.cachePath, {
         channel,
-        checkedAt: new Date().toISOString(),
+        checkedAt: DateTime.formatIso(yield* DateTime.now),
         latestVersion: fresh,
         version: 3 as const,
       });
@@ -69,9 +70,12 @@ function toUpdateCheckResult(currentVersion: string, latestVersion: string): Upd
   };
 }
 
-function isCacheFresh(cache: UpdateCacheFile): boolean {
-  const checkedAt = new Date(cache.checkedAt).getTime();
-  return Number.isFinite(checkedAt) && Date.now() - checkedAt < CACHE_TTL_MS;
+function isCacheFresh(cache: UpdateCacheFile) {
+  return Effect.gen(function* () {
+    const checkedAt = Date.parse(cache.checkedAt);
+    const now = yield* Clock.currentTimeMillis;
+    return Number.isFinite(checkedAt) && now - checkedAt < CACHE_TTL_MS;
+  });
 }
 
 const readUpdateCache = Effect.fn('updateCheck.readCache')((cachePath: string) =>
@@ -100,7 +104,7 @@ const readUpdateCache = Effect.fn('updateCheck.readCache')((cachePath: string) =
       latestVersion: parsed.latestVersion,
       version: 3 as const,
     } satisfies UpdateCacheFile;
-  }).pipe(Effect.catch(() => Effect.succeed(undefined))),
+  }).pipe(Effect.orElseSucceed(() => undefined)),
 );
 
 const writeUpdateCache = Effect.fn('updateCheck.writeCache')((cachePath: string, contents: UpdateCacheFile) =>

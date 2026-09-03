@@ -17,13 +17,15 @@ export function prepareReviewedRecallRerankerDatasetV1(
 ): RecallRerankerDatasetV1 {
   const draft = parseRecallRerankerDatasetDraftV1(draftValue);
   if (draft.purpose !== 'training_candidate') {
-    throw new ScriptError('Reviewed dataset preparation only accepts purpose training_candidate.');
+    throw ScriptError.make({message: 'Reviewed dataset preparation only accepts purpose training_candidate.'});
   }
   if ((draft.reservedEvaluations?.length ?? 0) > 0) {
-    throw new ScriptError('The preparation helper manages reserved evaluations; remove them from the draft.');
+    throw ScriptError.make({
+      message: 'The preparation helper manages reserved evaluations; remove them from the draft.',
+    });
   }
   if (draft.groupFile !== undefined && draft.groupFile !== 'groups.jsonl') {
-    throw new ScriptError('The preparation helper writes the reviewed groups to groups.jsonl.');
+    throw ScriptError.make({message: 'The preparation helper writes the reviewed groups to groups.jsonl.'});
   }
 
   const fixture = createRecallEvaluationFixtureV2();

@@ -151,7 +151,7 @@ describe('isolated local model runtime', () => {
     let attempts = 0;
     const spawn: LocalModelWorkerSpawner = () => {
       attempts += 1;
-      if (attempts === 1) throw new TestError('synthetic spawn failure');
+      if (attempts === 1) throw TestError.make({message: 'synthetic spawn failure'});
       const worker = new FakeWorkerProcess(request => {
         worker.respond(
           request,
@@ -467,7 +467,7 @@ describe('isolated local model runtime', () => {
         },
         undefined,
         () => {
-          throw new TestError('synthetic broken pipe');
+          throw TestError.make({message: 'synthetic broken pipe'});
         },
       );
       processes.push(worker);
@@ -516,16 +516,16 @@ describe('isolated local model runtime', () => {
             Effect.sync(() => expect(request.embeddingContextPoolSize).toBe(8)).pipe(
               Effect.andThen(
                 Effect.fail(
-                  new EmbeddingFailed({
-                    cause: new TestError(`${secret}:${request.inputs[0]}`),
+                  EmbeddingFailed.make({
+                    cause: TestError.make({message: `${secret}:${request.inputs[0]}`}),
                     message: secret,
                     modelId: request.manifest.id,
                   }),
                 ),
               ),
             ),
-          generate: () => Effect.die(new TestError('Unexpected generation request')),
-          rerank: () => Effect.die(new TestError('Unexpected reranking request')),
+          generate: () => Effect.die(TestError.make({message: 'Unexpected generation request'})),
+          rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking request'})),
         }),
         {
           input,

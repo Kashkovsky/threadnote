@@ -1,4 +1,5 @@
-import {Clock, Effect, Path, Predicate} from 'effect';
+import {DateTime, Effect, Path, Predicate, Schema} from 'effect';
+import {succeedUndefined} from '../../effect/optional.js';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {SystemInfo} from '../../effect/system.js';
@@ -229,7 +230,7 @@ export const replaceCodeGraphWorksetCatalogBridgeSet = Effect.fn('codeGraphCross
                FROM catalog_capacity WHERE singleton = 1 LIMIT 1`,
             );
             if (capacities.length !== 1) {
-              return yield* Effect.fail(corrupt('Catalog capacity receipt is missing.'));
+              return yield* corrupt('Catalog capacity receipt is missing.');
             }
             const bridgeLogicalBytes = requiredInteger(
               capacities[0].bridge_logical_bytes,
@@ -245,9 +246,7 @@ export const replaceCodeGraphWorksetCatalogBridgeSet = Effect.fn('codeGraphCross
               nextBridgeLogicalBytes + projectionLogicalBytes >
                 CODE_GRAPH_WORKSET_CATALOG_LIMITS.catalogPhysicalBytesMaximum
             ) {
-              return yield* Effect.fail(
-                new CodeGraphWorksetCatalogError('capacity', 'The home-global workset catalog is full.'),
-              );
+              return yield* CodeGraphWorksetCatalogError.of('capacity', 'The home-global workset catalog is full.');
             }
             yield* sql.unsafe(
               `UPDATE catalog_capacity SET bridge_logical_bytes = ?
@@ -255,7 +254,7 @@ export const replaceCodeGraphWorksetCatalogBridgeSet = Effect.fn('codeGraphCross
               [nextBridgeLogicalBytes, bridgeLogicalBytes],
             );
             if ((yield* changes(sql)) !== 1) {
-              return yield* Effect.fail(corrupt('Catalog bridge capacity receipt changed unexpectedly.'));
+              return yield* corrupt('Catalog bridge capacity receipt changed unexpectedly.');
             }
             yield* sql.unsafe('DELETE FROM cross_repository_bridge_sets WHERE generation_id = ?', [input.generationId]);
             yield* sql.unsafe(
@@ -349,11 +348,9 @@ export const readCodeGraphWorksetCatalogBridgePage = Effect.fn('codeGraphCrossRe
           if (bridgeSet === undefined) return undefined;
           const memberCount = yield* countEndpointMembership(sql, request.generationId, request.endpoint);
           if (memberCount !== 1) {
-            return yield* Effect.fail(
-              new CodeGraphWorksetCatalogError(
-                'stale',
-                'The requested bridge endpoint is not a unique member of the published generation.',
-              ),
+            return yield* CodeGraphWorksetCatalogError.of(
+              'stale',
+              'The requested bridge endpoint is not a unique member of the published generation.',
             );
           }
           const prefix = request.direction === 'outgoing' ? 'source' : 'target';
@@ -397,7 +394,7 @@ export const readCodeGraphWorksetCatalogBridgePage = Effect.fn('codeGraphCrossRe
               (entry.ordinal < previous.ordinal ||
                 (entry.ordinal === previous.ordinal && compareCodeUnits(entry.bridge.id, previous.bridgeId) <= 0))
             ) {
-              return yield* Effect.fail(corrupt('Stored bridge endpoint order is invalid.'));
+              return yield* corrupt('Stored bridge endpoint order is invalid.');
             }
             previous = {bridgeId: entry.bridge.id, ordinal: entry.ordinal};
             decoded.push(entry.bridge);
@@ -452,11 +449,9 @@ export const readCodeGraphWorksetCatalogRepositoryBridgePage = Effect.fn(
         if (bridgeSet === undefined) return undefined;
         const memberCount = yield* countRepositoryMembership(sql, request.generationId, request.repository);
         if (memberCount !== 1) {
-          return yield* Effect.fail(
-            new CodeGraphWorksetCatalogError(
-              'stale',
-              'The requested bridge repository snapshot is not a unique member of the published generation.',
-            ),
+          return yield* CodeGraphWorksetCatalogError.of(
+            'stale',
+            'The requested bridge repository snapshot is not a unique member of the published generation.',
           );
         }
         const prefix = request.direction === 'outgoing' ? 'source' : 'target';
@@ -636,18 +631,17 @@ function verifyBridgeReplacementDiskCapacity(
   requiredBytes: number,
 ) {
   return probe(target).pipe(
-    Effect.mapError(
-      cause =>
-        new CodeGraphWorksetCatalogError(
-          'storage',
-          `Could not inspect free disk space before bridge publication. Verify at least ${String(requiredBytes)} bytes are free and retry; the catalog was not modified.`,
-          {cause},
-        ),
+    Effect.mapError(cause =>
+      CodeGraphWorksetCatalogError.of(
+        'storage',
+        `Could not inspect free disk space before bridge publication. Verify at least ${String(requiredBytes)} bytes are free and retry; the catalog was not modified.`,
+        {cause},
+      ),
     ),
     Effect.flatMap(availableBytes => {
       if (availableBytes === undefined) {
         return Effect.fail(
-          new CodeGraphWorksetCatalogError(
+          CodeGraphWorksetCatalogError.of(
             'storage',
             `Could not determine free disk space before bridge publication. Verify at least ${String(requiredBytes)} bytes are free and retry; the catalog was not modified.`,
           ),
@@ -655,12 +649,12 @@ function verifyBridgeReplacementDiskCapacity(
       }
       if (!Number.isSafeInteger(availableBytes) || availableBytes < 0) {
         return Effect.fail(
-          new CodeGraphWorksetCatalogError('storage', 'The free disk space probe returned an invalid result.'),
+          CodeGraphWorksetCatalogError.of('storage', 'The free disk space probe returned an invalid result.'),
         );
       }
       if (availableBytes < requiredBytes) {
         return Effect.fail(
-          new CodeGraphWorksetCatalogError(
+          CodeGraphWorksetCatalogError.of(
             'capacity',
             `Bridge publication needs ${String(requiredBytes)} bytes free, but only ${String(availableBytes)} bytes are available. Free disk space and retry; the catalog was not modified.`,
           ),
@@ -680,12 +674,12 @@ function loadWritableGeneration(sql: SqlClient.SqlClient, generationId: string) 
       Effect.flatMap(rows =>
         validateStored(() => {
           if (rows.length !== 1) {
-            throw new CodeGraphWorksetCatalogError('missing', 'The bridge generation does not exist.');
+            throw CodeGraphWorksetCatalogError.of('missing', 'The bridge generation does not exist.');
           }
           const state = requiredText(rows[0].state, 'generation state');
           const worksetName = requiredText(rows[0].workset_name, 'workset name');
           if (state !== 'staging' && state !== 'ready') {
-            throw new CodeGraphWorksetCatalogError('stale', 'A retired generation cannot receive bridges.');
+            throw CodeGraphWorksetCatalogError.of('stale', 'A retired generation cannot receive bridges.');
           }
           return {state, worksetName};
         }),
@@ -702,7 +696,7 @@ function loadWritableGeneration(sql: SqlClient.SqlClient, generationId: string) 
                 Effect.flatMap(rows =>
                   validateStored(() => {
                     if (requiredInteger(rows[0]?.count, 'published pointer count') !== 1) {
-                      throw new CodeGraphWorksetCatalogError(
+                      throw CodeGraphWorksetCatalogError.of(
                         'stale',
                         'A ready generation must remain published while its bridge set is replaced.',
                       );
@@ -824,7 +818,7 @@ function loadPublishedBridgeSet(sql: SqlClient.SqlClient, generationId: string) 
     .pipe(
       Effect.flatMap(rows =>
         rows.length === 0
-          ? Effect.succeed(undefined)
+          ? succeedUndefined
           : validateStored(() => {
               const row = rows[0];
               const resolverVersion = requiredInteger(row.resolver_version, 'bridge resolver version');
@@ -1024,7 +1018,7 @@ function decodeBridgePageRows(
         (entry.ordinal < previous.ordinal ||
           (entry.ordinal === previous.ordinal && compareCodeUnits(entry.bridge.id, previous.bridgeId) <= 0))
       ) {
-        return yield* Effect.fail(corrupt('Stored bridge order is invalid.'));
+        return yield* corrupt('Stored bridge order is invalid.');
       }
       previous = {bridgeId: entry.bridge.id, ordinal: entry.ordinal};
       bridges.push(entry.bridge);
@@ -1445,9 +1439,9 @@ function validateInput<A>(evaluate: () => A): Effect.Effect<A, CodeGraphWorksetC
   return Effect.try({
     try: evaluate,
     catch: cause =>
-      cause instanceof CodeGraphWorksetCatalogError
+      Schema.is(CodeGraphWorksetCatalogError)(cause)
         ? cause
-        : new CodeGraphWorksetCatalogError('invalid-input', 'Cross-repository bridge input is invalid.', {cause}),
+        : CodeGraphWorksetCatalogError.of('invalid-input', 'Cross-repository bridge input is invalid.', {cause}),
   });
 }
 
@@ -1455,20 +1449,18 @@ function validateStored<A>(evaluate: () => A): Effect.Effect<A, CodeGraphWorkset
   return Effect.try({
     try: evaluate,
     catch: cause =>
-      cause instanceof CodeGraphWorksetCatalogError
+      Schema.is(CodeGraphWorksetCatalogError)(cause)
         ? cause
-        : new CodeGraphWorksetCatalogError('corrupt', 'Cross-repository bridge data is invalid.', {cause}),
+        : CodeGraphWorksetCatalogError.of('corrupt', 'Cross-repository bridge data is invalid.', {cause}),
   });
 }
 
 function invalid(message: string): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('invalid-input', message);
+  return CodeGraphWorksetCatalogError.of('invalid-input', message);
 }
 
 function corrupt(message: string, cause?: unknown): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('corrupt', message, cause === undefined ? undefined : {cause});
+  return CodeGraphWorksetCatalogError.of('corrupt', message, cause === undefined ? undefined : {cause});
 }
 
-const currentIsoInstant = Clock.currentTimeMillis.pipe(
-  Effect.map(milliseconds => new Date(milliseconds).toISOString()),
-);
+const currentIsoInstant = DateTime.now.pipe(Effect.map(DateTime.formatIso));

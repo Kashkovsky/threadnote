@@ -69,7 +69,9 @@ describe('Context Brief code-linked memory recovery', () => {
     mocks.loadRecallCodeLinks.mockReturnValue(Effect.succeed([]));
     mocks.loadRecallMemoryIdentities.mockReturnValue(Effect.succeed([]));
     mocks.readMemoryRecordsByUri.mockReturnValue(Effect.succeed([]));
-    mocks.resolveRepositoryIdentity.mockReturnValue(Effect.fail(new TestError('identity intentionally unavailable')));
+    mocks.resolveRepositoryIdentity.mockReturnValue(
+      Effect.fail(TestError.make({message: 'identity intentionally unavailable'})),
+    );
     mocks.expireRecallIndexValidation.mockReturnValue(Effect.void);
     mocks.finalizeDeferredCodeAnchorsForRoute.mockReturnValue(Effect.void);
     mocks.withCodeAnchorFinalizationAnonymousTelemetry.mockImplementation(
@@ -91,7 +93,7 @@ describe('Context Brief code-linked memory recovery', () => {
             },
           ]),
       );
-      mocks.readMemoryRecordsByUri.mockReturnValue(Effect.fail(new TestError('canonical read failed')));
+      mocks.readMemoryRecordsByUri.mockReturnValue(Effect.fail(TestError.make({message: 'canonical read failed'})));
 
       const result = yield* contextBriefRecoveryTestEffect(
         retrieveContextBriefCodeLinkedMemoryEvidence(CONFIG, codeAnchorPlan(refs)),
@@ -112,7 +114,7 @@ describe('Context Brief code-linked memory recovery', () => {
         Effect.succeed([{anchorOrdinal: 0, citationId: citation.id, matchKind: 'file-path', uri: MEMORY_URI}]),
       );
       mocks.readMemoryRecordsByUri.mockReturnValue(Effect.succeed([memoryRecord(citation)]));
-      mocks.loadRecallMemoryIdentities.mockReturnValue(Effect.fail(new TestError('identity index failed')));
+      mocks.loadRecallMemoryIdentities.mockReturnValue(Effect.fail(TestError.make({message: 'identity index failed'})));
 
       const result = yield* contextBriefRecoveryTestEffect(
         retrieveContextBriefCodeLinkedMemoryEvidence(CONFIG, codeAnchorPlan(refs)),
@@ -172,7 +174,7 @@ describe('Context Brief code-linked memory recovery', () => {
         (_config: RuntimeConfig, input: {readonly refs?: readonly string[]}) => {
           const requested = input.refs ?? [];
           if (requested.length > 1 || requested[0] === refs[1]) return Effect.fail(unresolvedCaptureError());
-          if (requested[0] === refs[2]) return Effect.fail(new MemoryCodeCitationCaptureError('permission denied'));
+          if (requested[0] === refs[2]) return Effect.fail(MemoryCodeCitationCaptureError.of('permission denied'));
           return Effect.succeed([codeCitation(requested[0], 0)]);
         },
       );
@@ -215,7 +217,7 @@ describe('Context Brief code-linked memory recovery', () => {
         (_config: RuntimeConfig, input: {readonly refs?: readonly string[]}) =>
           Effect.suspend(() => {
             fatalExecutions.push([...(input.refs ?? [])]);
-            return Effect.fail(new MemoryCodeCitationCaptureError('fatal'));
+            return Effect.fail(MemoryCodeCitationCaptureError.of('fatal'));
           }),
       );
 
@@ -233,7 +235,7 @@ describe('Context Brief code-linked memory recovery', () => {
         (_config: RuntimeConfig, input: {readonly refs?: readonly string[]}) =>
           Effect.suspend(() => {
             transientExecutions.push([...(input.refs ?? [])]);
-            return Effect.fail(new MemoryCodeCitationCaptureError('transient', undefined, undefined, true));
+            return Effect.fail(MemoryCodeCitationCaptureError.of('transient', undefined, undefined, true));
           }),
       );
 
@@ -294,7 +296,7 @@ function memoryRecord(citation: MemoryCodeCitationV1): MemoryRecord {
 }
 
 function unresolvedCaptureError(): MemoryCodeCitationCaptureError {
-  return new MemoryCodeCitationCaptureError('unresolved', undefined, 'code-reference-unresolved');
+  return MemoryCodeCitationCaptureError.of('unresolved', undefined, 'code-reference-unresolved');
 }
 
 function contextBriefRecoveryTestEffect<A, E>(effect: Effect.Effect<A, E, unknown>): Effect.Effect<A, E> {

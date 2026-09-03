@@ -1,5 +1,7 @@
+import {Schema} from 'effect';
 import type {Sql, TransactionSql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
+import {randomUuidV4} from '../crypto/uuid.js';
 import {MEMORY_SCHEMA_VERSION} from '../memory/code_citation.js';
 import {
   assertMemoryDocumentSchemaWritable,
@@ -428,7 +430,7 @@ export class PostgresRemoteMemoryRepository {
           }
           const share = await requireShareState(transaction, principal);
           requireFreshAttestationPolicy(principal, share, attestation, input.project);
-          const proposedRevision = crypto.randomUUID();
+          const proposedRevision = randomUuidV4();
           const intent: RemoteMutationIntentV1 = {
             ...(input.baseRevision ? {baseRevision: input.baseRevision} : {}),
             fingerprint,
@@ -476,7 +478,7 @@ export class PostgresRemoteMemoryRepository {
             topic: input.topic,
           });
           const document = makeRemoteDocument(input, current, canonicalUri, attestation, now);
-          const headId = current?.head_id ?? crypto.randomUUID();
+          const headId = current?.head_id ?? randomUuidV4();
           if (!current) {
             await transaction`
           INSERT INTO remote_memory.memory_heads(
@@ -542,7 +544,7 @@ export class PostgresRemoteMemoryRepository {
         INSERT INTO remote_memory.outbox_events(
           tenant_id, share_id, id, generation, event_type, aggregate_id
         ) VALUES (
-          ${principal.tenantId}, ${principal.shareId}, ${crypto.randomUUID()},
+          ${principal.tenantId}, ${principal.shareId}, ${randomUuidV4()},
           ${numeric(committed.share_generation)}, 'memory_head_changed', ${headId}
         )
       `;
@@ -551,7 +553,7 @@ export class PostgresRemoteMemoryRepository {
           tenant_id, share_id, id, request_id, principal_id, workload_attestation_id,
           operation, result, policy_version, share_policy_version, generation
         ) VALUES (
-          ${principal.tenantId}, ${principal.shareId}, ${crypto.randomUUID()}, ${requestId},
+          ${principal.tenantId}, ${principal.shareId}, ${randomUuidV4()}, ${requestId},
           ${principal.principalId}, ${attestation?.attestationId ?? null}, 'remember_context', 'committed',
           ${principal.policyVersion}, ${committed.policy_version}, ${numeric(committed.share_generation)}
         )
@@ -640,7 +642,7 @@ export class PostgresRemoteMemoryRepository {
               reason: lifecycle.reason,
             });
           }
-          const proposedRevision = crypto.randomUUID();
+          const proposedRevision = randomUuidV4();
           const share = await requireShareState(transaction, principal);
           requireFreshAttestationPolicy(principal, share, attestation, address.project);
           const decision = planRemoteMutation({
@@ -715,7 +717,7 @@ export class PostgresRemoteMemoryRepository {
         INSERT INTO remote_memory.outbox_events(
           tenant_id, share_id, id, generation, event_type, aggregate_id
         ) VALUES (
-          ${principal.tenantId}, ${principal.shareId}, ${crypto.randomUUID()},
+          ${principal.tenantId}, ${principal.shareId}, ${randomUuidV4()},
           ${numeric(committed.share_generation)}, 'memory_head_changed', ${current.head_id}
         )
       `;
@@ -724,7 +726,7 @@ export class PostgresRemoteMemoryRepository {
           tenant_id, share_id, id, request_id, principal_id, workload_attestation_id,
           operation, result, policy_version, share_policy_version, generation
         ) VALUES (
-          ${principal.tenantId}, ${principal.shareId}, ${crypto.randomUUID()}, ${requestId},
+          ${principal.tenantId}, ${principal.shareId}, ${randomUuidV4()}, ${requestId},
           ${principal.principalId}, ${attestation?.attestationId ?? null},
           ${`handoff_${input.operation}`}, 'committed', ${principal.policyVersion}, ${committed.policy_version},
           ${numeric(committed.share_generation)}
@@ -800,7 +802,7 @@ export class PostgresRemoteMemoryRepository {
         }
         if (record.outcome !== null) {
           const replay = readStoredOperationOutcome(record.outcome, requestId);
-          if (replay instanceof RemoteMemoryError) throw replay;
+          if (Schema.is(RemoteMemoryError)(replay)) throw replay;
           return {kind: 'replay', receipt: replay};
         }
         throw remoteMemoryError(
@@ -822,10 +824,9 @@ export class PostgresRemoteMemoryRepository {
     cause: unknown,
     execution?: RemoteMemoryRequestExecution,
   ): Promise<void> {
-    const error =
-      cause instanceof RemoteMemoryError
-        ? cause
-        : remoteMemoryError('service_unavailable', 'Remote memory could not complete the request.');
+    const error = Schema.is(RemoteMemoryError)(cause)
+      ? cause
+      : remoteMemoryError('service_unavailable', 'Remote memory could not complete the request.');
     const rejection = storedOperationRejection(error);
     try {
       await this.withTenant(
@@ -853,16 +854,16 @@ export class PostgresRemoteMemoryRepository {
     execution?: RemoteMemoryRequestExecution,
   ): Promise<A> {
     requireActiveRemoteMemoryRequest(execution);
-    return await this.sql.begin<Promise<A>>(async transaction => {
-      return withRemoteMemoryRequestCancellation(transaction, execution, async cancellableTransaction => {
+    return await this.sql.begin<Promise<A>>(async transaction =>
+      withRemoteMemoryRequestCancellation(transaction, execution, async cancellableTransaction => {
         const timeout = remoteMemoryDatabaseTimeoutMilliseconds(this.statementTimeoutMilliseconds, execution);
         await cancellableTransaction`SELECT set_config('threadnote.tenant_id', ${tenantId}, true)`;
         await cancellableTransaction`SELECT set_config('statement_timeout', ${String(timeout)}, true)`;
         await cancellableTransaction`SELECT set_config('lock_timeout', ${String(timeout)}, true)`;
         await cancellableTransaction`SELECT set_config('transaction_timeout', ${String(timeout)}, true)`;
         return use(cancellableTransaction);
-      });
-    });
+      }),
+    );
   }
 }
 
@@ -1033,7 +1034,7 @@ function makeRemoteDocument(
   const metadata: MemoryMetadata = {
     createdAt: prior?.metadata.createdAt ?? prior?.metadata.timestamp ?? timestamp,
     kind: input.kind,
-    memoryId: prior?.metadata.memoryId ?? `tn_${crypto.randomUUID().replaceAll('-', '')}`,
+    memoryId: prior?.metadata.memoryId ?? `tn_${randomUuidV4().replaceAll('-', '')}`,
     project: input.project,
     schemaVersion: MEMORY_SCHEMA_VERSION,
     sourceAgentClient: attestation ? 'cursor' : 'remote',

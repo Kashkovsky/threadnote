@@ -17,7 +17,7 @@ const readIfExists = Effect.fn('graph.readIfExists')(function* (path: string) {
   return yield* fs.readFileString(path).pipe(
     Effect.catchIf(
       error => error.reason._tag === 'NotFound',
-      () => Effect.succeed(undefined),
+      () => Effect.void,
     ),
   );
 });

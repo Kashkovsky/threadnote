@@ -1,9 +1,10 @@
 import {TestError} from '../helpers/test-error.js';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
 import fc from 'fast-check';
-import {Deferred, Effect, Fiber} from 'effect';
+import {DateTime, Deferred, Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
 import {
   assertIsolatedBuilderPlan,
@@ -31,7 +32,7 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 function systemInfoStub(overrides: Partial<SystemInfoShape>): SystemInfoShape {
   return {
     architecture: 'arm64',
-    availableDiskBytes: () => Effect.succeed(undefined),
+    availableDiskBytes: () => succeedUndefined,
     currentDirectory: () => '/',
     environment: () => ({}),
     executablePath: '/opt/threadnote/bin/threadnote',
@@ -48,7 +49,7 @@ function systemInfoStub(overrides: Partial<SystemInfoShape>): SystemInfoShape {
     platform: 'darwin',
     processArguments: ['/opt/threadnote/bin/threadnote'],
     processId: 1,
-    processStartIdentity: () => Effect.succeed(undefined),
+    processStartIdentity: () => succeedUndefined,
     readLine: () => () => undefined,
     runtimeVersion: 'test',
     setEnvironmentVariable: () => undefined,
@@ -130,7 +131,7 @@ describe('isolated code-graph builder spawn plan', () => {
       repositoryId: 'c'.repeat(64),
       worktreeId: 'd'.repeat(64),
     };
-    const failure = new CodeGraphRuntimeReconnectRequiredError();
+    const failure = CodeGraphRuntimeReconnectRequiredError.of();
     let spawnCalls = 0;
 
     await expect(
@@ -144,7 +145,7 @@ describe('isolated code-graph builder spawn plan', () => {
           resolveIdentity: () => Effect.succeed(identity),
           spawn: () => {
             spawnCalls += 1;
-            throw new TestError('spawn must not run');
+            throw TestError.make({message: 'spawn must not run'});
           },
           threadnoteHome: '/fixture/home',
         }),
@@ -613,11 +614,11 @@ describe('isolated builder cross-host spawn admission', () => {
               schemaVersion: 2,
               state: 'running' as const,
               timestamps: {
-                heartbeatAt: new Date().toISOString(),
-                lastProgressAt: new Date().toISOString(),
-                phaseStartedAt: new Date().toISOString(),
-                startedAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
+                heartbeatAt: DateTime.formatIso(yield* DateTime.now),
+                lastProgressAt: DateTime.formatIso(yield* DateTime.now),
+                phaseStartedAt: DateTime.formatIso(yield* DateTime.now),
+                startedAt: DateTime.formatIso(yield* DateTime.now),
+                updatedAt: DateTime.formatIso(yield* DateTime.now),
               },
             } as unknown as ObservedCodeGraphBuildStatus;
             const options = {

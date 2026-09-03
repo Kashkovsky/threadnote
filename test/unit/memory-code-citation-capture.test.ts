@@ -1,5 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Layer, Path} from 'effect';
+import {Effect, FileSystem, Layer, Path, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect} from 'vitest';
@@ -24,7 +24,7 @@ import {
   CodeGraphStoreBusyError,
   type CodeGraphInventoryFile,
   type CodeGraphStatus,
-  type CodeGraphStoreError,
+  type CodeGraphStoreFailure,
   type CodeGraphSymbol,
 } from '../../src/code_graph/types.js';
 import {validateContextBriefMemoryCitations} from '../../src/context_brief/citation_validation.js';
@@ -130,7 +130,7 @@ describe('memory code citation capture and validation', () => {
       }).pipe(provideTestLayer(fixture.layer), Effect.flip);
 
       expect(failure).toBeInstanceOf(MemoryCodeCitationCaptureError);
-      if (!(failure instanceof MemoryCodeCitationCaptureError)) return;
+      if (!Schema.is(MemoryCodeCitationCaptureError)(failure)) return;
       expect(failure.message).toBe(
         'Code citation path is not present in the exact current graph: .github/workflows/ci.yml. Use a graph-indexed repository-relative path.',
       );
@@ -146,7 +146,7 @@ describe('memory code citation capture and validation', () => {
       const fs = yield* FileSystem.FileSystem;
       const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-citation-retryable-store-'});
       const fixture = citationFixture(root, {
-        evidenceFailure: new CodeGraphStoreBusyError('fixture reader is busy'),
+        evidenceFailure: CodeGraphStoreBusyError.of('fixture reader is busy'),
       });
 
       const failure = yield* captureMemoryCodeCitations(CONFIG, {
@@ -155,7 +155,7 @@ describe('memory code citation capture and validation', () => {
       }).pipe(provideTestLayer(fixture.layer), Effect.flip);
 
       expect(failure).toBeInstanceOf(MemoryCodeCitationCaptureError);
-      if (!(failure instanceof MemoryCodeCitationCaptureError)) return;
+      if (!Schema.is(MemoryCodeCitationCaptureError)(failure)) return;
       expect(failure.retryable).toBe(true);
       expect(failure.failureCode).toBeUndefined();
       expect(failure.recovery).toBeUndefined();
@@ -276,7 +276,7 @@ describe('memory code citation capture and validation', () => {
         refs: [qualified.ref],
       }).pipe(provideTestLayer(fixture.layer), Effect.flip);
       expect(failure).toBeInstanceOf(MemoryCodeCitationCaptureError);
-      if (!(failure instanceof MemoryCodeCitationCaptureError)) return;
+      if (!Schema.is(MemoryCodeCitationCaptureError)(failure)) return;
       expect(failure.recovery?.preparation).toEqual({
         action: 'prepare-workset',
         arguments: [workset.name],
@@ -320,7 +320,7 @@ describe('memory code citation capture and validation', () => {
         }).pipe(provideTestLayer(fixture.layer), Effect.flip);
 
         expect(failure).toBeInstanceOf(MemoryCodeCitationCaptureError);
-        if (!(failure instanceof MemoryCodeCitationCaptureError)) return;
+        if (!Schema.is(MemoryCodeCitationCaptureError)(failure)) return;
         expect(failure.recovery).toEqual({
           code: status.hasReadySnapshot ? 'exact-current-evidence-unavailable' : 'ready-graph-unavailable',
           indexingStarted: false,
@@ -350,7 +350,7 @@ describe('memory code citation capture and validation', () => {
 function citationFixture(
   root: string,
   statusOptions: {
-    readonly evidenceFailure?: CodeGraphStoreError;
+    readonly evidenceFailure?: CodeGraphStoreFailure;
     readonly freshness?: CodeGraphStatus['freshness'];
     readonly stale?: boolean;
     readonly statusFor?: (cwd: string, observeWorktree: boolean | undefined) => CodeGraphStatus;

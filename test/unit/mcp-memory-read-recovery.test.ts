@@ -30,7 +30,7 @@ describe('MCP memory-read recovery', () => {
     const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/missing-source.md';
     const result = memoryReadErrorResult(
       {user: 'test-user'},
-      new ResourceNotFound({message: `Resource does not exist: ${uri}`, uri}),
+      ResourceNotFound.make({message: `Resource does not exist: ${uri}`, uri}),
     );
 
     expect(result.isError).toBe(true);

@@ -20,8 +20,8 @@ import {
   type CodeGraphReference,
   type CodeGraphResolutionActivity,
   type CodeGraphSnapshot,
-  type CodeGraphStoreError,
   type CodeGraphSymbol,
+  type CodeGraphStoreFailure,
 } from './types.js';
 import {
   CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
@@ -472,7 +472,7 @@ export interface CodeGraphMaterializationStorageObservation {
 export type CodeGraphDirectPersistentCapacityProtector = <A, E, R>(
   boundary: CodeGraphDirectPersistentCapacityBoundary,
   transaction: Effect.Effect<A, E, R>,
-) => Effect.Effect<A, E | CodeGraphStoreError, R>;
+) => Effect.Effect<A, E | CodeGraphStoreFailure, R>;
 
 export type CodeGraphStagingBatchProgressCallback = (
   batchIndex: number,

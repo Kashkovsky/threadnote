@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Path, Predicate, Result} from 'effect';
+import {Console, DateTime, Effect, FileSystem, Path, Predicate, Result} from 'effect';
 
 import {SystemInfo} from '../effect/system.js';
 
@@ -107,7 +107,9 @@ export const installSharedAgentArtifacts = Effect.fn('share.installSharedAgentAr
   if (artifacts.length === 0) {
     const filters = sharedArtifactFilterLabel(options);
     if (filters) {
-      throw new ShareOperationError(`No shared agent artifacts found for team "${team.name}" matching ${filters}.`);
+      throw ShareOperationError.make({
+        message: `No shared agent artifacts found for team "${team.name}" matching ${filters}.`,
+      });
     }
     return {
       installedCount: 0,
@@ -122,11 +124,11 @@ export const installSharedAgentArtifacts = Effect.fn('share.installSharedAgentAr
     artifacts.length > 1 &&
     (options.agent === undefined || options.kind === undefined)
   ) {
-    throw new ShareOperationError(
-      `Shared artifact "${options.name}" is ambiguous. Specify agent and kind. Matches: ${artifacts
+    throw ShareOperationError.make({
+      message: `Shared artifact "${options.name}" is ambiguous. Specify agent and kind. Matches: ${artifacts
         .map(artifact => sharedArtifactLabel(artifact.artifact))
         .join(', ')}`,
-    );
+    });
   }
   let installedCount = 0;
   for (const artifact of artifacts) {
@@ -146,9 +148,9 @@ export const installSharedAgentArtifacts = Effect.fn('share.installSharedAgentAr
       (state.status === 'local_modified' || state.status === 'remote_changed_and_local_modified') &&
       options.force !== true
     ) {
-      throw new ShareOperationError(
-        `Refusing to overwrite ${yield* portablePath(artifact.installPath)}. Pass force=true or --force.`,
-      );
+      throw ShareOperationError.make({
+        message: `Refusing to overwrite ${yield* portablePath(artifact.installPath)}. Pass force=true or --force.`,
+      });
     }
     if (state.status === 'current') {
       yield* writeSharedArtifactMetadata(artifact, state.sourceSha);
@@ -310,9 +312,9 @@ const collectSharedPackMembers = Effect.fn('share.collectSharedPackMembers')(fun
         const path = memberPath(entry);
         if (typeof path === 'string' && path.length > 0) {
           if (!(yield* isContainedMemberPath(filesDir, path))) {
-            return yield* Effect.fail(
-              new ShareOperationError(`Refusing pack member with an unsafe path that escapes the pack root: ${path}`),
-            );
+            return yield* ShareOperationError.make({
+              message: `Refusing pack member with an unsafe path that escapes the pack root: ${path}`,
+            });
           }
           fromManifest.push({absolutePath: yield* pathJoin(filesDir, ...path.split('/')), relativePath: path});
         }
@@ -339,9 +341,9 @@ const collectSharedBundleMembers = Effect.fn('share.collectSharedBundleMembers')
         const path = memberPath(entry);
         if (typeof path === 'string' && path.length > 0) {
           if (!(yield* isContainedMemberPath(skillDir, path))) {
-            return yield* Effect.fail(
-              new ShareOperationError(`Refusing skill member with an unsafe path that escapes the skill root: ${path}`),
-            );
+            return yield* ShareOperationError.make({
+              message: `Refusing skill member with an unsafe path that escapes the skill root: ${path}`,
+            });
           }
           fromManifest.push({absolutePath: yield* pathJoin(skillDir, ...path.split('/')), relativePath: path});
         }
@@ -604,18 +606,18 @@ const installBundleArtifact = Effect.fn('share.installBundleArtifact')(function*
     return 0;
   }
   if ((status === 'local_modified' || status === 'remote_changed_and_local_modified') && options.force !== true) {
-    throw new ShareOperationError(
-      `Refusing to overwrite ${yield* portablePath(installRoot)}. Pass force=true or --force.`,
-    );
+    throw ShareOperationError.make({
+      message: `Refusing to overwrite ${yield* portablePath(installRoot)}. Pass force=true or --force.`,
+    });
   }
   const prepared = yield* prepareInstallMembers(members, installRoot, artifact.artifact.kind === 'pack');
   // A declared member whose shared source is unreadable (partial sync / corrupt
   // repo) must not silently drop from the install — that would delete the prior
   // installed copy on a routine update. Refuse unless forced.
   if (prepared.length < members.length && options.force !== true) {
-    throw new ShareOperationError(
-      `Refusing to install ${yield* portablePath(installRoot)}: ${members.length - prepared.length} declared member(s) are unreadable in the shared pack (the shared worktree may be mid-sync). Retry after sync, or pass force=true / --force.`,
-    );
+    throw ShareOperationError.make({
+      message: `Refusing to install ${yield* portablePath(installRoot)}: ${members.length - prepared.length} declared member(s) are unreadable in the shared pack (the shared worktree may be mid-sync). Retry after sync, or pass force=true / --force.`,
+    });
   }
   if (status === 'current') {
     yield* writeFile(yield* bundleInstallMetadataPath(artifact), serializeInstallMetadata(artifact, prepared), {
@@ -657,7 +659,7 @@ const installBundleArtifact = Effect.fn('share.installBundleArtifact')(function*
     if (hadPriorInstall) {
       yield* rename(backupRoot, installRoot);
     }
-    return yield* Effect.fail(swapResult.failure);
+    return yield* swapResult.failure;
   }
   yield* rm(backupRoot, {force: true, recursive: true});
   messages.push(
@@ -833,7 +835,7 @@ const writeSharedArtifactMetadata = Effect.fn('share.writeSharedArtifactMetadata
 ) {
   const metadata: SharedArtifactInstallMetadata = {
     artifact: artifact.artifact,
-    installedAt: new Date().toISOString(),
+    installedAt: DateTime.formatIso(yield* DateTime.now),
     installedSha256: sourceSha,
     source: artifact.sourceRelativePath,
     sourceSha256: sourceSha,

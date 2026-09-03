@@ -1,4 +1,4 @@
-import {Console, Effect, Predicate} from 'effect';
+import {Console, Effect, Predicate, Schema} from 'effect';
 import {cursorCloudMemoryEndpoint} from './cloud.js';
 import {CommandExecutor, type CommandOptions} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
@@ -9,9 +9,10 @@ const CURSOR_OIDC_PATH = 'http://cursor-agent/v1/tokens/oidc';
 const CHALLENGE_MAX_FUTURE_MILLISECONDS = 10 * 60 * 1_000;
 const CURL_OUTPUT_MAX_BYTES = 16 * 1_024;
 
-export class CursorAttestationError extends Error {
-  readonly _tag = 'CursorAttestationError' as const;
-}
+export class CursorAttestationError extends Schema.TaggedError<CursorAttestationError>()('CursorAttestationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export interface CursorAttestationChallengeInputV1 {
   readonly audience?: unknown;
@@ -68,9 +69,9 @@ export function validateCursorAttestationChallenge(
   const expectedAudience = new URL('/attest/cursor', expectedEndpoint).toString();
   const expectedCompletionUrl = new URL('/attest/cursor/complete', expectedEndpoint).toString();
   if (audience !== expectedAudience || completionUrl !== expectedCompletionUrl) {
-    throw new CursorAttestationError(
-      'Cursor attestation audience and completion endpoint must match the configured remote memory service.',
-    );
+    throw CursorAttestationError.make({
+      message: 'Cursor attestation audience and completion endpoint must match the configured remote memory service.',
+    });
   }
   const expiresAt = requiredString(input.expiresAt, 'expiresAt', 64);
   const expiresAtMilliseconds = Date.parse(expiresAt);
@@ -79,7 +80,7 @@ export function validateCursorAttestationChallenge(
     expiresAtMilliseconds <= nowMilliseconds ||
     expiresAtMilliseconds - nowMilliseconds > CHALLENGE_MAX_FUTURE_MILLISECONDS
   ) {
-    throw new CursorAttestationError('Cursor attestation challenge is expired or has an invalid lifetime.');
+    throw CursorAttestationError.make({message: 'Cursor attestation challenge is expired or has an invalid lifetime.'});
   }
   return {
     audience,
@@ -100,25 +101,30 @@ export const completeCursorAttestationChallenge = Effect.fn('cursorCloud.complet
   const challenge = yield* Effect.try({
     try: () => validateCursorAttestationChallenge(input, expectedMemoryEndpoint, nowMilliseconds),
     catch: cause =>
-      cause instanceof CursorAttestationError
+      Schema.is(CursorAttestationError)(cause)
         ? cause
-        : new CursorAttestationError('Cursor attestation challenge validation failed.'),
+        : CursorAttestationError.make({message: 'Cursor attestation challenge validation failed.'}),
   });
   const minted = yield* client
     .mint(challenge)
-    .pipe(Effect.mapError(() => new CursorAttestationError('Cursor workload identity token minting failed.')));
+    .pipe(
+      Effect.mapError(() => CursorAttestationError.make({message: 'Cursor workload identity token minting failed.'})),
+    );
   if (!minted.token || !Number.isSafeInteger(minted.expiresAt) || minted.expiresAt * 1_000 <= nowMilliseconds) {
-    return yield* Effect.fail(new CursorAttestationError('Cursor returned an invalid workload identity response.'));
+    return yield* CursorAttestationError.make({message: 'Cursor returned an invalid workload identity response.'});
   }
   const completion = yield* client
     .complete(challenge, minted.token)
-    .pipe(Effect.mapError(() => new CursorAttestationError('Cursor workload attestation completion failed.')));
+    .pipe(
+      Effect.mapError(() => CursorAttestationError.make({message: 'Cursor workload attestation completion failed.'})),
+    );
   const normalizedCompletion = yield* Effect.try({
     try: () => ({
       attestationId: portableOpaqueValue(completion.attestationId, 'attestationId', 256),
       expiresAt: optionalTimestamp(completion.expiresAt),
     }),
-    catch: () => new CursorAttestationError('Threadnote returned an invalid workload attestation response.'),
+    catch: () =>
+      CursorAttestationError.make({message: 'Threadnote returned an invalid workload attestation response.'}),
   });
   return {
     attestationId: normalizedCompletion.attestationId,
@@ -135,9 +141,9 @@ export const runCursorAttestationChallenge = Effect.fn('cursorCloud.runAttestati
   const socket = yield* Effect.try({
     try: () => cursorAgentSocket(system.environment().CURSOR_AGENT_SOCKET),
     catch: cause =>
-      cause instanceof CursorAttestationError
+      Schema.is(CursorAttestationError)(cause)
         ? cause
-        : new CursorAttestationError('CURSOR_AGENT_SOCKET is not a valid Unix socket path.'),
+        : CursorAttestationError.make({message: 'CURSOR_AGENT_SOCKET is not a valid Unix socket path.'}),
   });
   const execute: CurlExecute = (args, options) => commands.execute('curl', args, options);
   const client: CursorAttestationExchangeClient = {
@@ -172,11 +178,15 @@ function mintCursorTokenWithCurl(challenge: CursorAttestationChallengeV1, socket
   return curlJson(socket, CURSOR_OIDC_PATH, body, 8_000, execute, true).pipe(
     Effect.flatMap(response => {
       if (response.status < 200 || response.status >= 300) {
-        return Effect.fail(new CursorAttestationError('Cursor rejected the workload identity token request.'));
+        return Effect.fail(
+          CursorAttestationError.make({message: 'Cursor rejected the workload identity token request.'}),
+        );
       }
       const parsed = parseObject(response.body);
       if (parsed === undefined || typeof parsed.token !== 'string' || typeof parsed.expires_at !== 'number') {
-        return Effect.fail(new CursorAttestationError('Cursor returned an invalid workload identity response.'));
+        return Effect.fail(
+          CursorAttestationError.make({message: 'Cursor returned an invalid workload identity response.'}),
+        );
       }
       return Effect.succeed({expiresAt: parsed.expires_at, token: parsed.token});
     }),
@@ -188,11 +198,15 @@ function completeChallengeWithCurl(challenge: CursorAttestationChallengeV1, toke
   return curlJson(undefined, challenge.completionUrl, body, 10_000, execute).pipe(
     Effect.flatMap(response => {
       if (response.status < 200 || response.status >= 300) {
-        return Effect.fail(new CursorAttestationError('Threadnote rejected the workload attestation completion.'));
+        return Effect.fail(
+          CursorAttestationError.make({message: 'Threadnote rejected the workload attestation completion.'}),
+        );
       }
       const parsed = parseObject(response.body);
       if (parsed === undefined || typeof parsed.attestationId !== 'string') {
-        return Effect.fail(new CursorAttestationError('Threadnote returned an invalid workload attestation response.'));
+        return Effect.fail(
+          CursorAttestationError.make({message: 'Threadnote returned an invalid workload attestation response.'}),
+        );
       }
       return Effect.succeed({
         attestationId: parsed.attestationId,
@@ -235,10 +249,12 @@ function curlJson(
     Effect.flatMap(result =>
       Effect.try({
         try: () => parseCurlOutput(result.stdout),
-        catch: () => new CursorAttestationError('Cursor workload attestation network exchange failed.'),
+        catch: () => CursorAttestationError.make({message: 'Cursor workload attestation network exchange failed.'}),
       }),
     ),
-    Effect.mapError(() => new CursorAttestationError('Cursor workload attestation network exchange failed.')),
+    Effect.mapError(() =>
+      CursorAttestationError.make({message: 'Cursor workload attestation network exchange failed.'}),
+    ),
   );
 }
 
@@ -246,7 +262,9 @@ function parseCurlOutput(output: string): {readonly body: string; readonly statu
   const separator = output.lastIndexOf('\n');
   const statusText = separator >= 0 ? output.slice(separator + 1) : '';
   if (!/^\d{3}$/u.test(statusText)) {
-    throw new CursorAttestationError('Cursor workload attestation network exchange returned an invalid response.');
+    throw CursorAttestationError.make({
+      message: 'Cursor workload attestation network exchange returned an invalid response.',
+    });
   }
   return {body: output.slice(0, separator), status: Number(statusText)};
 }
@@ -264,13 +282,13 @@ function parseObject(body: string): Record<string, unknown> | undefined {
 function httpsUrl(value: unknown, name: string, maximum: number): string {
   const text = requiredString(value, name, maximum);
   if (!/^[\x21-\x7e]+$/u.test(text)) {
-    throw new CursorAttestationError(`Cursor attestation ${name} must be a bounded printable HTTPS URL.`);
+    throw CursorAttestationError.make({message: `Cursor attestation ${name} must be a bounded printable HTTPS URL.`});
   }
   let parsed: URL;
   try {
     parsed = new URL(text);
   } catch {
-    throw new CursorAttestationError(`Cursor attestation ${name} must be a valid HTTPS URL.`);
+    throw CursorAttestationError.make({message: `Cursor attestation ${name} must be a valid HTTPS URL.`});
   }
   if (
     parsed.protocol !== 'https:' ||
@@ -280,13 +298,13 @@ function httpsUrl(value: unknown, name: string, maximum: number): string {
     parsed.hash.length > 0 ||
     parsed.search.length > 0
   ) {
-    throw new CursorAttestationError(
-      `Cursor attestation ${name} must be credential-free HTTPS without a query or fragment.`,
-    );
+    throw CursorAttestationError.make({
+      message: `Cursor attestation ${name} must be credential-free HTTPS without a query or fragment.`,
+    });
   }
   const normalized = parsed.toString();
   if (normalized.length > maximum) {
-    throw new CursorAttestationError(`Cursor attestation ${name} must be a bounded printable HTTPS URL.`);
+    throw CursorAttestationError.make({message: `Cursor attestation ${name} must be a bounded printable HTTPS URL.`});
   }
   return normalized;
 }
@@ -294,14 +312,14 @@ function httpsUrl(value: unknown, name: string, maximum: number): string {
 function portableOpaqueValue(value: unknown, name: string, maximum: number, minimum = 1): string {
   const text = requiredString(value, name, maximum);
   if (text.length < minimum || !/^[A-Za-z0-9._~-]+$/u.test(text)) {
-    throw new CursorAttestationError(`Cursor attestation ${name} must be a portable opaque identifier.`);
+    throw CursorAttestationError.make({message: `Cursor attestation ${name} must be a portable opaque identifier.`});
   }
   return text;
 }
 
 function requiredString(value: unknown, name: string, maximum: number): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > maximum || value.trim() !== value) {
-    throw new CursorAttestationError(`Cursor attestation ${name} is required and exceeds its safe bounds.`);
+    throw CursorAttestationError.make({message: `Cursor attestation ${name} is required and exceeds its safe bounds.`});
   }
   return value;
 }
@@ -310,7 +328,7 @@ function optionalTimestamp(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   const milliseconds = Date.parse(value);
   if (!Number.isFinite(milliseconds)) {
-    throw new CursorAttestationError('Threadnote returned an invalid workload attestation response.');
+    throw CursorAttestationError.make({message: 'Threadnote returned an invalid workload attestation response.'});
   }
   return new Date(milliseconds).toISOString();
 }
@@ -318,7 +336,7 @@ function optionalTimestamp(value: string | undefined): string | undefined {
 function cursorAgentSocket(value: string | undefined): string {
   const socket = value?.trim() || CURSOR_AGENT_SOCKET_DEFAULT;
   if (!socket.startsWith('/') || socket.length > 1_024 || /[\0\r\n]/u.test(socket)) {
-    throw new CursorAttestationError('CURSOR_AGENT_SOCKET must be a bounded absolute Unix socket path.');
+    throw CursorAttestationError.make({message: 'CURSOR_AGENT_SOCKET must be a bounded absolute Unix socket path.'});
   }
   return socket;
 }

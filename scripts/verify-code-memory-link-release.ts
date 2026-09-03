@@ -94,7 +94,7 @@ const program = Effect.gen(function* () {
     retained.contents.index.candidateCommit !== release.descriptor.candidate.commit ||
     retained.bundleHash !== release.descriptor.retainedBundle.sha256
   ) {
-    return yield* Effect.fail(new ScriptError('Retained bundle differs from the final release descriptor.'));
+    return yield* ScriptError.make({message: 'Retained bundle differs from the final release descriptor.'});
   }
   const assignment = json(retained.contents.artifacts.assignment, 'retained assignment');
   const dogfoodArtifact = json(retained.contents.artifacts.dogfood, 'retained dogfood artifact');
@@ -152,20 +152,21 @@ const program = Effect.gen(function* () {
       }
     },
     catch: cause =>
-      new ScriptError('Code Memory Link evidence does not match the verified installed runtime.', {cause}),
+      ScriptError.make({message: 'Code Memory Link evidence does not match the verified installed runtime.', cause}),
   });
   const finalRuntime = yield* verifyManagedDevelopmentRuntimeForSourceCheckout(
     sourceRoot,
     release.descriptor.candidate.commit,
   );
   if (JSON.stringify(finalRuntime) !== JSON.stringify(runtime)) {
-    return yield* Effect.fail(
-      new ScriptError('Managed candidate runtime changed while release evidence was being verified.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Managed candidate runtime changed while release evidence was being verified.',
+    });
   }
   yield* Effect.try({
     try: () => assertCodeMemoryLinkReleaseDescriptorRuntime(release.descriptor.candidate, finalRuntime),
-    catch: cause => new ScriptError('Final managed candidate runtime differs from the release descriptor.', {cause}),
+    catch: cause =>
+      ScriptError.make({message: 'Final managed candidate runtime differs from the release descriptor.', cause}),
   });
   const qualityFailures = [...agentAb.gate.qualityFailures, ...dogfood.gate.qualityFailures].sort();
   const insufficiencies = [...agentAb.gate.insufficiencies, ...dogfood.gate.insufficiencies].sort();
@@ -197,7 +198,7 @@ const program = Effect.gen(function* () {
     version: 1,
   } as const;
   yield* Console.log(JSON.stringify(result, undefined, 2));
-  if (status !== 'passed') return yield* Effect.fail(new ScriptError(failures.join('\n')));
+  if (status !== 'passed') return yield* ScriptError.make({message: failures.join('\n')});
 });
 
 /** Establish ancestry and governance before a candidate commit may be printed or executed. */
@@ -217,7 +218,7 @@ export const resolveGovernedCodeMemoryLinkRelease = Effect.fn('codeMemoryLinkRel
       release.descriptor.scaleArtifact.path,
     );
     if (governance.commit !== governanceCommit) {
-      return yield* Effect.fail(new ScriptError('The governance checkout changed during release preflight.'));
+      return yield* ScriptError.make({message: 'The governance checkout changed during release preflight.'});
     }
     return {governance, release};
   },
@@ -245,7 +246,9 @@ export function assertCodeMemoryLinkReleaseDescriptorRuntime(
     version: runtime.version,
   };
   if (JSON.stringify(observed) !== JSON.stringify(candidate)) {
-    throw new ScriptError('Installed candidate payload differs from the complete final release descriptor binding.');
+    throw ScriptError.make({
+      message: 'Installed candidate payload differs from the complete final release descriptor binding.',
+    });
   }
 }
 
@@ -260,7 +263,7 @@ export const loadCodeMemoryLinkReleaseDescriptorAtHead = Effect.fn('codeMemoryLi
     );
     const descriptor = yield* Effect.try({
       try: () => parseCodeMemoryLinkReleaseDescriptorV1({expectedReleaseTag: releaseTag, repositoryPath, source}),
-      catch: cause => new ScriptError(`Final release descriptor is invalid: ${String(cause)}`, {cause}),
+      catch: cause => ScriptError.make({message: `Final release descriptor is invalid: ${String(cause)}`, cause}),
     });
     const packageVersion = yield* Effect.try({
       try: () => {
@@ -275,19 +278,19 @@ export const loadCodeMemoryLinkReleaseDescriptorAtHead = Effect.fn('codeMemoryLi
         }
         return (value as {readonly version: string}).version;
       },
-      catch: cause => new ScriptError('Tracked package manifest is invalid.', {cause}),
+      catch: cause => ScriptError.make({message: 'Tracked package manifest is invalid.', cause}),
     });
     if (descriptor.releaseTag !== `v${packageVersion}`) {
-      return yield* Effect.fail(new ScriptError('Final release descriptor tag differs from package.json version.'));
+      return yield* ScriptError.make({message: 'Final release descriptor tag differs from package.json version.'});
     }
     const expectedCandidateVersion = yield* Effect.try({
       try: () => developmentBuildVersion(packageVersion, descriptor.candidate.commit),
-      catch: cause => new ScriptError('Final release descriptor candidate version is invalid.', {cause}),
+      catch: cause => ScriptError.make({message: 'Final release descriptor candidate version is invalid.', cause}),
     });
     if (descriptor.candidate.version !== expectedCandidateVersion) {
-      return yield* Effect.fail(
-        new ScriptError('Final release descriptor candidate version differs from candidate C and package.json.'),
-      );
+      return yield* ScriptError.make({
+        message: 'Final release descriptor candidate version differs from candidate C and package.json.',
+      });
     }
     return {descriptor, repositoryPath};
   },
@@ -299,20 +302,18 @@ export const loadCodeMemoryLinkRetainedBundleAtHead = Effect.fn('codeMemoryLinkR
       repositoryPath,
     );
     if (match === null) {
-      return yield* Effect.fail(
-        new ScriptError(
-          `Retained bundle must be a repository-relative hash-named bundle under ${CODE_MEMORY_LINK_RETAINED_BUNDLE_ROOT}.`,
-        ),
-      );
+      return yield* ScriptError.make({
+        message: `Retained bundle must be a repository-relative hash-named bundle under ${CODE_MEMORY_LINK_RETAINED_BUNDLE_ROOT}.`,
+      });
     }
     const bundleHash = match[1];
     const indexContent = yield* readTrackedGitBlob(sourceRoot, governanceCommit, repositoryPath);
     if (sha256HexSync(indexContent) !== bundleHash) {
-      return yield* Effect.fail(new ScriptError('Retained bundle directory name differs from bundle.json SHA-256.'));
+      return yield* ScriptError.make({message: 'Retained bundle directory name differs from bundle.json SHA-256.'});
     }
     const index = yield* Effect.try({
       try: () => parseCodeMemoryLinkRetainedBundleIndexV1(json(indexContent, 'retained bundle index')),
-      catch: cause => new ScriptError('Retained bundle index is invalid.', {cause}),
+      catch: cause => ScriptError.make({message: 'Retained bundle index is invalid.', cause}),
     });
     const bundleDirectory = repositoryPath.slice(0, -'/bundle.json'.length);
     const blobEntries = yield* Effect.forEach(
@@ -331,7 +332,7 @@ export const loadCodeMemoryLinkRetainedBundleAtHead = Effect.fn('codeMemoryLinkR
           blobs: new Map(blobEntries.map(([hash, content]) => [hash, content])),
           indexContent,
         }),
-      catch: cause => new ScriptError('Retained evidence bundle failed content verification.', {cause}),
+      catch: cause => ScriptError.make({message: 'Retained evidence bundle failed content verification.', cause}),
     });
     return {
       bundleHash,
@@ -356,16 +357,14 @@ export const loadCodeMemoryLinkScaleArtifactAtHead = Effect.fn('codeMemoryLinkRe
       !/^[0-9a-f]{64}$/u.test(expectedArtifactSha256) ||
       repositoryPath !== codeMemoryLinkScaleArtifactPath(expectedArtifactSha256)
     ) {
-      return yield* Effect.fail(
-        new ScriptError(
-          `Scale artifact must be a repository-relative content-addressed JSON blob under ${CODE_MEMORY_LINK_SCALE_ARTIFACT_ROOT}.`,
-        ),
-      );
+      return yield* ScriptError.make({
+        message: `Scale artifact must be a repository-relative content-addressed JSON blob under ${CODE_MEMORY_LINK_SCALE_ARTIFACT_ROOT}.`,
+      });
     }
     const source = yield* readTrackedGitBlob(sourceRoot, governanceCommit, repositoryPath);
     const artifactHash = sha256HexSync(source);
     if (artifactHash !== expectedArtifactSha256) {
-      return yield* Effect.fail(new ScriptError('Scale artifact bytes differ from the final release descriptor hash.'));
+      return yield* ScriptError.make({message: 'Scale artifact bytes differ from the final release descriptor hash.'});
     }
     const artifact = yield* Effect.try({
       try: () =>
@@ -373,40 +372,40 @@ export const loadCodeMemoryLinkScaleArtifactAtHead = Effect.fn('codeMemoryLinkRe
           json(source, 'retained inverse-selector scale artifact'),
           CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET,
         ),
-      catch: cause => new ScriptError('Retained inverse-selector scale artifact is invalid.', {cause}),
+      catch: cause => ScriptError.make({message: 'Retained inverse-selector scale artifact is invalid.', cause}),
     });
     if (`${JSON.stringify(artifact, undefined, 2)}\n` !== source) {
-      return yield* Effect.fail(
-        new ScriptError('Retained inverse-selector scale artifact must use canonical JSON encoding.'),
-      );
+      return yield* ScriptError.make({
+        message: 'Retained inverse-selector scale artifact must use canonical JSON encoding.',
+      });
     }
     if (
       artifact.evidenceClass !== 'release-scale' ||
       artifact.identity.invocationMode !== 'release-scale' ||
       !artifact.gate.passed
     ) {
-      return yield* Effect.fail(
-        new ScriptError('Retained inverse-selector scale artifact did not pass the frozen release-scale gate.'),
-      );
+      return yield* ScriptError.make({
+        message: 'Retained inverse-selector scale artifact did not pass the frozen release-scale gate.',
+      });
     }
     if (
       artifact.identity.candidateCommit !== expectedCandidateCommit ||
       artifact.identity.observedCommit !== expectedCandidateCommit ||
       artifact.identity.dirty
     ) {
-      return yield* Effect.fail(
-        new ScriptError('Retained inverse-selector scale artifact is not exact clean candidate C evidence.'),
-      );
+      return yield* ScriptError.make({
+        message: 'Retained inverse-selector scale artifact is not exact clean candidate C evidence.',
+      });
     }
     if (artifact.identity.builtArtifactSha256 !== expectedBuiltArtifactSha256) {
-      return yield* Effect.fail(
-        new ScriptError('Retained inverse-selector scale artifact differs from the independently rebuilt target.'),
-      );
+      return yield* ScriptError.make({
+        message: 'Retained inverse-selector scale artifact differs from the independently rebuilt target.',
+      });
     }
     if (artifact.identity.sourceVersion !== `threadnote-${expectedSourceVersion}`) {
-      return yield* Effect.fail(
-        new ScriptError('Retained inverse-selector scale artifact source version differs from the release version.'),
-      );
+      return yield* ScriptError.make({
+        message: 'Retained inverse-selector scale artifact source version differs from the release version.',
+      });
     }
     return {artifact, artifactHash, repositoryPath};
   },
@@ -424,7 +423,7 @@ export function assertRetainedBundleBindings(input: {
     JSON.stringify(retainedResult) !==
     JSON.stringify(createCodeMemoryLinkRetainedResultV1({agentAb: input.agentAb, dogfood: input.dogfood}))
   ) {
-    throw new ScriptError('Retained scored result differs from evaluation of the retained ledgers.');
+    throw ScriptError.make({message: 'Retained scored result differs from evaluation of the retained ledgers.'});
   }
   const suite = parseCodeMemoryLinkSealedSuiteV1(json(input.retained.artifacts.sealedSuite, 'retained sealed suite'));
   const layout = parseCodeMemoryLinkCodexSuiteLayoutV1(
@@ -437,11 +436,11 @@ export function assertRetainedBundleBindings(input: {
     ...layout.tasks.flatMap(task => [task.packetSource, task.rubricSource]),
   ];
   if (new Set(layoutSources).size !== layoutSources.length) {
-    throw new ScriptError('Retained sealed layout source paths must be unique.');
+    throw ScriptError.make({message: 'Retained sealed layout source paths must be unique.'});
   }
   const expectedSealedPaths = layoutSources.filter(source => source !== 'adapter.json').sort();
   if (JSON.stringify(retainedSealedPaths) !== JSON.stringify(expectedSealedPaths)) {
-    throw new ScriptError('Retained sealed files differ from the complete layout source set.');
+    throw ScriptError.make({message: 'Retained sealed files differ from the complete layout source set.'});
   }
   const sealedRawHashes = new Set([
     sha256HexSync(input.retained.artifacts.sealedLayout),
@@ -453,7 +452,9 @@ export function assertRetainedBundleBindings(input: {
     !suite.judge.artifacts.some(artifact => artifact.sha256 === sha256HexSync(input.retained.artifacts.sealedLayout)) ||
     [...suite.fixture.artifacts, ...suite.judge.artifacts].some(artifact => !sealedRawHashes.has(artifact.sha256))
   ) {
-    throw new ScriptError('Retained sealed suite or layout differs from the manifest adjudication bindings.');
+    throw ScriptError.make({
+      message: 'Retained sealed suite or layout differs from the manifest adjudication bindings.',
+    });
   }
   const sealedContentByPath = new Map(input.retained.sealedFiles.map(file => [file.path, file.content]));
   const fixtureArtifactById = new Map(suite.fixture.artifacts.map(artifact => [artifact.artifactId, artifact]));
@@ -464,23 +465,28 @@ export function assertRetainedBundleBindings(input: {
     JSON.stringify(layout.judge.files.map(file => file.artifactId)) !==
       JSON.stringify(suite.judge.artifacts.map(artifact => artifact.artifactId))
   ) {
-    throw new ScriptError('Retained sealed layout differs from the suite artifact rosters.');
+    throw ScriptError.make({message: 'Retained sealed layout differs from the suite artifact rosters.'});
   }
   for (const file of [...layout.fixtureFiles, ...layout.judge.files]) {
     const descriptor = fixtureArtifactById.get(file.artifactId) ?? judgeArtifactById.get(file.artifactId);
     const content =
       file.source === 'adapter.json' ? input.retained.artifacts.sealedLayout : sealedContentByPath.get(file.source);
     if (!descriptor || content === undefined || sha256HexSync(content) !== descriptor.sha256) {
-      throw new ScriptError(`Retained sealed artifact ${file.artifactId} differs from its suite descriptor.`);
+      throw ScriptError.make({
+        message: `Retained sealed artifact ${file.artifactId} differs from its suite descriptor.`,
+      });
     }
   }
   const layoutArtifact = layout.judge.files.find(file => file.artifactId === layout.layoutArtifactId);
   const commandArtifact = layout.judge.files.find(file => file.artifactId === layout.judge.commandArtifactId);
   if (!layoutArtifact || layoutArtifact.source !== 'adapter.json' || !commandArtifact) {
-    throw new ScriptError('Retained sealed layout omits its exact layout or judge-command artifact binding.');
+    throw ScriptError.make({
+      message: 'Retained sealed layout omits its exact layout or judge-command artifact binding.',
+    });
   }
   const commandContent = sealedContentByPath.get(commandArtifact.source);
-  if (commandContent === undefined) throw new ScriptError('Retained sealed layout omits the judge command bytes.');
+  if (commandContent === undefined)
+    throw ScriptError.make({message: 'Retained sealed layout omits the judge command bytes.'});
   const judgeCommand = parseCodeMemoryLinkCodexJudgeCommandV1(json(commandContent, 'retained sealed judge command'));
   const packets = input.retained.sealedFiles
     .filter(file => file.path.endsWith('/packet.json'))
@@ -496,7 +502,7 @@ export function assertRetainedBundleBindings(input: {
     .map(({packetHash, rubricHash, taskId, taskKind}) => ({packetHash, rubricHash, taskId, taskKind}))
     .sort((left, right) => left.taskId.localeCompare(right.taskId));
   if (JSON.stringify(suiteTaskBindings) !== JSON.stringify(manifestTaskBindings)) {
-    throw new ScriptError('Retained sealed suite task roster differs from the manifest task roster.');
+    throw ScriptError.make({message: 'Retained sealed suite task roster differs from the manifest task roster.'});
   }
   for (const task of input.manifest.tasks) {
     const packet = packets.filter(value => value.taskId === task.taskId);
@@ -517,9 +523,9 @@ export function assertRetainedBundleBindings(input: {
       codeMemoryLinkContextBriefResponseReceiptHashV1(layoutTask[0].preflightExpectedResponses.taskOnly) !==
         task.expectedResponseHashes.taskOnly
     ) {
-      throw new ScriptError(
-        `Retained layout, packet, rubric, or response projection differs from task ${task.taskId}.`,
-      );
+      throw ScriptError.make({
+        message: `Retained layout, packet, rubric, or response projection differs from task ${task.taskId}.`,
+      });
     }
   }
   const expectedClients = [...input.manifest.clients].sort((left, right) =>
@@ -532,7 +538,7 @@ export function assertRetainedBundleBindings(input: {
     JSON.stringify(retainedClients.map(client => client.clientId)) !==
     JSON.stringify(expectedClients.map(client => client.clientId))
   ) {
-    throw new ScriptError('Retained client descriptor/config-projection roster differs from the manifest.');
+    throw ScriptError.make({message: 'Retained client descriptor/config-projection roster differs from the manifest.'});
   }
   for (const [index, client] of retainedClients.entries()) {
     const expected = expectedClients[index];
@@ -542,15 +548,15 @@ export function assertRetainedBundleBindings(input: {
     const configurationProjectionHash = sha256HexSync(client.configProjection);
     const clientEvidence = input.evidence.filter(receipt => receipt.rawEvidence.bindings.clientId === client.clientId);
     if (clientEvidence.length === 0) {
-      throw new ScriptError(`Retained evidence omits manifest client ${client.clientId}.`);
+      throw ScriptError.make({message: `Retained evidence omits manifest client ${client.clientId}.`});
     }
     const expectedProjectionHashes = new Set(
       clientEvidence.map(receipt => {
         const protocol = receipt.rawEvidence.clientProtocol;
         if (JSON.stringify(protocol.expectedClient) !== JSON.stringify(expected.expectedClient)) {
-          throw new ScriptError(
-            `Retained app-server identity for ${client.clientId} differs from the manifest expected client.`,
-          );
+          throw ScriptError.make({
+            message: `Retained app-server identity for ${client.clientId} differs from the manifest expected client.`,
+          });
         }
         const expectedProjectionHash = codeMemoryLinkClientProjectionHash('expected-client', {
           ...protocol.expectedClient,
@@ -562,9 +568,9 @@ export function assertRetainedBundleBindings(input: {
           protocol.executionBundleHash !== expected.executionBundleHash ||
           protocol.expectedClientProjectionHash !== expectedProjectionHash
         ) {
-          throw new ScriptError(
-            `Retained client protocol for ${client.clientId} differs from the manifest/descriptor identity projection.`,
-          );
+          throw ScriptError.make({
+            message: `Retained client protocol for ${client.clientId} differs from the manifest/descriptor identity projection.`,
+          });
         }
         return expectedProjectionHash;
       }),
@@ -578,9 +584,9 @@ export function assertRetainedBundleBindings(input: {
       expectedProjectionHashes.size !== 1 ||
       !expectedProjectionHashes.has(descriptor.expectedClientProjectionHash)
     ) {
-      throw new ScriptError(
-        `Retained descriptor/config projection for ${client.clientId} differs from the manifest or app-server identity binding.`,
-      );
+      throw ScriptError.make({
+        message: `Retained descriptor/config projection for ${client.clientId} differs from the manifest or app-server identity binding.`,
+      });
     }
   }
   for (const receipt of input.evidence) {
@@ -592,9 +598,9 @@ export function assertRetainedBundleBindings(input: {
       judgeArtifactById.get(raw.judge.commandArtifactId)?.sha256 !== raw.judge.commandSha256 ||
       judgeArtifactById.get(raw.judge.programArtifactId)?.sha256 !== raw.judge.programSha256
     ) {
-      throw new ScriptError(
-        `Retained judge execution for ${raw.bindings.taskId} differs from the sealed suite judge artifacts.`,
-      );
+      throw ScriptError.make({
+        message: `Retained judge execution for ${raw.bindings.taskId} differs from the sealed suite judge artifacts.`,
+      });
     }
     const observedResponseHashes = raw.appServer.checkpoints.flatMap(checkpoint => {
       if (
@@ -614,9 +620,9 @@ export function assertRetainedBundleBindings(input: {
           ? task.expectedResponseHashes.noMemory
           : task.expectedResponseHashes.taskOnly;
     if (observedResponseHashes.length !== 1 || observedResponseHashes[0] !== expectedResponseHash) {
-      throw new ScriptError(
-        `Retained Context Brief response for ${raw.bindings.taskId}/${raw.bindings.arm} differs from the manifest preregistration.`,
-      );
+      throw ScriptError.make({
+        message: `Retained Context Brief response for ${raw.bindings.taskId}/${raw.bindings.arm} differs from the manifest preregistration.`,
+      });
     }
   }
 }
@@ -640,9 +646,9 @@ const readTrackedGitBlob = Effect.fn('codeMemoryLinkRelease.readTrackedGitBlob')
     typeof metadata !== 'string' ||
     !/^100644 blob [0-9a-f]{40,64}$/u.test(metadata)
   ) {
-    return yield* Effect.fail(
-      new ScriptError(`Release evidence path must be one exact non-executable regular Git blob: ${repositoryPath}`),
-    );
+    return yield* ScriptError.make({
+      message: `Release evidence path must be one exact non-executable regular Git blob: ${repositoryPath}`,
+    });
   }
   return content.stdout;
 });
@@ -654,19 +660,19 @@ export const verifyApprovalCheckout = Effect.fn('codeMemoryLinkRelease.verifyApp
   scaleArtifactPath?: string,
 ) {
   if (!/^[0-9a-f]{40}$/u.test(candidateCommit)) {
-    return yield* Effect.fail(new ScriptError('The tested candidate must be an exact 40-character Git commit.'));
+    return yield* ScriptError.make({message: 'The tested candidate must be an exact 40-character Git commit.'});
   }
   if (
     releaseDescriptorPath !== undefined &&
     !new RegExp(`^${CODE_MEMORY_LINK_RELEASE_DESCRIPTOR_ROOT}/v[^/]+\\.json$`, 'u').test(releaseDescriptorPath)
   ) {
-    return yield* Effect.fail(new ScriptError('Release descriptor path is outside version-bound governance.'));
+    return yield* ScriptError.make({message: 'Release descriptor path is outside version-bound governance.'});
   }
   if (
     scaleArtifactPath !== undefined &&
     !new RegExp(`^${CODE_MEMORY_LINK_SCALE_ARTIFACT_ROOT}/[0-9a-f]{64}\\.json$`, 'u').test(scaleArtifactPath)
   ) {
-    return yield* Effect.fail(new ScriptError('Scale artifact path is outside content-addressed governance.'));
+    return yield* ScriptError.make({message: 'Scale artifact path is outside content-addressed governance.'});
   }
   const [commitResult, mergeBaseResult, statusResult, historyResult] = yield* Effect.all(
     [
@@ -679,10 +685,10 @@ export const verifyApprovalCheckout = Effect.fn('codeMemoryLinkRelease.verifyApp
   );
   const commit = commitResult.stdout.trim();
   if (statusResult.stdout.trim()) {
-    return yield* Effect.fail(new ScriptError('Release evidence verification requires a clean governance checkout.'));
+    return yield* ScriptError.make({message: 'Release evidence verification requires a clean governance checkout.'});
   }
   if (mergeBaseResult.stdout.trim() !== candidateCommit) {
-    return yield* Effect.fail(new ScriptError('The tested candidate must be an ancestor of the governance checkout.'));
+    return yield* ScriptError.make({message: 'The tested candidate must be an ancestor of the governance checkout.'});
   }
   const history = parseLinearGovernanceHistory(historyResult.stdout, candidateCommit, commit);
   const changedByCommit = yield* Effect.forEach(
@@ -705,11 +711,9 @@ export const verifyApprovalCheckout = Effect.fn('codeMemoryLinkRelease.verifyApp
       .filter(entry => entry.paths.some(path => invalidPaths.includes(path)))
       .map(entry => entry.commit)
       .join(', ');
-    return yield* Effect.fail(
-      new ScriptError(
-        `Runtime or product files changed in post-candidate history (${offendingCommits}): ${invalidPaths.join(', ')}`,
-      ),
-    );
+    return yield* ScriptError.make({
+      message: `Runtime or product files changed in post-candidate history (${offendingCommits}): ${invalidPaths.join(', ')}`,
+    });
   }
   return {changedPaths, commit, governanceCommits: history.map(entry => entry.commit)};
 });
@@ -722,9 +726,9 @@ export const verifyManifestApproval = Effect.fn('codeMemoryLinkRelease.verifyMan
   manifestHash: string,
 ) {
   if (approvalCommit === candidateCommit || approvalCommit === governanceCommit) {
-    return yield* Effect.fail(
-      new ScriptError('Manifest approval must be a distinct commit before the post-run evidence approval commit.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Manifest approval must be a distinct commit before the post-run evidence approval commit.',
+    });
   }
   const [candidateBase, governanceBase, approvalParents] = yield* Effect.all(
     [
@@ -735,19 +739,19 @@ export const verifyManifestApproval = Effect.fn('codeMemoryLinkRelease.verifyMan
     {concurrency: 3},
   );
   if (candidateBase.stdout.trim() !== candidateCommit || governanceBase.stdout.trim() !== approvalCommit) {
-    return yield* Effect.fail(
-      new ScriptError('Manifest approval chronology does not descend candidate -> approval -> evidence governance.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Manifest approval chronology does not descend candidate -> approval -> evidence governance.',
+    });
   }
   const parents = approvalParents.stdout.trim().split(/\s+/u);
   if (parents.length !== 2) {
-    return yield* Effect.fail(new ScriptError('Manifest approval must be a single-parent governance commit.'));
+    return yield* ScriptError.make({message: 'Manifest approval must be a single-parent governance commit.'});
   }
   const parentCommit = parents[1];
   if (parentCommit !== candidateCommit) {
-    return yield* Effect.fail(
-      new ScriptError('Manifest approval must be the immediate governance commit after the tested candidate.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Manifest approval must be the immediate governance commit after the tested candidate.',
+    });
   }
   const [approvalDiff, approvalSource, parentSource] = yield* Effect.all(
     [
@@ -758,9 +762,9 @@ export const verifyManifestApproval = Effect.fn('codeMemoryLinkRelease.verifyMan
     {concurrency: 3},
   );
   if (JSON.stringify(changeStatusLines(approvalDiff.stdout)) !== JSON.stringify([`M\t${APPROVALS_PATH}`])) {
-    return yield* Effect.fail(
-      new ScriptError('The manifest approval commit must change only the reviewed approvals JSON file.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The manifest approval commit must change only the reviewed approvals JSON file.',
+    });
   }
   const [before, after] = yield* Effect.all(
     [parseApprovalJsonEffect(parentSource), parseApprovalJsonEffect(approvalSource)],
@@ -772,11 +776,10 @@ export const verifyManifestApproval = Effect.fn('codeMemoryLinkRelease.verifyMan
     JSON.stringify(after.dogfoodEvidence) !== JSON.stringify(before.dogfoodEvidence) ||
     JSON.stringify(after.retainedBundles) !== JSON.stringify(before.retainedBundles)
   ) {
-    return yield* Effect.fail(
-      new ScriptError(
+    return yield* ScriptError.make({
+      message:
         'The trial approval commit must add exactly the preregistered manifest hash to the parsed manifest allowlist.',
-      ),
-    );
+    });
   }
 });
 
@@ -793,9 +796,9 @@ export const verifyFinalEvidenceApproval = Effect.fn('codeMemoryLinkRelease.veri
   scaleArtifactPath: string,
 ) {
   if (approvalCommit === governanceCommit) {
-    return yield* Effect.fail(
-      new ScriptError('Final evidence approval must follow the distinct preregistered manifest approval commit.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Final evidence approval must follow the distinct preregistered manifest approval commit.',
+    });
   }
   const [governanceBase, governanceParents, approvalSource, finalDiff, finalSource] = yield* Effect.all(
     [
@@ -808,15 +811,15 @@ export const verifyFinalEvidenceApproval = Effect.fn('codeMemoryLinkRelease.veri
     {concurrency: 5},
   );
   if (governanceBase.stdout.trim() !== approvalCommit) {
-    return yield* Effect.fail(
-      new ScriptError('Final evidence approval chronology must descend from the manifest approval commit.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Final evidence approval chronology must descend from the manifest approval commit.',
+    });
   }
   const finalParents = governanceParents.stdout.trim().split(/\s+/u);
   if (finalParents.length !== 2 || finalParents[1] !== approvalCommit) {
-    return yield* Effect.fail(
-      new ScriptError('Final evidence approval must be the immediate single-parent commit after manifest approval.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Final evidence approval must be the immediate single-parent commit after manifest approval.',
+    });
   }
   const [before, after] = yield* Effect.all(
     [parseApprovalJsonEffect(approvalSource), parseApprovalJsonEffect(finalSource)],
@@ -829,22 +832,19 @@ export const verifyFinalEvidenceApproval = Effect.fn('codeMemoryLinkRelease.veri
     ...retainedBundlePaths.map(path => `A\t${path}`),
   ].sort();
   if (JSON.stringify(changeStatusLines(finalDiff.stdout).sort()) !== JSON.stringify(expectedFinalChanges)) {
-    return yield* Effect.fail(
-      new ScriptError(
+    return yield* ScriptError.make({
+      message:
         'Final evidence approval must modify only approvals and add the exact retained bundle, scale artifact, and version-bound release descriptor.',
-      ),
-    );
+    });
   }
   if (
     before.externalEvidence.includes(externalEvidenceHash) ||
     before.dogfoodEvidence.includes(dogfoodEvidenceHash) ||
     before.retainedBundles.includes(retainedBundleHash)
   ) {
-    return yield* Effect.fail(
-      new ScriptError(
-        'The reviewed external-agent and dogfood evidence hashes must not preexist their final approval.',
-      ),
-    );
+    return yield* ScriptError.make({
+      message: 'The reviewed external-agent and dogfood evidence hashes must not preexist their final approval.',
+    });
   }
   if (
     !before.manifests.includes(manifestHash) ||
@@ -853,11 +853,10 @@ export const verifyFinalEvidenceApproval = Effect.fn('codeMemoryLinkRelease.veri
     !sameHashes(after.dogfoodEvidence, [...before.dogfoodEvidence, dogfoodEvidenceHash]) ||
     !sameHashes(after.retainedBundles, [...before.retainedBundles, retainedBundleHash])
   ) {
-    return yield* Effect.fail(
-      new ScriptError(
+    return yield* ScriptError.make({
+      message:
         'Approval-to-HEAD governance must add exactly the reviewed external-agent, dogfood, and retained-bundle hashes while leaving manifest approvals unchanged.',
-      ),
-    );
+    });
   }
 });
 
@@ -876,13 +875,15 @@ function parseLinearGovernanceHistory(
   for (const line of lines(source)) {
     const [commit, ...parents] = line.split(/\s+/u);
     if (!commit || parents.length !== 1 || parents[0] !== expectedParent) {
-      throw new ScriptError('Post-candidate evidence governance must be a linear, single-parent commit history.');
+      throw ScriptError.make({
+        message: 'Post-candidate evidence governance must be a linear, single-parent commit history.',
+      });
     }
     history.push({commit, parent: parents[0]});
     expectedParent = commit;
   }
   if (expectedParent !== governanceCommit) {
-    throw new ScriptError('Post-candidate evidence governance history does not terminate at HEAD.');
+    throw ScriptError.make({message: 'Post-candidate evidence governance history does not terminate at HEAD.'});
   }
   return history;
 }
@@ -899,10 +900,10 @@ function parseApprovalJson(source: string): ParsedApprovalJson {
   try {
     value = JSON.parse(source);
   } catch (cause) {
-    throw new ScriptError('Approval data must be valid JSON.', {cause});
+    throw ScriptError.make({message: 'Approval data must be valid JSON.', cause});
   }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new ScriptError('Approval data must be a JSON object.');
+    throw ScriptError.make({message: 'Approval data must be a JSON object.'});
   }
   const record = value as Record<string, unknown>;
   const expectedKeys = [
@@ -913,9 +914,9 @@ function parseApprovalJson(source: string): ParsedApprovalJson {
     'version',
   ];
   if (JSON.stringify(Object.keys(record).sort()) !== JSON.stringify([...expectedKeys].sort())) {
-    throw new ScriptError(`Approval data must contain exactly: ${expectedKeys.join(', ')}.`);
+    throw ScriptError.make({message: `Approval data must contain exactly: ${expectedKeys.join(', ')}.`});
   }
-  if (record.version !== 1) throw new ScriptError('Approval data version must be 1.');
+  if (record.version !== 1) throw ScriptError.make({message: 'Approval data version must be 1.'});
   return {
     dogfoodEvidence: parseHashArray(record.dogfoodEvidenceHashes, 'dogfoodEvidenceHashes'),
     externalEvidence: parseHashArray(record.agentAbEvidenceHashes, 'agentAbEvidenceHashes'),
@@ -930,10 +931,11 @@ function parseApprovalJsonEffect(source: string) {
 
 function parseHashArray(value: unknown, name: string): readonly string[] {
   if (!Array.isArray(value) || value.some(hash => typeof hash !== 'string' || !/^[0-9a-f]{64}$/u.test(hash))) {
-    throw new ScriptError(`${name} must contain only lowercase SHA-256 hashes.`);
+    throw ScriptError.make({message: `${name} must contain only lowercase SHA-256 hashes.`});
   }
   const values = value as readonly string[];
-  if (new Set(values).size !== values.length) throw new ScriptError(`${name} must not contain duplicate hashes.`);
+  if (new Set(values).size !== values.length)
+    throw ScriptError.make({message: `${name} must not contain duplicate hashes.`});
   return values;
 }
 
@@ -951,7 +953,7 @@ function lines(source: string): string[] {
 function changeStatusLines(source: string): string[] {
   const changes = lines(source);
   if (changes.some(change => !/^[ACDMTUXB]\t[^\t]+$/u.test(change))) {
-    throw new ScriptError('Final evidence approval contains an unsupported Git change status.');
+    throw ScriptError.make({message: 'Final evidence approval contains an unsupported Git change status.'});
   }
   return changes;
 }
@@ -968,7 +970,7 @@ function json(source: string, label: string): unknown {
   try {
     return JSON.parse(source) as unknown;
   } catch (cause) {
-    throw new ScriptError(`${label} must be valid JSON.`, {cause});
+    throw ScriptError.make({message: `${label} must be valid JSON.`, cause});
   }
 }
 
@@ -982,26 +984,27 @@ function parseArguments(args: readonly string[]): {
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === '--print-candidate-commit') {
-      if (printCandidateCommit) throw new ScriptError('--print-candidate-commit may be specified only once.');
+      if (printCandidateCommit)
+        throw ScriptError.make({message: '--print-candidate-commit may be specified only once.'});
       printCandidateCommit = true;
       continue;
     }
     if (!['--release-descriptor', '--release-tag'].includes(argument)) {
-      throw new ScriptError(`Unknown Code Memory Link release evidence option: ${argument}`);
+      throw ScriptError.make({message: `Unknown Code Memory Link release evidence option: ${argument}`});
     }
-    if (values[argument] !== undefined) throw new ScriptError(`${argument} may be specified only once.`);
+    if (values[argument] !== undefined) throw ScriptError.make({message: `${argument} may be specified only once.`});
     values[argument] = required(args[++index], argument);
   }
   const releaseDescriptorPath = values['--release-descriptor'];
   const releaseTag = values['--release-tag'];
   if (!releaseDescriptorPath || !releaseTag) {
-    throw new ScriptError('Release verification requires --release-descriptor and --release-tag.');
+    throw ScriptError.make({message: 'Release verification requires --release-descriptor and --release-tag.'});
   }
   return {printCandidateCommit, releaseDescriptorPath, releaseTag};
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 

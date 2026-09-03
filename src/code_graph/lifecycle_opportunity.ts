@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path, Predicate} from 'effect';
+import {Effect, FileSystem, Option, Path, Predicate, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {syncDirectoryBestEffort, syncWritableFile} from '../effect/file_durability.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
@@ -73,9 +73,13 @@ export interface CodeGraphLifecycleOpportunityUnit {
   readonly target: CodeGraphLifecycleOpportunityTarget;
 }
 
-class CodeGraphLifecycleOpportunityCursorError extends Error {
-  readonly _tag = 'CodeGraphLifecycleOpportunityCursorError' as const;
-}
+class CodeGraphLifecycleOpportunityCursorError extends Schema.TaggedError<CodeGraphLifecycleOpportunityCursorError>()(
+  'CodeGraphLifecycleOpportunityCursorError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 /** Read bounded active-pointer provenance without invoking Git on the healthy hot path. */
 export const observeCodeGraphLifecycleOpportunityTargets = Effect.fn('codeGraph.observeLifecycleOpportunityTargets')(
@@ -90,8 +94,8 @@ export const observeCodeGraphLifecycleOpportunityTargets = Effect.fn('codeGraph.
           const checkoutId = path.basename(path.dirname(databasePath));
           const [views, storage] = yield* Effect.all(
             [
-              store.loadActiveViewIdentities(databasePath, 8).pipe(Effect.catch(() => Effect.succeed([]))),
-              inspectCodeGraphStorage(threadnoteHome, checkoutId).pipe(Effect.catch(() => Effect.succeed(undefined))),
+              store.loadActiveViewIdentities(databasePath, 8).pipe(Effect.orElseSucceed(() => [])),
+              inspectCodeGraphStorage(threadnoteHome, checkoutId).pipe(Effect.orElseSucceed(() => undefined)),
             ],
             {concurrency: 2},
           );
@@ -307,14 +311,16 @@ function readPersistedLifecycleOpportunityCursor(
   return Effect.gen(function* () {
     if (!(yield* fs.exists(cursorPath))) return undefined;
     if (Option.isSome(yield* fs.readLink(cursorPath).pipe(Effect.option))) {
-      return yield* Effect.fail(new CodeGraphLifecycleOpportunityCursorError('Lifecycle cursor is not a file.'));
+      return yield* CodeGraphLifecycleOpportunityCursorError.make({message: 'Lifecycle cursor is not a file.'});
     }
     const info = yield* fs.stat(cursorPath);
     if (info.type !== 'File' || Number(info.size) > LIFECYCLE_OPPORTUNITY_CURSOR_BYTES_LIMIT) return undefined;
     const content = yield* fs.readFileString(cursorPath);
     if (new TextEncoder().encode(content).byteLength > LIFECYCLE_OPPORTUNITY_CURSOR_BYTES_LIMIT) return undefined;
     return decodePersistedLifecycleOpportunityCursor(content);
-  }).pipe(Effect.mapError(() => new CodeGraphLifecycleOpportunityCursorError('Could not read lifecycle cursor.')));
+  }).pipe(
+    Effect.mapError(() => CodeGraphLifecycleOpportunityCursorError.make({message: 'Could not read lifecycle cursor.'})),
+  );
 }
 
 const writePersistedLifecycleOpportunityCursor = Effect.fn('codeGraph.writeLifecycleOpportunityCursor')(function* (
@@ -325,11 +331,11 @@ const writePersistedLifecycleOpportunityCursor = Effect.fn('codeGraph.writeLifec
   cursor: PersistedLifecycleOpportunityCursor,
 ) {
   if (Option.isSome(yield* fs.readLink(cursorPath).pipe(Effect.option))) {
-    return yield* Effect.fail(new CodeGraphLifecycleOpportunityCursorError('Lifecycle cursor is not a file.'));
+    return yield* CodeGraphLifecycleOpportunityCursorError.make({message: 'Lifecycle cursor is not a file.'});
   }
   const content = `${JSON.stringify(cursor)}\n`;
   if (new TextEncoder().encode(content).byteLength > LIFECYCLE_OPPORTUNITY_CURSOR_BYTES_LIMIT) {
-    return yield* Effect.fail(new CodeGraphLifecycleOpportunityCursorError('Lifecycle cursor is too large.'));
+    return yield* CodeGraphLifecycleOpportunityCursorError.make({message: 'Lifecycle cursor is too large.'});
   }
   const temporary = path.join(root, `.${path.basename(cursorPath)}.tmp`);
   yield* Effect.gen(function* () {
@@ -340,11 +346,11 @@ const writePersistedLifecycleOpportunityCursor = Effect.fn('codeGraph.writeLifec
     yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
     yield* syncWritableFile(fs, temporary);
     if (Option.isSome(yield* fs.readLink(cursorPath).pipe(Effect.option))) {
-      return yield* Effect.fail(new CodeGraphLifecycleOpportunityCursorError('Lifecycle cursor changed type.'));
+      return yield* CodeGraphLifecycleOpportunityCursorError.make({message: 'Lifecycle cursor changed type.'});
     }
     yield* fs.rename(temporary, cursorPath);
     yield* syncDirectoryBestEffort(fs, root);
-  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
 });
 
 function decodePersistedLifecycleOpportunityCursor(content: string): PersistedLifecycleOpportunityCursor | undefined {

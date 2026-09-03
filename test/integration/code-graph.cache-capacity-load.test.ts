@@ -19,7 +19,7 @@ import {
   type CodeGraphStoreShape,
 } from '../../src/code_graph/store.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
-import {CodeGraphStoreError} from '../../src/code_graph/types.js';
+import {CodeGraphStoreError, isCodeGraphStoreError} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
@@ -79,7 +79,7 @@ describe('code graph cache capacity load calibration', () => {
             ]);
             const protector: CodeGraphDirectPersistentCapacityProtector = (boundary, transaction) => {
               const operationEvidence = evidence.get(boundary.operation as typeof FILE_FACT_OPERATION);
-              if (!operationEvidence) return Effect.die(new TestError('Unexpected cache load operation.'));
+              if (!operationEvidence) return Effect.die(TestError.make({message: 'Unexpected cache load operation.'}));
               const demand = codeGraphPersistentCapacityDemand({
                 boundary,
                 lexicalFormatVersion: 1,
@@ -171,9 +171,9 @@ describe('code graph cache capacity load calibration', () => {
                     ),
                 ),
                 Effect.mapError(cause =>
-                  cause instanceof CodeGraphStoreError
+                  isCodeGraphStoreError(cause)
                     ? cause
-                    : new CodeGraphStoreError('Cache load reservation fixture failed.'),
+                    : CodeGraphStoreError.of('Cache load reservation fixture failed.'),
                 ),
                 Effect.provideService(Crypto.Crypto, crypto),
                 Effect.provideService(FileSystem.FileSystem, fs),
@@ -259,9 +259,7 @@ describe('code graph cache capacity load calibration', () => {
               rssBeforeBytes,
               rowsPerOperation: LOAD_ROWS,
             });
-          }).pipe(
-            Effect.ensuring(fs.remove(root, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void))),
-          );
+          }).pipe(Effect.ensuring(fs.remove(root, {force: true, recursive: true}).pipe(Effect.ignore)));
         }).pipe(provideTestLayer(ApplicationLayer)),
       ),
     120_000,
@@ -320,9 +318,9 @@ describe('code graph cache capacity load calibration', () => {
                     transaction,
                   ).pipe(
                     Effect.mapError(cause =>
-                      cause instanceof CodeGraphStoreError
+                      isCodeGraphStoreError(cause)
                         ? cause
-                        : new CodeGraphStoreError('Cache retry reservation fixture failed.'),
+                        : CodeGraphStoreError.of('Cache retry reservation fixture failed.'),
                     ),
                     Effect.provideService(Crypto.Crypto, crypto),
                     Effect.provideService(FileSystem.FileSystem, fs),
@@ -371,11 +369,7 @@ describe('code graph cache capacity load calibration', () => {
                 expect(readCacheMutationCount(databasePath)).toBe(committedPrefix + 513);
                 expectCacheMapping(databasePath, mode, files);
                 expect(yield* activeReceiptCount(fs, ledgerRoot)).toBe(0);
-              }).pipe(
-                Effect.ensuring(
-                  fs.remove(pressureRoot, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void)),
-                ),
-              );
+              }).pipe(Effect.ensuring(fs.remove(pressureRoot, {force: true, recursive: true}).pipe(Effect.ignore)));
             }
 
             const beforeWriterRoot = yield* fs.makeTempDirectory({prefix: `threadnote-cache-${mode}-cancel-first-`});
@@ -402,9 +396,9 @@ describe('code graph cache capacity load calibration', () => {
                   transaction,
                 ).pipe(
                   Effect.mapError(cause =>
-                    cause instanceof CodeGraphStoreError
+                    isCodeGraphStoreError(cause)
                       ? cause
-                      : new CodeGraphStoreError('Cache cancellation reservation fixture failed.'),
+                      : CodeGraphStoreError.of('Cache cancellation reservation fixture failed.'),
                   ),
                   Effect.provideService(Crypto.Crypto, crypto),
                   Effect.provideService(FileSystem.FileSystem, fs),
@@ -428,11 +422,7 @@ describe('code graph cache capacity load calibration', () => {
               yield* runCacheMode(store, mode, databasePath, [files[0]], [facts[0]], healthy);
               expect(readCacheRowCount(databasePath, mode)).toBe(1);
               expectCacheMapping(databasePath, mode, files.slice(0, 1));
-            }).pipe(
-              Effect.ensuring(
-                fs.remove(beforeWriterRoot, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void)),
-              ),
-            );
+            }).pipe(Effect.ensuring(fs.remove(beforeWriterRoot, {force: true, recursive: true}).pipe(Effect.ignore)));
 
             const prefixRoot = yield* fs.makeTempDirectory({prefix: `threadnote-cache-${mode}-cancel-prefix-`});
             yield* Effect.gen(function* () {
@@ -458,9 +448,9 @@ describe('code graph cache capacity load calibration', () => {
                   transaction,
                 ).pipe(
                   Effect.mapError(cause =>
-                    cause instanceof CodeGraphStoreError
+                    isCodeGraphStoreError(cause)
                       ? cause
-                      : new CodeGraphStoreError('Cache prefix reservation fixture failed.'),
+                      : CodeGraphStoreError.of('Cache prefix reservation fixture failed.'),
                   ),
                   Effect.provideService(Crypto.Crypto, crypto),
                   Effect.provideService(FileSystem.FileSystem, fs),
@@ -516,11 +506,7 @@ describe('code graph cache capacity load calibration', () => {
               expect(readCacheMutationCount(databasePath)).toBe(1_025);
               expectCacheMapping(databasePath, mode, files);
               expect(yield* activeReceiptCount(fs, ledgerRoot)).toBe(0);
-            }).pipe(
-              Effect.ensuring(
-                fs.remove(prefixRoot, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void)),
-              ),
-            );
+            }).pipe(Effect.ensuring(fs.remove(prefixRoot, {force: true, recursive: true}).pipe(Effect.ignore)));
           }
         }).pipe(provideTestLayer(ApplicationLayer)),
       ),
@@ -653,7 +639,7 @@ function healthyReservationObservation(
 function activeReceiptCount(fs: FileSystem.FileSystem, ledgerRoot: string) {
   return fs.readDirectory(ledgerRoot).pipe(
     Effect.map(entries => entries.filter(name => name.endsWith('.json')).length),
-    Effect.catch(() => Effect.succeed(0)),
+    Effect.orElseSucceed(() => 0),
   );
 }
 
@@ -694,6 +680,6 @@ function readSqliteProfile(databasePath: string) {
 function observedFileSize(fs: FileSystem.FileSystem, path: string) {
   return fs.stat(path).pipe(
     Effect.map(info => Number(info.size)),
-    Effect.catch(() => Effect.succeed(0)),
+    Effect.orElseSucceed(() => 0),
   );
 }

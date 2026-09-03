@@ -30,7 +30,7 @@ const manifest = BUILTIN_MODEL_MANIFESTS.find(model => model.id === 'bge-small-e
 const modelStoreLayer = Layer.succeed(
   LocalModelStore,
   LocalModelStore.of({
-    install: () => Effect.die(new TestError('Unexpected install')),
+    install: () => Effect.die(TestError.make({message: 'Unexpected install'})),
     path: home => `${home}/models/fake.gguf`,
     remove: () => Effect.succeed(false),
     status: home => Effect.succeed(installation(home)),
@@ -437,14 +437,14 @@ describe('vector index generations', () => {
                 diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
                 embedMany: () =>
                   Effect.fail(
-                    new InferenceInterrupted({
+                    InferenceInterrupted.make({
                       message: 'fixture interruption',
                       modelId: manifest.id,
                       operation: 'embed',
                     }),
                   ),
-                generate: () => Effect.die(new TestError('Unexpected generation')),
-                rerank: () => Effect.die(new TestError('Unexpected reranking')),
+                generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+                rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
               }),
             ),
           ),
@@ -600,8 +600,8 @@ describe('vector index generations', () => {
               }),
           );
         },
-        generate: () => Effect.die(new TestError('Unexpected generation')),
-        rerank: () => Effect.die(new TestError('Unexpected reranking')),
+        generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+        rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
       }),
     );
     const ensure = (corpusGeneration: string, text: string) =>
@@ -671,8 +671,8 @@ describe('vector index generations', () => {
               }),
           );
         },
-        generate: () => Effect.die(new TestError('Unexpected generation')),
-        rerank: () => Effect.die(new TestError('Unexpected reranking')),
+        generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+        rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
       }),
     );
     const documents = [
@@ -802,60 +802,57 @@ describe('vector index generations', () => {
               }),
           );
         },
-        generate: () => Effect.die(new TestError('Unexpected generation')),
-        rerank: () => Effect.die(new TestError('Unexpected reranking')),
+        generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+        rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
       }),
     );
     const withRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer));
 
     try {
-      await runEffect(
-        withRuntime(
-          Effect.gen(function* () {
-            const catalog = yield* LocalModelCatalog;
-            yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
-            yield* rebuildVectorIndex(
-              {agentContextHome: home},
-              manifest,
-              [
-                {
-                  text: '# First generation\n\nConsistent semantic content.',
-                  uri: 'threadnote://resources/repos/generation.md',
-                },
-              ],
-              {corpusGeneration: currentGeneration, currentCorpusGeneration: generationFence},
-            );
-          }),
-        ),
-      );
-
-      delayQuery = true;
-      const scoring = runEffect(
-        withRuntime(
-          selectedSemanticScores({agentContextHome: home}, 'generation-race-query', {
-            corpusGeneration: 'lexical-generation-1',
-            currentCorpusGeneration: generationFence,
-          }).pipe(Effect.result),
-        ),
-      );
-      await queryStarted;
-      currentGeneration = 'lexical-generation-2';
-      await runEffect(
-        withRuntime(
-          rebuildVectorIndex(
+      const prepared = withRuntime(
+        Effect.gen(function* () {
+          const catalog = yield* LocalModelCatalog;
+          yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+          yield* rebuildVectorIndex(
             {agentContextHome: home},
             manifest,
             [
               {
-                text: '# Second generation\n\nNewer consistent semantic content.',
+                text: '# First generation\n\nConsistent semantic content.',
                 uri: 'threadnote://resources/repos/generation.md',
               },
             ],
             {corpusGeneration: currentGeneration, currentCorpusGeneration: generationFence},
-          ),
+          );
+        }),
+      );
+      await runEffect(prepared);
+
+      delayQuery = true;
+      const scoringProgram = withRuntime(
+        selectedSemanticScores({agentContextHome: home}, 'generation-race-query', {
+          corpusGeneration: 'lexical-generation-1',
+          currentCorpusGeneration: generationFence,
+        }).pipe(Effect.result),
+      );
+      const scoring = runEffect(scoringProgram);
+      await queryStarted;
+      currentGeneration = 'lexical-generation-2';
+      const rebuild = withRuntime(
+        rebuildVectorIndex(
+          {agentContextHome: home},
+          manifest,
+          [
+            {
+              text: '# Second generation\n\nNewer consistent semantic content.',
+              uri: 'threadnote://resources/repos/generation.md',
+            },
+          ],
+          {corpusGeneration: currentGeneration, currentCorpusGeneration: generationFence},
         ),
       );
+      await runEffect(rebuild);
       releaseQuery();
 
       const result = await scoring;
@@ -884,7 +881,7 @@ describe('vector index generations', () => {
             call += 1;
             if (call === 2) {
               return Effect.fail(
-                new InferenceInterrupted({
+                InferenceInterrupted.make({
                   message: 'fixture interruption',
                   modelId: manifest.id,
                   operation: 'embed',
@@ -893,8 +890,8 @@ describe('vector index generations', () => {
             }
             return Effect.succeed(inputs.map((_, index) => unitVector(requested.dimensions ?? 0, index % 2)));
           },
-          generate: () => Effect.die(new TestError('Unexpected generation')),
-          rerank: () => Effect.die(new TestError('Unexpected reranking')),
+          generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+          rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
         }),
       );
       const interrupted = await runEffect(
@@ -975,8 +972,8 @@ describe('vector index generations', () => {
                 releaseEmbedding = () => resolve(inputs.map(() => unitVector(requested.dimensions ?? 0, 0)));
               }),
           ),
-        generate: () => Effect.die(new TestError('Unexpected generation')),
-        rerank: () => Effect.die(new TestError('Unexpected reranking')),
+        generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+        rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
       }),
     );
     try {
@@ -1028,8 +1025,8 @@ function fakeRuntimeLayer(
           onInputs(inputs);
           return inputs.map(input => unitVector(requested.dimensions ?? 0, vectorIndex(input)));
         }),
-      generate: () => Effect.die(new TestError('Unexpected generation')),
-      rerank: () => Effect.die(new TestError('Unexpected reranking')),
+      generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+      rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
     }),
   );
 }

@@ -1,4 +1,5 @@
-import {Clock, Effect} from 'effect';
+import {Clock, DateTime, Effect} from 'effect';
+import {succeedUndefined} from '../effect/optional.js';
 import type {AnonymousTelemetryContextBriefCitationUnknownReason} from '../effect/telemetry.js';
 import {
   makeContextBriefAnonymousTelemetryReporter,
@@ -99,8 +100,8 @@ export function instrumentContextBriefCompilerDependencies<
       reporter
         .graph(sources.graphEvidence(graphPlan), contextBriefGraphPhaseOutcome)
         .pipe(
-          Effect.catch(() =>
-            Effect.succeed(unavailableContextBriefGraphEvidence('graph-query-unavailable', requestedRepositories)),
+          Effect.orElseSucceed(() =>
+            unavailableContextBriefGraphEvidence('graph-query-unavailable', requestedRepositories),
           ),
         ),
     ...(sources.codeLinkedMemoryEvidence === undefined
@@ -110,12 +111,10 @@ export function instrumentContextBriefCompilerDependencies<
             reporter
               .codeLinkedMemory(sources.codeLinkedMemoryEvidence!(codePlan), contextBriefCodeLinkedMemoryPhaseOutcome)
               .pipe(
-                Effect.catch(() =>
-                  Effect.succeed(
-                    unavailableContextBriefCodeLinkedMemoryEvidence(
-                      codePlan.codeRefs.length,
-                      'code-anchor-resolution-unavailable',
-                    ),
+                Effect.orElseSucceed(() =>
+                  unavailableContextBriefCodeLinkedMemoryEvidence(
+                    codePlan.codeRefs.length,
+                    'code-anchor-resolution-unavailable',
                   ),
                 ),
               ),
@@ -123,7 +122,7 @@ export function instrumentContextBriefCompilerDependencies<
     memoryEvidence: memoryPlan =>
       reporter
         .memory(sources.memoryEvidence(memoryPlan))
-        .pipe(Effect.catch(() => Effect.succeed(unavailableContextBriefMemoryEvidence()))),
+        .pipe(Effect.orElseSucceed(() => unavailableContextBriefMemoryEvidence())),
     projection: (logical, maximumEstimatedTokens) =>
       reporter.projection(
         sources.projection(logical, maximumEstimatedTokens),
@@ -195,10 +194,10 @@ export const compileContextBriefWith = Effect.fn('contextBrief.compileWith')(fun
   input: ContextBriefRequestV1 | unknown,
 ) {
   const plan = planContextBrief(input);
-  const observedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+  const observedAt = DateTime.formatIso(yield* DateTime.now);
   const codeLinkedMemory =
     plan.codeAnchors.codeRefs.length === 0
-      ? Effect.succeed(undefined)
+      ? succeedUndefined
       : dependencies.codeLinkedMemoryEvidence === undefined
         ? Effect.succeed(unavailableContextBriefCodeLinkedMemoryEvidence(plan.codeAnchors.codeRefs.length))
         : dependencies.codeLinkedMemoryEvidence(plan.codeAnchors);

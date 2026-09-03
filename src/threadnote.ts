@@ -1,4 +1,4 @@
-import {Console, Effect} from 'effect';
+import {Console, Effect, Schema} from 'effect';
 import {Command} from 'effect/unstable/cli';
 import {errorMessage} from './utils.js';
 import {getThreadnoteVersion} from './release/runtime_version.js';
@@ -45,7 +45,7 @@ export const cliEffect = (arguments_: readonly string[]) => {
     Effect.tapError(error =>
       CliError.isCliError(error)
         ? Effect.void
-        : Console.error(errorMessage(error instanceof ApplicationError ? error.cause : error)),
+        : Console.error(errorMessage(Schema.is(ApplicationError)(error) ? error.cause : error)),
     ),
     Effect.catch(() => Effect.flatMap(SystemInfo, system => Effect.sync(() => system.setExitCode(1)))),
   );

@@ -1,7 +1,8 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Exit, Fiber, FileSystem, Layer, PlatformError} from 'effect';
+import {Clock, DateTime, Deferred, Effect, Exit, Fiber, FileSystem, Layer, PlatformError, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {FileLockTimeout, withExclusiveFileLock} from '../../src/effect/file_lock.js';
@@ -303,7 +304,7 @@ describe('Effect file lock', () => {
           ),
           Effect.as('acquired' as const),
           Effect.catch(error =>
-            error instanceof FileLockTimeout ? Effect.succeed('timed-out' as const) : Effect.fail(error),
+            Schema.is(FileLockTimeout)(error) ? Effect.succeed('timed-out' as const) : Effect.fail(error),
           ),
         );
 
@@ -329,7 +330,7 @@ describe('Effect file lock', () => {
           })}\n`,
           {mode: 0o600},
         );
-        const old = new Date(Date.now() - 60_000);
+        const old = DateTime.toDateUtc(DateTime.makeUnsafe((yield* Clock.currentTimeMillis) - 60_000));
         yield* fs.utimes(lockPath, old, old);
         const system = yield* SystemInfo;
         let canonicalLookups = 0;
@@ -405,7 +406,7 @@ describe('Effect file lock', () => {
               SystemInfo.of({
                 ...system,
                 isProcessRunning: () => true,
-                processStartIdentity: () => Effect.succeed(undefined),
+                processStartIdentity: () => succeedUndefined,
               }),
             ),
           );

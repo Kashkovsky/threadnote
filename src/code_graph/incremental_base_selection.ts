@@ -67,6 +67,6 @@ export function preferredIncrementalBaseCommitGroups(repoRoot: string, headCommi
     },
   ).pipe(
     Effect.map(result => gitCommitDistanceGroups(result.stdout, headCommit)),
-    Effect.catch(() => Effect.succeed<readonly (readonly string[])[]>([])),
+    Effect.orElseSucceed(() => []),
   );
 }

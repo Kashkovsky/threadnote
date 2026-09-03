@@ -221,7 +221,7 @@ function required(
 ): MaterializedCodeGraphWorksetFixtureRepository {
   const repository = repositories.get(state);
   if (!repository) {
-    throw new TestError(`Missing ${state} fixture repository.`);
+    throw TestError.make({message: `Missing ${state} fixture repository.`});
   }
   return repository;
 }

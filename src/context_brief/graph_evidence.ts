@@ -2,7 +2,7 @@ import {Effect, Result, Schedule} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {CodeGraphQueryService, observationFromCodeGraphStatus} from '../code_graph/query.js';
 import {
-  CodeGraphStoreError,
+  isCodeGraphStoreError,
   type CodeGraphEdge,
   type CodeGraphQueryResult,
   type CodeGraphStatus,
@@ -455,7 +455,7 @@ function retryContextBriefGraphRead<A, E, R>(
       schedule: Schedule.spaced(CONTEXT_BRIEF_GRAPH_READ_RETRY_MILLISECONDS),
       times: CONTEXT_BRIEF_GRAPH_READ_RETRIES,
       while: error => {
-        if (!(error instanceof CodeGraphStoreError) || !error.retryable || budget.remaining === 0) return false;
+        if (!isCodeGraphStoreError(error) || !error.retryable || budget.remaining === 0) return false;
         budget.remaining -= 1;
         return true;
       },

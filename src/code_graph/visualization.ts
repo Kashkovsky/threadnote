@@ -1,4 +1,4 @@
-import {Context, Effect, Option, Path, Result, Semaphore} from 'effect';
+import {Clock, Context, Effect, Option, Path, Result, Schema, Semaphore} from 'effect';
 import {codeGraphDatabasePaths} from './maintenance.js';
 import {CodeGraphEmbeddingIndex} from './embedding.js';
 import {codeGraphLayout} from './layout.js';
@@ -41,9 +41,13 @@ import {
 
 export {managerGraphBuildCatalog, type ManagerGraphBuildCatalog} from './manager_status.js';
 
-class CodeGraphVisualizationError extends Error {
-  readonly _tag = 'CodeGraphVisualizationError' as const;
-}
+class CodeGraphVisualizationError extends Schema.TaggedError<CodeGraphVisualizationError>()(
+  'CodeGraphVisualizationError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 const NODE_DETAIL_EDGE_LIMIT = 160;
 const NODE_DETAIL_SUMMARY_LIMIT = 2_000;
@@ -66,7 +70,7 @@ export interface ManagerGraphQueryLifecycleShape {
 export class ManagerGraphQueryLifecycle extends Context.Service<
   ManagerGraphQueryLifecycle,
   ManagerGraphQueryLifecycleShape
->()('threadnote/codeGraph/ManagerGraphQueryLifecycle') {}
+>()('threadnote/code_graph/visualization/ManagerGraphQueryLifecycle') {}
 
 const MANAGER_QUERY_MAX_EDGE_LIMIT = 500;
 const MANAGER_QUERY_MAX_NODE_LIMIT = 200;
@@ -145,17 +149,23 @@ export interface ManagerGraphCatalogDiagnostic {
   readonly message: string;
 }
 
-export class ManagerGraphBusyError extends Error {
-  override readonly name = 'ManagerGraphBusyError';
-}
+export class ManagerGraphBusyError extends Schema.TaggedError<ManagerGraphBusyError>()('ManagerGraphBusyError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
-export class ManagerGraphLeaseError extends Error {
-  override readonly name = 'ManagerGraphLeaseError';
-}
+export class ManagerGraphLeaseError extends Schema.TaggedError<ManagerGraphLeaseError>()('ManagerGraphLeaseError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
-export class ManagerGraphViewUnavailableError extends Error {
-  override readonly name = 'ManagerGraphViewUnavailableError';
-}
+export class ManagerGraphViewUnavailableError extends Schema.TaggedError<ManagerGraphViewUnavailableError>()(
+  'ManagerGraphViewUnavailableError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export interface ManagerGraphSnapshotLeaseWarning {
   readonly code: 'manager-snapshot-lease-release-busy' | 'manager-snapshot-lease-release-failed';
@@ -452,7 +462,7 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
     }).pipe(Effect.catch(() => Effect.void));
   }
   const maintenance = yield* observeCodeGraphMaintenanceStatus(threadnoteHome).pipe(
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
   const catalogRevision = managerGraphCatalogRevision(
     entries.map(entry => {
@@ -496,7 +506,7 @@ const retainManagerSnapshot = Effect.fn('codeGraph.retainManagerSnapshot')(funct
   return yield* managerSnapshotLeaseGate(key).withPermit(
     Effect.gen(function* () {
       const existing = managerSnapshotLeases.get(key);
-      const now = Date.now();
+      const now = yield* Clock.currentTimeMillis;
       const retained = yield* Effect.result(
         store.retainViewSnapshotLease(database, worktreeId, snapshotId, MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS, {
           ...(existing ? {existingToken: existing.token} : {}),
@@ -505,7 +515,7 @@ const retainManagerSnapshot = Effect.fn('codeGraph.retainManagerSnapshot')(funct
         }),
       );
       if (Result.isFailure(retained)) {
-        if (retained.failure instanceof CodeGraphStoreBusyError) {
+        if (Schema.is(CodeGraphStoreBusyError)(retained.failure)) {
           // A process-local cache is not cross-process authority. Linearize
           // every new reuse against the exact active pointer, tombstone and
           // still-live token in one read-only SQLite transaction. If another
@@ -613,7 +623,7 @@ export const releaseManagerGraphSnapshotLeases = Effect.fn('codeGraph.releaseMan
         .releaseSnapshotLease(lease.database, lease.token, {
           waitTimeoutMilliseconds: MANAGER_LEASE_WRITER_WAIT_MILLISECONDS,
         })
-        .pipe(Effect.catch(() => Effect.void)),
+        .pipe(Effect.ignore),
     {concurrency: 1, discard: true},
   );
 });
@@ -658,7 +668,7 @@ export function groupManagerGraphRepositories(
 }
 
 function managerSnapshotLeaseReleaseWarning(failure: unknown): ManagerGraphSnapshotLeaseWarning {
-  return failure instanceof CodeGraphStoreBusyError
+  return Schema.is(CodeGraphStoreBusyError)(failure)
     ? {
         code: 'manager-snapshot-lease-release-busy',
         message: 'Manager snapshot lease release is busy; it will not be renewed and later cleanup will retry.',
@@ -714,9 +724,9 @@ export const managerGraphCatalogPage = Effect.fn('codeGraph.managerCatalogPage')
   request: {readonly offset?: number; readonly query?: string; readonly workspaceOffset?: number} = {},
 ) {
   if (Option.isNone(expectedSnapshotId)) {
-    return yield* Effect.fail(
-      new CodeGraphVisualizationError('Graph catalog continuation requires the selected snapshot identity.'),
-    );
+    return yield* CodeGraphVisualizationError.make({
+      message: 'Graph catalog continuation requires the selected snapshot identity.',
+    });
   }
   const projectOffset = boundedCatalogOffset(request.offset);
   const workspaceOffset = boundedCatalogOffset(request.workspaceOffset);
@@ -751,15 +761,15 @@ export const managerGraphViewsPage = Effect.fn('codeGraph.managerViewsPage')(fun
   request: {readonly offset?: number; readonly query?: string} = {},
 ) {
   if (!INDEXED_VIEW_ID.test(indexedViewId))
-    return yield* Effect.fail(new CodeGraphVisualizationError('Graph view identity is invalid.'));
+    return yield* CodeGraphVisualizationError.make({message: 'Graph view identity is invalid.'});
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
   const checkoutId = indexedViewId.split('.', 1)[0];
   if (checkoutId === undefined)
-    return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph checkout is invalid.'));
+    return yield* CodeGraphVisualizationError.make({message: 'Indexed graph checkout is invalid.'});
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   const database = databases.find(candidate => path.basename(path.dirname(candidate)) === checkoutId);
-  if (!database) return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph checkout was not found.'));
+  if (!database) return yield* CodeGraphVisualizationError.make({message: 'Indexed graph checkout was not found.'});
   const offset = boundedCatalogOffset(request.offset);
   const query = boundedCatalogQuery(request.query);
   const catalogs = yield* store.loadVisualizationCatalogs(database, 'deferred', {
@@ -803,7 +813,7 @@ export const managerGraphAnalysis = Effect.fn('codeGraph.managerAnalysis')(funct
   expectedSnapshotId: Option.Option<string> = Option.none(),
 ) {
   if (!INDEXED_VIEW_ID.test(indexedViewId))
-    return yield* Effect.fail(new CodeGraphVisualizationError('Graph view identity is invalid.'));
+    return yield* CodeGraphVisualizationError.make({message: 'Graph view identity is invalid.'});
   const store = yield* CodeGraphStore;
   return yield* Effect.acquireUseRelease(
     resolveManagerGraphView(threadnoteHome, indexedViewId, {
@@ -834,7 +844,7 @@ export const managerGraphVisualization = Effect.fn('codeGraph.managerVisualizati
   expectedSnapshotId: Option.Option<string> = Option.none(),
 ) {
   if (!INDEXED_VIEW_ID.test(indexedViewId))
-    return yield* Effect.fail(new CodeGraphVisualizationError('Graph view identity is invalid.'));
+    return yield* CodeGraphVisualizationError.make({message: 'Graph view identity is invalid.'});
   const store = yield* CodeGraphStore;
   const projectId = requestedProjectId.trim() || 'all';
   return yield* Effect.acquireUseRelease(
@@ -852,8 +862,7 @@ export const managerGraphVisualization = Effect.fn('codeGraph.managerVisualizati
           return yield* overviewVisualization(store, database, repository, catalog, limits);
         }
         const project = catalog.projects.find(candidate => candidate.id === projectId);
-        if (!project)
-          return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph project was not found.'));
+        if (!project) return yield* CodeGraphVisualizationError.make({message: 'Indexed graph project was not found.'});
         return yield* detailVisualization(store, database, repository, project, limits);
       }),
     resolved => resolved.release,
@@ -868,15 +877,13 @@ export const managerGraphQuery = Effect.fn('codeGraph.managerQuery')(function* (
   expectedSnapshotId: Option.Option<string> = Option.none(),
 ) {
   if (!INDEXED_VIEW_ID.test(indexedViewId))
-    return yield* Effect.fail(new CodeGraphVisualizationError('Graph view identity is invalid.'));
+    return yield* CodeGraphVisualizationError.make({message: 'Graph view identity is invalid.'});
   if (Option.isNone(expectedSnapshotId)) {
-    return yield* Effect.fail(new CodeGraphVisualizationError('Graph queries require the selected snapshot identity.'));
+    return yield* CodeGraphVisualizationError.make({message: 'Graph queries require the selected snapshot identity.'});
   }
   const query = requestedQuery.trim();
   if (query.length === 0 || query.length > MANAGER_QUERY_MAX_LENGTH) {
-    return yield* Effect.fail(
-      new CodeGraphVisualizationError('Graph query must contain between 1 and 512 characters.'),
-    );
+    return yield* CodeGraphVisualizationError.make({message: 'Graph query must contain between 1 and 512 characters.'});
   }
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
@@ -964,10 +971,10 @@ export const managerGraphNodeDetail = Effect.fn('codeGraph.managerNodeDetail')(f
   expectedSnapshotId: Option.Option<string> = Option.none(),
 ) {
   if (!INDEXED_VIEW_ID.test(indexedViewId))
-    return yield* Effect.fail(new CodeGraphVisualizationError('Graph view identity is invalid.'));
+    return yield* CodeGraphVisualizationError.make({message: 'Graph view identity is invalid.'});
   const nodeId = requestedNodeId.trim();
   if (nodeId.length === 0 || nodeId.length > NODE_ID_MAX_LENGTH) {
-    return yield* Effect.fail(new CodeGraphVisualizationError('Graph node identity is invalid.'));
+    return yield* CodeGraphVisualizationError.make({message: 'Graph node identity is invalid.'});
   }
   const store = yield* CodeGraphStore;
   return yield* Effect.acquireUseRelease(
@@ -980,7 +987,7 @@ export const managerGraphNodeDetail = Effect.fn('codeGraph.managerNodeDetail')(f
       Effect.gen(function* () {
         const symbols = yield* store.symbolsByIds(database, catalog.snapshot.id, [nodeId]);
         const symbol = symbols.find(candidate => candidate.id === nodeId);
-        if (!symbol) return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph node was not found.'));
+        if (!symbol) return yield* CodeGraphVisualizationError.make({message: 'Indexed graph node was not found.'});
 
         const [edges, summary] = yield* Effect.all([
           store.edgesForNodes(
@@ -1533,10 +1540,10 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
   const store = yield* CodeGraphStore;
   const [checkoutId, worktreeId] = indexedViewId.split('.', 2);
   if (checkoutId === undefined)
-    return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph checkout is invalid.'));
+    return yield* CodeGraphVisualizationError.make({message: 'Indexed graph checkout is invalid.'});
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   const database = databases.find(candidate => path.basename(path.dirname(candidate)) === checkoutId);
-  if (!database) return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph checkout was not found.'));
+  if (!database) return yield* CodeGraphVisualizationError.make({message: 'Indexed graph checkout was not found.'});
   const catalogOptions = {
     includeDependencies: options.includeDependencies,
     projectOffset: options.projectOffset,
@@ -1556,18 +1563,16 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
         )
       : yield* store.loadVisualizationCatalog(database, 'deferred', catalogOptions);
   if (!catalog) {
-    return yield* Effect.fail(
-      Option.isSome(options.expectedSnapshotId)
-        ? new ManagerGraphViewUnavailableError(
-            'The selected graph view changed or was removed. Refresh the graph catalog.',
-          )
-        : new CodeGraphVisualizationError('Indexed graph view has no ready snapshot.'),
-    );
+    return yield* Option.isSome(options.expectedSnapshotId)
+      ? ManagerGraphViewUnavailableError.make({
+          message: 'The selected graph view changed or was removed. Refresh the graph catalog.',
+        })
+      : CodeGraphVisualizationError.make({message: 'Indexed graph view has no ready snapshot.'});
   }
   if (worktreeId && catalog.viewWorktreeId !== worktreeId) {
-    return yield* Effect.fail(
-      new CodeGraphVisualizationError('Indexed graph snapshot does not belong to the requested view.'),
-    );
+    return yield* CodeGraphVisualizationError.make({
+      message: 'Indexed graph snapshot does not belong to the requested view.',
+    });
   }
   const retention = yield* retainManagerSnapshot(
     store,
@@ -1578,25 +1583,19 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
     true,
   );
   if (retention.state === 'view-unavailable') {
-    return yield* Effect.fail(
-      new ManagerGraphViewUnavailableError(
-        'The selected graph view changed or was removed. Refresh the graph catalog.',
-      ),
-    );
+    return yield* ManagerGraphViewUnavailableError.make({
+      message: 'The selected graph view changed or was removed. Refresh the graph catalog.',
+    });
   }
   if (retention.state === 'busy') {
-    return yield* Effect.fail(
-      new ManagerGraphBusyError(
-        'The selected graph is temporarily busy with an active build. Retry after the writer completes.',
-      ),
-    );
+    return yield* ManagerGraphBusyError.make({
+      message: 'The selected graph is temporarily busy with an active build. Retry after the writer completes.',
+    });
   }
   if (retention.state === 'failed') {
-    return yield* Effect.fail(
-      new ManagerGraphLeaseError(
-        'The selected graph could not be retained safely. Run threadnote doctor --dry-run and retry.',
-      ),
-    );
+    return yield* ManagerGraphLeaseError.make({
+      message: 'The selected graph could not be retained safely. Run threadnote doctor --dry-run and retry.',
+    });
   }
   return {catalog, checkoutId, database, release: retention.release};
 });

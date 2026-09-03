@@ -1,4 +1,4 @@
-import {Clock, Effect, Option} from 'effect';
+import {Clock, DateTime, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {codeGraphUtf8ByteLength, saturatingCapacityAdd} from './disk_capacity.js';
 import {isCodeGraphReferenceWithinCandidateBudget} from './fact_budget.js';
@@ -175,7 +175,7 @@ const reclaimRetiredSnapshotPage = Effect.fn('codeGraph.reclaimRetiredSnapshotPa
     const changes = yield* sql.unsafe<{readonly count: number}>('SELECT changes() AS count');
     const deleted = Number(changes[0]?.count ?? 0);
     if (!Number.isSafeInteger(deleted) || deleted < 0) {
-      return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid row count.'));
+      return yield* CodeGraphStoreError.of('Retired snapshot cleanup returned an invalid row count.');
     }
     if (deleted > 0) return {complete: false, rowsDeleted: deleted};
   }
@@ -206,7 +206,7 @@ const reclaimRetiredSnapshotPage = Effect.fn('codeGraph.reclaimRetiredSnapshotPa
   const removed = yield* sql.unsafe<{readonly count: number}>('SELECT changes() AS count');
   const removedCount = Number(removed[0]?.count ?? 0);
   if (!Number.isSafeInteger(removedCount) || removedCount < 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid count.'));
+    return yield* CodeGraphStoreError.of('Retired snapshot cleanup returned an invalid count.');
   }
   const remaining = yield* sql.unsafe<{readonly present: number}>(
     `SELECT EXISTS(
@@ -498,8 +498,8 @@ const copyActivationCompactLexicalFacts = Effect.fn('codeGraph.copyActivationCom
   );
   const expectedPostings = yield* validatedCompactLexicalCount(expectedRows[0]?.count ?? 0, 'staged posting count');
   if (postingCount !== expectedPostings) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError(`Compact lexical activation lost ${expectedPostings - postingCount} posting(s).`),
+    return yield* CodeGraphStoreError.of(
+      `Compact lexical activation lost ${expectedPostings - postingCount} posting(s).`,
     );
   }
   return {postingCount, symbolCount, termCount} satisfies CompactLexicalFormatReceipt;
@@ -768,9 +768,7 @@ const stagePersistedAnalysisBatch = Effect.fn('codeGraph.stagePersistedAnalysisB
       Number(existing[0].symbol_count) !== symbols.length ||
       Number(existing[0].edge_count) !== edges.length
     ) {
-      return yield* Effect.fail(
-        new CodeGraphStoreError('Persisted analysis batch contents changed; discard and rebuild it.'),
-      );
+      return yield* CodeGraphStoreError.of('Persisted analysis batch contents changed; discard and rebuild it.');
     }
     return;
   }
@@ -808,7 +806,7 @@ const stagePersistedAnalysisBatch = Effect.fn('codeGraph.stagePersistedAnalysisB
       snapshot_id, batch_index, batch_fingerprint, symbol_count, edge_count, completed_at
     ) VALUES (
       ${snapshotId}, ${batchIndex}, ${batchFingerprint}, ${symbols.length}, ${edges.length},
-      ${new Date().toISOString()}
+      ${DateTime.formatIso(yield* DateTime.now)}
     )
   `;
 });
@@ -885,7 +883,7 @@ const snapshotPromotionLeaseCapacity = Effect.fn('codeGraph.snapshotPromotionLea
       !Number.isSafeInteger(leaseRows[0].lease_rowid) ||
       leaseRows[0].lease_rowid <= 0
     ) {
-      return yield* Effect.fail(new CodeGraphStoreError('Ready snapshot promotion lease capacity is invalid.'));
+      return yield* CodeGraphStoreError.of('Ready snapshot promotion lease capacity is invalid.');
     }
     rows += 1;
     factBytes = saturatingCapacityAdd(

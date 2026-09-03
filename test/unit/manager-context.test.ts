@@ -233,7 +233,7 @@ describe('Manager context API adapter', () => {
         method: 'POST',
         readContext: () =>
           Effect.fail(
-            new MemoryIdentityResolutionError({
+            MemoryIdentityResolutionError.make({
               memoryId: 'tn_manager_missing',
               message: 'Stable memory identity does not resolve inside the authorized active corpus.',
               reason: 'not-found',
@@ -247,7 +247,7 @@ describe('Manager context API adapter', () => {
         method: 'POST',
         readContext: () =>
           Effect.fail(
-            new MemoryIdentityResolutionError({
+            MemoryIdentityResolutionError.make({
               memoryId: 'tn_manager_conflict',
               message: 'Stable memory identity is ambiguous or conflicted inside the authorized corpus.',
               reason: 'ambiguous',

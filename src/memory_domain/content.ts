@@ -119,5 +119,5 @@ export function parseRemoteCanonicalMemoryDocument(input: {
 }
 
 function invalidDocument(reason: string): never {
-  throw new InvalidRemoteMemoryDocument({message: `Invalid remote memory document: ${reason}.`, reason});
+  throw InvalidRemoteMemoryDocument.make({message: `Invalid remote memory document: ${reason}.`, reason});
 }

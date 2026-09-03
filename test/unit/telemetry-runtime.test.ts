@@ -1,4 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import fc from 'fast-check';
 import {Cause, Deferred, Effect, Exit, Fiber, Tracer} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -34,13 +35,13 @@ describe('anonymous telemetry runtime', () => {
   effectIt.effect('classifies automatic-update failures while preserving their original Exit', () => {
     const capture = capturingTracer();
     const failures = [
-      new HttpRequestFailed({
+      HttpRequestFailed.make({
         cause: new Error('private network failure'),
         message: 'private request failure',
         method: 'GET',
         url: 'https://private.example/release.tar.gz',
       }),
-      new FileLockTimeout('/private/threadnote-install.lock'),
+      FileLockTimeout.of('/private/threadnote-install.lock'),
     ] as const;
 
     return Effect.gen(function* () {
@@ -76,7 +77,7 @@ describe('anonymous telemetry runtime', () => {
 
   effectIt.effect('executes once, preserves a failure Exit, and emits only a successful sanitized envelope', () => {
     const capture = capturingTracer();
-    const privateFailure = new TestError('secret at /Users/private/repository/store.sqlite');
+    const privateFailure = TestError.make({message: 'secret at /Users/private/repository/store.sqlite'});
     let executions = 0;
 
     return Effect.gen(function* () {
@@ -176,7 +177,7 @@ describe('anonymous telemetry runtime', () => {
     const capture = capturingTracer();
     const result = attachAnonymousTelemetryError(
       {content: [{text: 'private user-facing result containing repo content', type: 'text'}], isError: true},
-      new CodeGraphStoreError('native failure at /private/repository/graph.sqlite', {
+      CodeGraphStoreError.of('native failure at /private/repository/graph.sqlite', {
         code: 'transient-io',
         operation: 'load code graph adjacency',
         recovery: 'retry-read-only',
@@ -250,7 +251,7 @@ describe('anonymous telemetry runtime', () => {
     return Effect.gen(function* () {
       for (const outcome of cases) {
         const error = attachAnonymousTelemetryReportedOutcome(
-          new TestError('private target detail at /Users/private/repository'),
+          TestError.make({message: 'private target detail at /Users/private/repository'}),
           outcome,
         );
         const exit = yield* Effect.exit(
@@ -619,7 +620,7 @@ function spanAttributes(captured: CapturedSpan): Record<string, unknown> {
 function systemInfoStub(overrides: Partial<SystemInfoShape> = {}): SystemInfoShape {
   return {
     architecture: 'arm64',
-    availableDiskBytes: () => Effect.succeed(undefined),
+    availableDiskBytes: () => succeedUndefined,
     currentDirectory: () => '/',
     environment: () => ({}),
     executablePath: '/opt/threadnote/bin/threadnote',
@@ -636,7 +637,7 @@ function systemInfoStub(overrides: Partial<SystemInfoShape> = {}): SystemInfoSha
     platform: 'darwin',
     processArguments: ['/opt/threadnote/bin/threadnote'],
     processId: 1,
-    processStartIdentity: () => Effect.succeed(undefined),
+    processStartIdentity: () => succeedUndefined,
     readLine: () => () => undefined,
     runtimeVersion: 'test',
     setEnvironmentVariable: () => undefined,

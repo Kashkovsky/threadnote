@@ -9,7 +9,7 @@ import {
   codeGraphPersistentExtensionSchemaCompatible,
   inspectPersistentExtensionTables,
 } from './store_schema_inspection.js';
-import {CodeGraphStoreError} from './types.js';
+import {CodeGraphStoreError, isCodeGraphStoreError} from './types.js';
 import {
   CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION,
   codeGraphPersistentSchemaIsCurrent,
@@ -42,7 +42,7 @@ const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedVi
 ) {
   const preflightReady = yield* preflightRemovedViewCleanupSchema(sql).pipe(
     Effect.as(true),
-    Effect.catch(error => (error instanceof CodeGraphStoreError ? Effect.succeed(false) : Effect.fail(error))),
+    Effect.catch(error => (isCodeGraphStoreError(error) ? Effect.succeed(false) : Effect.fail(error))),
   );
   if (!preflightReady) return {reason: 'incompatible-schema', state: 'deferred'} as const;
   if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, true, false))) {
@@ -73,11 +73,11 @@ const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedVi
       WHERE key = 'persistent_extension_schema_revision' AND value = ${revision}
     `;
     if ((yield* lastStatementChangeCount(sql)) !== 1) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph cleanup schema revision changed during setup.'));
+      return yield* CodeGraphStoreError.of('Code graph cleanup schema revision changed during setup.');
     }
   }
   if (!(yield* codeGraphRemovedViewCleanupSchemaAdmission(sql)).current) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup schema is unavailable.');
   }
   return wasCurrent && codeGraphPersistentSchemaIsCurrent(revision)
     ? ({state: 'ready'} as const)
@@ -92,7 +92,7 @@ const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeR
   }
   const preflightReady = yield* preflightRemovedViewCleanupSchema(sql).pipe(
     Effect.as(true),
-    Effect.catch(error => (error instanceof CodeGraphStoreError ? Effect.succeed(false) : Effect.fail(error))),
+    Effect.catch(error => (isCodeGraphStoreError(error) ? Effect.succeed(false) : Effect.fail(error))),
   );
   if (!preflightReady || !(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
     return {reason: 'incompatible-schema', state: 'deferred'} as const;
@@ -142,7 +142,7 @@ const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeR
   if (missing !== undefined) {
     yield* sql.unsafe(missing.index.definition);
     if ((yield* codeGraphReconciliationIndexState(sql, missing.index)) !== 'ready') {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation index changed during setup.'));
+      return yield* CodeGraphStoreError.of('Code graph reconciliation index changed during setup.');
     }
     return {index: missing.index.name, state: 'prepared'} as const;
   }

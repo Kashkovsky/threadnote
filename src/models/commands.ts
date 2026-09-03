@@ -1,4 +1,4 @@
-import {Console, Effect} from 'effect';
+import {Console, Effect, Schema} from 'effect';
 import type {RuntimeConfig} from '../types.js';
 import {LocalModelRuntime} from '../effect/ai/local-model-runtime.js';
 import {LocalModelCatalog, type LocalModelRole} from './catalog.js';
@@ -6,9 +6,10 @@ import {bundledCoreEmbeddingSource} from './core-embedding-asset.js';
 import {LocalModelStore, modelDownloadUrl} from './store.js';
 import {readModelSelection, selectLocalModel} from './selection.js';
 
-class ModelCommandError extends Error {
-  readonly _tag = 'ModelCommandError' as const;
-}
+class ModelCommandError extends Schema.TaggedError<ModelCommandError>()('ModelCommandError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export const runModelList = Effect.fn('models.command.list')(function* (config: RuntimeConfig) {
   const catalog = yield* LocalModelCatalog;
@@ -89,14 +90,14 @@ export const runModelSelect = Effect.fn('models.command.select')(function* (
   const catalog = yield* LocalModelCatalog;
   const manifest = yield* catalog.get(modelId);
   if (manifest.role !== role) {
-    return yield* Effect.fail(new ModelCommandError(`Model ${modelId} has role ${manifest.role}, not ${role}.`));
+    return yield* ModelCommandError.make({message: `Model ${modelId} has role ${manifest.role}, not ${role}.`});
   }
   const store = yield* LocalModelStore;
   const status = yield* store.status(config.agentContextHome, manifest);
   if (!status.installed) {
-    return yield* Effect.fail(
-      new ModelCommandError(`Model ${modelId} is not installed. Run: threadnote models install ${modelId}`),
-    );
+    return yield* ModelCommandError.make({
+      message: `Model ${modelId} is not installed. Run: threadnote models install ${modelId}`,
+    });
   }
   if (options.dryRun === true) {
     yield* Console.log(`Would select ${modelId} for ${role}.`);

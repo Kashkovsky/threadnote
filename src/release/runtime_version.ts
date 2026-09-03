@@ -26,7 +26,7 @@ export const getThreadnoteVersion = Effect.fn('version.getThreadnoteVersion')(fu
       }),
     ),
     Effect.map(packageVersion),
-    Effect.catch(() => Effect.succeed('unknown')),
+    Effect.orElseSucceed(() => 'unknown'),
   );
   return cachedVersion;
 });

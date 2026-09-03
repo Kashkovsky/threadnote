@@ -779,7 +779,7 @@ function progressResult(
   result: CodeGraphRemovedViewVectorUnitResult,
 ): Extract<CodeGraphRemovedViewVectorUnitResult, {readonly state: 'progress'}> {
   expect(result.state).toBe('progress');
-  if (result.state !== 'progress') throw new TestError('Expected vector-unit progress.');
+  if (result.state !== 'progress') throw TestError.make({message: 'Expected vector-unit progress.'});
   return result;
 }
 
@@ -789,7 +789,7 @@ function parseCursor(result: CodeGraphRemovedViewVectorUnitResult): ParsedCursor
     progress.cursorToken,
   );
   expect(match).not.toBeNull();
-  if (match === null) throw new TestError('Vector-unit cursor is not canonical.');
+  if (match === null) throw TestError.make({message: 'Vector-unit cursor is not canonical.'});
   return {
     digest: match[2],
     mode: match[1] as ParsedCursor['mode'],

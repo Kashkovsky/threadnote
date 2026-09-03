@@ -302,7 +302,7 @@ const selectBaseSnapshotId = Effect.fn('codeGraph.selectBaseSnapshotId')(functio
   const rows = yield* sql<{readonly base_snapshot_id: unknown}>`
     SELECT base_snapshot_id FROM snapshots WHERE id = ${snapshotId} AND state = 'ready' LIMIT 1
   `;
-  if (!rows[0]) return yield* Effect.fail(new CodeGraphStoreError(`Ready snapshot ${snapshotId} was not found.`));
+  if (!rows[0]) return yield* CodeGraphStoreError.of(`Ready snapshot ${snapshotId} was not found.`);
   return Option.getOrUndefined(sqlTextOption(rows[0].base_snapshot_id));
 });
 

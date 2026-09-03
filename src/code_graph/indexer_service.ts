@@ -1,4 +1,4 @@
-import {Clock, Context, Crypto, Effect, Exit, FileSystem, Layer, Option, Path} from 'effect';
+import {Clock, Context, Crypto, Effect, Exit, FileSystem, Layer, Option, Path, Schema} from 'effect';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {makeCodeGraphBuildReporter} from './build_status.js';
@@ -80,7 +80,7 @@ import {
 } from './anonymous_telemetry.js';
 
 export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGraphIndexerShape>()(
-  'threadnote/codeGraph/CodeGraphIndexer',
+  'threadnote/code_graph/indexer_service/CodeGraphIndexer',
 ) {
   static readonly layer = Layer.effect(
     CodeGraphIndexer,
@@ -109,9 +109,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               request.expectedIdentity &&
               !repositoryIdentityMatchesExpectation(initialIdentity, request.expectedIdentity)
             ) {
-              return yield* Effect.fail(
-                new CodeGraphIndexOperationError('Repository identity does not match the requested graph target.'),
-              );
+              return yield* CodeGraphIndexOperationError.make({
+                message: 'Repository identity does not match the requested graph target.',
+              });
             }
             const layout = codeGraphLayout(
               path,
@@ -139,9 +139,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               request.threadnoteHome,
               Effect.gen(function* () {
                 if ((yield* fs.readLink(layout.repositoryRoot).pipe(Effect.option))._tag === 'Some') {
-                  return yield* Effect.fail(
-                    new CodeGraphIndexOperationError('Code graph repository root is a symbolic link.'),
-                  );
+                  return yield* CodeGraphIndexOperationError.make({
+                    message: 'Code graph repository root is a symbolic link.',
+                  });
                 }
                 yield* fs.makeDirectory(layout.repositoryRoot, {recursive: true, mode: 0o700});
                 const reporter = yield* makeCodeGraphBuildReporter(
@@ -181,20 +181,20 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               layout.lockPath,
               () =>
                 (options.onProgress?.({phase: 'waiting', reason: 'repository-lock'}) ?? Effect.void).pipe(
-                  Effect.catch(() => Effect.void),
+                  Effect.ignore,
                 ),
               'index-repository',
               Effect.gen(function* () {
                 if ((yield* fs.readLink(layout.repositoryRoot).pipe(Effect.option))._tag === 'Some') {
-                  return yield* Effect.fail(
-                    new CodeGraphIndexOperationError('Code graph repository root is a symbolic link.'),
-                  );
+                  return yield* CodeGraphIndexOperationError.make({
+                    message: 'Code graph repository root is a symbolic link.',
+                  });
                 }
                 if (!(yield* fs.exists(layout.repositoryRoot))) {
-                  return yield* Effect.fail(new RepositoryRegistrationLost());
+                  return yield* RepositoryRegistrationLost.make({});
                 }
                 if (yield* codeGraphMaintenanceIntentActive(options.threadnoteHome)) {
-                  return yield* Effect.fail(new RepositoryMaintenanceInterrupted());
+                  return yield* RepositoryMaintenanceInterrupted.make({});
                 }
                 const build = store
                   .withSession(
@@ -208,9 +208,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           validateIdentity: identity => {
                             if (!repositoryIdentityMatchesExpectation(identity, initialIdentity)) {
                               return Effect.fail(
-                                new CodeGraphIndexOperationError(
-                                  'Repository identity changed while waiting for the graph lock.',
-                                ),
+                                CodeGraphIndexOperationError.make({
+                                  message: 'Repository identity changed while waiting for the graph lock.',
+                                }),
                               );
                             }
                             if (
@@ -218,14 +218,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                               !repositoryIdentityMatchesExpectation(identity, options.expectedIdentity)
                             ) {
                               return Effect.fail(
-                                new CodeGraphIndexOperationError(
-                                  'Repository identity does not match the requested graph target.',
-                                ),
+                                CodeGraphIndexOperationError.make({
+                                  message: 'Repository identity does not match the requested graph target.',
+                                }),
                               );
                             }
                             return identity.headCommit === initialIdentity.headCommit
                               ? Effect.void
-                              : Effect.fail(new WorktreeChangedDuringIndex());
+                              : Effect.fail(WorktreeChangedDuringIndex.make({}));
                           },
                         },
                       );
@@ -238,7 +238,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         ).pipe(Effect.provideService(Crypto.Crypto, crypto));
                         const currentOverlay = currentBuildRequest.state;
                         if (!sameOverlayState(currentOverlay, requestedOverlay)) {
-                          return yield* Effect.fail(new WorktreeChangedDuringIndex());
+                          return yield* WorktreeChangedDuringIndex.make({});
                         }
                         inventoryOverlayObservation = currentBuildRequest.overlay;
                         if (requestKey) {
@@ -713,11 +713,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         }
                         if (incrementalAssessment.mode === 'eligible') {
                           if (committedBase === undefined) {
-                            return yield* Effect.fail(
-                              new CodeGraphIndexOperationError(
-                                'Incremental code graph preparation requires a committed base snapshot.',
-                              ),
-                            );
+                            return yield* CodeGraphIndexOperationError.make({
+                              message: 'Incremental code graph preparation requires a committed base snapshot.',
+                            });
                           }
                           const incrementalReusedFiles = inventory.files.length - incrementalAssessment.files.length;
                           const incrementalCapacityProtector = codeGraphDirectPersistentCapacityProtector({
@@ -856,7 +854,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   )
                   .pipe(
                     Effect.onInterrupt(() =>
-                      reporter.fail(new CodeGraphIndexOperationError(CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY)),
+                      reporter.fail(CodeGraphIndexOperationError.make({message: CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY})),
                     ),
                     Effect.tap(summary => reporter.complete(summary)),
                     Effect.tapError(cause => reporter.fail(cause)),
@@ -877,7 +875,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               {
                 admissionClass: codeGraphBuilderAdmissionClass(options, system.environment()),
                 onWaiting: (options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap'}) ?? Effect.void).pipe(
-                  Effect.catch(() => Effect.void),
+                  Effect.ignore,
                 ),
                 threadnoteHome: options.threadnoteHome,
               },
@@ -903,11 +901,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           Effect.provideService(Path.Path, path),
           Effect.provideService(SystemInfo, system),
           Effect.catchIf(
-            cause => cause instanceof WorktreeChangedDuringIndex && attempt === 0,
+            cause => Schema.is(WorktreeChangedDuringIndex)(cause) && attempt === 0,
             () => indexAttempt(request, anonymousTelemetry, attempt + 1, bypassCachedFacts),
           ),
           Effect.catchIf(
-            cause => cause instanceof CachedCodeGraphFactUnavailableDuringIndex && !bypassCachedFacts,
+            cause => Schema.is(CachedCodeGraphFactUnavailableDuringIndex)(cause) && !bypassCachedFacts,
             () => indexAttempt(request, anonymousTelemetry, attempt, true),
           ),
         );
@@ -931,9 +929,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               request.expectedIdentity &&
               !repositoryIdentityMatchesExpectation(initialIdentity, request.expectedIdentity)
             ) {
-              return yield* Effect.fail(
-                new CodeGraphIndexOperationError('Repository identity does not match the requested graph target.'),
-              );
+              return yield* CodeGraphIndexOperationError.make({
+                message: 'Repository identity does not match the requested graph target.',
+              });
             }
             const layout = codeGraphLayout(
               path,
@@ -945,9 +943,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               request.threadnoteHome,
               Effect.gen(function* () {
                 if ((yield* fs.readLink(layout.repositoryRoot).pipe(Effect.option))._tag === 'Some') {
-                  return yield* Effect.fail(
-                    new CodeGraphIndexOperationError('Code graph repository root is a symbolic link.'),
-                  );
+                  return yield* CodeGraphIndexOperationError.make({
+                    message: 'Code graph repository root is a symbolic link.',
+                  });
                 }
                 yield* fs.makeDirectory(layout.repositoryRoot, {recursive: true, mode: 0o700});
                 return yield* makeCodeGraphBuildReporter({...initialIdentity, headCommit: request.commit}, layout);
@@ -979,20 +977,20 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               layout.lockPath,
               () =>
                 (options.onProgress?.({phase: 'waiting', reason: 'repository-lock'}) ?? Effect.void).pipe(
-                  Effect.catch(() => Effect.void),
+                  Effect.ignore,
                 ),
               'ensure-commit',
               Effect.gen(function* () {
                 if ((yield* fs.readLink(layout.repositoryRoot).pipe(Effect.option))._tag === 'Some') {
-                  return yield* Effect.fail(
-                    new CodeGraphIndexOperationError('Code graph repository root is a symbolic link.'),
-                  );
+                  return yield* CodeGraphIndexOperationError.make({
+                    message: 'Code graph repository root is a symbolic link.',
+                  });
                 }
                 if (!(yield* fs.exists(layout.repositoryRoot))) {
-                  return yield* Effect.fail(new RepositoryRegistrationLost());
+                  return yield* RepositoryRegistrationLost.make({});
                 }
                 if (yield* codeGraphMaintenanceIntentActive(options.threadnoteHome)) {
-                  return yield* Effect.fail(new RepositoryMaintenanceInterrupted());
+                  return yield* RepositoryMaintenanceInterrupted.make({});
                 }
                 return yield* store
                   .withSession(
@@ -1005,9 +1003,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           validateIdentity: identity => {
                             if (!repositoryIdentityMatchesExpectation(identity, initialIdentity)) {
                               return Effect.fail(
-                                new CodeGraphIndexOperationError(
-                                  'Repository identity changed while waiting for the graph lock.',
-                                ),
+                                CodeGraphIndexOperationError.make({
+                                  message: 'Repository identity changed while waiting for the graph lock.',
+                                }),
                               );
                             }
                             if (
@@ -1015,9 +1013,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                               !repositoryIdentityMatchesExpectation(identity, options.expectedIdentity)
                             ) {
                               return Effect.fail(
-                                new CodeGraphIndexOperationError(
-                                  'Repository identity does not match the requested graph target.',
-                                ),
+                                CodeGraphIndexOperationError.make({
+                                  message: 'Repository identity does not match the requested graph target.',
+                                }),
                               );
                             }
                             return Effect.void;
@@ -1090,7 +1088,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   )
                   .pipe(
                     Effect.onInterrupt(() =>
-                      reporter.fail(new CodeGraphIndexOperationError(CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY)),
+                      reporter.fail(CodeGraphIndexOperationError.make({message: CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY})),
                     ),
                     Effect.tap(result => reporter.completeSnapshot(result.lease.snapshot)),
                     Effect.tapError(cause => reporter.fail(cause)),
@@ -1101,7 +1099,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               {
                 admissionClass: codeGraphBuilderAdmissionClass(options, system.environment()),
                 onWaiting: (options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap'}) ?? Effect.void).pipe(
-                  Effect.catch(() => Effect.void),
+                  Effect.ignore,
                 ),
                 threadnoteHome: options.threadnoteHome,
               },
@@ -1127,7 +1125,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           Effect.provideService(Path.Path, path),
           Effect.provideService(SystemInfo, system),
           Effect.catchIf(
-            cause => cause instanceof CachedCodeGraphFactUnavailableDuringIndex && !bypassCachedFacts,
+            cause => Schema.is(CachedCodeGraphFactUnavailableDuringIndex)(cause) && !bypassCachedFacts,
             () => ensureCommitWithSummary(request, anonymousTelemetry, true),
           ),
         );

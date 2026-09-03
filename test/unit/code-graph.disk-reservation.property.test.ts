@@ -197,7 +197,7 @@ describe('code graph disk reservation ledger', () => {
     ({freelist, main, recovery, transient}) =>
       Effect.sync(() => {
         const key = codeGraphDiskReservationFilesystemKey('linux', 123n);
-        if (!key) throw new TestError('A positive runtime device must produce a filesystem key.');
+        if (!key) throw TestError.make({message: 'A positive runtime device must produce a filesystem key.'});
         const projection = codeGraphDiskCapacityReservationProjection({
           demand: {
             calibrationIdentity: 'fixture-v1',

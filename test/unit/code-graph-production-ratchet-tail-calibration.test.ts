@@ -28,7 +28,7 @@ const SequenceObservation = Schema.Struct({
   ]),
 });
 
-const calibration = Schema.decodeUnknownSync(
+const calibration = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       artifact: Schema.Struct({

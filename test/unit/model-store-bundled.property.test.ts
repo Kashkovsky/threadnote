@@ -154,7 +154,7 @@ describe('bundled model installation', () => {
         extractBundledSource: (_sourcePath, destinationPath) =>
           fs
             .writeFile(destinationPath, bytes)
-            .pipe(Effect.andThen(Effect.fail(new TestError('fixture extraction failed')))),
+            .pipe(Effect.andThen(Effect.fail(TestError.make({message: 'fixture extraction failed'})))),
       });
 
       yield* Effect.gen(function* () {

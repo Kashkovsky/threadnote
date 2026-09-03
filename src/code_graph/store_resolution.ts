@@ -304,10 +304,8 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     matchingMilliseconds += (yield* Clock.currentTimeMillis) - countStartedAt;
     if (referencesTotal === 0) break;
     if (!codeGraphResolutionPassAdmitted(passesCompleted)) {
-      return yield* Effect.fail(
-        new CodeGraphStoreError(
-          `Code graph reference resolution did not converge within ${CODE_GRAPH_RESOLUTION_PASS_MAXIMUM} bounded passes.`,
-        ),
+      return yield* CodeGraphStoreError.of(
+        `Code graph reference resolution did not converge within ${CODE_GRAPH_RESOLUTION_PASS_MAXIMUM} bounded passes.`,
       );
     }
     const pass = passesCompleted + 1;
@@ -842,7 +840,7 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph promotion authority schema is unavailable.'));
+        return yield* CodeGraphStoreError.of('Code graph promotion authority schema is unavailable.');
       }
       const candidate = yield* sql<{
         readonly generation: number | null;
@@ -858,14 +856,14 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
         LIMIT 1
       `;
       if (!candidate[0]) {
-        return yield* Effect.fail(new CodeGraphStoreError(`Ready snapshot ${snapshotId} cannot be promoted.`));
+        return yield* CodeGraphStoreError.of(`Ready snapshot ${snapshotId} cannot be promoted.`);
       }
       if (
         candidate[0].generation === null ||
         Number(candidate[0].generation) < Number(candidate[0].minimum_generation)
       ) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError(`Ready snapshot ${snapshotId} was built by an incompatible extractor generation.`),
+        return yield* CodeGraphStoreError.of(
+          `Ready snapshot ${snapshotId} was built by an incompatible extractor generation.`,
         );
       }
       const active = yield* sql.unsafe<{readonly activated_at: unknown; readonly snapshot_id: unknown}>(
@@ -887,7 +885,7 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
             typeof displacedActivatedAt !== 'string' ||
             !validCanonicalTimestamp(displacedActivatedAt)))
       ) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph active view authority is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph active view authority is invalid.');
       }
       const removed = yield* sql.unsafe<{
         readonly expected_snapshot_id: unknown;
@@ -912,7 +910,7 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
             typeof removedAt !== 'string' ||
             !validCanonicalTimestamp(removedAt)))
       ) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph removed view authority is invalid.');
       }
       const observedLeaseCapacity = yield* snapshotPromotionLeaseCapacity(
         sql,
@@ -923,14 +921,14 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
         observedLeaseCapacity.rows > capacity.maximumLeaseRows ||
         observedLeaseCapacity.factBytes > capacity.maximumLeaseFactBytes
       ) {
-        return yield* Effect.fail(new CodeGraphPromotionCapacityPlanChanged());
+        return yield* CodeGraphPromotionCapacityPlanChanged.make({});
       }
       const activatedAt = nextCodeGraphActiveViewActivationTimestamp(capacity.activatedAt, [
         typeof displacedActivatedAt === 'string' ? displacedActivatedAt : undefined,
         typeof removedAt === 'string' ? removedAt : undefined,
       ]);
       if (activatedAt === undefined) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph active view generation is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph active view generation is invalid.');
       }
       const now = yield* Clock.currentTimeMillis;
       yield* sql`
@@ -960,7 +958,7 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
             AND removed_at = ${removedAt}
         `;
         if ((yield* lastStatementChangeCount(sql)) !== 1) {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority changed.'));
+          return yield* CodeGraphStoreError.of('Code graph removed view authority changed.');
         }
       }
       // A lease acquired by ID may precede promotion. Once a dirty snapshot

@@ -102,7 +102,7 @@ export const codeGraphSchemaInitializationReceiptCurrent = Effect.fn('codeGraph.
   function* (sql: SqlClient.SqlClient) {
     const definitions = yield* schemaInitializationReceiptDefinitions(sql);
     if (definitions.length > 0 && !schemaInitializationReceiptDefinitionCurrent(definitions)) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph schema initialization receipt is incompatible.'));
+      return yield* CodeGraphStoreError.of('Code graph schema initialization receipt is incompatible.');
     }
     if (definitions.length === 0 || !(yield* tableExists(sql, 'schema_metadata'))) return false;
     const receiptRows = yield* sql.unsafe<{
@@ -189,9 +189,7 @@ export const recordCodeGraphSchemaInitializationReceipt = Effect.fn('codeGraph.r
       Effect.gen(function* () {
         const existing = yield* schemaInitializationReceiptDefinitions(sql);
         if (existing.length > 0 && !schemaInitializationReceiptDefinitionCurrent(existing)) {
-          return yield* Effect.fail(
-            new CodeGraphStoreError('Code graph schema initialization receipt is incompatible.'),
-          );
+          return yield* CodeGraphStoreError.of('Code graph schema initialization receipt is incompatible.');
         }
         yield* sql.unsafe(CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_TABLE_SQL);
         const sqliteSchemaVersion = yield* mainSchemaVersion(sql);
@@ -213,7 +211,7 @@ export const recordCodeGraphSchemaInitializationReceipt = Effect.fn('codeGraph.r
           ],
         );
         if (!(yield* codeGraphSchemaInitializationReceiptCurrent(sql))) {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph schema initialization receipt is invalid.'));
+          return yield* CodeGraphStoreError.of('Code graph schema initialization receipt is invalid.');
         }
       }),
     );
@@ -261,7 +259,7 @@ const mainSchemaVersion = Effect.fn('codeGraph.mainSchemaVersion')(function* (sq
     value < CODE_GRAPH_SQLITE_SCHEMA_VERSION_MINIMUM ||
     value > CODE_GRAPH_SQLITE_SCHEMA_VERSION_MAXIMUM
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph SQLite schema version is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph SQLite schema version is invalid.');
   }
   return value;
 });

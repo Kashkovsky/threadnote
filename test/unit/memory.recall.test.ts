@@ -4,6 +4,7 @@ import {mkdir, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
+import {inheritedProcessEnvironment} from '../helpers/process-environment.js';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {captureConsole} from '../../src/effect/console.js';
@@ -192,11 +193,11 @@ describe('runRecall native index', () => {
     Effect.gen(function* () {
       const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-remote-project-')));
       const repoRoot = join(dir, 'easy-to-type');
-      const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
+      const previousCallerCwd = inheritedProcessEnvironment().THREADNOTE_CALLER_CWD;
       const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
-      const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
+      const previousGitEnv = new Map(gitEnvKeys.map(key => [key, inheritedProcessEnvironment()[key]]));
       for (const key of gitEnvKeys) {
-        delete process.env[key];
+        delete inheritedProcessEnvironment()[key];
       }
       let output = '';
       try {
@@ -211,7 +212,7 @@ describe('runRecall native index', () => {
             cwd: repoRoot,
           })
           .pipe(provideTestLayer(ApplicationLayer));
-        process.env.THREADNOTE_CALLER_CWD = repoRoot;
+        inheritedProcessEnvironment().THREADNOTE_CALLER_CWD = repoRoot;
         output = (yield* captureRecall(
           {
             ...runtime,
@@ -224,16 +225,16 @@ describe('runRecall native index', () => {
         )).output;
       } finally {
         if (previousCallerCwd === undefined) {
-          delete process.env.THREADNOTE_CALLER_CWD;
+          delete inheritedProcessEnvironment().THREADNOTE_CALLER_CWD;
         } else {
-          process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
+          inheritedProcessEnvironment().THREADNOTE_CALLER_CWD = previousCallerCwd;
         }
         for (const key of gitEnvKeys) {
           const value = previousGitEnv.get(key);
           if (value === undefined) {
-            delete process.env[key];
+            delete inheritedProcessEnvironment()[key];
           } else {
-            process.env[key] = value;
+            inheritedProcessEnvironment()[key] = value;
           }
         }
         yield* Effect.promise(() =>
@@ -255,11 +256,11 @@ describe('runRecall native index', () => {
       const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-query-project-')));
       const repoRoot = join(dir, 'easy-to-type');
       const manifestPath = join(dir, 'seed-manifest.yaml');
-      const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
+      const previousCallerCwd = inheritedProcessEnvironment().THREADNOTE_CALLER_CWD;
       const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
-      const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
+      const previousGitEnv = new Map(gitEnvKeys.map(key => [key, inheritedProcessEnvironment()[key]]));
       for (const key of gitEnvKeys) {
-        delete process.env[key];
+        delete inheritedProcessEnvironment()[key];
       }
       let output = '';
       try {
@@ -293,7 +294,7 @@ describe('runRecall native index', () => {
             'utf8',
           ),
         );
-        process.env.THREADNOTE_CALLER_CWD = repoRoot;
+        inheritedProcessEnvironment().THREADNOTE_CALLER_CWD = repoRoot;
         output = (yield* captureRecall(
           {
             ...runtime,
@@ -306,16 +307,16 @@ describe('runRecall native index', () => {
         )).output;
       } finally {
         if (previousCallerCwd === undefined) {
-          delete process.env.THREADNOTE_CALLER_CWD;
+          delete inheritedProcessEnvironment().THREADNOTE_CALLER_CWD;
         } else {
-          process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
+          inheritedProcessEnvironment().THREADNOTE_CALLER_CWD = previousCallerCwd;
         }
         for (const key of gitEnvKeys) {
           const value = previousGitEnv.get(key);
           if (value === undefined) {
-            delete process.env[key];
+            delete inheritedProcessEnvironment()[key];
           } else {
-            process.env[key] = value;
+            inheritedProcessEnvironment()[key] = value;
           }
         }
         yield* Effect.promise(() =>
@@ -335,11 +336,11 @@ describe('runRecall native index', () => {
       const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-workset-dedupe-')));
       const repoRoot = join(dir, 'easy-to-type');
       const manifestPath = join(dir, 'seed-manifest.yaml');
-      const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
+      const previousCallerCwd = inheritedProcessEnvironment().THREADNOTE_CALLER_CWD;
       const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
-      const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
+      const previousGitEnv = new Map(gitEnvKeys.map(key => [key, inheritedProcessEnvironment()[key]]));
       for (const key of gitEnvKeys) {
-        delete process.env[key];
+        delete inheritedProcessEnvironment()[key];
       }
       let output = '';
       try {
@@ -372,7 +373,7 @@ describe('runRecall native index', () => {
             'utf8',
           ),
         );
-        process.env.THREADNOTE_CALLER_CWD = repoRoot;
+        inheritedProcessEnvironment().THREADNOTE_CALLER_CWD = repoRoot;
         output = (yield* captureRecall(
           {
             ...runtime,
@@ -386,16 +387,16 @@ describe('runRecall native index', () => {
         )).output;
       } finally {
         if (previousCallerCwd === undefined) {
-          delete process.env.THREADNOTE_CALLER_CWD;
+          delete inheritedProcessEnvironment().THREADNOTE_CALLER_CWD;
         } else {
-          process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
+          inheritedProcessEnvironment().THREADNOTE_CALLER_CWD = previousCallerCwd;
         }
         for (const key of gitEnvKeys) {
           const value = previousGitEnv.get(key);
           if (value === undefined) {
-            delete process.env[key];
+            delete inheritedProcessEnvironment()[key];
           } else {
-            process.env[key] = value;
+            inheritedProcessEnvironment()[key] = value;
           }
         }
         yield* Effect.promise(() =>

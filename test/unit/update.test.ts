@@ -5,7 +5,7 @@ import {mkdtemp, rm} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import fc from 'fast-check';
-import {Crypto, Deferred, Effect, Encoding, Fiber, FileSystem, Path} from 'effect';
+import {Crypto, DateTime, Deferred, Effect, Encoding, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
@@ -375,7 +375,7 @@ describe('update notifications', () => {
             path.join(config.agentContextHome, 'update-check.json'),
             `${JSON.stringify({
               channel: 'beta',
-              checkedAt: new Date().toISOString(),
+              checkedAt: DateTime.formatIso(yield* DateTime.now),
               latestVersion: '4.1.0-beta.3',
               source: OFFICIAL_RELEASE_SOURCE,
             })}\n`,
@@ -2267,7 +2267,7 @@ function writeReleaseArchive(
         const firstGrammar = Object.entries(manifest.grammars).sort(([left], [right]) =>
           left.localeCompare(right),
         )[0]?.[1];
-        if (firstGrammar === undefined) throw new TestError('Code graph fixture manifest has no grammars.');
+        if (firstGrammar === undefined) throw TestError.make({message: 'Code graph fixture manifest has no grammars.'});
         assets[`assets/code-graph/${firstGrammar.path}`] = new TextEncoder().encode('tampered grammar');
       }
       return Bun.Archive.write(
@@ -2301,7 +2301,7 @@ function writeReleaseArchive(
         {compress: 'gzip'},
       );
     },
-    catch: cause => new TestError('Could not create updater fixture archive.', {cause}),
+    catch: cause => TestError.make({message: 'Could not create updater fixture archive.', cause}),
   });
 }
 
@@ -2320,7 +2320,7 @@ async function codeGraphFixtureAsset(
   if (grammar?.packagePath) return Bun.file(grammar.packagePath).bytes();
   const license = grammars.find(value => value.license === asset);
   if (license?.licensePackagePath) return Bun.file(license.licensePackagePath).bytes();
-  throw new TestError(`Missing code graph fixture asset: ${asset}`);
+  throw TestError.make({message: `Missing code graph fixture asset: ${asset}`});
 }
 
 function pathSeparator(): string {

@@ -15,7 +15,7 @@ const captureBaseline = Effect.gen(function* () {
   const raw = yield* fs.readFileString(FIXTURE_PATH);
   const fixture = yield* Effect.try({
     try: () => parseRecallEvaluationFixture(JSON.parse(raw)),
-    catch: cause => new ScriptError(`Could not parse ${FIXTURE_PATH}.`, {cause}),
+    catch: cause => ScriptError.make({message: `Could not parse ${FIXTURE_PATH}.`, cause}),
   });
   const result = evaluateRecallFixture(fixture);
   const artifact = {
@@ -49,15 +49,15 @@ function parseArguments(args: readonly string[]): {readonly createdAt: string; r
     if (argument === '--created-at') {
       const value = args[++index];
       if (!value?.trim() || Number.isNaN(new Date(value).getTime())) {
-        throw new ScriptError('--created-at requires an ISO timestamp');
+        throw ScriptError.make({message: '--created-at requires an ISO timestamp'});
       }
       createdAt = new Date(value).toISOString();
     } else if (argument === '--output') {
       const value = args[++index];
-      if (!value?.trim()) throw new ScriptError('--output requires a path');
+      if (!value?.trim()) throw ScriptError.make({message: '--output requires a path'});
       outputPath = value;
     } else {
-      throw new ScriptError(`Unknown recall baseline option: ${argument}`);
+      throw ScriptError.make({message: `Unknown recall baseline option: ${argument}`});
     }
   }
   return {createdAt, outputPath};

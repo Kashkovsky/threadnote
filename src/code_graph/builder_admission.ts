@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Path, Predicate} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Path, Predicate, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
@@ -34,9 +34,13 @@ const ADMISSION_RETRY_MILLISECONDS = 25;
 const LEDGER_LOCK_WAIT_MILLISECONDS = 5_000;
 const SLOT_STALE_MILLISECONDS = 15_000;
 
-class CodeGraphBuilderAdmissionError extends Error {
-  readonly _tag = 'CodeGraphBuilderAdmissionError' as const;
-}
+class CodeGraphBuilderAdmissionError extends Schema.TaggedError<CodeGraphBuilderAdmissionError>()(
+  'CodeGraphBuilderAdmissionError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 /**
  * Home-global, cross-process builder admission. Tickets are selected current-
@@ -187,22 +191,22 @@ const scanTickets = Effect.fn('codeGraph.builderAdmission.scan')(function* (
   const root = codeGraphBuilderAdmissionRoot(path, threadnoteHome);
   if (!(yield* fs.exists(root))) return [] as OwnedTicket[];
   const page = yield* runtimeTextDirectoryNamePage(root, TICKET_COUNT_MAXIMUM);
-  if (page.overflow) return yield* Effect.fail(new CodeGraphBuilderAdmissionError('Builder ticket bound exceeded.'));
+  if (page.overflow) return yield* CodeGraphBuilderAdmissionError.make({message: 'Builder ticket bound exceeded.'});
   const tickets: OwnedTicket[] = [];
   for (const name of [...page.names].sort()) {
     const token = TICKET_NAME.exec(name)?.[1];
-    if (!token) return yield* Effect.fail(new CodeGraphBuilderAdmissionError('Builder ticket name is invalid.'));
+    if (!token) return yield* CodeGraphBuilderAdmissionError.make({message: 'Builder ticket name is invalid.'});
     const ticketPath = path.join(root, name);
     if ((yield* fs.readLink(ticketPath).pipe(Effect.option))._tag === 'Some') {
-      return yield* Effect.fail(new CodeGraphBuilderAdmissionError('Builder ticket is symbolic.'));
+      return yield* CodeGraphBuilderAdmissionError.make({message: 'Builder ticket is symbolic.'});
     }
     const info = yield* fs.stat(ticketPath);
     if (info.type !== 'File' || Number(info.size) > TICKET_BYTES_MAXIMUM) {
-      return yield* Effect.fail(new CodeGraphBuilderAdmissionError('Builder ticket is invalid.'));
+      return yield* CodeGraphBuilderAdmissionError.make({message: 'Builder ticket is invalid.'});
     }
     const serialized = yield* fs.readFileString(ticketPath);
     const parsed = parseTicket(serialized, token);
-    if (!parsed) return yield* Effect.fail(new CodeGraphBuilderAdmissionError('Builder ticket content is invalid.'));
+    if (!parsed) return yield* CodeGraphBuilderAdmissionError.make({message: 'Builder ticket content is invalid.'});
     if (yield* ticketOwnerIsDead(system, parsed)) {
       yield* fs.remove(ticketPath, {force: true});
       continue;

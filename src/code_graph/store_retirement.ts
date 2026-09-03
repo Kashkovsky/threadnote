@@ -66,7 +66,7 @@ const pruneRetiredSnapshotRows = Effect.fn('codeGraph.pruneRetiredSnapshotRows')
         ),
       );
       if (!Number.isSafeInteger(deleted) || deleted < 0) {
-        return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid row count.'));
+        return yield* CodeGraphStoreError.of('Retired snapshot cleanup returned an invalid row count.');
       }
       if (deleted === 0) break;
       batchRows = nextPersistentActivationBatchRows(
@@ -112,7 +112,7 @@ const pruneRetiredSnapshotRows = Effect.fn('codeGraph.pruneRetiredSnapshotRows')
       ),
     );
     if (!Number.isSafeInteger(removed) || removed < 0) {
-      return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid count.'));
+      return yield* CodeGraphStoreError.of('Retired snapshot cleanup returned an invalid count.');
     }
     if (removed === 0) break;
     yield* Effect.yieldNow;

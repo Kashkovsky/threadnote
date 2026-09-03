@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 import type {CodeGraphEvidenceCardV1, CodeGraphWorksetQueryResultV2} from '../workset_evidence.js';
 
 export const CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION = 2 as const;
@@ -28,15 +29,34 @@ export const CODE_GRAPH_WORKSET_CATALOG_LIMITS = {
 export type CodeGraphWorksetCatalogErrorReason =
   'busy' | 'capacity' | 'corrupt' | 'expired' | 'incompatible' | 'invalid-input' | 'missing' | 'stale' | 'storage';
 
-export class CodeGraphWorksetCatalogError extends Error {
-  override readonly name = 'CodeGraphWorksetCatalogError';
-
-  constructor(
-    readonly reason: CodeGraphWorksetCatalogErrorReason,
+export class CodeGraphWorksetCatalogError extends Schema.TaggedError<CodeGraphWorksetCatalogError>()(
+  'CodeGraphWorksetCatalogError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+    reason: Schema.Literals([
+      'busy',
+      'capacity',
+      'corrupt',
+      'expired',
+      'incompatible',
+      'invalid-input',
+      'missing',
+      'stale',
+      'storage',
+    ]),
+  },
+) {
+  static of(
+    reason: CodeGraphWorksetCatalogErrorReason,
     message: string,
     options?: ErrorOptions,
-  ) {
-    super(message, options);
+  ): CodeGraphWorksetCatalogError {
+    return CodeGraphWorksetCatalogError.make({
+      message,
+      reason,
+      ...(options?.cause === undefined ? {} : {cause: options.cause}),
+    });
   }
 }
 

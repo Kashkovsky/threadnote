@@ -1,4 +1,4 @@
-import {Console, Crypto, Effect, FileSystem, Path, Result} from 'effect';
+import {Console, Crypto, Effect, FileSystem, Path, Result, Schema} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
 import {HttpService} from '../effect/http.js';
 import {SystemInfo} from '../effect/system.js';
@@ -9,9 +9,13 @@ const LEGACY_LOCAL_AI_RECEIPT_VERSION = 1;
 const LEGACY_LOCAL_AI_STOP_WAIT_MILLISECONDS = 2_000;
 const LEGACY_LOCAL_AI_STOP_POLL_MILLISECONDS = 50;
 
-class LegacyRuntimeMigrationError extends Error {
-  readonly _tag = 'LegacyRuntimeMigrationError' as const;
-}
+class LegacyRuntimeMigrationError extends Schema.TaggedError<LegacyRuntimeMigrationError>()(
+  'LegacyRuntimeMigrationError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 interface LegacyLocalAiReceipt {
   readonly launchId: string;
@@ -59,7 +63,7 @@ export const stopVerifiedLegacyLocalAi = Effect.fn('legacyRuntime.stopLocalAi')(
   const config = yield* readJsonFile(fs, configPath, isLegacyLocalAiConfig);
   const token = yield* fs.readFileString(tokenPath).pipe(
     Effect.map(value => value.trim()),
-    Effect.catch(() => Effect.succeed('')),
+    Effect.orElseSucceed(() => ''),
   );
   if (!config || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
     yield* Console.warn(`WARN legacy local AI process ${receipt.pid} could not be verified and was left running.`);
@@ -103,7 +107,8 @@ export const stopVerifiedLegacyLocalAi = Effect.fn('legacyRuntime.stopLocalAi')(
 
   const signalResult = yield* Effect.try({
     try: () => system.signalProcess(receipt.pid, 'SIGTERM'),
-    catch: cause => new LegacyRuntimeMigrationError('Could not signal the verified legacy local AI process.', {cause}),
+    catch: cause =>
+      LegacyRuntimeMigrationError.make({cause, message: 'Could not signal the verified legacy local AI process.'}),
   }).pipe(Effect.result);
   if (Result.isFailure(signalResult) && system.isProcessRunning(receipt.pid)) {
     yield* Console.warn(`WARN verified legacy local AI process ${receipt.pid} could not be signaled.`);
@@ -132,7 +137,7 @@ function readJsonFile<A>(
       const decoded = Result.try(() => JSON.parse(content) as unknown);
       return Result.isSuccess(decoded) && guard(decoded.success) ? decoded.success : undefined;
     }),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
 }
 

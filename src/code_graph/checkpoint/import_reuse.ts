@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Path, Schema} from 'effect';
 import {runBinaryCommandEffect} from '../../effect/command.js';
 import {SystemInfo} from '../../effect/system.js';
 import {codeGraphCommittedContentHash} from '../content_identity.js';
@@ -29,12 +29,19 @@ import {
 const CAT_FILE_BATCH_ENTRIES = 128;
 const CAT_FILE_BATCH_BYTES = 4 * 1_048_576;
 
-export class CodeGraphCheckpointReuseHydrationError extends Error {
-  override readonly name = 'CodeGraphCheckpointReuseHydrationError';
-}
+export class CodeGraphCheckpointReuseHydrationError extends Schema.TaggedError<CodeGraphCheckpointReuseHydrationError>()(
+  'CodeGraphCheckpointReuseHydrationError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 function hydrationError(message: string, cause?: unknown): CodeGraphCheckpointReuseHydrationError {
-  return new CodeGraphCheckpointReuseHydrationError(message, cause === undefined ? undefined : {cause});
+  return CodeGraphCheckpointReuseHydrationError.make({
+    message: message,
+    cause: cause === undefined ? undefined : {cause},
+  });
 }
 
 function attributionBatches(
@@ -74,7 +81,7 @@ export const hydrateCodeGraphCheckpointReusableBaseReceipt = Effect.fn(
     header.repository.repositoryId !== identity.repositoryId ||
     header.repository.objectFormat !== identity.objectFormat
   ) {
-    return yield* Effect.fail(hydrationError('Checkpoint repository identity does not match the receiver.'));
+    return yield* hydrationError('Checkpoint repository identity does not match the receiver.');
   }
   const packProvenance = header.abi.input.languagePacks.map(pack => ({
     cacheIdentity: pack.cacheIdentity,
@@ -96,7 +103,7 @@ export const hydrateCodeGraphCheckpointReusableBaseReceipt = Effect.fn(
     portable.policyExclusions.policyVersion !== CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION ||
     portable.policyExclusions.reasons.some(reason => !isCodeGraphInventoryExclusionReason(reason.reason))
   ) {
-    return yield* Effect.fail(hydrationError('Checkpoint inventory reuse contract is incompatible.'));
+    return yield* hydrationError('Checkpoint inventory reuse contract is incompatible.');
   }
   const totalContentBytes = portable.attributionFiles.reduce((total, file) => total + file.size, 0);
   const totalSourceBytes = portable.attributionFiles.reduce((total, file) => total + file.blobSize, 0);
@@ -107,7 +114,7 @@ export const hydrateCodeGraphCheckpointReusableBaseReceipt = Effect.fn(
     totalContentBytes > CODE_GRAPH_CHECKPOINT_ATTRIBUTION_CONTENT_BYTES_MAXIMUM ||
     totalSourceBytes > CODE_GRAPH_CHECKPOINT_ATTRIBUTION_SOURCE_BYTES_MAXIMUM
   ) {
-    return yield* Effect.fail(hydrationError('Checkpoint attribution context exceeds the local reuse boundary.'));
+    return yield* hydrationError('Checkpoint attribution context exceeds the local reuse boundary.');
   }
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -155,8 +162,8 @@ export const hydrateCodeGraphCheckpointReusableBaseReceipt = Effect.fn(
         codeGraphUtf8ByteLength(content) !== declared.size ||
         codeGraphCommittedContentHash(identity.objectFormat, declared.blobId) !== declared.contentHash
       ) {
-        return yield* Effect.fail(
-          hydrationError(`Checkpoint attribution blob for ${declared.path} does not match its portable identity.`),
+        return yield* hydrationError(
+          `Checkpoint attribution blob for ${declared.path} does not match its portable identity.`,
         );
       }
       attributionFiles.push({

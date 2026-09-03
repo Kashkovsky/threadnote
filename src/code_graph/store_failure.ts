@@ -6,6 +6,8 @@ import {
   CodeGraphStorePermissionError,
   CodeGraphStoreSchemaAdditiveError,
   CodeGraphStoreTransientIoError,
+  isCodeGraphStoreError,
+  type CodeGraphStoreFailure,
   type CodeGraphStoreFailureCode,
 } from './types.js';
 
@@ -28,8 +30,8 @@ const SAFE_OPERATION = /^[a-z][a-z0-9]*(?:[ -][a-z0-9]+){0,15}$/u;
 const GENERIC_OPERATION = 'code graph storage';
 
 /** Classify only stable structured evidence. Free-form messages are intentionally never inspected. */
-export function classifyCodeGraphStoreFailure(operation: string, cause: unknown): CodeGraphStoreError {
-  if (cause instanceof CodeGraphStoreError) return cause;
+export function classifyCodeGraphStoreFailure(operation: string, cause: unknown): CodeGraphStoreFailure {
+  if (isCodeGraphStoreError(cause)) return cause;
   const safeOperation = privacySafeOperation(operation);
   const evidence = collectFailureEvidence(cause);
   const code = classifiedFailureCode(evidence);
@@ -39,10 +41,9 @@ export function classifyCodeGraphStoreFailure(operation: string, cause: unknown)
 /** Preserve the existing file-lock busy contract without exposing its path-bearing native error. */
 export function codeGraphStoreBusyFailure(operation: string): CodeGraphStoreBusyError {
   const safeOperation = privacySafeOperation(operation);
-  return new CodeGraphStoreBusyError(
-    `${safeOperation} deferred because another code graph writer owns this checkout.`,
-    {operation: safeOperation},
-  );
+  return CodeGraphStoreBusyError.of(`${safeOperation} deferred because another code graph writer owns this checkout.`, {
+    operation: safeOperation,
+  });
 }
 
 /**
@@ -55,29 +56,29 @@ export function codeGraphStoreSchemaAdditiveRequired(
 ): CodeGraphStoreSchemaAdditiveError {
   const safeOperation = privacySafeOperation(operation);
   if (!preflight.createsOnly || !preflight.preservesActivePointers || !preflight.preservesSnapshots) {
-    throw new CodeGraphStoreError('Code graph schema preflight did not prove an additive migration.', {
+    throw CodeGraphStoreError.of('Code graph schema preflight did not prove an additive migration.', {
       operation: safeOperation,
     });
   }
-  return new CodeGraphStoreSchemaAdditiveError(
+  return CodeGraphStoreSchemaAdditiveError.of(
     `${safeOperation} requires a preflight-proven additive schema migration.`,
     {operation: safeOperation},
   );
 }
 
-function failureForCode(code: CodeGraphStoreFailureCode, operation: string): CodeGraphStoreError {
+function failureForCode(code: CodeGraphStoreFailureCode, operation: string): CodeGraphStoreFailure {
   const metadata = {operation};
   switch (code) {
     case 'busy':
-      return new CodeGraphStoreBusyError(`${operation} deferred because the code graph database is busy.`, metadata);
+      return CodeGraphStoreBusyError.of(`${operation} deferred because the code graph database is busy.`, metadata);
     case 'no-space':
-      return new CodeGraphStoreNoSpaceError(`${operation} stopped because storage space is unavailable.`, metadata);
+      return CodeGraphStoreNoSpaceError.of(`${operation} stopped because storage space is unavailable.`, metadata);
     case 'permission':
-      return new CodeGraphStorePermissionError(`${operation} stopped because storage permission was denied.`, metadata);
+      return CodeGraphStorePermissionError.of(`${operation} stopped because storage permission was denied.`, metadata);
     case 'transient-io':
-      return new CodeGraphStoreTransientIoError(`${operation} deferred after a transient storage failure.`, metadata);
+      return CodeGraphStoreTransientIoError.of(`${operation} deferred after a transient storage failure.`, metadata);
     case 'confirmed-corruption':
-      return new CodeGraphStoreCorruptionError(
+      return CodeGraphStoreCorruptionError.of(
         `${operation} stopped after SQLite reported confirmed database corruption.`,
         metadata,
       );
@@ -85,9 +86,9 @@ function failureForCode(code: CodeGraphStoreFailureCode, operation: string): Cod
     case 'schema-additive':
       // These states require positive schema inspection and are never inferred
       // from a caught native error.
-      return new CodeGraphStoreError(`${operation} failed with an unclassified storage error.`, metadata);
+      return CodeGraphStoreError.of(`${operation} failed with an unclassified storage error.`, metadata);
     case 'unknown':
-      return new CodeGraphStoreError(`${operation} failed with an unclassified storage error.`, metadata);
+      return CodeGraphStoreError.of(`${operation} failed with an unclassified storage error.`, metadata);
   }
 }
 

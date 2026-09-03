@@ -1,4 +1,5 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {mkdtemp, readFile, rm} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
@@ -720,7 +721,7 @@ describe('process diagnostics', () => {
         isProcessRunning: processId => processId === unavailableProcessId,
         memoryUsage: () => ({external: 0, heapUsed: 0, rss: expectedRssBytes}),
         processId: unavailableProcessId,
-        processStartIdentity: () => Effect.succeed(undefined),
+        processStartIdentity: () => succeedUndefined,
       });
       const fileSystem = yield* FileSystem.FileSystem;
       const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-rss-'});

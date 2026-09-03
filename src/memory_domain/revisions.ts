@@ -217,5 +217,5 @@ function validateMutationInput(input: {
 }
 
 function invalid(message: string): never {
-  throw new InvalidRemoteMutation({message: `Invalid remote mutation: ${message}.`});
+  throw InvalidRemoteMutation.make({message: `Invalid remote mutation: ${message}.`});
 }

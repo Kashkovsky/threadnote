@@ -1,4 +1,4 @@
-import {Crypto, Effect, FileSystem, Option, Path, Result} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path, Result, Schema} from 'effect';
 import {validatePortableSegment} from '../storage/resource-id.js';
 import type {RuntimeConfig} from '../types.js';
 
@@ -12,9 +12,13 @@ export interface CursorCloudIdentityProfileV1 {
   readonly version: typeof CURSOR_CLOUD_PROFILE_VERSION;
 }
 
-export class CursorCloudIdentityProfileError extends Error {
-  readonly _tag = 'CursorCloudIdentityProfileError' as const;
-}
+export class CursorCloudIdentityProfileError extends Schema.TaggedError<CursorCloudIdentityProfileError>()(
+  'CursorCloudIdentityProfileError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export const cursorCloudIdentityProfilePath = Effect.fn('cursorCloud.identityProfilePath')(function* (
   agentContextHome: string,
@@ -30,18 +34,17 @@ export const readCursorCloudIdentityProfile = Effect.fn('cursorCloud.readIdentit
   const file = yield* cursorCloudIdentityProfilePath(agentContextHome);
   if (!(yield* fs.exists(file))) return undefined;
   if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
-    return yield* Effect.fail(
-      new CursorCloudIdentityProfileError('Personal Cursor Cloud profile must not be a symlink.'),
-    );
+    return yield* CursorCloudIdentityProfileError.make({
+      message: 'Personal Cursor Cloud profile must not be a symlink.',
+    });
   }
   const raw = yield* fs.readFileString(file);
   const parsed = Result.try(() => JSON.parse(raw) as unknown);
   if (Result.isFailure(parsed) || !isCursorCloudIdentityProfile(parsed.success)) {
-    return yield* Effect.fail(
-      new CursorCloudIdentityProfileError(
+    return yield* CursorCloudIdentityProfileError.make({
+      message:
         'Personal Cursor Cloud profile is invalid. Move ~/.threadnote/cursor-cloud/profile.json aside and rerun bootstrap with the intended --user and --agent-id.',
-      ),
-    );
+    });
   }
   return parsed.success;
 });
@@ -53,11 +56,9 @@ export const persistCursorCloudIdentityProfile = Effect.fn('cursorCloud.persistI
   const profile = cursorCloudIdentityProfile(config);
   if (existing) {
     if (sameCursorCloudIdentity(existing, profile)) return existing;
-    return yield* Effect.fail(
-      new CursorCloudIdentityProfileError(
-        `Personal Cursor Cloud already uses user "${existing.user}" and agent "${existing.agentId}" in this Threadnote home. Reuse that identity or use a separate THREADNOTE_HOME; changing it would strand the existing canonical memory cache.`,
-      ),
-    );
+    return yield* CursorCloudIdentityProfileError.make({
+      message: `Personal Cursor Cloud already uses user "${existing.user}" and agent "${existing.agentId}" in this Threadnote home. Reuse that identity or use a separate THREADNOTE_HOME; changing it would strand the existing canonical memory cache.`,
+    });
   }
 
   const crypto = yield* Crypto.Crypto;
@@ -68,9 +69,7 @@ export const persistCursorCloudIdentityProfile = Effect.fn('cursorCloud.persistI
   const temporary = path.join(directory, `.profile.${yield* crypto.randomUUIDv4}.tmp`);
   yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
   yield* fs.writeFileString(temporary, `${JSON.stringify(profile, undefined, 2)}\n`, {mode: 0o600});
-  yield* fs
-    .rename(temporary, target)
-    .pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  yield* fs.rename(temporary, target).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
   yield* fs.chmod(target, 0o600);
   yield* fs.chmod(directory, 0o700);
   return profile;
@@ -113,7 +112,10 @@ function validateIdentity(value: string, label: string): string {
   try {
     return validatePortableSegment(value);
   } catch (cause) {
-    throw new CursorCloudIdentityProfileError(`Personal Cursor Cloud ${label} is not a portable identity.`, {cause});
+    throw CursorCloudIdentityProfileError.make({
+      cause,
+      message: `Personal Cursor Cloud ${label} is not a portable identity.`,
+    });
   }
 }
 

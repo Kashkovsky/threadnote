@@ -1,4 +1,4 @@
-import {Cause, Console, Effect, FileSystem, Option, Path, PlatformError, Result} from 'effect';
+import {Cause, Console, Effect, FileSystem, Option, Path, PlatformError, Result, Schema} from 'effect';
 import * as yaml from 'js-yaml';
 import {
   inspectContainedStableRegularFile,
@@ -54,9 +54,10 @@ interface SeedStateFile {
   readonly version: 1;
 }
 
-class SeedingOperationError extends Error {
-  readonly _tag = 'SeedingOperationError' as const;
-}
+class SeedingOperationError extends Schema.TaggedError<SeedingOperationError>()('SeedingOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const log = Console.log;
 const MAX_SEED_CANDIDATES_PER_PROJECT = 20_000;
@@ -169,13 +170,11 @@ export function runSeed(config: RuntimeConfig, options: SeedOptions) {
       yield* seedDependencyGraphs(config, 'threadnote-native', manifest, projects, options.dryRun === true);
     }
     if (failedProjectNames.length > 0) {
-      return yield* Effect.fail(
-        applicationError(
-          'seed projects',
-          new SeedingOperationError(
-            `${failedProjectNames.length} project(s) failed after the remaining projects were processed: ${failedProjectNames.join(', ')}`,
-          ),
-        ),
+      return yield* applicationError(
+        'seed projects',
+        SeedingOperationError.make({
+          message: `${failedProjectNames.length} project(s) failed after the remaining projects were processed: ${failedProjectNames.join(', ')}`,
+        }),
       );
     }
   });
@@ -401,7 +400,9 @@ function filterProjects(
   const missing = only.filter(name => !known.has(name));
   if (missing.length > 0) {
     const all = [...known].join(', ');
-    throw new SeedingOperationError(`Unknown project(s) in --only: ${missing.join(', ')}. Manifest projects: ${all}`);
+    throw SeedingOperationError.make({
+      message: `Unknown project(s) in --only: ${missing.join(', ')}. Manifest projects: ${all}`,
+    });
   }
   const want = new Set(only);
   return projects.filter(project => want.has(project.name));
@@ -417,7 +418,7 @@ const readSeedFile = Effect.fn('seeding.readSeedFile')(function* (projectRoot: s
   const target = path.join(projectRoot, ...relativePath.split('/'));
   const info = yield* fs.stat(target);
   if (info.type !== 'File' || Number(info.size) !== inspected.size) {
-    return yield* Effect.fail(new SeedingOperationError(`Seed file changed before it was read: ${relativePath}`));
+    return yield* SeedingOperationError.make({message: `Seed file changed before it was read: ${relativePath}`});
   }
   const materialized = yield* materializeContainedStableRegularFile(
     fs,
@@ -428,7 +429,7 @@ const readSeedFile = Effect.fn('seeding.readSeedFile')(function* (projectRoot: s
     inspected.size,
   );
   if (materialized.bytes === undefined) {
-    return yield* Effect.fail(new SeedingOperationError(`Seed file content was not materialized: ${relativePath}`));
+    return yield* SeedingOperationError.make({message: `Seed file content was not materialized: ${relativePath}`});
   }
   return {
     bytes: materialized.bytes,
@@ -471,7 +472,7 @@ function readSeedState(path: string) {
     const raw = yield* fs.readFileString(path).pipe(
       Effect.catchIf(
         error => error.reason._tag === 'NotFound',
-        () => Effect.succeed(undefined),
+        () => Effect.void,
       ),
     );
     if (raw === undefined) {
@@ -506,7 +507,9 @@ function assertUniqueProjectUriRoots(projects: readonly ProjectManifest[]): void
     const root = trimTrailingSlash(project.uri);
     const existing = ownerByRoot.get(root);
     if (existing !== undefined) {
-      throw new SeedingOperationError(`Projects ${existing} and ${project.name} use the same seed URI root: ${root}.`);
+      throw SeedingOperationError.make({
+        message: `Projects ${existing} and ${project.name} use the same seed URI root: ${root}.`,
+      });
     }
     ownerByRoot.set(root, project.name);
   }
@@ -639,11 +642,9 @@ export function runWorksetShow(config: RuntimeConfig, name: string) {
     const manifest = yield* readSeedManifest(config.manifestPath);
     const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === name.toLowerCase());
     if (!workset) {
-      return yield* Effect.fail(
-        applicationError(
-          'show workset',
-          new SeedingOperationError(`No workset named "${name}" in ${config.manifestPath}.`),
-        ),
+      return yield* applicationError(
+        'show workset',
+        SeedingOperationError.make({message: `No workset named "${name}" in ${config.manifestPath}.`}),
       );
     }
     yield* log(`Workset: ${workset.name}`);
@@ -692,7 +693,7 @@ export function runSeedSkills(config: RuntimeConfig, options: SeedOptions) {
 export const resolveRepoRoot = Effect.fn('seeding.resolveRepoRoot')(function* (repoInput: string) {
   const inputPath = yield* expandPath(repoInput);
   if (!(yield* isDirectory(inputPath))) {
-    return yield* Effect.fail(new SeedingOperationError(`Repo path is not a directory: ${inputPath}`));
+    return yield* SeedingOperationError.make({message: `Repo path is not a directory: ${inputPath}`});
   }
   return (yield* gitValue(['rev-parse', '--show-toplevel'], inputPath)) ?? inputPath;
 });
@@ -700,7 +701,7 @@ export const resolveRepoRoot = Effect.fn('seeding.resolveRepoRoot')(function* (r
 const projectIdentity = Effect.fn('seeding.projectIdentity')(function* (path: string) {
   const fs = yield* FileSystem.FileSystem;
   const expanded = yield* expandPath(path);
-  return yield* fs.realPath(expanded).pipe(Effect.catch(() => Effect.succeed(expanded)));
+  return yield* fs.realPath(expanded).pipe(Effect.orElseSucceed(() => expanded));
 });
 
 export const projectManifestForRepo = Effect.fn('seeding.projectManifestForRepo')(function* (
@@ -738,7 +739,7 @@ const visitSeedCandidates = Effect.fn('seeding.visitSeedCandidates')(function* (
   const logicalRoot = path.resolve(projectRoot);
   const resolvedRoot = yield* optionOnSeedNotFound(Effect.all([fs.realPath(logicalRoot), fs.stat(logicalRoot)]));
   if (resolvedRoot._tag === 'None' || resolvedRoot.value[1].type !== 'Directory') {
-    return yield* Effect.fail(new SeedingOperationError(`Project path is not a readable directory: ${projectRoot}`));
+    return yield* SeedingOperationError.make({message: `Project path is not a readable directory: ${projectRoot}`});
   }
   const boundary: SeedTraversalBoundary = {
     inspections: new Map([[logicalRoot, {type: 'Directory'}]]),
@@ -748,7 +749,7 @@ const visitSeedCandidates = Effect.fn('seeding.visitSeedCandidates')(function* (
   const patterns = yield* Effect.try({
     try: () => validateProjectSeedPatterns(project.seed),
     catch: cause =>
-      new SeedingOperationError(cause instanceof Error ? cause.message : 'Invalid project seed patterns.'),
+      SeedingOperationError.make({message: cause instanceof Error ? cause.message : 'Invalid project seed patterns.'}),
   });
   for (const pattern of patterns) {
     yield* visitProjectPattern(boundary, pattern, ignorePatterns, budget, filePath =>
@@ -760,11 +761,9 @@ const visitSeedCandidates = Effect.fn('seeding.visitSeedCandidates')(function* (
         seen.add(relativePath);
         budget.candidates += 1;
         if (budget.candidates > MAX_SEED_CANDIDATES_PER_PROJECT) {
-          return yield* Effect.fail(
-            new SeedingOperationError(
-              `candidate limit exceeded (${MAX_SEED_CANDIDATES_PER_PROJECT}); narrow the project's seed patterns`,
-            ),
-          );
+          return yield* SeedingOperationError.make({
+            message: `candidate limit exceeded (${MAX_SEED_CANDIDATES_PER_PROJECT}); narrow the project's seed patterns`,
+          });
         }
         yield* visit({
           destinationUri: `${trimTrailingSlash(project.uri)}/${relativePath}`,
@@ -788,7 +787,8 @@ const visitProjectPattern = Effect.fn('seeding.visitProjectPattern')(function* (
   const path = yield* Path.Path;
   const normalizedPattern = yield* Effect.try({
     try: () => toPosixPath(validateProjectSeedPattern(pattern)),
-    catch: cause => new SeedingOperationError(cause instanceof Error ? cause.message : 'Invalid project seed pattern.'),
+    catch: cause =>
+      SeedingOperationError.make({message: cause instanceof Error ? cause.message : 'Invalid project seed pattern.'}),
   });
   if (!hasGlob(normalizedPattern)) {
     const filePath = path.join(boundary.logicalRoot, normalizedPattern);
@@ -857,11 +857,9 @@ const visitProjectPattern = Effect.fn('seeding.visitProjectPattern')(function* (
       }
       budget.entries += 1;
       if (budget.entries > MAX_SEED_WALK_ENTRIES_PER_PROJECT) {
-        return yield* Effect.fail(
-          new SeedingOperationError(
-            `filesystem traversal limit exceeded (${MAX_SEED_WALK_ENTRIES_PER_PROJECT} entries); narrow the project's seed patterns or extend .threadnoteignore`,
-          ),
-        );
+        return yield* SeedingOperationError.make({
+          message: `filesystem traversal limit exceeded (${MAX_SEED_WALK_ENTRIES_PER_PROJECT} entries); narrow the project's seed patterns or extend .threadnoteignore`,
+        });
       }
       yield* visitPath(entryPath);
     }

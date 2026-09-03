@@ -93,11 +93,9 @@ export const runCodeMemoryLinkScaleWorkload = Effect.fn('evaluation.codeMemoryLi
         rss.observe();
         const status = yield* recallIndexStatus(materialized.config);
         if (!status.ready || status.documentCount !== options.memoryCandidates) {
-          return yield* Effect.fail(
-            new CodeMemoryLinkScaleRuntimeError({
-              message: `Production recall index contains ${status.documentCount}/${options.memoryCandidates} memories.`,
-            }),
-          );
+          return yield* new CodeMemoryLinkScaleRuntimeError({
+            message: `Production recall index contains ${status.documentCount}/${options.memoryCandidates} memories.`,
+          });
         }
         const scenarios = yield* Effect.forEach(
           materialized.scenarios,
@@ -435,7 +433,7 @@ function recallStorageBytes(fs: FileSystem.FileSystem, databasePath: string) {
       candidate =>
         fs.stat(candidate).pipe(
           Effect.map(info => Number(info.size)),
-          Effect.catch(() => Effect.succeed(0)),
+          Effect.orElseSucceed(() => 0),
         ),
       {concurrency: 4},
     );

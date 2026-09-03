@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {Effect, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {codeGraphBlobExtractionReuseClass} from './blob_reuse.js';
@@ -21,7 +21,13 @@ import {
   type CodeGraphReusableBaseReceiptInput,
 } from './store_models.js';
 import {useDatabase} from './store_session.js';
-import {type CodeGraphInventoryFile, type CodeGraphSnapshot, CodeGraphStoreError} from './types.js';
+import {
+  type CodeGraphInventoryFile,
+  type CodeGraphSnapshot,
+  CodeGraphStoreError,
+  isCodeGraphStoreError,
+  type CodeGraphStoreFailure,
+} from './types.js';
 import {CodeGraphCacheCapacityPlanChanged} from './store_internal_models.js';
 import {lastStatementChangeCount} from './store_activation_core.js';
 import {assertPersistentBuildOwner} from './store_build_core.js';
@@ -47,10 +53,10 @@ interface PlannedMaterializedShardCacheRow extends CodeGraphCacheCapacityRow {
   readonly path: string;
 }
 
-function cacheCapacityPlanningError(label: string, cause: unknown): CodeGraphStoreError {
-  if (cause instanceof CodeGraphStoreError) return cause;
+function cacheCapacityPlanningError(label: string, cause: unknown): CodeGraphStoreFailure {
+  if (isCodeGraphStoreError(cause)) return cause;
   const reason = cause instanceof Error && cause.message.includes('payload ceiling') ? ' payload ceiling' : ' input';
-  return new CodeGraphStoreError(`Code graph cache ${label}${reason} is invalid.`);
+  return CodeGraphStoreError.of(`Code graph cache ${label}${reason} is invalid.`);
 }
 
 function prepareFreshFactCacheChunks(
@@ -204,7 +210,7 @@ const associateMaterializedFileShardBatch = Effect.fn('codeGraph.associateMateri
     new Set(files.map(file => file.path)).size !== files.length ||
     selectedShardIds.size !== files.length
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Materialized file shard batch association is incomplete.'));
+    return yield* CodeGraphStoreError.of('Materialized file shard batch association is incomplete.');
   }
   const expected = files.map(file => ({
     contentHash: file.contentHash,
@@ -212,7 +218,7 @@ const associateMaterializedFileShardBatch = Effect.fn('codeGraph.associateMateri
     path: file.path,
   }));
   if (expected.some(row => selectedShardIds.get(row.path) !== row.id)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Materialized file shard batch selection changed.'));
+    return yield* CodeGraphStoreError.of('Materialized file shard batch selection changed.');
   }
 
   yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
@@ -243,7 +249,7 @@ const associateMaterializedFileShardBatch = Effect.fn('codeGraph.associateMateri
       return actual?.id !== row.id || actual.content_hash !== row.contentHash;
     })
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Materialized file shard batch is unavailable.'));
+    return yield* CodeGraphStoreError.of('Materialized file shard batch is unavailable.');
   }
   yield* sql.unsafe(
     `INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id)
@@ -358,7 +364,7 @@ function pairCacheInputs(
     factsByPath.size !== facts.length ||
     [...filesByPath.keys()].some(path => !factsByPath.has(path))
   ) {
-    throw new CodeGraphStoreError(`${label} inputs are inconsistent.`);
+    throw CodeGraphStoreError.of(`${label} inputs are inconsistent.`);
   }
   return [...filesByPath]
     .sort(([left], [right]) => compareCodeUnits(left, right))
@@ -486,7 +492,7 @@ const writeNormalMaterializedShardCacheRows = Effect.fn('codeGraph.writeNormalMa
     .pipe(
       Effect.as(true),
       Effect.catch(error =>
-        error instanceof CodeGraphCacheCapacityPlanChanged ? Effect.succeed(false) : Effect.fail(error),
+        Schema.is(CodeGraphCacheCapacityPlanChanged)(error) ? Effect.succeed(false) : Effect.fail(error),
       ),
     );
 });
@@ -525,7 +531,7 @@ const repairMaterializedShardCacheRow = Effect.fn('codeGraph.repairMaterializedS
       .pipe(
         Effect.as(true),
         Effect.catch(error =>
-          error instanceof CodeGraphCacheCapacityPlanChanged ? Effect.succeed(false) : Effect.fail(error),
+          Schema.is(CodeGraphCacheCapacityPlanChanged)(error) ? Effect.succeed(false) : Effect.fail(error),
         ),
       );
     if (!completed) {
@@ -578,7 +584,7 @@ function storeNormalMaterializedShardRows(sql: SqlClient.SqlClient, rows: readon
           stored.map(row => row.id),
         )
       ) {
-        return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
+        return yield* CodeGraphCacheCapacityPlanChanged.make({});
       }
     }
   });
@@ -602,7 +608,7 @@ const prepareMaterializedShardRepairPlan = Effect.fn('codeGraph.prepareMateriali
   const conflicts = materializedShardConflicts(row, existing);
   if (conflicts.length === 0) return {mode: 'normal'} as const satisfies MaterializedShardRepairPlan;
   if (conflicts.length > 2) {
-    return yield* Effect.fail(new CodeGraphStoreError(`Materialized file shard identity collision: ${row.id}.`));
+    return yield* CodeGraphStoreError.of(`Materialized file shard identity collision: ${row.id}.`);
   }
   const conflictIds = conflicts.map(conflict => conflict.id);
   const associationPage = yield* materializedShardAssociationPage(
@@ -621,16 +627,14 @@ const prepareMaterializedShardRepairPlan = Effect.fn('codeGraph.prepareMateriali
         association.shard_id,
       );
       if (candidateBytes > CODE_GRAPH_CACHE_TRANSACTION_LIMITS.payloadBytes) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError(`Materialized file shard association exceeds the repair payload ceiling.`),
-        );
+        return yield* CodeGraphStoreError.of(`Materialized file shard association exceeds the repair payload ceiling.`);
       }
       if (payloadBytes > CODE_GRAPH_CACHE_TRANSACTION_LIMITS.payloadBytes - candidateBytes) break;
       page.push(association);
       payloadBytes += candidateBytes;
     }
     if (page.length === 0) {
-      return yield* Effect.fail(new CodeGraphStoreError('Materialized file shard repair could not make progress.'));
+      return yield* CodeGraphStoreError.of('Materialized file shard repair could not make progress.');
     }
     return {
       associations: page,
@@ -652,9 +656,7 @@ const prepareMaterializedShardRepairPlan = Effect.fn('codeGraph.prepareMateriali
   );
   const payloadBytes = saturatingCapacityAdd(conflictBytes, row.payloadBytes);
   if (payloadBytes > CODE_GRAPH_CACHE_TRANSACTION_LIMITS.payloadBytes) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError('Materialized file shard collision exceeds the repair payload ceiling.'),
-    );
+    return yield* CodeGraphStoreError.of('Materialized file shard collision exceeds the repair payload ceiling.');
   }
   return {
     boundary: {
@@ -674,7 +676,7 @@ const applyMaterializedShardRepairPlan = Effect.fn('codeGraph.applyMaterializedS
 ) {
   const current = materializedShardConflicts(plan.row, yield* materializedShardMetadata(sql, [plan.row]));
   if (!sameMaterializedShardMetadata(current, plan.conflicts)) {
-    return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
+    return yield* CodeGraphCacheCapacityPlanChanged.make({});
   }
   const conflictIds = plan.conflicts.map(conflict => conflict.id);
   const associationPage = yield* materializedShardAssociationPage(
@@ -688,7 +690,7 @@ const applyMaterializedShardRepairPlan = Effect.fn('codeGraph.applyMaterializedS
       associationCount !== plan.associationCount ||
       !sameMaterializedShardAssociations(associationPage.associations, plan.associations)
     ) {
-      return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
+      return yield* CodeGraphCacheCapacityPlanChanged.make({});
     }
     for (const association of plan.associations) {
       yield* sql`
@@ -698,13 +700,13 @@ const applyMaterializedShardRepairPlan = Effect.fn('codeGraph.applyMaterializedS
           AND shard_id = ${association.shard_id}
       `;
       if ((yield* lastStatementChangeCount(sql)) !== 1) {
-        return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
+        return yield* CodeGraphCacheCapacityPlanChanged.make({});
       }
     }
     return;
   }
   if (associationCount !== 0) {
-    return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
+    return yield* CodeGraphCacheCapacityPlanChanged.make({});
   }
   for (const conflict of plan.conflicts) {
     yield* sql`
@@ -719,7 +721,7 @@ const applyMaterializedShardRepairPlan = Effect.fn('codeGraph.applyMaterializedS
         AND length(CAST(facts_json AS BLOB)) = ${conflict.facts_bytes}
     `;
     if ((yield* lastStatementChangeCount(sql)) !== 1) {
-      return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
+      return yield* CodeGraphCacheCapacityPlanChanged.make({});
     }
   }
   yield* storeNormalMaterializedShardRows(sql, [plan.row]);
@@ -780,7 +782,7 @@ function decodeMaterializedShardMetadata(row: RawMaterializedShardMetadataRow) {
     !Number.isSafeInteger(row.facts_bytes) ||
     row.facts_bytes < 0
   ) {
-    return Effect.fail(new CodeGraphStoreError('Materialized file shard metadata is invalid.'));
+    return Effect.fail(CodeGraphStoreError.of('Materialized file shard metadata is invalid.'));
   }
   return Effect.succeed({
     content_hash: row.content_hash,
@@ -803,7 +805,7 @@ function decodeMaterializedShardAssociationPageRow(row: RawMaterializedShardAsso
     !Number.isSafeInteger(row.association_count) ||
     row.association_count < 1
   ) {
-    return Effect.fail(new CodeGraphStoreError('Materialized file shard association metadata is invalid.'));
+    return Effect.fail(CodeGraphStoreError.of('Materialized file shard association metadata is invalid.'));
   }
   return Effect.succeed({
     association: {path: row.path, shard_id: row.shard_id, snapshot_id: row.snapshot_id},
@@ -868,9 +870,7 @@ function materializedShardAssociationPage(sql: SqlClient.SqlClient, shardIds: re
           const decoded = yield* decodeMaterializedShardAssociationPageRow(row);
           associationCount ??= decoded.associationCount;
           if (decoded.associationCount !== associationCount) {
-            return yield* Effect.fail(
-              new CodeGraphStoreError('Materialized file shard association metadata is invalid.'),
-            );
+            return yield* CodeGraphStoreError.of('Materialized file shard association metadata is invalid.');
           }
           associations.push(decoded.association);
         }

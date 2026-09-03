@@ -2,7 +2,7 @@ import {TestError} from '../helpers/test-error.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Crypto, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
+import {Clock, Crypto, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
 import fc from 'fast-check';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {codeGraphVectorWriteLockPath} from '../../src/code_graph/layout.js';
@@ -105,14 +105,16 @@ describe('code graph selected snapshot purge', () => {
             checkoutId: CHECKOUT_ID,
             snapshotId: SNAPSHOT_ID,
           });
-          if (preview.approvalDigest === undefined) throw new TestError('expected approval digest');
+          if (preview.approvalDigest === undefined) throw TestError.make({message: 'expected approval digest'});
 
           const result = yield* purgeCodeGraphSnapshot(
             fixture.home,
             {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID},
             {
               afterMaintenanceGates: () =>
-                Effect.sync(() => insertLease(fixture.databasePath, SNAPSHOT_ID, Date.now() + 60_000)),
+                Effect.gen(function* () {
+                  insertLease(fixture.databasePath, SNAPSHOT_ID, (yield* Clock.currentTimeMillis) + 60_000);
+                }),
               apply: true,
               approvalDigest: preview.approvalDigest,
             },
@@ -159,7 +161,7 @@ describe('code graph selected snapshot purge', () => {
             checkoutId: CHECKOUT_ID,
             snapshotId: SNAPSHOT_ID,
           });
-          if (preview.approvalDigest === undefined) throw new TestError('expected approval digest');
+          if (preview.approvalDigest === undefined) throw TestError.make({message: 'expected approval digest'});
 
           const result = yield* purgeCodeGraphSnapshot(
             fixture.home,
@@ -219,7 +221,7 @@ describe('code graph selected snapshot purge', () => {
             checkoutId: CHECKOUT_ID,
             snapshotId: SNAPSHOT_ID,
           });
-          if (preview.approvalDigest === undefined) throw new TestError('expected approval digest');
+          if (preview.approvalDigest === undefined) throw TestError.make({message: 'expected approval digest'});
 
           const crypto = yield* Crypto.Crypto;
           const fs = yield* FileSystem.FileSystem;
@@ -269,7 +271,7 @@ describe('code graph selected snapshot purge', () => {
             checkoutId: CHECKOUT_ID,
             snapshotId: SNAPSHOT_ID,
           });
-          if (preview.approvalDigest === undefined) throw new TestError('expected approval digest');
+          if (preview.approvalDigest === undefined) throw TestError.make({message: 'expected approval digest'});
           yield* purgeCodeGraphSnapshot(
             fixture.home,
             {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID},
@@ -298,7 +300,7 @@ describe('code graph selected snapshot purge', () => {
             checkoutId: CHECKOUT_ID,
             snapshotId: SNAPSHOT_ID,
           });
-          if (preview.approvalDigest === undefined) throw new TestError('expected approval digest');
+          if (preview.approvalDigest === undefined) throw TestError.make({message: 'expected approval digest'});
           let observed: unknown;
           yield* purgeCodeGraphSnapshot(
             fixture.home,
@@ -412,7 +414,7 @@ function seedSnapshotVectorDatabase(home: string, active: boolean) {
       });
       if (prepared.state === 'ready') return databasePath;
     }
-    return yield* Effect.die(new TestError('Vector retirement schema did not become ready.'));
+    return yield* Effect.die(TestError.make({message: 'Vector retirement schema did not become ready.'}));
   });
 }
 

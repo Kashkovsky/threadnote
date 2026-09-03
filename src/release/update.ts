@@ -1,4 +1,4 @@
-import {Console, Crypto, Effect, FileSystem, Path, Result} from 'effect';
+import {Clock, Console, Crypto, DateTime, Effect, FileSystem, Path, Result, Schema} from 'effect';
 import {
   heading,
   info as infoText,
@@ -48,9 +48,10 @@ import {
   formatShellCommand,
 } from '../utils.js';
 
-class UpdateOperationError extends Error {
-  readonly _tag = 'UpdateOperationError' as const;
-}
+class UpdateOperationError extends Schema.TaggedError<UpdateOperationError>()('UpdateOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const THREADNOTE_COMMAND = 'threadnote';
 const DEFAULT_RELEASE_SOURCE = 'https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=100';
@@ -163,7 +164,7 @@ export function maybeNotifyUpdate(config: RuntimeConfig, options: {readonly dryR
       yield* Console.log(warning(`Update available: threadnote ${info.currentVersion} -> ${info.latestVersion}`));
       yield* Console.log(`Run: ${infoText('threadnote update')}`);
     }
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }
 
 export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig, options: UpdateOptions) {
@@ -185,11 +186,10 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
 
   if (options.check === true && options.json === true) {
     if (requiresFreshStandaloneInstall(info.currentVersion)) {
-      return yield* Effect.fail(
-        new UpdateOperationError(
+      return yield* UpdateOperationError.make({
+        message:
           'Threadnote 3 cannot update across the standalone-runtime boundary. Install Threadnote 4 fresh from the GitHub release installer.',
-        ),
-      );
+      });
     }
     yield* writeFinalCliOutput(
       JSON.stringify({
@@ -218,11 +218,10 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   );
   yield* Console.log(keyValue('Release source', info.source));
   if (requiresFreshStandaloneInstall(info.currentVersion)) {
-    return yield* Effect.fail(
-      new UpdateOperationError(
+    return yield* UpdateOperationError.make({
+      message:
         'Threadnote 3 cannot update across the standalone-runtime boundary. Install Threadnote 4 fresh from the GitHub release installer.',
-      ),
-    );
+    });
   }
 
   if (info.latestVersion === undefined) {
@@ -271,7 +270,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   }
 
   if (!isUpdateTargetAllowed(info.currentVersion, latestVersion, requestedChannel)) {
-    return yield* Effect.fail(updateDowngradeError(info.currentVersion, latestVersion));
+    return yield* updateDowngradeError(info.currentVersion, latestVersion);
   }
 
   const shouldRepair = options.repair !== false;
@@ -281,7 +280,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
       const lockedInstalledVersion = yield* activeInstalledVersion();
       const currentVersion = lockedInstalledVersion ?? info.currentVersion;
       if (!isUpdateTargetAllowed(currentVersion, latestVersion, requestedChannel)) {
-        return yield* Effect.fail(updateDowngradeError(currentVersion, latestVersion));
+        return yield* updateDowngradeError(currentVersion, latestVersion);
       }
       const installed = yield* installStandaloneRelease({
         dryRun,
@@ -333,9 +332,9 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
 });
 
 function updateDowngradeError(currentVersion: string, targetVersion: string): UpdateOperationError {
-  return new UpdateOperationError(
-    `Refusing to downgrade Threadnote ${currentVersion} to ${targetVersion}. --force does not permit version downgrades; only an explicit beta-to-stable channel switch with --stable may install an older version.`,
-  );
+  return UpdateOperationError.make({
+    message: `Refusing to downgrade Threadnote ${currentVersion} to ${targetVersion}. --force does not permit version downgrades; only an explicit beta-to-stable channel switch with --stable may install an older version.`,
+  });
 }
 
 const installStandaloneRelease = Effect.fn('update.installStandaloneRelease')(function* (options: {
@@ -352,16 +351,14 @@ const installStandaloneRelease = Effect.fn('update.installStandaloneRelease')(fu
   const releases = yield* fetchAvailableReleases(options.source);
   const release = releases.find(candidate => compareVersions(candidate.version, options.version) === 0);
   if (!release) {
-    return yield* Effect.fail(new UpdateOperationError(`GitHub release ${options.version} is no longer available.`));
+    return yield* UpdateOperationError.make({message: `GitHub release ${options.version} is no longer available.`});
   }
   const archiveAsset = release.assets.find(asset => asset.name === artifactName);
   const checksumAsset = release.assets.find(asset => asset.name === `${artifactName}.sha256`);
   if (!archiveAsset || !checksumAsset) {
-    return yield* Effect.fail(
-      new UpdateOperationError(
-        `Release ${options.version} does not publish ${artifactName} and ${artifactName}.sha256 for this platform.`,
-      ),
-    );
+    return yield* UpdateOperationError.make({
+      message: `Release ${options.version} does not publish ${artifactName} and ${artifactName}.sha256 for this platform.`,
+    });
   }
   if (options.dryRun) {
     yield* Console.log(`Would download verified release artifact: ${archiveAsset.url}`);
@@ -393,11 +390,9 @@ const installStandaloneRelease = Effect.fn('update.installStandaloneRelease')(fu
       );
       const actualChecksum = yield* sha256FileHex(archivePath);
       if (actualChecksum !== expectedChecksum) {
-        return yield* Effect.fail(
-          new UpdateOperationError(
-            `Checksum mismatch for ${artifactName}: expected ${expectedChecksum}, got ${actualChecksum}.`,
-          ),
-        );
+        return yield* UpdateOperationError.make({
+          message: `Checksum mismatch for ${artifactName}: expected ${expectedChecksum}, got ${actualChecksum}.`,
+        });
       }
       yield* extractGzipTar(archivePath, extractedRoot);
       yield* validateExtractedRelease(fs, path, extractedRoot, options.version, system.platform);
@@ -423,25 +418,29 @@ export const verifyOfficialPlatformSignature = Effect.fn('update.verifyOfficialP
       const type = yield* runCommandEffect('file', ['--brief', file]);
       if (!type.stdout.includes('Mach-O')) continue;
       yield* runCommandEffect('codesign', ['--verify', '--strict', '--verbose=2', file]).pipe(
-        Effect.mapError(cause => new UpdateOperationError(`Release signature validation failed for ${file}.`, {cause})),
+        Effect.mapError(cause =>
+          UpdateOperationError.make({cause, message: `Release signature validation failed for ${file}.`}),
+        ),
       );
     }
     yield* runCommandEffect('codesign', ['--verify', '--strict', '--verbose=2', executable]).pipe(
-      Effect.mapError(
-        cause => new UpdateOperationError(`Release signature validation failed for ${executable}.`, {cause}),
+      Effect.mapError(cause =>
+        UpdateOperationError.make({cause, message: `Release signature validation failed for ${executable}.`}),
       ),
     );
     return;
   }
   const metadataContent = yield* fs
     .readFileString(path.join(releaseRoot, 'release.json'))
-    .pipe(Effect.mapError(cause => new UpdateOperationError('Release signature policy is invalid.', {cause})));
+    .pipe(
+      Effect.mapError(cause => UpdateOperationError.make({cause, message: 'Release signature policy is invalid.'})),
+    );
   const metadata = yield* Effect.try({
     try: () => JSON.parse(metadataContent) as unknown,
-    catch: cause => new UpdateOperationError('Release signature policy is invalid.', {cause}),
+    catch: cause => UpdateOperationError.make({cause, message: 'Release signature policy is invalid.'}),
   });
   if (!isJsonObject(metadata) || metadata.codeSignature !== 'unsigned') {
-    return yield* Effect.fail(new UpdateOperationError('Release signature policy is invalid for Windows.'));
+    return yield* UpdateOperationError.make({message: 'Release signature policy is invalid for Windows.'});
   }
   yield* Console.log(
     warning('This Windows release is unsigned. Its immutable GitHub release and SHA-256 checksum were verified.'),
@@ -473,7 +472,9 @@ export function releaseArtifactName(system: Pick<SystemInfoShape, 'architecture'
   const platform = system.platform === 'win32' ? 'windows' : system.platform === 'darwin' ? 'darwin' : system.platform;
   const architecture = system.architecture === 'aarch64' ? 'arm64' : system.architecture;
   if (!['darwin', 'linux', 'windows'].includes(platform) || !['arm64', 'x64'].includes(architecture)) {
-    throw new UpdateOperationError(`No standalone Threadnote artifact is available for ${platform}-${architecture}.`);
+    throw UpdateOperationError.make({
+      message: `No standalone Threadnote artifact is available for ${platform}-${architecture}.`,
+    });
   }
   return `threadnote-${platform}-${architecture}.tar.gz`;
 }
@@ -492,7 +493,7 @@ export function parseReleaseChecksum(content: string, artifactName: string): str
     .find(value => value.length > 0);
   const match = line ? /^([a-f0-9]{64})(?:\s+\*?(.+))?$/i.exec(line) : undefined;
   if (!match || (match[2] !== undefined && match[2] !== artifactName)) {
-    throw new UpdateOperationError(`Invalid checksum document for ${artifactName}.`);
+    throw UpdateOperationError.make({message: `Invalid checksum document for ${artifactName}.`});
   }
   return match[1].toLowerCase();
 }
@@ -507,7 +508,7 @@ const validateExtractedRelease = Effect.fn('update.validateExtractedRelease')(fu
   const metadataContent = yield* fs.readFileString(path.join(releaseRoot, 'release.json'));
   const metadata = yield* Effect.try({
     try: () => JSON.parse(metadataContent) as unknown,
-    catch: cause => new UpdateOperationError('Release metadata is invalid.', {cause}),
+    catch: cause => UpdateOperationError.make({cause, message: 'Release metadata is invalid.'}),
   });
   const executable = platform === 'win32' ? 'threadnote.exe' : 'threadnote';
   if (
@@ -520,9 +521,7 @@ const validateExtractedRelease = Effect.fn('update.validateExtractedRelease')(fu
     !(yield* fs.exists(path.join(releaseRoot, executable))) ||
     !(yield* fs.exists(path.join(releaseRoot, 'runtime', 'node-llama-cpp.js')))
   ) {
-    return yield* Effect.fail(
-      new UpdateOperationError(`Release artifact validation failed for Threadnote ${version}.`),
-    );
+    return yield* UpdateOperationError.make({message: `Release artifact validation failed for Threadnote ${version}.`});
   }
   yield* validateCodeGraphAssets(fs, path, releaseRoot);
   if (platform !== 'win32') {
@@ -539,10 +538,10 @@ const validateCodeGraphAssets = Effect.fn('update.validateCodeGraphAssets')(func
   const content = yield* fs.readFileString(manifestPath);
   const manifest = yield* Effect.try({
     try: () => JSON.parse(content) as unknown,
-    catch: cause => new UpdateOperationError('Code graph asset manifest is invalid.', {cause}),
+    catch: cause => UpdateOperationError.make({cause, message: 'Code graph asset manifest is invalid.'}),
   });
   if (!isJsonObject(manifest) || manifest.version !== 1 || !isJsonObject(manifest.runtime)) {
-    return yield* Effect.fail(new UpdateOperationError('Code graph asset manifest is invalid.'));
+    return yield* UpdateOperationError.make({message: 'Code graph asset manifest is invalid.'});
   }
   const grammars = isJsonObject(manifest.grammars) ? manifest.grammars : {};
   const expected = [
@@ -569,25 +568,25 @@ const validateCodeGraphAssets = Effect.fn('update.validateCodeGraphAssets')(func
         ? asset.metadata.id !== asset.id
         : !Number.isInteger(asset.metadata.abi) || Number(asset.metadata.abi) <= 0)
     ) {
-      return yield* Effect.fail(new UpdateOperationError(`Code graph asset metadata is invalid for ${asset.id}.`));
+      return yield* UpdateOperationError.make({message: `Code graph asset metadata is invalid for ${asset.id}.`});
     }
     const assetPath = path.join(releaseRoot, 'assets', 'code-graph', ...asset.metadata.path.split('/'));
     if (!(yield* fs.exists(assetPath)) || (yield* sha256FileHex(assetPath)) !== asset.metadata.sha256) {
-      return yield* Effect.fail(
-        new UpdateOperationError(`Code graph asset checksum validation failed for ${asset.metadata.path}.`),
-      );
+      return yield* UpdateOperationError.make({
+        message: `Code graph asset checksum validation failed for ${asset.metadata.path}.`,
+      });
     }
     if (!asset.runtime) {
       if (typeof asset.metadata.license !== 'string') {
-        return yield* Effect.fail(
-          new UpdateOperationError(`Code graph asset license metadata is missing for ${asset.id}.`),
-        );
+        return yield* UpdateOperationError.make({
+          message: `Code graph asset license metadata is missing for ${asset.id}.`,
+        });
       }
       const licensePath = path.join(releaseRoot, 'assets', 'code-graph', ...asset.metadata.license.split('/'));
       if (!(yield* fs.exists(licensePath)) || (yield* fs.stat(licensePath)).size <= 0) {
-        return yield* Effect.fail(
-          new UpdateOperationError(`Code graph asset license is missing for ${asset.metadata.license}.`),
-        );
+        return yield* UpdateOperationError.make({
+          message: `Code graph asset license is missing for ${asset.metadata.license}.`,
+        });
       }
       if (typeof asset.metadata.builderLicense === 'string') {
         const builderLicensePath = path.join(
@@ -597,20 +596,18 @@ const validateCodeGraphAssets = Effect.fn('update.validateCodeGraphAssets')(func
           ...asset.metadata.builderLicense.split('/'),
         );
         if (!(yield* fs.exists(builderLicensePath)) || (yield* fs.stat(builderLicensePath)).size <= 0) {
-          return yield* Effect.fail(
-            new UpdateOperationError(
-              `Code graph asset builder license is missing for ${asset.metadata.builderLicense}.`,
-            ),
-          );
+          return yield* UpdateOperationError.make({
+            message: `Code graph asset builder license is missing for ${asset.metadata.builderLicense}.`,
+          });
         }
       }
     }
   }
   const runtimeLicense = path.join(releaseRoot, 'assets', 'code-graph', 'licenses', 'web-tree-sitter.LICENSE');
   if (!(yield* fs.exists(runtimeLicense)) || (yield* fs.stat(runtimeLicense)).size <= 0) {
-    return yield* Effect.fail(
-      new UpdateOperationError('Code graph asset license is missing for web-tree-sitter.LICENSE.'),
-    );
+    return yield* UpdateOperationError.make({
+      message: 'Code graph asset license is missing for web-tree-sitter.LICENSE.',
+    });
   }
 });
 
@@ -648,11 +645,9 @@ function printWhatsNewIfAvailable(info: UpdateInfo) {
 
 export const runPostUpdate = Effect.fn('runPostUpdate')(function* (config: RuntimeConfig, options: PostUpdateOptions) {
   if (!options.fromVersion || !options.toVersion) {
-    return yield* Effect.fail(
-      applicationError(
-        'validate post-update options',
-        new UpdateOperationError('Provide --from-version and --to-version for post-update.'),
-      ),
+    return yield* applicationError(
+      'validate post-update options',
+      UpdateOperationError.make({message: 'Provide --from-version and --to-version for post-update.'}),
     );
   }
   const fromVersion = options.fromVersion;
@@ -706,11 +701,9 @@ function runStreamingSubcommand(
       inheritOutput: true,
     });
     if (result.exitCode !== 0) {
-      return yield* Effect.fail(
-        applicationError(
-          'run interactive subcommand',
-          new UpdateOperationError(`${formatShellCommand(executable, args)} exited with ${result.exitCode}.`),
-        ),
+      return yield* applicationError(
+        'run interactive subcommand',
+        UpdateOperationError.make({message: `${formatShellCommand(executable, args)} exited with ${result.exitCode}.`}),
       );
     }
   });
@@ -749,7 +742,7 @@ function getUpdateInfo(
     if (!cached && latestVersion !== undefined && options.allowCacheWrite) {
       yield* writeUpdateCache(config, {
         channel,
-        checkedAt: new Date().toISOString(),
+        checkedAt: DateTime.formatIso(yield* DateTime.now),
         latestVersion,
         source: options.source,
         version: 2,
@@ -790,7 +783,7 @@ export function shouldPreferActiveInstalledVersion(options: {
 
 export function requestedUpdateChannel(options: Pick<UpdateOptions, 'beta' | 'stable'>): UpdateChannel | undefined {
   if (options.beta === true && options.stable === true) {
-    throw new UpdateOperationError('Choose either --beta or --stable, not both.');
+    throw UpdateOperationError.make({message: 'Choose either --beta or --stable, not both.'});
   }
   if (options.beta === true) {
     return 'beta';
@@ -845,16 +838,14 @@ const fetchAvailableReleases = Effect.fn('update.fetchAvailableReleases')(functi
     Effect.mapError(cause =>
       applicationError(
         'check GitHub for updates',
-        new UpdateOperationError(`Could not check GitHub for updates: ${errorMessage(cause)}`, {cause}),
+        UpdateOperationError.make({cause, message: `Could not check GitHub for updates: ${errorMessage(cause)}`}),
       ),
     ),
   );
   if (!Array.isArray(response.body)) {
-    return yield* Effect.fail(
-      applicationError(
-        'check GitHub for updates',
-        new UpdateOperationError('GitHub releases response was not an array.'),
-      ),
+    return yield* applicationError(
+      'check GitHub for updates',
+      UpdateOperationError.make({message: 'GitHub releases response was not an array.'}),
     );
   }
   return response.body.flatMap(parseAvailableRelease);
@@ -902,7 +893,7 @@ const readFreshCache = Effect.fn('update.readFreshCache')(function* (
     return undefined;
   }
   const checkedAt = Date.parse(parsed.checkedAt);
-  if (!Number.isFinite(checkedAt) || Date.now() - checkedAt > UPDATE_CHECK_TTL_MS) {
+  if (!Number.isFinite(checkedAt) || (yield* Clock.currentTimeMillis) - checkedAt > UPDATE_CHECK_TTL_MS) {
     return undefined;
   }
   return {
@@ -1014,13 +1005,11 @@ const runApplicablePostUpdateMigrationsUnlocked = Effect.fn('update.runApplicabl
       }
       yield* runStreamingSubcommand(false, threadnoteCommand, [...migration.commandArgs, '--apply']);
       if (yield* migrationRequirementsSatisfied(config, migration)) {
-        return yield* Effect.fail(
-          applicationError(
-            'verify post-update telemetry consent',
-            new UpdateOperationError(
-              `Migration ${migration.id} exited successfully but telemetry consent still requires renewal; it was not marked handled.`,
-            ),
-          ),
+        return yield* applicationError(
+          'verify post-update telemetry consent',
+          UpdateOperationError.make({
+            message: `Migration ${migration.id} exited successfully but telemetry consent still requires renewal; it was not marked handled.`,
+          }),
         );
       }
       yield* checkpoint(migration.id);
@@ -1042,13 +1031,11 @@ const runApplicablePostUpdateMigrationsUnlocked = Effect.fn('update.runApplicabl
     yield* runStreamingSubcommand(options.dryRun, threadnoteCommand, migration.commandArgs);
     if (!options.dryRun) {
       if (hasAuthoritativeHomeRequirements(migration) && (yield* migrationRequirementsSatisfied(config, migration))) {
-        return yield* Effect.fail(
-          applicationError(
-            'verify post-update migration',
-            new UpdateOperationError(
-              `Migration ${migration.id} exited successfully but its filesystem requirements remain pending; it was not marked handled.`,
-            ),
-          ),
+        return yield* applicationError(
+          'verify post-update migration',
+          UpdateOperationError.make({
+            message: `Migration ${migration.id} exited successfully but its filesystem requirements remain pending; it was not marked handled.`,
+          }),
         );
       }
       yield* checkpoint(migration.id);
@@ -1117,7 +1104,7 @@ const migrationRequirementsSatisfied = Effect.fn('update.migrationRequirementsSa
   }
   if (
     migration.requiresTelemetryConsentRenewal === true &&
-    (yield* readTelemetryConsentRenewal(config).pipe(Effect.catch(() => Effect.succeed(undefined)))) === undefined
+    (yield* readTelemetryConsentRenewal(config).pipe(Effect.orElseSucceed(() => undefined))) === undefined
   ) {
     return false;
   }
@@ -1140,10 +1127,10 @@ const readPostUpdateMigrations = Effect.fn('update.readPostUpdateMigrations')(fu
   }
   const parsed = yield* Effect.try({
     try: (): unknown => JSON.parse(raw),
-    catch: cause => new UpdateOperationError(`Could not parse ${POST_UPDATE_MIGRATIONS_FILE}.`, {cause}),
+    catch: cause => UpdateOperationError.make({cause, message: `Could not parse ${POST_UPDATE_MIGRATIONS_FILE}.`}),
   });
   if (!isJsonObject(parsed) || !Array.isArray(parsed.migrations)) {
-    throw new UpdateOperationError(`${POST_UPDATE_MIGRATIONS_FILE} must contain a migrations array.`);
+    throw UpdateOperationError.make({message: `${POST_UPDATE_MIGRATIONS_FILE} must contain a migrations array.`});
   }
   return parsed.migrations.map(parsePostUpdateMigration);
 });
@@ -1158,7 +1145,7 @@ function parsePostUpdateMigration(value: unknown): PostUpdateMigration {
     !Array.isArray(value.commandArgs) ||
     !Array.isArray(value.instructions)
   ) {
-    throw new UpdateOperationError(`Invalid entry in ${POST_UPDATE_MIGRATIONS_FILE}.`);
+    throw UpdateOperationError.make({message: `Invalid entry in ${POST_UPDATE_MIGRATIONS_FILE}.`});
   }
   const commandArgs = stringArray(value, 'commandArgs');
   const requiresExplicitTelemetryConsent = value.requiresExplicitTelemetryConsent === true;
@@ -1168,7 +1155,9 @@ function parsePostUpdateMigration(value: unknown): PostUpdateMigration {
     (requiresExplicitTelemetryConsent &&
       (commandArgs.length !== 2 || commandArgs[0] !== 'telemetry' || commandArgs[1] !== 'enable'))
   ) {
-    throw new UpdateOperationError(`Invalid explicit telemetry consent entry in ${POST_UPDATE_MIGRATIONS_FILE}.`);
+    throw UpdateOperationError.make({
+      message: `Invalid explicit telemetry consent entry in ${POST_UPDATE_MIGRATIONS_FILE}.`,
+    });
   }
   return {
     appliesToPrereleases: value.appliesToPrereleases === true,
@@ -1207,7 +1196,7 @@ function stableVersionCore(version: string): string {
 function stringArray(value: JsonObject, key: string): readonly string[] {
   const raw = value[key];
   if (!Array.isArray(raw) || !raw.every(item => typeof item === 'string')) {
-    throw new UpdateOperationError(`Invalid ${key} in ${POST_UPDATE_MIGRATIONS_FILE}.`);
+    throw UpdateOperationError.make({message: `Invalid ${key} in ${POST_UPDATE_MIGRATIONS_FILE}.`});
   }
   return raw;
 }
@@ -1240,14 +1229,14 @@ const readPostUpdateState = Effect.fn('update.readPostUpdateState')(function* (c
   const raw = yield* fs.readFileString(statePath);
   const parsedResult = Result.try((): unknown => JSON.parse(raw));
   if (Result.isFailure(parsedResult)) {
-    return yield* Effect.fail(new UpdateOperationError(`Post-update state is invalid and was preserved: ${statePath}`));
+    return yield* UpdateOperationError.make({message: `Post-update state is invalid and was preserved: ${statePath}`});
   }
   const parsed = parsedResult.success;
   if (!isJsonObject(parsed) || !Array.isArray(parsed.handledMigrationIds)) {
-    return yield* Effect.fail(new UpdateOperationError(`Post-update state is invalid and was preserved: ${statePath}`));
+    return yield* UpdateOperationError.make({message: `Post-update state is invalid and was preserved: ${statePath}`});
   }
   if (!parsed.handledMigrationIds.every((id): id is string => typeof id === 'string')) {
-    return yield* Effect.fail(new UpdateOperationError(`Post-update state is invalid and was preserved: ${statePath}`));
+    return yield* UpdateOperationError.make({message: `Post-update state is invalid and was preserved: ${statePath}`});
   }
   return {handledMigrationIds: [...new Set(parsed.handledMigrationIds)].sort()};
 });
@@ -1280,7 +1269,7 @@ const writePostUpdateState = Effect.fn('update.writePostUpdateState')(function* 
     yield* syncWritableFile(fs, temporary);
     yield* fs.rename(temporary, target);
     yield* syncDirectoryBestEffort(fs, path.dirname(target));
-  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
 });
 
 const postUpdateStatePath = Effect.fn('update.postUpdateStatePath')(function* (config: RuntimeConfig) {
@@ -1303,9 +1292,9 @@ export function resolveReleaseSource(
     untrustedSourceAllowed,
   );
   if (normalized !== DEFAULT_RELEASE_SOURCE && !untrustedSourceAllowed) {
-    throw new UpdateOperationError(
-      `Refusing custom release source ${normalized}. Use the official GitHub releases API, pass --allow-untrusted-source, or set ${ALLOW_UNTRUSTED_SOURCE_ENV}=1 only for an approved mirror.`,
-    );
+    throw UpdateOperationError.make({
+      message: `Refusing custom release source ${normalized}. Use the official GitHub releases API, pass --allow-untrusted-source, or set ${ALLOW_UNTRUSTED_SOURCE_ENV}=1 only for an approved mirror.`,
+    });
   }
   return normalized;
 }
@@ -1317,7 +1306,7 @@ function normalizeReleaseSource(source: string, untrustedSourceAllowed: boolean)
     url.protocol === 'http:' &&
     (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]');
   if (url.protocol !== 'https:' && !localDevelopmentSource) {
-    throw new UpdateOperationError(`Release source must use https: ${source}`);
+    throw UpdateOperationError.make({message: `Release source must use https: ${source}`});
   }
   return url.toString();
 }

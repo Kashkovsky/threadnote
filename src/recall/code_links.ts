@@ -269,7 +269,7 @@ export const selectRecallCodeLinks = Effect.fn('recall.selectCodeLinks')(functio
               } satisfies RecallCodeLinkMatch)
             : undefined;
         }),
-        Effect.catch(() => Effect.succeed(undefined)),
+        Effect.orElseSucceed(() => undefined),
       ),
     {concurrency: 4},
   );

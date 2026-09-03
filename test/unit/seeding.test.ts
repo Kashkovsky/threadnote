@@ -1,4 +1,5 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {inheritedProcessEnvironment} from '../helpers/process-environment.js';
 import {mkdir, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
@@ -18,7 +19,11 @@ const GIT_ENV_KEYS = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_T
 const run = <A, E>(effect: Effect.Effect<A, E, ApplicationServices>) => effect.pipe(provideTestLayer(ApplicationLayer));
 
 const captureConsole = <E>(effect: Effect.Effect<void, E, ApplicationServices>) =>
-  run(captureEffectConsole(effect)).pipe(Effect.map(result => result.output));
+  effect.pipe(
+    captureEffectConsole,
+    run,
+    Effect.map(result => result.output),
+  );
 
 describe('runSeed', () => {
   const homes: string[] = [];
@@ -766,7 +771,7 @@ describe('seed-skills', () => {
       const contextHome = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-skills-context-')));
       const repo = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-skills-repo-')));
       homes.push(home, contextHome, repo);
-      process.env.HOME = home;
+      inheritedProcessEnvironment().HOME = home;
 
       yield* Effect.promise(() => mkdir(join(home, '.claude', 'commands'), {recursive: true}));
       yield* Effect.promise(() =>
@@ -878,10 +883,10 @@ describe('init-manifest', () => {
     Effect.gen(function* () {
       const contextHome = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-init-manifest-context-')));
       const repo = join(contextHome, 'easy-to-type');
-      const previousGitEnv = new Map(GIT_ENV_KEYS.map(key => [key, process.env[key]]));
+      const previousGitEnv = new Map(GIT_ENV_KEYS.map(key => [key, inheritedProcessEnvironment()[key]]));
       homes.push(contextHome);
       for (const key of GIT_ENV_KEYS) {
-        delete process.env[key];
+        delete inheritedProcessEnvironment()[key];
       }
       try {
         yield* Effect.promise(() => mkdir(repo));
@@ -907,9 +912,9 @@ describe('init-manifest', () => {
         for (const key of GIT_ENV_KEYS) {
           const value = previousGitEnv.get(key);
           if (value === undefined) {
-            delete process.env[key];
+            delete inheritedProcessEnvironment()[key];
           } else {
-            process.env[key] = value;
+            inheritedProcessEnvironment()[key] = value;
           }
         }
       }

@@ -165,16 +165,19 @@ describe('code graph query budgets', () => {
         const maintenanceLayer = Layer.succeed(
           CodeGraphMaintenanceCoordinator,
           CodeGraphMaintenanceCoordinator.of({
-            kickOrdinary: () => Effect.die(new TestError('query trigger test must not kick ordinary maintenance')),
+            kickOrdinary: () =>
+              Effect.die(TestError.make({message: 'query trigger test must not kick ordinary maintenance'})),
             kickReconciliation: () =>
-              Effect.die(new TestError('query trigger test must not kick reconciliation maintenance')),
-            kickResidual: () => Effect.die(new TestError('query trigger test must not kick residual maintenance')),
+              Effect.die(TestError.make({message: 'query trigger test must not kick reconciliation maintenance'})),
+            kickResidual: () =>
+              Effect.die(TestError.make({message: 'query trigger test must not kick residual maintenance'})),
             request: input =>
               Ref.update(requests, current => [
                 ...current,
                 {allowIndexPreparation: input.allowIndexPreparation, databasePath: input.databasePath},
               ]),
-            tick: () => Effect.die(new TestError('query trigger test must not synchronously tick maintenance')),
+            tick: () =>
+              Effect.die(TestError.make({message: 'query trigger test must not synchronously tick maintenance'})),
           }),
         );
         const snapshotRef = yield* Ref.make<CodeGraphSnapshot | undefined>(undefined);
@@ -224,7 +227,7 @@ describe('code graph query budgets', () => {
                 Effect.andThen(Ref.get(failPathSearch)),
                 Effect.flatMap(fail =>
                   fail
-                    ? Effect.fail(new TestError('bounded impact read failed'))
+                    ? Effect.fail(TestError.make({message: 'bounded impact read failed'}))
                     : Effect.succeed(queries.map(() => (snapshotId === readyBaseSnapshotId ? [stableSeed] : []))),
                 ),
               ),
@@ -247,16 +250,16 @@ describe('code graph query budgets', () => {
             CodeGraphIndexer.of({
               ensureCommit: () =>
                 Ref.update(ensureCommitCalls, count => count + 1).pipe(
-                  Effect.andThen(Effect.fail(new TestError('query trigger test must not ensure a commit'))),
+                  Effect.andThen(Effect.fail(TestError.make({message: 'query trigger test must not ensure a commit'}))),
                 ),
-              index: () => Effect.die(new TestError('query trigger test must not index')),
+              index: () => Effect.die(TestError.make({message: 'query trigger test must not index'})),
             }),
           ),
           Layer.succeed(
             CodeGraphEmbeddingIndex,
             CodeGraphEmbeddingIndex.of({
-              check: () => Effect.die(new TestError('query trigger test must not check embeddings')),
-              ensure: () => Effect.die(new TestError('query trigger test must not ensure embeddings')),
+              check: () => Effect.die(TestError.make({message: 'query trigger test must not check embeddings'})),
+              ensure: () => Effect.die(TestError.make({message: 'query trigger test must not ensure embeddings'})),
               search: () => Effect.succeed(new Map()),
             }),
           ),
@@ -556,7 +559,7 @@ describe('code graph query budgets', () => {
               threadnoteHome: fixtureRoot.home,
             })
             .pipe(Effect.flip);
-          expect(failedReadyBaseImpact).toEqual(new TestError('bounded impact read failed'));
+          expect(failedReadyBaseImpact).toEqual(TestError.make({message: 'bounded impact read failed'}));
           expect(yield* Ref.get(leaseEvents)).toEqual([
             `acquire:${readyBaseSnapshotId}`,
             `acquire:${snapshot.id}`,
@@ -1203,7 +1206,7 @@ describe('code graph query budgets', () => {
             return ids.map((id, index) => {
               const pathIndex = Number(id.split('-')[1]);
               const current = currentNodes.get(`current-${pathIndex}`);
-              if (!current) throw new TestError(`Missing current recovery fixture for ${id}.`);
+              if (!current) throw TestError.make({message: `Missing current recovery fixture for ${id}.`});
               return {
                 ...edge,
                 evidencePath: current.path,

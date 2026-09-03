@@ -1,8 +1,9 @@
-import {Console, Context, Effect, Layer, Logger} from 'effect';
+import {Console, Context, Effect, Layer, Logger, Schema} from 'effect';
 
-class CliOutputError extends Error {
-  readonly _tag = 'CliOutputError' as const;
-}
+class CliOutputError extends Schema.TaggedError<CliOutputError>()('CliOutputError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export interface CliOutputShape {
   readonly drain: Effect.Effect<void, Error>;
@@ -17,7 +18,7 @@ export function makeFinalCliOutput(write: (output: string) => Promise<void>) {
   return Effect.fn('cliOutput.writeFinal')(function* (output: string) {
     yield* Effect.tryPromise({
       try: () => write(output),
-      catch: cause => new CliOutputError('Failed to write complete Threadnote CLI output.', {cause}),
+      catch: cause => CliOutputError.make({cause, message: 'Failed to write complete Threadnote CLI output.'}),
     });
   });
 }
@@ -90,20 +91,20 @@ export function makeQueuedCliWriter(open: () => CliOutputSink) {
 const formatConsoleArguments = (arguments_: readonly unknown[]): string =>
   arguments_.map(value => (typeof value === 'string' ? value : String(value))).join(' ');
 
-export class CliOutput extends Context.Service<CliOutput, CliOutputShape>()('threadnote/effect/CliOutput') {
+export class CliOutput extends Context.Service<CliOutput, CliOutputShape>()('threadnote/effect/cli_output/CliOutput') {
   static readonly layer = Layer.sync(CliOutput, () => {
     const stdout = makeQueuedCliWriter(() => Bun.stdout.writer({highWaterMark: 64 * 1024}));
     const stderr = makeQueuedCliWriter(() => Bun.stderr.writer({highWaterMark: 64 * 1024}));
     return CliOutput.of({
       drain: Effect.tryPromise({
         try: () => Promise.all([stdout.drain(), stderr.drain()]).then(() => undefined),
-        catch: cause => new CliOutputError('Failed to drain Threadnote CLI output.', {cause}),
+        catch: cause => CliOutputError.make({cause, message: 'Failed to drain Threadnote CLI output.'}),
       }),
       enqueueError: stderr.enqueue,
       enqueueOutput: stdout.enqueue,
       flush: Effect.tryPromise({
         try: () => Promise.all([stdout.flush(), stderr.flush()]).then(() => undefined),
-        catch: cause => new CliOutputError('Failed to flush Threadnote CLI output.', {cause}),
+        catch: cause => CliOutputError.make({cause, message: 'Failed to flush Threadnote CLI output.'}),
       }),
       writeError: makeFinalCliOutput(stderr.write),
       writeFinal: makeFinalCliOutput(stdout.write),

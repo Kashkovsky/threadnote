@@ -27,10 +27,10 @@ const validateViewRemovalTarget = Effect.fn('codeGraph.validateViewRemovalTarget
   expectedSnapshotId: string,
 ) {
   if (!/^[0-9a-f]{64}$/.test(worktreeId)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph worktree identity is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph worktree identity is invalid.');
   }
   if (!CODE_GRAPH_SNAPSHOT_ID.test(expectedSnapshotId)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot identity is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot identity is invalid.');
   }
 });
 
@@ -71,7 +71,7 @@ const observeActiveView = Effect.fn('codeGraph.observeActiveView')(function* (
     (removedSnapshotId !== undefined &&
       (typeof removedSnapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(removedSnapshotId)))
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph view authority is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph view authority is invalid.');
   }
 
   if (activeSnapshotId !== undefined && activeSnapshotId !== expectedSnapshotId) {
@@ -377,38 +377,36 @@ const ensureInitialReconciliationIndexes = Effect.fn('codeGraph.ensureInitialRec
   const expiryIndexState = yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX);
   if (expiryIndexState !== 'ready') {
     if (expiryIndexState === 'incompatible') {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease expiry index is incompatible.'));
+      return yield* CodeGraphStoreError.of('Code graph snapshot lease expiry index is incompatible.');
     }
     const rows = yield* sql.unsafe('SELECT 1 FROM snapshot_leases LIMIT 1');
     if (revision.state !== 'missing' || rows.length !== 0) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease expiry index is unavailable.'));
+      return yield* CodeGraphStoreError.of('Code graph snapshot lease expiry index is unavailable.');
     }
     yield* sql.unsafe(CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX.definition);
     if ((yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX)) !== 'ready') {
-      return yield* Effect.fail(
-        new CodeGraphStoreError('Code graph snapshot lease expiry index changed during setup.'),
-      );
+      return yield* CodeGraphStoreError.of('Code graph snapshot lease expiry index changed during setup.');
     }
   }
   for (const index of CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES) {
     const state = yield* codeGraphReconciliationIndexState(sql, index);
     if (state === 'ready') continue;
     if (state === 'incompatible') {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation index is incompatible.'));
+      return yield* CodeGraphStoreError.of('Code graph reconciliation index is incompatible.');
     }
     // Only an empty, not-yet-versioned core database may create all required
     // indexes synchronously. Existing databases prepare one missing index per
     // bounded maintenance tick before publishing revision 8.
     if (revision.state !== 'missing') {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation index is unavailable.'));
+      return yield* CodeGraphStoreError.of('Code graph reconciliation index is unavailable.');
     }
     const rows = yield* sql.unsafe(`SELECT 1 FROM "${index.table}" LIMIT 1`);
     if (rows.length !== 0) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation index requires preparation.'));
+      return yield* CodeGraphStoreError.of('Code graph reconciliation index requires preparation.');
     }
     yield* sql.unsafe(index.definition);
     if ((yield* codeGraphReconciliationIndexState(sql, index)) !== 'ready') {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation index changed during setup.'));
+      return yield* CodeGraphStoreError.of('Code graph reconciliation index changed during setup.');
     }
   }
 });
@@ -602,7 +600,7 @@ const selectRemovedViewCleanupEntry = Effect.fn('codeGraph.selectRemovedViewClea
   if (rows.length === 0) return undefined;
   const entry = decodeRemovedViewCleanupRow(rows[0]);
   if (entry === undefined) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup row is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup row is invalid.');
   }
   return entry;
 });
@@ -630,7 +628,7 @@ const validateRemovedViewSnapshotAuthority = Effect.fn('codeGraph.validateRemove
   );
   if (snapshots.length === 0) {
     if (!requireSnapshot) return;
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view snapshot authority is unavailable.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view snapshot authority is unavailable.');
   }
   const snapshot = snapshots[0];
   if (
@@ -644,7 +642,7 @@ const validateRemovedViewSnapshotAuthority = Effect.fn('codeGraph.validateRemove
     !/^[0-9a-f]{64}$/u.test(snapshot.worktree_id) ||
     (evidence !== undefined && evidence.repositoryId !== snapshot.repository_id)
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view snapshot authority is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view snapshot authority is invalid.');
   }
 });
 
@@ -658,7 +656,7 @@ const allocateRemovedViewCleanupEpoch = Effect.fn('codeGraph.allocateRemovedView
     !Number.isSafeInteger(Number(sequence.value)) ||
     Number(sequence.value) >= Number.MAX_SAFE_INTEGER
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup epoch sequence is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup epoch sequence is invalid.');
   }
   const epoch = Number(sequence.value) + 1;
   yield* sql`
@@ -668,7 +666,7 @@ const allocateRemovedViewCleanupEpoch = Effect.fn('codeGraph.allocateRemovedView
       AND value = ${sequence.value}
   `;
   if ((yield* lastStatementChangeCount(sql)) !== 1) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup epoch sequence changed.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup epoch sequence changed.');
   }
   return epoch;
 });
@@ -736,7 +734,7 @@ const revokeRemovedViewCleanupEntry = Effect.fn('codeGraph.revokeRemovedViewClea
     removedViewCleanupEntryCasParameters(entry),
   );
   if ((yield* lastStatementChangeCount(sql)) !== 1) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup revocation changed.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup revocation changed.');
   }
 });
 
@@ -765,7 +763,7 @@ const observeRemovedViewCleanupAuthority = Effect.fn('codeGraph.observeRemovedVi
     typeof removed[0]?.removed_at !== 'string' ||
     !validCanonicalTimestamp(removed[0].removed_at)
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view authority is invalid.');
   }
   if (removed[0].expected_snapshot_id !== entry.expectedSnapshotId || removed[0].removed_at !== entry.removedAt) {
     return {state: 'stale'} as const;
@@ -794,7 +792,7 @@ const observeRemovedViewCleanupAuthority = Effect.fn('codeGraph.observeRemovedVi
     (activeSnapshotId !== undefined &&
       (typeof activeSnapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(activeSnapshotId)))
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph active view authority is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph active view authority is invalid.');
   }
   return activeSnapshotId === undefined || activeSnapshotId === entry.expectedSnapshotId
     ? ({matchingActivePointer: activeSnapshotId === entry.expectedSnapshotId, state: 'authorized'} as const)
@@ -812,7 +810,7 @@ const removeMatchingLegacyCleanupPointer = Effect.fn('codeGraph.removeMatchingLe
       WHERE worktree_id = ${entry.worktreeId} AND snapshot_id = ${entry.expectedSnapshotId}
     `;
     if ((yield* lastStatementChangeCount(sql)) !== 1) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph active view pointer changed.'));
+      return yield* CodeGraphStoreError.of('Code graph active view pointer changed.');
     }
   }
 });

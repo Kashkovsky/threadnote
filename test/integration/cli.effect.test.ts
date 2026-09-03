@@ -1722,7 +1722,7 @@ async function runCliThroughPlatformPipe(
       new Response(child.stdout).text(),
     ]);
     if (exitCode !== 0) {
-      throw new TestError(`CLI ${mode} platform pipe failed with ${exitCode}.\n${stderr}`);
+      throw TestError.make({message: `CLI ${mode} platform pipe failed with ${exitCode}.\n${stderr}`});
     }
     return JSON.parse(stdout);
   } finally {

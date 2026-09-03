@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path, Predicate} from 'effect';
+import {Effect, FileSystem, Option, Path, Predicate, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {CommandTimedOut, runBinaryCommandEffect} from '../effect/command.js';
 import {
@@ -124,13 +124,14 @@ export interface ObserveCodeGraphGitWorktreeRegistryOptions {
   readonly timeoutMilliseconds?: number;
 }
 
-export class CodeGraphGitWorktreeRegistrationError extends Error {
-  override readonly name = 'CodeGraphGitWorktreeRegistrationError';
-
-  constructor() {
-    super('Unable to verify the Git worktree registration.');
-  }
-}
+export class CodeGraphGitWorktreeRegistrationError extends Schema.TaggedError<CodeGraphGitWorktreeRegistrationError>()(
+  'CodeGraphGitWorktreeRegistrationError',
+  {
+    message: Schema.String.pipe(
+      Schema.withConstructorDefault(Effect.succeed('Unable to verify the Git worktree registration.')),
+    ),
+  },
+) {}
 
 /**
  * Capture the current worktree's administrative registration while that worktree is live.
@@ -140,7 +141,10 @@ export const captureCodeGraphGitWorktreeRegistration = Effect.fn('codeGraph.capt
   identity: RepositoryIdentity,
   observedGitDirectory?: string,
 ) {
-  if (!HASH_ID.test(identity.checkoutId)) return yield* Effect.fail(new CodeGraphGitWorktreeRegistrationError());
+  if (!HASH_ID.test(identity.checkoutId))
+    return yield* CodeGraphGitWorktreeRegistrationError.make({
+      message: 'Unable to verify the Git worktree registration.',
+    });
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const rawGitDirectory =
@@ -153,10 +157,16 @@ export const captureCodeGraphGitWorktreeRegistration = Effect.fn('codeGraph.capt
           maxOutputBytes: CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.gitDirectoryOutputBytes,
           timeoutMs: CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.gitDirectoryTimeoutMilliseconds,
         },
-      ).pipe(Effect.mapError(() => new CodeGraphGitWorktreeRegistrationError()))).stdout,
+      ).pipe(
+        Effect.mapError(() =>
+          CodeGraphGitWorktreeRegistrationError.make({message: 'Unable to verify the Git worktree registration.'}),
+        ),
+      )).stdout,
     );
   if (rawGitDirectory === undefined || !path.isAbsolute(rawGitDirectory)) {
-    return yield* Effect.fail(new CodeGraphGitWorktreeRegistrationError());
+    return yield* CodeGraphGitWorktreeRegistrationError.make({
+      message: 'Unable to verify the Git worktree registration.',
+    });
   }
 
   const registration = yield* Effect.gen(function* () {
@@ -166,7 +176,9 @@ export const captureCodeGraphGitWorktreeRegistration = Effect.fn('codeGraph.capt
 
     const registryRoot = yield* inspectCanonicalDirectory(fs, path.join(commonDirectory, 'worktrees'));
     if (path.dirname(gitDirectory) !== registryRoot) {
-      return yield* Effect.fail(new CodeGraphGitWorktreeRegistrationError());
+      return yield* CodeGraphGitWorktreeRegistrationError.make({
+        message: 'Unable to verify the Git worktree registration.',
+      });
     }
     const adminName = path.basename(gitDirectory);
     const adminNameBytes = UTF8.encode(adminName);
@@ -177,14 +189,22 @@ export const captureCodeGraphGitWorktreeRegistration = Effect.fn('codeGraph.capt
       adminName.includes('\r') ||
       adminName.includes('\n')
     ) {
-      return yield* Effect.fail(new CodeGraphGitWorktreeRegistrationError());
+      return yield* CodeGraphGitWorktreeRegistrationError.make({
+        message: 'Unable to verify the Git worktree registration.',
+      });
     }
     const adminNameKeys = codeGraphGitWorktreeAdminNameKeys(identity.checkoutId, adminNameBytes);
     if (!validAdminNameKeys(adminNameKeys)) {
-      return yield* Effect.fail(new CodeGraphGitWorktreeRegistrationError());
+      return yield* CodeGraphGitWorktreeRegistrationError.make({
+        message: 'Unable to verify the Git worktree registration.',
+      });
     }
     return {adminNameKeys, kind: 'linked'} as const;
-  }).pipe(Effect.mapError(() => new CodeGraphGitWorktreeRegistrationError()));
+  }).pipe(
+    Effect.mapError(() =>
+      CodeGraphGitWorktreeRegistrationError.make({message: 'Unable to verify the Git worktree registration.'}),
+    ),
+  );
   return registration;
 });
 
@@ -222,7 +242,7 @@ export const observeCodeGraphGitWorktreeRegistry = Effect.fn('codeGraph.observeG
     Effect.map(result => parseWorkerResponse(result.stdout)),
     Effect.catch(error =>
       Effect.succeed({
-        reason: error instanceof CommandTimedOut ? 'timeout' : 'unavailable',
+        reason: Schema.is(CommandTimedOut)(error) ? 'timeout' : 'unavailable',
         state: 'unknown',
       } as const satisfies CodeGraphGitWorktreeRegistryObservation),
     ),
@@ -277,7 +297,7 @@ export const observeCodeGraphGitWorktreeRegistryBatch = Effect.fn('codeGraph.obs
       Effect.map(result => parseBatchWorkerResponse(result.stdout, registrations.length)),
       Effect.catch(error =>
         Effect.succeed({
-          reason: error instanceof CommandTimedOut ? 'timeout' : 'unavailable',
+          reason: Schema.is(CommandTimedOut)(error) ? 'timeout' : 'unavailable',
           state: 'unknown',
         } as const satisfies CodeGraphGitWorktreeRegistryBatchObservation),
       ),
@@ -319,7 +339,7 @@ export const observeCodeGraphRecordedWorktreePaths = Effect.fn('codeGraph.observ
     Effect.map(result => parsePathBatchWorkerResponse(result.stdout, canonicalWorktreePaths.length)),
     Effect.catch(error =>
       Effect.succeed({
-        reason: error instanceof CommandTimedOut ? 'timeout' : 'unavailable',
+        reason: Schema.is(CommandTimedOut)(error) ? 'timeout' : 'unavailable',
         state: 'unknown',
       } as const satisfies CodeGraphRecordedWorktreePathBatchObservation),
     ),
@@ -357,7 +377,7 @@ export const observeCodeGraphWorktreeReconciliationAuthority = Effect.fn(
     Effect.map(result => parseAuthorityWorkerResponse(result.stdout, targets.length)),
     Effect.catch(error =>
       Effect.succeed({
-        reason: error instanceof CommandTimedOut ? 'timeout' : 'unavailable',
+        reason: Schema.is(CommandTimedOut)(error) ? 'timeout' : 'unavailable',
         state: 'unknown',
       } as const satisfies CodeGraphWorktreeReconciliationAuthorityObservation),
     ),
@@ -872,12 +892,20 @@ function gitWorktreeRegistrationWorkerSpawnPlan(system: SystemInfoShape) {
 function inspectCanonicalDirectory(fs: FileSystem.FileSystem, candidate: string) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(candidate).pipe(Effect.option))) {
-      return yield* Effect.fail(new CodeGraphGitWorktreeRegistrationError());
+      return yield* CodeGraphGitWorktreeRegistrationError.make({
+        message: 'Unable to verify the Git worktree registration.',
+      });
     }
     const info = yield* fs.stat(candidate);
-    if (info.type !== 'Directory') return yield* Effect.fail(new CodeGraphGitWorktreeRegistrationError());
+    if (info.type !== 'Directory')
+      return yield* CodeGraphGitWorktreeRegistrationError.make({
+        message: 'Unable to verify the Git worktree registration.',
+      });
     const canonical = yield* fs.realPath(candidate);
-    if (canonical !== candidate) return yield* Effect.fail(new CodeGraphGitWorktreeRegistrationError());
+    if (canonical !== candidate)
+      return yield* CodeGraphGitWorktreeRegistrationError.make({
+        message: 'Unable to verify the Git worktree registration.',
+      });
     return canonical;
   });
 }

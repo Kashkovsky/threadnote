@@ -452,7 +452,8 @@ function bridgeFixture(seed: string, options: {readonly consumerSnapshot?: strin
   ]);
   const repositories = [consumer, alpha, beta, protobuf];
   const resolution = resolveCodeGraphCrossRepositoryBridges(repositories);
-  if (resolution.rejections.length > 0 || resolution.bridges.length !== 3) throw new TestError('Invalid test fixture.');
+  if (resolution.rejections.length > 0 || resolution.bridges.length !== 3)
+    throw TestError.make({message: 'Invalid test fixture.'});
   return {
     bridges: resolution.bridges,
     members: repositories.map((repository, index) => member(repository, index)),

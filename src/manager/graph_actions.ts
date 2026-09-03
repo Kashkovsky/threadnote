@@ -1,4 +1,4 @@
-import {Console, Effect, Path} from 'effect';
+import {Console, Effect, Path, Schema} from 'effect';
 import {runIsolatedCodeGraphIndexSnapshot} from '../code_graph/isolated_index.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from '../code_graph/local_provenance.js';
 import {captureConsole} from '../effect/console.js';
@@ -6,9 +6,13 @@ import type {RuntimeConfig} from '../types.js';
 import {errorMessage} from '../utils.js';
 import {requireString} from './request_inputs.js';
 
-class ManagerExplicitGraphActionError extends Error {
-  readonly _tag = 'ManagerExplicitGraphActionError' as const;
-}
+class ManagerExplicitGraphActionError extends Schema.TaggedError<ManagerExplicitGraphActionError>()(
+  'ManagerExplicitGraphActionError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export const runManagerExplicitCwdGraphIndex = Effect.fn('managerGraphActions.runExplicitCwdGraphIndex')(function* (
   config: RuntimeConfig,
@@ -16,18 +20,17 @@ export const runManagerExplicitCwdGraphIndex = Effect.fn('managerGraphActions.ru
 ) {
   const suppliedCwd = yield* Effect.try({
     try: () => requireString(body.cwd, 'cwd'),
-    catch: cause => new ManagerExplicitGraphActionError(errorMessage(cause), {cause}),
+    catch: cause => ManagerExplicitGraphActionError.make({cause, message: errorMessage(cause)}),
   });
   const path = yield* Path.Path;
   if (!path.isAbsolute(suppliedCwd)) {
-    return yield* Effect.fail(new ManagerExplicitGraphActionError('Supply cwd as an absolute local worktree path.'));
+    return yield* ManagerExplicitGraphActionError.make({message: 'Supply cwd as an absolute local worktree path.'});
   }
   const {identity} = yield* resolveAndRecordCodeGraphLocalAssociation(config.agentContextHome, suppliedCwd).pipe(
-    Effect.mapError(
-      () =>
-        new ManagerExplicitGraphActionError(
-          'The selected workspace is not an available local Git repository. Check its path and retry.',
-        ),
+    Effect.mapError(() =>
+      ManagerExplicitGraphActionError.make({
+        message: 'The selected workspace is not an available local Git repository. Check its path and retry.',
+      }),
     ),
   );
   const captured = yield* captureConsole(

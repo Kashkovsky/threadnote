@@ -1,4 +1,5 @@
-import {Effect} from 'effect';
+import {DateTime, Effect} from 'effect';
+import {succeedUndefined} from '../effect/optional.js';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {type CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import {configureConnection, useDatabase, useReadOnlyDatabase} from './store_session.js';
@@ -228,9 +229,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
               const sql = yield* SqlClient.SqlClient;
               const mode = yield* activationMode(sql);
               if (mode?.mode !== 'persisted-full') {
-                return yield* Effect.fail(
-                  new CodeGraphStoreError('Persistent full-build materialization is not active.'),
-                );
+                return yield* CodeGraphStoreError.of('Persistent full-build materialization is not active.');
               }
               const spoolPath = materializationSpool
                 ? yield* finalizePersistentMaterializationSpool(
@@ -324,7 +323,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
       ),
     diagnose: databasePath =>
       fs.exists(databasePath).pipe(
-        Effect.flatMap(exists => (exists ? useDatabase(databasePath, diagnoseDatabase()) : Effect.succeed(undefined))),
+        Effect.flatMap(exists => (exists ? useDatabase(databasePath, diagnoseDatabase()) : succeedUndefined)),
         Effect.mapError(cause => storeError('diagnose code graph database', cause)),
       ),
     cachedCommittedFileKeys: (databasePath, extractorSet, files) =>
@@ -348,7 +347,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                   yield* sql.withTransaction(discardInvalidCachedFacts(files));
                 }),
               )
-            : Effect.void,
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('discard invalid cached code graph facts', cause)),
       ),
@@ -458,7 +457,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.flatMap(exists =>
           exists
             ? useReadOnlyDatabase(databasePath, selectVisualizationCatalog(undefined, metrics, options))
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load code graph visualization catalog', cause)),
       ),
@@ -472,7 +471,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
     loadActiveViewFence: (databasePath, worktreeId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
-          exists ? useReadOnlyDatabase(databasePath, selectActiveViewFence(worktreeId)) : Effect.succeed(undefined),
+          exists ? useReadOnlyDatabase(databasePath, selectActiveViewFence(worktreeId)) : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load active code graph view fence', cause)),
       ),
@@ -533,7 +532,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                             ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
                             ${snapshot.graphContentId ?? snapshot.id}, ${snapshot.baseSnapshotId ?? null},
                             ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
-                            ${snapshot.overlayFingerprint ?? null}, 'building', 0, 0, 0, ${new Date().toISOString()}
+                            ${snapshot.overlayFingerprint ?? null}, 'building', 0, 0, 0, ${DateTime.formatIso(yield* DateTime.now)}
                           )
                           ON CONFLICT(id) DO UPDATE SET
                             graph_content_id = excluded.graph_content_id,
@@ -556,10 +555,8 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                           RETURNING id
                         `;
                 if (registered.length !== 1) {
-                  return yield* Effect.fail(
-                    new CodeGraphStoreError(
-                      `Snapshot identity ${snapshot.id} already belongs to incompatible or ready content.`,
-                    ),
+                  return yield* CodeGraphStoreError.of(
+                    `Snapshot identity ${snapshot.id} already belongs to incompatible or ready content.`,
                   );
                 }
               }),
@@ -594,16 +591,14 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
     resumableForcedBuild: (databasePath, logicalSnapshotId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
-          exists
-            ? useReadOnlyDatabase(databasePath, selectResumableForcedBuild(logicalSnapshotId))
-            : Effect.succeed(undefined),
+          exists ? useReadOnlyDatabase(databasePath, selectResumableForcedBuild(logicalSnapshotId)) : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load resumable forced code graph snapshot', cause)),
       ),
     resumableBuildById: (databasePath, snapshotId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
-          exists ? useReadOnlyDatabase(databasePath, selectResumableBuildById(snapshotId)) : Effect.succeed(undefined),
+          exists ? useReadOnlyDatabase(databasePath, selectResumableBuildById(snapshotId)) : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load resumable code graph snapshot by identity', cause)),
       ),
@@ -630,7 +625,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         );
         for (const snapshotId of result.spoolCleanupSnapshotIds) {
           const spoolPath = yield* Effect.try({
-            catch: () => new CodeGraphStoreError('Retired materialization spool identity is invalid.'),
+            catch: () => CodeGraphStoreError.of('Retired materialization spool identity is invalid.'),
             try: () =>
               codeGraphMaterializationSpoolPath(
                 runtime.path,
@@ -658,14 +653,14 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
     readySnapshot: (databasePath, worktreeId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
-          exists ? useReadOnlyDatabase(databasePath, selectReadySnapshot(worktreeId)) : Effect.succeed(undefined),
+          exists ? useReadOnlyDatabase(databasePath, selectReadySnapshot(worktreeId)) : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load ready code graph snapshot', cause)),
       ),
     readySnapshotById: (databasePath, snapshotId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
-          exists ? useReadOnlyDatabase(databasePath, selectReadySnapshotById(snapshotId)) : Effect.succeed(undefined),
+          exists ? useReadOnlyDatabase(databasePath, selectReadySnapshotById(snapshotId)) : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load ready code graph snapshot by identity', cause)),
       ),
@@ -674,7 +669,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.flatMap(exists =>
           exists
             ? useReadOnlyDatabase(databasePath, selectCurrentLexicalReadySnapshotById(snapshotId))
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load current-format ready code graph snapshot by identity', cause)),
       ),
@@ -683,7 +678,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.flatMap(exists =>
           exists
             ? useReadOnlyDatabase(databasePath, selectReadySnapshotForCommit(repositoryId, commit, extractorSet))
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load ready code graph snapshot for commit', cause)),
       ),
@@ -692,7 +687,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.flatMap(exists =>
           exists
             ? useReadOnlyDatabase(databasePath, selectLatestReadySnapshotForRepository(repositoryId))
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load latest ready code graph snapshot for repository', cause)),
       ),
@@ -701,25 +696,21 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.flatMap(exists =>
           exists
             ? useReadOnlyDatabase(databasePath, selectReusableBaseReceipt(snapshotId, options?.allowDirtyRoot === true))
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load reusable code graph base receipt', cause)),
       ),
     reusableFoldForwardBase: (databasePath, snapshotId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
-          exists
-            ? useReadOnlyDatabase(databasePath, selectReusableFoldForwardBase(snapshotId))
-            : Effect.succeed(undefined),
+          exists ? useReadOnlyDatabase(databasePath, selectReusableFoldForwardBase(snapshotId)) : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load reusable code graph fold-forward base', cause)),
       ),
     snapshotPackProvenance: (databasePath, snapshotId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
-          exists
-            ? useReadOnlyDatabase(databasePath, selectSnapshotPackProvenance(snapshotId))
-            : Effect.succeed(undefined),
+          exists ? useReadOnlyDatabase(databasePath, selectSnapshotPackProvenance(snapshotId)) : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load code graph snapshot language-pack provenance', cause)),
       ),
@@ -748,7 +739,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                   allowExtractorMismatch,
                 ),
               )
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load reusable clean code graph base', cause)),
       ),
@@ -757,7 +748,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.flatMap(exists =>
           exists
             ? useReadOnlyDatabase(databasePath, selectReusableCleanBaseForCommit(repositoryId, commit))
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load reusable clean code graph base for commit', cause)),
       ),
@@ -766,7 +757,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.flatMap(exists =>
           exists
             ? useReadOnlyDatabase(databasePath, selectReusableCleanBaseForCommitPaths(repositoryId, commit, paths))
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load reusable clean code graph base paths for commit', cause)),
       ),
@@ -775,7 +766,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.flatMap(exists =>
           exists
             ? useReadOnlyDatabase(databasePath, selectExistingSnapshotFilePaths(snapshotId, paths))
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('probe existing code graph snapshot file paths', cause)),
       ),
@@ -814,7 +805,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.flatMap(exists =>
           exists
             ? useReadOnlyDatabase(databasePath, selectSnapshotProjectClosureFiles(snapshotId, prefixes))
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load bounded code graph project closure files', cause)),
       ),
@@ -826,7 +817,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                 databasePath,
                 selectReusableOverlayBase(repositoryId, extractorSet, overlayFingerprint),
               )
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load reusable retained overlay code graph base', cause)),
       ),
@@ -838,7 +829,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                 databasePath,
                 selectReusableReexports(snapshotId, seeds, options?.maxRows, options?.allowDirtyRoot === true),
               )
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load reusable code graph reexport provenance', cause)),
       ),
@@ -864,7 +855,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                   yield* sql.withTransaction(pruneCachedFileBlobs(sql, acceptedExtractorSets));
                 }),
               )
-            : Effect.void,
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('prune cached code graph facts', cause)),
       ),
@@ -876,7 +867,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                 databasePath,
                 pruneRetiredSnapshotRows(effect => withWriterGate(databasePath, effect)),
               )
-            : Effect.void,
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('prune retired code graph snapshots', cause)),
       ),
@@ -885,7 +876,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.flatMap(exists =>
           exists
             ? useDatabase(databasePath, repairDatabase(dryRun, options?.allowSchemaMigrationPreview === true))
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('repair code graph database', cause)),
       ),

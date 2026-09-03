@@ -79,5 +79,5 @@ export interface LlamaCppEngineShape {
 }
 
 export class LlamaCppEngine extends Context.Service<LlamaCppEngine, LlamaCppEngineShape>()(
-  'threadnote/effect/ai/LlamaCppEngine',
+  'threadnote/effect/ai/llama-cpp-engine/LlamaCppEngine',
 ) {}

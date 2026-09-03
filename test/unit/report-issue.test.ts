@@ -271,9 +271,9 @@ describe('report issue', () => {
         const command = CommandExecutor.of({
           execute: () =>
             Effect.fail(
-              new CommandSpawnFailed({
+              CommandSpawnFailed.make({
                 args: [],
-                cause: new TestError('not found'),
+                cause: TestError.make({message: 'not found'}),
                 executable: 'gh',
                 message: 'gh could not be started',
               }),

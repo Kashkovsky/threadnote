@@ -318,7 +318,7 @@ export const selectRecallMemoryLinks = Effect.fn('recall.selectMemoryLinks')(fun
           row =>
             fs.readFileString(row.source_path).pipe(
               Effect.map(content => [row.source_path, parseMemoryDocument(row.source_uri, content)] as const),
-              Effect.catch(() => Effect.succeed([row.source_path, undefined] as const)),
+              Effect.orElseSucceed(() => [row.source_path, undefined] as const),
             ),
           {concurrency: RECALL_MEMORY_LINK_CANONICAL_READ_CONCURRENCY},
         );

@@ -6,7 +6,7 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const [repository, home, marker] = process.argv.slice(2);
 if (!repository || !home || !marker) {
-  throw new TestError('Expected repository, Threadnote home, and marker arguments.');
+  throw TestError.make({message: 'Expected repository, Threadnote home, and marker arguments.'});
 }
 
 let paused = false;

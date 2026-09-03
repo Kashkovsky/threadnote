@@ -1,4 +1,5 @@
 import {TestError} from '../helpers/test-error.js';
+import {testHttpFetch} from '../helpers/http-fetch.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {startManagerTestServer as startServer} from '../helpers/manager-test-server.js';
 import {execFileSync} from '../helpers/node-child-process.js';
@@ -486,13 +487,13 @@ function fileNode(uri: string, name: string, isSystem = false): TreeNode {
 
 async function fetchManagerGraphActionWhenAvailable(url: string, init: RequestInit): Promise<Response> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const response = await fetch(url, init);
+    const response = await testHttpFetch(url, init);
     if (response.status !== 409) return response;
     const body = (await response.clone().json()) as {readonly code?: string; readonly retryAfterMilliseconds?: number};
     if (body.code !== 'graph-view-busy' || attempt === 2) return response;
     await new Promise(resolve => setTimeout(resolve, body.retryAfterMilliseconds ?? 1_000));
   }
-  throw new TestError('Manager graph action retry budget was exhausted.');
+  throw TestError.make({message: 'Manager graph action retry budget was exhausted.'});
 }
 
 function initializeGitRepository(root: string): void {
@@ -709,10 +710,10 @@ describe('manager http API', () => {
     homes.push(config.agentContextHome);
     const server = await startServer(config, 'secret');
     try {
-      const rejected = await fetch(`${server.url}/api/tree`);
+      const rejected = await testHttpFetch(`${server.url}/api/tree`);
       expect(rejected.status).toBe(401);
 
-      const accepted = await fetch(`${server.url}/api/tree`, {headers: {authorization: 'Bearer secret'}});
+      const accepted = await testHttpFetch(`${server.url}/api/tree`, {headers: {authorization: 'Bearer secret'}});
       const body = (await accepted.json()) as {readonly resourcesTree?: TreeNode; readonly tree?: TreeNode};
       expect(accepted.status).toBe(200);
       expect(body.tree?.uri).toBe('threadnote://user/denys/memories');
@@ -734,7 +735,7 @@ describe('manager http API', () => {
     };
     const server = await startServer(config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/tree`, {headers: {authorization: 'Bearer secret'}});
+      const response = await testHttpFetch(`${server.url}/api/tree`, {headers: {authorization: 'Bearer secret'}});
       const body = (await response.json()) as {readonly tree?: TreeNode};
 
       expect(response.status).toBe(200);
@@ -797,7 +798,7 @@ describe('manager http API', () => {
           yield* Effect.gen(function* () {
             const requestCompleted = yield* Deferred.make<void>();
             const request = yield* Effect.promise(() =>
-              fetch(`${server.url}/api/memory/save`, {
+              testHttpFetch(`${server.url}/api/memory/save`, {
                 body: JSON.stringify({replaceUri: uri, text: updated}),
                 headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
                 method: 'POST',
@@ -848,7 +849,7 @@ describe('manager http API', () => {
     const server = await startServer(config, 'secret');
     try {
       await writeFile(memoryPath, concurrent);
-      const response = await fetch(`${server.url}/api/memory/save`, {
+      const response = await testHttpFetch(`${server.url}/api/memory/save`, {
         body: JSON.stringify({expectedContent: openedContent, replaceUri: uri, text: stale}),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',
@@ -881,7 +882,7 @@ describe('manager http API', () => {
     const original = await readFile(memoryPath, 'utf8');
     const server = await startServer(config, 'secret');
     const requestSave = (text: string) =>
-      fetch(`${server.url}/api/memory/save`, {
+      testHttpFetch(`${server.url}/api/memory/save`, {
         body: JSON.stringify({replaceUri: uri, text}),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',
@@ -927,7 +928,7 @@ describe('manager http API', () => {
         const original = originalLf.replaceAll('\n', newline);
         const updated = original.replace('Manager UI feature notes.', 'Legacy Manager raw edit.');
         await writeFile(memoryPath, original);
-        const response = await fetch(`${server.url}/api/memory/save`, {
+        const response = await testHttpFetch(`${server.url}/api/memory/save`, {
           body: JSON.stringify({replaceUri: uri, text: updated}),
           headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
           method: 'POST',
@@ -952,7 +953,7 @@ describe('manager http API', () => {
     await writeFile(sourcePath, original);
     const server = await startServer(config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/memory/move`, {
+      const response = await testHttpFetch(`${server.url}/api/memory/move`, {
         body: JSON.stringify({
           confirm: true,
           kind: 'durable',
@@ -1023,7 +1024,7 @@ describe('manager http API', () => {
     );
     const server = await startServer(fixture.config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/memory/move`, {
+      const response = await testHttpFetch(`${server.url}/api/memory/move`, {
         body: JSON.stringify({
           confirm: true,
           kind: 'durable',
@@ -1156,7 +1157,7 @@ describe('manager http API', () => {
     );
     const server = await startServer(fixture.config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/memory/move`, {
+      const response = await testHttpFetch(`${server.url}/api/memory/move`, {
         body: JSON.stringify({
           confirm: true,
           kind: 'durable',
@@ -1247,7 +1248,7 @@ describe('manager http API', () => {
 
     const server = await startServer(fixture.config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/memory/move`, {
+      const response = await testHttpFetch(`${server.url}/api/memory/move`, {
         body: JSON.stringify({
           confirm: true,
           kind: 'durable',
@@ -1309,7 +1310,7 @@ describe('manager http API', () => {
     await writeFile(sourcePath, original);
     const server = await startServer(fixture.config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/memory/move`, {
+      const response = await testHttpFetch(`${server.url}/api/memory/move`, {
         body: JSON.stringify({
           confirm: true,
           kind: 'durable',
@@ -1391,7 +1392,7 @@ describe('manager http API', () => {
 
     const server = await startServer(fixture.config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/memory/move`, {
+      const response = await testHttpFetch(`${server.url}/api/memory/move`, {
         body: JSON.stringify({
           confirm: true,
           kind: 'durable',
@@ -1466,7 +1467,7 @@ describe('manager http API', () => {
     await writeFile(sourcePath, original);
     const server = await startServer(fixture.config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/memory/move`, {
+      const response = await testHttpFetch(`${server.url}/api/memory/move`, {
         body: JSON.stringify({
           confirm: true,
           kind: 'durable',
@@ -1552,7 +1553,7 @@ describe('manager http API', () => {
 
         yield* Effect.gen(function* () {
           const moveRequest = yield* Effect.promise(() =>
-            fetch(`${server.url}/api/memory/move`, {
+            testHttpFetch(`${server.url}/api/memory/move`, {
               body: JSON.stringify({
                 confirm: true,
                 kind: 'durable',
@@ -1575,7 +1576,7 @@ describe('manager http API', () => {
           expect(staged).toBe(true);
 
           const saveResponse = yield* Effect.promise(() =>
-            fetch(`${server.url}/api/memory/save`, {
+            testHttpFetch(`${server.url}/api/memory/save`, {
               body: JSON.stringify({expectedContent: original, replaceUri: sourceUri, text: concurrent}),
               headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
               method: 'POST',
@@ -1610,13 +1611,13 @@ describe('manager http API', () => {
     homes.push(fixture.config.agentContextHome);
     const server = await startServer(fixture.config, 'secret');
     const requestSave = (text: string, expectedContent?: string) =>
-      fetch(`${server.url}/api/memory/save`, {
+      testHttpFetch(`${server.url}/api/memory/save`, {
         body: JSON.stringify({expectedContent, replaceUri: fixture.uri, text}),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',
       });
     try {
-      const opened = await fetch(`${server.url}/api/memory?uri=${encodeURIComponent(fixture.uri)}`, {
+      const opened = await testHttpFetch(`${server.url}/api/memory?uri=${encodeURIComponent(fixture.uri)}`, {
         headers: {authorization: 'Bearer secret'},
       });
       const openedMemory = (await opened.json()) as {readonly content: string};
@@ -1636,7 +1637,7 @@ describe('manager http API', () => {
       expect(await readFile(fixture.canonicalPath, 'utf8')).toBe(cleanUpdate);
       expect(await readFile(fixture.worktreePath, 'utf8')).toBe(cleanUpdate);
 
-      const refreshed = await fetch(`${server.url}/api/memory?uri=${encodeURIComponent(fixture.uri)}`, {
+      const refreshed = await testHttpFetch(`${server.url}/api/memory?uri=${encodeURIComponent(fixture.uri)}`, {
         headers: {authorization: 'Bearer secret'},
       });
       const refreshedMemory = (await refreshed.json()) as {readonly content: string};
@@ -1697,8 +1698,8 @@ describe('manager http API', () => {
     const server = await startServer(config, 'secret');
     const kill = vi.spyOn(process, 'kill');
     try {
-      const inventory = await fetch(`${server.url}/api/processes`);
-      const termination = await fetch(`${server.url}/api/processes/terminate`, {
+      const inventory = await testHttpFetch(`${server.url}/api/processes`);
+      const termination = await testHttpFetch(`${server.url}/api/processes/terminate`, {
         body: JSON.stringify({
           confirm: true,
           processId: 123_456,
@@ -1724,7 +1725,9 @@ describe('manager http API', () => {
       const response = await runEffect(
         withCodeGraphMaintenanceIntent(
           config.agentContextHome,
-          Effect.promise(() => fetch(`${server.url}/api/processes`, {headers: {authorization: 'Bearer secret'}})),
+          Effect.promise(() =>
+            testHttpFetch(`${server.url}/api/processes`, {headers: {authorization: 'Bearer secret'}}),
+          ),
         ),
       );
       expect(response.status).toBe(200);
@@ -1761,7 +1764,7 @@ describe('manager http API', () => {
     const server = await startServer(config, 'secret');
     try {
       const headers = {authorization: 'Bearer secret'};
-      const statusResponse = await fetch(`${server.url}/api/graphs/status`, {headers});
+      const statusResponse = await testHttpFetch(`${server.url}/api/graphs/status`, {headers});
       const status = (await statusResponse.json()) as {
         readonly builds: readonly {readonly state: string}[];
         readonly catalogRevision?: string;
@@ -1773,7 +1776,7 @@ describe('manager http API', () => {
       expect(status.catalogRevision).toBeUndefined();
       expect(existsSync(seeded.databasePath)).toBe(false);
 
-      const catalogResponse = await fetch(`${server.url}/api/graphs`, {headers});
+      const catalogResponse = await testHttpFetch(`${server.url}/api/graphs`, {headers});
       const catalog = (await catalogResponse.json()) as {
         readonly builds: readonly {readonly state: string}[];
         readonly catalogRevision: string;
@@ -1794,7 +1797,7 @@ describe('manager http API', () => {
     const server = await startServer(config, 'secret');
     try {
       const headers = {authorization: 'Bearer secret'};
-      const initialResponse = await fetch(`${server.url}/api/graphs`, {headers});
+      const initialResponse = await testHttpFetch(`${server.url}/api/graphs`, {headers});
       const initial = (await initialResponse.json()) as {
         readonly catalogRevision: string;
         readonly repositories: readonly {readonly views: readonly unknown[]}[];
@@ -1812,13 +1815,13 @@ describe('manager http API', () => {
       );
       expect(removal.state).toBe('removed');
 
-      const statusResponse = await fetch(`${server.url}/api/graphs/status`, {headers});
+      const statusResponse = await testHttpFetch(`${server.url}/api/graphs/status`, {headers});
       const status = (await statusResponse.json()) as {readonly catalogRevision?: string};
       expect(statusResponse.status).toBe(200);
       expect(status.catalogRevision).toMatch(/^[0-9a-f]{64}$/u);
       expect(status.catalogRevision).not.toBe(initial.catalogRevision);
 
-      const refreshedResponse = await fetch(`${server.url}/api/graphs`, {headers});
+      const refreshedResponse = await testHttpFetch(`${server.url}/api/graphs`, {headers});
       const refreshed = (await refreshedResponse.json()) as {
         readonly catalogRevision: string;
         readonly repositories: readonly unknown[];
@@ -1838,7 +1841,7 @@ describe('manager http API', () => {
     const server = await startServer(config, 'secret');
     try {
       const headers = {authorization: 'Bearer secret'};
-      const catalogResponse = await fetch(`${server.url}/api/graphs`, {headers});
+      const catalogResponse = await testHttpFetch(`${server.url}/api/graphs`, {headers});
       const catalog = (await catalogResponse.json()) as {
         readonly repositories: readonly {
           readonly defaultViewId: string;
@@ -1867,7 +1870,7 @@ describe('manager http API', () => {
         expect.arrayContaining([expect.objectContaining({id: 'cgp_app'}), expect.objectContaining({id: 'cgp_core'})]),
       );
 
-      const catalogPageResponse = await fetch(
+      const catalogPageResponse = await testHttpFetch(
         `${server.url}/api/graphs/page?repository=${repositoryId}&snapshot=${MANAGER_GRAPH_SNAPSHOT_ID}&offset=0&workspaceOffset=0&query=core`,
         {headers},
       );
@@ -1885,9 +1888,12 @@ describe('manager http API', () => {
       expect(catalogPage.repository.snapshot.id).toBe(MANAGER_GRAPH_SNAPSHOT_ID);
       expect(catalogPage.repository.projects.map(project => project.id)).toEqual(['cgp_core']);
 
-      const viewsPageResponse = await fetch(`${server.url}/api/graphs/views?repository=${repositoryId}&offset=0`, {
-        headers,
-      });
+      const viewsPageResponse = await testHttpFetch(
+        `${server.url}/api/graphs/views?repository=${repositoryId}&offset=0`,
+        {
+          headers,
+        },
+      );
       const viewsPage = (await viewsPageResponse.json()) as {
         readonly hasMore: boolean;
         readonly repositories: readonly {
@@ -1905,10 +1911,14 @@ describe('manager http API', () => {
         state: 'legacy-unknown',
       });
 
-      const unpinnedCatalogPage = await fetch(`${server.url}/api/graphs/page?repository=${repositoryId}`, {headers});
+      const unpinnedCatalogPage = await testHttpFetch(`${server.url}/api/graphs/page?repository=${repositoryId}`, {
+        headers,
+      });
       expect(unpinnedCatalogPage.status).toBe(500);
 
-      const overviewResponse = await fetch(`${server.url}/api/graph?repository=${repositoryId}&project=all`, {headers});
+      const overviewResponse = await testHttpFetch(`${server.url}/api/graph?repository=${repositoryId}&project=all`, {
+        headers,
+      });
       const overview = (await overviewResponse.json()) as {
         readonly edges: readonly {readonly count: number; readonly relation: string}[];
         readonly mode: string;
@@ -1930,7 +1940,7 @@ describe('manager http API', () => {
       );
 
       const detailStartedAt = performance.now();
-      const detailResponse = await fetch(
+      const detailResponse = await testHttpFetch(
         `${server.url}/api/graph?repository=${repositoryId}&project=${encodeURIComponent('cgp_app')}`,
         {headers},
       );
@@ -1968,7 +1978,7 @@ describe('manager http API', () => {
       expect(detailElapsedMilliseconds).toBeLessThan(1_500);
 
       const expandedStartedAt = performance.now();
-      const expandedResponse = await fetch(
+      const expandedResponse = await testHttpFetch(
         `${server.url}/api/graph?repository=${repositoryId}&project=${encodeURIComponent('cgp_app')}&nodeLimit=999999&edgeLimit=999999`,
         {headers},
       );
@@ -1987,7 +1997,7 @@ describe('manager http API', () => {
       expect(expandedElapsedMilliseconds).toBeLessThan(2_000);
 
       const queryStartedAt = performance.now();
-      const queryResponse = await fetch(
+      const queryResponse = await testHttpFetch(
         `${server.url}/api/graph/query?repository=${repositoryId}&snapshot=${MANAGER_GRAPH_SNAPSHOT_ID}&query=${encodeURIComponent('App')}&nodeLimit=999999&edgeLimit=999999`,
         {headers},
       );
@@ -2011,13 +2021,13 @@ describe('manager http API', () => {
       expect(new TextEncoder().encode(queryText).byteLength).toBeLessThan(500_000);
       expect(queryElapsedMilliseconds).toBeLessThan(2_500);
 
-      const unpinnedQueryResponse = await fetch(
+      const unpinnedQueryResponse = await testHttpFetch(
         `${server.url}/api/graph/query?repository=${repositoryId}&query=${encodeURIComponent('App')}`,
         {headers},
       );
       expect(unpinnedQueryResponse.status).toBe(500);
 
-      const nodeResponse = await fetch(
+      const nodeResponse = await testHttpFetch(
         `${server.url}/api/graph/node?repository=${repositoryId}&node=${encodeURIComponent('app')}`,
         {headers},
       );
@@ -2074,7 +2084,9 @@ describe('manager http API', () => {
         ]),
       );
 
-      const analysisResponse = await fetch(`${server.url}/api/graph/analysis?repository=${repositoryId}`, {headers});
+      const analysisResponse = await testHttpFetch(`${server.url}/api/graph/analysis?repository=${repositoryId}`, {
+        headers,
+      });
       const analysis = (await analysisResponse.json()) as {
         readonly statistics: {
           readonly analyzedEdgeCount: number;
@@ -2115,7 +2127,7 @@ describe('manager http API', () => {
     const server = await startServer(config, 'secret');
     try {
       const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
-      const response = await fetch(`${server.url}/api/graphs/action`, {
+      const response = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({action: 'index-cwd', cwd: repositoryRoot}),
         headers,
         method: 'POST',
@@ -2136,7 +2148,7 @@ describe('manager http API', () => {
         threadnoteHome: config.agentContextHome,
       });
 
-      const rejected = await fetch(`${server.url}/api/graphs/action`, {
+      const rejected = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({action: 'index-cwd', cwd: 'relative/project'}),
         headers,
         method: 'POST',
@@ -2144,7 +2156,7 @@ describe('manager http API', () => {
       expect(rejected.status).toBe(500);
       expect(await rejected.json()).toEqual({error: 'Supply cwd as an absolute local worktree path.'});
 
-      const unavailable = await fetch(`${server.url}/api/graphs/action`, {
+      const unavailable = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({action: 'index-cwd', cwd: config.agentContextHome}),
         headers,
         method: 'POST',
@@ -2208,7 +2220,7 @@ describe('manager http API', () => {
     const server = await startServer(config, 'secret');
     try {
       const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
-      const response = await fetch(`${server.url}/api/graphs`, {headers});
+      const response = await testHttpFetch(`${server.url}/api/graphs`, {headers});
       const catalog = (await response.json()) as {
         readonly configuredProjects: readonly {
           readonly graphState: string;
@@ -2230,7 +2242,7 @@ describe('manager http API', () => {
       ]);
       expect(catalog.manifestRevision).toMatch(/^[0-9a-f]{64}$/);
 
-      const indexResponse = await fetch(`${server.url}/api/graphs/action`, {
+      const indexResponse = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({
           action: 'index-project',
           expectedRevision: catalog.manifestRevision,
@@ -2290,7 +2302,7 @@ describe('manager http API', () => {
           yield* store.promote(layout.databasePath, identity, snapshot.id);
         }),
       );
-      const refreshedCatalogResponse = await fetch(`${server.url}/api/graphs`, {headers});
+      const refreshedCatalogResponse = await testHttpFetch(`${server.url}/api/graphs`, {headers});
       const refreshedCatalog = (await refreshedCatalogResponse.json()) as {
         readonly configuredProjects: readonly {readonly graphState: string; readonly name: string}[];
       };
@@ -2302,7 +2314,7 @@ describe('manager http API', () => {
       const nestedSymlink = join(repositoryRoot, 'linked-project');
       await symlink(secondRepositoryRoot, nestedSymlink, 'dir');
       await writeFile(config.manifestPath, manifestFor(nestedSymlink));
-      const symlinkCatalogResponse = await fetch(`${server.url}/api/graphs`, {headers});
+      const symlinkCatalogResponse = await testHttpFetch(`${server.url}/api/graphs`, {headers});
       const symlinkCatalog = (await symlinkCatalogResponse.json()) as {
         readonly configuredProjects: readonly {readonly graphState: string; readonly name: string}[];
         readonly manifestRevision: string;
@@ -2311,7 +2323,7 @@ describe('manager http API', () => {
       expect(symlinkCatalog.configuredProjects).toEqual([
         expect.objectContaining({graphState: 'not-indexed', name: 'configured-project'}),
       ]);
-      const symlinkIndexResponse = await fetch(`${server.url}/api/graphs/action`, {
+      const symlinkIndexResponse = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({
           action: 'index-project',
           expectedRevision: symlinkCatalog.manifestRevision,
@@ -2332,7 +2344,7 @@ describe('manager http API', () => {
         threadnoteHome: config.agentContextHome,
       });
 
-      const staleResponse = await fetch(`${server.url}/api/graphs/action`, {
+      const staleResponse = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({
           action: 'index-project',
           expectedRevision: '0'.repeat(64),
@@ -2348,7 +2360,7 @@ describe('manager http API', () => {
         retryAfterMilliseconds: 0,
       });
 
-      const existingIndexResponse = await fetch(`${server.url}/api/graphs/action`, {
+      const existingIndexResponse = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({
           action: 'index',
           checkoutId: identity.checkoutId,
@@ -2374,7 +2386,7 @@ describe('manager http API', () => {
 
       const unsafeManifest = manifestFor(`${secondRepositoryRoot}\t`);
       await writeFile(config.manifestPath, unsafeManifest);
-      const unsafeResponse = await fetch(`${server.url}/api/graphs/action`, {
+      const unsafeResponse = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({
           action: 'index-project',
           expectedRevision: sha256HexSync(unsafeManifest),
@@ -2393,7 +2405,7 @@ describe('manager http API', () => {
 
       const foreignManifest = manifestFor('C:\\foreign\\configured-project');
       await writeFile(config.manifestPath, foreignManifest);
-      const foreignResponse = await fetch(`${server.url}/api/graphs/action`, {
+      const foreignResponse = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({
           action: 'index-project',
           expectedRevision: sha256HexSync(foreignManifest),
@@ -2416,7 +2428,7 @@ describe('manager http API', () => {
       const missingManifest = manifestFor(repositoryRoot);
       await writeFile(config.manifestPath, missingManifest);
       await rm(repositoryRoot, {force: true, recursive: true});
-      const unavailableResponse = await fetch(`${server.url}/api/graphs/action`, {
+      const unavailableResponse = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({
           action: 'index-project',
           expectedRevision: sha256HexSync(missingManifest),
@@ -2449,7 +2461,7 @@ describe('manager http API', () => {
     const server = await startServer(config, 'secret');
     try {
       const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
-      const diagnosticsResponse = await fetch(`${server.url}/api/graphs/diagnostics?analyze=true`, {headers});
+      const diagnosticsResponse = await testHttpFetch(`${server.url}/api/graphs/diagnostics?analyze=true`, {headers});
       const diagnostics = (await diagnosticsResponse.json()) as {
         readonly databases: readonly {
           readonly health: {readonly integrity: string};
@@ -2473,7 +2485,7 @@ describe('manager http API', () => {
         state: 'legacy-unknown',
       });
 
-      const repairPreview = await fetch(`${server.url}/api/graphs/action`, {
+      const repairPreview = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({action: 'repair', dryRun: true}),
         headers,
         method: 'POST',
@@ -2482,7 +2494,7 @@ describe('manager http API', () => {
       expect(repairPreview.status).toBe(200);
       expect(repairOutput.output).toContain('Would repair 1 native code graph database(s)');
 
-      const purgePreview = await fetch(`${server.url}/api/graphs/action`, {
+      const purgePreview = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({action: 'purge-all', dryRun: true}),
         headers,
         method: 'POST',
@@ -2490,7 +2502,7 @@ describe('manager http API', () => {
       expect(purgePreview.status).toBe(200);
       expect(await purgePreview.json()).toMatchObject({output: expect.stringContaining('Would remove derived')});
 
-      const refusedPurge = await fetch(`${server.url}/api/graphs/action`, {
+      const refusedPurge = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({action: 'purge-all'}),
         headers,
         method: 'POST',
@@ -2498,7 +2510,7 @@ describe('manager http API', () => {
       expect(refusedPurge.status).toBe(500);
       expect(await refusedPurge.json()).toMatchObject({error: 'Set confirm=true for this action.'});
 
-      const relativeTarget = await fetch(`${server.url}/api/graphs/action`, {
+      const relativeTarget = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({
           action: 'index',
           checkoutId: 'a'.repeat(64),
@@ -2512,7 +2524,7 @@ describe('manager http API', () => {
       expect(relativeTarget.status).toBe(500);
       expect(await relativeTarget.json()).toMatchObject({error: 'Supply cwd as an absolute local worktree path.'});
 
-      const missingRepositoryIdentity = await fetch(`${server.url}/api/graphs/action`, {
+      const missingRepositoryIdentity = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({
           action: 'index',
           checkoutId: 'a'.repeat(64),
@@ -2527,7 +2539,7 @@ describe('manager http API', () => {
 
       await mkdir(orphanedRoot, {recursive: true});
       await writeFile(join(orphanedRoot, 'graph-v3.sqlite'), 'incompatible disposable graph\n');
-      const targetedPreview = await fetch(`${server.url}/api/graphs/action`, {
+      const targetedPreview = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({action: 'purge', checkoutId: orphanedCheckoutId, dryRun: true}),
         headers,
         method: 'POST',
@@ -2538,7 +2550,7 @@ describe('manager http API', () => {
       });
       expect(existsSync(orphanedRoot)).toBe(true);
 
-      const refusedTargetedPurge = await fetch(`${server.url}/api/graphs/action`, {
+      const refusedTargetedPurge = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({action: 'purge', checkoutId: orphanedCheckoutId}),
         headers,
         method: 'POST',
@@ -2546,7 +2558,7 @@ describe('manager http API', () => {
       expect(refusedTargetedPurge.status).toBe(500);
       expect(await refusedTargetedPurge.json()).toMatchObject({error: 'Set confirm=true for this action.'});
 
-      const targetedPurge = await fetch(`${server.url}/api/graphs/action`, {
+      const targetedPurge = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({action: 'purge', checkoutId: orphanedCheckoutId, confirm: true}),
         headers,
         method: 'POST',
@@ -2572,7 +2584,7 @@ describe('manager http API', () => {
     );
     const server = await startServer(config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/graphs/action`, {
+      const response = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({
           action: 'compact',
           checkoutId: identity.checkoutId,
@@ -2610,16 +2622,16 @@ describe('manager http API', () => {
     try {
       const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
       const target = {action: 'remove-view', checkoutId, expectedSnapshotId: snapshotId, worktreeId};
-      const unauthorized = await fetch(`${server.url}/api/graphs/action`, {
+      const unauthorized = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({...target, dryRun: true}),
         headers: {'content-type': 'application/json'},
         method: 'POST',
       });
       expect(unauthorized.status).toBe(401);
 
-      const catalog = await fetch(`${server.url}/api/graphs`, {headers});
+      const catalog = await testHttpFetch(`${server.url}/api/graphs`, {headers});
       expect(catalog.status).toBe(200);
-      const preview = await fetch(`${server.url}/api/graphs/action`, {
+      const preview = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({...target, dryRun: true}),
         headers,
         method: 'POST',
@@ -2642,7 +2654,7 @@ describe('manager http API', () => {
       });
       expect(JSON.stringify(prepared)).not.toContain(config.agentContextHome);
 
-      const refused = await fetch(`${server.url}/api/graphs/action`, {
+      const refused = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({...target, confirm: true}),
         headers,
         method: 'POST',
@@ -2652,7 +2664,7 @@ describe('manager http API', () => {
         error: 'Preview this exact graph view removal and provide its approval digest before applying.',
       });
 
-      const applied = await fetch(`${server.url}/api/graphs/action`, {
+      const applied = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({...target, approvalDigest: prepared.approvalDigest, confirm: true}),
         headers,
         method: 'POST',
@@ -2689,7 +2701,7 @@ describe('manager http API', () => {
       expect(retried.status).toBe(200);
       expect(await retried.json()).toMatchObject({result: {applied: true, state: 'already-removed'}});
 
-      const stalePreview = await fetch(`${server.url}/api/graphs/action`, {
+      const stalePreview = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({...target, dryRun: true, expectedSnapshotId: `cgsn_${'e'.repeat(40)}-direct`}),
         headers,
         method: 'POST',
@@ -2724,7 +2736,7 @@ describe('manager http API', () => {
           const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
           const target = {action: 'remove-view', checkoutId, expectedSnapshotId: snapshotId, worktreeId};
           const preview = yield* Effect.promise(() =>
-            fetch(`${server.url}/api/graphs/action`, {
+            testHttpFetch(`${server.url}/api/graphs/action`, {
               body: JSON.stringify({...target, dryRun: true}),
               headers,
               method: 'POST',
@@ -2733,7 +2745,7 @@ describe('manager http API', () => {
           const prepared = (yield* Effect.promise(() => preview.json())) as {readonly approvalDigest: string};
           yield* Deferred.await(acquired);
           const response = yield* Effect.promise(() =>
-            fetch(`${server.url}/api/graphs/action`, {
+            testHttpFetch(`${server.url}/api/graphs/action`, {
               body: JSON.stringify({...target, approvalDigest: prepared.approvalDigest, confirm: true}),
               headers,
               method: 'POST',
@@ -2774,7 +2786,7 @@ describe('manager http API', () => {
         worktreeId: identity.worktreeId,
       };
       for (const component of ['checkoutId', 'repositoryId', 'worktreeId'] as const) {
-        const response = await fetch(`${server.url}/api/graphs/action`, {
+        const response = await testHttpFetch(`${server.url}/api/graphs/action`, {
           body: JSON.stringify({
             ...expected,
             [component]: differentGraphIdentity(expected[component]),
@@ -2793,7 +2805,7 @@ describe('manager http API', () => {
       execFileSync('git', ['-C', root, 'remote', 'add', 'origin', 'https://example.com/changed.git'], {
         stdio: 'pipe',
       });
-      const changedOrigin = await fetch(`${server.url}/api/graphs/action`, {
+      const changedOrigin = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({...expected, action: 'compact', cwd: root, dryRun: true}),
         headers,
         method: 'POST',
@@ -2828,7 +2840,7 @@ describe('manager http API', () => {
 
     const server = await startServer(config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/graphs/action`, {
+      const response = await testHttpFetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({
           action: 'compact',
           checkoutId: identity.checkoutId,
@@ -2859,10 +2871,10 @@ describe('manager http API', () => {
           Effect.all(
             [
               Effect.promise(() =>
-                fetch(`${server.url}/api/graphs/diagnostics`, {headers: {authorization: 'Bearer secret'}}),
+                testHttpFetch(`${server.url}/api/graphs/diagnostics`, {headers: {authorization: 'Bearer secret'}}),
               ),
               Effect.promise(() =>
-                fetch(`${server.url}/api/graphs/status`, {headers: {authorization: 'Bearer secret'}}),
+                testHttpFetch(`${server.url}/api/graphs/status`, {headers: {authorization: 'Bearer secret'}}),
               ),
             ] as const,
             {concurrency: 'unbounded'},
@@ -2890,7 +2902,7 @@ describe('manager http API', () => {
     const server = await startServer(config, 'secret');
     try {
       const headers = {authorization: 'Bearer secret'};
-      const catalog = (await (await fetch(`${server.url}/api/graphs`, {headers})).json()) as {
+      const catalog = (await (await testHttpFetch(`${server.url}/api/graphs`, {headers})).json()) as {
         readonly repositories: readonly {
           readonly defaultViewId: string;
           readonly views: readonly {readonly id: string; readonly snapshot: {readonly id: string}}[];
@@ -2908,7 +2920,7 @@ describe('manager http API', () => {
         `${server.url}/api/graphs/page?repository=${checkoutId}&snapshot=${originalSnapshotId}&query=app`,
       ];
       for (const url of staleUrls) {
-        const stale = await fetch(url, {headers});
+        const stale = await testHttpFetch(url, {headers});
         expect(stale.status, url).toBe(409);
         expect(await stale.json(), url).toEqual({
           code: 'graph-view-stale',
@@ -2918,7 +2930,7 @@ describe('manager http API', () => {
       }
 
       const currentGraph = (await (
-        await fetch(`${server.url}/api/graph?repository=${checkoutId}&project=all`, {headers})
+        await testHttpFetch(`${server.url}/api/graph?repository=${checkoutId}&project=all`, {headers})
       ).json()) as {readonly repository: {readonly snapshot: {readonly id: string}}};
       expect(currentGraph.repository.snapshot.id).toBe(replacementSnapshotId);
     } finally {
@@ -2931,13 +2943,13 @@ describe('manager http API', () => {
     homes.push(config.agentContextHome);
     vi.mocked(memory.runArchive).mockImplementation((_config, uri) => {
       if (uri.endsWith('bad.md')) {
-        return Effect.fail(new TestError('archive failed'));
+        return Effect.fail(TestError.make({message: 'archive failed'}));
       }
-      return Effect.succeed(undefined);
+      return Effect.void;
     });
     const server = await startServer(config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/bulk`, {
+      const response = await testHttpFetch(`${server.url}/api/bulk`, {
         body: JSON.stringify({
           action: 'archive',
           confirm: true,
@@ -2965,7 +2977,7 @@ describe('manager http API', () => {
     homes.push(config.agentContextHome);
     const server = await startServer(config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/read`, {
+      const response = await testHttpFetch(`${server.url}/api/read`, {
         body: JSON.stringify({uri: 'threadnote://user/denys/memories/durable/projects/threadnote/manager-ui.md'}),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',
@@ -2990,7 +3002,7 @@ describe('manager http API', () => {
     homes.push(config.agentContextHome);
     const server = await startServer(config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/recall`, {
+      const response = await testHttpFetch(`${server.url}/api/recall`, {
         body: JSON.stringify({query: 'manager context'}),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',
@@ -3014,7 +3026,7 @@ describe('manager http API', () => {
     homes.push(config.agentContextHome);
     const server = await startServer(config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/compact`, {
+      const response = await testHttpFetch(`${server.url}/api/compact`, {
         body: JSON.stringify({project: 'threadnote', topic: 'manager-ui'}),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',
@@ -3065,7 +3077,7 @@ describe('manager http API', () => {
     );
     const server = await startServer(config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/compact`, {
+      const response = await testHttpFetch(`${server.url}/api/compact`, {
         body: JSON.stringify({project: 'threadnote', topic: 'manager-ui'}),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',
@@ -3099,7 +3111,7 @@ describe('manager http API', () => {
     );
     const server = await startServer(config, 'secret');
     try {
-      const response = await fetch(`${server.url}/api/folder/remove`, {
+      const response = await testHttpFetch(`${server.url}/api/folder/remove`, {
         body: JSON.stringify({
           confirm: true,
           uri: 'threadnote://user/denys/memories/durable/projects/threadnote',
@@ -3132,7 +3144,7 @@ describe('manager http API', () => {
     homes.push(config.agentContextHome);
     const server = await startServer(config, 'secret');
     try {
-      const rejected = await fetch(`${server.url}/api/doctor/repair`, {
+      const rejected = await testHttpFetch(`${server.url}/api/doctor/repair`, {
         body: JSON.stringify({}),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',
@@ -3140,7 +3152,7 @@ describe('manager http API', () => {
       expect(rejected.status).toBe(500);
       expect(vi.mocked(lifecycle.runRepair)).not.toHaveBeenCalled();
 
-      const accepted = await fetch(`${server.url}/api/doctor/repair`, {
+      const accepted = await testHttpFetch(`${server.url}/api/doctor/repair`, {
         body: JSON.stringify({confirm: true}),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',
@@ -3169,7 +3181,7 @@ describe('manager http API', () => {
     const server = await startServer(config, 'secret');
     try {
       const request = (path: string, body: object) =>
-        fetch(`${server.url}${path}`, {
+        testHttpFetch(`${server.url}${path}`, {
           body: JSON.stringify(body),
           headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
           method: 'POST',
@@ -3191,7 +3203,7 @@ describe('manager http API', () => {
     homes.push(config.agentContextHome);
     const server = await startServer(config, 'secret');
     try {
-      const seedResponse = await fetch(`${server.url}/api/seed`, {
+      const seedResponse = await testHttpFetch(`${server.url}/api/seed`, {
         body: JSON.stringify({confirm: true}),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',
@@ -3201,7 +3213,7 @@ describe('manager http API', () => {
       expect(seedBody.output).toBe('seed applied');
       expect(vi.mocked(seeding.runSeed)).toHaveBeenCalledWith(config, {dryRun: false});
 
-      const skillsResponse = await fetch(`${server.url}/api/seed`, {
+      const skillsResponse = await testHttpFetch(`${server.url}/api/seed`, {
         body: JSON.stringify({confirm: true, skills: true}),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',

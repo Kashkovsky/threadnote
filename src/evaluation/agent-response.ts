@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 export const AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN = 3 as const;
 
 export interface AgentToolResponseMeasurement {
@@ -16,14 +17,20 @@ export interface RankedJsonPrefixProjection<T> {
   readonly value: T;
 }
 
-export class AgentResponseBudgetTooSmallError extends Error {
-  override readonly name = 'AgentResponseBudgetTooSmallError';
-
-  constructor(
-    readonly maximumBytes: number,
-    readonly minimumBytes: number,
-  ) {
-    super(`Agent response budget ${maximumBytes} bytes cannot fit the required ${minimumBytes}-byte envelope.`);
+export class AgentResponseBudgetTooSmallError extends Schema.TaggedError<AgentResponseBudgetTooSmallError>()(
+  'AgentResponseBudgetTooSmallError',
+  {
+    maximumBytes: Schema.Finite,
+    message: Schema.String,
+    minimumBytes: Schema.Finite,
+  },
+) {
+  static of(maximumBytes: number, minimumBytes: number): AgentResponseBudgetTooSmallError {
+    return AgentResponseBudgetTooSmallError.make({
+      maximumBytes,
+      message: `Agent response budget ${maximumBytes} bytes cannot fit the required ${minimumBytes}-byte envelope.`,
+      minimumBytes,
+    });
   }
 }
 
@@ -87,7 +94,7 @@ export function projectRankedJsonPrefix<TItem, TValue>(
   const empty = render([], items.length);
   const minimumBytes = encodedJsonBytes(empty);
   if (minimumBytes > maximumBytes) {
-    throw new AgentResponseBudgetTooSmallError(maximumBytes, minimumBytes);
+    throw AgentResponseBudgetTooSmallError.of(maximumBytes, minimumBytes);
   }
 
   // Do not assume the renderer's envelope size is monotonic. Omission receipts

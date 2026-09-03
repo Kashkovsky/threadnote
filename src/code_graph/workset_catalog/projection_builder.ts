@@ -34,7 +34,7 @@ export const buildCodeGraphWorksetRoutingProjectionScoped = Effect.fn(
   const layout = yield* Effect.try({
     try: () => codeGraphLayout(path, request.threadnoteHome, request.identity.checkoutId, request.identity.worktreeId),
     catch: cause =>
-      new CodeGraphWorksetCatalogError('invalid-input', 'Workset routing projection identity is invalid.', {cause}),
+      CodeGraphWorksetCatalogError.of('invalid-input', 'Workset routing projection identity is invalid.', {cause}),
   });
   return yield* buildCodeGraphReadySnapshotRoutingProjectionScoped(store, {
     checkoutId: request.identity.checkoutId,
@@ -62,7 +62,7 @@ export const stageCodeGraphWorksetRoutingProjectionScoped = Effect.fn(
   const layout = yield* Effect.try({
     try: () => codeGraphLayout(path, request.threadnoteHome, request.identity.checkoutId, request.identity.worktreeId),
     catch: cause =>
-      new CodeGraphWorksetCatalogError('invalid-input', 'Workset routing projection identity is invalid.', {cause}),
+      CodeGraphWorksetCatalogError.of('invalid-input', 'Workset routing projection identity is invalid.', {cause}),
   });
   return yield* streamCodeGraphReadySnapshotRoutingProjectionScoped(
     store,

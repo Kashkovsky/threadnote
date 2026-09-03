@@ -68,7 +68,7 @@ const program = Effect.scoped(
     });
     const cloneHead = yield* git(repository, ['rev-parse', 'HEAD']);
     if (cloneHead.stdout.trim() !== options.approvalCommit) {
-      return yield* Effect.fail(new ScriptError('The isolated dogfood clone did not resolve the reviewed harness.'));
+      return yield* ScriptError.make({message: 'The isolated dogfood clone did not resolve the reviewed harness.'});
     }
     const dogfoodEnvironment = codeMemoryLinkDogfoodEnvironment({
       home: processHome,
@@ -98,7 +98,7 @@ const program = Effect.scoped(
       '--json',
     ]);
     const symbol = findSymbolId(JSON.parse(graphQuery.stdout) as unknown, 'selectRecallCodeLinks');
-    if (symbol === null) return yield* Effect.fail(new ScriptError('Dogfood could not resolve the cited symbol id.'));
+    if (symbol === null) return yield* ScriptError.make({message: 'Dogfood could not resolve the cited symbol id.'});
     const runId = randomOpaqueId('run');
     const lexicalMarker = randomOpaqueId('marker');
     yield* runExact([
@@ -202,7 +202,7 @@ const program = Effect.scoped(
     const deferredWrite = yield* runExact(deferredRememberArgs);
     const durableReceiptMilliseconds = Math.max(0, Math.round((yield* Clock.currentTimeMillis) - deferredStartedAt));
     if (!deferredWrite.stdout.includes(deferredMemoryUri)) {
-      return yield* Effect.fail(new ScriptError('Deferred write did not return the canonical durable memory URI.'));
+      return yield* ScriptError.make({message: 'Deferred write did not return the canonical durable memory URI.'});
     }
     const beforeContent = (yield* runExact(['read', '--home', home, deferredMemoryUri])).stdout;
     const beforeMemory = requireMemoryRecord(deferredMemoryUri, beforeContent, 'deferred memory before finalization');
@@ -282,7 +282,7 @@ const program = Effect.scoped(
       verifyApprovalCheckout(sourceRoot, options.candidateCommit),
     ]);
     if (governanceAfter.commit !== options.approvalCommit) {
-      return yield* Effect.fail(new ScriptError('The reviewed harness checkout changed during dogfood.'));
+      return yield* ScriptError.make({message: 'The reviewed harness checkout changed during dogfood.'});
     }
     const observations = rawRuns.map(run =>
       createCodeMemoryLinkDogfoodObservationV1({
@@ -316,11 +316,9 @@ const program = Effect.scoped(
     const result = evaluateCodeMemoryLinkDogfood(artifact);
     yield* atomicWrite(options.output, `${JSON.stringify(artifact, undefined, 2)}\n`);
     if (result.gate.qualityFailures.length > 0) {
-      return yield* Effect.fail(
-        new ScriptError(
-          `Dogfood evidence was retained at ${options.output}.\n${result.gate.qualityFailures.join('\n')}`,
-        ),
-      );
+      return yield* ScriptError.make({
+        message: `Dogfood evidence was retained at ${options.output}.\n${result.gate.qualityFailures.join('\n')}`,
+      });
     }
     yield* Console.log(
       JSON.stringify({artifactHash: artifact.artifactHash, gate: result.gate, output: options.output}),
@@ -393,13 +391,13 @@ export function projectDeferredAnchorFinalization(
     receipt.version !== 1 ||
     !Array.isArray(receipt.items)
   ) {
-    throw new ScriptError('Dogfood finalization did not use the expected v1 receipt contract.');
+    throw ScriptError.make({message: 'Dogfood finalization did not use the expected v1 receipt contract.'});
   }
   const items = receipt.items.map((value, index) => plainRecord(value, `Deferred finalization item ${index + 1}`));
   const count = (field: 'conflictCount' | 'failedCount' | 'finalizedCount' | 'pendingCount' | 'scannedCount') => {
     const candidate = receipt[field];
     if (!Number.isSafeInteger(candidate) || (candidate as number) < 0) {
-      throw new ScriptError(`Dogfood finalization ${field} must be a non-negative integer.`);
+      throw ScriptError.make({message: `Dogfood finalization ${field} must be a non-negative integer.`});
     }
     return candidate as number;
   };
@@ -408,7 +406,7 @@ export function projectDeferredAnchorFinalization(
       const candidate = item.citationCount;
       if (candidate === undefined) return total;
       if (!Number.isSafeInteger(candidate) || (candidate as number) < 0) {
-        throw new ScriptError('Dogfood finalization citation count must be a non-negative integer.');
+        throw ScriptError.make({message: 'Dogfood finalization citation count must be a non-negative integer.'});
       }
       return total + (candidate as number);
     }, 0),
@@ -425,7 +423,7 @@ export function projectDeferredAnchorFinalization(
     projected.finalizedCount !== items.filter(item => item.state === 'finalized').length ||
     projected.pendingCount !== items.filter(item => item.state === 'pending').length
   ) {
-    throw new ScriptError('Dogfood finalization aggregate counts do not match its item receipts.');
+    throw ScriptError.make({message: 'Dogfood finalization aggregate counts do not match its item receipts.'});
   }
   return projected;
 }
@@ -441,7 +439,7 @@ export function codeGraphStatusHasIndexingActivity(value: unknown): boolean {
     (status.waiterCount as number) < 0 ||
     !('build' in status)
   ) {
-    throw new ScriptError('Dogfood graph status omitted its build and waiter activity contract.');
+    throw ScriptError.make({message: 'Dogfood graph status omitted its build and waiter activity contract.'});
   }
   return status.build !== null || status.builds.length > 0 || status.waiters.length > 0 || status.waiterCount !== 0;
 }
@@ -453,7 +451,7 @@ const countDeferredAnchorIntents = Effect.fn('codeMemoryLinkDogfood.countDeferre
   const path = yield* Path.Path;
   const names = yield* fs
     .readDirectory(root, {recursive: true})
-    .pipe(Effect.catch(() => Effect.succeed([] as readonly string[])));
+    .pipe(Effect.orElseSucceed(() => [] as readonly string[]));
   return countDeferredAnchorIntentNames(names.map(name => path.basename(name)));
 });
 
@@ -474,7 +472,7 @@ export function projectAutomaticDeferredAnchorTransition(input: {
     input.pendingIntentCountBefore,
   ];
   if (counts.some(count => !Number.isSafeInteger(count) || count < 0)) {
-    throw new ScriptError('Automatic deferred-anchor transition counts must be non-negative integers.');
+    throw ScriptError.make({message: 'Automatic deferred-anchor transition counts must be non-negative integers.'});
   }
   const citationCount = Math.max(0, input.citationCountAfter - input.citationCountBefore);
   const finalized =
@@ -499,7 +497,7 @@ export function projectAutomaticDeferredAnchorTransition(input: {
 
 function requireMemoryRecord(uri: string, content: string, label: string): MemoryRecord {
   const record = parseMemoryDocument(uri, content);
-  if (!record) throw new ScriptError(`${label} is not a canonical Threadnote memory document.`);
+  if (!record) throw ScriptError.make({message: `${label} is not a canonical Threadnote memory document.`});
   return record;
 }
 
@@ -534,7 +532,7 @@ export function projectCodeMemoryLinkDogfoodGraphStatusV1(value: unknown): CodeM
     (status.version !== 2 && status.version !== 3 && status.version !== 4 && status.version !== 5) ||
     typeof status.stale !== 'boolean'
   ) {
-    throw new ScriptError('Dogfood graph status did not use a supported status contract.');
+    throw ScriptError.make({message: 'Dogfood graph status did not use a supported status contract.'});
   }
   const snapshot = plainRecord(status.readySnapshot, 'Code graph ready snapshot');
   if (
@@ -544,7 +542,7 @@ export function projectCodeMemoryLinkDogfoodGraphStatusV1(value: unknown): CodeM
     typeof snapshot.id !== 'string' ||
     !/^cgsn_[0-9a-f]{32,64}$/u.test(snapshot.id)
   ) {
-    throw new ScriptError('Dogfood graph status did not identify a valid ready snapshot.');
+    throw ScriptError.make({message: 'Dogfood graph status did not identify a valid ready snapshot.'});
   }
   return {
     readySnapshotCommit: snapshot.commit,
@@ -569,7 +567,7 @@ export function codeMemoryLinkDogfoodEnvironment(input: {
 
 function plainRecord(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new ScriptError(`${label} must be an object.`);
+    throw ScriptError.make({message: `${label} must be an object.`});
   }
   return value as Record<string, unknown>;
 }
@@ -600,7 +598,7 @@ function parseArguments(args: readonly string[]): {
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (!['--approval-commit', '--candidate-commit', '--output', '--repository'].includes(argument)) {
-      throw new ScriptError(`Unknown Code Memory Link dogfood option: ${argument}`);
+      throw ScriptError.make({message: `Unknown Code Memory Link dogfood option: ${argument}`});
     }
     values[argument] = required(args[++index], argument);
   }
@@ -618,7 +616,7 @@ function randomOpaqueId(prefix: string): string {
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 
@@ -638,15 +636,15 @@ export const verifyDogfoodRunnerCheckout = Effect.fn('codeMemoryLinkDogfood.veri
     {concurrency: 2},
   );
   if (executingSourceRoot !== requestedSourceRoot) {
-    return yield* Effect.fail(
-      new ScriptError('--repository must be the canonical checkout that supplied and is executing the dogfood runner.'),
-    );
+    return yield* ScriptError.make({
+      message: '--repository must be the canonical checkout that supplied and is executing the dogfood runner.',
+    });
   }
   const governance = yield* verifyApprovalCheckout(executingSourceRoot, input.candidateCommit);
   if (governance.commit !== input.approvalCommit) {
-    return yield* Effect.fail(
-      new ScriptError('Dogfood requires the executing checkout to be the exact clean reviewed --approval-commit.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Dogfood requires the executing checkout to be the exact clean reviewed --approval-commit.',
+    });
   }
   return executingSourceRoot;
 });

@@ -15,7 +15,7 @@ export class HttpRequestFailed extends Schema.TaggedError<HttpRequestFailed>()('
 export class HttpStatusError extends Schema.TaggedError<HttpStatusError>()('HttpStatusError', {
   message: Schema.String,
   method: Schema.String,
-  status: Schema.Number,
+  status: Schema.Finite,
   url: Schema.String,
 }) {}
 
@@ -50,7 +50,9 @@ export interface HttpServiceShape {
   readonly getText: (url: string | URL, options?: HttpGetOptions) => Effect.Effect<HttpResponse<string>, HttpError>;
 }
 
-export class HttpService extends Context.Service<HttpService, HttpServiceShape>()('threadnote/effect/HttpService') {
+export class HttpService extends Context.Service<HttpService, HttpServiceShape>()(
+  'threadnote/effect/http/HttpService',
+) {
   static readonly layer = Layer.effect(
     HttpService,
     Effect.gen(function* () {
@@ -83,18 +85,17 @@ const download = (
   const operation = Effect.gen(function* () {
     const response = yield* client.execute(request).pipe(
       Effect.provideService(FetchHttpClient.Fetch, dynamicFetch),
-      Effect.mapError(
-        cause =>
-          new HttpRequestFailed({
-            cause,
-            message: `GET ${urlText} failed`,
-            method: 'GET',
-            url: urlText,
-          }),
+      Effect.mapError(cause =>
+        HttpRequestFailed.make({
+          cause,
+          message: `GET ${urlText} failed`,
+          method: 'GET',
+          url: urlText,
+        }),
       ),
     );
     if (response.status < 200 || response.status >= 300) {
-      return yield* new HttpStatusError({
+      return yield* HttpStatusError.make({
         message: `GET ${urlText} returned HTTP ${response.status}`,
         method: 'GET',
         status: response.status,
@@ -103,14 +104,13 @@ const download = (
     }
     const resumed = offset > 0 && response.status === 206;
     yield* Stream.run(response.stream, fs.sink(path, {flag: resumed ? 'a' : 'w', mode: 0o600})).pipe(
-      Effect.mapError(
-        cause =>
-          new HttpRequestFailed({
-            cause,
-            message: `GET ${urlText} response could not be written`,
-            method: 'GET',
-            url: urlText,
-          }),
+      Effect.mapError(cause =>
+        HttpRequestFailed.make({
+          cause,
+          message: `GET ${urlText} response could not be written`,
+          method: 'GET',
+          url: urlText,
+        }),
       ),
     );
     return {resumed, status: response.status};
@@ -118,9 +118,9 @@ const download = (
   return operation.pipe(
     Effect.timeout(options?.timeoutMs ?? 30 * 60_000),
     Effect.mapError(cause =>
-      cause instanceof HttpRequestFailed || cause instanceof HttpStatusError
+      Schema.is(HttpRequestFailed)(cause) || Schema.is(HttpStatusError)(cause)
         ? cause
-        : new HttpRequestFailed({
+        : HttpRequestFailed.make({
             cause,
             message: `GET ${urlText} failed`,
             method: 'GET',
@@ -143,20 +143,19 @@ const execute = <A>(
   }
   const response = client.execute(request).pipe(
     Effect.provideService(FetchHttpClient.Fetch, dynamicFetch),
-    Effect.mapError(
-      cause =>
-        new HttpRequestFailed({
-          cause,
-          message: `GET ${urlText} failed`,
-          method: 'GET',
-          url: urlText,
-        }),
+    Effect.mapError(cause =>
+      HttpRequestFailed.make({
+        cause,
+        message: `GET ${urlText} failed`,
+        method: 'GET',
+        url: urlText,
+      }),
     ),
   );
   const completeResponse = Effect.gen(function* () {
     const current = yield* response;
     if (current.status < 200 || current.status >= 300) {
-      return yield* new HttpStatusError({
+      return yield* HttpStatusError.make({
         message: `GET ${urlText} returned HTTP ${current.status}`,
         method: 'GET',
         status: current.status,
@@ -164,14 +163,13 @@ const execute = <A>(
       });
     }
     const body = yield* readBody(current).pipe(
-      Effect.mapError(
-        cause =>
-          new HttpRequestFailed({
-            cause,
-            message: `GET ${urlText} response could not be decoded`,
-            method: 'GET',
-            url: urlText,
-          }),
+      Effect.mapError(cause =>
+        HttpRequestFailed.make({
+          cause,
+          message: `GET ${urlText} response could not be decoded`,
+          method: 'GET',
+          url: urlText,
+        }),
       ),
     );
     return {body, status: current.status};
@@ -179,9 +177,9 @@ const execute = <A>(
   return completeResponse.pipe(
     Effect.timeout(options?.timeoutMs ?? 3000),
     Effect.mapError(cause =>
-      cause instanceof HttpRequestFailed || cause instanceof HttpStatusError
+      Schema.is(HttpRequestFailed)(cause) || Schema.is(HttpStatusError)(cause)
         ? cause
-        : new HttpRequestFailed({
+        : HttpRequestFailed.make({
             cause,
             message: `GET ${urlText} failed`,
             method: 'GET',
@@ -205,14 +203,13 @@ const executeStatus = (
     Effect.provideService(FetchHttpClient.Fetch, dynamicFetch),
     Effect.timeout(options?.timeoutMs ?? 3000),
     Effect.map(response => response.status),
-    Effect.mapError(
-      cause =>
-        new HttpRequestFailed({
-          cause,
-          message: `GET ${urlText} failed`,
-          method: 'GET',
-          url: urlText,
-        }),
+    Effect.mapError(cause =>
+      HttpRequestFailed.make({
+        cause,
+        message: `GET ${urlText} failed`,
+        method: 'GET',
+        url: urlText,
+      }),
     ),
   );
 };

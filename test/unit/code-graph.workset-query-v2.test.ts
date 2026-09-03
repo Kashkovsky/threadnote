@@ -1,6 +1,6 @@
 import {it as effectIt} from '@effect/vitest';
 import fc from 'fast-check';
-import {Effect} from 'effect';
+import {Clock, Effect} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -176,14 +176,14 @@ describe('code graph Workset Search V2 core', () => {
           (repository, index) => [repository.repositoryKey, index < 8 ? 0 : index < 12 ? 750 : 1_000] as const,
         ),
       );
-      const started = Date.now();
+      const started = yield* Clock.currentTimeMillis;
       const execution = yield* runCodeGraphWorksetQueryV2Core(dependencies(uncertain, {delays, realClock: true}), {
         ...uncertain.input,
         deadlineMilliseconds: 950,
         evidenceCards: 40,
       }).pipe(TestClock.withLive);
 
-      expect(Date.now() - started).toBeLessThan(1_250);
+      expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(1_250);
       expect(execution.logicalResult.coverage.stopReason).toBe('deadline');
       expect(execution.logicalResult.cards.map(card => card.repositoryKey)).toEqual(
         uncertain.router.repositories.slice(8, 12).map(repository => repository.repositoryKey),
@@ -503,7 +503,7 @@ function dependencies(
       const delay = options.delays?.get(repository.repositoryKey) ?? 0;
       return delay === 0 ? Effect.succeed(graph) : Effect.sleep(delay).pipe(Effect.as(graph));
     },
-    nowMilliseconds: options.realClock ? Effect.sync(() => Date.now()) : Effect.succeed(0),
+    nowMilliseconds: options.realClock ? Clock.currentTimeMillis : Effect.succeed(0),
     persist: (result: {readonly cards: readonly unknown[]}, refs: readonly {nodeId: string; repositoryId: string}[]) =>
       Effect.sync(() => {
         options.persistRefs?.(refs);

@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 import type {RemoteMemoryReceiptV1} from '../memory_domain/receipts.js';
 import type {RemoteMemoryRecallResult} from './postgres_repository.js';
 
@@ -48,9 +49,13 @@ export interface RemoteRecallProjection {
   readonly text: string;
 }
 
-export class RemoteRecallProjectionError extends Error {
-  override readonly name = 'RemoteRecallProjectionError';
-}
+export class RemoteRecallProjectionError extends Schema.TaggedError<RemoteRecallProjectionError>()(
+  'RemoteRecallProjectionError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export function projectRemoteRecallResponse(
   input: {
@@ -65,17 +70,17 @@ export function projectRemoteRecallResponse(
     budgetTokens < REMOTE_RECALL_MINIMUM_BUDGET_TOKENS ||
     budgetTokens > REMOTE_RECALL_MAXIMUM_BUDGET_TOKENS
   ) {
-    throw new RemoteRecallProjectionError(
-      `Remote recall budgetTokens must be an integer from ${REMOTE_RECALL_MINIMUM_BUDGET_TOKENS} through ${REMOTE_RECALL_MAXIMUM_BUDGET_TOKENS}.`,
-    );
+    throw RemoteRecallProjectionError.make({
+      message: `Remote recall budgetTokens must be an integer from ${REMOTE_RECALL_MINIMUM_BUDGET_TOKENS} through ${REMOTE_RECALL_MAXIMUM_BUDGET_TOKENS}.`,
+    });
   }
   const explain = options.explain === true;
   const maximumBytes = budgetTokens * ESTIMATED_BYTES_PER_TOKEN;
   let selected = responseForPrefix(input, 0, explain, budgetTokens);
   if (projectionBytes(selected) > maximumBytes) {
-    throw new RemoteRecallProjectionError(
-      `Remote recall budgetTokens=${budgetTokens} cannot fit its receipt envelope.`,
-    );
+    throw RemoteRecallProjectionError.make({
+      message: `Remote recall budgetTokens=${budgetTokens} cannot fit its receipt envelope.`,
+    });
   }
   for (let count = 1; count <= input.results.length; count += 1) {
     const candidate = responseForPrefix(input, count, explain, budgetTokens);

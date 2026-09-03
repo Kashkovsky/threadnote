@@ -26,7 +26,7 @@ describe('LocalModelStore', () => {
     const coreModel = BUILTIN_MODEL_MANIFESTS.find(model => model.id === CORE_EMBEDDING_MODEL_ID);
     const nonCoreModel = BUILTIN_MODEL_MANIFESTS.find(model => model.id === 'bge-m3-q8');
 
-    if (!coreModel || !nonCoreModel) throw new TestError('Missing built-in model fixture.');
+    if (!coreModel || !nonCoreModel) throw TestError.make({message: 'Missing built-in model fixture.'});
     expect(modelDownloadUrl(coreModel)).toBe(
       `https://github.com/Kashkovsky/threadnote/releases/download/v4.1.1/${coreModel.sha256}.gguf`,
     );
@@ -115,11 +115,7 @@ describe('LocalModelStore', () => {
     const sourceUrl = await serve(bytes, ranges);
     const home = await mkdtemp(join(tmpdir(), 'threadnote-model-store-repair-'));
     homes.push(home);
-    const store = await runEffect(
-      Effect.gen(function* () {
-        return yield* LocalModelStore;
-      }),
-    );
+    const store = await runEffect(LocalModelStore);
     const installedPath = store.path(home, manifest);
     await runEffect(store.install(home, manifest, {sourceUrl}));
     await writeFile(installedPath, Buffer.from('x'.repeat(bytes.length)));
@@ -237,7 +233,8 @@ async function serve(bytes: Buffer, ranges: Array<string | undefined>): Promise<
   servers.push(server);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new TestError('Could not resolve test model server address.');
+  if (!address || typeof address === 'string')
+    throw TestError.make({message: 'Could not resolve test model server address.'});
   return `http://127.0.0.1:${address.port}/model.gguf`;
 }
 
@@ -264,7 +261,8 @@ async function serveControlled(bytes: Buffer): Promise<{
   servers.push(server);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new TestError('Could not resolve test model server address.');
+  if (!address || typeof address === 'string')
+    throw TestError.make({message: 'Could not resolve test model server address.'});
   return {
     release: () => release(),
     requestStarted,

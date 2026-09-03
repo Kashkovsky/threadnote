@@ -4,7 +4,7 @@ import {Database} from 'bun:sqlite';
 
 const [databasePath, markerPath] = process.argv.slice(2);
 if (!databasePath || !markerPath) {
-  throw new TestError('Expected database and marker paths.');
+  throw TestError.make({message: 'Expected database and marker paths.'});
 }
 
 const database = new Database(databasePath);

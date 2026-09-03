@@ -2,7 +2,7 @@ import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {existsSync} from '../helpers/node-fs.js';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {Clock, DateTime, Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
@@ -840,7 +840,9 @@ describe('code graph cross-process build status', () => {
         const status = JSON.parse(yield* fs.readFileString(statusPath)) as {
           timestamps: Record<string, string>;
         };
-        const stale = new Date(Date.now() - CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS - 5_000).toISOString();
+        const stale = DateTime.formatIso(
+          DateTime.makeUnsafe((yield* Clock.currentTimeMillis) - CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS - 5_000),
+        );
         yield* fs.writeFileString(
           statusPath,
           `${JSON.stringify({...status, timestamps: {...status.timestamps, heartbeatAt: stale}})}\n`,
@@ -873,7 +875,7 @@ describe('code graph cross-process build status', () => {
         const completed = yield* makeCodeGraphBuildReporter(identity, layout);
         yield* completed.completeSnapshot(fixtureSnapshot(identity));
         const failed = yield* makeCodeGraphBuildReporter(identity, layout);
-        yield* failed.fail(new TestError(`Could not read ${home}/private/source.ts while indexing`));
+        yield* failed.fail(TestError.make({message: `Could not read ${home}/private/source.ts while indexing`}));
         return yield* readCodeGraphBuildStatuses(layout);
       }),
     );
@@ -982,12 +984,12 @@ describe('code graph cross-process build status', () => {
         });
         yield* fs.writeFileString(path.join(layout.repositoryRoot, 'graph-v2.sqlite'), 'obsolete graph\n');
         yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}));
-        const startedAt = Date.now();
+        const startedAt = yield* Clock.currentTimeMillis;
         const output = yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}));
         const human = yield* captureConsole(runCodeGraphStatus(config, {cwd: repository}));
         return {
           databasePath: layout.databasePath,
-          elapsedMilliseconds: Date.now() - startedAt,
+          elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
           human: human.output,
           idleOutput: idleOutput.output.trim(),
           output: output.output.trim(),
@@ -1258,5 +1260,5 @@ function fixtureSnapshot(identity: RepositoryIdentity): CodeGraphSnapshot {
 
 function runGit(cwd: string, args: readonly string[]): void {
   const result = Bun.spawnSync({cmd: ['git', '-C', cwd, ...args], stderr: 'pipe', stdout: 'pipe'});
-  if (result.exitCode !== 0) throw new TestError(result.stderr.toString());
+  if (result.exitCode !== 0) throw TestError.make({message: result.stderr.toString()});
 }

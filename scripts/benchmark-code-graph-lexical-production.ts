@@ -1,7 +1,7 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {DateTime, Effect, FileSystem, Option, Path} from 'effect';
 import {
   codeGraphCompactLexicalDeepAuditStatement,
   codeGraphEffectiveSymbolTermsQueryStatement,
@@ -111,9 +111,9 @@ const benchmark = Effect.scoped(
       storageReduced: compactStorage.allocatedBytes < legacyStorage.allocatedBytes,
     };
     if (Object.values(assertions).some(value => !value)) {
-      return yield* Effect.fail(
-        new ScriptError(`Code graph lexical production microbenchmark failed: ${JSON.stringify(assertions)}`),
-      );
+      return yield* ScriptError.make({
+        message: `Code graph lexical production microbenchmark failed: ${JSON.stringify(assertions)}`,
+      });
     }
 
     const artifact = {
@@ -132,7 +132,7 @@ const benchmark = Effect.scoped(
         ranking: 'sum-weight-desc-symbol-id',
         scope: 'lexical-storage-only-not-end-to-end-indexing',
       },
-      createdAt: new Date().toISOString(),
+      createdAt: DateTime.formatIso(yield* DateTime.now),
       environment: {
         architecture: system.architecture,
         commit: gitValue(['rev-parse', 'HEAD']),
@@ -361,7 +361,8 @@ function compactValidationMeasurements(databasePath: string, snapshotId: string)
       result = query.get(...statement.parameters) as typeof result;
       durations.push(performance.now() - startedAt);
     }
-    if (result === undefined) throw new ScriptError('Compact lexical deep audit did not return a storage receipt.');
+    if (result === undefined)
+      throw ScriptError.make({message: 'Compact lexical deep audit did not return a storage receipt.'});
     return {
       actualPostingCount: Number(result.posting_count),
       actualSymbolCount: Number(result.symbol_count),
@@ -462,7 +463,8 @@ function storageMeasurements(databasePath: string): StorageMeasurements {
 function pragmaInteger(database: Database, name: 'freelist_count' | 'page_count' | 'page_size'): number {
   const row = database.query(`PRAGMA ${name}`).get() as Record<string, bigint | number> | null;
   const value = Number(row?.[name] ?? -1);
-  if (!Number.isSafeInteger(value) || value < 0) throw new ScriptError(`SQLite returned an invalid ${name}.`);
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw ScriptError.make({message: `SQLite returned an invalid ${name}.`});
   return value;
 }
 

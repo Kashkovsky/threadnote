@@ -1,5 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber} from 'effect';
+import {DateTime, Deferred, Effect, Fiber} from 'effect';
 import {describe, expect} from 'vitest';
 import {
   makeCodeGraphRemovedViewCleanupWorker,
@@ -108,7 +108,7 @@ describe('removed view cleanup worker', () => {
           cursorToken: `vp1:a:${'f'.repeat(64)}:model-000:1`,
           nextAttemptAt: 501,
           phase: 'vector-pointers',
-          updatedAt: new Date(500).toISOString(),
+          updatedAt: DateTime.formatIso(DateTime.makeUnsafe(500)),
         },
       ]);
       expect(result).toEqual({
@@ -294,7 +294,7 @@ describe('removed view cleanup worker', () => {
             attempts: 0,
             nextAttemptAt: 501,
             phase: 'complete',
-            updatedAt: new Date(500).toISOString(),
+            updatedAt: DateTime.formatIso(DateTime.makeUnsafe(500)),
           },
         ]);
       }),
@@ -352,7 +352,7 @@ describe('removed view cleanup worker', () => {
             blockedCode: 'invalid-sidecar',
             nextAttemptAt: 30_500,
             phase,
-            updatedAt: new Date(500).toISOString(),
+            updatedAt: DateTime.formatIso(DateTime.makeUnsafe(500)),
           });
           expect(updates[0].cursorToken, `${phase}/${source}`).toBe(source === 'stored' ? malformed[phase] : undefined);
         }
@@ -367,7 +367,7 @@ describe('removed view cleanup worker', () => {
         attempts: 2,
         cursorToken: `vp1:a:${'a'.repeat(64)}:model-000:7`,
         nextAttemptAt: 30_500,
-        updatedAt: new Date(1_000).toISOString(),
+        updatedAt: DateTime.formatIso(DateTime.makeUnsafe(1_000)),
       });
       const worker = yield* makeCodeGraphRemovedViewCleanupWorker(
         dependencies({
@@ -461,7 +461,7 @@ describe('removed view cleanup worker', () => {
               }),
             ),
           withTargetLock: (_input, worktreeId, effect) =>
-            worktreeId.endsWith('0') ? Effect.fail(new CodeGraphStoreBusyError('busy')) : effect,
+            worktreeId.endsWith('0') ? Effect.fail(CodeGraphStoreBusyError.of('busy')) : effect,
         }),
       );
 
@@ -497,7 +497,7 @@ describe('removed view cleanup worker', () => {
                 ...candidate,
                 nextAttemptAt: now + 30_000,
                 revision: candidate.revision + 1,
-                updatedAt: new Date(Math.max(now, Date.parse(candidate.updatedAt))).toISOString(),
+                updatedAt: DateTime.formatIso(DateTime.makeUnsafe(Math.max(now, Date.parse(candidate.updatedAt)))),
               };
               queue = queue.map(entry => (entry.worktreeId === claimed.worktreeId ? claimed : entry));
               return [claimed];
@@ -609,7 +609,7 @@ function injectedPreparedVectorUnit(options: {
           () =>
             Effect.suspend((): Effect.Effect<A, unknown> => {
               if (options.monotonicMilliseconds() > preparation.deadlineMonotonicMilliseconds) {
-                return Effect.fail(new CodeGraphStoreBusyError('reservation deadline exhausted'));
+                return Effect.fail(CodeGraphStoreBusyError.of('reservation deadline exhausted'));
               }
               options.events.push('use');
               return use(Effect.succeed(completeVectorPage())).pipe(Effect.mapError(error => error as unknown));

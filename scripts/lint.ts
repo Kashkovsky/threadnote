@@ -103,6 +103,6 @@ if (import.meta.main) {
   try {
     process.exitCode = lint();
   } catch (cause) {
-    throw new ScriptError('Could not run the repository lint policy.', {cause});
+    throw ScriptError.make({message: 'Could not run the repository lint policy.', cause});
   }
 }

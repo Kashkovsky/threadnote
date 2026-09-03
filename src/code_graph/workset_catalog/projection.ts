@@ -425,5 +425,5 @@ function compareText(left: string, right: string): number {
 }
 
 function invalid(message: string): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('invalid-input', message);
+  return CodeGraphWorksetCatalogError.of('invalid-input', message);
 }

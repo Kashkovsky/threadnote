@@ -19,7 +19,7 @@ export function performanceArtifactPublicUrl(siteBase: string): string {
     siteBase.includes('//') ||
     segments.some(segment => segment === '.' || segment === '..' || !/^[A-Za-z0-9._~-]+$/.test(segment))
   ) {
-    throw new ScriptError('THREADNOTE_SITE_BASE must be a root-relative directory path ending in /.');
+    throw ScriptError.make({message: 'THREADNOTE_SITE_BASE must be a root-relative directory path ending in /.'});
   }
   return `${siteBase}performance-evidence.json`;
 }
@@ -71,13 +71,13 @@ const utcTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
 
 function exactRecord(value: unknown, path: string, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new ScriptError(`Performance binding ${path} must be an object.`);
+    throw ScriptError.make({message: `Performance binding ${path} must be an object.`});
   }
   const record = value as Record<string, unknown>;
   const actualKeys = Object.keys(record).sort();
   const expectedKeys = [...keys].sort();
   if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) {
-    throw new ScriptError(`Performance binding ${path} has unexpected or missing fields.`);
+    throw ScriptError.make({message: `Performance binding ${path} has unexpected or missing fields.`});
   }
   return record;
 }
@@ -91,7 +91,7 @@ function matchingString(
 ): string {
   const value = record[key];
   if (typeof value !== 'string' || !pattern.test(value)) {
-    throw new ScriptError(`Performance binding ${path}.${key} must be ${label}.`);
+    throw ScriptError.make({message: `Performance binding ${path}.${key} must be ${label}.`});
   }
   return value;
 }
@@ -104,7 +104,8 @@ export function validatePerformanceArtifactBinding(input: unknown): PerformanceA
     'sourceThreadnoteCommit',
     'sourceTreeSha256',
   ]);
-  if (binding.schemaVersion !== 1) throw new ScriptError('Performance binding root.schemaVersion must be 1.');
+  if (binding.schemaVersion !== 1)
+    throw ScriptError.make({message: 'Performance binding root.schemaVersion must be 1.'});
   matchingString(binding, 'artifactSha256', 'root', sha256Pattern, 'a lowercase SHA-256 digest');
   matchingString(binding, 'generatedAt', 'root', utcTimestampPattern, 'an ISO-8601 UTC timestamp');
   matchingString(binding, 'sourceThreadnoteCommit', 'root', sha40Pattern, 'a lowercase 40-character Git commit');
@@ -123,7 +124,8 @@ function canonicalJson(value: unknown): string {
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (!value || typeof value !== 'object') throw new ScriptError('Package manifest contains a non-JSON value.');
+  if (!value || typeof value !== 'object')
+    throw ScriptError.make({message: 'Package manifest contains a non-JSON value.'});
   return `{${Object.entries(value as Record<string, unknown>)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
@@ -135,10 +137,10 @@ export function canonicalPerformanceRuntimePackageManifest(manifestBytes: Uint8A
   try {
     parsed = JSON.parse(typeof manifestBytes === 'string' ? manifestBytes : new TextDecoder().decode(manifestBytes));
   } catch {
-    throw new ScriptError('Threadnote package manifest is not valid JSON.');
+    throw ScriptError.make({message: 'Threadnote package manifest is not valid JSON.'});
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new ScriptError('Threadnote package manifest must be an object.');
+    throw ScriptError.make({message: 'Threadnote package manifest must be an object.'});
   }
   const manifest = {...(parsed as Record<string, unknown>)};
   const scripts = manifest.scripts;
@@ -155,7 +157,7 @@ function parseRetainedPerformanceArtifactBytes(artifactBytes: Uint8Array): Retai
   try {
     parsed = JSON.parse(new TextDecoder().decode(artifactBytes));
   } catch {
-    throw new ScriptError('Retained performance artifact is not valid JSON.');
+    throw ScriptError.make({message: 'Retained performance artifact is not valid JSON.'});
   }
   parseBenchmarkArtifactV1(parsed);
   return validateRetainedPerformancePayload(parsed);
@@ -172,21 +174,25 @@ export function bindRetainedPerformanceArtifact(input: {
 }): PerformanceEvidence {
   const binding = validatePerformanceArtifactBinding(input.binding);
   if (!sha256Pattern.test(input.currentSourceTreeSha256)) {
-    throw new ScriptError('Measured performance source-tree digest is invalid.');
+    throw ScriptError.make({message: 'Measured performance source-tree digest is invalid.'});
   }
   const actualArtifactSha256 = sha256Hex(input.artifactBytes);
   if (actualArtifactSha256 !== binding.artifactSha256) {
-    throw new ScriptError(
-      `Retained performance artifact SHA-256 mismatch: expected ${binding.artifactSha256}, got ${actualArtifactSha256}.`,
-    );
+    throw ScriptError.make({
+      message: `Retained performance artifact SHA-256 mismatch: expected ${binding.artifactSha256}, got ${actualArtifactSha256}.`,
+    });
   }
   if (input.currentSourceTreeSha256 !== binding.sourceTreeSha256) {
-    throw new ScriptError('Retained performance evidence does not match its measured Threadnote source tree.');
+    throw ScriptError.make({
+      message: 'Retained performance evidence does not match its measured Threadnote source tree.',
+    });
   }
 
   const payload = parseRetainedPerformanceArtifactBytes(input.artifactBytes);
   if (payload.environment.commit !== binding.sourceThreadnoteCommit) {
-    throw new ScriptError('Retained performance artifact and binding name different Threadnote source commits.');
+    throw ScriptError.make({
+      message: 'Retained performance artifact and binding name different Threadnote source commits.',
+    });
   }
   const artifact = retainedPerformanceArtifactFromHarness(payload, {
     artifactUrl: input.artifactPublicUrl,
@@ -213,41 +219,43 @@ function runGit(repositoryRoot: string, arguments_: readonly string[]): ReturnTy
 
 function requireSuccessfulGit(result: ReturnType<typeof Bun.spawnSync>, operation: string): void {
   if (result.exitCode !== 0) {
-    throw new ScriptError(
-      `Could not ${operation}: ${decodeOutput(result.stderr) || `git exited with ${result.exitCode}`}.`,
-    );
+    throw ScriptError.make({
+      message: `Could not ${operation}: ${decodeOutput(result.stderr) || `git exited with ${result.exitCode}`}.`,
+    });
   }
 }
 
 function assertPerformanceSourceCommitAvailable(repositoryRoot: string, sourceCommit: string): void {
   if (!sha40Pattern.test(sourceCommit)) {
-    throw new ScriptError('Retained performance source commit must be a lowercase 40-character Git commit.');
+    throw ScriptError.make({
+      message: 'Retained performance source commit must be a lowercase 40-character Git commit.',
+    });
   }
   const commit = runGit(repositoryRoot, ['cat-file', '-e', `${sourceCommit}^{commit}`]);
   if (commit.exitCode !== 0) {
-    throw new ScriptError(
-      `Retained performance source commit ${sourceCommit} is unavailable; use a full Git checkout for the website build.`,
-    );
+    throw ScriptError.make({
+      message: `Retained performance source commit ${sourceCommit} is unavailable; use a full Git checkout for the website build.`,
+    });
   }
 }
 
 export function assertPerformanceSourceClean(repositoryRoot: string): void {
   const unstaged = runGit(repositoryRoot, ['diff', '--quiet', '--', ...cleanPerformanceSourcePathspecs]);
   if (unstaged.exitCode === 1) {
-    throw new ScriptError('Performance-bound sources contain tracked working-tree modifications.');
+    throw ScriptError.make({message: 'Performance-bound sources contain tracked working-tree modifications.'});
   }
   requireSuccessfulGit(unstaged, 'inspect tracked performance-source modifications');
 
   const staged = runGit(repositoryRoot, ['diff', '--cached', '--quiet', '--', ...cleanPerformanceSourcePathspecs]);
   if (staged.exitCode === 1) {
-    throw new ScriptError('Performance-bound sources contain staged modifications.');
+    throw ScriptError.make({message: 'Performance-bound sources contain staged modifications.'});
   }
   requireSuccessfulGit(staged, 'inspect staged performance-source modifications');
 
   const untracked = runGit(repositoryRoot, ['ls-files', '--others', '-z', '--', ...cleanPerformanceSourcePathspecs]);
   requireSuccessfulGit(untracked, 'inspect untracked performance sources');
   if ((untracked.stdout?.byteLength ?? 0) > 0) {
-    throw new ScriptError('Performance-bound sources contain untracked files.');
+    throw ScriptError.make({message: 'Performance-bound sources contain untracked files.'});
   }
 }
 
@@ -261,9 +269,10 @@ export function assertPerformancePackageManifestMatchesCommit(repositoryRoot: st
   const current = canonicalPerformanceRuntimePackageManifest(gitFileAt(repositoryRoot, 'HEAD', 'package.json'));
   const measured = canonicalPerformanceRuntimePackageManifest(gitFileAt(repositoryRoot, sourceCommit, 'package.json'));
   if (current !== measured) {
-    throw new ScriptError(
-      'Threadnote package manifest changed outside site-only scripts after the retained performance run; publish fresh evidence.',
-    );
+    throw ScriptError.make({
+      message:
+        'Threadnote package manifest changed outside site-only scripts after the retained performance run; publish fresh evidence.',
+    });
   }
 }
 
@@ -279,9 +288,9 @@ export function assertPerformanceSourcesMatchCommit(repositoryRoot: string, sour
     ...measuredPerformanceSourcePathspecs,
   ]);
   if (changed.exitCode !== 0) {
-    throw new ScriptError(
-      'Threadnote runtime sources changed after the retained performance run; publish fresh evidence.',
-    );
+    throw ScriptError.make({
+      message: 'Threadnote runtime sources changed after the retained performance run; publish fresh evidence.',
+    });
   }
   assertPerformancePackageManifestMatchesCommit(repositoryRoot, sourceCommit);
 }
@@ -294,7 +303,9 @@ function verifyReleaseEvidenceSource(repositoryRoot: string, payload: RetainedPe
   const resolved = runGit(repositoryRoot, ['rev-parse', '--verify', `${ref}^{commit}`]);
   requireSuccessfulGit(resolved, 'resolve the retained performance release tag');
   if (decodeOutput(resolved.stdout) !== releaseSha) {
-    throw new ScriptError('Retained performance release tag does not resolve to its recorded release commit.');
+    throw ScriptError.make({
+      message: 'Retained performance release tag does not resolve to its recorded release commit.',
+    });
   }
   if (
     sourceMode === 'exact-release' &&
@@ -309,12 +320,12 @@ function verifyReleaseEvidenceSource(repositoryRoot: string, payload: RetainedPe
     harnessCommit !== payload.environment.commit ||
     harnessCommit === releaseSha
   ) {
-    throw new ScriptError('Retained performance evidence has invalid release/harness source binding.');
+    throw ScriptError.make({message: 'Retained performance evidence has invalid release/harness source binding.'});
   }
   const mergeBase = runGit(repositoryRoot, ['merge-base', releaseSha, harnessCommit]);
   requireSuccessfulGit(mergeBase, 'verify the retained performance harness ancestry');
   if (decodeOutput(mergeBase.stdout) !== releaseSha) {
-    throw new ScriptError('Retained performance harness commit is not a descendant of its release commit.');
+    throw ScriptError.make({message: 'Retained performance harness commit is not a descendant of its release commit.'});
   }
   const changed = runGit(repositoryRoot, [
     'diff',
@@ -332,7 +343,7 @@ function verifyReleaseEvidenceSource(repositoryRoot: string, payload: RetainedPe
     deltaPaths.length === 0 ||
     deltaPaths.some(path => !(RELEASE_EVIDENCE_HARNESS_DELTA_PATHS as readonly string[]).includes(path))
   ) {
-    throw new ScriptError('Retained performance harness delta contains unreviewed runtime-source changes.');
+    throw ScriptError.make({message: 'Retained performance harness delta contains unreviewed runtime-source changes.'});
   }
 }
 
@@ -357,7 +368,9 @@ function performanceSourceTreeEntriesAtCommit(
     ...measuredPerformanceSourceTreeRoots,
   ]);
   if (listed.exitCode !== 0) {
-    throw new ScriptError(`Could not inventory measured performance sources: ${decodeOutput(listed.stderr)}.`);
+    throw ScriptError.make({
+      message: `Could not inventory measured performance sources: ${decodeOutput(listed.stderr)}.`,
+    });
   }
   const entries = new TextDecoder()
     .decode(listed.stdout)
@@ -365,20 +378,20 @@ function performanceSourceTreeEntriesAtCommit(
     .filter(Boolean)
     .map(entry => {
       const tabIndex = entry.indexOf('\t');
-      if (tabIndex === -1) throw new ScriptError('Git returned an invalid performance source entry.');
+      if (tabIndex === -1) throw ScriptError.make({message: 'Git returned an invalid performance source entry.'});
       const metadata = entry.slice(0, tabIndex).split(' ');
       const mode = metadata[0];
       const type = metadata[1];
       const objectId = metadata[2];
       const path = entry.slice(tabIndex + 1);
       if (!mode || type !== 'blob' || !objectId || !sha40Pattern.test(objectId) || !path) {
-        throw new ScriptError('Git returned an incomplete performance source entry.');
+        throw ScriptError.make({message: 'Git returned an incomplete performance source entry.'});
       }
       return {mode, objectId, path};
     })
     .filter(entry => !measuredPerformanceSourceTreeExclusions.has(entry.path))
     .sort((left, right) => left.path.localeCompare(right.path));
-  if (entries.length === 0) throw new ScriptError('Performance source inventory is empty.');
+  if (entries.length === 0) throw ScriptError.make({message: 'Performance source inventory is empty.'});
   return entries;
 }
 
@@ -400,23 +413,25 @@ function hashPerformanceSourceTreeEntries(
   let offset = 0;
   for (const entry of entries) {
     const headerEnd = output.indexOf(10, offset);
-    if (headerEnd === -1) throw new ScriptError('Git returned an incomplete performance source blob header.');
+    if (headerEnd === -1)
+      throw ScriptError.make({message: 'Git returned an incomplete performance source blob header.'});
     const [objectId, type, sizeText] = new TextDecoder().decode(output.subarray(offset, headerEnd)).split(' ');
     const size = Number(sizeText);
     if (objectId !== entry.objectId || type !== 'blob' || !Number.isSafeInteger(size) || size < 0) {
-      throw new ScriptError('Git returned an invalid performance source blob header.');
+      throw ScriptError.make({message: 'Git returned an invalid performance source blob header.'});
     }
     const blobStart = headerEnd + 1;
     const blobEnd = blobStart + size;
     if (blobEnd >= output.byteLength || output[blobEnd] !== 10) {
-      throw new ScriptError('Git returned an incomplete performance source blob.');
+      throw ScriptError.make({message: 'Git returned an incomplete performance source blob.'});
     }
     hasher.update(`${entry.mode}\0${entry.path}\0${size}\0`);
     hasher.update(output.subarray(blobStart, blobEnd));
     hasher.update('\0');
     offset = blobEnd + 1;
   }
-  if (offset !== output.byteLength) throw new ScriptError('Git returned unexpected performance source blob data.');
+  if (offset !== output.byteLength)
+    throw ScriptError.make({message: 'Git returned unexpected performance source blob data.'});
   return hasher.digest('hex');
 }
 
@@ -463,14 +478,16 @@ export async function loadRetainedPerformanceEvidence(
     );
   }
   if (!artifactExists || !bindingExists) {
-    throw new ScriptError('Retained performance evidence requires both the local JSON artifact and its binding file.');
+    throw ScriptError.make({
+      message: 'Retained performance evidence requires both the local JSON artifact and its binding file.',
+    });
   }
 
   let bindingInput: unknown;
   try {
     bindingInput = JSON.parse(await bindingFile.text());
   } catch {
-    throw new ScriptError('Retained performance binding is not valid JSON.');
+    throw ScriptError.make({message: 'Retained performance binding is not valid JSON.'});
   }
   const binding = validatePerformanceArtifactBinding(bindingInput);
   // This page publishes historical release evidence. Later runtime changes must not rewrite its source identity;
@@ -496,9 +513,9 @@ export async function loadRetainedPerformanceEvidence(
 export async function writePerformanceArtifactBinding(repositoryRoot: string): Promise<PerformanceArtifactBinding> {
   const artifactFile = Bun.file(`${repositoryRoot}/${performanceArtifactRelativePath}`);
   if (!(await artifactFile.exists())) {
-    throw new ScriptError(
-      `Place the reviewed payload at ${performanceArtifactRelativePath} before creating its binding.`,
-    );
+    throw ScriptError.make({
+      message: `Place the reviewed payload at ${performanceArtifactRelativePath} before creating its binding.`,
+    });
   }
 
   const artifactBytes = new Uint8Array(await artifactFile.arrayBuffer());

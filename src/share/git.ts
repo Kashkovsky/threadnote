@@ -164,7 +164,7 @@ export const publishShareGitChange = Effect.fn('share.publishShareGitChange')(fu
       if (/nothing to commit|no changes added/i.test(detail)) {
         messages.push('git commit: nothing to commit (file already in tree)');
       } else {
-        throw new ShareOperationError(`git commit failed: ${detail || 'unknown error'}`);
+        throw ShareOperationError.make({message: `git commit failed: ${detail || 'unknown error'}`});
       }
     } else {
       messages.push(`git commit: ${commitResult.stdout.trim().split('\n').slice(0, 2).join(' ')}`);
@@ -207,35 +207,35 @@ export const writeSharedWorktreeFile = Effect.fn('share.writeSharedWorktreeFile'
   for (const segment of safeRelativePath.split('/').slice(0, -1)) {
     current = path.join(current, segment);
     if (Option.isSome(yield* fs.readLink(current).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new ShareOperationError(`Refusing to write through a shared worktree symbolic link: ${current}`),
-      );
+      return yield* ShareOperationError.make({
+        message: `Refusing to write through a shared worktree symbolic link: ${current}`,
+      });
     }
     if (yield* fs.exists(current)) {
       const info = yield* fs.stat(current);
       if (info.type !== 'Directory') {
-        return yield* Effect.fail(new ShareOperationError(`Shared worktree parent is not a directory: ${current}`));
+        return yield* ShareOperationError.make({message: `Shared worktree parent is not a directory: ${current}`});
       }
     } else {
       yield* fs.makeDirectory(current, {mode: 0o700});
     }
     const expected = path.resolve(realWorktree, path.relative(path.resolve(worktree), current));
     if ((yield* fs.realPath(current)) !== expected) {
-      return yield* Effect.fail(
-        new ShareOperationError(`Refusing to write through a shared worktree path alias: ${current}`),
-      );
+      return yield* ShareOperationError.make({
+        message: `Refusing to write through a shared worktree path alias: ${current}`,
+      });
     }
   }
   if (Option.isSome(yield* fs.readLink(targetPath).pipe(Effect.option))) {
-    return yield* Effect.fail(
-      new ShareOperationError(`Refusing to replace a shared worktree symbolic link: ${targetPath}`),
-    );
+    return yield* ShareOperationError.make({
+      message: `Refusing to replace a shared worktree symbolic link: ${targetPath}`,
+    });
   }
   const temporaryPath = `${targetPath}.${system.processId}.tmp`;
   yield* fs.writeFileString(temporaryPath, content, {mode: 0o600});
   yield* fs
     .rename(temporaryPath, targetPath)
-    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
+    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.ignore)));
   return targetPath;
 });
 
@@ -255,38 +255,32 @@ export function assertSharedWorktreeFileReady(
       allowFailure: true,
     });
     if (unmerged.exitCode !== 0) {
-      return yield* Effect.fail(
-        new ShareOperationError(
-          `Could not verify shared worktree state for ${safeRelativePath}: ${unmerged.stderr.trim() || unmerged.stdout.trim() || 'git ls-files failed'}.`,
-        ),
-      );
+      return yield* ShareOperationError.make({
+        message: `Could not verify shared worktree state for ${safeRelativePath}: ${unmerged.stderr.trim() || unmerged.stdout.trim() || 'git ls-files failed'}.`,
+      });
     }
     if (unmerged.stdout.trim().length > 0) {
-      return yield* Effect.fail(
-        new ShareOperationError(
-          `Refusing to overwrite unmerged shared worktree file: ${safeRelativePath}. Resolve the conflict first.`,
-        ),
-      );
+      return yield* ShareOperationError.make({
+        message: `Refusing to overwrite unmerged shared worktree file: ${safeRelativePath}. Resolve the conflict first.`,
+      });
     }
     const targetPath = yield* pathJoin(worktree, ...safeRelativePath.split('/'));
     const fs = yield* FileSystem.FileSystem;
     if (!(yield* fs.exists(targetPath))) return;
     if (Option.isSome(yield* fs.readLink(targetPath).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new ShareOperationError(`Refusing to replace a shared worktree symbolic link: ${targetPath}`),
-      );
+      return yield* ShareOperationError.make({
+        message: `Refusing to replace a shared worktree symbolic link: ${targetPath}`,
+      });
     }
     const info = yield* fs.stat(targetPath);
     if (info.type !== 'File') {
-      return yield* Effect.fail(new ShareOperationError(`Shared worktree target is not a regular file: ${targetPath}`));
+      return yield* ShareOperationError.make({message: `Shared worktree target is not a regular file: ${targetPath}`});
     }
     const currentContent = yield* fs.readFileString(targetPath);
     if (expectedContent === undefined || !contentEquivalent(currentContent, expectedContent)) {
-      return yield* Effect.fail(
-        new ShareOperationError(
-          `Refusing to overwrite changed shared worktree file: ${safeRelativePath}. Sync or resolve the worktree conflict first.`,
-        ),
-      );
+      return yield* ShareOperationError.make({
+        message: `Refusing to overwrite changed shared worktree file: ${safeRelativePath}. Sync or resolve the worktree conflict first.`,
+      });
     }
   });
 }
@@ -303,9 +297,9 @@ const runGitCommand = Effect.fn('share.runGitCommand')(function* (
   }
   const result = yield* runCommand(git, args, {allowFailure: true});
   if (result.exitCode !== 0) {
-    throw new ShareOperationError(
-      `${failureLabel}: ${result.stderr.trim() || result.stdout.trim() || 'unknown error'}`,
-    );
+    throw ShareOperationError.make({
+      message: `${failureLabel}: ${result.stderr.trim() || result.stdout.trim() || 'unknown error'}`,
+    });
   }
   return result;
 });
@@ -331,9 +325,9 @@ const restoreTrackedSharedChanges = Effect.fn('share.restoreTrackedSharedChanges
     {allowFailure: true},
   );
   if (changed.exitCode !== 0) {
-    throw new ShareOperationError(
-      `Could not inspect tracked shared changes in ${worktree}: ${changed.stderr.trim() || changed.stdout.trim() || 'unknown git diff error'}`,
-    );
+    throw ShareOperationError.make({
+      message: `Could not inspect tracked shared changes in ${worktree}: ${changed.stderr.trim() || changed.stdout.trim() || 'unknown git diff error'}`,
+    });
   }
   const relativePaths = [...new Set(changed.stdout.split('\0').filter(Boolean))];
   if (relativePaths.length === 0) {
@@ -345,9 +339,9 @@ const restoreTrackedSharedChanges = Effect.fn('share.restoreTrackedSharedChanges
     {allowFailure: true},
   );
   if (restored.exitCode !== 0) {
-    throw new ShareOperationError(
-      `Could not restore tracked shared changes in ${worktree}: ${restored.stderr.trim() || restored.stdout.trim() || 'unknown git restore error'}`,
-    );
+    throw ShareOperationError.make({
+      message: `Could not restore tracked shared changes in ${worktree}: ${restored.stderr.trim() || restored.stdout.trim() || 'unknown git restore error'}`,
+    });
   }
   return relativePaths;
 });
@@ -368,19 +362,15 @@ const isShareGitOperationInProgress = Effect.fn('share.isShareGitOperationInProg
   const args = ['-C', worktree, 'rev-parse', ...SHARE_GIT_OPERATION_MARKERS.flatMap(marker => ['--git-path', marker])];
   const result = yield* runCommand(git, args, {allowFailure: true});
   if (result.exitCode !== 0) {
-    return yield* Effect.fail(
-      new ShareOperationError(
-        `Could not inspect Git operation state in ${worktree}: ${result.stderr.trim() || result.stdout.trim() || 'unknown git rev-parse error'}`,
-      ),
-    );
+    return yield* ShareOperationError.make({
+      message: `Could not inspect Git operation state in ${worktree}: ${result.stderr.trim() || result.stdout.trim() || 'unknown git rev-parse error'}`,
+    });
   }
   const markerPaths = result.stdout.split(/\r?\n/).filter(Boolean);
   if (markerPaths.length !== SHARE_GIT_OPERATION_MARKERS.length) {
-    return yield* Effect.fail(
-      new ShareOperationError(
-        `Could not inspect Git operation state in ${worktree}: git returned incomplete marker paths.`,
-      ),
-    );
+    return yield* ShareOperationError.make({
+      message: `Could not inspect Git operation state in ${worktree}: git returned incomplete marker paths.`,
+    });
   }
   for (const markerPath of markerPaths) {
     const absolutePath = (yield* pathIsAbsolute(markerPath)) ? markerPath : yield* pathJoin(worktree, markerPath);

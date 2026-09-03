@@ -1,4 +1,5 @@
 import fc from 'fast-check';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {describe, expect, it} from 'vitest';
 import {
   CODE_GRAPH_MANAGER_WORKSET_ORCHESTRATOR_ENV,
@@ -13,7 +14,7 @@ import {Effect} from 'effect';
 function systemInfoStub(overrides: Partial<SystemInfoShape> = {}): SystemInfoShape {
   return {
     architecture: 'arm64',
-    availableDiskBytes: () => Effect.succeed(undefined),
+    availableDiskBytes: () => succeedUndefined,
     currentDirectory: () => '/',
     environment: () => ({
       PATH: '/usr/bin',
@@ -34,7 +35,7 @@ function systemInfoStub(overrides: Partial<SystemInfoShape> = {}): SystemInfoSha
     platform: 'darwin',
     processArguments: ['/opt/threadnote/bin/threadnote'],
     processId: 1,
-    processStartIdentity: () => Effect.succeed(undefined),
+    processStartIdentity: () => succeedUndefined,
     readLine: () => () => undefined,
     runtimeVersion: 'test',
     setEnvironmentVariable: () => undefined,

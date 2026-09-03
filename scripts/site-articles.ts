@@ -1,6 +1,6 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Console, Effect, FileSystem, Path} from 'effect';
+import {Console, Effect, FileSystem, Path, Schema} from 'effect';
 import {createElement} from 'react';
 import ReactMarkdown from 'react-markdown';
 import {renderToStaticMarkup} from 'react-dom/server';
@@ -53,7 +53,7 @@ export type WebsitePost =
   WebsiteArticle | (WebsiteRelease & {readonly author: 'Threadnote'; readonly kind: 'release'; readonly title: string});
 
 function articleError(fileName: string, detail: string): ScriptError {
-  return new ScriptError(`website/articles/${fileName}: ${detail}`);
+  return ScriptError.make({message: `website/articles/${fileName}: ${detail}`});
 }
 
 function plainText(markdown: string): string {
@@ -292,14 +292,14 @@ function replaceTagAttribute(
   );
   const tag = html.match(tagPattern)?.[0];
   if (!tag)
-    throw new ScriptError(
-      `What's New HTML template is missing ${tagName}[${identifyingAttribute}="${identifyingValue}"]`,
-    );
+    throw ScriptError.make({
+      message: `What's New HTML template is missing ${tagName}[${identifyingAttribute}="${identifyingValue}"]`,
+    });
   const attributePattern = new RegExp(`\\b${escapeRegExp(updatedAttribute)}="[^"]*"`, 'i');
   if (!attributePattern.test(tag)) {
-    throw new ScriptError(
-      `What's New HTML template ${tagName}[${identifyingAttribute}="${identifyingValue}"] is missing ${updatedAttribute}`,
-    );
+    throw ScriptError.make({
+      message: `What's New HTML template ${tagName}[${identifyingAttribute}="${identifyingValue}"] is missing ${updatedAttribute}`,
+    });
   }
   const updatedTag = tag.replace(attributePattern, `${updatedAttribute}="${escapeHtml(updatedValue)}"`);
   return html.replace(tagPattern, updatedTag);
@@ -400,10 +400,11 @@ function crawlerIndexFallback(posts: readonly WebsitePost[]): string {
 export function renderWhatsNewIndexHtml(template: string, posts: readonly WebsitePost[]): string {
   const orderedPosts = orderWebsitePostsDescending(posts);
   const latestPost = orderedPosts[0];
-  if (!latestPost) throw new ScriptError("What's New index requires at least one post");
+  if (!latestPost) throw ScriptError.make({message: "What's New index requires at least one post"});
   const latestSocialImage = postDetails(latestPost).socialImage;
-  if (!template.includes('<div id="root"></div>')) throw new ScriptError("What's New HTML template is missing #root");
-  if (!template.includes('</head>')) throw new ScriptError("What's New HTML template is missing </head>");
+  if (!template.includes('<div id="root"></div>'))
+    throw ScriptError.make({message: "What's New HTML template is missing #root"});
+  if (!template.includes('</head>')) throw ScriptError.make({message: "What's New HTML template is missing </head>"});
   const itemList = {
     '@context': 'https://schema.org',
     '@type': 'CollectionPage',
@@ -461,7 +462,8 @@ export function renderWebsitePostHtml(template: string, post: WebsitePost): stri
   html = replaceSocialImageMetadata(html, details.socialImage);
   html = replaceTagAttribute(html, 'meta', 'name', 'twitter:title', 'content', details.pageTitle);
   html = replaceTagAttribute(html, 'meta', 'name', 'twitter:description', 'content', post.summary);
-  if (!/<title>[^<]*<\/title>/i.test(html)) throw new ScriptError("What's New HTML template is missing its title");
+  if (!/<title>[^<]*<\/title>/i.test(html))
+    throw ScriptError.make({message: "What's New HTML template is missing its title"});
   html = html.replace(/<title>[^<]*<\/title>/i, `<title>${escapeHtml(details.pageTitle)}</title>`);
 
   const structuredData = JSON.stringify(postStructuredData(post)).replaceAll('<', '\\u003c');
@@ -470,9 +472,10 @@ export function renderWebsitePostHtml(template: string, post: WebsitePost): stri
     `<meta property="article:author" content="${escapeHtml(details.author)}" />`,
     `<script type="application/ld+json" data-threadnote-post>${structuredData}</script>`,
   ].join('\n    ');
-  if (!html.includes('</head>')) throw new ScriptError("What's New HTML template is missing </head>");
+  if (!html.includes('</head>')) throw ScriptError.make({message: "What's New HTML template is missing </head>"});
   html = html.replace('</head>', `    ${postMetadata}\n  </head>`);
-  if (!html.includes('<div id="root"></div>')) throw new ScriptError("What's New HTML template is missing #root");
+  if (!html.includes('<div id="root"></div>'))
+    throw ScriptError.make({message: "What's New HTML template is missing #root"});
   return html.replace('<div id="root"></div>', `<div id="root">${crawlerFallback(post)}</div>`);
 }
 
@@ -489,7 +492,7 @@ export function renderWebsitePostsSitemap(sitemap: string, posts: readonly Websi
     `${escapeRegExp(generatedSitemapStart)}[\\s\\S]*?${escapeRegExp(generatedSitemapEnd)}`,
   );
   if (generatedPattern.test(sitemap)) return sitemap.replace(generatedPattern, generated);
-  if (!sitemap.includes('</urlset>')) throw new ScriptError('Website sitemap is missing </urlset>');
+  if (!sitemap.includes('</urlset>')) throw ScriptError.make({message: 'Website sitemap is missing </urlset>'});
   return sitemap.replace('</urlset>', `${generated}\n</urlset>`);
 }
 
@@ -501,12 +504,16 @@ export const generateWebsitePostPages = Effect.fn('siteArticles.generatePostPage
   const articles = yield* Effect.tryPromise({
     try: () => loadWebsiteArticles(repositoryRoot),
     catch: error =>
-      error instanceof ScriptError ? error : new ScriptError(`Could not load website articles: ${String(error)}`),
+      Schema.is(ScriptError)(error)
+        ? error
+        : ScriptError.make({message: `Could not load website articles: ${String(error)}`}),
   });
   const releases = yield* Effect.try({
     try: () => loadLatestMajorWebsiteReleases(repositoryRoot),
     catch: error =>
-      error instanceof ScriptError ? error : new ScriptError(`Could not load website releases: ${String(error)}`),
+      Schema.is(ScriptError)(error)
+        ? error
+        : ScriptError.make({message: `Could not load website releases: ${String(error)}`}),
   });
   const posts = orderWebsitePostsDescending([
     ...articles,
@@ -530,7 +537,8 @@ export const generateWebsitePostPages = Effect.fn('siteArticles.generatePostPage
         const imagePath = path.join(outputRoot, release.socialImage);
         const image = yield* Effect.try({
           try: () => renderWebsiteReleaseSocialImagePng(repositoryRoot, release),
-          catch: error => new ScriptError(`Could not render ${release.version} social image: ${String(error)}`),
+          catch: error =>
+            ScriptError.make({message: `Could not render ${release.version} social image: ${String(error)}`}),
         });
         yield* fs.makeDirectory(path.dirname(imagePath), {recursive: true});
         yield* fs.writeFile(imagePath, image);

@@ -107,7 +107,7 @@ describe('code graph lifecycle classification properties', () => {
         let cursor: string | undefined;
         for (let index = 0; index < targets.length; index += 1) {
           const selected = selectCodeGraphLifecycleOpportunityTarget(targets, cursor);
-          if (!selected) throw new TestError('valid lifecycle target was not selected');
+          if (!selected) throw TestError.make({message: 'valid lifecycle target was not selected'});
           visited.push(selected.checkoutId);
           cursor = `${selected.checkoutId}\0${selected.databasePath}`;
         }
@@ -131,7 +131,7 @@ describe('code graph lifecycle classification properties', () => {
         let cursor: string | undefined;
         for (let index = 0; index < targets.length; index += 1) {
           const selected = selectCodeGraphLifecycleOpportunityTarget(targets, cursor);
-          if (!selected) throw new TestError('valid lifecycle target was not selected');
+          if (!selected) throw TestError.make({message: 'valid lifecycle target was not selected'});
           visited.push(selected.checkoutId);
           cursor = `${selected.checkoutId}\0${selected.databasePath}`;
         }
@@ -167,7 +167,7 @@ describe('code graph lifecycle classification properties', () => {
         let cursor: string | undefined;
         for (let index = 0; index < units.length; index += 1) {
           const selected = selectCodeGraphLifecycleOpportunityUnit(units, cursor);
-          if (!selected) throw new TestError('valid lifecycle unit was not selected');
+          if (!selected) throw TestError.make({message: 'valid lifecycle unit was not selected'});
           visited.push(`${selected.lane}:${selected.target.checkoutId}`);
           cursor = `${selected.lane}\0${selected.target.checkoutId}\0${selected.target.databasePath}`;
         }

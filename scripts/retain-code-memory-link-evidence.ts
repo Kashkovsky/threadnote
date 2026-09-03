@@ -54,7 +54,7 @@ const program = Effect.gen(function* () {
     );
   const manifest = parseCodeMemoryLinkAgentAbManifestV1(json(manifestSource, 'manifest'));
   if (manifest.candidate.commit !== options.candidateCommit) {
-    return yield* Effect.fail(new ScriptError('Retained manifest candidate differs from --candidate-commit.'));
+    return yield* ScriptError.make({message: 'Retained manifest candidate differs from --candidate-commit.'});
   }
   const parsedAssignment = json(assignment, 'assignment');
   const parsedAttempts = parseCodeMemoryLinkAgentAttemptsJsonl(attempts);
@@ -75,22 +75,22 @@ const program = Effect.gen(function* () {
   const dogfoodResult = evaluateCodeMemoryLinkDogfood(json(dogfood, 'dogfood'));
   const retentionBlockers = codeMemoryLinkRetentionBlockers({agentAb, dogfood: dogfoodResult});
   if (retentionBlockers.length > 0) {
-    return yield* Effect.fail(new ScriptError(`Evidence is not ready for retention:\n${retentionBlockers.join('\n')}`));
+    return yield* ScriptError.make({message: `Evidence is not ready for retention:\n${retentionBlockers.join('\n')}`});
   }
   if (
     agentAb.candidate.commit !== options.candidateCommit ||
     dogfoodResult.candidate.commit !== options.candidateCommit ||
     JSON.stringify(agentAb.candidate) !== JSON.stringify(dogfoodResult.candidate)
   ) {
-    return yield* Effect.fail(new ScriptError('Retained agent and dogfood artifacts do not identify one candidate.'));
+    return yield* ScriptError.make({message: 'Retained agent and dogfood artifacts do not identify one candidate.'});
   }
   const suite = parseCodeMemoryLinkSealedSuiteV1(json(sealedSuite, 'sealed suite'));
   if (manifest.suiteHash !== suite.suiteHash || manifest.adjudicationArtifactHash !== suite.judge.judgeHash) {
-    return yield* Effect.fail(new ScriptError('Retained sealed suite differs from the manifest bindings.'));
+    return yield* ScriptError.make({message: 'Retained sealed suite differs from the manifest bindings.'});
   }
   const layoutHash = sha256HexSync(sealedLayout);
   if (!suite.judge.artifacts.some(artifact => artifact.sha256 === layoutHash)) {
-    return yield* Effect.fail(new ScriptError('Retained sealed layout is not one of the suite judge artifacts.'));
+    return yield* ScriptError.make({message: 'Retained sealed layout is not one of the suite judge artifacts.'});
   }
   const clients = yield* Effect.forEach(
     manifest.clients,
@@ -112,9 +112,9 @@ const program = Effect.gen(function* () {
           clientEvidence.map(receipt => {
             const protocol = receipt.rawEvidence.clientProtocol;
             if (JSON.stringify(protocol.expectedClient) !== JSON.stringify(client.expectedClient)) {
-              throw new ScriptError(
-                `Retained app-server identity for ${client.clientId} differs from the manifest expected client.`,
-              );
+              throw ScriptError.make({
+                message: `Retained app-server identity for ${client.clientId} differs from the manifest expected client.`,
+              });
             }
             const expectedProjectionHash = codeMemoryLinkClientProjectionHash('expected-client', {
               ...protocol.expectedClient,
@@ -126,9 +126,9 @@ const program = Effect.gen(function* () {
               protocol.executionBundleHash !== client.executionBundleHash ||
               protocol.expectedClientProjectionHash !== expectedProjectionHash
             ) {
-              throw new ScriptError(
-                `Retained client protocol for ${client.clientId} differs from the manifest/descriptor identity projection.`,
-              );
+              throw ScriptError.make({
+                message: `Retained client protocol for ${client.clientId} differs from the manifest/descriptor identity projection.`,
+              });
             }
             return expectedProjectionHash;
           }),
@@ -143,11 +143,9 @@ const program = Effect.gen(function* () {
           expectedProjectionHashes.size !== 1 ||
           !expectedProjectionHashes.has(parsedDescriptor.expectedClientProjectionHash)
         ) {
-          return yield* Effect.fail(
-            new ScriptError(
-              `Retained descriptor/config projection for ${client.clientId} differs from the manifest or app-server identity binding.`,
-            ),
-          );
+          return yield* ScriptError.make({
+            message: `Retained descriptor/config projection for ${client.clientId} differs from the manifest or app-server identity binding.`,
+          });
         }
         return {clientId: client.clientId, configProjection, descriptor};
       }),
@@ -175,16 +173,17 @@ const program = Effect.gen(function* () {
         clients,
         sealedFiles,
       }),
-    catch: cause => new ScriptError('Could not construct the privacy-safe retained evidence bundle.', {cause}),
+    catch: cause =>
+      ScriptError.make({message: 'Could not construct the privacy-safe retained evidence bundle.', cause}),
   });
   const destination = path.join(outputRoot, bundle.bundleHash);
   if (yield* fs.exists(destination)) {
-    return yield* Effect.fail(new ScriptError(`Retained evidence destination already exists: ${destination}`));
+    return yield* ScriptError.make({message: `Retained evidence destination already exists: ${destination}`});
   }
   yield* fs.makeDirectory(outputRoot, {recursive: true});
   const staging = path.join(outputRoot, `.staging-${bundle.bundleHash}`);
   if (yield* fs.exists(staging)) {
-    return yield* Effect.fail(new ScriptError(`Retained evidence staging directory already exists: ${staging}`));
+    return yield* ScriptError.make({message: `Retained evidence staging directory already exists: ${staging}`});
   }
   yield* Effect.gen(function* () {
     yield* fs.makeDirectory(path.join(staging, 'blobs'), {recursive: true, mode: 0o700});
@@ -195,7 +194,7 @@ const program = Effect.gen(function* () {
     );
     yield* fs.writeFileString(path.join(staging, 'bundle.json'), bundle.indexContent, {flag: 'wx', mode: 0o600});
     yield* fs.rename(staging, destination);
-  }).pipe(Effect.ensuring(fs.remove(staging, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(fs.remove(staging, {force: true, recursive: true}).pipe(Effect.ignore)));
   yield* Console.log(
     JSON.stringify({
       bundleHash: bundle.bundleHash,
@@ -229,9 +228,9 @@ function assertRetainedResponseBindings(
           ? task.expectedResponseHashes.noMemory
           : task.expectedResponseHashes.taskOnly;
     if (observedResponseHashes.length !== 1 || observedResponseHashes[0] !== expectedResponseHash) {
-      throw new ScriptError(
-        `Retained Context Brief response for ${raw.bindings.taskId}/${raw.bindings.arm} differs from the manifest preregistration.`,
-      );
+      throw ScriptError.make({
+        message: `Retained Context Brief response for ${raw.bindings.taskId}/${raw.bindings.arm} differs from the manifest preregistration.`,
+      });
     }
   }
 }
@@ -251,12 +250,12 @@ const collectPreparedSealedFiles = Effect.fn('codeMemoryLinkRetain.collectSealed
       const relativePath = `${relativeDirectory}/${name}`;
       const absolutePath = path.join(preparedRoot, relativePath);
       if (Option.isSome(yield* fs.readLink(absolutePath).pipe(Effect.option))) {
-        return yield* Effect.fail(new ScriptError(`Prepared sealed file must not be a symlink: ${relativePath}`));
+        return yield* ScriptError.make({message: `Prepared sealed file must not be a symlink: ${relativePath}`});
       }
       const info = yield* fs.stat(absolutePath);
       if (info.type === 'Directory') pending.push(relativePath);
       else if (info.type === 'File') files.push({content: yield* fs.readFileString(absolutePath), path: relativePath});
-      else return yield* Effect.fail(new ScriptError(`Prepared sealed path has unsupported type: ${relativePath}`));
+      else return yield* ScriptError.make({message: `Prepared sealed path has unsupported type: ${relativePath}`});
     }
   }
   return files.sort((left, right) => left.path.localeCompare(right.path));
@@ -281,13 +280,13 @@ function parseArguments(args: readonly string[]): {
   ]);
   for (let index = 0; index < args.length; index += 1) {
     const option = args[index];
-    if (!supported.has(option)) throw new ScriptError(`Unknown Code Memory Link retain option: ${option}`);
-    if (values.has(option)) throw new ScriptError(`${option} must be provided exactly once`);
+    if (!supported.has(option)) throw ScriptError.make({message: `Unknown Code Memory Link retain option: ${option}`});
+    if (values.has(option)) throw ScriptError.make({message: `${option} must be provided exactly once`});
     values.set(option, required(args[++index], option));
   }
   const candidateCommit = required(values.get('--candidate-commit'), '--candidate-commit');
   if (!/^[0-9a-f]{40}$/u.test(candidateCommit)) {
-    throw new ScriptError('--candidate-commit requires an exact 40-character lowercase Git SHA.');
+    throw ScriptError.make({message: '--candidate-commit requires an exact 40-character lowercase Git SHA.'});
   }
   return {
     attemptsPath: required(values.get('--attempts'), '--attempts'),
@@ -303,12 +302,12 @@ function json(source: string, label: string): unknown {
   try {
     return JSON.parse(source) as unknown;
   } catch (cause) {
-    throw new ScriptError(`Retained ${label} must be valid JSON.`, {cause});
+    throw ScriptError.make({message: `Retained ${label} must be valid JSON.`, cause});
   }
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 

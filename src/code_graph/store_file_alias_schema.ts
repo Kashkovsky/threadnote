@@ -218,9 +218,7 @@ export const codeGraphCacheReferenceIndexState = Effect.fn('codeGraph.cacheRefer
   }>(`SELECT seqno, name, desc, coll, key FROM pragma_index_xinfo(?) LIMIT 8`, [index.name]);
   const keyColumns = xinfo
     .filter(column => Number(column.key) === 1)
-    .sort((left, right) => {
-      return Number(left.seqno) - Number(right.seqno);
-    });
+    .sort((left, right) => Number(left.seqno) - Number(right.seqno));
   return xinfo.length > 0 &&
     xinfo.length < 8 &&
     keyColumns.length === index.columns.length &&
@@ -552,15 +550,11 @@ export const prepareCodeGraphSnapshotFileCitationSchema = Effect.fn('codeGraph.p
       if (indexState !== 'missing') continue;
       yield* sql.unsafe(index.definition);
       if ((yield* codeGraphCacheReferenceIndexState(sql, index)) !== 'ready') {
-        return yield* Effect.fail(
-          new CodeGraphStoreError('Code graph snapshot file citation index changed during setup.'),
-        );
+        return yield* CodeGraphStoreError.of('Code graph snapshot file citation index changed during setup.');
       }
       return {index: index.name, state: 'prepared'} as const;
     }
-    return yield* Effect.fail(
-      new CodeGraphStoreError('Code graph snapshot file citation schema changed during setup.'),
-    );
+    return yield* CodeGraphStoreError.of('Code graph snapshot file citation schema changed during setup.');
   },
 );
 
@@ -569,7 +563,7 @@ export const assertCodeGraphSnapshotFileCitationSchemaMigratable = Effect.fn(
 )(function* (sql: SqlClient.SqlClient) {
   const inspection = yield* inspectCodeGraphSnapshotFileCitationSchema(sql);
   if (inspection.state === 'incompatible' || inspection.baseIndexes === 'incompatible') {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot file citation schema is incompatible.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot file citation schema is incompatible.');
   }
   const revisionObservation = yield* inspectBoundedSchemaMetadataValue(sql, 'persistent_extension_schema_revision', 16);
   const revisionValue = revisionObservation.state === 'recorded' ? revisionObservation.value : undefined;
@@ -584,7 +578,7 @@ export const assertCodeGraphSnapshotFileCitationSchemaMigratable = Effect.fn(
     authoritySensitive &&
     !codeGraphSnapshotFileCitationSchemaMigrationAdmitted(revision, inspection.state, inspection.baseIndexes)
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot file citation schema is incompatible.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot file citation schema is incompatible.');
   }
   return {
     allowColumnAuthority: inspection.state === 'column-only-with-predecessor-authority',
@@ -608,7 +602,7 @@ export const ensureCodeGraphSnapshotFileCitationSchema = Effect.fn('codeGraph.en
       (columnAuthority && !authorization.allowColumnAuthority) ||
       (releasedAuthority && !authorization.allowReleasedAuthority)
     ) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot file citation schema is incompatible.'));
+      return yield* CodeGraphStoreError.of('Code graph snapshot file citation schema is incompatible.');
     }
     yield* sql.unsafe(
       CODE_GRAPH_SNAPSHOT_FILES_CURRENT_TABLE_SQL.replace('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'),
@@ -630,7 +624,7 @@ export const ensureCodeGraphSnapshotFileCitationSchema = Effect.fn('codeGraph.en
     if (alias !== 'current') yield* sql.unsafe(CODE_GRAPH_RAW_CONTENT_ALIAS_INDEX_SQL);
     const after = yield* inspectCodeGraphSnapshotFileCitationSchema(sql);
     if (after.state !== 'current' || after.baseIndexes !== 'current') {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot file citation schema is unavailable.'));
+      return yield* CodeGraphStoreError.of('Code graph snapshot file citation schema is unavailable.');
     }
   },
 );

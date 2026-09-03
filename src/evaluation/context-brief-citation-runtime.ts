@@ -41,17 +41,18 @@ export const evaluateContextBriefCitationRuntime = Effect.fn('evaluation.context
   fixtureInput: ContextBriefCitationRuntimeFixtureV1 | unknown,
 ) {
   const fixture = parseContextBriefCitationRuntimeFixtureV1(fixtureInput);
-  const observations: readonly ContextBriefCitationRuntimeObservationV1[] = yield* Effect.scoped(
-    Effect.forEach(
-      fixture.scenarios,
-      scenario =>
-        Effect.gen(function* () {
-          return yield* scenario.kind === 'legacy-v1'
-            ? evaluateLegacyScenario(fixture, scenario)
-            : evaluateCitedScenario(fixture, scenario);
-        }),
-      {concurrency: 1},
-    ),
+  const observations = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const collected: ContextBriefCitationRuntimeObservationV1[] = [];
+      for (const scenario of fixture.scenarios) {
+        collected.push(
+          scenario.kind === 'legacy-v1'
+            ? yield* evaluateLegacyScenario(fixture, scenario)
+            : yield* evaluateCitedScenario(fixture, scenario),
+        );
+      }
+      return collected;
+    }),
   );
   return finalizeContextBriefCitationRuntimeEvaluation(fixture, observations);
 });

@@ -47,7 +47,7 @@ export function reconcileInterruptedDeferredCodeAnchorCommit<A, E, R>(
       const record = parseMemoryDocument(memoryUri, actual.value);
       if (!record || !deferredCodeAnchorFinalizationVerified(expectedMemory, actual.value)) return;
       yield* cleanup;
-    }).pipe(Effect.catchCause(() => Effect.void)),
+    }).pipe(Effect.ignoreCause),
   );
 }
 

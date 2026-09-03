@@ -3,7 +3,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Layer, Path} from 'effect';
+import {Clock, Effect, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -192,15 +192,16 @@ function terminateVectorChild(child: VectorChildProcess): Effect.Effect<void, ne
 
 function waitForMarker(fs: FileSystem.FileSystem, markerPath: string, child: VectorChildProcess) {
   return Effect.gen(function* () {
-    const deadline = Date.now() + 15_000;
+    const deadline = (yield* Clock.currentTimeMillis) + 15_000;
     while (!(yield* fs.exists(markerPath))) {
       if (child.exitCode !== null) {
         const streams = yield* collectChildStreams(child);
-        return yield* Effect.fail(
-          new TestError(`Vector child exited before the commit barrier: ${JSON.stringify(streams)}`),
-        );
+        return yield* TestError.make({
+          message: `Vector child exited before the commit barrier: ${JSON.stringify(streams)}`,
+        });
       }
-      if (Date.now() >= deadline) return yield* Effect.fail(new TestError('Vector child missed the commit barrier.'));
+      if ((yield* Clock.currentTimeMillis) >= deadline)
+        return yield* TestError.make({message: 'Vector child missed the commit barrier.'});
       yield* Effect.sleep(10);
     }
   });
@@ -229,11 +230,11 @@ function readBoundedChildStream(stream: ReadableStream<Uint8Array>, maximumBytes
             const next = await reader.read();
             if (next.done) return output + decoder.decode();
             bytes += next.value.byteLength;
-            if (bytes > maximumBytes) throw new TestError('Vector child output exceeded its byte bound.');
+            if (bytes > maximumBytes) throw TestError.make({message: 'Vector child output exceeded its byte bound.'});
             output += decoder.decode(next.value, {stream: true});
           }
         },
-        catch: cause => new TestError('Could not read bounded vector child output.', {cause}),
+        catch: cause => TestError.make({message: 'Could not read bounded vector child output.', cause}),
       }),
     reader => Effect.sync(() => reader.releaseLock()),
   );
@@ -247,7 +248,7 @@ function prepareRetirementUntilReady(databasePath: string) {
       });
       if (result.state === 'ready') return;
     }
-    return yield* Effect.die(new TestError('Vector retirement schema did not become ready.'));
+    return yield* Effect.die(TestError.make({message: 'Vector retirement schema did not become ready.'}));
   });
 }
 

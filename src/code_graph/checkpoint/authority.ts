@@ -1,5 +1,5 @@
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
-import {Effect, FileSystem, Layer, Path} from 'effect';
+import {Effect, FileSystem, Layer, Path, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
   codeGraphExtractorSetIdentityFromPackProvenance,
@@ -16,9 +16,13 @@ import {checkpointTerminalText} from './terminal_text.js';
 const AUTHORITY_INSERT_ROWS = 1_000;
 const AUTHORITY_READ_ROWS = 1_000;
 
-export class CodeGraphCheckpointAuthorityError extends Error {
-  override readonly name = 'CodeGraphCheckpointAuthorityError';
-}
+export class CodeGraphCheckpointAuthorityError extends Schema.TaggedError<CodeGraphCheckpointAuthorityError>()(
+  'CodeGraphCheckpointAuthorityError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 /**
  * Binds source identity, ABI provenance, and logical records before any target
@@ -155,11 +159,11 @@ function utf16SortKey(value: string): string {
 }
 
 function authorityFailure(message: string): Effect.Effect<never, CodeGraphCheckpointAuthorityError> {
-  return Effect.fail(new CodeGraphCheckpointAuthorityError(message));
+  return Effect.fail(CodeGraphCheckpointAuthorityError.make({message: message}));
 }
 
 function authorityError(cause: unknown): CodeGraphCheckpointAuthorityError {
-  return cause instanceof CodeGraphCheckpointAuthorityError
+  return Schema.is(CodeGraphCheckpointAuthorityError)(cause)
     ? cause
-    : new CodeGraphCheckpointAuthorityError('Checkpoint authority verification failed.', {cause});
+    : CodeGraphCheckpointAuthorityError.make({cause, message: 'Checkpoint authority verification failed.'});
 }

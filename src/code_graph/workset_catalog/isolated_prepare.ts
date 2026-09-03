@@ -1,4 +1,4 @@
-import {Effect, Option, Predicate, Stream} from 'effect';
+import {Effect, Option, Predicate, Stream, Schema} from 'effect';
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {SystemInfo, type SystemInfoShape} from '../../effect/system.js';
 import {withCurrentAgentSessionEnvironment} from '../../telemetry/session.js';
@@ -75,9 +75,13 @@ const WORKSET_PREPARE_FAILURE_CODES = [
   'worktree-changed',
 ] as const satisfies readonly CodeGraphWorksetPrepareFailureCodeV1[];
 
-export class CodeGraphIsolatedWorksetPrepareError extends Error {
-  override readonly name = 'CodeGraphIsolatedWorksetPrepareError';
-}
+export class CodeGraphIsolatedWorksetPrepareError extends Schema.TaggedError<CodeGraphIsolatedWorksetPrepareError>()(
+  'CodeGraphIsolatedWorksetPrepareError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export interface CodeGraphIsolatedWorksetPrepareSpawnPlan {
   readonly arguments: readonly string[];
@@ -140,8 +144,8 @@ export const runIsolatedCodeGraphWorksetPrepare = Effect.fn('codeGraph.workset.p
         forceKillAfter: 1_000,
         stdin: 'ignore',
       }).pipe(
-        Effect.mapError(
-          cause => new CodeGraphIsolatedWorksetPrepareError('Could not start isolated workset preparation.', {cause}),
+        Effect.mapError(cause =>
+          CodeGraphIsolatedWorksetPrepareError.make({cause, message: 'Could not start isolated workset preparation.'}),
         ),
       );
       const [stdout, , exitCode] = yield* Effect.all(
@@ -154,16 +158,14 @@ export const runIsolatedCodeGraphWorksetPrepare = Effect.fn('codeGraph.workset.p
       );
       const result = decodeIsolatedWorksetPrepareResult(stdout);
       if (result === undefined || result.workset !== input.workset) {
-        return yield* Effect.fail(
-          new CodeGraphIsolatedWorksetPrepareError(
-            `Isolated workset preparation exited with code ${exitCode} without a valid result.`,
-          ),
-        );
+        return yield* CodeGraphIsolatedWorksetPrepareError.make({
+          message: `Isolated workset preparation exited with code ${exitCode} without a valid result.`,
+        });
       }
       if (exitCode !== 0 && result.state !== 'failed') {
-        return yield* Effect.fail(
-          new CodeGraphIsolatedWorksetPrepareError(`Isolated workset preparation exited with code ${exitCode}.`),
-        );
+        return yield* CodeGraphIsolatedWorksetPrepareError.make({
+          message: `Isolated workset preparation exited with code ${exitCode}.`,
+        });
       }
       return result;
     }),
@@ -190,7 +192,9 @@ function collectBoundedWorksetOutput(stream: Stream.Stream<Uint8Array, unknown>)
       (state, chunk) => {
         const size = state.size + encoder.encode(chunk).byteLength;
         if (size > ISOLATED_WORKSET_STDOUT_BYTES_MAXIMUM) {
-          return Effect.fail(new CodeGraphIsolatedWorksetPrepareError('Isolated workset result was too large.'));
+          return Effect.fail(
+            CodeGraphIsolatedWorksetPrepareError.make({message: 'Isolated workset result was too large.'}),
+          );
         }
         state.chunks.push(chunk);
         return Effect.succeed({chunks: state.chunks, size});
@@ -213,7 +217,7 @@ function consumeIsolatedWorksetProgress(
         line => {
           const progress = decodeIsolatedWorksetPrepareProgress(line);
           if (progress === undefined || progress.workset !== expectedWorkset) return Effect.void;
-          return (onProgress?.(progress) ?? Effect.void).pipe(Effect.catch(() => Effect.void));
+          return (onProgress?.(progress) ?? Effect.void).pipe(Effect.ignore);
         },
         {discard: true},
       ),

@@ -1,5 +1,6 @@
 import postgres, {type Sql} from 'postgres';
 import {migrateRemoteMemoryDatabase} from '../../src/remote_memory/migrations.js';
+import {randomUuidV4} from '../../src/crypto/uuid.js';
 import {createRemoteMemorySql} from '../../src/remote_memory/postgres_control_plane.js';
 
 export interface RemoteMemoryPostgresFixture {
@@ -17,12 +18,12 @@ export interface RemoteMemoryPostgresFixture {
  * table privileges required by the deployed control plane and data plane.
  */
 export async function createRemoteMemoryPostgresFixture(databaseUrl: string): Promise<RemoteMemoryPostgresFixture> {
-  const suffix = crypto.randomUUID().replaceAll('-', '').slice(0, 24);
+  const suffix = randomUuidV4().replaceAll('-', '').slice(0, 24);
   const databaseName = `tn_remote_${suffix}`;
   const migratorRoleName = `tn_remote_migrator_${suffix}`;
-  const migratorRolePassword = crypto.randomUUID().replaceAll('-', '');
+  const migratorRolePassword = randomUuidV4().replaceAll('-', '');
   const runtimeRoleName = `tn_remote_runtime_${suffix}`;
-  const runtimeRolePassword = crypto.randomUUID().replaceAll('-', '');
+  const runtimeRolePassword = randomUuidV4().replaceAll('-', '');
   const maintenanceSql = postgres(databaseUrl, {max: 1, onnotice: () => undefined});
   let migratorSql: Sql | undefined;
   let sql: Sql | undefined;

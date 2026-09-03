@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 
 export const MEMORY_READ_DEFAULT_BUDGET_TOKENS = 1_500;
@@ -60,9 +61,13 @@ export interface MemoryReadPage {
   readonly uri: string;
 }
 
-export class MemoryReadProjectionError extends Error {
-  override readonly name = 'MemoryReadProjectionError';
-}
+export class MemoryReadProjectionError extends Schema.TaggedError<MemoryReadProjectionError>()(
+  'MemoryReadProjectionError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export function memoryReadCursorToken(entropy: string): string {
   return `${MEMORY_READ_CURSOR_PREFIX}${sha256HexSync(entropy).slice(0, 32)}`;
@@ -111,28 +116,29 @@ export function projectMemoryReadPage(
     readonly warnings?: readonly string[];
   },
 ): MemoryReadPage {
-  if (resources.length === 0) throw new MemoryReadProjectionError('Memory read requires at least one resource.');
+  if (resources.length === 0)
+    throw MemoryReadProjectionError.make({message: 'Memory read requires at least one resource.'});
   const budgetTokens = options.budgetTokens ?? MEMORY_READ_DEFAULT_BUDGET_TOKENS;
   if (
     !Number.isSafeInteger(budgetTokens) ||
     budgetTokens < MEMORY_READ_MINIMUM_BUDGET_TOKENS ||
     budgetTokens > MEMORY_READ_MAXIMUM_BUDGET_TOKENS
   ) {
-    throw new MemoryReadProjectionError(
-      `Memory read budgetTokens must be an integer from ${MEMORY_READ_MINIMUM_BUDGET_TOKENS} through ${MEMORY_READ_MAXIMUM_BUDGET_TOKENS}.`,
-    );
+    throw MemoryReadProjectionError.make({
+      message: `Memory read budgetTokens must be an integer from ${MEMORY_READ_MINIMUM_BUDGET_TOKENS} through ${MEMORY_READ_MAXIMUM_BUDGET_TOKENS}.`,
+    });
   }
   if (
     options.continuationCursor.length < 1 ||
     options.continuationCursor.length > 8_192 ||
     !/^[A-Za-z0-9._:-]+$/u.test(options.continuationCursor)
   ) {
-    throw new MemoryReadProjectionError('Memory read continuation cursor is invalid.');
+    throw MemoryReadProjectionError.make({message: 'Memory read continuation cursor is invalid.'});
   }
   const mode = options.mode ?? 'content';
   const section = normalizedSection(options.section);
   if (mode === 'outline' && section !== undefined) {
-    throw new MemoryReadProjectionError('Memory read section cannot be combined with mode=outline.');
+    throw MemoryReadProjectionError.make({message: 'Memory read section cannot be combined with mode=outline.'});
   }
   const position = options.position ?? {characterOffset: 0, resourceIndex: 0};
   if (
@@ -142,7 +148,7 @@ export function projectMemoryReadPage(
     !Number.isSafeInteger(position.characterOffset) ||
     position.characterOffset < 0
   ) {
-    throw new MemoryReadProjectionError('Memory read continuation position is invalid.');
+    throw MemoryReadProjectionError.make({message: 'Memory read continuation position is invalid.'});
   }
 
   const projectedResources = resources.map(resource => ({
@@ -152,16 +158,20 @@ export function projectMemoryReadPage(
   }));
   const resource = projectedResources[position.resourceIndex];
   if (position.characterOffset > resource.text.length) {
-    throw new MemoryReadProjectionError('Memory read continuation position is stale.');
+    throw MemoryReadProjectionError.make({message: 'Memory read continuation position is stale.'});
   }
   const warnings = memoryReadBoundedWarnings(options.warnings);
   const reservedResponseBytes = options.reservedResponseBytes ?? 0;
   if (!Number.isSafeInteger(reservedResponseBytes) || reservedResponseBytes < 0) {
-    throw new MemoryReadProjectionError('Memory read reserved response bytes must be a non-negative integer.');
+    throw MemoryReadProjectionError.make({
+      message: 'Memory read reserved response bytes must be a non-negative integer.',
+    });
   }
   const maximumBytes = budgetTokens * MEMORY_READ_ESTIMATED_BYTES_PER_TOKEN - reservedResponseBytes;
   if (maximumBytes < 1) {
-    throw new MemoryReadProjectionError(`Memory read budgetTokens=${budgetTokens} cannot fit required metadata.`);
+    throw MemoryReadProjectionError.make({
+      message: `Memory read budgetTokens=${budgetTokens} cannot fit required metadata.`,
+    });
   }
   const receipt =
     options.includeReceipt === false
@@ -254,18 +264,22 @@ export function projectMemoryReadPage(
     content => structuredContentFor(content, false, options.continuationCursor, receipt),
   );
   if (slice.end === position.characterOffset && position.characterOffset < resource.text.length) {
-    throw new MemoryReadProjectionError(`Memory read budgetTokens=${budgetTokens} cannot fit one Unicode character.`);
+    throw MemoryReadProjectionError.make({
+      message: `Memory read budgetTokens=${budgetTokens} cannot fit one Unicode character.`,
+    });
   }
   const nextPosition =
     slice.end < resource.text.length
       ? {characterOffset: slice.end, resourceIndex: position.resourceIndex}
       : {characterOffset: 0, resourceIndex: position.resourceIndex + 1};
   if (nextPosition.resourceIndex >= resources.length) {
-    throw new MemoryReadProjectionError('Memory read projection produced an invalid terminal continuation.');
+    throw MemoryReadProjectionError.make({
+      message: 'Memory read projection produced an invalid terminal continuation.',
+    });
   }
   const structuredContent = structuredContentFor(slice.text, false, options.continuationCursor, receipt);
   if (responseBytes(slice.text, receipt, structuredContent) > maximumBytes) {
-    throw new MemoryReadProjectionError('Memory read projection exceeded its response budget.');
+    throw MemoryReadProjectionError.make({message: 'Memory read projection exceeded its response budget.'});
   }
   return {
     complete: false,
@@ -344,7 +358,7 @@ export function selectMemoryMarkdownSection(content: string, section: string | u
   const index = headings.findIndex(
     heading => heading.title === selector.title && (selector.level === undefined || heading.level === selector.level),
   );
-  if (index < 0) throw new MemoryReadProjectionError(`Memory section "${section}" was not found.`);
+  if (index < 0) throw MemoryReadProjectionError.make({message: `Memory section "${section}" was not found.`});
   const heading = headings[index];
   const next = headings.slice(index + 1).find(candidate => candidate.level <= heading.level);
   return content.slice(heading.start, next?.start ?? content.length);
@@ -398,7 +412,7 @@ function normalizedSection(section: string | undefined): string | undefined {
   if (section === undefined) return undefined;
   const normalized = section.trim();
   if (normalized.length === 0 || utf8Bytes(normalized) > 256) {
-    throw new MemoryReadProjectionError('Memory read section must be 1 through 256 UTF-8 bytes.');
+    throw MemoryReadProjectionError.make({message: 'Memory read section must be 1 through 256 UTF-8 bytes.'});
   }
   return normalized;
 }

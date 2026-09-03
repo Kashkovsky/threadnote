@@ -265,7 +265,7 @@ describe('Context Brief exact-anchor graph evidence', () => {
         Effect.suspend(() => {
           calls += 1;
           return calls <= 2
-            ? Effect.fail(new CodeGraphStoreTransientIoError('transient graph read'))
+            ? Effect.fail(CodeGraphStoreTransientIoError.of('transient graph read'))
             : Effect.succeed(
                 queryResult({
                   edges: [],
@@ -300,7 +300,7 @@ describe('Context Brief exact-anchor graph evidence', () => {
       const query = queryServiceEffect(() =>
         Effect.suspend(() => {
           calls += 1;
-          return Effect.fail(new CodeGraphStoreTransientIoError('persistent graph read'));
+          return Effect.fail(CodeGraphStoreTransientIoError.of('persistent graph read'));
         }),
       );
 
@@ -340,7 +340,7 @@ describe('Context Brief exact-anchor graph evidence', () => {
       const query = queryServiceEffect(() =>
         Effect.sync(() => {
           calls += 1;
-        }).pipe(Effect.andThen(Effect.fail(new CodeGraphStoreTransientIoError('transient graph read')))),
+        }).pipe(Effect.andThen(Effect.fail(CodeGraphStoreTransientIoError.of('transient graph read')))),
       );
 
       const evidence = yield* retrieveContextBriefGraphEvidence(CONFIG, plan.graph).pipe(
@@ -367,7 +367,7 @@ describe('Context Brief exact-anchor graph evidence', () => {
       const query = queryServiceEffect(() =>
         Effect.sync(() => {
           calls += 1;
-        }).pipe(Effect.andThen(Effect.fail(new CodeGraphStorePermissionError('permission denied')))),
+        }).pipe(Effect.andThen(Effect.fail(CodeGraphStorePermissionError.of('permission denied')))),
       );
 
       const evidence = yield* retrieveContextBriefGraphEvidence(CONFIG, plan.graph).pipe(
@@ -402,7 +402,7 @@ describe('Context Brief exact-anchor graph evidence', () => {
                     operation: 'query',
                   }),
                 )
-              : Effect.fail(new CodeGraphStoreTransientIoError('generic graph read'));
+              : Effect.fail(CodeGraphStoreTransientIoError.of('generic graph read'));
           }),
         );
 

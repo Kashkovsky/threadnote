@@ -46,7 +46,7 @@ function makeFixture(allowedOrigins?: ReadonlyArray<string>): McpHttpFixture {
     },
     () =>
       Effect.fail(
-        new McpSchema.InvalidParams({
+        McpSchema.InvalidParams.make({
           data: MCP_RESOURCE_ERROR_DATA,
           message: 'Expected a canonical threadnote:// URI.',
         }),

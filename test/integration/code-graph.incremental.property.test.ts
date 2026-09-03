@@ -1089,7 +1089,8 @@ function persistedForcedBuildCheckpoint(databasePath: string): {
         "SELECT id, dirty, started_at AS startedAt, state FROM snapshots WHERE state = 'building' ORDER BY started_at, id",
       )
       .get();
-    if (snapshot === null) throw new TestError('Interrupted forced build did not preserve its building snapshot.');
+    if (snapshot === null)
+      throw TestError.make({message: 'Interrupted forced build did not preserve its building snapshot.'});
     return {...snapshot, batchCount: persistedMaterializationSpoolBatchCount(databasePath, snapshot.id)};
   } finally {
     database.close();
@@ -1123,7 +1124,7 @@ function persistedBuildingSnapshot(databasePath: string): {
         "SELECT id, base_snapshot_id AS baseSnapshotId FROM snapshots WHERE state = 'building' ORDER BY started_at, id LIMIT 1",
       )
       .get();
-    if (snapshot === null) throw new TestError('Interrupted build did not preserve its building snapshot.');
+    if (snapshot === null) throw TestError.make({message: 'Interrupted build did not preserve its building snapshot.'});
     return {
       ...snapshot,
       baseSnapshotId:

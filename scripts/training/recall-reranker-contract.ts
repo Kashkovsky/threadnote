@@ -287,7 +287,7 @@ export function parseRecallRerankerValidationPolicyV1(value: unknown): RecallRer
   assertSha256(policy.forbiddenTextsSha256, 'validation policy forbidden texts');
   assertSha256(policy.reservedEvaluation.sha256, 'validation policy reserved evaluation');
   if (!isSafeRelativeFile(policy.receiptFile)) {
-    throw new ScriptError('Recall reranker validation receipt must be a repository-relative file name.');
+    throw ScriptError.make({message: 'Recall reranker validation receipt must be a repository-relative file name.'});
   }
   return policy;
 }
@@ -317,11 +317,11 @@ export function parseRecallRerankerGroupJsonLinesV1(content: string): readonly R
     try {
       value = JSON.parse(line) as unknown;
     } catch (cause) {
-      throw new ScriptError(`Could not parse recall reranker JSONL line ${index + 1}.`, {cause});
+      throw ScriptError.make({message: `Could not parse recall reranker JSONL line ${index + 1}.`, cause});
     }
     groups.push(parseRecallRerankerQueryGroupV1(value));
   }
-  if (groups.length === 0) throw new ScriptError('Recall reranker dataset contains no query groups.');
+  if (groups.length === 0) throw ScriptError.make({message: 'Recall reranker dataset contains no query groups.'});
   return groups;
 }
 
@@ -409,7 +409,7 @@ export function parseRecallRerankerDatasetV1(
   const manifest = parseRecallRerankerDatasetManifestV1(manifestValue);
   const groups = parseRecallRerankerGroupJsonLinesV1(groupContent);
   if (sha256HexSync(groupContent) !== manifest.groupFileSha256) {
-    throw new ScriptError('Recall reranker group file checksum does not match its manifest.');
+    throw ScriptError.make({message: 'Recall reranker group file checksum does not match its manifest.'});
   }
   const dataset = {groups, manifest};
   validateRecallRerankerDatasetV1(dataset, options);
@@ -421,9 +421,9 @@ export function validateRecallRerankerDatasetV1(
   options: RecallRerankerValidationOptions = {},
 ): void {
   const {groups, manifest} = dataset;
-  if (!manifest.privacyReviewed) throw new ScriptError('Recall reranker dataset must pass privacy review.');
+  if (!manifest.privacyReviewed) throw ScriptError.make({message: 'Recall reranker dataset must pass privacy review.'});
   if (!isSafeRelativeFile(manifest.groupFile)) {
-    throw new ScriptError('Recall reranker group file must be a repository-relative file name.');
+    throw ScriptError.make({message: 'Recall reranker group file must be a repository-relative file name.'});
   }
   assertSha256(manifest.groupFileSha256, 'group file');
   assertSha256(manifest.groupsSha256, 'canonical groups');
@@ -432,11 +432,13 @@ export function validateRecallRerankerDatasetV1(
 
   const sourceIds = new Set<string>();
   for (const source of manifest.sources) {
-    if (sourceIds.has(source.id)) throw new ScriptError(`Duplicate recall reranker source ID: ${source.id}`);
+    if (sourceIds.has(source.id))
+      throw ScriptError.make({message: `Duplicate recall reranker source ID: ${source.id}`});
     sourceIds.add(source.id);
     validateSource(source);
   }
-  if (sourceIds.size === 0) throw new ScriptError('Recall reranker dataset must declare at least one source.');
+  if (sourceIds.size === 0)
+    throw ScriptError.make({message: 'Recall reranker dataset must declare at least one source.'});
 
   const groupIds = new Set<string>();
   const queryTexts = new Set<string>();
@@ -446,7 +448,8 @@ export function validateRecallRerankerDatasetV1(
   const observedSplits = new Set<RecallRerankerSplit>();
 
   for (const group of groups) {
-    if (groupIds.has(group.id)) throw new ScriptError(`Duplicate recall reranker query group ID: ${group.id}`);
+    if (groupIds.has(group.id))
+      throw ScriptError.make({message: `Duplicate recall reranker query group ID: ${group.id}`});
     groupIds.add(group.id);
     observedSplits.add(group.split);
     validateSafeText(group.id, `query group ${group.id} ID`);
@@ -454,40 +457,44 @@ export function validateRecallRerankerDatasetV1(
     validateSafeText(group.provenanceRecord, `query group ${group.id} provenance record`);
     validateSafeText(group.query, `query group ${group.id} query`);
     if (!sourceIds.has(group.sourceId)) {
-      throw new ScriptError(`Recall reranker query group ${group.id} references missing source: ${group.sourceId}`);
+      throw ScriptError.make({
+        message: `Recall reranker query group ${group.id} references missing source: ${group.sourceId}`,
+      });
     }
     const normalizedQuery = normalizeRecallRerankerText(group.query);
     if (queryTexts.has(normalizedQuery))
-      throw new ScriptError(`Duplicate normalized recall reranker query: ${group.id}`);
+      throw ScriptError.make({message: `Duplicate normalized recall reranker query: ${group.id}`});
     queryTexts.add(normalizedQuery);
     assertNotReserved(normalizedQuery, forbiddenTexts, `query group ${group.id} query`);
     assertOneSplit(partitionSplits, normalizeRecallRerankerText(group.partitionKey), group.split, 'partition key');
 
     if (group.candidates.length < 2 || group.candidates.length > RECALL_RERANKER_MAX_CANDIDATES) {
-      throw new ScriptError(
-        `Recall reranker query group ${group.id} must contain 2-${RECALL_RERANKER_MAX_CANDIDATES} candidates.`,
-      );
+      throw ScriptError.make({
+        message: `Recall reranker query group ${group.id} must contain 2-${RECALL_RERANKER_MAX_CANDIDATES} candidates.`,
+      });
     }
     const candidateIds = new Set<string>();
     let positiveCount = 0;
     let negativeCount = 0;
     for (const candidate of group.candidates) {
       if (candidateIds.has(candidate.id)) {
-        throw new ScriptError(`Duplicate recall reranker candidate ID ${candidate.id} in query group ${group.id}.`);
+        throw ScriptError.make({
+          message: `Duplicate recall reranker candidate ID ${candidate.id} in query group ${group.id}.`,
+        });
       }
       candidateIds.add(candidate.id);
       if (!sourceIds.has(candidate.sourceId)) {
-        throw new ScriptError(
-          `Recall reranker candidate ${candidate.id} references missing source: ${candidate.sourceId}`,
-        );
+        throw ScriptError.make({
+          message: `Recall reranker candidate ${candidate.id} references missing source: ${candidate.sourceId}`,
+        });
       }
       if (!Number.isInteger(candidate.relevance) || candidate.relevance < 0 || candidate.relevance > 3) {
-        throw new ScriptError(
-          `Recall reranker candidate ${candidate.id} has invalid relevance grade ${candidate.relevance}.`,
-        );
+        throw ScriptError.make({
+          message: `Recall reranker candidate ${candidate.id} has invalid relevance grade ${candidate.relevance}.`,
+        });
       }
       if (!candidate.reviewed) {
-        throw new ScriptError(`Recall reranker candidate ${candidate.id} must be reviewed.`);
+        throw ScriptError.make({message: `Recall reranker candidate ${candidate.id} must be reviewed.`});
       }
       validateSafeText(candidate.provenanceRecord, `candidate ${candidate.id} provenance record`);
       validateSafeText(candidate.text, `candidate ${candidate.id} text`);
@@ -498,37 +505,44 @@ export function validateRecallRerankerDatasetV1(
       if (candidate.relevance > 0) {
         positiveCount += 1;
         if (candidate.negativeKind !== undefined) {
-          throw new ScriptError(`Relevant recall reranker candidate ${candidate.id} cannot declare a negative kind.`);
+          throw ScriptError.make({
+            message: `Relevant recall reranker candidate ${candidate.id} cannot declare a negative kind.`,
+          });
         }
       } else {
         negativeCount += 1;
         if (candidate.negativeKind === undefined) {
-          throw new ScriptError(`Negative recall reranker candidate ${candidate.id} must declare a negative kind.`);
+          throw ScriptError.make({
+            message: `Negative recall reranker candidate ${candidate.id} must declare a negative kind.`,
+          });
         }
       }
     }
     if (group.answerability === 'answerable' && (positiveCount === 0 || negativeCount === 0)) {
-      throw new ScriptError(
-        `Answerable recall reranker query group ${group.id} requires positive and negative candidates.`,
-      );
+      throw ScriptError.make({
+        message: `Answerable recall reranker query group ${group.id} requires positive and negative candidates.`,
+      });
     }
     if (group.answerability === 'no_answer' && positiveCount > 0) {
-      throw new ScriptError(`No-answer recall reranker query group ${group.id} cannot contain relevant candidates.`);
+      throw ScriptError.make({
+        message: `No-answer recall reranker query group ${group.id} cannot contain relevant candidates.`,
+      });
     }
   }
 
-  if (groups.length === 0) throw new ScriptError('Recall reranker dataset contains no query groups.');
+  if (groups.length === 0) throw ScriptError.make({message: 'Recall reranker dataset contains no query groups.'});
   if (options.requireAllSplits !== false) {
     for (const split of RECALL_RERANKER_SPLITS) {
-      if (!observedSplits.has(split)) throw new ScriptError(`Recall reranker dataset is missing the ${split} split.`);
+      if (!observedSplits.has(split))
+        throw ScriptError.make({message: `Recall reranker dataset is missing the ${split} split.`});
     }
   }
   const counts = recallRerankerDatasetCountsV1(groups);
   if (JSON.stringify(counts) !== JSON.stringify(manifest.counts)) {
-    throw new ScriptError('Recall reranker dataset counts do not match its manifest.');
+    throw ScriptError.make({message: 'Recall reranker dataset counts do not match its manifest.'});
   }
   if (recallRerankerGroupsHashV1(groups) !== manifest.groupsSha256) {
-    throw new ScriptError('Recall reranker canonical group hash does not match its manifest.');
+    throw ScriptError.make({message: 'Recall reranker canonical group hash does not match its manifest.'});
   }
 }
 
@@ -584,38 +598,39 @@ function validateSource(source: RecallRerankerSourceV1): void {
     validateSafeText(value, `source ${source.id} ${label}`);
   }
   if (!source.trainingApproved)
-    throw new ScriptError(`Recall reranker source ${source.id} is not approved for training.`);
+    throw ScriptError.make({message: `Recall reranker source ${source.id} is not approved for training.`});
   if (!source.redistributionApproved) {
-    throw new ScriptError(`Recall reranker source ${source.id} is not approved for redistribution.`);
+    throw ScriptError.make({message: `Recall reranker source ${source.id} is not approved for redistribution.`});
   }
   if (source.kind === 'self_authored_synthetic' && source.privacyBasis !== 'self_authored') {
-    throw new ScriptError(`Self-authored source ${source.id} must use the self_authored privacy basis.`);
+    throw ScriptError.make({message: `Self-authored source ${source.id} must use the self_authored privacy basis.`});
   }
   if (
     (source.kind === 'public_dataset' || source.kind === 'public_repository') &&
     source.privacyBasis !== 'public_licensed'
   ) {
-    throw new ScriptError(`Public source ${source.id} must use the public_licensed privacy basis.`);
+    throw ScriptError.make({message: `Public source ${source.id} must use the public_licensed privacy basis.`});
   }
   if (source.kind === 'opt_in_sanitized') {
     if (source.privacyBasis !== 'explicit_opt_in' || !source.consentReference?.trim()) {
-      throw new ScriptError(`Opt-in source ${source.id} requires an explicit consent reference.`);
+      throw ScriptError.make({message: `Opt-in source ${source.id} requires an explicit consent reference.`});
     }
     validateSafeText(source.consentReference, `source ${source.id} consent reference`);
   } else if (source.consentReference !== undefined) {
-    throw new ScriptError(`Non-opt-in source ${source.id} cannot declare a consent reference.`);
+    throw ScriptError.make({message: `Non-opt-in source ${source.id} cannot declare a consent reference.`});
   }
 }
 
 function validateSafeText(value: string, label: string): void {
   const matches = detectSecretMatches(value);
-  if (matches.length > 0) throw new ScriptError(`${label} contains sensitive data (${matches.join(', ')}).`);
+  if (matches.length > 0)
+    throw ScriptError.make({message: `${label} contains sensitive data (${matches.join(', ')}).`});
   if (
     /(?:^|[\s"'`(])(?:[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/]|\/mnt\/[a-z]\/(?:Users|home)\/|\\\\[^\\\s]+\\[^\\\s]+)/i.test(
       value,
     )
   ) {
-    throw new ScriptError(`${label} contains an absolute local path.`);
+    throw ScriptError.make({message: `${label} contains an absolute local path.`});
   }
 }
 
@@ -627,17 +642,17 @@ function assertOneSplit(
 ): void {
   const previous = seen.get(key);
   if (previous !== undefined && previous !== split) {
-    throw new ScriptError(`Recall reranker ${label} leaks across ${previous} and ${split} splits.`);
+    throw ScriptError.make({message: `Recall reranker ${label} leaks across ${previous} and ${split} splits.`});
   }
   seen.set(key, split);
 }
 
 function assertNotReserved(value: string, forbidden: ReadonlySet<string>, label: string): void {
-  if (forbidden.has(value)) throw new ScriptError(`${label} duplicates reserved evaluation content.`);
+  if (forbidden.has(value)) throw ScriptError.make({message: `${label} duplicates reserved evaluation content.`});
 }
 
 function assertSha256(value: string, label: string): void {
-  if (!/^[0-9a-f]{64}$/.test(value)) throw new ScriptError(`Recall reranker ${label} SHA-256 is invalid.`);
+  if (!/^[0-9a-f]{64}$/.test(value)) throw ScriptError.make({message: `Recall reranker ${label} SHA-256 is invalid.`});
 }
 
 function isSafeRelativeFile(value: string): boolean {

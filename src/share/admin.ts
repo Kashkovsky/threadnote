@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Option, Result} from 'effect';
+import {Console, DateTime, Effect, FileSystem, Option, Result} from 'effect';
 
 import {uriSegment} from '../manifest.js';
 
@@ -83,21 +83,23 @@ export const runShareInit = Effect.fn('share.runShareInit')(function* (
   options: ShareInitOptions,
 ) {
   if (!remoteUrl.trim()) {
-    throw new ShareOperationError('Provide a git remote URL for the shared memories repo.');
+    throw ShareOperationError.make({message: 'Provide a git remote URL for the shared memories repo.'});
   }
   const dryRun = options.dryRun === true;
   const teamName = normalizeTeamName(options.team);
   const teamsFile = yield* readTeamsFile(config);
   if (teamsFile.teams[teamName]) {
-    throw new ShareOperationError(
-      `Team "${teamName}" is already configured (remote ${teamsFile.teams[teamName].remote}). Remove it first with: threadnote share remove --team ${teamName}`,
-    );
+    throw ShareOperationError.make({
+      message: `Team "${teamName}" is already configured (remote ${teamsFile.teams[teamName].remote}). Remove it first with: threadnote share remove --team ${teamName}`,
+    });
   }
   const worktree = yield* teamWorktreePath(config, teamName);
   const gitdir = yield* teamGitdirPath(config, teamName);
   yield* assertWorktreeUsable(worktree);
   if (yield* exists(gitdir)) {
-    throw new ShareOperationError(`Gitdir already exists at ${gitdir}; remove it or pick a different team name.`);
+    throw ShareOperationError.make({
+      message: `Gitdir already exists at ${gitdir}; remove it or pick a different team name.`,
+    });
   }
 
   yield* ensureDirectory(yield* pathDirname(worktree), dryRun);
@@ -116,7 +118,7 @@ export const runShareInit = Effect.fn('share.runShareInit')(function* (
 
   const newConfig: ShareTeamConfig = {
     ...(options.readOnly === true ? {access: 'read-only' as const} : {}),
-    addedAt: new Date().toISOString(),
+    addedAt: DateTime.formatIso(yield* DateTime.now),
     gitdir,
     name: teamName,
     remote: remoteUrl,
@@ -182,7 +184,7 @@ export const runShareUnpublish = Effect.fn('share.runShareUnpublish')(function* 
   assertShareTeamWritable(team, 'unpublish memories');
   const dryRun = options.dryRun === true;
   if (!isInTeamNamespace(config, sourceUri, team.name)) {
-    throw new ShareOperationError(`Memory ${sourceUri} is not in team "${team.name}" shared namespace.`);
+    throw ShareOperationError.make({message: `Memory ${sourceUri} is not in team "${team.name}" shared namespace.`});
   }
   const ov = NATIVE_RESOURCE_BACKEND;
   const targetUri = personalUriFor(config, sourceUri, team.name);
@@ -215,15 +217,15 @@ export const runShareUnpublish = Effect.fn('share.runShareUnpublish')(function* 
   if (!dryRun) {
     const currentTarget = yield* readMemoryContent(config, ov, targetUri, false);
     if (currentTarget !== preflight.personalContent) {
-      throw new ShareOperationError(
-        `Personal target ${targetUri} changed during unpublish; shared canonical source preserved.`,
-      );
+      throw ShareOperationError.make({
+        message: `Personal target ${targetUri} changed during unpublish; shared canonical source preserved.`,
+      });
     }
     const currentSource = yield* readMemoryContent(config, ov, sourceUri, false);
     if (currentSource !== preflight.sharedContent) {
-      throw new ShareOperationError(
-        `Shared source ${sourceUri} changed during unpublish; shared canonical source preserved.`,
-      );
+      throw ShareOperationError.make({
+        message: `Shared source ${sourceUri} changed during unpublish; shared canonical source preserved.`,
+      });
     }
     yield* recordMemoryRelocation(config, {
       fromContent: currentSource,
@@ -235,12 +237,10 @@ export const runShareUnpublish = Effect.fn('share.runShareUnpublish')(function* 
   const removeResult = yield* Effect.result(removeMemoryUri(config, ov, sourceUri, dryRun));
   if (Result.isFailure(removeResult)) {
     const err = removeResult.failure;
-    return yield* Effect.fail(
-      new ShareOperationError(
-        `Unpublished ${sourceUri} -> ${targetUri}, but could not remove the shared native canonical store source. Retry cleanup later with: threadnote forget ${sourceUri}\n${err instanceof Error ? err.message : String(err)}`,
-        {cause: err},
-      ),
-    );
+    return yield* ShareOperationError.make({
+      message: `Unpublished ${sourceUri} -> ${targetUri}, but could not remove the shared native canonical store source. Retry cleanup later with: threadnote forget ${sourceUri}\n${err instanceof Error ? err.message : String(err)}`,
+      cause: err,
+    });
   }
   yield* Console.log(
     `${dryRun ? 'Would unpublish' : 'Unpublished'} ${sourceUri} -> ${targetUri} --mode ${preflight.disposition}`,
@@ -272,11 +272,9 @@ const preflightShareUnpublish = Effect.fn('share.preflightShareUnpublish')(funct
     : undefined;
   const disposition = shareUnpublishTargetDisposition(existingTarget, personalContent);
   if (disposition === 'conflict') {
-    return yield* Effect.fail(
-      new ShareOperationError(
-        `Refusing to unpublish: a personal memory already exists at ${targetUri} with different content. Move or forget it first, then retry.`,
-      ),
-    );
+    return yield* ShareOperationError.make({
+      message: `Refusing to unpublish: a personal memory already exists at ${targetUri} with different content. Move or forget it first, then retry.`,
+    });
   }
   const worktreeState = yield* preflightSharedWorktreeRemoval(
     worktree,
@@ -299,72 +297,60 @@ const preflightSharedWorktreeRemoval = Effect.fn('share.preflightSharedWorktreeR
     allowFailure: true,
   });
   if (unmerged.exitCode !== 0) {
-    return yield* Effect.fail(
-      new ShareOperationError(
-        `Could not verify shared worktree state for ${safeRelativePath}: ${unmerged.stderr.trim() || unmerged.stdout.trim() || 'git ls-files failed'}.`,
-      ),
-    );
+    return yield* ShareOperationError.make({
+      message: `Could not verify shared worktree state for ${safeRelativePath}: ${unmerged.stderr.trim() || unmerged.stdout.trim() || 'git ls-files failed'}.`,
+    });
   }
   if (unmerged.stdout.trim().length > 0) {
-    return yield* Effect.fail(
-      new ShareOperationError(
-        `Refusing to unpublish unmerged shared worktree file: ${safeRelativePath}. Resolve the conflict first.`,
-      ),
-    );
+    return yield* ShareOperationError.make({
+      message: `Refusing to unpublish unmerged shared worktree file: ${safeRelativePath}. Resolve the conflict first.`,
+    });
   }
 
   const trackedResult = yield* runCommand(git, ['-C', worktree, 'ls-files', '--', safeRelativePath], {
     allowFailure: true,
   });
   if (trackedResult.exitCode !== 0) {
-    return yield* Effect.fail(
-      new ShareOperationError(
-        `Could not inspect shared worktree tracking for ${safeRelativePath}: ${trackedResult.stderr.trim() || trackedResult.stdout.trim() || 'git ls-files failed'}.`,
-      ),
-    );
+    return yield* ShareOperationError.make({
+      message: `Could not inspect shared worktree tracking for ${safeRelativePath}: ${trackedResult.stderr.trim() || trackedResult.stdout.trim() || 'git ls-files failed'}.`,
+    });
   }
   const tracked = trackedResult.stdout.split(/\r?\n/).some(path => path === safeRelativePath);
   if (tracked) {
     const indexed = yield* runCommand(git, ['-C', worktree, 'show', `:${safeRelativePath}`], {allowFailure: true});
     if (indexed.exitCode !== 0) {
-      return yield* Effect.fail(
-        new ShareOperationError(
-          `Could not verify shared worktree file ${safeRelativePath} against the Git index: ${indexed.stderr.trim() || indexed.stdout.trim() || 'git show failed'}.`,
-        ),
-      );
+      return yield* ShareOperationError.make({
+        message: `Could not verify shared worktree file ${safeRelativePath} against the Git index: ${indexed.stderr.trim() || indexed.stdout.trim() || 'git show failed'}.`,
+      });
     }
     if (!sharedMemoryContentsEquivalent(indexed.stdout, canonicalContent)) {
-      return yield* Effect.fail(
-        new ShareOperationError(
-          `Refusing to unpublish: shared canonical source does not match tracked Git content for ${safeRelativePath}. Sync or resolve the worktree conflict first.`,
-        ),
-      );
+      return yield* ShareOperationError.make({
+        message: `Refusing to unpublish: shared canonical source does not match tracked Git content for ${safeRelativePath}. Sync or resolve the worktree conflict first.`,
+      });
     }
   }
   const fs = yield* FileSystem.FileSystem;
   const targetPath = yield* pathJoin(worktree, ...safeRelativePath.split('/'));
   if (yield* fs.exists(targetPath)) {
     if (!tracked) {
-      return yield* Effect.fail(
-        new ShareOperationError(`Refusing to unpublish untracked shared worktree file: ${safeRelativePath}.`),
-      );
+      return yield* ShareOperationError.make({
+        message: `Refusing to unpublish untracked shared worktree file: ${safeRelativePath}.`,
+      });
     }
     if (Option.isSome(yield* fs.readLink(targetPath).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new ShareOperationError(`Refusing to unpublish shared worktree symbolic link: ${targetPath}`),
-      );
+      return yield* ShareOperationError.make({
+        message: `Refusing to unpublish shared worktree symbolic link: ${targetPath}`,
+      });
     }
     const info = yield* fs.stat(targetPath);
     if (info.type !== 'File') {
-      return yield* Effect.fail(new ShareOperationError(`Shared worktree source is not a regular file: ${targetPath}`));
+      return yield* ShareOperationError.make({message: `Shared worktree source is not a regular file: ${targetPath}`});
     }
     const worktreeContent = yield* fs.readFileString(targetPath);
     if (!sharedMemoryContentsEquivalent(worktreeContent, canonicalContent)) {
-      return yield* Effect.fail(
-        new ShareOperationError(
-          `Refusing to unpublish: shared canonical source does not match worktree file ${safeRelativePath}. Sync or resolve the worktree conflict first.`,
-        ),
-      );
+      return yield* ShareOperationError.make({
+        message: `Refusing to unpublish: shared canonical source does not match worktree file ${safeRelativePath}. Sync or resolve the worktree conflict first.`,
+      });
     }
     return 'present' as const;
   }
@@ -372,11 +358,9 @@ const preflightSharedWorktreeRemoval = Effect.fn('share.preflightSharedWorktreeR
   if (tracked) return 'tracked-missing' as const;
 
   if (allowAlreadyRemoved) return 'already-removed' as const;
-  return yield* Effect.fail(
-    new ShareOperationError(
-      `Refusing to unpublish: shared worktree file ${safeRelativePath} is already removed, but no byte-identical personal target exists to resume cleanup.`,
-    ),
-  );
+  return yield* ShareOperationError.make({
+    message: `Refusing to unpublish: shared worktree file ${safeRelativePath} is already removed, but no byte-identical personal target exists to resume cleanup.`,
+  });
 });
 
 export const runShareList = Effect.fn('share.runShareList')(function* (
@@ -407,12 +391,12 @@ export const runShareRename = Effect.fn('share.runShareRename')(function* (
   const oldTeam = yield* resolveTeam(config, options.team);
   const newName = normalizeTeamName(options.to);
   if (newName === oldTeam.name) {
-    throw new ShareOperationError(`Team is already named "${newName}".`);
+    throw ShareOperationError.make({message: `Team is already named "${newName}".`});
   }
   const dryRun = options.dryRun === true;
   const teamsFile = yield* readTeamsFile(config);
   if (teamsFile.teams[newName]) {
-    throw new ShareOperationError(`Team "${newName}" is already configured.`);
+    throw ShareOperationError.make({message: `Team "${newName}" is already configured.`});
   }
 
   const newWorktree = yield* teamWorktreePath(config, newName);
@@ -490,7 +474,7 @@ export const runShareRename = Effect.fn('share.runShareRename')(function* (
         allowFailure: true,
       });
     }
-    return yield* Effect.fail(renameResult.failure);
+    return yield* renameResult.failure;
   }
   const ov = NATIVE_RESOURCE_BACKEND;
   const oldSharedRoot = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${oldTeam.name}`;
@@ -517,7 +501,7 @@ export const runShareSetUrl = Effect.fn('share.runShareSetUrl')(function* (
   options: ShareSetUrlOptions,
 ) {
   if (!remoteUrl.trim()) {
-    throw new ShareOperationError('Provide a git remote URL.');
+    throw ShareOperationError.make({message: 'Provide a git remote URL.'});
   }
   const team = yield* resolveTeam(config, options.team);
   const dryRun = options.dryRun === true;
@@ -550,7 +534,7 @@ export const runShareSetAccess = Effect.fn('share.runShareSetAccess')(function* 
   const team = yield* resolveTeam(config, options.team);
   const mode = options.mode;
   if (mode !== 'read-only' && mode !== 'read-write') {
-    throw new ShareOperationError('Choose a shared-team access mode: read-only or read-write.');
+    throw ShareOperationError.make({message: 'Choose a shared-team access mode: read-only or read-write.'});
   }
   const current = shareTeamAccess(team.config);
   if (current === mode) {
@@ -634,7 +618,7 @@ export const runShareRemove = Effect.fn('share.runShareRemove')(function* (
 
 const assertDestinationAbsent = Effect.fn('share.assertDestinationAbsent')(function* (path: string, label: string) {
   if (yield* exists(path)) {
-    throw new ShareOperationError(`Cannot rename share: destination ${label} already exists at ${path}.`);
+    throw ShareOperationError.make({message: `Cannot rename share: destination ${label} already exists at ${path}.`});
   }
 });
 
@@ -664,11 +648,9 @@ const preserveSharedMemoriesLocally = Effect.fn('share.preserveSharedMemoriesLoc
       Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none<string>())),
     );
     if (Option.isSome(existing) && !sharedMemoryContentsEquivalent(existing.value, content)) {
-      return yield* Effect.fail(
-        new ShareOperationError(
-          `Refusing to remove share: a different personal memory already exists at ${targetUri}. Move or forget it first, then retry.`,
-        ),
-      );
+      return yield* ShareOperationError.make({
+        message: `Refusing to remove share: a different personal memory already exists at ${targetUri}. Move or forget it first, then retry.`,
+      });
     }
     planned.push({
       content,

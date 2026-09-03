@@ -30,9 +30,9 @@ export const buildMemoryConnectionsScaleTarget = Effect.fn('memoryConnectionsSca
         sourcemap: 'none',
         target: 'bun',
       }),
-    catch: cause => new ScriptError('Could not build the memory-connections scale target.', {cause}),
+    catch: cause => ScriptError.make({message: 'Could not build the memory-connections scale target.', cause}),
   });
-  if (!result.success) return yield* Effect.fail(new ScriptError('Memory-connections scale target build failed.'));
+  if (!result.success) return yield* ScriptError.make({message: 'Memory-connections scale target build failed.'});
   return {executablePath, sha256: yield* sha256Hex(yield* fs.readFile(executablePath))};
 });
 
@@ -42,7 +42,7 @@ const program = Effect.scoped(
     const system = yield* SystemInfo;
     const args = yield* scriptArguments();
     if (args.includes('--built-artifact-sha256')) {
-      return yield* Effect.fail(new ScriptError('--built-artifact-sha256 is reserved for the benchmark wrapper.'));
+      return yield* ScriptError.make({message: '--built-artifact-sha256 is reserved for the benchmark wrapper.'});
     }
     const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-connections-scale-build-'});
     const built = yield* buildMemoryConnectionsScaleTarget(root);

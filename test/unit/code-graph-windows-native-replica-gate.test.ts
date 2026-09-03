@@ -10,7 +10,7 @@ import type {BenchmarkArtifactV1, BenchmarkMeasurementV1} from '../../src/evalua
 const GitCommit = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/u));
 const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const GitObjectId = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/u));
-const Positive = Schema.Number.check(Schema.isGreaterThan(0));
+const Positive = Schema.Finite.check(Schema.isGreaterThan(0));
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const CalibrationReplicaFields = {
   archiveSha256: Sha256,
@@ -42,13 +42,13 @@ const CalibrationReplicaFields = {
     wholeGraphAnalysisP95: Positive,
   }),
 } as const;
-const calibration = Schema.decodeUnknownSync(
+const calibration = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       expected: Schema.Struct({
-        processCpuP95DeltaMilliseconds: Schema.Number,
+        processCpuP95DeltaMilliseconds: Schema.Finite,
         slowerTailHasLowerWallP50: Schema.Boolean,
-        wallP95DeltaMilliseconds: Schema.Number,
+        wallP95DeltaMilliseconds: Schema.Finite,
         wallP95Ratio: Positive,
       }),
       fixtureHash: Sha256,

@@ -17,7 +17,7 @@ describe('Code Memory Link Codex terminal receipts', () => {
     fc.assert(
       fc.property(fc.constantFrom(...CODE_MEMORY_LINK_CODEX_TERMINAL_KINDS), kind => {
         const marker = formatCodeMemoryLinkCodexTerminalReceipt(
-          new CodeMemoryLinkCodexTerminalError(kind, 'private diagnostic text must not be retained'),
+          CodeMemoryLinkCodexTerminalError.of(kind, 'private diagnostic text must not be retained'),
         );
         expect(marker).not.toContain('private diagnostic text');
         expect(parseCodeMemoryLinkCodexTerminalReceipt(`${marker}\n`)).toEqual(

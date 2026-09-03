@@ -24,7 +24,7 @@ export const healAnchorsAfterGraphIndex = Effect.fn('memoryCodeAnchor.healAfterG
     kind: 'repository',
     repositoryId: identity.repositoryId,
     worktreeId: identity.worktreeId,
-  }).pipe(Effect.catchCause(() => Effect.void));
+  }).pipe(Effect.ignoreCause);
 });
 
 /** Fail-soft product hook for an already-published ready Workset generation. */
@@ -32,9 +32,7 @@ export const healAnchorsAfterWorksetPrepare = Effect.fn('memoryCodeAnchor.healAf
   config: RuntimeConfig,
   name: string,
 ) {
-  yield* healAnchorsForRoute(config, 'workset-prepare', {kind: 'workset', name}).pipe(
-    Effect.catchCause(() => Effect.void),
-  );
+  yield* healAnchorsForRoute(config, 'workset-prepare', {kind: 'workset', name}).pipe(Effect.ignoreCause);
 });
 
 const healAnchorsForRoute = Effect.fn('memoryCodeAnchor.healForRoute')(function* (

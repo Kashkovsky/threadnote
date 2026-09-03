@@ -59,7 +59,7 @@ const Summary = Schema.Struct({
   upperMiddle: PositiveFinite,
 });
 
-const calibration = Schema.decodeUnknownSync(
+const calibration = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       adjacentHundredSampleMethodControl: Schema.Struct({
@@ -120,7 +120,7 @@ const calibration = Schema.decodeUnknownSync(
   ).text(),
 );
 
-const budget = Schema.decodeUnknownSync(
+const budget = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       developmentPerformance: Schema.Struct({

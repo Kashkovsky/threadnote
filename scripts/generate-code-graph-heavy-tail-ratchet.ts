@@ -15,7 +15,7 @@ const generate = Effect.gen(function* () {
   for (const artifactPath of artifacts) {
     const artifact = parseCodeGraphHeavyTailBenchmarkArtifact(yield* readJsonFile(artifactPath));
     if (artifact.version !== 3) {
-      return yield* Effect.fail(new ScriptError('Heavy-tail ratchet generation requires version 3 artifacts.'));
+      return yield* ScriptError.make({message: 'Heavy-tail ratchet generation requires version 3 artifacts.'});
     }
     parsed.push(artifact);
   }
@@ -31,16 +31,17 @@ function parseArguments(args: readonly string[]): {readonly artifacts: readonly 
     const argument = args[index];
     if (argument === '--output') {
       const value = args[++index];
-      if (!value?.trim()) throw new ScriptError('--output requires a path.');
+      if (!value?.trim()) throw ScriptError.make({message: '--output requires a path.'});
       outputPath = value;
     } else if (argument.startsWith('-')) {
-      throw new ScriptError(`Unknown heavy-tail ratchet generator option: ${argument}`);
+      throw ScriptError.make({message: `Unknown heavy-tail ratchet generator option: ${argument}`});
     } else {
       artifacts.push(argument);
     }
   }
-  if (outputPath === undefined) throw new ScriptError('Heavy-tail ratchet generation requires --output.');
-  if (artifacts.length < 3) throw new ScriptError('Heavy-tail ratchet generation requires at least three artifacts.');
+  if (outputPath === undefined) throw ScriptError.make({message: 'Heavy-tail ratchet generation requires --output.'});
+  if (artifacts.length < 3)
+    throw ScriptError.make({message: 'Heavy-tail ratchet generation requires at least three artifacts.'});
   return {artifacts, outputPath};
 }
 

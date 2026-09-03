@@ -574,7 +574,7 @@ function identityTestPack(): CodeGraphLanguagePack {
     capabilities: new Set<CodeGraphCapability>(['declarations']),
     extractor: {
       extract: () => {
-        throw new TestError('identity-only test extractor');
+        throw TestError.make({message: 'identity-only test extractor'});
       },
       version: 'identity-extractor-v1',
     },

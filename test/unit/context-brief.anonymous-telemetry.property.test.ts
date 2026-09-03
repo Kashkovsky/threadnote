@@ -1,4 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import fc from 'fast-check';
 import {Cause, Effect, Exit, Tracer} from 'effect';
 import {describe, expect, it} from 'vitest';
@@ -455,7 +456,7 @@ describe('Context Brief anonymous telemetry', () => {
   effectIt.effect('preserves failures and strips successful citation results from a failed terminal envelope', () => {
     const capture = capturingTracer();
     const reporter = makeContextBriefAnonymousTelemetryReporter('local');
-    const original = new TestError('private projection failure at /private/repository');
+    const original = TestError.make({message: 'private projection failure at /private/repository'});
 
     return Effect.gen(function* () {
       const exit = yield* Effect.exit(
@@ -538,7 +539,7 @@ describe('Context Brief anonymous telemetry', () => {
   effectIt.effect('records raw source failures before the compiler returns a successful fail-soft brief', () => {
     const capture = capturingTracer();
     const reporter = makeContextBriefAnonymousTelemetryReporter('local');
-    const privateFailure = new TestError('private source failure at /private/repository');
+    const privateFailure = TestError.make({message: 'private source failure at /private/repository'});
 
     return Effect.gen(function* () {
       const result = yield* withAnonymousTelemetry(
@@ -762,7 +763,7 @@ describe('Context Brief anonymous telemetry', () => {
       const privateNode = `cgs_${token}${token}`;
       const privateTask = `private-task-${token}`;
       const privateMemory = `private-memory-${token}`;
-      const privateFailure = new TestError(`${privateMemory} at ${privatePath} via ${privateNode}`);
+      const privateFailure = TestError.make({message: `${privateMemory} at ${privatePath} via ${privateNode}`});
 
       return Effect.gen(function* () {
         const result = yield* withAnonymousTelemetry(
@@ -918,7 +919,7 @@ function spanAttributes(captured: CapturedSpan): Record<string, unknown> {
 function systemInfoStub(): SystemInfoShape {
   return {
     architecture: 'arm64',
-    availableDiskBytes: () => Effect.succeed(undefined),
+    availableDiskBytes: () => succeedUndefined,
     currentDirectory: () => '/',
     environment: () => ({}),
     executablePath: '/opt/threadnote/bin/threadnote',
@@ -935,7 +936,7 @@ function systemInfoStub(): SystemInfoShape {
     platform: 'darwin',
     processArguments: ['/opt/threadnote/bin/threadnote'],
     processId: 1,
-    processStartIdentity: () => Effect.succeed(undefined),
+    processStartIdentity: () => succeedUndefined,
     readLine: () => () => undefined,
     runtimeVersion: 'test',
     setEnvironmentVariable: () => undefined,

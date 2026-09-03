@@ -82,7 +82,7 @@ describe('legacy installation cleanup', () => {
               }
               return {exitCode: 0, stderr: '', stdout: ''};
             }),
-          executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),
+          executeStreaming: () => Effect.die(TestError.make({message: 'Unexpected streaming command'})),
         });
         const testSystem = SystemInfo.of({
           ...baseSystem,
@@ -154,7 +154,7 @@ describe('legacy installation cleanup', () => {
               }
               return {exitCode: 0, stderr: '', stdout: ''};
             }),
-          executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),
+          executeStreaming: () => Effect.die(TestError.make({message: 'Unexpected streaming command'})),
         });
         const testSystem = SystemInfo.of({
           ...baseSystem,

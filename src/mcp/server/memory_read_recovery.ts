@@ -1,4 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
+import {Schema} from 'effect';
 import {memoryReadRecoveryForError, memoryReadRecoveryText} from '../../memory/read_recovery.js';
 import type {RuntimeConfig} from '../../types.js';
 import {memoryIdentityAlias} from '../../memory/identity_alias.js';
@@ -6,7 +7,7 @@ import {MemoryIdentityResolutionError} from '../../recall/memory_identity.js';
 import {mcpErrorResult} from './common.js';
 
 export function memoryReadErrorResult(config: Pick<RuntimeConfig, 'user'>, error: unknown): CallToolResult {
-  if (error instanceof MemoryIdentityResolutionError) {
+  if (Schema.is(MemoryIdentityResolutionError)(error)) {
     const receipt = {
       alias: memoryIdentityAlias(error.memoryId),
       message: error.message,

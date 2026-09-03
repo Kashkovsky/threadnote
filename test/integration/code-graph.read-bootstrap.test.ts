@@ -39,7 +39,7 @@ effectIt.effect('serves parallel ready-snapshot reads while another process hold
       );
       yield* Effect.tryPromise({
         try: () => waitForWriter(marker, writer),
-        catch: cause => new TestError('Held SQLite writer did not become ready.', {cause}),
+        catch: cause => TestError.make({message: 'Held SQLite writer did not become ready.', cause}),
       });
 
       const snapshots = yield* Effect.all(
@@ -83,9 +83,10 @@ async function waitForWriter(markerPath: string, writer: HeldWriter): Promise<vo
   const deadline = Date.now() + 15_000;
   while (!existsSync(markerPath)) {
     if (writer.child.exitCode !== null || writer.child.signalCode !== null) {
-      throw new TestError(`Held-writer child exited before acquiring SQLite: ${writer.stderr()}`);
+      throw TestError.make({message: `Held-writer child exited before acquiring SQLite: ${writer.stderr()}`});
     }
-    if (Date.now() >= deadline) throw new TestError(`Timed out waiting for held-writer marker: ${writer.stderr()}`);
+    if (Date.now() >= deadline)
+      throw TestError.make({message: `Timed out waiting for held-writer marker: ${writer.stderr()}`});
     await new Promise(resolve => setTimeout(resolve, 25));
   }
 }

@@ -151,16 +151,19 @@ function SharesPanel(props: {
   );
 }
 
-export class ManagerApiError extends Error {
-  override readonly name = 'ManagerApiError';
-
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly code?: string,
-    readonly retryAfterMilliseconds?: number,
-  ) {
-    super(message);
+export class ManagerApiError extends Schema.TaggedError<ManagerApiError>()('ManagerApiError', {
+  code: Schema.optionalKey(Schema.String),
+  message: Schema.String,
+  retryAfterMilliseconds: Schema.optionalKey(Schema.Finite),
+  status: Schema.Finite,
+}) {
+  static of(message: string, status: number, code?: string, retryAfterMilliseconds?: number): ManagerApiError {
+    return ManagerApiError.make({
+      message,
+      status,
+      ...(code === undefined ? {} : {code}),
+      ...(retryAfterMilliseconds === undefined ? {} : {retryAfterMilliseconds}),
+    });
   }
 }
 
@@ -199,7 +202,7 @@ async function api<T>(
       readonly retryAfterMilliseconds?: number;
     };
     if (!response.ok) {
-      throw new ManagerApiError(
+      throw ManagerApiError.of(
         data.error ?? `HTTP ${response.status}`,
         response.status,
         data.code,

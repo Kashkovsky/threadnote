@@ -50,18 +50,18 @@ const program = Effect.gen(function* () {
     policy.reservedEvaluation.sha256 !== evaluationHash ||
     policy.forbiddenTextsSha256 !== forbiddenTextsHash
   ) {
-    return yield* Effect.fail(
-      new ScriptError('Recall reranker validation policy does not match the current frozen recall evaluation fixture.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Recall reranker validation policy does not match the current frozen recall evaluation fixture.',
+    });
   }
   if (
     !manifest.reservedEvaluations.some(
       candidate => candidate.name === policy.reservedEvaluation.name && candidate.sha256 === evaluationHash,
     )
   ) {
-    return yield* Effect.fail(
-      new ScriptError('Dataset manifest does not reserve the current recall evaluation fixture.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Dataset manifest does not reserve the current recall evaluation fixture.',
+    });
   }
   const dataset = parseRecallRerankerDatasetV1(manifestValue, groupContent, {
     forbiddenTexts,
@@ -80,7 +80,7 @@ function parseJson(content: string, source: string): unknown {
   try {
     return JSON.parse(content) as unknown;
   } catch (cause) {
-    throw new ScriptError(`Could not parse JSON file: ${source}`, {cause});
+    throw ScriptError.make({message: `Could not parse JSON file: ${source}`, cause});
   }
 }
 
@@ -93,13 +93,16 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === '--dataset') dataset = resolve(required(args[++index], argument));
-    else throw new ScriptError(`Unknown recall reranker validation option: ${argument}. Pass --help for usage.`);
+    else
+      throw ScriptError.make({
+        message: `Unknown recall reranker validation option: ${argument}. Pass --help for usage.`,
+      });
   }
   return {dataset};
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 

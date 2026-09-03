@@ -1014,11 +1014,11 @@ describe('Manager logical repository and workspace catalogs', () => {
           })
           .pipe(Effect.forkChild);
         yield* Deferred.await(writerAcquired);
-        const startedAt = Date.now();
+        const startedAt = yield* Clock.currentTimeMillis;
         const catalog = yield* managerGraphCatalog(home).pipe(
           Effect.ensuring(Deferred.succeed(releaseWriter, undefined).pipe(Effect.asVoid)),
         );
-        const elapsed = Date.now() - startedAt;
+        const elapsed = (yield* Clock.currentTimeMillis) - startedAt;
         yield* Fiber.join(writer);
         return {catalog, elapsed};
       }).pipe(provideTestLayer(storeLayer));
@@ -1067,7 +1067,7 @@ describe('Manager logical repository and workspace catalogs', () => {
         yield* store.promote(databasePath, identity, snapshot.id);
         const failingStore = CodeGraphStore.of({
           ...store,
-          retainViewSnapshotLease: () => Effect.fail(new CodeGraphStoreError(`synthetic failure at ${home}`)),
+          retainViewSnapshotLease: () => Effect.fail(CodeGraphStoreError.of(`synthetic failure at ${home}`)),
         });
         return yield* managerGraphCatalog(home).pipe(Effect.provideService(CodeGraphStore, failingStore));
       }).pipe(provideTestLayer(storeLayer));
@@ -1111,7 +1111,7 @@ describe('Manager logical repository and workspace catalogs', () => {
           })
           .pipe(Effect.forkChild);
         yield* Deferred.await(writerAcquired);
-        const startedAt = Date.now();
+        const startedAt = yield* Clock.currentTimeMillis;
         const failure = yield* managerGraphQuery(
           home,
           `${identity.checkoutId}.${identity.worktreeId}`,
@@ -1119,7 +1119,7 @@ describe('Manager logical repository and workspace catalogs', () => {
           {},
           Option.some(snapshot.id),
         ).pipe(Effect.flip, Effect.ensuring(Deferred.succeed(releaseWriter, undefined).pipe(Effect.asVoid)));
-        const elapsed = Date.now() - startedAt;
+        const elapsed = (yield* Clock.currentTimeMillis) - startedAt;
         yield* Fiber.join(writer);
         return {elapsed, failure};
       }).pipe(provideTestLayer(managerGraphLayer));
@@ -1151,7 +1151,8 @@ describe('Manager logical repository and workspace catalogs', () => {
         yield* store.activate(databasePath, identity, snapshot, [], [], []);
         yield* store.promote(databasePath, identity, snapshot.id);
         const catalog = yield* managerGraphCatalog(home);
-        if (catalog.repositories.length !== 1) return yield* Effect.die(new TestError('catalog lease fixture failed'));
+        if (catalog.repositories.length !== 1)
+          return yield* Effect.die(TestError.make({message: 'catalog lease fixture failed'}));
         const writerAcquired = yield* Deferred.make<void>();
         const releaseWriter = yield* Deferred.make<void>();
         const writer = yield* store
@@ -1162,7 +1163,7 @@ describe('Manager logical repository and workspace catalogs', () => {
           })
           .pipe(Effect.forkChild);
         yield* Deferred.await(writerAcquired);
-        const startedAt = Date.now();
+        const startedAt = yield* Clock.currentTimeMillis;
         const result = yield* managerGraphQuery(
           home,
           `${identity.checkoutId}.${identity.worktreeId}`,
@@ -1170,7 +1171,7 @@ describe('Manager logical repository and workspace catalogs', () => {
           {},
           Option.some(snapshot.id),
         ).pipe(Effect.ensuring(Deferred.succeed(releaseWriter, undefined).pipe(Effect.asVoid)));
-        const elapsed = Date.now() - startedAt;
+        const elapsed = (yield* Clock.currentTimeMillis) - startedAt;
         yield* Fiber.join(writer);
         yield* releaseManagerGraphSnapshotLeases();
         return {elapsed, result};
@@ -1211,13 +1212,13 @@ describe('Manager logical repository and workspace catalogs', () => {
           })
           .pipe(Effect.forkChild);
         yield* Deferred.await(writerAcquired);
-        const startedAt = Date.now();
+        const startedAt = yield* Clock.currentTimeMillis;
         const result = yield* managerGraphAnalysis(
           home,
           `${identity.checkoutId}.${identity.worktreeId}`,
           Option.some(snapshot.id),
         ).pipe(Effect.ensuring(Deferred.succeed(releaseWriter, undefined).pipe(Effect.asVoid)));
-        const elapsed = Date.now() - startedAt;
+        const elapsed = (yield* Clock.currentTimeMillis) - startedAt;
         yield* Fiber.join(writer);
         yield* releaseManagerGraphSnapshotLeases();
         return {elapsed, result};
@@ -1258,9 +1259,9 @@ describe('Manager logical repository and workspace catalogs', () => {
           })
           .pipe(Effect.forkChild);
         yield* Deferred.await(writerAcquired);
-        const startedAt = Date.now();
+        const startedAt = yield* Clock.currentTimeMillis;
         yield* releaseManagerGraphSnapshotLeases();
-        const elapsed = Date.now() - startedAt;
+        const elapsed = (yield* Clock.currentTimeMillis) - startedAt;
         yield* Deferred.succeed(releaseWriter, undefined);
         yield* Fiber.join(writer);
         return elapsed;
@@ -1708,7 +1709,7 @@ describe('Manager logical repository and workspace catalogs', () => {
               identity.checkoutId,
               identity.worktreeId,
               snapshot.id,
-              Effect.fail(new TestError('fixture removal failed before its commit point')),
+              Effect.fail(TestError.make({message: 'fixture removal failed before its commit point'})),
             ).pipe(
               Effect.match({
                 onFailure: error => error.message,

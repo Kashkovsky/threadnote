@@ -1,4 +1,4 @@
-import {Cause, Clock, Console, Crypto, Effect, Exit, FileSystem, Path, Result} from 'effect';
+import {Cause, Clock, Console, Crypto, DateTime, Effect, Exit, FileSystem, Path, Result, Schema} from 'effect';
 import {runDetachedCommandEffect} from '../effect/command.js';
 import {applicationError} from '../effect/errors.js';
 import {syncDirectoryBestEffort, syncWritableFile} from '../effect/file_durability.js';
@@ -260,7 +260,7 @@ export const runAutoUpdateWorker = Effect.fn('autoUpdate.runWorker')(function* (
           Effect.exit(runOwnedAutoUpdate(config)),
         ).pipe(
           Effect.catch(error =>
-            error instanceof FileLockTimeout
+            Schema.is(FileLockTimeout)(error)
               ? Effect.succeed(Exit.succeed<AutoUpdateWorkerResult>({result: 'busy'}))
               : Effect.fail(error),
           ),
@@ -295,11 +295,11 @@ export const triggerAutoUpdateIfEnabled = Effect.fn('autoUpdate.triggerIfEnabled
       ) {
         return undefined;
       }
-      const claimedAt = new Date(now).toISOString();
+      const claimedAt = DateTime.formatIso(DateTime.makeUnsafe(now));
       yield* writeAutoUpdateState({...state, lastCheckAt: claimedAt, running: undefined});
       return {claimedAt, previousLastCheckAt: state.lastCheckAt};
     }),
-  ).pipe(Effect.catch(error => (error instanceof FileLockTimeout ? Effect.succeed(undefined) : Effect.fail(error))));
+  ).pipe(Effect.catch(error => (Schema.is(FileLockTimeout)(error) ? Effect.void : Effect.fail(error))));
   if (!claim) return false;
   const spawned = yield* spawnDetachedAutoUpdateWorker(agentSession);
   if (spawned) return true;
@@ -539,7 +539,7 @@ const writeAutoUpdateState = Effect.fn('autoUpdate.writeState')(function* (state
     yield* syncWritableFile(fs, temporary);
     yield* fs.rename(temporary, target);
     yield* syncDirectoryBestEffort(fs, directory);
-  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
 });
 
 const autoUpdateStatePath = Effect.fn('autoUpdate.statePath')(function* () {
@@ -574,7 +574,7 @@ const effectiveAutoUpdatePolicy = Effect.fn('autoUpdate.effectivePolicy')(functi
 });
 
 const nowIso = Effect.fn('autoUpdate.nowIso')(function* () {
-  return new Date(yield* Clock.currentTimeMillis).toISOString();
+  return DateTime.formatIso(yield* DateTime.now);
 });
 
 function emptyAutoUpdateState(policy: AutoUpdatePolicy): AutoUpdateState {

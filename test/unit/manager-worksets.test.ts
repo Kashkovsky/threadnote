@@ -28,6 +28,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 import {startManagerTestServer} from '../helpers/manager-test-server.js';
 import {TestError} from '../helpers/test-error.js';
+import {testHttpFetch} from '../helpers/http-fetch.js';
 import {execFileSync} from '../helpers/node-child-process.js';
 import {existsSync} from '../helpers/node-fs.js';
 import {mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
@@ -1193,18 +1194,18 @@ describe('Manager Worksets API and human labels', () => {
     const server = await startManagerTestServer(config, 'workset-secret');
     const headers = {authorization: 'Bearer workset-secret'};
     try {
-      expect((await fetch(`${server.url}/api/worksets`)).status).toBe(401);
-      const catalogResponse = await fetch(`${server.url}/api/worksets`, {headers});
+      expect((await testHttpFetch(`${server.url}/api/worksets`)).status).toBe(401);
+      const catalogResponse = await testHttpFetch(`${server.url}/api/worksets`, {headers});
       const catalog = (await catalogResponse.json()) as {readonly revision: string};
       expect(catalogResponse.status).toBe(200);
-      const unauthorizedProject = await fetch(`${server.url}/api/worksets/projects`, {
+      const unauthorizedProject = await testHttpFetch(`${server.url}/api/worksets/projects`, {
         body: JSON.stringify({expectedRevision: catalog.revision, name: 'x', operation: 'create'}),
         headers: {'content-type': 'application/json'},
         method: 'POST',
       });
       expect(unauthorizedProject.status).toBe(401);
 
-      const createdResponse = await fetch(`${server.url}/api/worksets/definitions`, {
+      const createdResponse = await testHttpFetch(`${server.url}/api/worksets/definitions`, {
         body: JSON.stringify({
           expectedRevision: catalog.revision,
           name: 'platform',
@@ -1217,14 +1218,16 @@ describe('Manager Worksets API and human labels', () => {
       expect(createdResponse.status).toBe(200);
       const created = (await createdResponse.json()) as {readonly catalog: {readonly revision: string}};
 
-      const definitionResponse = await fetch(`${server.url}/api/worksets/definition?workset=platform`, {headers});
+      const definitionResponse = await testHttpFetch(`${server.url}/api/worksets/definition?workset=platform`, {
+        headers,
+      });
       expect(definitionResponse.status).toBe(200);
       expect(await definitionResponse.json()).toMatchObject({
         members: [{project: 'api'}, {project: 'billing'}],
         name: 'platform',
       });
 
-      const updatedResponse = await fetch(`${server.url}/api/worksets/definitions`, {
+      const updatedResponse = await testHttpFetch(`${server.url}/api/worksets/definitions`, {
         body: JSON.stringify({
           description: 'Shared runtime services',
           expectedRevision: created.catalog.revision,
@@ -1239,10 +1242,10 @@ describe('Manager Worksets API and human labels', () => {
       expect(updatedResponse.status).toBe(200);
       const updated = (await updatedResponse.json()) as {readonly catalog: {readonly revision: string}};
       expect(
-        await (await fetch(`${server.url}/api/worksets/definition?workset=platform`, {headers})).json(),
+        await (await testHttpFetch(`${server.url}/api/worksets/definition?workset=platform`, {headers})).json(),
       ).toMatchObject({description: 'Shared runtime services', members: [{project: 'api'}]});
 
-      const statusResponse = await fetch(`${server.url}/api/worksets/status?workset=platform`, {headers});
+      const statusResponse = await testHttpFetch(`${server.url}/api/worksets/status?workset=platform`, {headers});
       expect(statusResponse.status).toBe(200);
       expect(await statusResponse.json()).toMatchObject({catalog: {state: 'missing'}, workset: 'platform'});
 
@@ -1252,11 +1255,11 @@ describe('Manager Worksets API and human labels', () => {
             config.agentContextHome,
             Effect.all(
               [
-                Effect.promise(() => fetch(`${server.url}/api/worksets`, {headers})),
-                Effect.promise(() => fetch(`${server.url}/api/worksets/status?workset=platform`, {headers})),
-                Effect.promise(() => fetch(`${server.url}/api/worksets/jobs`, {headers})),
+                Effect.promise(() => testHttpFetch(`${server.url}/api/worksets`, {headers})),
+                Effect.promise(() => testHttpFetch(`${server.url}/api/worksets/status?workset=platform`, {headers})),
+                Effect.promise(() => testHttpFetch(`${server.url}/api/worksets/jobs`, {headers})),
                 Effect.promise(() =>
-                  fetch(`${server.url}/api/worksets/projects`, {
+                  testHttpFetch(`${server.url}/api/worksets/projects`, {
                     body: JSON.stringify({
                       expectedRevision: updated.catalog.revision,
                       name: 'api',
@@ -1283,12 +1286,14 @@ describe('Manager Worksets API and human labels', () => {
       const projectMutation = (await projectDuringMaintenance.json()) as {
         readonly catalog: {readonly revision: string};
       };
-      expect(await (await fetch(`${server.url}/api/worksets/project?project=api`, {headers})).json()).toMatchObject({
+      expect(
+        await (await testHttpFetch(`${server.url}/api/worksets/project?project=api`, {headers})).json(),
+      ).toMatchObject({
         name: 'api',
         seed: ['README.md'],
       });
 
-      const queryResponse = await fetch(`${server.url}/api/worksets/query`, {
+      const queryResponse = await testHttpFetch(`${server.url}/api/worksets/query`, {
         body: JSON.stringify({query: 'checkout ownership', workset: 'platform'}),
         headers: {...headers, 'content-type': 'application/json'},
         method: 'POST',
@@ -1297,7 +1302,7 @@ describe('Manager Worksets API and human labels', () => {
       expect(await queryResponse.json()).toMatchObject({code: 'catalog-missing'});
       expect(existsSync(join(config.agentContextHome, 'indexes', 'code-graph', 'repositories'))).toBe(false);
 
-      const deletedResponse = await fetch(`${server.url}/api/worksets/definitions`, {
+      const deletedResponse = await testHttpFetch(`${server.url}/api/worksets/definitions`, {
         body: JSON.stringify({
           confirm: true,
           expectedRevision: projectMutation.catalog.revision,
@@ -1308,7 +1313,9 @@ describe('Manager Worksets API and human labels', () => {
         method: 'POST',
       });
       expect(deletedResponse.status).toBe(200);
-      expect((await fetch(`${server.url}/api/worksets/definition?workset=platform`, {headers})).status).toBe(404);
+      expect((await testHttpFetch(`${server.url}/api/worksets/definition?workset=platform`, {headers})).status).toBe(
+        404,
+      );
     } finally {
       await server.close();
       await rm(root, {force: true, recursive: true});
@@ -1327,7 +1334,7 @@ describe('Manager Worksets API and human labels', () => {
           user: 'manager-test',
         } satisfies RuntimeConfig;
         const failed = yield* handleManagerWorksetRequest({
-          body: Effect.fail(new TestError('/private/parser/path')),
+          body: Effect.fail(TestError.make({message: '/private/parser/path'})),
           config,
           contextKey: {},
           jobScope,
@@ -1377,7 +1384,7 @@ describe('Manager Worksets API and human labels', () => {
             ),
           url: new URL('http://127.0.0.1/api/worksets/prepare'),
         });
-        if (startedResponse === undefined) return yield* Effect.fail(new TestError('prepare route was not handled'));
+        if (startedResponse === undefined) return yield* TestError.make({message: 'prepare route was not handled'});
         expect(startedResponse.status).toBe(202);
         const job = (startedResponse.body as {readonly job: {readonly id: string}}).job;
         yield* Deferred.await(started);
@@ -1464,7 +1471,7 @@ describe('Manager Worksets API and human labels', () => {
             ),
           url: new URL('http://127.0.0.1/api/worksets/prepare'),
         });
-        if (started === undefined) return yield* Effect.fail(new TestError('prepare route was not handled'));
+        if (started === undefined) return yield* TestError.make({message: 'prepare route was not handled'});
         const id = (started.body as {readonly job: {readonly id: string}}).job.id;
         yield* Deferred.await(progressObserved);
 
@@ -1539,7 +1546,7 @@ describe('Manager Worksets API and human labels', () => {
               }),
             url: new URL('http://127.0.0.1/api/worksets/prepare'),
           });
-          if (started === undefined) return yield* Effect.fail(new TestError('prepare route was not handled'));
+          if (started === undefined) return yield* TestError.make({message: 'prepare route was not handled'});
           const id = (started.body as {readonly job: {readonly id: string}}).job.id;
           yield* Effect.yieldNow;
           const detail = yield* handleManagerWorksetRequest({

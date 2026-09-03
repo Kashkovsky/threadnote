@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {safeChildDirectoryNames, scanFilesWithinBoundary} from '../effect/safe_scan.js';
@@ -92,9 +92,10 @@ interface CandidateAuditTransition {
   readonly memoryUri?: string;
 }
 
-class CandidateMemoryError extends Error {
-  readonly _tag = 'CandidateMemoryError' as const;
-}
+class CandidateMemoryError extends Schema.TaggedError<CandidateMemoryError>()('CandidateMemoryError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const MEMORY_READ_CONCURRENCY = 16;
 const MAX_CANDIDATE_AUDIT_EVENTS = 5_000;
@@ -360,9 +361,9 @@ export const saveCandidateReview = Effect.fn('candidate.saveReview')(function* (
   const path = candidateReviewPath(pathService, agentContextHome, review.reviewId);
   const serialized = `${JSON.stringify(review, undefined, 2)}\n`;
   if (new TextEncoder().encode(serialized).byteLength > MAX_CANDIDATE_REVIEW_BYTES) {
-    return yield* Effect.fail(
-      new CandidateMemoryError(`Candidate review exceeds the ${MAX_CANDIDATE_REVIEW_BYTES}-byte persistence limit.`),
-    );
+    return yield* CandidateMemoryError.make({
+      message: `Candidate review exceeds the ${MAX_CANDIDATE_REVIEW_BYTES}-byte persistence limit.`,
+    });
   }
   yield* writePrivateFileAtomically(fs, path, serialized);
   yield* syncCandidateAudit(agentContextHome, review.auditEvents);
@@ -380,7 +381,7 @@ export const loadCandidateReview = Effect.fn('candidate.loadReview')(function* (
   const raw = yield* fs.readFileString(path);
   const review = yield* Effect.try({
     try: () => parseCandidateReview(JSON.parse(raw)),
-    catch: cause => new CandidateMemoryError(`Invalid candidate review ${reviewId}: ${errorText(cause)}`),
+    catch: cause => CandidateMemoryError.make({message: `Invalid candidate review ${reviewId}: ${errorText(cause)}`}),
   });
   yield* syncCandidateAudit(agentContextHome, review.auditEvents);
   return review;
@@ -652,7 +653,7 @@ function writePrivateFileAtomically(
     yield* fs.writeFileString(temporaryPath, content, {mode: 0o600});
     yield* fs
       .rename(temporaryPath, path)
-      .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
+      .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.ignore)));
   });
 }
 
@@ -708,7 +709,7 @@ function pruneCandidateReviews(
           const review = yield* Effect.try({
             try: () => parseCandidateReview(JSON.parse(raw)),
             catch: () => undefined,
-          }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+          }).pipe(Effect.orElseSucceed(() => undefined));
           return {modifiedAt, path, review};
         }),
       {concurrency: MEMORY_READ_CONCURRENCY},
@@ -767,7 +768,7 @@ function parseCandidateReview(value: unknown): CandidateReview {
     !('candidates' in value) ||
     !Array.isArray(value.candidates)
   ) {
-    throw new CandidateMemoryError('unsupported review document');
+    throw CandidateMemoryError.make({message: 'unsupported review document'});
   }
   const review = value as Omit<CandidateReview, 'codeCitations' | 'version'> & {
     readonly codeCitations?: readonly MemoryCodeCitationV1[];
@@ -775,12 +776,12 @@ function parseCandidateReview(value: unknown): CandidateReview {
   };
   let codeCitations: readonly MemoryCodeCitationV1[] = [];
   if (review.version === 2) {
-    if (!Array.isArray(review.codeCitations)) throw new CandidateMemoryError('invalid v2 code citations');
+    if (!Array.isArray(review.codeCitations)) throw CandidateMemoryError.make({message: 'invalid v2 code citations'});
     try {
       codeCitations = review.codeCitations.map(assertMemoryCodeCitation);
       formatMemoryCodeCitationLines(codeCitations);
     } catch {
-      throw new CandidateMemoryError('invalid v2 code citations');
+      throw CandidateMemoryError.make({message: 'invalid v2 code citations'});
     }
   }
   return {

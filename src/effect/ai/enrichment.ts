@@ -1,4 +1,4 @@
-import {Context, Effect, Layer, Schema} from 'effect';
+import {Context, Effect, Layer, Schema, pipe} from 'effect';
 import {AiError, LanguageModel} from 'effect/unstable/ai';
 import type {MemoryKind} from '../../types.js';
 import type {RuntimeConfig} from '../../types.js';
@@ -36,7 +36,7 @@ export class AiMemoryEnrichmentFailed extends Schema.TaggedError<AiMemoryEnrichm
 ) {}
 
 export function isUnusableMemoryEnrichmentOutput(error: unknown): boolean {
-  if (!(error instanceof AiMemoryEnrichmentFailed)) {
+  if (!Schema.is(AiMemoryEnrichmentFailed)(error)) {
     return false;
   }
   if (error.message.includes('invalid output')) return true;
@@ -53,7 +53,7 @@ export class MemoryEnricher extends Context.Service<
   {
     readonly enrich: (input: MemoryEnrichmentInput) => Effect.Effect<readonly string[], AiMemoryEnrichmentFailed>;
   }
->()('threadnote/effect/MemoryEnricher') {}
+>()('threadnote/effect/ai/enrichment/MemoryEnricher') {}
 
 export const enrichMemoryEffect = Effect.fn('MemoryEnricher.enrich')(function* (input: MemoryEnrichmentInput) {
   const enricher = yield* MemoryEnricher;
@@ -76,9 +76,9 @@ export function memoryEnricherLayer(config: EffectAiConfiguration): Layer.Layer<
             .pipe(
               Effect.map(response => normalizeMemoryKeywords(input, response.value.searchPhrases)),
               Effect.mapError(cause =>
-                cause instanceof AiMemoryEnrichmentFailed
+                Schema.is(AiMemoryEnrichmentFailed)(cause)
                   ? cause
-                  : new AiMemoryEnrichmentFailed({
+                  : AiMemoryEnrichmentFailed.make({
                       cause,
                       message: 'Effect AI memory enrichment failed.',
                     }),
@@ -102,7 +102,7 @@ export const runEffectAiMemoryEnrichment = Effect.fn('MemoryEnricher.run')(funct
             duration: MEMORY_ENRICHMENT_TIMEOUT_MILLISECONDS,
             orElse: () =>
               Effect.fail(
-                new AiMemoryEnrichmentFailed({
+                AiMemoryEnrichmentFailed.make({
                   cause: new Error('Memory enrichment timed out.'),
                   message: 'Effect AI memory enrichment timed out.',
                 }),
@@ -148,29 +148,28 @@ export const runNativeMemoryEnrichment = Effect.fn('MemoryEnricher.runNative')(f
       duration: MEMORY_ENRICHMENT_TIMEOUT_MILLISECONDS,
       orElse: () =>
         Effect.fail(
-          new AiMemoryEnrichmentFailed({
+          AiMemoryEnrichmentFailed.make({
             cause: new Error('Native memory enrichment timed out.'),
             message: 'Native memory enrichment timed out.',
           }),
         ),
     }),
     Effect.mapError(cause =>
-      cause instanceof AiMemoryEnrichmentFailed
+      Schema.is(AiMemoryEnrichmentFailed)(cause)
         ? cause
-        : new AiMemoryEnrichmentFailed({
+        : AiMemoryEnrichmentFailed.make({
             cause,
-            message: `Native memory enrichment failed: ${redactSensitiveText(errorMessage(cause))}`,
+            message: `Native memory enrichment failed: ${pipe(cause, errorMessage, redactSensitiveText)}`,
           }),
     ),
   );
   if (output === undefined) return undefined;
   const draft = yield* Schema.decodeUnknownEffect(MemoryEnrichmentDraft)(output).pipe(
-    Effect.mapError(
-      cause =>
-        new AiMemoryEnrichmentFailed({
-          cause,
-          message: 'Native memory enrichment returned invalid output.',
-        }),
+    Effect.mapError(cause =>
+      AiMemoryEnrichmentFailed.make({
+        cause,
+        message: 'Native memory enrichment returned invalid output.',
+      }),
     ),
   );
   return normalizeMemoryKeywords(input, draft.searchPhrases);

@@ -368,7 +368,7 @@ function assertSpan(span: CodeGraphSpan, content: string, message: string): void
 
 function inventoryFile(path: string, content: string): CodeGraphInventoryFile {
   const match = BUILTIN_LANGUAGE_PACK_REGISTRY.match(path);
-  if (Option.isNone(match)) throw new TestError(`Fuzz path is not accepted by a language pack: ${path}.`);
+  if (Option.isNone(match)) throw TestError.make({message: `Fuzz path is not accepted by a language pack: ${path}.`});
   return {
     blobId: `fuzz-${path}`,
     content,

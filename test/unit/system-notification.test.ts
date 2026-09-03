@@ -81,7 +81,7 @@ describe('system notifications', () => {
         Effect.provideService(SystemInfo, linuxSystem),
         Effect.provideService(CommandExecutor, executor(127)),
       );
-      const spawnFailure = new CommandSpawnFailed({
+      const spawnFailure = CommandSpawnFailed.make({
         args: [],
         cause: new Error('missing notifier'),
         executable: 'notify-send',

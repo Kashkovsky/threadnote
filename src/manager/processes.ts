@@ -1,4 +1,4 @@
-import {Cause, Effect} from 'effect';
+import {Cause, Effect, Schema} from 'effect';
 import {
   readManageableThreadnoteProcessDiagnostics,
   terminateThreadnoteProcess,
@@ -18,15 +18,13 @@ export interface ManagerProcessApiRequest {
   readonly url: URL;
 }
 
-class ManagerProcessApiError extends Error {
-  override readonly name = 'ManagerProcessApiError';
-
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
+class ManagerProcessApiError extends Schema.TaggedError<ManagerProcessApiError>()('ManagerProcessApiError', {
+  code: Schema.String,
+  message: Schema.String,
+  status: Schema.Finite,
+}) {
+  static of(code: string, message: string, status: number): ManagerProcessApiError {
+    return ManagerProcessApiError.make({code, message, status});
   }
 }
 
@@ -52,20 +50,20 @@ function routeManagerProcessRequest(request: ManagerProcessApiRequest) {
       return response(404, {error: 'Not found'});
     }
     const body = yield* request.body.pipe(
-      Effect.mapError(() => new ManagerProcessApiError('invalid-json', 'Provide a JSON object request body.', 400)),
+      Effect.mapError(() => ManagerProcessApiError.of('invalid-json', 'Provide a JSON object request body.', 400)),
     );
     if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-      throw new ManagerProcessApiError('invalid-json', 'Provide a JSON object request body.', 400);
+      throw ManagerProcessApiError.of('invalid-json', 'Provide a JSON object request body.', 400);
     }
     if (body.confirm !== true) {
-      throw new ManagerProcessApiError(
+      throw ManagerProcessApiError.of(
         'confirmation-required',
         'Confirm termination of the selected Threadnote process.',
         400,
       );
     }
     if (!Number.isSafeInteger(body.processId) || Number(body.processId) <= 0 || typeof body.processRef !== 'string') {
-      throw new ManagerProcessApiError('invalid-process-target', 'The process target is invalid.', 400);
+      throw ManagerProcessApiError.of('invalid-process-target', 'The process target is invalid.', 400);
     }
     return response(
       200,
@@ -78,10 +76,10 @@ function routeManagerProcessRequest(request: ManagerProcessApiRequest) {
 }
 
 function managerProcessErrorResponse(error: unknown): ManagerProcessApiResponse {
-  if (error instanceof ManagerProcessApiError) {
+  if (Schema.is(ManagerProcessApiError)(error)) {
     return response(error.status, {code: error.code, error: error.message, retryAfterMilliseconds: 0});
   }
-  if (error instanceof ThreadnoteProcessTerminationError) {
+  if (Schema.is(ThreadnoteProcessTerminationError)(error)) {
     const status =
       error.code === 'invalid-process-target'
         ? 400

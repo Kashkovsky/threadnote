@@ -153,7 +153,7 @@ function canonicalAliasSource(input: string): string {
     if (resource.anchor) return invalidAlias(input, 'aliases cannot contain anchors');
     return resource.canonicalUri;
   } catch (cause) {
-    if (cause instanceof InvalidRemoteMemoryAlias) throw cause;
+    if (Schema.is(InvalidRemoteMemoryAlias)(cause)) throw cause;
     return invalidAlias(input, cause instanceof Error ? cause.message : 'invalid alias URI');
   }
 }
@@ -162,13 +162,13 @@ function tryParseRemoteAddress(input: string): RemoteShareAddress | undefined {
   try {
     return parseRemoteShareAddress(input);
   } catch (cause) {
-    if (cause instanceof InvalidRemoteMemoryAddress) return undefined;
+    if (Schema.is(InvalidRemoteMemoryAddress)(cause)) return undefined;
     throw cause;
   }
 }
 
 function invalidAddress(input: string, reason: string): never {
-  throw new InvalidRemoteMemoryAddress({
+  throw InvalidRemoteMemoryAddress.make({
     input,
     message: `Invalid remote memory address "${input}": ${reason}.`,
     reason,
@@ -176,7 +176,7 @@ function invalidAddress(input: string, reason: string): never {
 }
 
 function invalidAlias(input: string, reason: string): never {
-  throw new InvalidRemoteMemoryAlias({
+  throw InvalidRemoteMemoryAlias.make({
     input,
     message: `Invalid remote memory alias "${input}": ${reason}.`,
     reason,

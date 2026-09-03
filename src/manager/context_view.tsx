@@ -1390,21 +1390,21 @@ async function prepareWorksetForContext(workset: string, signal: AbortSignal): P
 }
 
 function contextRecoveryDelay(signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new Error('Context graph recovery was cancelled.'));
-      return;
-    }
-    const onAbort = () => {
-      window.clearTimeout(timer);
-      reject(new Error('Context graph recovery was cancelled.'));
-    };
-    const timer = window.setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, CONTEXT_WORKSET_RECOVERY_POLL_MILLISECONDS);
-    signal.addEventListener('abort', onAbort, {once: true});
-  });
+  const {promise, reject, resolve} = Promise.withResolvers<void>();
+  if (signal.aborted) {
+    reject(new Error('Context graph recovery was cancelled.'));
+    return promise;
+  }
+  const onAbort = () => {
+    window.clearTimeout(timer);
+    reject(new Error('Context graph recovery was cancelled.'));
+  };
+  const timer = window.setTimeout(() => {
+    signal.removeEventListener('abort', onAbort);
+    resolve();
+  }, CONTEXT_WORKSET_RECOVERY_POLL_MILLISECONDS);
+  signal.addEventListener('abort', onAbort, {once: true});
+  return promise;
 }
 
 function Metric(props: {

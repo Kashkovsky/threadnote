@@ -77,7 +77,7 @@ export const sendSystemNotification = Effect.fn('systemNotification.send')(funct
     env: invocation.env,
     maxOutputBytes: NOTIFICATION_OUTPUT_LIMIT_BYTES,
     timeoutMs: NOTIFICATION_TIMEOUT_MILLISECONDS,
-  }).pipe(Effect.catch(() => Effect.succeed({exitCode: 127, stderr: '', stdout: ''})));
+  }).pipe(Effect.orElseSucceed(() => ({exitCode: 127, stderr: '', stdout: ''})));
   if (result.exitCode === 0) return 'sent' as const;
   return result.exitCode === 127 ? ('unavailable' as const) : ('failed' as const);
 });

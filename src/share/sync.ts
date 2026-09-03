@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Result} from 'effect';
+import {Clock, Console, DateTime, Effect, FileSystem, Result} from 'effect';
 
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {SystemInfo} from '../effect/system.js';
@@ -143,7 +143,7 @@ const refreshShareUpdateStateLocked = Effect.fn('share.refreshShareUpdateStateLo
   state: AutoShareState,
   options: {readonly force: boolean; readonly teams?: ReadonlySet<string>},
 ) {
-  const now = Date.now();
+  const now = yield* Clock.currentTimeMillis;
   const teamsFile = yield* readTeamsFile(config);
   const configuredTeams = Object.keys(teamsFile.teams).filter(team => !options.teams || options.teams.has(team));
   const teamsToCheck = new Set(
@@ -174,8 +174,8 @@ const refreshShareUpdateStateLocked = Effect.fn('share.refreshShareUpdateStateLo
     return statuses.flatMap(status => (status.warning ? [status.warning] : []));
   }).pipe(
     Effect.ensuring(
-      Effect.sync(() => {
-        const checkedAt = Date.now();
+      Effect.gen(function* () {
+        const checkedAt = yield* Clock.currentTimeMillis;
         for (const team of teamsToCheck) state.checkedAtByTeam.set(team, checkedAt);
       }),
     ),
@@ -223,7 +223,7 @@ const fetchShareUpdateStatuses = Effect.fn('share.fetchShareUpdateStatuses')(fun
       );
       yield* persistShareFetchReceipt(config, {
         behind: 0,
-        checkedAt: Date.now(),
+        checkedAt: yield* Clock.currentTimeMillis,
         remote: team.remote,
         succeeded: false,
         team: name,
@@ -244,7 +244,7 @@ const fetchShareUpdateStatuses = Effect.fn('share.fetchShareUpdateStatuses')(fun
       const warning = `Auto-sync check for shared team "${name}" failed: could not read upstream behind count.`;
       yield* persistShareFetchReceipt(config, {
         behind: 0,
-        checkedAt: Date.now(),
+        checkedAt: yield* Clock.currentTimeMillis,
         remote: team.remote,
         succeeded: false,
         team: name,
@@ -258,7 +258,7 @@ const fetchShareUpdateStatuses = Effect.fn('share.fetchShareUpdateStatuses')(fun
     const behindCount = Number.parseInt(behind, 10) || 0;
     yield* persistShareFetchReceipt(config, {
       behind: behindCount,
-      checkedAt: Date.now(),
+      checkedAt: yield* Clock.currentTimeMillis,
       remote: team.remote,
       succeeded: true,
       team: name,
@@ -281,7 +281,7 @@ const readFreshShareFetchReceipt = Effect.fn('share.readFreshFetchReceipt')(func
 ) {
   const raw = yield* readFileIfExists(yield* shareFetchReceiptPath(config, teamName));
   if (!raw) return undefined;
-  return parseFreshShareFetchReceipt(raw, teamName, team, Date.now());
+  return parseFreshShareFetchReceipt(raw, teamName, team, yield* Clock.currentTimeMillis);
 });
 
 const persistShareFetchReceipt = Effect.fn('share.persistFetchReceipt')(function* (
@@ -296,7 +296,7 @@ const persistShareFetchReceipt = Effect.fn('share.persistFetchReceipt')(function
     yield* mkdir(parent, {mode: 0o700, recursive: true});
     yield* writeFile(temporary, `${JSON.stringify(receipt)}\n`, {encoding: 'utf8', mode: 0o600});
     yield* rename(temporary, target);
-  }).pipe(Effect.ensuring(rm(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(rm(temporary, {force: true}).pipe(Effect.ignore)));
   yield* write.pipe(
     Effect.catch(error =>
       Console.error(
@@ -312,7 +312,7 @@ const recordShareTeamSynced = Effect.fn('share.recordTeamSynced')(function* (con
   const team = yield* resolveTeam(config, teamName);
   yield* persistShareFetchReceipt(config, {
     behind: 0,
-    checkedAt: Date.now(),
+    checkedAt: yield* Clock.currentTimeMillis,
     remote: team.config.remote,
     succeeded: true,
     team: team.name,
@@ -374,7 +374,7 @@ export const runShareSync = Effect.fn('share.runShareSync')(function* (
   if (options.team) {
     const team = teams[0];
     if (!team) {
-      throw new ShareOperationError('No shared teams configured. Run: threadnote share init <remote-url>');
+      throw ShareOperationError.make({message: 'No shared teams configured. Run: threadnote share init <remote-url>'});
     }
     yield* runShareSyncForTeam(config, team, options);
     return;
@@ -393,11 +393,12 @@ export const runShareSync = Effect.fn('share.runShareSync')(function* (
   }
 
   if (failures.length > 0) {
-    throw new ShareOperationError(
-      [`share sync failed for ${failures.length} shared team(s):`, ...failures.map(failure => `- ${failure}`)].join(
-        '\n',
-      ),
-    );
+    throw ShareOperationError.make({
+      message: [
+        `share sync failed for ${failures.length} shared team(s):`,
+        ...failures.map(failure => `- ${failure}`),
+      ].join('\n'),
+    });
   }
 });
 
@@ -419,45 +420,45 @@ const runShareSyncForTeam = Effect.fn('share.runShareSyncForTeam')(function* (
 
   if (yield* hasUncommittedChanges(worktree)) {
     if (readOnly) {
-      throw new ShareOperationError(
-        `Shared team "${team.name}" is read-only and has local worktree changes. Discard or move them before syncing; Threadnote will not auto-commit read-only teams.`,
-      );
+      throw ShareOperationError.make({
+        message: `Shared team "${team.name}" is read-only and has local worktree changes. Discard or move them before syncing; Threadnote will not auto-commit read-only teams.`,
+      });
     }
     if (options.autoCommit === false) {
-      throw new ShareOperationError(
-        `Worktree ${worktree} has uncommitted changes. Commit them yourself or rerun without --no-auto-commit.`,
-      );
+      throw ShareOperationError.make({
+        message: `Worktree ${worktree} has uncommitted changes. Commit them yourself or rerun without --no-auto-commit.`,
+      });
     }
-    const message = options.message ?? `share: sync ${new Date().toISOString()}`;
+    const message = options.message ?? `share: sync ${DateTime.formatIso(yield* DateTime.now)}`;
     yield* stageShareableChanges(dryRun, git, worktree);
     const commitResult = yield* maybeRun(dryRun, git, ['-C', worktree, 'commit', '-m', message], {allowFailure: true});
     if (!dryRun && commitResult && commitResult.exitCode !== 0) {
       if (yield* hasUncommittedChanges(worktree)) {
-        throw new ShareOperationError(
-          `Worktree ${worktree} has uncommitted changes that Threadnote did not auto-commit. Commit, remove, or ignore the remaining files, then rerun \`threadnote share sync\`.\nGit said: ${
+        throw ShareOperationError.make({
+          message: `Worktree ${worktree} has uncommitted changes that Threadnote did not auto-commit. Commit, remove, or ignore the remaining files, then rerun \`threadnote share sync\`.\nGit said: ${
             commitResult.stderr.trim() || commitResult.stdout.trim() || 'unknown git commit error'
           }`,
-        );
+        });
       }
-      throw new ShareOperationError(
-        `Could not auto-commit share worktree changes in ${worktree}: ${
+      throw ShareOperationError.make({
+        message: `Could not auto-commit share worktree changes in ${worktree}: ${
           commitResult.stderr.trim() || commitResult.stdout.trim() || 'unknown git commit error'
         }`,
-      );
+      });
     }
     if (!dryRun && (yield* hasUncommittedChanges(worktree))) {
-      throw new ShareOperationError(
-        `Worktree ${worktree} still has uncommitted changes after staging Threadnote shareable files. Commit, remove, or ignore the remaining files, then rerun \`threadnote share sync\`.`,
-      );
+      throw ShareOperationError.make({
+        message: `Worktree ${worktree} still has uncommitted changes after staging Threadnote shareable files. Commit, remove, or ignore the remaining files, then rerun \`threadnote share sync\`.`,
+      });
     }
   }
 
   if (readOnly) {
     const ahead = yield* gitOutput(worktree, ['rev-list', '--count', '@{u}..HEAD'], dryRun);
     if ((Number.parseInt(ahead ?? '0', 10) || 0) > 0) {
-      throw new ShareOperationError(
-        `Shared team "${team.name}" is read-only but has local commits ahead of upstream. Move those commits to a writable clone before syncing.`,
-      );
+      throw ShareOperationError.make({
+        message: `Shared team "${team.name}" is read-only but has local commits ahead of upstream. Move those commits to a writable clone before syncing.`,
+      });
     }
   }
 
@@ -472,13 +473,13 @@ const runShareSyncForTeam = Effect.fn('share.runShareSyncForTeam')(function* (
     // Detect mid-rebase state via Git-resolved filesystem markers rather than
     // parsing localized human-readable output.
     if (yield* isShareGitOperationInProgress(git, worktree)) {
-      throw new ShareOperationError(
-        `git pull --rebase reported conflicts in ${worktree}. The worktree is in a rebase-in-progress state.\nResolve the conflicts in-place, run \`git -C ${worktree} rebase --continue\` (or --abort), then re-run \`threadnote share sync\`.`,
-      );
+      throw ShareOperationError.make({
+        message: `git pull --rebase reported conflicts in ${worktree}. The worktree is in a rebase-in-progress state.\nResolve the conflicts in-place, run \`git -C ${worktree} rebase --continue\` (or --abort), then re-run \`threadnote share sync\`.`,
+      });
     }
-    throw new ShareOperationError(
-      `git rebase @{u} failed in ${worktree}: ${pullResult.stderr.trim() || pullResult.stdout.trim() || 'unknown error'}`,
-    );
+    throw ShareOperationError.make({
+      message: `git rebase @{u} failed in ${worktree}: ${pullResult.stderr.trim() || pullResult.stdout.trim() || 'unknown error'}`,
+    });
   }
   const afterRev = yield* gitOutput(worktree, ['rev-parse', 'HEAD'], dryRun);
 
@@ -513,9 +514,9 @@ const runShareSyncForTeam = Effect.fn('share.runShareSyncForTeam')(function* (
     if (dryRun) {
       yield* Console.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME])}`);
     } else if (pushResult && pushResult.exitCode !== 0) {
-      throw new ShareOperationError(
-        `git push failed in ${worktree}: ${pushResult.stderr.trim() || pushResult.stdout.trim() || 'unknown error'}`,
-      );
+      throw ShareOperationError.make({
+        message: `git push failed in ${worktree}: ${pushResult.stderr.trim() || pushResult.stdout.trim() || 'unknown error'}`,
+      });
     }
   }
 });
@@ -585,13 +586,13 @@ const runShareSyncQuiet = Effect.fn('share.runShareSyncQuiet')(function* (
   const pullResult = yield* runCommand(git, ['-C', worktree, 'rebase', '@{u}'], {allowFailure: true});
   if (pullResult.exitCode !== 0) {
     if (yield* isShareGitOperationInProgress(git, worktree)) {
-      throw new ShareOperationError(
-        `Automatic share sync hit git conflicts in ${worktree}. Resolve them in-place, run \`git -C ${worktree} rebase --continue\` (or --abort), then rerun recall/read.`,
-      );
+      throw ShareOperationError.make({
+        message: `Automatic share sync hit git conflicts in ${worktree}. Resolve them in-place, run \`git -C ${worktree} rebase --continue\` (or --abort), then rerun recall/read.`,
+      });
     }
-    throw new ShareOperationError(
-      `Automatic share sync failed in ${worktree}: ${pullResult.stderr.trim() || pullResult.stdout.trim() || 'unknown error'}`,
-    );
+    throw ShareOperationError.make({
+      message: `Automatic share sync failed in ${worktree}: ${pullResult.stderr.trim() || pullResult.stdout.trim() || 'unknown error'}`,
+    });
   }
   const afterRev = yield* gitOutput(worktree, ['rev-parse', 'HEAD'], false);
   let pulledChanges: readonly ChangedFile[] = [];
@@ -683,7 +684,7 @@ const applyChangesToCanonicalStore = Effect.fn('share.applyChangesToCanonicalSto
             const currentContent = yield* readExistingMemoryContent(config, ov, uri);
             if (currentContent !== undefined) {
               const identityIssue = sharedMemoryIdentityContinuityIssue(uri, currentContent, content);
-              if (identityIssue !== undefined) return yield* Effect.fail(new ShareOperationError(identityIssue));
+              if (identityIssue !== undefined) return yield* ShareOperationError.make({message: identityIssue});
               if (
                 sharedMemoryContentsEquivalent(currentContent, content) &&
                 countManagedMemoryFieldsTrailers(currentContent) <= 1

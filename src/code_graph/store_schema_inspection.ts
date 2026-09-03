@@ -132,10 +132,8 @@ export const validatePersistentExtensionTables = Effect.fn('codeGraph.validatePe
   const inspections = yield* inspectPersistentExtensionTables(sql);
   const incompatible = inspections.filter(inspection => !inspection.exists || !inspection.compatible);
   if (incompatible.length > 0) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError(
-        `Code graph persistent extension schema is incompatible: ${incompatible.map(table => table.name).join(', ')}.`,
-      ),
+    return yield* CodeGraphStoreError.of(
+      `Code graph persistent extension schema is incompatible: ${incompatible.map(table => table.name).join(', ')}.`,
     );
   }
 });

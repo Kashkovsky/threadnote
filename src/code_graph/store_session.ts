@@ -7,7 +7,7 @@ import type {
   CodeGraphSqliteWriterSettings,
   CodeGraphSqliteWriterTuning,
 } from './store_shape.js';
-import {CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError} from './types.js';
+import {CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError, type CodeGraphStoreFailure} from './types.js';
 
 export interface CodeGraphDatabaseSessionShape extends CodeGraphDatabaseSessionOptions {
   readonly databasePath: string;
@@ -23,7 +23,7 @@ export interface CodeGraphDatabaseSessionShape extends CodeGraphDatabaseSessionO
 export class CodeGraphDatabaseSession extends Context.Service<
   CodeGraphDatabaseSession,
   CodeGraphDatabaseSessionShape
->()('threadnote/codeGraph/CodeGraphDatabaseSession') {}
+>()('threadnote/code_graph/store_session/CodeGraphDatabaseSession') {}
 
 export function useDatabase<A, E, R>(
   databasePath: string,
@@ -54,7 +54,7 @@ export function useReadOnlyDatabase<A, E, R>(
 export function useExistingDatabase<A, E, R>(
   databasePath: string,
   effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
-): Effect.Effect<A, E | CodeGraphStoreError, Exclude<R, SqlClient.SqlClient>> {
+): Effect.Effect<A, E | CodeGraphStoreFailure, Exclude<R, SqlClient.SqlClient>> {
   return Effect.scoped(
     Layer.build(
       SqliteClient.layer({
@@ -68,7 +68,7 @@ export function useExistingDatabase<A, E, R>(
       Effect.catchCause(cause =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.failCause(cause)
-          : Effect.fail(new CodeGraphStoreError('Existing code graph database could not be opened.')),
+          : Effect.fail(CodeGraphStoreError.of('Existing code graph database could not be opened.')),
       ),
       Effect.flatMap(context => effect.pipe(Effect.provide(context))),
     ),
@@ -130,7 +130,7 @@ export const configureSqliteWriterConnection = Effect.fn('codeGraph.configureSql
     const pageSize = yield* sql.unsafe<{readonly page_size: number}>('PRAGMA main.page_size');
     const bytesPerPage = Number(pageSize[0]?.page_size ?? 0);
     if (!Number.isSafeInteger(bytesPerPage) || bytesPerPage < 512) {
-      return yield* Effect.fail(new CodeGraphStoreError('SQLite writer page size is invalid.'));
+      return yield* CodeGraphStoreError.of('SQLite writer page size is invalid.');
     }
     // SQLite's connection default can retain a 20,000-page spill threshold
     // even after cache_size is lowered. Bind spill to the configured byte
@@ -223,7 +223,7 @@ const reportSqliteWriterSettings = Effect.fn('codeGraph.reportSqliteWriterSettin
 
 function sqlitePragmaInteger(value: number, label: string, minimum: number, maximum: number): number {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
-    throw new CodeGraphStoreError(`${label} must be an integer from ${minimum} to ${maximum}.`);
+    throw CodeGraphStoreError.of(`${label} must be an integer from ${minimum} to ${maximum}.`);
   }
   return value;
 }

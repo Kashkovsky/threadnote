@@ -1,4 +1,4 @@
-import {Predicate} from 'effect';
+import {Predicate, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 
 export const MEMORY_SCHEMA_VERSION = 4 as const;
@@ -91,23 +91,44 @@ export interface ParsedMemoryCodeCitations {
   readonly errors?: readonly MemoryCodeCitationError[];
 }
 
-export class MemoryCodeCitationValidationError extends Error {
-  readonly reason: MemoryCodeCitationErrorReason;
-
-  constructor(reason: MemoryCodeCitationErrorReason) {
-    super(CITATION_ERROR_MESSAGES[reason]);
-    this.name = 'MemoryCodeCitationValidationError';
-    this.reason = reason;
+export class MemoryCodeCitationValidationError extends Schema.TaggedError<MemoryCodeCitationValidationError>()(
+  'MemoryCodeCitationValidationError',
+  {
+    message: Schema.String,
+    reason: Schema.Literals([
+      'aggregate-too-large',
+      'duplicate-id',
+      'entry-too-large',
+      'id-mismatch',
+      'invalid-json',
+      'invalid-shape',
+      'non-canonical',
+      'schema-version-mismatch',
+      'too-many-citations',
+      'unsupported-version',
+    ]),
+  },
+) {
+  static of(reason: MemoryCodeCitationErrorReason): MemoryCodeCitationValidationError {
+    return MemoryCodeCitationValidationError.make({
+      message: CITATION_ERROR_MESSAGES[reason],
+      reason,
+    });
   }
 }
 
-export class UnsupportedMemorySchemaVersionError extends Error {
-  readonly schemaVersion: number;
-
-  constructor(schemaVersion: number) {
-    super(`Memory schema version ${schemaVersion} is newer than supported version ${MEMORY_SCHEMA_VERSION}.`);
-    this.name = 'UnsupportedMemorySchemaVersionError';
-    this.schemaVersion = schemaVersion;
+export class UnsupportedMemorySchemaVersionError extends Schema.TaggedError<UnsupportedMemorySchemaVersionError>()(
+  'UnsupportedMemorySchemaVersionError',
+  {
+    message: Schema.String,
+    schemaVersion: Schema.Finite,
+  },
+) {
+  static of(schemaVersion: number): UnsupportedMemorySchemaVersionError {
+    return UnsupportedMemorySchemaVersionError.make({
+      message: `Memory schema version ${schemaVersion} is newer than supported version ${MEMORY_SCHEMA_VERSION}.`,
+      schemaVersion,
+    });
   }
 }
 
@@ -146,7 +167,7 @@ export function assertMemorySchemaWritable(schemaVersion: number | undefined): v
     throw new Error('Memory schema version must be a positive safe integer.');
   }
   if (schemaVersion !== undefined && schemaVersion > MEMORY_SCHEMA_VERSION) {
-    throw new UnsupportedMemorySchemaVersionError(schemaVersion);
+    throw UnsupportedMemorySchemaVersionError.of(schemaVersion);
   }
 }
 
@@ -264,7 +285,7 @@ export function parseMemoryCodeCitation(value: string): MemoryCodeCitationParseR
     return {citation, ok: true};
   } catch (error) {
     return {
-      error: {reason: error instanceof MemoryCodeCitationValidationError ? error.reason : 'invalid-shape'},
+      error: {reason: Schema.is(MemoryCodeCitationValidationError)(error) ? error.reason : 'invalid-shape'},
       ok: false,
     };
   }
@@ -566,7 +587,7 @@ function invalidShape(): never {
 }
 
 function citationError(reason: MemoryCodeCitationErrorReason): MemoryCodeCitationValidationError {
-  return new MemoryCodeCitationValidationError(reason);
+  return MemoryCodeCitationValidationError.of(reason);
 }
 
 function citationLineBytes(json: string): number {

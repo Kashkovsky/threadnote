@@ -292,7 +292,7 @@ export function makeCodeGraphStoreMaintenanceMethods(runtime: CodeGraphStoreRunt
                 Effect.tap(cleanup => (cleanup.remaining ? scheduleRoutinePhysicalCleanup(databasePath) : Effect.void)),
                 Effect.asVoid,
               )
-            : Effect.fail(new CodeGraphStoreError('The code graph database disappeared while renewing a lease.')),
+            : Effect.fail(CodeGraphStoreError.of('The code graph database disappeared while renewing a lease.')),
         ),
         Effect.mapError(cause => storeError('renew code graph snapshot lease', cause)),
       ),

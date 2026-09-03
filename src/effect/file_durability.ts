@@ -16,5 +16,5 @@ export function syncDirectoryBestEffort(fs: FileSystem.FileSystem, directory: st
       const handle = yield* fs.open(directory, {flag: 'r'});
       yield* handle.sync;
     }),
-  ).pipe(Effect.catch(() => Effect.void));
+  ).pipe(Effect.ignore);
 }

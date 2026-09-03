@@ -66,9 +66,13 @@ export const CODE_GRAPH_CHECKPOINT_GIT_PATHSPEC_BYTES_MAXIMUM = 64 * 1_024;
 const GIT_TREE_OUTPUT_BYTES_MAXIMUM = 256 * 1_024;
 const GIT_TREE_FORMAT = '%(objectmode)%x09%(objecttype)%x09%(objectname)%x09%(objectsize)%x09%(path)';
 
-export class CodeGraphCheckpointProjectionError extends Error {
-  override readonly name = 'CodeGraphCheckpointProjectionError';
-}
+export class CodeGraphCheckpointProjectionError extends Schema.TaggedError<CodeGraphCheckpointProjectionError>()(
+  'CodeGraphCheckpointProjectionError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export interface CodeGraphCheckpointProjectionRequest<E = never, R = never> {
   readonly abi: CodeGraphCheckpointAbiInputV1;
@@ -242,9 +246,9 @@ export function projectCodeGraphCheckpointV1<E, R>(request: CodeGraphCheckpointP
     yield* observeExactCleanRepository(request.identity, 'before');
     const selected = yield* store.readySnapshotById(request.databasePath, request.snapshotId);
     if (selected === undefined) {
-      return yield* Effect.fail(
-        new CodeGraphCheckpointProjectionError(`Ready snapshot ${request.snapshotId} was not found.`),
-      );
+      return yield* CodeGraphCheckpointProjectionError.make({
+        message: `Ready snapshot ${request.snapshotId} was not found.`,
+      });
     }
     yield* attemptProjection('Checkpoint source snapshot is invalid.', () =>
       validateSelectedSnapshot(selected, request.identity),
@@ -264,7 +268,7 @@ export function projectCodeGraphCheckpointV1<E, R>(request: CodeGraphCheckpointP
       .withSession(request.databasePath, projectInReadTransaction(request, selected, pageSize), {readOnly: true})
       .pipe(Effect.tap(() => observeExactCleanRepository(request.identity, 'after')));
     return yield* Effect.raceFirst(projection, renewLease).pipe(
-      Effect.ensuring(store.releaseSnapshotLease(request.databasePath, lease).pipe(Effect.catch(() => Effect.void))),
+      Effect.ensuring(store.releaseSnapshotLease(request.databasePath, lease).pipe(Effect.ignore)),
     );
   });
 }
@@ -383,21 +387,21 @@ function normalizePageSize(value: number | undefined): number {
     pageSize < 1 ||
     pageSize > CODE_GRAPH_CHECKPOINT_PROJECTION_MAXIMUM_PAGE_SIZE
   ) {
-    throw new CodeGraphCheckpointProjectionError(
-      `Checkpoint projection page size must be an integer from 1 to ${CODE_GRAPH_CHECKPOINT_PROJECTION_MAXIMUM_PAGE_SIZE}.`,
-    );
+    throw CodeGraphCheckpointProjectionError.make({
+      message: `Checkpoint projection page size must be an integer from 1 to ${CODE_GRAPH_CHECKPOINT_PROJECTION_MAXIMUM_PAGE_SIZE}.`,
+    });
   }
   return pageSize;
 }
 
 function validateProjectionIdentity(identity: RepositoryIdentity): void {
   if (identity.remoteIdentity === undefined) {
-    throw new CodeGraphCheckpointProjectionError(
-      'Portable checkpoints require a credential-free remote repository identity.',
-    );
+    throw CodeGraphCheckpointProjectionError.make({
+      message: 'Portable checkpoints require a credential-free remote repository identity.',
+    });
   }
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(identity.headCommit)) {
-    throw new CodeGraphCheckpointProjectionError('Checkpoint repository HEAD is not a Git object ID.');
+    throw CodeGraphCheckpointProjectionError.make({message: 'Checkpoint repository HEAD is not a Git object ID.'});
   }
 }
 
@@ -409,12 +413,14 @@ function validateSelectedSnapshot(snapshot: CodeGraphSnapshot, identity: Reposit
     snapshot.repositoryId !== identity.repositoryId ||
     snapshot.commit !== identity.headCommit
   ) {
-    throw new CodeGraphCheckpointProjectionError(
-      'Checkpoint export requires the exact ready CLEAN root snapshot for the current repository HEAD.',
-    );
+    throw CodeGraphCheckpointProjectionError.make({
+      message: 'Checkpoint export requires the exact ready CLEAN root snapshot for the current repository HEAD.',
+    });
   }
   if (snapshot.graphContentId === undefined) {
-    throw new CodeGraphCheckpointProjectionError('Checkpoint source snapshot has no graph content identity.');
+    throw CodeGraphCheckpointProjectionError.make({
+      message: 'Checkpoint source snapshot has no graph content identity.',
+    });
   }
 }
 
@@ -508,7 +514,9 @@ function validateFence(
     abi.inventoryPolicyVersion !== CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION ||
     abi.lexicalLogicalFormatVersion !== CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION
   ) {
-    throw new CodeGraphCheckpointProjectionError('Checkpoint source ABI or reusable snapshot receipt is incompatible.');
+    throw CodeGraphCheckpointProjectionError.make({
+      message: 'Checkpoint source ABI or reusable snapshot receipt is incompatible.',
+    });
   }
   const persistedPacks = packs.map(pack => ({
     cacheIdentity: pack.cache_identity,
@@ -518,9 +526,9 @@ function validateFence(
     resolutionVersion: pack.resolution_version,
   }));
   if (JSON.stringify(persistedPacks) !== JSON.stringify(abi.languagePacks)) {
-    throw new CodeGraphCheckpointProjectionError(
-      'Checkpoint ABI language-pack provenance does not match the ready snapshot.',
-    );
+    throw CodeGraphCheckpointProjectionError.make({
+      message: 'Checkpoint ABI language-pack provenance does not match the ready snapshot.',
+    });
   }
 }
 
@@ -563,7 +571,7 @@ export function codeGraphCheckpointCoverage(
     eligibleFiles < 0 ||
     inventory.policyExclusions.files > inventory.skipped
   ) {
-    throw new CodeGraphCheckpointProjectionError('Checkpoint inventory coverage is inconsistent.');
+    throw CodeGraphCheckpointProjectionError.make({message: 'Checkpoint inventory coverage is inconsistent.'});
   }
   const reasons: Array<CodeGraphCheckpointCoverageV1['reasons'][number]> = inventory.policyExclusions.reasons
     .filter(reason => reason.files > 0)
@@ -617,9 +625,9 @@ function portableInventory(
         git.mode !== file.mode ||
         codeGraphCommittedContentHash(objectFormat, git.blobId) !== file.contentHash
       ) {
-        throw new CodeGraphCheckpointProjectionError(
-          `Checkpoint attribution context does not match exact commit path ${file.path}.`,
-        );
+        throw CodeGraphCheckpointProjectionError.make({
+          message: `Checkpoint attribution context does not match exact commit path ${file.path}.`,
+        });
       }
       return {
         blobId: file.blobId,
@@ -684,9 +692,9 @@ function streamFiles<E, R>(
               git.size !== Number(row.size) ||
               codeGraphCommittedContentHash(identity.objectFormat, git.blobId) !== row.content_hash
             ) {
-              throw new CodeGraphCheckpointProjectionError(
-                `Checkpoint file metadata does not match exact commit path ${row.path}.`,
-              );
+              throw CodeGraphCheckpointProjectionError.make({
+                message: `Checkpoint file metadata does not match exact commit path ${row.path}.`,
+              });
             }
             updatePathDigest(pathDigest, row.path);
             const rawContentHash = optionalText(row.raw_content_hash);
@@ -771,7 +779,7 @@ export function codeGraphCheckpointGitPathBatches<T extends {readonly path: stri
     // outside this budget and leave ample space below the platform ARG_MAX.
     const pathBytes = encoder.encode(file.path).byteLength + 1;
     if (pathBytes > CODE_GRAPH_CHECKPOINT_GIT_PATHSPEC_BYTES_MAXIMUM) {
-      throw new CodeGraphCheckpointProjectionError('Checkpoint Git path exceeds the pathspec byte budget.');
+      throw CodeGraphCheckpointProjectionError.make({message: 'Checkpoint Git path exceeds the pathspec byte budget.'});
     }
     if (batch.length > 0 && bytes > CODE_GRAPH_CHECKPOINT_GIT_PATHSPEC_BYTES_MAXIMUM - pathBytes) {
       batches.push(batch);
@@ -791,12 +799,13 @@ export function parseGitTreeEntries(
 ): ReadonlyMap<string, GitTreeEntry> {
   const text = new TextDecoder('utf-8', {fatal: true}).decode(output);
   if (text.length === 0) return new Map();
-  if (!text.endsWith('\0')) throw new CodeGraphCheckpointProjectionError('Git tree output is not NUL terminated.');
+  if (!text.endsWith('\0'))
+    throw CodeGraphCheckpointProjectionError.make({message: 'Git tree output is not NUL terminated.'});
   const entries = new Map<string, GitTreeEntry>();
   const objectIdPattern = objectFormat === 'sha1' ? /^[0-9a-f]{40}$/u : /^[0-9a-f]{64}$/u;
   for (const encoded of text.slice(0, -1).split('\0')) {
     const fields = encoded.split('\t');
-    if (fields.length !== 5) throw new CodeGraphCheckpointProjectionError('Git tree entry is malformed.');
+    if (fields.length !== 5) throw CodeGraphCheckpointProjectionError.make({message: 'Git tree entry is malformed.'});
     const [mode, type, blobId, encodedSize, path] = fields;
     if (
       mode === undefined ||
@@ -805,7 +814,7 @@ export function parseGitTreeEntries(
       encodedSize === undefined ||
       path === undefined
     ) {
-      throw new CodeGraphCheckpointProjectionError('Git tree entry is malformed.');
+      throw CodeGraphCheckpointProjectionError.make({message: 'Git tree entry is malformed.'});
     }
     const size = Number(encodedSize);
     if (
@@ -817,7 +826,7 @@ export function parseGitTreeEntries(
       !isSafeCodeGraphCheckpointPath(path) ||
       entries.has(path)
     ) {
-      throw new CodeGraphCheckpointProjectionError('Git tree entry is invalid.');
+      throw CodeGraphCheckpointProjectionError.make({message: 'Git tree entry is invalid.'});
     }
     entries.set(path, {blobId, mode, path, size});
   }
@@ -857,9 +866,9 @@ function streamFileFacts<E, R>(
                 row.extractor_set !== snapshot.extractorSet ||
                 row.shard_content_hash !== row.content_hash
               ) {
-                throw new CodeGraphCheckpointProjectionError(
-                  `Materialized checkpoint fact provenance changed for ${row.path}.`,
-                );
+                throw CodeGraphCheckpointProjectionError.make({
+                  message: `Materialized checkpoint fact provenance changed for ${row.path}.`,
+                });
               }
               const facts = decodeStoredCodeGraphFact(row.facts_json, row.path).facts;
               updatePathDigest(pathDigest, row.path);
@@ -1372,7 +1381,9 @@ function validateProjectedCounts(
     counts.lexical !== Number(fence.lexical_posting_count) ||
     counts['pack-provenance'] !== packCount
   ) {
-    throw new CodeGraphCheckpointProjectionError('Checkpoint logical surface counts do not match ready receipts.');
+    throw CodeGraphCheckpointProjectionError.make({
+      message: 'Checkpoint logical surface counts do not match ready receipts.',
+    });
   }
 }
 
@@ -1448,7 +1459,7 @@ function updatePathDigest(hasher: Bun.CryptoHasher, path: string): void {
 function parseStringArray(value: string, label: string): readonly string[] {
   const parsed: unknown = JSON.parse(value);
   if (!Array.isArray(parsed) || parsed.some(item => typeof item !== 'string')) {
-    throw new CodeGraphCheckpointProjectionError(`Checkpoint ${label} are invalid.`);
+    throw CodeGraphCheckpointProjectionError.make({message: `Checkpoint ${label} are invalid.`});
   }
   return parsed;
 }
@@ -1462,14 +1473,14 @@ function parseOptionalSpan(value: unknown, label: string): CodeGraphCheckpointSp
   const parsed = parseOptionalJson(value, label);
   if (parsed === undefined) return undefined;
   if (!isCodeGraphCheckpointSpan(parsed))
-    throw new CodeGraphCheckpointProjectionError(`Checkpoint ${label} is invalid.`);
+    throw CodeGraphCheckpointProjectionError.make({message: `Checkpoint ${label} is invalid.`});
   return parsed;
 }
 
 function parseRequiredSpan(value: string, label: string): CodeGraphCheckpointSpanV1 {
   const parsed = parseRequiredJson(value, label);
   if (!isCodeGraphCheckpointSpan(parsed))
-    throw new CodeGraphCheckpointProjectionError(`Checkpoint ${label} is invalid.`);
+    throw CodeGraphCheckpointProjectionError.make({message: `Checkpoint ${label} is invalid.`});
   return parsed;
 }
 
@@ -1492,18 +1503,18 @@ function optionalFields(values: Readonly<Record<string, unknown>>): Record<strin
 }
 
 function projectionError(message: string, cause: unknown): CodeGraphCheckpointProjectionError {
-  return new CodeGraphCheckpointProjectionError(
-    cause instanceof Error && cause.message.length > 0 ? `${message} ${cause.message}` : message,
-  );
+  return CodeGraphCheckpointProjectionError.make({
+    message: cause instanceof Error && cause.message.length > 0 ? `${message} ${cause.message}` : message,
+  });
 }
 
 function attemptProjection<A>(message: string, attempt: () => A) {
   return Effect.try({
     try: attempt,
-    catch: cause => (cause instanceof CodeGraphCheckpointProjectionError ? cause : projectionError(message, cause)),
+    catch: cause => (Schema.is(CodeGraphCheckpointProjectionError)(cause) ? cause : projectionError(message, cause)),
   });
 }
 
 function projectionFailure(message: string): Effect.Effect<never, CodeGraphCheckpointProjectionError> {
-  return Effect.fail(new CodeGraphCheckpointProjectionError(message));
+  return Effect.fail(CodeGraphCheckpointProjectionError.make({message: message}));
 }

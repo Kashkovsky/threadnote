@@ -914,6 +914,6 @@ function waitForSnapshotRemoval(databasePath: string, snapshotId: string) {
       if (readSnapshotState(databasePath, snapshotId) === undefined) return;
       yield* Effect.sleep(10);
     }
-    return yield* Effect.fail(new TestError(`Timed out waiting for retired snapshot ${snapshotId} to be reclaimed.`));
+    return yield* TestError.make({message: `Timed out waiting for retired snapshot ${snapshotId} to be reclaimed.`});
   });
 }

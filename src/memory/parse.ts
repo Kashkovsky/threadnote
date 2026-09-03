@@ -4,9 +4,9 @@ import {MemoryOperationError} from './migrations.js';
 
 export function parseMemoryStatus(value: string): MemoryStatus {
   if (value === 'active' || value === 'archived' || value === 'expired' || value === 'superseded') return value;
-  throw new MemoryOperationError(
-    `Unsupported memory status "${value}". Expected active, archived, expired, or superseded.`,
-  );
+  throw MemoryOperationError.make({
+    message: `Unsupported memory status "${value}". Expected active, archived, expired, or superseded.`,
+  });
 }
 
 export function isRawMemoryDocument(text: string): boolean {
@@ -15,5 +15,7 @@ export function isRawMemoryDocument(text: string): boolean {
 
 export function parseCompactKind(value: string): CompactableMemoryKind {
   if (value === 'durable' || value === 'handoff' || value === 'incident') return value;
-  throw new MemoryOperationError(`Unsupported compact kind "${value}". Expected durable, handoff, or incident.`);
+  throw MemoryOperationError.make({
+    message: `Unsupported compact kind "${value}". Expected durable, handoff, or incident.`,
+  });
 }

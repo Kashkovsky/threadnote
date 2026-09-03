@@ -29,7 +29,7 @@ export const llamaEmbeddingModelLayer = (options: LlamaEmbeddingLayerOptions) =>
               AiError.make({
                 method: 'embedMany',
                 module: 'ThreadnoteNodeLlamaCpp',
-                reason: new AiError.InternalProviderError({description: error.message}),
+                reason: AiError.InternalProviderError.make({description: error.message}),
               }),
             ),
           ),

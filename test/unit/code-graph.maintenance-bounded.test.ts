@@ -861,7 +861,7 @@ describe('bounded code graph maintenance', () => {
       expect(repeated).toEqual(repeated.map(() => ({state: 'migration-ready'})));
       const typedFailure = yield* store
         .prepareWorktreeReconciliationIndexes(databasePath, {
-          afterPreviewTransactionStarted: () => Effect.fail(new TestError('stop preview')),
+          afterPreviewTransactionStarted: () => Effect.fail(TestError.make({message: 'stop preview'})),
           preview: true,
         })
         .pipe(Effect.exit);
@@ -975,9 +975,7 @@ describe('bounded code graph maintenance', () => {
       yield* store.activate(databasePath, identity, snapshot, [], [], []);
       yield* store.promote(databasePath, identity, snapshot.id);
       yield* Effect.sync(() => downgradeToReleasedRevision6(databasePath));
-      const legacyStore = yield* Effect.gen(function* () {
-        return yield* CodeGraphStore;
-      }).pipe(provideTestLayer(CodeGraphStore.layer));
+      const legacyStore = yield* CodeGraphStore.pipe(provideTestLayer(CodeGraphStore.layer));
 
       const before = yield* diagnoseCodeGraphDatabaseReadOnly(databasePath, false);
       expect(before).toMatchObject({integrity: 'migration-pending', readySnapshots: 1});
@@ -1002,7 +1000,7 @@ describe('bounded code graph maintenance', () => {
       }
       expect(readPersistentExtensionRevision(databasePath)).toBe(6);
       const inspectedTarget = yield* inspectCodeGraphViewDatabaseTarget(home, identity.checkoutId);
-      if (inspectedTarget.state !== 'ready') throw new TestError('legacy graph target disappeared');
+      if (inspectedTarget.state !== 'ready') throw TestError.make({message: 'legacy graph target disappeared'});
       yield* Effect.sleep(100);
 
       const path = yield* Path.Path;

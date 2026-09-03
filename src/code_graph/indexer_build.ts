@@ -164,9 +164,7 @@ export function writerSessionOptions(layout: CodeGraphLayout, options: CodeGraph
     cleanupCompletedBuildRows: true,
     ...(options.onSqliteWriterConfigured ? {onSqliteWriterConfigured: options.onSqliteWriterConfigured} : {}),
     onWriterContention: () =>
-      (options.onProgress?.({phase: 'waiting', reason: 'database-writer'}) ?? Effect.void).pipe(
-        Effect.catch(() => Effect.void),
-      ),
+      (options.onProgress?.({phase: 'waiting', reason: 'database-writer'}) ?? Effect.void).pipe(Effect.ignore),
     ...(options.sqliteWriterTuning ? {sqliteWriterTuning: options.sqliteWriterTuning} : {}),
     writerLockPath: layout.databaseWriteLockPath,
   } as const;
@@ -183,7 +181,7 @@ export function retiredSnapshotCleanupReporter(onProgress: CodeGraphIndexOptions
         total: progress.snapshotsTotal,
         unit: 'snapshots',
       }) ?? Effect.void
-    ).pipe(Effect.catch(() => Effect.void));
+    ).pipe(Effect.ignore);
 }
 
 export function withSharedCleanRequestGate<A, E, R>(input: {
@@ -203,9 +201,7 @@ export function withSharedCleanRequestGate<A, E, R>(input: {
     {
       ...CODE_GRAPH_LOCK_OPTIONS,
       onContention: () =>
-        (input.onProgress?.({phase: 'waiting', reason: 'request-lock'}) ?? Effect.void).pipe(
-          Effect.catch(() => Effect.void),
-        ),
+        (input.onProgress?.({phase: 'waiting', reason: 'request-lock'}) ?? Effect.void).pipe(Effect.ignore),
     },
     input.effect,
   );
@@ -273,9 +269,7 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
     {
       ...CODE_GRAPH_LOCK_OPTIONS,
       onContention: () =>
-        (input.onProgress?.({phase: 'waiting', reason: 'snapshot-build'}) ?? Effect.void).pipe(
-          Effect.catch(() => Effect.void),
-        ),
+        (input.onProgress?.({phase: 'waiting', reason: 'snapshot-build'}) ?? Effect.void).pipe(Effect.ignore),
     },
     Effect.gen(function* () {
       let cleanFallbackAssessment: IncrementalOverlayAssessment | undefined;
@@ -660,7 +654,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
         );
         return Option.some<ReusableCleanSnapshotAttempt>({mode: 'complete', summary});
       }),
-    token => input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+    token => input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.ignore),
   );
 });
 
@@ -878,7 +872,7 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
       .pipe(Effect.option);
     if (Option.isSome(lease)) {
       const leaseToken = yield* Effect.acquireRelease(Effect.succeed(lease.value), token =>
-        input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+        input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.ignore),
       );
       const summary = {
         diagnostics: [],
@@ -909,9 +903,7 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
     {
       ...CODE_GRAPH_LOCK_OPTIONS,
       onContention: () =>
-        (input.onProgress?.({phase: 'waiting', reason: 'snapshot-build'}) ?? Effect.void).pipe(
-          Effect.catch(() => Effect.void),
-        ),
+        (input.onProgress?.({phase: 'waiting', reason: 'snapshot-build'}) ?? Effect.void).pipe(Effect.ignore),
     },
     Effect.gen(function* () {
       if (!input.force) {
@@ -1117,11 +1109,9 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       input.languagePacks,
     );
     if (cachedMetadata.files !== input.inventory.files.length) {
-      return yield* Effect.fail(
-        new CodeGraphIndexOperationError(
-          'Cached code graph facts are incomplete during materialization planning; retry with a full rebuild.',
-        ),
-      );
+      return yield* CodeGraphIndexOperationError.make({
+        message: 'Cached code graph facts are incomplete during materialization planning; retry with a full rebuild.',
+      });
     }
     const batches = factMaterializationBatches(input.inventory.files, cachedMetadata.bytesByPath);
     const cachedFactBytesTotal = cachedMetadata.bytes;
@@ -1143,8 +1133,8 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     const system = yield* SystemInfo;
     const [durableAvailableBytes, temporaryAvailableBytes, durableFilesystem, temporaryFilesystem] = yield* Effect.all(
       [
-        system.availableDiskBytes(input.layout.repositoryRoot).pipe(Effect.catch(() => Effect.succeed(undefined))),
-        system.availableDiskBytes(system.tempDirectory).pipe(Effect.catch(() => Effect.succeed(undefined))),
+        system.availableDiskBytes(input.layout.repositoryRoot).pipe(Effect.orElseSucceed(() => undefined)),
+        system.availableDiskBytes(system.tempDirectory).pipe(Effect.orElseSucceed(() => undefined)),
         input.fs.stat(input.layout.repositoryRoot).pipe(
           Effect.map(info => info.dev),
           Effect.option,
@@ -1329,7 +1319,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
             unit: 'files',
           }) ?? Effect.void,
         ),
-        Effect.catch(() => Effect.void),
+        Effect.ignore,
       );
     };
     const flushPendingBatches = () =>
@@ -1480,7 +1470,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       loadingMilliseconds += batchLoadingMilliseconds;
       stageMilliseconds['loading-cache'] = loadingMilliseconds;
       if (fallbackFiles.some(file => !cached.facts.has(file.path))) {
-        return yield* Effect.fail(new CachedCodeGraphFactUnavailableDuringIndex());
+        return yield* CachedCodeGraphFactUnavailableDuringIndex.make({});
       }
       yield* input.onProgress?.({
         activity: {
@@ -1705,10 +1695,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           phase: 'resolving',
           subphase: 'references',
         }) ?? Effect.void
-      ).pipe(
-        Effect.catch(() => Effect.void),
-        Effect.andThen(Effect.yieldNow),
-      ),
+      ).pipe(Effect.ignore, Effect.andThen(Effect.yieldNow)),
     persistentCapacityGuard,
   );
   const stagedCounts = yield* input.store.stagedFactCounts(input.layout.databasePath);
@@ -1734,82 +1721,79 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     snapshotId: ready.id,
     subphase: 'writing-and-checkpointing',
   }) ?? Effect.void;
-  const activatedReady = yield* Effect.gen(function* () {
-    const activationLease = yield* Effect.acquireRelease(
-      input.store.activateStaged(
-        input.layout.databasePath,
-        input.identity,
-        ready,
-        reusableBaseReceipt,
-        CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS,
-        activity =>
-          (
-            input.onProgress?.({
-              activity,
-              phase: 'activating',
-              snapshotId: ready.id,
-            }) ?? Effect.void
-          ).pipe(Effect.catch(() => Effect.void)),
-        persistentCapacityGuard,
-        packProvenance,
-        directPersistentMaterialization && !incrementalApplied && materializedShardAssociationsComplete,
-      ),
-      lease =>
-        Option.match(lease, {
-          onNone: () => Effect.void,
-          onSome: token =>
-            input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
-        }),
-    );
-    const activated = yield* input.store.currentLexicalReadySnapshotById(input.layout.databasePath, ready.id);
-    if (!activated) {
-      return yield* Effect.fail(
-        new CodeGraphIndexOperationError('Activated code graph snapshot could not be read back from its store.'),
-      );
-    }
-    yield* input.store.shrinkMemory(input.layout.databasePath);
-    if (input.activatePointer) {
-      yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'promoting'}) ?? Effect.void;
-      // Progress callbacks may yield long enough for the worktree to change. Revalidate on both sides of
-      // pointer promotion so a mutation in this window triggers the bounded retry.
-      yield* verifyCommittedIndexInput({
-        databasePath: input.layout.databasePath,
-        identity: input.identity,
-        requestedOverlay: input.requestedOverlay,
-        snapshotId: activated.id,
-        store: input.store,
-        threadnoteHome: input.threadnoteHome,
-      });
-      yield* input.store.promote(input.layout.databasePath, input.identity, activated.id, {
-        persistentCapacityProtector: protectDirectPersistentWrite,
-      });
-      yield* input.store.shrinkMemory(input.layout.databasePath);
-      yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'promoting'}) ?? Effect.void;
-      yield* verifyCommittedIndexInput({
-        databasePath: input.layout.databasePath,
-        identity: input.identity,
-        requestedOverlay: input.requestedOverlay,
-        snapshotId: activated.id,
-        store: input.store,
-        threadnoteHome: input.threadnoteHome,
-      });
-      if (Option.isSome(activationLease)) {
-        yield* input.store.releaseSnapshotLease(input.layout.databasePath, activationLease.value);
-      }
-    }
-    if (input.committedBase && Option.isSome(input.committedBase.leaseToken)) {
-      yield* input.store.releaseSnapshotLease(input.layout.databasePath, input.committedBase.leaseToken.value);
-    }
-    for (const token of input.committedBase?.additionalLeaseTokens ?? []) {
-      yield* input.store.releaseSnapshotLease(input.layout.databasePath, token);
-    }
-    yield* input.onProgress?.({
-      phase: 'activating',
+  const activationLease = yield* Effect.acquireRelease(
+    input.store.activateStaged(
+      input.layout.databasePath,
+      input.identity,
+      ready,
+      reusableBaseReceipt,
+      CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS,
+      activity =>
+        (
+          input.onProgress?.({
+            activity,
+            phase: 'activating',
+            snapshotId: ready.id,
+          }) ?? Effect.void
+        ).pipe(Effect.ignore),
+      persistentCapacityGuard,
+      packProvenance,
+      directPersistentMaterialization && !incrementalApplied && materializedShardAssociationsComplete,
+    ),
+    lease =>
+      Option.match(lease, {
+        onNone: () => Effect.void,
+        onSome: token => input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.ignore),
+      }),
+  );
+  const activated = yield* input.store.currentLexicalReadySnapshotById(input.layout.databasePath, ready.id);
+  if (!activated) {
+    return yield* CodeGraphIndexOperationError.make({
+      message: 'Activated code graph snapshot could not be read back from its store.',
+    });
+  }
+  yield* input.store.shrinkMemory(input.layout.databasePath);
+  if (input.activatePointer) {
+    yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'promoting'}) ?? Effect.void;
+    // Progress callbacks may yield long enough for the worktree to change. Revalidate on both sides of
+    // pointer promotion so a mutation in this window triggers the bounded retry.
+    yield* verifyCommittedIndexInput({
+      databasePath: input.layout.databasePath,
+      identity: input.identity,
+      requestedOverlay: input.requestedOverlay,
       snapshotId: activated.id,
-      subphase: input.activatePointer ? 'structural-ready' : 'complete',
-    }) ?? Effect.void;
-    return activated;
-  });
+      store: input.store,
+      threadnoteHome: input.threadnoteHome,
+    });
+    yield* input.store.promote(input.layout.databasePath, input.identity, activated.id, {
+      persistentCapacityProtector: protectDirectPersistentWrite,
+    });
+    yield* input.store.shrinkMemory(input.layout.databasePath);
+    yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'promoting'}) ?? Effect.void;
+    yield* verifyCommittedIndexInput({
+      databasePath: input.layout.databasePath,
+      identity: input.identity,
+      requestedOverlay: input.requestedOverlay,
+      snapshotId: activated.id,
+      store: input.store,
+      threadnoteHome: input.threadnoteHome,
+    });
+    if (Option.isSome(activationLease)) {
+      yield* input.store.releaseSnapshotLease(input.layout.databasePath, activationLease.value);
+    }
+  }
+  if (input.committedBase && Option.isSome(input.committedBase.leaseToken)) {
+    yield* input.store.releaseSnapshotLease(input.layout.databasePath, input.committedBase.leaseToken.value);
+  }
+  for (const token of input.committedBase?.additionalLeaseTokens ?? []) {
+    yield* input.store.releaseSnapshotLease(input.layout.databasePath, token);
+  }
+  yield* input.onProgress?.({
+    phase: 'activating',
+    snapshotId: activated.id,
+    subphase: input.activatePointer ? 'structural-ready' : 'complete',
+  }) ?? Effect.void;
+  const activatedReady = activated;
   let analysisSummaryFailure: string | undefined;
   const analysisSummaryBackfilled =
     input.activatePointer && !activatedReady.dirty
@@ -1865,7 +1849,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         )
       : undefined;
   if (input.activatePointer) {
-    yield* input.fs.remove(input.layout.staleMarkerPath, {force: true}).pipe(Effect.catch(() => Effect.void));
+    yield* input.fs.remove(input.layout.staleMarkerPath, {force: true}).pipe(Effect.ignore);
   }
   return {
     diagnostics: [

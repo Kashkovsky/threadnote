@@ -104,15 +104,17 @@ export function summarizeReleaseNote(markdown: string): {
 
 export function releaseHeadlineFromSummary(summary: string): string {
   const sentence = /^.*?[.!?](?=\s|$)/u.exec(summary)?.[0];
-  if (!sentence) throw new ScriptError('The release-note opening summary must contain a complete first sentence.');
+  if (!sentence)
+    throw ScriptError.make({message: 'The release-note opening summary must contain a complete first sentence.'});
   const withoutProductVersion = sentence.replace(/^Threadnote\s+\d+(?:\.\d+){0,2}\s+/u, '');
   const withoutCopula = withoutProductVersion.replace(/^is\s+/u, '');
   const headline = withoutCopula ? `${withoutCopula[0].toUpperCase()}${withoutCopula.slice(1)}` : sentence;
-  if (!headline.trim()) throw new ScriptError('The release-note opening sentence must contain a social-card headline.');
+  if (!headline.trim())
+    throw ScriptError.make({message: 'The release-note opening sentence must contain a social-card headline.'});
   if (headline.length > releaseHeadlineMaximumLength) {
-    throw new ScriptError(
-      `The release-note opening sentence must produce a social-card headline of at most ${releaseHeadlineMaximumLength} characters.`,
-    );
+    throw ScriptError.make({
+      message: `The release-note opening sentence must produce a social-card headline of at most ${releaseHeadlineMaximumLength} characters.`,
+    });
   }
   return headline;
 }
@@ -134,7 +136,7 @@ function runGit(repositoryRoot: string, arguments_: readonly string[]): string {
   });
   if (result.exitCode !== 0) {
     const detail = result.stderr.toString().trim();
-    throw new ScriptError(`Could not load website release notes${detail ? `: ${detail}` : '.'}`);
+    throw ScriptError.make({message: `Could not load website release notes${detail ? `: ${detail}` : '.'}`});
   }
   return result.stdout.toString();
 }
@@ -194,16 +196,17 @@ export function loadLatestMajorWebsiteReleases(repositoryRoot: string): readonly
 
   const selected = selectLatestMajorReleases(refs);
   if (selected.length === 0)
-    throw new ScriptError('The website needs at least one published or prepared stable release.');
+    throw ScriptError.make({message: 'The website needs at least one published or prepared stable release.'});
   const sourcesByVersion = new Map(refs.map(release => [release.version, release]));
 
   return selected.map(release => {
     const releaseNotePath = `.github/release-notes/${release.version}.md`;
     const source = sourcesByVersion.get(release.version);
-    if (source === undefined) throw new ScriptError(`Could not resolve website release source for ${release.version}.`);
+    if (source === undefined)
+      throw ScriptError.make({message: `Could not resolve website release source for ${release.version}.`});
     const markdown = runGit(repositoryRoot, ['show', `${source.noteRef}:${releaseNotePath}`]);
     const {summary, highlights} = summarizeReleaseNote(markdown);
-    if (!summary) throw new ScriptError(`${releaseNotePath} needs an introductory release summary.`);
+    if (!summary) throw ScriptError.make({message: `${releaseNotePath} needs an introductory release summary.`});
     const headline = releaseHeadlineFromSummary(summary);
     const socialImage = releaseSocialImage(release.version, headline);
     return {

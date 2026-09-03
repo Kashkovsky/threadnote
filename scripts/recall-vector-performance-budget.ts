@@ -35,7 +35,7 @@ export function assessRecallVectorPerformance(
   measurement: RecallVectorPerformanceMeasurement,
 ): RecallVectorPerformanceBudget {
   if (!Number.isSafeInteger(documents) || documents <= 0) {
-    throw new ScriptError('Recall vector performance budget requires a positive document count.');
+    throw ScriptError.make({message: 'Recall vector performance budget requires a positive document count.'});
   }
   assertMeasurement(measurement);
 
@@ -87,7 +87,7 @@ function assertMeasurement(measurement: RecallVectorPerformanceMeasurement): voi
     measurement.semanticQueryP95Milliseconds,
   ]) {
     if (!Number.isFinite(value) || value < 0) {
-      throw new ScriptError('Invalid recall vector performance measurement.');
+      throw ScriptError.make({message: 'Invalid recall vector performance measurement.'});
     }
   }
 }

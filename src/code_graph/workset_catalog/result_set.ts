@@ -512,13 +512,13 @@ function compareText(left: string, right: string): number {
 }
 
 function fail(reason: 'corrupt' | 'invalid-input', message: string): never {
-  throw new CodeGraphWorksetCatalogError(reason, message);
+  throw CodeGraphWorksetCatalogError.of(reason, message);
 }
 
 function invalid(message: string, cause?: unknown): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('invalid-input', message, cause === undefined ? undefined : {cause});
+  return CodeGraphWorksetCatalogError.of('invalid-input', message, cause === undefined ? undefined : {cause});
 }
 
 function corrupt(message: string, cause?: unknown): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('corrupt', message, cause === undefined ? undefined : {cause});
+  return CodeGraphWorksetCatalogError.of('corrupt', message, cause === undefined ? undefined : {cause});
 }

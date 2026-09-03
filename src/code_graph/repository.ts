@@ -33,7 +33,7 @@ export const resolveRepositoryIdentityDetail = Effect.fn('codeGraph.resolveRepos
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
   const rootResult = yield* runGit(cwd, ['rev-parse', '--show-toplevel']).pipe(
-    Effect.mapError(cause => new CodeGraphRepositoryError(`Not a Git repository: ${cause.message}`)),
+    Effect.mapError(cause => CodeGraphRepositoryError.make({message: `Not a Git repository: ${cause.message}`})),
   );
   const repoRoot = yield* fs.realPath(rootResult.stdout.trim());
   const [directoryResult, formatResult, commitResult, ignoreCaseResult, remoteResult, branch] = yield* Effect.all(
@@ -53,14 +53,14 @@ export const resolveRepositoryIdentityDetail = Effect.fn('codeGraph.resolveRepos
   );
   const directories = parseGitDirectoryOutput(directoryResult.stdout);
   if (directories === undefined) {
-    return yield* Effect.fail(new CodeGraphRepositoryError('Git repository directory metadata is invalid.'));
+    return yield* CodeGraphRepositoryError.make({message: 'Git repository directory metadata is invalid.'});
   }
   const commonRaw = directories.commonDirectory;
   const commonAbsolute = path.isAbsolute(commonRaw) ? commonRaw : path.resolve(repoRoot, commonRaw);
   const gitCommonDirectory = yield* fs.realPath(commonAbsolute);
   const objectFormat = formatResult.stdout.trim();
   if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
-    return yield* Effect.fail(new CodeGraphRepositoryError(`Unsupported Git object format: ${objectFormat}`));
+    return yield* CodeGraphRepositoryError.make({message: `Unsupported Git object format: ${objectFormat}`});
   }
   const remoteIdentity =
     remoteResult.exitCode === 0 ? normalizeCredentialFreeRemote(remoteResult.stdout.trim()) : undefined;
@@ -160,22 +160,28 @@ export const revalidateRepositoryIdentityFence = Effect.fn('codeGraph.revalidate
       runGit(cwd, ['remote', 'get-url', 'origin'], true),
     ],
     {concurrency: 2},
-  ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+  ).pipe(
+    Effect.mapError(() => CodeGraphRepositoryError.make({message: 'Repository identity could not be revalidated.'})),
+  );
   const metadata = metadataResult.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
   if (metadata.length !== 4) {
-    return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
+    return yield* CodeGraphRepositoryError.make({message: 'Git repository identity metadata is invalid.'});
   }
   const repoRoot = yield* fs
     .realPath(metadata[0])
-    .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+    .pipe(
+      Effect.mapError(() => CodeGraphRepositoryError.make({message: 'Repository identity could not be revalidated.'})),
+    );
   const commonRaw = metadata[1];
   const commonAbsolute = path.isAbsolute(commonRaw) ? commonRaw : path.resolve(repoRoot, commonRaw);
   const gitCommonDirectory = yield* fs
     .realPath(commonAbsolute)
-    .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+    .pipe(
+      Effect.mapError(() => CodeGraphRepositoryError.make({message: 'Repository identity could not be revalidated.'})),
+    );
   const objectFormat = metadata[2];
   if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
-    return yield* Effect.fail(new CodeGraphRepositoryError(`Unsupported Git object format: ${objectFormat}`));
+    return yield* CodeGraphRepositoryError.make({message: `Unsupported Git object format: ${objectFormat}`});
   }
   const remoteIdentity =
     remoteResult.exitCode === 0 ? normalizeCredentialFreeRemote(remoteResult.stdout.trim()) : undefined;
@@ -198,7 +204,7 @@ export const revalidateRepositoryIdentityFence = Effect.fn('codeGraph.revalidate
     identity.repositoryId !== previous.repositoryId ||
     identity.worktreeId !== previous.worktreeId
   ) {
-    return yield* Effect.fail(new CodeGraphRepositoryError('Repository identity changed during the graph read.'));
+    return yield* CodeGraphRepositoryError.make({message: 'Repository identity changed during the graph read.'});
   }
   return identity;
 });
@@ -223,7 +229,9 @@ export const resolvePublishedRepositoryReadFence = Effect.fn('codeGraph.resolveP
     const observed = yield* observeRepositoryReadFenceMetadata(cwd);
     yield* interlock?.afterInitialIdentity?.() ?? Effect.void;
     const remoteResult = yield* runGit(observed.repoRoot, ['remote', 'get-url', 'origin'], true).pipe(
-      Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')),
+      Effect.mapError(() =>
+        CodeGraphRepositoryError.make({message: 'Repository read fence could not be revalidated.'}),
+      ),
     );
     const remoteIdentity =
       remoteResult.exitCode === 0 ? normalizeCredentialFreeRemote(remoteResult.stdout.trim()) : undefined;
@@ -236,7 +244,7 @@ export const resolvePublishedRepositoryReadFence = Effect.fn('codeGraph.resolveP
       worktreeId: worktreeIdForRoot(observed.repoRoot),
     };
     if (!repositoryIdentityMatchesExpectation(identity, expected)) {
-      return yield* Effect.fail(new CodeGraphRepositoryError('Repository identity changed during the graph read.'));
+      return yield* CodeGraphRepositoryError.make({message: 'Repository identity changed during the graph read.'});
     }
     yield* interlock?.beforeClosingWorktreeObservation?.() ?? Effect.void;
     const worktree = yield* observeRepositoryReadFenceClosingWorktree(cwd, observed.objectFormat);
@@ -245,7 +253,7 @@ export const resolvePublishedRepositoryReadFence = Effect.fn('codeGraph.resolveP
       worktree.gitCommonDirectory !== observed.gitCommonDirectory ||
       worktree.headCommit !== observed.headCommit
     ) {
-      return yield* Effect.fail(new CodeGraphRepositoryError('Repository identity changed during the graph read.'));
+      return yield* CodeGraphRepositoryError.make({message: 'Repository identity changed during the graph read.'});
     }
     return {...identity, worktreeChanged: worktree.changed};
   },
@@ -264,21 +272,33 @@ const observeRepositoryReadFenceClosingWorktree = Effect.fn('codeGraph.observeRe
         maxOutputBytes: REPOSITORY_STATUS_OBSERVATION_BYTES_MAXIMUM,
         timeoutMs: 10_000,
       },
-    ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')));
+    ).pipe(
+      Effect.mapError(() =>
+        CodeGraphRepositoryError.make({message: 'Repository read fence could not be revalidated.'}),
+      ),
+    );
     const worktree = parseRepositoryIdentityWorktreeObservation(status.stdout, objectFormat);
     const setup = parseRepositoryReadFenceSetupObservation(status.stderr);
     if (worktree === undefined || setup === undefined) {
-      return yield* Effect.fail(new CodeGraphRepositoryError('Repository read fence could not be revalidated.'));
+      return yield* CodeGraphRepositoryError.make({message: 'Repository read fence could not be revalidated.'});
     }
     const repoRoot = yield* fs
       .realPath(setup.worktree)
-      .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')));
+      .pipe(
+        Effect.mapError(() =>
+          CodeGraphRepositoryError.make({message: 'Repository read fence could not be revalidated.'}),
+        ),
+      );
     const commonPath = path.isAbsolute(setup.gitCommonDirectory)
       ? setup.gitCommonDirectory
       : path.resolve(repoRoot, setup.gitCommonDirectory);
     const gitCommonDirectory = yield* fs
       .realPath(commonPath)
-      .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')));
+      .pipe(
+        Effect.mapError(() =>
+          CodeGraphRepositoryError.make({message: 'Repository read fence could not be revalidated.'}),
+        ),
+      );
     return {...worktree, gitCommonDirectory, repoRoot};
   },
 );
@@ -345,10 +365,12 @@ const observeRepositoryReadFenceMetadata = Effect.fn('codeGraph.observeRepositor
     '--git-common-dir',
     '--show-object-format',
     'HEAD',
-  ]).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')));
+  ]).pipe(
+    Effect.mapError(() => CodeGraphRepositoryError.make({message: 'Repository read fence could not be revalidated.'})),
+  );
   const metadata = result.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
   if (metadata.length !== 4) {
-    return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
+    return yield* CodeGraphRepositoryError.make({message: 'Git repository identity metadata is invalid.'});
   }
   const repoRoot = yield* fs.realPath(metadata[0]);
   const commonRaw = metadata[1];
@@ -356,12 +378,12 @@ const observeRepositoryReadFenceMetadata = Effect.fn('codeGraph.observeRepositor
   const gitCommonDirectory = yield* fs.realPath(commonAbsolute);
   const objectFormat = metadata[2];
   if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
-    return yield* Effect.fail(new CodeGraphRepositoryError(`Unsupported Git object format: ${objectFormat}`));
+    return yield* CodeGraphRepositoryError.make({message: `Unsupported Git object format: ${objectFormat}`});
   }
   const headCommit = metadata[3];
   const expectedLength = objectFormat === 'sha256' ? 64 : 40;
   if (!new RegExp(`^[0-9a-f]{${expectedLength}}$`, 'u').test(headCommit)) {
-    return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
+    return yield* CodeGraphRepositoryError.make({message: 'Git repository identity metadata is invalid.'});
   }
   return {
     gitCommonDirectory,
@@ -424,31 +446,37 @@ const resolveExpectedRepositoryIdentity = Effect.fn('codeGraph.resolveExpectedRe
       branchOrWorktree,
     ],
     {concurrency: 4},
-  ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+  ).pipe(
+    Effect.mapError(() => CodeGraphRepositoryError.make({message: 'Repository identity could not be revalidated.'})),
+  );
   const metadata = metadataResult.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
   if (metadata.length !== 4) {
-    return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
+    return yield* CodeGraphRepositoryError.make({message: 'Git repository identity metadata is invalid.'});
   }
   const repoRoot = yield* fs
     .realPath(metadata[0])
-    .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+    .pipe(
+      Effect.mapError(() => CodeGraphRepositoryError.make({message: 'Repository identity could not be revalidated.'})),
+    );
   const commonRaw = metadata[1];
   const commonAbsolute = path.isAbsolute(commonRaw) ? commonRaw : path.resolve(repoRoot, commonRaw);
   const gitCommonDirectory = yield* fs
     .realPath(commonAbsolute)
-    .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+    .pipe(
+      Effect.mapError(() => CodeGraphRepositoryError.make({message: 'Repository identity could not be revalidated.'})),
+    );
   const objectFormat = metadata[2];
   if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
-    return yield* Effect.fail(new CodeGraphRepositoryError(`Unsupported Git object format: ${objectFormat}`));
+    return yield* CodeGraphRepositoryError.make({message: `Unsupported Git object format: ${objectFormat}`});
   }
   const worktree =
     observed.kind === 'worktree'
       ? parseRepositoryIdentityWorktreeObservation(observed.output, objectFormat)
       : undefined;
   if (observed.kind === 'worktree' && (worktree === undefined || worktree.headCommit !== metadata[3])) {
-    return yield* Effect.fail(
-      new CodeGraphRepositoryError('Repository identity changed during the worktree observation.'),
-    );
+    return yield* CodeGraphRepositoryError.make({
+      message: 'Repository identity changed during the worktree observation.',
+    });
   }
   const branch = observed.kind === 'branch' ? observed.branch : worktree!.branch;
   const remoteIdentity =
@@ -471,9 +499,7 @@ const resolveExpectedRepositoryIdentity = Effect.fn('codeGraph.resolveExpectedRe
     worktreeId: worktreeIdForRoot(repoRoot),
   } satisfies RepositoryIdentity;
   if (!repositoryIdentityMatchesExpectation(identity, expected)) {
-    return yield* Effect.fail(
-      new CodeGraphRepositoryError('Repository identity does not match the published workset.'),
-    );
+    return yield* CodeGraphRepositoryError.make({message: 'Repository identity does not match the published workset.'});
   }
   return {
     identity,
@@ -533,13 +559,13 @@ export const repositoryWorktreeRegistry = Effect.fn('codeGraph.repositoryWorktre
       maxOutputBytes: CODE_GRAPH_WORKTREE_REGISTRY_LIMITS.maxOutputBytes,
       timeoutMs: CODE_GRAPH_WORKTREE_REGISTRY_LIMITS.timeoutMs,
     },
-  ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Unable to read the Git worktree registry.')));
+  ).pipe(Effect.mapError(() => CodeGraphRepositoryError.make({message: 'Unable to read the Git worktree registry.'})));
   const output = yield* Effect.try({
-    catch: () => new CodeGraphRepositoryError('Git worktree registry output is invalid.'),
+    catch: () => CodeGraphRepositoryError.make({message: 'Git worktree registry output is invalid.'}),
     try: () => new TextDecoder('utf-8', {fatal: true}).decode(result.stdout),
   });
   return yield* Effect.try({
-    catch: () => new CodeGraphRepositoryError('Git worktree registry output is invalid.'),
+    catch: () => CodeGraphRepositoryError.make({message: 'Git worktree registry output is invalid.'}),
     try: () => parseRepositoryWorktreeRegistryOutput(output, system.platform),
   });
 });
@@ -557,7 +583,7 @@ function parseRegisteredRepositoryWorktrees(
   output: string,
   platform: NodeJS.Platform,
 ): readonly RegisteredRepositoryWorktree[] {
-  const invalid = () => new CodeGraphRepositoryError('Git worktree registry output is invalid.');
+  const invalid = () => CodeGraphRepositoryError.make({message: 'Git worktree registry output is invalid.'});
   if (
     byteLength(output) > CODE_GRAPH_WORKTREE_REGISTRY_LIMITS.maxOutputBytes ||
     output.length === 0 ||
@@ -606,7 +632,7 @@ export const repositoryChangesSince = Effect.fn('codeGraph.repositoryChangesSinc
   );
   const objectId = verified.stdout.trim();
   if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(objectId)) {
-    return yield* Effect.fail(new CodeGraphRepositoryError(`Git resolved ${base} to an invalid object ID.`));
+    return yield* CodeGraphRepositoryError.make({message: `Git resolved ${base} to an invalid object ID.`});
   }
   const [tracked, untracked] = yield* Effect.all(
     [
@@ -623,7 +649,7 @@ export const repositoryChangesSince = Effect.fn('codeGraph.repositoryChangesSinc
   );
   const paths = [...new Set(`${tracked.stdout}\0${untracked.stdout}`.split('\0').filter(Boolean))].sort();
   if (paths.length === 0)
-    return yield* Effect.fail(new CodeGraphRepositoryError(`No changed paths found relative to ${base}.`));
+    return yield* CodeGraphRepositoryError.make({message: `No changed paths found relative to ${base}.`});
   return {baseCommit: objectId, paths};
 });
 

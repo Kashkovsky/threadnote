@@ -1,7 +1,7 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
-import {Context, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Option, Path, Scope} from 'effect';
+import {Clock, Context, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Option, Path, Scope} from 'effect';
 import {describe} from 'vitest';
 import {TestClock} from 'effect/testing';
 import {isolatedLocalModelRuntimeLayer} from '../../src/effect/ai/isolated-local-model-runtime.js';
@@ -78,11 +78,11 @@ describe('native memory workflow', () => {
           verified: true,
         };
         const modelStore = LocalModelStore.of({
-          install: () => Effect.die(new TestError('Unexpected model install')),
+          install: () => Effect.die(TestError.make({message: 'Unexpected model install'})),
           path: () => modelPath,
-          remove: () => Effect.die(new TestError('Unexpected model removal')),
+          remove: () => Effect.die(TestError.make({message: 'Unexpected model removal'})),
           status: () => Effect.succeed(installation),
-          verify: () => Effect.die(new TestError('Unexpected model verification')),
+          verify: () => Effect.die(TestError.make({message: 'Unexpected model verification'})),
         } satisfies LocalModelStoreShape);
 
         const remembered = yield* captureConsole(
@@ -136,7 +136,7 @@ describe('native memory workflow', () => {
           manifestPath,
           user: 'tester',
         };
-        yield* TestClock.setTime(Date.now());
+        yield* TestClock.setTime(yield* Clock.currentTimeMillis);
         const uri = 'threadnote://user/tester/memories/durable/projects/threadnote/lease-recovery.md';
 
         yield* runRemember(config, {
@@ -934,7 +934,7 @@ describe('native memory workflow', () => {
           manifestPath: path.join(targetHome, 'seed-manifest.yaml'),
           user: 'target-user',
         };
-        yield* TestClock.setTime(Date.now());
+        yield* TestClock.setTime(yield* Clock.currentTimeMillis);
         yield* runRemember(sourceConfig, {
           kind: 'durable',
           project: 'threadnote',

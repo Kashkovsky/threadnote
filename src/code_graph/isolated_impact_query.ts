@@ -1,4 +1,4 @@
-import {Effect, Predicate, Stdio, Stream} from 'effect';
+import {Effect, Predicate, Schema, Stdio, Stream} from 'effect';
 import {CommandExecutor, CommandTimedOut, type CommandExecutionError} from '../effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT} from '../worker_protocol.js';
@@ -51,13 +51,21 @@ export interface IsolatedCodeGraphImpactQueryInput {
   readonly threadnoteHome: string;
 }
 
-export class IsolatedCodeGraphImpactQueryError extends Error {
-  readonly _tag = 'IsolatedCodeGraphImpactQueryError' as const;
-}
+export class IsolatedCodeGraphImpactQueryError extends Schema.TaggedError<IsolatedCodeGraphImpactQueryError>()(
+  'IsolatedCodeGraphImpactQueryError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
-export class IsolatedCodeGraphImpactQueryTimedOut extends Error {
-  readonly _tag = 'IsolatedCodeGraphImpactQueryTimedOut' as const;
-}
+export class IsolatedCodeGraphImpactQueryTimedOut extends Schema.TaggedError<IsolatedCodeGraphImpactQueryTimedOut>()(
+  'IsolatedCodeGraphImpactQueryTimedOut',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 /**
  * Execute correctness-sensitive impact reads outside the MCP event loop.
@@ -74,12 +82,12 @@ export const inspectCodeGraphImpactIsolated = Effect.fn('codeGraph.impactQueryIs
   const request = yield* Effect.try({
     try: () => encodeImpactQueryRequest(input),
     catch: cause =>
-      cause instanceof IsolatedCodeGraphImpactQueryError
+      Schema.is(IsolatedCodeGraphImpactQueryError)(cause)
         ? cause
-        : new IsolatedCodeGraphImpactQueryError('Isolated code graph impact query request is invalid.'),
+        : IsolatedCodeGraphImpactQueryError.make({message: 'Isolated code graph impact query request is invalid.'}),
   });
   const invocation = impactQueryWorkerInvocation(system);
-  const timeout = new IsolatedCodeGraphImpactQueryTimedOut('Isolated code graph impact query timed out.');
+  const timeout = IsolatedCodeGraphImpactQueryTimedOut.make({message: 'Isolated code graph impact query timed out.'});
   const execute = command
     .execute(invocation.executable, invocation.arguments, {
       env: impactQueryWorkerEnvironment(system.environment(), input.threadnoteHome),
@@ -89,16 +97,16 @@ export const inspectCodeGraphImpactIsolated = Effect.fn('codeGraph.impactQueryIs
     })
     .pipe(
       Effect.mapError((error: CommandExecutionError) =>
-        error instanceof CommandTimedOut
+        Schema.is(CommandTimedOut)(error)
           ? timeout
-          : new IsolatedCodeGraphImpactQueryError('Isolated code graph impact query failed.'),
+          : IsolatedCodeGraphImpactQueryError.make({message: 'Isolated code graph impact query failed.'}),
       ),
       Effect.timeoutOrElse({duration: timeoutMilliseconds, orElse: () => Effect.fail(timeout)}),
     );
   const result = yield* execute;
   const response = decodeImpactQueryResponse(result.stdout);
   if (response === undefined || !response.ok) {
-    return yield* Effect.fail(new IsolatedCodeGraphImpactQueryError('Isolated code graph impact query failed.'));
+    return yield* IsolatedCodeGraphImpactQueryError.make({message: 'Isolated code graph impact query failed.'});
   }
   return response.result;
 });
@@ -123,7 +131,7 @@ export const codeGraphImpactQueryWorkerProgram = (threadnoteHome: string) =>
             }),
           );
     yield* writeImpactQueryWorkerResponse(response);
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 
 /** @internal Keep the bounded read worker incapable of starting base-commit indexing. */
 export function impactQueryWorkerInspectOptions(
@@ -166,11 +174,11 @@ function encodeImpactQueryRequest(input: IsolatedCodeGraphImpactQueryInput): Uin
     threadnoteHome: input.threadnoteHome,
   } satisfies CodeGraphImpactQueryRequest;
   if (!validImpactQueryRequest(request)) {
-    throw new IsolatedCodeGraphImpactQueryError('Isolated code graph impact query request is invalid.');
+    throw IsolatedCodeGraphImpactQueryError.make({message: 'Isolated code graph impact query request is invalid.'});
   }
   const bytes = new TextEncoder().encode(`${JSON.stringify(request)}\n`);
   if (bytes.byteLength > CODE_GRAPH_IMPACT_QUERY_INPUT_BYTES_MAXIMUM) {
-    throw new IsolatedCodeGraphImpactQueryError('Isolated code graph impact query request is too large.');
+    throw IsolatedCodeGraphImpactQueryError.make({message: 'Isolated code graph impact query request is too large.'});
   }
   return bytes;
 }
@@ -185,7 +193,9 @@ const readImpactQueryWorkerRequest = Effect.gen(function* () {
       (current, chunk) => {
         const size = current.size + encoder.encode(chunk).byteLength;
         if (size > CODE_GRAPH_IMPACT_QUERY_INPUT_BYTES_MAXIMUM) {
-          return Effect.fail(new IsolatedCodeGraphImpactQueryError('Impact query worker input is too large.'));
+          return Effect.fail(
+            IsolatedCodeGraphImpactQueryError.make({message: 'Impact query worker input is too large.'}),
+          );
         }
         current.chunks.push(chunk);
         return Effect.succeed({chunks: current.chunks, size});
@@ -201,7 +211,7 @@ const writeImpactQueryWorkerResponse = Effect.fn('codeGraph.impactQueryWorker.wr
   const stdio = yield* Stdio.Stdio;
   const bytes = new TextEncoder().encode(`${JSON.stringify(response)}\n`);
   if (bytes.byteLength > CODE_GRAPH_IMPACT_QUERY_OUTPUT_BYTES_MAXIMUM) {
-    return yield* Effect.fail(new IsolatedCodeGraphImpactQueryError('Impact query worker output is too large.'));
+    return yield* IsolatedCodeGraphImpactQueryError.make({message: 'Impact query worker output is too large.'});
   }
   yield* Stream.run(Stream.make(bytes), stdio.stdout({endOnDone: false}));
 });

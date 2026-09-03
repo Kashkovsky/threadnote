@@ -33,7 +33,7 @@ export interface StructuredGeneratorShape {
 }
 
 export class StructuredGenerator extends Context.Service<StructuredGenerator, StructuredGeneratorShape>()(
-  'threadnote/effect/ai/StructuredGenerator',
+  'threadnote/effect/ai/structured-generator/StructuredGenerator',
 ) {}
 
 export interface LlamaStructuredGeneratorLayerOptions {

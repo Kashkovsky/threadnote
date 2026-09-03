@@ -64,7 +64,7 @@ export const runReportIssue = Effect.fn('reportIssue.runReportIssue')(function* 
     return;
   }
   if (options.approval !== issue.approval) {
-    return yield* new ReportIssueInvalid({
+    return yield* ReportIssueInvalid.make({
       message: `The prepared issue does not match an approved preview. Review it, then retry with --approval ${issue.approval}.`,
     });
   }
@@ -77,38 +77,38 @@ const prepareReportIssue = Effect.fn('reportIssue.prepareReportIssue')(function*
   options: ReportIssueOptions,
 ) {
   if (hasUnsafePublicControl(options.title, false) || hasUnsafePublicControl(options.body, true)) {
-    return yield* new ReportIssueInvalid({
+    return yield* ReportIssueInvalid.make({
       message: 'Issue title or body contains unsafe terminal control characters. Remove them and retry.',
     });
   }
   const titleResult = scrubPublicText(options.title);
   const bodyResult = scrubPublicText(options.body);
   if (titleResult.blocker !== undefined || bodyResult.blocker !== undefined) {
-    return yield* new ReportIssueInvalid({
+    return yield* ReportIssueInvalid.make({
       message: `Refusing to report an issue containing a possible ${titleResult.blocker ?? bodyResult.blocker}. Remove it and retry.`,
     });
   }
   const title = titleResult.cleaned.trim();
   const description = bodyResult.cleaned.trim();
   if (title.length === 0) {
-    return yield* new ReportIssueInvalid({message: 'Issue title must not be empty.'});
+    return yield* ReportIssueInvalid.make({message: 'Issue title must not be empty.'});
   }
   if (description.length === 0) {
-    return yield* new ReportIssueInvalid({message: 'Issue body must not be empty.'});
+    return yield* ReportIssueInvalid.make({message: 'Issue body must not be empty.'});
   }
   if (title.length > REPORT_ISSUE_TITLE_MAX_CHARACTERS) {
-    return yield* new ReportIssueInvalid({
+    return yield* ReportIssueInvalid.make({
       message: `Issue title must be at most ${REPORT_ISSUE_TITLE_MAX_CHARACTERS} characters.`,
     });
   }
   if (description.length > REPORT_ISSUE_DESCRIPTION_MAX_CHARACTERS) {
-    return yield* new ReportIssueInvalid({
+    return yield* ReportIssueInvalid.make({
       message: `Issue body must be at most ${REPORT_ISSUE_DESCRIPTION_MAX_CHARACTERS} characters before diagnostics.`,
     });
   }
 
   const system = yield* SystemInfo;
-  const version = yield* getThreadnoteVersion().pipe(Effect.catch(() => Effect.succeed('unknown')));
+  const version = yield* getThreadnoteVersion().pipe(Effect.orElseSucceed(() => 'unknown'));
   const logExcerpt = options.includeLogs
     ? yield* productionLogSupportExcerpt(config.agentContextHome, REPORT_ISSUE_LOG_MAX_CHARACTERS)
     : undefined;
@@ -141,7 +141,7 @@ const prepareReportIssue = Effect.fn('reportIssue.prepareReportIssue')(function*
   }
   const body = `${description}\n\n---\n\n${diagnostics.join('\n')}`;
   if (body.length > REPORT_ISSUE_BODY_MAX_CHARACTERS) {
-    return yield* new ReportIssueInvalid({
+    return yield* ReportIssueInvalid.make({
       message: `Prepared issue body exceeds the ${REPORT_ISSUE_BODY_MAX_CHARACTERS}-character safety limit.`,
     });
   }
@@ -204,7 +204,7 @@ const createGitHubIssue = Effect.fn('reportIssue.createGitHubIssue')(function* (
       ).pipe(Effect.mapError(cause => reportIssueCreateFailure(cause, system.platform)));
       const issueUrl = result.stdout.trim();
       if (!isThreadnoteIssueUrl(issueUrl)) {
-        return yield* new ReportIssueCreateFailed({
+        return yield* ReportIssueCreateFailed.make({
           message: 'GitHub returned an invalid issue URL. Check the repository before retrying.',
         });
       }
@@ -214,20 +214,20 @@ const createGitHubIssue = Effect.fn('reportIssue.createGitHubIssue')(function* (
 });
 
 function reportIssueCreateFailure(cause: unknown, platform: NodeJS.Platform): ReportIssueCreateFailed {
-  if (cause instanceof CommandSpawnFailed) {
-    return new ReportIssueCreateFailed({
+  if (Schema.is(CommandSpawnFailed)(cause)) {
+    return ReportIssueCreateFailed.make({
       message: `GitHub CLI (\`gh\`) is required only for submission. ${githubCliInstallInstruction(platform)} Then run \`gh auth login\` and retry with \`--apply\`.`,
     });
   }
   if (
-    cause instanceof CommandFailed &&
+    Schema.is(CommandFailed)(cause) &&
     /auth|credential|login|token|HTTP 401|HTTP 403/i.test(`${cause.stderr}\n${cause.stdout}`)
   ) {
-    return new ReportIssueCreateFailed({
+    return ReportIssueCreateFailed.make({
       message: 'GitHub authentication failed. Run `gh auth login` with permission to create issues, then retry.',
     });
   }
-  return new ReportIssueCreateFailed({
+  return ReportIssueCreateFailed.make({
     message: 'GitHub issue creation failed through `gh api`. Check connectivity and `gh auth status`, then retry.',
   });
 }

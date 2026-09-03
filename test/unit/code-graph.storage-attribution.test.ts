@@ -126,9 +126,9 @@ describe('code graph semantic storage attribution', () => {
 
       const storage = yield* inspectCodeGraphStorage(home, checkoutId, {attributeObjects: true});
       if (storage.state !== 'available' || storage.pageStorage.state !== 'available')
-        throw new TestError('missing storage');
+        throw TestError.make({message: 'missing storage'});
       const attribution = storage.pageStorage.attribution;
-      if (!attribution) throw new TestError('missing attribution');
+      if (!attribution) throw TestError.make({message: 'missing attribution'});
       if (attribution.state === 'unavailable') {
         expect(attribution.reason).toBe('sqlite-dbstat-unavailable');
         return;
@@ -149,7 +149,7 @@ function assertSnapshotAttribution(
   snapshotId: string,
   factsJson: string,
 ): void {
-  if (attribution.state !== 'available') throw new TestError('missing snapshot attribution');
+  if (attribution.state !== 'available') throw TestError.make({message: 'missing snapshot attribution'});
   expect(attribution.baseline).toMatchObject({activeSnapshotCount: 1, activeSymbolCount: 1});
   expect(attribution.snapshots[0]).toMatchObject({
     active: true,

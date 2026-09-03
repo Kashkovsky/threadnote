@@ -14,7 +14,7 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
       Effect.try({
         try: () => extractFileFacts(file),
         catch: cause =>
-          new CodeGraphLanguagePackError(`Could not extract TypeScript facts from ${file.path}.`, {cause}),
+          CodeGraphLanguagePackError.make({message: `Could not extract TypeScript facts from ${file.path}.`, cause}),
       }),
     version: sha256HexSync(`${EXTRACTOR_POLICY_VERSION}\ntypescript:${ts.version}`),
   },

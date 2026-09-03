@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This reviewed JSONL client is an explicit operating-system child-process boundary. */
 import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {createInterface, type Interface as ReadlineInterface} from 'node:readline';
@@ -296,7 +297,7 @@ export class CodeMemoryLinkAppServerClient {
       this.#write({id, result: {decision: 'accept'}});
     } catch (cause) {
       const error = cause instanceof Error ? cause : new Error(String(cause));
-      if (error instanceof CodeMemoryLinkActionDeniedError) {
+      if (Schema.is(CodeMemoryLinkActionDeniedError)(error)) {
         const params = record(message.params, `${method} params`);
         const itemId = textValue(params.itemId, `${method} item id`);
         if (this.#approvedItemIds.has(itemId) || this.#declinedItemIds.has(itemId)) {
@@ -428,8 +429,8 @@ export async function runCodeMemoryLinkAppServerTurn(
       turnStartResponse,
     };
   } catch (cause) {
-    if (cause instanceof CodeMemoryLinkCodexTerminalError) throw cause;
-    throw new CodeMemoryLinkCodexTerminalError(
+    if (Schema.is(CodeMemoryLinkCodexTerminalError)(cause)) throw cause;
+    throw CodeMemoryLinkCodexTerminalError.of(
       classifyCodeMemoryLinkCodexTerminal(cause),
       cause instanceof Error ? cause.message : 'Codex app-server turn failed before producing admissible evidence.',
       summarizeCodeMemoryLinkCodexEvents(client.events),
@@ -453,7 +454,7 @@ export function assertWithinTaskBudget(
 ): void {
   const usage = events.filter(event => event.method === 'thread/tokenUsage/updated');
   if (usage.length > budget.steps) {
-    throw new CodeMemoryLinkCodexTerminalError(
+    throw CodeMemoryLinkCodexTerminalError.of(
       'provider-step-budget',
       'Codex exceeded the sealed provider inference-step budget.',
       summarizeCodeMemoryLinkCodexEvents(events),
@@ -465,7 +466,7 @@ export function assertWithinTaskBudget(
   const tokenUsage = record(params.tokenUsage, 'token usage');
   const total = record(tokenUsage.total, 'total token usage');
   if (!Number.isSafeInteger(total.totalTokens) || (total.totalTokens as number) > budget.tokens) {
-    throw new CodeMemoryLinkCodexTerminalError(
+    throw CodeMemoryLinkCodexTerminalError.of(
       'provider-token-budget',
       'Codex exceeded the sealed provider token budget.',
       summarizeCodeMemoryLinkCodexEvents(events),

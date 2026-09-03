@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {Effect, Schema} from 'effect';
 import {SystemInfo} from '../effect/system.js';
 
 export interface RecallScoreThresholdPolicy {
@@ -6,15 +6,19 @@ export interface RecallScoreThresholdPolicy {
   readonly value: string;
 }
 
-export class InvalidRecallScoreThreshold extends Error {
-  override readonly name = 'InvalidRecallScoreThreshold';
-}
+export class InvalidRecallScoreThreshold extends Schema.TaggedError<InvalidRecallScoreThreshold>()(
+  'InvalidRecallScoreThreshold',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export function validatedRecallScoreThreshold(value: string, source = 'Recall threshold'): string {
   const normalized = value.trim();
   const parsed = Number(normalized);
   if (!normalized || !Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
-    throw new InvalidRecallScoreThreshold(`${source} must be a number from 0 to 1.`);
+    throw InvalidRecallScoreThreshold.make({message: `${source} must be a number from 0 to 1.`});
   }
   return String(parsed);
 }
@@ -31,9 +35,9 @@ export const recallScoreThresholdPolicy = Effect.fn('utils.recallScoreThresholdP
   const value = yield* Effect.try({
     try: () => validatedRecallScoreThreshold(configured, 'THREADNOTE_RECALL_THRESHOLD'),
     catch: error =>
-      error instanceof InvalidRecallScoreThreshold
+      Schema.is(InvalidRecallScoreThreshold)(error)
         ? error
-        : new InvalidRecallScoreThreshold('THREADNOTE_RECALL_THRESHOLD is invalid.'),
+        : InvalidRecallScoreThreshold.make({message: 'THREADNOTE_RECALL_THRESHOLD is invalid.'}),
   });
   return {source: 'environment', value} satisfies RecallScoreThresholdPolicy;
 });

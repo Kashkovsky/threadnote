@@ -1,4 +1,4 @@
-import {Console, Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {startProgress} from '../cli_ui.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {SystemInfo} from '../effect/system.js';
@@ -100,9 +100,10 @@ interface CwdOption {
 export {CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS, codeGraphCliReadPlan};
 export type {CodeGraphCliFreshnessPolicy, CodeGraphCliReadPlan};
 
-class CodeGraphCommandError extends Error {
-  readonly _tag = 'CodeGraphCommandError' as const;
-}
+class CodeGraphCommandError extends Schema.TaggedError<CodeGraphCommandError>()('CodeGraphCommandError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export function defaultCodeGraphCliFreshness(
   operation: CodeGraphQueryOptions['operation'],
@@ -202,10 +203,10 @@ export const runCodeGraphRepair = Effect.fn('codeGraph.command.repair')(function
   },
 ) {
   if (options.all && (options.checkoutId !== undefined || options.cwd !== undefined)) {
-    return yield* Effect.fail(new CodeGraphCommandError('Use --all by itself, without --checkout-id or --cwd.'));
+    return yield* CodeGraphCommandError.make({message: 'Use --all by itself, without --checkout-id or --cwd.'});
   }
   if (options.checkoutId !== undefined && options.cwd !== undefined) {
-    return yield* Effect.fail(new CodeGraphCommandError('Use either --checkout-id or --cwd, not both.'));
+    return yield* CodeGraphCommandError.make({message: 'Use either --checkout-id or --cwd, not both.'});
   }
   const targetCheckoutId = options.all
     ? undefined
@@ -303,7 +304,7 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
 ) {
   const statusOptions = resolveCodeGraphStatusOptions(options);
   if (statusOptions.error !== undefined) {
-    return yield* Effect.fail(new CodeGraphCommandError(statusOptions.error));
+    return yield* CodeGraphCommandError.make({message: statusOptions.error});
   }
   const cwd = yield* commandCwd(options.cwd);
   const path = yield* Path.Path;
@@ -384,7 +385,7 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
         activity.factsBytes === undefined ? undefined : `${formatBytes(activity.factsBytes)} final facts`,
         renderMaterializationRows(activity.rows),
         activity.elapsedMilliseconds === undefined
-          ? `active ${formatStatusDuration(Math.max(0, Date.now() - Date.parse(activity.startedAt)))}`
+          ? `active ${formatStatusDuration(Math.max(0, (yield* Clock.currentTimeMillis) - Date.parse(activity.startedAt)))}`
           : `batch ${formatMilliseconds(activity.elapsedMilliseconds)}`,
         activity.stageElapsedMilliseconds === undefined
           ? undefined
@@ -560,7 +561,10 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
           `${formatBytes(metrics.factsBytesCompleted)} emitted facts · ${workPercentage.toFixed(1)}% class-weighted work`,
       );
     }
-    const lastProgressAge = Math.max(0, Date.now() - Date.parse(current.timestamps.lastProgressAt));
+    const lastProgressAge = Math.max(
+      0,
+      (yield* Clock.currentTimeMillis) - Date.parse(current.timestamps.lastProgressAt),
+    );
     if (current.eta && current.eta.confidence !== 'low' && lastProgressAge <= 15_000) {
       yield* Console.log(
         `Phase ETA: about ${formatStatusDuration(current.eta.remainingMilliseconds)} ` +
@@ -736,9 +740,9 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
   const cwd = yield* commandCwd(options.cwd);
   const identity = yield* resolveRepositoryIdentity(cwd);
   if (options.expectedIdentity && !repositoryIdentityMatchesExpectation(identity, options.expectedIdentity)) {
-    return yield* Effect.fail(
-      new CodeGraphCommandError('Repository identity does not match the requested graph target.'),
-    );
+    return yield* CodeGraphCommandError.make({
+      message: 'Repository identity does not match the requested graph target.',
+    });
   }
   const ensureVectors = options.noVectors === true ? false : undefined;
   if (options.json) {
@@ -768,7 +772,7 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
           ...(ensureVectors === false ? {ensureVectors: false} : {}),
           ...(options.expectedIdentity ? {expectedIdentity: options.expectedIdentity} : {}),
           force: options.full,
-          onProgress: state => progress.update(progressMessage(state)).pipe(Effect.catch(() => Effect.void)),
+          onProgress: state => progress.update(progressMessage(state)).pipe(Effect.ignore),
           threadnoteHome: config.agentContextHome,
         })
         .pipe(
@@ -778,10 +782,10 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
                 `Ready · ${summary.snapshot.fileCount} files · ${summary.snapshot.symbolCount} symbols · ` +
                   `${summary.snapshot.edgeCount} edges`,
               )
-              .pipe(Effect.catch(() => Effect.void)),
+              .pipe(Effect.ignore),
           ),
         ),
-    progress => progress.stop.pipe(Effect.catch(() => Effect.void)),
+    progress => progress.stop.pipe(Effect.ignore),
   );
   yield* healAnchorsAfterGraphIndex(config, cwd, summary.identity);
   yield* Console.log(
@@ -811,7 +815,7 @@ export const runCodeGraphWorksetPrepare = Effect.fn('codeGraph.command.worksetPr
             isolateBuilds,
             onProgress: event => progress.update(event.message),
           }),
-        progress => progress.stop.pipe(Effect.catch(() => Effect.void)),
+        progress => progress.stop.pipe(Effect.ignore),
       );
   if (result.state === 'ready') {
     yield* healAnchorsAfterWorksetPrepare(config, result.workset);
@@ -820,11 +824,9 @@ export const runCodeGraphWorksetPrepare = Effect.fn('codeGraph.command.worksetPr
     options.json ? JSON.stringify(result) : renderCodeGraphWorksetPrepareResult(result).trimEnd(),
   );
   if (result.state === 'failed') {
-    return yield* Effect.fail(
-      new CodeGraphCommandError(
-        'Workset preparation was incomplete; the previous published catalog generation was preserved.',
-      ),
-    );
+    return yield* CodeGraphCommandError.make({
+      message: 'Workset preparation was incomplete; the previous published catalog generation was preserved.',
+    });
   }
 });
 
@@ -902,11 +904,9 @@ export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(func
   const cwd = yield* commandCwd(options.cwd);
   const communityId = options.communityId?.trim();
   if (options.view === 'community' && !communityId?.match(/^cgc_[a-f0-9]{32}$/)) {
-    return yield* Effect.fail(
-      new CodeGraphCommandError(
-        'Community drill-down requires --community-id with a stable cgc_ identifier from graph communities.',
-      ),
-    );
+    return yield* CodeGraphCommandError.make({
+      message: 'Community drill-down requires --community-id with a stable cgc_ identifier from graph communities.',
+    });
   }
   const freshness = options.freshness ?? 'ready';
   const resolution = yield* ensureAnalysisSnapshot(
@@ -970,7 +970,7 @@ export const runCodeGraphReport = Effect.fn('codeGraph.command.report')(function
   const cwd = yield* commandCwd(options.cwd);
   const output = path.resolve(options.output);
   if (yield* fs.exists(output))
-    return yield* Effect.fail(new CodeGraphCommandError(`Report output already exists: ${output}`));
+    return yield* CodeGraphCommandError.make({message: `Report output already exists: ${output}`});
   const resolution = yield* ensureAnalysisSnapshot(
     config,
     cwd,
@@ -980,11 +980,9 @@ export const runCodeGraphReport = Effect.fn('codeGraph.command.report')(function
     options.readTimeoutMilliseconds,
   );
   if (!resolution.ready) {
-    return yield* Effect.fail(
-      new CodeGraphCommandError(
-        `${renderCodeGraphCliAnalysisState(resolution.state).trim()} The report output was not created.`,
-      ),
-    );
+    return yield* CodeGraphCommandError.make({
+      message: `${renderCodeGraphCliAnalysisState(resolution.state).trim()} The report output was not created.`,
+    });
   }
   const status = resolution;
   const analysis = yield* CodeGraphAnalysis;
@@ -1009,11 +1007,7 @@ export const runCodeGraphReport = Effect.fn('codeGraph.command.report')(function
       yield* file.writeAll(new TextEncoder().encode(renderCodeGraphReport(result, status.repository)));
       yield* file.sync;
     }),
-  ).pipe(
-    Effect.onError(() =>
-      ownsOutput ? fs.remove(output, {force: true}).pipe(Effect.catch(() => Effect.void)) : Effect.void,
-    ),
-  );
+  ).pipe(Effect.onError(() => (ownsOutput ? fs.remove(output, {force: true}).pipe(Effect.ignore) : Effect.void)));
   yield* Console.log(
     `Wrote code graph report for ${status.repository.displayName}: ${output}${
       result.coverage.complete ? '' : ' (partial analysis; see report warnings)'
@@ -1051,7 +1045,7 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
     }
     if (options.operation === 'impact') {
       const query = options.query?.trim();
-      if (!query) return yield* Effect.fail(new CodeGraphCommandError('A workset impact trace requires --query.'));
+      if (!query) return yield* CodeGraphCommandError.make({message: 'A workset impact trace requires --query.'});
       const result = yield* traceCodeGraphWorksetImpact(config, {
         maxDepth: options.depth,
         maxEdges: options.edgeLimit,
@@ -1062,7 +1056,7 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
       return;
     }
     if (options.operation !== 'query') {
-      return yield* Effect.fail(new CodeGraphCommandError('--workset is valid for graph query, path, and impact.'));
+      return yield* CodeGraphCommandError.make({message: '--workset is valid for graph query, path, and impact.'});
     }
     const cursor = options.cursor?.trim();
     const projected = cursor
@@ -1070,30 +1064,27 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
           cursor,
           maximumEstimatedTokens: options.budgetTokens,
         })
-      : yield* Effect.gen(function* () {
-          const query = options.query?.trim();
-          if (!query)
-            return yield* Effect.fail(new CodeGraphCommandError('A workset graph query requires --query or --cursor.'));
-          return yield* queryCodeGraphWorksetV2(config, {
-            depth: options.depth,
-            edgeLimit: options.edgeLimit,
-            includeHeuristic: options.includeHeuristic,
-            includeModelAssociations: options.includeModelAssociations,
-            maximumEstimatedTokens: options.budgetTokens,
-            nodeLimit: options.nodeLimit,
-            packageName: options.packageName,
-            query,
-            worksetName,
-          });
+      : yield* queryCodeGraphWorksetV2(config, {
+          depth: options.depth,
+          edgeLimit: options.edgeLimit,
+          includeHeuristic: options.includeHeuristic,
+          includeModelAssociations: options.includeModelAssociations,
+          maximumEstimatedTokens: options.budgetTokens,
+          nodeLimit: options.nodeLimit,
+          packageName: options.packageName,
+          query:
+            options.query?.trim() ||
+            (yield* CodeGraphCommandError.make({message: 'A workset graph query requires --query or --cursor.'})),
+          worksetName,
         });
     yield* writeFinalCliOutput(options.json ? JSON.stringify(projected.structuredContent) : projected.text.trimEnd());
     return;
   }
   if (options.cursor?.trim() || options.budgetTokens !== undefined) {
-    return yield* Effect.fail(new CodeGraphCommandError('--cursor and --budget-tokens require --workset.'));
+    return yield* CodeGraphCommandError.make({message: '--cursor and --budget-tokens require --workset.'});
   }
   if (options.operation === 'query' && !options.query?.trim()) {
-    return yield* Effect.fail(new CodeGraphCommandError('A graph query requires --query.'));
+    return yield* CodeGraphCommandError.make({message: 'A graph query requires --query.'});
   }
   const qualifiedTarget = options.nodeId?.startsWith('cgr_')
     ? yield* resolveCodeGraphQualifiedRefTarget(config, options.nodeId, options.cwd)
@@ -1135,8 +1126,8 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
     : readPlan.refresh
       ? Effect.acquireUseRelease(
           startProgress('Scanning repository source from Git.'),
-          progress => inspect(state => progress.update(progressMessage(state)).pipe(Effect.catch(() => Effect.void))),
-          progress => progress.stop.pipe(Effect.catch(() => Effect.void)),
+          progress => inspect(state => progress.update(progressMessage(state)).pipe(Effect.ignore)),
+          progress => progress.stop.pipe(Effect.ignore),
         )
       : inspect();
   const readTimeoutMilliseconds = options.readTimeoutMilliseconds ?? CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS;
@@ -1235,9 +1226,9 @@ export const runCodeGraphImpact = Effect.fn('codeGraph.command.impact')(function
 ) {
   if (options.workset?.trim()) {
     if (!options.query?.trim()) {
-      return yield* Effect.fail(
-        new CodeGraphCommandError('A workset impact trace requires --query with a qualified endpoint.'),
-      );
+      return yield* CodeGraphCommandError.make({
+        message: 'A workset impact trace requires --query with a qualified endpoint.',
+      });
     }
     yield* runCodeGraphInspect(config, {...options, operation: 'impact'});
     return;
@@ -1271,18 +1262,16 @@ export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* 
 ) {
   const path = yield* Path.Path;
   if (options.all && (options.checkoutId !== undefined || options.obsolete || options.snapshotId !== undefined)) {
-    return yield* Effect.fail(
-      new CodeGraphCommandError('Use --all by itself, without --checkout-id, --obsolete, or --snapshot-id.'),
-    );
+    return yield* CodeGraphCommandError.make({
+      message: 'Use --all by itself, without --checkout-id, --obsolete, or --snapshot-id.',
+    });
   }
   if (options.checkoutId !== undefined && options.cwd !== undefined) {
-    return yield* Effect.fail(new CodeGraphCommandError('Use either --checkout-id or --cwd, not both.'));
+    return yield* CodeGraphCommandError.make({message: 'Use either --checkout-id or --cwd, not both.'});
   }
   if (options.snapshotId !== undefined) {
     if (options.obsolete || options.all || options.dryRun) {
-      return yield* Effect.fail(
-        new CodeGraphCommandError('Use --snapshot-id without --all, --obsolete, or --dry-run.'),
-      );
+      return yield* CodeGraphCommandError.make({message: 'Use --snapshot-id without --all, --obsolete, or --dry-run.'});
     }
     let checkoutId = options.checkoutId;
     if (checkoutId === undefined) {
@@ -1302,7 +1291,7 @@ export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* 
     return;
   }
   if (options.apply || options.approval !== undefined || options.json) {
-    return yield* Effect.fail(new CodeGraphCommandError('Use --apply, --approval, or --json only with --snapshot-id.'));
+    return yield* CodeGraphCommandError.make({message: 'Use --apply, --approval, or --json only with --snapshot-id.'});
   }
   if (options.obsolete) {
     let checkoutId = options.checkoutId;
@@ -1405,9 +1394,9 @@ export const runCodeGraphCompact = Effect.fn('codeGraph.command.compact')(functi
   const cwd = yield* commandCwd(options.cwd);
   const identity = yield* resolveRepositoryIdentity(cwd);
   if (options.expectedIdentity && !repositoryIdentityMatchesExpectation(identity, options.expectedIdentity)) {
-    return yield* Effect.fail(
-      new CodeGraphCommandError('Repository identity does not match the requested graph target.'),
-    );
+    return yield* CodeGraphCommandError.make({
+      message: 'Repository identity does not match the requested graph target.',
+    });
   }
   const summary = yield* compactCodeGraphStorage(config.agentContextHome, identity.checkoutId, {
     dryRun: options.dryRun === true,
@@ -1464,15 +1453,13 @@ export const runCodeGraphExport = Effect.fn('codeGraph.command.export')(function
   const store = yield* CodeGraphStore;
   const snapshot = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
   if (!snapshot) {
-    return yield* Effect.fail(
-      new CodeGraphCommandError(
-        'No ready native code graph snapshot exists. Run `threadnote graph index` before exporting.',
-      ),
-    );
+    return yield* CodeGraphCommandError.make({
+      message: 'No ready native code graph snapshot exists. Run `threadnote graph index` before exporting.',
+    });
   }
   const output = path.resolve(options.output);
   if (yield* fs.exists(output))
-    return yield* Effect.fail(new CodeGraphCommandError(`Export output already exists: ${output}`));
+    return yield* CodeGraphCommandError.make({message: `Export output already exists: ${output}`});
   yield* options.interlock?.afterOutputCheck?.() ?? Effect.void;
   const edgeLimit = yield* parseCodeGraphExportLimit(options.edgeLimit, '--edge-limit');
   const nodeLimit = yield* parseCodeGraphExportLimit(options.nodeLimit, '--node-limit');
@@ -1503,7 +1490,7 @@ export const runCodeGraphExport = Effect.fn('codeGraph.command.export')(function
         const linked = yield* fs.link(temporary, output).pipe(Effect.result);
         if (linked._tag === 'Failure') {
           if (yield* fs.exists(output)) {
-            return yield* Effect.fail(new CodeGraphCommandError(`Export output already exists: ${output}`));
+            return yield* CodeGraphCommandError.make({message: `Export output already exists: ${output}`});
           }
           return yield* linked.failure;
         }
@@ -1553,7 +1540,7 @@ function parseCodeGraphExportLimit(
   if (value === undefined || value === 'all') return Effect.succeed(value);
   const parsed = typeof value === 'number' ? value : Number(value.trim());
   if (!Number.isSafeInteger(parsed) || parsed < 0 || (typeof value === 'string' && !/^\d+$/.test(value.trim()))) {
-    return Effect.fail(new CodeGraphCommandError(`${flag} must be "all" or a non-negative safe integer.`));
+    return Effect.fail(CodeGraphCommandError.make({message: `${flag} must be "all" or a non-negative safe integer.`}));
   }
   return Effect.succeed(parsed);
 }
@@ -1565,13 +1552,13 @@ function verifyOwnedExportTemporary(
 ) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(temporary).pipe(Effect.option))) {
-      return yield* Effect.fail(new CodeGraphCommandError('Export temporary path was replaced by a symbolic link.'));
+      return yield* CodeGraphCommandError.make({message: 'Export temporary path was replaced by a symbolic link.'});
     }
     const current = exportTemporaryIdentity(yield* fs.stat(temporary));
     if (Option.isNone(current) || !sameExportFile(expected, current.value)) {
-      return yield* Effect.fail(
-        new CodeGraphCommandError('Export temporary path no longer identifies the private output file.'),
-      );
+      return yield* CodeGraphCommandError.make({
+        message: 'Export temporary path no longer identifies the private output file.',
+      });
     }
   });
 }
@@ -1584,7 +1571,7 @@ function verifyPublishedExportOutput(
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(output).pipe(Effect.option))) {
       yield* fs.remove(output, {force: true});
-      return yield* Effect.fail(new CodeGraphCommandError('Export publication did not link the private output file.'));
+      return yield* CodeGraphCommandError.make({message: 'Export publication did not link the private output file.'});
     }
     const current = yield* fs.stat(output).pipe(Effect.option);
     const identity = Option.flatMap(current, exportTemporaryIdentity);
@@ -1597,10 +1584,10 @@ function verifyPublishedExportOutput(
     }
     if (Option.isSome(yield* fs.readLink(output).pipe(Effect.option))) {
       yield* fs.remove(output, {force: true});
-      return yield* Effect.fail(new CodeGraphCommandError('Export publication did not link the private output file.'));
+      return yield* CodeGraphCommandError.make({message: 'Export publication did not link the private output file.'});
     }
     if (Option.isSome(identity)) yield* removeOwnedExportTemporary(fs, output, identity.value);
-    return yield* Effect.fail(new CodeGraphCommandError('Export publication did not link the private output file.'));
+    return yield* CodeGraphCommandError.make({message: 'Export publication did not link the private output file.'});
   });
 }
 
@@ -1616,7 +1603,7 @@ function removeOwnedExportTemporary(
     if (Option.isSome(currentIdentity) && sameExportFile(expected, currentIdentity.value)) {
       yield* fs.remove(temporary, {force: true});
     }
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }
 
 function removeOpenedExportTemporary(
@@ -1627,14 +1614,16 @@ function removeOpenedExportTemporary(
   return Effect.gen(function* () {
     const identity = exportTemporaryIdentity(yield* file.stat);
     if (Option.isSome(identity)) yield* removeOwnedExportTemporary(fs, temporary, identity.value);
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }
 
 function requireExportTemporaryIdentity(info: FileSystem.File.Info) {
   return Option.match(exportTemporaryIdentity(info), {
     onNone: () =>
       Effect.fail(
-        new CodeGraphCommandError('Export temporary file has insufficient identity metadata for safe publication.'),
+        CodeGraphCommandError.make({
+          message: 'Export temporary file has insufficient identity metadata for safe publication.',
+        }),
       ),
     onSome: Effect.succeed,
   });
@@ -1674,7 +1663,7 @@ function syncExportDirectory(fs: FileSystem.FileSystem, directory: string): Effe
   return Effect.scoped(
     fs.open(directory, {flag: 'r'}).pipe(
       Effect.flatMap(file => file.sync),
-      Effect.catch(() => Effect.void),
+      Effect.ignore,
     ),
   );
 }
@@ -1709,10 +1698,10 @@ const ensureAnalysisSnapshot = Effect.fn('codeGraph.command.ensureAnalysisSnapsh
               indexer.index({
                 cwd,
                 ensureVectors: false,
-                onProgress: state => progress.update(progressMessage(state)).pipe(Effect.catch(() => Effect.void)),
+                onProgress: state => progress.update(progressMessage(state)).pipe(Effect.ignore),
                 threadnoteHome: config.agentContextHome,
               }),
-            progress => progress.stop.pipe(Effect.catch(() => Effect.void)),
+            progress => progress.stop.pipe(Effect.ignore),
           ),
     {operation, readTimeoutMilliseconds},
   );

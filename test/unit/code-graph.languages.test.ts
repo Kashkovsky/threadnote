@@ -993,7 +993,7 @@ function runExtraction(file: CodeGraphInventoryFile) {
 function inventoryFile(path: string, content: string, language?: string): CodeGraphInventoryFile {
   const match = BUILTIN_LANGUAGE_PACK_REGISTRY.match(path);
   if (Option.isNone(match) && language === undefined) {
-    throw new CodeGraphLanguagePackError(`Test file is not accepted by a language pack: ${path}.`);
+    throw CodeGraphLanguagePackError.make({message: `Test file is not accepted by a language pack: ${path}.`});
   }
   return {
     blobId: `blob-${path}`,

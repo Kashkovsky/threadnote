@@ -1,10 +1,11 @@
-import {Effect} from 'effect';
+import {Effect, Schema} from 'effect';
 import {getJsonEffect} from '../effect/http.js';
 import {compareVersions, errorMessage, isJsonObject} from '../utils.js';
 
-class ReleaseNotesError extends Error {
-  readonly _tag = 'ReleaseNotesError' as const;
-}
+class ReleaseNotesError extends Schema.TaggedError<ReleaseNotesError>()('ReleaseNotesError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=100';
 const RELEASE_FETCH_TIMEOUT_MS = 3500;
@@ -31,7 +32,7 @@ export const fetchThreadnoteReleaseNotes = Effect.fn('fetchThreadnoteReleaseNote
     timeoutMs: RELEASE_FETCH_TIMEOUT_MS,
   });
   if (!Array.isArray(response.body)) {
-    return yield* Effect.fail(new ReleaseNotesError('GitHub releases response was not an array.'));
+    return yield* ReleaseNotesError.make({message: 'GitHub releases response was not an array.'});
   }
   return response.body.flatMap(value => parseGithubRelease(value, options.includePrereleases === true));
 });

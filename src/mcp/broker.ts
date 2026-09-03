@@ -1,5 +1,5 @@
 import type {StandaloneActiveRelease} from '../process/standalone_lease.js';
-import {Predicate} from 'effect';
+import {Predicate, Schema} from 'effect';
 
 const MCP_BROKER_MAX_LINE_BYTES = 32 * 1024 * 1024;
 const MCP_BROKER_REPLAY_TIMEOUT_MILLISECONDS = 10_000;
@@ -7,9 +7,10 @@ const MCP_BROKER_CHILD_STOP_WAIT_MILLISECONDS = 1_000;
 const MCP_BROKER_RUNTIME_EXIT_ERROR =
   'Threadnote MCP runtime exited before responding. The request outcome is unknown; inspect state before retrying a mutating operation.';
 
-export class McpBrokerError extends Error {
-  readonly _tag = 'McpBrokerError' as const;
-}
+export class McpBrokerError extends Schema.TaggedError<McpBrokerError>()('McpBrokerError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 interface McpBrokerChildInput {
   end(): Promise<unknown> | unknown;
@@ -168,7 +169,7 @@ class McpBroker {
     const active = await this.#dependencies.readActiveRelease();
     if (active === undefined) {
       if (this.#child !== undefined) return this.#child;
-      throw new McpBrokerError('Threadnote has no valid active standalone release for the MCP broker.');
+      throw McpBrokerError.make({message: 'Threadnote has no valid active standalone release for the MCP broker.'});
     }
     if (
       this.#child !== undefined &&
@@ -224,7 +225,7 @@ class McpBroker {
     this.#reportFailure({area: 'child', reason: 'exit'});
     this.#child = undefined;
     if (this.#pendingInitialize?.child === active) this.#pendingInitialize = undefined;
-    active.replay?.reject(new McpBrokerError('Threadnote MCP runtime exited during session promotion.'));
+    active.replay?.reject(McpBrokerError.make({message: 'Threadnote MCP runtime exited during session promotion.'}));
     active.replay = undefined;
     const pending = [...this.#clientRequests.values()];
     this.#clientRequests.clear();
@@ -248,7 +249,9 @@ class McpBroker {
           if (envelope.error === undefined && envelope.result !== undefined) replay.resolve();
           else {
             this.#reportFailure({area: 'promotion', reason: 'protocol'});
-            replay.reject(new McpBrokerError('The promoted MCP runtime rejected the replayed initialization.'));
+            replay.reject(
+              McpBrokerError.make({message: 'The promoted MCP runtime rejected the replayed initialization.'}),
+            );
           }
           continue;
         }
@@ -287,25 +290,20 @@ class McpBroker {
     const initializeLine = this.#initializeLine;
     const initializeRequestId = this.#initializeRequestId;
     if (initializeLine === undefined || initializeRequestId === undefined) return;
-    let rejectReplay = (_cause: unknown): void => undefined;
-    let resolveReplay = (): void => undefined;
-    const replayed = new Promise<void>((resolve, reject) => {
-      rejectReplay = cause => reject(cause);
-      resolveReplay = () => resolve();
-    });
+    const replayed = Promise.withResolvers<void>();
     const replay = {
       idKey: jsonRpcIdKey(initializeRequestId),
-      reject: rejectReplay,
-      resolve: resolveReplay,
+      reject: (cause: unknown) => replayed.reject(cause),
+      resolve: () => replayed.resolve(),
     };
     active.replay = replay;
     await this.#writeChildLine(active.child, initializeLine);
     await Promise.race([
-      replayed,
+      replayed.promise,
       Bun.sleep(this.#dependencies.replayTimeoutMilliseconds ?? MCP_BROKER_REPLAY_TIMEOUT_MILLISECONDS).then(() => {
         if (active.replay !== replay) return;
         this.#reportFailure({area: 'promotion', reason: 'timeout'});
-        throw new McpBrokerError('Timed out initializing the promoted Threadnote MCP runtime.');
+        throw McpBrokerError.make({message: 'Timed out initializing the promoted Threadnote MCP runtime.'});
       }),
     ]);
     if (this.#initializedLine !== undefined) await this.#writeChildLine(active.child, this.#initializedLine);
@@ -318,7 +316,7 @@ class McpBroker {
     if (this.#pendingInitialize?.child === active) this.#pendingInitialize = undefined;
     await this.#cancelServerRequestRoutes(active);
     this.#deleteServerRequestRoutes(active);
-    active.replay?.reject(new McpBrokerError('Threadnote MCP runtime promotion was superseded.'));
+    active.replay?.reject(McpBrokerError.make({message: 'Threadnote MCP runtime promotion was superseded.'}));
     active.replay = undefined;
     await Promise.resolve(active.child.input.end()).catch(() => undefined);
     if (await exitsWithin(active.child, MCP_BROKER_CHILD_STOP_WAIT_MILLISECONDS)) return;
@@ -427,7 +425,7 @@ async function* ndjsonLines(input: AsyncIterable<Uint8Array>): AsyncGenerator<st
   for await (const chunk of input) {
     buffered += decoder.decode(chunk, {stream: true});
     if (new TextEncoder().encode(buffered).byteLength > MCP_BROKER_MAX_LINE_BYTES) {
-      throw new McpBrokerError('Threadnote MCP broker received an oversized protocol line.');
+      throw McpBrokerError.make({message: 'Threadnote MCP broker received an oversized protocol line.'});
     }
     for (;;) {
       const newline = buffered.indexOf('\n');

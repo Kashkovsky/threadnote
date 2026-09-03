@@ -191,7 +191,7 @@ async function callCodeGraphUntilReady(client: Client, arguments_: Readonly<Reco
       {readonly retryAfterMilliseconds?: unknown; readonly state?: unknown} | undefined;
     if (!isRetryableCodeGraphState(structured?.state)) return result;
     if (Date.now() >= deadline) {
-      throw new TestError(`Code graph remained ${String(structured?.state)} for 90 seconds.`);
+      throw TestError.make({message: `Code graph remained ${String(structured?.state)} for 90 seconds.`});
     }
     const requestedDelay =
       typeof structured?.retryAfterMilliseconds === 'number' ? structured.retryAfterMilliseconds : 250;
@@ -1114,7 +1114,7 @@ describe('Threadnote MCP toolsets', () => {
           expect(structured.cursor).not.toContain('threadnote');
           previousCursor = cursor;
           cursor = structured.cursor;
-          if (pageNumber === 999) throw new TestError('Bounded read did not terminate.');
+          if (pageNumber === 999) throw TestError.make({message: 'Bounded read did not terminate.'});
         }
         expect(reconstructed.join('')).toBe(content);
 
@@ -1572,7 +1572,7 @@ describe('Threadnote MCP toolsets', () => {
         },
         {toolset: 'core'},
       );
-      if (!initialCursor) throw new TestError('First MCP process did not issue a continuation cursor.');
+      if (!initialCursor) throw TestError.make({message: 'First MCP process did not issue a continuation cursor.'});
 
       let raceCursor: string | undefined;
       await withMcpClientForFixture(
@@ -1591,7 +1591,7 @@ describe('Threadnote MCP toolsets', () => {
         },
         {toolset: 'core'},
       );
-      if (!raceCursor) throw new TestError('Second MCP process did not issue a continuation cursor.');
+      if (!raceCursor) throw TestError.make({message: 'Second MCP process did not issue a continuation cursor.'});
 
       const [left, right] = await Promise.all([
         connectMcpClient(fixture, {toolset: 'core'}),
@@ -1649,7 +1649,7 @@ describe('Threadnote MCP toolsets', () => {
           pages.push(structured.content);
           if (structured.complete) break;
           cursor = structured.cursor;
-          if (pageNumber === 9) throw new TestError('Multi-resource read did not terminate.');
+          if (pageNumber === 9) throw TestError.make({message: 'Multi-resource read did not terminate.'});
         }
 
         expect(resources).toEqual([1, 1, 2, 3]);
@@ -1739,10 +1739,12 @@ describe('Threadnote MCP toolsets', () => {
           const readyDeadline = Date.now() + 10_000;
           while (!(await Bun.file(ready).exists())) {
             if (owner.exitCode !== null) {
-              throw new TestError(`Share lock owner exited early: ${await new Response(owner.stderr).text()}`);
+              throw TestError.make({
+                message: `Share lock owner exited early: ${await new Response(owner.stderr).text()}`,
+              });
             }
             if (Date.now() >= readyDeadline)
-              throw new TestError('Timed out waiting for the shared repository lock owner.');
+              throw TestError.make({message: 'Timed out waiting for the shared repository lock owner.'});
             await Bun.sleep(10);
           }
 
@@ -1771,9 +1773,9 @@ describe('Threadnote MCP toolsets', () => {
           ownerExitCode = await owner.exited;
         }
         if (ownerExitCode !== 0) {
-          throw new TestError(
-            `Share lock owner exited with ${ownerExitCode}: ${await new Response(owner.stderr).text()}`,
-          );
+          throw TestError.make({
+            message: `Share lock owner exited with ${ownerExitCode}: ${await new Response(owner.stderr).text()}`,
+          });
         }
       },
       {toolset: 'core'},
@@ -2415,7 +2417,8 @@ describe('Threadnote MCP toolsets', () => {
         )?.nodes?.find(node => node.name === 'afterImpact');
         expect(beforeNode?.id).toMatch(/^cgs_[a-f0-9]{32,64}$/);
         expect(afterNode?.id).toMatch(/^cgs_[a-f0-9]{32,64}$/);
-        if (!beforeNode?.id || !afterNode?.id) throw new TestError('Expected exact code graph fixture node IDs.');
+        if (!beforeNode?.id || !afterNode?.id)
+          throw TestError.make({message: 'Expected exact code graph fixture node IDs.'});
         const beforeId = beforeNode.id;
         const afterId = afterNode.id;
 
@@ -3033,7 +3036,8 @@ describe('Threadnote MCP toolsets', () => {
         expect(finalizedMemory?.body).toBe('Deferred memory stored while the exact-current graph is unavailable.');
         expect(finalizedMemory?.metadata.codeCitations).toMatchObject([{path: 'src/index.ts'}]);
         const finalizedCitation = finalizedMemory?.metadata.codeCitations?.[0];
-        if (!finalizedCitation) throw new TestError('Automatic finalization did not attach the expected citation.');
+        if (!finalizedCitation)
+          throw TestError.make({message: 'Automatic finalization did not attach the expected citation.'});
         const automaticBacklink = await client.callTool(
           {
             arguments: {

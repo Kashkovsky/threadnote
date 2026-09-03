@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path, Schema} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {canonicalResourceUri, validatePortableSegment} from '../storage/resource-id.js';
 import {
   REMOTE_MEMORY_PORTABILITY_VERSION,
@@ -30,14 +30,14 @@ export const readGitBetaMemorySources = Effect.fn('remoteMemory.operator.readGit
   const user = yield* tryOperatorFile(() => validatePortableSegment(input.user));
   const team = yield* tryOperatorFile(() => validatePortableSegment(input.team));
   if (yield* isSymbolicLink(path.resolve(input.directory))) {
-    return yield* Effect.fail(operatorFileError('The Git beta source directory cannot be a symbolic link.'));
+    return yield* operatorFileError('The Git beta source directory cannot be a symbolic link.');
   }
   const root = yield* fs.realPath(input.directory);
   const sourceRoot = path.join(root, 'durable', 'projects');
   yield* requireDirectoryWithoutSymlink(sourceRoot);
   const paths = yield* markdownFiles(sourceRoot);
   if (paths.length > MAX_IMPORT_FILES) {
-    return yield* Effect.fail(operatorFileError(`Git beta import exceeds ${MAX_IMPORT_FILES} Markdown files.`));
+    return yield* operatorFileError(`Git beta import exceeds ${MAX_IMPORT_FILES} Markdown files.`);
   }
   let totalBytes = 0;
   const sources: GitBetaMemorySourceV1[] = [];
@@ -50,7 +50,7 @@ export const readGitBetaMemorySources = Effect.fn('remoteMemory.operator.readGit
     const size = new TextEncoder().encode(content).byteLength;
     totalBytes += size;
     if (totalBytes > MAX_IMPORT_TOTAL_BYTES) {
-      return yield* Effect.fail(operatorFileError('Git beta import exceeds the total size limit.'));
+      return yield* operatorFileError('Git beta import exceeds the total size limit.');
     }
     const segments = path.relative(sourceRoot, sourcePath).split(path.sep);
     const sourceUri = yield* tryOperatorFile(() =>
@@ -95,9 +95,10 @@ export const writeRemoteMemoryExportBundle = Effect.fn('remoteMemory.operator.wr
   yield* tryOperatorFile(() => verifyRemoteMemoryExportPlan(plan));
   const output = path.resolve(outputDirectory);
   if (yield* fs.exists(output)) {
-    return yield* Effect.fail(operatorFileError('The export output directory already exists.'));
+    return yield* operatorFileError('The export output directory already exists.');
   }
-  const staging = path.join(path.dirname(output), `.threadnote-remote-export-${crypto.randomUUID()}`);
+  const crypto = yield* Crypto.Crypto;
+  const staging = path.join(path.dirname(output), `.threadnote-remote-export-${yield* crypto.randomUUIDv4}`);
   yield* fs.makeDirectory(staging, {mode: 0o700, recursive: false});
   return yield* Effect.gen(function* () {
     for (const file of plan.files) {
@@ -123,9 +124,7 @@ export const writeRemoteMemoryExportBundle = Effect.fn('remoteMemory.operator.wr
       {flag: 'wx', mode: 0o600},
     );
     yield* fs.rename(staging, output);
-  }).pipe(
-    Effect.onError(() => fs.remove(staging, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void))),
-  );
+  }).pipe(Effect.onError(() => fs.remove(staging, {force: true, recursive: true}).pipe(Effect.ignore)));
 });
 
 const markdownFiles = Effect.fn('remoteMemory.operator.markdownFiles')(function* (directory: string) {
@@ -140,18 +139,18 @@ const markdownFiles = Effect.fn('remoteMemory.operator.markdownFiles')(function*
     for (const name of entries.sort(compareCodeUnits)) {
       visited += 1;
       if (visited > MAX_IMPORT_TREE_ENTRIES) {
-        return yield* Effect.fail(operatorFileError('Git beta import exceeds the bounded tree-entry limit.'));
+        return yield* operatorFileError('Git beta import exceeds the bounded tree-entry limit.');
       }
       const candidate = path.join(current, name);
       if (yield* isSymbolicLink(candidate)) {
-        return yield* Effect.fail(operatorFileError('Operator input does not follow symbolic links.'));
+        return yield* operatorFileError('Operator input does not follow symbolic links.');
       }
       const info = yield* fs.stat(candidate);
       if (info.type === 'Directory') pending.push(candidate);
       else if (info.type === 'File' && name.endsWith('.md')) {
         found.push(candidate);
         if (found.length > MAX_IMPORT_FILES) {
-          return yield* Effect.fail(operatorFileError(`Git beta import exceeds ${MAX_IMPORT_FILES} Markdown files.`));
+          return yield* operatorFileError(`Git beta import exceeds ${MAX_IMPORT_FILES} Markdown files.`);
         }
       }
     }
@@ -167,7 +166,7 @@ const requireDirectoryWithoutSymlink = Effect.fn('remoteMemory.operator.requireD
   const status = yield* fs.stat(directory);
   const real = yield* fs.realPath(directory);
   if ((yield* isSymbolicLink(directory)) || real !== path.resolve(directory) || status.type !== 'Directory') {
-    return yield* Effect.fail(operatorFileError('The Git beta source must contain a real durable/projects directory.'));
+    return yield* operatorFileError('The Git beta source must contain a real durable/projects directory.');
   }
 });
 
@@ -188,18 +187,17 @@ const readRegularFileWithoutSymlink = Effect.fn('remoteMemory.operator.readRegul
   tooLarge: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  if (yield* isSymbolicLink(file))
-    return yield* Effect.fail(operatorFileError('Operator input does not follow symbolic links.'));
+  if (yield* isSymbolicLink(file)) return yield* operatorFileError('Operator input does not follow symbolic links.');
   const actual = yield* fs.realPath(file);
   const info = yield* fs.stat(file);
-  if (info.type !== 'File') return yield* Effect.fail(operatorFileError('Operator input is not a regular file.'));
-  if (Number(info.size) > maximumBytes) return yield* Effect.fail(operatorFileError(tooLarge));
+  if (info.type !== 'File') return yield* operatorFileError('Operator input is not a regular file.');
+  if (Number(info.size) > maximumBytes) return yield* operatorFileError(tooLarge);
   const content = yield* fs.readFileString(file);
   if (new TextEncoder().encode(content).byteLength > maximumBytes) {
-    return yield* Effect.fail(operatorFileError(tooLarge));
+    return yield* operatorFileError(tooLarge);
   }
   if ((yield* isSymbolicLink(file)) || (yield* fs.realPath(file)) !== actual) {
-    return yield* Effect.fail(operatorFileError('Operator input changed identity while it was read.'));
+    return yield* operatorFileError('Operator input changed identity while it was read.');
   }
   return content;
 });
@@ -220,7 +218,7 @@ function tryOperatorFile<A>(evaluate: () => A): Effect.Effect<A, RemoteMemoryOpe
 }
 
 function operatorFileError(message: string): RemoteMemoryOperatorFileError {
-  return new RemoteMemoryOperatorFileError({message});
+  return RemoteMemoryOperatorFileError.make({message});
 }
 
 function operatorFileFailureMessage(cause: unknown): string {

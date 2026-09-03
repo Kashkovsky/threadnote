@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {DateTime, Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
   saturatingCapacityAdd,
@@ -8,7 +8,13 @@ import {
 import {isCodeGraphReferenceWithinCandidateBudget} from './fact_budget.js';
 import {compareCodeUnits} from './ordering.js';
 import {configureConnection, tableExists} from './store_session.js';
-import {type CodeGraphEdge, type CodeGraphReference, type CodeGraphSymbol, CodeGraphStoreError} from './types.js';
+import {
+  type CodeGraphEdge,
+  type CodeGraphReference,
+  type CodeGraphSymbol,
+  CodeGraphStoreError,
+  isCodeGraphStoreError,
+} from './types.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import {type EdgeRow, type SnapshotRow} from './store_internal_models.js';
 import {snapshotFromRow} from './store_rows.js';
@@ -50,7 +56,7 @@ const selectResumableForcedBuild = Effect.fn('codeGraph.selectResumableForcedBui
   logicalSnapshotId: string,
 ) {
   if (!/^cgsn_[0-9a-f]{40}$/.test(logicalSnapshotId)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Logical snapshot identity is invalid.'));
+    return yield* CodeGraphStoreError.of('Logical snapshot identity is invalid.');
   }
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
@@ -88,13 +94,13 @@ export function partitionPersistedReferenceEdges(
 ): PersistedReferenceEdgePartition {
   const edgesById = new Map(edges.map(edge => [edge.id, edge]));
   if (edgesById.size !== edges.length) {
-    throw new CodeGraphStoreError('Persistent edge identities are duplicated.');
+    throw CodeGraphStoreError.of('Persistent edge identities are duplicated.');
   }
   const referenceEdges = new Map<string, CodeGraphEdge>();
   for (const reference of references) {
     const edge = edgesById.get(reference.edgeId);
     if (edge === undefined || edge.targetId !== undefined || referenceEdges.has(reference.edgeId)) {
-      throw new CodeGraphStoreError('Persistent reference edge payload is missing, resolved, or duplicated.');
+      throw CodeGraphStoreError.of('Persistent reference edge payload is missing, resolved, or duplicated.');
     }
     referenceEdges.set(reference.edgeId, edge);
   }
@@ -118,7 +124,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
   monikers: readonly CodeGraphMonikerV1[] = [],
 ) {
   if (!Number.isSafeInteger(batchIndex) || batchIndex < 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization batch identity is invalid.'));
+    return yield* CodeGraphStoreError.of('Persistent materialization batch identity is invalid.');
   }
   const boundedReferences = prepared?.boundedReferences ?? references.filter(isCodeGraphReferenceWithinCandidateBudget);
   const batchFingerprint = yield* persistedFullBatchFingerprint(symbols, edges, boundedReferences, monikers);
@@ -145,9 +151,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
       yield* observer('validating', 3, true);
       if (existing[0]) {
         if (existing[0].batch_fingerprint !== batchFingerprint) {
-          return yield* Effect.fail(
-            new CodeGraphStoreError('Persisted full-build batch contents changed; discard and rebuild it.'),
-          );
+          return yield* CodeGraphStoreError.of('Persisted full-build batch contents changed; discard and rebuild it.');
         }
         // Beta databases may have a durable materialization receipt created
         // before compact analysis summaries existed. Repair that batch from
@@ -231,9 +235,9 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
       const edgePartition = yield* Effect.try({
         try: () => partitionPersistedReferenceEdges(edges, boundedReferences),
         catch: cause =>
-          cause instanceof CodeGraphStoreError
+          isCodeGraphStoreError(cause)
             ? cause
-            : new CodeGraphStoreError('Persistent reference edges could not be partitioned.'),
+            : CodeGraphStoreError.of('Persistent reference edges could not be partitioned.'),
       });
       const persistedReferenceEdges = edgePartition.referenceEdges;
       // A resolvable raw edge used to enter every final edge index here, then
@@ -359,7 +363,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
           reference_count, candidate_count, reexport_count, completed_at
         ) VALUES (
           ${snapshotId}, ${batchIndex}, ${batchFingerprint}, ${symbols.length}, ${edges.length}, ${termCount}, ${lookupCount},
-          ${boundedReferences.length}, ${candidateCount}, ${reexportCount}, ${new Date().toISOString()}
+          ${boundedReferences.length}, ${candidateCount}, ${reexportCount}, ${DateTime.formatIso(yield* DateTime.now)}
         )
       `;
       const lexicalCounter = yield* sql<{
@@ -382,9 +386,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
         RETURNING completed_batch_count, posting_count, symbol_count, term_count
       `;
       if (Number(lexicalCounter[0]?.completed_batch_count ?? -1) !== batchIndex + 1) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError('Compact lexical counters no longer match contiguous batch receipts.'),
-        );
+        return yield* CodeGraphStoreError.of('Compact lexical counters no longer match contiguous batch receipts.');
       }
       yield* observer('receipt', 1, true);
       if (!withinTransaction) yield* observer('committing', 0, true);
@@ -759,7 +761,7 @@ const adjustPersistedAnalysisResolutionEdges = Effect.fn('codeGraph.adjustPersis
     WHERE snapshot_id = ${snapshotId} AND count < 0
   `;
   if (Number(invalid[0]?.count ?? 0) > 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Reference resolution produced a negative analysis delta.'));
+    return yield* CodeGraphStoreError.of('Reference resolution produced a negative analysis delta.');
   }
   yield* sql`
     DELETE FROM snapshot_analysis_edge_histogram
@@ -934,7 +936,7 @@ const promotionRemovedSnapshotId = Effect.fn('codeGraph.promotionRemovedSnapshot
     typeof rows[0]?.expected_snapshot_id !== 'string' ||
     !CODE_GRAPH_SNAPSHOT_ID.test(rows[0].expected_snapshot_id)
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view authority is invalid.');
   }
   return rows[0].expected_snapshot_id;
 });

@@ -234,7 +234,7 @@ export function projectContextBrief(
     minimumBytes = Math.min(minimumBytes, measurement.totalBytes);
     if (measurement.totalBytes <= maximumBytes) selectedCount = count;
   }
-  if (selectedCount === undefined) throw new AgentResponseBudgetTooSmallError(maximumBytes, minimumBytes);
+  if (selectedCount === undefined) throw AgentResponseBudgetTooSmallError.of(maximumBytes, minimumBytes);
   const structuredContent = parseContextBriefV1(
     renderProjection(logical, selectItems(selectedCount), protectedMemoryUri, compactMemoryUris),
   );

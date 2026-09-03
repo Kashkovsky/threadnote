@@ -31,14 +31,14 @@ const validateSnapshotPurgeInput = Effect.fn('codeGraph.validateSnapshotPurgeInp
   nowMilliseconds: number,
 ) {
   if (!CODE_GRAPH_SNAPSHOT_ID.test(snapshotId)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge identity is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot purge identity is invalid.');
   }
   if (
     !Number.isSafeInteger(nowMilliseconds) ||
     nowMilliseconds < 0 ||
     nowMilliseconds > MAXIMUM_CANONICAL_DATE_MILLISECONDS
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge observation time is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot purge observation time is invalid.');
   }
 });
 
@@ -53,7 +53,7 @@ const observeSnapshotPurge = Effect.fn('codeGraph.observeSnapshotPurge')(functio
     return {snapshotId, state: 'not-found'} satisfies CodeGraphSnapshotPurgeObservationResult;
   }
   if (snapshots.length !== 1) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge target is ambiguous.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot purge target is ambiguous.');
   }
   const snapshot = snapshotFromRow(snapshots[0]);
   const boundedLimit = CODE_GRAPH_SNAPSHOT_PURGE_EVIDENCE_LIMIT + 1;
@@ -147,26 +147,26 @@ const observeSnapshotPurge = Effect.fn('codeGraph.observeSnapshotPurge')(functio
     ownerRows.length > 1 ||
     cleanupRows.length > CODE_GRAPH_SNAPSHOT_PURGE_EVIDENCE_LIMIT
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence exceeded its bound.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot purge evidence exceeded its bound.');
   }
   const activeViewIds: string[] = [];
   for (const row of activeRows) {
     if (typeof row.worktree_id !== 'string' || !/^[0-9a-f]{64}$/u.test(row.worktree_id)) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence is invalid.'));
+      return yield* CodeGraphStoreError.of('Code graph snapshot purge evidence is invalid.');
     }
     activeViewIds.push(row.worktree_id);
   }
   const childSnapshotIds: string[] = [];
   for (const row of childRows) {
     if (typeof row.id !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(row.id)) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence is invalid.'));
+      return yield* CodeGraphStoreError.of('Code graph snapshot purge evidence is invalid.');
     }
     childSnapshotIds.push(row.id);
   }
   const liveLeases: CodeGraphSnapshotPurgeLeaseEvidence[] = [];
   for (const row of leaseRows) {
     if (typeof row.token !== 'string' || typeof row.expires_at !== 'number' || !Number.isSafeInteger(row.expires_at)) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence is invalid.'));
+      return yield* CodeGraphStoreError.of('Code graph snapshot purge evidence is invalid.');
     }
     liveLeases.push({expiresAt: row.expires_at, identity: sha256HexSync(`snapshot-purge-lease\n${row.token}`)});
   }
@@ -180,7 +180,7 @@ const observeSnapshotPurge = Effect.fn('codeGraph.observeSnapshotPurge')(functio
       (row.process_start_identity !== null && typeof row.process_start_identity !== 'string') ||
       (row.logical_snapshot_id !== null && typeof row.logical_snapshot_id !== 'string')
     ) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence is invalid.'));
+      return yield* CodeGraphStoreError.of('Code graph snapshot purge evidence is invalid.');
     }
     buildOwnerIds.push(
       sha256HexSync(
@@ -203,7 +203,7 @@ const observeSnapshotPurge = Effect.fn('codeGraph.observeSnapshotPurge')(functio
       !Number.isSafeInteger(row.revision) ||
       typeof row.phase !== 'string'
     ) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence is invalid.'));
+      return yield* CodeGraphStoreError.of('Code graph snapshot purge evidence is invalid.');
     }
     cleanupEpochs.push(
       sha256HexSync(`snapshot-purge-cleanup\n${JSON.stringify([row.worktree_id, row.epoch, row.revision, row.phase])}`),
@@ -776,7 +776,7 @@ const clearSnapshotOwnedRows = Effect.fn('codeGraph.clearSnapshotOwnedRows')(fun
         ),
       );
       if (!Number.isSafeInteger(deleted) || deleted < 0) {
-        return yield* Effect.fail(new CodeGraphStoreError('Snapshot reset returned an invalid row count.'));
+        return yield* CodeGraphStoreError.of('Snapshot reset returned an invalid row count.');
       }
       if (deleted === 0) break;
       batchRows = nextPersistentActivationBatchRows(
@@ -825,7 +825,7 @@ const pruneCachedFileBlobs = Effect.fn('codeGraph.pruneCachedFileBlobs')(functio
     return;
   }
   if (acceptedExtractorSets.length === 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('At least one active extractor cache is required.'));
+    return yield* CodeGraphStoreError.of('At least one active extractor cache is required.');
   }
   yield* sql.unsafe(
     `DELETE FROM file_blobs

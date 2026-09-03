@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {Effect, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_LIMITS,
@@ -51,15 +51,24 @@ export const CODE_GRAPH_WORKSET_ROUTER_SCORE_WEIGHTS = {
 
 export type CodeGraphWorksetRouterErrorReason = 'invalid-input' | 'missing' | 'source-contract' | 'stale-cursor';
 
-export class CodeGraphWorksetRouterError extends Error {
-  override readonly name = 'CodeGraphWorksetRouterError';
-
-  constructor(
-    readonly reason: CodeGraphWorksetRouterErrorReason,
+export class CodeGraphWorksetRouterError extends Schema.TaggedError<CodeGraphWorksetRouterError>()(
+  'CodeGraphWorksetRouterError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+    reason: Schema.Literals(['invalid-input', 'missing', 'source-contract', 'stale-cursor']),
+  },
+) {
+  static of(
+    reason: CodeGraphWorksetRouterErrorReason,
     message: string,
     options?: ErrorOptions,
-  ) {
-    super(message, options);
+  ): CodeGraphWorksetRouterError {
+    return CodeGraphWorksetRouterError.make({
+      message,
+      reason,
+      ...(options?.cause === undefined ? {} : {cause: options.cause}),
+    });
   }
 }
 
@@ -491,15 +500,15 @@ export const routeCodeGraphWorksetCatalogCandidates = Effect.fn('codeGraphWorkse
         prepared.cursor.requestDigest !== prepared.requestDigest ||
         prepared.cursor.worksetName !== prepared.worksetName
       ) {
-        return yield* Effect.fail(staleCursor('Workset router cursor does not belong to this query.'));
+        return yield* staleCursor('Workset router cursor does not belong to this query.');
       }
     }
     const generation = yield* source.readGeneration(prepared.worksetName);
     if (generation === undefined) {
-      return yield* Effect.fail(new CodeGraphWorksetRouterError('missing', 'No published catalog generation exists.'));
+      return yield* CodeGraphWorksetRouterError.of('missing', 'No published catalog generation exists.');
     }
     if (prepared.cursor !== undefined && prepared.cursor.generationId !== generation.id) {
-      return yield* Effect.fail(staleCursor('Workset router cursor belongs to a superseded catalog generation.'));
+      return yield* staleCursor('Workset router cursor belongs to a superseded catalog generation.');
     }
     const exactRequest = candidateRequest(prepared, generation.id, prepared.cursor?.exactAfter);
     const lexicalRequest = candidateRequest(prepared, generation.id, prepared.cursor?.lexicalAfter);
@@ -1047,7 +1056,7 @@ function decodeRouterCursor(cursor: string): RouterCursorPayloadV1 {
     if (encodeRouterCursor(payload) !== cursor) throw invalid('Workset router cursor encoding is non-canonical.');
     return payload;
   } catch (cause) {
-    if (cause instanceof CodeGraphWorksetRouterError) throw cause;
+    if (Schema.is(CodeGraphWorksetRouterError)(cause)) throw cause;
     throw invalid('Workset router cursor is invalid.', cause);
   }
 }
@@ -1134,21 +1143,21 @@ function compareText(left: string, right: string): number {
 function validateEffect<A>(evaluate: () => A): Effect.Effect<A, CodeGraphWorksetRouterError> {
   return Effect.try({
     catch: cause =>
-      cause instanceof CodeGraphWorksetRouterError
+      Schema.is(CodeGraphWorksetRouterError)(cause)
         ? cause
-        : new CodeGraphWorksetRouterError('invalid-input', 'Workset router validation failed.', {cause}),
+        : CodeGraphWorksetRouterError.of('invalid-input', 'Workset router validation failed.', {cause}),
     try: evaluate,
   });
 }
 
 function invalid(message: string, cause?: unknown): CodeGraphWorksetRouterError {
-  return new CodeGraphWorksetRouterError('invalid-input', message, cause === undefined ? undefined : {cause});
+  return CodeGraphWorksetRouterError.of('invalid-input', message, cause === undefined ? undefined : {cause});
 }
 
 function sourceContract(message: string): CodeGraphWorksetRouterError {
-  return new CodeGraphWorksetRouterError('source-contract', message);
+  return CodeGraphWorksetRouterError.of('source-contract', message);
 }
 
 function staleCursor(message: string): CodeGraphWorksetRouterError {
-  return new CodeGraphWorksetRouterError('stale-cursor', message);
+  return CodeGraphWorksetRouterError.of('stale-cursor', message);
 }

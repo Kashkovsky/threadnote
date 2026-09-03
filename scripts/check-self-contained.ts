@@ -107,7 +107,7 @@ const checkSelfContained = Effect.gen(function* () {
     Effect.flatMap(content =>
       Effect.try({
         try: () => JSON.parse(content) as PackageManifest,
-        catch: cause => new ScriptError('Could not parse package.json.', {cause}),
+        catch: cause => ScriptError.make({message: 'Could not parse package.json.', cause}),
       }),
     ),
   );
@@ -267,7 +267,7 @@ const checkSelfContained = Effect.gen(function* () {
   }
 
   if (failures.length > 0) {
-    return yield* Effect.fail(new ScriptError(failures.map(failure => `- ${failure}`).join('\n')));
+    return yield* ScriptError.make({message: failures.map(failure => `- ${failure}`).join('\n')});
   }
   yield* Console.log('Self-contained Bun source and release checks passed.');
 });
@@ -404,10 +404,10 @@ function parseJsonFile(fs: FileSystem.FileSystem, path: string): Effect.Effect<u
     Effect.flatMap(content =>
       Effect.try({
         try: () => JSON.parse(content) as unknown,
-        catch: cause => new ScriptError(`Could not parse JSON file ${path}.`, {cause}),
+        catch: cause => ScriptError.make({message: `Could not parse JSON file ${path}.`, cause}),
       }),
     ),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
 }
 

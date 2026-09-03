@@ -7,7 +7,7 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const [repository, home, releaseGate, marker] = process.argv.slice(2);
 if (!repository || !home || !releaseGate || !marker) {
-  throw new TestError('Expected repository, home, release gate, and marker arguments.');
+  throw TestError.make({message: 'Expected repository, home, release gate, and marker arguments.'});
 }
 
 const summary = await Effect.runPromise(
