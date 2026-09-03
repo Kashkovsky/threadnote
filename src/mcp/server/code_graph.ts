@@ -1108,7 +1108,7 @@ function emptyCodeGraphMcpAnalysisProjection(result: CodeGraphAnalysisResult): C
 }
 
 function mutableAnalysisArray<Value>(value: readonly Value[]): Value[] {
-  return [...value];
+  return value as Value[];
 }
 
 function compactCodeGraphAnalysisStrings(value: unknown, observation: CodeGraphMcpAnalysisStringObservation): unknown {
