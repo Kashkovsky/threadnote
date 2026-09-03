@@ -6,6 +6,7 @@ import {
   memoryReadPageEstimatedTokens,
   memoryReadSourceHashes,
   memoryReadSourcesMatch,
+  memoryReadWouldPage,
   projectMemoryReadPage,
   selectMemoryMarkdownSection,
   type MemoryReadPosition,
@@ -63,6 +64,20 @@ describe('bounded memory read projection', () => {
     expect(page.structuredContent.content).toBe('short evidence');
     expect(page.structuredContent.estimatedTokens).toBe(memoryReadPageEstimatedTokens(page));
     expect(page.structuredContent.estimatedTokens).toBeLessThan(page.structuredContent.budgetTokens);
+  });
+
+  it('reports whether a first page would be incomplete', () => {
+    expect(
+      memoryReadWouldPage([{text: 'short evidence', uri: 'threadnote://test/short.md'}], {budgetTokens: 1_500}),
+    ).toBe(false);
+    expect(
+      memoryReadWouldPage(
+        [{text: `${'ASCII evidence line\n'.repeat(800)}terminal`, uri: 'threadnote://test/long.md'}],
+        {
+          budgetTokens: 1_500,
+        },
+      ),
+    ).toBe(true);
   });
 
   it('mirrors a complete outline with its measured response budget', () => {

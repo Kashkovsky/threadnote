@@ -216,14 +216,6 @@ describe('JSON MCP host configuration', () => {
         const cursorPath = path.join(user, '.cursor', 'mcp.json');
         const copilotPath = path.join(root, 'copilot-mcp.json');
         const testRuntime = runtime(path.join(user, '.threadnote'));
-        const managedEnvironment = {
-          THREADNOTE_USER: 'test-user',
-          THREADNOTE_MCP_TOOLSET: 'core',
-          THREADNOTE_HOME: testRuntime.agentContextHome,
-          THREADNOTE_AGENT_ID: 'threadnote',
-          THREADNOTE_ACCOUNT: 'local',
-          USER_EXTENSION: 'preserved',
-        };
         const testSystem = SystemInfo.of({
           ...baseSystem,
           environment: () => ({
@@ -245,7 +237,15 @@ describe('JSON MCP host configuration', () => {
                 unrelated: {command: 'unrelated-server'},
                 threadnote: {
                   userMetadata: {preserve: true},
-                  env: managedEnvironment,
+                  env: {
+                    THREADNOTE_USER: 'test-user',
+                    THREADNOTE_MCP_TOOLSET: 'core',
+                    THREADNOTE_HOME: testRuntime.agentContextHome,
+                    THREADNOTE_MCP_CLIENT: agent,
+                    THREADNOTE_AGENT_ID: 'threadnote',
+                    THREADNOTE_ACCOUNT: 'local',
+                    USER_EXTENSION: 'preserved',
+                  },
                   command: broker,
                   args: [],
                   ...(agent === 'copilot' ? {type: 'stdio'} : {}),
@@ -597,15 +597,17 @@ describe('MCP agent executable resolution', () => {
     const testRuntime = runtime(join(userHome, '.threadnote'));
     process.env.THREADNOTE_BIN_DIR = bin;
     const broker = join(bin, 'threadnote-mcp-server');
-    const managedEnvironment = {
-      THREADNOTE_ACCOUNT: 'local',
-      THREADNOTE_AGENT_ID: 'threadnote',
-      THREADNOTE_HOME: testRuntime.agentContextHome,
-      THREADNOTE_MCP_TOOLSET: 'core',
-      THREADNOTE_USER: 'test-user',
-    };
 
     for (const agent of ['codex', 'claude'] as const) {
+      const managedEnvironment = {
+        THREADNOTE_ACCOUNT: 'local',
+        THREADNOTE_AGENT_ID: 'threadnote',
+        THREADNOTE_HOME: testRuntime.agentContextHome,
+        THREADNOTE_MCP_CLIENT: agent,
+        THREADNOTE_MCP_TOOLSET: 'core',
+        THREADNOTE_USER: 'test-user',
+      };
+
       const callsPath = join(tmpdir(), `threadnote-${agent}-current-calls-${process.pid}-${Date.now()}`);
       const output =
         agent === 'codex'

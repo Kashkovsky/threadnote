@@ -533,9 +533,12 @@ describe('code graph workset catalog', () => {
     const repositorySentinel = join(home, 'indexes', 'code-graph', 'repositories', 'sentinel', 'graph-v3.sqlite');
     await mkdir(join(home, 'indexes', 'code-graph', 'repositories', 'sentinel'), {recursive: true});
     await writeFile(repositorySentinel, 'repository graph remains authoritative');
-    await rm(`${catalogPath(home)}-wal`, {force: true});
-    await rm(`${catalogPath(home)}-shm`, {force: true});
-    await writeFile(catalogPath(home), 'not a sqlite catalog');
+    const catalog = catalogPath(home);
+    await rm(`${catalog}-wal`, {force: true});
+    await rm(`${catalog}-shm`, {force: true});
+    await rm(`${catalog}-journal`, {force: true});
+    await rm(catalog, {force: true});
+    await writeFile(catalog, 'not a sqlite catalog');
 
     expect(await runEffect(inspectCodeGraphWorksetCatalog(home))).toMatchObject({state: 'corrupt'});
     expect(await runEffect(recoverCodeGraphWorksetCatalog(home))).toEqual({previousState: 'corrupt', rebuilt: true});

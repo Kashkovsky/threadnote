@@ -134,6 +134,7 @@ import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
 } from '../context_brief/types.js';
+import {runImageProjectionCommand} from '../image_projection/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
 import {
@@ -296,6 +297,15 @@ const telemetry = Command.make('telemetry').pipe(
   Command.withDescription('Manage optional anonymous CLI and MCP operational telemetry'),
   Command.withSubcommands([telemetryStatus, telemetryEnable, telemetryDisable]),
 );
+
+const imageProjection = Command.make(
+  'image-projection',
+  {
+    disable: boolean('disable', 'Turn off MCP memory image projection and persist immediately'),
+    enable: boolean('enable', 'Turn on MCP memory image projection and persist immediately'),
+  },
+  options => withRuntimeEffect(config => runImageProjectionCommand(config, options)),
+).pipe(Command.withDescription('Show or persist optional MCP memory image projection'));
 
 const reportIssue = Command.make(
   'report-issue',
@@ -1880,6 +1890,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('version', version),
   registerTopLevelCommand('logs', logs),
   registerTopLevelCommand('telemetry', telemetry, {productionLog: {mode: 'never'}}),
+  registerTopLevelCommand('image-projection', imageProjection, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('report-issue', reportIssue, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('update', update),
   registerTopLevelCommand('auto-update-worker', autoUpdateWorker),

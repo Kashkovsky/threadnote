@@ -301,6 +301,7 @@ describe('Threadnote MCP toolsets', () => {
         );
         const readContext = tools.tools.find(tool => tool.name === 'read_context');
         expect(readContext?.description).toContain('no more than 1500 estimated tokens');
+        expect(readContext?.description).toContain('Optional PNG pages');
         expect(readContext?.description).toContain('pass cursor without uri, uris, mode, or section');
       },
       {toolset: null},
@@ -1123,6 +1124,53 @@ describe('Threadnote MCP toolsets', () => {
           const replayContent = Array.isArray(replay.content) ? replay.content : [];
           expect((replayContent[0] as TextContent | undefined)?.text).toContain('already consumed');
         }
+      },
+      {toolset: 'core'},
+    );
+  }, 40_000);
+
+  it('returns PNG pages for a large memory when image projection is enabled', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        await mkdir(join(fixture.home, 'image-projection'), {recursive: true});
+        await writeFile(
+          join(fixture.home, 'image-projection', 'config.json'),
+          `${JSON.stringify({enabled: true, version: 1})}\n`,
+        );
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/imaged-read.md';
+        const content = canonicalMemoryContent(
+          'imaged-read',
+          `${'ASCII evidence line for image projection.\n'.repeat(400)}terminal tn_imagedread`,
+        );
+        await writeCanonicalMemory(fixture.home, 'imaged-read.md', content);
+
+        const result = await client.callTool({arguments: {budgetTokens: 1_500, uri}, name: 'read_context'}, undefined, {
+          timeout: 30_000,
+        });
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const output = Array.isArray(result.content) ? result.content : [];
+        const structured = result.structuredContent as ReadPageStructuredContent & {
+          readonly pageCount?: number;
+          readonly projection?: string;
+        };
+        expect(structured.type).toBe('threadnote-read-page');
+        expect(structured.complete).toBe(true);
+        expect(structured.cursor).toBeUndefined();
+        expect(structured.content).toBe('');
+        expect(structured.projection).toBe('image');
+        expect(structured.pageCount).toBeGreaterThan(0);
+        const images = output.filter(
+          (item): item is {data: string; mimeType: string; type: 'image'} => item.type === 'image',
+        );
+        expect(images.length).toBe(structured.pageCount);
+        expect(images.length).toBeGreaterThan(0);
+        expect(images.length).toBeLessThanOrEqual(8);
+        for (const image of images) {
+          expect(image.mimeType).toBe('image/png');
+          const bytes = Buffer.from(image.data, 'base64');
+          expect(bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe(true);
+        }
+        expect(output.some(item => item.type === 'text' && item.text.includes('tn_imagedread'))).toBe(true);
       },
       {toolset: 'core'},
     );

@@ -1,6 +1,6 @@
 {
   "name": "threadnote",
-  "version": "4.6.5",
+  "version": "4.6.6",
   "type": "module",
   "description": "Shared local context and handoffs for development agents",
   "license": "AGPL-3.0-or-later",
@@ -152,6 +152,7 @@
     "jose": "6.2.10",
     "node-llama-cpp": "3.20.0",
     "postgres": "3.4.9",
+    "pxpipe-proxy": "0.13.2",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "three": "^0.185.1",

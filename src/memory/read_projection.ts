@@ -80,6 +80,23 @@ export function memoryReadSourcesMatch(
   return resources.every((resource, index) => sha256HexSync(resource.text) === expectedHashes[index]);
 }
 
+export function memoryReadWouldPage(
+  resources: readonly MemoryReadResource[],
+  options: {
+    readonly budgetTokens?: number;
+    readonly mode?: MemoryReadMode;
+    readonly section?: string;
+  } = {},
+): boolean {
+  return !projectMemoryReadPage(resources, {
+    budgetTokens: options.budgetTokens,
+    continuationCursor: 'tnrc_image_projection_probe',
+    includeReceipt: false,
+    mode: options.mode,
+    section: options.section,
+  }).complete;
+}
+
 export function projectMemoryReadPage(
   resources: readonly MemoryReadResource[],
   options: {
@@ -137,7 +154,7 @@ export function projectMemoryReadPage(
   if (position.characterOffset > resource.text.length) {
     throw new MemoryReadProjectionError('Memory read continuation position is stale.');
   }
-  const warnings = boundedWarnings(options.warnings);
+  const warnings = memoryReadBoundedWarnings(options.warnings);
   const reservedResponseBytes = options.reservedResponseBytes ?? 0;
   if (!Number.isSafeInteger(reservedResponseBytes) || reservedResponseBytes < 0) {
     throw new MemoryReadProjectionError('Memory read reserved response bytes must be a non-negative integer.');
@@ -386,7 +403,7 @@ function normalizedSection(section: string | undefined): string | undefined {
   return normalized;
 }
 
-function boundedWarnings(warnings: readonly string[] | undefined): string[] | undefined {
+export function memoryReadBoundedWarnings(warnings: readonly string[] | undefined): string[] | undefined {
   if (!warnings || warnings.length === 0) return undefined;
   const combined = warnings
     .map(warning => warning.trim())

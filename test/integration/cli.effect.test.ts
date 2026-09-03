@@ -41,6 +41,12 @@ describe('Effect CLI', () => {
     expect(disable.stdout).toContain('--apply');
   });
 
+  it('exposes immediate enable and disable flags for MCP image projection', async () => {
+    const help = await runCli(['image-projection', '--help']);
+    expect(help.stdout).toContain('--enable');
+    expect(help.stdout).toContain('--disable');
+  });
+
   it('describes citation paths as exact-current graph locators', async () => {
     const remember = await runCli(['remember', '--help']);
     const handoff = await runCli(['handoff', '--help']);

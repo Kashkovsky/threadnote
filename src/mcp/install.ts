@@ -8,7 +8,7 @@ import {
 } from '../agent_integration/index.js';
 import {type AgentIntegrationMcpReceipt, withAgentIntegrationLock} from '../agent_integration/registry.js';
 import {commandLauncherPath} from '../command-shim.js';
-import {THREADNOTE_MCP_NAME} from '../constants.js';
+import {THREADNOTE_MCP_CLIENT_ENV, THREADNOTE_MCP_NAME} from '../constants.js';
 import {maybeRunEffect, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset} from './toolset.js';
@@ -310,7 +310,7 @@ const cliMcpConfigurationMatches = Effect.fn('mcp.cliConfigurationMatches')(func
   if (result._tag === 'None' || result.value.exitCode !== 0) return false;
 
   const command = yield* mcpAdapterCommand();
-  const environment = mcpEnvironmentObject(config, options.toolset);
+  const environment = mcpEnvironmentObject(config, options.toolset, agent);
   return agent === 'codex'
     ? codexMcpConfigurationMatches(result.value.stdout, command, environment)
     : claudeMcpConfigurationMatches(result.value.stdout, command, environment, options.scope ?? 'user');
@@ -576,7 +576,7 @@ const buildMcpInstallCommand = Effect.fn('mcp.buildInstallCommand')(function* (
   const claudeCwd = options.cwd ?? (yield* getInvocationCwd());
   const claudeScope = options.scope ?? 'user';
   const command = yield* mcpAdapterCommand();
-  const env = mcpEnvironment(config, options.toolset);
+  const env = mcpEnvironment(config, options.toolset, agent);
   if (agent === 'codex') {
     return {
       executable: agentExecutable,
@@ -648,21 +648,23 @@ const requiredMcpAgentExecutable = Effect.fn('mcp.requiredAgentExecutable')(func
   );
 });
 
-function mcpEnvironment(config: RuntimeConfig, toolset: McpToolset): readonly string[] {
+function mcpEnvironment(config: RuntimeConfig, toolset: McpToolset, client: AgentClient): readonly string[] {
   return [
     `THREADNOTE_HOME=${config.agentContextHome}`,
     `THREADNOTE_ACCOUNT=${config.account}`,
     `THREADNOTE_USER=${config.user}`,
     `THREADNOTE_AGENT_ID=${config.agentId}`,
     `${MCP_TOOLSET_ENV}=${toolset}`,
+    `${THREADNOTE_MCP_CLIENT_ENV}=${client}`,
   ];
 }
 
-function mcpEnvironmentObject(config: RuntimeConfig, toolset: McpToolset): JsonObject {
+function mcpEnvironmentObject(config: RuntimeConfig, toolset: McpToolset, client: AgentClient): JsonObject {
   return {
     THREADNOTE_ACCOUNT: config.account,
     THREADNOTE_AGENT_ID: config.agentId,
     THREADNOTE_HOME: config.agentContextHome,
+    [THREADNOTE_MCP_CLIENT_ENV]: client,
     [MCP_TOOLSET_ENV]: toolset,
     THREADNOTE_USER: config.user,
   };
@@ -678,7 +680,7 @@ const buildCursorMcpServerConfig = Effect.fn('mcp.buildCursorServerConfig')(func
   return {
     args: command.slice(1),
     command: command[0],
-    env: mcpEnvironmentObject(config, options.toolset),
+    env: mcpEnvironmentObject(config, options.toolset, 'cursor'),
   };
 });
 
@@ -692,7 +694,7 @@ const buildCopilotMcpServerConfig = Effect.fn('mcp.buildCopilotServerConfig')(fu
   return {
     args: command.slice(1),
     command: command[0],
-    env: mcpEnvironmentObject(config, options.toolset),
+    env: mcpEnvironmentObject(config, options.toolset, 'copilot'),
     type: 'stdio',
   };
 });

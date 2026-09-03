@@ -12,6 +12,7 @@ Direct runtime software and packages bundled into the published JavaScript retai
 - `effect`, `@effect/platform-bun`, `@effect/ai-openai-compat`, `@effect/sql-sqlite-bun`, and `@effect/vitest` (MIT)
 - `@modelcontextprotocol/sdk` 1.30.0 (MIT), pinned for the Streamable HTTP and stdio MCP protocol boundary
 - `jose` 6.2.10 (MIT), used for OAuth and Cursor workload JWT/JWKS verification
+- `pxpipe-proxy` 0.13.2 (MIT), used to render optional MCP memory PNG pages
 - `postgres` 3.4.9 (MIT), used by the managed remote-memory PostgreSQL service and operator
 - `zod` 4.4.3 (MIT), used for strict remote MCP and operator request schemas
 - `react`, `react-dom`, and `react-markdown` (MIT)
