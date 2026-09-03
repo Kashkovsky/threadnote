@@ -643,7 +643,9 @@ function registerTools(
         "Publish a local Codex/Claude skill or Claude command markdown file into a team's shared artifact catalog. Path inference handles ~/.codex/skills/**/SKILL.md, ~/.claude/skills/**/SKILL.md, and ~/.claude/commands/**/*.md; pass agent/kind/name when sharing from another path. A skill is shared as its whole directory: companion files (scripts, references, assets) beside the SKILL.md travel with it. Default team is used unless team is provided. Pass preview=true to inspect what would land without writing or committing.",
       inputSchema: {
         agent: McpInput.literals(['codex', 'claude'], 'Agent owner when path inference is ambiguous'),
-        allowBinary: McpInput.boolean('Include binary skill files (unscannable by the scrubber); blocked by default'),
+        allowBinary: McpInput.boolean(
+          'Include binary skill files; embedded binary credentials and machine-local paths in binaries still block',
+        ),
         force: McpInput.boolean('Replace an existing shared artifact with different content'),
         kind: McpInput.literals(['skill', 'command'], 'Artifact kind when path inference is ambiguous'),
         message: McpInput.string('Commit message override; defaults to "share: publish <path>"'),
@@ -652,7 +654,7 @@ function registerTools(
         preview: McpInput.boolean('Return the bytes that would land in the shared git repo'),
         push: McpInput.boolean('Push to remote after committing; defaults to true'),
         redact: McpInput.boolean(
-          'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.',
+          'Ignored for agent artifacts. The memory-share scrubber does not run on skills, commands, or packs.',
         ),
         team: McpInput.string('Team name; defaults to the configured default team'),
       },
@@ -686,14 +688,16 @@ function registerTools(
       description:
         "Publish a multi-skill constellation (pack) into a team's shared artifact catalog from a threadnote-bundle.json manifest. Use this when several skills share code that lives outside any single skill directory (e.g. repo-root scripts/lib). The manifest declares name, agent, skills, include paths, external deps, and pathRewrites. Hardcoded repo-root paths are rewritten to a portable token and expanded on install. Pass preview=true to inspect what would land without writing or committing.",
       inputSchema: {
-        allowBinary: McpInput.boolean('Include binary files (unscannable by the scrubber); blocked by default'),
+        allowBinary: McpInput.boolean(
+          'Include binary files; embedded binary credentials and machine-local paths in binaries still block',
+        ),
         force: McpInput.boolean('Replace existing shared pack files with different content'),
         message: McpInput.string('Commit message override'),
         path: McpInput.string('Required local path to a threadnote-bundle.json manifest'),
         preview: McpInput.boolean('Return what would land in the shared git repo without writing'),
         push: McpInput.boolean('Push to remote after committing; defaults to true'),
         redact: McpInput.boolean(
-          'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.',
+          'Ignored for agent artifacts. The memory-share scrubber does not run on skills, commands, or packs.',
         ),
         team: McpInput.string('Team name; defaults to the configured default team'),
       },

@@ -2,6 +2,7 @@ import {mkdtemp, mkdir, readFile, rm, writeFile} from '../helpers/node-fs-promis
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
+import * as fc from 'fast-check';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {shareAgentArtifact, shareBundlePack} from '../../src/share/index.js';
 import {
@@ -537,18 +538,63 @@ describe('shared agent artifacts', () => {
     ).rejects.toThrow(/embedded in binary file/);
   });
 
-  it('scrubs companion files and blocks a leaked credential in a script', async () => {
+  it('publishes a companion script with a credential-shaped token unchanged', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const skillDir = join(config.agentContextHome, '.codex', 'skills', 'reviewer');
+    const script = `const token = "ghp_${'b'.repeat(36)}";\n`;
     await mkdir(join(skillDir, 'scripts'), {recursive: true});
     await writeFile(join(skillDir, 'SKILL.md'), '# Reviewer\n');
-    await writeFile(join(skillDir, 'scripts', 'run.ts'), `const token = "ghp_${'b'.repeat(36)}";\n`);
+    await writeFile(join(skillDir, 'scripts', 'run.ts'), script);
     mockPublishCommands();
 
-    await expect(runEffect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {}))).rejects.toThrow(
-      /scripts\/run\.ts/,
-    );
+    await runEffect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {}));
+    await expect(
+      readFile(
+        join(
+          config.agentContextHome,
+          'shared',
+          'default',
+          'agent-artifacts',
+          'skills',
+          'codex',
+          'reviewer',
+          'scripts',
+          'run.ts',
+        ),
+        'utf8',
+      ),
+    ).resolves.toBe(script);
+  });
+
+  it('publishes skill markdown that mentions /tmp and JS escapes unchanged', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const sourcePath = join(config.agentContextHome, '.claude', 'skills', 'reviewer', 'SKILL.md');
+    const body =
+      '# Reviewer\n\nRun `bun scripts/digest-stats.ts > /tmp/digest-prompt.md`.\n\n' +
+      "Normalize with `str.replace(/\\\\/g, '\\\\\\\\')`.\n";
+    await mkdir(join(sourcePath, '..'), {recursive: true});
+    await writeFile(sourcePath, body);
+    mockPublishCommands();
+
+    const result = await runEffect(shareAgentArtifact(config, sourcePath, {redact: true}));
+    expect(result.messages.join('\n')).toMatch(/--redact is ignored/);
+    await expect(
+      readFile(
+        join(
+          config.agentContextHome,
+          'shared',
+          'default',
+          'agent-artifacts',
+          'skills',
+          'claude',
+          'reviewer',
+          'SKILL.md',
+        ),
+        'utf8',
+      ),
+    ).resolves.toBe(body);
   });
 
   it('does not materialize bundle companions when the native SKILL.md write fails', async () => {
@@ -734,16 +780,32 @@ describe('shared agent artifacts', () => {
     expect(addArgs).toContain('agent-artifacts/packs/claude/reviewer/files/scripts/vcs.ts');
   });
 
-  it('blocks a residual local path that no pathRewrite covers', async () => {
+  it('publishes a residual local path that no pathRewrite covers unchanged', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const repo = await makeReviewerManifestRepo();
-    await writeFile(join(repo, 'scripts', 'leak.ts'), 'const home = "/Users/someone/secret/notes";\n');
+    const leak = 'const home = "/Users/someone/secret/notes";\n';
+    await writeFile(join(repo, 'scripts', 'leak.ts'), leak);
     mockPublishCommands();
 
-    await expect(runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}))).rejects.toThrow(
-      /scripts\/leak\.ts/,
-    );
+    await runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}));
+    await expect(
+      readFile(
+        join(
+          config.agentContextHome,
+          'shared',
+          'default',
+          'agent-artifacts',
+          'packs',
+          'claude',
+          'reviewer',
+          'files',
+          'scripts',
+          'leak.ts',
+        ),
+        'utf8',
+      ),
+    ).resolves.toBe(leak);
   });
 
   async function seedSharedPack(config: ShareRuntime): Promise<string> {
@@ -1061,28 +1123,99 @@ describe('shared agent artifacts', () => {
     expect(result.artifacts.map(entry => entry.artifact.name)).toContain('reviewer');
   });
 
-  it('blocks a residual /home path in a pack member', async () => {
+  it('publishes a residual /home path in a pack member unchanged', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const repo = await makeReviewerManifestRepo();
-    await writeFile(join(repo, 'scripts', 'deploy.ts'), 'const key = "/home/deploy/.ssh/id_rsa";\n');
+    const deploy = 'const key = "/home/deploy/.ssh/id_rsa";\n';
+    await writeFile(join(repo, 'scripts', 'deploy.ts'), deploy);
     mockPublishCommands();
 
-    await expect(runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}))).rejects.toThrow(
-      /scripts\/deploy\.ts/,
-    );
+    await runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}));
+    await expect(
+      readFile(
+        join(
+          config.agentContextHome,
+          'shared',
+          'default',
+          'agent-artifacts',
+          'packs',
+          'claude',
+          'reviewer',
+          'files',
+          'scripts',
+          'deploy.ts',
+        ),
+        'utf8',
+      ),
+    ).resolves.toBe(deploy);
   });
 
-  it('blocks a residual local path in a code member even with --redact', async () => {
+  it('treats --redact as a no-op and publishes a residual local path unchanged', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const repo = await makeReviewerManifestRepo();
-    await writeFile(join(repo, 'scripts', 'leak.ts'), 'const home = "/Users/someone/secret/x";\n');
+    const leak = 'const home = "/Users/someone/secret/x";\n';
+    await writeFile(join(repo, 'scripts', 'leak.ts'), leak);
     mockPublishCommands();
 
+    const result = await runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {redact: true}));
+    expect(result.messages.join('\n')).toMatch(/--redact is ignored/);
     await expect(
-      runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {redact: true})),
-    ).rejects.toThrow(/scripts\/leak\.ts/);
+      readFile(
+        join(
+          config.agentContextHome,
+          'shared',
+          'default',
+          'agent-artifacts',
+          'packs',
+          'claude',
+          'reviewer',
+          'files',
+          'scripts',
+          'leak.ts',
+        ),
+        'utf8',
+      ),
+    ).resolves.toBe(leak);
+  });
+
+  it('publishes skill markdown with path-shaped literals unchanged', async () => {
+    const fragment = fc.oneof(
+      fc.constant('/tmp/digest-prompt.md'),
+      fc.constant('/Users/someone/secret/notes'),
+      fc.constant('/home/deploy/.ssh/id_rsa'),
+      fc.constant("str.replace(/\\\\/g, '\\\\\\\\')"),
+      fc.string({maxLength: 24}).map(value => `/tmp/${value.replaceAll(/[/\\\0]/g, '_') || 'x'}`),
+    );
+    await fc.assert(
+      fc.asyncProperty(fragment, async value => {
+        const config = await makeRuntime();
+        homes.push(config.agentContextHome);
+        const sourcePath = join(config.agentContextHome, '.codex', 'skills', 'reviewer', 'SKILL.md');
+        const body = `# Reviewer\n\nSee ${value}\n`;
+        await mkdir(join(sourcePath, '..'), {recursive: true});
+        await writeFile(sourcePath, body);
+        mockPublishCommands();
+        await runEffect(shareAgentArtifact(config, sourcePath, {}));
+        await expect(
+          readFile(
+            join(
+              config.agentContextHome,
+              'shared',
+              'default',
+              'agent-artifacts',
+              'skills',
+              'codex',
+              'reviewer',
+              'SKILL.md',
+            ),
+            'utf8',
+          ),
+        ).resolves.toBe(body);
+      }),
+      {numRuns: 15},
+    );
   });
 
   it('flags a locally-edited member removed upstream as a conflict, not a silent update', async () => {
@@ -1227,18 +1360,34 @@ describe('shared agent artifacts', () => {
     await expect(readFile(join(installRoot, 'scripts', 'vcs.ts'), 'utf8')).resolves.toContain('/scripts-v2');
   });
 
-  it('blocks a text member whose residual rewrite-root path the tokenizer leaves intact', async () => {
+  it('publishes a residual rewrite-root path the tokenizer leaves intact', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const repo = await makeReviewerManifestRepo();
     // `${repo}-logs` is a sibling of the repo root: the tokenizer will not rewrite
-    // it (the `-` is not a path boundary), so the residual-root check must block.
-    await writeFile(join(repo, 'scripts', 'log.ts'), `const dir = "${repo}-logs/run";\n`);
+    // it (the `-` is not a path boundary). Residual-root blocking no longer applies.
+    const log = `const dir = "${repo}-logs/run";\n`;
+    await writeFile(join(repo, 'scripts', 'log.ts'), log);
     mockPublishCommands();
 
-    await expect(runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}))).rejects.toThrow(
-      /scripts\/log\.ts/,
-    );
+    await runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}));
+    await expect(
+      readFile(
+        join(
+          config.agentContextHome,
+          'shared',
+          'default',
+          'agent-artifacts',
+          'packs',
+          'claude',
+          'reviewer',
+          'files',
+          'scripts',
+          'log.ts',
+        ),
+        'utf8',
+      ),
+    ).resolves.toBe(log);
   });
 
   it('accepts a skill entry given as a path to SKILL.md', async () => {

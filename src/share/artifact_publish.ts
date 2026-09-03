@@ -280,7 +280,9 @@ const shareSingleArtifact = Effect.fn('share.shareSingleArtifact')(function* (
   if (!rawContent.trim()) {
     throw new ShareOperationError(`Refusing to share empty agent artifact: ${resolvedSourcePath}`);
   }
-  const scrub = applyScrubber(rawContent, {redact: options.redact === true});
+  // Agent artifacts are published byte-for-byte. The memory-share scrubber stays
+  // on durable `share publish`; --redact is ignored here.
+  const content = rawContent;
   const relativePath = sharedArtifactRelativePath(artifact);
   const targetPath = yield* pathJoin(team.config.worktree, ...relativePath.split('/'));
   const targetUri = yield* workfileToResourceUri(config, team.config, targetPath);
@@ -289,42 +291,19 @@ const shareSingleArtifact = Effect.fn('share.shareSingleArtifact')(function* (
     `Source: ${yield* portablePath(resolvedSourcePath)}`,
     `Destination: ${targetUri}`,
   ];
+  appendIgnoredArtifactRedactNote(messages, options);
 
   if (preview) {
-    if (scrub.blocker) {
-      messages.push(`PREVIEW BLOCKED: ${scrub.blocker}. Strip the sensitive value or pass --redact.`);
-      return {
-        artifact,
-        gitMessages: [],
-        messages,
-        sourcePath: resolvedSourcePath,
-        targetPath,
-        targetUri,
-      };
-    }
-    for (const redaction of scrub.redactions) {
-      messages.push(`PREVIEW redact: ${redaction.count}× ${redaction.name}`);
-    }
     return {
       artifact,
       gitMessages: [],
       messages,
-      previewContent: scrub.cleaned,
+      previewContent: content,
       sourcePath: resolvedSourcePath,
       targetPath,
       targetUri,
     };
   }
-
-  if (scrub.blocker) {
-    throw new ShareOperationError(
-      `Refusing to share ${resolvedSourcePath}: possible ${scrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,
-    );
-  }
-  for (const redaction of scrub.redactions) {
-    messages.push(`Redacted ${redaction.count}× ${redaction.name} before sharing.`);
-  }
-  const content = scrub.cleaned;
   const existingContent = (yield* readFileIfExists(targetPath)) ?? undefined;
   if (existingContent !== undefined && existingContent !== content && options.force !== true) {
     throw new ShareOperationError(
@@ -354,11 +333,16 @@ interface PreparedBundleMember {
   readonly binary: boolean;
   readonly blocker?: string;
   readonly content: Uint8Array | string;
-  readonly redactions: ReadonlyArray<{readonly count: number; readonly name: string}>;
   readonly relativePath: string;
   readonly sha256: string;
   readonly targetPath: string;
   readonly targetUri: string;
+}
+
+function appendIgnoredArtifactRedactNote(messages: string[], options: SharePublishArtifactOptions): void {
+  if (options.redact === true) {
+    messages.push('Note: --redact is ignored for agent artifacts; content is published unchanged.');
+  }
 }
 
 const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
@@ -394,14 +378,12 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
     `Source: ${yield* portablePath(skillDir)}`,
     `Destination: ${skillRootTargetUri}/`,
   ];
+  appendIgnoredArtifactRedactNote(messages, options);
 
   const blockers = prepared.filter(entry => entry.blocker !== undefined);
   if (preview) {
     for (const entry of prepared) {
       const flags = entry.binary ? ['binary'] : [];
-      for (const redaction of entry.redactions) {
-        flags.push(`redact ${redaction.count}× ${redaction.name}`);
-      }
       const note = entry.blocker !== undefined ? ` BLOCKED: ${entry.blocker}` : '';
       messages.push(`  ${entry.relativePath}${flags.length > 0 ? ` [${flags.join(', ')}]` : ''}${note}`);
     }
@@ -420,13 +402,8 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
     throw new ShareOperationError(
       `Refusing to share skill ${artifact.agent}/${artifact.name}: ${blockers
         .map(entry => `${entry.relativePath} (${entry.blocker})`)
-        .join('; ')}. Strip the value, pass --redact for local paths, or --allow-binary for binary files.`,
+        .join('; ')}. Strip the value or pass --allow-binary for binary files.`,
     );
-  }
-  for (const entry of prepared) {
-    for (const redaction of entry.redactions) {
-      messages.push(`Redacted ${redaction.count}× ${redaction.name} in ${entry.relativePath} before sharing.`);
-    }
   }
 
   for (const entry of prepared) {
@@ -528,21 +505,18 @@ const prepareBundleMember = Effect.fn('share.prepareBundleMember')(function* (
       binary: true,
       blocker,
       content: buffer,
-      redactions: [],
       relativePath: member.relativePath,
       sha256: yield* sha256(buffer),
       targetPath,
       targetUri,
     };
   }
-  const scrub = applyScrubber(new TextDecoder().decode(buffer), {redact: options.redact === true});
+  const text = new TextDecoder().decode(buffer);
   return {
     binary: false,
-    blocker: scrub.blocker,
-    content: scrub.cleaned,
-    redactions: scrub.redactions,
+    content: text,
     relativePath: member.relativePath,
-    sha256: yield* sha256(scrub.cleaned),
+    sha256: yield* sha256(text),
     targetPath,
     targetUri,
   };
@@ -717,14 +691,6 @@ function tokenizePackPaths(text: string, rewriteRoots: readonly string[]): strin
   return out;
 }
 
-// A declared rewrite root still present after tokenization (e.g. followed by a
-// non-boundary char like '-' so the prefix wasn't rewritten) is a residual
-// machine-local path. Text members rely on this to match the substring check
-// detectBinaryLocalPath already applies to binary members.
-function residualRewriteRoot(content: string, rewriteRoots: readonly string[]): string | undefined {
-  return rewriteRoots.find(root => root.length > 0 && content.includes(root));
-}
-
 // Absolute path prefixes that are portable across machines (system/tool paths),
 // so a surviving reference to them is not flagged as a machine-local leak.
 const PORTABLE_PATH_PREFIXES: readonly string[] = [
@@ -747,10 +713,9 @@ const PORTABLE_PATH_PREFIXES: readonly string[] = [
   '/Applications/',
 ];
 
-// Best-effort detector of machine-local absolute paths that tokenization and the
-// scrubber do not catch (anything that isn't /Users, /home, a rewrite root, or a
-// portable system prefix). Advisory only — used to WARN, never to block, because
-// many absolute paths (/usr/bin, /bin/sh) are legitimately portable.
+// Advisory leftover-path detector after tokenization. /Users and /home are not
+// portable prefixes, so they warn here. PORTABLE_PATH_PREFIXES (/tmp, /usr, …)
+// are skipped. Never blocks — many remaining absolute paths are still portable.
 function unportableAbsolutePaths(content: string): readonly string[] {
   // Drop the portable pack-root token (and the path that follows it) so paths
   // anchored to the install root are not mistaken for machine-local leaks.
@@ -796,7 +761,6 @@ const preparePackMember = Effect.fn('share.preparePackMember')(function* (
       binary: true,
       blocker,
       content: buffer,
-      redactions: [],
       relativePath: member.relativePath,
       sha256: yield* sha256(buffer),
       targetPath,
@@ -811,35 +775,21 @@ const preparePackMember = Effect.fn('share.preparePackMember')(function* (
       binary: false,
       blocker: `contains the reserved ${PACK_ROOT_TOKEN} token`,
       content: text,
-      redactions: [],
       relativePath: member.relativePath,
       sha256: yield* sha256(text),
       targetPath,
       targetUri,
     };
   }
-  // Rewrite hardcoded repo-root paths to the portable token BEFORE scrubbing.
-  // The residual net is PARTIAL: a surviving declared/auto rewrite root
-  // (residualRewriteRoot) and /Users or /home paths (scrubber) block the publish,
-  // but other machine-local absolute paths (/opt, /srv, /Volumes, Windows C:\\)
-  // are NOT auto-detected — authors must declare them in pathRewrites or strip
-  // them. See docs/share.md and the known-limitations follow-up.
+  // Declared/auto rewrite roots become the portable pack token. The memory-share
+  // scrubber and residual rewrite-root blocking do not run on pack members;
+  // leftover machine-local paths are advisory only.
   const tokenized = tokenizePackPaths(text, rewriteRoots);
-  // Honor --redact only for prose (.md). Redacting a soft-leak path inside an
-  // executable member would silently rewrite it to <local-path> and break the
-  // file at runtime, so code members always block on a residual path instead.
-  const isMarkdown = member.relativePath.toLowerCase().endsWith('.md');
-  const scrub = applyScrubber(tokenized, {redact: isMarkdown && options.redact === true});
-  const residual = residualRewriteRoot(scrub.cleaned, rewriteRoots);
-  const blocker =
-    scrub.blocker ?? (residual !== undefined ? `machine-local path "${residual}" not rewritten` : undefined);
   return {
     binary: false,
-    blocker,
-    content: scrub.cleaned,
-    redactions: scrub.redactions,
+    content: tokenized,
     relativePath: member.relativePath,
-    sha256: yield* sha256(scrub.cleaned),
+    sha256: yield* sha256(tokenized),
     targetPath,
     targetUri,
   };
@@ -947,23 +897,20 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
   );
   // Tokenize the generated index + manifest too (not just member files) so an
   // author repo-root path embedded in description/deps is normalized to the
-  // portable token rather than leaking or noisily blocking.
+  // portable token. The memory-share scrubber does not run on these files.
   const indexContent = tokenizePackPaths(buildPackIndex(artifact, manifest, skillNames, prepared.length), rewriteRoots);
-  const indexScrub = applyScrubber(indexContent, {redact: options.redact === true});
 
   const messages: string[] = [
     `${preview ? 'Previewing' : dryRun ? 'Would share' : 'Sharing'} pack ${artifact.agent}/${artifact.name} (${prepared.length} files, ${skillNames.length} skills)`,
     `Source: ${yield* portablePath(manifestDir)}`,
     `Destination: ${indexTargetUri}`,
   ];
+  appendIgnoredArtifactRedactNote(messages, options);
 
   const blockers = prepared.filter(entry => entry.blocker !== undefined);
   if (preview) {
     for (const entry of prepared) {
       const flags = entry.binary ? ['binary'] : [];
-      for (const redaction of entry.redactions) {
-        flags.push(`redact ${redaction.count}× ${redaction.name}`);
-      }
       const note = entry.blocker !== undefined ? ` BLOCKED: ${entry.blocker}` : '';
       messages.push(`  ${entry.relativePath}${flags.length > 0 ? ` [${flags.join(', ')}]` : ''}${note}`);
     }
@@ -971,45 +918,24 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
       artifact,
       gitMessages: [],
       messages,
-      previewContent: indexScrub.cleaned,
+      previewContent: indexContent,
       sourcePath: resolvedManifest,
       targetPath: indexTargetPath,
       targetUri: indexTargetUri,
     };
   }
 
-  const indexResidual = residualRewriteRoot(indexScrub.cleaned, rewriteRoots);
-  if (indexScrub.blocker !== undefined || indexResidual !== undefined) {
-    throw new ShareOperationError(
-      `Refusing to share pack ${artifact.agent}/${artifact.name}: index ${indexScrub.blocker ?? `machine-local path "${indexResidual}" not rewritten`}.`,
-    );
-  }
   if (blockers.length > 0) {
     throw new ShareOperationError(
       `Refusing to share pack ${artifact.agent}/${artifact.name}: ${blockers
         .map(entry => `${entry.relativePath} (${entry.blocker})`)
-        .join('; ')}. Strip the value, pass --redact for local paths, or --allow-binary for binary files.`,
+        .join('; ')}. Strip the value or pass --allow-binary for binary files.`,
     );
   }
-  // The generated .pack.json is shared text too — tokenize then route it through
-  // the scrubber so no field can leak a secret or local path past the chokepoint.
-  const packJson = applyScrubber(tokenizePackPaths(buildPackManifestJson(artifact, manifest, prepared), rewriteRoots), {
-    redact: options.redact === true,
-  });
-  const packJsonResidual = residualRewriteRoot(packJson.cleaned, rewriteRoots);
-  if (packJson.blocker !== undefined || packJsonResidual !== undefined) {
-    throw new ShareOperationError(
-      `Refusing to share pack ${artifact.agent}/${artifact.name}: manifest ${packJson.blocker ?? `machine-local path "${packJsonResidual}" not rewritten`}.`,
-    );
-  }
-  for (const entry of prepared) {
-    for (const redaction of entry.redactions) {
-      messages.push(`Redacted ${redaction.count}× ${redaction.name} in ${entry.relativePath} before sharing.`);
-    }
-  }
-  // Advisory: surface machine-local absolute paths the rewriter/scrubber cannot
-  // auto-detect (e.g. /opt, /srv, /Volumes, Windows C:\) so the author can add a
-  // pathRewrite or strip them. Non-blocking — many absolute paths are portable.
+  const packJson = tokenizePackPaths(buildPackManifestJson(artifact, manifest, prepared), rewriteRoots);
+  // Advisory: surface machine-local absolute paths that pathRewrites did not
+  // tokenize (e.g. /opt, /srv, /Volumes, Windows C:\) so the author can add a
+  // rewrite or strip them. Non-blocking — many absolute paths are portable.
   const unportable = new Set<string>();
   for (const entry of prepared) {
     if (!entry.binary && typeof entry.content === 'string') {
@@ -1018,10 +944,10 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
       }
     }
   }
-  for (const path of unportableAbsolutePaths(indexScrub.cleaned)) {
+  for (const path of unportableAbsolutePaths(indexContent)) {
     unportable.add(`${artifact.name}${PACK_INDEX_SUFFIX}: ${path}`);
   }
-  for (const path of unportableAbsolutePaths(packJson.cleaned)) {
+  for (const path of unportableAbsolutePaths(packJson)) {
     unportable.add(`${artifact.name}${PACK_MANIFEST_SUFFIX}: ${path}`);
   }
   if (unportable.size > 0) {
@@ -1099,7 +1025,7 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
           }),
         );
       });
-      yield* writeMarkdownMember(indexTargetUri, indexScrub.cleaned, indexTargetPath);
+      yield* writeMarkdownMember(indexTargetUri, indexContent, indexTargetPath);
       for (const entry of prepared.filter(member => member.relativePath.endsWith('.md'))) {
         yield* writeMarkdownMember(entry.targetUri, entry.content as string, entry.targetPath);
       }
@@ -1124,7 +1050,7 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
       }
       yield* ensureDirectory(packRootTargetDir, false);
       const priorManifest = yield* readFileBytesIfExists(manifestTargetPath);
-      yield* writeFile(manifestTargetPath, packJson.cleaned, {encoding: 'utf8', mode: 0o600});
+      yield* writeFile(manifestTargetPath, packJson, {encoding: 'utf8', mode: 0o600});
       rollbacks.push(
         Effect.fn('share.callback')(function* () {
           if (priorManifest !== undefined) {

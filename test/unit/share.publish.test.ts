@@ -390,4 +390,29 @@ describe('runSharePublish transaction ordering', () => {
 
     expect(existsSync(sourcePath)).toBe(true);
   });
+
+  it('still blocks a machine-local path on durable memory publish', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const sourceUri = 'threadnote://user/test-user/memories/durable/projects/foo/bar.md';
+    const sourcePath = join(
+      config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'test-user',
+      'memories',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    await writeFile(
+      sourcePath,
+      'MEMORY\nkind: durable\nstatus: active\nproject: foo\ntopic: bar\nmemory_id: tn_share_publish\n\nSee /Users/jane/work/notes.md\n',
+    );
+    mockPublishCommands(sourcePath, ok('pushed'), []);
+
+    await expect(runSharePublish(config, sourceUri, {})).rejects.toThrow(/macOS home path/);
+  });
 });

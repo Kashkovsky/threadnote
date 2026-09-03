@@ -1709,9 +1709,20 @@ const sharePublish = Command.make(
 ).pipe(Command.withDescription('Move a personal memory into the shared team namespace, commit and push'));
 
 const artifactFlags = {
-  ...publishFlags,
+  dryRun: publishFlags.dryRun,
+  message: publishFlags.message,
+  preview: publishFlags.preview,
+  push: publishFlags.push,
+  redact: boolean(
+    'redact',
+    'Ignored for agent artifacts; the memory-share scrubber does not run on skills, commands, or packs',
+  ),
+  team: publishFlags.team,
   agent: optionalChoice('agent', ['codex', 'claude'], 'Agent owner'),
-  allowBinary: boolean('allow-binary', 'Include binary files that the scrubber cannot scan'),
+  allowBinary: boolean(
+    'allow-binary',
+    'Include binary files; embedded binary credentials and machine-local paths in binaries still block',
+  ),
   force: boolean('force', 'Replace existing shared files with different content'),
   kind: optionalChoice('kind', ['skill', 'command', 'pack'], 'Shared artifact kind'),
   name: optionalString('name', 'Shared artifact name'),
