@@ -9,7 +9,11 @@ import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {memoryProjectConsistencyCheck, runDoctor, telemetryDoctorCheck} from '../../src/lifecycle.js';
-import {imageProjectionDoctorCheck} from '../../src/image_projection/config.js';
+import {
+  imageProjectionConfiguration,
+  imageProjectionDoctorCheck,
+  renderImageProjectionConfiguration,
+} from '../../src/image_projection/config.js';
 import {DEFAULT_TELEMETRY_ENDPOINT} from '../../src/telemetry/config.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -194,6 +198,33 @@ describe('doctor report resilience', () => {
           detail: 'invalid or unreadable configuration; image projection fails closed',
           name: 'MCP image projection',
           status: 'warn',
+        });
+
+        yield* fs.writeFileString(
+          path.join(home, 'image-projection', 'config.json'),
+          renderImageProjectionConfiguration(imageProjectionConfiguration(true)),
+        );
+        expect(yield* imageProjectionDoctorCheck(config)).toEqual({
+          detail: 'enabled; MCP read_context may return PNG pages',
+          name: 'MCP image projection',
+          status: 'ok',
+        });
+
+        const system = yield* SystemInfo;
+        expect(
+          yield* imageProjectionDoctorCheck(config).pipe(
+            Effect.provideService(
+              SystemInfo,
+              SystemInfo.of({
+                ...system,
+                environment: () => ({...system.environment(), THREADNOTE_IMAGE_PROJECTION: 'off'}),
+              }),
+            ),
+          ),
+        ).toEqual({
+          detail: 'persisted enabled but suppressed by THREADNOTE_IMAGE_PROJECTION',
+          name: 'MCP image projection',
+          status: 'ok',
         });
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),

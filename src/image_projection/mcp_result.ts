@@ -2,6 +2,7 @@ import {Effect, Encoding, Result} from 'effect';
 import type {RuntimeConfig} from '../types.js';
 import {
   MEMORY_READ_DEFAULT_BUDGET_TOKENS,
+  memoryReadBoundedWarnings,
   memoryReadWouldPage,
   type MemoryReadMode,
   type MemoryReadResource,
@@ -97,8 +98,9 @@ export function buildImageProjectedReadResult(options: {
   const appendix = renderExactTokenAppendix(extractExactMemoryTokens(options.source));
   const caption = [
     `Full memory as ${options.pages.length} PNG page${options.pages.length === 1 ? '' : 's'}. Image projection is lossy for hex and identifiers.`,
-    ...(options.warnings ?? []),
+    ...(memoryReadBoundedWarnings(options.warnings) ?? []),
   ].join('\n');
+  const resourceIndex = 1;
   const structuredContent: ImageProjectedStructuredContent = {
     budgetTokens: options.budgetTokens,
     complete: true,
@@ -108,7 +110,7 @@ export function buildImageProjectedReadResult(options: {
     mode: 'content',
     pageCount: options.pages.length,
     projection: 'image',
-    resource: 0,
+    resource: resourceIndex,
     resourceCount: options.resources.length,
     type: 'threadnote-read-page',
     version: 1,
@@ -122,7 +124,7 @@ export function buildImageProjectedReadResult(options: {
         contentIndex: 0,
         pageCount: options.pages.length,
         projection: 'image',
-        resource: 0,
+        resource: resourceIndex,
         resourceCount: options.resources.length,
         type: 'threadnote-read-page',
         uri: resource.uri,
@@ -148,6 +150,7 @@ export const tryProjectMemoryReadAsImages = Effect.fn('imageProjection.tryProjec
   input: TryProjectMemoryReadAsImagesInput,
 ) {
   if (!imageProjectionAttemptEligible(input)) return undefined;
+  if (!(yield* isImageProjectionEnabled(input.config))) return undefined;
   const budgetTokens = input.budgetTokens ?? MEMORY_READ_DEFAULT_BUDGET_TOKENS;
   const wouldPage = Result.try(() =>
     memoryReadWouldPage(input.resources, {
@@ -157,7 +160,6 @@ export const tryProjectMemoryReadAsImages = Effect.fn('imageProjection.tryProjec
     }),
   );
   if (Result.isFailure(wouldPage) || !wouldPage.success) return undefined;
-  if (!(yield* isImageProjectionEnabled(input.config))) return undefined;
   const source = imageProjectionSourceText(input.resources).trim();
   if (source.length === 0) return undefined;
   const rendered = yield* (input.render ?? renderMemoryTextToImages)(source).pipe(

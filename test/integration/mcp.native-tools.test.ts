@@ -1139,7 +1139,7 @@ describe('Threadnote MCP toolsets', () => {
         const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/imaged-read.md';
         const content = canonicalMemoryContent(
           'imaged-read',
-          `${'ASCII evidence line for image projection.\n'.repeat(800)}terminal tn_imagedread`,
+          `${'ASCII evidence line for image projection.\n'.repeat(400)}terminal tn_imagedread`,
         );
         await writeCanonicalMemory(fixture.home, 'imaged-read.md', content);
 

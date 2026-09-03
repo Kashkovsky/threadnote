@@ -1,6 +1,7 @@
 import {Effect} from 'effect';
-import {renderTextToImages} from 'pxpipe-proxy/transform';
 import {fromPromise} from '../effect/errors.js';
+import {SystemInfo} from '../effect/system.js';
+import {imageProjectionRenderOptions, resolveImageProjectionPxpipeModel} from './render_profile.js';
 
 export interface RenderedMemoryImagePage {
   readonly height: number;
@@ -13,12 +14,17 @@ export interface RenderedMemoryImages {
   readonly pages: readonly RenderedMemoryImagePage[];
 }
 
-export type MemoryImageRenderer = (text: string) => Effect.Effect<RenderedMemoryImages, unknown>;
+export type MemoryImageRenderer = (text: string) => Effect.Effect<RenderedMemoryImages, unknown, SystemInfo>;
 
 export const renderMemoryTextToImages: MemoryImageRenderer = Effect.fn('imageProjection.render')(function* (
   text: string,
 ) {
-  const result = yield* fromPromise('render memory text to images', () => renderTextToImages(text, {reflow: true}));
+  const system = yield* SystemInfo;
+  const options = imageProjectionRenderOptions(resolveImageProjectionPxpipeModel(system.environment()));
+  const result = yield* fromPromise('render memory text to images', async () => {
+    const {renderTextToImages} = await import('pxpipe-proxy/transform');
+    return renderTextToImages(text, options);
+  });
   return {
     droppedChars: result.droppedChars,
     pages: result.pages.map(page => ({height: page.height, png: page.png, width: page.width})),

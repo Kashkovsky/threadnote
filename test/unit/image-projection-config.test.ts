@@ -14,8 +14,8 @@ import {
   renderImageProjectionConfiguration,
   writeImageProjectionConfiguration,
 } from '../../src/image_projection/config.js';
-import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {imageProjectionRuntimeConfig} from '../helpers/image-projection-runtime-config.js';
 
 describe('image projection configuration', () => {
   it('round-trips enabled and disabled documents and rejects extra fields', () => {
@@ -54,7 +54,7 @@ describe('image projection configuration', () => {
         const path = yield* Path.Path;
         const baseSystem = yield* SystemInfo;
         const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-image-projection-config-'});
-        const config = runtimeConfig(home);
+        const config = imageProjectionRuntimeConfig(home);
         expect(yield* readImageProjectionConfiguration(config)).toBeUndefined();
         expect(yield* isImageProjectionEnabled(config)).toBe(false);
 
@@ -76,13 +76,3 @@ describe('image projection configuration', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
-
-function runtimeConfig(agentContextHome: string): RuntimeConfig {
-  return {
-    account: 'local',
-    agentContextHome,
-    agentId: 'threadnote',
-    manifestPath: `${agentContextHome}/manifest.yaml`,
-    user: 'tester',
-  };
-}

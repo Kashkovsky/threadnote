@@ -41,6 +41,7 @@ it.effect.prop(
           THREADNOTE_ACCOUNT: 'local',
           THREADNOTE_AGENT_ID: 'threadnote',
           THREADNOTE_HOME: '/tmp/threadnote-test',
+          THREADNOTE_MCP_CLIENT: 'cursor',
           THREADNOTE_MCP_TOOLSET: 'core',
           THREADNOTE_USER: 'test-user',
         };

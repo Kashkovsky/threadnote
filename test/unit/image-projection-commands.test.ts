@@ -6,8 +6,8 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {runImageProjectionCommand} from '../../src/image_projection/commands.js';
 import {readImageProjectionConfiguration} from '../../src/image_projection/config.js';
-import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {imageProjectionRuntimeConfig} from '../helpers/image-projection-runtime-config.js';
 
 describe('image projection commands', () => {
   effectIt.effect('enables, reports an environment kill switch, and disables immediately', () =>
@@ -16,7 +16,7 @@ describe('image projection commands', () => {
         const fs = yield* FileSystem.FileSystem;
         const baseSystem = yield* SystemInfo;
         const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-image-projection-commands-'});
-        const config = runtimeConfig(home);
+        const config = imageProjectionRuntimeConfig(home);
 
         const status = yield* captureConsole(runImageProjectionCommand(config, {disable: false, enable: false}));
         expect(status.output).toContain('disabled (default');
@@ -50,20 +50,10 @@ describe('image projection commands', () => {
         const fs = yield* FileSystem.FileSystem;
         const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-image-projection-conflict-'});
         const result = yield* Effect.result(
-          runImageProjectionCommand(runtimeConfig(home), {disable: true, enable: true}),
+          runImageProjectionCommand(imageProjectionRuntimeConfig(home), {disable: true, enable: true}),
         );
         expect(result._tag).toBe('Failure');
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
-
-function runtimeConfig(agentContextHome: string): RuntimeConfig {
-  return {
-    account: 'local',
-    agentContextHome,
-    agentId: 'threadnote',
-    manifestPath: `${agentContextHome}/manifest.yaml`,
-    user: 'tester',
-  };
-}

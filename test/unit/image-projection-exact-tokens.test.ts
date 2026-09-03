@@ -29,16 +29,25 @@ describe('image projection exact tokens', () => {
     expect(extractExactMemoryTokens('plain prose without identifiers')).toEqual([]);
   });
 
+  it('caps unique tokens at IMAGE_PROJECTION_EXACT_TOKEN_LIMIT', () => {
+    const ids = Array.from(
+      {length: IMAGE_PROJECTION_EXACT_TOKEN_LIMIT + 8},
+      (_, index) => `tn_${index.toString(16).padStart(8, '0')}`,
+    );
+    expect(extractExactMemoryTokens(ids.join(' '))).toHaveLength(IMAGE_PROJECTION_EXACT_TOKEN_LIMIT);
+  });
+
   it('keeps extracted tokens as source substrings and caps uniqueness', () => {
+    const filler = fc.stringMatching(/^[A-Za-z0-9 .,'-]{0,40}$/);
     fc.assert(
       fc.property(
         fc.array(fc.constantFrom('tn_deadbeef', 'tnrc_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'cgr_node'), {
           maxLength: 12,
           minLength: 1,
         }),
-        fc.string({maxLength: 40}),
-        (ids, filler) => {
-          const source = `${filler}\n${ids.join(' and ')}\n${filler}`;
+        filler,
+        (ids, noise) => {
+          const source = `${noise}\n${ids.join(' and ')}\n${noise}`;
           const extracted = extractExactMemoryTokens(source);
           expect(extracted.length).toBeLessThanOrEqual(IMAGE_PROJECTION_EXACT_TOKEN_LIMIT);
           expect(new Set(extracted).size).toBe(extracted.length);

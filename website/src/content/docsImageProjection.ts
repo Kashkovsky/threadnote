@@ -31,6 +31,7 @@ threadnote image-projection --disable`,
       type: 'list',
       items: [
         'THREADNOTE_IMAGE_PROJECTION=0 disables imaging without removing the persisted setting.',
+        'THREADNOTE_IMAGE_PROJECTION_MODEL selects a pxpipe render profile. Otherwise THREADNOTE_MCP_CLIENT (set by mcp-install) maps Claude Code to dense Claude pages and Cursor and Codex to 14px profiles. Copilot and unknown hosts use the same 84-column 14px strip. MCP does not expose the live chat model.',
         'Imaging is lossy for hex and identifiers; trust the text appendix over glyphs.',
         'Cursor continuations, outline mode, and section reads stay on the paged text path.',
       ],
