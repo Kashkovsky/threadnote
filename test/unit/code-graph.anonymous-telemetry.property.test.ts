@@ -145,6 +145,53 @@ describe('code graph anonymous telemetry', () => {
     );
   });
 
+  effectIt.effect.prop(
+    'emits quantity counters as closed power-of-two labels, never raw counts',
+    {
+      counters: fc.record({
+        completed: fc.nat({max: 1_000_000}),
+        degradedFiles: fc.nat({max: 1_000_000}),
+        factsBytesCompleted: fc.nat({max: Number.MAX_SAFE_INTEGER}),
+        sourceBytesCompleted: fc.nat({max: Number.MAX_SAFE_INTEGER}),
+        sourceBytesTotal: fc.nat({max: Number.MAX_SAFE_INTEGER}),
+        total: fc.nat({max: 1_000_000}),
+        workUnitsCompleted: fc.nat({max: Number.MAX_SAFE_INTEGER}),
+        workUnitsTotal: fc.nat({max: Number.MAX_SAFE_INTEGER}),
+      }),
+    },
+    ({counters}) => {
+      const capture = capturingTracer();
+      const report = makeCodeGraphAnonymousTelemetryReporter('mcp');
+      return Effect.gen(function* () {
+        yield* report(
+          scanningProgress(counters, {
+            classifier: 'private-classifier',
+            language: 'private-language',
+            path: '/Users/private/secret-repository.ts',
+            role: 'private-role',
+          }),
+        );
+        const attributes = Object.fromEntries(capture.spans[0].span.attributes);
+        expect(attributes).toMatchObject({
+          'threadnote.work.completed_bucket': expectedQuantityBucket(counters.completed),
+          'threadnote.work.degraded_files_bucket': expectedQuantityBucket(counters.degradedFiles),
+          'threadnote.work.facts_bytes_completed_bucket': expectedQuantityBucket(counters.factsBytesCompleted),
+          'threadnote.work.source_bytes_completed_bucket': expectedQuantityBucket(counters.sourceBytesCompleted),
+          'threadnote.work.source_bytes_total_bucket': expectedQuantityBucket(counters.sourceBytesTotal),
+          'threadnote.work.total_bucket': expectedQuantityBucket(counters.total),
+          'threadnote.work.units_completed_bucket': expectedQuantityBucket(counters.workUnitsCompleted),
+          'threadnote.work.units_total_bucket': expectedQuantityBucket(counters.workUnitsTotal),
+        });
+        for (const [key, value] of Object.entries(attributes)) {
+          if (!key.endsWith('_bucket') || !key.startsWith('threadnote.work.')) continue;
+          expect(typeof value).toBe('string');
+          expect(value).toMatch(/^0$|^2\^\d+$/u);
+        }
+      }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+    },
+    {fastCheck: {numRuns: 64}},
+  );
+
   effectIt.effect('emits on phase changes and once per minute with bucketed path-free graph progress', () => {
     const capture = capturingTracer();
     const report = makeCodeGraphAnonymousTelemetryReporter('mcp');
@@ -438,6 +485,11 @@ describe('code graph anonymous telemetry', () => {
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
 });
+
+function expectedQuantityBucket(value: number): string {
+  if (value <= 0) return '0';
+  return `2^${Math.min(52, Math.floor(Math.log2(value)))}`;
+}
 
 function scanningProgress(
   counters: {

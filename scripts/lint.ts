@@ -80,7 +80,7 @@ export function lintUnsafeTypeAssertions(): number {
   if (diff === undefined) return 0;
   const diagnostics = unsafeTypeAssertionDiagnostics(changedTypeScriptLines(diff));
   if (diagnostics.length === 0) return 0;
-  console.error(diagnostics.join('\n'));
+  process.stderr.write(`${diagnostics.join('\n')}\n`);
   return 1;
 }
 

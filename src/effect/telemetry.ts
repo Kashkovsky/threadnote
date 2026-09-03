@@ -1041,7 +1041,7 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
     Reflect.set(
       attributes,
       attribute,
-      recordValue(QUANTITY_FIELD_KEYS, key) === true ? quantityBucket(value) : boundedNumber(value),
+      QUANTITY_FIELD_KEYS.has(key) ? quantityBucket(value) : boundedNumber(value),
     );
   }
   return attributes;
@@ -1189,7 +1189,7 @@ const FIELD_ATTRIBUTE_KEYS: Readonly<Record<NumericTelemetryField, string>> = {
   workUnitsTotal: 'threadnote.work.units_total_bucket',
 };
 
-const QUANTITY_FIELD_KEYS = new Set<NumericTelemetryField>([
+const QUANTITY_FIELD_KEYS: ReadonlySet<string> = new Set<NumericTelemetryField>([
   'batchesCompleted',
   'batchesTotal',
   'completed',
