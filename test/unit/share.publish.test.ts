@@ -168,6 +168,73 @@ describe('runSharePublish transaction ordering', () => {
     });
   });
 
+  it('keeps identity-alias relations and drops local projection URIs in the published copy', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const sourceUri = 'threadnote://user/test-user/memories/durable/projects/foo/bar.md';
+    const sourcePath = join(
+      config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'test-user',
+      'memories',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    const targetPath = join(
+      config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'test-user',
+      'memories',
+      'shared',
+      'default',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    const worktreeTargetPath = join(
+      config.agentContextHome,
+      'shared',
+      'default',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    await writeFile(
+      sourcePath,
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: foo',
+        'topic: bar',
+        'memory_id: tn_share_publish',
+        'relation: related_to threadnote://memory/tn_e7d22dadd14756e7d665',
+        'relation: related_to threadnote://user/test-user/memories/durable/projects/foo/private.md',
+        'candidate_id: review-local-1',
+        '',
+        'Body',
+        '',
+      ].join('\n'),
+    );
+    mockPublishCommands(sourcePath, ok('pushed'), []);
+
+    await runSharePublish(config, sourceUri, {});
+
+    const published = await readFile(targetPath, 'utf8');
+    expect(published).toContain('relation: related_to threadnote://memory/tn_e7d22dadd14756e7d665');
+    expect(published).not.toContain('private.md');
+    expect(published).not.toMatch(/^candidate_id:/m);
+    expect(await readFile(worktreeTargetPath, 'utf8')).toBe(published);
+  });
+
   it('requires an explicit uncited choice before publishing a pending-anchor memory', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);

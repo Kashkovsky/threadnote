@@ -170,7 +170,7 @@ import {
   resolveTeam,
   sharedMemoryUriParts,
   sharedTeamNameForUri,
-  stripPersonalProvenance,
+  stripPersonalProvenanceForSharedPublication,
   resourceUriToWorktreeRelative,
   writeMemoryFile,
   writeMemoryFileChecked,
@@ -1744,7 +1744,7 @@ const storeSharedMemoryReplacement = Effect.fn('memory.storeSharedMemoryReplacem
       ),
     );
   }
-  const scrub = applyScrubber(stripPersonalProvenance(rawMemory, {preserveStableMemoryRelations: true}), {
+  const scrub = applyScrubber(stripPersonalProvenanceForSharedPublication(rawMemory), {
     redact: false,
   });
   if (scrub.blocker) {

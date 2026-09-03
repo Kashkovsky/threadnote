@@ -1,5 +1,13 @@
-import {describe, expect, it} from 'vitest';
-import {applyScrubber, scrubberBlocker, setMemoryVisibility, stripPersonalProvenance} from '../../src/share/index.js';
+import {describe, expect, it} from '@effect/vitest';
+import * as FC from 'effect/testing/FastCheck';
+import {MEMORY_RELATION_TYPES} from '../../src/memory/document.js';
+import {
+  applyScrubber,
+  scrubberBlocker,
+  setMemoryVisibility,
+  stripPersonalProvenance,
+  stripPersonalProvenanceForSharedPublication,
+} from '../../src/share/index.js';
 
 function fixture(...parts: readonly string[]): string {
   return parts.join('');
@@ -206,7 +214,7 @@ describe('stripPersonalProvenance', () => {
     expect(out).toContain('Reviewed body.');
   });
 
-  it('preserves only validated stable memory relations when explicitly requested', () => {
+  it('preserves only validated stable memory relations for shared publication', () => {
     const input = [
       'MEMORY',
       'kind: durable',
@@ -224,7 +232,7 @@ describe('stripPersonalProvenance', () => {
 
     expect(stripPersonalProvenance(input)).not.toMatch(/^relation:/m);
 
-    const shared = stripPersonalProvenance(input, {preserveStableMemoryRelations: true});
+    const shared = stripPersonalProvenanceForSharedPublication(input);
     expect(shared).toContain('relation: depends_on threadnote://memory/tn_shared_dependency');
     expect(shared).toContain('relation:references threadnote://memory/tn_compact_shared_dependency');
     expect(shared).not.toContain('private.md');
@@ -234,6 +242,40 @@ describe('stripPersonalProvenance', () => {
     expect(shared).not.toContain('not-a-memory-id');
     expect(shared).toContain('Shared body.');
   });
+
+  it.prop(
+    'shared publication keeps identity-alias relations and drops local projection URIs',
+    {
+      rows: FC.uniqueArray(
+        FC.record({
+          id: FC.stringMatching(/^[A-Za-z0-9]{8}$/u).map(suffix => `tn_${suffix}`),
+          kind: FC.constantFrom('alias' as const, 'local' as const),
+          type: FC.constantFrom(...MEMORY_RELATION_TYPES),
+        }),
+        {maxLength: 6, minLength: 1, selector: row => row.id},
+      ),
+    },
+    ({rows}) => {
+      const headers = rows.map(row =>
+        row.kind === 'alias'
+          ? `relation: ${row.type} threadnote://memory/${row.id}`
+          : `relation: ${row.type} threadnote://user/me/memories/durable/projects/foo/${row.id}.md`,
+      );
+      const input = ['MEMORY', 'kind: durable', ...headers, '', 'Body.'].join('\n');
+      const published = stripPersonalProvenanceForSharedPublication(input);
+
+      expect(stripPersonalProvenance(input)).not.toMatch(/^relation:/m);
+      for (const row of rows) {
+        if (row.kind === 'alias') {
+          expect(published).toContain(`relation: ${row.type} threadnote://memory/${row.id}`);
+        } else {
+          expect(published).not.toContain(`${row.id}.md`);
+        }
+      }
+      expect(published).toContain('Body.');
+    },
+    {fastCheck: {numRuns: 100}},
+  );
 
   it('leaves content unchanged when there is no header to strip', () => {
     const input = 'just a body\nwith no provenance';

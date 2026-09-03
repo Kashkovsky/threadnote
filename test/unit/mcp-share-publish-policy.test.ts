@@ -87,6 +87,85 @@ describe('MCP share-publish citation policy', () => {
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
+
+  it.effect('preview keeps identity-alias relations and drops local projection URIs', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-share-relations-'});
+        const worktree = path.join(home, 'share', 'worktrees', 'default');
+        const gitdir = path.join(home, 'share', 'teams', 'default.gitdir');
+        const sourceUri = 'threadnote://user/tester/memories/durable/projects/threadnote/relations.md';
+        const sourcePath = path.join(
+          home,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          'relations.md',
+        );
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        yield* fs.makeDirectory(path.dirname(sourcePath), {recursive: true});
+        yield* fs.makeDirectory(worktree, {recursive: true});
+        yield* fs.makeDirectory(path.join(home, 'share'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(home, 'share', 'teams.json'),
+          `${JSON.stringify(
+            {
+              defaultTeam: 'default',
+              teams: {
+                default: {
+                  addedAt: '2026-08-26T20:00:00.000Z',
+                  gitdir,
+                  name: 'default',
+                  remote: 'git@example.com:team/memories.git',
+                  worktree,
+                },
+              },
+              version: 1,
+            },
+            undefined,
+            2,
+          )}\n`,
+        );
+        yield* fs.writeFileString(
+          sourcePath,
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            'topic: relations',
+            'memory_id: tn_share_publish_relations',
+            'relation: related_to threadnote://memory/tn_1c56a4a00279466aa450ac4db78a1a72',
+            'relation: related_to threadnote://user/tester/memories/durable/projects/threadnote/private.md',
+            '',
+            'Body',
+            '',
+          ].join('\n'),
+        );
+
+        const result = yield* runSharePublishTool(config, sourceUri, {preview: true});
+        const text = result.content.map(item => (item.type === 'text' ? item.text : '')).join('\n');
+
+        expect(result.isError).toBeUndefined();
+        expect(text).toContain('relation: related_to threadnote://memory/tn_1c56a4a00279466aa450ac4db78a1a72');
+        expect(text).not.toContain('private.md');
+        expect(yield* fs.exists(sourcePath)).toBe(true);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 });
 
 function citedMemory(sourceDirty: boolean): string {

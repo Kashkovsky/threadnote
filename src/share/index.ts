@@ -37,6 +37,7 @@ export {
   sharedUriFor,
   shareTeamAccess,
   stripPersonalProvenance,
+  stripPersonalProvenanceForSharedPublication,
   writeMemoryFile,
   writeMemoryFileChecked,
 } from './core.js';

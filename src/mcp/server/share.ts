@@ -10,7 +10,7 @@ import {
   applyScrubber,
   setMemoryVisibility,
   sharedUriFor,
-  stripPersonalProvenance,
+  stripPersonalProvenanceForSharedPublication,
   resourceUriToWorktreeRelative,
   writeMemoryFile,
   writeSharedWorktreeFile,
@@ -207,7 +207,7 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
         `Refusing to publish ${sourceUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
       );
     }
-    const stripped = setMemoryVisibility(stripPersonalProvenance(sourceText), 'shared');
+    const stripped = setMemoryVisibility(stripPersonalProvenanceForSharedPublication(sourceText), 'shared');
     const scrub = applyScrubber(stripped, {redact: options.redact === true});
 
     if (options.preview === true) {
@@ -260,7 +260,10 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
               return {blocker: currentCitationBlocker, kind: 'citation_blocked' as const};
             }
             const currentScrub = applyScrubber(
-              setMemoryVisibility(stripPersonalProvenance(canonicalMemoryDocumentContent(currentSourceText)), 'shared'),
+              setMemoryVisibility(
+                stripPersonalProvenanceForSharedPublication(canonicalMemoryDocumentContent(currentSourceText)),
+                'shared',
+              ),
               {
                 redact: options.redact === true,
               },
