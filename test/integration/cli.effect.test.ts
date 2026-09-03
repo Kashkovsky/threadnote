@@ -1201,8 +1201,8 @@ describe('Effect CLI', () => {
           stdout: 'pipe',
         },
       );
-      child.stdin.write(input);
-      child.stdin.end();
+      await child.stdin.write(input);
+      await child.stdin.end();
 
       const stdout = child.stdout.getReader();
       const prefix = await stdout.read();

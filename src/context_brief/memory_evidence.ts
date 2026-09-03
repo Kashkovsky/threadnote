@@ -98,7 +98,7 @@ export function classifyMemoryFreshness(
   resolvedSnapshots: readonly ContextBriefSnapshotV1[],
 ): ContextBriefFreshness {
   if (sourceCommit === undefined || !COMMIT.test(sourceCommit) || resolvedSnapshots.length !== 1) return 'unknown';
-  const snapshot = resolvedSnapshots[0]!;
+  const snapshot = resolvedSnapshots[0];
   if (snapshot.dirty || snapshot.freshness !== 'fresh') return 'unknown';
   return snapshot.commit === sourceCommit ? 'fresh' : 'stale';
 }
@@ -649,12 +649,13 @@ function labeledHandoffSection(body: string, label: 'blockers' | 'next_step' | '
   const lines = body.split(/\r?\n/gu);
   const index = lines.findIndex(line => line.trimStart().startsWith(`${label}:`));
   if (index < 0) return undefined;
-  const first = lines[index]!.trim()
+  const first = lines[index]
+    .trim()
     .slice(label.length + 1)
     .trim();
   const values = first ? [first] : [];
   for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
-    const line = lines[cursor]!.trim();
+    const line = lines[cursor].trim();
     if (!line) break;
     values.push(line.replace(/^[-*+]\s+/u, '').trim());
   }

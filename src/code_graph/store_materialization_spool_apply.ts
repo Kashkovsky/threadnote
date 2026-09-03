@@ -95,7 +95,7 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
     Effect.gen(function* () {
       yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
       const rows = yield* readSurfaceRows(sql, snapshotId);
-      const expected = CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES[surfaceIndex]!;
+      const expected = CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES[surfaceIndex];
       const current = rows[surfaceIndex];
       if (
         rows.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.length ||
@@ -304,7 +304,7 @@ export const assertCodeGraphMaterializationSpoolApplyComplete = Effect.fn(
     rows.some(
       (row, index) =>
         row.surface_index !== index ||
-        row.surface_name !== CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES[index]!.name ||
+        row.surface_name !== CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES[index].name ||
         row.spool_identity !== spoolIdentity ||
         row.complete !== 1 ||
         row.applied_row_count !== row.row_count,
@@ -509,7 +509,7 @@ function validateSurfacePlan(
   return surfaces.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.length ||
     surfaces.some(
       (surface, index) =>
-        surface.name !== CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES[index]!.name ||
+        surface.name !== CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES[index].name ||
         !Number.isSafeInteger(surface.rowCount) ||
         surface.rowCount < 0,
     )
@@ -528,8 +528,8 @@ function surfaceRowsMatch(
       (row, index) =>
         row.surface_index === index &&
         row.spool_identity === spoolIdentity &&
-        row.surface_name === surfaces[index]!.name &&
-        row.row_count === surfaces[index]!.rowCount &&
+        row.surface_name === surfaces[index].name &&
+        row.row_count === surfaces[index].rowCount &&
         Number.isSafeInteger(row.next_page_index) &&
         row.next_page_index >= 0 &&
         Number.isSafeInteger(row.applied_row_count) &&

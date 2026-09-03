@@ -20,7 +20,7 @@ function parseArguments(argv: readonly string[]): Arguments | 'help' {
   let fixturePath: string | undefined;
   let outputPath: string | undefined;
   for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index]!;
+    const argument = argv[index];
     if (argument === '--help' || argument === '-h') return 'help';
     if (argument === '--fixture') {
       fixturePath = argumentValue(argv, index, '--fixture');

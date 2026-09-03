@@ -59,7 +59,7 @@ export function withoutRemovedGraphCatalogView(
     return [
       {
         ...group,
-        defaultViewId: views.some(view => view.id === group.defaultViewId) ? group.defaultViewId : views[0]!.id,
+        defaultViewId: views.some(view => view.id === group.defaultViewId) ? group.defaultViewId : views[0].id,
         views,
       },
     ];

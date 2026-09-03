@@ -507,7 +507,7 @@ describe('Threadnote 4 website content', () => {
 
     const releases = loadLatestMajorWebsiteReleases(root);
     expect(releases.length).toBeGreaterThan(1);
-    expect(releases.every(release => release.major === releases[0]!.major)).toBe(true);
+    expect(releases.every(release => release.major === releases[0].major)).toBe(true);
     expect(releases.every(release => !release.version.includes('-'))).toBe(true);
     expect(releases.every(release => release.headline.endsWith('.'))).toBe(true);
     expect(releases.every(release => release.socialImage.startsWith(`whats-new/releases/${release.version}/`))).toBe(
@@ -519,7 +519,7 @@ describe('Threadnote 4 website content', () => {
   });
 
   it('renders deterministic release social cards without dropping headline words', () => {
-    const release = loadLatestMajorWebsiteReleases(root)[0]!;
+    const release = loadLatestMajorWebsiteReleases(root)[0];
     const svg = renderWebsiteReleaseSocialImageSvg(release);
     const png = renderWebsiteReleaseSocialImagePng(root, release);
     const pngView = new DataView(png.buffer, png.byteOffset, png.byteLength);
@@ -572,8 +572,8 @@ describe('Threadnote 4 website content', () => {
           expect(selected.every(release => release.major === latestMajor)).toBe(true);
           expect(new Set(selected.map(release => release.version)).size).toBe(selected.length);
           for (let index = 1; index < selected.length; index += 1) {
-            const previous = selected[index - 1]!;
-            const current = selected[index]!;
+            const previous = selected[index - 1];
+            const current = selected[index];
             expect(
               previous.minor > current.minor || (previous.minor === current.minor && previous.patch > current.patch),
             ).toBe(true);
@@ -740,8 +740,8 @@ The body remains ordinary **Markdown**.
           expect(input).toEqual(before);
           expect(ordered).toHaveLength(input.length);
           for (let index = 1; index < ordered.length; index += 1) {
-            const previous = ordered[index - 1]!;
-            const current = ordered[index]!;
+            const previous = ordered[index - 1];
+            const current = ordered[index];
             expect(
               Date.parse(previous.publishedAt) > Date.parse(current.publishedAt) ||
                 (previous.publishedAt === current.publishedAt && previous.stableId <= current.stableId),
@@ -1219,7 +1219,7 @@ The body remains ordinary **Markdown**.
         expect(first.length).toBeLessThanOrEqual(7);
         expect(new Set(first.map(result => result.article.id)).size).toBe(first.length);
         for (let index = 1; index < first.length; index += 1) {
-          expect(first[index - 1]!.score).toBeGreaterThanOrEqual(first[index]!.score);
+          expect(first[index - 1].score).toBeGreaterThanOrEqual(first[index].score);
         }
       }),
       {numRuns: 100},
@@ -1391,7 +1391,7 @@ The full article remains visible to crawlers before the client application start
 Make the bottleneck observable.
 `,
     );
-    const release = loadLatestMajorWebsiteReleases(root)[0]!;
+    const release = loadLatestMajorWebsiteReleases(root)[0];
     const releasePost = {
       ...release,
       author: 'Threadnote' as const,
@@ -1453,7 +1453,7 @@ Make the bottleneck observable.
     expect(renderedIndex).toContain('data-threadnote-index');
     expect(renderedIndex).toContain('<h1>Threadnote articles and releases</h1>');
     const orderedPosts = orderWebsitePostsDescending([releasePost, article]);
-    const latestPost = orderedPosts[0]!;
+    const latestPost = orderedPosts[0];
     const latestSocialImage =
       latestPost.kind === 'article'
         ? websiteSocialImageForArticle(latestPost)
@@ -1468,7 +1468,7 @@ Make the bottleneck observable.
     expect(renderedIndex).toContain(`"image":"${latestSocialImage.url}"`);
     expect(renderedIndex).not.toContain('whats-new-og.png');
     const orderedTitles = orderedPosts.map(post => post.title);
-    expect(renderedIndex.indexOf(orderedTitles[0]!)).toBeLessThan(renderedIndex.indexOf(orderedTitles[1]!));
+    expect(renderedIndex.indexOf(orderedTitles[0])).toBeLessThan(renderedIndex.indexOf(orderedTitles[1]));
   });
 
   it("keeps the What's New root image aligned with the newest post for arbitrary timelines", async () => {
@@ -1563,7 +1563,7 @@ Measure the system before changing its implementation language.
     const measurement = (name: string) => {
       const matches = retainedArtifact.measurements.filter(candidate => candidate.name === name);
       expect(matches).toHaveLength(1);
-      return matches[0]!.p50;
+      return matches[0].p50;
     };
 
     expect(retainedArtifact).toMatchObject({
@@ -1953,7 +1953,7 @@ Measure the system before changing its implementation language.
       const fixture = verifiedPerformanceFixture();
       const metadata = fixture.metadata as Record<string, unknown>;
       const controls = JSON.parse(String(metadata.externalControlEvidence)) as Record<string, Record<string, string>>;
-      controls.java = {...controls.java!, [field]: value};
+      controls.java = {...controls.java, [field]: value};
       metadata.externalControlEvidence = JSON.stringify(controls);
       const artifactBytes = fixtureBytes(fixture);
 

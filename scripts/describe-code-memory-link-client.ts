@@ -26,7 +26,7 @@ function parseArguments(args: readonly string[]) {
   const clientBinaryBindings: Array<{path: string; role: string}> = [];
   const clientArguments: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--client-arg') clientArguments.push(required(args[++index], argument));
     else if (argument === '--client-artifact-binding') {
       clientArtifactBindings.push(parseBinding(required(args[++index], argument), argument));

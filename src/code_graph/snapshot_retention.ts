@@ -214,7 +214,7 @@ function decodeSnapshotRetentionCandidate(
     commit: row.commit_id,
     completedAt: row.completed_at,
     edgeCount: row.edge_count,
-    ...(row.graph_content_id === null ? {} : {graphContentId: row.graph_content_id as string}),
+    ...(row.graph_content_id === null ? {} : {graphContentId: row.graph_content_id}),
     hasNewerEquivalent: row.has_newer_equivalent === 1,
     id: row.id,
     repositoryId: row.repository_id,

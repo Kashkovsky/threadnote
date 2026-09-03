@@ -178,10 +178,10 @@ describe('memory-connections one-hop scale contract', () => {
     'rejects the retained connection regression %s',
     mutation => {
       const baseline = releaseCapture();
-      const sparse = baseline.scenarios[1]!;
+      const sparse = baseline.scenarios[1];
       const receipts = [...sparse.cold.projectedConnections];
-      const first = receipts[0]!;
-      const second = receipts[1]!;
+      const first = receipts[0];
+      const second = receipts[1];
       receipts[1] =
         mutation === 'missing-neighbor'
           ? {...second, neighborMemoryId: null}
@@ -205,8 +205,8 @@ describe('memory-connections one-hop scale contract', () => {
     'rejects the retained premise regression %s',
     mutation => {
       const baseline = releaseCapture();
-      const scenario = baseline.scenarios[2]!;
-      const premise = scenario.cold.projectedPremises[0]!;
+      const scenario = baseline.scenarios[2];
+      const premise = scenario.cold.projectedPremises[0];
       const mutated =
         mutation === 'missing-memory'
           ? {...premise, memoryId: null}
@@ -232,7 +232,7 @@ describe('memory-connections one-hop scale contract', () => {
         fc.boolean(),
         (scenarioIndex, prefixSeed, retainPremise) => {
           const baseline = releaseCapture();
-          const connectionCount = baseline.scenarios[scenarioIndex]!.cold.projectedConnections.length;
+          const connectionCount = baseline.scenarios[scenarioIndex].cold.projectedConnections.length;
           const retainedConnectionCount = connectionCount === 0 ? 0 : 1 + (prefixSeed % connectionCount);
           const capture = withProjectedReceiptPrefix(
             baseline,
@@ -264,13 +264,13 @@ describe('memory-connections one-hop scale contract', () => {
         ),
         (scenarioIndex, prefixSeed, rowSeed, field) => {
           const baseline = releaseCapture();
-          const connectionCount = baseline.scenarios[scenarioIndex]!.cold.projectedConnections.length;
+          const connectionCount = baseline.scenarios[scenarioIndex].cold.projectedConnections.length;
           const retainedConnectionCount = 1 + (prefixSeed % connectionCount);
           const rowIndex = rowSeed % retainedConnectionCount;
           const valid = withProjectedReceiptPrefix(baseline, scenarioIndex, retainedConnectionCount, true);
-          const scenario = valid.scenarios[scenarioIndex]!;
+          const scenario = valid.scenarios[scenarioIndex];
           const connections = [...scenario.cold.projectedConnections];
-          connections[rowIndex] = corruptConnectionReceipt(connections[rowIndex]!, field);
+          connections[rowIndex] = corruptConnectionReceipt(connections[rowIndex], field);
           const capture = withColdObservation(valid, scenarioIndex, {
             ...scenario.cold,
             projectedConnections: connections,
@@ -291,8 +291,8 @@ describe('memory-connections one-hop scale contract', () => {
         fc.constantFrom('memoryId', 'requestedOrdinal', 'state'),
         (scenarioIndex, field) => {
           const baseline = releaseCapture();
-          const scenario = baseline.scenarios[scenarioIndex]!;
-          const premise = scenario.cold.projectedPremises[0]!;
+          const scenario = baseline.scenarios[scenarioIndex];
+          const premise = scenario.cold.projectedPremises[0];
           const mutated =
             field === 'memoryId'
               ? {...premise, memoryId: `${premise.memoryId}-corrupt`}
@@ -447,7 +447,7 @@ function withProjectedReceiptPrefix(
   retainedConnectionCount: number,
   retainPremise: boolean,
 ): MemoryConnectionsScaleCaptureV1 {
-  const scenario = capture.scenarios[scenarioIndex]!;
+  const scenario = capture.scenarios[scenarioIndex];
   const connectionCount = scenario.cold.projectedConnections.length;
   const projectedConnections = scenario.cold.projectedConnections.slice(0, retainedConnectionCount);
   const projectedPremises = retainPremise ? scenario.cold.projectedPremises : [];

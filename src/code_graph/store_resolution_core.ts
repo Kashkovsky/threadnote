@@ -277,7 +277,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
         ),
       ];
       for (let referenceBatchIndex = 0; referenceBatchIndex < referenceBatches.length; referenceBatchIndex += 1) {
-        const batch = referenceBatches[referenceBatchIndex]!;
+        const batch = referenceBatches[referenceBatchIndex];
         const compacted = batch.map(reference => ({
           candidates: compactReferenceLookupTiers(reference.lookupTiers),
           edge: persistedReferenceEdges.get(reference.edgeId)!,

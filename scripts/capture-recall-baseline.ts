@@ -45,7 +45,7 @@ function parseArguments(args: readonly string[]): {readonly createdAt: string; r
   let createdAt = sourceDateEpoch ? new Date(Number(sourceDateEpoch) * 1_000).toISOString() : DEFAULT_CREATED_AT;
   let outputPath: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--created-at') {
       const value = args[++index];
       if (!value?.trim() || Number.isNaN(new Date(value).getTime())) {

@@ -45,7 +45,7 @@ export function parseCodeGraphWorksetBenchmarkArguments(args: readonly string[])
   let sizes: readonly CodeGraphWorksetFixtureSize[] = CODE_GRAPH_WORKSET_FIXTURE_SUPPORTED_SIZES;
   let warmups = DEFAULT_WARMUPS;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--fail-on-budget') failOnBudget = true;
     else if (argument === '--output') outputPath = required(args[++index], argument);
     else if (argument === '--samples') samples = integer(args[++index], argument, 1, 100);

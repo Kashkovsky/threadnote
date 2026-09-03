@@ -104,7 +104,7 @@ export function parseCodeMemoryLinkCodexTerminalReceipt(stderr: string): CodeMem
   if (candidates.length !== 1) return null;
   let value: unknown;
   try {
-    value = JSON.parse(candidates[0]!.slice(CODE_MEMORY_LINK_CODEX_TERMINAL_MARKER.length)) as unknown;
+    value = JSON.parse(candidates[0].slice(CODE_MEMORY_LINK_CODEX_TERMINAL_MARKER.length)) as unknown;
   } catch {
     return null;
   }

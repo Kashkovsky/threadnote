@@ -426,7 +426,7 @@ export function assessResolutionCandidateReexportSafety(input: {
       alias = target;
     }
     for (let index = path.length - 1; index >= 0; index -= 1) {
-      const pathAlias = path[index]!;
+      const pathAlias = path[index];
       forwardDepth += Number(stagedAliases.has(pathAlias));
       completedDepth.set(pathAlias, forwardDepth);
     }
@@ -637,7 +637,7 @@ export function resolvePersistedReexportTerminals(
     }
     for (let index = next.length - 1; index >= 0; index -= 1) {
       if (!consumeOperation()) return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
-      const reexport = next[index]!;
+      const reexport = next[index];
       const candidate = {name: reexport.importedName, path: reexport.targetPath};
       const key = reusableReexportSeedKey(candidate);
       if (discovered.has(key)) continue;
@@ -684,10 +684,10 @@ function parseTypeScriptPathNameLookupTarget(value: string): readonly TypeScript
   try {
     return [
       {
-        lookupPrefix: `typescript:${match[1]!}`,
+        lookupPrefix: `typescript:${match[1]}`,
         lookupSuffix: match[4] ?? '',
-        name: decodeURIComponent(match[3]!),
-        path: decodeURIComponent(match[2]!),
+        name: decodeURIComponent(match[3]),
+        path: decodeURIComponent(match[2]),
       },
     ];
   } catch {

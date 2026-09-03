@@ -2,7 +2,7 @@ export function normalizeSchemaDefinition(value: string): string {
   const quoted: string[] = [];
   let unquoted = '';
   for (let index = 0; index < value.length; index += 1) {
-    const opener = value[index]!;
+    const opener = value[index];
     const closer = opener === '[' ? ']' : opener;
     if (opener !== "'" && opener !== '"' && opener !== '`' && opener !== '[') {
       unquoted += opener;

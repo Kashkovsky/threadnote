@@ -1,4 +1,5 @@
 import {sha256HexSync} from '../crypto/sha256.js';
+import {parseCodeMemoryLinkAgentAbClientTrialSummaryV1} from './code-memory-link-agent-ab.js';
 import type {
   CodeMemoryLinkAgentAbAssignmentV1,
   CodeMemoryLinkAgentAbClientTrialSummaryV1,
@@ -7,6 +8,7 @@ import type {
 } from './code-memory-link-agent-ab.js';
 import {deriveCodeMemoryLinkCodexAppServerProjectionV1} from './code-memory-link-agent-protocol.js';
 import {codeMemoryLinkClientProjectionHash} from './code-memory-link-client-descriptor.js';
+import {Predicate} from 'effect';
 import {
   codeMemoryLinkCodexInvocationNonceDigestV1,
   parseCodeMemoryLinkCodexRawEvidenceV1,
@@ -39,7 +41,7 @@ export function parseCodeMemoryLinkAgentClientOutputV1(value: unknown): CodeMemo
   if (output.version !== CODE_MEMORY_LINK_AGENT_EVIDENCE_VERSION) invalid('client output version must be 1');
   return {
     rawEvidence: parseCodeMemoryLinkCodexRawEvidenceV1(output.rawEvidence),
-    trial: record(output.trial, 'client trial summary') as unknown as CodeMemoryLinkAgentAbClientTrialSummaryV1,
+    trial: parseCodeMemoryLinkAgentAbClientTrialSummaryV1(output.trial),
     version: CODE_MEMORY_LINK_AGENT_EVIDENCE_VERSION,
   };
 }
@@ -115,7 +117,7 @@ export function assertCodeMemoryLinkAgentEvidenceLedgerV1(input: {
   let previousEvidenceDigest: string | null = null;
 
   for (const [index, trial] of input.trials.entries()) {
-    const receipt = receipts[index]!;
+    const receipt = receipts[index];
     const raw = receipt.rawEvidence;
     const binding = raw.bindings;
     const task = input.manifest.tasks.find(candidate => candidate.taskId === trial.taskId);
@@ -189,7 +191,7 @@ export function assertCodeMemoryLinkAgentEvidenceLedgerV1(input: {
         : binding.arm === 'task-only'
           ? task.expectedResponseHashes.taskOnly
           : task.expectedResponseHashes.noMemory;
-    if (contextCalls.length !== 1 || contextCalls[0]!.proxyReceipt?.responseHash !== expectedResponseHash) {
+    if (contextCalls.length !== 1 || contextCalls[0].proxyReceipt?.responseHash !== expectedResponseHash) {
       invalid(`evidence receipt ${index} model-visible response differs from the preregistered arm projection`);
     }
 
@@ -230,8 +232,8 @@ function sameUsage(
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, expected: readonly string[], label: string): void {

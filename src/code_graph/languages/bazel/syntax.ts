@@ -55,7 +55,7 @@ export function parseBazelSyntax(content: string): BazelSyntax {
   let bounded = definitions.length >= MAX_BAZEL_DECLARATIONS || assignments.length >= MAX_BAZEL_DECLARATIONS;
   const nesting = {braces: 0, brackets: 0, parentheses: 0};
   for (let index = 0; index < masked.length && calls.length < MAX_BAZEL_CALLS; index += 1) {
-    const character = masked[index]!;
+    const character = masked[index];
     if (isIdentifierStart(character) && !isIdentifierPart(masked[index - 1] ?? '')) {
       const start = index;
       index = scanDottedIdentifier(masked, index);
@@ -162,7 +162,7 @@ function scanDefinitions(masked: string): BazelDefinition[] {
     output.push({
       bodyEnd: definitionBodyEnd(masked, endOfLine(masked, start), indent),
       end: endOfLine(masked, start),
-      name: match[2]!,
+      name: match[2],
       start,
     });
   }
@@ -175,7 +175,7 @@ function scanAssignments(masked: string): BazelAssignment[] {
   for (const match of masked.matchAll(expression)) {
     if (output.length >= MAX_BAZEL_DECLARATIONS) break;
     const start = match.index ?? 0;
-    output.push({end: endOfLine(masked, start), name: match[1]!, start});
+    output.push({end: endOfLine(masked, start), name: match[1], start});
   }
   return output;
 }
@@ -214,7 +214,7 @@ function scanStringLiterals(content: string, start: number, end: number, limit: 
   const output: BazelStringLiteral[] = [];
   let comment = false;
   for (let index = start; index < end && output.length < limit; index += 1) {
-    const character = content[index]!;
+    const character = content[index];
     if (comment) {
       if (isLineTerminator(character)) comment = false;
       continue;
@@ -253,7 +253,7 @@ function readStringLiteral(
   end: number,
   raw: boolean,
 ): Option.Option<BazelStringLiteral> {
-  const quote = content[quoteStart]!;
+  const quote = content[quoteStart];
   const triple = content.slice(quoteStart, quoteStart + 3) === quote.repeat(3);
   const width = triple ? 3 : 1;
   let value = '';
@@ -261,9 +261,9 @@ function readStringLiteral(
     if (triple ? content.slice(cursor, cursor + 3) === quote.repeat(3) : content[cursor] === quote) {
       return Option.some({end: cursor + width, start: quoteStart, value});
     }
-    const character = content[cursor]!;
+    const character = content[cursor];
     if (!raw && character === '\\' && cursor + 1 < end) {
-      const escaped = content[cursor + 1]!;
+      const escaped = content[cursor + 1];
       value += escaped === 'n' ? '\n' : escaped === 'r' ? '\r' : escaped === 't' ? '\t' : escaped;
       cursor += 1;
     } else {
@@ -277,7 +277,7 @@ function maskBazelNonCode(content: string): string {
   const output = content.split('');
   let comment = false;
   for (let index = 0; index < content.length; index += 1) {
-    const character = content[index]!;
+    const character = content[index];
     if (comment) {
       if (isLineTerminator(character)) comment = false;
       else output[index] = ' ';
@@ -293,7 +293,7 @@ function maskBazelNonCode(content: string): string {
     const literal = readStringLiteral(content, prefix.value.quoteStart, content.length, prefix.value.raw);
     if (Option.isNone(literal)) continue;
     for (let cursor = index; cursor < literal.value.end; cursor += 1) {
-      if (!isLineTerminator(content[cursor]!)) output[cursor] = ' ';
+      if (!isLineTerminator(content[cursor])) output[cursor] = ' ';
     }
     index = literal.value.end - 1;
   }
@@ -303,7 +303,7 @@ function maskBazelNonCode(content: string): string {
 function nextTopLevelComma(masked: string, start: number, end: number): number {
   const nesting = {braces: 0, brackets: 0, parentheses: 0};
   for (let cursor = start; cursor < end; cursor += 1) {
-    const character = masked[cursor]!;
+    const character = masked[cursor];
     if (character === '{') nesting.braces += 1;
     else if (character === '}') nesting.braces = Math.max(0, nesting.braces - 1);
     else if (character === '[') nesting.brackets += 1;

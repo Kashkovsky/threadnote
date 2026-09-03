@@ -318,8 +318,12 @@ function boundedText(value: string, maximumBytes: number): string {
   return value.slice(0, end);
 }
 
-function definedProperties<T extends object, K extends keyof T>(value: T, keys: readonly K[]): Pick<T, K> {
-  return Object.fromEntries(keys.flatMap(key => (value[key] === undefined ? [] : [[key, value[key]]]))) as Pick<T, K>;
+function definedProperties<T extends object, K extends keyof T>(value: T, keys: readonly K[]): Partial<Pick<T, K>> {
+  const result: Partial<Pick<T, K>> = {};
+  for (const key of keys) {
+    if (value[key] !== undefined) Reflect.set(result, key, value[key]);
+  }
+  return result;
 }
 
 function listReceipt(total: number, returned: number, limit: number): CodeGraphStatusBoundedListReceiptV3 {

@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path, Stdio, Stream} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path, Predicate, Stdio, Stream} from 'effect';
 import {CommandExecutor, type CommandExecutionError} from '../effect/command.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {CODE_GRAPH_COMPACTION_WORKER_ARGUMENT} from '../worker_protocol.js';
@@ -583,8 +583,8 @@ export function decodeAutomaticCompactionWorkerRequest(
 ): CodeGraphAutomaticCompactionWorkerRequest | undefined {
   try {
     const parsed: unknown = JSON.parse(content.trim());
-    if (typeof parsed !== 'object' || parsed === null) return undefined;
-    const record = parsed as Readonly<Record<string, unknown>>;
+    if (!Predicate.isObject(parsed)) return undefined;
+    const record = parsed;
     if (
       record.protocol !== CODE_GRAPH_AUTOMATIC_COMPACTION_PROTOCOL ||
       typeof record.threadnoteHome !== 'string' ||
@@ -595,14 +595,14 @@ export function decodeAutomaticCompactionWorkerRequest(
       typeof record.checkoutId !== 'string' ||
       !/^[0-9a-f]{64}$/u.test(record.checkoutId) ||
       typeof record.force !== 'boolean' ||
-      !['compact', 'probe'].includes(String(record.operation))
+      !isAutomaticCompactionOperation(record.operation)
     ) {
       return undefined;
     }
     return {
       checkoutId: record.checkoutId,
       force: record.force,
-      operation: record.operation as CodeGraphAutomaticCompactionWorkerRequest['operation'],
+      operation: record.operation,
       protocol: CODE_GRAPH_AUTOMATIC_COMPACTION_PROTOCOL,
       threadnoteHome: record.threadnoteHome,
     };
@@ -618,23 +618,23 @@ export function decodeAutomaticCompactionWorkerResponse(
 ): CodeGraphAutomaticCompactionWorkerResponse | undefined {
   try {
     const parsed: unknown = JSON.parse(content.trim());
-    if (typeof parsed !== 'object' || parsed === null) return undefined;
-    const record = parsed as Readonly<Record<string, unknown>>;
+    if (!Predicate.isObject(parsed)) return undefined;
+    const record = parsed;
     if (record.protocol !== CODE_GRAPH_AUTOMATIC_COMPACTION_PROTOCOL || typeof record.ok !== 'boolean') {
       return undefined;
     }
     if (!record.ok) return {ok: false, protocol: CODE_GRAPH_AUTOMATIC_COMPACTION_PROTOCOL};
-    if (typeof record.result !== 'object' || record.result === null) return undefined;
-    const result = record.result as Readonly<Record<string, unknown>>;
+    if (!Predicate.isObject(record.result)) return undefined;
+    const result = record.result;
     if (
-      !['compacted', 'deferred', 'missing', 'not-needed', 'would-compact'].includes(String(result.action)) ||
+      !isAutomaticCompactionAction(result.action) ||
       typeof result.checkoutId !== 'string' ||
       !/^[0-9a-f]{64}$/u.test(result.checkoutId) ||
       (expectedCheckoutId !== undefined && result.checkoutId !== expectedCheckoutId) ||
       typeof result.reclaimedBytes !== 'number' ||
       !Number.isSafeInteger(result.reclaimedBytes) ||
       result.reclaimedBytes < 0 ||
-      (result.reason !== undefined && !['active-build', 'active-maintenance'].includes(String(result.reason))) ||
+      (result.reason !== undefined && !isAutomaticCompactionReason(result.reason)) ||
       (result.action === 'deferred' ? result.reason === undefined : result.reason !== undefined)
     ) {
       return undefined;
@@ -643,11 +643,9 @@ export function decodeAutomaticCompactionWorkerResponse(
       ok: true,
       protocol: CODE_GRAPH_AUTOMATIC_COMPACTION_PROTOCOL,
       result: {
-        action: result.action as CodeGraphAutomaticCompactionResult['action'],
+        action: result.action,
         checkoutId: result.checkoutId,
-        ...(result.reason === undefined
-          ? {}
-          : {reason: result.reason as NonNullable<CodeGraphAutomaticCompactionResult['reason']>}),
+        ...(result.reason === undefined ? {} : {reason: result.reason}),
         reclaimedBytes: result.reclaimedBytes,
       },
     };
@@ -658,6 +656,28 @@ export function decodeAutomaticCompactionWorkerResponse(
 
 function automaticCompactionAbsolutePath(value: string): boolean {
   return value.startsWith('/') || value.startsWith('\\\\') || /^[A-Za-z]:[/\\]/u.test(value);
+}
+
+function isAutomaticCompactionAction(value: unknown): value is CodeGraphAutomaticCompactionResult['action'] {
+  return (
+    value === 'compacted' ||
+    value === 'deferred' ||
+    value === 'missing' ||
+    value === 'not-needed' ||
+    value === 'would-compact'
+  );
+}
+
+function isAutomaticCompactionOperation(
+  value: unknown,
+): value is CodeGraphAutomaticCompactionWorkerRequest['operation'] {
+  return value === 'compact' || value === 'probe';
+}
+
+function isAutomaticCompactionReason(
+  value: unknown,
+): value is NonNullable<CodeGraphAutomaticCompactionResult['reason']> {
+  return value === 'active-build' || value === 'active-maintenance';
 }
 
 /** @internal Re-invoke either the compiled binary or the current development standalone. */

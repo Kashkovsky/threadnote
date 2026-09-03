@@ -480,7 +480,7 @@ describe('Context Brief exact-anchor graph evidence', () => {
         const metadataEdge = relationshipEdge(`metadata-${index}`, 'contains', MIGRATION_PATH, metadataId, anchorId);
         const sourceEdge = relationshipEdge(
           `source-${index}`,
-          relations[index]!,
+          relations[index],
           sourceConsumerPath(index),
           consumerId,
           anchorId,
@@ -503,10 +503,10 @@ describe('Context Brief exact-anchor graph evidence', () => {
         plan,
       });
       const projected = projectContextBrief(logical, 1_500);
-      const topCardRef = evidence.cards[0]!.ref;
-      const topContract = evidence.contracts[0]!;
-      const selectedContract = projected.structuredContent.graph.contracts[0]!;
-      const selectedAction = projected.structuredContent.recommendedFollowUps[0]!;
+      const topCardRef = evidence.cards[0].ref;
+      const topContract = evidence.contracts[0];
+      const selectedContract = projected.structuredContent.graph.contracts[0];
+      const selectedAction = projected.structuredContent.recommendedFollowUps[0];
 
       expect(evidence.cards[0]?.symbol.path).not.toBe(MIGRATION_PATH);
       expect(evidence.cards.some(card => card.symbol.path === MIGRATION_PATH)).toBe(true);
@@ -597,7 +597,7 @@ describe('Context Brief exact-anchor graph evidence', () => {
           expect(requests[1]).not.toHaveProperty('seedQueries');
           expect(
             contextBriefAnchoredRepositoryGraphResultMatches(
-              {...requests[0]!, seedQueries: undefined, seedQueryCount: undefined},
+              {...requests[0], seedQueries: undefined, seedQueryCount: undefined},
               queryResult({
                 edges: [],
                 nodes: [sourceNode(`cgs_${'4'.repeat(32)}`, 'UnrelatedMigration', MIGRATION_PATH, 'property')],

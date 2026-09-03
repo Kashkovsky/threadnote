@@ -101,7 +101,7 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
   let model: string | undefined;
   let output: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--fixture') fixture = resolve(required(args[++index], argument));
     else if (argument === '--manifest') manifest = resolve(required(args[++index], argument));
     else if (argument === '--max-absolute-error') {

@@ -805,7 +805,7 @@ function declaredProjectResolutionClosure(
   const closure = new Set(seeds);
   const queue = [...seeds];
   for (let offset = 0; offset < queue.length; offset += 1) {
-    for (const dependentId of reverseDependencies.get(queue[offset]!) ?? []) {
+    for (const dependentId of reverseDependencies.get(queue[offset]) ?? []) {
       if (closure.has(dependentId)) continue;
       closure.add(dependentId);
       queue.push(dependentId);

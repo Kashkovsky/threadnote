@@ -312,7 +312,7 @@ function recallStorageBytes(fs: FileSystem.FileSystem, databasePath: string) {
         ),
       {concurrency: 4},
     );
-    return {database: sizes[0]!, total: sizes.reduce((total, size) => total + size, 0)};
+    return {database: sizes[0], total: sizes.reduce((total, size) => total + size, 0)};
   });
 }
 

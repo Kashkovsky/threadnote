@@ -1,7 +1,21 @@
-import {Option} from 'effect';
+import {Option, Schema} from 'effect';
 import {type CodeGraphEdge, type CodeGraphSnapshot, type CodeGraphSymbol} from './types.js';
 import {type EdgeRow, type SnapshotRow, type SymbolRow} from './store_internal_models.js';
 import {parseLookupKeys, sqlTextOption} from './store_utilities.js';
+
+const CodeGraphSpanSchema = Schema.Struct({
+  column: Schema.Int,
+  endColumn: Schema.Int,
+  endLine: Schema.Int,
+  line: Schema.Int,
+});
+const isCodeGraphSpan = Schema.is(CodeGraphSpanSchema);
+
+function parseCodeGraphSpan(value: string, label: string): CodeGraphSymbol['span'] {
+  const parsed: unknown = JSON.parse(value);
+  if (!isCodeGraphSpan(parsed)) throw new Error(`Stored ${label} is invalid.`);
+  return parsed;
+}
 
 function snapshotFromRow(row: SnapshotRow): CodeGraphSnapshot {
   return {
@@ -42,7 +56,7 @@ function symbolFromRow(row: SymbolRow): CodeGraphSymbol {
     ...(resolutionDomain === undefined ? {} : {resolutionDomain}),
     ...(resolutionScopeId === undefined ? {} : {resolutionScopeId}),
     signature: Option.getOrUndefined(sqlTextOption(row.signature)),
-    span: JSON.parse(row.span_json) as CodeGraphSymbol['span'],
+    span: parseCodeGraphSpan(row.span_json, 'symbol span'),
   };
 }
 
@@ -50,7 +64,7 @@ function edgeFromRow(row: EdgeRow): CodeGraphEdge {
   return {
     confidence: row.confidence,
     evidencePath: row.evidence_path,
-    evidenceSpan: JSON.parse(row.evidence_span_json) as CodeGraphEdge['evidenceSpan'],
+    evidenceSpan: parseCodeGraphSpan(row.evidence_span_json, 'edge evidence span'),
     id: row.id,
     provenance: row.provenance,
     relation: row.relation,

@@ -127,7 +127,7 @@ describe('vector recall eligibility', () => {
             candidate({
               approved: true,
               project: ' TARGET-APP ',
-              text: initial[0]!.text,
+              text: initial[0].text,
               uri: TARGET_URI,
             }),
           ];
@@ -190,7 +190,7 @@ describe('vector recall eligibility', () => {
             const permuted = yield* ensureVectorIndex(
               {agentContextHome: home},
               manifest,
-              order.map(index => candidates[index]!),
+              order.map(index => candidates[index]),
             );
 
             expect(permuted.generation).toBe(first.generation);
@@ -316,13 +316,13 @@ function vectorDatabasePath(home: string): string {
 }
 
 function unitVector(index: number): readonly number[] {
-  const vector = new Array<number>(manifest.dimensions!).fill(0);
+  const vector = new Array<number>(manifest.dimensions).fill(0);
   vector[index] = 1;
   return vector;
 }
 
 function blendedVector(): readonly number[] {
-  const vector = new Array<number>(manifest.dimensions!).fill(0);
+  const vector = new Array<number>(manifest.dimensions).fill(0);
   vector[0] = 0.8;
   vector[1] = 0.6;
   return vector;

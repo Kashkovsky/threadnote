@@ -212,7 +212,7 @@ function createTarStreamParser(
       const effectiveSize =
         effectivePax.size === undefined
           ? entry.size
-          : yield* attemptArchiveParse(() => parsePaxSize(effectivePax.size!));
+          : yield* attemptArchiveParse(() => parsePaxSize(effectivePax.size));
       expandedBytes += effectiveSize - entry.size;
       if (expandedBytes > limits.expandedBytes) {
         return yield* Effect.fail(

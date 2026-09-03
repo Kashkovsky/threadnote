@@ -536,7 +536,7 @@ export const makeCodeGraphMaintenanceLaneRunner = Effect.fn('codeGraph.makeMaint
         return {reason: 'home-tick-active', state: 'deferred'} as const;
       }
       const {databaseKey, laneIndex} = selection;
-      const lane = CODE_GRAPH_MAINTENANCE_LANES[laneIndex]!;
+      const lane = CODE_GRAPH_MAINTENANCE_LANES[laneIndex];
       const result = yield* runs[lane](input);
       const laneRemaining = result.state === 'completed' && result.remaining;
       const shouldContinue = yield* SynchronizedRef.modify<MaintenanceLaneRunnerState, boolean>(
@@ -787,7 +787,7 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
               input: mergeMaintenanceTick(input, existing?.input ?? input),
             });
           }
-          const nextEntry = pending.entries().next().value as [string, PendingMaintenanceTick] | undefined;
+          const nextEntry = pending.entries().next().value;
           const updated = new Map(current);
           if (nextEntry === undefined) {
             updated.delete(input.threadnoteHome);

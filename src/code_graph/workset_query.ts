@@ -86,8 +86,8 @@ export const inspectCodeGraphWorkset = Effect.fn('codeGraph.inspectWorkset')(fun
         const graph = yield* service.inspect({
           ...options,
           cwd,
-          edgeLimit: edgeBudgets[index]!,
-          nodeLimit: nodeBudgets[index]!,
+          edgeLimit: edgeBudgets[index],
+          nodeLimit: nodeBudgets[index],
           operation: 'query',
           refresh: false,
           requestMaintenance: options.requestMaintenance,

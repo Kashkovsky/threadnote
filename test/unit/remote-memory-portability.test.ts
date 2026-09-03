@@ -89,7 +89,7 @@ describe('remote memory Git beta portability', () => {
     expect(
       finalizeGitBetaCutover({
         outcomes: [
-          {sourceUri: original.sourceUri, status: 'imported', targetUri: plan.entries[0]!.targetUri, version: 1},
+          {sourceUri: original.sourceUri, status: 'imported', targetUri: plan.entries[0].targetUri, version: 1},
         ],
         plan,
         verified: false,
@@ -138,7 +138,7 @@ describe('remote memory Git beta portability', () => {
     // are independently revalidated during materialization.
     const arbitraryAlias = forgePlan({
       ...plan,
-      entries: [{...plan.entries[0]!, aliasUri: beta.sourceUri.replace('cloud-user', 'attacker')}],
+      entries: [{...plan.entries[0], aliasUri: beta.sourceUri.replace('cloud-user', 'attacker')}],
     });
     expect(() => materializeGitBetaImport(arbitraryAlias, [beta])).toThrow('changed after planning');
     const omitted = forgePlan({
@@ -187,8 +187,8 @@ describe('remote memory Git beta portability', () => {
       }),
     ]);
     expect(() => verifyRemoteMemoryExportPlan(exportPlan)).not.toThrow();
-    expect(() => planRemoteMemoryExport([{...records[0]!, contentHash: 'f'.repeat(64)}])).toThrow('hash mismatch');
-    const changedFiles = [{...exportPlan.files[0]!, relativePath: 'durable/projects/threadnote/other.md'}];
+    expect(() => planRemoteMemoryExport([{...records[0], contentHash: 'f'.repeat(64)}])).toThrow('hash mismatch');
+    const changedFiles = [{...exportPlan.files[0], relativePath: 'durable/projects/threadnote/other.md'}];
     const rehashed = {
       ...exportPlan,
       bundleDigest: sha256HexSync(stableJson({files: changedFiles, sourceMutation: 'none', version: 1})),
@@ -230,7 +230,7 @@ describe('remote memory Git beta portability', () => {
     expect(records[0]?.canonicalContent).toBe(sourceRecord.content);
     expect(exportPlan.files[0]?.canonicalContent).toBe(sourceRecord.content);
     expect(
-      parseMemoryDocument(exportPlan.files[0]!.sourceUri, exportPlan.files[0]!.canonicalContent)?.metadata,
+      parseMemoryDocument(exportPlan.files[0].sourceUri, exportPlan.files[0].canonicalContent)?.metadata,
     ).toMatchObject({codeCitations: [citation], schemaVersion: MEMORY_SCHEMA_VERSION});
     expect(() => verifyRemoteMemoryExportPlan(exportPlan)).not.toThrow();
   });
@@ -408,7 +408,7 @@ describe('remote memory portability operator', () => {
             version: 1,
           });
           recordsByUri.set(record.uri, record);
-          return {sourceUri: record.aliases[0]!, status, targetUri: record.uri, version: 1};
+          return {sourceUri: record.aliases[0], status, targetUri: record.uri, version: 1};
         }),
       capabilities: remoteMemoryOperatorCapabilities(['apply_git_beta_import', 'export_records', 'inspect_records']),
       exportRecords: async () => [...recordsByUri.values()],

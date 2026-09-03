@@ -134,7 +134,7 @@ describe('vector index generations', () => {
         expect(database.query('SELECT COUNT(*) AS count FROM vector_chunks').get()).toEqual({count: 2});
         expect(database.query('SELECT COUNT(*) AS count FROM vector_values').get()).toEqual({count: 2});
         expect(database.query('SELECT MIN(length(vector)) AS bytes FROM vector_values').get()).toEqual({
-          bytes: manifest.dimensions! * 4,
+          bytes: manifest.dimensions * 4,
         });
         expect(database.query('SELECT state FROM vector_generations').all()).toEqual([{state: 'ready'}]);
         expect(
@@ -361,7 +361,7 @@ describe('vector index generations', () => {
       const repaired = new Database(vectorDatabasePath(home), {readonly: true});
       try {
         expect(repaired.query('SELECT length(vector) AS bytes FROM vector_values').get()).toEqual({
-          bytes: manifest.dimensions! * 4,
+          bytes: manifest.dimensions * 4,
         });
       } finally {
         repaired.close();
@@ -495,7 +495,7 @@ describe('vector index generations', () => {
       ).vector_id;
       beforeChange.close();
       const changed = await rebuild([
-        candidates[0]!,
+        candidates[0],
         {text: '# Beta\n\nChanged canonical content.', uri: 'threadnote://resources/repos/b.md'},
       ]);
 
@@ -555,7 +555,7 @@ describe('vector index generations', () => {
         vectorIndexMatchesGeneration(home, manifest, 'lexical-generation-2'),
       );
       const changedDocuments = [
-        initial[0]!,
+        initial[0],
         {text: '# Beta\n\nChanged canonical content.', uri: 'threadnote://resources/repos/b.md'},
       ];
       const refreshed = await ensure(changedDocuments, 'lexical-generation-3');

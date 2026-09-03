@@ -1,5 +1,6 @@
 import {sha256HexSync} from '../crypto/sha256.js';
 import {benchmarkMeasurement, type BenchmarkMeasurementV1} from './benchmark.js';
+import {Predicate} from 'effect';
 
 export const MEMORY_CONNECTIONS_SCALE_ID = 'memory-connections-one-hop-scale-v1' as const;
 export const MEMORY_CONNECTIONS_SCALE_VERSION = 1 as const;
@@ -235,8 +236,8 @@ function connectionReceiptIdentityMatches(
 }
 
 export function parseMemoryConnectionsScaleBudgetV1(value: unknown): MemoryConnectionsScaleBudgetV1 {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid('budget must be an object');
-  const budget = value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid('budget must be an object');
+  const budget = value;
   const expectedEntries = Object.entries(MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET);
   if (Object.keys(budget).length !== expectedEntries.length)
     invalid('budget fields do not match the approved contract');

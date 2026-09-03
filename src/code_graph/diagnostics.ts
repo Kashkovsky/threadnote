@@ -609,7 +609,7 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const units = ['KiB', 'MiB', 'GiB', 'TiB'];
   let value = bytes / 1024;
-  let unit = units[0]!;
+  let unit = units[0];
   for (const candidate of units.slice(1)) {
     if (value < 1024) break;
     value /= 1024;

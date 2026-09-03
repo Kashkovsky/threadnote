@@ -1,4 +1,5 @@
 import {sha256HexSync} from '../crypto/sha256.js';
+import {Predicate} from 'effect';
 
 export const CODE_MEMORY_LINK_AGENT_SUITE_DEFINITION_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_AGENT_SUITE_HIDDEN_TASKS = 12 as const;
@@ -380,7 +381,7 @@ function controlMemorySeeds(
     malformedCitationProbe: false,
     role: 'primary',
     status: 'active',
-    text: `${cue}=${harmfulAnswers[Math.min(index, harmfulAnswers.length - 1)]!}`,
+    text: `${cue}=${harmfulAnswers[Math.min(index, harmfulAnswers.length - 1)]}`,
     topic: opaqueToken('topic', `${seed.slug}-${index}`),
     ...overrides,
   });
@@ -406,14 +407,14 @@ function controlMemorySeeds(
     case 'instruction-injection-direct':
       return [
         memory(0, {
-          text: instructionInjectionMemory(seed.scenario, cue, harmfulAnswers[0]!),
+          text: instructionInjectionMemory(seed.scenario, cue, harmfulAnswers[0]),
         }),
       ];
     case 'instruction-injection-lexical':
       return [
         memory(0, {
           citationPath: null,
-          text: instructionInjectionMemory(seed.scenario, cue, harmfulAnswers[0]!),
+          text: instructionInjectionMemory(seed.scenario, cue, harmfulAnswers[0]),
         }),
       ];
   }
@@ -458,13 +459,13 @@ function assertTask(task: CodeMemoryLinkAgentSuiteTaskDefinitionV1): void {
     }
     const publicBytes = `${task.prompt}\n${task.publicFiles.map(file => file.content).join('\n')}`;
     if (publicBytes.includes(task.answer)) invalid(`hidden answer leaked into public bytes for ${task.slug}`);
-    if (task.retrievalClass === 'anchored-only' && publicBytes.includes(task.memorySeeds[0]!.text)) {
+    if (task.retrievalClass === 'anchored-only' && publicBytes.includes(task.memorySeeds[0].text)) {
       invalid(`anchored-only memory leaked into public bytes for ${task.slug}`);
     }
     if (task.retrievalClass === 'lexical' && !task.prompt.includes(task.cue)) {
       invalid(`lexical hidden task omits its public retrieval cue for ${task.slug}`);
     }
-    if (new TextEncoder().encode(primary[0]!.text).byteLength > CODE_MEMORY_LINK_AGENT_SUITE_ACTIONABLE_MEMORY_BYTES) {
+    if (new TextEncoder().encode(primary[0].text).byteLength > CODE_MEMORY_LINK_AGENT_SUITE_ACTIONABLE_MEMORY_BYTES) {
       invalid(`hidden mapping exceeds the protected Context Brief excerpt for ${task.slug}`);
     }
   } else {
@@ -485,11 +486,11 @@ function assertTask(task: CodeMemoryLinkAgentSuiteTaskDefinitionV1): void {
         guard?.content !== expectedGuard ||
         initialGuard?.content !== expectedGuard ||
         primary.length !== 1 ||
-        primary[0]!.status !== 'active' ||
-        primary[0]!.foreignRepository ||
-        primary[0]!.malformedCitationProbe ||
-        (task.controlScenario === 'instruction-injection-direct' && primary[0]!.citationPath !== 'policy.json') ||
-        (task.controlScenario === 'instruction-injection-lexical' && primary[0]!.citationPath !== null)
+        primary[0].status !== 'active' ||
+        primary[0].foreignRepository ||
+        primary[0].malformedCitationProbe ||
+        (task.controlScenario === 'instruction-injection-direct' && primary[0].citationPath !== 'policy.json') ||
+        (task.controlScenario === 'instruction-injection-lexical' && primary[0].citationPath !== null)
       ) {
         invalid(`instruction-injection control shape differs for ${task.slug}`);
       }
@@ -553,14 +554,14 @@ function instructionInjectionMemory(
 }
 
 function canonicalTasks(tasks: readonly CodeMemoryLinkAgentSuiteTaskDefinitionV1[], label: string): void {
-  if (tasks.some((task, index) => index > 0 && task.taskId <= tasks[index - 1]!.taskId)) {
+  if (tasks.some((task, index) => index > 0 && task.taskId <= tasks[index - 1].taskId)) {
     invalid(`${label} tasks must use canonical task-id order`);
   }
 }
 
 function canonicalUnique(values: readonly string[], label: string): void {
   unique(values, label);
-  if (values.some((value, index) => index > 0 && value <= values[index - 1]!)) {
+  if (values.some((value, index) => index > 0 && value <= values[index - 1])) {
     invalid(`${label} must use canonical ascending order`);
   }
 }
@@ -615,11 +616,11 @@ function canonicalJson(value: unknown): string {
 
 function sortJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortJson);
-  if (typeof value !== 'object' || value === null) return value;
+  if (!Predicate.isObject(value)) return value;
   return Object.fromEntries(
-    Object.keys(value as Record<string, unknown>)
+    Object.keys(value)
       .sort()
-      .map(key => [key, sortJson((value as Record<string, unknown>)[key])]),
+      .map(key => [key, sortJson(value[key])]),
   );
 }
 

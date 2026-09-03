@@ -322,7 +322,7 @@ function deterministicShuffle<T>(values: readonly T[], seed: number): readonly T
   };
   for (let index = shuffled.length - 1; index > 0; index -= 1) {
     const replacement = Math.floor(random() * (index + 1));
-    [shuffled[index], shuffled[replacement]] = [shuffled[replacement]!, shuffled[index]!];
+    [shuffled[index], shuffled[replacement]] = [shuffled[replacement], shuffled[index]];
   }
   return shuffled;
 }

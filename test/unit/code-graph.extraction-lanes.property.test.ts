@@ -62,7 +62,7 @@ describe('code graph extraction scheduling', () => {
     fc.assert(
       fc.property(
         fc.uniqueArray(groupArbitrary, {
-          comparator: (left, right) => left.files[0]!.path === right.files[0]!.path,
+          comparator: (left, right) => left.files[0].path === right.files[0].path,
           maxLength: 32,
         }),
         fc.integer({max: 16, min: 1}),
@@ -85,8 +85,8 @@ describe('code graph extraction scheduling', () => {
     const typescript = group('typescript', 'src/a.ts', 32 * 1_024);
     const python = group('python', 'src/b.py', 32 * 1_024);
     const observations = [
-      {factsBytes: 8 * 1_024, file: typescript.files[0]!, requestMilliseconds: 2},
-      {factsBytes: 512 * 1_024, file: python.files[0]!, requestMilliseconds: 80},
+      {factsBytes: 8 * 1_024, file: typescript.files[0], requestMilliseconds: 2},
+      {factsBytes: 512 * 1_024, file: python.files[0], requestMilliseconds: 80},
     ];
     const schedule = (ordered: typeof observations) => {
       const model = createCodeGraphExtractionCostModel<TestGroup>();
@@ -127,7 +127,7 @@ describe('code graph extraction scheduling', () => {
     expect(() => planCodeGraphExtractionLanes([group('typescript', 'src/a.ts', 1)], 0, model)).toThrow(/capacity/u);
     expect(() => model.estimate({files: [], id: 'empty'})).toThrow(/empty/u);
     expect(() =>
-      model.observe(group('typescript', 'src/a.ts', 1).files[0]!, {factsBytes: -1, requestMilliseconds: 1}),
+      model.observe(group('typescript', 'src/a.ts', 1).files[0], {factsBytes: -1, requestMilliseconds: 1}),
     ).toThrow(/observation/u);
   });
 });

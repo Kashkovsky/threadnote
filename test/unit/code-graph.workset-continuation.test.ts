@@ -92,7 +92,7 @@ describe('code graph workset qualified refs and continuation', () => {
         fc.uniqueArray(fc.integer({min: 0, max: 1_000_000}), {maxLength: 8, minLength: 1}),
         async seeds => {
           for (const seed of seeds) {
-            const nodeHexLength = [32, 40, 64][seed % 3]!;
+            const nodeHexLength = [32, 40, 64][seed % 3];
             const nodeId = `cgs_${digest(`node:${seed}`).slice(0, nodeHexLength)}`;
             const leftRepositoryId = digest(`left:${seed}`);
             const rightRepositoryId = digest(`right:${seed}`);
@@ -210,7 +210,7 @@ describe('code graph workset qualified refs and continuation', () => {
       runEffect(
         registerCodeGraphWorksetResultSet(home, {
           projectorVersion: CODE_GRAPH_WORKSET_EVIDENCE_PROJECTOR_VERSION,
-          result: worksetResult([{...cards[0]!, source: 'must never persist'} as never], generation, [left, right]),
+          result: worksetResult([{...cards[0], source: 'must never persist'} as never], generation, [left, right]),
         }),
       ),
     ).rejects.toMatchObject({reason: 'invalid-input'} satisfies Partial<CodeGraphWorksetCatalogError>);
@@ -334,7 +334,7 @@ describe('code graph workset qualified refs and continuation', () => {
     const generation = await publish(home, generationInput('engineering', 'manifest-property', [inputMember]));
     const cards: CodeGraphEvidenceCardV1[] = [];
     for (let index = 0; index < count; index += 1) {
-      const nodeId = inputMember.projection.symbols[index]!.nodeId;
+      const nodeId = inputMember.projection.symbols[index].nodeId;
       const qualified = await runEffect(
         registerCodeGraphQualifiedRef(home, {nodeId, repositoryId: inputMember.projection.repositoryId}),
       );
@@ -370,7 +370,7 @@ describe('code graph workset qualified refs and continuation', () => {
     const generation = await publish(home, generationInput('engineering', 'manifest-maintenance', [inputMember]));
     const qualified = await runEffect(
       registerCodeGraphQualifiedRef(home, {
-        nodeId: inputMember.projection.symbols[0]!.nodeId,
+        nodeId: inputMember.projection.symbols[0].nodeId,
         repositoryId: inputMember.projection.repositoryId,
       }),
     );
@@ -399,7 +399,7 @@ describe('code graph workset qualified refs and continuation', () => {
       await runEffect(maintainCodeGraphWorksetResultSets(home, {limit: 1, now: '2026-01-01T00:00:00.000Z'})),
     ).toMatchObject({expiredResultSetsDeleted: 1, remainingResultSets: 2});
     await expect(
-      runEffect(readCodeGraphWorksetResultSetPage(home, {cursor: registrations[0]!.initialCursor})),
+      runEffect(readCodeGraphWorksetResultSetPage(home, {cursor: registrations[0].initialCursor})),
     ).rejects.toMatchObject({reason: 'missing'} satisfies Partial<CodeGraphWorksetCatalogError>);
   });
 });
@@ -474,7 +474,7 @@ function evidenceCard(
   inputMember: CodeGraphWorksetCatalogGenerationMemberV1,
   index = 0,
 ): CodeGraphEvidenceCardV1 {
-  const symbol = inputMember.projection.symbols[index]!;
+  const symbol = inputMember.projection.symbols[index];
   return {
     id: codeGraphEvidenceCardId(ref, inputMember.projection.snapshotId, inputMember.projection.worktreeId),
     reason: {score: 1 - index / 100, signals: ['exact-qualified-name'], summary: `ranked card ${index}`},

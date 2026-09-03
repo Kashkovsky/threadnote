@@ -242,7 +242,10 @@ export function formatMemoryDocumentWithKeywords(content: string, keywords: read
   const header = separatorIndex === -1 ? canonical : canonical.slice(0, separatorIndex);
   const body = separatorIndex === -1 ? '' : canonical.slice(separatorIndex + 2);
   const headerLines = header.split('\n').filter(line => !line.startsWith('keywords:'));
-  const keywordLines = keywords.map(keyword => memoryHeaderLine('keywords', keyword) as string);
+  const keywordLines = keywords.flatMap(keyword => {
+    const line = memoryHeaderLine('keywords', keyword);
+    return line === undefined ? [] : [line];
+  });
   return [...headerLines, ...keywordLines, '', body].join('\n');
 }
 
@@ -268,7 +271,7 @@ export function assertMemoryDocumentSchemaWritable(content: string): void {
   if (schemaLines.length !== 1) {
     throw new Error('Memory schema_version header must appear exactly once before rewriting.');
   }
-  const line = schemaLines[0]!;
+  const line = schemaLines[0];
   const rawVersion = line.slice(line.indexOf(':') + 1).trim();
   const schemaVersion = parseSchemaVersion(rawVersion);
   if (schemaVersion === undefined) {

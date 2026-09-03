@@ -322,12 +322,12 @@ function lookupSummaries(rows: readonly RawLookupRow[]): readonly PersistedLooku
       .sort();
     return {
       exportedSymbolCount: exportedIds.length,
-      lookupKey: group[0]!.lookupKey,
+      lookupKey: group[0].lookupKey,
       ...(exportedIds.at(-1) === undefined ? {} : {maximumExportedSymbolId: exportedIds.at(-1)}),
       ...(ids.at(-1) === undefined ? {} : {maximumSymbolId: ids.at(-1)}),
       ...(exportedIds[0] === undefined ? {} : {minimumExportedSymbolId: exportedIds[0]}),
       ...(ids[0] === undefined ? {} : {minimumSymbolId: ids[0]}),
-      resolutionDomain: group[0]!.resolutionDomain,
+      resolutionDomain: group[0].resolutionDomain,
       symbolCount: ids.length,
     };
   });

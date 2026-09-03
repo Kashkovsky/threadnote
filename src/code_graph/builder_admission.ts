@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Path} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Path, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
@@ -214,20 +214,31 @@ const scanTickets = Effect.fn('codeGraph.builderAdmission.scan')(function* (
 
 function parseTicket(serialized: string, token: string): BuilderAdmissionTicket | undefined {
   try {
-    const value = JSON.parse(serialized) as Partial<BuilderAdmissionTicket>;
+    const parsed: unknown = JSON.parse(serialized);
+    if (!Predicate.isObject(parsed)) return undefined;
+    const value = parsed;
     if (
       value.version !== 1 ||
       value.token !== token ||
       (value.admissionClass !== 'background' && value.admissionClass !== 'current-required') ||
+      typeof value.createdAt !== 'number' ||
       !Number.isSafeInteger(value.createdAt) ||
+      typeof value.processId !== 'number' ||
       !Number.isSafeInteger(value.processId) ||
-      Number(value.processId) <= 0 ||
+      value.processId <= 0 ||
       ((value.processStartIdentity !== undefined || Object.hasOwn(value, 'processStartIdentity')) &&
         typeof value.processStartIdentity !== 'string')
     ) {
       return undefined;
     }
-    return value as BuilderAdmissionTicket;
+    return {
+      admissionClass: value.admissionClass,
+      createdAt: value.createdAt,
+      processId: value.processId,
+      ...(value.processStartIdentity === undefined ? {} : {processStartIdentity: value.processStartIdentity}),
+      token: value.token,
+      version: 1,
+    };
   } catch {
     return undefined;
   }

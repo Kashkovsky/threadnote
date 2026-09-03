@@ -177,8 +177,8 @@ export function mcpCallToolResultWithTelemetryMetadata(result: ToolResult): McpS
   const normalized =
     result.structuredContent === undefined
       ? result
-      : {...result, structuredContent: JSON.parse(JSON.stringify(result.structuredContent)) as unknown};
-  return copyAnonymousTelemetryMetadata(new McpSchema.CallToolResult(normalized as McpSchema.CallToolResult), result);
+      : {...result, structuredContent: parseMcpJson(JSON.stringify(result.structuredContent))};
+  return copyAnonymousTelemetryMetadata(Schema.decodeUnknownSync(McpSchema.CallToolResult)(normalized), result);
 }
 
 interface ResourceTemplateDefinition {
@@ -255,9 +255,10 @@ export class EffectMcpServerRegistry {
     definition: ToolDefinition<Fields>,
     handle: (args: Schema.Struct.Type<Fields>, context: McpToolCallContext) => ToolHandlerResult,
   ): void {
+    const decodeInput = Schema.decodeUnknownSync(Schema.Struct(definition.inputSchema));
     this.#tools.push({
       definition,
-      handle: (args, context) => handle(args as Schema.Struct.Type<Fields>, context),
+      handle: (args, context) => handle(decodeInput(args), context),
       name,
     });
   }
@@ -670,7 +671,7 @@ export function makeMcpCancellationCompatibleProtocol(
           : handling.pipe(Effect.provideService(CurrentMcpProgressRequestAssociation, progressAssociation));
       }),
     send: (clientId, response, transferables) => {
-      const mcpResponse = response as RpcMessage.FromServerEncoded | RpcMessage.RequestEncoded;
+      const mcpResponse = response;
       const outgoingProgressPayload =
         mcpResponse._tag === 'Request' &&
         mcpResponse.tag === 'notifications/progress' &&
@@ -687,7 +688,7 @@ export function makeMcpCancellationCompatibleProtocol(
         '_meta' in outgoingProgressPayload &&
         typeof outgoingProgressPayload._meta === 'object' &&
         outgoingProgressPayload._meta !== null
-          ? (outgoingProgressPayload._meta as Readonly<Record<string, unknown>>)
+          ? mcpRecord(outgoingProgressPayload._meta)
           : undefined;
       const progressGeneration = outgoingProgressMetadata?.[MCP_PROGRESS_GENERATION_METADATA_KEY];
       if (
@@ -700,10 +701,7 @@ export function makeMcpCancellationCompatibleProtocol(
       if (outgoingProgressPayload !== undefined && outgoingProgressMetadata !== undefined) {
         const {[MCP_PROGRESS_GENERATION_METADATA_KEY]: _generation, ...wireMetadata} = outgoingProgressMetadata;
         if (MCP_PROGRESS_GENERATION_METADATA_KEY in outgoingProgressMetadata) {
-          wireResponse = {
-            ...mcpResponse,
-            payload: {...outgoingProgressPayload, _meta: wireMetadata},
-          } as unknown as typeof response;
+          wireResponse = mcpResponseWithPublicProgressMetadata(mcpResponse, outgoingProgressPayload, wireMetadata);
         }
       }
       if (response._tag !== 'Chunk' && response._tag !== 'Exit') {
@@ -881,7 +879,6 @@ export function installCallToolProgressBridge(server: EffectMcpServer): boolean 
   const originalCallToolMethod = server.callTool;
   const originalInitializedClients = server.initializedClients;
   const stdioInitializedClients = new StdioSingleClientSet(originalInitializedClients);
-  const writableServer = server as unknown as {callTool: EffectMcpServer['callTool']};
   const wrappedCallTool: EffectMcpServer['callTool'] = request =>
     Effect.gen(function* () {
       // McpServerClient middleware rejects non-initialize requests before
@@ -921,11 +918,21 @@ export function installCallToolProgressBridge(server: EffectMcpServer): boolean 
       value: stdioInitializedClients,
       writable: false,
     });
-    writableServer.callTool = wrappedCallTool;
+    Object.defineProperty(server, 'callTool', {
+      configurable: callToolDescriptor.configurable,
+      enumerable: callToolDescriptor.enumerable,
+      value: wrappedCallTool,
+      writable: true,
+    });
     if (server.callTool !== wrappedCallTool) throw new Error('Effect MCP callTool bridge was not installed.');
   } catch {
     try {
-      writableServer.callTool = originalCallToolMethod;
+      Object.defineProperty(server, 'callTool', {
+        configurable: callToolDescriptor.configurable,
+        enumerable: callToolDescriptor.enumerable,
+        value: originalCallToolMethod,
+        writable: true,
+      });
     } catch {
       // The stdio recipient invariant is installed before the handler wrapper,
       // so even a hostile setter that prevents restoration cannot turn this
@@ -995,7 +1002,7 @@ export function makeMcpToolProgress(
           Effect.andThen(Effect.yieldNow),
           Effect.andThen(Effect.yieldNow),
           Effect.catchCause(cause =>
-            Cause.hasInterrupts(cause) ? Effect.failCause(cause as Cause.Cause<never>) : Effect.void,
+            Cause.hasInterrupts(cause) ? Effect.failCause(interruptCause(cause)) : Effect.void,
           ),
         );
       }),
@@ -1066,7 +1073,7 @@ export function mcpResourceFailureResult(
   cause: Cause.Cause<unknown>,
 ): Effect.Effect<never, McpSchema.InternalError | McpSchema.InvalidParams> {
   if (Cause.hasInterrupts(cause)) {
-    return Effect.failCause(cause as Cause.Cause<McpSchema.InternalError | McpSchema.InvalidParams>);
+    return Effect.failCause(interruptCause(cause));
   }
   const error = Option.getOrUndefined(Cause.findErrorOption(cause));
   if (
@@ -1085,7 +1092,7 @@ export function mcpResourceFailureResult(
 
 export function mcpToolFailureResult(cause: Cause.Cause<unknown>): Effect.Effect<McpSchema.CallToolResult, never> {
   if (Cause.hasInterruptsOnly(cause)) {
-    return Effect.failCause(cause as Cause.Cause<never>);
+    return Effect.failCause(interruptCause(cause));
   }
   return Effect.succeed(
     attachAnonymousTelemetryError(
@@ -1263,20 +1270,18 @@ function repairMcpJsonRpcEnvelope(input: string, instructions: string | undefine
 type McpJsonRpcEnvelope = Record<string, unknown> | readonly Record<string, unknown>[];
 
 function parseMcpJsonRpcEnvelope(input: string): McpJsonRpcEnvelope | undefined {
-  const parsed = Option.getOrUndefined(
-    Option.liftThrowable((content: string) => JSON.parse(content) as unknown)(input),
-  );
+  const parsed = Option.getOrUndefined(Option.liftThrowable(parseMcpJson)(input));
   if (Array.isArray(parsed)) {
-    if (parsed.length === 0 || parsed.some(item => typeof item !== 'object' || item === null || Array.isArray(item))) {
+    if (parsed.length === 0 || !parsed.every(mcpRecord)) {
       return undefined;
     }
-    return parsed as readonly Record<string, unknown>[];
+    return parsed;
   }
-  return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
+  return mcpRecord(parsed);
 }
 
 function repairMcpJsonRpcValue(parsed: McpJsonRpcEnvelope, instructions: string | undefined): McpJsonRpcEnvelope {
-  if (!Array.isArray(parsed)) return repairMcpJsonRpcObject(parsed as Record<string, unknown>, instructions);
+  if (!isMcpJsonRpcBatch(parsed)) return repairMcpJsonRpcObject(parsed, instructions);
   let changed = false;
   const transformed = parsed.map(item => {
     const repaired = repairMcpJsonRpcObject(item, instructions);
@@ -1287,9 +1292,7 @@ function repairMcpJsonRpcValue(parsed: McpJsonRpcEnvelope, instructions: string 
 }
 
 function mcpJsonRpcEnvelopeContainsInitializeResponse(parsed: McpJsonRpcEnvelope): boolean {
-  return Array.isArray(parsed)
-    ? parsed.some(item => mcpInitializeResponse(item))
-    : mcpInitializeResponse(parsed as Record<string, unknown>);
+  return isMcpJsonRpcBatch(parsed) ? parsed.some(item => mcpInitializeResponse(item)) : mcpInitializeResponse(parsed);
 }
 
 function repairMcpJsonRpcObject(
@@ -1322,16 +1325,39 @@ function repairMcpJsonRpcObject(
 }
 
 function mcpRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Readonly<Record<string, unknown>>)
-    : undefined;
+  return isMcpRecord(value) ? value : undefined;
+}
+
+function isMcpRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isMcpJsonRpcBatch(value: McpJsonRpcEnvelope): value is readonly Record<string, unknown>[] {
+  return Array.isArray(value);
+}
+
+function parseMcpJson(content: string): unknown {
+  const value: unknown = JSON.parse(content);
+  return value;
+}
+
+function mcpResponseWithPublicProgressMetadata<Response extends object>(
+  response: Response,
+  payload: object,
+  metadata: Readonly<Record<string, unknown>>,
+): Response {
+  return {...response, payload: {...payload, _meta: metadata}};
+}
+
+function interruptCause(cause: Cause.Cause<unknown>): Cause.Cause<never> {
+  return Cause.interrupt(cause.reasons.find(Cause.isInterruptReason)?.fiberId);
 }
 
 function mcpInitializeResponse(parsed: Record<string, unknown>): parsed is Record<string, unknown> & {
   readonly result: Readonly<Record<string, unknown>>;
 } {
-  if (typeof parsed.result !== 'object' || parsed.result === null || Array.isArray(parsed.result)) return false;
-  return 'protocolVersion' in parsed.result && 'serverInfo' in parsed.result;
+  const result = mcpRecord(parsed.result);
+  return result !== undefined && 'protocolVersion' in result && 'serverInfo' in result;
 }
 
 function couldContainEffectRpcCause(input: string | Uint8Array): boolean {
@@ -1407,7 +1433,8 @@ function hasMcpResourceErrorBrand(error: unknown): boolean {
   if (typeof error !== 'object' || error === null || !('data' in error)) return false;
   const data = error.data;
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return false;
-  const record = data as Readonly<Record<string, unknown>>;
+  const record = mcpRecord(data);
+  if (!record) return false;
   const keys = Object.keys(record);
   const brand = record[MCP_RESOURCE_ERROR_BRAND_KEY];
   if (brand === 1) return keys.length === 1;
@@ -1424,7 +1451,8 @@ function hasMcpResourceNotFoundErrorBrand(error: unknown): boolean {
   if (!hasMcpResourceErrorBrand(error) || typeof error !== 'object' || error === null || !('data' in error)) {
     return false;
   }
-  const data = error.data as Readonly<Record<string, unknown>>;
+  const data = mcpRecord(error.data);
+  if (!data) return false;
   return data[MCP_RESOURCE_ERROR_BRAND_KEY] === 2;
 }
 
@@ -1432,7 +1460,8 @@ function mcpResourceMemoryRecovery(error: unknown): MemoryReadRecoveryV1 | undef
   if (!hasMcpResourceNotFoundErrorBrand(error) || typeof error !== 'object' || error === null || !('data' in error)) {
     return undefined;
   }
-  const data = error.data as Readonly<Record<string, unknown>>;
+  const data = mcpRecord(error.data);
+  if (!data) return undefined;
   const recovery = data[MCP_RESOURCE_MEMORY_RECOVERY_KEY];
   return isMemoryReadRecoveryV1(recovery) ? recovery : undefined;
 }

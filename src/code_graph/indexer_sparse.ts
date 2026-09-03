@@ -382,8 +382,7 @@ function currentBasePackProvenance(
     .map(codeGraphLanguagePackProvenance)
     .sort((left, right) => compareCodeUnits(left.id, right.id));
   const expected = [...persisted].sort((left, right) => compareCodeUnits(left.id, right.id));
-  return current.length === expected.length &&
-    current.every((pack, index) => samePackProvenance(pack, expected[index]!))
+  return current.length === expected.length && current.every((pack, index) => samePackProvenance(pack, expected[index]))
     ? current
     : undefined;
 }
@@ -440,7 +439,10 @@ export const assessReusableOverlayAdmissionCompatibility = Effect.fn(
   if (orderedBaseRawFacts.some(file => file === undefined) || baseRawFactsByPath.size !== base.files.length) {
     return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
   }
-  const completeBaseRawFacts = orderedBaseRawFacts as readonly CodeGraphFileFacts[];
+  const completeBaseRawFacts: CodeGraphFileFacts[] = [];
+  for (const fact of orderedBaseRawFacts) {
+    if (fact !== undefined) completeBaseRawFacts.push(fact);
+  }
   const repositoryAttribution = createRepositoryFactAttributionContext(inventoryReceipt.attributionFiles);
   const candidates = repositoryAttribution.candidatePaths([...completeBaseRawFacts, ...currentRawFacts]);
   const existingPaths = yield* input.store.existingSnapshotFilePaths(

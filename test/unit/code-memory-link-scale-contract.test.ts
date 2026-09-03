@@ -140,7 +140,7 @@ describe('code-memory-link inverse-selector scale contract', () => {
     const noAnswer = capture.scenarios.find(scenario => scenario.id === 'no-answer')!;
     noAnswer.samples[0] = observation(['threadnote://user/inverse-scale/memories/leaked.md'], 10, 1);
     const file = capture.scenarios.find(scenario => scenario.id === 'file-backlinks')!;
-    file.samples[0] = observation([file.expectedUris[0]!, file.expectedUris[0]!, 'threadnote://foreign/decoy.md']);
+    file.samples[0] = observation([file.expectedUris[0], file.expectedUris[0], 'threadnote://foreign/decoy.md']);
     const artifact = evaluateCodeMemoryLinkScaleCapture({
       budget,
       capture,
@@ -166,8 +166,8 @@ describe('code-memory-link inverse-selector scale contract', () => {
 
   it('does not let retained observations redefine frozen URI truth', () => {
     const capture = releaseCapture();
-    capture.scenarios[0]!.expectedUris = ['threadnote://foreign/decoy.md'];
-    capture.scenarios[0]!.cold.returnedUris = ['threadnote://foreign/decoy.md'];
+    capture.scenarios[0].expectedUris = ['threadnote://foreign/decoy.md'];
+    capture.scenarios[0].cold.returnedUris = ['threadnote://foreign/decoy.md'];
     const artifact = evaluateCodeMemoryLinkScaleCapture({
       budget,
       capture,
@@ -181,7 +181,7 @@ describe('code-memory-link inverse-selector scale contract', () => {
   it('requires the frozen dense scenario to observe bounded shadow-search abstention', () => {
     const capture = releaseCapture();
     const dense = capture.scenarios.find(scenario => scenario.id === 'dense-shared-selector')!;
-    dense.samples[0]!.truncatedSelectorCount = 0;
+    dense.samples[0].truncatedSelectorCount = 0;
     const artifact = evaluateCodeMemoryLinkScaleCapture({
       budget,
       capture,
@@ -206,7 +206,7 @@ describe('code-memory-link inverse-selector scale contract', () => {
       fc.property(fc.shuffledSubarray([...Array(25).keys()], {maxLength: 25, minLength: 25}), order => {
         const permuted = releaseCapture();
         for (const scenario of permuted.scenarios) {
-          scenario.samples = order.map(index => scenario.samples[index]!);
+          scenario.samples = order.map(index => scenario.samples[index]);
         }
         const actual = evaluateCodeMemoryLinkScaleCapture({
           budget,

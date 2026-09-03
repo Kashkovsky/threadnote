@@ -141,7 +141,7 @@ const RecallRerankerParityFixtureSchemaV1 = Schema.Struct({
 });
 
 export function parseRecallRerankerParityFixtureV1(value: unknown): RecallRerankerParityFixtureV1 {
-  const fixture = Schema.decodeUnknownSync(RecallRerankerParityFixtureSchemaV1)(value) as RecallRerankerParityFixtureV1;
+  const fixture = Schema.decodeUnknownSync(RecallRerankerParityFixtureSchemaV1)(value);
   const shaValues = [
     fixture.configurationSha256,
     fixture.dataset.groupFileSha256,
@@ -214,7 +214,7 @@ export function evaluateRecallRerankerParity(
       throw new ScriptError(`Native reranker returned invalid scores for parity group ${group.groupId}.`);
     }
     const candidates = group.candidates.map((candidate, index) => {
-      const nativeScore = scores[index]!;
+      const nativeScore = scores[index];
       const absoluteError = Math.abs(nativeScore - candidate.pythonScore);
       pairs += 1;
       absoluteErrorTotal += absoluteError;
@@ -229,17 +229,17 @@ export function evaluateRecallRerankerParity(
     });
     for (let left = 0; left < group.candidates.length; left += 1) {
       for (let right = left + 1; right < group.candidates.length; right += 1) {
-        const pythonDelta = group.candidates[left]!.pythonScore - group.candidates[right]!.pythonScore;
+        const pythonDelta = group.candidates[left].pythonScore - group.candidates[right].pythonScore;
         if (Math.abs(pythonDelta) < thresholds.minimumOrderingGap) continue;
         orderingComparisons += 1;
-        const nativeDelta = scores[left]! - scores[right]!;
+        const nativeDelta = scores[left] - scores[right];
         if (Math.sign(nativeDelta) !== Math.sign(pythonDelta)) {
           orderingFailures.push({
             groupId: group.groupId,
-            leftCandidateId: group.candidates[left]!.candidateId,
+            leftCandidateId: group.candidates[left].candidateId,
             nativeDelta,
             pythonDelta,
-            rightCandidateId: group.candidates[right]!.candidateId,
+            rightCandidateId: group.candidates[right].candidateId,
           });
         }
       }

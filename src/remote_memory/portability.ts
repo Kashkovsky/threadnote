@@ -261,8 +261,8 @@ function assertSourceClassificationSemantics(
     throw new Error('Git beta import source changed after planning or no longer matches classification semantics.');
   }
   for (let index = 0; index < sourcePlan.entries.length; index += 1) {
-    const expected = sourcePlan.entries[index]!;
-    const actual = plan.entries[index]!;
+    const expected = sourcePlan.entries[index];
+    const actual = plan.entries[index];
     const classificationMatches =
       actual.classification === expected.classification ||
       (expected.classification === 'would_import' && actual.classification === 'unchanged');
@@ -324,8 +324,8 @@ export function finalizeGitBetaCutover(input: {
 export function planRemoteMemoryExport(records: readonly RemoteMemoryPortableRecordV1[]): RemoteMemoryExportPlanV1 {
   const files = records.map(exportFile).sort((left, right) => compareCodeUnits(left.relativePath, right.relativePath));
   for (let index = 1; index < files.length; index += 1) {
-    if (files[index - 1]!.relativePath === files[index]!.relativePath) {
-      throw new Error(`Remote memory export path conflict: ${files[index]!.relativePath}.`);
+    if (files[index - 1].relativePath === files[index].relativePath) {
+      throw new Error(`Remote memory export path conflict: ${files[index].relativePath}.`);
     }
   }
   const bundleDigest = sha256HexSync(stableJson({files, sourceMutation: 'none', version: 1}));

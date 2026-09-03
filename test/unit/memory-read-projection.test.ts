@@ -252,6 +252,6 @@ describe('bounded memory read projection', () => {
       uris: resources.map(resource => resource.uri),
     };
     expect(memoryReadSourcesMatch(resources, state.sourceHashes)).toBe(true);
-    expect(memoryReadSourcesMatch([{...resources[0]!, text: 'changed'}], state.sourceHashes)).toBe(false);
+    expect(memoryReadSourcesMatch([{...resources[0], text: 'changed'}], state.sourceHashes)).toBe(false);
   });
 });

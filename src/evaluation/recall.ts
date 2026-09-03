@@ -261,13 +261,13 @@ export const RecallEvaluationRunSchemaV1 = Schema.Struct({
 });
 
 export function parseRecallEvaluationFixtureV2(value: unknown): RecallEvaluationFixtureV2 {
-  const decoded = Schema.decodeUnknownSync(RecallEvaluationFixtureSchemaV2)(value) as RecallEvaluationFixtureV2;
+  const decoded = Schema.decodeUnknownSync(RecallEvaluationFixtureSchemaV2)(value);
   validateRecallEvaluationFixtureV2(decoded);
   return decoded;
 }
 
 export function parseRecallEvaluationRunV1(value: unknown): RecallEvaluationRunV1 {
-  return Schema.decodeUnknownSync(RecallEvaluationRunSchemaV1)(value) as RecallEvaluationRunV1;
+  return Schema.decodeUnknownSync(RecallEvaluationRunSchemaV1)(value);
 }
 
 export function validateRecallEvaluationFixtureV2(fixture: RecallEvaluationFixtureV2): void {

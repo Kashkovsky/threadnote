@@ -28,22 +28,22 @@ describe('Code Memory Link retained release replay', () => {
     expect(() => assertRetainedBundleBindings(fixture.input)).not.toThrow();
 
     const responseTamper = replayFixture();
-    responseTamper.evidence[0]!.rawEvidence.appServer.checkpoints[0]!.proxyReceipt.responseHash = 'f'.repeat(64);
+    responseTamper.evidence[0].rawEvidence.appServer.checkpoints[0].proxyReceipt.responseHash = 'f'.repeat(64);
     expect(() => assertRetainedBundleBindings(responseTamper.input)).toThrow(/response.*preregistration/u);
 
     const projectionTamper = replayFixture();
-    projectionTamper.evidence[0]!.rawEvidence.clientProtocol.configurationProjectionHash = 'e'.repeat(64);
+    projectionTamper.evidence[0].rawEvidence.clientProtocol.configurationProjectionHash = 'e'.repeat(64);
     expect(() => assertRetainedBundleBindings(projectionTamper.input)).toThrow(/client protocol/u);
 
     const judgeTamper = replayFixture();
-    judgeTamper.evidence[0]!.rawEvidence.judge.programSha256 = 'd'.repeat(64);
+    judgeTamper.evidence[0].rawEvidence.judge.programSha256 = 'd'.repeat(64);
     expect(() => assertRetainedBundleBindings(judgeTamper.input)).toThrow(/judge execution/u);
   });
 });
 
 function replayFixture() {
   const corpus = createCodeMemoryLinkAgentSuiteCorpusV1();
-  const definition = corpus.releaseTasks[0]!;
+  const definition = corpus.releaseTasks[0];
   const sealed = assembleCodeMemoryLinkSealedSuiteV1({
     corpusHash: corpus.corpusHash,
     judgeProgram: 'export const judge = true;\n',
@@ -65,7 +65,7 @@ function replayFixture() {
     suiteHash: sealed.suite.suiteHash,
     tasks: sealed.manifestTasks,
   };
-  const responseHash = sealed.manifestTasks[0]!.expectedResponseHashes.anchored;
+  const responseHash = sealed.manifestTasks[0].expectedResponseHashes.anchored;
   const evidence = clientFixtures.map(client => ({
     rawEvidence: {
       appServer: {

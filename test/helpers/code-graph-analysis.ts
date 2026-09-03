@@ -244,7 +244,7 @@ function firstAfter<Value>(values: readonly Value[], compareToCursor: (value: Va
   let high = values.length;
   while (low < high) {
     const middle = (low + high) >>> 1;
-    if (compareToCursor(values[middle]!) <= 0) low = middle + 1;
+    if (compareToCursor(values[middle]) <= 0) low = middle + 1;
     else high = middle;
   }
   return low;

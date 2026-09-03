@@ -59,7 +59,7 @@ function importForLocalName(imports: readonly TreeSitterImport[], name: string):
     const localName = Option.getOrElse(item.alias, () => Option.getOrElse(item.importedName, () => ''));
     return !item.wildcard && normalizeName(localName) === normalizeName(name);
   });
-  return candidates.length === 1 ? Option.some(candidates[0]!) : Option.none();
+  return candidates.length === 1 ? Option.some(candidates[0]) : Option.none();
 }
 
 function keyTiers(domain: string, qualifiedName: string, arity: Option.Option<number>): string[][] {

@@ -10,7 +10,7 @@ export function runBenchmarkQuery(
   fixture: ReturnType<typeof createBenchmarkFixture>,
   queryIndex = 0,
 ): {readonly confidence: string; readonly topScore: number; readonly topUri: string} {
-  const query = fixture.queries[queryIndex % fixture.queries.length]!;
+  const query = fixture.queries[queryIndex % fixture.queries.length];
   const result = rankRecallCandidates(query.query, fixture.documents, {
     eligibility: deriveRecallEligibilityPolicy({
       explicitProject: query.project,

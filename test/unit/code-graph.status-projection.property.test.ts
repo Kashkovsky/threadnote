@@ -20,7 +20,7 @@ describe('code graph status JSON projection', () => {
   it('bounds the observed 74-worktree shape and pins an otherwise omitted current build', () => {
     const builds = Array.from({length: 74}, (_, index) => status(index, 'completed'));
     const waiters = Array.from({length: 74}, (_, index) => status(index + 100, 'active'));
-    const currentWorktreeId = builds[73]!.identity.worktreeId;
+    const currentWorktreeId = builds[73].identity.worktreeId;
 
     const result = projectCodeGraphStatusActivityV5({builds, waiters}, currentWorktreeId, 8);
 
@@ -55,7 +55,7 @@ describe('code graph status JSON projection', () => {
           const waiters = Array.from({length: waiterCount}, (_, index) =>
             status(1_000 + Math.floor(index / 2), 'active'),
           );
-          const current = buildCount === 0 ? hexId(10_000) : builds[currentSeed % buildCount]!.identity.worktreeId;
+          const current = buildCount === 0 ? hexId(10_000) : builds[currentSeed % buildCount].identity.worktreeId;
           const originalBuildOrder = builds.map(build => build.identity.worktreeId);
           const originalWaiterOrder = waiters.map(waiter => waiter.identity.worktreeId);
 
@@ -205,7 +205,7 @@ describe('code graph status JSON projection', () => {
       extraction: {metrics: {noise: 'x'.repeat(8_000)}},
       materialization: {metrics: {noise: 'y'.repeat(8_000)}},
     })) as unknown as readonly ObservedCodeGraphBuildStatus[];
-    const currentWorktreeId = richBuilds[73]!.identity.worktreeId;
+    const currentWorktreeId = richBuilds[73].identity.worktreeId;
 
     const result = projectCodeGraphStatusActivityV5(
       {builds: richBuilds, waiters: []},
@@ -252,7 +252,7 @@ describe('code graph status JSON projection', () => {
         fc.integer({max: CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT, min: 1}),
         (packCount, limit) => {
           const languagePacks = Array.from({length: packCount}, (_, index) => ({
-            ...builtins[index % builtins.length]!,
+            ...builtins[index % builtins.length],
             id: `pack-${index.toString().padStart(3, '0')}`,
           }));
           const originalIds = languagePacks.map(pack => pack.id);

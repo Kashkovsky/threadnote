@@ -32,7 +32,7 @@ it.prop(
   },
   ({includeSidecar, observations}) => {
     const original = structuredClone(observations);
-    let telemetry = initialMaterializationStorageTelemetry(observations[0]!, includeSidecar);
+    let telemetry = initialMaterializationStorageTelemetry(observations[0], includeSidecar);
     for (const observation of observations.slice(1)) {
       const previous = telemetry;
       telemetry = observeMaterializationStorage(telemetry, observation);
@@ -53,11 +53,11 @@ it.prop(
     expect(telemetry).toMatchObject({
       durableDatabaseFileBytes: latest.databaseBytes,
       durableDatabaseFileHighWaterBytes: Math.max(...observations.map(value => value.databaseBytes)),
-      durableDatabaseGrowthBytes: Math.max(0, latest.databaseBytes - observations[0]!.databaseBytes),
+      durableDatabaseGrowthBytes: Math.max(0, latest.databaseBytes - observations[0].databaseBytes),
       durableDatabaseGrowthHighWaterBytes: Math.max(
-        ...observations.map(value => Math.max(0, value.databaseBytes - observations[0]!.databaseBytes)),
+        ...observations.map(value => Math.max(0, value.databaseBytes - observations[0].databaseBytes)),
       ),
-      durableDatabaseStartBytes: observations[0]!.databaseBytes,
+      durableDatabaseStartBytes: observations[0].databaseBytes,
       durableFilesystemBytes: latest.totalBytes,
       durableFilesystemHighWaterBytes: Math.max(...observations.map(value => value.totalBytes)),
       durableJournalBytes: latest.journalBytes,

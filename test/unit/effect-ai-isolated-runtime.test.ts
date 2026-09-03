@@ -140,9 +140,9 @@ describe('isolated local model runtime', () => {
         }),
       ).toEqual([[5, 1]]);
       expect(processes).toHaveLength(2);
-      expect(processes[0]!.killed).toBe(true);
-      expect(processes[0]!.writes).toHaveLength(1);
-      expect(processes[1]!.writes).toHaveLength(1);
+      expect(processes[0].killed).toBe(true);
+      expect(processes[0].writes).toHaveLength(1);
+      expect(processes[1].writes).toHaveLength(1);
     }).pipe(provideTestLayer(runtimeLayer(spawn)));
   });
 
@@ -290,9 +290,9 @@ describe('isolated local model runtime', () => {
       expect(first).toHaveLength(40);
       expect(second).toEqual([[5, 2]]);
       expect(processes).toHaveLength(1);
-      expect(processes[0]!.writes.map(request => request.payload.inputs.length)).toEqual([32, 8, 1]);
-      expect(processes[0]!.writes.map(request => request.payload.embeddingContextPoolSize)).toEqual([8, 8, undefined]);
-      expect(new Set(processes[0]!.writes.map(request => request.id)).size).toBe(3);
+      expect(processes[0].writes.map(request => request.payload.inputs.length)).toEqual([32, 8, 1]);
+      expect(processes[0].writes.map(request => request.payload.embeddingContextPoolSize)).toEqual([8, 8, undefined]);
+      expect(new Set(processes[0].writes.map(request => request.id)).size).toBe(3);
     }).pipe(provideTestLayer(runtimeLayer(spawn)));
   });
 
@@ -322,7 +322,7 @@ describe('isolated local model runtime', () => {
 
       yield* Effect.promise(() => new Promise(resolve => setTimeout(resolve, 30)));
       expect(processes).toHaveLength(1);
-      expect(processes[0]!.inputClosed).toBe(true);
+      expect(processes[0].inputClosed).toBe(true);
 
       const results = yield* Effect.all(
         ['second', 'third'].map(input =>
@@ -336,7 +336,7 @@ describe('isolated local model runtime', () => {
       );
       expect(results).toEqual([[[6, 2]], [[5, 2]]]);
       expect(processes).toHaveLength(2);
-      expect(processes[1]!.writes).toHaveLength(2);
+      expect(processes[1].writes).toHaveLength(2);
     }).pipe(provideTestLayer(runtimeLayer(spawn, 1_000, 1_024, 10)));
   });
 
@@ -450,8 +450,8 @@ describe('isolated local model runtime', () => {
       }).pipe(provideTestLayer(runtimeLayer(spawn)));
 
       expect(processes).toHaveLength(1);
-      expect(processes[0]!.inputClosed).toBe(true);
-      expect(processes[0]!.killed).toBe(false);
+      expect(processes[0].inputClosed).toBe(true);
+      expect(processes[0].killed).toBe(false);
     });
   });
 
@@ -485,7 +485,7 @@ describe('isolated local model runtime', () => {
       }).pipe(provideTestLayer(runtimeLayer(spawn)));
 
       expect(processes).toHaveLength(1);
-      expect(processes[0]!.killed).toBe(true);
+      expect(processes[0].killed).toBe(true);
     });
   });
 
@@ -537,7 +537,7 @@ describe('isolated local model runtime', () => {
       );
 
       expect(output).toHaveLength(1);
-      expect(JSON.parse(output[0]!)).toEqual({
+      expect(JSON.parse(output[0])).toEqual({
         error: {tag: 'EmbeddingFailed'},
         id: 'request-1',
         ok: false,

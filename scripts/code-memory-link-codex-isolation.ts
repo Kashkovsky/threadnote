@@ -492,7 +492,7 @@ function absolutePathList(value: unknown, label: string): string {
     invalid(`${label} must contain only normalized absolute paths`);
   }
   if (entries.length !== 1) invalid(`${label} must name one private reviewed directory`);
-  return entries[0]!;
+  return entries[0];
 }
 
 function parseSafeBinaries(value: unknown): CodeMemoryLinkCodexClientConfigV1['safeBinaries'] {

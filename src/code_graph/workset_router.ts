@@ -387,7 +387,7 @@ export function aggregateCodeGraphWorksetRepositoryCandidates(
   }
   const candidates = [...groups.values()].map(entries => {
     entries.sort(compareScoredCandidate);
-    const best = entries[0]!;
+    const best = entries[0];
     const supportingSymbolContribution = Math.floor((entries[1]?.score ?? 0) * 0.2);
     const exactSymbolCount = entries.filter(entry => entry.exactMatches.length > 0).length;
     const exactMatchContribution = Math.min(exactSymbolCount, 3) * 100;

@@ -2,6 +2,7 @@ import type {CodeGraphProvenance, CodeGraphRelation, CodeGraphSpan} from '../cod
 import type {AgentToolResponseMeasurement} from '../evaluation/agent-response.js';
 import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
 import type {MemoryAuthority, MemoryTrust} from '../memory/document.js';
+import {Predicate} from 'effect';
 
 export const CONTEXT_BRIEF_LEGACY_VERSION = 2 as const;
 export const CONTEXT_BRIEF_VERSION = 3 as const;
@@ -20,6 +21,10 @@ export const CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS = 1_500 as const;
 export const CONTEXT_BRIEF_MODES = ['brief', 'locate', 'explain', 'trace', 'impact'] as const;
 
 export type ContextBriefMode = (typeof CONTEXT_BRIEF_MODES)[number];
+
+export function isContextBriefMode(value: string): value is ContextBriefMode {
+  return CONTEXT_BRIEF_MODES.some(mode => mode === value);
+}
 export type ContextBriefFreshness = 'fresh' | 'stale' | 'unknown';
 export type ContextBriefPreciseEvidenceStatus = 'exact' | 'relocated' | 'changed' | 'deleted' | 'unknown';
 export type ContextBriefResponseVersion = typeof CONTEXT_BRIEF_LEGACY_VERSION | typeof CONTEXT_BRIEF_VERSION;
@@ -555,9 +560,10 @@ export function parseContextBriefRequestV1(value: unknown): ContextBriefRequestV
   const task = boundedText(object.task, 'task', 4_096);
   const budgetTokens = object.budgetTokens === undefined ? CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS : object.budgetTokens;
   if (
+    typeof budgetTokens !== 'number' ||
     !Number.isSafeInteger(budgetTokens) ||
-    (budgetTokens as number) < CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS ||
-    (budgetTokens as number) > CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS
+    budgetTokens < CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS ||
+    budgetTokens > CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS
   ) {
     throw invalid(
       `budgetTokens must be an integer from ${CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS} to ${CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS}.`,
@@ -567,7 +573,7 @@ export function parseContextBriefRequestV1(value: unknown): ContextBriefRequestV
   const mode = object.mode === undefined ? 'brief' : contextBriefMode(object.mode);
   const scope = parseScope(object.scope);
   return {
-    budgetTokens: budgetTokens as number,
+    budgetTokens,
     ...(codeRefs.length === 0 ? {} : {codeRefs}),
     mode,
     scope,
@@ -648,15 +654,15 @@ function parseScope(value: unknown): ContextBriefScopeV1 {
 }
 
 function contextBriefMode(value: unknown): ContextBriefMode {
-  if (typeof value === 'string' && (CONTEXT_BRIEF_MODES as readonly string[]).includes(value)) {
-    return value as ContextBriefMode;
+  if (value === 'brief' || value === 'locate' || value === 'explain' || value === 'trace' || value === 'impact') {
+    return value;
   }
   throw invalid(`mode must be one of ${CONTEXT_BRIEF_MODES.join(', ')}.`);
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw invalid(`${label} must be an object.`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) throw invalid(`${label} must be an object.`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>, label: string): void {

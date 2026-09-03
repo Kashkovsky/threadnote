@@ -55,24 +55,19 @@ describe('remote memory worker health', () => {
     const now = new Date('2026-08-13T12:00:00.000Z');
     expect(remoteMemoryWorkerRowsReady(healthyRows(now), now)).toBe(true);
     expect(remoteMemoryWorkerRowsReady(healthyRows(now).slice(0, 1), now)).toBe(false);
-    expect(remoteMemoryWorkerRowsReady([healthyRows(now)[0]!, healthyRows(now)[0]!], now)).toBe(false);
+    expect(remoteMemoryWorkerRowsReady([healthyRows(now)[0], healthyRows(now)[0]], now)).toBe(false);
   });
 
   it('fails readiness for stale heartbeat, stale index lag, or a worker failure', () => {
     const now = new Date('2026-08-13T12:00:00.000Z');
     const [indexer, retention] = healthyRows(now);
     expect(
-      remoteMemoryWorkerRowsReady([{...indexer!, heartbeat_at: new Date(now.getTime() - 120_001)}, retention!], now),
+      remoteMemoryWorkerRowsReady([{...indexer, heartbeat_at: new Date(now.getTime() - 120_001)}, retention], now),
     ).toBe(false);
     expect(
-      remoteMemoryWorkerRowsReady(
-        [{...indexer!, oldest_pending_at: new Date(now.getTime() - 300_001)}, retention!],
-        now,
-      ),
+      remoteMemoryWorkerRowsReady([{...indexer, oldest_pending_at: new Date(now.getTime() - 300_001)}, retention], now),
     ).toBe(false);
-    expect(remoteMemoryWorkerRowsReady([indexer!, {...retention!, failure_class: 'retention_failed'}], now)).toBe(
-      false,
-    );
+    expect(remoteMemoryWorkerRowsReady([indexer, {...retention, failure_class: 'retention_failed'}], now)).toBe(false);
   });
 
   it('marks rejected and unexpectedly completed workers unavailable, except during shutdown', async () => {

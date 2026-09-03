@@ -137,7 +137,7 @@ async function waitFor<A>(observe: () => A | Promise<A>, timeoutMilliseconds: nu
   const deadline = Date.now() + timeoutMilliseconds;
   for (;;) {
     const value = await observe();
-    if (value !== undefined && value !== false && value !== null) return value as NonNullable<A>;
+    if (value !== undefined && value !== false && value !== null) return value;
     if (Date.now() >= deadline) throw new TestError(`Timed out after ${timeoutMilliseconds} ms.`);
     await Bun.sleep(20);
   }

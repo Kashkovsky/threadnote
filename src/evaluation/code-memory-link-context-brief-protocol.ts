@@ -312,9 +312,9 @@ export function parseCodeMemoryLinkContextBriefResponseReceiptV1(
     selectedMemories.some(
       (entry, index) =>
         index > 0 &&
-        (selectedMemories[index - 1]!.memoryIdDigest > entry.memoryIdDigest ||
-          (selectedMemories[index - 1]!.memoryIdDigest === entry.memoryIdDigest &&
-            selectedMemories[index - 1]!.contentSha256 >= entry.contentSha256)),
+        (selectedMemories[index - 1].memoryIdDigest > entry.memoryIdDigest ||
+          (selectedMemories[index - 1].memoryIdDigest === entry.memoryIdDigest &&
+            selectedMemories[index - 1].contentSha256 >= entry.contentSha256)),
     )
   ) {
     invalid('Context Brief selected-memory receipt roster is not unique canonical order');

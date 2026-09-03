@@ -188,7 +188,7 @@ describe('recall memory connection properties', () => {
           yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: true});
 
           const refs = [alias, currentUri, formerUri] as const;
-          const orderedRefs = order.map(index => refs[index]!);
+          const orderedRefs = order.map(index => refs[index]);
           const result = yield* retrieveRecallMemoryConnections(config, {
             allowedUriScopes: [`threadnote://user/${config.user}/memories`],
             memoryRefs: orderedRefs,

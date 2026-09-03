@@ -241,7 +241,7 @@ function startCacheChild(options: CacheChildOptions): Effect.Effect<CacheChildPr
       ],
       stderr: 'pipe',
       stdout: 'pipe',
-    }) as CacheChildProcess;
+    });
   });
 }
 
@@ -348,7 +348,7 @@ function expectedReceiptBytes(mode: CacheMode, childId: number): number {
   if (projection.state !== 'measured' || projection.filesystems.length !== 1) {
     throw new TestError('Cache child capacity projection was not measurable.');
   }
-  return projection.filesystems[0]!.bytes;
+  return projection.filesystems[0].bytes;
 }
 
 function expectedBoundary(mode: CacheMode, childId: number): CodeGraphDirectPersistentCapacityBoundary {

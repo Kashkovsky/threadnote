@@ -19,7 +19,7 @@ import {
 describe('code graph workset evidence', () => {
   it('strictly parses repository-qualified cards and exact relationship provenance', () => {
     const result = relationshipResult();
-    const {snapshot: _snapshot, ...producerWithoutSnapshot} = result.repositories.producer!;
+    const {snapshot: _snapshot, ...producerWithoutSnapshot} = result.repositories.producer;
 
     expect(parseCodeGraphWorksetQueryResultV2(JSON.parse(JSON.stringify(result)))).toEqual(result);
     expect(() => parseCodeGraphWorksetQueryResultV2({...result, unexpected: true})).toThrow();
@@ -28,8 +28,8 @@ describe('code graph workset evidence', () => {
         ...result,
         cards: [
           {
-            ...result.cards[0]!,
-            symbol: {...result.cards[0]!.symbol, documentation: 'source bodies do not belong in evidence cards'},
+            ...result.cards[0],
+            symbol: {...result.cards[0].symbol, documentation: 'source bodies do not belong in evidence cards'},
           },
         ],
       }),
@@ -39,8 +39,8 @@ describe('code graph workset evidence', () => {
         ...result,
         cards: [
           {
-            ...result.cards[0]!,
-            relationships: [{...result.cards[0]!.relationships[0]!, authority: 'supporting'}],
+            ...result.cards[0],
+            relationships: [{...result.cards[0].relationships[0], authority: 'supporting'}],
           },
         ],
       }),
@@ -68,7 +68,7 @@ describe('code graph workset evidence', () => {
           consumer: {
             considered: true,
             deepQueried: false,
-            repositoryId: result.repositories.consumer!.repositoryId,
+            repositoryId: result.repositories.consumer.repositoryId,
             state: 'missing',
           },
         },
@@ -160,7 +160,7 @@ describe('code graph workset evidence', () => {
     const reversedReceipts = projectCodeGraphWorksetEvidence(
       {
         ...result,
-        repositories: {producer: result.repositories.producer!, consumer: result.repositories.consumer!},
+        repositories: {producer: result.repositories.producer, consumer: result.repositories.consumer},
       },
       {maximumEstimatedTokens: 1_500},
     );
@@ -205,8 +205,8 @@ describe('code graph workset evidence', () => {
 
   it('permits one stable ref to carry distinct snapshot-bound sibling-worktree evidence', () => {
     const first = evidenceResult(1);
-    const original = first.cards[0]!;
-    const siblingReceipt = readyReceipt(first.repositories.repository!.repositoryId, 'sibling');
+    const original = first.cards[0];
+    const siblingReceipt = readyReceipt(first.repositories.repository.repositoryId, 'sibling');
     const sibling = {
       ...original,
       id: codeGraphEvidenceCardId(original.ref, siblingReceipt.snapshot!.id, siblingReceipt.snapshot!.worktreeId),
@@ -230,7 +230,7 @@ describe('code graph workset evidence', () => {
       original.ref,
       original.ref,
     ]);
-    expect(result.cards[0]!.id).not.toBe(result.cards[1]!.id);
+    expect(result.cards[0].id).not.toBe(result.cards[1].id);
   });
 
   it('is deterministic, round-trippable, prefix-monotone, and byte bounded across budgets', () => {

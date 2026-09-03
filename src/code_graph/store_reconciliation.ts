@@ -1,4 +1,4 @@
-import {Clock, Effect} from 'effect';
+import {Clock, Effect, Predicate} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import * as SqlError from 'effect/unstable/sql/SqlError';
 import {
@@ -85,6 +85,31 @@ const ORPHAN_PROVENANCE_WORKTREE_ID_LIMIT = 4_096;
 
 type WorktreeReconciliationCursorState =
   {readonly recorded: true; readonly value: string} | {readonly recorded: false; readonly value: undefined};
+
+interface ReconciliationTrigger {
+  readonly bounded_sql: string;
+  readonly name: string;
+  readonly sql_bytes: number;
+  readonly tbl_name: string;
+}
+
+function isCodeGraphReconciliationTable(value: string): value is CodeGraphReconciliationTable {
+  return Object.hasOwn(CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS, value);
+}
+
+function isReconciliationTrigger(value: unknown): value is ReconciliationTrigger {
+  if (!Predicate.isObject(value)) return false;
+  return (
+    typeof value.name === 'string' &&
+    value.name === value.name.toLowerCase() &&
+    typeof value.tbl_name === 'string' &&
+    value.tbl_name === value.tbl_name.toLowerCase() &&
+    typeof value.sql_bytes === 'number' &&
+    Number.isSafeInteger(value.sql_bytes) &&
+    value.sql_bytes <= 8192 &&
+    typeof value.bounded_sql === 'string'
+  );
+}
 
 const admitOrRecoverWorktreeReconciliationSchema = Effect.fn('codeGraph.admitOrRecoverWorktreeReconciliationSchema')(
   function* (sql: SqlClient.SqlClient) {
@@ -338,19 +363,19 @@ const claimOrphanProvenanceCandidates = Effect.fn('codeGraph.claimOrphanProvenan
         cursor === undefined || after.length >= limit
           ? after
           : [...after, ...(yield* selectPage('through', limit - after.length))];
-      if (
-        rows.some(
-          row =>
-            typeof row.worktree_id !== 'string' ||
-            !/^[0-9a-f]{64}$/.test(row.worktree_id) ||
-            !worktreeIdSet.has(row.worktree_id),
-        )
-      ) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError('Code graph provenance reconciliation candidate is invalid.'),
-        );
+      const selected: string[] = [];
+      for (const row of rows) {
+        if (
+          typeof row.worktree_id !== 'string' ||
+          !/^[0-9a-f]{64}$/.test(row.worktree_id) ||
+          !worktreeIdSet.has(row.worktree_id)
+        ) {
+          return yield* Effect.fail(
+            new CodeGraphStoreError('Code graph provenance reconciliation candidate is invalid.'),
+          );
+        }
+        selected.push(row.worktree_id);
       }
-      const selected = rows.map(row => row.worktree_id as string);
       const nextCursor = selected.at(-1);
       if (nextCursor !== undefined) {
         if (cursorInspection.state === 'missing') {
@@ -416,17 +441,17 @@ const observeOrphanProvenanceView = Effect.fn('codeGraph.observeOrphanProvenance
         `SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
         [worktreeId],
       );
+      const snapshotId = rows[0]?.snapshot_id;
       if (
         rows.length > 1 ||
-        (rows[0] !== undefined &&
-          (typeof rows[0].snapshot_id !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(rows[0].snapshot_id)))
+        (snapshotId !== undefined && (typeof snapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(snapshotId)))
       ) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph view authority is invalid.'));
       }
-      return rows[0] === undefined
+      return snapshotId === undefined
         ? ({state: 'absent'} as const satisfies CodeGraphOrphanProvenanceViewObservation)
         : ({
-            snapshotId: rows[0].snapshot_id as string,
+            snapshotId,
             state: 'active',
           } as const satisfies CodeGraphOrphanProvenanceViewObservation);
     }),
@@ -451,7 +476,9 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
   ) {
     const extensionRevision = yield* removedViewCleanupRecordedRevision(sql);
     if (extensionRevision.state === 'invalid') return false;
-    for (const table of Object.keys(CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS) as CodeGraphReconciliationTable[]) {
+    for (const tableName of Object.keys(CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS)) {
+      if (!isCodeGraphReconciliationTable(tableName)) return false;
+      const table = tableName;
       if (table === 'removed_view_cleanup' && !requireCleanup) continue;
       if (table === 'removed_views' && !requireRemovedViewAuthority) continue;
       const columns = yield* sql.unsafe<{
@@ -609,27 +636,23 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
             OR tbl_name = 'snapshot_leases' COLLATE NOCASE)
         ORDER BY name
         LIMIT 5`);
-    const activeTrigger = triggers.filter(trigger => trigger.name === 'active_snapshots_require_current_extractor');
-    const cleanupTriggers = triggers.filter(trigger =>
+    const verifiedTriggers: ReconciliationTrigger[] = [];
+    for (const trigger of triggers) {
+      if (!isReconciliationTrigger(trigger)) return false;
+      verifiedTriggers.push(trigger);
+    }
+    const activeTrigger = verifiedTriggers.filter(
+      trigger => trigger.name === 'active_snapshots_require_current_extractor',
+    );
+    const cleanupTriggers = verifiedTriggers.filter(trigger =>
       REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.some(expected => expected.name === trigger.name),
     );
     const expectedTriggerCount = 1 + cleanupTriggers.length;
     if (
-      triggers.length !== expectedTriggerCount ||
-      triggers.some(
-        trigger =>
-          typeof trigger.name !== 'string' ||
-          trigger.name !== trigger.name.toLowerCase() ||
-          typeof trigger.tbl_name !== 'string' ||
-          trigger.tbl_name !== trigger.tbl_name.toLowerCase() ||
-          typeof trigger.sql_bytes !== 'number' ||
-          !Number.isSafeInteger(trigger.sql_bytes) ||
-          trigger.sql_bytes > 8192 ||
-          typeof trigger.bounded_sql !== 'string',
-      ) ||
+      verifiedTriggers.length !== expectedTriggerCount ||
       activeTrigger.length !== 1 ||
       activeTrigger[0]?.tbl_name !== 'active_snapshots' ||
-      normalizeSchemaDefinition((activeTrigger[0]?.bounded_sql as string) ?? '') !==
+      normalizeSchemaDefinition(activeTrigger[0]?.bounded_sql ?? '') !==
         normalizeSchemaDefinition(CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL) ||
       (cleanupTriggers.length !== 0 && cleanupTriggers.length !== REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.length) ||
       (requireCleanup && cleanupTriggers.length !== REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.length) ||
@@ -638,7 +661,7 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
         return (
           expected === undefined ||
           trigger.tbl_name !== 'removed_views' ||
-          normalizeSchemaDefinition((trigger.bounded_sql as string) ?? '') !== normalizeSchemaDefinition(expected.sql)
+          normalizeSchemaDefinition(trigger.bounded_sql) !== normalizeSchemaDefinition(expected.sql)
         );
       })
     ) {
@@ -672,7 +695,7 @@ const markSnapshotLeaseRetirementBaton = Effect.fn('codeGraph.markSnapshotLeaseR
     [snapshotId, now],
   );
   if (rows.length === 0) return 0;
-  const lease = decodeSnapshotLeaseManifest(rows[0]!);
+  const lease = decodeSnapshotLeaseManifest(rows[0]);
   const rowid = rows[0]?.lease_rowid;
   if (
     lease === undefined ||
@@ -865,7 +888,12 @@ const admitRemovedViewCleanupEpoch = Effect.fn('codeGraph.admitRemovedViewCleanu
     cursor === undefined || after.length >= CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS
       ? after
       : [...after, ...(yield* selectPage('through', CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS - after.length))];
-  const tombstones = rows.map(row => {
+  const tombstones: Array<{
+    readonly expectedSnapshotId: string;
+    readonly removedAt: string;
+    readonly worktreeId: string;
+  }> = [];
+  for (const row of rows) {
     if (
       typeof row.worktree_id !== 'string' ||
       !/^[0-9a-f]{64}$/u.test(row.worktree_id) ||
@@ -874,24 +902,17 @@ const admitRemovedViewCleanupEpoch = Effect.fn('codeGraph.admitRemovedViewCleanu
       typeof row.removed_at !== 'string' ||
       !validCanonicalTimestamp(row.removed_at)
     ) {
-      return undefined;
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup admission row is invalid.'));
     }
-    return {
+    tombstones.push({
       expectedSnapshotId: row.expected_snapshot_id,
       removedAt: row.removed_at,
       worktreeId: row.worktree_id,
-    };
-  });
-  if (tombstones.some(tombstone => tombstone === undefined)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup admission row is invalid.'));
+    });
   }
 
   let nextCursor = tombstones.at(-1)?.worktreeId;
-  for (const tombstone of tombstones as readonly {
-    readonly expectedSnapshotId: string;
-    readonly removedAt: string;
-    readonly worktreeId: string;
-  }[]) {
+  for (const tombstone of tombstones) {
     const existing = yield* selectRemovedViewCleanupEntry(sql, tombstone.worktreeId, tombstone.expectedSnapshotId);
     if (existing !== undefined && existing.removedAt === tombstone.removedAt) continue;
     yield* validateRemovedViewSnapshotAuthority(sql, tombstone.expectedSnapshotId, false);
@@ -937,15 +958,16 @@ const claimRemovedViewCleanupCandidates = Effect.fn('codeGraph.claimRemovedViewC
       yield* admitRemovedViewCleanupEpoch(sql);
       const statement = codeGraphRemovedViewCleanupDuePageStatement(nowMilliseconds, requestedLimit);
       const rows = yield* sql.unsafe<RemovedViewCleanupRow>(statement.text, statement.parameters);
-      const entries = rows.map(decodeRemovedViewCleanupRow);
-      if (
-        entries.some(entry => entry === undefined) ||
-        entries.some(entry => entry !== undefined && entry.revision >= Number.MAX_SAFE_INTEGER)
-      ) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup claim row is invalid.'));
+      const entries: CodeGraphRemovedViewCleanupEntry[] = [];
+      for (const row of rows) {
+        const entry = decodeRemovedViewCleanupRow(row);
+        if (entry === undefined || entry.revision >= Number.MAX_SAFE_INTEGER) {
+          return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup claim row is invalid.'));
+        }
+        entries.push(entry);
       }
       const claimed: CodeGraphRemovedViewCleanupEntry[] = [];
-      for (const entry of entries as readonly CodeGraphRemovedViewCleanupEntry[]) {
+      for (const entry of entries) {
         const claimedAt = new Date(Math.max(nowMilliseconds, Date.parse(entry.updatedAt))).toISOString();
         yield* sql.unsafe(
           `UPDATE removed_view_cleanup
@@ -958,7 +980,7 @@ const claimRemovedViewCleanupCandidates = Effect.fn('codeGraph.claimRemovedViewC
         }
         claimed.push({...entry, nextAttemptAt, revision: entry.revision + 1, updatedAt: claimedAt});
       }
-      return claimed as readonly CodeGraphRemovedViewCleanupEntry[];
+      return claimed;
     }),
   );
 });

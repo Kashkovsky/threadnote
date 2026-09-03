@@ -23,7 +23,7 @@ describe('Git index semantic fingerprint', () => {
           expect(codeGraphGitIndexSemanticSha256(first, 'sha1')).toBe(codeGraphGitIndexSemanticSha256(second, 'sha1'));
 
           const changedObjectId = objectId.slice();
-          changedObjectId[0] = changedObjectId[0]! ^ 1;
+          changedObjectId[0] = changedObjectId[0] ^ 1;
           const changed = buildGitIndex(2, [entry(firstStat, changedObjectId, path, semanticFlags)]);
           expect(codeGraphGitIndexSemanticSha256(changed, 'sha1')).not.toBe(
             codeGraphGitIndexSemanticSha256(first, 'sha1'),
@@ -72,7 +72,7 @@ describe('Git index semantic fingerprint', () => {
     ).toBeUndefined();
 
     const corrupt = plain.slice();
-    corrupt[12] = corrupt[12]! ^ 1;
+    corrupt[12] = corrupt[12] ^ 1;
     expect(codeGraphGitIndexSemanticSha256(corrupt, 'sha1')).toBeUndefined();
   });
 });

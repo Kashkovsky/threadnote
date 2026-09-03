@@ -382,10 +382,18 @@ export function hashRecallRefreshGeneration(sql: SqlClient.SqlClient, previousCo
           if (codeLink === undefined || codeLink.uri > row.uri) break;
           codeLinkPageOffset += 1;
           if (codeLink.uri < row.uri) continue;
+          if (
+            codeLink.selector_kind !== 'file-content' &&
+            codeLink.selector_kind !== 'file-path' &&
+            codeLink.selector_kind !== 'symbol-locator' &&
+            codeLink.selector_kind !== 'symbol-node'
+          ) {
+            continue;
+          }
           codeLinks.push({
             citationOrdinal: codeLink.citation_ordinal,
             selectorDigest: codeLink.selector_digest,
-            selectorKind: codeLink.selector_kind as IndexedRecallCodeLink['selectorKind'],
+            selectorKind: codeLink.selector_kind,
           });
         }
         hash.update(

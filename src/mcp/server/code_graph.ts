@@ -803,8 +803,8 @@ export function codeGraphWorksetMcpResponse(result: CodeGraphWorksetQueryResult)
       renderCodeGraphResult(
         {
           ...member.graph,
-          edges: member.graph.edges.slice(0, edgeCounts[readyIndex]!),
-          nodes: member.graph.nodes.slice(0, nodeCounts[readyIndex]!),
+          edges: member.graph.edges.slice(0, edgeCounts[readyIndex]),
+          nodes: member.graph.nodes.slice(0, nodeCounts[readyIndex]),
         },
         'mcp',
       ).trimEnd(),
@@ -833,8 +833,8 @@ function projectCodeGraphWorksetMcpResult(result: CodeGraphWorksetQueryResult, n
     if (member.state === 'unavailable') return member;
     const graph = compactCodeGraphMcpResult({
       ...member.graph,
-      edges: member.graph.edges.slice(0, edgeCounts[readyIndex]!),
-      nodes: member.graph.nodes.slice(0, nodeCounts[readyIndex]!),
+      edges: member.graph.edges.slice(0, edgeCounts[readyIndex]),
+      nodes: member.graph.nodes.slice(0, nodeCounts[readyIndex]),
     });
     readyIndex += 1;
     return {graph, project: member.project, state: member.state};
@@ -867,8 +867,8 @@ function fairPrefixCounts(lengths: readonly number[], budget: number): readonly 
   for (;;) {
     let advanced = false;
     for (let index = 0; index < lengths.length && remaining > 0; index += 1) {
-      if (counts[index]! >= lengths[index]!) continue;
-      counts[index] = counts[index]! + 1;
+      if (counts[index] >= lengths[index]) continue;
+      counts[index] = counts[index] + 1;
       remaining -= 1;
       advanced = true;
     }

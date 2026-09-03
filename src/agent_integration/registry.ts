@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Path, Predicate} from 'effect';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {parseMcpToolset, type McpToolset} from '../mcp/toolset.js';
@@ -122,16 +122,22 @@ export function withAgentIntegrationLock<A, E, R>(
 }
 
 function isAgentIntegrationRegistry(value: unknown): value is AgentIntegrationRegistry {
-  if (!isRecord(value) || value.version !== AGENT_INTEGRATION_REGISTRY_VERSION || !isRecord(value.hosts)) return false;
+  if (
+    !Predicate.isObject(value) ||
+    value.version !== AGENT_INTEGRATION_REGISTRY_VERSION ||
+    !Predicate.isObject(value.hosts)
+  )
+    return false;
   if (typeof value.legacyInstructionsMigrated !== 'boolean') return false;
   for (const [agent, receipt] of Object.entries(value.hosts)) {
-    if (!AGENT_CLIENTS.includes(agent as AgentClient) || !isHostReceipt(receipt)) return false;
+    if (!isAgentClient(agent) || !isHostReceipt(receipt)) return false;
   }
   return true;
 }
 
 function isHostReceipt(value: unknown): value is AgentIntegrationHostReceipt {
-  if (!isRecord(value) || !isRecord(value.mcp) || !isRecord(value.artifacts)) return false;
+  if (!Predicate.isObject(value) || !Predicate.isObject(value.mcp) || !Predicate.isObject(value.artifacts))
+    return false;
   if (
     value.artifactVersion !== AGENT_INTEGRATION_ARTIFACT_VERSION ||
     typeof value.installedVersion !== 'string' ||
@@ -143,7 +149,8 @@ function isHostReceipt(value: unknown): value is AgentIntegrationHostReceipt {
   }
   if (value.mcp.toolset !== undefined) {
     try {
-      parseMcpToolset(value.mcp.toolset as string);
+      if (typeof value.mcp.toolset !== 'string') return false;
+      parseMcpToolset(value.mcp.toolset);
     } catch {
       return false;
     }
@@ -157,7 +164,14 @@ function isHostReceipt(value: unknown): value is AgentIntegrationHostReceipt {
   }
   if (value.mcp.external !== undefined && typeof value.mcp.external !== 'boolean') return false;
   if (value.mcp.repair && value.mcp.toolset === undefined) return false;
-  if (value.mcp.scope !== undefined && !['local', 'project', 'user'].includes(value.mcp.scope as string)) return false;
+  if (
+    value.mcp.scope !== undefined &&
+    value.mcp.scope !== 'local' &&
+    value.mcp.scope !== 'project' &&
+    value.mcp.scope !== 'user'
+  ) {
+    return false;
+  }
   if (value.mcp.cwd !== undefined && (typeof value.mcp.cwd !== 'string' || value.mcp.cwd.length === 0)) return false;
   if (
     value.mcp.repair &&
@@ -169,6 +183,6 @@ function isHostReceipt(value: unknown): value is AgentIntegrationHostReceipt {
   return Object.values(value.artifacts).every(hash => typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash));
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+function isAgentClient(value: string): value is AgentClient {
+  return AGENT_CLIENTS.some(client => client === value);
 }

@@ -103,7 +103,7 @@ describe('process diagnostics', () => {
       expect(listed.processes[0]?.processRef).toMatch(/^tnp_[0-9a-f]{64}$/u);
       const outcome = yield* terminateThreadnoteProcess(
         {agentContextHome: home},
-        {processId, processRef: listed.processes[0]!.processRef!},
+        {processId, processRef: listed.processes[0].processRef!},
         {forceWaitMilliseconds: 0, gracefulWaitMilliseconds: 0},
       ).pipe(
         Effect.provideService(SystemInfo, testSystem),
@@ -148,7 +148,7 @@ describe('process diagnostics', () => {
       terminating = true;
       const outcome = yield* terminateThreadnoteProcess(
         {agentContextHome: home},
-        {processId, processRef: listed.processes[0]!.processRef!},
+        {processId, processRef: listed.processes[0].processRef!},
         {forceWaitMilliseconds: 0, gracefulWaitMilliseconds: 0},
       ).pipe(
         Effect.provideService(SystemInfo, testSystem),
@@ -193,7 +193,7 @@ describe('process diagnostics', () => {
       terminating = true;
       const outcome = yield* terminateThreadnoteProcess(
         {agentContextHome: home},
-        {processId, processRef: listed.processes[0]!.processRef!},
+        {processId, processRef: listed.processes[0].processRef!},
         {forceWaitMilliseconds: 0, gracefulWaitMilliseconds: 0},
       ).pipe(
         Effect.provideService(SystemInfo, testSystem),
@@ -256,7 +256,7 @@ describe('process diagnostics', () => {
       );
       const result = yield* terminateThreadnoteProcess(
         {agentContextHome: home},
-        {processId, processRef: listed.processes[0]!.processRef!},
+        {processId, processRef: listed.processes[0].processRef!},
         {gracefulWaitMilliseconds: 0},
       ).pipe(Effect.provideService(SystemInfo, testSystem));
       expect(result).toEqual({processId, state: 'terminated'});
@@ -426,15 +426,15 @@ describe('process diagnostics', () => {
     },
     ({processes}) => {
       const lines = renderProcessDiagnosticsTable(processes).split('\n');
-      const operationColumn = lines[0]!.indexOf('OPERATION');
-      const roleColumn = lines[0]!.indexOf('ROLE');
+      const operationColumn = lines[0].indexOf('OPERATION');
+      const roleColumn = lines[0].indexOf('ROLE');
 
       expect(operationColumn).toBeGreaterThan(0);
       expect(lines).toHaveLength(processes.length + 1);
       for (const [index, process] of processes.entries()) {
-        expect(lines[index + 1]!.slice(operationColumn)).toBe(process.currentOperation ?? '-');
+        expect(lines[index + 1].slice(operationColumn)).toBe(process.currentOperation ?? '-');
         // A nested activity qualifies the identity it runs under; it never replaces it.
-        expect(lines[index + 1]!.slice(roleColumn)).toMatch(new RegExp(`^${process.role}(?: \\(|\\s|$)`));
+        expect(lines[index + 1].slice(roleColumn)).toMatch(new RegExp(`^${process.role}(?: \\(|\\s|$)`));
       }
     },
     {fastCheck: {numRuns: 200}},

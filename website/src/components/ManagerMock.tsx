@@ -104,7 +104,7 @@ function GraphPanel(): React.ReactElement {
   const [project, setProject] = useState('all');
   const [relation, setRelation] = useState<ManagerDemoGraphEdge['relation'] | 'all'>('all');
   const [nodeQuery, setNodeQuery] = useState('');
-  const selectedNode = managerDemoNodes.find(node => node.id === selectedNodeId) ?? managerDemoNodes[0]!;
+  const selectedNode = managerDemoNodes.find(node => node.id === selectedNodeId) ?? managerDemoNodes[0];
   const visibleNodes = useMemo(() => {
     const normalizedQuery = nodeQuery.trim().toLocaleLowerCase();
     return managerDemoNodes.filter(node => {
@@ -418,7 +418,7 @@ export function ManagerMock(): React.ReactElement {
   const moveTab = (direction: -1 | 1): void => {
     const current = managerDemoTabs.findIndex(tab => tab.id === activeTab);
     const next = (current + direction + managerDemoTabs.length) % managerDemoTabs.length;
-    const nextTab = managerDemoTabs[next]!;
+    const nextTab = managerDemoTabs[next];
     setActiveTab(nextTab.id);
     document.getElementById(tabId(nextTab.id))?.focus();
   };

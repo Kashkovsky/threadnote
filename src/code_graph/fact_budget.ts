@@ -119,7 +119,7 @@ export function finalCodeGraphFactBatches(
   );
   return boundedCodeGraphFactBatches(
     closed.map((fact, index) =>
-      fact === measured[index]!.facts ? measured[index]! : measureBoundedCodeGraphFact(fact, maximumBytes),
+      fact === measured[index].facts ? measured[index] : measureBoundedCodeGraphFact(fact, maximumBytes),
     ),
     maximumBytes,
   );

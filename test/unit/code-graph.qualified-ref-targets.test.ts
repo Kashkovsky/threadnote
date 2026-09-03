@@ -71,7 +71,7 @@ describe('batched repository-qualified reference routing', () => {
           manifestPath,
           user: 'test-user',
         };
-        const routedProjects = [projects[5]!, projects[77]!].map(project => ({
+        const routedProjects = [projects[5], projects[77]].map(project => ({
           name: `project-${project.index}`,
           path: project.cwd,
           seed: [] as const,
@@ -82,7 +82,7 @@ describe('batched repository-qualified reference routing', () => {
           stageCodeGraphWorksetCatalogGeneration(home, {
             manifestDigest: codeGraphWorksetManifestDigest(workset),
             members: routedProjects.map((project, index) => ({
-              projection: routingProjection(projects[index === 0 ? 5 : 77]!.repositoryId, index),
+              projection: routingProjection(projects[index === 0 ? 5 : 77].repositoryId, index),
               repositoryKey: project.name,
             })),
             worksetName: workset.name,
@@ -97,33 +97,33 @@ describe('batched repository-qualified reference routing', () => {
         const first = yield* catalogTestEffect(
           registerCodeGraphQualifiedRef(home, {
             nodeId: `cgs_${'a'.repeat(32)}`,
-            repositoryId: projects[5]!.repositoryId,
+            repositoryId: projects[5].repositoryId,
           }),
         );
         const second = yield* catalogTestEffect(
           registerCodeGraphQualifiedRef(home, {
             nodeId: `cgs_${'b'.repeat(32)}`,
-            repositoryId: projects[77]!.repositoryId,
+            repositoryId: projects[77].repositoryId,
           }),
         );
         const callerRef = yield* catalogTestEffect(
           registerCodeGraphQualifiedRef(home, {
             nodeId: `cgs_${'c'.repeat(32)}`,
-            repositoryId: projects[0]!.repositoryId,
+            repositoryId: projects[0].repositoryId,
           }),
         );
 
         const resolved = yield* resolveCodeGraphQualifiedRefTargets(
           config,
           [first.ref, second.ref, callerRef.ref, first.ref],
-          projects[0]!.cwd,
+          projects[0].cwd,
         );
 
         expect(resolved.map(target => target.cwd)).toEqual([
-          projects[5]!.cwd,
-          projects[77]!.cwd,
-          projects[0]!.cwd,
-          projects[5]!.cwd,
+          projects[5].cwd,
+          projects[77].cwd,
+          projects[0].cwd,
+          projects[5].cwd,
         ]);
         expect(resolved.map(target => target.route)).toEqual([
           {kind: 'workset', name: 'citation-routing'},

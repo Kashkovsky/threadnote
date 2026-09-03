@@ -164,7 +164,7 @@ describe('code graph reference-resolution progress', () => {
         expect(result.resolution.longestTransactionMilliseconds).toBeGreaterThan(0);
         expect(capacityBoundaries).toHaveLength(1);
         expect(capacityBoundaries[0]).toMatchObject({rowCount: 55_011});
-        expect(capacityBoundaries[0]!.finalFactBytes).toBeGreaterThan(0);
+        expect(capacityBoundaries[0].finalFactBytes).toBeGreaterThan(0);
         expect(observations[0]).toMatchObject({
           pageCompleted: 0,
           pageTotal: 2,
@@ -271,8 +271,8 @@ describe('code graph reference-resolution progress', () => {
               `;
               yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
               return {
-                afterFailure: afterFailure[0]!,
-                afterResume: afterResume[0]!,
+                afterFailure: afterFailure[0],
+                afterResume: afterResume[0],
                 firstFailure,
                 graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
                 resumed,
@@ -371,8 +371,8 @@ describe('code graph reference-resolution progress', () => {
               `;
               yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
               return {
-                afterCrash: afterCrash[0]!,
-                afterResume: afterResume[0]!,
+                afterCrash: afterCrash[0],
+                afterResume: afterResume[0],
                 firstExit,
                 graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
                 resumed,
@@ -413,9 +413,7 @@ describe('code graph reference-resolution progress', () => {
     const fixture = await resolutionFixture();
     const targets = Array.from({length: 600}, (_, index) => symbol(`target-${index}`, `target${index}`));
     const callers = Array.from({length: targets.length}, (_, index) => symbol(`caller-${index}`, `caller${index}`));
-    const unresolved = callers.map((caller, index) =>
-      resolvableReference(fixture.file, caller, targets[index]!, index),
-    );
+    const unresolved = callers.map((caller, index) => resolvableReference(fixture.file, caller, targets[index], index));
     const snapshot = persistentSnapshot(fixture.identity, targets.length + callers.length, unresolved.length);
     const observations: CodeGraphResolutionActivity[] = [];
 

@@ -1,4 +1,11 @@
-import type {CodeGraphWorkspace} from '../languages/types.js';
+import {parseCodeGraphMonikerV1} from '../cross_repository/monikers.js';
+import type {CodeGraphExternalDependencyV1, CodeGraphMonikerV1} from '../cross_repository/types.js';
+import type {
+  CodeGraphBuildWorkspace,
+  CodeGraphWorkspace,
+  CodeGraphWorkspaceDependency,
+  CodeGraphWorkspaceProject,
+} from '../languages/types.js';
 import {parseCodeGraphFileFacts} from '../fact_validation.js';
 import {
   CODE_GRAPH_CHECKPOINT_FORMAT_VERSION,
@@ -8,6 +15,7 @@ import {
 import type {CodeGraphFileFacts} from '../types.js';
 import {canonicalJson} from './canonical_json.js';
 import {codeGraphCheckpointFileFactCacheIdentity} from './file_fact_identity.js';
+import {Predicate} from 'effect';
 
 export const CODE_GRAPH_CHECKPOINT_SCHEMA = 'threadnote.code-graph-checkpoint' as const;
 export const CODE_GRAPH_CHECKPOINT_MEDIA_TYPE = 'application/vnd.threadnote.code-graph-checkpoint.v1' as const;
@@ -391,10 +399,21 @@ export interface CodeGraphCheckpointRecordOrderKeyV1 {
 }
 
 export function emptyCodeGraphCheckpointCounts(): Record<CodeGraphCheckpointRecordKind, number> {
-  return Object.fromEntries(CODE_GRAPH_CHECKPOINT_RECORD_KINDS.map(kind => [kind, 0])) as Record<
-    CodeGraphCheckpointRecordKind,
-    number
-  >;
+  return {
+    edge: 0,
+    file: 0,
+    'file-fact': 0,
+    lexical: 0,
+    moniker: 0,
+    'pack-provenance': 0,
+    reexport: 0,
+    symbol: 0,
+    'symbol-lookup': 0,
+    'workspace-component': 0,
+    'workspace-dependency': 0,
+    'workspace-external-dependency': 0,
+    'workspace-scope': 0,
+  };
 }
 
 export function parseCodeGraphCheckpointMetadataV1(value: unknown): CodeGraphCheckpointMetadataV1 {
@@ -490,42 +509,50 @@ export function parseCodeGraphCheckpointRecordV1(value: unknown): CodeGraphCheck
         'File record',
       );
       gitObjectId(input.blobId, 'File blob ID');
-      sha256(input.contentHash, 'File content hash');
-      optionalSha256(input.rawContentHash, 'File raw content hash');
-      shortText(input.language, 'File language');
-      mode(input.mode, 'File mode');
-      repositoryPath(input.path, 'File path');
-      nonNegativeInteger(input.size, 'File size');
-      literal(input.source, 'commit', 'File source');
-      break;
-    case 'file-fact':
+      return {
+        blobId: gitObjectId(input.blobId, 'File blob ID'),
+        contentHash: sha256(input.contentHash, 'File content hash'),
+        kind: 'file',
+        language: shortText(input.language, 'File language'),
+        mode: mode(input.mode, 'File mode'),
+        path: repositoryPath(input.path, 'File path'),
+        ...(input.rawContentHash === undefined
+          ? {}
+          : {rawContentHash: sha256(input.rawContentHash, 'File raw content hash')}),
+        size: nonNegativeInteger(input.size, 'File size'),
+        source: literal(input.source, 'commit', 'File source'),
+      };
+    case 'file-fact': {
       exactKeys(input, ['cacheIdentity', 'factRole', 'facts', 'kind', 'path'], [], 'File-fact record');
       if (typeof input.cacheIdentity !== 'string' || !MATERIALIZED_FACT_IDENTITY.test(input.cacheIdentity)) {
         throw new CodeGraphCheckpointSchemaError('File-fact cache identity is not a materialized derivation ID.');
       }
-      literal(input.factRole, 'materialized', 'File-fact role');
-      repositoryPath(input.path, 'File-fact path');
-      if (
-        input.cacheIdentity !==
-        codeGraphCheckpointFileFactCacheIdentity(parseFileFacts(input.facts, input.path as string))
-      ) {
+      const factRole = literal(input.factRole, 'materialized', 'File-fact role');
+      const path = repositoryPath(input.path, 'File-fact path');
+      const facts = parseFileFacts(input.facts, path);
+      if (input.cacheIdentity !== codeGraphCheckpointFileFactCacheIdentity(facts)) {
         throw new CodeGraphCheckpointSchemaError('File-fact cache identity does not match its payload.');
       }
-      break;
-    case 'workspace-scope':
+      return {cacheIdentity: input.cacheIdentity, factRole, facts, kind: 'file-fact', path};
+    }
+    case 'workspace-scope': {
       exactKeys(
         input,
         ['buildSystem', 'diagnostics', 'id', 'kind', 'name', 'provenance', 'root'],
         [],
         'Workspace-scope record',
       );
-      workspaceBuildSystem(input.buildSystem, 'Workspace build system');
-      stringArray(input.diagnostics, 'Workspace diagnostics');
-      shortText(input.id, 'Workspace ID');
-      workspaceName(input.name, input.root, 'Workspace name');
-      workspaceProvenance(input.provenance, 'Workspace provenance');
-      workspaceRoot(input.root, 'Workspace root');
-      break;
+      const root = workspaceRoot(input.root, 'Workspace root');
+      return {
+        buildSystem: workspaceBuildSystem(input.buildSystem, 'Workspace build system'),
+        diagnostics: stringArray(input.diagnostics, 'Workspace diagnostics'),
+        id: shortText(input.id, 'Workspace ID'),
+        kind: 'workspace-scope',
+        name: workspaceName(input.name, root, 'Workspace name'),
+        provenance: workspaceProvenance(input.provenance, 'Workspace provenance'),
+        root,
+      };
+    }
     case 'workspace-component':
       exactKeys(
         input,
@@ -547,19 +574,21 @@ export function parseCodeGraphCheckpointRecordV1(value: unknown): CodeGraphCheck
         [],
         'Workspace-component record',
       );
-      workspaceBuildSystem(input.buildSystem, 'Component build system');
-      oneOf(input.componentKind, ['module', 'package', 'project', 'target'], 'Component kind');
-      stringArray(input.diagnostics, 'Component diagnostics');
-      shortText(input.id, 'Component ID');
-      stringArray(input.languages, 'Component languages');
-      shortText(input.name, 'Component name');
-      workspaceProvenance(input.provenance, 'Component provenance');
-      shortText(input.resolutionDomain, 'Component resolution domain');
-      workspaceRoot(input.root, 'Component root');
-      pathArray(input.sourceRoots, 'Component source roots', true);
-      shortText(input.workspaceId, 'Component workspace ID');
-      pathArray(input.workspaceRoots, 'Component workspace roots', true);
-      break;
+      return {
+        buildSystem: workspaceBuildSystem(input.buildSystem, 'Component build system'),
+        componentKind: oneOf(input.componentKind, ['module', 'package', 'project', 'target'], 'Component kind'),
+        diagnostics: stringArray(input.diagnostics, 'Component diagnostics'),
+        id: shortText(input.id, 'Component ID'),
+        kind: 'workspace-component',
+        languages: stringArray(input.languages, 'Component languages'),
+        name: shortText(input.name, 'Component name'),
+        provenance: workspaceProvenance(input.provenance, 'Component provenance'),
+        resolutionDomain: shortText(input.resolutionDomain, 'Component resolution domain'),
+        root: workspaceRoot(input.root, 'Component root'),
+        sourceRoots: pathArray(input.sourceRoots, 'Component source roots', true),
+        workspaceId: shortText(input.workspaceId, 'Component workspace ID'),
+        workspaceRoots: pathArray(input.workspaceRoots, 'Component workspace roots', true),
+      };
     case 'workspace-dependency':
       exactKeys(
         input,
@@ -567,11 +596,13 @@ export function parseCodeGraphCheckpointRecordV1(value: unknown): CodeGraphCheck
         ['evidence'],
         'Workspace-dependency record',
       );
-      optionalShortText(input.evidence, 'Workspace dependency evidence');
-      workspaceProvenance(input.provenance, 'Workspace dependency provenance');
-      shortText(input.sourceComponentId, 'Workspace dependency source');
-      shortText(input.targetComponentId, 'Workspace dependency target');
-      break;
+      return {
+        ...(input.evidence === undefined ? {} : {evidence: shortText(input.evidence, 'Workspace dependency evidence')}),
+        kind: 'workspace-dependency',
+        provenance: workspaceProvenance(input.provenance, 'Workspace dependency provenance'),
+        sourceComponentId: shortText(input.sourceComponentId, 'Workspace dependency source'),
+        targetComponentId: shortText(input.targetComponentId, 'Workspace dependency target'),
+      };
     case 'workspace-external-dependency':
       exactKeys(
         input,
@@ -588,18 +619,21 @@ export function parseCodeGraphCheckpointRecordV1(value: unknown): CodeGraphCheck
         ['evidenceSpan'],
         'Workspace external-dependency record',
       );
-      dependencyKind(input.dependencyKind, 'External dependency kind');
-      literal(input.ecosystem, 'npm', 'External dependency ecosystem');
-      repositoryPath(input.evidencePath, 'External dependency evidence path');
-      if (input.evidenceSpan !== undefined) parseSpan(input.evidenceSpan, 'External dependency evidence span');
-      shortText(input.importAlias, 'External dependency alias');
-      shortText(input.packageName, 'External dependency package');
-      shortText(input.sourceComponentId, 'External dependency component');
-      shortText(input.versionConstraint, 'External dependency version');
-      break;
+      return {
+        dependencyKind: dependencyKind(input.dependencyKind, 'External dependency kind'),
+        ecosystem: literal(input.ecosystem, 'npm', 'External dependency ecosystem'),
+        evidencePath: repositoryPath(input.evidencePath, 'External dependency evidence path'),
+        ...(input.evidenceSpan === undefined
+          ? {}
+          : {evidenceSpan: parseSpan(input.evidenceSpan, 'External dependency evidence span')}),
+        importAlias: shortText(input.importAlias, 'External dependency alias'),
+        kind: 'workspace-external-dependency',
+        packageName: shortText(input.packageName, 'External dependency package'),
+        sourceComponentId: shortText(input.sourceComponentId, 'External dependency component'),
+        versionConstraint: shortText(input.versionConstraint, 'External dependency version'),
+      };
     case 'symbol':
-      parseSymbol(input);
-      break;
+      return parseSymbol(input);
     case 'symbol-lookup':
       exactKeys(
         input,
@@ -607,33 +641,41 @@ export function parseCodeGraphCheckpointRecordV1(value: unknown): CodeGraphCheck
         ['evidenceEdgeId', 'evidencePath'],
         'Symbol-lookup record',
       );
-      boolean(input.exported, 'Symbol lookup exported');
-      shortText(input.lookupKey, 'Symbol lookup key');
-      oneOf(input.provenance, ['alias', 'symbol'], 'Symbol lookup provenance');
-      shortText(input.resolutionDomain, 'Symbol lookup resolution domain');
-      shortText(input.symbolId, 'Symbol lookup symbol ID');
-      optionalShortText(input.evidenceEdgeId, 'Symbol lookup evidence edge');
-      if (input.evidencePath !== undefined) repositoryPath(input.evidencePath, 'Symbol lookup evidence path');
-      break;
+      return {
+        ...(input.evidenceEdgeId === undefined
+          ? {}
+          : {evidenceEdgeId: shortText(input.evidenceEdgeId, 'Symbol lookup evidence edge')}),
+        ...(input.evidencePath === undefined
+          ? {}
+          : {evidencePath: repositoryPath(input.evidencePath, 'Symbol lookup evidence path')}),
+        exported: boolean(input.exported, 'Symbol lookup exported'),
+        kind: 'symbol-lookup',
+        lookupKey: shortText(input.lookupKey, 'Symbol lookup key'),
+        provenance: oneOf(input.provenance, ['alias', 'symbol'], 'Symbol lookup provenance'),
+        resolutionDomain: shortText(input.resolutionDomain, 'Symbol lookup resolution domain'),
+        symbolId: shortText(input.symbolId, 'Symbol lookup symbol ID'),
+      };
     case 'reexport':
       exactKeys(input, ['importedName', 'kind', 'localName', 'sourcePath', 'targetPath'], [], 'Reexport record');
-      shortText(input.importedName, 'Reexport imported name');
-      shortText(input.localName, 'Reexport local name');
-      repositoryPath(input.sourcePath, 'Reexport source path');
-      repositoryPath(input.targetPath, 'Reexport target path');
-      break;
+      return {
+        importedName: shortText(input.importedName, 'Reexport imported name'),
+        kind: 'reexport',
+        localName: shortText(input.localName, 'Reexport local name'),
+        sourcePath: repositoryPath(input.sourcePath, 'Reexport source path'),
+        targetPath: repositoryPath(input.targetPath, 'Reexport target path'),
+      };
     case 'edge':
-      parseEdge(input);
-      break;
+      return parseEdge(input);
     case 'moniker':
-      parseMoniker(input);
-      break;
+      return parseMoniker(input);
     case 'lexical':
       exactKeys(input, ['kind', 'symbolId', 'term', 'weight'], [], 'Lexical record');
-      shortText(input.symbolId, 'Lexical symbol ID');
-      shortText(input.term, 'Lexical term');
-      positiveInteger(input.weight, 'Lexical weight', 1_000);
-      break;
+      return {
+        kind: 'lexical',
+        symbolId: shortText(input.symbolId, 'Lexical symbol ID'),
+        term: shortText(input.term, 'Lexical term'),
+        weight: positiveInteger(input.weight, 'Lexical weight', 1_000),
+      };
     case 'pack-provenance':
       exactKeys(
         input,
@@ -641,17 +683,17 @@ export function parseCodeGraphCheckpointRecordV1(value: unknown): CodeGraphCheck
         [],
         'Pack-provenance record',
       );
-      sha256(input.cacheIdentity, 'Pack cache identity');
-      sha256(input.derivationIdentity, 'Pack derivation identity');
-      shortText(input.id, 'Pack ID');
-      shortText(input.resolutionDomain, 'Pack resolution domain');
-      shortText(input.resolutionVersion, 'Pack resolution version');
-      break;
+      return {
+        cacheIdentity: sha256(input.cacheIdentity, 'Pack cache identity'),
+        derivationIdentity: sha256(input.derivationIdentity, 'Pack derivation identity'),
+        id: shortText(input.id, 'Pack ID'),
+        kind: 'pack-provenance',
+        resolutionDomain: shortText(input.resolutionDomain, 'Pack resolution domain'),
+        resolutionVersion: shortText(input.resolutionVersion, 'Pack resolution version'),
+      };
     default:
       throw new CodeGraphCheckpointSchemaError(`Unknown checkpoint record kind: ${kind}.`);
   }
-  canonicalJson(input);
-  return input as unknown as CodeGraphCheckpointRecordV1;
 }
 
 export function codeGraphCheckpointRecordIdentity(record: CodeGraphCheckpointRecordV1): string {
@@ -715,7 +757,7 @@ export function compareCodeGraphCheckpointRecordOrderKeys(
   const kind = RECORD_KIND_ORDER.get(left.kind)! - RECORD_KIND_ORDER.get(right.kind)!;
   if (kind !== 0) return kind;
   for (let index = 0; index < left.identity.length; index += 1) {
-    const order = compareUtf8(left.identity[index]!, right.identity[index]!);
+    const order = compareUtf8(left.identity[index], right.identity[index]);
     if (order !== 0) return order;
   }
   return left.identity.length - right.identity.length;
@@ -761,24 +803,40 @@ function parseAbiInput(value: unknown): CodeGraphCheckpointAbiInputV1 {
     [],
     'Checkpoint ABI input',
   );
-  literal(input.checkpointSemanticVersion, CODE_GRAPH_CHECKPOINT_SEMANTIC_VERSION, 'Checkpoint semantic version');
-  nonNegativeInteger(input.graphSchemaVersion, 'Graph schema version');
-  nonNegativeInteger(input.inventoryPolicyVersion, 'Inventory policy version');
+  const checkpointSemanticVersion = literal(
+    input.checkpointSemanticVersion,
+    CODE_GRAPH_CHECKPOINT_SEMANTIC_VERSION,
+    'Checkpoint semantic version',
+  );
+  const graphSchemaVersion = nonNegativeInteger(input.graphSchemaVersion, 'Graph schema version');
+  const inventoryPolicyVersion = nonNegativeInteger(input.inventoryPolicyVersion, 'Inventory policy version');
   const languagePacks = array(input.languagePacks, 'ABI language packs').map(parseLanguagePack);
   ensureSortedUnique(languagePacks, pack => pack.id, 'ABI language packs');
-  nonNegativeInteger(input.lexicalLogicalFormatVersion, 'Lexical logical format version');
-  literal(input.pathPolicy, CODE_GRAPH_CHECKPOINT_PATH_POLICY, 'Checkpoint path policy');
-  shortText(input.referenceResolutionVersion, 'Reference resolution version');
-  shortText(input.workspaceModelVersion, 'Workspace model version');
-  return input as unknown as CodeGraphCheckpointAbiInputV1;
+  const lexicalLogicalFormatVersion = nonNegativeInteger(
+    input.lexicalLogicalFormatVersion,
+    'Lexical logical format version',
+  );
+  const pathPolicy = literal(input.pathPolicy, CODE_GRAPH_CHECKPOINT_PATH_POLICY, 'Checkpoint path policy');
+  const referenceResolutionVersion = shortText(input.referenceResolutionVersion, 'Reference resolution version');
+  const workspaceModelVersion = shortText(input.workspaceModelVersion, 'Workspace model version');
+  return {
+    checkpointSemanticVersion,
+    graphSchemaVersion,
+    inventoryPolicyVersion,
+    languagePacks,
+    lexicalLogicalFormatVersion,
+    pathPolicy,
+    referenceResolutionVersion,
+    workspaceModelVersion,
+  };
 }
 
 function parseAbi(value: unknown): CodeGraphCheckpointAbiV1 {
   const input = object(value, 'Checkpoint ABI');
   exactKeys(input, ['algorithm', 'digest', 'input'], [], 'Checkpoint ABI');
-  literal(input.algorithm, 'sha256', 'Checkpoint ABI algorithm');
-  sha256(input.digest, 'Checkpoint ABI digest');
-  return {algorithm: 'sha256', digest: input.digest as string, input: parseAbiInput(input.input)};
+  const algorithm = literal(input.algorithm, 'sha256', 'Checkpoint ABI algorithm');
+  const digest = sha256(input.digest, 'Checkpoint ABI digest');
+  return {algorithm, digest, input: parseAbiInput(input.input)};
 }
 
 function parseLanguagePack(value: unknown): CodeGraphCheckpointLanguagePackV1 {
@@ -789,61 +847,67 @@ function parseLanguagePack(value: unknown): CodeGraphCheckpointLanguagePackV1 {
     [],
     'ABI language pack',
   );
-  sha256(input.cacheIdentity, 'Language-pack cache identity');
-  sha256(input.derivationIdentity, 'Language-pack derivation identity');
-  shortText(input.id, 'Language-pack ID');
-  shortText(input.resolutionDomain, 'Language-pack resolution domain');
-  shortText(input.resolutionVersion, 'Language-pack resolution version');
-  return input as unknown as CodeGraphCheckpointLanguagePackV1;
+  return {
+    cacheIdentity: sha256(input.cacheIdentity, 'Language-pack cache identity'),
+    derivationIdentity: sha256(input.derivationIdentity, 'Language-pack derivation identity'),
+    id: shortText(input.id, 'Language-pack ID'),
+    resolutionDomain: shortText(input.resolutionDomain, 'Language-pack resolution domain'),
+    resolutionVersion: shortText(input.resolutionVersion, 'Language-pack resolution version'),
+  };
 }
 
 function parseRepository(value: unknown): CodeGraphCheckpointMetadataV1['repository'] {
   const input = object(value, 'Checkpoint repository');
   exactKeys(input, ['caseMode', 'displayName', 'objectFormat', 'repositoryId'], [], 'Checkpoint repository');
-  oneOf(input.caseMode, ['insensitive', 'sensitive'], 'Repository case mode');
-  shortText(input.displayName, 'Repository display name');
-  oneOf(input.objectFormat, ['sha1', 'sha256'], 'Repository object format');
-  sha256(input.repositoryId, 'Repository ID');
-  return input as unknown as CodeGraphCheckpointMetadataV1['repository'];
+  return {
+    caseMode: oneOf(input.caseMode, ['insensitive', 'sensitive'], 'Repository case mode'),
+    displayName: shortText(input.displayName, 'Repository display name'),
+    objectFormat: oneOf(input.objectFormat, ['sha1', 'sha256'], 'Repository object format'),
+    repositoryId: sha256(input.repositoryId, 'Repository ID'),
+  };
 }
 
 function parseSource(value: unknown): CodeGraphCheckpointMetadataV1['source'] {
   const input = object(value, 'Checkpoint source');
   exactKeys(input, ['commit', 'extractorSet', 'graphContentId'], [], 'Checkpoint source');
-  gitObjectId(input.commit, 'Checkpoint commit');
-  shortText(input.extractorSet, 'Checkpoint extractor set');
-  if (typeof input.graphContentId !== 'string' || !GRAPH_CONTENT_ID.test(input.graphContentId)) {
+  const graphContentId = text(input.graphContentId, 'Checkpoint graph content ID');
+  if (!GRAPH_CONTENT_ID.test(graphContentId)) {
     throw new CodeGraphCheckpointSchemaError('Checkpoint graph content ID is invalid.');
   }
-  return input as unknown as CodeGraphCheckpointMetadataV1['source'];
+  return {
+    commit: gitObjectId(input.commit, 'Checkpoint commit'),
+    extractorSet: shortText(input.extractorSet, 'Checkpoint extractor set'),
+    graphContentId,
+  };
 }
 
 function parseCoverage(value: unknown): CodeGraphCheckpointCoverageV1 {
   const input = object(value, 'Checkpoint coverage');
   exactKeys(input, ['eligibleFiles', 'excludedFiles', 'reasons', 'state'], [], 'Checkpoint coverage');
-  nonNegativeInteger(input.eligibleFiles, 'Coverage eligible files');
-  nonNegativeInteger(input.excludedFiles, 'Coverage excluded files');
+  const eligibleFiles = nonNegativeInteger(input.eligibleFiles, 'Coverage eligible files');
+  const excludedFiles = nonNegativeInteger(input.excludedFiles, 'Coverage excluded files');
   const reasons = array(input.reasons, 'Coverage reasons').map(reason => {
     const candidate = object(reason, 'Coverage reason');
     exactKeys(candidate, ['bytes', 'code', 'files'], [], 'Coverage reason');
-    nonNegativeInteger(candidate.bytes, 'Coverage reason bytes');
-    shortText(candidate.code, 'Coverage reason code');
-    nonNegativeInteger(candidate.files, 'Coverage reason files');
-    return candidate as unknown as CodeGraphCheckpointCoverageReasonV1;
+    return {
+      bytes: nonNegativeInteger(candidate.bytes, 'Coverage reason bytes'),
+      code: shortText(candidate.code, 'Coverage reason code'),
+      files: nonNegativeInteger(candidate.files, 'Coverage reason files'),
+    };
   });
   ensureSortedUnique(reasons, reason => reason.code, 'Coverage reasons');
-  oneOf(input.state, ['complete', 'partial'], 'Coverage state');
+  const state = oneOf(input.state, ['complete', 'partial'], 'Coverage state');
   const explainedFiles = checkedSum(
     reasons.map(reason => reason.files),
     'Coverage reason file count',
   );
-  if (explainedFiles !== input.excludedFiles) {
+  if (explainedFiles !== excludedFiles) {
     throw new CodeGraphCheckpointSchemaError('Coverage reasons do not account for every excluded file.');
   }
-  if ((input.excludedFiles === 0) !== (input.state === 'complete')) {
+  if ((excludedFiles === 0) !== (state === 'complete')) {
     throw new CodeGraphCheckpointSchemaError('Coverage state does not match the excluded-file count.');
   }
-  return input as unknown as CodeGraphCheckpointCoverageV1;
+  return {eligibleFiles, excludedFiles, reasons, state};
 }
 
 function parseReuse(value: unknown): CodeGraphCheckpointReuseV1 {
@@ -854,17 +918,23 @@ function parseReuse(value: unknown): CodeGraphCheckpointReuseV1 {
     ['inventory'],
     'Checkpoint reuse',
   );
-  sha256(input.fileSetFingerprint, 'Reuse file-set fingerprint');
-  positiveInteger(input.formatVersion, 'Reuse format version');
-  positiveInteger(input.resolutionSurfaceVersion, 'Reuse resolution-surface version');
-  sha256(input.workspaceFingerprint, 'Reuse workspace fingerprint');
-  if (input.inventory !== undefined) {
-    const inventory = parsePortableInventory(input.inventory);
-    if (inventory.workspace.fingerprint !== input.workspaceFingerprint) {
+  const fileSetFingerprint = sha256(input.fileSetFingerprint, 'Reuse file-set fingerprint');
+  const formatVersion = positiveInteger(input.formatVersion, 'Reuse format version');
+  const resolutionSurfaceVersion = positiveInteger(input.resolutionSurfaceVersion, 'Reuse resolution-surface version');
+  const workspaceFingerprint = sha256(input.workspaceFingerprint, 'Reuse workspace fingerprint');
+  const inventory = input.inventory === undefined ? undefined : parsePortableInventory(input.inventory);
+  if (inventory !== undefined) {
+    if (inventory.workspace.fingerprint !== workspaceFingerprint) {
       throw new CodeGraphCheckpointSchemaError('Portable workspace fingerprint does not match reuse metadata.');
     }
   }
-  return input as unknown as CodeGraphCheckpointReuseV1;
+  return {
+    fileSetFingerprint,
+    formatVersion,
+    ...(inventory === undefined ? {} : {inventory}),
+    resolutionSurfaceVersion,
+    workspaceFingerprint,
+  };
 }
 
 function parsePortableInventory(value: unknown): CodeGraphCheckpointPortableInventoryV1 {
@@ -902,14 +972,24 @@ function parsePortableInventory(value: unknown): CodeGraphCheckpointPortableInve
   ) {
     throw new CodeGraphCheckpointSchemaError('Attribution context exceeds the portable byte boundary.');
   }
-  sha256(input.contract, 'Inventory contract');
-  if (input.diagnostics !== undefined) stringArray(input.diagnostics, 'Inventory diagnostics');
-  boolean(input.includeOpaqueCorpusAssets, 'Inventory opaque-corpus policy');
-  parsePolicyExclusions(input.policyExclusions);
-  nonNegativeInteger(input.skipped, 'Inventory skipped files');
-  positiveInteger(input.version, 'Inventory version');
-  parseWorkspace(input.workspace);
-  return input as unknown as CodeGraphCheckpointPortableInventoryV1;
+  const contract = sha256(input.contract, 'Inventory contract');
+  const diagnostics =
+    input.diagnostics === undefined ? undefined : stringArray(input.diagnostics, 'Inventory diagnostics');
+  const includeOpaqueCorpusAssets = boolean(input.includeOpaqueCorpusAssets, 'Inventory opaque-corpus policy');
+  const policyExclusions = parsePolicyExclusions(input.policyExclusions);
+  const skipped = nonNegativeInteger(input.skipped, 'Inventory skipped files');
+  const version = positiveInteger(input.version, 'Inventory version');
+  const workspace = parseWorkspace(input.workspace);
+  return {
+    attributionFiles,
+    contract,
+    ...(diagnostics === undefined ? {} : {diagnostics}),
+    includeOpaqueCorpusAssets,
+    policyExclusions,
+    skipped,
+    version,
+    workspace,
+  };
 }
 
 function parseAttributionFile(value: unknown): CodeGraphCheckpointAttributionFileV1 {
@@ -920,59 +1000,51 @@ function parseAttributionFile(value: unknown): CodeGraphCheckpointAttributionFil
     [],
     'Attribution file',
   );
-  gitObjectId(input.blobId, 'Attribution blob ID');
-  nonNegativeInteger(input.blobSize, 'Attribution blob size');
-  sha256(input.contentHash, 'Attribution content hash');
-  shortText(input.language, 'Attribution language');
-  mode(input.mode, 'Attribution mode');
-  repositoryPath(input.path, 'Attribution path');
-  nonNegativeInteger(input.size, 'Attribution size');
-  literal(input.source, 'commit', 'Attribution source');
-  return input as unknown as CodeGraphCheckpointAttributionFileV1;
+  return {
+    blobId: gitObjectId(input.blobId, 'Attribution blob ID'),
+    blobSize: nonNegativeInteger(input.blobSize, 'Attribution blob size'),
+    contentHash: sha256(input.contentHash, 'Attribution content hash'),
+    language: shortText(input.language, 'Attribution language'),
+    mode: mode(input.mode, 'Attribution mode'),
+    path: repositoryPath(input.path, 'Attribution path'),
+    size: nonNegativeInteger(input.size, 'Attribution size'),
+    source: literal(input.source, 'commit', 'Attribution source'),
+  };
 }
 
 function parsePolicyExclusions(value: unknown): CodeGraphCheckpointPolicyExclusionsV1 {
   const input = object(value, 'Policy exclusions');
   exactKeys(input, ['bytes', 'files', 'policyVersion', 'reasons'], [], 'Policy exclusions');
-  nonNegativeInteger(input.bytes, 'Policy exclusion bytes');
-  nonNegativeInteger(input.files, 'Policy exclusion files');
-  positiveInteger(input.policyVersion, 'Policy exclusion version');
+  const bytes = nonNegativeInteger(input.bytes, 'Policy exclusion bytes');
+  const files = nonNegativeInteger(input.files, 'Policy exclusion files');
+  const policyVersion = positiveInteger(input.policyVersion, 'Policy exclusion version');
   const reasons = array(input.reasons, 'Policy exclusion reasons').map(value => {
     const reason = object(value, 'Policy exclusion reason');
     exactKeys(reason, ['bytes', 'files', 'reason'], [], 'Policy exclusion reason');
-    nonNegativeInteger(reason.bytes, 'Policy exclusion reason bytes');
-    nonNegativeInteger(reason.files, 'Policy exclusion reason files');
-    shortText(reason.reason, 'Policy exclusion reason');
-    return reason as unknown as CodeGraphCheckpointPolicyExclusionReasonV1;
+    return {
+      bytes: nonNegativeInteger(reason.bytes, 'Policy exclusion reason bytes'),
+      files: nonNegativeInteger(reason.files, 'Policy exclusion reason files'),
+      reason: shortText(reason.reason, 'Policy exclusion reason'),
+    };
   });
   ensureSortedUnique(reasons, reason => reason.reason, 'Policy exclusion reasons');
-  return input as unknown as CodeGraphCheckpointPolicyExclusionsV1;
+  return {bytes, files, policyVersion, reasons};
 }
 
 function parseWorkspace(value: unknown): CodeGraphWorkspace {
   const input = object(value, 'Portable workspace');
   exactKeys(input, ['diagnostics', 'fingerprint', 'projects', 'workspaces'], [], 'Portable workspace');
-  stringArray(input.diagnostics, 'Workspace diagnostics');
-  sha256(input.fingerprint, 'Workspace fingerprint');
-  const projects = array(input.projects, 'Workspace projects');
-  const workspaces = array(input.workspaces, 'Build workspaces');
-  for (const project of projects) parseWorkspaceProject(project);
-  for (const workspace of workspaces) parseBuildWorkspace(workspace);
-  ensureSortedUnique(
-    projects.map(project => project as {readonly id: string}),
-    project => project.id,
-    'Workspace projects',
-  );
-  ensureSortedUnique(
-    workspaces.map(workspace => workspace as {readonly id: string}),
-    workspace => workspace.id,
-    'Build workspaces',
-  );
+  const diagnostics = stringArray(input.diagnostics, 'Workspace diagnostics');
+  const fingerprint = sha256(input.fingerprint, 'Workspace fingerprint');
+  const projects = array(input.projects, 'Workspace projects').map(parseWorkspaceProject);
+  const workspaces = array(input.workspaces, 'Build workspaces').map(parseBuildWorkspace);
+  ensureSortedUnique(projects, project => project.id, 'Workspace projects');
+  ensureSortedUnique(workspaces, workspace => workspace.id, 'Build workspaces');
   canonicalJson(input);
-  return input as unknown as CodeGraphWorkspace;
+  return {diagnostics, fingerprint, projects, workspaces};
 }
 
-function parseWorkspaceProject(value: unknown): void {
+function parseWorkspaceProject(value: unknown): CodeGraphWorkspaceProject {
   const input = object(value, 'Workspace project');
   exactKeys(
     input,
@@ -995,60 +1067,96 @@ function parseWorkspaceProject(value: unknown): void {
     ['externalDependencies', 'monikers'],
     'Workspace project',
   );
-  workspaceBuildSystem(input.buildSystem, 'Project build system');
-  stringArray(input.dependencies, 'Project dependencies');
-  for (const detail of array(input.dependencyDetails, 'Project dependency details')) {
+  const buildSystem = workspaceBuildSystem(input.buildSystem, 'Project build system');
+  const dependencies = stringArray(input.dependencies, 'Project dependencies');
+  const dependencyDetails: readonly CodeGraphWorkspaceDependency[] = array(
+    input.dependencyDetails,
+    'Project dependency details',
+  ).map(detail => {
     const candidate = object(detail, 'Project dependency detail');
     exactKeys(candidate, ['provenance', 'targetId'], ['evidence'], 'Project dependency detail');
-    workspaceProvenance(candidate.provenance, 'Project dependency provenance');
-    shortText(candidate.targetId, 'Project dependency target');
-    optionalShortText(candidate.evidence, 'Project dependency evidence');
-  }
-  stringArray(input.diagnostics, 'Project diagnostics');
-  shortText(input.id, 'Project ID');
-  oneOf(input.kind, ['module', 'package', 'project', 'target'], 'Project kind');
-  stringArray(input.languages, 'Project languages');
-  shortText(input.name, 'Project name');
-  workspaceProvenance(input.provenance, 'Project provenance');
-  shortText(input.resolutionDomain, 'Project resolution domain');
-  workspaceRoot(input.root, 'Project root');
-  pathArray(input.sourceRoots, 'Project source roots', true);
-  shortText(input.workspaceId, 'Project workspace ID');
-  pathArray(input.workspaceRoots, 'Project workspace roots', true);
-  if (input.externalDependencies !== undefined) {
-    for (const dependency of array(input.externalDependencies, 'Project external dependencies')) {
-      const candidate = object(dependency, 'Project external dependency');
-      exactKeys(
-        candidate,
-        ['ecosystem', 'evidence', 'importAlias', 'kind', 'name', 'versionConstraint'],
-        [],
-        'Project external dependency',
-      );
-      literal(candidate.ecosystem, 'npm', 'Project external dependency ecosystem');
-      const evidence = object(candidate.evidence, 'Project external dependency evidence');
-      exactKeys(evidence, ['path'], ['span'], 'Project external dependency evidence');
-      repositoryPath(evidence.path, 'Project external dependency path');
-      if (evidence.span !== undefined) parseSpan(evidence.span, 'Project external dependency span');
-      shortText(candidate.importAlias, 'Project external dependency alias');
-      dependencyKind(candidate.kind, 'Project external dependency kind');
-      shortText(candidate.name, 'Project external dependency name');
-      shortText(candidate.versionConstraint, 'Project external dependency version');
-    }
-  }
-  if (input.monikers !== undefined) {
-    for (const moniker of array(input.monikers, 'Project monikers')) canonicalJson(moniker);
-  }
+    const evidence =
+      candidate.evidence === undefined ? undefined : shortText(candidate.evidence, 'Project dependency evidence');
+    return {
+      ...(evidence === undefined ? {} : {evidence}),
+      provenance: workspaceProvenance(candidate.provenance, 'Project dependency provenance'),
+      targetId: shortText(candidate.targetId, 'Project dependency target'),
+    };
+  });
+  const diagnostics = stringArray(input.diagnostics, 'Project diagnostics');
+  const id = shortText(input.id, 'Project ID');
+  const kind = oneOf(input.kind, ['module', 'package', 'project', 'target'], 'Project kind');
+  const languages = stringArray(input.languages, 'Project languages');
+  const name = shortText(input.name, 'Project name');
+  const provenance = workspaceProvenance(input.provenance, 'Project provenance');
+  const resolutionDomain = shortText(input.resolutionDomain, 'Project resolution domain');
+  const root = workspaceRoot(input.root, 'Project root');
+  const sourceRoots = pathArray(input.sourceRoots, 'Project source roots', true);
+  const workspaceId = shortText(input.workspaceId, 'Project workspace ID');
+  const workspaceRoots = pathArray(input.workspaceRoots, 'Project workspace roots', true);
+  const externalDependencies =
+    input.externalDependencies === undefined
+      ? undefined
+      : array(input.externalDependencies, 'Project external dependencies').map(parseExternalDependency);
+  const monikers: readonly CodeGraphMonikerV1[] | undefined =
+    input.monikers === undefined ? undefined : array(input.monikers, 'Project monikers').map(parseCodeGraphMonikerV1);
+  return {
+    buildSystem,
+    dependencies,
+    dependencyDetails,
+    diagnostics,
+    ...(externalDependencies === undefined ? {} : {externalDependencies}),
+    id,
+    kind,
+    languages,
+    ...(monikers === undefined ? {} : {monikers}),
+    name,
+    provenance,
+    resolutionDomain,
+    root,
+    sourceRoots,
+    workspaceId,
+    workspaceRoots,
+  };
 }
 
-function parseBuildWorkspace(value: unknown): void {
+function parseExternalDependency(value: unknown): CodeGraphExternalDependencyV1 {
+  const input = object(value, 'Project external dependency');
+  exactKeys(
+    input,
+    ['ecosystem', 'evidence', 'importAlias', 'kind', 'name', 'versionConstraint'],
+    [],
+    'Project external dependency',
+  );
+  const evidenceInput = object(input.evidence, 'Project external dependency evidence');
+  exactKeys(evidenceInput, ['path'], ['span'], 'Project external dependency evidence');
+  const span =
+    evidenceInput.span === undefined ? undefined : parseSpan(evidenceInput.span, 'Project external dependency span');
+  return {
+    ecosystem: literal(input.ecosystem, 'npm', 'Project external dependency ecosystem'),
+    evidence: {
+      path: repositoryPath(evidenceInput.path, 'Project external dependency path'),
+      ...(span === undefined ? {} : {span}),
+    },
+    importAlias: shortText(input.importAlias, 'Project external dependency alias'),
+    kind: dependencyKind(input.kind, 'Project external dependency kind'),
+    name: shortText(input.name, 'Project external dependency name'),
+    versionConstraint: shortText(input.versionConstraint, 'Project external dependency version'),
+  };
+}
+
+function parseBuildWorkspace(value: unknown): CodeGraphBuildWorkspace {
   const input = object(value, 'Build workspace');
   exactKeys(input, ['buildSystem', 'diagnostics', 'id', 'name', 'provenance', 'root'], [], 'Build workspace');
-  workspaceBuildSystem(input.buildSystem, 'Build workspace system');
-  stringArray(input.diagnostics, 'Build workspace diagnostics');
-  shortText(input.id, 'Build workspace ID');
-  workspaceName(input.name, input.root, 'Build workspace name');
-  workspaceProvenance(input.provenance, 'Build workspace provenance');
-  workspaceRoot(input.root, 'Build workspace root');
+  const root = workspaceRoot(input.root, 'Build workspace root');
+  return {
+    buildSystem: workspaceBuildSystem(input.buildSystem, 'Build workspace system'),
+    diagnostics: stringArray(input.diagnostics, 'Build workspace diagnostics'),
+    id: shortText(input.id, 'Build workspace ID'),
+    name: workspaceName(input.name, root, 'Build workspace name'),
+    provenance: workspaceProvenance(input.provenance, 'Build workspace provenance'),
+    root,
+  };
 }
 
 function parseChunk(value: unknown, expectedOrdinal: number): CodeGraphCheckpointChunkDescriptorV1 {
@@ -1059,28 +1167,32 @@ function parseChunk(value: unknown, expectedOrdinal: number): CodeGraphCheckpoin
     [],
     'Checkpoint chunk',
   );
-  positiveInteger(input.compressedBytes, 'Chunk compressed bytes');
+  const compressedBytes = positiveInteger(input.compressedBytes, 'Chunk compressed bytes');
   const digest = parseDigest(input.digest, 'Chunk digest');
-  nonNegativeInteger(input.ordinal, 'Chunk ordinal');
-  if (input.ordinal !== expectedOrdinal) throw new CodeGraphCheckpointSchemaError('Chunk ordinals are not contiguous.');
-  positiveInteger(input.recordCount, 'Chunk record count');
-  positiveInteger(input.uncompressedBytes, 'Chunk uncompressed bytes');
-  return {...(input as unknown as Omit<CodeGraphCheckpointChunkDescriptorV1, 'digest'>), digest};
+  const ordinal = nonNegativeInteger(input.ordinal, 'Chunk ordinal');
+  if (ordinal !== expectedOrdinal) throw new CodeGraphCheckpointSchemaError('Chunk ordinals are not contiguous.');
+  const recordCount = positiveInteger(input.recordCount, 'Chunk record count');
+  const uncompressedBytes = positiveInteger(input.uncompressedBytes, 'Chunk uncompressed bytes');
+  return {compressedBytes, digest, ordinal, recordCount, uncompressedBytes};
 }
 
 function parseCounts(value: unknown): CodeGraphCheckpointCountsV1 {
   const input = object(value, 'Checkpoint counts');
   exactKeys(input, [...CODE_GRAPH_CHECKPOINT_RECORD_KINDS], [], 'Checkpoint counts');
-  for (const kind of CODE_GRAPH_CHECKPOINT_RECORD_KINDS) nonNegativeInteger(input[kind], `${kind} count`);
-  return input as CodeGraphCheckpointCountsV1;
+  const counts = emptyCodeGraphCheckpointCounts();
+  for (const kind of CODE_GRAPH_CHECKPOINT_RECORD_KINDS) {
+    counts[kind] = nonNegativeInteger(input[kind], `${kind} count`);
+  }
+  return counts;
 }
 
 function parseDigest(value: unknown, label: string): CodeGraphCheckpointDigestV1 {
   const input = object(value, label);
   exactKeys(input, ['algorithm', 'digest'], [], label);
-  literal(input.algorithm, 'sha256', `${label} algorithm`);
-  sha256(input.digest, label);
-  return input as unknown as CodeGraphCheckpointDigestV1;
+  return {
+    algorithm: literal(input.algorithm, 'sha256', `${label} algorithm`),
+    digest: sha256(input.digest, label),
+  };
 }
 
 function parseFileFacts(value: unknown, expectedPath: string): CodeGraphFileFacts {
@@ -1096,73 +1208,83 @@ function parseFileFacts(value: unknown, expectedPath: string): CodeGraphFileFact
   return facts;
 }
 
-function parseSymbol(input: Record<string, unknown>): void {
+function parseSymbol(input: Record<string, unknown>): CodeGraphCheckpointSymbolRecordV1 {
   exactKeys(
     input,
     ['contentHash', 'exported', 'id', 'kind', 'language', 'name', 'path', 'qualifiedName', 'span', 'symbolKind'],
     ['arity', 'documentation', 'lookupKeys', 'packageName', 'resolutionDomain', 'resolutionScopeId', 'signature'],
     'Symbol record',
   );
-  optionalNonNegativeInteger(input.arity, 'Symbol arity');
-  sha256(input.contentHash, 'Symbol content hash');
-  optionalText(input.documentation, 'Symbol documentation');
-  boolean(input.exported, 'Symbol exported');
-  shortText(input.id, 'Symbol ID');
-  shortText(input.language, 'Symbol language');
-  if (input.lookupKeys !== undefined) stringArray(input.lookupKeys, 'Symbol lookup keys');
-  shortText(input.name, 'Symbol name');
-  optionalShortText(input.packageName, 'Symbol package name');
-  repositoryPath(input.path, 'Symbol path');
-  shortText(input.qualifiedName, 'Symbol qualified name');
-  optionalShortText(input.resolutionDomain, 'Symbol resolution domain');
-  optionalShortText(input.resolutionScopeId, 'Symbol resolution scope');
-  optionalText(input.signature, 'Symbol signature');
-  parseSpan(input.span, 'Symbol span');
-  shortText(input.symbolKind, 'Symbol kind');
+  return {
+    ...(input.arity === undefined ? {} : {arity: nonNegativeInteger(input.arity, 'Symbol arity')}),
+    contentHash: sha256(input.contentHash, 'Symbol content hash'),
+    ...(input.documentation === undefined ? {} : {documentation: text(input.documentation, 'Symbol documentation')}),
+    exported: boolean(input.exported, 'Symbol exported'),
+    id: shortText(input.id, 'Symbol ID'),
+    kind: 'symbol',
+    language: shortText(input.language, 'Symbol language'),
+    ...(input.lookupKeys === undefined ? {} : {lookupKeys: stringArray(input.lookupKeys, 'Symbol lookup keys')}),
+    name: shortText(input.name, 'Symbol name'),
+    ...(input.packageName === undefined ? {} : {packageName: shortText(input.packageName, 'Symbol package name')}),
+    path: repositoryPath(input.path, 'Symbol path'),
+    qualifiedName: shortText(input.qualifiedName, 'Symbol qualified name'),
+    ...(input.resolutionDomain === undefined
+      ? {}
+      : {resolutionDomain: shortText(input.resolutionDomain, 'Symbol resolution domain')}),
+    ...(input.resolutionScopeId === undefined
+      ? {}
+      : {resolutionScopeId: shortText(input.resolutionScopeId, 'Symbol resolution scope')}),
+    ...(input.signature === undefined ? {} : {signature: text(input.signature, 'Symbol signature')}),
+    span: parseSpan(input.span, 'Symbol span'),
+    symbolKind: shortText(input.symbolKind, 'Symbol kind'),
+  };
 }
 
-function parseEdge(input: Record<string, unknown>): void {
+function parseEdge(input: Record<string, unknown>): CodeGraphCheckpointEdgeRecordV1 {
   exactKeys(
     input,
     ['confidence', 'evidencePath', 'evidenceSpan', 'id', 'kind', 'provenance', 'relation', 'sourceName', 'targetName'],
     ['sourceId', 'targetId'],
     'Edge record',
   );
-  finiteRange(input.confidence, 'Edge confidence', 0, 1);
-  repositoryPath(input.evidencePath, 'Edge evidence path');
-  parseSpan(input.evidenceSpan, 'Edge evidence span');
-  shortText(input.id, 'Edge ID');
-  oneOf(input.provenance, ['declared', 'heuristic', 'model', 'resolved', 'syntactic'], 'Edge provenance');
-  oneOf(
-    input.relation,
-    [
-      'calls',
-      'configures',
-      'constructs',
-      'contains',
-      'declares',
-      'depends_on',
-      'documents',
-      'exports',
-      'extends',
-      'implements',
-      'imports',
-      'overrides',
-      'reads_or_writes',
-      'references',
-      'reexports',
-      'semantic_association',
-      'tests',
-    ],
-    'Edge relation',
-  );
-  optionalShortText(input.sourceId, 'Edge source ID');
-  shortText(input.sourceName, 'Edge source name');
-  optionalShortText(input.targetId, 'Edge target ID');
-  shortText(input.targetName, 'Edge target name');
+  return {
+    confidence: finiteRange(input.confidence, 'Edge confidence', 0, 1),
+    evidencePath: repositoryPath(input.evidencePath, 'Edge evidence path'),
+    evidenceSpan: parseSpan(input.evidenceSpan, 'Edge evidence span'),
+    id: shortText(input.id, 'Edge ID'),
+    kind: 'edge',
+    provenance: oneOf(input.provenance, ['declared', 'heuristic', 'model', 'resolved', 'syntactic'], 'Edge provenance'),
+    relation: oneOf(
+      input.relation,
+      [
+        'calls',
+        'configures',
+        'constructs',
+        'contains',
+        'declares',
+        'depends_on',
+        'documents',
+        'exports',
+        'extends',
+        'implements',
+        'imports',
+        'overrides',
+        'reads_or_writes',
+        'references',
+        'reexports',
+        'semantic_association',
+        'tests',
+      ],
+      'Edge relation',
+    ),
+    ...(input.sourceId === undefined ? {} : {sourceId: shortText(input.sourceId, 'Edge source ID')}),
+    sourceName: shortText(input.sourceName, 'Edge source name'),
+    ...(input.targetId === undefined ? {} : {targetId: shortText(input.targetId, 'Edge target ID')}),
+    targetName: shortText(input.targetName, 'Edge target name'),
+  };
 }
 
-function parseMoniker(input: Record<string, unknown>): void {
+function parseMoniker(input: Record<string, unknown>): CodeGraphCheckpointMonikerRecordV1 {
   exactKeys(
     input,
     [
@@ -1180,51 +1302,65 @@ function parseMoniker(input: Record<string, unknown>): void {
     ['componentId', 'dependencyKind', 'importPath', 'packageName', 'packageVersion', 'qualifiedName', 'symbolId'],
     'Moniker record',
   );
-  optionalShortText(input.componentId, 'Moniker component ID');
-  if (input.dependencyKind !== undefined) dependencyKind(input.dependencyKind, 'Moniker dependency kind');
-  repositoryPath(input.evidencePath, 'Moniker evidence path');
-  parseSpan(input.evidenceSpan, 'Moniker evidence span');
-  shortText(input.id, 'Moniker ID');
-  shortText(input.identity, 'Moniker identity');
-  if (input.importPath !== undefined) repositoryPath(input.importPath, 'Moniker import path');
-  shortText(input.monikerKind, 'Moniker kind');
-  optionalShortText(input.packageName, 'Moniker package name');
-  optionalShortText(input.packageVersion, 'Moniker package version');
-  optionalShortText(input.qualifiedName, 'Moniker qualified name');
-  shortText(input.resolutionDomain, 'Moniker resolution domain');
-  oneOf(input.role, ['export', 'import'], 'Moniker role');
-  oneOf(input.scheme, ['package', 'protobuf'], 'Moniker scheme');
-  optionalShortText(input.symbolId, 'Moniker symbol ID');
-  positiveInteger(input.version, 'Moniker version');
-  if (input.scheme === 'package' && (input.componentId === undefined || input.packageName === undefined)) {
+  const componentId =
+    input.componentId === undefined ? undefined : shortText(input.componentId, 'Moniker component ID');
+  const dependencyKindValue =
+    input.dependencyKind === undefined ? undefined : dependencyKind(input.dependencyKind, 'Moniker dependency kind');
+  const importPath =
+    input.importPath === undefined ? undefined : repositoryPath(input.importPath, 'Moniker import path');
+  const packageName =
+    input.packageName === undefined ? undefined : shortText(input.packageName, 'Moniker package name');
+  const packageVersion =
+    input.packageVersion === undefined ? undefined : shortText(input.packageVersion, 'Moniker package version');
+  const qualifiedName =
+    input.qualifiedName === undefined ? undefined : shortText(input.qualifiedName, 'Moniker qualified name');
+  const scheme = oneOf(input.scheme, ['package', 'protobuf'], 'Moniker scheme');
+  const symbolId = input.symbolId === undefined ? undefined : shortText(input.symbolId, 'Moniker symbol ID');
+  if (scheme === 'package' && (componentId === undefined || packageName === undefined)) {
     throw new CodeGraphCheckpointSchemaError('Package moniker is missing component or package identity.');
   }
-  if (input.scheme === 'protobuf' && input.symbolId === undefined) {
+  if (scheme === 'protobuf' && symbolId === undefined) {
     throw new CodeGraphCheckpointSchemaError('Protobuf moniker is missing its symbol identity.');
   }
+  return {
+    ...(componentId === undefined ? {} : {componentId}),
+    ...(dependencyKindValue === undefined ? {} : {dependencyKind: dependencyKindValue}),
+    evidencePath: repositoryPath(input.evidencePath, 'Moniker evidence path'),
+    evidenceSpan: parseSpan(input.evidenceSpan, 'Moniker evidence span'),
+    id: shortText(input.id, 'Moniker ID'),
+    identity: shortText(input.identity, 'Moniker identity'),
+    ...(importPath === undefined ? {} : {importPath}),
+    kind: 'moniker',
+    monikerKind: shortText(input.monikerKind, 'Moniker kind'),
+    ...(packageName === undefined ? {} : {packageName}),
+    ...(packageVersion === undefined ? {} : {packageVersion}),
+    ...(qualifiedName === undefined ? {} : {qualifiedName}),
+    resolutionDomain: shortText(input.resolutionDomain, 'Moniker resolution domain'),
+    role: oneOf(input.role, ['export', 'import'], 'Moniker role'),
+    scheme,
+    ...(symbolId === undefined ? {} : {symbolId}),
+    version: positiveInteger(input.version, 'Moniker version'),
+  };
 }
 
 function parseSpan(value: unknown, label: string): CodeGraphCheckpointSpanV1 {
   const input = object(value, label);
   exactKeys(input, ['column', 'endColumn', 'endLine', 'line'], [], label);
-  positiveInteger(input.column, `${label} column`);
-  positiveInteger(input.endColumn, `${label} end column`);
-  positiveInteger(input.endLine, `${label} end line`);
-  positiveInteger(input.line, `${label} line`);
-  if (
-    (input.endLine as number) < (input.line as number) ||
-    (input.endLine === input.line && (input.endColumn as number) < (input.column as number))
-  ) {
+  const column = positiveInteger(input.column, `${label} column`);
+  const endColumn = positiveInteger(input.endColumn, `${label} end column`);
+  const endLine = positiveInteger(input.endLine, `${label} end line`);
+  const line = positiveInteger(input.line, `${label} line`);
+  if (endLine < line || (endLine === line && endColumn < column)) {
     throw new CodeGraphCheckpointSchemaError(`${label} ends before it starts.`);
   }
-  return input as unknown as CodeGraphCheckpointSpanV1;
+  return {column, endColumn, endLine, line};
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!Predicate.isObject(value)) {
     throw new CodeGraphCheckpointSchemaError(`${label} must be an object.`);
   }
-  return value as Record<string, unknown>;
+  return value;
 }
 
 function array(value: unknown, label: string): readonly unknown[] {
@@ -1249,18 +1385,16 @@ function exactKeys(
   }
 }
 
-function literal<T extends boolean | number | string>(value: unknown, expected: T, label: string): asserts value is T {
+function literal<T extends boolean | number | string>(value: unknown, expected: T, label: string): T {
   if (value !== expected) throw new CodeGraphCheckpointSchemaError(`${label} is invalid.`);
+  return expected;
 }
 
-function oneOf<const T extends readonly string[]>(
-  value: unknown,
-  options: T,
-  label: string,
-): asserts value is T[number] {
-  if (typeof value !== 'string' || !(options as readonly string[]).includes(value)) {
+function oneOf<const T extends readonly string[]>(value: unknown, options: T, label: string): T[number] {
+  if (typeof value !== 'string' || !options.some(option => option === value)) {
     throw new CodeGraphCheckpointSchemaError(`${label} is invalid.`);
   }
+  return value;
 }
 
 function text(value: unknown, label: string, maximum = 8 * 1_048_576): string {
@@ -1276,106 +1410,103 @@ function shortText(value: unknown, label: string): string {
   return result;
 }
 
-function optionalText(value: unknown, label: string): void {
-  if (value !== undefined) text(value, label);
-}
-
-function optionalShortText(value: unknown, label: string): void {
-  if (value !== undefined) shortText(value, label);
-}
-
-function boolean(value: unknown, label: string): asserts value is boolean {
+function boolean(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') throw new CodeGraphCheckpointSchemaError(`${label} must be boolean.`);
+  return value;
 }
 
-function nonNegativeInteger(value: unknown, label: string): asserts value is number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+function nonNegativeInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new CodeGraphCheckpointSchemaError(`${label} must be a non-negative safe integer.`);
   }
+  return value;
 }
 
-function positiveInteger(value: unknown, label: string, maximum = Number.MAX_SAFE_INTEGER): asserts value is number {
-  if (!Number.isSafeInteger(value) || (value as number) <= 0 || (value as number) > maximum) {
+function positiveInteger(value: unknown, label: string, maximum = Number.MAX_SAFE_INTEGER): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0 || value > maximum) {
     throw new CodeGraphCheckpointSchemaError(`${label} must be a bounded positive safe integer.`);
   }
+  return value;
 }
 
-function optionalNonNegativeInteger(value: unknown, label: string): void {
-  if (value !== undefined) nonNegativeInteger(value, label);
-}
-
-function finiteRange(value: unknown, label: string, minimum: number, maximum: number): void {
+function finiteRange(value: unknown, label: string, minimum: number, maximum: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) {
     throw new CodeGraphCheckpointSchemaError(`${label} must be a finite number between ${minimum} and ${maximum}.`);
   }
+  return value;
 }
 
-function sha256(value: unknown, label: string): asserts value is string {
+function sha256(value: unknown, label: string): string {
   if (typeof value !== 'string' || !SHA256.test(value)) {
     throw new CodeGraphCheckpointSchemaError(`${label} must be a lowercase SHA-256 digest.`);
   }
+  return value;
 }
 
-function optionalSha256(value: unknown, label: string): void {
-  if (value !== undefined) sha256(value, label);
-}
-
-function gitObjectId(value: unknown, label: string): asserts value is string {
+function gitObjectId(value: unknown, label: string): string {
   if (typeof value !== 'string' || !GIT_OBJECT_ID.test(value)) {
     throw new CodeGraphCheckpointSchemaError(`${label} must be a lowercase Git object ID.`);
   }
+  return value;
 }
 
-function mode(value: unknown, label: string): void {
+function mode(value: unknown, label: string): string {
   if (typeof value !== 'string' || !/^\d{6}$/u.test(value)) {
     throw new CodeGraphCheckpointSchemaError(`${label} is invalid.`);
   }
+  return value;
 }
 
-function repositoryPath(value: unknown, label: string): asserts value is string {
+function repositoryPath(value: unknown, label: string): string {
   if (typeof value !== 'string' || !isSafeCodeGraphCheckpointPath(value)) {
     throw new CodeGraphCheckpointSchemaError(`${label} must be a safe repository-relative POSIX path.`);
   }
+  return value;
 }
 
-function workspaceRoot(value: unknown, label: string): void {
+function workspaceRoot(value: unknown, label: string): string {
   // The workspace model uses the empty repository-relative path as its
   // canonical repository root. Keep `.` readable for older/projected models,
   // but never rewrite either representation at the checkpoint boundary.
-  if (value !== '' && value !== '.' && (typeof value !== 'string' || !isSafeCodeGraphCheckpointPath(value))) {
+  if (value === '' || value === '.') return value;
+  if (typeof value !== 'string' || !isSafeCodeGraphCheckpointPath(value)) {
     throw new CodeGraphCheckpointSchemaError(`${label} must be a safe repository-relative POSIX root.`);
   }
+  return value;
 }
 
-function workspaceName(value: unknown, root: unknown, label: string): void {
+function workspaceName(value: unknown, root: string, label: string): string {
   // Existing workspace receipts represent the repository-wide build scope as
   // the pair {root: '', name: ''}. Admit only that paired empty identity;
   // nested workspace names remain non-empty bounded text.
-  if (value === '' && root === '') return;
-  shortText(value, label);
+  if (value === '' && root === '') return value;
+  return shortText(value, label);
 }
 
-function stringArray(value: unknown, label: string): void {
-  for (const entry of array(value, label)) text(entry, `${label} entry`, MAXIMUM_SHORT_TEXT_LENGTH);
+function stringArray(value: unknown, label: string): readonly string[] {
+  return array(value, label).map(entry => text(entry, `${label} entry`, MAXIMUM_SHORT_TEXT_LENGTH));
 }
 
-function pathArray(value: unknown, label: string, allowRoot: boolean): void {
-  for (const entry of array(value, label)) {
-    if (allowRoot) workspaceRoot(entry, `${label} entry`);
-    else repositoryPath(entry, `${label} entry`);
-  }
+function pathArray(value: unknown, label: string, allowRoot: boolean): readonly string[] {
+  return array(value, label).map(entry =>
+    allowRoot ? workspaceRoot(entry, `${label} entry`) : repositoryPath(entry, `${label} entry`),
+  );
 }
 
-function workspaceBuildSystem(value: unknown, label: string): void {
-  oneOf(value, ['bazel', 'gradle', 'inferred', 'maven', 'node', 'nx', 'pnpm', 'swiftpm', 'typescript', 'xcode'], label);
+function workspaceBuildSystem(value: unknown, label: string): CodeGraphWorkspaceProject['buildSystem'] {
+  return oneOf(
+    value,
+    ['bazel', 'gradle', 'inferred', 'maven', 'node', 'nx', 'pnpm', 'swiftpm', 'typescript', 'xcode'],
+    label,
+  );
 }
 
-function workspaceProvenance(value: unknown, label: string): void {
-  oneOf(value, ['declared', 'inferred'], label);
+function workspaceProvenance(value: unknown, label: string): CodeGraphWorkspaceProject['provenance'] {
+  return oneOf(value, ['declared', 'inferred'], label);
 }
 
-function dependencyKind(value: unknown, label: string): void {
-  oneOf(value, ['development', 'optional', 'peer', 'runtime'], label);
+function dependencyKind(value: unknown, label: string): CodeGraphExternalDependencyV1['kind'] {
+  return oneOf(value, ['development', 'optional', 'peer', 'runtime'], label);
 }
 
 function ensureSortedUnique<T>(values: readonly T[], key: (value: T) => string, label: string): void {
@@ -1404,7 +1535,7 @@ function compareUtf8(left: string, right: string): number {
   const rightBytes = UTF8.encode(right);
   const length = Math.min(leftBytes.byteLength, rightBytes.byteLength);
   for (let index = 0; index < length; index += 1) {
-    const difference = leftBytes[index]! - rightBytes[index]!;
+    const difference = leftBytes[index] - rightBytes[index];
     if (difference !== 0) return difference;
   }
   return leftBytes.byteLength - rightBytes.byteLength;

@@ -336,10 +336,10 @@ function createDeclarationOwnerIndex(declarations: readonly MaterializedDeclarat
   const maximumEnds = new Float64Array(leafCount * 2);
   maximumEnds.fill(Number.NEGATIVE_INFINITY);
   for (let index = 0; index < intervalGroups.length; index += 1) {
-    maximumEnds[leafCount + index] = intervalGroups[index]!.endIndex;
+    maximumEnds[leafCount + index] = intervalGroups[index].endIndex;
   }
   for (let index = leafCount - 1; index > 0; index -= 1) {
-    maximumEnds[index] = Math.max(maximumEnds[index * 2]!, maximumEnds[index * 2 + 1]!);
+    maximumEnds[index] = Math.max(maximumEnds[index * 2], maximumEnds[index * 2 + 1]);
   }
 
   return {
@@ -354,7 +354,7 @@ function createDeclarationOwnerIndex(declarations: readonly MaterializedDeclarat
           node.endIndex,
         );
         if (groupIndex < 0) return undefined;
-        const owner = intervalGroups[groupIndex]!.declarations.find(
+        const owner = intervalGroups[groupIndex].declarations.find(
           declaration => declaration.symbol.id !== excludedSymbolId,
         );
         if (owner) return owner;
@@ -370,7 +370,7 @@ function lastGroupStartingBefore(groups: readonly DeclarationIntervalGroup[], st
   let upper = groups.length;
   while (lower < upper) {
     const middle = lower + Math.floor((upper - lower) / 2);
-    if (groups[middle]!.startIndex <= startIndex) {
+    if (groups[middle].startIndex <= startIndex) {
       lower = middle + 1;
     } else {
       upper = middle;
@@ -387,7 +387,7 @@ function rightmostContainingGroup(
   requiredEndIndex: number,
 ): number {
   const visit = (treeIndex: number, lower: number, upper: number): number => {
-    if (lower > maximumGroupIndex || maximumEnds[treeIndex]! < requiredEndIndex) return -1;
+    if (lower > maximumGroupIndex || maximumEnds[treeIndex] < requiredEndIndex) return -1;
     if (lower === upper) return lower < groupCount ? lower : -1;
     const middle = lower + Math.floor((upper - lower) / 2);
     const right = visit(treeIndex * 2 + 1, middle + 1, upper);

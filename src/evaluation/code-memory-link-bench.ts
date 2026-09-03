@@ -95,7 +95,7 @@ const evaluateRuntimeQuery = Effect.fn('evaluation.codeMemoryLinkBenchRuntime.qu
     if (query.measureWarmIncrementalLatency) {
       yield* Effect.forEach(
         Array.from({length: CODE_MEMORY_LINK_BENCH_MINIMUM_WARMUPS}),
-        (_, index) => run([definition.warmCodeRefs?.[index] ?? query.codeRefs[0]!]),
+        (_, index) => run([definition.warmCodeRefs?.[index] ?? query.codeRefs[0]]),
         {concurrency: 1, discard: true},
       );
       const milliseconds = yield* Effect.forEach(
@@ -104,7 +104,7 @@ const evaluateRuntimeQuery = Effect.fn('evaluation.codeMemoryLinkBenchRuntime.qu
           Effect.gen(function* () {
             const sampleStarted = monotonicMilliseconds();
             const cohort = index + CODE_MEMORY_LINK_BENCH_MINIMUM_WARMUPS;
-            yield* run([definition.warmCodeRefs?.[cohort] ?? query.codeRefs[0]!]);
+            yield* run([definition.warmCodeRefs?.[cohort] ?? query.codeRefs[0]]);
             return elapsed(sampleStarted);
           }),
         {concurrency: 1},

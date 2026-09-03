@@ -21,7 +21,7 @@ function parseArguments(args: readonly string[]): {readonly artifacts: readonly 
   const artifacts: string[] = [];
   let outputPath: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--output') {
       const value = args[++index];
       if (!value?.trim()) throw new ScriptError('--output requires a path.');

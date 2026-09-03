@@ -175,7 +175,7 @@ export class CodeMemoryLinkAppServerClient {
     while (Date.now() - started < timeoutMilliseconds) {
       this.assertHealthy();
       while (inspected < this.#events.length) {
-        const event = this.#events[inspected++]!;
+        const event = this.#events[inspected++];
         if (predicate(event)) return event;
       }
       await new Promise(resolve => setTimeout(resolve, 5));
@@ -718,7 +718,7 @@ export function assertTraceIsolation(
   const completed = events.filter(event => event.method === 'turn/completed');
   if (!selectedTurnSettingsUpdated) throw new Error('Codex did not confirm the sealed turn settings.');
   if (completed.length !== 1) throw new Error('Codex trace must contain exactly one completed turn.');
-  const params = record(completed[0]!.params, 'turn/completed params');
+  const params = record(completed[0].params, 'turn/completed params');
   if (params.threadId !== expected.threadId) throw new Error('Completed turn belongs to another thread.');
   const turn = record(params.turn, 'completed turn');
   if (turn.id !== expected.turnId || turn.status !== 'completed')

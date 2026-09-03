@@ -1656,7 +1656,7 @@ function formatGraphBytes(bytes: number): string {
   if (bytes < 1_024) return `${Math.round(bytes)} B`;
   const units = ['KiB', 'MiB', 'GiB', 'TiB'];
   let value = bytes / 1_024;
-  let unit = units[0]!;
+  let unit = units[0];
   for (const candidate of units.slice(1)) {
     if (value < 1_024) break;
     value /= 1_024;

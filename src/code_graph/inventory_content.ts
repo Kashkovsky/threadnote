@@ -1,4 +1,4 @@
-import {Option} from 'effect';
+import {Option, Predicate} from 'effect';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT} from './languages/corpus/policy.js';
 import {isLowSignalStructuredPath} from './languages/schemas/policy.js';
@@ -86,8 +86,8 @@ function compactResolutionContext(name: string, content: string): string | undef
   if (name === 'project.pbxproj') return compactXcodeProject(content);
   if (name !== 'package.json' && name !== 'tsconfig.json') return undefined;
   try {
-    const parsed = JSON.parse(content) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const parsed: unknown = JSON.parse(content);
+    if (!Predicate.isObject(parsed)) return undefined;
     if (name === 'package.json') {
       const entry = packageEntryForResolution(parsed.exports, parsed.main);
       const dependencySections = Object.fromEntries(
@@ -98,7 +98,7 @@ function compactResolutionContext(name: string, content: string): string | undef
             [
               section,
               Object.fromEntries(
-                Object.entries(value as Record<string, unknown>).flatMap(([dependency, version]) =>
+                Object.entries(value).flatMap(([dependency, version]) =>
                   typeof version === 'string' ? [[dependency, version]] : [],
                 ),
               ),
@@ -113,33 +113,27 @@ function compactResolutionContext(name: string, content: string): string | undef
         ...(typeof parsed.packageManager === 'string' ? {packageManager: parsed.packageManager} : {}),
         ...(Array.isArray(parsed.workspaces)
           ? {workspaces: parsed.workspaces.filter((value): value is string => typeof value === 'string')}
-          : parsed.workspaces && typeof parsed.workspaces === 'object'
+          : Predicate.isObject(parsed.workspaces)
             ? {
                 workspaces: {
-                  packages: Array.isArray((parsed.workspaces as Record<string, unknown>).packages)
-                    ? ((parsed.workspaces as Record<string, unknown>).packages as unknown[]).filter(
-                        (value): value is string => typeof value === 'string',
-                      )
+                  packages: Array.isArray(parsed.workspaces.packages)
+                    ? parsed.workspaces.packages.filter((value): value is string => typeof value === 'string')
                     : [],
                 },
               }
             : {}),
       });
     }
-    const compilerOptions =
-      parsed.compilerOptions && typeof parsed.compilerOptions === 'object' && !Array.isArray(parsed.compilerOptions)
-        ? (parsed.compilerOptions as Record<string, unknown>)
-        : {};
-    const paths =
-      compilerOptions.paths && typeof compilerOptions.paths === 'object' && !Array.isArray(compilerOptions.paths)
-        ? Object.fromEntries(
-            Object.entries(compilerOptions.paths as Record<string, unknown>).flatMap(([alias, targets]) =>
-              Array.isArray(targets)
-                ? [[alias, targets.filter((target): target is string => typeof target === 'string')]]
-                : [],
-            ),
-          )
-        : undefined;
+    const compilerOptions = Predicate.isObject(parsed.compilerOptions) ? parsed.compilerOptions : {};
+    const paths = Predicate.isObject(compilerOptions.paths)
+      ? Object.fromEntries(
+          Object.entries(compilerOptions.paths).flatMap(([alias, targets]) =>
+            Array.isArray(targets)
+              ? [[alias, targets.filter((target): target is string => typeof target === 'string')]]
+              : [],
+          ),
+        )
+      : undefined;
     const compact: Record<string, unknown> = {
       compilerOptions: {
         ...(typeof compilerOptions.baseUrl === 'string' ? {baseUrl: compilerOptions.baseUrl} : {}),
@@ -156,11 +150,8 @@ function compactResolutionContext(name: string, content: string): string | undef
     }
     if (Array.isArray(parsed.references)) {
       compact.references = parsed.references.flatMap(reference =>
-        reference &&
-        typeof reference === 'object' &&
-        !Array.isArray(reference) &&
-        typeof (reference as Record<string, unknown>).path === 'string'
-          ? [{path: (reference as Record<string, unknown>).path}]
+        reference && Predicate.isObject(reference) && typeof reference.path === 'string'
+          ? [{path: reference.path}]
           : [],
       );
     }
@@ -243,7 +234,7 @@ function compactSwiftPackage(content: string): string | undefined {
     const body = content.slice(match.index, starts[index + 1]?.index ?? content.length);
     const path = /\bpath\s*:\s*"([^"]+)"/.exec(body)?.[1];
     const dependencies = /\bdependencies\s*:\s*\[([\s\S]*?)\]/.exec(body)?.[1] ?? '';
-    const names = [...dependencies.matchAll(/"([^"]+)"/g)].map(value => value[1]!);
+    const names = [...dependencies.matchAll(/"([^"]+)"/g)].map(value => value[1]);
     return `.${match[1]}(name: ${JSON.stringify(match[2])}, dependencies: [${names
       .map(name => JSON.stringify(name))
       .join(', ')}]${path ? `, path: ${JSON.stringify(path)}` : ''})`;
@@ -253,7 +244,7 @@ function compactSwiftPackage(content: string): string | undefined {
 
 function compactXcodeProject(content: string): string {
   const targets = [...content.matchAll(/isa\s*=\s*PBXNativeTarget;[\s\S]*?\bname\s*=\s*"?([^";\n]+)"?;/g)].map(match =>
-    match[1]!.trim(),
+    match[1].trim(),
   );
   return `${targets.map(target => `isa = PBXNativeTarget; name = ${JSON.stringify(target)};`).join('\n')}\n`;
 }
@@ -264,19 +255,16 @@ function compactXmlTag(content: string, tag: string): string | undefined {
 
 function compactXmlTags(content: string, tag: string): readonly string[] {
   return [...content.matchAll(new RegExp(`<${tag}(?:\\s[^>]*)?>\\s*([^<]+?)\\s*</${tag}>`, 'gi'))].map(match =>
-    match[1]!.trim(),
+    match[1].trim(),
   );
 }
 
 function packageEntryForResolution(exportsValue: unknown, mainValue: unknown): string | undefined {
   if (exportsValue === undefined) return typeof mainValue === 'string' ? mainValue : undefined;
-  const root =
-    typeof exportsValue === 'object' &&
-    exportsValue !== null &&
-    !Array.isArray(exportsValue) &&
-    Object.keys(exportsValue).some(key => key.startsWith('.'))
-      ? (exportsValue as Record<string, unknown>)['.']
-      : exportsValue;
+  let root: unknown = exportsValue;
+  if (Predicate.isObject(exportsValue) && Object.keys(exportsValue).some(key => key.startsWith('.'))) {
+    root = exportsValue['.'];
+  }
   const targets = new Set(collectResolutionExportTargets(root));
   return targets.size === 1 ? [...targets][0] : undefined;
 }
@@ -285,7 +273,7 @@ function collectResolutionExportTargets(value: unknown): readonly string[] {
   if (typeof value === 'string') return [value];
   if (Array.isArray(value)) return value.flatMap(collectResolutionExportTargets);
   if (typeof value !== 'object' || value === null) return [];
-  return Object.values(value as Record<string, unknown>).flatMap(collectResolutionExportTargets);
+  return Object.values(value).flatMap(collectResolutionExportTargets);
 }
 
 export function appearsBinary(bytes: Uint8Array): boolean {

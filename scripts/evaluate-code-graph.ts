@@ -203,7 +203,7 @@ function parseArguments(args: readonly string[]): {
     ? new Date(Number.parseInt(process.env.SOURCE_DATE_EPOCH, 10) * 1_000).toISOString()
     : new Date().toISOString();
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--output') outputPath = required(args[++index], argument);
     else if (argument === '--fixture') fixture = required(args[++index], argument);
     else if (argument === '--created-at') createdAt = new Date(required(args[++index], argument)).toISOString();

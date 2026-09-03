@@ -171,7 +171,7 @@ function readRetirementEpoch(databasePath: string): number {
         /epoch|retirement.*id/i.test(key) && typeof value === 'number' && Number.isSafeInteger(value) && value > 0,
     );
     expect(candidates).toHaveLength(1);
-    return candidates[0]![1] as number;
+    return candidates[0][1] as number;
   } finally {
     database.close(false);
   }

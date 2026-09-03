@@ -105,7 +105,7 @@ function finalizationResult(
     ['failed', receipt.failedCount],
   ];
   const nonEmpty = outcomes.filter(entry => entry[1] > 0);
-  if (nonEmpty.length === 1) return nonEmpty[0]![0];
+  if (nonEmpty.length === 1) return nonEmpty[0][0];
   if (nonEmpty.length > 1) return 'mixed';
   return undefined;
 }

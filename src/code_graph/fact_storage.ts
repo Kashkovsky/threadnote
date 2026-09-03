@@ -4,7 +4,8 @@ import {
   ensureBoundedCodeGraphFact,
   type BoundedCodeGraphFact,
 } from './fact_budget.js';
-import type {CodeGraphFileFacts} from './types.js';
+import {parseCodeGraphFileFacts} from './fact_validation.js';
+import {Predicate} from 'effect';
 
 export const CODE_GRAPH_STORED_FACT_CODEC = 'zlib-base64-v1' as const;
 export const CODE_GRAPH_STORED_FACT_COMPRESSION_LEVEL = 3 as const;
@@ -67,15 +68,10 @@ export function encodeStoredCodeGraphFact(fact: BoundedCodeGraphFact): EncodedSt
 export function decodeStoredCodeGraphFact(json: string, expectedPath?: string): BoundedCodeGraphFact {
   const parsed = JSON.parse(json) as unknown;
   if (!isStoredCodeGraphFactEnvelope(parsed)) {
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'codec' in parsed &&
-      (parsed as {readonly codec?: unknown}).codec === CODE_GRAPH_STORED_FACT_CODEC
-    ) {
+    if (Predicate.isObject(parsed) && parsed.codec === CODE_GRAPH_STORED_FACT_CODEC) {
       throw new Error('Stored code graph fact envelope is malformed.');
     }
-    const bounded = ensureBoundedCodeGraphFact(parsed as CodeGraphFileFacts);
+    const bounded = ensureBoundedCodeGraphFact(parseCodeGraphFileFacts(parsed));
     if (expectedPath !== undefined && bounded.facts.path !== expectedPath) {
       throw new Error('Stored code graph fact path does not match its cache key.');
     }
@@ -91,7 +87,7 @@ export function decodeStoredCodeGraphFact(json: string, expectedPath?: string): 
   if (raw.byteLength !== parsed.rawBytes || storedFactSha256Hex(raw) !== parsed.sha256) {
     throw new Error('Stored code graph fact envelope failed integrity validation.');
   }
-  const bounded = ensureBoundedCodeGraphFact(JSON.parse(storedFactDecoder.decode(raw)) as CodeGraphFileFacts);
+  const bounded = ensureBoundedCodeGraphFact(parseCodeGraphFileFacts(JSON.parse(storedFactDecoder.decode(raw))));
   if (bounded.bytes !== parsed.rawBytes || bounded.facts.path !== parsed.path) {
     throw new Error('Stored code graph fact envelope metadata does not match its payload.');
   }

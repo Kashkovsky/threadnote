@@ -130,8 +130,8 @@ const graphEdges = [
 function graphMarkup(): string {
   const edges = graphEdges
     .map(([from, to], index) => {
-      const left = graphPoints[from]!;
-      const right = graphPoints[to]!;
+      const left = graphPoints[from];
+      const right = graphPoints[to];
       const dashed = index % 9 === 0 ? ' stroke-dasharray="5 8"' : '';
       return `<line x1="${left[0]}" y1="${left[1]}" x2="${right[0]}" y2="${right[1]}"${dashed} />`;
     })

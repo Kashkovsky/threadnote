@@ -487,7 +487,7 @@ export function parseRecallEligibilityBenchmarkArguments(args: readonly string[]
   let topK = DEFAULT_TOP_K;
   let warmups = DEFAULT_WARMUPS;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--distractors-per-class') {
       distractorsPerClass = positiveInteger(args[++index], argument);
     } else if (argument === '--output') outputPath = requiredValue(args[++index], argument);

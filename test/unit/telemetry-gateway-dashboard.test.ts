@@ -722,7 +722,7 @@ describe('Threadnote Grafana dashboard', () => {
 
       const scopedAttribute = /(?:resource|span)\.([A-Za-z_][A-Za-z0-9_.]*)/gu;
       const attributes = new Set(
-        queries.flatMap(query => Array.from(query.matchAll(scopedAttribute), match => match[1]!)),
+        queries.flatMap(query => Array.from(query.matchAll(scopedAttribute), match => match[1])),
       );
       expect(attributes.size).toBeGreaterThan(10);
       for (const attribute of attributes) expect(collector).toContain(`"${attribute}"`);

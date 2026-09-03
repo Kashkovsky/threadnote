@@ -601,13 +601,13 @@ function readPageStorage(
 }
 
 function readFragmentedStorageBytes(database: Database): number | undefined {
-  const dbstat = database.query("SELECT sqlite_compileoption_used('ENABLE_DBSTAT_VTAB') AS enabled").get() as {
-    readonly enabled: bigint | number;
-  } | null;
+  const dbstat = database
+    .query<{readonly enabled: bigint | number}, []>("SELECT sqlite_compileoption_used('ENABLE_DBSTAT_VTAB') AS enabled")
+    .get();
   if (safeCount(dbstat?.enabled ?? 0, 'dbstat availability') !== 1) return undefined;
-  const row = database.query('SELECT COALESCE(SUM(unused), 0) AS bytes FROM dbstat').get() as {
-    readonly bytes: bigint | number;
-  } | null;
+  const row = database
+    .query<{readonly bytes: bigint | number}, []>('SELECT COALESCE(SUM(unused), 0) AS bytes FROM dbstat')
+    .get();
   return safeCount(row?.bytes ?? 0, 'fragmented storage bytes');
 }
 
@@ -617,14 +617,25 @@ function readStorageAttribution(
   pageSize: number,
   freelistBytes: number,
 ): CodeGraphStorageAttribution {
-  const dbstat = database.query("SELECT sqlite_compileoption_used('ENABLE_DBSTAT_VTAB') AS enabled").get() as {
-    readonly enabled: bigint | number;
-  } | null;
+  const dbstat = database
+    .query<{readonly enabled: bigint | number}, []>("SELECT sqlite_compileoption_used('ENABLE_DBSTAT_VTAB') AS enabled")
+    .get();
   if (safeCount(dbstat?.enabled ?? 0, 'dbstat availability') !== 1) {
     return {reason: 'sqlite-dbstat-unavailable', state: 'unavailable'};
   }
   const rows = database
-    .query(
+    .query<
+      {
+        readonly bytes: bigint | number;
+        readonly kind: CodeGraphStorageObjectAttribution['kind'];
+        readonly name: string;
+        readonly object_count: bigint | number;
+        readonly pages: bigint | number;
+        readonly total_bytes: bigint | number;
+        readonly total_unused_bytes: bigint | number;
+      },
+      [number]
+    >(
       `SELECT dbstat.name AS name,
               CASE
                 WHEN dbstat.name = 'sqlite_schema' THEN 'internal'
@@ -643,15 +654,7 @@ function readStorageAttribution(
         ORDER BY bytes DESC, dbstat.name ASC
         LIMIT ?`,
     )
-    .all(CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT + 1) as readonly {
-    readonly bytes: bigint | number;
-    readonly kind: CodeGraphStorageObjectAttribution['kind'];
-    readonly name: string;
-    readonly object_count: bigint | number;
-    readonly pages: bigint | number;
-    readonly total_bytes: bigint | number;
-    readonly total_unused_bytes: bigint | number;
-  }[];
+    .all(CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT + 1);
   const semanticRows = rows.slice(0, CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT).map(row => ({
     bytes: safeCount(row.bytes, `storage object ${safeStorageObjectName(row.name)} bytes`),
     name: safeStorageObjectName(row.name),
@@ -692,19 +695,21 @@ function readCompactionReceipt(databasePath: string): Effect.Effect<CodeGraphCom
       const database = new Database(databasePath, {readonly: true, strict: true});
       try {
         database.exec('PRAGMA busy_timeout = 50');
-        const integrity = database.query('PRAGMA quick_check').get() as {readonly quick_check?: string} | null;
+        const integrity = database.query<{readonly quick_check?: string}, []>('PRAGMA quick_check').get();
         if (integrity?.quick_check !== 'ok')
           throw new CodeGraphStorageOperationError(`quick_check returned ${integrity?.quick_check ?? 'no row'}`);
-        const schema = database.query("SELECT value FROM schema_metadata WHERE key = 'schema_version'").get() as {
-          readonly value?: string;
-        } | null;
+        const schema = database
+          .query<{readonly value?: string}, []>("SELECT value FROM schema_metadata WHERE key = 'schema_version'")
+          .get();
         const schemaVersion = Number.parseInt(schema?.value ?? '', 10);
         if (schemaVersion !== CODE_GRAPH_SCHEMA_VERSION) {
           throw new CodeGraphStorageOperationError(`schema version ${schema?.value ?? 'missing'} is not supported`);
         }
         const stateRows = database
-          .query('SELECT state, COUNT(*) AS count FROM snapshots GROUP BY state ORDER BY state')
-          .all() as readonly {readonly count: bigint | number; readonly state: CodeGraphSnapshot['state']}[];
+          .query<{readonly count: bigint | number; readonly state: CodeGraphSnapshot['state']}, []>(
+            'SELECT state, COUNT(*) AS count FROM snapshots GROUP BY state ORDER BY state',
+          )
+          .all();
         const snapshotStates: Record<CodeGraphSnapshot['state'], number> = {
           building: 0,
           failed: 0,
@@ -712,9 +717,9 @@ function readCompactionReceipt(databasePath: string): Effect.Effect<CodeGraphCom
           retired: 0,
         };
         for (const row of stateRows) snapshotStates[row.state] = safeCount(row.count, `snapshot state ${row.state}`);
-        const active = database.query('SELECT COUNT(*) AS count FROM active_snapshots').get() as {
-          readonly count?: bigint | number;
-        } | null;
+        const active = database
+          .query<{readonly count?: bigint | number}, []>('SELECT COUNT(*) AS count FROM active_snapshots')
+          .get();
         return {
           activeSnapshots: safeCount(active?.count ?? 0, 'active snapshot'),
           schemaVersion,
@@ -735,15 +740,11 @@ function vacuumDatabase(databasePath: string): Effect.Effect<void, Error> {
       const database = new Database(databasePath, {create: false, strict: true});
       try {
         database.exec('PRAGMA busy_timeout = 0');
-        const before = database.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as {
-          readonly busy?: number;
-        } | null;
+        const before = database.query<{readonly busy?: number}, []>('PRAGMA wal_checkpoint(TRUNCATE)').get();
         if (Number(before?.busy ?? 0) !== 0)
           throw new CodeGraphStorageOperationError('active SQLite readers prevented the preflight checkpoint');
         database.exec('VACUUM');
-        const after = database.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as {
-          readonly busy?: number;
-        } | null;
+        const after = database.query<{readonly busy?: number}, []>('PRAGMA wal_checkpoint(TRUNCATE)').get();
         if (Number(after?.busy ?? 0) !== 0)
           throw new CodeGraphStorageOperationError('active SQLite readers prevented the final checkpoint');
       } finally {
@@ -755,7 +756,7 @@ function vacuumDatabase(databasePath: string): Effect.Effect<void, Error> {
 }
 
 function pragmaNumber(database: Database, pragma: 'freelist_count' | 'page_count' | 'page_size'): number {
-  const row = database.query(`PRAGMA ${pragma}`).get() as Record<string, bigint | number> | null;
+  const row = database.query<Record<string, bigint | number>, []>(`PRAGMA ${pragma}`).get();
   return safeCount(row?.[pragma] ?? 0, pragma);
 }
 

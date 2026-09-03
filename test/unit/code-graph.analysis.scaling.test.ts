@@ -27,11 +27,11 @@ describe('code graph analysis scaling', () => {
         });
         const edges: CodeGraphEdge[] = [];
         for (let index = 0; index < symbols.length; index += 1) {
-          const source = symbols[index]!;
-          const next = symbols[(index + 1) % symbols.length]!;
+          const source = symbols[index];
+          const next = symbols[(index + 1) % symbols.length];
           edges.push(analysisEdge(`next-${index.toString().padStart(5, '0')}`, source, next));
           if (index % 2 === 0) {
-            const secondary = symbols[(index + 17) % symbols.length]!;
+            const secondary = symbols[(index + 17) % symbols.length];
             edges.push(analysisEdge(`secondary-${index.toString().padStart(5, '0')}`, source, secondary, 'references'));
           }
         }

@@ -99,7 +99,7 @@ export const RecallEvaluationBaselineSchemaV1 = Schema.Struct({
 });
 
 export function parseRecallEvaluationBaselineV1(value: unknown): RecallEvaluationBaselineV1 {
-  const baseline = Schema.decodeUnknownSync(RecallEvaluationBaselineSchemaV1)(value) as RecallEvaluationBaselineV1;
+  const baseline = Schema.decodeUnknownSync(RecallEvaluationBaselineSchemaV1)(value);
   for (const [name, value] of [
     ['fixture.documents', baseline.fixture.documents],
     ['fixture.queries', baseline.fixture.queries],

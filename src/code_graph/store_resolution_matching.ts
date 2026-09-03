@@ -289,7 +289,7 @@ function decodePersistedReferencePage(
             candidateCount += 1;
             if (
               candidateCount > PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES ||
-              (index > 0 && compareCodeUnits(tier[index - 1]!, tier[index]!) >= 0)
+              (index > 0 && compareCodeUnits(tier[index - 1], tier[index]) >= 0)
             ) {
               throw new CodeGraphStoreError('Stored reference candidate payload is not canonical.');
             }
@@ -329,7 +329,7 @@ function loadLookupSummaries(
       yield* loadLookupSummaries(sql, snapshotId, pairs.slice(middle), output, onLookupBatch);
       return;
     }
-    const [lookupKey, resolutionDomain] = pairs[0]!;
+    const [lookupKey, resolutionDomain] = pairs[0];
     const aggregate = yield* sql.unsafe<PersistedLookupAggregateRow>(
       `SELECT ? AS lookup_key, ? AS resolution_domain,
          COUNT(*) AS symbol_count,

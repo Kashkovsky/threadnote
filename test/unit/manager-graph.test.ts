@@ -859,7 +859,7 @@ describe('manager graph focus', () => {
     ).toBe(true);
     const truncatedCatalog = {
       ...catalog,
-      repositories: [{...catalog.repositories[0]!, viewsTruncated: true}],
+      repositories: [{...catalog.repositories[0], viewsTruncated: true}],
     };
     const hiddenBuild = {...graphBuildStatus('completed'), result: {snapshotId: 'hidden-snapshot'}};
     expect(graphStatusRequiresCatalogRefresh(truncatedCatalog, [hiddenBuild])).toBe(true);
@@ -876,10 +876,10 @@ describe('manager graph focus', () => {
           ...truncatedCatalog,
           repositories: [
             {
-              ...truncatedCatalog.repositories[0]!,
+              ...truncatedCatalog.repositories[0],
               views: [
                 {
-                  ...truncatedCatalog.repositories[0]!.views[0]!,
+                  ...truncatedCatalog.repositories[0].views[0],
                   checkoutId: 'checkout',
                   worktreeId: 'worktree',
                 },
@@ -1273,7 +1273,7 @@ describe('manager graph focus', () => {
     };
     const continuation = {
       ...continued,
-      views: [{...continued.views[0]!, projects: [project], projectsTruncated: false}],
+      views: [{...continued.views[0], projects: [project], projectsTruncated: false}],
     };
     const merged = mergeGraphRepositoryGroups([{...initial, viewsTruncated: true}], [continuation]);
     expect(merged[0]?.views.map(view => view.id)).toEqual(['view-00', 'view-01']);
@@ -1285,9 +1285,9 @@ describe('manager graph focus', () => {
       ...refreshed,
       views: [
         {
-          ...refreshed.views[0]!,
+          ...refreshed.views[0],
           projects: [project],
-          snapshot: {...refreshed.views[0]!.snapshot, id: 'stale-snapshot'},
+          snapshot: {...refreshed.views[0].snapshot, id: 'stale-snapshot'},
         },
       ],
     };
@@ -1297,11 +1297,11 @@ describe('manager graph focus', () => {
       ...refreshed,
       views: [
         {
-          ...refreshed.views[0]!,
+          ...refreshed.views[0],
           activatedAt: '2026-08-02T12:00:00.000Z',
           projects: [project],
           snapshot: {
-            ...refreshed.views[0]!.snapshot,
+            ...refreshed.views[0].snapshot,
             completedAt: '2026-08-02T11:59:00.000Z',
             id: 'promoted-snapshot',
           },
@@ -1312,9 +1312,9 @@ describe('manager graph focus', () => {
       ...refreshed,
       views: [
         {
-          ...refreshed.views[0]!,
+          ...refreshed.views[0],
           activatedAt: '2026-08-01T12:00:00.000Z',
-          snapshot: {...refreshed.views[0]!.snapshot, completedAt: '2026-08-01T11:59:00.000Z'},
+          snapshot: {...refreshed.views[0].snapshot, completedAt: '2026-08-01T11:59:00.000Z'},
         },
       ],
     };
@@ -1329,7 +1329,7 @@ describe('manager graph focus', () => {
   it('keeps unfiltered catalog cursors independent from merged search hits', () => {
     const initial = repositoryGroup('repo', ['view-00', 'view-01'], 'view-00');
     const baseRepository = {
-      ...initial.views[0]!,
+      ...initial.views[0],
       checkoutId: 'checkout',
       projects: [
         {id: 'cgp_first', label: '//apps:first'},
@@ -1342,7 +1342,7 @@ describe('manager graph focus', () => {
     };
     const baseRepositoryGroup = {
       ...initial,
-      views: [baseRepository, {...initial.views[1]!, checkoutId: 'checkout'}],
+      views: [baseRepository, {...initial.views[1], checkoutId: 'checkout'}],
     };
     const searchResult = {
       ...baseRepository,
@@ -1352,7 +1352,7 @@ describe('manager graph focus', () => {
     const merged = mergeGraphRepositoryGroups(
       [baseRepositoryGroup],
       [{...baseRepositoryGroup, views: [searchResult]}],
-    )[0]!;
+    )[0];
     expect(merged.views[0]?.projects).toHaveLength(3);
     expect(merged.views[0]?.workspaces).toHaveLength(3);
     expect(
@@ -1377,7 +1377,7 @@ describe('manager graph focus', () => {
   it('turns catalog search responses into visible actionable component and view options', () => {
     const group = repositoryGroup('repo', ['view-current', 'view-match'], 'view-current');
     const currentView = {
-      ...group.views[0]!,
+      ...group.views[0],
       projects: [
         {
           buildSystem: 'bazel',
@@ -1390,7 +1390,7 @@ describe('manager graph focus', () => {
       workspaces: [{buildSystem: 'bazel', id: 'cgw_mobile', name: 'mobile workspace', root: 'apps/mobile'}],
     };
     const matchingView = {
-      ...group.views[1]!,
+      ...group.views[1],
       label: 'feature/mobile-auth',
       localAssociation: {
         available: true,

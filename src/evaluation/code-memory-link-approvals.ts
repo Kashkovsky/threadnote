@@ -1,4 +1,5 @@
 import approvalData from './code-memory-link-approvals.json' with {type: 'json'};
+import {Predicate} from 'effect';
 
 const HASH = /^[0-9a-f]{64}$/u;
 const APPROVAL_KEYS = [
@@ -18,10 +19,10 @@ interface CodeMemoryLinkApprovalsV1 {
 }
 
 function parseApprovalData(value: unknown): CodeMemoryLinkApprovalsV1 {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!Predicate.isObject(value)) {
     throw new Error('Code Memory Link approvals must be a JSON object.');
   }
-  const record = value as Record<string, unknown>;
+  const record = value;
   const keys = Object.keys(record).sort();
   if (JSON.stringify(keys) !== JSON.stringify([...APPROVAL_KEYS].sort())) {
     throw new Error(`Code Memory Link approvals must contain exactly: ${APPROVAL_KEYS.join(', ')}.`);

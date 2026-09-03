@@ -1,4 +1,4 @@
-import {Data, Effect, FileSystem, Option, Path} from 'effect';
+import {Data, Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import type {CodeMemoryLinkAgentAbManifestV1, CodeMemoryLinkAgentAbTrialV1} from './code-memory-link-agent-ab.js';
@@ -175,21 +175,25 @@ export function withCodeMemoryLinkAgentLedgerLock<A, E, R>(
 export function createCodeMemoryLinkAgentAttemptStartedV1(
   input: Omit<CodeMemoryLinkAgentAttemptStartedV1, 'type' | 'version'>,
 ): CodeMemoryLinkAgentAttemptStartedV1 {
-  return parseCodeMemoryLinkAgentAttemptEventV1({
+  const event = parseCodeMemoryLinkAgentAttemptEventV1({
     ...input,
     type: 'attempt-started',
     version: CODE_MEMORY_LINK_AGENT_ATTEMPT_VERSION,
-  }) as CodeMemoryLinkAgentAttemptStartedV1;
+  });
+  if (event.type !== 'attempt-started') invalid('attempt start factory returned an unexpected event');
+  return event;
 }
 
 export function createCodeMemoryLinkAgentAttemptFailedV1(
   input: Omit<CodeMemoryLinkAgentAttemptFailedV1, 'type' | 'version'>,
 ): CodeMemoryLinkAgentAttemptFailedV1 {
-  return parseCodeMemoryLinkAgentAttemptEventV1({
+  const event = parseCodeMemoryLinkAgentAttemptEventV1({
     ...input,
     type: 'attempt-failed',
     version: CODE_MEMORY_LINK_AGENT_ATTEMPT_VERSION,
-  }) as CodeMemoryLinkAgentAttemptFailedV1;
+  });
+  if (event.type !== 'attempt-failed') invalid('attempt failure factory returned an unexpected event');
+  return event;
 }
 
 export function codeMemoryLinkAgentAttemptEventDigest(value: unknown): string {
@@ -431,8 +435,8 @@ function assertRegularLedgerTarget(fs: FileSystem.FileSystem, target: string) {
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
@@ -447,8 +451,11 @@ function matching(value: unknown, pattern: RegExp, label: string): string {
 }
 
 function literal<T extends string>(value: unknown, values: readonly T[], label: string): T {
-  if (typeof value !== 'string' || !values.includes(value as T)) invalid(`${label} is invalid`);
-  return value as T;
+  if (typeof value !== 'string') invalid(`${label} is invalid`);
+  for (const candidate of values) {
+    if (value === candidate) return candidate;
+  }
+  return invalid(`${label} is invalid`);
 }
 
 function nonNegativeInteger(value: unknown, label: string): number {

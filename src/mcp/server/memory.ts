@@ -112,11 +112,11 @@ export function registerCompactTool(server: EffectMcpServerAdapter, config: Runt
       return Effect.gen(function* () {
         const sharedAudit = yield* syncSharedMemoriesForCompact(config);
         const records = yield* scopedCompactRecords(config, {
-          kind: kind as CompactableMemoryKind | undefined,
+          kind: kind,
           project: checkedProject.value,
         });
         const plan = buildCompactPlan(records, {
-          kind: kind as CompactableMemoryKind | undefined,
+          kind: kind,
           project: checkedProject.value,
           topic: normalizeOptionalMetadata(topic),
         });
@@ -533,7 +533,7 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
           config,
           ov,
           {...params, metadata: prepared.finalMetadata},
-          params.replaceUri as string,
+          params.replaceUri,
         );
       }
       const {finalMetadata, isInPlaceUpdate, memory, memoryUri} = prepared;
@@ -771,7 +771,7 @@ export function writeCursorCloudSharedMemory(
   );
   return write.pipe(
     Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
-    Effect.map(result => result as CallToolResult),
+    Effect.map(result => result),
   );
 }
 
@@ -1317,12 +1317,13 @@ export function runNativeReadTool(
       });
       content.push({text: resolved.content, type: 'text'});
     }
-    return {
+    const result: CallToolResult = {
       _meta: {
         'threadnote.io/canonical-read': {resources, type: 'threadnote-canonical-read', version: 1},
       },
       content,
-    } as CallToolResult;
+    };
+    return result;
   }).pipe(Effect.catch(error => Effect.succeed(memoryReadErrorResult(config, error))));
 }
 

@@ -274,11 +274,9 @@ const syncObsidianSource = Effect.fn('obsidian.syncSource')(function* (
           type: 'write' as const,
           uri: note.uri,
         })),
-        ...removals.map(entry => ({
-          ignoreMissing: true,
-          type: 'remove' as const,
-          uri: entry.uri as string,
-        })),
+        ...removals.flatMap(entry =>
+          typeof entry.uri === 'string' ? [{ignoreMissing: true, type: 'remove' as const, uri: entry.uri}] : [],
+        ),
       ];
       if (mutations.length > 0) {
         const store = yield* ResourceStore;

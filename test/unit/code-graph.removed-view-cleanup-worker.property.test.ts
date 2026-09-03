@@ -70,7 +70,7 @@ describe('removed view cleanup worker properties', () => {
         yield* worker.tick(INPUT);
 
         expect(observed).toEqual([modeledUpdate(entry, page, now)]);
-        const update = observed[0]!;
+        const update = observed[0];
         const beforeIndex = CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES.indexOf(entry.phase);
         const afterIndex = CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES.indexOf(update.phase);
         expect(afterIndex === beforeIndex || afterIndex === beforeIndex + 1).toBe(true);
@@ -187,7 +187,7 @@ function modeledUpdate(
   return {
     attempts: 0,
     nextAttemptAt: now + 1,
-    phase: CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES[phaseIndex + 1]!,
+    phase: CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES[phaseIndex + 1],
     updatedAt,
   };
 }

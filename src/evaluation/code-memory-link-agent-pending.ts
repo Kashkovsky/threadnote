@@ -4,6 +4,7 @@ import {
   parseCodeMemoryLinkAgentAbTrialV1,
   type CodeMemoryLinkAgentAbTrialV1,
 } from './code-memory-link-agent-ab.js';
+import {Predicate} from 'effect';
 import {
   codeMemoryLinkAgentEvidenceReceiptDigest,
   parseCodeMemoryLinkAgentEvidenceReceiptV1,
@@ -113,11 +114,13 @@ function normalizePending(value: unknown): Omit<CodeMemoryLinkAgentPendingCommit
   const pending = record(value, 'pending commit');
   if (pending.version !== CODE_MEMORY_LINK_AGENT_PENDING_COMMIT_VERSION) invalid('pending commit version must be 1');
   const index = pending.index;
-  if (!Number.isSafeInteger(index) || (index as number) < 0) invalid('pending commit index is invalid');
+  if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0) {
+    invalid('pending commit index is invalid');
+  }
   const evidence = parseCodeMemoryLinkAgentEvidenceReceiptV1(pending.evidence);
   const trial = parseCodeMemoryLinkAgentAbTrialV1(pending.trial);
   if (evidence.trialId !== trial.trialId) invalid('pending evidence and trial identities differ');
-  return {evidence, index: index as number, trial, version: CODE_MEMORY_LINK_AGENT_PENDING_COMMIT_VERSION};
+  return {evidence, index, trial, version: CODE_MEMORY_LINK_AGENT_PENDING_COMMIT_VERSION};
 }
 
 function pendingDigest(value: Omit<CodeMemoryLinkAgentPendingCommitV1, 'commitDigest'>): string {
@@ -129,8 +132,8 @@ function same(left: unknown, right: unknown): boolean {
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, expected: readonly string[]): void {

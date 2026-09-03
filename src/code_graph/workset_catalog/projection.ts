@@ -185,8 +185,8 @@ export function codeGraphWorksetCatalogGenerationDigest(
   }
   const normalizedMembers = members.map(normalizeGenerationDigestMember).sort(compareDigestMember);
   for (let index = 1; index < normalizedMembers.length; index += 1) {
-    if (normalizedMembers[index - 1]!.repositoryKey === normalizedMembers[index]!.repositoryKey) {
-      throw invalid(`Workset catalog repository key ${normalizedMembers[index]!.repositoryKey} is duplicated.`);
+    if (normalizedMembers[index - 1].repositoryKey === normalizedMembers[index].repositoryKey) {
+      throw invalid(`Workset catalog repository key ${normalizedMembers[index].repositoryKey} is duplicated.`);
     }
   }
   return sha256HexSync(
@@ -249,8 +249,8 @@ function normalizeProjectionDraft(
     .map(normalizeCodeGraphWorksetRoutingSymbol)
     .sort((left, right) => compareText(left.nodeId, right.nodeId));
   for (let index = 1; index < symbols.length; index += 1) {
-    if (symbols[index - 1]!.nodeId === symbols[index]!.nodeId) {
-      throw invalid(`Workset routing symbol ${symbols[index]!.nodeId} is duplicated.`);
+    if (symbols[index - 1].nodeId === symbols[index].nodeId) {
+      throw invalid(`Workset routing symbol ${symbols[index].nodeId} is duplicated.`);
     }
   }
   return {

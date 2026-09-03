@@ -1,4 +1,4 @@
-import {Clock, Effect, FileSystem, Option, Path, Result} from 'effect';
+import {Clock, Effect, FileSystem, Option, Path, Predicate, Result} from 'effect';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {sha256Hex} from '../effect/digest.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
@@ -318,7 +318,7 @@ export const findUrisWithDeferredCodeAnchorIntents = Effect.fn('memoryCodeAnchor
     keyed,
     candidate => {
       const itemAncestors = deferredCodeAnchorItemAncestors(path, root, candidate.digest);
-      const itemDirectory = itemAncestors[itemAncestors.length - 1]!;
+      const itemDirectory = itemAncestors[itemAncestors.length - 1];
       return (
         itemRootNames === undefined
           ? Effect.succeed(undefined)
@@ -942,7 +942,7 @@ const readDeferredCodeAnchorRouteQueue = Effect.fn('memoryCodeAnchor.readRouteQu
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const queueAncestors = deferredCodeAnchorRouteAncestors(path, root, key);
-  const queueRoot = queueAncestors[queueAncestors.length - 1]!;
+  const queueRoot = queueAncestors[queueAncestors.length - 1];
   if (!(yield* validatePrivateDeferredCodeAnchorDirectories(fs, queueAncestors))) {
     return {entries: [] as StoredDeferredCodeAnchorIntent[], maintenancePending: false, partial: false};
   }
@@ -955,7 +955,7 @@ const readDeferredCodeAnchorRouteQueue = Effect.fn('memoryCodeAnchor.readRouteQu
   for (let offset = 0; offset < DEFERRED_CODE_ANCHOR_ROUTE_LANE_COUNT; offset += 1) {
     const lane = (startLane + offset) % DEFERRED_CODE_ANCHOR_ROUTE_LANE_COUNT;
     const laneAncestors = deferredCodeAnchorRouteAncestors(path, root, key, lane);
-    const laneRoot = laneAncestors[laneAncestors.length - 1]!;
+    const laneRoot = laneAncestors[laneAncestors.length - 1];
     const laneAuthority = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, laneAncestors);
     if (laneAuthority === undefined) continue;
     const remaining = limit - inspectedMarkerCount;
@@ -1187,7 +1187,7 @@ const selectDeferredCodeAnchorFinalizationWindow = Effect.fn('memoryCodeAnchor.s
   // Advance by the fair baseline rather than the promoted entry. A requested
   // backlink receives one bounded priority displacement without pinning the
   // rest of a route behind a repeatedly pending preferred intent.
-  yield* writeDeferredCodeAnchorScanCursor(config, baseline[baseline.length - 1]!.name, cursorName);
+  yield* writeDeferredCodeAnchorScanCursor(config, baseline[baseline.length - 1].name, cursorName);
   return selected;
 });
 
@@ -1234,7 +1234,7 @@ function prioritizeDeferredCodeAnchorEntries(
     entry => entry.kind === 'valid' && entry.intent.codeRefs.some(ref => preferred.has(ref)),
   );
   if (preferredIndex <= 0) return entries;
-  return [entries[preferredIndex]!, ...entries.slice(0, preferredIndex), ...entries.slice(preferredIndex + 1)];
+  return [entries[preferredIndex], ...entries.slice(0, preferredIndex), ...entries.slice(preferredIndex + 1)];
 }
 
 function isDeferredCodeAnchorCursorName(value: string): boolean {
@@ -1351,7 +1351,7 @@ const discardStoredDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.discar
   const itemAncestors = deferredCodeAnchorItemAncestors(path, root, uriDigest);
   yield* removePrivateDeferredCodeAnchorFile(
     fs,
-    path.join(itemAncestors[itemAncestors.length - 1]!, name),
+    path.join(itemAncestors[itemAncestors.length - 1], name),
     itemAncestors,
   );
   const markerName = `${name.slice(0, -5)}.ref`;
@@ -1360,7 +1360,7 @@ const discardStoredDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.discar
       const laneAncestors = deferredCodeAnchorRouteAncestors(path, root, key, lane);
       yield* removePrivateDeferredCodeAnchorRouteMarker(
         fs,
-        path.join(laneAncestors[laneAncestors.length - 1]!, markerName),
+        path.join(laneAncestors[laneAncestors.length - 1], markerName),
         laneAncestors,
       );
     }
@@ -1383,11 +1383,11 @@ const discardDeferredCodeAnchorRouteMarkersNamed = Effect.fn('memoryCodeAnchor.d
   for (const key of routeKeys ?? []) {
     if (!isDeferredCodeAnchorRouteQueueKey(key)) continue;
     const queueAncestors = deferredCodeAnchorRouteAncestors(path, root, key);
-    const queueRoot = queueAncestors[queueAncestors.length - 1]!;
+    const queueRoot = queueAncestors[queueAncestors.length - 1];
     if ((yield* readPrivateDeferredCodeAnchorDirectory(fs, queueRoot, queueAncestors)) === undefined) continue;
     for (let lane = 0; lane < DEFERRED_CODE_ANCHOR_ROUTE_LANE_COUNT; lane += 1) {
       const laneAncestors = deferredCodeAnchorRouteAncestors(path, root, key, lane);
-      const laneRoot = laneAncestors[laneAncestors.length - 1]!;
+      const laneRoot = laneAncestors[laneAncestors.length - 1];
       if ((yield* readPrivateDeferredCodeAnchorDirectory(fs, laneRoot, laneAncestors)) === undefined) continue;
       yield* removePrivateDeferredCodeAnchorRouteMarker(fs, path.join(laneRoot, markerName), laneAncestors);
     }
@@ -1470,7 +1470,7 @@ const retainDeferredCodeAnchorRouteMarkerLane = Effect.fn('memoryCodeAnchor.reta
 function parseDeferredCodeAnchorIntent(content: string): DeferredCodeAnchorIntentV1 | undefined {
   try {
     const value: unknown = JSON.parse(content);
-    if (!isRecord(value)) return undefined;
+    if (!Predicate.isObject(value)) return undefined;
     if (
       !hasExactKeys(value, [
         'authorization',
@@ -1622,7 +1622,8 @@ function deferredCodeAnchorIntentId(input: {
 }
 
 function isMemoryCodeCitationRecovery(value: unknown): value is MemoryCodeCitationCaptureRecoveryV1 {
-  if (!isRecord(value) || value.type !== 'memory-code-citation-capture-recovery' || value.version !== 1) return false;
+  if (!Predicate.isObject(value) || value.type !== 'memory-code-citation-capture-recovery' || value.version !== 1)
+    return false;
   if (
     !hasExactKeys(value, [
       'code',
@@ -1640,8 +1641,8 @@ function isMemoryCodeCitationRecovery(value: unknown): value is MemoryCodeCitati
     value.recovery !== 'prepare-current-graph' ||
     value.retryCondition !== 'after-current-graph-ready' ||
     value.retryable !== true ||
-    !isRecord(value.observedGraph) ||
-    !isRecord(value.preparation)
+    !Predicate.isObject(value.observedGraph) ||
+    !Predicate.isObject(value.preparation)
   ) {
     return false;
   }
@@ -1674,10 +1675,6 @@ function isMemoryCodeCitationRecovery(value: unknown): value is MemoryCodeCitati
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
@@ -1702,9 +1699,9 @@ const deferredCodeAnchorIntentPaths = Effect.fn('memoryCodeAnchor.intentPaths')(
     .filter(name => isDeferredCodeAnchorIntentNameForDigest(name, digest))
     .map(name => path.join(root, name));
   const itemAncestors = deferredCodeAnchorItemAncestors(path, root, digest);
-  const itemRoot = itemAncestors[1]!;
+  const itemRoot = itemAncestors[1];
   const itemRootNames = yield* readPrivateDeferredCodeAnchorDirectory(fs, itemRoot, [root, itemRoot]);
-  const itemDirectory = itemAncestors[itemAncestors.length - 1]!;
+  const itemDirectory = itemAncestors[itemAncestors.length - 1];
   const sharded =
     itemRootNames === undefined
       ? []
@@ -1769,7 +1766,7 @@ function parseDeferredCodeAnchorIntentName(name: string): DeferredCodeAnchorInte
       intentId: legacy[2],
       kind: 'legacy',
       qualified: false,
-      uriDigest: legacy[1]!,
+      uriDigest: legacy[1],
     };
   }
   const sharded = /^([a-f0-9]{32})-(tnca_[a-f0-9]{32})-b([a-f0-9]{32})\.json$/u.exec(name);
@@ -1779,7 +1776,7 @@ function parseDeferredCodeAnchorIntentName(name: string): DeferredCodeAnchorInte
       kind: 'sharded',
       qualified: false,
       refsBloom: sharded[3],
-      uriDigest: sharded[1]!,
+      uriDigest: sharded[1],
     };
   }
   const routed =
@@ -1793,7 +1790,7 @@ function parseDeferredCodeAnchorIntentName(name: string): DeferredCodeAnchorInte
     qualified: routed[5] !== undefined,
     refsBloom: routed[6],
     repositoryRouteDigest: routed[3],
-    uriDigest: routed[1]!,
+    uriDigest: routed[1],
     worksetRouteDigest: routed[4],
   };
 }

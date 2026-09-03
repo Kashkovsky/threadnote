@@ -322,7 +322,7 @@ describe('built self-contained distribution', () => {
     const repositoryIndexes = join(home, 'indexes', 'code-graph', 'repositories');
     const repositories = await readdir(repositoryIndexes);
     expect(repositories).toHaveLength(1);
-    const files = await readdir(join(repositoryIndexes, repositories[0]!), {recursive: true});
+    const files = await readdir(join(repositoryIndexes, repositories[0]), {recursive: true});
     expect(files).toContain('graph-v3.sqlite');
     expect(files).toEqual(expect.arrayContaining([expect.stringMatching(/vectors-v2\.sqlite$/)]));
     expect(files).not.toEqual(expect.arrayContaining([expect.stringMatching(/vectors\.bin$/)]));
@@ -984,7 +984,7 @@ describe('built self-contained distribution', () => {
         THREADNOTE_MCP_TOOLSET: 'full',
         THREADNOTE_USER: 'e2e-user',
         USERPROFILE: userHome,
-      } as Record<string, string>,
+      },
       stderr: 'pipe',
     });
     const client = new Client({name: 'threadnote-e2e', version: '4.0.0'});

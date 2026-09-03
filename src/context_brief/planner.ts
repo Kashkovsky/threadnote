@@ -218,7 +218,7 @@ function scopeFreshness(graph: ContextBriefGraphEvidenceV1): ContextBriefFreshne
   if (graph.coverage.requestedRepositories === 0 || graph.coverage.readyRepositories === 0) return 'unknown';
   if (!graph.coverage.complete || graph.coverage.readyRepositories < graph.coverage.requestedRepositories)
     return 'stale';
-  if (graph.resolvedSnapshots.length === 1) return graph.resolvedSnapshots[0]!.freshness;
+  if (graph.resolvedSnapshots.length === 1) return graph.resolvedSnapshots[0].freshness;
   const stale =
     (graph.coverage.states.stale ?? 0) + (graph.coverage.states.missing ?? 0) + (graph.coverage.states.failed ?? 0);
   return stale > 0 ? 'stale' : 'fresh';
@@ -281,7 +281,7 @@ function contextIssues(memories: readonly ContextBriefMemoryEvidenceV1[]): reado
       id: issueId('candidate-conflict', uris),
       kind: 'candidate-conflict',
       rank: issues.length,
-      summary: `Multiple active memories disagree for ${group[0]!.project}/${group[0]!.topic}.`,
+      summary: `Multiple active memories disagree for ${group[0].project}/${group[0].topic}.`,
       uris,
     });
   }

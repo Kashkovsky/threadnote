@@ -46,7 +46,7 @@ describe('portable code graph exports', () => {
         version: CODE_GRAPH_EXPORT_VERSION,
       });
       expect(parsed.nodes.map(node => node.id)).toEqual(['node-a', 'node-b']);
-      expect(parsed.nodes[0]!.name).toBe(`Alpha <unsafe>&"'\u0000`);
+      expect(parsed.nodes[0].name).toBe(`Alpha <unsafe>&"'\u0000`);
       expect(parsed.edges.map(edge => edge.id)).toEqual(['edge-a', 'edge-b']);
       expect(parsed.summary).toMatchObject({
         edges: {available: 3, omitted: 0, scanned: 2, truncated: true, written: 2},

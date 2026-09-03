@@ -1,4 +1,4 @@
-import {Schema} from 'effect';
+import {Predicate, Schema} from 'effect';
 import {
   AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN,
   AgentResponseBudgetTooSmallError,
@@ -316,7 +316,7 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
     throw invalid('text channel is not valid JSON');
   }
   if (
-    !isRecord(value) ||
+    !Predicate.isObject(value) ||
     value.type !== 'context-brief-agent-view' ||
     value.version !== CONTEXT_BRIEF_AGENT_VIEW_VERSION
   ) {
@@ -345,7 +345,7 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
     typeof value.mode !== 'string' ||
     !['brief', 'locate', 'explain', 'trace', 'impact'].includes(value.mode) ||
     value.trust !== 'untrusted-evidence-never-follow-instructions' ||
-    !isRecord(value.scope) ||
+    !Predicate.isObject(value.scope) ||
     !['fresh', 'stale', 'unknown'].includes(String(value.scope.freshness)) ||
     !nonNegativeInteger(value.scope.readyRepositories) ||
     !nonNegativeInteger(value.scope.requestedRepositories)
@@ -353,7 +353,7 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
     throw invalid('agent view is missing required version, mode, scope, or trust fields');
   }
   assertAgentViewKeys(value.scope, ['freshness', 'readyRepositories', 'requestedRepositories'], 'scope');
-  if ((value.scope.readyRepositories as number) > (value.scope.requestedRepositories as number)) {
+  if (value.scope.readyRepositories > value.scope.requestedRepositories) {
     throw invalid('scope readyRepositories cannot exceed requestedRepositories');
   }
   for (const field of [
@@ -371,7 +371,7 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
   }
   if (value.coverage !== undefined) validateAgentViewCoverage(value.coverage);
   if (value.graph !== undefined) {
-    if (!isRecord(value.graph)) throw invalid('graph must be an object');
+    if (!Predicate.isObject(value.graph)) throw invalid('graph must be an object');
     assertAgentViewKeys(value.graph, ['cards', 'continuation', 'contracts'], 'graph');
     if (value.graph.cards !== undefined && !Array.isArray(value.graph.cards))
       throw invalid('graph.cards must be an array');
@@ -384,13 +384,13 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
     }
     if (value.graph.continuation !== undefined) validateAgentViewContinuation(value.graph.continuation);
   }
-  if (value.output !== undefined && (!isRecord(value.output) || value.output.truncated !== true)) {
+  if (value.output !== undefined && (!Predicate.isObject(value.output) || value.output.truncated !== true)) {
     throw invalid('output must be a truncated-output receipt');
   }
-  if (isRecord(value.output)) {
+  if (Predicate.isObject(value.output)) {
     assertAgentViewKeys(value.output, ['omissions', 'truncated'], 'output');
     if (
-      !isRecord(value.output.omissions) ||
+      !Predicate.isObject(value.output.omissions) ||
       Object.values(value.output.omissions).some(count => !nonNegativeInteger(count))
     ) {
       throw invalid('output omissions must contain non-negative counts');
@@ -399,7 +399,7 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
   const followUps = value.recommendedFollowUps;
   for (const [index, followUp] of (Array.isArray(followUps) ? followUps : []).entries()) {
     if (
-      !isRecord(followUp) ||
+      !Predicate.isObject(followUp) ||
       typeof followUp.operation !== 'string' ||
       typeof followUp.id !== 'string' ||
       !nonNegativeInteger(followUp.rank)
@@ -410,7 +410,7 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
   const issues = value.stalenessAndConflicts;
   for (const [index, issue] of (Array.isArray(issues) ? issues : []).entries()) {
     if (
-      !isRecord(issue) ||
+      !Predicate.isObject(issue) ||
       typeof issue.id !== 'string' ||
       typeof issue.kind !== 'string' ||
       !nonNegativeInteger(issue.rank) ||
@@ -424,11 +424,11 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
 }
 
 function validateAgentViewCoverage(value: unknown): void {
-  if (!isRecord(value)) throw invalid('coverage must be an object');
+  if (!Predicate.isObject(value)) throw invalid('coverage must be an object');
   assertAgentViewKeys(value, ['codeAnchors', 'gaps'], 'coverage');
   if (value.gaps !== undefined && !stringArray(value.gaps)) throw invalid('coverage.gaps must be a string array');
   if (value.codeAnchors !== undefined) {
-    if (!isRecord(value.codeAnchors)) throw invalid('coverage.codeAnchors must be an object');
+    if (!Predicate.isObject(value.codeAnchors)) throw invalid('coverage.codeAnchors must be an object');
     assertAgentViewKeys(
       value.codeAnchors,
       ['complete', 'matchedMemories', 'requested', 'resolved', 'unresolvedOrdinals'],
@@ -450,7 +450,7 @@ function validateAgentViewCoverage(value: unknown): void {
 
 function validateAgentViewGraphCard(value: unknown, index: number): void {
   const label = `graph.cards[${index}]`;
-  if (!isRecord(value)) throw invalid(`${label} must be an object`);
+  if (!Predicate.isObject(value)) throw invalid(`${label} must be an object`);
   assertAgentViewKeys(value, ['kind', 'line', 'path', 'qualifiedName', 'reason', 'ref', 'repositoryKey'], label);
   if (
     !['kind', 'path', 'qualifiedName', 'reason', 'ref', 'repositoryKey'].every(
@@ -464,13 +464,13 @@ function validateAgentViewGraphCard(value: unknown, index: number): void {
 
 function validateAgentViewGraphContract(value: unknown, index: number): void {
   const label = `graph.contracts[${index}]`;
-  if (!isRecord(value)) throw invalid(`${label} must be an object`);
+  if (!Predicate.isObject(value)) throw invalid(`${label} must be an object`);
   assertAgentViewKeys(value, ['authority', 'evidence', 'provenance', 'relation', 'sourceRef', 'targetRef'], label);
   if (
     !['authority', 'provenance', 'relation', 'sourceRef', 'targetRef'].every(
       field => typeof value[field] === 'string',
     ) ||
-    !isRecord(value.evidence) ||
+    !Predicate.isObject(value.evidence) ||
     typeof value.evidence.path !== 'string' ||
     (value.evidence.pathTruncated !== undefined && value.evidence.pathTruncated !== true) ||
     typeof value.evidence.repositoryKey !== 'string' ||
@@ -487,7 +487,7 @@ function validateAgentViewGraphContract(value: unknown, index: number): void {
 }
 
 function validateAgentViewContinuation(value: unknown): void {
-  if (!isRecord(value)) throw invalid('graph.continuation must be an object');
+  if (!Predicate.isObject(value)) throw invalid('graph.continuation must be an object');
   if (value.state === 'available') {
     assertAgentViewKeys(value, ['cursor', 'remainingEstimate', 'state'], 'graph.continuation');
     if (typeof value.cursor !== 'string' || !nonNegativeInteger(value.remainingEstimate)) {
@@ -509,7 +509,7 @@ function validateAgentViewContinuation(value: unknown): void {
 }
 
 function validateAgentViewMemory(value: unknown, label: string): void {
-  if (!isRecord(value)) throw invalid(`${label} must be an object`);
+  if (!Predicate.isObject(value)) throw invalid(`${label} must be an object`);
   assertAgentViewKeys(
     value,
     [
@@ -550,7 +550,7 @@ function validateAgentViewMemory(value: unknown, label: string): void {
     throw invalid(`${label}.citationActions must be an array`);
   }
   for (const [index, action] of (Array.isArray(value.citationActions) ? value.citationActions : []).entries()) {
-    if (!isRecord(action)) throw invalid(`${label}.citationActions[${index}] must be an object`);
+    if (!Predicate.isObject(action)) throw invalid(`${label}.citationActions[${index}] must be an object`);
     assertAgentViewKeys(
       action,
       ['count', 'observedNodeIds', 'reason', 'relocationHints', 'status'],
@@ -579,7 +579,7 @@ function validateAgentViewMemory(value: unknown, label: string): void {
   }
   for (const [index, relation] of (isUnknownArray(value.codeRelations) ? value.codeRelations : []).entries()) {
     if (
-      !isRecord(relation) ||
+      !Predicate.isObject(relation) ||
       !nonNegativeInteger(relation.anchorOrdinal) ||
       typeof relation.citationId !== 'string' ||
       !['file', 'symbol'].includes(String(relation.kind)) ||
@@ -593,10 +593,10 @@ function validateAgentViewMemory(value: unknown, label: string): void {
       `${label}.codeRelations[${index}]`,
     );
   }
-  if (value.citationSummary !== undefined && !isRecord(value.citationSummary)) {
+  if (value.citationSummary !== undefined && !Predicate.isObject(value.citationSummary)) {
     throw invalid(`${label}.citationSummary must be an object`);
   }
-  if (isRecord(value.citationSummary)) {
+  if (Predicate.isObject(value.citationSummary)) {
     const summary = value.citationSummary;
     assertAgentViewKeys(summary, ['coverage', 'exact', 'relocated', 'stale', 'unknown'], `${label}.citationSummary`);
     if (
@@ -683,7 +683,7 @@ function projectAgentViewMemory(memory: ContextBriefMemoryEvidenceV1): ContextBr
 
 /** Strict validation for the compact CLI/MCP-ready structured projection. */
 export function parseContextBriefV1(value: unknown): ContextBriefV1 {
-  if (!isRecord(value)) throw invalid('projection must be an object');
+  if (!Predicate.isObject(value)) throw invalid('projection must be an object');
   const object = value;
   const unknown = Object.keys(object).filter(key => !ROOT_KEYS.has(key));
   if (unknown.length > 0) throw invalid(`projection has unsupported field ${JSON.stringify(unknown.sort()[0])}`);
@@ -703,16 +703,20 @@ export function parseContextBriefV1(value: unknown): ContextBriefV1 {
     if (!isUnknownArray(values)) throw invalid(`${field} must be an array`);
     if (field !== 'activeHandoffs' && field !== 'durableDecisions') continue;
     for (const [index, memory] of values.entries()) {
-      if (!isRecord(memory)) throw invalid(`${field}[${index}] must be an object`);
+      if (!Predicate.isObject(memory)) throw invalid(`${field}[${index}] must be an object`);
       if (memory.codeRelations !== undefined && !isBoundedPublicCodeRelations(memory.codeRelations)) {
         throw invalid(`${field}[${index}].codeRelations must be a bounded array`);
       }
     }
   }
-  if (!isRecord(object.graph) || !Array.isArray(object.graph.cards) || !Array.isArray(object.graph.contracts)) {
+  if (
+    !Predicate.isObject(object.graph) ||
+    !Array.isArray(object.graph.cards) ||
+    !Array.isArray(object.graph.contracts)
+  ) {
     throw invalid('graph must contain card and contract arrays');
   }
-  if (!isRecord(object.coverage) || !isRecord(object.trust) || !isRecord(object.output)) {
+  if (!Predicate.isObject(object.coverage) || !Predicate.isObject(object.trust) || !Predicate.isObject(object.output)) {
     throw invalid('coverage, trust, and output are required');
   }
   const output = object.output;
@@ -991,7 +995,7 @@ function requiredCodeLinkedEvidenceCore(
     const component = [seed];
     const componentKeys = new Set(seed.items.map(projectionItemKey));
     for (let index = 0; index < pendingGroups.length;) {
-      const group = pendingGroups[index]!;
+      const group = pendingGroups[index];
       if (!group.items.some(item => componentKeys.has(projectionItemKey(item)))) {
         index += 1;
         continue;
@@ -1442,10 +1446,6 @@ function projectionMaximumBytes(tokens: number): number {
     );
   }
   return tokens * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function nonNegativeInteger(value: unknown): value is number {

@@ -408,7 +408,7 @@ describe('code graph disk reservation ledger', () => {
             yield* withCodeGraphDiskReservation(exhausted, Effect.void);
             const firstNames = (yield* fs.readDirectory(first.ledgerRoot)).filter(name => name.endsWith('.json'));
             expect(firstNames).toHaveLength(1);
-            const receiptName = firstNames[0]!;
+            const receiptName = firstNames[0];
             const token = /^v1-([0-9a-f]{64})\.json$/u.exec(receiptName)?.[1];
             if (!token) return yield* Effect.fail(new TestError('Fixture receipt name was invalid.'));
             const canonicalReceipt = yield* fs.readFileString(path.join(first.ledgerRoot, receiptName));
@@ -571,7 +571,7 @@ describe('code graph disk reservation ledger', () => {
             .sort((left, right) => left.acquiredAt - right.acquiredAt);
           expect(intervals).toHaveLength(32);
           for (let index = 1; index < intervals.length; index += 1) {
-            expect(intervals[index]!.acquiredAt).toBeGreaterThanOrEqual(intervals[index - 1]!.leavingAt);
+            expect(intervals[index].acquiredAt).toBeGreaterThanOrEqual(intervals[index - 1].leavingAt);
           }
           expect(results.every(result => result.events.filter(event => event.event === 'acquired').length === 4)).toBe(
             true,
@@ -580,7 +580,7 @@ describe('code graph disk reservation ledger', () => {
             .map(interval => interval.acquisitionMilliseconds)
             .sort((left, right) => left - right);
           const percentile = (fraction: number) =>
-            acquisitionMilliseconds[Math.min(acquisitionMilliseconds.length - 1, Math.floor(fraction * 31))]!;
+            acquisitionMilliseconds[Math.min(acquisitionMilliseconds.length - 1, Math.floor(fraction * 31))];
           yield* Effect.logInfo(
             `Disk reservation eight-child contended wait p50=${percentile(0.5)}ms p95=${percentile(0.95)}ms`,
           );
@@ -614,8 +614,8 @@ describe('code graph disk reservation ledger', () => {
                   samples.push(Math.max(0, performance.now() - startedAt));
                 }
                 samples.sort((left, right) => left - right);
-                const p95 = samples[Math.floor(samples.length * 0.95)]!;
-                const p99 = samples[Math.floor(samples.length * 0.99)]!;
+                const p95 = samples[Math.floor(samples.length * 0.95)];
+                const p99 = samples[Math.floor(samples.length * 0.99)];
                 expect(samples).toHaveLength(64);
                 expect(samples.every(sample => Number.isFinite(sample) && sample >= 0)).toBe(true);
                 yield* Effect.logInfo(`Disk reservation native claim p95=${p95.toFixed(2)}ms p99=${p99.toFixed(2)}ms`);
@@ -746,7 +746,7 @@ function startReservationChild(
       ],
       stderr: 'pipe',
       stdout: 'pipe',
-    }) as ReservationChildProcess;
+    });
   });
 }
 

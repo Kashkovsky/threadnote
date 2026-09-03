@@ -61,7 +61,7 @@ describe('native code graph extraction', () => {
 
   it('resolves file batches equivalently while retaining only symbols and reexports globally', () => {
     const attributePackages = createPackageAttributor(files);
-    const attributed = files.map(file => attributePackages(extractRepositoryFileFacts([file]))[0]!);
+    const attributed = files.map(file => attributePackages(extractRepositoryFileFacts([file]))[0]);
     const resolver = createRepositoryFactResolver(
       attributed.map(file => ({
         diagnostics: [],
@@ -337,8 +337,8 @@ describe('native code graph extraction', () => {
         FC.integer({max: 100, min: 0}),
         (generatedArities, selectedIndex) => {
           const arities = [...generatedArities].sort((left, right) => left - right);
-          const selectedArity = arities[selectedIndex % arities.length]!;
-          const secondArity = arities[(selectedIndex + 1) % arities.length]!;
+          const selectedArity = arities[selectedIndex % arities.length];
+          const secondArity = arities[(selectedIndex + 1) % arities.length];
           const resolved = extractRepositoryFacts([
             sourceFile('src/overloads.ts', overloadFixture(arities)),
             sourceFile('src/use-overloads.ts', overloadUseFixture(selectedArity, secondArity)),

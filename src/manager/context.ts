@@ -5,6 +5,7 @@ import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MODES,
+  isContextBriefMode,
   parseContextBriefRequestV1,
   type ContextBriefMode,
   type ProjectedContextBriefV1,
@@ -305,7 +306,7 @@ export const readManagerContextPage = Effect.fn('managerContext.read')(function*
   }
   return {
     canonicalUri: resolved.canonicalUri,
-    content: pages[page]!,
+    content: pages[page],
     ...(memory === undefined ? {} : {metadata: projectMemoryMetadata(memory.metadata)}),
     page: {
       complete: page === pages.length - 1,
@@ -517,7 +518,7 @@ const readManagerContextUri = Effect.fn('managerContext.readUri')(function* (con
           config,
           [uri],
           [`threadnote://user/${uriSegment(config.user)}/memories`],
-        ))[0]!;
+        ))[0];
   const resource = parseResourceId(resolvedIdentity.canonicalUri);
   if (
     resource.namespace === 'user' &&
@@ -637,8 +638,8 @@ function canonicalContextUri(value: string): string {
 
 function optionalMode(value: unknown): ContextBriefMode {
   if (value === undefined) return 'brief';
-  if (typeof value === 'string' && (CONTEXT_BRIEF_MODES as readonly string[]).includes(value)) {
-    return value as ContextBriefMode;
+  if (typeof value === 'string' && isContextBriefMode(value)) {
+    return value;
   }
   throw new ManagerContextApiError('invalid-mode', `Mode must be one of ${CONTEXT_BRIEF_MODES.join(', ')}.`, 400);
 }

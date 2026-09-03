@@ -693,7 +693,7 @@ describe('Context Brief citation scale benchmark', () => {
         fc.array(fc.integer({min: 0, max: 1_000_000}), {maxLength: 50, minLength: 1}),
         fc.integer({min: 0, max: 1_000_000}),
         (baselines, offset) => {
-          const expected = Math.max(0, Math.max(...baselines) - baselines[0]!);
+          const expected = Math.max(0, Math.max(...baselines) - baselines[0]);
           expect(contextBriefCitationScaleRetainedRootRssGrowthBytes(baselines)).toBe(expected);
           expect(contextBriefCitationScaleRetainedRootRssGrowthBytes(baselines.map(value => value + offset))).toBe(
             expected,
@@ -842,7 +842,7 @@ describe('Context Brief citation scale benchmark', () => {
       >;
       readonly on: {readonly workflow_dispatch?: {readonly inputs?: Readonly<Record<string, unknown>>}};
     };
-    const job = workflow.jobs['context-brief-citations-scale']!;
+    const job = workflow.jobs['context-brief-citations-scale'];
     const benchmarkStep = job.steps?.find(step => step.run?.includes('bench:context-brief-citations'));
     const checkout = job.steps?.find(step => step.uses === 'actions/checkout@v7');
     const command = benchmarkStep?.run ?? '';

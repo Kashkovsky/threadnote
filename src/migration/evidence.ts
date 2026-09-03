@@ -22,7 +22,7 @@ export const hasBoundedMigrationTreeContent = Effect.fn('migration.hasBoundedTre
   const directories = [root];
   for (let index = 0; index < directories.length; index += 1) {
     if (index >= MAX_MIGRATION_EVIDENCE_DIRECTORIES) return true;
-    const directory = directories[index]!;
+    const directory = directories[index];
     for (const name of yield* fs.readDirectory(directory)) {
       const candidate = path.join(directory, name);
       if (Option.isSome(yield* fs.readLink(candidate).pipe(Effect.option))) return true;

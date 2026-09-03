@@ -229,7 +229,7 @@ export function selectProjectionForSnapshot(
        LIMIT 1`,
       [receipt.checkoutId, receipt.worktreeId, receipt.snapshotId, receipt.projectorVersion],
     )
-    .pipe(Effect.flatMap(rows => (rows.length === 0 ? Effect.succeed(undefined) : decodeProjectionMetadata(rows[0]!))));
+    .pipe(Effect.flatMap(rows => (rows.length === 0 ? Effect.succeed(undefined) : decodeProjectionMetadata(rows[0]))));
 }
 
 export function selectProjectionByDigest(sql: SqlClient.SqlClient, projectionDigest: string) {
@@ -241,7 +241,7 @@ export function selectProjectionByDigest(sql: SqlClient.SqlClient, projectionDig
        FROM repository_snapshots WHERE projection_digest = ? LIMIT 1`,
       [projectionDigest],
     )
-    .pipe(Effect.flatMap(rows => (rows.length === 0 ? Effect.succeed(undefined) : decodeProjectionMetadata(rows[0]!))));
+    .pipe(Effect.flatMap(rows => (rows.length === 0 ? Effect.succeed(undefined) : decodeProjectionMetadata(rows[0]))));
 }
 
 export function projectionState(sql: SqlClient.SqlClient, projectionDigest: string) {
@@ -420,7 +420,7 @@ export function loadAndValidateProjection(sql: SqlClient.SqlClient, projectionDi
       [projectionDigest],
     );
     if (projectionRows.length !== 1) return yield* Effect.fail(corrupt('Routing projection metadata is missing.'));
-    const metadata = yield* decodeProjectionMetadata(projectionRows[0]!);
+    const metadata = yield* decodeProjectionMetadata(projectionRows[0]);
     if (requireReady && metadata.state !== 'ready') {
       return yield* Effect.fail(corrupt('Routing projection is not ready for publication.'));
     }
@@ -842,7 +842,7 @@ export function readStoredResultSetCursor(
       [resultSet.id, offset],
     );
     if (rows.length !== 1) return yield* Effect.fail(corrupt('Stored workset continuation boundary is missing.'));
-    const cursor = requiredText(rows[0]!.cursor, 'continuation cursor');
+    const cursor = requiredText(rows[0].cursor, 'continuation cursor');
     const expected = codeGraphWorksetContinuationHandle({
       generationDigest: resultSet.generation.digest,
       offset,
@@ -881,8 +881,8 @@ export function resultSetCapacity(sql: SqlClient.SqlClient) {
         validateStored(() => {
           if (rows.length !== 1) throw corrupt('Result-set capacity query returned an invalid row set.');
           return {
-            bytes: requiredInteger(rows[0]!.bytes, 'result-set capacity bytes'),
-            count: requiredInteger(rows[0]!.count, 'result-set capacity count'),
+            bytes: requiredInteger(rows[0].bytes, 'result-set capacity bytes'),
+            count: requiredInteger(rows[0].count, 'result-set capacity count'),
           };
         }),
       ),
@@ -931,7 +931,7 @@ export function selectGeneration(sql: SqlClient.SqlClient, generationId: string)
        FROM workset_generations WHERE id = ? LIMIT 1`,
       [generationId],
     )
-    .pipe(Effect.flatMap(rows => (rows.length === 0 ? Effect.succeed(undefined) : decodeGenerationRow(rows[0]!))));
+    .pipe(Effect.flatMap(rows => (rows.length === 0 ? Effect.succeed(undefined) : decodeGenerationRow(rows[0]))));
 }
 
 export function decodeGenerationRow(row: GenerationRow) {
@@ -1077,7 +1077,7 @@ export function rowCount(sql: SqlClient.SqlClient, statement: string, parameters
     Effect.flatMap(rows =>
       validateStored(() => {
         if (rows.length !== 1) throw corrupt('Catalog count query returned an invalid row set.');
-        return requiredInteger(rows[0]!.count, 'row count');
+        return requiredInteger(rows[0].count, 'row count');
       }),
     ),
   );

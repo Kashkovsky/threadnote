@@ -220,8 +220,8 @@ describe('code graph incremental-overlay differential properties', () => {
           const expectedCalls = new Set(
             Array.from({length: scenario.fileCount}, (_, source) => {
               const rawTarget = scenario.dirty.has(source)
-                ? scenario.dirtyTargets[source]!
-                : scenario.baseTargets[source]!;
+                ? scenario.dirtyTargets[source]
+                : scenario.baseTargets[source];
               return `symbol${source}->symbol${differentFile(rawTarget, source, scenario.fileCount)}`;
             }),
           );
@@ -897,7 +897,7 @@ function createRepository(scenario: DifferentialScenario): string {
   mkdirSync(join(root, 'src'), {recursive: true});
   git(root, ['init', '-q']);
   for (let source = 0; source < scenario.fileCount; source += 1) {
-    writeSource(root, source, scenario.baseTargets[source]!, scenario.fileCount, 0);
+    writeSource(root, source, scenario.baseTargets[source], scenario.fileCount, 0);
   }
   git(root, ['add', '.']);
   git(root, [
@@ -914,7 +914,7 @@ function createRepository(scenario: DifferentialScenario): string {
 
 function applyDirtyScenario(root: string, scenario: DifferentialScenario): void {
   for (const source of scenario.dirty) {
-    writeSource(root, source, scenario.dirtyTargets[source]!, scenario.fileCount, scenario.salt + source + 1);
+    writeSource(root, source, scenario.dirtyTargets[source], scenario.fileCount, scenario.salt + source + 1);
   }
 }
 
@@ -948,7 +948,7 @@ function writeSurfaceChangedSource(
   source: number,
   mutation: CleanSurfaceChangeScenario['mutation'],
 ): void {
-  const target = differentFile(scenario.baseTargets[source]!, source, scenario.fileCount);
+  const target = differentFile(scenario.baseTargets[source], source, scenario.fileCount);
   if (mutation === 'private-method') {
     writeFileSync(
       join(root, 'src', `file-${source}.ts`),
@@ -1005,7 +1005,7 @@ function writeSurfaceChangedSource(
 
 function restoreCleanScenario(root: string, scenario: DifferentialScenario): void {
   for (const source of scenario.dirty) {
-    writeSource(root, source, scenario.baseTargets[source]!, scenario.fileCount, 0);
+    writeSource(root, source, scenario.baseTargets[source], scenario.fileCount, 0);
   }
 }
 

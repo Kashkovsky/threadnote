@@ -69,8 +69,8 @@ describe('code graph inventory admission policy', () => {
         ],
       });
       expect(clean.diagnostics).toHaveLength(1);
-      expect(clean.diagnostics![0]!.length).toBeLessThan(512);
-      for (const path of excludedPaths) expect(clean.diagnostics![0]).not.toContain(path);
+      expect(clean.diagnostics[0].length).toBeLessThan(512);
+      for (const path of excludedPaths) expect(clean.diagnostics[0]).not.toContain(path);
 
       writeFileSync(join(root, 'assets', 'logo.SVG'), '<svg>changed</svg>');
       writeFileSync(join(root, 'SCHEMAS', '__SNAPSHOTS__', 'PROJECT.JSON'), '{"changed":true}');

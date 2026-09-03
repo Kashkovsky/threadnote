@@ -44,7 +44,7 @@ export function parseMemoryRelationOption(value: string): MemoryRelation {
   }
   return normalizeMemoryRelationInputs([
     {type: value.slice(0, separator).trim(), uri: value.slice(separator + 1).trim()},
-  ])[0]!;
+  ])[0];
 }
 
 export function formatMemoryRelationOption(relation: MemoryRelation): string {
@@ -148,7 +148,7 @@ export const resolveAuthoredMemoryRelations = Effect.fn('memory.resolveAuthoredR
       return {
         content: live.content,
         memoryId: record.metadata.memoryId!,
-        relation: relations[index]!,
+        relation: relations[index],
         uri: live.canonicalUri,
       };
     }),
@@ -164,7 +164,7 @@ export const resolveAuthoredMemoryRelations = Effect.fn('memory.resolveAuthoredR
   const targets = new Map<string, AuthoredMemoryRelationTarget>();
   const seen = new Set<string>();
   for (const [index, target] of liveTargets.entries()) {
-    const identity = identityChecks[index]!;
+    const identity = identityChecks[index];
     if (identity.canonicalUri !== target.uri) {
       return yield* Effect.fail(
         relationError('Relation target identity changed during validation; refresh memory and retry.'),
@@ -222,7 +222,7 @@ export const verifyAuthoredMemoryRelationTargetIdentities = Effect.fn('memory.ve
       grouped.set(key, [...(grouped.get(key) ?? []), target]);
     }
     for (const targetsInScope of grouped.values()) {
-      const allowedUriScopes = targetsInScope[0]!.allowedUriScopes!;
+      const allowedUriScopes = targetsInScope[0].allowedUriScopes!;
       const resolved = yield* resolveMemoryIdentityAliases(
         config,
         targetsInScope.map(target => memoryIdentityAlias(target.memoryId!)),
@@ -234,7 +234,7 @@ export const verifyAuthoredMemoryRelationTargetIdentities = Effect.fn('memory.ve
         ),
       );
       for (const [index, target] of targetsInScope.entries()) {
-        const identity = resolved[index]!;
+        const identity = resolved[index];
         if (identity.canonicalUri !== target.uri) {
           return yield* Effect.fail(
             relationError('A relation target identity became ambiguous or moved during the write; refresh and retry.'),

@@ -92,38 +92,38 @@ describe('code graph view removal core', () => {
         const fixture = yield* viewFixture('threadnote-view-cas-');
         seedGraph(
           fixture,
-          [{id: snapshotId('current'), worktreeId: fixture.worktrees[0]!}],
-          [{snapshotId: snapshotId('current'), worktreeId: fixture.worktrees[0]!}],
+          [{id: snapshotId('current'), worktreeId: fixture.worktrees[0]}],
+          [{snapshotId: snapshotId('current'), worktreeId: fixture.worktrees[0]}],
         );
         const store = yield* CodeGraphStore;
         const retryOptions = {waitTimeoutMilliseconds: 5_000} as const;
         const staleActive = yield* store.removeView(
           fixture.databasePath,
-          fixture.worktrees[0]!,
+          fixture.worktrees[0],
           snapshotId('other'),
           retryOptions,
         );
         const removed = yield* store.removeView(
           fixture.databasePath,
-          fixture.worktrees[0]!,
+          fixture.worktrees[0],
           snapshotId('current'),
           retryOptions,
         );
         const retry = yield* store.removeView(
           fixture.databasePath,
-          fixture.worktrees[0]!,
+          fixture.worktrees[0],
           snapshotId('current'),
           retryOptions,
         );
         const staleRemoved = yield* store.removeView(
           fixture.databasePath,
-          fixture.worktrees[0]!,
+          fixture.worktrees[0],
           snapshotId('other'),
           retryOptions,
         );
         const missing = yield* store.removeView(
           fixture.databasePath,
-          fixture.worktrees[1]!,
+          fixture.worktrees[1],
           snapshotId('current'),
           retryOptions,
         );
@@ -176,24 +176,24 @@ describe('code graph view removal core', () => {
         seedGraph(
           fixture,
           [
-            {id: snapshotId('base-root'), worktreeId: target!},
-            {baseSnapshotId: snapshotId('base-root'), dirty: true, id: snapshotId('base-middle'), worktreeId: target!},
-            {baseSnapshotId: snapshotId('base-middle'), dirty: true, id: snapshotId('target'), worktreeId: target!},
-            {baseSnapshotId: snapshotId('target'), dirty: true, id: snapshotId('dependent'), worktreeId: dependent!},
-            {id: snapshotId('shared'), worktreeId: sharedA!},
+            {id: snapshotId('base-root'), worktreeId: target},
+            {baseSnapshotId: snapshotId('base-root'), dirty: true, id: snapshotId('base-middle'), worktreeId: target},
+            {baseSnapshotId: snapshotId('base-middle'), dirty: true, id: snapshotId('target'), worktreeId: target},
+            {baseSnapshotId: snapshotId('target'), dirty: true, id: snapshotId('dependent'), worktreeId: dependent},
+            {id: snapshotId('shared'), worktreeId: sharedA},
             {dirty: true, id: snapshotId('unrelated-dirty'), worktreeId: 'e'.repeat(64)},
           ],
           [
-            {snapshotId: snapshotId('shared'), worktreeId: sharedA!},
-            {snapshotId: snapshotId('dependent'), worktreeId: dependent!},
-            {snapshotId: snapshotId('shared'), worktreeId: sharedB!},
-            {snapshotId: snapshotId('target'), worktreeId: target!},
+            {snapshotId: snapshotId('shared'), worktreeId: sharedA},
+            {snapshotId: snapshotId('dependent'), worktreeId: dependent},
+            {snapshotId: snapshotId('shared'), worktreeId: sharedB},
+            {snapshotId: snapshotId('target'), worktreeId: target},
           ],
         );
         const store = yield* CodeGraphStore;
         const targetLease = yield* store.acquireSnapshotLease(fixture.databasePath, snapshotId('target'), 60_000);
-        const sharedRemoval = yield* store.removeView(fixture.databasePath, sharedA!, snapshotId('shared'));
-        const targetRemoval = yield* store.removeView(fixture.databasePath, target!, snapshotId('target'));
+        const sharedRemoval = yield* store.removeView(fixture.databasePath, sharedA, snapshotId('shared'));
+        const targetRemoval = yield* store.removeView(fixture.databasePath, target, snapshotId('target'));
         const leaseFlag = yield* Effect.sync(() => {
           const database = new Database(fixture.databasePath, {readonly: true, strict: true});
           try {
@@ -245,13 +245,13 @@ describe('code graph view removal core', () => {
     TestClock.withLive(
       Effect.gen(function* () {
         const fixture = yield* viewFixture('threadnote-view-catalog-');
-        const worktreeId = fixture.worktrees[0]!;
+        const worktreeId = fixture.worktrees[0];
         seedGraph(
           fixture,
           [
             {id: snapshotId('original'), worktreeId},
-            {id: snapshotId('new'), worktreeId: fixture.worktrees[1]!},
-            {id: snapshotId('builder-cache'), worktreeId: fixture.worktrees[2]!},
+            {id: snapshotId('new'), worktreeId: fixture.worktrees[1]},
+            {id: snapshotId('builder-cache'), worktreeId: fixture.worktrees[2]},
           ],
           [{snapshotId: snapshotId('original'), worktreeId}],
         );
@@ -299,7 +299,7 @@ describe('code graph view removal core', () => {
     TestClock.withLive(
       Effect.gen(function* () {
         const fixture = yield* viewFixture('threadnote-view-load-');
-        const worktreeId = fixture.worktrees[0]!;
+        const worktreeId = fixture.worktrees[0];
         seedGraph(fixture, [{id: snapshotId('load'), worktreeId}], [{snapshotId: snapshotId('load'), worktreeId}]);
         const store = yield* CodeGraphStore;
         yield* store.acquireSnapshotLease(fixture.databasePath, snapshotId('load'), 60_000);
@@ -320,7 +320,7 @@ describe('code graph view removal core', () => {
     TestClock.withLive(
       Effect.gen(function* () {
         const fixture = yield* viewFixture('threadnote-view-busy-');
-        const worktreeId = fixture.worktrees[0]!;
+        const worktreeId = fixture.worktrees[0];
         seedGraph(fixture, [{id: snapshotId('busy'), worktreeId}], [{snapshotId: snapshotId('busy'), worktreeId}]);
         const fs = yield* FileSystem.FileSystem;
         const store = yield* CodeGraphStore;

@@ -405,7 +405,7 @@ function deterministicVector(dimensions: number, input: string): readonly number
 }
 
 function expectedStoredVector(input: string): readonly number[] {
-  const vector = deterministicVector(manifest.dimensions!, input);
+  const vector = deterministicVector(manifest.dimensions, input);
   const magnitude = Math.sqrt(vector.reduce((total, component) => total + component * component, 0));
   return vector.map(component => Math.fround(component / magnitude));
 }
@@ -420,9 +420,9 @@ function decodeVector(value: unknown): readonly number[] {
           ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
           : undefined;
   if (!bytes) throw new TestError('Stored vector is not a binary SQLite value.');
-  expect(bytes.byteLength).toBe(manifest.dimensions! * 4);
+  expect(bytes.byteLength).toBe(manifest.dimensions * 4);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  return Array.from({length: manifest.dimensions!}, (_, index) => view.getFloat32(index * 4, true));
+  return Array.from({length: manifest.dimensions}, (_, index) => view.getFloat32(index * 4, true));
 }
 
 function assertBuildResult(

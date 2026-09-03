@@ -277,9 +277,7 @@ export const ContextBriefCitationEvaluationFixtureSchemaV1 = Schema.Struct({
 
 /** Decode an offline fixture and enforce the hard Context Brief and benchmark bounds. */
 export function parseContextBriefCitationEvaluationFixtureV1(value: unknown): ContextBriefCitationEvaluationFixtureV1 {
-  const fixture = Schema.decodeUnknownSync(ContextBriefCitationEvaluationFixtureSchemaV1)(
-    value,
-  ) as ContextBriefCitationEvaluationFixtureV1;
+  const fixture = Schema.decodeUnknownSync(ContextBriefCitationEvaluationFixtureSchemaV1)(value);
   if (
     fixture.scenarios.length === 0 ||
     fixture.scenarios.length > CONTEXT_BRIEF_CITATION_EVALUATION_MAXIMUM_SCENARIOS
@@ -358,7 +356,7 @@ export function parseContextBriefCitationEvaluationFixtureV1(value: unknown): Co
     ) {
       throw new Error(`Citation evaluation equivalence group ${key} requires one clean and one incremental scenario.`);
     }
-    if (expectedOutcomeIdentity(scenarios[0]!) !== expectedOutcomeIdentity(scenarios[1]!)) {
+    if (expectedOutcomeIdentity(scenarios[0]) !== expectedOutcomeIdentity(scenarios[1])) {
       throw new Error(`Citation evaluation equivalence group ${key} must compare identical truth.`);
     }
   }
@@ -485,12 +483,7 @@ export function evaluateContextBriefCitationFixture(
     const matching = citations.filter(item => item.citation.expectedStatus === expectedStatus);
     return {
       expectedStatus,
-      observed: Object.fromEntries(
-        CONTEXT_BRIEF_CITATION_STATUSES.map(observedStatus => [
-          observedStatus,
-          matching.filter(item => item.citation.observedStatus === observedStatus).length,
-        ]),
-      ) as Readonly<Record<ContextBriefCitationEvaluationStatus, number>>,
+      observed: contextBriefCitationStatusCounts(matching),
     };
   });
   const statusMetrics = CONTEXT_BRIEF_CITATION_STATUSES.map(status => {
@@ -610,6 +603,20 @@ export function evaluateContextBriefCitationFixture(
     performance,
     quality,
     version: CONTEXT_BRIEF_CITATION_EVALUATION_VERSION,
+  };
+}
+
+function contextBriefCitationStatusCounts(
+  citations: readonly {readonly citation: ContextBriefCitationEvaluationScenarioV1['citations'][number]}[],
+): Readonly<Record<ContextBriefCitationEvaluationStatus, number>> {
+  const count = (status: ContextBriefCitationEvaluationStatus) =>
+    citations.filter(item => item.citation.observedStatus === status).length;
+  return {
+    changed: count('changed'),
+    deleted: count('deleted'),
+    exact: count('exact'),
+    relocated: count('relocated'),
+    unknown: count('unknown'),
   };
 }
 

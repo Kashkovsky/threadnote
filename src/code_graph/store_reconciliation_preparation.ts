@@ -70,7 +70,7 @@ const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedVi
     yield* sql`
       UPDATE schema_metadata
       SET value = ${String(CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION)}
-      WHERE key = 'persistent_extension_schema_revision' AND value = ${revision!}
+      WHERE key = 'persistent_extension_schema_revision' AND value = ${revision}
     `;
     if ((yield* lastStatementChangeCount(sql)) !== 1) {
       return yield* Effect.fail(new CodeGraphStoreError('Code graph cleanup schema revision changed during setup.'));

@@ -527,7 +527,7 @@ function parseArguments(args: readonly string[]): AdjudicatorOptions {
   let input = '';
   let output = '';
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--budget') budget = requiredArgument(args[++index], argument);
     else if (argument === '--expected-commit') expectedCommit = requiredArgument(args[++index], argument);
     else if (argument === '--fail-on-budget') failOnBudget = true;

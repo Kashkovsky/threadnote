@@ -36,8 +36,8 @@ describe('code graph hot-path scaling', () => {
             ).toMatchObject({sourceName: 'Scale'});
           }
 
-          const fiveThousand = durations[1]!;
-          const tenThousand = durations[2]!;
+          const fiveThousand = durations[1];
+          const tenThousand = durations[2];
           expect(tenThousand).toBeLessThan(5_000);
           expect(tenThousand).toBeLessThan(fiveThousand * 3 + 1_000);
         }),
@@ -71,8 +71,8 @@ describe('code graph hot-path scaling', () => {
     const attributionDuration = performance.now() - attributionStartedAt;
 
     expect(workspace.projects).toHaveLength(moduleCount + 1);
-    expect(attributed[0]!.symbols[0]!.packageName).toBe('m0');
-    expect(attributed.at(-1)!.symbols[0]!.packageName).toBe(`m${moduleCount - 1}`);
+    expect(attributed[0].symbols[0].packageName).toBe('m0');
+    expect(attributed.at(-1)!.symbols[0].packageName).toBe(`m${moduleCount - 1}`);
     expect(discoveryDuration).toBeLessThan(5_000);
     expect(attributionDuration).toBeLessThan(5_000);
   }, 20_000);

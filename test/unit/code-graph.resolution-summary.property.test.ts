@@ -124,7 +124,7 @@ function resolutionFacts(root: string, testCase: ResolutionCase) {
   const edges: CodeGraphEdge[] = [];
   const references: CodeGraphReference[] = [];
   for (const [index, definition] of testCase.references.entries()) {
-    const source = symbols[definition.sourceIndex]!;
+    const source = symbols[definition.sourceIndex];
     const evidencePath = `src/resolution-${index}.ts`;
     const edge: CodeGraphEdge = {
       confidence: 0.7,

@@ -6,13 +6,14 @@ import {
   type CompactEvidenceRelationshipV1,
 } from '../workset_evidence.js';
 import {CODE_GRAPH_WORKSET_CATALOG_LIMITS, CodeGraphWorksetCatalogError} from './types.js';
+import {Predicate} from 'effect';
 
 const CARD_ID = /^cgec_[0-9a-f]{40}$/u;
 const QUALIFIED_REF = /^cgr_[0-9a-f]{40}$/u;
 const RESULT_SET_TOKEN = /^[0-9a-f]{64}$/u;
 
-const PROVENANCES = new Set(['declared', 'heuristic', 'model', 'resolved', 'syntactic']);
-const RELATIONS = new Set([
+const PROVENANCES = ['declared', 'heuristic', 'model', 'resolved', 'syntactic'] as const;
+const RELATIONS = [
   'calls',
   'configures',
   'constructs',
@@ -30,7 +31,7 @@ const RELATIONS = new Set([
   'reexports',
   'semantic_association',
   'tests',
-]);
+] as const;
 
 export interface PreparedCodeGraphWorksetResultCardV1 {
   readonly bytes: number;
@@ -120,7 +121,7 @@ export function prepareCodeGraphWorksetResultSequence(
   const cards: PreparedCodeGraphWorksetResultCardV1[] = [];
   const cardIds = new Set<string>();
   let totalBytes = 0;
-  for (const value of input as readonly unknown[]) {
+  for (const value of input) {
     const card = normalizeCard(value, 'invalid-input');
     if (cardIds.has(card.id)) throw invalid(`Workset result-set card ${card.id} is duplicated.`);
     cardIds.add(card.id);
@@ -302,12 +303,7 @@ function normalizeRelationship(
     reason,
   );
   const authority = literal(relationship.authority, ['authoritative', 'supporting'], 'relationship authority', reason);
-  const provenance = literal(
-    relationship.provenance,
-    [...PROVENANCES],
-    'relationship provenance',
-    reason,
-  ) as CompactEvidenceRelationshipV1['provenance'];
+  const provenance = literal(relationship.provenance, PROVENANCES, 'relationship provenance', reason);
   const authoritative = provenance === 'declared' || provenance === 'resolved';
   if ((authority === 'authoritative') !== authoritative) {
     fail(reason, 'Workset result-set relationship authority does not match provenance.');
@@ -338,12 +334,7 @@ function normalizeRelationship(
       span: normalizeSpan(evidence.span, 'relationship evidence span', reason),
     },
     provenance,
-    relation: literal(
-      relationship.relation,
-      [...RELATIONS],
-      'relationship relation',
-      reason,
-    ) as CompactEvidenceRelationshipV1['relation'],
+    relation: literal(relationship.relation, RELATIONS, 'relationship relation', reason),
     source,
     target,
   };
@@ -475,10 +466,13 @@ function literal<const T extends string>(
   label: string,
   reason: 'corrupt' | 'invalid-input',
 ): T {
-  if (typeof value !== 'string' || !values.includes(value as T)) {
+  if (typeof value !== 'string') {
     fail(reason, `Workset result-set ${label} is invalid.`);
   }
-  return value as T;
+  for (const candidate of values) {
+    if (value === candidate) return candidate;
+  }
+  fail(reason, `Workset result-set ${label} is invalid.`);
 }
 
 function array(
@@ -494,10 +488,10 @@ function array(
 }
 
 function object(value: unknown, label: string, reason: 'corrupt' | 'invalid-input'): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!Predicate.isObject(value)) {
     fail(reason, `Workset result-set ${label} is invalid.`);
   }
-  return value as Record<string, unknown>;
+  return value;
 }
 
 function exactKeys(

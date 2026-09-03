@@ -53,7 +53,7 @@ describe('Manager graph view removal', () => {
   it('applies removal projections idempotently for any selected view', () => {
     fc.assert(
       fc.property(fc.uniqueArray(fc.string({minLength: 1, maxLength: 12}), {minLength: 1, maxLength: 12}), ids => {
-        const worktreeId = ids[0]!;
+        const worktreeId = ids[0];
         const target = {checkoutId: 'checkout', expectedSnapshotId: `snapshot-${worktreeId}`, worktreeId};
         const catalogOnce = withoutRemovedGraphCatalogView(catalogFixture(ids), target);
         const diagnosticsOnce = withoutRemovedGraphDiagnosticsView(diagnosticsFixture(ids), target);
@@ -84,7 +84,7 @@ function catalogFixture(worktreeIds: readonly string[]): GraphCatalog {
         ? []
         : [
             {
-              defaultViewId: views[0]!.id,
+              defaultViewId: views[0].id,
               displayName: 'Repository',
               id: 'repository-group',
               repositoryId: 'repository',

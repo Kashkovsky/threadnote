@@ -280,7 +280,7 @@ function parseArguments(args: readonly string[]): {
     '--trials',
   ]);
   for (let index = 0; index < args.length; index += 1) {
-    const option = args[index]!;
+    const option = args[index];
     if (!supported.has(option)) throw new ScriptError(`Unknown Code Memory Link retain option: ${option}`);
     if (values.has(option)) throw new ScriptError(`${option} must be provided exactly once`);
     values.set(option, required(args[++index], option));

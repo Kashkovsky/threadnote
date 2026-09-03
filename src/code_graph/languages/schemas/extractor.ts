@@ -1,5 +1,5 @@
 import * as yaml from 'js-yaml';
-import {Option} from 'effect';
+import {Option, Predicate} from 'effect';
 import {sha256HexSync} from '../../../crypto/sha256.js';
 import type {CodeGraphExtractionContext} from '../types.js';
 import type {
@@ -191,10 +191,12 @@ function extractObjectConfig(facts: MutableStructuredFacts, policy: ReturnType<t
       }
       return;
     }
-    for (const key in value as Record<string, unknown>) {
+    if (!Predicate.isObject(value)) return;
+    const record = value;
+    for (const key in record) {
       if (facts.symbols.length >= maximumSymbols) break;
-      if (!Object.hasOwn(value, key)) continue;
-      addChild(key, (value as Record<string, unknown>)[key], false);
+      if (!Object.hasOwn(record, key)) continue;
+      addChild(key, record[key], false);
     }
   };
   documents.forEach((document, index) =>
@@ -258,7 +260,7 @@ function createConfigKeyLocator(
   let cursor = 0;
   return key => {
     for (let index = cursor; index < locations.length; index += 1) {
-      const location = locations[index]!;
+      const location = locations[index];
       if (location.key !== key) continue;
       cursor = index + 1;
       return {end: location.end, start: location.start};
@@ -337,7 +339,7 @@ function extractShallowJson(facts: MutableStructuredFacts): void {
     {readonly path: readonly string[]; readonly symbol: CodeGraphSymbol; readonly valuePending: boolean} | undefined;
   let cursor = 0;
   while (cursor < limit && facts.symbols.length - 1 < MAX_SHALLOW_OBJECT_CONFIG_SYMBOLS) {
-    const character = content[cursor]!;
+    const character = content[cursor];
     if (/\s/u.test(character)) {
       cursor += 1;
       continue;
@@ -414,11 +416,11 @@ function extractShallowYaml(facts: MutableStructuredFacts): void {
   let start = 0;
   while (start < limit && facts.symbols.length - 1 < MAX_SHALLOW_OBJECT_CONFIG_SYMBOLS) {
     let end = start;
-    while (end < limit && !isLineTerminator(content[end]!)) end += 1;
+    while (end < limit && !isLineTerminator(content[end])) end += 1;
     const line = content.slice(start, end);
     const match = /^(\s*)(?!-\s)(?:["']([^"']+)["']|([^:#][^:]*?))\s*:(?:\s|$)/.exec(line);
     if (match) {
-      const indent = yamlIndent(match[1]!);
+      const indent = yamlIndent(match[1]);
       const key = (match[2] ?? match[3] ?? '').trim();
       while (scopes.length > 1 && scopes.at(-1)!.indent >= indent) scopes.pop();
       const parent = scopes.at(-1)!;
@@ -450,7 +452,7 @@ function jsonStringAt(
 ): {readonly end: number; readonly value: string} | undefined {
   let escaped = false;
   for (let cursor = start + 1; cursor < limit; cursor += 1) {
-    const character = content[cursor]!;
+    const character = content[cursor];
     if (escaped) {
       escaped = false;
       continue;
@@ -474,7 +476,7 @@ function jsonStringAt(
 function skipJsonTrivia(content: string, offset: number, limit: number): number {
   let cursor = offset;
   while (cursor < limit) {
-    if (/\s/u.test(content[cursor]!)) cursor += 1;
+    if (/\s/u.test(content[cursor])) cursor += 1;
     else if (content[cursor] === '/' && content[cursor + 1] === '/') cursor = skipLine(content, cursor + 2, limit);
     else if (content[cursor] === '/' && content[cursor + 1] === '*')
       cursor = skipBlockComment(content, cursor + 2, limit);
@@ -485,7 +487,7 @@ function skipJsonTrivia(content: string, offset: number, limit: number): number 
 
 function skipLine(content: string, offset: number, limit: number): number {
   let cursor = offset;
-  while (cursor < limit && !isLineTerminator(content[cursor]!)) cursor += 1;
+  while (cursor < limit && !isLineTerminator(content[cursor])) cursor += 1;
   return cursor;
 }
 
@@ -511,7 +513,7 @@ function extractToml(facts: MutableStructuredFacts): void {
   for (const line of linesWithOffsets(content)) {
     const tableMatch = /^\s*\[\[?([^\]]+)\]\]?\s*(?:#.*)?$/.exec(line.text);
     if (tableMatch) {
-      const name = tableMatch[1]!.trim();
+      const name = tableMatch[1].trim();
       table = addDeclaration(
         facts,
         facts.module,
@@ -527,7 +529,7 @@ function extractToml(facts: MutableStructuredFacts): void {
     }
     const keyMatch = /^\s*([A-Za-z0-9_.-]+)\s*=/.exec(line.text);
     if (!keyMatch) continue;
-    const name = keyMatch[1]!;
+    const name = keyMatch[1];
     addDeclaration(
       facts,
       table,
@@ -547,7 +549,7 @@ function extractKeyValueConfig(facts: MutableStructuredFacts): void {
   for (const line of linesWithOffsets(facts.file.content!)) {
     const sectionMatch = /^\s*\[([^\]]+)\]\s*$/.exec(line.text);
     if (sectionMatch) {
-      const name = sectionMatch[1]!.trim();
+      const name = sectionMatch[1].trim();
       section = addDeclaration(
         facts,
         facts.module,
@@ -563,7 +565,7 @@ function extractKeyValueConfig(facts: MutableStructuredFacts): void {
     }
     const keyMatch = /^\s*(?:export\s+)?([A-Za-z_][\w.-]*)\s*(?:=|:)/.exec(line.text);
     if (!keyMatch) continue;
-    const name = keyMatch[1]!;
+    const name = keyMatch[1];
     addDeclaration(
       facts,
       section,
@@ -583,8 +585,8 @@ function extractSql(facts: MutableStructuredFacts): void {
   const declaration =
     /(?:^|[;\r\n])\s*create\s+(?:or\s+replace\s+)?(?:global\s+|local\s+)?(?:temporary\s+|temp\s+)?(materialized\s+view|table|view|index|function|procedure|trigger|type|schema|sequence)\s+(?:if\s+not\s+exists\s+)?([`"[]?[A-Za-z_][\w$.-]*(?:\s*\.\s*[`"[]?[A-Za-z_][\w$-]*[`"\]]?)*[`"\]]?)/gi;
   for (const match of content.matchAll(declaration)) {
-    const kind = match[1]!.toLowerCase().replace(/\s+/g, '_');
-    const name = normalizeSqlIdentifier(match[2]!);
+    const kind = match[1].toLowerCase().replace(/\s+/g, '_');
+    const name = normalizeSqlIdentifier(match[2]);
     const offset = match.index ?? 0;
     const symbol = addDeclaration(facts, facts.module, kind, name, name, offset, offset + match[0].length);
     declarations.push({offset, symbol});
@@ -592,7 +594,7 @@ function extractSql(facts: MutableStructuredFacts): void {
   const references =
     /\b(?:references|from|join|update|into)\s+([`"[]?[A-Za-z_][\w$.-]*(?:\s*\.\s*[`"[]?[A-Za-z_][\w$-]*[`"\]]?)*[`"\]]?)/gi;
   for (const match of content.matchAll(references)) {
-    const target = normalizeSqlIdentifier(match[1]!);
+    const target = normalizeSqlIdentifier(match[1]);
     if (!target) continue;
     const offset = match.index ?? 0;
     let owner = facts.module;
@@ -608,8 +610,8 @@ function extractGraphql(facts: MutableStructuredFacts): void {
   const expression =
     /^\s*(extend\s+)?(schema|type|interface|input|enum|scalar|union|directive)\s+@?([_A-Za-z][_0-9A-Za-z]*)/gim;
   for (const match of facts.file.content!.matchAll(expression)) {
-    const kind = `${match[1] ? 'extended_' : ''}${match[2]!.toLowerCase()}`;
-    const name = match[3]!;
+    const kind = `${match[1] ? 'extended_' : ''}${match[2].toLowerCase()}`;
+    const name = match[3];
     const offset = match.index ?? 0;
     addDeclaration(facts, facts.module, kind, name, name, offset, offset + match[0].length);
   }
@@ -678,8 +680,8 @@ function extractProtobuf(facts: MutableStructuredFacts): void {
       pendingScope = undefined;
       continue;
     }
-    const name = match[2]!;
-    const kind = match[1]!.toLowerCase();
+    const name = match[2];
+    const kind = match[1].toLowerCase();
     const offset = match.index ?? 0;
     const parent = [...scopes].reverse().find((scope): scope is CodeGraphSymbol => scope !== undefined) ?? facts.module;
     const parentQualifiedName = parent === facts.module ? namespace : parent.qualifiedName;
@@ -755,7 +757,7 @@ function extractXml(facts: MutableStructuredFacts): void {
   const elements = /<([A-Za-z_][\w:.-]*)([^<>]*?)\/?\s*>/g;
   for (const match of content.matchAll(elements)) {
     if (facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) break;
-    const tag = match[1]!;
+    const tag = match[1];
     const attributes = match[2] ?? '';
     const identity = /\b(?:x:Class|x:Name|Name|Include|Update|Remove|Id)\s*=\s*["']([^"']+)["']/.exec(attributes)?.[1];
     if (!identity && !/^(?:Project|PackageReference|ProjectReference|Target|PropertyGroup|ItemGroup)$/i.test(tag))
@@ -781,16 +783,8 @@ function extractSolution(facts: MutableStructuredFacts): void {
   const expression = /^Project\("[^"\r\n]+"\)\s*=\s*"([^"]+)",\s*"([^"]+)"/gim;
   for (const match of facts.file.content!.matchAll(expression)) {
     const offset = match.index ?? 0;
-    const symbol = addDeclaration(
-      facts,
-      facts.module,
-      'project',
-      match[1]!,
-      match[1]!,
-      offset,
-      offset + match[0].length,
-    );
-    addUnresolvedEdge(facts, symbol, match[2]!, 'depends_on', 'declared', offset, offset + match[0].length);
+    const symbol = addDeclaration(facts, facts.module, 'project', match[1], match[1], offset, offset + match[0].length);
+    addUnresolvedEdge(facts, symbol, match[2], 'depends_on', 'declared', offset, offset + match[0].length);
   }
 }
 
@@ -799,13 +793,13 @@ function extractDockerfile(facts: MutableStructuredFacts): void {
   for (const line of linesWithOffsets(facts.file.content!)) {
     const from = /^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?/i.exec(line.text);
     if (from) {
-      const name = from[2] ?? from[1]!;
+      const name = from[2] ?? from[1];
       stage = addDeclaration(facts, facts.module, 'stage', name, name, line.start, line.end);
-      addUnresolvedEdge(facts, stage, from[1]!, 'depends_on', 'declared', line.start, line.end);
+      addUnresolvedEdge(facts, stage, from[1], 'depends_on', 'declared', line.start, line.end);
       continue;
     }
     const copy = /^\s*COPY\s+--from=(\S+)/i.exec(line.text);
-    if (copy) addUnresolvedEdge(facts, stage, copy[1]!, 'depends_on', 'declared', line.start, line.end);
+    if (copy) addUnresolvedEdge(facts, stage, copy[1], 'depends_on', 'declared', line.start, line.end);
   }
 }
 
@@ -1103,7 +1097,7 @@ function normalizeJsonc(value: string): string {
   let escaped = false;
   let inString = false;
   for (let index = 0; index < output.length; index += 1) {
-    const current = output[index]!;
+    const current = output[index];
     if (inString) {
       if (escaped) escaped = false;
       else if (current === '\\') escaped = true;
@@ -1116,7 +1110,7 @@ function normalizeJsonc(value: string): string {
     }
     if (current !== ',') continue;
     let lookahead = index + 1;
-    while (lookahead < output.length && /\s/u.test(output[lookahead]!)) lookahead += 1;
+    while (lookahead < output.length && /\s/u.test(output[lookahead])) lookahead += 1;
     if (output[lookahead] === '}' || output[lookahead] === ']') output[index] = ' ';
   }
   if (output[0] === '\uFEFF') output[0] = ' ';
@@ -1129,7 +1123,7 @@ function maskCStyleNonCode(value: string, maskStrings: boolean): string {
   let quote = '';
   let escaped = false;
   for (let index = 0; index < value.length; index += 1) {
-    const current = value[index]!;
+    const current = value[index];
     const next = value[index + 1];
     if (mode === 'line-comment') {
       if (isLineTerminator(current)) mode = 'code';

@@ -51,7 +51,7 @@ export function classifyMemoryIdentityCandidates(
   );
   const activeMatches = matches.filter(candidate => candidate.status === 'active');
   const identityConflict = matches.some(candidate => candidate.identityConflict === true);
-  if (activeMatches.length === 1 && !identityConflict) return {state: 'resolved', uri: activeMatches[0]!.uri};
+  if (activeMatches.length === 1 && !identityConflict) return {state: 'resolved', uri: activeMatches[0].uri};
   return activeMatches.length === 0 && !identityConflict ? {state: 'not-found'} : {state: 'ambiguous'};
 }
 
@@ -69,7 +69,7 @@ export const resolveMemoryIdentityAliases = Effect.fn('recall.resolveMemoryIdent
   if (allowedUriScopes.length === 0) {
     return yield* Effect.fail(
       new MemoryIdentityResolutionError({
-        memoryId: memoryIds[0]!,
+        memoryId: memoryIds[0],
         message: 'Stable memory identity resolution requires an explicit non-empty authorized URI scope.',
         reason: 'scope-required',
       }),

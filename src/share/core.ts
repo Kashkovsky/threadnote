@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Option, Path, Result} from 'effect';
+import {Console, Effect, FileSystem, Option, Path, Predicate, Result} from 'effect';
 
 import {SystemInfo} from '../effect/system.js';
 
@@ -508,10 +508,10 @@ const loadPendingReindexes = Effect.fn('share.loadPendingReindexes')(function* (
     }
     const changes: ChangedFile[] = [];
     for (const item of value) {
-      if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      if (!Predicate.isObject(item)) {
         continue;
       }
-      const entry = item as Record<string, unknown>;
+      const entry = item;
       if (
         typeof entry.path === 'string' &&
         typeof entry.relativePath === 'string' &&
@@ -594,7 +594,8 @@ export const readTeamsFile = Effect.fn('share.readTeamsFile')(function* (config:
   const path = yield* teamsFilePath(config);
   const raw = yield* readFileIfExists(path);
   if (!raw) {
-    return {teams: {}, version: TEAMS_FILE_VERSION} as ShareTeamsFile;
+    const empty: ShareTeamsFile = {teams: {}, version: TEAMS_FILE_VERSION};
+    return empty;
   }
   const parsed = parseJsonConfigObject(raw);
   if (!parsed) {
@@ -608,11 +609,11 @@ export const readTeamsFile = Effect.fn('share.readTeamsFile')(function* (config:
   const teams: Record<string, ShareTeamConfig> = {};
   if (typeof parsed.teams === 'object' && parsed.teams !== null && !Array.isArray(parsed.teams)) {
     for (const [name, value] of Object.entries(parsed.teams)) {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      if (!Predicate.isObject(value)) {
         yield* Console.warn(`Skipping non-object team entry "${name}" in ${path}.`);
         continue;
       }
-      const entry = value as Record<string, unknown>;
+      const entry = value;
       if (typeof entry.remote !== 'string' || entry.remote.length === 0) {
         yield* Console.warn(`Skipping team entry "${name}" in ${path}: missing or empty "remote" field.`);
         continue;
@@ -632,7 +633,8 @@ export const readTeamsFile = Effect.fn('share.readTeamsFile')(function* (config:
     }
   }
   const defaultTeam = typeof parsed.defaultTeam === 'string' ? parsed.defaultTeam : undefined;
-  return {defaultTeam, teams, version: TEAMS_FILE_VERSION} as ShareTeamsFile;
+  const teamsFile: ShareTeamsFile = {defaultTeam, teams, version: TEAMS_FILE_VERSION};
+  return teamsFile;
 });
 
 export function shareTeamAccess(team: ShareTeamConfig): ShareTeamAccess {
@@ -858,7 +860,7 @@ export function stripPersonalProvenance(
   }
   const cleaned: string[] = [];
   for (let index = 0; index < headerEnd; index += 1) {
-    const line = lines[index]!;
+    const line = lines[index];
     const stableRelation = options.preserveStableMemoryRelations === true && isStableMemoryRelationHeader(line);
     if (
       !stableRelation &&

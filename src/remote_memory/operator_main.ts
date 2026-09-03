@@ -195,7 +195,7 @@ const operatorPromise = <A>(evaluate: (signal: AbortSignal) => PromiseLike<A>) =
 function parseOptions(arguments_: readonly string[]): ReadonlyMap<string, string | true> {
   const options = new Map<string, string | true>();
   for (let index = 0; index < arguments_.length; index += 1) {
-    const token = arguments_[index]!;
+    const token = arguments_[index];
     if (!token.startsWith('--') || token.length <= 2) {
       throw operatorInvocationError('Operator arguments must use --name followed by an optional value.');
     }

@@ -120,7 +120,7 @@ function parseArticleMetadata(
   if (authorUrlValue !== undefined && (typeof authorUrlValue !== 'string' || !authorUrlValue.trim())) {
     throw articleError(fileName, 'frontmatter authorUrl must be a non-empty HTTPS URL when present');
   }
-  const authorUrl = authorUrlValue as string | undefined;
+  const authorUrl = authorUrlValue;
   if (authorUrl && authorUrl !== authorUrl.trim()) {
     throw articleError(fileName, 'frontmatter authorUrl must not have surrounding whitespace');
   }
@@ -135,8 +135,8 @@ function parseArticleMetadata(
   if (socialImageAltValue !== undefined && (typeof socialImageAltValue !== 'string' || !socialImageAltValue.trim())) {
     throw articleError(fileName, 'frontmatter socialImageAlt must be a non-empty string when present');
   }
-  const socialImage = socialImageValue as string | undefined;
-  const socialImageAlt = socialImageAltValue as string | undefined;
+  const socialImage = socialImageValue;
+  const socialImageAlt = socialImageAltValue;
   if (socialImage && socialImage !== socialImage.trim()) {
     throw articleError(fileName, 'frontmatter socialImage must not have surrounding whitespace');
   }
@@ -177,7 +177,7 @@ function parseArticleMetadata(
   if (!fileMatch) {
     throw articleError(fileName, 'filename must be <UTC timestamp>--<slug>.md with colons written as hyphens');
   }
-  const fileTimestamp = fileMatch[1]!.replace(/T(\d{2})-(\d{2})-(\d{2})Z$/, 'T$1:$2:$3Z');
+  const fileTimestamp = fileMatch[1].replace(/T(\d{2})-(\d{2})-(\d{2})Z$/, 'T$1:$2:$3Z');
   if (fileTimestamp !== publishedAt || fileMatch[2] !== slug) {
     throw articleError(fileName, 'filename timestamp and slug must exactly match frontmatter publishedAt and slug');
   }
@@ -256,7 +256,7 @@ export async function loadWebsiteArticles(repositoryRoot: string): Promise<reado
   const slugs = new Set<string>();
   for (const article of articles) {
     if (slugs.has(article.slug))
-      throw articleError(fileNames[articles.indexOf(article)]!, `duplicate slug: ${article.slug}`);
+      throw articleError(fileNames[articles.indexOf(article)], `duplicate slug: ${article.slug}`);
     slugs.add(article.slug);
   }
   return articles.sort(

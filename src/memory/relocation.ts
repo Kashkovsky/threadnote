@@ -1,4 +1,4 @@
-import {Data, Effect, FileSystem, Option, Path} from 'effect';
+import {Data, Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
 import {ResourceStore} from '../effect/resource-store.js';
 import {fileSystemModeIsPrivate, runtimePlatform} from '../effect/system.js';
@@ -384,7 +384,10 @@ function parseMemoryRelocationReceipt(content: string): MemoryRelocationReceiptV
   } catch {
     throw relocationError('Memory relocation receipt is not valid JSON.');
   }
-  if (!isRecord(value) || !hasExactKeys(value, ['fromUri', 'memoryId', 'toUri', 'type', 'version', 'visibility'])) {
+  if (
+    !Predicate.isObject(value) ||
+    !hasExactKeys(value, ['fromUri', 'memoryId', 'toUri', 'type', 'version', 'visibility'])
+  ) {
     throw relocationError('Memory relocation receipt has an unsupported shape.');
   }
   if (
@@ -398,7 +401,14 @@ function parseMemoryRelocationReceipt(content: string): MemoryRelocationReceiptV
   ) {
     throw relocationError('Memory relocation receipt has invalid fields.');
   }
-  return value as unknown as MemoryRelocationReceiptV1;
+  return {
+    fromUri: value.fromUri,
+    memoryId: value.memoryId,
+    toUri: value.toUri,
+    type: 'threadnote-memory-relocation',
+    version: MEMORY_RELOCATION_RECEIPT_VERSION,
+    visibility: 'private-local',
+  };
 }
 
 const canonicalManagedMemoryUri = Effect.fn('memoryRelocation.canonicalUri')(
@@ -500,10 +510,6 @@ export function isMemoryRelocationUri(config: Pick<RuntimeConfig, 'user'>, input
   } catch {
     return false;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {

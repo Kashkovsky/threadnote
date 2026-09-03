@@ -1003,7 +1003,7 @@ describe('routine code graph maintenance', () => {
       );
       const admissions: CodeGraphRoutineMaintenanceResult[] = [];
       for (const input of queued) admissions.push(yield* coordinator.tick(input));
-      const duplicate = yield* coordinator.tick(queued[0]!);
+      const duplicate = yield* coordinator.tick(queued[0]);
       yield* Fiber.interrupt(owner);
       yield* Deferred.await(drained);
 

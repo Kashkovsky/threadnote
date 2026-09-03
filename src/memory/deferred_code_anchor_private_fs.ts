@@ -272,7 +272,7 @@ const quarantinePrivateDeferredCodeAnchorEntry = Effect.fn('memoryCodeAnchor.qua
   if (sourceAuthority === undefined) return false;
   if ((yield* deferredCodeAnchorPathEntryKind(fs, entryPath)) === 'missing') return false;
 
-  const queueRoot = destinationAncestors[destinationAncestors.length - 1]!;
+  const queueRoot = destinationAncestors[destinationAncestors.length - 1];
   const quarantineRoot = yield* ensurePrivateDeferredCodeAnchorDirectory(
     fs,
     path.join(queueRoot, quarantineName),

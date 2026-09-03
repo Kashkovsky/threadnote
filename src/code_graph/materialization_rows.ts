@@ -299,7 +299,7 @@ export function parseTypeScriptPathNameLookupKey(
     /^typescript:(?:[^:]+:)?path:([^:]+):name:([^:]+)(?::(?:arity:\d+|implementation|merge-canonical))?$/u.exec(value);
   if (!match) return undefined;
   try {
-    return {name: decodeURIComponent(match[2]!), path: decodeURIComponent(match[1]!)};
+    return {name: decodeURIComponent(match[2]), path: decodeURIComponent(match[1])};
   } catch {
     return undefined;
   }

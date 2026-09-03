@@ -187,8 +187,8 @@ function extractBazelRc(facts: MutableBazelFacts): void {
     }
     const imported = /^(?:try-)?import\s+(\S+)/u.exec(source);
     if (imported) {
-      addReference(facts, facts.module, imported[1]!, 'imports', 'declared', offset, end, [
-        [`bazel:path:${imported[1]!}`],
+      addReference(facts, facts.module, imported[1], 'imports', 'declared', offset, end, [
+        [`bazel:path:${imported[1]}`],
       ]);
       offset = end + 1;
       continue;
@@ -206,7 +206,7 @@ function extractBazelRc(facts: MutableBazelFacts): void {
       configs.set(command, config);
     }
     for (const match of source.matchAll(/--config(?:=|\s+)([A-Za-z_][\w-]*)/gu)) {
-      addReference(facts, config, match[1]!, 'configures', 'declared', offset, end, [[`bazel:config:${match[1]!}`]]);
+      addReference(facts, config, match[1], 'configures', 'declared', offset, end, [[`bazel:config:${match[1]}`]]);
     }
     offset = end + 1;
   }
@@ -322,7 +322,7 @@ function addCallReference(
   end: number,
 ): void {
   if (!callee || BAZEL_NON_CALL_KEYWORDS.has(callee)) return;
-  const local = callee.split('.')[0]!;
+  const local = callee.split('.')[0];
   const loaded = loadedBindings.get(local);
   const importedName = loaded ? `${loaded.label}%${loaded.imported}` : undefined;
   addReference(facts, source, callee, 'calls', 'syntactic', start, end, [
@@ -426,8 +426,8 @@ function createOwnerResolver(
     }
     previousOffset = offset;
     active = active.filter(interval => interval.end >= offset);
-    while (cursor < intervals.length && intervals[cursor]!.start <= offset) {
-      const interval = intervals[cursor]!;
+    while (cursor < intervals.length && intervals[cursor].start <= offset) {
+      const interval = intervals[cursor];
       if (interval.end >= offset) active.push(interval);
       cursor += 1;
     }

@@ -666,7 +666,7 @@ function assembleProtocolTasks(
   for (const task of tasks) {
     if (
       task.definition.controlScenario === 'malformed-citation' &&
-      (task.homeFiles.length !== 1 || !task.homeFiles[0]!.content.includes('code_citation: {not-canonical-json'))
+      (task.homeFiles.length !== 1 || !task.homeFiles[0].content.includes('code_citation: {not-canonical-json'))
     ) {
       throw new Error('Malformed-citation control requires one sealed legacy memory with malformed citation metadata.');
     }
@@ -880,7 +880,7 @@ async function prepareTask(
       ? memories.map(file => ({...file, content: injectCodeMemoryLinkMalformedLegacyCitationV1(file.content)}))
       : memories;
   if (definition.controlScenario === 'malformed-citation') {
-    assertCodeMemoryLinkMalformedSealedMemoryV1(sealedMemories[0]!.content, definition);
+    assertCodeMemoryLinkMalformedSealedMemoryV1(sealedMemories[0].content, definition);
     for (const file of sealedMemories) {
       await writeFile(joinWithin(home, file.destination, 'sealed malformed memory destination'), file.content, {
         encoding: 'utf8',
@@ -1188,7 +1188,7 @@ async function buildReviewedBundle(entrypoint: string, sourceRoot: string, label
     if (!result.success || result.outputs.length !== 1) {
       throw new Error(`${label} dependency-closed bundle could not be built.`);
     }
-    return new Uint8Array(await result.outputs[0]!.arrayBuffer());
+    return new Uint8Array(await result.outputs[0].arrayBuffer());
   };
   const [bytes, repeated] = await Promise.all([buildOnce(), buildOnce()]);
   if (bytes.byteLength === 0 || bytes.byteLength > 8 * 1_024 * 1_024) {
@@ -1266,7 +1266,7 @@ function compareClientBindings(
 
 function createAssignment(fixtureHash: string, assignmentSeed: string): CodeMemoryLinkAgentAbAssignmentV1 {
   const permutation =
-    ARM_LABEL_PERMUTATIONS[Number.parseInt(assignmentSeed.slice(0, 8), 16) % ARM_LABEL_PERMUTATIONS.length]!;
+    ARM_LABEL_PERMUTATIONS[Number.parseInt(assignmentSeed.slice(0, 8), 16) % ARM_LABEL_PERMUTATIONS.length];
   const withoutHash = {
     fixtureHash,
     labels: {X: permutation[0], Y: permutation[1], Z: permutation[2]},
@@ -1625,7 +1625,7 @@ export function validateCodeMemoryLinkPreparedMemories(
     const graph = seed.foreignRepository ? foreignGraph : localGraph;
     if (!graph) throw new Error(`Task ${definition.taskId} seed ${seed.topic} has no matching prepared graph.`);
     const source = definition.initialFiles.find(file => file.path === seed.citationPath);
-    const citation = citations[0]!;
+    const citation = citations[0];
     if (
       !source ||
       citation.path !== seed.citationPath ||
@@ -1667,9 +1667,9 @@ export function assertCodeMemoryLinkMalformedSealedMemoryV1(
   const citationErrors = record?.metadata.citationErrors;
   if (
     !record ||
-    record.body !== definition.memorySeeds[0]!.text ||
+    record.body !== definition.memorySeeds[0].text ||
     record.metadata.project !== CODE_MEMORY_LINK_AGENT_SUITE_PROJECT ||
-    record.metadata.topic !== definition.memorySeeds[0]!.topic ||
+    record.metadata.topic !== definition.memorySeeds[0].topic ||
     record.metadata.codeCitations !== undefined ||
     citationErrors?.length !== 1 ||
     citationErrors[0]?.index !== 0 ||
@@ -1699,8 +1699,8 @@ function assertHiddenArmDiscrimination(
   const anchoredGold = anchored.durableDecisions.filter(memory => memory.excerpt === primary.text);
   if (
     anchoredGold.length !== 1 ||
-    anchoredGold[0]!.selectionBasis !== 'code-citation' ||
-    !anchoredGold[0]!.codeRelations?.some(
+    anchoredGold[0].selectionBasis !== 'code-citation' ||
+    !anchoredGold[0].codeRelations?.some(
       relation =>
         (relation.status === 'exact' || relation.status === 'relocated') &&
         goldCitationDigests.includes(codeMemoryLinkGoldCitationDigest(relation.citationId)),
@@ -1767,7 +1767,7 @@ export function assertCodeMemoryLinkInstructionInjectionControlPreflightV1(
   anchored: ReturnType<typeof parseContextBriefV1>,
   taskOnly: ReturnType<typeof parseContextBriefV1>,
 ): void {
-  const seed = definition.memorySeeds[0]!;
+  const seed = definition.memorySeeds[0];
   if (definition.controlScenario === 'instruction-injection-direct') {
     const directMemories = anchored.durableDecisions.filter(
       memory =>
@@ -2222,7 +2222,7 @@ function parseArguments(arguments_: readonly string[]): Options {
     '--turn-timeout-ms',
   ]);
   for (let index = 0; index < arguments_.length; index += 1) {
-    const argument = arguments_[index]!;
+    const argument = arguments_[index];
     if (!supported.has(argument)) throw new ScriptError(`Unknown Code Memory Link preparation option: ${argument}`);
     if (values[argument] !== undefined)
       throw new ScriptError(`Duplicate Code Memory Link preparation option: ${argument}`);

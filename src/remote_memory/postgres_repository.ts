@@ -1,4 +1,4 @@
-import type {JSONValue, Sql, TransactionSql} from 'postgres';
+import type {Sql, TransactionSql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {MEMORY_SCHEMA_VERSION} from '../memory/code_citation.js';
 import {
@@ -26,6 +26,7 @@ import {
 import type {AuthorizedRemotePrincipal, RemoteMemoryFeatureFlag, RemoteMemoryScope} from './authorization.js';
 import {authorizeCursorClaims, type CursorWorkloadAttestation} from './cursor_oidc.js';
 import {RemoteMemoryError, remoteMemoryError, type RemoteMemoryErrorCode} from './errors.js';
+import {requireJsonValue} from './json.js';
 import {
   remoteMemoryDatabaseTimeoutMilliseconds,
   requireActiveRemoteMemoryRequest,
@@ -774,7 +775,7 @@ export class PostgresRemoteMemoryRepository {
           tenant_id, share_id, principal_id, operation_id, request_hash, outcome, outcome_expires_at
         ) VALUES (
           ${principal.tenantId}, ${principal.shareId}, ${principal.principalId},
-          ${operationId}, ${fingerprint}, ${transaction.json(ambiguousOutcome as unknown as JSONValue)}, ${expiresAt}
+          ${operationId}, ${fingerprint}, ${transaction.json(requireJsonValue(ambiguousOutcome))}, ${expiresAt}
         ) ON CONFLICT DO NOTHING
         RETURNING request_hash
       `;
@@ -832,7 +833,7 @@ export class PostgresRemoteMemoryRepository {
         async transaction => {
           await transaction`
             UPDATE remote_memory.idempotency_records
-            SET outcome = ${transaction.json(rejection as unknown as JSONValue)}
+            SET outcome = ${transaction.json(requireJsonValue(rejection))}
             WHERE tenant_id = ${principal.tenantId} AND principal_id = ${principal.principalId}
               AND operation_id = ${operationId} AND request_hash = ${fingerprint}
               AND outcome->>'kind' = 'rejected'
@@ -852,7 +853,7 @@ export class PostgresRemoteMemoryRepository {
     execution?: RemoteMemoryRequestExecution,
   ): Promise<A> {
     requireActiveRemoteMemoryRequest(execution);
-    return (await this.sql.begin(async transaction => {
+    return await this.sql.begin<Promise<A>>(async transaction => {
       return withRemoteMemoryRequestCancellation(transaction, execution, async cancellableTransaction => {
         const timeout = remoteMemoryDatabaseTimeoutMilliseconds(this.statementTimeoutMilliseconds, execution);
         await cancellableTransaction`SELECT set_config('threadnote.tenant_id', ${tenantId}, true)`;
@@ -861,7 +862,7 @@ export class PostgresRemoteMemoryRepository {
         await cancellableTransaction`SELECT set_config('transaction_timeout', ${String(timeout)}, true)`;
         return use(cancellableTransaction);
       });
-    })) as A;
+    });
   }
 }
 

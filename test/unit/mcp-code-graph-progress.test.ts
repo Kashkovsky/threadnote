@@ -192,7 +192,7 @@ describe('MCP code graph indexing progress', () => {
     expect(continued.warnings).toHaveLength(1);
     expect(continued.warnings[0]).toContain('no-space');
     expect(continued.warnings[0]).toContain('Free storage space');
-    expect(continued.warnings[0]!.length).toBeLessThanOrEqual(320);
+    expect(continued.warnings[0].length).toBeLessThanOrEqual(320);
     expect(JSON.stringify(continued)).not.toContain('/Users/private');
     expect(codeGraphResultWithRefreshContinuity(continued, deferred)).toBe(continued);
   });
@@ -650,7 +650,7 @@ describe('MCP code graph indexing progress', () => {
           qualifiedName: `Fixture.${'Namespace.'.repeat(100)}node${index}`,
         }),
       );
-      const edges = symbols.slice(1).map((symbol, index) => analysisEdge(`edge-${index}`, symbols[index]!, symbol));
+      const edges = symbols.slice(1).map((symbol, index) => analysisEdge(`edge-${index}`, symbols[index], symbol));
       const store = pagedAnalysisStore(symbols, edges);
       const snapshot = analysisSnapshot(symbols, edges);
       const communities = yield* analyzeCodeGraph(store, {

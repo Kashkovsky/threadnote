@@ -90,7 +90,7 @@ export const BenchmarkArtifactSchemaV1 = Schema.Struct({
 });
 
 export function parseBenchmarkArtifactV1(value: unknown): BenchmarkArtifactV1 {
-  const artifact = Schema.decodeUnknownSync(BenchmarkArtifactSchemaV1)(value) as BenchmarkArtifactV1;
+  const artifact = Schema.decodeUnknownSync(BenchmarkArtifactSchemaV1)(value);
   for (const measurement of artifact.measurements) {
     if (!Number.isInteger(measurement.samples) || measurement.samples < 1) {
       throw new Error(`Benchmark ${measurement.name} must have at least one integer sample`);
@@ -120,9 +120,9 @@ export function benchmarkMeasurement(
   }
   const sorted = [...values].sort((left, right) => left - right);
   return {
-    maximum: sorted[sorted.length - 1]!,
+    maximum: sorted[sorted.length - 1],
     mean: sorted.reduce((total, value) => total + value, 0) / sorted.length,
-    minimum: sorted[0]!,
+    minimum: sorted[0],
     name,
     p50: percentile(sorted, 0.5),
     p95: percentile(sorted, 0.95),
@@ -133,5 +133,5 @@ export function benchmarkMeasurement(
 }
 
 function percentile(sorted: readonly number[], quantile: number): number {
-  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))]!;
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))];
 }

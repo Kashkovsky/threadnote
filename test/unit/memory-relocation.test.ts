@@ -223,14 +223,14 @@ describe('private memory relocation receipts', () => {
           for (let index = 0; index < depth; index += 1) {
             yield* recordMemoryRelocation(fixture.config, {
               fromContent: content,
-              fromUri: uris[index]!,
+              fromUri: uris[index],
               toContent: content,
-              toUri: uris[index + 1]!,
+              toUri: uris[index + 1],
             });
           }
           for (const uri of uris.slice(0, -1)) yield* fixture.store.remove(fixture.location, uri);
 
-          expect(yield* readMemoryWithRelocations(fixture.config, uris[0]!)).toMatchObject({
+          expect(yield* readMemoryWithRelocations(fixture.config, uris[0])).toMatchObject({
             canonicalUri: uris.at(-1),
             content,
             relocationDepth: depth,
@@ -251,13 +251,13 @@ describe('private memory relocation receipts', () => {
         for (let index = 0; index < uris.length - 1; index += 1) {
           yield* recordMemoryRelocation(fixture.config, {
             fromContent: content,
-            fromUri: uris[index]!,
+            fromUri: uris[index],
             toContent: content,
-            toUri: uris[index + 1]!,
+            toUri: uris[index + 1],
           });
         }
         for (const uri of uris.slice(0, -1)) yield* fixture.store.remove(fixture.location, uri);
-        const tooDeep = yield* readMemoryWithRelocations(fixture.config, uris[0]!).pipe(Effect.exit);
+        const tooDeep = yield* readMemoryWithRelocations(fixture.config, uris[0]).pipe(Effect.exit);
         expect(Exit.isFailure(tooDeep)).toBe(true);
         if (Exit.isFailure(tooDeep)) expect(String(tooDeep.cause)).toContain('maximum depth');
 
@@ -267,18 +267,18 @@ describe('private memory relocation receipts', () => {
           yield* loopFixture.store.write(loopFixture.location, uri, content, {mode: 'create'});
         yield* recordMemoryRelocation(loopFixture.config, {
           fromContent: content,
-          fromUri: loopUris[0]!,
+          fromUri: loopUris[0],
           toContent: content,
-          toUri: loopUris[1]!,
+          toUri: loopUris[1],
         });
         yield* recordMemoryRelocation(loopFixture.config, {
           fromContent: content,
-          fromUri: loopUris[1]!,
+          fromUri: loopUris[1],
           toContent: content,
-          toUri: loopUris[0]!,
+          toUri: loopUris[0],
         });
         for (const uri of loopUris) yield* loopFixture.store.remove(loopFixture.location, uri);
-        const loop = yield* readMemoryWithRelocations(loopFixture.config, loopUris[0]!).pipe(Effect.exit);
+        const loop = yield* readMemoryWithRelocations(loopFixture.config, loopUris[0]).pipe(Effect.exit);
         expect(Exit.isFailure(loop)).toBe(true);
         if (Exit.isFailure(loop)) {
           expect(String(loop.cause)).toContain(MemoryRelocationError.name);

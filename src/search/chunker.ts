@@ -78,9 +78,9 @@ function markdownSections(source: string): readonly {readonly body: string; read
       continue;
     }
     flush();
-    const level = match[1]!.length;
+    const level = match[1].length;
     headingStack.splice(level - 1);
-    headingStack[level - 1] = match[2]!.trim();
+    headingStack[level - 1] = match[2].trim();
   }
   flush();
   return sections.length > 0 ? sections : [{body: source, heading: ''}];
@@ -112,7 +112,7 @@ function splitWithOverlap(source: string, maximum: number, overlap: number): rea
 
 function skipWhitespace(source: string, index: number): number {
   let current = index;
-  while (current < source.length && /\s/.test(source[current]!)) current += 1;
+  while (current < source.length && /\s/.test(source[current])) current += 1;
   return current;
 }
 

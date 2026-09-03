@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {syncDirectoryBestEffort, syncWritableFile} from '../effect/file_durability.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
@@ -214,7 +214,7 @@ export function selectCodeGraphLifecycleOpportunityTarget(
         (target.anchorIdentity !== undefined || target.anchorPath !== undefined),
     ) ?? ordered[0])[1];
   }
-  return (ordered.find(([key]) => compareCodeUnits(key, cursor) > 0) ?? ordered[0])![1];
+  return (ordered.find(([key]) => compareCodeUnits(key, cursor) > 0) ?? ordered[0])[1];
 }
 
 /** @internal Plan one deterministic bounded ring without deriving deletion authority. */
@@ -349,7 +349,8 @@ const writePersistedLifecycleOpportunityCursor = Effect.fn('codeGraph.writeLifec
 
 function decodePersistedLifecycleOpportunityCursor(content: string): PersistedLifecycleOpportunityCursor | undefined {
   try {
-    const parsed = JSON.parse(content) as Partial<PersistedLifecycleOpportunityCursor>;
+    const parsed: unknown = JSON.parse(content);
+    if (!Predicate.isObject(parsed)) return undefined;
     if (
       parsed.schemaVersion !== LIFECYCLE_OPPORTUNITY_CURSOR_SCHEMA_VERSION ||
       typeof parsed.checkoutId !== 'string' ||
@@ -393,7 +394,7 @@ function rememberOpportunityCursor(cursors: Map<string, string>, key: string, cu
   cursors.delete(key);
   cursors.set(key, cursor);
   while (cursors.size > LIFECYCLE_OPPORTUNITY_CURSOR_LIMIT) {
-    const oldest = cursors.keys().next().value as string | undefined;
+    const oldest = cursors.keys().next().value;
     if (oldest === undefined) break;
     cursors.delete(oldest);
   }

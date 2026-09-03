@@ -1,4 +1,4 @@
-import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {RECALL_RANKER_VERSION} from './rank.js';
@@ -178,14 +178,15 @@ function parseFeedbackEvent(line: string): RecallFeedbackEvent | undefined {
   }
   const value = Option.getOrUndefined(Option.liftThrowable((content: string): unknown => JSON.parse(content))(line));
   if (
-    typeof value !== 'object' ||
-    value === null ||
+    !Predicate.isObject(value) ||
     !('version' in value) ||
     value.version !== 1 ||
     !('action' in value) ||
     !isFeedbackAction(value.action) ||
     !('queryFingerprint' in value) ||
     typeof value.queryFingerprint !== 'string' ||
+    !('rankerVersion' in value) ||
+    typeof value.rankerVersion !== 'string' ||
     !('timestamp' in value) ||
     typeof value.timestamp !== 'string' ||
     !('uri' in value) ||
@@ -193,7 +194,15 @@ function parseFeedbackEvent(line: string): RecallFeedbackEvent | undefined {
   ) {
     return undefined;
   }
-  return value as RecallFeedbackEvent;
+  return {
+    action: value.action,
+    ...(typeof value.project === 'string' ? {project: value.project} : {}),
+    queryFingerprint: value.queryFingerprint,
+    rankerVersion: value.rankerVersion,
+    timestamp: value.timestamp,
+    uri: value.uri,
+    version: 1,
+  };
 }
 
 function isFeedbackAction(value: unknown): value is RecallFeedbackAction {

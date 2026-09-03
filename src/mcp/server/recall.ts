@@ -1,5 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
-import {Clock, Crypto, Effect, FileSystem, Option, Result} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Predicate, Result} from 'effect';
 import {inferProjectFromQuery, inferWorksetFromQuery, requireWorkset} from '../../manifest.js';
 import type {ProjectManifest} from '../../types.js';
 import {
@@ -373,7 +373,7 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
             );
           }
           if (candidate.state === 'applying' && candidate.applyTargetUri) {
-            const [appliedRecord] = yield* readMemoryRecordsByUri(config, [candidate?.applyTargetUri as string]);
+            const [appliedRecord] = yield* readMemoryRecordsByUri(config, [candidate?.applyTargetUri]);
             if (appliedRecord?.metadata.candidateId === candidate.candidateId) {
               if (
                 !candidate.applyContentHash ||
@@ -806,7 +806,7 @@ export function registerSearchTool(
       const scopedUri =
         checkedUri.value ??
         selectedShare?.root ??
-        (memoryScope?.shares.length === 1 ? memoryScope.shares[0]!.root : undefined);
+        (memoryScope?.shares.length === 1 ? memoryScope.shares[0].root : undefined);
       if (scopedUri && memoryScope && !cursorCloudUriWithinScope(memoryScope, scopedUri)) {
         return argumentError(`${name} uri must stay within a configured Personal Cursor Cloud share.`);
       }
@@ -1415,7 +1415,7 @@ export function registerReadTool(
           : [];
         const syncTeams =
           memoryScope && requestedShares.every(share => share !== undefined)
-            ? [...new Set(requestedShares.map(share => share!.team))]
+            ? [...new Set(requestedShares.map(share => share.team))]
             : undefined;
         const syncWarnings: string[] = [];
         const syncedTeams = yield* syncCursorCloudMemoryShares(config, memoryScope, syncTeams).pipe(
@@ -1561,12 +1561,8 @@ function canonicalReadMetadata(result: CallToolResult):
     }
   | undefined {
   const value = result._meta?.['threadnote.io/canonical-read'];
-  if (typeof value !== 'object' || value === null) return undefined;
-  const candidate = value as {
-    readonly resources?: unknown;
-    readonly type?: unknown;
-    readonly version?: unknown;
-  };
+  if (!Predicate.isObject(value)) return undefined;
+  const candidate = value;
   if (
     candidate.type !== 'threadnote-canonical-read' ||
     candidate.version !== 1 ||
@@ -1574,14 +1570,14 @@ function canonicalReadMetadata(result: CallToolResult):
   ) {
     return undefined;
   }
-  const resources = candidate.resources.map(resource => {
-    if (typeof resource !== 'object' || resource === null) return undefined;
-    const entry = resource as {
-      readonly canonicalUri?: unknown;
-      readonly contentIndex?: unknown;
-      readonly requestedUri?: unknown;
-      readonly uri?: unknown;
-    };
+  const resources: {
+    canonicalUri: string;
+    contentIndex: number;
+    requestedUri: string;
+  }[] = [];
+  for (const resource of candidate.resources) {
+    if (!Predicate.isObject(resource)) return undefined;
+    const entry = resource;
     const requestedUri =
       typeof entry.requestedUri === 'string'
         ? entry.requestedUri
@@ -1589,13 +1585,17 @@ function canonicalReadMetadata(result: CallToolResult):
           ? entry.uri
           : undefined;
     const canonicalUri = typeof entry.canonicalUri === 'string' ? entry.canonicalUri : requestedUri;
-    return Number.isSafeInteger(entry.contentIndex) && requestedUri && canonicalUri
-      ? {canonicalUri, contentIndex: entry.contentIndex as number, requestedUri}
-      : undefined;
-  });
-  return resources.every(resource => resource !== undefined)
-    ? {resources: resources as readonly {canonicalUri: string; contentIndex: number; requestedUri: string}[]}
-    : undefined;
+    if (
+      typeof entry.contentIndex !== 'number' ||
+      !Number.isSafeInteger(entry.contentIndex) ||
+      !requestedUri ||
+      !canonicalUri
+    ) {
+      return undefined;
+    }
+    resources.push({canonicalUri, contentIndex: entry.contentIndex, requestedUri});
+  }
+  return {resources};
 }
 
 function sessionCloseoutHasCandidateMaterial(input: SessionCloseoutInput): boolean {
@@ -1662,6 +1662,14 @@ function scrubSessionCloseout(
     return result;
   };
   try {
+    const outcome = scrubbedScalars.get('outcome');
+    const project = scrubbedScalars.get('project');
+    const sourceAgentClient = scrubbedScalars.get('sourceAgentClient');
+    const task = scrubbedScalars.get('task');
+    const topic = scrubbedScalars.get('topic');
+    if (!outcome || !project || !sourceAgentClient || !task || !topic) {
+      return {error: 'Refusing session review: a required scalar was unexpectedly absent after scrubbing.', ok: false};
+    }
     return {
       input: {
         codeCitations: input.codeCitations,
@@ -1669,14 +1677,14 @@ function scrubSessionCloseout(
         evidence: scrubList('evidence', input.evidence),
         handoff: scrubList('handoff', input.handoff),
         invariants: scrubList('invariants', input.invariants),
-        outcome: scrubbedScalars.get('outcome') as string,
+        outcome,
         preferences: scrubList('preferences', input.preferences),
-        project: scrubbedScalars.get('project') as string,
-        sourceAgentClient: scrubbedScalars.get('sourceAgentClient') as string,
+        project,
+        sourceAgentClient,
         sourceCommit: scrubbedScalars.get('sourceCommit'),
         sourceSessionId: scrubbedScalars.get('sourceSessionId'),
-        task: scrubbedScalars.get('task') as string,
-        topic: scrubbedScalars.get('topic') as string,
+        task,
+        topic,
       },
       ok: true,
     };
@@ -1759,7 +1767,8 @@ function replacementCleanupIsPending(result: CallToolResult): boolean {
 }
 
 function reviewedCandidateTargetIsCurrent(config: RuntimeConfig, candidate: MemoryCandidate) {
-  if (!candidate.targetUri || !candidate.targetContentHash) {
+  const targetUri = candidate.targetUri;
+  if (!targetUri || !candidate.targetContentHash) {
     return Effect.succeed(false);
   }
   return Effect.gen(function* () {
@@ -1767,9 +1776,9 @@ function reviewedCandidateTargetIsCurrent(config: RuntimeConfig, candidate: Memo
     return yield* withMemoryUriLocks(
       fs,
       config.agentContextHome,
-      [candidate.targetUri],
+      [targetUri],
       Effect.gen(function* () {
-        const [target] = yield* readMemoryRecordsByUri(config, [candidate.targetUri as string]);
+        const [target] = yield* readMemoryRecordsByUri(config, [targetUri]);
         return (
           target !== undefined &&
           (yield* sha256Hex(canonicalMemoryDocumentContent(target.content))) === candidate.targetContentHash
@@ -1802,12 +1811,9 @@ function persistCandidateConflict(
 }
 
 function reconcileCandidateReplacementCleanup(config: RuntimeConfig, candidate: MemoryCandidate) {
-  if (
-    candidate.applyOperation !== 'replace' ||
-    !candidate.applyReplaceUri ||
-    !candidate.applyTargetUri ||
-    candidate.applyReplaceUri === candidate.applyTargetUri
-  ) {
+  const replacementUri = candidate.applyReplaceUri;
+  const targetUri = candidate.applyTargetUri;
+  if (candidate.applyOperation !== 'replace' || !replacementUri || !targetUri || replacementUri === targetUri) {
     return Effect.succeed('complete');
   }
   return Effect.gen(function* () {
@@ -1815,9 +1821,9 @@ function reconcileCandidateReplacementCleanup(config: RuntimeConfig, candidate: 
     return yield* withMemoryUriLocks(
       fs,
       config.agentContextHome,
-      [candidate.applyReplaceUri, candidate.applyTargetUri],
+      [replacementUri, targetUri],
       Effect.gen(function* () {
-        const [currentTarget] = yield* readMemoryRecordsByUri(config, [candidate.applyReplaceUri as string]);
+        const [currentTarget] = yield* readMemoryRecordsByUri(config, [replacementUri]);
         if (!currentTarget) {
           return 'complete' as const;
         }
@@ -1827,15 +1833,11 @@ function reconcileCandidateReplacementCleanup(config: RuntimeConfig, candidate: 
         ) {
           return 'conflict' as const;
         }
-        const removed = yield* removeResourceWithRetry(
-          'threadnote-native',
-          config,
-          candidate.applyReplaceUri as string,
-        );
+        const removed = yield* removeResourceWithRetry('threadnote-native', config, replacementUri);
         if (!removed) {
           return 'pending' as const;
         }
-        const stillExists = yield* resourceExists('threadnote-native', config, candidate.applyReplaceUri as string);
+        const stillExists = yield* resourceExists('threadnote-native', config, replacementUri);
         return stillExists ? ('pending' as const) : ('complete' as const);
       }),
     );

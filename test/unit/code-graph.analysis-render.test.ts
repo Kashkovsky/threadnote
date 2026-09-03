@@ -95,7 +95,7 @@ describe('code graph analysis rendering', () => {
         analysisSymbol(`node-${index}`, '@acme/partial', `src/${index}.ts`),
       );
       const edges = symbols.map((symbol, index) =>
-        analysisEdge(`edge-${index}`, symbol, symbols[(index + 1) % symbols.length]!),
+        analysisEdge(`edge-${index}`, symbol, symbols[(index + 1) % symbols.length]),
       );
       const result = yield* analyzeCodeGraph(pagedAnalysisStore(symbols, edges), {
         budget: {maxEdges: 2, maxEdgeVisits: 2, maxNodes: 3, pageSize: 2},

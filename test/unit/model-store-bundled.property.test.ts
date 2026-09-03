@@ -67,7 +67,7 @@ describe('bundled model installation', () => {
             expect(yield* fs.exists(`${installed.path}.partial`)).toBe(false);
 
             const mutated = Uint8Array.from(bytes);
-            mutated[0] = mutated[0]! ^ 0xff;
+            mutated[0] = mutated[0] ^ 0xff;
             yield* fs.writeFile(source, mutated);
             const rejected = yield* store
               .install(invalidHome, manifest, {sourcePath: source, sourceUrl: 'embedded://threadnote/fixture.gguf'})

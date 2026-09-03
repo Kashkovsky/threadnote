@@ -168,7 +168,7 @@ export function contextBriefCodeAnchorTelemetryFields(
     ...(unresolved ? (['unresolved'] as const) : []),
     ...(truncated ? (['truncated'] as const) : []),
   ];
-  const gapClass = gapClasses.length === 0 ? 'none' : gapClasses.length === 1 ? gapClasses[0]! : 'mixed';
+  const gapClass = gapClasses.length === 0 ? 'none' : gapClasses.length === 1 ? gapClasses[0] : 'mixed';
   return {
     contextBriefCodeAnchorCoverage: resolutionUnavailable ? 'unavailable' : summary.complete ? 'complete' : 'partial',
     contextBriefCodeAnchorGap: gapClass !== 'none',

@@ -35,7 +35,9 @@ export interface HttpDownloadOptions extends HttpGetOptions {
   readonly offset?: number;
 }
 
-const dynamicFetch = ((input, init) => globalThis.fetch(input, init)) as typeof globalThis.fetch;
+const dynamicFetch = Object.assign((...args: Parameters<typeof globalThis.fetch>) => globalThis.fetch(...args), {
+  preconnect: (...args: Parameters<typeof globalThis.fetch.preconnect>) => globalThis.fetch.preconnect(...args),
+}) satisfies typeof globalThis.fetch;
 
 export interface HttpServiceShape {
   readonly downloadToFile: (

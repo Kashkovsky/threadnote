@@ -143,7 +143,7 @@ interface NativeEmbeddingPolicy {
 }
 
 const loadInstalledNodeLlamaCpp = async (moduleSpecifier: string = 'node-llama-cpp'): Promise<NodeLlamaCppModule> =>
-  (await import(moduleSpecifier)) as unknown as NodeLlamaCppModule;
+  await import(moduleSpecifier);
 
 export function nodeLlamaCppEngineLayer(
   options: NodeLlamaCppLayerOptions & {
@@ -369,10 +369,14 @@ export function resolveNativeEmbeddingGpuLayers(options: {
 export function parseEmbeddingContextPoolSize(value: string | undefined): EmbeddingContextPoolSize {
   if (value === undefined || value.trim() === '') return 1;
   const parsed = Number(value);
-  if (!EMBEDDING_CONTEXT_POOL_SIZES.some(candidate => candidate === parsed)) {
+  if (!isEmbeddingContextPoolSize(parsed)) {
     throw new RangeError(`${THREADNOTE_EMBEDDING_CONTEXTS_ENV} must be one of 1, 2, 4, or 8.`);
   }
-  return parsed as EmbeddingContextPoolSize;
+  return parsed;
+}
+
+function isEmbeddingContextPoolSize(value: number): value is EmbeddingContextPoolSize {
+  return value === 1 || value === 2 || value === 4 || value === 8;
 }
 
 export function nativeEmbeddingContextPlan(options: {
@@ -571,7 +575,7 @@ async function embeddingForInput(
 ): Promise<NativeEmbedding> {
   const windows = embeddingInputWindows(model, input, contextSize);
   if (windows.length === 1) {
-    return context.getEmbeddingFor(windows[0]!.text);
+    return context.getEmbeddingFor(windows[0].text);
   }
   const embeddings: NativeEmbedding[] = [];
   for (const window of windows) {
@@ -581,7 +585,7 @@ async function embeddingForInput(
   const pooled = new Array<number>(dimensions).fill(0);
   let totalWeight = 0;
   for (const [index, embedding] of embeddings.entries()) {
-    const weight = windows[index]!.weight;
+    const weight = windows[index].weight;
     totalWeight += weight;
     for (let dimension = 0; dimension < dimensions; dimension += 1) {
       pooled[dimension] += (embedding.vector[dimension] ?? 0) * weight;
@@ -620,7 +624,7 @@ async function embedInputsWithContextPool(
       cursor += 1;
       if (index >= inputs.length) return;
       try {
-        embeddings[index] = await embeddingForInput(model, context, inputs[index]!, contextSize);
+        embeddings[index] = await embeddingForInput(model, context, inputs[index], contextSize);
       } catch (cause) {
         if (signal.aborted) {
           stopped = true;

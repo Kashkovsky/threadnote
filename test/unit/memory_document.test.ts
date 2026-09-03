@@ -83,8 +83,8 @@ describe('memory document contract', () => {
         topic: 'newline-compatibility',
       });
     }
-    expect(canonicalMemoryDocumentContent(variants[1]!)).not.toBe(canonicalMemoryDocumentContent(lf));
-    expect(canonicalMemoryDocumentContent(variants[2]!)).not.toBe(canonicalMemoryDocumentContent(lf));
+    expect(canonicalMemoryDocumentContent(variants[1])).not.toBe(canonicalMemoryDocumentContent(lf));
+    expect(canonicalMemoryDocumentContent(variants[2])).not.toBe(canonicalMemoryDocumentContent(lf));
   });
 
   it('round-trips authority, validity, provenance, evidence, and typed relations', () => {

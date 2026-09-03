@@ -107,8 +107,8 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
     }
 
     for (let index = 0; index < options.samples; index += 1) {
-      const incrementalSample = incremental[index]!;
-      const fullSample = full[index]!;
+      const incrementalSample = incremental[index];
+      const fullSample = full[index];
       if (
         incrementalSample.symbols !== fullSample.symbols ||
         incrementalSample.edges !== fullSample.edges ||
@@ -192,7 +192,7 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
               }
             : {}),
           materializationMilliseconds: fullMaterialization,
-          replay: full[0]!.replay,
+          replay: full[0].replay,
           stagedFiles: full[0]?.stagedFiles ?? 0,
         },
         incremental: {
@@ -206,7 +206,7 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
               }
             : {}),
           materializationMilliseconds: incrementalMaterialization,
-          replay: incremental[0]!.replay,
+          replay: incremental[0].replay,
           stagedFiles: incremental[0]?.stagedFiles ?? 0,
         },
         improvement: {
@@ -327,7 +327,7 @@ export function dirtyOverlayRatchetArtifact(input: {
       'incremental-duration-reduction',
       'percent',
       input.incremental.map((sample, index) =>
-        Math.max(0, percentReduction(input.full[index]!.durationMilliseconds, sample.durationMilliseconds)),
+        Math.max(0, percentReduction(input.full[index].durationMilliseconds, sample.durationMilliseconds)),
       ),
     ),
     benchmarkMeasurement(
@@ -336,7 +336,7 @@ export function dirtyOverlayRatchetArtifact(input: {
       input.incremental.map((sample, index) =>
         Math.max(
           0,
-          percentReduction(input.full[index]!.materializationMilliseconds, sample.materializationMilliseconds),
+          percentReduction(input.full[index].materializationMilliseconds, sample.materializationMilliseconds),
         ),
       ),
     ),
@@ -673,7 +673,7 @@ export function parseDirtyOverlayBenchmarkArguments(args: readonly string[]): Di
   let scenario: DirtyOverlayBenchmarkScenario = 'body-only';
   let scaleSymbols = 10_000;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--governed') governed = true;
     else if (argument === '--minimum-free-gib') minimumFreeGiB = integer(args[++index], argument, 1);
     else if (argument === '--output') outputPath = required(args[++index], argument);

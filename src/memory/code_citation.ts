@@ -1,3 +1,4 @@
+import {Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 
 export const MEMORY_SCHEMA_VERSION = 4 as const;
@@ -252,7 +253,7 @@ export function parseMemoryCodeCitation(value: string): MemoryCodeCitationParseR
   } catch {
     return {error: {reason: 'invalid-json'}, ok: false};
   }
-  if (isRecord(parsed) && hasOwn(parsed, 'version') && parsed.version !== MEMORY_CODE_CITATION_VERSION) {
+  if (isPlainObject(parsed) && hasOwn(parsed, 'version') && parsed.version !== MEMORY_CODE_CITATION_VERSION) {
     return {error: {reason: 'unsupported-version'}, ok: false};
   }
   try {
@@ -499,13 +500,13 @@ function assertExactKeys(record: Record<string, unknown>, expected: readonly str
 }
 
 function requiredRecord(value: unknown): Record<string, unknown> {
-  if (!isRecord(value)) throw citationError('invalid-shape');
+  if (!isPlainObject(value)) throw citationError('invalid-shape');
   return value;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value) as unknown;
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!Predicate.isObject(value)) return false;
+  const prototype = Reflect.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 
@@ -554,10 +555,10 @@ function repositoryPath(value: unknown): string {
 }
 
 function boundedInteger(value: unknown, minimum: number): number {
-  if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > 1_000_000_000) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > 1_000_000_000) {
     throw citationError('invalid-shape');
   }
-  return value as number;
+  return value;
 }
 
 function invalidShape(): never {

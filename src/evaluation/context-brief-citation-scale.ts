@@ -650,8 +650,8 @@ function scaleGraphEvidence(prepared: ContextBriefCitationScalePreparedProfile):
       prepared.generation === undefined
         ? {
             kind: 'repository',
-            repositoryId: prepared.repositories[0]!.repositoryId,
-            snapshotId: prepared.repositories[0]!.snapshotId,
+            repositoryId: prepared.repositories[0].repositoryId,
+            snapshotId: prepared.repositories[0].snapshotId,
           }
         : {generation: prepared.generation, kind: 'workset', workset: prepared.workset!.name},
     contracts: [],
@@ -671,7 +671,7 @@ function scaleGraphEvidence(prepared: ContextBriefCitationScalePreparedProfile):
 
 function profileScope(prepared: ContextBriefCitationScalePreparedProfile): ContextBriefScopeV1 {
   return prepared.profile.id === 'local-100k'
-    ? {callerCwd: prepared.repositories[0]!.root, kind: 'repository', project: contextBriefCitationScaleProject()}
+    ? {callerCwd: prepared.repositories[0].root, kind: 'repository', project: contextBriefCitationScaleProject()}
     : {kind: 'workset', name: prepared.workset!.name, project: contextBriefCitationScaleProject()};
 }
 

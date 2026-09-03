@@ -81,11 +81,11 @@ function extractFortran(facts: MutableTextFacts): void {
     }
     const owner = scopes.at(-1)!;
     const used = /^use(?:\s*,[^:]*)?\s*(?:::\s*)?([A-Za-z_]\w*)/i.exec(source);
-    if (used) addReference(facts, owner, used[1]!.toLowerCase(), 'imports', 'declared', line.start, line.end);
+    if (used) addReference(facts, owner, used[1].toLowerCase(), 'imports', 'declared', line.start, line.end);
     const included = /^include\s*["']([^"']+)["']/i.exec(source);
-    if (included) addReference(facts, owner, included[1]!, 'imports', 'declared', line.start, line.end);
+    if (included) addReference(facts, owner, included[1], 'imports', 'declared', line.start, line.end);
     for (const call of source.matchAll(/\bcall\s+([A-Za-z_]\w*)/gi)) {
-      addReference(facts, owner, call[1]!.toLowerCase(), 'calls', 'syntactic', line.start, line.end);
+      addReference(facts, owner, call[1].toLowerCase(), 'calls', 'syntactic', line.start, line.end);
     }
   }
   addBoundDiagnostic(facts);
@@ -95,22 +95,22 @@ function fortranDeclaration(
   source: string,
 ): {readonly kind: string; readonly name: string; readonly scoped: boolean} | undefined {
   const program = /^program\s+([A-Za-z_]\w*)/i.exec(source);
-  if (program) return {kind: 'program', name: program[1]!, scoped: true};
+  if (program) return {kind: 'program', name: program[1], scoped: true};
   const submodule = /^submodule\s*\([^)]*\)\s*([A-Za-z_]\w*)/i.exec(source);
-  if (submodule) return {kind: 'submodule', name: submodule[1]!, scoped: true};
+  if (submodule) return {kind: 'submodule', name: submodule[1], scoped: true};
   const module = /^module\s+(?!procedure\b)([A-Za-z_]\w*)/i.exec(source);
-  if (module) return {kind: 'module', name: module[1]!, scoped: true};
+  if (module) return {kind: 'module', name: module[1], scoped: true};
   const subroutine = /^(?:(?:pure|elemental|recursive|impure|module)\s+)*subroutine\s+([A-Za-z_]\w*)/i.exec(source);
-  if (subroutine) return {kind: 'subroutine', name: subroutine[1]!, scoped: true};
+  if (subroutine) return {kind: 'subroutine', name: subroutine[1], scoped: true};
   const fn =
     /^(?:(?:pure|elemental|recursive|impure|module)\s+)*(?:(?:integer|real|logical|character|complex|double\s+precision|type\s*\([^)]*\)|class\s*\([^)]*\))(?:\s*\([^)]*\)|\s*,[^:]*)?\s+)?function\s+([A-Za-z_]\w*)/i.exec(
       source,
     );
-  if (fn) return {kind: 'function', name: fn[1]!, scoped: true};
+  if (fn) return {kind: 'function', name: fn[1], scoped: true};
   const type = /^type\s*(?:,[^:]*)?::\s*([A-Za-z_]\w*)/i.exec(source);
-  if (type) return {kind: 'type', name: type[1]!, scoped: true};
+  if (type) return {kind: 'type', name: type[1], scoped: true};
   const namedInterface = /^interface\s+([A-Za-z_]\w*)/i.exec(source);
-  if (namedInterface) return {kind: 'interface', name: namedInterface[1]!, scoped: true};
+  if (namedInterface) return {kind: 'interface', name: namedInterface[1], scoped: true};
   return undefined;
 }
 
@@ -129,19 +129,19 @@ function extractApex(facts: MutableTextFacts): void {
         source,
       );
     if (trigger) {
-      declaredScope = addDeclaration(facts, parent, 'trigger', trigger[1]!, line.start, line.end, true);
-      addReference(facts, declaredScope, trigger[2]!, 'references', 'syntactic', line.start, line.end);
+      declaredScope = addDeclaration(facts, parent, 'trigger', trigger[1], line.start, line.end, true);
+      addReference(facts, declaredScope, trigger[2], 'references', 'syntactic', line.start, line.end);
     } else if (type) {
       declaredScope = addDeclaration(
         facts,
         parent,
-        type[1]!.toLowerCase(),
-        type[2]!,
+        type[1].toLowerCase(),
+        type[2],
         line.start,
         line.end,
         !/\bprivate\b/i.test(source),
       );
-      if (type[3]) addReference(facts, declaredScope, type[3]!, 'extends', 'syntactic', line.start, line.end);
+      if (type[3]) addReference(facts, declaredScope, type[3], 'extends', 'syntactic', line.start, line.end);
       for (const implemented of (type[4] ?? '')
         .split(',')
         .map(value => value.trim())
@@ -153,13 +153,13 @@ function extractApex(facts: MutableTextFacts): void {
         /^(?:(?:@[A-Za-z_]\w*(?:\([^)]*\))?\s*)*)(?:(?:public|private|protected|global|webservice|static|abstract|virtual|override|final|testmethod)\s+)+[A-Za-z_][\w<>[\],.]*\s+([A-Za-z_]\w*)\s*\([^)]*\)/i.exec(
           source,
         );
-      if (method && !APEX_CONTROL_WORDS.has(method[1]!.toLowerCase())) {
-        addDeclaration(facts, parent, 'method', method[1]!, line.start, line.end, !/\bprivate\b/i.test(source));
+      if (method && !APEX_CONTROL_WORDS.has(method[1].toLowerCase())) {
+        addDeclaration(facts, parent, 'method', method[1], line.start, line.end, !/\bprivate\b/i.test(source));
       }
     }
     const owner = declaredScope ?? parent;
     for (const query of source.matchAll(/\[\s*select\b[^\]]*?\bfrom\s+([A-Za-z_]\w*)/gi)) {
-      addReference(facts, owner, query[1]!, 'references', 'syntactic', line.start, line.end);
+      addReference(facts, owner, query[1], 'references', 'syntactic', line.start, line.end);
     }
     const opens = countCharacterOutsideStrings(source, '{');
     const closes = countCharacterOutsideStrings(source, '}');
@@ -178,16 +178,16 @@ function extractRazor(facts: MutableTextFacts): void {
     if (directive) {
       const relation: CodeGraphRelation =
         directive[1] === 'inherits' ? 'extends' : directive[1] === 'model' ? 'references' : 'imports';
-      addReference(facts, facts.module, directive[2]!, relation, 'declared', line.start, line.end);
+      addReference(facts, facts.module, directive[2], relation, 'declared', line.start, line.end);
     }
     const page = /^\s*@page\s+["']([^"']+)["']/.exec(line.text);
-    if (page) addDeclaration(facts, facts.module, 'route', page[1]!, line.start, line.end, true);
+    if (page) addDeclaration(facts, facts.module, 'route', page[1], line.start, line.end, true);
   }
   const component = /<([A-Z][A-Za-z0-9_.]*)(?=[\s/>])/g;
   for (const match of content.matchAll(component)) {
-    if (RAZOR_HTML_TAGS.has(match[1]!)) continue;
+    if (RAZOR_HTML_TAGS.has(match[1])) continue;
     const start = match.index ?? 0;
-    addReference(facts, facts.module, match[1]!, 'constructs', 'syntactic', start, start + match[0].length);
+    addReference(facts, facts.module, match[1], 'constructs', 'syntactic', start, start + match[0].length);
   }
   for (const block of razorCodeBlocks(content)) {
     const method =
@@ -198,7 +198,7 @@ function extractRazor(facts: MutableTextFacts): void {
         facts,
         facts.module,
         'method',
-        match[1]!,
+        match[1],
         start,
         start + match[0].length,
         !/\bprivate\b/.test(match[0]),
@@ -241,7 +241,7 @@ function razorCodeBlocks(content: string): readonly {readonly content: string; r
     let escaped = false;
     let position = start;
     for (; position < content.length && depth > 0; position += 1) {
-      const character = content[position]!;
+      const character = content[position];
       if (quote) {
         if (escaped) escaped = false;
         else if (character === '\\') escaped = true;
@@ -459,7 +459,7 @@ function lineTerminatorWidth(content: string, offset: number): number {
 function stripLineComment(value: string, marker: string): string {
   let quote = '';
   for (let index = 0; index < value.length; index += 1) {
-    const character = value[index]!;
+    const character = value[index];
     if (quote) {
       if (character === quote && value[index + 1] === quote) index += 1;
       else if (character === quote) quote = '';
@@ -474,7 +474,7 @@ function stripCStyleComments(value: string): string {
   let quote = '';
   let escaped = false;
   for (let index = 0; index < value.length; index += 1) {
-    const character = value[index]!;
+    const character = value[index];
     const next = value[index + 1];
     if (quote) {
       output += character;

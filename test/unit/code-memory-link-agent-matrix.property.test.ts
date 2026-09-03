@@ -47,7 +47,7 @@ describe('Code Memory Link sequential matrix', () => {
         (left, compressedRight) => {
           const right = compressedRight >= left ? compressedRight + 1 : compressedRight;
           const runs = [...plan.runs];
-          [runs[left], runs[right]] = [runs[right]!, runs[left]!];
+          [runs[left], runs[right]] = [runs[right], runs[left]];
           expect(() => parseCalibrationPlan({...plan, runs})).toThrow('canonical non-outcome-dependent order');
         },
       ),
@@ -62,8 +62,8 @@ describe('Code Memory Link sequential matrix', () => {
         const bounded = diagnostics.slice(0, plan.runs.length);
         const results = bounded.reduce<ReturnType<typeof createCalibrationResult>[]>(
           (prior, diagnosticsHash, index) => {
-            const previousResultDigest = index === 0 ? null : calibrationResultDigest(prior[index - 1]!);
-            const run = plan.runs[index]!;
+            const previousResultDigest = index === 0 ? null : calibrationResultDigest(prior[index - 1]);
+            const run = plan.runs[index];
             prior.push(
               createCalibrationResult(
                 plan,
@@ -240,7 +240,7 @@ describe('Code Memory Link sequential matrix', () => {
       expect(await readFile(join(sandbox, 'calibration/plan.json'), 'utf8')).not.toContain(
         'release-private-rubric-sentinel',
       );
-      const firstFixture = assembly.plan.fixtureFiles[0]!;
+      const firstFixture = assembly.plan.fixtureFiles[0];
       expect(await readFile(join(sandbox, firstFixture.source), 'utf8')).toBe(
         await readFile(join(preparedRoot, firstFixture.source), 'utf8'),
       );
@@ -330,9 +330,9 @@ function preparedClient(): CodeMemoryLinkPreparedClientV1 {
     configurationHash: '7'.repeat(64),
     configurationProjectionHash: '8'.repeat(64),
     dependenciesLockHash: '9'.repeat(64),
-    entrypointHash: artifactBindings[1]!.sha256,
+    entrypointHash: artifactBindings[1].sha256,
     environmentPolicyHash: 'a'.repeat(64),
-    executionBundleHash: artifactBindings[0]!.sha256,
+    executionBundleHash: artifactBindings[0].sha256,
     expectedClientProjectionHash: 'b'.repeat(64),
     version: 2 as const,
   };

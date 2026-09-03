@@ -428,7 +428,7 @@ function readLocalAdjacencyPage(
       );
       const selected: Array<{readonly edge: CodeGraphCrossRepositoryLocalEdgeV1; readonly rawIndex: number}> = [];
       for (let index = offset; index < rows.length && selected.length < limit; index += 1) {
-        const edge = localTraversalEdge(member.published, rows[index]!, nodeId, direction);
+        const edge = localTraversalEdge(member.published, rows[index], nodeId, direction);
         if (edge !== undefined) selected.push({edge, rawIndex: index});
       }
       const lastRawIndex = selected.at(-1)?.rawIndex;
@@ -484,7 +484,7 @@ function localTraversalEdge(
     edge.sourceId === undefined ||
     edge.targetId === undefined ||
     (direction === 'outgoing' ? edge.sourceId !== nodeId : edge.targetId !== nodeId) ||
-    !['declared', 'resolved', 'syntactic'].includes(edge.provenance)
+    !isEdgeProvenance(edge.provenance)
   ) {
     return undefined;
   }
@@ -500,11 +500,15 @@ function localTraversalEdge(
   return {
     confidence: edge.confidence,
     id: edge.id,
-    provenance: edge.provenance as 'declared' | 'resolved' | 'syntactic',
+    provenance: edge.provenance,
     relation: edge.relation,
     source: endpoint(edge.sourceId),
     target: endpoint(edge.targetId),
   };
+}
+
+function isEdgeProvenance(value: string): value is 'declared' | 'resolved' | 'syntactic' {
+  return value === 'declared' || value === 'resolved' || value === 'syntactic';
 }
 
 function edgeNodeId(ref: string, repositoryId: string, rows: readonly CodeGraphEdge[]): string | undefined {
@@ -542,7 +546,7 @@ function resolveTraversalEndpoint(config: RuntimeConfig, runtime: PreparedRuntim
           'A component selector in a multi-repository workset must use <repository>:<cgp_...>.',
         );
       }
-      return traversalEndpoint(runtime.published.members[0]!, {componentId: normalized, kind: 'component'});
+      return traversalEndpoint(runtime.published.members[0], {componentId: normalized, kind: 'component'});
     }
     const marker = normalized.lastIndexOf(':cgp_');
     if (marker > 0) {

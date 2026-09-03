@@ -271,7 +271,7 @@ describe('code graph workset ranked-sequence observation mapping', () => {
       },
     } as unknown as MeasuredCodeGraphWorksetQuery;
 
-    const observation = codeGraphWorksetObservationFromQuery(fixture, 1, 'sample-1', fixture.queries[0]!.id, measured);
+    const observation = codeGraphWorksetObservationFromQuery(fixture, 1, 'sample-1', fixture.queries[0].id, measured);
 
     expect(observation.symbolHits).toEqual([
       {repositoryId: 'repo-000', symbol: 'src/source.ts#sourceSymbol'},

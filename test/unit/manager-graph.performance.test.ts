@@ -58,14 +58,14 @@ describe('Manager graph production-shaped budgets', () => {
       x: (index % 25) * 12,
       y: Math.floor(index / 25) * 12,
     }));
-    const edges = nodes.slice(1).map(node => ({sourceId: nodes[0]!.id, targetId: node.id}));
+    const edges = nodes.slice(1).map(node => ({sourceId: nodes[0].id, targetId: node.id}));
     const labelSizes = new Map(nodes.map(node => [node.id, {height: 15, width: 120}]));
-    graphFocusLayoutTargets(nodes, nodes[0]!.id, edges, labelSizes, 2.8);
+    graphFocusLayoutTargets(nodes, nodes[0].id, edges, labelSizes, 2.8);
 
     const startedAt = performance.now();
-    let result = graphFocusLayoutTargets(nodes, nodes[0]!.id, edges, labelSizes, 2.8);
+    let result = graphFocusLayoutTargets(nodes, nodes[0].id, edges, labelSizes, 2.8);
     for (let iteration = 1; iteration < 5; iteration += 1) {
-      result = graphFocusLayoutTargets(nodes, nodes[0]!.id, edges, labelSizes, 2.8);
+      result = graphFocusLayoutTargets(nodes, nodes[0].id, edges, labelSizes, 2.8);
     }
     const elapsedMilliseconds = performance.now() - startedAt;
 
@@ -96,8 +96,8 @@ function maximumGraphFixture(): GraphQueryVisualization {
     id: `cge_${index.toString().padStart(5, '0')}`,
     provenance: 'resolved',
     relation: index % 2 === 0 ? 'calls' : 'imports',
-    sourceId: nodes[index % nodes.length]!.id,
-    targetId: nodes[(index * 17 + 1) % nodes.length]!.id,
+    sourceId: nodes[index % nodes.length].id,
+    targetId: nodes[(index * 17 + 1) % nodes.length].id,
   }));
   return {
     edges,

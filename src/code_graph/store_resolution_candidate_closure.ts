@@ -390,13 +390,13 @@ export function resolutionCandidateLookupKeyClosure(
   const aliasIdentities = new Set<string>();
   const expandedReexports = new Set<number>();
   for (let offset = 0; offset < queue.length; offset += 1) {
-    const current = queue[offset]!;
+    const current = queue[offset];
     for (const reexportIndex of reexportsByCandidate.get(
       resolutionLookupKeyIdentity(current.resolutionDomain, current.key),
     ) ?? []) {
       if (expandedReexports.has(reexportIndex)) continue;
       expandedReexports.add(reexportIndex);
-      for (const [identity, alias] of aliasesByReexport[reexportIndex]!) {
+      for (const [identity, alias] of aliasesByReexport[reexportIndex]) {
         if (keys.has(identity)) continue;
         keys.set(identity, alias);
         aliasIdentities.add(identity);
@@ -514,8 +514,8 @@ function createResolutionCandidateProjection(input: {
       recordHashes.push(new BigUint64Array(PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK));
       recordKinds.push(new Uint16Array(PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK));
     }
-    recordHashes[chunkIndex]![offset] = fingerprint;
-    recordKinds[chunkIndex]![offset] = kind;
+    recordHashes[chunkIndex][offset] = fingerprint;
+    recordKinds[chunkIndex][offset] = kind;
     records += 1;
   };
 
@@ -589,8 +589,8 @@ function createResolutionCandidateProjection(input: {
       for (let record = 0; record < records; record += 1) {
         const chunkIndex = Math.floor(record / PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK);
         const offset = record % PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK;
-        const fingerprint = recordHashes[chunkIndex]![offset]!;
-        const kind = recordKinds[chunkIndex]![offset]!;
+        const fingerprint = recordHashes[chunkIndex][offset];
+        const kind = recordKinds[chunkIndex][offset];
         if (kind === PROJECTION_SYMBOL_RECORD) {
           if (aliasFingerprints.has(fingerprint)) symbolConflictFingerprints.add(fingerprint);
         } else if (affectedFingerprints.has(fingerprint)) {

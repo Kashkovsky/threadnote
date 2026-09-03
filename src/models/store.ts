@@ -421,7 +421,7 @@ function mapStoreIoError(manifest: LocalModelManifest, operation: string) {
               operation,
             }),
       ),
-    ) as Effect.Effect<A, LocalModelStoreError, R>;
+    );
 }
 
 export function assertSufficientModelDiskSpace(

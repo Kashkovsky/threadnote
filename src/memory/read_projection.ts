@@ -133,7 +133,7 @@ export function projectMemoryReadPage(
     text:
       mode === 'outline' ? memoryMarkdownOutline(resource.text) : selectMemoryMarkdownSection(resource.text, section),
   }));
-  const resource = projectedResources[position.resourceIndex]!;
+  const resource = projectedResources[position.resourceIndex];
   if (position.characterOffset > resource.text.length) {
     throw new MemoryReadProjectionError('Memory read continuation position is stale.');
   }
@@ -273,7 +273,7 @@ function largestFittingMemoryReadPrefix(
   let selected = 0;
   while (lower <= upper) {
     const middle = Math.floor((lower + upper) / 2);
-    const end = boundaries[middle]!;
+    const end = boundaries[middle];
     const content = value.slice(start, end);
     const structuredContent = structuredContentFor(content);
     if (responseBytes(content, receipt, structuredContent) <= maximumBytes) {
@@ -283,7 +283,7 @@ function largestFittingMemoryReadPrefix(
       upper = middle - 1;
     }
   }
-  const end = boundaries[selected]!;
+  const end = boundaries[selected];
   return {end, text: value.slice(start, end)};
 }
 
@@ -328,7 +328,7 @@ export function selectMemoryMarkdownSection(content: string, section: string | u
     heading => heading.title === selector.title && (selector.level === undefined || heading.level === selector.level),
   );
   if (index < 0) throw new MemoryReadProjectionError(`Memory section "${section}" was not found.`);
-  const heading = headings[index]!;
+  const heading = headings[index];
   const next = headings.slice(index + 1).find(candidate => candidate.level <= heading.level);
   return content.slice(heading.start, next?.start ?? content.length);
 }
@@ -354,8 +354,9 @@ function markdownHeadings(content: string): MarkdownHeading[] {
       const opening = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
       const sequence = opening?.[1];
       const suffix = opening?.[2] ?? '';
-      if (sequence && (sequence[0] === '~' || !suffix.includes('`'))) {
-        fence = {character: sequence[0] as '`' | '~', length: sequence.length};
+      const character = sequence?.[0];
+      if (sequence && (character === '~' || (character === '`' && !suffix.includes('`')))) {
+        fence = {character, length: sequence.length};
       } else {
         const heading = /^ {0,3}(#{1,6})[\t ]+(.+?)[\t ]*#*[\t ]*$/u.exec(line);
         const hashes = heading?.[1];

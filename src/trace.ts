@@ -1,14 +1,10 @@
-import {Effect, FileSystem, Result, Stream} from 'effect';
+import {Effect, FileSystem, Predicate, Result, Stream} from 'effect';
 import {applyScrubber} from './share/index.js';
 
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024;
 const MAX_INTENTS = 5;
 const MAX_INTENT_CHARS = 160;
 const MAX_TOOLS = 12;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function extractText(content: unknown): string | undefined {
   if (typeof content === 'string') {
@@ -21,7 +17,7 @@ function extractText(content: unknown): string | undefined {
   for (const part of content) {
     if (typeof part === 'string') {
       parts.push(part);
-    } else if (isRecord(part) && part.type === 'text' && typeof part.text === 'string') {
+    } else if (Predicate.isObject(part) && part.type === 'text' && typeof part.text === 'string') {
       parts.push(part.text);
     }
   }
@@ -35,7 +31,7 @@ function extractToolNames(content: unknown): readonly string[] {
   }
   const names: string[] = [];
   for (const part of content) {
-    if (isRecord(part) && part.type === 'tool_use' && typeof part.name === 'string') {
+    if (Predicate.isObject(part) && part.type === 'tool_use' && typeof part.name === 'string') {
       names.push(part.name);
     }
   }
@@ -76,11 +72,11 @@ export const distillTrace = Effect.fn('trace.distill')(function* (transcriptPath
       continue;
     }
     const parsed = parsedResult.success;
-    if (!isRecord(parsed)) {
+    if (!Predicate.isObject(parsed)) {
       continue;
     }
     events += 1;
-    const message = isRecord(parsed.message) ? parsed.message : parsed;
+    const message = Predicate.isObject(parsed.message) ? parsed.message : parsed;
     const role =
       typeof message.role === 'string' ? message.role : typeof parsed.type === 'string' ? parsed.type : undefined;
     if (role === 'user') {

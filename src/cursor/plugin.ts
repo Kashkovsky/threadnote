@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Path, Predicate} from 'effect';
 import {USER_INSTRUCTIONS_END_MARKER, USER_INSTRUCTIONS_START_MARKER} from '../constants.js';
 import {SystemInfo} from '../effect/system.js';
 import type {DoctorCheck} from '../types.js';
@@ -197,16 +197,14 @@ const readCursorPluginManifest = Effect.fn('cursorPlugin.readManifest')(function
     catch: cause => new CursorPluginError('manifest is not valid JSON', {cause}),
   });
   if (
-    typeof parsed !== 'object' ||
-    parsed === null ||
-    Array.isArray(parsed) ||
-    typeof (parsed as Record<string, unknown>).name !== 'string' ||
-    typeof (parsed as Record<string, unknown>).version !== 'string' ||
-    !isSemver((parsed as Record<string, unknown>).version as string)
+    !Predicate.isObject(parsed) ||
+    typeof parsed.name !== 'string' ||
+    typeof parsed.version !== 'string' ||
+    !isSemver(parsed.version)
   ) {
     return yield* Effect.fail(new CursorPluginError('manifest must declare string name and semantic version fields'));
   }
-  return parsed as CursorPluginManifest;
+  return {name: parsed.name, version: parsed.version};
 });
 
 function cursorRuleProblem(content: string): string | undefined {
@@ -224,10 +222,10 @@ function cursorRuleProblem(content: string): string | undefined {
 function compareSemver(left: string, right: string): number {
   const [leftCore, leftPrerelease] = left.split('-', 2);
   const [rightCore, rightPrerelease] = right.split('-', 2);
-  const leftParts = leftCore!.split('.').map(Number);
-  const rightParts = rightCore!.split('.').map(Number);
+  const leftParts = leftCore.split('.').map(Number);
+  const rightParts = rightCore.split('.').map(Number);
   for (let index = 0; index < 3; index += 1) {
-    const difference = leftParts[index]! - rightParts[index]!;
+    const difference = leftParts[index] - rightParts[index];
     if (difference !== 0) return difference;
   }
   if (leftPrerelease === rightPrerelease) return 0;

@@ -73,7 +73,7 @@ function adaptiveConcurrency(
 
 function scheduledBatchSize(phase: number, memoryPressure: 'elevated' | 'high' | 'normal'): number {
   const scheduled =
-    CODE_GRAPH_WORKSET_EXPANSION_SCHEDULE[Math.min(phase, CODE_GRAPH_WORKSET_EXPANSION_SCHEDULE.length - 1)]!;
+    CODE_GRAPH_WORKSET_EXPANSION_SCHEDULE[Math.min(phase, CODE_GRAPH_WORKSET_EXPANSION_SCHEDULE.length - 1)];
   return memoryPressure === 'high'
     ? Math.min(2, scheduled)
     : memoryPressure === 'elevated'
@@ -87,7 +87,7 @@ function conservativeRecentLatency(samples: readonly number[] | undefined): numb
     .filter(sample => Number.isFinite(sample) && sample >= 1 && sample <= 60_000)
     .sort((a, b) => a - b);
   if (valid.length === 0) return 250;
-  return Math.ceil(valid[Math.min(valid.length - 1, Math.ceil(valid.length * 0.95) - 1)]!);
+  return Math.ceil(valid[Math.min(valid.length - 1, Math.ceil(valid.length * 0.95) - 1)]);
 }
 
 function empty(

@@ -238,7 +238,7 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
           AND snapshot.state = 'ready'
           AND snapshot.dirty = 0
           AND snapshot.base_snapshot_id IS NULL
-          AND snapshot.commit_id = ${matches[0]!}
+          AND snapshot.commit_id = ${matches[0]}
           AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
           AND receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
           AND receipt.workspace_fingerprint = ${workspaceFingerprint}
@@ -518,7 +518,7 @@ const loadFirstReusableOverlayBase = Effect.fn('codeGraph.loadFirstReusableOverl
         mode: file.mode,
         path: file.path,
         size: Number(file.size),
-        source: file.source as 'commit' | 'worktree',
+        source: persistedFileSource(file.source),
       })),
       receipt,
       snapshot: snapshotFromRow(row),
@@ -526,6 +526,11 @@ const loadFirstReusableOverlayBase = Effect.fn('codeGraph.loadFirstReusableOverl
   }
   return undefined;
 });
+
+function persistedFileSource(source: string): 'commit' | 'worktree' {
+  if (source === 'commit' || source === 'worktree') return source;
+  throw new CodeGraphStoreError('Stored code graph snapshot file source is invalid.');
+}
 
 const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt')(function* (
   snapshotId: string,
@@ -778,8 +783,8 @@ const selectReusableFoldForwardBase = Effect.fn('codeGraph.selectReusableFoldFor
     })),
     logicalSnapshot: snapshotFromRow(logicalRow),
     priorDeltaPaths: priorPaths.map(row => row.path),
-    priorStagedPayloadBytes: counts[2]!,
-    priorStagedRows: counts[1]!,
+    priorStagedPayloadBytes: counts[2],
+    priorStagedRows: counts[1],
     rootReceipt,
     rootSnapshot: snapshotFromRow(rootRow),
   } satisfies CodeGraphReusableFoldForwardBase;

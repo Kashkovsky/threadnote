@@ -98,8 +98,8 @@ describe('code graph vector pointer maintenance', () => {
             expect(first.warnings).toEqual([]);
             expect(second.pointersRemoved).toBe(0);
             for (const [position, fixture] of fixtures.entries()) {
-              expect(readPointers(databases[position]!).length).toBe(fixture.matchesExpected ? 0 : 1);
-              expect(readGenerations(databases[position]!)).toEqual([`generation-${fixture.index}`]);
+              expect(readPointers(databases[position]).length).toBe(fixture.matchesExpected ? 0 : 1);
+              expect(readGenerations(databases[position])).toEqual([`generation-${fixture.index}`]);
             }
           }),
         ),

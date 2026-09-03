@@ -45,8 +45,8 @@ export const validateManagerProjectRoots = Effect.fn('managerProjectRoots.valida
     const observed = yield* Effect.forEach(projects, observeCheapRoot, {concurrency: 16});
     const confirmed: ObservedRoot[] = [];
     for (let index = 0; index < observed.length; index += 1) {
-      const cheap = observed[index]!;
-      const root = rootsCanCollide(cheap, candidateRoot) ? yield* observeRoot(projects[index]!) : cheap;
+      const cheap = observed[index];
+      const root = rootsCanCollide(cheap, candidateRoot) ? yield* observeRoot(projects[index]) : cheap;
       confirmed.push(root);
       if (root.key === candidateRoot.key) {
         return yield* Effect.fail(new ManagerProjectRootError('Another manifest project owns this repository root.'));

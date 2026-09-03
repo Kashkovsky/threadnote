@@ -47,7 +47,7 @@ function oracleSearch(
   return records
     .map(record => {
       const dotProduct = record.vector.reduce(
-        (score, component, index) => score + component * normalizedQuery[index]!,
+        (score, component, index) => score + component * normalizedQuery[index],
         0,
       );
       return {id: record.id, score: Math.max(-1, Math.min(1, dotProduct))};
@@ -74,7 +74,7 @@ const vectorSearchCaseArbitrary = FC.integer({max: 8, min: 1}).chain(dimensions 
     ).chain(([query, vectors, labels, limit, minimumScorePercent]) => {
       const records = ids.map((id, index): VectorRecord => ({
         id: `${labels[index]}-${String(id).padStart(3, '0')}`,
-        vector: vectors[index]!,
+        vector: vectors[index],
       }));
       return FC.shuffledSubarray(records, {maxLength: records.length, minLength: records.length}).map(permutation => ({
         dimensions,

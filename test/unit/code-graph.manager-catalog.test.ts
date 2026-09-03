@@ -172,7 +172,7 @@ describe('Manager logical repository and workspace catalogs', () => {
         dirty: true,
         overlayFingerprint: 'dirty-overlay',
       };
-      const modifiedFile = {...originalFiles[0]!, contentHash: 'modified-file-hash'};
+      const modifiedFile = {...originalFiles[0], contentHash: 'modified-file-hash'};
       const modifiedSymbol = {...originalSymbol, contentHash: 'modified-symbol-hash', documentation: 'must not stage'};
       const modifiedFacts: CodeGraphFileFacts = {
         diagnostics: [],
@@ -798,11 +798,11 @@ describe('Manager logical repository and workspace catalogs', () => {
       expect(edgeStatements).toHaveLength(8);
       const planDatabase = new Database(databasePath, {readonly: true});
       const symbolPlan = planDatabase
-        .query(`EXPLAIN QUERY PLAN ${symbolStatements[0]!.text}`)
-        .all(...symbolStatements[0]!.parameters) as readonly {readonly detail: string}[];
+        .query(`EXPLAIN QUERY PLAN ${symbolStatements[0].text}`)
+        .all(...symbolStatements[0].parameters) as readonly {readonly detail: string}[];
       const edgePlan = planDatabase
-        .query(`EXPLAIN QUERY PLAN ${edgeStatements[0]!.text}`)
-        .all(...edgeStatements[0]!.parameters) as readonly {readonly detail: string}[];
+        .query(`EXPLAIN QUERY PLAN ${edgeStatements[0].text}`)
+        .all(...edgeStatements[0].parameters) as readonly {readonly detail: string}[];
       const endpointPlan = planDatabase
         .query(`EXPLAIN QUERY PLAN ${endpointStatement.text}`)
         .all(...endpointStatement.parameters) as readonly {readonly detail: string}[];

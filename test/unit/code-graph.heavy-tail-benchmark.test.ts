@@ -228,7 +228,7 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
   it('independently ratchets every emitted scheduler, resource, language, resume, and graph measurement', () => {
     const artifacts = [heavyTailArtifact(0), heavyTailArtifact(10), heavyTailArtifact(20)];
     const ratchet = createCodeGraphHeavyTailRatchet(artifacts);
-    const names = artifacts[0]!.ratchetArtifact.measurements.map(measurement => measurement.name).sort();
+    const names = artifacts[0].ratchetArtifact.measurements.map(measurement => measurement.name).sort();
 
     expect(Object.keys(ratchet.measurements).sort()).toEqual(names);
     expect(names).toHaveLength(254);
@@ -241,7 +241,7 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
         'resume-retained-cache-coverage',
       ]),
     );
-    expect(() => enforceCodeGraphBenchmarkRatchet(artifacts[0]!.ratchetArtifact, ratchet)).not.toThrow();
+    expect(() => enforceCodeGraphBenchmarkRatchet(artifacts[0].ratchetArtifact, ratchet)).not.toThrow();
     expect(ratchet.measurements['interrupted-interrupted-after-persisted-files']).toMatchObject({
       maximum: 268,
       minimum: 256,
@@ -250,8 +250,8 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
     expect(ratchet.measurements['single-reused-files']).toMatchObject({maximum: 0, minimum: 0});
     expect(ratchet.measurements['resume-retained-cache-coverage']).toMatchObject({maximum: 100, minimum: 100});
     const reducedInterruptionOvershoot = {
-      ...artifacts[0]!.ratchetArtifact,
-      measurements: artifacts[0]!.ratchetArtifact.measurements.map(measurement =>
+      ...artifacts[0].ratchetArtifact,
+      measurements: artifacts[0].ratchetArtifact.measurements.map(measurement =>
         ['interrupted-cache-files', 'interrupted-interrupted-after-persisted-files', 'resumed-reused-files'].includes(
           measurement.name,
         )
@@ -261,10 +261,10 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
     };
     expect(() => enforceCodeGraphBenchmarkRatchet(reducedInterruptionOvershoot, ratchet)).not.toThrow();
 
-    const durationLimit = ratchet.measurements['parallel-duration']!.p95Maximum!;
+    const durationLimit = ratchet.measurements['parallel-duration'].p95Maximum!;
     const regressed = {
-      ...artifacts[0]!.ratchetArtifact,
-      measurements: artifacts[0]!.ratchetArtifact.measurements.map(measurement =>
+      ...artifacts[0].ratchetArtifact,
+      measurements: artifacts[0].ratchetArtifact.measurements.map(measurement =>
         measurement.name === 'parallel-duration'
           ? {
               ...measurement,
@@ -374,7 +374,7 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
 
   it('rejects ratchet generation across different exact source commits', () => {
     const artifacts = [heavyTailArtifact(0), heavyTailArtifact(10), heavyTailArtifact(20)];
-    const mixed = artifacts[2]!;
+    const mixed = artifacts[2];
     const differentCommit = 'e'.repeat(40);
     artifacts[2] = {
       ...mixed,

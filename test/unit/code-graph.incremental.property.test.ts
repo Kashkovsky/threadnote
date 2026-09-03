@@ -170,13 +170,13 @@ describe('code graph incremental-overlay properties', () => {
 
       const [first, ...rest] = committed;
       const mutations: readonly CodeGraphInventoryFile[][] = [
-        [{...first!, contentHash: `changed:${first!.contentHash}`}, ...rest],
-        [{...first!, language: `changed:${first!.language}`}, ...rest],
-        [{...first!, mode: `changed:${first!.mode}`}, ...rest],
-        [{...first!, path: `changed/${first!.path}`}, ...rest],
-        [{...first!, size: first!.size + 1}, ...rest],
+        [{...first, contentHash: `changed:${first.contentHash}`}, ...rest],
+        [{...first, language: `changed:${first.language}`}, ...rest],
+        [{...first, mode: `changed:${first.mode}`}, ...rest],
+        [{...first, path: `changed/${first.path}`}, ...rest],
+        [{...first, size: first.size + 1}, ...rest],
         committed.slice(1),
-        [first!, first!, ...rest],
+        [first, first, ...rest],
       ];
       expect(mutations.every(mutated => !sameEffectiveCodeGraphInventory(files, mutated))).toBe(true);
       if (files.length > 1) expect(sameEffectiveCodeGraphInventory(files, [...committed].reverse())).toBe(false);
@@ -401,7 +401,7 @@ describe('code graph incremental-overlay properties', () => {
       source: 'commit',
     };
 
-    const attributed = createResolutionAttributor([file])([facts])[0]!;
+    const attributed = createResolutionAttributor([file])([facts])[0];
     expect(attributed.symbols.find(symbol => symbol.id === 'local')?.lookupKeys).toEqual([ownKey]);
     expect(attributed.symbols.find(symbol => symbol.id === 'exported')?.lookupKeys).not.toContain(
       'global:name:exported',

@@ -188,7 +188,7 @@ describe('code graph citation source reads', () => {
             }
             expect(args).toContain('--batch');
             expect(options?.input).toEqual(encoder.encode(`${blobIds[0]}\0`));
-            return {exitCode: 0, stderr: '', stdout: batchBlob(blobIds[0]!, committed[0]!)};
+            return {exitCode: 0, stderr: '', stdout: batchBlob(blobIds[0], committed[0])};
           }),
       });
 
@@ -199,8 +199,8 @@ describe('code graph citation source reads', () => {
         sourceCommit,
         sources,
       }).pipe(Effect.provideService(CommandExecutor, observed));
-      expect(result.get(codeGraphCitationSourceKey(sources[0]!))).toEqual(committed[0]);
-      expect(result.has(codeGraphCitationSourceKey(sources[1]!))).toBe(false);
+      expect(result.get(codeGraphCitationSourceKey(sources[0]))).toEqual(committed[0]);
+      expect(result.has(codeGraphCitationSourceKey(sources[1]))).toBe(false);
     }).pipe(provideTestLayer(StandaloneBrokerLayer)),
   );
 });

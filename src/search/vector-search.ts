@@ -82,7 +82,7 @@ export function searchExactVectors(
     assertFiniteVector(record.vector);
     let score = 0;
     for (let index = 0; index < options.dimensions; index += 1) {
-      score += normalizedQuery[index]! * record.vector[index]!;
+      score += normalizedQuery[index] * record.vector[index];
     }
     score = Math.max(-1, Math.min(1, score));
     if (score >= (options.minimumScore ?? -1)) {
@@ -113,7 +113,7 @@ function offerBoundedBest<T>(heap: T[], item: T, limit: number, compareBestFirst
     bubbleWorstUp(heap, heap.length - 1, compareBestFirst);
     return;
   }
-  if (compareBestFirst(item, heap[0]!) >= 0) return;
+  if (compareBestFirst(item, heap[0]) >= 0) return;
   heap[0] = item;
   sinkWorstDown(heap, 0, compareBestFirst);
 }
@@ -122,8 +122,8 @@ function bubbleWorstUp<T>(heap: T[], start: number, compareBestFirst: (left: T, 
   let index = start;
   while (index > 0) {
     const parent = Math.floor((index - 1) / 2);
-    if (compareBestFirst(heap[index]!, heap[parent]!) <= 0) break;
-    [heap[index], heap[parent]] = [heap[parent]!, heap[index]!];
+    if (compareBestFirst(heap[index], heap[parent]) <= 0) break;
+    [heap[index], heap[parent]] = [heap[parent], heap[index]];
     index = parent;
   }
 }
@@ -134,9 +134,9 @@ function sinkWorstDown<T>(heap: T[], start: number, compareBestFirst: (left: T, 
     const left = index * 2 + 1;
     if (left >= heap.length) return;
     const right = left + 1;
-    const worse = right < heap.length && compareBestFirst(heap[right]!, heap[left]!) > 0 ? right : left;
-    if (compareBestFirst(heap[worse]!, heap[index]!) <= 0) return;
-    [heap[index], heap[worse]] = [heap[worse]!, heap[index]!];
+    const worse = right < heap.length && compareBestFirst(heap[right], heap[left]) > 0 ? right : left;
+    if (compareBestFirst(heap[worse], heap[index]) <= 0) return;
+    [heap[index], heap[worse]] = [heap[worse], heap[index]];
     index = worse;
   }
 }

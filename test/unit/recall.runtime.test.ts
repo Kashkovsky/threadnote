@@ -252,7 +252,7 @@ describe('recall runtime orchestration', () => {
       query: 'latest release status',
     });
     expect(sections.ranked[0]?.uri).toBe(latest.uri);
-    expect(sections.ranked.findIndex(hit => hit.uri === staleTopical[0]!.uri)).toBeGreaterThan(0);
+    expect(sections.ranked.findIndex(hit => hit.uri === staleTopical[0].uri)).toBeGreaterThan(0);
   });
   effectIt.effect.prop(
     'keeps protected and cross-scope reserves independent throughout the bounded admission window',
@@ -495,7 +495,7 @@ describe('recall runtime orchestration', () => {
         readRecords: () => Effect.succeed([]),
         semanticResult: Option.some({
           corpusGeneration: Option.some(first.generation),
-          scores: Option.some(new Map([[first.candidates[0]!.uri, 1]])),
+          scores: Option.some(new Map([[first.candidates[0].uri, 1]])),
           warning: Option.none(),
         }),
       }).pipe(provideTestLayer(ApplicationLayer));

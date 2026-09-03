@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {Effect, Predicate} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
   CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION,
@@ -19,11 +19,13 @@ import {
 } from './types.js';
 import {
   CODE_GRAPH_CHECKPOINT_RECORD_KINDS,
+  emptyCodeGraphCheckpointCounts,
   parseCodeGraphCheckpointRecordV1,
   type CodeGraphCheckpointRecordKind,
   type CodeGraphCheckpointRecordV1,
 } from './checkpoint/schema.js';
 import {canonicalJson} from './checkpoint/canonical_json.js';
+import {parseCodeGraphMonikerV1} from './cross_repository/monikers.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import {ensureBoundedCodeGraphFact} from './fact_budget.js';
 import {decodeStoredCodeGraphFact, encodeStoredCodeGraphFact} from './fact_storage.js';
@@ -159,29 +161,33 @@ function decodedCoverage(value: unknown): CodeGraphCheckpointCoverageSummary {
   }
   let decoded: unknown;
   try {
-    decoded = JSON.parse(value) as unknown;
+    decoded = JSON.parse(value);
   } catch {
     throw invalid('Stored code graph checkpoint coverage is invalid.');
   }
-  if (decoded === null || typeof decoded !== 'object' || Array.isArray(decoded)) {
+  if (!Predicate.isObject(decoded)) {
     throw invalid('Stored code graph checkpoint coverage is invalid.');
   }
-  const object = decoded as Record<string, unknown>;
-  const reasons = Array.isArray(object.reasons)
-    ? object.reasons.map(reason => {
-        if (reason === null || typeof reason !== 'object' || Array.isArray(reason)) {
-          throw invalid('Stored code graph checkpoint coverage is invalid.');
-        }
-        const entry = reason as Record<string, unknown>;
-        return {bytes: entry.bytes, code: entry.code, files: entry.files};
-      })
-    : object.reasons;
+  const object = decoded;
+  if (!Array.isArray(object.reasons)) throw invalid('Stored code graph checkpoint coverage is invalid.');
+  const reasons: CodeGraphCheckpointCoverageSummary['reasons'][number][] = [];
+  for (const reason of object.reasons) {
+    if (!Predicate.isObject(reason)) throw invalid('Stored code graph checkpoint coverage is invalid.');
+    if (typeof reason.bytes !== 'number' || typeof reason.code !== 'string' || typeof reason.files !== 'number') {
+      throw invalid('Stored code graph checkpoint coverage is invalid.');
+    }
+    reasons.push({bytes: reason.bytes, code: reason.code, files: reason.files});
+  }
+  const state = coverageState(object.state);
+  if (typeof object.eligibleFiles !== 'number' || typeof object.excludedFiles !== 'number') {
+    throw invalid('Stored code graph checkpoint coverage is invalid.');
+  }
   const coverage = {
     eligibleFiles: object.eligibleFiles,
     excludedFiles: object.excludedFiles,
     reasons,
-    state: object.state,
-  } as CodeGraphCheckpointCoverageSummary;
+    state,
+  };
   validateCoverage(coverage);
   return coverage;
 }
@@ -229,21 +235,29 @@ function decodedRecordCounts(value: unknown): Readonly<Record<CodeGraphCheckpoin
   }
   let decoded: unknown;
   try {
-    decoded = JSON.parse(value) as unknown;
+    decoded = JSON.parse(value);
   } catch {
     throw invalid('Stored code graph checkpoint record counts are invalid.');
   }
-  if (decoded === null || typeof decoded !== 'object' || Array.isArray(decoded)) {
+  if (!Predicate.isObject(decoded)) {
     throw invalid('Stored code graph checkpoint record counts are invalid.');
   }
-  const object = decoded as Record<string, unknown>;
+  const object = decoded;
   if (
     Object.keys(object).length !== CODE_GRAPH_CHECKPOINT_RECORD_KINDS.length ||
-    CODE_GRAPH_CHECKPOINT_RECORD_KINDS.some(kind => !Number.isSafeInteger(object[kind]) || Number(object[kind]) < 0)
+    CODE_GRAPH_CHECKPOINT_RECORD_KINDS.some(
+      kind => typeof object[kind] !== 'number' || !Number.isSafeInteger(object[kind]) || object[kind] < 0,
+    )
   ) {
     throw invalid('Stored code graph checkpoint record counts are invalid.');
   }
-  return object as Readonly<Record<CodeGraphCheckpointRecordKind, number>>;
+  const counts = emptyCodeGraphCheckpointCounts();
+  for (const kind of CODE_GRAPH_CHECKPOINT_RECORD_KINDS) {
+    const count = object[kind];
+    if (typeof count !== 'number') throw invalid('Stored code graph checkpoint record counts are invalid.');
+    counts[kind] = count;
+  }
+  return counts;
 }
 
 function encodedPackProvenance(input: CodeGraphCheckpointImportBuildInput): string {
@@ -261,7 +275,7 @@ function decodedPackProvenance(value: unknown): readonly CodeGraphLanguagePackPr
   }
   let decoded: unknown;
   try {
-    decoded = JSON.parse(value) as unknown;
+    decoded = JSON.parse(value);
   } catch {
     throw invalid('Stored code graph checkpoint pack provenance is invalid.');
   }
@@ -273,11 +287,12 @@ function validatePackProvenance(value: unknown): readonly CodeGraphLanguagePackP
     throw invalid('Code graph checkpoint pack provenance is invalid.');
   }
   let previousId: string | undefined;
+  const packs: CodeGraphLanguagePackProvenance[] = [];
   for (const candidate of value) {
-    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    if (!Predicate.isObject(candidate)) {
       throw invalid('Code graph checkpoint pack provenance is invalid.');
     }
-    const pack = candidate as Record<string, unknown>;
+    const pack = candidate;
     if (
       Object.keys(pack).sort().join(',') !== 'cacheIdentity,derivationIdentity,id,resolutionDomain,resolutionVersion' ||
       typeof pack.id !== 'string' ||
@@ -295,12 +310,36 @@ function validatePackProvenance(value: unknown): readonly CodeGraphLanguagePackP
       throw invalid('Code graph checkpoint pack provenance is invalid.');
     }
     previousId = pack.id;
+    packs.push({
+      cacheIdentity: pack.cacheIdentity,
+      derivationIdentity: pack.derivationIdentity,
+      id: pack.id,
+      resolutionDomain: pack.resolutionDomain,
+      resolutionVersion: pack.resolutionVersion,
+    });
   }
-  return value as readonly CodeGraphLanguagePackProvenance[];
+  return packs;
 }
 
 function receiptFromRow(row: CheckpointImportRow): CodeGraphCheckpointImportReceipt {
-  const input = {
+  if (
+    row.abi_algorithm !== 'sha256' ||
+    typeof row.abi_digest !== 'string' ||
+    row.artifact_algorithm !== 'sha256' ||
+    typeof row.artifact_digest !== 'string' ||
+    typeof row.artifact_media_type !== 'string' ||
+    (row.base_logical_digest !== null && typeof row.base_logical_digest !== 'string') ||
+    Number(row.format_version) !== CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION ||
+    row.logical_algorithm !== 'sha256' ||
+    typeof row.logical_digest !== 'string' ||
+    typeof row.source_commit_id !== 'string' ||
+    typeof row.source_graph_content_id !== 'string' ||
+    typeof row.source_repository_id !== 'string' ||
+    (row.trust !== 'local-unverified' && row.trust !== 'expected-descriptor-verified')
+  ) {
+    throw invalid('Stored code graph checkpoint import receipt is invalid.');
+  }
+  const input: CodeGraphCheckpointImportReceiptInput = {
     abi: {algorithm: row.abi_algorithm, digest: row.abi_digest},
     artifact: {
       algorithm: row.artifact_algorithm,
@@ -310,7 +349,7 @@ function receiptFromRow(row: CheckpointImportRow): CodeGraphCheckpointImportRece
     },
     baseLogicalDigest: row.base_logical_digest,
     coverage: decodedCoverage(row.coverage_json),
-    formatVersion: Number(row.format_version),
+    formatVersion: CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION,
     logical: {algorithm: row.logical_algorithm, digest: row.logical_digest},
     source: {
       commit: row.source_commit_id,
@@ -318,7 +357,7 @@ function receiptFromRow(row: CheckpointImportRow): CodeGraphCheckpointImportRece
       repositoryId: row.source_repository_id,
     },
     trust: row.trust,
-  } as CodeGraphCheckpointImportReceiptInput;
+  };
   validateCodeGraphCheckpointImportReceiptInput(input);
   if (typeof row.snapshot_id !== 'string' || typeof row.recorded_at !== 'string') {
     throw invalid('Stored code graph checkpoint import receipt is invalid.');
@@ -506,11 +545,16 @@ function checkpointMoniker(
   record: Extract<CodeGraphCheckpointRecordV1, {readonly kind: 'moniker'}>,
 ): CodeGraphMonikerV1 {
   const {evidencePath, evidenceSpan, kind: _recordKind, monikerKind, ...moniker} = record;
-  return {
+  return parseCodeGraphMonikerV1({
     ...moniker,
     evidence: {path: evidencePath, span: evidenceSpan},
     kind: monikerKind,
-  } as CodeGraphMonikerV1;
+  });
+}
+
+function coverageState(value: unknown): CodeGraphCheckpointCoverageSummary['state'] {
+  if (value === 'complete' || value === 'partial') return value;
+  throw invalid('Stored code graph checkpoint coverage is invalid.');
 }
 
 function samePackProvenance(
@@ -563,7 +607,7 @@ const stageCheckpointSupplementalRecord = Effect.fn('codeGraph.stageCheckpointSu
       });
       const encoded = encodeStoredCodeGraphFact(bounded);
       const shardId = materializedFileShardIdentity(
-        files[0]!.content_hash,
+        files[0].content_hash,
         extractorSet,
         record.cacheIdentity,
         record.path,
@@ -572,7 +616,7 @@ const stageCheckpointSupplementalRecord = Effect.fn('codeGraph.stageCheckpointSu
         INSERT INTO materialized_file_shards (
           id, content_hash, extractor_set, derivation_identity, path_hint, facts_json, created_at, last_used_at
         ) VALUES (
-          ${shardId}, ${files[0]!.content_hash}, ${extractorSet}, ${record.cacheIdentity}, ${record.path},
+          ${shardId}, ${files[0].content_hash}, ${extractorSet}, ${record.cacheIdentity}, ${record.path},
           ${encoded.json}, ${now}, ${now}
         )
         ON CONFLICT(id) DO NOTHING
@@ -589,13 +633,13 @@ const stageCheckpointSupplementalRecord = Effect.fn('codeGraph.stageCheckpointSu
       `;
       const storedMetadataMatches =
         stored.length === 1 &&
-        stored[0]?.content_hash === files[0]!.content_hash &&
+        stored[0]?.content_hash === files[0].content_hash &&
         stored[0]?.extractor_set === extractorSet &&
         stored[0]?.derivation_identity === record.cacheIdentity &&
         stored[0]?.path_hint === record.path;
       if (
         !storedMetadataMatches ||
-        !checkpointStoredFactMatches(stored[0]!.facts_json, encoded.json, bounded.facts, record.path)
+        !checkpointStoredFactMatches(stored[0].facts_json, encoded.json, bounded.facts, record.path)
       ) {
         return yield* Effect.fail(invalid(`Checkpoint file fact ${record.path} conflicts with cached content.`));
       }
@@ -860,13 +904,7 @@ export const stageCheckpointImportRecordPage = Effect.fn('codeGraph.stageCheckpo
     monikers.map(checkpointMoniker),
   );
   for (const record of records) {
-    yield* stageCheckpointSupplementalRecord(
-      sql,
-      snapshotId,
-      authority[0]!.extractor_set as string,
-      record,
-      completedAt,
-    );
+    yield* stageCheckpointSupplementalRecord(sql, snapshotId, authority[0].extractor_set, record, completedAt);
   }
   yield* sql`
     INSERT INTO checkpoint_import_batches (

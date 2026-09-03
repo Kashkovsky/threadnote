@@ -122,7 +122,7 @@ async function main(): Promise<void> {
     expectedLayoutArtifactId: baseConfig.sealedSuite.layoutArtifactId,
     expectedSuiteHash: manifest.suiteHash,
     root: baseConfig.sealedSuite.root,
-    taskId: manifest.tasks[0]!.taskId,
+    taskId: manifest.tasks[0].taskId,
   });
   const blind = blindArm(environment.arm);
   const runNonce = opaqueId('run', `${environment.planHash}:${environment.runOrder}:run`);
@@ -234,7 +234,7 @@ function completedDiagnostic(
     evidence: output.rawEvidence.appServer,
     rubric: output.rawEvidence.rubric,
   });
-  const onlyCall = projection.contextBriefCalls.length === 1 ? projection.contextBriefCalls[0]! : null;
+  const onlyCall = projection.contextBriefCalls.length === 1 ? projection.contextBriefCalls[0] : null;
   const finalStates = classifyFinalStates(plan, environment.taskId, output.rawEvidence.finalPublicArtifacts);
   return sealDiagnostic({
     environment,
@@ -423,7 +423,7 @@ async function existingDiagnostic(path: string, environment: CalibrationEnvironm
   if (diagnostics.length <= environment.runOrder) return false;
   if (diagnostics.length !== environment.runOrder + 1)
     throw new Error('Calibration diagnostics are ahead of schedule.');
-  const existing = diagnostics[environment.runOrder]!;
+  const existing = diagnostics[environment.runOrder];
   if (
     existing.arm !== environment.arm ||
     existing.clientId !== environment.clientId ||
@@ -647,7 +647,7 @@ function parseArguments(arguments_: readonly string[]): Options {
     '--prepared-root',
   ]);
   for (let index = 0; index < arguments_.length; index += 1) {
-    const option = arguments_[index]!;
+    const option = arguments_[index];
     if (!supported.has(option) || values.has(option)) throw new Error(`Unsupported calibration option ${option}.`);
     const value = arguments_[++index];
     if (!value) throw new Error(`${option} requires a value.`);

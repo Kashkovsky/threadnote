@@ -1,3 +1,4 @@
+import {Predicate} from 'effect';
 /**
  * Slice 3 remains gated. This module describes the evidence a future watcher
  * backend must prove before any receipt authority can be implemented.
@@ -249,7 +250,7 @@ function nonEmptyString(value: unknown): string | undefined {
 }
 
 function record(value: unknown): Record<PropertyKey, unknown> | undefined {
-  return typeof value === 'object' && value !== null ? (value as Record<PropertyKey, unknown>) : undefined;
+  return Predicate.isObject(value) ? value : undefined;
 }
 
 function satisfy(

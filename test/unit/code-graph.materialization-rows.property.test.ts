@@ -52,8 +52,8 @@ it.prop(
       forward.every(
         (row, index) =>
           index === 0 ||
-          forward[index - 1]!.lookupKey < row.lookupKey ||
-          (forward[index - 1]!.lookupKey === row.lookupKey && forward[index - 1]!.symbolId < row.symbolId),
+          forward[index - 1].lookupKey < row.lookupKey ||
+          (forward[index - 1].lookupKey === row.lookupKey && forward[index - 1].symbolId < row.symbolId),
       ),
     ).toBe(true);
     expect(codeGraphMaterializationSymbolRows(reversed)).toEqual(codeGraphMaterializationSymbolRows(materialized));
@@ -84,8 +84,8 @@ it.prop(
       forward.every(
         (row, index) =>
           index === 0 ||
-          forward[index - 1]!.term < row.term ||
-          (forward[index - 1]!.term === row.term && forward[index - 1]!.symbolId < row.symbolId),
+          forward[index - 1].term < row.term ||
+          (forward[index - 1].term === row.term && forward[index - 1].symbolId < row.symbolId),
       ),
     ).toBe(true);
   },

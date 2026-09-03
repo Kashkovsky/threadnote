@@ -1750,15 +1750,15 @@ describe('native code graph lifecycle', () => {
             .run(secondSnapshotId, first.snapshot.id);
           database
             .query('INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id) VALUES (?, ?, ?)')
-            .run(secondSnapshotId, rows[1]!.path, rows[1]!.id);
+            .run(secondSnapshotId, rows[1].path, rows[1].id);
           expect(
             database
               .query('DELETE FROM snapshot_file_shards WHERE snapshot_id = ? AND path = ?')
-              .run(first.snapshot.id, rows[1]!.path).changes,
+              .run(first.snapshot.id, rows[1].path).changes,
           ).toBe(1);
           return {
-            derivationIdentity: rows[0]!.derivationIdentity,
-            extractorSet: rows[0]!.extractorSet,
+            derivationIdentity: rows[0].derivationIdentity,
+            extractorSet: rows[0].extractorSet,
             files: rows.map(row => ({contentHash: row.contentHash, path: row.path})),
             secondSnapshotId,
           };
@@ -4747,7 +4747,7 @@ describe('native code graph lifecycle', () => {
         )
         .all(baseline.identity.worktreeId, baseline.snapshot.id);
       expect(pausedRows).toHaveLength(1);
-      const pausedId = pausedRows[0]!.id;
+      const pausedId = pausedRows[0].id;
       expect(
         pausedDatabase
           .query<{readonly snapshot_id: string}, [string]>(

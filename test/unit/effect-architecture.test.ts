@@ -39,7 +39,7 @@ function importedModuleSpecifiers(path: string, source: string): readonly string
 
 function isNodeBuiltinSpecifier(specifier: string): boolean {
   if (specifier.startsWith('node:')) return true;
-  const root = specifier.split('/', 1)[0]!;
+  const root = specifier.split('/', 1)[0];
   return nodeBuiltinModules.has(specifier) || nodeBuiltinModules.has(root);
 }
 
@@ -124,7 +124,7 @@ describe('Effect architecture boundaries', () => {
       const mentions = source.match(/\bgetBuiltinModule\b/g)?.length ?? 0;
       expect(mentions, relativePath).toBe(relativePath === 'src/effect/system.ts' ? 3 : 0);
       const calls = [...source.matchAll(/process\.getBuiltinModule\(\s*['"]([^'"]+)['"]\s*\)/g)];
-      accesses.push(...calls.map(match => ({module: match[1]!, path: relativePath})));
+      accesses.push(...calls.map(match => ({module: match[1], path: relativePath})));
     }
     expect(accesses).toEqual([
       {module: 'os', path: 'src/effect/system.ts'},

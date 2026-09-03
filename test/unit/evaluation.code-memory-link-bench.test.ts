@@ -46,7 +46,7 @@ describe('CodeMemoryLinkBench runtime', () => {
       const fixture = JSON.parse(yield* fs.readFileString(yield* path.fromFileUrl(FIXTURE))) as {
         queries: Array<{task: string}>;
       };
-      fixture.queries[0]!.task = `${fixture.queries[0]!.task} unreviewed`;
+      fixture.queries[0].task = `${fixture.queries[0].task} unreviewed`;
 
       const exit = yield* Effect.exit(evaluateCodeMemoryLinkBenchRuntime(fixture));
       expect(String(exit)).toContain('is not the approved');

@@ -558,7 +558,7 @@ function validateUniqueTargets<T>(
       output.push(value);
     }
   }
-  return Effect.succeed(output as readonly T[]);
+  return Effect.succeed(output);
 }
 
 function validateMatchLimit(limit: number) {

@@ -461,10 +461,10 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
             approvedAuthoritative: chunk.approvedAuthoritative,
             chunkId: chunk.id,
             fingerprint: chunk.fingerprint,
-            generation: building!.generation,
+            generation: building.generation,
             project: chunk.project,
             uri: chunk.uri,
-            vector: encodeVector(normalizeVector(vectors[index]!), dimensions),
+            vector: encodeVector(normalizeVector(vectors[index]), dimensions),
             vectorKey: chunk.vectorKey,
           }));
           yield* insertVectorRows(sql, rows);
@@ -536,7 +536,7 @@ export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticSco
               inputs: [`${manifest.promptPrefixes?.query ?? ''}${query}`],
               manifest,
               modelPath: status.path,
-            }))[0]!,
+            }))[0],
           ),
         );
 
@@ -612,7 +612,7 @@ export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticSco
   ).pipe(
     // Effect's generator inference does not retain the tagged error introduced by
     // the paged synchronous scorer, so make the public failure channel explicit.
-    Effect.mapError(error => error as typeof error | VectorCorpusGenerationChanged | VectorIndexCorrupt),
+    Effect.mapError(error => error),
   );
   // The SQLite transaction pins the vector snapshot. Re-check the independently
   // changing lexical corpus after releasing that read snapshot so a long paged
@@ -1400,7 +1400,7 @@ function searchEncodedVectorRows(
         throw new VectorIndexOperationError(`Stored vector ${row.chunk_id} contains a non-finite component.`);
       }
       squaredMagnitude += component * component;
-      score += normalizedQuery[index]! * component;
+      score += normalizedQuery[index] * component;
     }
     if (Math.abs(Math.sqrt(squaredMagnitude) - 1) > 0.002) {
       throw new VectorIndexOperationError(`Stored vector ${row.chunk_id} is not L2-normalized.`);

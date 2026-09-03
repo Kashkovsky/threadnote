@@ -214,8 +214,8 @@ export class RemoteHandoffRetentionWorker {
       if (result.length >= limit) break;
     }
     if (lastScanned && shares.length > 0) {
-      const index = shares.findIndex(share => shareKey(share) === shareKey(lastScanned!));
-      this.nextShareKey = shareKey(shares[(index + 1) % shares.length]!);
+      const index = shares.findIndex(share => shareKey(share) === shareKey(lastScanned));
+      this.nextShareKey = shareKey(shares[(index + 1) % shares.length]);
     }
     return result;
   }
@@ -232,13 +232,13 @@ export class RemoteHandoffRetentionWorker {
   }
 
   private async withTenant<A>(tenantId: string, use: (transaction: TransactionSql) => Promise<A>): Promise<A> {
-    return (await this.sql.begin(async transaction => {
+    return await this.sql.begin<Promise<A>>(async transaction => {
       await transaction`SELECT set_config('threadnote.tenant_id', ${tenantId}, true)`;
       await transaction`SELECT set_config('statement_timeout', '10000', true)`;
       await transaction`SELECT set_config('lock_timeout', '5000', true)`;
       await transaction`SELECT set_config('transaction_timeout', '10000', true)`;
       return use(transaction);
-    })) as A;
+    });
   }
 }
 

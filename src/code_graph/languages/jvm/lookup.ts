@@ -19,10 +19,10 @@ export function jvmReferenceLookupTiers(input: TreeSitterReferenceInput): readon
 
   if (target.includes('.')) {
     const [head, ...tail] = target.split('.');
-    const imported = importForLocalName(input.metadata.imports, head!);
+    const imported = importForLocalName(input.metadata.imports, head);
     if (Option.isSome(imported)) {
       tiers.push(...withArity(`jvm:q:${[imported.value.module, ...tail].join('.')}`, input.arity));
-    } else if (/^[A-Z]/.test(head!)) {
+    } else if (/^[A-Z]/.test(head)) {
       tiers.push(...withArity(`jvm:q:${namespace ? `${namespace}.` : ''}${target}`, input.arity));
     }
     return tiers;
@@ -49,7 +49,7 @@ export function parseJvmImport(value: string): Option.Option<TreeSitterImport> {
   const wildcard = module.endsWith('.*');
   const importedName = wildcard ? Option.none<string>() : Option.some(module.split('.').at(-1)!);
   return Option.some({
-    alias: aliasMatch ? Option.some(aliasMatch[1]!) : Option.none(),
+    alias: aliasMatch ? Option.some(aliasMatch[1]) : Option.none(),
     importedName,
     module,
     wildcard,
@@ -69,7 +69,7 @@ function importForLocalName(imports: readonly TreeSitterImport[], name: string):
     const localName = Option.getOrElse(item.alias, () => Option.getOrElse(item.importedName, () => ''));
     return !item.wildcard && localName === name;
   });
-  return candidates.length === 1 ? Option.some(candidates[0]!) : Option.none();
+  return candidates.length === 1 ? Option.some(candidates[0]) : Option.none();
 }
 
 function ownerTypeName(qualifiedName: string, namespace: string | undefined): string | undefined {

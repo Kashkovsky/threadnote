@@ -1,4 +1,4 @@
-import {Effect, Stdio, Stream} from 'effect';
+import {Effect, Schema, Stdio, Stream} from 'effect';
 import {CommandExecutor, type CommandExecutionError} from '../effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT} from '../worker_protocol.js';
@@ -10,6 +10,40 @@ class CodeGraphDeepDiagnosticsError extends Error {
 }
 
 const CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL = 1;
+const NonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const CodeGraphDatabaseHealthSchema = Schema.Struct({
+  activeSnapshots: NonNegativeInteger,
+  buildingSnapshots: NonNegativeInteger,
+  cachedFileBlobs: NonNegativeInteger,
+  failedSnapshots: NonNegativeInteger,
+  foreignKeyViolations: NonNegativeInteger,
+  integrity: Schema.Union([
+    Schema.Literal('corrupt'),
+    Schema.Literal('incompatible'),
+    Schema.Literal('migration-pending'),
+    Schema.Literal('ok'),
+  ]),
+  persistentExtensionSchemaRevision: Schema.optionalKey(Schema.Int),
+  readySnapshots: NonNegativeInteger,
+  schemaVersion: Schema.optionalKey(Schema.Int),
+  snapshotFileCitationBaseIndexes: Schema.Union([
+    Schema.Literal('current'),
+    Schema.Literal('incompatible'),
+    Schema.Literal('missing'),
+  ]),
+  snapshotFileCitationSchema: Schema.Union([
+    Schema.Literal('column-only'),
+    Schema.Literal('column-only-with-authority'),
+    Schema.Literal('column-only-with-predecessor-authority'),
+    Schema.Literal('current'),
+    Schema.Literal('incompatible'),
+    Schema.Literal('released-absent'),
+    Schema.Literal('released-absent-with-predecessor-authority'),
+    Schema.Literal('released-absent-with-authority'),
+    Schema.Literal('table-absent'),
+  ]),
+});
+const isCodeGraphDatabaseHealth = Schema.is(CodeGraphDatabaseHealthSchema);
 const CODE_GRAPH_DEEP_DIAGNOSTICS_INPUT_BYTES_MAXIMUM = 64 * 1_024;
 const CODE_GRAPH_DEEP_DIAGNOSTICS_OUTPUT_BYTES_MAXIMUM = 4 * 1_024;
 
@@ -182,44 +216,7 @@ function decodeDeepDiagnosticsResponse(content: string): CodeGraphDeepDiagnostic
 }
 
 function decodeDatabaseHealth(value: unknown): CodeGraphDatabaseHealth | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  const record = value as Readonly<Record<string, unknown>>;
-  const counts = [
-    record.activeSnapshots,
-    record.buildingSnapshots,
-    record.cachedFileBlobs,
-    record.failedSnapshots,
-    record.foreignKeyViolations,
-    record.readySnapshots,
-  ];
-  if (!counts.every(count => typeof count === 'number' && Number.isSafeInteger(count) && count >= 0)) {
-    return undefined;
-  }
-  if (!['corrupt', 'incompatible', 'migration-pending', 'ok'].includes(String(record.integrity))) {
-    return undefined;
-  }
-  if (
-    ![
-      'column-only',
-      'column-only-with-authority',
-      'column-only-with-predecessor-authority',
-      'current',
-      'incompatible',
-      'released-absent',
-      'released-absent-with-predecessor-authority',
-      'released-absent-with-authority',
-      'table-absent',
-    ].includes(String(record.snapshotFileCitationSchema))
-  ) {
-    return undefined;
-  }
-  if (!['current', 'incompatible', 'missing'].includes(String(record.snapshotFileCitationBaseIndexes))) {
-    return undefined;
-  }
-  for (const revision of [record.persistentExtensionSchemaRevision, record.schemaVersion]) {
-    if (revision !== undefined && (typeof revision !== 'number' || !Number.isSafeInteger(revision))) return undefined;
-  }
-  return record as unknown as CodeGraphDatabaseHealth;
+  return isCodeGraphDatabaseHealth(value) ? value : undefined;
 }
 
 function deepDiagnosticsWorkerInvocation(system: SystemInfoShape): {

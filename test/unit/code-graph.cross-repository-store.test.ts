@@ -58,7 +58,7 @@ describe('cross-repository bridge catalog', () => {
       await runEffect(
         readCodeGraphWorksetCatalogBridgePage(home, {
           direction: 'outgoing',
-          endpoint: endpointKey(fixture.packageBridges[0]!.source),
+          endpoint: endpointKey(fixture.packageBridges[0].source),
           generationId: staged.id,
         }),
       ),
@@ -86,7 +86,7 @@ describe('cross-repository bridge catalog', () => {
     const first = await runEffect(
       readCodeGraphWorksetCatalogBridgePage(home, {
         direction: 'outgoing',
-        endpoint: endpointKey(fixture.packageBridges[0]!.source),
+        endpoint: endpointKey(fixture.packageBridges[0].source),
         generationId: staged.id,
         limit: 1,
       }),
@@ -97,7 +97,7 @@ describe('cross-repository bridge catalog', () => {
       readCodeGraphWorksetCatalogBridgePage(home, {
         after: first?.next,
         direction: 'outgoing',
-        endpoint: endpointKey(fixture.packageBridges[0]!.source),
+        endpoint: endpointKey(fixture.packageBridges[0].source),
         generationId: staged.id,
         limit: 1,
       }),
@@ -110,8 +110,8 @@ describe('cross-repository bridge catalog', () => {
         direction: 'outgoing',
         generationId: staged.id,
         repository: {
-          repositoryId: fixture.packageBridges[0]!.source.repositoryId,
-          snapshotId: fixture.packageBridges[0]!.source.snapshotId,
+          repositoryId: fixture.packageBridges[0].source.repositoryId,
+          snapshotId: fixture.packageBridges[0].source.snapshotId,
         },
       }),
     );
@@ -162,11 +162,11 @@ describe('cross-repository bridge catalog', () => {
         )
         .all(
           staged.id,
-          fixture.packageBridges[0]!.source.repositoryId,
-          fixture.packageBridges[0]!.source.snapshotId,
+          fixture.packageBridges[0].source.repositoryId,
+          fixture.packageBridges[0].source.snapshotId,
           'component',
-          fixture.packageBridges[0]!.source.reference.kind === 'component'
-            ? fixture.packageBridges[0]!.source.reference.componentId
+          fixture.packageBridges[0].source.reference.kind === 'component'
+            ? fixture.packageBridges[0].source.reference.componentId
             : '',
         );
       expect(plan.some(row => row.detail.includes('cross_repository_bridges_source_endpoint'))).toBe(true);
@@ -176,7 +176,7 @@ describe('cross-repository bridge catalog', () => {
            SELECT bridge_id FROM cross_repository_bridges
            WHERE generation_id = ? AND source_repository_id = ? AND source_snapshot_id = ?`,
         )
-        .all(staged.id, fixture.packageBridges[0]!.source.repositoryId, fixture.packageBridges[0]!.source.snapshotId);
+        .all(staged.id, fixture.packageBridges[0].source.repositoryId, fixture.packageBridges[0].source.snapshotId);
       expect(repositoryPlan.some(row => row.detail.includes('cross_repository_bridges_source_endpoint'))).toBe(true);
     } finally {
       database.close(false);
@@ -241,7 +241,7 @@ describe('cross-repository bridge catalog', () => {
         await runEffect(
           readCodeGraphWorksetCatalogBridgePage(home, {
             direction: 'outgoing',
-            endpoint: endpointKey(fixture.packageBridges[0]!.source),
+            endpoint: endpointKey(fixture.packageBridges[0].source),
             generationId: staged.id,
           }),
         )
@@ -254,7 +254,7 @@ describe('cross-repository bridge catalog', () => {
       await runEffect(
         readCodeGraphWorksetCatalogBridgePage(home, {
           direction: 'outgoing',
-          endpoint: endpointKey(drifted.packageBridges[0]!.source),
+          endpoint: endpointKey(drifted.packageBridges[0].source),
           generationId: next.id,
         }),
       ),
@@ -263,7 +263,7 @@ describe('cross-repository bridge catalog', () => {
       await runEffect(
         readCodeGraphWorksetCatalogBridgePage(home, {
           direction: 'outgoing',
-          endpoint: endpointKey(fixture.packageBridges[0]!.source),
+          endpoint: endpointKey(fixture.packageBridges[0].source),
           generationId: staged.id,
         }),
       ),
@@ -386,8 +386,8 @@ describe('cross-repository bridge catalog', () => {
           publish(cleanHome, fixture.worksetName, cleanStage.id),
           publish(incrementalHome, fixture.worksetName, incrementalStage.id),
         ]);
-        expect(await collectEndpoint(cleanHome, cleanStage.id, fixture.packageBridges[0]!)).toEqual(
-          await collectEndpoint(incrementalHome, incrementalStage.id, fixture.packageBridges[0]!),
+        expect(await collectEndpoint(cleanHome, cleanStage.id, fixture.packageBridges[0])).toEqual(
+          await collectEndpoint(incrementalHome, incrementalStage.id, fixture.packageBridges[0]),
         );
 
         const changed = bridgeFixture(`property-${seed}`, {

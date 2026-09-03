@@ -140,7 +140,7 @@ function graph(
   withRelationship = false,
 ) {
   const repositoryId = digest(`repository-${repository}`);
-  const source = nodes[0]!;
+  const source = nodes[0];
   const targetId = `cgs_${digest(`target-${repository}`).slice(0, 32)}`;
   const graph: CodeGraphQueryResult = {
     edges: withRelationship

@@ -421,7 +421,7 @@ export function parseRecallCrossScopeSqliteBenchmarkArguments(
   let warmups = 1;
   let outputPath: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--documents') documents = positiveInteger(args[++index], argument);
     else if (argument === '--samples') samples = positiveInteger(args[++index], argument);
     else if (argument === '--top-k') topK = positiveInteger(args[++index], argument);

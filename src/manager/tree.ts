@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {Effect, Predicate} from 'effect';
 
 export function emptyManagerTree(name: string, uri: string) {
   return {
@@ -14,9 +14,8 @@ export function emptyManagerTree(name: string, uri: string) {
 
 export function isMissingManagerTreePath(cause: unknown): boolean {
   return (
-    typeof cause === 'object' &&
-    cause !== null &&
-    (('code' in cause && (cause as NodeJS.ErrnoException).code === 'ENOENT') ||
+    Predicate.isObject(cause) &&
+    (('code' in cause && cause.code === 'ENOENT') ||
       ('reason' in cause &&
         typeof cause.reason === 'object' &&
         cause.reason !== null &&

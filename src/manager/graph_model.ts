@@ -574,7 +574,7 @@ export function graphBuildConcurrencyState(
       waiter.identity.checkoutId === build.identity.checkoutId &&
       waiter.identity.worktreeId === build.identity.worktreeId,
   );
-  const latest = [build, ...matchingWaiters].sort(compareGraphBuildRequest)[matchingWaiters.length]!;
+  const latest = [build, ...matchingWaiters].sort(compareGraphBuildRequest)[matchingWaiters.length];
   const repository = repositories.find(candidate => candidate.repositoryId === build.identity.repositoryId);
   const ready = repository?.views.find(
     candidate =>
@@ -1126,7 +1126,7 @@ export function cacheGraphNodeDetail(
   cache.delete(key);
   cache.set(key, detail);
   while (cache.size > Math.max(1, limit)) {
-    const oldest = cache.keys().next().value as string | undefined;
+    const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
     cache.delete(oldest);
   }

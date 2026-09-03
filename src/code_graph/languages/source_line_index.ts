@@ -45,12 +45,12 @@ export function sourcePositionAt(
   let upper = index.lineStarts.length;
   while (lower < upper) {
     const middle = lower + ((upper - lower) >> 1);
-    if (index.lineStarts[middle]! <= boundedOffset) lower = middle + 1;
+    if (index.lineStarts[middle] <= boundedOffset) lower = middle + 1;
     else upper = middle;
   }
   const lineIndex = Math.max(0, lower - 1);
   if (index.crlfMidpoints.has(boundedOffset)) return {column: 1, line: lineIndex + 2};
-  return {column: boundedOffset - index.lineStarts[lineIndex]! + 1, line: lineIndex + 1};
+  return {column: boundedOffset - index.lineStarts[lineIndex] + 1, line: lineIndex + 1};
 }
 
 export function sourceSpan(index: SourceLineIndex, start: number, end: number): CodeGraphSpan {

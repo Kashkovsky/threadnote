@@ -1,9 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
-
-interface RecallIndexPointer {
-  readonly database: string;
-  readonly version: number;
-}
+import {Effect, FileSystem, Path, Predicate} from 'effect';
 
 export const removeLegacyRecallIndexArtifacts = Effect.fn('recall.removeLegacyIndexArtifacts')(function* (
   fs: FileSystem.FileSystem,
@@ -53,8 +48,9 @@ function recallPointerDatabaseRelativePath(fs: FileSystem.FileSystem, pointerPat
   return fs.readFileString(pointerPath).pipe(
     Effect.map(raw => {
       try {
-        const pointer = JSON.parse(raw) as Partial<RecallIndexPointer>;
-        const relative = pointer.database?.replaceAll('\\', '/');
+        const pointer: unknown = JSON.parse(raw);
+        if (!Predicate.isObject(pointer) || typeof pointer.database !== 'string') return undefined;
+        const relative = pointer.database.replaceAll('\\', '/');
         return relative &&
           relative.startsWith('generations/') &&
           relative.endsWith('.sqlite') &&

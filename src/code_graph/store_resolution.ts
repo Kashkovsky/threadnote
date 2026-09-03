@@ -536,7 +536,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       for (const reservation of reservations) {
         const transactions = Effect.gen(function* () {
           for (let index = 0; index < reservation.transactions.length; index += 1) {
-            const observedTransactionMilliseconds = yield* commitTransactionPages(reservation.transactions[index]!);
+            const observedTransactionMilliseconds = yield* commitTransactionPages(reservation.transactions[index]);
             if (persistentFull && observedTransactionMilliseconds !== undefined) {
               persistentTransactionPageLimit = nextPersistentReferenceResolutionTransactionPages(
                 persistentTransactionPageLimit,
@@ -943,7 +943,7 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
       // Only a current promotion contract may make this worktree visible
       // again. Mixed-version writers can still publish active_snapshots, but
       // the durable tombstone keeps those pointers hidden until this delete.
-      if (typeof removedSnapshotId === 'string') {
+      if (typeof removedSnapshotId === 'string' && typeof removedAt === 'string') {
         if (removedSnapshotId !== snapshotId) {
           yield* markSnapshotLeaseRetirementBaton(sql, removedSnapshotId, now);
         }
@@ -951,13 +951,13 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
           DELETE FROM removed_view_cleanup
           WHERE worktree_id = ${identity.worktreeId}
             AND expected_snapshot_id = ${removedSnapshotId}
-            AND removed_at = ${removedAt as string}
+            AND removed_at = ${removedAt}
         `;
         yield* sql`
           DELETE FROM removed_views
           WHERE worktree_id = ${identity.worktreeId}
             AND expected_snapshot_id = ${removedSnapshotId}
-            AND removed_at = ${removedAt as string}
+            AND removed_at = ${removedAt}
         `;
         if ((yield* lastStatementChangeCount(sql)) !== 1) {
           return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority changed.'));

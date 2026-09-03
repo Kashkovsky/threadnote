@@ -103,7 +103,7 @@ describe('Code Memory Link practical dogfood evidence', () => {
       parseCodeMemoryLinkDogfoodArtifactV1({
         ...artifact,
         observations: artifact.observations.map((entry, index) =>
-          index === 1 ? {...second!, attestation: first!.attestation} : entry,
+          index === 1 ? {...second, attestation: first.attestation} : entry,
         ),
       }),
     ).toThrow(/invocation digest|replayed harness receipts/);
@@ -112,7 +112,7 @@ describe('Code Memory Link practical dogfood evidence', () => {
   it('requires the stale-abstention case to retain an independently observed clean snapshot status', () => {
     const artifact = validArtifact();
     const staleIndex = CODE_MEMORY_LINK_DOGFOOD_CASE_IDS.indexOf('stale-graph-abstention');
-    const stale = artifact.observations[staleIndex]!;
+    const stale = artifact.observations[staleIndex];
     const notStale = reseal({...stale, graphStatus: {...stale.graphStatus!, stale: false}});
     const wrongSnapshot = reseal({
       ...stale,

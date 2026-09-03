@@ -72,7 +72,7 @@ describe('anonymous telemetry OTLP transport', () => {
             traceparent: null,
             userAgent: 'effect-opentelemetry-OtlpTracer/0.0.0',
           });
-          const envelope = decodeTelemetryEnvelope(requests[0]!.body);
+          const envelope = decodeTelemetryEnvelope(requests[0].body);
           expect(envelope.resourceAttributes).toEqual({
             'service.name': 'threadnote',
             'service.version': localServiceVersion,
@@ -124,7 +124,7 @@ describe('anonymous telemetry OTLP transport', () => {
           for (const [key, value] of Object.entries(envelope.spanAttributes)) {
             if (key.startsWith('threadnote.memory.')) expect(value).toMatch(TELEMETRY_MEMORY_BUCKET);
           }
-          const protobufText = new TextDecoder().decode(requests[0]!.body);
+          const protobufText = new TextDecoder().decode(requests[0].body);
           expect(protobufText).toContain('threadnote.anonymous-diagnostic');
           expect(protobufText).toContain('threadnote.operation');
           expect(protobufText).toContain('graph-build');
@@ -310,7 +310,7 @@ function decodeAttributes(message: ProtoMessage, fieldNumber: number): Readonly<
     const value = embeddedField(entry, 2);
     const valueFields = fieldNumbers(value);
     expect(valueFields).toHaveLength(1);
-    const valueFieldNumber = valueFields[0]!;
+    const valueFieldNumber = valueFields[0];
     attributes[key] =
       valueFieldNumber === 1
         ? stringField(value, 1)
@@ -370,7 +370,7 @@ function readVarint(bytes: Uint8Array, initialOffset: number): {readonly nextOff
   let value = 0n;
   let shift = 0n;
   for (let offset = initialOffset; offset < bytes.byteLength && offset < initialOffset + 10; offset += 1) {
-    const byte = bytes[offset]!;
+    const byte = bytes[offset];
     value |= BigInt(byte & 0x7f) << shift;
     if ((byte & 0x80) === 0) return {nextOffset: offset + 1, value};
     shift += 7n;
@@ -386,7 +386,7 @@ function readFixed(bytes: Uint8Array, offset: number, byteLength: 4 | 8): Uint8A
 function onlyField(message: ProtoMessage, fieldNumber: number): ProtoField {
   const fields = message.get(fieldNumber) ?? [];
   if (fields.length !== 1) throw new Error(`Expected exactly one protobuf field ${fieldNumber}.`);
-  return fields[0]!;
+  return fields[0];
 }
 
 function lengthDelimitedValue(field: ProtoField, fieldNumber: number): Uint8Array {

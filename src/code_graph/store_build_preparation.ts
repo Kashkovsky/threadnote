@@ -470,11 +470,11 @@ const stagePersistedFullFactBatches = Effect.fn('codeGraph.stagePersistedFullFac
     );
   }
   for (let index = 0; index < batches.length; index += 1) {
-    const batch = batches[index]!;
+    const batch = batches[index];
     if (!Number.isSafeInteger(batch.batchIndex) || batch.batchIndex < 0) {
       return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization batch identity is invalid.'));
     }
-    if (index > 0 && batch.batchIndex !== batches[index - 1]!.batchIndex + 1) {
+    if (index > 0 && batch.batchIndex !== batches[index - 1].batchIndex + 1) {
       return yield* Effect.fail(
         new CodeGraphStoreError('Persistent materialization transaction batches must be contiguous.'),
       );
@@ -489,11 +489,11 @@ const stagePersistedFullFactBatches = Effect.fn('codeGraph.stagePersistedFullFac
     observers.set(batchIndex, created);
     return created;
   };
-  const commitBatch = batches[batches.length - 1]!;
+  const commitBatch = batches[batches.length - 1];
   yield* sql.withTransaction(
     Effect.gen(function* () {
       for (let index = 0; index < batches.length; index += 1) {
-        const batch = batches[index]!;
+        const batch = batches[index];
         yield* stagePersistedFullFacts(
           sql,
           snapshotId,

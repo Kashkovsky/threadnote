@@ -87,7 +87,7 @@ export function parseMemoryConnectionsScaleTargetArguments(
   let samples: number | undefined;
   let warmups: number | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--budget') budgetPath = required(args[++index], argument);
     else if (argument === '--built-artifact-sha256') builtArtifactSha256 = required(args[++index], argument);
     else if (argument === '--candidate-commit') candidateCommit = commit(args[++index], argument);

@@ -196,7 +196,7 @@ describe('code graph evaluation contract', () => {
       },
       {
         artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-vectors-10000-development.json'))),
-        budget: budgets.vectorScalePerformance['10000']!,
+        budget: budgets.vectorScalePerformance['10000'],
         scale: 10_000,
         vectors: true,
       },
@@ -208,13 +208,13 @@ describe('code graph evaluation contract', () => {
       },
       {
         artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-10000-development.json'))),
-        budget: budgets.scalePerformance['10000']!,
+        budget: budgets.scalePerformance['10000'],
         scale: 10_000,
         vectors: false,
       },
       {
         artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-100000-development.json'))),
-        budget: budgets.scalePerformance['100000']!,
+        budget: budgets.scalePerformance['100000'],
         scale: 100_000,
         vectors: false,
       },
@@ -258,7 +258,7 @@ describe('code graph evaluation contract', () => {
     ] as const;
 
     for (const testCase of cases) {
-      const budget = budgets.scalePerformance[testCase.scale]!;
+      const budget = budgets.scalePerformance[testCase.scale];
       const baseline = testCase.artifact.measurements.find(
         measurement => measurement.name === 'one-file-incremental-index',
       )!.p95;
@@ -281,12 +281,12 @@ describe('code graph evaluation contract', () => {
       },
       {
         artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-parity-10000-development.json'))),
-        budget: budgets.scalePerformance['10000']!,
+        budget: budgets.scalePerformance['10000'],
         scale: 10_000,
       },
       {
         artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-parity-100000-development.json'))),
-        budget: budgets.scalePerformance['100000']!,
+        budget: budgets.scalePerformance['100000'],
         scale: 100_000,
       },
     ] as const;

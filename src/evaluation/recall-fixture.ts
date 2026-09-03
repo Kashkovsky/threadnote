@@ -313,7 +313,7 @@ export function expandRecallEvaluationFixtureV2(
   const documents = [...fixture.documents];
   while (documents.length < documentCount) {
     const index = documents.length - fixture.documents.length;
-    const terms = Array.from({length: 6}, () => vocabulary[Math.floor(random() * vocabulary.length)]!);
+    const terms = Array.from({length: 6}, () => vocabulary[Math.floor(random() * vocabulary.length)]);
     documents.push({
       authority: index % 7 === 0 ? 'external' : 'agent_generated',
       fields: {
@@ -615,7 +615,7 @@ function rotatingQuery(
       query: `¿Dónde está documentada la política vigente ${scenario.title}?`,
     },
   ] as const;
-  const language = languages[index % languages.length]!;
+  const language = languages[index % languages.length];
   return {
     ...common,
     category: 'multilingual',

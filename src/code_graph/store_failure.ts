@@ -220,7 +220,7 @@ function stableToken(value: unknown): string | undefined {
 
 function safeField(value: object, field: string): unknown {
   try {
-    return field in value ? (value as Record<string, unknown>)[field] : undefined;
+    return field in value ? Reflect.get(value, field) : undefined;
   } catch {
     return undefined;
   }

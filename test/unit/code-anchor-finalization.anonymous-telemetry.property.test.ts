@@ -81,7 +81,7 @@ describe('deferred code-anchor finalization anonymous telemetry', () => {
       );
       expect(receipt.finalizedCount).toBe(3);
       expect(capture.spans).toHaveLength(2);
-      expect(spanAttributes(capture.spans[0]!)).toMatchObject({
+      expect(spanAttributes(capture.spans[0])).toMatchObject({
         'threadnote.code_anchor_finalization.conflict_bucket': '0',
         'threadnote.code_anchor_finalization.failed_bucket': '0',
         'threadnote.code_anchor_finalization.finalized_bucket': '2^1',
@@ -94,7 +94,7 @@ describe('deferred code-anchor finalization anonymous telemetry', () => {
         'threadnote.phase': 'memory.code-anchor-finalization',
         'threadnote.phase.outcome': 'success',
       });
-      const completion = spanAttributes(capture.spans[1]!);
+      const completion = spanAttributes(capture.spans[1]);
       expect(completion).toMatchObject({
         'threadnote.event': 'completion',
         'threadnote.operation': 'finalize_code_refs',

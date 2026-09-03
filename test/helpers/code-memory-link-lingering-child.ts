@@ -11,7 +11,7 @@ if (mode === 'descendant') {
   await writeFile(markerPath, `${process.pid}\n`, {flag: 'wx'});
   setInterval(() => undefined, 1_000);
 } else {
-  const child = spawn(process.execPath, [Bun.argv[1]!, 'descendant', markerPath], {stdio: 'ignore'});
+  const child = spawn(process.execPath, [Bun.argv[1], 'descendant', markerPath], {stdio: 'ignore'});
   child.unref();
   const deadline = Date.now() + 5_000;
   for (;;) {

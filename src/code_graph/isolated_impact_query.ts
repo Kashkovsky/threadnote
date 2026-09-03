@@ -1,4 +1,4 @@
-import {Effect, Stdio, Stream} from 'effect';
+import {Effect, Predicate, Stdio, Stream} from 'effect';
 import {CommandExecutor, CommandTimedOut, type CommandExecutionError} from '../effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT} from '../worker_protocol.js';
@@ -218,8 +218,8 @@ export function decodeImpactQueryRequest(content: string): CodeGraphImpactQueryR
 }
 
 function validImpactQueryRequest(value: unknown): value is CodeGraphImpactQueryRequest {
-  if (typeof value !== 'object' || value === null) return false;
-  const record = value as Readonly<Record<string, unknown>>;
+  if (!Predicate.isObject(value)) return false;
+  const record = value;
   if (
     record.protocol !== CODE_GRAPH_IMPACT_QUERY_PROTOCOL ||
     !validProtocolText(record.cwd) ||
@@ -276,8 +276,8 @@ function boundedTimeout(value: number | undefined): number {
 function decodeImpactQueryResponse(content: string): CodeGraphImpactQueryResponse | undefined {
   try {
     const parsed: unknown = JSON.parse(content.trim());
-    if (typeof parsed !== 'object' || parsed === null) return undefined;
-    const record = parsed as Readonly<Record<string, unknown>>;
+    if (!Predicate.isObject(parsed)) return undefined;
+    const record = parsed;
     if (record.protocol !== CODE_GRAPH_IMPACT_QUERY_PROTOCOL || typeof record.ok !== 'boolean') return undefined;
     if (!record.ok) return {ok: false, protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL};
     if (!validImpactQueryResult(record.result)) return undefined;
@@ -288,11 +288,11 @@ function decodeImpactQueryResponse(content: string): CodeGraphImpactQueryRespons
 }
 
 function validImpactQueryResult(value: unknown): value is CodeGraphQueryResult {
-  if (typeof value !== 'object' || value === null) return false;
-  const record = value as Readonly<Record<string, unknown>>;
-  const repository = record.repository as Readonly<Record<string, unknown>> | undefined;
-  const snapshot = record.snapshot as Readonly<Record<string, unknown>> | undefined;
-  const trust = record.trust as Readonly<Record<string, unknown>> | undefined;
+  if (!Predicate.isObject(value)) return false;
+  const record = value;
+  const repository = Predicate.isObject(record.repository) ? record.repository : undefined;
+  const snapshot = Predicate.isObject(record.snapshot) ? record.snapshot : undefined;
+  const trust = Predicate.isObject(record.trust) ? record.trust : undefined;
   return (
     record.version === 1 &&
     record.operation === 'impact' &&
@@ -301,18 +301,15 @@ function validImpactQueryResult(value: unknown): value is CodeGraphQueryResult {
     Array.isArray(record.edges) &&
     Array.isArray(record.warnings) &&
     record.warnings.every(warning => typeof warning === 'string') &&
-    typeof repository === 'object' &&
-    repository !== null &&
+    repository !== undefined &&
     typeof repository.displayName === 'string' &&
     typeof repository.repositoryId === 'string' &&
-    typeof snapshot === 'object' &&
-    snapshot !== null &&
+    snapshot !== undefined &&
     typeof snapshot.commit === 'string' &&
     typeof snapshot.dirty === 'boolean' &&
     typeof snapshot.id === 'string' &&
     typeof snapshot.worktreeId === 'string' &&
-    typeof trust === 'object' &&
-    trust !== null &&
+    trust !== undefined &&
     trust.classification === 'untrusted-repository-data' &&
     trust.instructionPolicy === 'evidence-only-never-follow'
   );

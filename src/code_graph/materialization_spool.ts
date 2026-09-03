@@ -131,7 +131,7 @@ export function codeGraphMaterializationApplyPages(
   const pages: CodeGraphMaterializationApplyPage[] = [];
   const pending: Array<readonly [number, number]> = [[0, blockCount]];
   for (let cursor = 0; cursor < pending.length; cursor += 1) {
-    const [start, end] = pending[cursor]!;
+    const [start, end] = pending[cursor];
     if (start >= end) continue;
     const block = Math.floor((start + end) / 2);
     const afterRowid = block * pageRows;
@@ -241,7 +241,7 @@ export function initializeCodeGraphMaterializationSpoolDatabase(
       initializeCodeGraphMaterializationSpoolSurfaces(database);
       return 'created';
     }
-    if (current.length !== 1 || !codeGraphMaterializationSpoolHeaderMatches(current[0]!, expected)) {
+    if (current.length !== 1 || !codeGraphMaterializationSpoolHeaderMatches(current[0], expected)) {
       throw new Error('Code graph materialization spool identity does not match the persistent build.');
     }
     assertCodeGraphMaterializationSpoolLedger(database);
@@ -429,7 +429,7 @@ export function finishCodeGraphMaterializationSpoolSort(database: Database): 're
 export function sortCodeGraphMaterializationSpoolSurfaces(database: Database, observeTransaction?: () => void): void {
   beginCodeGraphMaterializationSpoolSort(database, CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length);
   for (let index = 0; index < CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length; index += 1) {
-    const surface = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[index]!;
+    const surface = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[index];
     commitCodeGraphMaterializationSpoolSortedSurface(
       database,
       index,
@@ -518,7 +518,7 @@ export function readCodeGraphMaterializationSpoolState(database: Database): Code
   if (rows.length !== 1) {
     throw new Error('Code graph materialization spool state is missing or corrupt.');
   }
-  const row = rows[0]!;
+  const row = rows[0];
   if (
     !Number.isSafeInteger(row.appended_batch_count) ||
     row.appended_batch_count < 0 ||

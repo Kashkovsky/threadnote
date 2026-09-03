@@ -76,7 +76,7 @@ const reclaimRetiredSnapshotRows = Effect.fn('codeGraph.reclaimRetiredSnapshotRo
     snapshotsTotal: targets.length,
   }) ?? Effect.void;
   for (let index = 0; index < targetBatches.length; index += 1) {
-    const targetBatch = targetBatches[index]!;
+    const targetBatch = targetBatches[index];
     for (;;) {
       const page = yield* writerGate(sql.withTransaction(reclaimRetiredSnapshotPage(sql, targetBatch)));
       pagesCompleted += 1;
@@ -877,7 +877,7 @@ const snapshotPromotionLeaseCapacity = Effect.fn('codeGraph.snapshotPromotionLea
       [candidate, now],
     );
     if (leaseRows.length === 0) continue;
-    const lease = decodeSnapshotLeaseManifest(leaseRows[0]!);
+    const lease = decodeSnapshotLeaseManifest(leaseRows[0]);
     if (
       lease === undefined ||
       lease.snapshotId !== candidate ||

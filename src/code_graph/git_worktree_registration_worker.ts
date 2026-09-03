@@ -6,9 +6,9 @@ import {
   scanCodeGraphGitWorktreeRegistry,
   scanCodeGraphGitWorktreeRegistryBatch,
   scanCodeGraphWorktreeAuthorityWorkerRequest,
+  validCodeGraphGitWorktreeRegistryRequest,
   validCodeGraphGitWorktreeRegistryBatchRequest,
   validCodeGraphWorktreeAuthorityWorkerRequest,
-  type CodeGraphGitWorktreeRegistryRequest,
 } from './git_worktree_registration.js';
 
 class GitWorktreeRegistrationError extends Error {
@@ -49,9 +49,10 @@ const workerResponse = Effect.fn('codeGraph.gitWorktreeRegistrationWorkerRespons
   if (validCodeGraphGitWorktreeRegistryBatchRequest(request)) {
     return yield* fromPromise('scan Git worktree registry', () => scanCodeGraphGitWorktreeRegistryBatch(request));
   }
-  return yield* fromPromise('scan Git worktree registration batch', () =>
-    scanCodeGraphGitWorktreeRegistry(request as CodeGraphGitWorktreeRegistryRequest),
-  );
+  if (validCodeGraphGitWorktreeRegistryRequest(request)) {
+    return yield* fromPromise('scan Git worktree registration batch', () => scanCodeGraphGitWorktreeRegistry(request));
+  }
+  return yield* Effect.fail(new GitWorktreeRegistrationError('invalid'));
 });
 
 const readBoundedStandardInput = Effect.fn('codeGraph.readGitWorktreeRegistrationWorkerInput')(function* (

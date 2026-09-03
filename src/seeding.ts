@@ -307,7 +307,7 @@ const seedProject = Effect.fn('seeding.seedProject')(function* ({
   yield* flush();
 
   for (const uri of Object.keys(state.files).filter(
-    uri => seedStateEntryOwnedByProject(uri, state.files[uri]!, project, manifest.projects) && !currentUris.has(uri),
+    uri => seedStateEntryOwnedByProject(uri, state.files[uri], project, manifest.projects) && !currentUris.has(uri),
   )) {
     if (options.dryRun === true) {
       yield* log(`Would remove stale seeded resource: ${uri}`);
@@ -477,12 +477,12 @@ function readSeedState(path: string) {
     if (raw === undefined) {
       return {files: {}, version: 1} as const;
     }
-    const parsedResult = Result.try(() => JSON.parse(raw) as Partial<SeedStateFile>);
+    const parsedResult = Result.try((): unknown => JSON.parse(raw));
     if (Result.isFailure(parsedResult)) {
       return {files: {}, version: 1} as const;
     }
     const parsed = parsedResult.success;
-    if (parsed.version !== 1 || !isJsonObject(parsed.files)) {
+    if (!isJsonObject(parsed) || parsed.version !== 1 || !isJsonObject(parsed.files)) {
       return {files: {}, version: 1} as const;
     }
     const files: Record<string, SeedStateEntry> = {};
@@ -893,7 +893,7 @@ function inspectSeedPathWithinBoundary(
     let currentPath = boundary.logicalRoot;
     const segments = relativePath.split(path.sep).filter(segment => segment !== '' && segment !== '.');
     for (let index = 0; index < segments.length; index += 1) {
-      currentPath = path.join(currentPath, segments[index]!);
+      currentPath = path.join(currentPath, segments[index]);
       let inspection = boundary.inspections.get(currentPath);
       if (inspection === undefined && !boundary.inspections.has(currentPath)) {
         const link = yield* readSeedLink(fs, currentPath);

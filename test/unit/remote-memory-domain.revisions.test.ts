@@ -4,7 +4,6 @@ import {
   openNewRemoteHandoffLifecycle,
   REMOTE_HANDOFF_LIFECYCLE_OPERATIONS,
   transitionRemoteHandoffLifecycle,
-  type RemoteHandoffLifecycleOperation,
 } from '../../src/memory_domain/lifecycle.js';
 import {
   REMOTE_MEMORY_CAPABILITIES,
@@ -207,7 +206,7 @@ describe('remote memory revision, policy, and lifecycle contracts', () => {
     ({operations}) => {
       const state = 'archived' as const;
       for (const operation of operations) {
-        const decision = transitionRemoteHandoffLifecycle(state, operation as RemoteHandoffLifecycleOperation);
+        const decision = transitionRemoteHandoffLifecycle(state, operation);
         expect(decision).toMatchObject({from: 'archived', kind: 'rejected', reason: 'terminal_state'});
       }
       expect(openNewRemoteHandoffLifecycle()).toBe('active');

@@ -1,4 +1,4 @@
-import {Data, Effect} from 'effect';
+import {Data, Effect, Predicate} from 'effect';
 import {assertMemoryDocumentSchemaWritable, type MemoryRelation} from '../memory/document.js';
 import {isMemoryId} from '../memory/identity_alias.js';
 import {
@@ -146,10 +146,10 @@ export function parseManagerMemoryRelationsInput(body: Record<string, unknown>):
   }
   if (!Array.isArray(body.relations)) throw relationError('relations must be an array.');
   const relations = body.relations.map((value, index) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    if (!Predicate.isObject(value)) {
       throw relationError(`relations[${index}] must contain type and uri.`);
     }
-    const relation = value as Record<string, unknown>;
+    const relation = value;
     if (
       Object.keys(relation).some(key => key !== 'type' && key !== 'uri') ||
       typeof relation.type !== 'string' ||
@@ -197,8 +197,8 @@ function relationResolutionError(cause: unknown): ManagerMemoryRelationsError {
 }
 
 function toolErrorMessage(content: readonly unknown[]): string {
-  const text = content.find(
-    item => item && typeof item === 'object' && 'text' in item && typeof item.text === 'string',
-  ) as {readonly text?: string} | undefined;
-  return text?.text ?? 'Threadnote could not update the memory relations.';
+  const text = content.find(item => Predicate.isObject(item) && typeof item.text === 'string');
+  return Predicate.isObject(text) && typeof text.text === 'string'
+    ? text.text
+    : 'Threadnote could not update the memory relations.';
 }

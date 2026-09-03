@@ -544,7 +544,7 @@ export function boundedRecallSemanticRetrieval<A, E, R>(
     Effect.catchCause(cause =>
       Cause.hasInterrupts(cause)
         ? Effect.failCause(cause as Cause.Cause<never>)
-        : Effect.succeed({cause: cause as Cause.Cause<unknown>, status: 'failed' as const}),
+        : Effect.succeed({cause: cause, status: 'failed' as const}),
     ),
     Effect.timeoutOrElse({
       duration: MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS,

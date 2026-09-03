@@ -1669,8 +1669,8 @@ describe('code graph full-build materialization store', () => {
       evidencePath: consumer.path,
       evidenceSpan: consumerEdge.evidenceSpan,
       lookupTiers: [
-        [`${scopedNameKey(chainPaths[0]!, 'feature')}:implementation`],
-        [scopedNameKey(chainPaths[0]!, 'feature')],
+        [`${scopedNameKey(chainPaths[0], 'feature')}:implementation`],
+        [scopedNameKey(chainPaths[0], 'feature')],
       ],
       provenance: consumerEdge.provenance,
       relation: consumerEdge.relation,
@@ -1928,8 +1928,8 @@ describe('code graph full-build materialization store', () => {
       provenance: 'syntactic',
       relation: 'calls',
       resolutionDomain: 'typescript',
-      sourceId: callers[index]!.id,
-      sourceName: callers[index]!.name,
+      sourceId: callers[index].id,
+      sourceName: callers[index].name,
       targetName,
     }));
     const snapshot = readySnapshot(fixture.identity, callers.length, referenceCount);
@@ -3072,7 +3072,7 @@ describe('code graph full-build materialization store', () => {
     const attributed = createCachedCodeGraphFactsAttributor(
       files,
       discoverManifestWorkspace(files),
-    )(rawFacts.map((fact, index) => augmentRationaleFacts(files[index]!, fact)));
+    )(rawFacts.map((fact, index) => augmentRationaleFacts(files[index], fact)));
     const finalBatches = finalCodeGraphFactBatches(attributed);
     const stagedBatches = finalBatches.map(batch => ({
       edges: batch.flatMap(value => value.facts.edges),
@@ -3118,7 +3118,7 @@ describe('code graph full-build materialization store', () => {
               stagedBatches.length,
               ownerToken,
             );
-            const first = stagedBatches[0]!;
+            const first = stagedBatches[0];
             yield* store.stageActivationFacts(
               interruptedFixture.databasePath,
               first.symbols,
@@ -3388,8 +3388,8 @@ describe('code graph full-build materialization store', () => {
       provenance: 'syntactic',
       relation: 'calls',
       resolutionDomain: 'typescript',
-      sourceId: callers[index]!.id,
-      sourceName: callers[index]!.name,
+      sourceId: callers[index].id,
+      sourceName: callers[index].name,
       targetName: target.name,
     }));
     const snapshot = readySnapshot(fixture.identity, callers.length + 1, unresolved.length);
@@ -3857,8 +3857,8 @@ describe('code graph full-build materialization store', () => {
       'test/integration/mcp.native-tools.test.ts',
       'AGENTS.md',
     ]);
-    expect(search[0]?.score).toBeGreaterThan(search[1]!.score);
-    expect(search[1]?.score).toBeGreaterThan(search[2]!.score);
+    expect(search[0]?.score).toBeGreaterThan(search[1].score);
+    expect(search[1]?.score).toBeGreaterThan(search[2].score);
   });
 
   it('keeps test symbols undemoted when the query asks for a test path', async () => {
@@ -4869,9 +4869,9 @@ describe('code graph full-build materialization store', () => {
             SELECT state FROM snapshots WHERE id = ${overlay.id}
           `;
           return {
-            afterFactsPause: afterFactsPause[0]!,
-            afterInventoryPause: afterInventoryPause[0]!,
-            afterPublicationPause: afterPublicationPause[0]!,
+            afterFactsPause: afterFactsPause[0],
+            afterInventoryPause: afterInventoryPause[0],
+            afterPublicationPause: afterPublicationPause[0],
             factsFailure,
             factsPause: factsPause.boundaries,
             factsResume: factsResume.boundaries,
@@ -4881,7 +4881,7 @@ describe('code graph full-build materialization store', () => {
             publicationFailure,
             publicationPause: publicationPause.boundaries,
             publicationResume: publicationResume.boundaries,
-            resumed: resumed[0]!,
+            resumed: resumed[0],
           };
         }),
       );
@@ -4974,8 +4974,8 @@ describe('code graph full-build materialization store', () => {
               (SELECT COUNT(*) FROM activation_edges WHERE target_id IS NOT NULL) AS resolved
           `;
           return {
-            afterPause: afterPause[0]!,
-            afterResume: afterResume[0]!,
+            afterPause: afterPause[0],
+            afterResume: afterResume[0],
             failure,
             pause: pause.boundaries,
             resolution,
@@ -5073,9 +5073,7 @@ describe('code graph full-build materialization store', () => {
           yield* store.finalizePersistentMaterializationPlan(fixture.databasePath, 1);
           const sql = yield* SqlClient.SqlClient;
 
-          const aliasPause = capacityGuardProbe(
-            'resolve persistent code graph reexport aliases' as CodeGraphDirectPersistentCapacityBoundary['operation'],
-          );
+          const aliasPause = capacityGuardProbe('resolve persistent code graph reexport aliases');
           const aliasFailure = yield* store
             .resolveStagedReferences(fixture.databasePath, undefined, aliasPause.guard)
             .pipe(
@@ -5095,9 +5093,7 @@ describe('code graph full-build materialization store', () => {
               (SELECT COUNT(*) FROM edges WHERE snapshot_id = ${snapshot.id} AND target_id IS NOT NULL) AS resolvedEdges
           `;
 
-          const pagePause = capacityGuardProbe(
-            'resolve persistent code graph references' as CodeGraphDirectPersistentCapacityBoundary['operation'],
-          );
+          const pagePause = capacityGuardProbe('resolve persistent code graph references');
           const pageFailure = yield* store
             .resolveStagedReferences(fixture.databasePath, undefined, pagePause.guard)
             .pipe(
@@ -5129,9 +5125,9 @@ describe('code graph full-build materialization store', () => {
               (SELECT COUNT(*) FROM edges WHERE snapshot_id = ${snapshot.id} AND target_id IS NOT NULL) AS resolvedEdges
           `;
           return {
-            afterAliasPause: afterAliasPause[0]!,
-            afterPagePause: afterPagePause[0]!,
-            afterResume: afterResume[0]!,
+            afterAliasPause: afterAliasPause[0],
+            afterPagePause: afterPagePause[0],
+            afterResume: afterResume[0],
             aliasFailure,
             aliasPause: aliasPause.boundaries,
             pageFailure,
@@ -5145,8 +5141,8 @@ describe('code graph full-build materialization store', () => {
       expect(result.aliasFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
       expect(result.aliasPause).toHaveLength(1);
       expect(result.aliasPause[0]).toMatchObject({operation: 'resolve persistent code graph reexport aliases'});
-      expect(result.aliasPause[0]!.rowCount).toBeGreaterThan(0);
-      expect(result.aliasPause[0]!.finalFactBytes).toBeGreaterThan(0);
+      expect(result.aliasPause[0].rowCount).toBeGreaterThan(0);
+      expect(result.aliasPause[0].finalFactBytes).toBeGreaterThan(0);
       expect(result.afterAliasPause).toEqual({aliases: 0, remainingReferences: 1, resolvedEdges: 0});
 
       expect(result.pageFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
@@ -5219,9 +5215,7 @@ describe('code graph full-build materialization store', () => {
             );
           }
 
-          const pause = capacityGuardProbe(
-            'promote ready code graph snapshot' as CodeGraphDirectPersistentCapacityBoundary['operation'],
-          );
+          const pause = capacityGuardProbe('promote ready code graph snapshot');
           const pauseFailure = yield* store
             .promote(fixture.databasePath, fixture.identity, snapshot.id, {
               persistentCapacityProtector: pause.guard,
@@ -5272,8 +5266,8 @@ describe('code graph full-build materialization store', () => {
             FROM snapshots AS snapshot WHERE snapshot.id = ${snapshot.id}
           `;
           return {
-            afterPause: afterPause[0]!,
-            afterResume: afterResume[0]!,
+            afterPause: afterPause[0],
+            afterResume: afterResume[0],
             pause: pause.boundaries,
             pauseFailure,
             resumed: resumedBoundaries,
@@ -5287,7 +5281,7 @@ describe('code graph full-build materialization store', () => {
         operation: 'promote ready code graph snapshot',
         rowCount: 5,
       });
-      expect(result.pause[0]!.finalFactBytes).toBeLessThan(leaseCount * snapshot.id.length);
+      expect(result.pause[0].finalFactBytes).toBeLessThan(leaseCount * snapshot.id.length);
       expect(result.afterPause).toEqual({active: 0, flags: 0, state: 'ready'});
       expect(result.resumed).toHaveLength(2);
       expect(result.resumed[0]).toMatchObject({
@@ -5298,7 +5292,7 @@ describe('code graph full-build materialization store', () => {
         operation: 'promote ready code graph snapshot',
         rowCount: 5,
       });
-      expect(result.resumed[1]!.finalFactBytes).toBeGreaterThan(result.resumed[0]!.finalFactBytes);
+      expect(result.resumed[1].finalFactBytes).toBeGreaterThan(result.resumed[0].finalFactBytes);
       expect(result.afterResume).toEqual({
         active: 1,
         // Ordinary promotion keeps a clean snapshot warm; only dirty views
@@ -5516,23 +5510,23 @@ describe('code graph full-build materialization store', () => {
             `;
             return {
               factResume: factResume.boundaries,
-              factRowsAfterPause: factRowsAfterPause[0]!,
+              factRowsAfterPause: factRowsAfterPause[0],
               finalizeFailure,
               finalizePause: finalizePause.boundaries,
               finalizeResume: finalizeResume.boundaries,
               invalidFactFailure,
               invalidFactPause: invalidFactPause.boundaries,
-              physicalFactRows: physicalFactRows[0]!,
+              physicalFactRows: physicalFactRows[0],
               preparation: preparation.boundaries,
               publicationFailure,
               publicationPause: publicationPause.boundaries,
               publicationResume: publicationResume.boundaries,
-              publicationRowsAfterPause: publicationRowsAfterPause[0]!,
-              published: published[0]!,
+              publicationRowsAfterPause: publicationRowsAfterPause[0],
+              published: published[0],
               workspaceFailure,
               workspacePause: workspacePause.boundaries,
               workspaceResume: workspaceResume.boundaries,
-              workspaceRowsAfterPause: workspaceRowsAfterPause[0]!,
+              workspaceRowsAfterPause: workspaceRowsAfterPause[0],
             };
           }),
         );
@@ -5552,14 +5546,14 @@ describe('code graph full-build materialization store', () => {
         expect(result.invalidFactPause[0]).toMatchObject({
           operation: 'stage persistent code graph facts',
         });
-        expect(Number.isNaN(result.invalidFactPause[0]!.finalFactBytes)).toBe(true);
+        expect(Number.isNaN(result.invalidFactPause[0].finalFactBytes)).toBe(true);
         expect(result.factRowsAfterPause).toEqual({analysisReceipts: 0, materializationReceipts: 0, symbols: 0});
         expect(result.factResume).toHaveLength(1);
         expect(result.factResume[0]).toMatchObject({
           finalFactBytes,
           operation: 'stage persistent code graph facts',
         });
-        expect(result.factResume[0]!.rowCount).toBeGreaterThanOrEqual(
+        expect(result.factResume[0].rowCount).toBeGreaterThanOrEqual(
           Object.values(result.physicalFactRows).reduce((total, value) => total + Number(value), 0),
         );
 
@@ -5610,7 +5604,7 @@ describe('code graph full-build materialization store', () => {
 
           const marker = yield* Effect.promise(async () => {
             try {
-              return await readJsonLine(child.stdout as ReadableStream<Uint8Array>, 30_000);
+              return await readJsonLine(child.stdout, 30_000);
             } catch (error) {
               child.kill('SIGKILL');
               const stderr = await new Response(child.stderr).text();

@@ -318,9 +318,9 @@ describe('Context Brief anonymous telemetry', () => {
           {
             cacheHits: 99,
             receipts: [
-              receipt(citations[0]!.id, 'exact', 'exact', 'repository-a'),
-              receipt(citations[1]!.id, 'relocated', 'relocated', 'repository-a'),
-              receipt(citations[2]!.id, 'changed', 'source-changed', 'repository-b'),
+              receipt(citations[0].id, 'exact', 'exact', 'repository-a'),
+              receipt(citations[1].id, 'relocated', 'relocated', 'repository-a'),
+              receipt(citations[2].id, 'changed', 'source-changed', 'repository-b'),
             ],
             uri: candidateUri('cached'),
           },
@@ -363,7 +363,7 @@ describe('Context Brief anonymous telemetry', () => {
         'context.brief.citation-validation',
         'context.brief.projection',
       ]);
-      const citation = spanAttributes(capture.spans[2]!);
+      const citation = spanAttributes(capture.spans[2]);
       expect(citation).toMatchObject({
         'threadnote.context_brief.citation_coverage': 'partial',
         'threadnote.context_brief.citation_result': 'unknown',
@@ -374,14 +374,14 @@ describe('Context Brief anonymous telemetry', () => {
         'threadnote.phase.outcome': 'success',
       });
       expect(citation).not.toHaveProperty('threadnote.context_brief.output_truncated');
-      const projection = spanAttributes(capture.spans[3]!);
+      const projection = spanAttributes(capture.spans[3]);
       expect(projection).toMatchObject({
         'threadnote.context_brief.output_truncated': true,
         'threadnote.context_brief.scope': 'workset',
         'threadnote.phase': 'context.brief.projection',
       });
       expect(projection).not.toHaveProperty('threadnote.context_brief.citation_result');
-      const completion = spanAttributes(capture.spans[4]!);
+      const completion = spanAttributes(capture.spans[4]);
       expect(completion).toMatchObject({
         'threadnote.context_brief.cache_hits_bucket': '2^1',
         'threadnote.context_brief.citation_coverage': 'partial',
@@ -427,12 +427,12 @@ describe('Context Brief anonymous telemetry', () => {
         }),
       );
 
-      expect(spanAttributes(capture.spans[0]!)).toMatchObject({
+      expect(spanAttributes(capture.spans[0])).toMatchObject({
         'threadnote.context_brief.contract': 'code-anchored-v3',
         'threadnote.context_brief.mode': 'impact',
         'threadnote.phase': 'context.brief.code-linked-memory',
       });
-      const projection = spanAttributes(capture.spans[2]!);
+      const projection = spanAttributes(capture.spans[2]);
       expect(projection).toMatchObject({
         'threadnote.context_brief.code_anchor_coverage': 'partial',
         'threadnote.context_brief.code_anchor_gap': true,
@@ -443,7 +443,7 @@ describe('Context Brief anonymous telemetry', () => {
         'threadnote.context_brief.recovery_present': true,
         'threadnote.context_brief.returned_lane': 'memory',
       });
-      expect(spanAttributes(capture.spans[3]!)).toMatchObject({
+      expect(spanAttributes(capture.spans[3])).toMatchObject({
         'threadnote.context_brief.contract': 'code-anchored-v3',
         'threadnote.context_brief.mode': 'impact',
         'threadnote.context_brief.returned_lane': 'memory',
@@ -472,8 +472,8 @@ describe('Context Brief anonymous telemetry', () => {
       expect(Exit.isFailure(exit)).toBe(true);
       if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(original);
       expect(capture.spans).toHaveLength(3);
-      const failedProjection = spanAttributes(capture.spans[1]!);
-      const completion = spanAttributes(capture.spans[2]!);
+      const failedProjection = spanAttributes(capture.spans[1]);
+      const completion = spanAttributes(capture.spans[2]);
       expect(failedProjection).toMatchObject({
         'threadnote.context_brief.scope': 'local',
         'threadnote.outcome': 'failure',
@@ -511,17 +511,17 @@ describe('Context Brief anonymous telemetry', () => {
 
         expect(result).toBe('brief');
         expect(capture.spans).toHaveLength(3);
-        expect(spanAttributes(capture.spans[0]!)).toMatchObject({
+        expect(spanAttributes(capture.spans[0])).toMatchObject({
           'threadnote.context_brief.scope': 'local',
           'threadnote.phase': 'context.brief.citation-validation',
           'threadnote.phase.outcome': 'unavailable',
         });
-        expect(spanAttributes(capture.spans[1]!)).toMatchObject({
+        expect(spanAttributes(capture.spans[1])).toMatchObject({
           'threadnote.context_brief.output_truncated': true,
           'threadnote.phase': 'context.brief.projection',
           'threadnote.phase.outcome': 'success',
         });
-        const completion = spanAttributes(capture.spans[2]!);
+        const completion = spanAttributes(capture.spans[2]);
         expect(completion).toMatchObject({
           'threadnote.context_brief.scope': 'local',
           'threadnote.event': 'completion',

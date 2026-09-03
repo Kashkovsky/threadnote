@@ -59,7 +59,7 @@ function stepForRun(job: WorkflowJob, run: string): WorkflowStep {
 describe('dependency-aware CI workflow', () => {
   it('exports every classifier scope and preserves a fail-safe full-diff checkout', () => {
     const ci = workflow('.github/workflows/ci.yml');
-    const changes = ci.jobs.changes!;
+    const changes = ci.jobs.changes;
     const checkout = changes.steps?.find(step => step.uses?.startsWith('actions/checkout@'));
     const classifier = changes.steps?.find(step => step.id === 'scopes');
 
@@ -78,11 +78,11 @@ describe('dependency-aware CI workflow', () => {
 
   it('keeps the stable primary check while parallelizing scoped tests and quality gates', () => {
     const ci = workflow('.github/workflows/ci.yml');
-    const primary = ci.jobs.test!;
-    const quality = ci.jobs.quality!;
-    const standard = ci.jobs.standard_tests!;
-    const long = ci.jobs.long_tests!;
-    const remotePostgres = ci.jobs.remote_memory_postgres!;
+    const primary = ci.jobs.test;
+    const quality = ci.jobs.quality;
+    const standard = ci.jobs.standard_tests;
+    const long = ci.jobs.long_tests;
+    const remotePostgres = ci.jobs.remote_memory_postgres;
     const actionlint = quality.steps?.find(
       step =>
         step.uses ===
@@ -175,7 +175,7 @@ describe('dependency-aware CI workflow', () => {
 
   it('runs the actual-runtime citation gate on quality-relevant changes', () => {
     const ci = workflow('.github/workflows/ci.yml');
-    const recallQuality = ci.jobs['recall-quality']!;
+    const recallQuality = ci.jobs['recall-quality'];
 
     expect(stepForRun(recallQuality, 'bun run eval:context-brief-citations:runtime').name).toBe(
       'Actual-runtime memory citation and Context Brief gate',

@@ -733,7 +733,7 @@ export class CodeGraphCheckpointStreamInspectorV1 {
         const consumed = Math.min(this.#queue.size, this.#payloadRemaining);
         const bytes = this.#queue.take(consumed)!;
         for (let index = 0; index < bytes.byteLength && this.#gzipPrefix.length < 3; index += 1) {
-          this.#gzipPrefix.push(bytes[index]!);
+          this.#gzipPrefix.push(bytes[index]);
         }
         this.#payloadRemaining -= consumed;
         if (this.#payloadRemaining > 0) continue;
@@ -1103,7 +1103,7 @@ function joinBytes(parts: readonly Uint8Array[], expected?: number): Uint8Array 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false;
   let difference = 0;
-  for (let index = 0; index < left.byteLength; index += 1) difference |= left[index]! ^ right[index]!;
+  for (let index = 0; index < left.byteLength; index += 1) difference |= left[index] ^ right[index];
   return difference === 0;
 }
 
@@ -1127,7 +1127,7 @@ class ByteQueue {
     const output = new Uint8Array(size);
     let outputOffset = 0;
     while (outputOffset < size) {
-      const first = this.#chunks[0]!;
+      const first = this.#chunks[0];
       const available = first.byteLength - this.#firstOffset;
       const copied = Math.min(available, size - outputOffset);
       output.set(first.subarray(this.#firstOffset, this.#firstOffset + copied), outputOffset);

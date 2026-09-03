@@ -154,9 +154,9 @@ describe('Manager Processes panel', () => {
           );
           expect(orderManagerProcessesForPresentation(processes)).toEqual(ordered);
           for (let index = 1; index < ordered.length; index += 1) {
-            expect(presentationRank(ordered[index - 1]!)).toBeLessThanOrEqual(presentationRank(ordered[index]!));
+            expect(presentationRank(ordered[index - 1])).toBeLessThanOrEqual(presentationRank(ordered[index]));
           }
-          expect(presentationRank(ordered[99]!)).toBeLessThanOrEqual(presentationRank(ordered[100]!));
+          expect(presentationRank(ordered[99])).toBeLessThanOrEqual(presentationRank(ordered[100]));
         },
       ),
       {numRuns: 100},

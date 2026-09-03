@@ -569,7 +569,7 @@ describe('native embedding context pool', () => {
               return new Promise(resolve => {
                 pending.push({
                   inputIndex,
-                  priority: priorities[inputIndex]!,
+                  priority: priorities[inputIndex],
                   resolve: () => {
                     active -= 1;
                     activeByContext.set(contextIndex, contextActive - 1);
@@ -597,9 +597,9 @@ describe('native embedding context pool', () => {
             while (pending.length === 0) yield* Effect.yieldNow;
             let selected = 0;
             for (let index = 1; index < pending.length; index += 1) {
-              if (pending[index]!.priority > pending[selected]!.priority) selected = index;
+              if (pending[index].priority > pending[selected].priority) selected = index;
             }
-            pending.splice(selected, 1)[0]!.resolve();
+            pending.splice(selected, 1)[0].resolve();
             yield* Effect.yieldNow;
           }
           const vectors = yield* Fiber.join(fiber);

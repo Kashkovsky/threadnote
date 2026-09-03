@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Path, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runCommandEffect} from '../effect/command.js';
 import {readOptionalText} from './inventory_contained_file.js';
@@ -142,7 +142,7 @@ export function decodeCodeGraphInventoryReuseReceipt(value: unknown): CodeGraphI
   if (typeof value !== 'string' || value.length === 0 || value.length > 24 * 1_048_576) return undefined;
   try {
     const parsed: unknown = JSON.parse(value);
-    if (!isRecord(parsed)) return undefined;
+    if (!Predicate.isObject(parsed)) return undefined;
     if (parsed.version !== CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION) return undefined;
     if (!isSha256(parsed.contract) || !isSha256(parsed.environmentFingerprint)) return undefined;
     if (typeof parsed.includeOpaqueCorpusAssets !== 'boolean') return undefined;
@@ -153,7 +153,11 @@ export function decodeCodeGraphInventoryReuseReceipt(value: unknown): CodeGraphI
     if (attributionFiles === undefined) return undefined;
     const workspaceInput = parsed.workspace;
     const workspace = normalizedWorkspace(workspaceInput);
-    if (!isRecord(workspaceInput) || workspace === undefined || workspace.fingerprint !== workspaceInput.fingerprint) {
+    if (
+      !Predicate.isObject(workspaceInput) ||
+      workspace === undefined ||
+      workspace.fingerprint !== workspaceInput.fingerprint
+    ) {
       return undefined;
     }
     return {
@@ -179,7 +183,7 @@ function normalizedAttributionFiles(value: unknown): readonly CodeGraphAttributi
   let contentBytes = 0;
   for (const input of value) {
     if (
-      !isRecord(input) ||
+      !Predicate.isObject(input) ||
       typeof input.blobId !== 'string' ||
       input.blobId.length === 0 ||
       input.blobId.length > 4_096 ||
@@ -218,7 +222,7 @@ function normalizedAttributionFiles(value: unknown): readonly CodeGraphAttributi
 }
 
 function normalizedWorkspace(value: unknown): CodeGraphWorkspace | undefined {
-  if (!isRecord(value) || !isSha256(value.fingerprint) || !Array.isArray(value.projects)) return undefined;
+  if (!Predicate.isObject(value) || !isSha256(value.fingerprint) || !Array.isArray(value.projects)) return undefined;
   if (!Array.isArray(value.diagnostics) || !Array.isArray(value.workspaces)) return undefined;
   try {
     return mergeCodeGraphWorkspaces([value as unknown as CodeGraphWorkspace]);
@@ -228,7 +232,7 @@ function normalizedWorkspace(value: unknown): CodeGraphWorkspace | undefined {
 }
 
 function isPolicyExclusionSummary(value: unknown): value is CodeGraphInventoryPolicyExclusionSummary {
-  if (!isRecord(value)) return false;
+  if (!Predicate.isObject(value)) return false;
   if (!isNonNegativeSafeInteger(value.bytes) || !isNonNegativeSafeInteger(value.files)) return false;
   if (
     value.policyVersion !== CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION ||
@@ -241,27 +245,23 @@ function isPolicyExclusionSummary(value: unknown): value is CodeGraphInventoryPo
   let bytes = 0;
   let files = 0;
   const valid = value.reasons.every(reason => {
-    if (!isRecord(reason)) return false;
+    if (!Predicate.isObject(reason)) return false;
+    const bytesValue = reason.bytes;
+    const filesValue = reason.files;
+    const reasonValue = reason.reason;
     const accepted =
-      isNonNegativeSafeInteger(reason.bytes) &&
-      isNonNegativeSafeInteger(reason.files) &&
-      typeof reason.reason === 'string' &&
-      CODE_GRAPH_INVENTORY_EXCLUSION_REASONS.includes(
-        reason.reason as (typeof CODE_GRAPH_INVENTORY_EXCLUSION_REASONS)[number],
-      ) &&
-      !reasons.has(reason.reason);
+      isNonNegativeSafeInteger(bytesValue) &&
+      isNonNegativeSafeInteger(filesValue) &&
+      isCodeGraphInventoryExclusionReason(reasonValue) &&
+      !reasons.has(reasonValue);
     if (accepted) {
-      reasons.add(reason.reason as string);
-      bytes += reason.bytes as number;
-      files += reason.files as number;
+      reasons.add(reasonValue);
+      bytes += bytesValue;
+      files += filesValue;
     }
     return accepted;
   });
   return valid && bytes === value.bytes && files === value.files;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isSha256(value: unknown): value is string {
@@ -270,6 +270,17 @@ function isSha256(value: unknown): value is string {
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isCodeGraphInventoryExclusionReason(
+  value: unknown,
+): value is (typeof CODE_GRAPH_INVENTORY_EXCLUSION_REASONS)[number] {
+  return (
+    value === 'generic-json-size' ||
+    value === 'high-signal-json-hard-cap' ||
+    value === 'low-signal-json' ||
+    value === 'svg'
+  );
 }
 
 function isBoundedStringArray(value: unknown, maxItems: number, maxLength: number): value is readonly string[] {

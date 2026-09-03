@@ -178,7 +178,7 @@ const program = Effect.gen(function* () {
       if (existing.length >= manifest.schedule.length) {
         return yield* Effect.fail(new ScriptError('The preregistered trial ledger is already complete.'));
       }
-      const scheduled = manifest.schedule[existing.length]!;
+      const scheduled = manifest.schedule[existing.length];
       const task = manifest.tasks.find(candidate => candidate.taskId === scheduled.taskId)!;
       const arm = assignment.labels[scheduled.blindLabel];
       if (scheduled.clientId !== options.clientId) {
@@ -234,7 +234,7 @@ const program = Effect.gen(function* () {
         previousEventDigest:
           attemptEvents.length === 0
             ? null
-            : codeMemoryLinkAgentAttemptEventDigest(attemptEvents[attemptEvents.length - 1]!),
+            : codeMemoryLinkAgentAttemptEventDigest(attemptEvents[attemptEvents.length - 1]),
         retryOfAttemptId: attemptState.requiredRetry?.attemptId ?? null,
         retryReason: attemptState.requiredRetry?.reason ?? null,
         runBindingHash,
@@ -344,7 +344,7 @@ const program = Effect.gen(function* () {
         }
         failureKind = 'receipt-validation';
         const previousReceiptDigest =
-          existing.length === 0 ? null : codeMemoryLinkAgentAbTrialReceiptDigest(existing[existing.length - 1]!);
+          existing.length === 0 ? null : codeMemoryLinkAgentAbTrialReceiptDigest(existing[existing.length - 1]);
         const trialId = randomOpaqueId('trl');
         const nextTrial = createCodeMemoryLinkAgentAbTrialV1({
           candidate: manifest.candidate,
@@ -359,7 +359,7 @@ const program = Effect.gen(function* () {
         const previousEvidenceDigest =
           evidenceReceipts.length === 0
             ? null
-            : codeMemoryLinkAgentEvidenceReceiptDigest(evidenceReceipts[evidenceReceipts.length - 1]!);
+            : codeMemoryLinkAgentEvidenceReceiptDigest(evidenceReceipts[evidenceReceipts.length - 1]);
         const nextEvidence = createCodeMemoryLinkAgentEvidenceReceiptV1({
           previousEvidenceDigest,
           rawEvidence: clientOutput.rawEvidence,
@@ -469,7 +469,7 @@ function parseArguments(args: readonly string[]): Options {
   const clientBinaryBindings: Array<{path: string; role: string}> = [];
   const clientArguments: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--client-arg') clientArguments.push(required(args[++index], argument));
     else if (argument === '--client-artifact-binding') {
       clientArtifactBindings.push(parseFileBinding(required(args[++index], argument), argument));

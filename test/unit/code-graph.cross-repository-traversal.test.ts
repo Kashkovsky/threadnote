@@ -69,7 +69,7 @@ describe('cross-repository graph traversal', () => {
     expect(complete.edges.map(edge => edge.provenance.kind)).toEqual(['local', 'bridge', 'local', 'bridge', 'local']);
     expect(complete.visited).toEqual(expect.arrayContaining([fixture.start, fixture.end]));
 
-    const blockedKey = endpointKey(fixture.bridges[0]!.source);
+    const blockedKey = endpointKey(fixture.bridges[0].source);
     const blocked = await runEffect(
       traceCodeGraphCrossRepositoryImpact(dependencies(fixture, {blockedKey}), {
         bridgeSet,
@@ -216,7 +216,7 @@ describe('cross-repository graph traversal', () => {
             readLocalPage: request => {
               const index = request.after === undefined ? 0 : Number(request.after.slice('page:'.length));
               return Effect.succeed({
-                edges: [pagedEdges[index]!],
+                edges: [pagedEdges[index]],
                 ...(index + 1 < pagedEdges.length ? {next: `page:${index + 1}`} : {}),
               });
             },

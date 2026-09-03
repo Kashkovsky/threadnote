@@ -78,7 +78,7 @@ export function inventoryFilesForPaths(
   const selected: CodeGraphInventoryFile[] = [];
   let fileIndex = 0;
   for (const path of paths) {
-    while (fileIndex < files.length && compareCodeUnits(files[fileIndex]!.path, path) < 0) fileIndex += 1;
+    while (fileIndex < files.length && compareCodeUnits(files[fileIndex].path, path) < 0) fileIndex += 1;
     const file = files[fileIndex];
     if (!file || file.path !== path) return undefined;
     selected.push(file);

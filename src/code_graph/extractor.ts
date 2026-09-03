@@ -1,5 +1,5 @@
 import ts from 'typescript-compiler';
-import {Option} from 'effect';
+import {Option, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {compareCodeUnits} from './ordering.js';
 import {documentLookupTiers, resolveLegacyDocumentReference, resolveLookupTiers} from './resolution_lookup.js';
@@ -179,7 +179,7 @@ export function createResolutionAttributorFromIndex(
         const declared = declaredReferences.get(edge.id);
         if (declared !== undefined && declared.lookupTiers.length > 0) return [declared];
         return referenceForLegacyEdge(
-          edges[index]!,
+          edges[index],
           imports,
           existingPaths,
           packages,
@@ -715,9 +715,9 @@ function declarationForNode(
   stack: readonly CodeGraphSymbol[],
   identities: SymbolIdentityAllocator,
 ): CodeGraphSymbol | undefined {
-  if (DECLARATION_KINDS.has(node.kind) && 'name' in node) {
-    const nameNode = (node as ts.NamedDeclaration).name;
-    if (!nameNode || !ts.isIdentifier(nameNode)) return undefined;
+  if (DECLARATION_KINDS.has(node.kind)) {
+    const nameNode = namedDeclarationName(node);
+    if (!nameNode) return undefined;
     return makeSymbol(
       context,
       sourceFile,
@@ -767,13 +767,25 @@ function declarationForNode(
   return undefined;
 }
 
+function namedDeclarationName(node: ts.Node): ts.Identifier | undefined {
+  const declaration =
+    ts.isClassDeclaration(node) ||
+    ts.isEnumDeclaration(node) ||
+    ts.isFunctionDeclaration(node) ||
+    ts.isInterfaceDeclaration(node) ||
+    ts.isTypeAliasDeclaration(node)
+      ? node
+      : undefined;
+  return declaration?.name && ts.isIdentifier(declaration.name) ? declaration.name : undefined;
+}
+
 function extractPackageManifest(content: string, context: ExtractionContext): CodeGraphFileFacts {
   const facts: MutableFacts = {diagnostics: [], edges: [], symbols: []};
   let manifest: Record<string, unknown>;
   try {
     const value: unknown = JSON.parse(content);
-    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('expected an object');
-    manifest = value as Record<string, unknown>;
+    if (!Predicate.isObject(value)) throw new Error('expected an object');
+    manifest = value;
   } catch (cause) {
     return {
       diagnostics: [`${context.path}: invalid package.json (${messageOf(cause)})`],
@@ -788,7 +800,7 @@ function extractPackageManifest(content: string, context: ExtractionContext): Co
   for (const sectionName of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const) {
     const section = manifest[sectionName];
     if (!section || typeof section !== 'object' || Array.isArray(section)) continue;
-    for (const dependency of Object.keys(section as Record<string, unknown>).sort()) {
+    for (const dependency of Object.keys(section).sort()) {
       addTextEdge(facts, context, symbol, dependency, 'depends_on', 'declared', content);
     }
   }
@@ -816,7 +828,7 @@ function extractMarkdown(content: string, context: ExtractionContext): CodeGraph
   const document = makeTextSymbol(context, 'document', context.path, context.path, true, content, 0, 1);
   facts.symbols.push(document);
   for (const match of content.matchAll(/^(#{1,6})\s+(.+)$/gm)) {
-    const name = match[2]!.trim().replace(/\s+#+$/, '');
+    const name = match[2].trim().replace(/\s+#+$/, '');
     const symbol = makeTextSymbol(
       context,
       'heading',
@@ -833,7 +845,7 @@ function extractMarkdown(content: string, context: ExtractionContext): CodeGraph
   }
   const references = new Set<string>();
   for (const match of content.matchAll(/`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)`/g)) {
-    references.add(match[1]!);
+    references.add(match[1]);
   }
   for (const match of content.matchAll(
     /\b(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:[cm]?[jt]sx?|mdx?|pdf|docx|pptx|xlsx|od[stp]|png|jpe?g|gif|webp|svg|mp[34]|m4[av]|mov|webm|wav|flac)\b/gi,
@@ -1176,9 +1188,9 @@ function parseImportBindingTarget(
   if (!match) return undefined;
   try {
     return {
-      imported: decodeURIComponent(match[2]!),
-      local: decodeURIComponent(match[3]!),
-      specifier: decodeURIComponent(match[1]!),
+      imported: decodeURIComponent(match[2]),
+      local: decodeURIComponent(match[3]),
+      specifier: decodeURIComponent(match[1]),
     };
   } catch {
     return undefined;
@@ -1236,11 +1248,8 @@ export function discoverPackages(files: readonly CodeGraphInventoryFile[]): Pack
     if (!/package\.json$/i.test(file.path)) continue;
     try {
       if (file.content === undefined) continue;
-      const parsed = JSON.parse(file.content) as {
-        readonly exports?: unknown;
-        readonly main?: unknown;
-        readonly name?: unknown;
-      };
+      const parsed: unknown = JSON.parse(file.content);
+      if (!Predicate.isObject(parsed)) continue;
       if (typeof parsed.name === 'string') {
         const root = file.path.replace(/(?:^|\/)package\.json$/, '');
         const declaredEntry = packageEntry(parsed.exports, parsed.main);
@@ -1263,9 +1272,8 @@ export function discoverPackages(files: readonly CodeGraphInventoryFile[]): Pack
     uniqueByName: new Map(
       [...candidates].flatMap(([name, values]) => {
         const value = values[0];
-        return values.length === 1 && value?.entryPath !== undefined
-          ? [[name, value as ResolvablePackageInfo] as const]
-          : [];
+        if (values.length !== 1 || value?.entryPath === undefined) return [];
+        return [[name, {entryPath: value.entryPath, name: value.name, root: value.root}] as const];
       }),
     ),
   };
@@ -1290,20 +1298,17 @@ export function discoverResolutionAliases(
   for (const file of files.filter(candidate => /(?:^|\/)tsconfig\.json$/i.test(candidate.path))) {
     try {
       if (file.content === undefined) continue;
-      const parsed = JSON.parse(file.content) as {
-        readonly compilerOptions?: {readonly baseUrl?: unknown; readonly outDir?: unknown; readonly paths?: unknown};
-        readonly exclude?: unknown;
-        readonly files?: unknown;
-        readonly include?: unknown;
-      };
+      const parsed: unknown = JSON.parse(file.content);
+      if (!Predicate.isObject(parsed)) continue;
+      const compilerOptions = Predicate.isObject(parsed.compilerOptions) ? parsed.compilerOptions : undefined;
       const configRoot = file.path.replace(/(?:^|\/)tsconfig\.json$/, '');
-      const baseUrl = typeof parsed.compilerOptions?.baseUrl === 'string' ? parsed.compilerOptions.baseUrl : '.';
+      const baseUrl = typeof compilerOptions?.baseUrl === 'string' ? compilerOptions.baseUrl : '.';
       const base = normalizeContainedSegments([configRoot, baseUrl]);
       if (base === undefined) continue;
       const aliases = new Map<string, string[]>();
-      const paths = parsed.compilerOptions?.paths;
-      if (paths && typeof paths === 'object' && !Array.isArray(paths)) {
-        for (const [alias, targets] of Object.entries(paths as Record<string, unknown>)) {
+      const paths = compilerOptions?.paths;
+      if (Predicate.isObject(paths)) {
+        for (const [alias, targets] of Object.entries(paths)) {
           if (!Array.isArray(targets)) continue;
           const safeTargets = targets
             .filter((target): target is string => typeof target === 'string')
@@ -1324,7 +1329,7 @@ export function discoverResolutionAliases(
       const exclude = compileProjectPatterns(
         normalizedProjectPatterns(configRoot, [
           ...(Array.isArray(parsed.exclude) ? parsed.exclude : []),
-          ...(typeof parsed.compilerOptions?.outDir === 'string' ? [parsed.compilerOptions.outDir] : []),
+          ...(typeof compilerOptions?.outDir === 'string' ? [compilerOptions.outDir] : []),
         ]),
       );
       scopes.push({aliases, exclude, explicitFiles, files: projectFiles, include, root: configRoot});
@@ -1376,17 +1381,14 @@ function aliasCandidates(sourcePath: string, target: string, index: ResolutionAl
     ...matches.map(match => (match.exact ? Number.MAX_SAFE_INTEGER : match.specificity)),
   );
   const best = matches.filter(match => (match.exact ? Number.MAX_SAFE_INTEGER : match.specificity) === bestSpecificity);
-  return best.length === 1 ? best[0]!.candidates : [];
+  return best.length === 1 ? best[0].candidates : [];
 }
 
 function packageEntry(exportsValue: unknown, mainValue: unknown): string | undefined {
   if (exportsValue === undefined) return typeof mainValue === 'string' ? mainValue : undefined;
   const root =
-    typeof exportsValue === 'object' &&
-    exportsValue !== null &&
-    !Array.isArray(exportsValue) &&
-    Object.keys(exportsValue).some(key => key.startsWith('.'))
-      ? (exportsValue as Record<string, unknown>)['.']
+    Predicate.isObject(exportsValue) && Object.keys(exportsValue).some(key => key.startsWith('.'))
+      ? exportsValue['.']
       : exportsValue;
   const targets = new Set(collectExportTargets(root));
   return targets.size === 1 ? [...targets][0] : undefined;
@@ -1395,8 +1397,8 @@ function packageEntry(exportsValue: unknown, mainValue: unknown): string | undef
 function collectExportTargets(value: unknown): readonly string[] {
   if (typeof value === 'string') return [value];
   if (Array.isArray(value)) return value.flatMap(collectExportTargets);
-  if (typeof value !== 'object' || value === null) return [];
-  return Object.values(value as Record<string, unknown>).flatMap(collectExportTargets);
+  if (!Predicate.isObject(value)) return [];
+  return Object.values(value).flatMap(collectExportTargets);
 }
 
 function normalizedProjectPaths(root: string, value: unknown): ReadonlySet<string> {
@@ -1865,7 +1867,7 @@ function parseLocallyBoundTarget(value: string): string | undefined {
   const match = /^local:(.+)$/.exec(value);
   if (!match) return undefined;
   try {
-    return decodeURIComponent(match[1]!);
+    return decodeURIComponent(match[1]);
   } catch {
     return undefined;
   }

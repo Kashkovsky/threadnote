@@ -309,7 +309,7 @@ function median(values: readonly number[]): number | undefined {
   if (values.length === 0) return undefined;
   const ordered = [...values].sort((left, right) => left - right);
   const middle = Math.floor(ordered.length / 2);
-  return ordered.length % 2 === 0 ? (ordered[middle - 1]! + ordered[middle]!) / 2 : ordered[middle];
+  return ordered.length % 2 === 0 ? (ordered[middle - 1] + ordered[middle]) / 2 : ordered[middle];
 }
 
 function roundUpToSecond(milliseconds: number): number {

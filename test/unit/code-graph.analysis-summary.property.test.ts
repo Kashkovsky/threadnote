@@ -687,8 +687,8 @@ function graphSymbol(index: number): CodeGraphSymbol {
 }
 
 function graphEdge(index: number, symbols: readonly CodeGraphSymbol[], spec: EdgeSpec): CodeGraphEdge {
-  const source = symbols[spec.source % symbols.length]!;
-  const target = symbols[spec.target % symbols.length]!;
+  const source = symbols[spec.source % symbols.length];
+  const target = symbols[spec.target % symbols.length];
   return {
     confidence: spec.confidence / 100,
     evidencePath: 'src/graph.ts',

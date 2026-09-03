@@ -157,12 +157,28 @@ function readCandidatePage(
           if (lane === 'lexical' && normalized.query.terms.length === 0) {
             return {coverage, generationId: normalized.generationId, hits: [], lane};
           }
+          const {cursor, ...requestWithoutCursor} = normalized;
           const rows =
             lane === 'exact'
-              ? yield* selectExactCandidates(sql, normalized as typeof normalized & {readonly cursor?: ExactCursor})
+              ? yield* selectExactCandidates(
+                  sql,
+                  cursor === undefined
+                    ? requestWithoutCursor
+                    : cursor.lane === 'exact'
+                      ? {...requestWithoutCursor, cursor}
+                      : (() => {
+                          throw corrupt('Exact candidate request cursor is invalid.');
+                        })(),
+                )
               : yield* selectLexicalCandidates(
                   sql,
-                  normalized as typeof normalized & {readonly cursor?: LexicalCursor},
+                  cursor === undefined
+                    ? requestWithoutCursor
+                    : cursor.lane === 'lexical'
+                      ? {...requestWithoutCursor, cursor}
+                      : (() => {
+                          throw corrupt('Lexical candidate request cursor is invalid.');
+                        })(),
                 );
           const visible = rows.slice(0, normalized.limit);
           const surfaces = yield* loadCandidateSurfaces(sql, visible);
@@ -215,13 +231,13 @@ function readCompleteCoverage(sql: SqlClient.SqlClient, request: CodeGraphWorkse
           if (rows.length === 0) {
             throw new CodeGraphWorksetCatalogError('missing', 'No published workset generation exists.');
           }
-          const generationId = requiredText(rows[0]!.generation_id, 'generation identity');
+          const generationId = requiredText(rows[0].generation_id, 'generation identity');
           if (generationId !== request.generationId) {
             throw new CodeGraphWorksetCatalogError('stale', 'The published workset generation changed.');
           }
-          const declared = requiredInteger(rows[0]!.member_count, 'generation member count');
-          const actual = requiredInteger(rows[0]!.actual_member_count, 'actual generation member count');
-          const ready = requiredInteger(rows[0]!.ready_member_count, 'ready generation member count');
+          const declared = requiredInteger(rows[0].member_count, 'generation member count');
+          const actual = requiredInteger(rows[0].actual_member_count, 'actual generation member count');
+          const ready = requiredInteger(rows[0].ready_member_count, 'ready generation member count');
           if (
             declared > CODE_GRAPH_WORKSET_CATALOG_LIMITS.membersPerGeneration ||
             actual !== declared ||
@@ -556,9 +572,7 @@ function validateRequest(
       );
       if (expectedDigest !== request.query.digest) throw invalid('Candidate query digest does not match its terms.');
       const cursor = request.after === undefined ? undefined : decodeCursor(request.after, request, lane);
-      return {...request, cursor, query: {...request.query, terms}} as CodeGraphWorksetCatalogCandidateRequestV1 & {
-        readonly cursor?: CandidateCursor;
-      };
+      return {...request, cursor, query: {...request.query, terms}};
     },
     catch: cause =>
       cause instanceof CodeGraphWorksetCatalogError
@@ -585,15 +599,15 @@ function encodeCursor(
     lane === 'exact'
       ? [
           ...common,
-          requiredInteger((row as ExactCandidateRow).lane_priority, 'exact lane priority'),
+          requiredInteger(exactCandidateRow(row).lane_priority, 'exact lane priority'),
           requiredInteger(row.exported, 'candidate exported flag'),
           requiredInteger(row.ordinal, 'candidate ordinal'),
           requiredText(row.node_id, 'candidate node identity'),
         ]
       : [
           ...common,
-          positiveInteger((row as LexicalCandidateRow).matched_term_count, 'matched term count'),
-          requiredNumber((row as LexicalCandidateRow).matched_term_weight, 'matched term weight'),
+          positiveInteger(lexicalCandidateRow(row).matched_term_count, 'matched term count'),
+          requiredNumber(lexicalCandidateRow(row).matched_term_weight, 'matched term weight'),
           requiredInteger(row.exported, 'candidate exported flag'),
           requiredInteger(row.ordinal, 'candidate ordinal'),
           requiredText(row.node_id, 'candidate node identity'),
@@ -665,6 +679,18 @@ function decodeCursor(
 
 function rowKey(ordinal: number, nodeId: string): string {
   return `${String(ordinal)}\0${nodeId}`;
+}
+
+function exactCandidateRow(row: CandidateRow): ExactCandidateRow {
+  if (!('lane_priority' in row)) throw corrupt('Exact candidate row is invalid.');
+  return row;
+}
+
+function lexicalCandidateRow(row: CandidateRow): LexicalCandidateRow {
+  if (!('matched_term_count' in row) || !('matched_term_weight' in row)) {
+    throw corrupt('Lexical candidate row is invalid.');
+  }
+  return row;
 }
 
 function compareText(left: string, right: string): number {

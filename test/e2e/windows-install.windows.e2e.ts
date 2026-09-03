@@ -264,7 +264,7 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
           LOCALAPPDATA: join(userHome, 'AppData', 'Local'),
           THREADNOTE_HOME: join(userHome, '.threadnote'),
           USERPROFILE: userHome,
-        } as Record<string, string>,
+        },
       });
       const client = new Client({name: 'threadnote-windows-installer-e2e', version: packageManifest.version});
       try {
@@ -324,7 +324,7 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
       await expect(stat(promotionBackup)).rejects.toThrow();
       await expect(stat(promotionJournal)).resolves.toMatchObject({size: expect.any(Number)});
     } finally {
-      server.stop(true);
+      await server.stop(true);
     }
   } finally {
     await rm(root, {force: true, recursive: true});

@@ -271,21 +271,19 @@ export const RecallRerankerValidationReceiptSchemaV1 = Schema.Struct({
 });
 
 export function parseRecallRerankerDatasetManifestV1(value: unknown): RecallRerankerDatasetManifestV1 {
-  return Schema.decodeUnknownSync(RecallRerankerDatasetManifestSchemaV1)(value) as RecallRerankerDatasetManifestV1;
+  return Schema.decodeUnknownSync(RecallRerankerDatasetManifestSchemaV1)(value);
 }
 
 export function parseRecallRerankerDatasetDraftV1(value: unknown): RecallRerankerDatasetDraftV1 {
-  return Schema.decodeUnknownSync(RecallRerankerDatasetDraftSchemaV1)(value) as RecallRerankerDatasetDraftV1;
+  return Schema.decodeUnknownSync(RecallRerankerDatasetDraftSchemaV1)(value);
 }
 
 export function parseRecallRerankerQueryGroupV1(value: unknown): RecallRerankerQueryGroupV1 {
-  return Schema.decodeUnknownSync(RecallRerankerQueryGroupSchemaV1)(value) as RecallRerankerQueryGroupV1;
+  return Schema.decodeUnknownSync(RecallRerankerQueryGroupSchemaV1)(value);
 }
 
 export function parseRecallRerankerValidationPolicyV1(value: unknown): RecallRerankerValidationPolicyV1 {
-  const policy = Schema.decodeUnknownSync(RecallRerankerValidationPolicySchemaV1)(
-    value,
-  ) as RecallRerankerValidationPolicyV1;
+  const policy = Schema.decodeUnknownSync(RecallRerankerValidationPolicySchemaV1)(value);
   assertSha256(policy.forbiddenTextsSha256, 'validation policy forbidden texts');
   assertSha256(policy.reservedEvaluation.sha256, 'validation policy reserved evaluation');
   if (!isSafeRelativeFile(policy.receiptFile)) {
@@ -295,9 +293,7 @@ export function parseRecallRerankerValidationPolicyV1(value: unknown): RecallRer
 }
 
 export function parseRecallRerankerValidationReceiptV1(value: unknown): RecallRerankerValidationReceiptV1 {
-  const receipt = Schema.decodeUnknownSync(RecallRerankerValidationReceiptSchemaV1)(
-    value,
-  ) as RecallRerankerValidationReceiptV1;
+  const receipt = Schema.decodeUnknownSync(RecallRerankerValidationReceiptSchemaV1)(value);
   for (const [label, hash] of [
     ['forbidden texts', receipt.forbiddenTextsSha256],
     ['group file', receipt.groupFileSha256],
@@ -315,7 +311,7 @@ export function parseRecallRerankerGroupJsonLinesV1(content: string): readonly R
   const lines = content.split(/\r?\n/);
   const groups: RecallRerankerQueryGroupV1[] = [];
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!.trim();
+    const line = lines[index].trim();
     if (line.length === 0) continue;
     let value: unknown;
     try {
@@ -570,7 +566,7 @@ export function compareRecallRerankerStringsV1(left: string, right: string): num
   const rightBytes = UTF8_ENCODER.encode(right);
   const length = Math.min(leftBytes.length, rightBytes.length);
   for (let index = 0; index < length; index += 1) {
-    const difference = leftBytes[index]! - rightBytes[index]!;
+    const difference = leftBytes[index] - rightBytes[index];
     if (difference !== 0) return difference;
   }
   return leftBytes.length - rightBytes.length;

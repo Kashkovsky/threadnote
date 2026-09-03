@@ -1,4 +1,4 @@
-import {Cause, Effect, Option, Ref, Result} from 'effect';
+import {Cause, Effect, Option, Predicate, Ref, Result} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store_build_core.js';
@@ -883,7 +883,7 @@ function selectProjectionSnapshot(
     if (rows.length !== 1) {
       return yield* Effect.fail(missing('The selected snapshot is no longer an active ready worktree view.'));
     }
-    return rows[0]!;
+    return rows[0];
   });
 }
 
@@ -909,7 +909,7 @@ function selectExtractorGeneration(sql: SqlClient.SqlClient, snapshotId: string)
     if (rows.length !== 1) {
       return yield* Effect.fail(corrupt('The ready snapshot has no unique extractor-generation receipt.'));
     }
-    const generation = safeCount(rows[0]!.generation, 'extractor generation');
+    const generation = safeCount(rows[0].generation, 'extractor generation');
     if (generation < 1) return yield* Effect.fail(corrupt('The ready snapshot extractor generation is invalid.'));
     return generation;
   });
@@ -919,7 +919,7 @@ function selectCount(sql: SqlClient.SqlClient, statement: string, parameters: re
   return Effect.gen(function* () {
     const rows = yield* sql.unsafe<CountRow>(statement, parameters);
     if (rows.length !== 1) return yield* Effect.fail(corrupt(`The ${label} is unavailable.`));
-    return safeCount(rows[0]!.count, label);
+    return safeCount(rows[0].count, label);
   });
 }
 
@@ -1156,7 +1156,7 @@ function selectTemporaryRowCount(sql: SqlClient.SqlClient, table: string, label:
     }
     const rows = yield* sql.unsafe<CountRow>(`SELECT COUNT(*) AS count FROM temp.${table}`);
     if (rows.length !== 1) return yield* Effect.fail(corrupt(`The ${label} count is unavailable.`));
-    return safeCount(rows[0]!.count, `${label} count`);
+    return safeCount(rows[0].count, `${label} count`);
   });
 }
 
@@ -1280,10 +1280,10 @@ function decodeSpan(value: unknown): CodeGraphWorksetCatalogSpanV1 {
     throw corrupt('A ready snapshot symbol has an invalid evidence span.');
   }
   const parsed = parseJson(value, 'symbol evidence span');
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+  if (!Predicate.isObject(parsed)) {
     throw corrupt('A ready snapshot symbol has an invalid evidence span.');
   }
-  const record = parsed as Record<string, unknown>;
+  const record = parsed;
   return {
     column: safeCount(record.column, 'symbol span column'),
     endColumn: safeCount(record.endColumn, 'symbol span end column'),

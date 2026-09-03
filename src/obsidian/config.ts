@@ -316,7 +316,7 @@ function requiredStringArray(value: unknown, label: string): readonly string[] {
   if (!Array.isArray(value) || !value.every(item => typeof item === 'string' && item.trim().length > 0)) {
     throw new ObsidianConfigurationError(`${label} must be an array of non-empty strings.`);
   }
-  return [...new Set(value.map(item => (item as string).trim()))];
+  return [...new Set(value.map(item => item.trim()))];
 }
 
 function sourcePatterns(value: unknown, label: string): readonly string[] {
@@ -355,7 +355,7 @@ function memoryKinds(value: unknown, label: string): readonly MemoryKind[] {
   ) {
     throw new ObsidianConfigurationError(`${label} contains an unsupported memory kind.`);
   }
-  return values as readonly MemoryKind[];
+  return values;
 }
 
 function memoryStatuses(value: unknown, label: string): readonly MemoryStatus[] {
@@ -363,7 +363,7 @@ function memoryStatuses(value: unknown, label: string): readonly MemoryStatus[] 
   if (!values.every(item => item === 'active' || item === 'archived' || item === 'expired' || item === 'superseded')) {
     throw new ObsidianConfigurationError(`${label} contains an unsupported memory status.`);
   }
-  return values as readonly MemoryStatus[];
+  return values;
 }
 
 function selectedMemoryUris(value: unknown, label: string): readonly string[] {

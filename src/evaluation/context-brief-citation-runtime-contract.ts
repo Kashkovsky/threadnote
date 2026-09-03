@@ -1,5 +1,6 @@
 import {sha256HexSync} from '../crypto/sha256.js';
 import {benchmarkMeasurement, type BenchmarkMeasurementV1} from './benchmark.js';
+import {Predicate} from 'effect';
 
 export const CONTEXT_BRIEF_CITATION_RUNTIME_EVALUATION_VERSION = 1 as const;
 
@@ -512,11 +513,10 @@ function runtimeOutcome(observation: ContextBriefCitationRuntimeObservationV1 | 
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (typeof value === 'object' && value !== null) {
-    const object = value as Readonly<Record<string, unknown>>;
-    return `{${Object.keys(object)
+  if (Predicate.isObject(value)) {
+    return `{${Object.keys(value)
       .sort()
-      .map(key => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+      .map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
       .join(',')}}`;
   }
   const encoded = JSON.stringify(value);
@@ -525,8 +525,8 @@ function canonicalJson(value: unknown): string {
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
@@ -542,8 +542,12 @@ function literal<const Values extends readonly string[]>(
   values: Values,
   label: string,
 ): Values[number] {
-  if (typeof value !== 'string' || !(values as readonly string[]).includes(value)) invalid(`${label} is invalid`);
-  return value as Values[number];
+  if (typeof value !== 'string' || !isLiteral(value, values)) invalid(`${label} is invalid`);
+  return value;
+}
+
+function isLiteral<const Values extends readonly string[]>(value: string, values: Values): value is Values[number] {
+  return values.some(candidate => candidate === value);
 }
 
 function matchingString(value: unknown, pattern: RegExp, label: string): string {
@@ -558,8 +562,10 @@ function nonEmptyString(value: unknown, label: string): string {
 }
 
 function positiveInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 1) invalid(`${label} must be a positive integer`);
-  return value as number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    invalid(`${label} must be a positive integer`);
+  }
+  return value;
 }
 
 function positiveNumber(value: unknown, label: string): number {

@@ -1336,11 +1336,15 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
   if (candidates.some(candidate => candidate === undefined)) {
     return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history changed during its bounded page.'));
   }
+  const completeCandidates: BuildHistoryCandidate[] = [];
+  for (const candidate of candidates) {
+    if (candidate !== undefined) completeCandidates.push(candidate);
+  }
   const lockPath = path.join(layout.worktreeLockRoot, `${worktreeId}.lock`);
   const initialLock = yield* inspectBuildHistoryLock(fs, lockPath);
   const nowMilliseconds = yield* Clock.currentTimeMillis;
   const observedCandidates = yield* Effect.forEach(
-    candidates as readonly BuildHistoryCandidate[],
+    completeCandidates,
     candidate =>
       observeBuildHistoryCandidate(system, candidate.status, nowMilliseconds).pipe(
         Effect.map(status => ({candidate, status})),
@@ -1806,8 +1810,8 @@ function compareBuildHistoryCandidate(left: BuildHistoryCandidate, right: BuildH
 function parseBuildHistoryCursor(cursorToken: string): BuildHistoryCursor | undefined {
   if (cursorToken === 'bh1:r') return {mode: 'reset'};
   const fields = cursorToken.split(':');
-  return fields.length === 3 && fields[0] === 'bh1' && fields[1] === 's' && BUILD_ID.test(fields[2]!)
-    ? {afterBuildId: fields[2]!, mode: 'scan'}
+  return fields.length === 3 && fields[0] === 'bh1' && fields[1] === 's' && BUILD_ID.test(fields[2])
+    ? {afterBuildId: fields[2], mode: 'scan'}
     : undefined;
 }
 
@@ -1872,7 +1876,7 @@ export function selectCodeGraphBuildStatuses(
   for (const group of byWorktree.values()) {
     group.sort(compareObservedBuildStatus);
     const owner = group.find(status => status.coordination?.role === 'owner');
-    builds.push(owner ?? group[0]!);
+    builds.push(owner ?? group[0]);
     waiters.push(
       ...group.filter(
         status =>

@@ -94,7 +94,7 @@ describe('anonymous telemetry runtime', () => {
       if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(privateFailure);
       expect(capture.spans).toHaveLength(1);
 
-      const captured = capture.spans[0]!;
+      const captured = capture.spans[0];
       const attributes = spanAttributes(captured);
       expect(captured.root).toBe(true);
       expect(captured.span.name).toBe('threadnote.anonymous-diagnostic');
@@ -133,9 +133,9 @@ describe('anonymous telemetry runtime', () => {
 
         expect(Exit.isFailure(exit)).toBe(true);
         if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(trapped);
-        expect(spanAttributes(capture.spans[0]!)).toMatchObject({'error.type': 'UnknownError'});
-        expect(JSON.stringify(spanAttributes(capture.spans[0]!))).not.toContain('SecretCustomerAcme');
-        expect(JSON.stringify(spanAttributes(capture.spans[0]!))).not.toContain('symbol trap');
+        expect(spanAttributes(capture.spans[0])).toMatchObject({'error.type': 'UnknownError'});
+        expect(JSON.stringify(spanAttributes(capture.spans[0]))).not.toContain('SecretCustomerAcme');
+        expect(JSON.stringify(spanAttributes(capture.spans[0]))).not.toContain('symbol trap');
       }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
     },
   );
@@ -168,7 +168,7 @@ describe('anonymous telemetry runtime', () => {
       );
 
       expect(returned).toBe(result);
-      expect(JSON.stringify(spanAttributes(capture.spans[0]!))).not.toContain('private diagnostic trap');
+      expect(JSON.stringify(spanAttributes(capture.spans[0]))).not.toContain('private diagnostic trap');
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
 
@@ -197,7 +197,7 @@ describe('anonymous telemetry runtime', () => {
 
       expect(returned).toBe(result);
       expect(capture.spans).toHaveLength(1);
-      const attributes = spanAttributes(capture.spans[0]!);
+      const attributes = spanAttributes(capture.spans[0]);
       expect(attributes).toMatchObject({
         'error.type': 'CodeGraphStoreError',
         'threadnote.component': 'mcp',
@@ -209,7 +209,7 @@ describe('anonymous telemetry runtime', () => {
         'threadnote.operation': 'inspect-code-graph',
         'threadnote.outcome': 'failure',
       });
-      expect(endedSpanExit(capture.spans[0]!)).toSatisfy(Exit.isSuccess);
+      expect(endedSpanExit(capture.spans[0])).toSatisfy(Exit.isSuccess);
       const serialized = JSON.stringify(attributes);
       expect(serialized).not.toContain('private user-facing result');
       expect(serialized).not.toContain('/private/repository');
@@ -280,14 +280,14 @@ describe('anonymous telemetry runtime', () => {
       },
     ] as const;
     const system = systemInfoStub({
-      memoryUsage: () => samples[Math.min(memoryCalls++, samples.length - 1)]!,
+      memoryUsage: () => samples[Math.min(memoryCalls++, samples.length - 1)],
     });
 
     return Effect.gen(function* () {
       expect(yield* withAnonymousTelemetry({component: 'cli', operation: 'recall'}, Effect.succeed('ok'))).toBe('ok');
 
       expect(memoryCalls).toBe(2);
-      const attributes = spanAttributes(capture.spans[0]!);
+      const attributes = spanAttributes(capture.spans[0]);
       expect(attributes).toMatchObject({
         'threadnote.memory.external.end_bucket': '64-128MiB',
         'threadnote.memory.external.start_bucket': '<32MiB',
@@ -311,7 +311,7 @@ describe('anonymous telemetry runtime', () => {
     return Effect.gen(function* () {
       yield* withAnonymousTelemetry({component: 'cli', operation: 'version'}, Effect.void);
 
-      expect(spanAttributes(capture.spans[0]!)).toMatchObject({
+      expect(spanAttributes(capture.spans[0])).toMatchObject({
         'threadnote.runtime.version': 'unknown',
       });
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system, tracer: capture.tracer})));
@@ -368,7 +368,7 @@ describe('anonymous telemetry runtime', () => {
       expect(value).toBe('ok');
       expect(executions).toBe(1);
       expect(capture.spans).toHaveLength(1);
-      expect(spanAttributes(capture.spans[0]!)).not.toHaveProperty('threadnote.invocation.id');
+      expect(spanAttributes(capture.spans[0])).not.toHaveProperty('threadnote.invocation.id');
     }).pipe(
       provideTestLayer(
         anonymousTelemetryTestLayer({
@@ -395,7 +395,7 @@ describe('anonymous telemetry runtime', () => {
       expect(ids).toHaveLength(2);
       expect(ids[0]).toMatch(/^tni_[\da-f]{24}$/u);
       expect(ids[1]).toBe(ids[0]);
-      expect(spanAttributes(capture.spans[0]!)).toMatchObject({
+      expect(spanAttributes(capture.spans[0])).toMatchObject({
         'threadnote.event': 'checkpoint',
         'threadnote.memory.rss.current_bucket': '<32MiB',
       });
@@ -459,7 +459,7 @@ describe('anonymous telemetry runtime', () => {
           }),
         );
 
-        const attributes = spanAttributes(capture.spans[0]!);
+        const attributes = spanAttributes(capture.spans[0]);
         expect(attributes).not.toHaveProperty('threadnote.auto_update.result');
         expect(attributes).not.toHaveProperty('threadnote.auto_update.repair_required');
       }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
@@ -481,8 +481,8 @@ describe('anonymous telemetry runtime', () => {
 
       expect(value).toBe('found');
       expect(capture.spans).toHaveLength(2);
-      const checkpoint = spanAttributes(capture.spans[0]!);
-      const completion = spanAttributes(capture.spans[1]!);
+      const checkpoint = spanAttributes(capture.spans[0]);
+      const completion = spanAttributes(capture.spans[1]);
       expect(checkpoint).toMatchObject({
         'threadnote.event': 'checkpoint',
         'threadnote.operation': 'recall-context',
@@ -523,7 +523,7 @@ describe('anonymous telemetry runtime', () => {
         }),
       );
 
-      const completion = spanAttributes(capture.spans[0]!);
+      const completion = spanAttributes(capture.spans[0]);
       expect(completion).toMatchObject({
         'threadnote.phase': 'recall.lexical-ranking',
         'threadnote.phase.elapsed_ms': 100,
@@ -568,7 +568,7 @@ describe('anonymous telemetry runtime', () => {
         yield* Effect.yieldNow;
 
         expect(capture.spans).toHaveLength(1);
-        expect(spanAttributes(capture.spans[0]!)).toMatchObject({
+        expect(spanAttributes(capture.spans[0])).toMatchObject({
           'threadnote.event': 'checkpoint',
           'threadnote.operation': 'graph-build',
           'threadnote.operation.elapsed_ms': 30_000,
@@ -578,12 +578,12 @@ describe('anonymous telemetry runtime', () => {
         const exit = yield* Fiber.await(fiber);
         expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
         expect(capture.spans).toHaveLength(2);
-        expect(spanAttributes(capture.spans[1]!)).toMatchObject({
+        expect(spanAttributes(capture.spans[1])).toMatchObject({
           'threadnote.event': 'completion',
           'threadnote.operation': 'graph-build',
           'threadnote.outcome': 'interrupted',
         });
-        expect(endedSpanExit(capture.spans[1]!)).toSatisfy(Exit.isSuccess);
+        expect(endedSpanExit(capture.spans[1])).toSatisfy(Exit.isSuccess);
       }),
     );
   });

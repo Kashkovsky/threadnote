@@ -102,7 +102,7 @@ const program = Effect.scoped(
         );
         const finishedAt = yield* Clock.currentTimeNanos;
         const expectedSize = Math.min(VECTOR_QUERY_RESULT_LIMIT, options.documents);
-        const expectedUri = candidates[targetIndex]!.uri;
+        const expectedUri = candidates[targetIndex].uri;
         if (scores?.size !== expectedSize || (scores.get(expectedUri) ?? -1) < 0.999) {
           return yield* Effect.fail(
             new ScriptError(
@@ -314,7 +314,7 @@ function parseOptions(arguments_: readonly string[]): {
   let output: string | undefined;
   let samples = DEFAULT_QUERY_SAMPLES;
   for (let index = 0; index < arguments_.length; index += 1) {
-    const argument = arguments_[index]!;
+    const argument = arguments_[index];
     if (argument === '--documents') documents = positiveInteger(arguments_[++index], '--documents');
     else if (argument === '--samples') samples = positiveInteger(arguments_[++index], '--samples');
     else if (argument === '--output') output = arguments_[++index];

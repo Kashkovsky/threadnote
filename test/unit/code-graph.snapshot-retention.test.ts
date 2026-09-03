@@ -48,9 +48,9 @@ describe('code graph ready snapshot retention', () => {
             ),
           {concurrency: 1, discard: true},
         );
-        yield* Effect.sync(() => seedSymbol(databasePath, fixtures[0]!.snapshot.id));
+        yield* Effect.sync(() => seedSymbol(databasePath, fixtures[0].snapshot.id));
         yield* Effect.forEach(
-          Array.from({length: 128}, (_, index) => fixtures[index % fixtures.length]!),
+          Array.from({length: 128}, (_, index) => fixtures[index % fixtures.length]),
           fixture => store.promote(databasePath, fixture.identity, fixture.snapshot.id),
           {concurrency: 8, discard: true},
         );
@@ -66,7 +66,7 @@ describe('code graph ready snapshot retention', () => {
             expect(
               database
                 .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
-                .get(fixtures[0]!.snapshot.id),
+                .get(fixtures[0].snapshot.id),
             ).toEqual({count: 1});
             expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
           } finally {
@@ -682,11 +682,11 @@ describe('code graph ready snapshot retention', () => {
           const backlogBefore = readSnapshotSymbolCount(databasePath, retired.id);
           const liveTokens = new Set(tokens);
           const releaseOrder = Array.from({length: leaseCount}, (_, index) => index).sort(
-            (left, right) => releasePriorities[left]! - releasePriorities[right]! || left - right,
+            (left, right) => releasePriorities[left] - releasePriorities[right] || left - right,
           );
 
           for (const index of releaseOrder) {
-            const token = tokens[index]!;
+            const token = tokens[index];
             liveTokens.delete(token);
             yield* store.releaseSnapshotLease(databasePath, token);
             expect(readSnapshotLeaseTokens(databasePath)).toEqual([...liveTokens].sort());

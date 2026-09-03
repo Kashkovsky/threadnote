@@ -354,9 +354,7 @@ describe('removed view cleanup worker', () => {
             phase,
             updatedAt: new Date(500).toISOString(),
           });
-          expect(updates[0]!.cursorToken, `${phase}/${source}`).toBe(
-            source === 'stored' ? malformed[phase] : undefined,
-          );
+          expect(updates[0].cursorToken, `${phase}/${source}`).toBe(source === 'stored' ? malformed[phase] : undefined);
         }
       }
     }),
@@ -507,7 +505,7 @@ describe('removed view cleanup worker', () => {
           withPreparedVectorUnit: (_input, entry, _deadline, use) =>
             use(
               Effect.sync(() => {
-                order.push(entry.worktreeId[0]!);
+                order.push(entry.worktreeId[0]);
                 return {
                   cursorToken: `vp1:a:${entry.worktreeId}:model-000:${entry.revision}`,
                   state: 'progress',

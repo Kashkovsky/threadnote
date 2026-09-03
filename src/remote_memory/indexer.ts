@@ -112,7 +112,7 @@ export class RemoteMemoryIndexer {
   }
 
   private async claimAndProject(share: ShareDirectoryRow): Promise<ProjectionResult> {
-    return (await this.sql.begin(async transaction => {
+    return await this.sql.begin(async transaction => {
       await configureTenantTransaction(transaction, share.tenant_id);
       const locked = await transaction<OutboxRow[]>`
         SELECT id, aggregate_id, event_type, generation, attempts
@@ -164,7 +164,7 @@ export class RemoteMemoryIndexer {
         `;
         return 'claimed_failed' as const;
       }
-    })) as ProjectionResult;
+    });
   }
 
   private async updateHealth(shares: readonly ShareDirectoryRow[], result: RemoteMemoryIndexPassResult): Promise<void> {
@@ -205,10 +205,10 @@ export class RemoteMemoryIndexer {
   }
 
   private async withTenant<A>(tenantId: string, use: (transaction: TransactionSql) => Promise<A>): Promise<A> {
-    return (await this.sql.begin(async transaction => {
+    return await this.sql.begin<Promise<A>>(async transaction => {
       await configureTenantTransaction(transaction, tenantId);
       return use(transaction);
-    })) as A;
+    });
   }
 }
 
@@ -234,7 +234,7 @@ function shareKey(share: ShareDirectoryRow): string {
 function shareKeyAfter(shares: readonly ShareDirectoryRow[], current: ShareDirectoryRow): string | undefined {
   if (shares.length === 0) return undefined;
   const index = shares.findIndex(share => shareKey(share) === shareKey(current));
-  return shareKey(shares[(index + 1) % shares.length]!);
+  return shareKey(shares[(index + 1) % shares.length]);
 }
 
 async function advanceContiguousGeneration(transaction: TransactionSql, share: ShareDirectoryRow): Promise<void> {

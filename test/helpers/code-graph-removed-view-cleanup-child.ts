@@ -34,14 +34,14 @@ const CLAIM_RETRY_PAUSE_MILLISECONDS = 25;
 const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const store = yield* CodeGraphStore;
-  const claimed = yield* claimWithBoundedBusyDeferral(store, fs, databasePath!, now, contentionMarkerPath);
+  const claimed = yield* claimWithBoundedBusyDeferral(store, fs, databasePath, now, contentionMarkerPath);
   const marker = JSON.stringify({
     event: 'claim-committed',
     processId: process.pid,
     revisions: claimed.map(entry => entry.revision),
     worktreeIds: claimed.map(entry => entry.worktreeId),
   });
-  yield* fs.writeFileString(markerPath!, marker, {flag: 'wx', mode: 0o600});
+  yield* fs.writeFileString(markerPath, marker, {flag: 'wx', mode: 0o600});
   process.stdout.write(`${marker}\n`);
   // A pending Effect alone does not retain Bun's event loop. Keep a live,
   // bounded timer handle until the parent exercises post-commit SIGKILL.

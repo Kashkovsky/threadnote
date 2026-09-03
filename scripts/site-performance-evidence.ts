@@ -475,11 +475,12 @@ export async function loadRetainedPerformanceEvidence(
   const binding = validatePerformanceArtifactBinding(bindingInput);
   // This page publishes historical release evidence. Later runtime changes must not rewrite its source identity;
   // new bindings remain strict against the current clean HEAD in writePerformanceArtifactBinding below.
-  const [artifactBuffer, measuredSourceTreeSha256, dependencyHashes] = await Promise.all([
-    artifactFile.arrayBuffer(),
-    computePerformanceSourceTreeSha256AtCommit(repositoryRoot, binding.sourceThreadnoteCommit),
-    performanceSourceDependencyHashesAtCommit(repositoryRoot, binding.sourceThreadnoteCommit),
-  ]);
+  const measuredSourceTreeSha256 = computePerformanceSourceTreeSha256AtCommit(
+    repositoryRoot,
+    binding.sourceThreadnoteCommit,
+  );
+  const dependencyHashes = performanceSourceDependencyHashesAtCommit(repositoryRoot, binding.sourceThreadnoteCommit);
+  const artifactBuffer = await artifactFile.arrayBuffer();
   const artifactBytes = new Uint8Array(artifactBuffer);
   verifyReleaseEvidenceSource(repositoryRoot, parseRetainedPerformanceArtifactBytes(artifactBytes));
   return bindRetainedPerformanceArtifact({
@@ -504,10 +505,8 @@ export async function writePerformanceArtifactBinding(repositoryRoot: string): P
   const payload = parseRetainedPerformanceArtifactBytes(artifactBytes);
   assertPerformanceSourcesMatchCommit(repositoryRoot, payload.environment.commit);
   verifyReleaseEvidenceSource(repositoryRoot, payload);
-  const [sourceTreeSha256, dependencyHashes] = await Promise.all([
-    computePerformanceSourceTreeSha256(repositoryRoot),
-    performanceSourceDependencyHashesAtCommit(repositoryRoot, payload.environment.commit),
-  ]);
+  const sourceTreeSha256 = await computePerformanceSourceTreeSha256(repositoryRoot);
+  const dependencyHashes = performanceSourceDependencyHashesAtCommit(repositoryRoot, payload.environment.commit);
   const binding = validatePerformanceArtifactBinding({
     schemaVersion: 1,
     artifactSha256: sha256Hex(artifactBytes),

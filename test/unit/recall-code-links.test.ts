@@ -223,7 +223,7 @@ describe('recall code links', () => {
         }),
       ]);
 
-      const selector = deriveRecallCodeLinkQuerySelectors([anchor])[0]!;
+      const selector = deriveRecallCodeLinkQuerySelectors([anchor])[0];
       const queries = buildBoundedRecallCodeLinkRawQueries(selector, [`threadnote://user/${user}/memories`], 5);
       const plans = yield* Effect.sync(() => {
         const database = new Database(path.join(home, 'indexes', 'lexical', recallIndexDatabaseFilename(false)), {
@@ -288,10 +288,10 @@ describe('recall code links', () => {
         citation({repositoryId, symbolSeed: (index + 1).toString(16).padStart(2, '0')}),
       );
       for (let index = 0; index < 8; index += 1) {
-        yield* writeMemory(fs, path, home, user, 'threadnote', `anchor-zero-${index}`, [anchors[0]!]);
+        yield* writeMemory(fs, path, home, user, 'threadnote', `anchor-zero-${index}`, [anchors[0]]);
       }
       for (let index = 1; index < anchors.length; index += 1) {
-        yield* writeMemory(fs, path, home, user, 'threadnote', `anchor-${index}`, [anchors[index]!]);
+        yield* writeMemory(fs, path, home, user, 'threadnote', `anchor-${index}`, [anchors[index]]);
       }
       const config = {account: 'local', agentContextHome: home, user};
 
@@ -582,12 +582,12 @@ describe('recall code links', () => {
             user,
             'threadnote',
             topic,
-            assignments.map(anchorOrdinal => anchors[anchorOrdinal]!),
+            assignments.map(anchorOrdinal => anchors[anchorOrdinal]),
           );
           modeled.push({
-            anchorOrdinal: assignments[0]!,
+            anchorOrdinal: assignments[0],
             assignments,
-            citationId: anchors[assignments[0]!]!.id,
+            citationId: anchors[assignments[0]].id,
             citationOrdinal: 0,
             matchKind: 'symbol-node',
             uri: `threadnote://user/${user}/memories/durable/projects/threadnote/${topic}.md`,

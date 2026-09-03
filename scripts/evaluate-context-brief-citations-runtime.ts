@@ -31,7 +31,7 @@ function parseArguments(args: readonly string[]): {readonly fixturePath?: string
   let fixturePath: string | undefined;
   let outputPath: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--fixture') fixturePath = required(args[++index], argument);
     else if (argument === '--output') outputPath = required(args[++index], argument);
     else throw new ScriptError(`Unknown Context Brief citation runtime evaluation option: ${argument}`);

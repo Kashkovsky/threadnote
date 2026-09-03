@@ -165,7 +165,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
       name: 'RemoteMemoryError',
     });
     await fixture.migratorSql`
-      UPDATE remote_memory.schema_migrations SET checksum = ${before[0]!.checksum} WHERE version = 1
+      UPDATE remote_memory.schema_migrations SET checksum = ${before[0].checksum} WHERE version = 1
     `;
     await migrateRemoteMemoryDatabase(fixture.migratorSql);
 
@@ -492,7 +492,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
     const outcomes = await Promise.all([operator.applyGitBetaImport(input), operator.applyGitBetaImport(input)]);
     expect(outcomes[0]).toEqual(outcomes[1]);
     expect(outcomes[0]).toEqual([
-      {sourceUri: input.records[0]!.aliases[0], status: 'imported', targetUri: uri, version: 1},
+      {sourceUri: input.records[0].aliases[0], status: 'imported', targetUri: uri, version: 1},
     ]);
     const persisted = await withTenant(fixture.migratorSql, TENANT_A, async transaction => ({
       audits: await transaction<{policy_version: string; share_policy_version: string}[]>`
@@ -657,7 +657,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
     expect(winners).toHaveLength(1);
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0]).toMatchObject({reason: {code: 'conflict', name: 'RemoteMemoryError'}});
-    const winningReceipt = (winners[0] as PromiseFulfilledResult<typeof created>).value;
+    const winningReceipt = winners[0].value;
     expect(winningReceipt).toMatchObject({indexedGeneration: 0, shareGeneration: 2});
 
     const laggingRecall = await repository.recall(
@@ -687,7 +687,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
           (SELECT count(*) FROM remote_memory.audit_events WHERE share_id = ${SHARE_A}) AS audits
       `,
     );
-    expect(numericCounts(mutationState[0]!)).toEqual({audits: 2, idempotency: 4, outbox: 2, revisions: 2});
+    expect(numericCounts(mutationState[0])).toEqual({audits: 2, idempotency: 4, outbox: 2, revisions: 2});
 
     expect(await indexer.runPass({batchSize: 16})).toEqual({failed: 0, processed: 2});
     const indexedRecall = await repository.recall(
@@ -1276,7 +1276,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
         TENANT_A,
         transaction => transaction`
           UPDATE remote_memory.memory_heads SET current_revision_id = NULL
-          WHERE tenant_id = ${TENANT_A} AND share_id = ${SHARE_A} AND id = ${heads[0]!.head_id}
+          WHERE tenant_id = ${TENANT_A} AND share_id = ${SHARE_A} AND id = ${heads[0].head_id}
         `,
       ),
     ).rejects.toSatisfy(isRevisionHeadGuardRejection);
@@ -1286,7 +1286,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
         TENANT_A,
         transaction => transaction`
           UPDATE remote_memory.memory_heads SET current_revision_id = ${firstHead.revision!}
-          WHERE tenant_id = ${TENANT_A} AND share_id = ${SHARE_A} AND id = ${heads[0]!.head_id}
+          WHERE tenant_id = ${TENANT_A} AND share_id = ${SHARE_A} AND id = ${heads[0].head_id}
             AND current_revision_id = ${advanced.revision!}
         `,
       ),
@@ -1296,8 +1296,8 @@ postgresDescribe('remote memory PostgreSQL service', () => {
         fixture.migratorSql,
         TENANT_A,
         transaction => transaction`
-          UPDATE remote_memory.memory_heads SET current_revision_id = ${heads[1]!.revision_id}
-          WHERE tenant_id = ${TENANT_A} AND share_id = ${SHARE_A} AND id = ${heads[0]!.head_id}
+          UPDATE remote_memory.memory_heads SET current_revision_id = ${heads[1].revision_id}
+          WHERE tenant_id = ${TENANT_A} AND share_id = ${SHARE_A} AND id = ${heads[0].head_id}
         `,
       ),
     ).rejects.toSatisfy(isRevisionHeadGuardRejection);
@@ -1310,7 +1310,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
             tenant_id, share_id, id, head_id, base_revision_id, generation, status,
             markdown_body, content_hash, oauth_principal_id, operation_id
           ) VALUES (
-            ${TENANT_A}, ${SHARE_A}, ${crypto.randomUUID()}, ${heads[0]!.head_id}, ${heads[1]!.revision_id},
+            ${TENANT_A}, ${SHARE_A}, ${crypto.randomUUID()}, ${heads[0].head_id}, ${heads[1].revision_id},
             999999, 'active', 'invalid base head', 'invalid', ${PRINCIPAL_A}, 'invalid-base-head'
           )
         `,

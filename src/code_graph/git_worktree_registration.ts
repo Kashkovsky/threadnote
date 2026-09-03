@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {CommandTimedOut, runBinaryCommandEffect} from '../effect/command.js';
 import {
@@ -207,7 +207,7 @@ export const observeCodeGraphGitWorktreeRegistry = Effect.fn('codeGraph.observeG
     gitCommonDirectory: identity.gitCommonDirectory,
     protocol: PROTOCOL_VERSION,
   } satisfies CodeGraphGitWorktreeRegistryRequest;
-  if (!validWorkerRequest(request)) {
+  if (!validCodeGraphGitWorktreeRegistryRequest(request)) {
     return {reason: 'invalid', state: 'unknown'} satisfies CodeGraphGitWorktreeRegistryObservation;
   }
   const timeoutMilliseconds = boundedWorkerTimeout(options.timeoutMilliseconds);
@@ -402,7 +402,7 @@ export async function scanCodeGraphWorktreeAuthorityWorkerRequest(
 export async function scanCodeGraphGitWorktreeRegistry(
   request: CodeGraphGitWorktreeRegistryRequest,
 ): Promise<CodeGraphGitWorktreeRegistryObservation> {
-  if (!validWorkerRequest(request)) return {reason: 'invalid', state: 'unknown'};
+  if (!validCodeGraphGitWorktreeRegistryRequest(request)) return {reason: 'invalid', state: 'unknown'};
   const observation = await scanCodeGraphGitWorktreeRegistryTargetSets(request.checkoutId, request.gitCommonDirectory, [
     request.adminNameKeys,
   ]);
@@ -412,7 +412,7 @@ export async function scanCodeGraphGitWorktreeRegistry(
     entryCount: observation.entryCount,
     registryRootIdentity: observation.registryRootIdentity,
     registryRootKind: observation.registryRootKind,
-    state: observation.states[0]!,
+    state: observation.states[0],
   };
 }
 
@@ -486,7 +486,7 @@ async function scanCodeGraphGitWorktreeRegistryTargetSets(
         return {reason: 'ambiguous', state: 'unknown'};
       }
       const keys = codeGraphGitWorktreeAdminNameKeys(checkoutId, nameBytes);
-      exactEntryKeys.push(keys[0]!);
+      exactEntryKeys.push(keys[0]);
       const matchingTargetIndexes = new Set<number>();
       for (const key of keys) {
         for (const index of targetIndexesByKey.get(key) ?? []) matchingTargetIndexes.add(index);
@@ -498,11 +498,11 @@ async function scanCodeGraphGitWorktreeRegistryTargetSets(
         const matches = await observeCodeGraphGitdirBacklinkMatches(
           registryRoot,
           nameBytes,
-          indexes.map(index => canonicalWorktreePaths[index]!),
+          indexes.map(index => canonicalWorktreePaths[index]),
         );
         if (matches === undefined) return {reason: 'ambiguous', state: 'unknown'};
         for (const [matchIndex, matchesTarget] of matches.entries()) {
-          if (matchesTarget) targetPresence[indexes[matchIndex]!] = true;
+          if (matchesTarget) targetPresence[indexes[matchIndex]] = true;
         }
       }
     }
@@ -567,7 +567,7 @@ export function parseBoundedGitDirectoryOutput(output: Uint8Array): string | und
 }
 
 export function parseCodeGraphGitWorktreeRegistration(value: unknown): CodeGraphGitWorktreeRegistration | undefined {
-  if (!isRecord(value) || (value.kind !== 'main' && value.kind !== 'linked')) return undefined;
+  if (!Predicate.isObject(value) || (value.kind !== 'main' && value.kind !== 'linked')) return undefined;
   if (value.kind === 'main') return {kind: 'main'};
   if (!validAdminNameKeys(value.adminNameKeys)) return undefined;
   return {adminNameKeys: [...value.adminNameKeys], kind: 'linked'};
@@ -586,8 +586,8 @@ export function sameCodeGraphGitWorktreeRegistration(
   );
 }
 
-function validWorkerRequest(value: unknown): value is CodeGraphGitWorktreeRegistryRequest {
-  if (!isRecord(value)) return false;
+export function validCodeGraphGitWorktreeRegistryRequest(value: unknown): value is CodeGraphGitWorktreeRegistryRequest {
+  if (!Predicate.isObject(value)) return false;
   return (
     value.protocol === PROTOCOL_VERSION &&
     typeof value.checkoutId === 'string' &&
@@ -605,7 +605,7 @@ export function validCodeGraphWorktreeAuthorityWorkerRequest(
 }
 
 function validAuthorityWorkerRequest(value: unknown): value is CodeGraphWorktreeAuthorityWorkerRequest {
-  if (!isRecord(value) || value.protocol !== AUTHORITY_PROTOCOL_VERSION) return false;
+  if (!Predicate.isObject(value) || value.protocol !== AUTHORITY_PROTOCOL_VERSION) return false;
   const validPaths = (paths: unknown): paths is readonly string[] =>
     Array.isArray(paths) &&
     paths.length >= 1 &&
@@ -623,7 +623,7 @@ function validAuthorityWorkerRequest(value: unknown): value is CodeGraphWorktree
         value.targets.length <= CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.maxBatchTargets &&
         value.targets.every(
           target =>
-            isRecord(target) &&
+            Predicate.isObject(target) &&
             isHash(target.evidenceToken) &&
             isSafeAbsolutePath(target.canonicalWorktreePath) &&
             validAdminNameKeys(target.adminNameKeys),
@@ -642,7 +642,7 @@ export function validCodeGraphGitWorktreeRegistryBatchRequest(
 }
 
 function validBatchWorkerRequest(value: unknown): value is CodeGraphGitWorktreeRegistryBatchRequest {
-  if (!isRecord(value)) return false;
+  if (!Predicate.isObject(value)) return false;
   return (
     value.protocol === BATCH_PROTOCOL_VERSION &&
     typeof value.checkoutId === 'string' &&
@@ -675,7 +675,7 @@ function parseWorkerResponse(output: Uint8Array): CodeGraphGitWorktreeRegistryOb
       return {reason: 'unavailable', state: 'unknown'};
     }
     const value: unknown = JSON.parse(decoded.slice(0, -1));
-    if (!isRecord(value)) return {reason: 'unavailable', state: 'unknown'};
+    if (!Predicate.isObject(value)) return {reason: 'unavailable', state: 'unknown'};
     if (value.state === 'unknown') {
       return value.reason === 'ambiguous' || value.reason === 'invalid' || value.reason === 'unavailable'
         ? {reason: value.reason, state: 'unknown'}
@@ -714,7 +714,7 @@ function parseBatchWorkerResponse(
       return {reason: 'unavailable', state: 'unknown'};
     }
     const value: unknown = JSON.parse(decoded.slice(0, -1));
-    if (!isRecord(value)) return {reason: 'unavailable', state: 'unknown'};
+    if (!Predicate.isObject(value)) return {reason: 'unavailable', state: 'unknown'};
     if (value.state === 'unknown') {
       return value.reason === 'ambiguous' || value.reason === 'invalid' || value.reason === 'unavailable'
         ? {reason: value.reason, state: 'unknown'}
@@ -841,7 +841,7 @@ function parseWorkerJson(output: Uint8Array): Record<string, unknown> | undefine
     const decoded = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(output);
     if (!decoded.endsWith('\n') || decoded.slice(0, -1).includes('\n')) return undefined;
     const value: unknown = JSON.parse(decoded.slice(0, -1));
-    return isRecord(value) ? value : undefined;
+    return Predicate.isObject(value) ? value : undefined;
   } catch {
     return undefined;
   }
@@ -954,11 +954,7 @@ function isHash(value: unknown): value is string {
 }
 
 function isNotFound(cause: unknown): boolean {
-  return isRecord(cause) && cause.code === 'ENOENT';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return Predicate.isObject(cause) && cause.code === 'ENOENT';
 }
 
 function boundedWorkerTimeout(value: number | undefined): number {

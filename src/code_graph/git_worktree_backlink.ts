@@ -31,10 +31,18 @@ export async function observeCodeGraphGitdirBacklinkMatches(
     const content = await runtimeReadBoundedStableRegularFile(gitdir, CODE_GRAPH_GITDIR_BACKLINK_BYTES_LIMIT);
     const entryAfter = await stableDirectory(adminEntry);
     if (!sameStableDirectory(entryBefore, entryAfter)) return undefined;
-    const matches = canonicalWorktreePaths.map(canonicalWorktreePath =>
-      codeGraphGitdirBacklinkMatchesCanonicalWorktree(content, canonicalWorktreePath, adminEntry, runtimePlatform),
-    );
-    return matches.some(match => match === undefined) ? undefined : (matches as readonly boolean[]);
+    const matches: boolean[] = [];
+    for (const canonicalWorktreePath of canonicalWorktreePaths) {
+      const match = codeGraphGitdirBacklinkMatchesCanonicalWorktree(
+        content,
+        canonicalWorktreePath,
+        adminEntry,
+        runtimePlatform,
+      );
+      if (match === undefined) return undefined;
+      matches.push(match);
+    }
+    return matches;
   } catch {
     return undefined;
   }

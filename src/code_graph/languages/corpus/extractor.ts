@@ -1,6 +1,6 @@
 import {unzipSync, type UnzipFileInfo} from 'fflate';
 import {getResolvedPDFJS} from 'unpdf';
-import {Option} from 'effect';
+import {Option, Predicate} from 'effect';
 import {sha256HexSync} from '../../../crypto/sha256.js';
 import {compareNaturalCodeUnits} from '../../ordering.js';
 import type {CodeGraphEdge, CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../types.js';
@@ -167,12 +167,12 @@ function extractMobileResourceXml(path: string, source: string, extension: strin
   const elementPattern = /<([A-Za-z_][A-Za-z0-9_.:-]*)(?:\s+([^<>]*?))?\s*\/?>/gu;
   for (const match of source.matchAll(elementPattern)) {
     if (elements >= MOBILE_RESOURCE_XML_ELEMENT_LIMIT || attributes >= MOBILE_RESOURCE_XML_ATTRIBUTE_LIMIT) break;
-    const elementName = match[1]!;
+    const elementName = match[1];
     const values = [`element ${elementName}`];
     const attributeSource = match[2] ?? '';
     for (const attribute of attributeSource.matchAll(/([A-Za-z_][A-Za-z0-9_.:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/gu)) {
       if (attributes >= MOBILE_RESOURCE_XML_ATTRIBUTE_LIMIT) break;
-      const name = attribute[1]!;
+      const name = attribute[1];
       const value = decodeXmlEntities(attribute[2] ?? attribute[3] ?? '');
       values.push(`attribute ${name} ${value}`);
       for (const reference of value.match(/[@?](?:android:)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/gu) ?? []) {
@@ -302,7 +302,7 @@ async function extractPdf(file: CodeGraphInventoryFile, options: CorpusExtractio
         text.push(pageText);
         const annotations = await abortable<PdfAnnotations>(page.getAnnotations(), controller.signal);
         for (const annotation of annotations) {
-          if (isRecord(annotation) && annotation.subtype === 'Link' && typeof annotation.url === 'string') {
+          if (Predicate.isObject(annotation) && annotation.subtype === 'Link' && typeof annotation.url === 'string') {
             links.push(annotation.url);
           }
         }
@@ -339,7 +339,7 @@ export function joinPdfTextItemsWithinLimit(items: readonly unknown[], maximumCh
   const chunks: string[] = [];
   let characters = 0;
   for (const item of items) {
-    if (!isRecord(item) || typeof item.str !== 'string') continue;
+    if (!Predicate.isObject(item) || typeof item.str !== 'string') continue;
     const hasEndOfLine = item.hasEOL === true;
     characters += item.str.length + (hasEndOfLine ? 1 : 0);
     if (characters > maximumCharacters) {
@@ -570,12 +570,12 @@ function sectionize(raw: string, fallbackName: string): readonly ExtractedSectio
   const headings = [...text.matchAll(/^(#{1,6}|={1,6}|\*{1,6})\s+(.+)$/gm)];
   if (headings.length === 0) return chunkSection(fallbackName, text);
   const sections: ExtractedSection[] = [];
-  const preamble = text.slice(0, headings[0]!.index).trim();
+  const preamble = text.slice(0, headings[0].index).trim();
   if (preamble) sections.push(...chunkSection(fallbackName, preamble));
   headings.forEach((match, index) => {
     const start = match.index + match[0].length;
     const end = headings[index + 1]?.index ?? text.length;
-    const name = match[2]!.trim().replace(/\s+#+$/, '') || `${fallbackName} · ${index + 1}`;
+    const name = match[2].trim().replace(/\s+#+$/, '') || `${fallbackName} · ${index + 1}`;
     const body = text.slice(start, end).trim();
     sections.push(...chunkSection(name, body || name));
   });
@@ -636,10 +636,10 @@ function normalizeTextDocument(content: string, extension: string): string {
 function notebookToText(content: string): string {
   try {
     const value: unknown = JSON.parse(content);
-    if (!isRecord(value) || !Array.isArray(value.cells)) return content;
+    if (!Predicate.isObject(value) || !Array.isArray(value.cells)) return content;
     return value.cells
       .flatMap((cell, index) => {
-        if (!isRecord(cell) || !Array.isArray(cell.source)) return [];
+        if (!Predicate.isObject(cell) || !Array.isArray(cell.source)) return [];
         const source = cell.source.filter((line): line is string => typeof line === 'string').join('');
         if (!source.trim()) return [];
         const label = cell.cell_type === 'markdown' ? 'Markdown' : cell.cell_type === 'code' ? 'Code' : 'Cell';
@@ -741,13 +741,13 @@ function jpegDimensions(bytes: Uint8Array): {readonly height: number; readonly w
       offset += 1;
       continue;
     }
-    const marker = bytes[offset + 1]!;
-    const length = (bytes[offset + 2]! << 8) | bytes[offset + 3]!;
+    const marker = bytes[offset + 1];
+    const length = (bytes[offset + 2] << 8) | bytes[offset + 3];
     if (length < 2 || offset + 2 + length > bytes.length) return undefined;
     if (marker >= 0xc0 && marker <= 0xc3) {
       return {
-        height: (bytes[offset + 5]! << 8) | bytes[offset + 6]!,
-        width: (bytes[offset + 7]! << 8) | bytes[offset + 8]!,
+        height: (bytes[offset + 5] << 8) | bytes[offset + 6],
+        width: (bytes[offset + 7] << 8) | bytes[offset + 8],
       };
     }
     offset += 2 + length;
@@ -780,7 +780,7 @@ function normalizeWhitespace(value: string): string {
 
 function extractUrls(value: string): readonly string[] {
   return uniqueStrings(
-    [...value.matchAll(/\bhttps?:\/\/[^\s<>"')\]}]+/gi)].map(match => match[0]!.replace(/[.,;:]$/, '')),
+    [...value.matchAll(/\bhttps?:\/\/[^\s<>"')\]}]+/gi)].map(match => match[0].replace(/[.,;:]$/, '')),
   );
 }
 
@@ -900,19 +900,15 @@ function ascii(bytes: Uint8Array, offset: number, length: number): string {
 }
 
 function uint16le(bytes: Uint8Array, offset: number): number {
-  return bytes[offset]! | (bytes[offset + 1]! << 8);
+  return bytes[offset] | (bytes[offset + 1] << 8);
 }
 
 function uint24le(bytes: Uint8Array, offset: number): number {
-  return bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16);
+  return bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
 }
 
 function uint32(bytes: Uint8Array, offset: number): number {
-  return ((bytes[offset]! << 24) | (bytes[offset + 1]! << 16) | (bytes[offset + 2]! << 8) | bytes[offset + 3]!) >>> 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
 }
 
 function messageOf(value: unknown): string {

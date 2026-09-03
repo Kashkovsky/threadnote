@@ -60,7 +60,7 @@ const benchmarkRecall = Effect.gen(function* () {
     options.seed,
   );
   const hash = yield* fixtureHash(serializeRecallEvaluationFixtureV2Identity(fixture));
-  const query = fixture.queries[0]!;
+  const query = fixture.queries[0];
   const runQuery = () =>
     rankRecallCandidates(query.query, fixture.documents, {
       eligibility: deriveRecallEligibilityPolicy({
@@ -162,7 +162,7 @@ function parseArguments(args: readonly string[]): BenchmarkOptions {
   let seed = 0x4_00_00;
   let warmups = 5;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--documents') documentCount = positiveInteger(args[++index], argument);
     else if (argument === '--output') outputPath = requiredValue(args[++index], argument);
     else if (argument === '--require-clean') requireClean = true;

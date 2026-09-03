@@ -381,9 +381,9 @@ function selectedMemoryRoster(value: unknown, label: string): readonly CodeMemor
     memories.some(
       (entry, index) =>
         index > 0 &&
-        (memories[index - 1]!.memoryIdDigest > entry.memoryIdDigest ||
-          (memories[index - 1]!.memoryIdDigest === entry.memoryIdDigest &&
-            memories[index - 1]!.contentSha256 >= entry.contentSha256)),
+        (memories[index - 1].memoryIdDigest > entry.memoryIdDigest ||
+          (memories[index - 1].memoryIdDigest === entry.memoryIdDigest &&
+            memories[index - 1].contentSha256 >= entry.contentSha256)),
     )
   ) {
     throw new Error(`${label} must be unique and canonically sorted.`);

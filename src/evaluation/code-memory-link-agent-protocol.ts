@@ -36,6 +36,13 @@ import {
   validateResolvedServerRequestV1,
   type CanonicalJsonValue,
 } from './code-memory-link-agent-protocol-primitives.js';
+import {
+  ALLOWED_ITEM_TYPES,
+  IGNORED_MATCHING_TURN_METHOD_VALUES,
+  IGNORED_MATCHING_TURN_METHODS,
+  type AllowedItemType,
+  type IgnoredTurnMethod,
+} from './code-memory-link-agent-protocol-items.js';
 import * as contextBriefProtocol from './code-memory-link-context-brief-protocol.js';
 
 export {
@@ -357,35 +364,7 @@ const MAXIMUM_EVENT_TEXT_BYTES = 1_024 * 1_024;
 const MAXIMUM_STATIC_ARTIFACT_BYTES = 1 * 1_024 * 1_024;
 const MAXIMUM_STATIC_ARTIFACT_TOTAL_BYTES = 4 * 1_024 * 1_024;
 
-const ALLOWED_ITEM_TYPES = [
-  'agentMessage',
-  'commandExecution',
-  'fileChange',
-  'mcpToolCall',
-  'plan',
-  'reasoning',
-  'userMessage',
-] as const;
-type AllowedItemType = (typeof ALLOWED_ITEM_TYPES)[number];
-
-const IGNORED_MATCHING_TURN_METHOD_VALUES = [
-  'item/agentMessage/delta',
-  'item/commandExecution/outputDelta',
-  'item/commandExecution/terminalInteraction',
-  'item/fileChange/outputDelta',
-  'item/fileChange/patchUpdated',
-  'item/mcpToolCall/progress',
-  'item/reasoning/summaryPartAdded',
-  'item/reasoning/summaryTextDelta',
-  'item/reasoning/textDelta',
-  'model/safetyBuffering/updated',
-  'model/verification',
-  'turn/diff/updated',
-  'turn/plan/updated',
-] as const;
-type IgnoredTurnMethod = (typeof IGNORED_MATCHING_TURN_METHOD_VALUES)[number];
 type AppServerItemStatus = 'completed' | 'declined' | 'failed' | 'inProgress';
-const IGNORED_MATCHING_TURN_METHODS = new Set<string>(IGNORED_MATCHING_TURN_METHOD_VALUES);
 
 const ALLOWED_NON_TURN_METHODS = new Set([
   'account/rateLimits/updated',
@@ -702,7 +681,7 @@ export function judgeCodeMemoryLinkTaskV1(input: {
       satisfied: constraints.filter(predicate => matches.get(predicate.predicateId) === true).length,
       total: constraints.length,
     },
-    memoryExclusiveSatisfied: memoryExclusive.length === 1 && matches.get(memoryExclusive[0]!.predicateId) === true,
+    memoryExclusiveSatisfied: memoryExclusive.length === 1 && matches.get(memoryExclusive[0].predicateId) === true,
     observationHash: observation.observationHash,
     qualifyingActionItemDigest,
     qualifyingActionQualified,
@@ -1122,7 +1101,8 @@ function normalizeCodexEvidence(
   if (eventCount > MAXIMUM_EVENTS || eventCount < checkpoints.length + proxyStartupNotifications + 2) {
     invalid('app-server event count is inconsistent with retained checkpoints and pre-turn evidence');
   }
-  const staticArtifacts = parseStaticArtifacts(evidence.staticArtifacts as readonly unknown[]);
+  if (!Array.isArray(evidence.staticArtifacts)) invalid('static artifacts must be an array');
+  const staticArtifacts = parseStaticArtifacts(evidence.staticArtifacts);
   const staticArtifactSetHash = matchingHash(evidence.staticArtifactSetHash, 'static artifact set');
   const recomputedArtifactSetHash = protocolDigest(
     'static-artifact-set',
@@ -1187,7 +1167,7 @@ function parseEvidenceCheckpoints(value: unknown): readonly CodeMemoryLinkCodexT
   if (!Array.isArray(value) || value.length < 2 || value.length > MAXIMUM_EVENTS) {
     invalid('retained trace checkpoints must be a bounded non-empty array');
   }
-  return value.map((entry, index) => {
+  return value.map((entry, index): CodeMemoryLinkCodexTraceCheckpointV1 => {
     const checkpoint = record(entry, `trace checkpoint ${index + 1}`);
     if (checkpoint.ordinal !== index + 1) invalid('trace checkpoint ordinals must be contiguous and ordered');
     const method = boundedText(checkpoint.method, `trace checkpoint ${index + 1} method`, 128);
@@ -1226,7 +1206,7 @@ function parseEvidenceCheckpoints(value: unknown): readonly CodeMemoryLinkCodexT
         exactKeys(checkpoint, fields, `trace checkpoint ${index + 1}`);
         const requestDigest = matchingHash(checkpoint.requestDigest, 'Context Brief request');
         if (method === 'item/started') {
-          return {itemIdDigest, itemType, method, ordinal: index + 1, requestDigest, status};
+          return {itemIdDigest, itemType, method: 'item/started', ordinal: index + 1, requestDigest, status};
         }
         const terminalStatus = literal(checkpoint.status, ['completed', 'failed'] as const, 'MCP terminal status');
         const succeeded = boolean(checkpoint.succeeded, 'MCP success');
@@ -1253,7 +1233,7 @@ function parseEvidenceCheckpoints(value: unknown): readonly CodeMemoryLinkCodexT
         return {
           itemIdDigest,
           itemType,
-          method,
+          method: 'item/completed',
           ordinal: index + 1,
           proxyReceipt,
           requestDigest,
@@ -1267,11 +1247,13 @@ function parseEvidenceCheckpoints(value: unknown): readonly CodeMemoryLinkCodexT
         ['itemIdDigest', 'itemType', 'method', 'ordinal', 'status'],
         `trace checkpoint ${index + 1}`,
       );
-      return {itemIdDigest, itemType, method, ordinal: index + 1, status} as CodeMemoryLinkCodexTraceCheckpointV1;
+      return method === 'item/started'
+        ? {itemIdDigest, itemType, method: 'item/started', ordinal: index + 1, status}
+        : {itemIdDigest, itemType, method: 'item/completed', ordinal: index + 1, status};
     }
     if (IGNORED_MATCHING_TURN_METHODS.has(method)) {
       exactKeys(checkpoint, ['method', 'ordinal'], `trace checkpoint ${index + 1}`);
-      return {method: method as IgnoredTurnMethod, ordinal: index + 1};
+      return {method: literal(method, IGNORED_MATCHING_TURN_METHOD_VALUES, 'ignored trace method'), ordinal: index + 1};
     }
     invalid(`retained trace contains unexpected checkpoint method ${method}`);
   });
@@ -1358,7 +1340,7 @@ function collectTraceState(
 } {
   const starts = notifications.filter(event => event.method === 'turn/started');
   if (starts.length !== 1) invalid('app-server trace requires exactly one turn/started notification');
-  const started = starts[0]!;
+  const started = starts[0];
   matchingIdentifier(started.params.threadId, threadId, 'turn/started thread id');
   const startedTurn = record(started.params.turn, 'turn/started turn');
   const turnId = boundedText(startedTurn.id, 'turn id', 256);
@@ -1455,7 +1437,7 @@ function summarizePreTurn(
   if (remote.length !== 1 || thread.length !== 1 || !turn) {
     invalid('trace requires exactly one disabled remote-control status and one thread start before the selected turn');
   }
-  if (!(remote[0]!.eventIndex < thread[0]!.eventIndex && thread[0]!.eventIndex < turn.eventIndex)) {
+  if (!(remote[0].eventIndex < thread[0].eventIndex && thread[0].eventIndex < turn.eventIndex)) {
     invalid('pre-turn evidence must order disabled remote control before thread start and selected turn');
   }
   return {
@@ -1477,7 +1459,7 @@ function buildTraceCheckpoints(
   const usageByEvent = new Map(state.usage.map(entry => [entry.eventIndex, entry]));
   const checkpoints: CodeMemoryLinkCodexTraceCheckpointV1[] = [];
   const append = (checkpoint: CodeMemoryLinkCodexTraceCheckpointWithoutOrdinalV1): void => {
-    checkpoints.push({...checkpoint, ordinal: checkpoints.length + 1} as CodeMemoryLinkCodexTraceCheckpointV1);
+    checkpoints.push({...checkpoint, ordinal: checkpoints.length + 1});
   };
   for (const notification of notifications) {
     if (ALLOWED_NON_TURN_METHODS.has(notification.method) || notification.method === 'model/rerouted') continue;
@@ -1519,23 +1501,26 @@ function buildTraceCheckpoints(
         method: 'item/completed' as const,
         status: item.status,
       };
-      append(
-        call
-          ? {
-              ...shared,
-              itemType: 'mcpToolCall',
-              proxyReceipt: call.proxyReceipt,
-              requestDigest: call.requestDigest,
-              response: call.response,
-              status: call.status as 'completed' | 'failed',
-              succeeded: call.succeeded,
-            }
-          : {...shared, itemType: item.type as Exclude<AllowedItemType, 'mcpToolCall'>},
-      );
+      if (call) {
+        append({
+          ...shared,
+          itemType: 'mcpToolCall',
+          proxyReceipt: call.proxyReceipt,
+          requestDigest: call.requestDigest,
+          response: call.response,
+          status: literal(call.status, ['completed', 'failed'] as const, 'MCP terminal status'),
+          succeeded: call.succeeded,
+        });
+      } else {
+        if (item.type === 'mcpToolCall') invalid('normalized MCP tool call checkpoint is missing');
+        append({...shared, itemType: item.type});
+      }
       continue;
     }
     if (IGNORED_MATCHING_TURN_METHODS.has(notification.method)) {
-      append({method: notification.method as IgnoredTurnMethod});
+      append({
+        method: literal(notification.method, IGNORED_MATCHING_TURN_METHOD_VALUES, 'ignored selected-turn method'),
+      });
       continue;
     }
     invalid(`cannot retain unsupported selected-turn method ${notification.method}`);
@@ -1687,8 +1672,16 @@ function deriveProjectionFromEvidence(
   if (useful && !usage.some(entry => entry.step > useful.associatedStep)) {
     invalid('a useful Context Brief call must be followed by a later provider inference');
   }
-  const contextBriefProtocolAdhered = callProjections.length === 1 && callProjections[0]!.succeeded;
-  const itemCounts = Object.fromEntries(ALLOWED_ITEM_TYPES.map(type => [type, 0])) as Record<AllowedItemType, number>;
+  const contextBriefProtocolAdhered = callProjections.length === 1 && callProjections[0].succeeded;
+  const itemCounts = {
+    agentMessage: 0,
+    commandExecution: 0,
+    fileChange: 0,
+    mcpToolCall: 0,
+    plan: 0,
+    reasoning: 0,
+    userMessage: 0,
+  } satisfies Record<AllowedItemType, number>;
   for (const item of completed) itemCounts[item.type] += 1;
   const providerUsageHash = protocolDigest('provider-usage', {
     threadIdDigest: evidence.threadIdDigest,
@@ -1733,7 +1726,7 @@ function qualifyingActionFromEvidence(
   if (judgment.qualifyingActionItemDigest === null) return null;
   const matching = completed.filter(item => item.digest === judgment.qualifyingActionItemDigest);
   if (matching.length !== 1) invalid('static qualifying action does not identify exactly one retained completed item');
-  const action = matching[0]!;
+  const action = matching[0];
   if (!(rubric.qualifyingActionItemTypes as readonly string[]).includes(action.type) || action.status !== 'completed') {
     invalid('static qualifying action is not a successfully completed item of the sealed type');
   }
@@ -1864,7 +1857,7 @@ function parseCompletedItem(
     requestDigest: contextBriefRequestDigest(identity.item.arguments),
     proxyReceipt: parsed.proxyReceipt,
     response: parsed.response,
-    status: identity.item.status as 'completed' | 'failed',
+    status: literal(identity.item.status, ['completed', 'failed'] as const, 'MCP terminal status'),
     succeeded: parsed.succeeded,
     type: 'mcpToolCall',
   };

@@ -950,7 +950,7 @@ function mapOpenedFile(
     truncate: length => opened.truncate(length),
     write: buffer => opened.write(buffer),
     writeAll: buffer => opened.writeAll(buffer),
-  } as FileSystem.File;
+  };
 }
 
 function escapeRegularExpression(value: string): string {

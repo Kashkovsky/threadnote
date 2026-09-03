@@ -320,7 +320,7 @@ describe('Manager graph properties', () => {
           id: `edge-${index}`,
           provenance: 'resolved',
           relation: 'imports',
-          sourceId: nodeIds[index]!,
+          sourceId: nodeIds[index],
           targetId: nodeId,
         }));
         const selected = representativeManagerGraphEdges(candidates, nodeIds, nodeIds.length);

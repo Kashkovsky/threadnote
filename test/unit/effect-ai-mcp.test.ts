@@ -405,7 +405,7 @@ describe('Effect MCP stdio protocol revisions', () => {
       _tag: 'Exit',
       exit: {_tag: 'Failure', cause: [{_tag: 'Fail', error: {message: 'JSON-RPC batches are not supported'}}]},
       requestId: null,
-    } as never);
+    });
 
     expect(typeof encoded).toBe('string');
     expect(JSON.parse(encoded as string)).toMatchObject({
@@ -455,7 +455,7 @@ describe('Effect MCP stdio protocol revisions', () => {
         ],
       },
       requestId: null,
-    } as never);
+    });
 
     expect(JSON.parse(encoded as string)).toMatchObject({
       error: {code: -32_600, message: 'Unrelated null-id failure'},
@@ -674,7 +674,7 @@ describe('Effect MCP tool progress', () => {
         payload: {requestId: 9},
         tag: 'notifications/cancelled',
       });
-      const oldProgress = stampedProgress[0] as Sent;
+      const oldProgress = stampedProgress[0];
       const unrelatedProgress = {
         _tag: 'Request',
         headers: [],
@@ -700,7 +700,7 @@ describe('Effect MCP tool progress', () => {
       const normalizedOrdinaryRequest = received[2];
       expect(normalizedOrdinaryRequest?._tag).toBe('Request');
       if (normalizedOrdinaryRequest?._tag !== 'Request') return;
-      const freshProgress = stampedProgress[1] as Sent;
+      const freshProgress = stampedProgress[1];
       yield* protocol.send(7, freshProgress);
       yield* protocol.send(7, {
         _tag: 'Exit',
@@ -852,7 +852,7 @@ describe('Effect MCP tool progress', () => {
       });
 
       const result = yield* server
-        .callTool({arguments: {}, name: 'fixture'} as Parameters<EffectMcpServer['callTool']>[0])
+        .callTool({arguments: {}, name: 'fixture'})
         .pipe(Effect.provideService(McpSchema.McpServerClient, fixtureMcpServerClient(17)));
 
       expect(result.content).toEqual([{type: 'text', text: 'receiver-preserved'}]);
@@ -1147,7 +1147,7 @@ function fixtureMcpServerClient(clientId: number): McpSchema.McpServerClient['Se
     clientCapabilities: {},
     clientId,
     clientInfo: {name: 'effect-ai-mcp-test', version: '1.0.0'},
-    getClient: Effect.never as McpSchema.McpServerClient['Service']['getClient'],
+    getClient: Effect.never,
     initializePayload: {} as McpSchema.McpServerClient['Service']['initializePayload'],
     protocolVersion: '2025-06-18',
   });

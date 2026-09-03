@@ -261,12 +261,12 @@ describe('code graph workset catalog', () => {
     const home = await temporaryHome(homes);
     const input = generationInput('engineering', 'manifest-node-membership', [member(1, 'producer')]);
     await runEffect(stageCodeGraphWorksetCatalogGeneration(home, input));
-    const projection = input.members[0]!.projection;
+    const projection = input.members[0].projection;
 
     expect(
       await runEffect(
         codeGraphWorksetCatalogProjectionContainsNode(home, {
-          nodeId: projection.symbols[0]!.nodeId,
+          nodeId: projection.symbols[0].nodeId,
           projectionDigest: projection.projectionDigest,
         }),
       ),
@@ -290,7 +290,7 @@ describe('code graph workset catalog', () => {
     try {
       database
         .query('UPDATE routing_symbols SET name = ? WHERE projection_digest = ?')
-        .run('tampered', secondInput.members[0]!.projection.projectionDigest);
+        .run('tampered', secondInput.members[0].projection.projectionDigest);
     } finally {
       database.close(false);
     }
@@ -650,7 +650,7 @@ describe('code graph workset catalog', () => {
       ...metadata,
       symbols: [
         {
-          ...base.symbols[0]!,
+          ...base.symbols[0],
           lookupKeys: Array.from({length: 64}, (_, index) => `lookup.${String(index).padStart(2, '0')}`),
           path: `${Array.from({length: 96}, (_, index) => `segment-${String(index).padStart(2, '0')}`).join('/')}/symbol.ts`,
           terms: Array.from({length: 64}, (_, index) => ({term: `term-${String(index).padStart(2, '0')}`, weight: 1})),
@@ -719,7 +719,7 @@ describe('code graph workset catalog', () => {
         fc.uniqueArray(fc.integer({min: 0, max: 500}), {maxLength: 32, minLength: 1}),
         fc.integer({min: 1, max: 16}),
         (seeds, pageSize) => {
-          const symbols = seeds.map(seed => projection(seed).symbols[0]!);
+          const symbols = seeds.map(seed => projection(seed).symbols[0]);
           const full = codeGraphWorksetRoutingProjectionLogicalBytes(symbols);
           let streamed = 0;
           for (let offset = 0; offset < symbols.length; offset += pageSize) {

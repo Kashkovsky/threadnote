@@ -214,7 +214,7 @@ describe('automatic orphan provenance cleanup', () => {
         expect(yield* store.observeOrphanProvenanceView(databasePath, worktreeIds.at(-1)!)).toMatchObject({
           state: 'active',
         });
-        expect(yield* store.observeOrphanProvenanceView(databasePath, worktreeIds[0]!)).toEqual({state: 'absent'});
+        expect(yield* store.observeOrphanProvenanceView(databasePath, worktreeIds[0])).toEqual({state: 'absent'});
 
         const malformed = yield* Effect.sync(() => writeOrphanCursor(databasePath, 'malformed')).pipe(
           Effect.andThen(store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 1).pipe(Effect.exit)),
@@ -223,13 +223,13 @@ describe('automatic orphan provenance cleanup', () => {
         if (malformed._tag === 'Success') {
           expect(malformed.value).toEqual({
             cursorRecovery: 'invalid-format',
-            worktreeIds: [worktreeIds[0]!],
+            worktreeIds: [worktreeIds[0]],
           });
         }
         expect(readOrphanCursor(databasePath)).toBe(worktreeIds[0]);
 
         const resumed = yield* store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 1);
-        expect(resumed).toEqual({worktreeIds: [worktreeIds[1]!]});
+        expect(resumed).toEqual({worktreeIds: [worktreeIds[1]]});
 
         yield* Effect.sync(() => writeOrphanCursor(databasePath, 'x'.repeat(65)));
         const structurallyInvalid = yield* store
@@ -276,19 +276,19 @@ describe('automatic orphan provenance cleanup', () => {
             const store = yield* CodeGraphStore;
             yield* store.initialize(databasePath);
             const worktreeIds = Array.from({length: 4}, (_, index) => index.toString(16).padStart(64, '0'));
-            yield* Effect.sync(() => seedActiveView(databasePath, worktreeIds[3]!));
+            yield* Effect.sync(() => seedActiveView(databasePath, worktreeIds[3]));
 
             for (const malformedCursor of malformedCursors) {
               yield* Effect.sync(() => writeOrphanCursor(databasePath, malformedCursor));
               const recovered = yield* store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 2);
               expect(recovered).toEqual({
                 cursorRecovery: 'invalid-format',
-                worktreeIds: [worktreeIds[0]!, worktreeIds[1]!],
+                worktreeIds: [worktreeIds[0], worktreeIds[1]],
               });
               expect(readOrphanCursor(databasePath)).toBe(worktreeIds[1]);
 
               const resumed = yield* store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 2);
-              expect(resumed).toEqual({worktreeIds: [worktreeIds[2]!, worktreeIds[0]!]});
+              expect(resumed).toEqual({worktreeIds: [worktreeIds[2], worktreeIds[0]]});
               expect(new Set([...recovered.worktreeIds, ...resumed.worktreeIds])).toEqual(
                 new Set(worktreeIds.slice(0, 3)),
               );
@@ -349,11 +349,11 @@ describe('automatic orphan provenance cleanup', () => {
         expect(earlier).toBeDefined();
         expect(later).toBeDefined();
         yield* Effect.sync(() => {
-          execFileSync('git', ['-C', later!.main, 'worktree', 'remove', later!.linked], {encoding: 'utf8'});
-          writeOrphanCursor(later!.databasePath, 'malformed-cursor');
+          execFileSync('git', ['-C', later.main, 'worktree', 'remove', later.linked], {encoding: 'utf8'});
+          writeOrphanCursor(later.databasePath, 'malformed-cursor');
         });
         const maintenance = yield* CodeGraphMaintenanceCoordinator;
-        const targets: readonly CodeGraphLifecycleOpportunityTarget[] = [earlier!, later!].map(fixture => ({
+        const targets: readonly CodeGraphLifecycleOpportunityTarget[] = [earlier, later].map(fixture => ({
           anchorIdentity: fixture.mainIdentity,
           checkoutId: fixture.mainIdentity.checkoutId,
           databasePath: fixture.databasePath,
@@ -378,13 +378,13 @@ describe('automatic orphan provenance cleanup', () => {
           ),
         ) as {readonly checkoutId?: unknown; readonly lane?: unknown};
         expect(persistedCursor).toMatchObject({
-          checkoutId: later!.mainIdentity.checkoutId,
+          checkoutId: later.mainIdentity.checkoutId,
           lane: 'reconciliation',
         });
 
         if (first.state === 'completed') {
           expect(first).toMatchObject({
-            checkoutId: earlier!.mainIdentity.checkoutId,
+            checkoutId: earlier.mainIdentity.checkoutId,
             result: {cleanup: 'none'},
           });
         } else {
@@ -393,7 +393,7 @@ describe('automatic orphan provenance cleanup', () => {
 
         if (second.state === 'completed') {
           expect(second).toMatchObject({
-            checkoutId: later!.mainIdentity.checkoutId,
+            checkoutId: later.mainIdentity.checkoutId,
             result: {
               cleanup: 'orphan-provenance',
               diagnostics: [CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC],
@@ -401,19 +401,19 @@ describe('automatic orphan provenance cleanup', () => {
           });
         } else {
           expect(second).toEqual({opportunity: 'diagnostics', reason: 'deadline', state: 'deferred'});
-          if (existsSync(later!.sidecar)) {
+          if (existsSync(later.sidecar)) {
             // The foreground deadline is a valid production result. Finish the same live lane
             // directly so this test verifies cleanup correctness without stretching that guard.
-            const cursorBeforeRetry = readOrphanCursor(later!.databasePath);
+            const cursorBeforeRetry = readOrphanCursor(later.databasePath);
             const completed = yield* maintenance.kickReconciliation({
               allowIndexPreparation: true,
-              anchorIdentity: later!.mainIdentity,
+              anchorIdentity: later.mainIdentity,
               automaticTail: false,
-              checkoutId: later!.mainIdentity.checkoutId,
-              databasePath: later!.databasePath,
+              checkoutId: later.mainIdentity.checkoutId,
+              databasePath: later.databasePath,
               joinActive: false,
               threadnoteHome: home,
-              writerLockPath: later!.layout.databaseWriteLockPath,
+              writerLockPath: later.layout.databaseWriteLockPath,
             });
             expect(completed).toMatchObject({cleanup: 'orphan-provenance', state: 'completed'});
             if (cursorBeforeRetry === 'malformed-cursor') {
@@ -423,10 +423,10 @@ describe('automatic orphan provenance cleanup', () => {
             }
           }
         }
-        expect(existsSync(earlier!.sidecar)).toBe(true);
-        expect(existsSync(later!.sidecar)).toBe(false);
-        expect(readOrphanCursor(later!.databasePath)).not.toBe('malformed-cursor');
-        expect(readFileSync(later!.mainFile, 'utf8')).toBe('main source\n');
+        expect(existsSync(earlier.sidecar)).toBe(true);
+        expect(existsSync(later.sidecar)).toBe(false);
+        expect(readOrphanCursor(later.databasePath)).not.toBe('malformed-cursor');
+        expect(readFileSync(later.mainFile, 'utf8')).toBe('main source\n');
         const serialized = JSON.stringify([first, second]);
         expect(serialized).not.toContain(root);
         expect(serialized).not.toContain('malformed-cursor');

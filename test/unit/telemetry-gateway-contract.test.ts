@@ -72,7 +72,7 @@ describe('telemetry producer and production gateway schema', () => {
     const sourceText = effectTelemetrySource.getFullText();
     const sourceAttributeKeys = new Set(
       [...sourceText.matchAll(/['"]((?:error\.type|session\.id|threadnote\.[a-z0-9_.]+))['"]/giu)].map(
-        match => match[1]!,
+        match => match[1],
       ),
     );
     sourceAttributeKeys.add('service.name');

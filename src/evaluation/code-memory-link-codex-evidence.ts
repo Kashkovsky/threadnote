@@ -1,5 +1,6 @@
 import {sha256HexSync} from '../crypto/sha256.js';
 import {codeMemoryLinkClientProjectionHash} from './code-memory-link-client-descriptor.js';
+import {Predicate} from 'effect';
 import {
   assertCodeMemoryLinkExpectedCodexClientProjectionV1,
   codeMemoryLinkArmPacketHashV1,
@@ -267,7 +268,7 @@ function normalize(value: unknown, hasHash: boolean): Omit<CodeMemoryLinkCodexRa
     approvalCommit: matching(bindingInput.approvalCommit, /^[0-9a-f]{40}$/u, 'approval commit'),
     arm: oneOf(bindingInput.arm, ['anchored', 'task-only', 'no-memory'] as const, 'arm'),
     armPacketHash: matching(bindingInput.armPacketHash, HASH, 'arm packet hash'),
-    armPosition: integer(bindingInput.armPosition, 'arm position', 1, 3) as 1 | 2 | 3,
+    armPosition: armPosition(bindingInput.armPosition),
     assignmentHash: matching(bindingInput.assignmentHash, HASH, 'assignment hash'),
     blindLabel: oneOf(bindingInput.blindLabel, ['X', 'Y', 'Z'] as const, 'blind label'),
     budget: {
@@ -473,7 +474,7 @@ function normalizeGraphPreflightWithoutHash(
   const observedCitationDigests = preflight.observedCitationDigests.map(value =>
     matching(value, HASH, 'observed citation digest'),
   );
-  if (observedCitationDigests.some((entry, index) => index > 0 && observedCitationDigests[index - 1]! >= entry)) {
+  if (observedCitationDigests.some((entry, index) => index > 0 && observedCitationDigests[index - 1] >= entry)) {
     invalid('observed citation digests must be unique and sorted');
   }
   const responses = object(preflight.observedResponses, 'graph preflight response projections');
@@ -504,7 +505,7 @@ function normalizeGraphPreflightWithoutHash(
   if (
     observedSelectedMemories.some((entry, index) => {
       if (index === 0) return false;
-      const previous = observedSelectedMemories[index - 1]!;
+      const previous = observedSelectedMemories[index - 1];
       return (
         previous.memoryIdDigest > entry.memoryIdDigest ||
         (previous.memoryIdDigest === entry.memoryIdDigest && previous.contentSha256 >= entry.contentSha256)
@@ -537,8 +538,8 @@ function normalizeGraphPreflightWithoutHash(
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, expected: readonly string[], label: string): void {
@@ -550,10 +551,16 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[], 
 }
 
 function integer(value: unknown, label: string, minimum: number, maximum: number): number {
-  if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
     invalid(`${label} is out of range`);
   }
-  return value as number;
+  return value;
+}
+
+function armPosition(value: unknown): 1 | 2 | 3 {
+  const parsed = integer(value, 'arm position', 1, 3);
+  if (parsed === 1 || parsed === 2 || parsed === 3) return parsed;
+  invalid('arm position is out of range');
 }
 
 function matching(value: unknown, pattern: RegExp, label: string): string {
@@ -562,8 +569,10 @@ function matching(value: unknown, pattern: RegExp, label: string): string {
 }
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
-  if (typeof value !== 'string' || !allowed.includes(value as T)) invalid(`${label} is invalid`);
-  return value as T;
+  if (typeof value !== 'string') invalid(`${label} is invalid`);
+  const match = allowed.find(candidate => candidate === value);
+  if (match === undefined) invalid(`${label} is invalid`);
+  return match;
 }
 
 function unique(values: readonly string[], label: string): void {

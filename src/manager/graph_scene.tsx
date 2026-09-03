@@ -648,7 +648,7 @@ export function graphFocusLayoutTargets(
       node.y += (node.anchorY - node.y) * 0.006;
     }
     for (const [leftIndex, rightIndex] of focusCollisionPairs(focusNodes, labelSizes, safeZoom)) {
-      separateFocusNodes(focusNodes[leftIndex]!, focusNodes[rightIndex]!, labelSizes, safeZoom);
+      separateFocusNodes(focusNodes[leftIndex], focusNodes[rightIndex], labelSizes, safeZoom);
     }
     for (const node of animatedNeighbors) {
       const deltaX = node.x - selectedNode.x;
@@ -693,7 +693,7 @@ function focusCollisionPairs(
   const pairs: Array<readonly [number, number]> = [];
   for (const [leftPosition, left] of bounds.entries()) {
     for (let rightPosition = leftPosition + 1; rightPosition < bounds.length; rightPosition += 1) {
-      const right = bounds[rightPosition]!;
+      const right = bounds[rightPosition];
       if (right.left >= left.right) break;
       if (!left.highlighted && !right.highlighted) continue;
       if (Math.min(left.bottom, right.bottom) <= Math.max(left.top, right.top)) continue;
@@ -872,9 +872,9 @@ function positionNode(
 }
 
 function colorForNode(node: GraphNode, fallbackIndex: number): string {
-  if (node.type === 'project') return GRAPH_PALETTE[fallbackIndex % GRAPH_PALETTE.length]!;
+  if (node.type === 'project') return GRAPH_PALETTE[fallbackIndex % GRAPH_PALETTE.length];
   const key = node.projectId || node.kind;
-  return GRAPH_PALETTE[Math.abs(hashString(key)) % GRAPH_PALETTE.length]!;
+  return GRAPH_PALETTE[Math.abs(hashString(key)) % GRAPH_PALETTE.length];
 }
 
 function graphGroup(node: GraphNode): string {

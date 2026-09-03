@@ -48,13 +48,13 @@ describe('cross-repository topology projection', () => {
       relations: [{count: 2, value: 'depends_on'}],
       resolutionDomains: [{count: 2, value: 'package:npm'}],
     });
-    expect(componentEdges[0]!.evidence.items[0]).toEqual(
+    expect(componentEdges[0].evidence.items[0]).toEqual(
       expect.objectContaining({
         source: expect.objectContaining({monikerId: expect.stringMatching(/^cgm_/u), path: expect.any(String), span}),
         target: expect.objectContaining({monikerId: expect.stringMatching(/^cgm_/u), path: expect.any(String), span}),
       }),
     );
-    expect(Object.keys(componentEdges[0]!.evidence.items[0]!.source).sort()).toEqual(['monikerId', 'path', 'span']);
+    expect(Object.keys(componentEdges[0].evidence.items[0].source).sort()).toEqual(['monikerId', 'path', 'span']);
     expect(result.coverage).toMatchObject({
       bridges: {
         componentEligible: 2,
@@ -146,8 +146,8 @@ describe('cross-repository topology projection', () => {
         budgets: {maxEdges: 16, maxEvidence: 32, maxEvidencePerEdge: 8, maxNodes: 16},
         repositories: fixture.repositories,
       });
-      const bridges = bridgeOrder.map(index => fixture.bridges[index]!);
-      const repositories = repositoryOrder.map(index => fixture.repositories[index]!);
+      const bridges = bridgeOrder.map(index => fixture.bridges[index]);
+      const repositories = repositoryOrder.map(index => fixture.repositories[index]);
 
       expect(
         projectCodeGraphCrossRepositoryTopology({

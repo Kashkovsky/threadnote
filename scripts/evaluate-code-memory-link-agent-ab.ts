@@ -79,7 +79,7 @@ function parseArguments(args: readonly string[]): {
   let manifestPath: string | undefined;
   let trialsPath: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--assignment') assignmentPath = required(args[++index], argument);
     else if (argument === '--attempts') attemptsPath = required(args[++index], argument);
     else if (argument === '--candidate-commit') candidateCommit = required(args[++index], argument);

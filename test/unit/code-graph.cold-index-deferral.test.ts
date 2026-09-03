@@ -153,7 +153,7 @@ describe('code graph cold query-index deferral', () => {
         expect(
           progress.every(
             (observation, index) =>
-              index === 0 || observation.elapsedMilliseconds >= progress[index - 1]!.elapsedMilliseconds,
+              index === 0 || observation.elapsedMilliseconds >= progress[index - 1].elapsedMilliseconds,
           ),
         ).toBe(true);
       }).pipe(provideTestLayer(ApplicationLayer)),

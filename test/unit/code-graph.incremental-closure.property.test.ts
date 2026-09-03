@@ -567,7 +567,7 @@ describe('project incremental closure', () => {
         ...common,
         cachedFactBytesByPath: new Map(aggregateBudgetFiles.slice(0, 4).map(value => [value.path, 8 * 1_048_576])),
         files: aggregateBudgetFiles.slice(0, 4),
-        modifiedPaths: [aggregateBudgetFiles[0]!.path],
+        modifiedPaths: [aggregateBudgetFiles[0].path],
         projects: [base],
       }),
     ).toMatchObject({cachedFactBytes: 32 * 1_048_576, mode: 'eligible'});
@@ -578,7 +578,7 @@ describe('project incremental closure', () => {
           aggregateBudgetFiles.map((value, index) => [value.path, index === 4 ? 1 : 8 * 1_048_576]),
         ),
         files: aggregateBudgetFiles,
-        modifiedPaths: [aggregateBudgetFiles[0]!.path],
+        modifiedPaths: [aggregateBudgetFiles[0].path],
         projects: [base],
       }),
     ).toEqual({
@@ -726,7 +726,7 @@ describe('project incremental closure', () => {
           return reverseEvidence ? evidence.reverse() : evidence;
         }),
       }));
-      const seedProject = projects[seed % projectCount]!;
+      const seedProject = projects[seed % projectCount];
       const changedPath = `${seedProject.root}/index.ts`;
       const files = projects.map(value => inventory(`${value.root}/index.ts`, 1));
       const canonicalSeeds = assessProjectFileSetClosureSeeds({
@@ -774,11 +774,11 @@ describe('project incremental closure', () => {
       const projects = ids.map((id, source) =>
         project(
           id,
-          ids.filter((_, target) => target !== source && (adjacency[source]! & (1 << target)) !== 0),
+          ids.filter((_, target) => target !== source && (adjacency[source] & (1 << target)) !== 0),
         ),
       );
       const seeds = ids.filter((_, index) => (seedMask & (1 << index)) !== 0);
-      const firstSeed = seeds[0] ?? ids[0]!;
+      const firstSeed = seeds[0] ?? ids[0];
       const expected = independentReverseClosure(projects, seeds.length > 0 ? seeds : [firstSeed]);
       const files = ids.map(id => inventory(`packages/${id}/index.ts`, 1));
       const bytes = new Map(files.map(file => [file.path, 1]));
@@ -900,7 +900,7 @@ describe('project incremental closure', () => {
     const projects = Array.from({length: 5_000}, (_, index) => project(`p${index}`));
     const path = 'packages/p4999/index.ts';
     const template = {
-      ...facts(path, [], true).references![0]!,
+      ...facts(path, [], true).references![0],
       aliasLookupKeys: ['typescript:p4999:path:packages%2Fp4999%2Findex.ts:name:foo'],
     };
     const denseFacts: CodeGraphFileFacts = {
@@ -928,7 +928,7 @@ describe('project incremental closure', () => {
   it('seeds only the symmetric-diff entry of a large otherwise-unchanged barrel', () => {
     const path = 'packages/barrel/index.ts';
     const reference = (index: number) => ({
-      ...facts(path, [], true).references![0]!,
+      ...facts(path, [], true).references![0],
       aliasLookupKeys: [`typescript:barrel:path:${encodeURIComponent(path)}:name:alias${index}`],
       edgeId: `edge-${index}`,
       lookupTiers: [[`typescript:barrel:path:${encodeURIComponent(`packages/core/value-${index}.ts`)}:name:value`]],

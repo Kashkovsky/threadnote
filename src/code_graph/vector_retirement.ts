@@ -1523,8 +1523,8 @@ export const planCodeGraphVectorRetirementAdmission = Effect.fn('codeGraph.planV
         observation.cursor === undefined ? 0 : new TextEncoder().encode(observation.cursor).byteLength;
       const candidateBytes = observation.candidate?.finalFactBytes ?? 0;
       const markerBytes = insertsMarker
-        ? new TextEncoder().encode(observation.candidate!.generation).byteLength +
-          new TextEncoder().encode(observation.candidate!.snapshotId).byteLength +
+        ? new TextEncoder().encode(observation.candidate.generation).byteLength +
+          new TextEncoder().encode(observation.candidate.snapshotId).byteLength +
           256
         : 0;
       return {

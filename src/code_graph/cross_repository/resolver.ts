@@ -110,7 +110,7 @@ export function resolveCodeGraphCrossRepositoryBridges(
       );
 
       if (compatibleCandidates.length === 1) {
-        bridges.push(createBridge({moniker, repository}, compatibleCandidates[0]!));
+        bridges.push(createBridge({moniker, repository}, compatibleCandidates[0]));
         continue;
       }
       if (compatibleCandidates.length > 1) {
@@ -358,8 +358,8 @@ function semverClauseMatches(version: ParsedSemver, rawClause: string): boolean 
 
   const hyphen = clause.match(/^(\S+)\s+-\s+(\S+)$/u);
   if (hyphen !== null) {
-    const lower = parseExactSemver(hyphen[1]!);
-    const upper = parseExactSemver(hyphen[2]!);
+    const lower = parseExactSemver(hyphen[1]);
+    const upper = parseExactSemver(hyphen[2]);
     return (
       lower !== undefined &&
       upper !== undefined &&
@@ -377,8 +377,8 @@ function semverTokenMatches(version: ParsedSemver, token: string): boolean {
 
   const caret = token.match(/^\^(.+)$/u);
   if (caret !== null) {
-    const partial = parsePartialSemver(caret[1]!);
-    const lower = partial === undefined ? parseExactSemver(caret[1]!) : partialLowerBound(partial);
+    const partial = parsePartialSemver(caret[1]);
+    const lower = partial === undefined ? parseExactSemver(caret[1]) : partialLowerBound(partial);
     if (lower === undefined) return false;
     const upper = caretUpperBound(lower, partial);
     return compareSemver(version, lower) >= 0 && compareSemver(version, upper) < 0;
@@ -386,7 +386,7 @@ function semverTokenMatches(version: ParsedSemver, token: string): boolean {
 
   const tilde = token.match(/^~(.+)$/u);
   if (tilde !== null) {
-    const partial = parsePartialSemver(tilde[1]!);
+    const partial = parsePartialSemver(tilde[1]);
     const lower = partial === undefined ? undefined : partialLowerBound(partial);
     if (partial === undefined || lower === undefined || partial.major === undefined) return false;
     const upper =
@@ -396,7 +396,7 @@ function semverTokenMatches(version: ParsedSemver, token: string): boolean {
 
   const comparator = token.match(/^(<=|>=|<|>)(.+)$/u);
   if (comparator !== null) {
-    const bound = lowerBound(comparator[2]!);
+    const bound = lowerBound(comparator[2]);
     if (bound === undefined) return false;
     const comparison = compareSemver(version, bound);
     switch (comparator[1]) {
@@ -449,7 +449,7 @@ function parsePartialSemver(value: string): PartialSemver | undefined {
   const keys = ['major', 'minor', 'patch'] as const;
   let wildcard = false;
   for (let index = 0; index < parts.length; index += 1) {
-    const part = parts[index]!;
+    const part = parts[index];
     if (/^(?:\*|x)$/iu.test(part)) {
       wildcard = true;
       continue;
@@ -457,7 +457,7 @@ function parsePartialSemver(value: string): PartialSemver | undefined {
     if (wildcard || !/^(?:0|[1-9]\d*)$/u.test(part)) return undefined;
     const parsed = Number(part);
     if (!Number.isSafeInteger(parsed)) return undefined;
-    output[keys[index]!] = parsed;
+    output[keys[index]] = parsed;
   }
   return output;
 }
@@ -479,7 +479,7 @@ function parseExactSemver(value: string): ParsedSemver | undefined {
   if (prerelease.some(identifier => /^\d+$/u.test(identifier) && identifier.length > 1 && identifier.startsWith('0'))) {
     return undefined;
   }
-  return {major: numbers[0]!, minor: numbers[1]!, patch: numbers[2]!, prerelease};
+  return {major: numbers[0], minor: numbers[1], patch: numbers[2], prerelease};
 }
 
 function semver(major: number, minor: number, patch: number): ParsedSemver {

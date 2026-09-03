@@ -427,7 +427,7 @@ const buildVectorGeneration = Effect.fn('codeGraph.buildVectorGeneration')(funct
             input.generation,
             item.id,
             item.fingerprint,
-            encodeVector(normalizeVector(vectors[index]!), dimensions),
+            encodeVector(normalizeVector(vectors[index]), dimensions),
           ] as const,
       );
       yield* insertVectorRows(input.sql, embeddedRows);
@@ -518,7 +518,7 @@ const searchGraphVectors = Effect.fn('codeGraph.searchVectors')(function* (input
           id: row.symbol_id,
           vector: decodeVector(row.vector, active.dimensions),
         }));
-        const pageMatches = searchExactVectors(queryVector!, records, {
+        const pageMatches = searchExactVectors(queryVector, records, {
           dimensions: active.dimensions,
           limit: Math.min(boundedLimit, records.length),
           minimumScore: CODE_GRAPH_SEMANTIC_MINIMUM_SCORE,

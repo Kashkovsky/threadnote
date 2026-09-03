@@ -273,7 +273,7 @@ export const acquireCodeGraphDiskReservation = Effect.fn('codeGraph.diskReservat
       yield* options.onWaiting ?? Effect.void;
       waitingReported = true;
     }
-    yield* Effect.sleep(WAIT_BACKOFF_MILLISECONDS[Math.min(backoffIndex, WAIT_BACKOFF_MILLISECONDS.length - 1)]!);
+    yield* Effect.sleep(WAIT_BACKOFF_MILLISECONDS[Math.min(backoffIndex, WAIT_BACKOFF_MILLISECONDS.length - 1)]);
     backoffIndex += 1;
   }
 });
@@ -395,7 +395,7 @@ export function withCodeGraphDiskReservation<A, E, R, R2>(
         yield* options.onWaiting ?? Effect.void;
         waitingReported = true;
       }
-      yield* Effect.sleep(WAIT_BACKOFF_MILLISECONDS[Math.min(backoffIndex, WAIT_BACKOFF_MILLISECONDS.length - 1)]!);
+      yield* Effect.sleep(WAIT_BACKOFF_MILLISECONDS[Math.min(backoffIndex, WAIT_BACKOFF_MILLISECONDS.length - 1)]);
       backoffIndex += 1;
     }
   });

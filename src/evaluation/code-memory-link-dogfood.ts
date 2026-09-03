@@ -8,6 +8,7 @@ import {
   type CodeMemoryLinkRuntimeIdentityV1,
 } from './code-memory-link-attestation.js';
 import {CODE_MEMORY_LINK_DOGFOOD_APPROVED_EVIDENCE_HASHES} from './code-memory-link-approvals.js';
+import {Predicate} from 'effect';
 
 export {CODE_MEMORY_LINK_DOGFOOD_APPROVED_EVIDENCE_HASHES} from './code-memory-link-approvals.js';
 
@@ -675,8 +676,8 @@ function expected(
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
@@ -698,7 +699,7 @@ function literal<const Values extends readonly string[]>(
   label: string,
 ): Values[number] {
   if (typeof value !== 'string' || !(values as readonly string[]).includes(value)) invalid(`${label} is invalid`);
-  return value as Values[number];
+  return value;
 }
 
 function boolean(value: unknown, label: string): boolean {
@@ -713,8 +714,10 @@ function positiveInteger(value: unknown, label: string): number {
 }
 
 function nonNegativeInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) invalid(`${label} must be a non-negative integer`);
-  return value as number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    invalid(`${label} must be a non-negative integer`);
+  }
+  return value;
 }
 
 function invalid(message: string): never {

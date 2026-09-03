@@ -610,19 +610,19 @@ describe('removed code graph view cleanup queue', () => {
               database.query('DELETE FROM active_snapshots WHERE worktree_id = ?').run(WORKTREE_ID);
               database
                 .query('INSERT INTO removed_views (worktree_id, expected_snapshot_id, removed_at) VALUES (?, ?, ?)')
-                .run(WORKTREE_ID, SNAPSHOT_ID, first!.removedAt);
+                .run(WORKTREE_ID, SNAPSHOT_ID, first.removedAt);
             })();
           } finally {
             database.close(false);
           }
         });
 
-        expect(yield* store.authorizeRemovedViewCleanup(databasePath, first!)).toEqual({state: 'stale'});
+        expect(yield* store.authorizeRemovedViewCleanup(databasePath, first)).toEqual({state: 'stale'});
         const [replacement] = yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now() + 1, 1);
         expect(replacement).toBeDefined();
-        expect(replacement!.expectedSnapshotId).toBe(SNAPSHOT_ID);
-        expect(replacement!.removedAt).toBe(first!.removedAt);
-        expect(replacement!.epoch).toBeGreaterThan(first!.epoch);
+        expect(replacement.expectedSnapshotId).toBe(SNAPSHOT_ID);
+        expect(replacement.removedAt).toBe(first.removedAt);
+        expect(replacement.epoch).toBeGreaterThan(first.epoch);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -649,22 +649,22 @@ describe('removed code graph view cleanup queue', () => {
         const [candidate] = yield* store.claimRemovedViewCleanupCandidates(databasePath, now, 32);
         expect(candidate).toBeDefined();
         const noOpFailure = yield* store
-          .updateRemovedViewCleanup(databasePath, candidate!, {
-            attempts: candidate!.attempts,
-            cursorToken: candidate!.cursorToken,
-            nextAttemptAt: candidate!.nextAttemptAt,
-            phase: candidate!.phase,
-            updatedAt: candidate!.updatedAt,
+          .updateRemovedViewCleanup(databasePath, candidate, {
+            attempts: candidate.attempts,
+            cursorToken: candidate.cursorToken,
+            nextAttemptAt: candidate.nextAttemptAt,
+            phase: candidate.phase,
+            updatedAt: candidate.updatedAt,
           })
           .pipe(Effect.flip);
         expect(noOpFailure.message).toContain('update is invalid');
 
         yield* Effect.sync(() => legacyPromote(databasePath, WORKTREE_ID, SNAPSHOT_ID));
-        const authorized = yield* store.authorizeRemovedViewCleanup(databasePath, candidate!);
+        const authorized = yield* store.authorizeRemovedViewCleanup(databasePath, candidate);
         expect(authorized).toEqual({entry: candidate, state: 'authorized'});
         expect(readAuthority(databasePath).active).toEqual([]);
 
-        const advanced = yield* store.updateRemovedViewCleanup(databasePath, candidate!, {
+        const advanced = yield* store.updateRemovedViewCleanup(databasePath, candidate, {
           attempts: 0,
           cursorToken: 'model:' + '1'.repeat(64),
           nextAttemptAt: 2,
@@ -673,7 +673,7 @@ describe('removed code graph view cleanup queue', () => {
         });
         expect(advanced).toMatchObject({entry: {revision: 2}, state: 'updated'});
         expect(
-          yield* store.updateRemovedViewCleanup(databasePath, candidate!, {
+          yield* store.updateRemovedViewCleanup(databasePath, candidate, {
             attempts: 0,
             nextAttemptAt: 3,
             phase: 'build-status',
@@ -712,22 +712,22 @@ describe('removed code graph view cleanup queue', () => {
         const [candidate] = yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now(), 1);
         expect(candidate).toBeDefined();
         const update = {
-          attempts: candidate!.attempts,
+          attempts: candidate.attempts,
           cursorToken: `concurrent:${'1'.repeat(64)}`,
-          nextAttemptAt: candidate!.nextAttemptAt,
-          phase: candidate!.phase,
-          updatedAt: new Date(Date.parse(candidate!.updatedAt) + 1).toISOString(),
+          nextAttemptAt: candidate.nextAttemptAt,
+          phase: candidate.phase,
+          updatedAt: new Date(Date.parse(candidate.updatedAt) + 1).toISOString(),
         } as const;
         const results = yield* Effect.all(
           [
-            store.updateRemovedViewCleanup(databasePath, candidate!, update, {waitTimeoutMilliseconds: 5_000}),
-            store.updateRemovedViewCleanup(databasePath, candidate!, update, {waitTimeoutMilliseconds: 5_000}),
+            store.updateRemovedViewCleanup(databasePath, candidate, update, {waitTimeoutMilliseconds: 5_000}),
+            store.updateRemovedViewCleanup(databasePath, candidate, update, {waitTimeoutMilliseconds: 5_000}),
           ],
           {concurrency: 'unbounded'},
         );
         expect(results.map(result => result.state).sort()).toEqual(['stale', 'updated']);
         expect(readCleanupRows(databasePath)).toEqual([
-          expect.objectContaining({cursor_token: update.cursorToken, revision: candidate!.revision + 1}),
+          expect.objectContaining({cursor_token: update.cursorToken, revision: candidate.revision + 1}),
         ]);
       }).pipe(TestClock.withLive),
     ).pipe(provideTestLayer(ApplicationLayer)),
@@ -816,13 +816,13 @@ describe('removed code graph view cleanup queue', () => {
         const before = readCleanupRows(databasePath);
         expect(
           (yield* store
-            .updateRemovedViewCleanup(databasePath, claimed!, {
+            .updateRemovedViewCleanup(databasePath, claimed, {
               attempts: Number.MAX_SAFE_INTEGER + 1,
               blockedCode: 'busy',
-              cursorToken: claimed!.cursorToken,
-              nextAttemptAt: claimed!.nextAttemptAt + 1,
-              phase: claimed!.phase,
-              updatedAt: new Date(Date.parse(claimed!.updatedAt) + 1).toISOString(),
+              cursorToken: claimed.cursorToken,
+              nextAttemptAt: claimed.nextAttemptAt + 1,
+              phase: claimed.phase,
+              updatedAt: new Date(Date.parse(claimed.updatedAt) + 1).toISOString(),
             })
             .pipe(Effect.exit))._tag,
         ).toBe('Failure');
@@ -876,8 +876,8 @@ describe('removed code graph view cleanup queue', () => {
             expect(carrier).toHaveLength(1);
             database
               .query('DELETE FROM snapshot_leases WHERE snapshot_id = ? AND token <> ?')
-              .run(SNAPSHOT_ID, carrier[0]!.token);
-            return {...observed, carrierToken: carrier[0]!.token};
+              .run(SNAPSHOT_ID, carrier[0].token);
+            return {...observed, carrierToken: carrier[0].token};
           } finally {
             database.close(false);
           }

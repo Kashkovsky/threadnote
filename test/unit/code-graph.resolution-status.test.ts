@@ -31,7 +31,7 @@ describe('code graph reference-resolution status', () => {
         for (const completed of [0, 500, 1_000, 1_201]) {
           const activity = resolutionActivity(completed);
           yield* reporter.progress({activity, phase: 'resolving', subphase: 'references'});
-          persisted.push((yield* readCodeGraphBuildStatuses(layout))[0]!);
+          persisted.push((yield* readCodeGraphBuildStatuses(layout))[0]);
         }
         return persisted;
       }),
@@ -95,7 +95,7 @@ describe('code graph reference-resolution status', () => {
           phase: 'activating',
           snapshotId: 'cgsn_resolution-exit',
         });
-        return (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        return (yield* readCodeGraphBuildStatuses(layout))[0];
       }),
     );
 

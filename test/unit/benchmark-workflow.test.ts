@@ -61,18 +61,18 @@ describe('platform benchmark workflow', () => {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
     const paths = workflow.on.pull_request?.paths ?? [];
-    const pullRequestJob = workflow.jobs['code-graph-pr-scale']!;
+    const pullRequestJob = workflow.jobs['code-graph-pr-scale'];
     const command = pullRequestJob.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
-    const recallJob = workflow.jobs['recall-pr-10k']!;
+    const recallJob = workflow.jobs['recall-pr-10k'];
     const recallCommand = recallJob.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
-    const worksetJob = workflow.jobs['code-graph-workset']!;
+    const worksetJob = workflow.jobs['code-graph-workset'];
     const worksetCommand = worksetJob.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
-    const nativeJob = workflow.jobs['code-graph']!;
+    const nativeJob = workflow.jobs['code-graph'];
     const nativeCapture = nativeJob.steps?.find(step => step.name === 'Capture native graph benchmark');
-    const windowsReplicas = workflow.jobs['code-graph-windows-replicas']!;
+    const windowsReplicas = workflow.jobs['code-graph-windows-replicas'];
     const windowsCapture = windowsReplicas.steps?.find(step => step.name === 'Capture fixed native graph replica');
     const windowsUpload = windowsReplicas.steps?.find(step => step.uses === 'actions/upload-artifact@v7');
-    const windowsGate = workflow.jobs['code-graph-windows']!;
+    const windowsGate = workflow.jobs['code-graph-windows'];
     const windowsDownload = windowsGate.steps?.find(step => step.uses === 'actions/download-artifact@v8');
     const windowsAdjudication = windowsGate.steps?.find(
       step => step.name === 'Adjudicate fixed hosted-runner replicas',
@@ -177,7 +177,7 @@ describe('platform benchmark workflow', () => {
       expect(workflow.jobs[jobName]?.if).not.toContain('refs/tags/');
     }
 
-    const loadEvidence = workflow.jobs['code-graph-load-evidence']!;
+    const loadEvidence = workflow.jobs['code-graph-load-evidence'];
     const loadEvidenceStep = loadEvidence.steps?.find(step => step.env?.THREADNOTE_VITEST_LONG_GROUP);
     expect(loadEvidence['runs-on']).toBe('ubuntu-latest');
     expect(loadEvidence['timeout-minutes']).toBe(30);
@@ -209,8 +209,8 @@ describe('platform benchmark workflow', () => {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
     const paths = ratchetWorkflow.on.pull_request?.paths ?? [];
-    const classifier = ratchetWorkflow.jobs.classify!;
-    const job = ratchetWorkflow.jobs.ratchet!;
+    const classifier = ratchetWorkflow.jobs.classify;
+    const job = ratchetWorkflow.jobs.ratchet;
     const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
 
     expect(paths).toEqual(
@@ -309,7 +309,7 @@ describe('platform benchmark workflow', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
-    const preparation = workflow.jobs['prepare-code-graph-vector-model']!;
+    const preparation = workflow.jobs['prepare-code-graph-vector-model'];
     const preparationSteps = preparation.steps ?? [];
 
     expect(preparation.if).toContain("github.event_name == 'schedule'");
@@ -325,14 +325,14 @@ describe('platform benchmark workflow', () => {
     });
 
     for (const jobName of ['code-graph-vectors', 'code-graph-vectors-10k', 'code-graph-vectors-100k']) {
-      const job = workflow.jobs[jobName]!;
+      const job = workflow.jobs[jobName];
       expect(job.needs).toBe('prepare-code-graph-vector-model');
       const download = job.steps?.find(step => step.uses === 'actions/download-artifact@v8');
       expect(download?.with).toMatchObject({name: 'code-graph-core-embedding-model'});
       expect(job.steps?.some(step => step.uses === 'actions/cache@v6')).toBe(false);
     }
 
-    const vector10k = workflow.jobs['code-graph-vectors-10k']!;
+    const vector10k = workflow.jobs['code-graph-vectors-10k'];
     const retainedFailureEvidence = vector10k.steps?.find(step => step.uses === 'actions/upload-artifact@v7');
     expect(retainedFailureEvidence?.if).toBe('always()');
     expect(retainedFailureEvidence?.with).toMatchObject({
@@ -341,7 +341,7 @@ describe('platform benchmark workflow', () => {
       path: 'artifacts/code-graph-vectors-10k-Linux-${{ runner.arch }}.json',
     });
 
-    const vector100k = workflow.jobs['code-graph-vectors-100k']!;
+    const vector100k = workflow.jobs['code-graph-vectors-100k'];
     const vector100kCapture = vector100k.steps?.find(step => step.run?.includes('--scale-symbols 100000'));
     const vector100kCommand = vector100kCapture?.run;
     const vector100kArtifact = vector100k.steps?.find(step => step.uses === 'actions/upload-artifact@v7');
@@ -372,8 +372,8 @@ describe('platform benchmark workflow', () => {
     const evidence = load(readFileSync('.github/workflows/production-large-evidence.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
-    const caller = workflow.jobs['code-graph-production-large']!;
-    const job = evidence.jobs['code-graph-production-large']!;
+    const caller = workflow.jobs['code-graph-production-large'];
+    const job = evidence.jobs['code-graph-production-large'];
     const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
     const capture = job.steps?.find(step => step.run?.includes('--profile production-large'));
     const admission = job.steps?.find(step => step.id === 'classify_production_large_admission');
@@ -457,11 +457,11 @@ describe('platform benchmark workflow', () => {
     const publisher = load(readFileSync('.github/workflows/publish-release-assets.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
-    const evidence = releaseEvidence.jobs['production-large-evidence']!;
-    const linux = workflow.jobs.linux!;
-    const macos = workflow.jobs.macos!;
-    const publish = workflow.jobs['publish-release']!;
-    const release = publisher.jobs.publish!;
+    const evidence = releaseEvidence.jobs['production-large-evidence'];
+    const linux = workflow.jobs.linux;
+    const macos = workflow.jobs.macos;
+    const publish = workflow.jobs['publish-release'];
+    const release = publisher.jobs.publish;
     const releaseCommand = release.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
 
     expect(evidence.needs).toBeUndefined();
@@ -498,7 +498,7 @@ describe('platform benchmark workflow', () => {
     const evidence = load(readFileSync('.github/workflows/production-large-evidence.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
-    const job = evidence.jobs['code-graph-production-large']!;
+    const job = evidence.jobs['code-graph-production-large'];
     const summary = job.steps?.find(step => step.run?.includes('Production-large release evidence'));
 
     expect(summary?.env).toMatchObject({
@@ -516,7 +516,7 @@ describe('platform benchmark workflow', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
-    const job = workflow.jobs['code-graph-heavy-tail']!;
+    const job = workflow.jobs['code-graph-heavy-tail'];
     const capture = job.steps?.find(step => step.run?.includes('bench:code-graph:heavy-tail'));
     const upload = job.steps?.find(step => step.uses?.startsWith('actions/upload-artifact@'));
 

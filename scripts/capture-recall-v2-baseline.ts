@@ -84,7 +84,7 @@ function parseArguments(args: readonly string[]): Options {
   let createdAt: string | undefined;
   let outputPath: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--created-at') createdAt = isoDate(requiredValue(args[++index], argument));
     else if (argument === '--output') outputPath = requiredValue(args[++index], argument);
     else throw new ScriptError(`Unknown recall baseline option: ${argument}`);

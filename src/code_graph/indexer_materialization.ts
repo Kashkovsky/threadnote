@@ -295,7 +295,7 @@ export function cacheContentBatch(options: {
         return yield* Effect.fail(
           new CodeGraphIndexOperationError('Code graph cache persistence context is unavailable.'),
         );
-      const representative = group.files[0]!;
+      const representative = group.files[0];
       const groupBytes = group.files.reduce((total, file) => total + file.size, 0);
       const groupFactBytes = group.facts.reduce((total, fact) => total + fact.bytes, 0);
       yield* emitContentProgress(
@@ -354,7 +354,7 @@ export function cacheContentBatch(options: {
       );
     });
   const flushOldestPendingGroup = () => {
-    const key = pendingGroups.keys().next().value as string | undefined;
+    const key = pendingGroups.keys().next().value;
     return key === undefined ? Effect.void : flushPendingGroup(key);
   };
   const acceptExtracted = (rows: readonly CodeGraphCacheExtractedRow[], context: CodeGraphContentBatchContext) =>
@@ -439,11 +439,7 @@ export function cacheContentBatch(options: {
       };
       let remainingGroups: readonly ExtractionReuseGroup[] = extractionReuseGroups(orderedFiles, options.languagePacks);
       while (remainingGroups.length > 0) {
-        const lane = planCodeGraphExtractionLanes(
-          remainingGroups,
-          options.parserPool.capacity,
-          extractionCostModel,
-        )[0]!;
+        const lane = planCodeGraphExtractionLanes(remainingGroups, options.parserPool.capacity, extractionCostModel)[0];
         const [groupWindow, rest] = takeCodeGraphExtractionWindow(lane.groups, windowSize);
         remainingGroups = rest;
         const window = groupWindow

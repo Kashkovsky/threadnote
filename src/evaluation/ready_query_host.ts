@@ -73,7 +73,7 @@ export function parseReadyQueryLinuxHostSample(input: {
     memoryPressureTotalMicroseconds: memoryPressure,
     observedAtMilliseconds: input.observedAtMilliseconds,
     runnableProcesses: runnable,
-    stealTicks: cpu![7]!,
+    stealTicks: cpu![7],
     swapInputPages: Number(swapInput),
     swapOutputPages: Number(swapOutput),
   };
@@ -91,8 +91,8 @@ export function readyQueryHostEvidence(
     throw new Error('Ready-query host contention evidence requires at least two Linux observations.');
   }
   const ordered = [...samples].sort((left, right) => left.observedAtMilliseconds - right.observedAtMilliseconds);
-  const first = ordered[0]!;
-  const last = ordered[ordered.length - 1]!;
+  const first = ordered[0];
+  const last = ordered[ordered.length - 1];
   const cpuPressurePercentMaximum = pressurePercentMaximum(ordered, sample => sample.cpuPressureTotalMicroseconds);
   const ioPressurePercentMaximum = pressurePercentMaximum(ordered, sample => sample.ioPressureTotalMicroseconds);
   const memoryPressurePercentMaximum = pressurePercentMaximum(
@@ -143,8 +143,8 @@ function pressurePercentMaximum(
 ): number {
   let maximum = 0;
   for (let index = 1; index < samples.length; index += 1) {
-    const previous = samples[index - 1]!;
-    const current = samples[index]!;
+    const previous = samples[index - 1];
+    const current = samples[index];
     const elapsedMicroseconds = (current.observedAtMilliseconds - previous.observedAtMilliseconds) * 1_000;
     const pressureMicroseconds = select(current) - select(previous);
     if (elapsedMicroseconds < 0 || pressureMicroseconds < 0) {
