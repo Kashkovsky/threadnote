@@ -90,5 +90,7 @@ Use `--take local` only after reviewing the scrubbed content, or provide an expl
 before conflict mutation.
 
 Skills, commands, and constellation packs are namespaced by agent and kind. Bundle manifests list every member and
-path rewrite. Unsafe traversal, binary content without explicit permission, embedded credentials, reserved tokens,
-and locally modified installs are blocked.
+path rewrite. The memory-share scrubber does not run on these artifacts; `--redact` is ignored. Unsafe traversal,
+binary content without explicit permission, embedded binary credentials, machine-local paths in binaries, reserved
+tokens, and locally modified installs are blocked. Declared pack `pathRewrites` still tokenize repo-root paths for
+portable install.

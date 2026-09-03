@@ -1016,8 +1016,8 @@ threadnote share conflict resolve <id> --take shared`,
           {
             type: 'list',
             items: [
-              'Unsafe traversal, credentials, reserved tokens, and locally modified installs are blocked.',
-              'Binary files require an explicit opt-in because the scrubber cannot inspect them.',
+              'The memory-share scrubber does not run on skills, commands, or packs; redact is ignored.',
+              'Unsafe traversal, reserved tokens, binary files without opt-in, embedded binary credentials, machine-local paths in binaries, and locally modified installs are blocked.',
               'Preview the exact bundle before commit and push.',
               'List shared artifacts before installing so agent, kind, and name are unambiguous.',
             ],
