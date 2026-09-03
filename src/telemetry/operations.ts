@@ -68,6 +68,7 @@ const CLI_TOP_LEVEL_OPERATIONS = [
   'forget',
   'graph',
   'handoff',
+  'image-projection',
   'import-pack',
   'inbox',
   'index',

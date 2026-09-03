@@ -121,6 +121,11 @@ describe('CLI production log policy', () => {
     expect(inspectCliInvocation(['processes'])).toMatchObject({writeAnonymousTelemetry: true});
     expect(inspectCliInvocation(['report-issue'])).toMatchObject({writeAnonymousTelemetry: true});
     expect(inspectCliInvocation(['telemetry', 'status'])).toMatchObject({writeAnonymousTelemetry: false});
+    expect(inspectCliInvocation(['image-projection', '--enable'])).toMatchObject({
+      operation: 'image-projection',
+      writeAnonymousTelemetry: true,
+      writeProductionLog: false,
+    });
   });
 
   it('derives anonymous graph operations only from registered command words', () => {

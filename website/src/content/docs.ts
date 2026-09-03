@@ -11,6 +11,7 @@ import {
   typedMemoryRelationsDocsArticle,
 } from './docsMemoryCitationReference.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
+import {optionalImageProjectionCliCommand, optionalImageProjectionDocsArticle} from './docsImageProjection.js';
 import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
 import type {CliCommandReference, DocsSection, McpToolReference} from './docsTypes.js';
 export type {
@@ -130,6 +131,7 @@ export const cliCommands: CliCommandReference[] = [
     ],
   },
   optionalAnonymousTelemetryCliCommand,
+  optionalImageProjectionCliCommand,
   {
     command: 'manage',
     summary: 'Open the loopback-only Manager for diagnostics, memories, shares, and graph visualizations.',
@@ -1793,6 +1795,7 @@ threadnote update --check`,
         ],
       },
       optionalAnonymousTelemetryDocsArticle,
+      optionalImageProjectionDocsArticle,
       {
         id: 'logs-and-support',
         title: 'Logs and support reports',

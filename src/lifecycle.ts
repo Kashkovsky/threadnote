@@ -31,6 +31,7 @@ import {
 } from './mcp/index.js';
 import {legacyProcessDoctorCheck} from './process/diagnostics.js';
 import {maybeRunPostUpdateAfterRepair} from './release/index.js';
+import {imageProjectionDoctorCheck} from './image_projection/config.js';
 import {
   TELEMETRY_CONSENT_VERSION,
   readTelemetryConfiguration,
@@ -185,6 +186,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* safeDoctorCheck('seed manifest', manifestCheck(config.manifestPath)),
     yield* safeDoctorCheck('local generation model', localAiDoctorCheck(config)),
     yield* telemetryDoctorCheck(config),
+    yield* imageProjectionDoctorCheck(config),
   );
   const inferredMcpClients = yield* inferConfiguredMcpClients().pipe(Effect.catch(() => Effect.succeed([])));
   checks.push(...(yield* safeDoctorChecks('MCP configuration', mcpConfigurationChecks(config, inferredMcpClients))));

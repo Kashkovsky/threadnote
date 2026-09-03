@@ -39,6 +39,7 @@ import {
 } from '../../memory/document.js';
 import {captureMemoryCodeCitationsForMcp} from '../memory_code_citation.js';
 import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
+import {tryProjectMemoryReadAsImages} from '../../image_projection/mcp_result.js';
 import {
   MEMORY_READ_DEFAULT_BUDGET_TOKENS,
   MEMORY_READ_MAXIMUM_BUDGET_TOKENS,
@@ -1222,7 +1223,7 @@ export function registerReadTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description: `${description} Accepts canonical pointers and bounded threadnote://memory/tn_ identity aliases. Paged at no more than 1500 estimated tokens. Start with uri or uris. To continue, pass cursor without uri, uris, mode, or section; budgetTokens may be adjusted.`,
+      description: `${description} Accepts canonical pointers and bounded threadnote://memory/tn_ identity aliases. Paged at no more than 1500 estimated tokens by default. Optional image projection can return a complete memory as PNG pages. Start with uri or uris. To continue, pass cursor without uri, uris, mode, or section; budgetTokens may be adjusted.`,
       inputSchema: {
         budgetTokens: McpInput.integer('Whole-response budget; defaults to 1500 tokens', {
           minimum: MEMORY_READ_MINIMUM_BUDGET_TOKENS,
@@ -1331,6 +1332,17 @@ export function registerReadTool(
         if (continuation && !memoryReadSourcesMatch(resources, continuation.sourceHashes)) {
           return argumentError(`${name} source changed after the prior page; restart from the URI.`);
         }
+        const imageProjected = yield* tryProjectMemoryReadAsImages({
+          budgetTokens: budgetTokens ?? MEMORY_READ_DEFAULT_BUDGET_TOKENS,
+          config,
+          memoryScopeReceipt: memoryScope ? cursorCloudMemoryScopeReceipt(memoryScope) : undefined,
+          mode: continuation?.mode ?? mode,
+          requestedCursor,
+          resources,
+          section: selectedSection,
+          warnings: syncMessages,
+        });
+        if (imageProjected !== undefined) return imageProjected;
         const crypto = yield* Crypto.Crypto;
         const continuationCursor = memoryReadCursorToken(yield* crypto.randomUUIDv4);
         const projected = Result.try(() =>

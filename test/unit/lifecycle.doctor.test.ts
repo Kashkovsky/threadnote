@@ -9,6 +9,7 @@ import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {memoryProjectConsistencyCheck, runDoctor, telemetryDoctorCheck} from '../../src/lifecycle.js';
+import {imageProjectionDoctorCheck} from '../../src/image_projection/config.js';
 import {DEFAULT_TELEMETRY_ENDPOINT} from '../../src/telemetry/config.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -167,6 +168,32 @@ describe('doctor report resilience', () => {
           detail: `enabled by explicit consent with automatic future scope acceptance; endpoint ${DEFAULT_TELEMETRY_ENDPOINT}`,
           name: 'anonymous telemetry',
           status: 'ok',
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('checks image projection locally without creating state', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-doctor-image-projection-'});
+        const config = {agentContextHome: home};
+
+        expect(yield* imageProjectionDoctorCheck(config)).toEqual({
+          detail: 'disabled; MCP read_context stays paged text',
+          name: 'MCP image projection',
+          status: 'ok',
+        });
+        expect(yield* fs.exists(path.join(home, 'image-projection'))).toBe(false);
+
+        yield* fs.makeDirectory(path.join(home, 'image-projection'), {recursive: true});
+        yield* fs.writeFileString(path.join(home, 'image-projection', 'config.json'), '{invalid-json}\n');
+        expect(yield* imageProjectionDoctorCheck(config)).toEqual({
+          detail: 'invalid or unreadable configuration; image projection fails closed',
+          name: 'MCP image projection',
+          status: 'warn',
         });
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),

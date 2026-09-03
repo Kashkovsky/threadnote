@@ -85,6 +85,18 @@ describe('Bun distribution contract', () => {
     expect(noticeVersion).toBe(manifest.dependencies?.jose);
   });
 
+  it('keeps the direct pxpipe-proxy attribution aligned with the runtime dependency', async () => {
+    const [manifestText, thirdPartyNotice] = await Promise.all([
+      readFile(join(process.cwd(), 'package.json'), 'utf8'),
+      readFile(join(process.cwd(), 'THIRD_PARTY.md'), 'utf8'),
+    ]);
+    const manifest = JSON.parse(manifestText) as PackageManifest;
+    const noticeVersion = thirdPartyNotice.match(/^- `pxpipe-proxy` ([^\s]+) \(MIT\),/mu)?.[1];
+
+    expect(manifest.dependencies?.['pxpipe-proxy']).toMatch(/^\d+\.\d+\.\d+$/u);
+    expect(noticeVersion).toBe(manifest.dependencies?.['pxpipe-proxy']);
+  });
+
   it('keeps release-coupled native and type packages exact in the manifest and lockfile', async () => {
     const [manifestText, lockfile, thirdPartyNotices] = await Promise.all([
       readFile(join(process.cwd(), 'package.json'), 'utf8'),

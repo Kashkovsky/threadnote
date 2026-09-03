@@ -80,6 +80,23 @@ export function memoryReadSourcesMatch(
   return resources.every((resource, index) => sha256HexSync(resource.text) === expectedHashes[index]);
 }
 
+export function memoryReadWouldPage(
+  resources: readonly MemoryReadResource[],
+  options: {
+    readonly budgetTokens?: number;
+    readonly mode?: MemoryReadMode;
+    readonly section?: string;
+  } = {},
+): boolean {
+  return !projectMemoryReadPage(resources, {
+    budgetTokens: options.budgetTokens,
+    continuationCursor: 'tnrc_image_projection_probe',
+    includeReceipt: false,
+    mode: options.mode,
+    section: options.section,
+  }).complete;
+}
+
 export function projectMemoryReadPage(
   resources: readonly MemoryReadResource[],
   options: {
