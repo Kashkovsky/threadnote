@@ -1038,11 +1038,7 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
     if (!Number.isFinite(value) || value < 0) continue;
     const attribute = recordValue(FIELD_ATTRIBUTE_KEYS, key);
     if (typeof attribute !== 'string') continue;
-    Reflect.set(
-      attributes,
-      attribute,
-      QUANTITY_FIELD_KEYS.has(key) ? quantityBucket(value) : boundedNumber(value),
-    );
+    Reflect.set(attributes, attribute, QUANTITY_FIELD_KEYS.has(key) ? quantityBucket(value) : boundedNumber(value));
   }
   return attributes;
 }
