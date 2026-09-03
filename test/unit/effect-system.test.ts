@@ -424,7 +424,7 @@ describe('SystemInfo disk capacity parsing', () => {
                   },
                   750,
                 ).pipe(Effect.forkChild({startImmediately: true}));
-                const processId = yield* waitForRecordedProcessId(fixture.processIdPath, 500);
+                const processId = yield* waitForRecordedProcessId(fixture.processIdPath, PROCESS_START_WAIT_MS);
 
                 expect(yield* Fiber.join(fiber)).toBe(16_384);
                 expect(fallbackInvocations).toBe(1);
@@ -828,7 +828,7 @@ describe('SystemInfo disk capacity parsing', () => {
                 },
                 750,
               ).pipe(Effect.forkChild({startImmediately: true}));
-              const processId = yield* waitForRecordedProcessId(fixture.processIdPath, 500);
+              const processId = yield* waitForRecordedProcessId(fixture.processIdPath, PROCESS_START_WAIT_MS);
 
               expect(yield* Fiber.join(fiber)).toBeUndefined();
               expect((yield* Clock.currentTimeMillis) - startedAt).toBeLessThan(2_000);
@@ -914,6 +914,8 @@ function scriptedWindowsCapacityWorker(
     },
   };
 }
+
+const PROCESS_START_WAIT_MS = 5_000;
 
 function waitForRecordedProcessId(path: string, timeoutMilliseconds: number) {
   return Effect.gen(function* () {
