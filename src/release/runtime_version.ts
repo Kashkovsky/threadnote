@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Path, Predicate} from 'effect';
 
 let cachedVersion: string | undefined;
 
@@ -21,14 +21,18 @@ export const getThreadnoteVersion = Effect.fn('version.getThreadnoteVersion')(fu
   cachedVersion = yield* fs.readFileString(packageJsonPath).pipe(
     Effect.flatMap(content =>
       Effect.try({
-        try: () => JSON.parse(content) as {readonly version?: unknown},
+        try: (): unknown => JSON.parse(content),
         catch: () => undefined,
       }),
     ),
-    Effect.map(parsed =>
-      parsed && typeof parsed.version === 'string' && parsed.version.length > 0 ? parsed.version : 'unknown',
-    ),
+    Effect.map(packageVersion),
     Effect.catch(() => Effect.succeed('unknown')),
   );
   return cachedVersion;
 });
+
+function packageVersion(value: unknown): string {
+  if (!Predicate.isObject(value)) return 'unknown';
+  const version = value.version;
+  return typeof version === 'string' && version.length > 0 ? version : 'unknown';
+}

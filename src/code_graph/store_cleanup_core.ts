@@ -149,13 +149,29 @@ const observeSnapshotPurge = Effect.fn('codeGraph.observeSnapshotPurge')(functio
   ) {
     return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence exceeded its bound.'));
   }
-  const activeViewIds = activeRows.map(row => row.worktree_id);
-  const childSnapshotIds = childRows.map(row => row.id);
-  const liveLeases = leaseRows.map(row => {
-    if (typeof row.token !== 'string' || !Number.isSafeInteger(row.expires_at)) return undefined;
-    return {expiresAt: Number(row.expires_at), identity: sha256HexSync(`snapshot-purge-lease\n${row.token}`)};
-  });
-  const buildOwnerIds = ownerRows.map(row => {
+  const activeViewIds: string[] = [];
+  for (const row of activeRows) {
+    if (typeof row.worktree_id !== 'string' || !/^[0-9a-f]{64}$/u.test(row.worktree_id)) {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence is invalid.'));
+    }
+    activeViewIds.push(row.worktree_id);
+  }
+  const childSnapshotIds: string[] = [];
+  for (const row of childRows) {
+    if (typeof row.id !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(row.id)) {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence is invalid.'));
+    }
+    childSnapshotIds.push(row.id);
+  }
+  const liveLeases: CodeGraphSnapshotPurgeLeaseEvidence[] = [];
+  for (const row of leaseRows) {
+    if (typeof row.token !== 'string' || typeof row.expires_at !== 'number' || !Number.isSafeInteger(row.expires_at)) {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence is invalid.'));
+    }
+    liveLeases.push({expiresAt: row.expires_at, identity: sha256HexSync(`snapshot-purge-lease\n${row.token}`)});
+  }
+  const buildOwnerIds: string[] = [];
+  for (const row of ownerRows) {
     if (
       typeof row.owner_token !== 'string' ||
       typeof row.claimed_at !== 'string' ||
@@ -164,40 +180,34 @@ const observeSnapshotPurge = Effect.fn('codeGraph.observeSnapshotPurge')(functio
       (row.process_start_identity !== null && typeof row.process_start_identity !== 'string') ||
       (row.logical_snapshot_id !== null && typeof row.logical_snapshot_id !== 'string')
     ) {
-      return undefined;
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence is invalid.'));
     }
-    return sha256HexSync(
-      `snapshot-purge-owner\n${JSON.stringify([
-        row.owner_token,
-        row.claimed_at,
-        row.build_id,
-        row.process_id,
-        row.process_start_identity,
-        row.logical_snapshot_id,
-      ])}`,
+    buildOwnerIds.push(
+      sha256HexSync(
+        `snapshot-purge-owner\n${JSON.stringify([
+          row.owner_token,
+          row.claimed_at,
+          row.build_id,
+          row.process_id,
+          row.process_start_identity,
+          row.logical_snapshot_id,
+        ])}`,
+      ),
     );
-  });
-  const cleanupEpochs = cleanupRows.map(row => {
+  }
+  const cleanupEpochs: string[] = [];
+  for (const row of cleanupRows) {
     if (
       typeof row.worktree_id !== 'string' ||
       !Number.isSafeInteger(row.epoch) ||
       !Number.isSafeInteger(row.revision) ||
       typeof row.phase !== 'string'
     ) {
-      return undefined;
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence is invalid.'));
     }
-    return sha256HexSync(
-      `snapshot-purge-cleanup\n${JSON.stringify([row.worktree_id, row.epoch, row.revision, row.phase])}`,
+    cleanupEpochs.push(
+      sha256HexSync(`snapshot-purge-cleanup\n${JSON.stringify([row.worktree_id, row.epoch, row.revision, row.phase])}`),
     );
-  });
-  if (
-    activeViewIds.some(value => typeof value !== 'string' || !/^[0-9a-f]{64}$/u.test(value)) ||
-    childSnapshotIds.some(value => typeof value !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(value)) ||
-    liveLeases.some(value => value === undefined) ||
-    buildOwnerIds.some(value => value === undefined) ||
-    cleanupEpochs.some(value => value === undefined)
-  ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence is invalid.'));
   }
   const blockers: CodeGraphSnapshotPurgeGraphBlockerCode[] = [];
   if (activeViewIds.length > 0) blockers.push('active-view');
@@ -209,12 +219,12 @@ const observeSnapshotPurge = Effect.fn('codeGraph.observeSnapshotPurge')(functio
   if (snapshot.state !== 'ready' && snapshot.state !== 'retired') blockers.push('unsupported-state');
   blockers.sort(compareCodeUnits);
   const evidenceWithoutDigest = {
-    activeViewIds: [...(activeViewIds as readonly string[])].sort(compareCodeUnits),
+    activeViewIds: [...activeViewIds].sort(compareCodeUnits),
     blockers,
-    buildOwnerIds: [...(buildOwnerIds as readonly string[])].sort(compareCodeUnits),
-    childSnapshotIds: [...(childSnapshotIds as readonly string[])].sort(compareCodeUnits),
-    cleanupEpochs: [...(cleanupEpochs as readonly string[])].sort(compareCodeUnits),
-    liveLeases: [...(liveLeases as readonly CodeGraphSnapshotPurgeLeaseEvidence[])].sort(
+    buildOwnerIds: [...buildOwnerIds].sort(compareCodeUnits),
+    childSnapshotIds: [...childSnapshotIds].sort(compareCodeUnits),
+    cleanupEpochs: [...cleanupEpochs].sort(compareCodeUnits),
+    liveLeases: [...liveLeases].sort(
       (left, right) => left.expiresAt - right.expiresAt || compareCodeUnits(left.identity, right.identity),
     ),
     snapshot,

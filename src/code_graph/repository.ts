@@ -291,8 +291,9 @@ export function parseRepositoryReadFenceSetupObservation(
     worktree: 'setup: worktree: ',
   } as const;
   const matches = {gitCommonDirectory: [] as string[], worktree: [] as string[]};
+  const markerKeys: (keyof typeof markers)[] = ['gitCommonDirectory', 'worktree'];
   for (const line of output.split(/\r?\n/u)) {
-    for (const key of Object.keys(markers) as Array<keyof typeof markers>) {
+    for (const key of markerKeys) {
       const index = line.indexOf(markers[key]);
       if (index >= 0) matches[key].push(line.slice(index + markers[key].length));
     }

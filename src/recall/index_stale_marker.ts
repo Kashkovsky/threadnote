@@ -1,4 +1,4 @@
-import {Clock, Effect, FileSystem, Option} from 'effect';
+import {Clock, Effect, FileSystem, Option, Predicate} from 'effect';
 import type {CanonicalMutationGenerationTransition} from '../effect/resource_mutation_generation.js';
 import {SystemInfo} from '../effect/system.js';
 import {mergeRecallIndexCanonicalMutationContinuity} from './index_freshness.js';
@@ -29,22 +29,8 @@ export function readRecallStaleMarker(
     const raw = yield* fs.readFileString(stalePath).pipe(Effect.catch(() => Effect.succeed('present')));
     const legacyGeneration = raw.trim() || 'present';
     const value = Option.getOrUndefined(Option.liftThrowable((content: string): unknown => JSON.parse(content))(raw));
-    if (
-      typeof value === 'object' &&
-      value !== null &&
-      (value as {readonly version?: unknown}).version === RECALL_STALE_MARKER_VERSION &&
-      typeof (value as {readonly generation?: unknown}).generation === 'string' &&
-      (value as {readonly generation: string}).generation.length > 0 &&
-      typeof (value as {readonly forceRefresh?: unknown}).forceRefresh === 'boolean' &&
-      (!('canonicalMutationGeneration' in value) ||
-        typeof (value as {readonly canonicalMutationGeneration?: unknown}).canonicalMutationGeneration === 'string') &&
-      (!('previousCanonicalMutationGeneration' in value) ||
-        typeof (value as {readonly previousCanonicalMutationGeneration?: unknown})
-          .previousCanonicalMutationGeneration === 'string') &&
-      Array.isArray((value as {readonly invalidatedUris?: unknown}).invalidatedUris) &&
-      (value as {readonly invalidatedUris: readonly unknown[]}).invalidatedUris.every(uri => typeof uri === 'string')
-    ) {
-      const marker = value as RecallStaleMarker;
+    const marker = toRecallStaleMarker(value);
+    if (marker !== undefined) {
       return {
         ...(marker.canonicalMutationGeneration === undefined
           ? {}
@@ -65,6 +51,36 @@ export function readRecallStaleMarker(
       version: RECALL_STALE_MARKER_VERSION,
     };
   });
+}
+
+function toRecallStaleMarker(value: unknown): RecallStaleMarker | undefined {
+  if (!Predicate.isObject(value)) return undefined;
+  const record = value;
+  if (
+    record.version !== RECALL_STALE_MARKER_VERSION ||
+    typeof record.generation !== 'string' ||
+    record.generation.length === 0 ||
+    typeof record.forceRefresh !== 'boolean' ||
+    !Array.isArray(record.invalidatedUris) ||
+    !record.invalidatedUris.every(uri => typeof uri === 'string') ||
+    (record.canonicalMutationGeneration !== undefined && typeof record.canonicalMutationGeneration !== 'string') ||
+    (record.previousCanonicalMutationGeneration !== undefined &&
+      typeof record.previousCanonicalMutationGeneration !== 'string')
+  ) {
+    return undefined;
+  }
+  return {
+    ...(record.canonicalMutationGeneration === undefined
+      ? {}
+      : {canonicalMutationGeneration: record.canonicalMutationGeneration}),
+    forceRefresh: record.forceRefresh,
+    generation: record.generation,
+    invalidatedUris: record.invalidatedUris,
+    ...(record.previousCanonicalMutationGeneration === undefined
+      ? {}
+      : {previousCanonicalMutationGeneration: record.previousCanonicalMutationGeneration}),
+    version: RECALL_STALE_MARKER_VERSION,
+  };
 }
 
 export const writeRecallStaleGeneration = Effect.fn('recall.writeStaleGeneration')(function* (

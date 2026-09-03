@@ -316,7 +316,7 @@ function requiredStringArray(value: unknown, label: string): readonly string[] {
   if (!Array.isArray(value) || !value.every(item => typeof item === 'string' && item.trim().length > 0)) {
     throw new ObsidianConfigurationError(`${label} must be an array of non-empty strings.`);
   }
-  return [...new Set(value.map(item => (item as string).trim()))];
+  return [...new Set(value.map(item => item.trim()))];
 }
 
 function sourcePatterns(value: unknown, label: string): readonly string[] {

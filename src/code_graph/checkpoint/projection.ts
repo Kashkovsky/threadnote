@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {Effect, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {runBinaryCommandEffect} from '../../effect/command.js';
@@ -46,6 +46,14 @@ import {
   type CodeGraphCheckpointReuseV1,
   type CodeGraphCheckpointSpanV1,
 } from './schema.js';
+
+const CodeGraphCheckpointSpanSchema = Schema.Struct({
+  column: Schema.Int,
+  endColumn: Schema.Int,
+  endLine: Schema.Int,
+  line: Schema.Int,
+});
+const isCodeGraphCheckpointSpan = Schema.is(CodeGraphCheckpointSpanSchema);
 
 export const CODE_GRAPH_CHECKPOINT_PROJECTION_LEASE_MILLISECONDS = 30 * 60_000;
 export const CODE_GRAPH_CHECKPOINT_PROJECTION_LEASE_RENEWAL_INTERVAL_MILLISECONDS = 10 * 60_000;
@@ -789,7 +797,16 @@ export function parseGitTreeEntries(
   for (const encoded of text.slice(0, -1).split('\0')) {
     const fields = encoded.split('\t');
     if (fields.length !== 5) throw new CodeGraphCheckpointProjectionError('Git tree entry is malformed.');
-    const [mode, type, blobId, encodedSize, path] = fields as [string, string, string, string, string];
+    const [mode, type, blobId, encodedSize, path] = fields;
+    if (
+      mode === undefined ||
+      type === undefined ||
+      blobId === undefined ||
+      encodedSize === undefined ||
+      path === undefined
+    ) {
+      throw new CodeGraphCheckpointProjectionError('Git tree entry is malformed.');
+    }
     const size = Number(encodedSize);
     if (
       !/^\d{6}$/u.test(mode) ||
@@ -1443,11 +1460,17 @@ function parseOptionalJson(value: unknown, label: string): unknown | undefined {
 
 function parseOptionalSpan(value: unknown, label: string): CodeGraphCheckpointSpanV1 | undefined {
   const parsed = parseOptionalJson(value, label);
-  return parsed === undefined ? undefined : (parsed as CodeGraphCheckpointSpanV1);
+  if (parsed === undefined) return undefined;
+  if (!isCodeGraphCheckpointSpan(parsed))
+    throw new CodeGraphCheckpointProjectionError(`Checkpoint ${label} is invalid.`);
+  return parsed;
 }
 
 function parseRequiredSpan(value: string, label: string): CodeGraphCheckpointSpanV1 {
-  return parseRequiredJson(value, label) as CodeGraphCheckpointSpanV1;
+  const parsed = parseRequiredJson(value, label);
+  if (!isCodeGraphCheckpointSpan(parsed))
+    throw new CodeGraphCheckpointProjectionError(`Checkpoint ${label} is invalid.`);
+  return parsed;
 }
 
 function parseRequiredJson(value: string, label: string): unknown {

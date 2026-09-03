@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {sha256FileHex} from '../effect/digest.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../models/builtin.js';
 import type {LocalModelManifest} from '../models/catalog.js';
@@ -8,7 +8,7 @@ class LegacyLocalModelMigrationError extends Error {
   readonly _tag = 'LegacyLocalModelMigrationError' as const;
 }
 
-export const LEGACY_LOCAL_MODEL_MIGRATION_ID = 'legacy-local-model-v1';
+export const LEGACY_LOCAL_MODEL_MIGRATION_ID = 'legacy-local-model-v1' as const;
 const LEGACY_MODEL_DIRECTORY = 'threadnote/models';
 
 export interface LegacyLocalModelMigrationOptions {
@@ -253,7 +253,11 @@ function readReceipt(
 ): Effect.Effect<LegacyLocalModelMigrationReceipt | undefined, unknown> {
   return fs.readFileString(receiptPath).pipe(
     Effect.map(content => {
-      const parsed = JSON.parse(content) as Partial<LegacyLocalModelMigrationReceipt>;
+      const value: unknown = JSON.parse(content);
+      if (!Predicate.isObject(value)) {
+        throw new LegacyLocalModelMigrationError('Invalid legacy local-model migration receipt.');
+      }
+      const parsed = value;
       if (
         parsed.id !== LEGACY_LOCAL_MODEL_MIGRATION_ID ||
         parsed.version !== 1 ||
@@ -263,7 +267,12 @@ function readReceipt(
       ) {
         throw new LegacyLocalModelMigrationError('Invalid legacy local-model migration receipt.');
       }
-      return parsed as LegacyLocalModelMigrationReceipt;
+      return {
+        id: LEGACY_LOCAL_MODEL_MIGRATION_ID,
+        models: parsed.models,
+        status: parsed.status === 'pending' ? ('pending' as const) : ('completed' as const),
+        version: 1 as const,
+      };
     }),
     Effect.catch(() => Effect.succeed(undefined)),
   );

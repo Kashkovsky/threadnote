@@ -1,4 +1,4 @@
-import {Console, Effect} from 'effect';
+import {Console, Effect, Predicate} from 'effect';
 import {BUILTIN_MODEL_MANIFESTS} from '../models/builtin.js';
 import {LocalModelCatalog, type LocalModelManifest} from '../models/catalog.js';
 import {runModelInstall, runModelSelect} from '../models/commands.js';
@@ -210,18 +210,20 @@ export const listInstalledLocalAiModels = Effect.fn('localAi.compat.listInstalle
 });
 
 export function parseLocalAiSettings(value: unknown): LocalAiSettings {
+  if (!Predicate.isObject(value)) {
+    throw new LocalAiOperationError('Legacy local-ai server settings are not valid Threadnote 4 settings.');
+  }
   if (
-    typeof value !== 'object' ||
-    value === null ||
-    (value as Partial<LocalAiSettings>).version !== 2 ||
-    (value as Partial<LocalAiSettings>).host !== 'in-process' ||
-    (value as Partial<LocalAiSettings>).port !== 0 ||
-    typeof (value as Partial<LocalAiSettings>).model !== 'string' ||
-    typeof (value as Partial<LocalAiSettings>).modelPath !== 'string'
+    value.enabled !== true ||
+    value.version !== 2 ||
+    value.host !== 'in-process' ||
+    value.port !== 0 ||
+    typeof value.model !== 'string' ||
+    typeof value.modelPath !== 'string'
   ) {
     throw new LocalAiOperationError('Legacy local-ai server settings are not valid Threadnote 4 settings.');
   }
-  return value as LocalAiSettings;
+  return {enabled: true, host: 'in-process', model: value.model, modelPath: value.modelPath, port: 0, version: 2};
 }
 
 /** @deprecated There is no HTTP endpoint in Threadnote 4. */

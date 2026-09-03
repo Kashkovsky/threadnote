@@ -209,7 +209,10 @@ const reapExpiredSnapshotLeasesPage = Effect.fn('codeGraph.reapExpiredSnapshotLe
   if (leases.some(lease => lease === undefined)) {
     return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease manifest is invalid.'));
   }
-  const decodedLeases = leases as readonly SnapshotLeaseManifest[];
+  const decodedLeases: SnapshotLeaseManifest[] = [];
+  for (const lease of leases) {
+    if (lease !== undefined) decodedLeases.push(lease);
+  }
   const retirementAuthorityCurrent = yield* codeGraphWorktreeReconciliationSchemaCompatible(sql);
   const successorIndexReady =
     (yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES[2])) === 'ready';

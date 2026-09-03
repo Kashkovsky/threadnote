@@ -484,7 +484,7 @@ function localTraversalEdge(
     edge.sourceId === undefined ||
     edge.targetId === undefined ||
     (direction === 'outgoing' ? edge.sourceId !== nodeId : edge.targetId !== nodeId) ||
-    !['declared', 'resolved', 'syntactic'].includes(edge.provenance)
+    !isEdgeProvenance(edge.provenance)
   ) {
     return undefined;
   }
@@ -500,11 +500,15 @@ function localTraversalEdge(
   return {
     confidence: edge.confidence,
     id: edge.id,
-    provenance: edge.provenance as 'declared' | 'resolved' | 'syntactic',
+    provenance: edge.provenance,
     relation: edge.relation,
     source: endpoint(edge.sourceId),
     target: endpoint(edge.targetId),
   };
+}
+
+function isEdgeProvenance(value: string): value is 'declared' | 'resolved' | 'syntactic' {
+  return value === 'declared' || value === 'resolved' || value === 'syntactic';
 }
 
 function edgeNodeId(ref: string, repositoryId: string, rows: readonly CodeGraphEdge[]): string | undefined {

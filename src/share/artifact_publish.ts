@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Path, Result} from 'effect';
+import {Console, Effect, FileSystem, Path, Predicate, Result} from 'effect';
 
 import {CommandExecutor} from '../effect/command.js';
 
@@ -361,6 +361,10 @@ interface PreparedBundleMember {
   readonly targetUri: string;
 }
 
+function bundleTextContent(member: PreparedBundleMember): string | undefined {
+  return member.binary || typeof member.content !== 'string' ? undefined : member.content;
+}
+
 const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
   config: ShareRuntime,
   team: ResolvedShareTeam,
@@ -409,7 +413,7 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
       artifact,
       gitMessages: [],
       messages,
-      previewContent: skillMd.binary ? undefined : (skillMd.content as string),
+      previewContent: bundleTextContent(skillMd),
       sourcePath: skillMdSourcePath,
       targetPath: skillMdTargetPath,
       targetUri: skillMdTargetUri,
@@ -458,23 +462,16 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
   const markdownMembers = orderSkillMdFirst(prepared.filter(entry => entry.relativePath.endsWith('.md')));
   const otherMembers = prepared.filter(entry => !entry.relativePath.endsWith('.md'));
   for (const entry of markdownMembers) {
+    const content = bundleTextContent(entry);
+    if (content === undefined) {
+      throw new ShareOperationError(`Refusing binary markdown bundle member: ${entry.relativePath}`);
+    }
     const ovHasResource = yield* resourceExists(ov, config, entry.targetUri);
     yield* ensureSharedDirectoryChain(config, ov, entry.targetUri, dryRun, {quiet: true});
-    yield* writeMemoryFile(
-      config,
-      ov,
-      entry.targetUri,
-      entry.content as string,
-      ovHasResource ? 'replace' : 'create',
-      dryRun,
-      {quiet: true},
-    );
-    yield* writeSharedWorktreeFile(
-      team.config.worktree,
-      `${skillRootRelative}/${entry.relativePath}`,
-      entry.content as string,
-      dryRun,
-    );
+    yield* writeMemoryFile(config, ov, entry.targetUri, content, ovHasResource ? 'replace' : 'create', dryRun, {
+      quiet: true,
+    });
+    yield* writeSharedWorktreeFile(team.config.worktree, `${skillRootRelative}/${entry.relativePath}`, content, dryRun);
   }
   yield* ensureDirectory(skillRootTargetDir, false);
   for (const entry of otherMembers) {
@@ -614,10 +611,10 @@ const parsePackManifest = Effect.fn('share.parsePackManifest')(function* (raw: s
   if (skills.length === 0) {
     throw new ShareOperationError(`Pack manifest must list at least one skill in "skills": ${manifestPath}`);
   }
-  const depsValue = (parsed.deps ?? {}) as Record<string, unknown>;
+  const depsValue = Predicate.isObject(parsed.deps) ? parsed.deps : {};
   const pathRewrites = Array.isArray(parsed.pathRewrites)
     ? parsed.pathRewrites
-        .map(entry => (typeof entry === 'string' ? entry : (entry as {from?: unknown})?.from))
+        .map(entry => (typeof entry === 'string' ? entry : Predicate.isObject(entry) ? entry.from : undefined))
         .filter((item): item is string => typeof item === 'string')
         // Strip trailing slashes so a declared "/repo/" still matches a bare
         // "/repo" reference (otherwise the slash-suffixed root never appears and
@@ -1102,7 +1099,11 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
       });
       yield* writeMarkdownMember(indexTargetUri, indexScrub.cleaned, indexTargetPath);
       for (const entry of prepared.filter(member => member.relativePath.endsWith('.md'))) {
-        yield* writeMarkdownMember(entry.targetUri, entry.content as string, entry.targetPath);
+        const content = bundleTextContent(entry);
+        if (content === undefined) {
+          throw new ShareOperationError(`Refusing binary markdown pack member: ${entry.relativePath}`);
+        }
+        yield* writeMarkdownMember(entry.targetUri, content, entry.targetPath);
       }
       yield* ensureDirectory(filesTargetDir, false);
       for (const entry of prepared.filter(member => !member.relativePath.endsWith('.md'))) {

@@ -147,9 +147,7 @@ function worksetTelemetryPhaseFields(progress: CodeGraphWorksetPrepareProgressV1
 }
 
 function worksetFailureDiagnostic(detail: CodeGraphWorksetPrepareFailureDetailV1): AnonymousTelemetryDiagnostic {
-  const storageCode = STORE_FAILURE_CODES.has(detail.code as CodeGraphStoreFailureCode)
-    ? (detail.code as CodeGraphStoreFailureCode)
-    : undefined;
+  const storageCode = [...STORE_FAILURE_CODES].find(code => code === detail.code);
   return {
     ...(storageCode === undefined ? {} : {code: storageCode, domain: 'code-graph-storage' as const}),
     errorType: detail.errorType,

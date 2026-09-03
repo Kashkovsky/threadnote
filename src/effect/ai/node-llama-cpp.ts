@@ -369,10 +369,14 @@ export function resolveNativeEmbeddingGpuLayers(options: {
 export function parseEmbeddingContextPoolSize(value: string | undefined): EmbeddingContextPoolSize {
   if (value === undefined || value.trim() === '') return 1;
   const parsed = Number(value);
-  if (!EMBEDDING_CONTEXT_POOL_SIZES.some(candidate => candidate === parsed)) {
+  if (!isEmbeddingContextPoolSize(parsed)) {
     throw new RangeError(`${THREADNOTE_EMBEDDING_CONTEXTS_ENV} must be one of 1, 2, 4, or 8.`);
   }
-  return parsed as EmbeddingContextPoolSize;
+  return parsed;
+}
+
+function isEmbeddingContextPoolSize(value: number): value is EmbeddingContextPoolSize {
+  return value === 1 || value === 2 || value === 4 || value === 8;
 }
 
 export function nativeEmbeddingContextPlan(options: {

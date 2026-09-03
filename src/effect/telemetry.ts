@@ -1013,16 +1013,16 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
     attributes['threadnote.graph.snapshot_selection'] = fields.snapshotSelection;
   }
   for (const [key, attribute] of Object.entries(GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS)) {
-    const value = fields[key as GraphQuantityBucketField];
-    if (value !== undefined && isQuantityBucket(value)) attributes[attribute] = value;
+    const value = recordValue(fields, key);
+    if (isQuantityBucket(value)) Reflect.set(attributes, attribute, value);
   }
   for (const [key, attribute] of Object.entries(CONTEXT_BRIEF_QUANTITY_BUCKET_ATTRIBUTE_KEYS)) {
-    const value = fields[key as ContextBriefQuantityBucketField];
-    if (value !== undefined && isQuantityBucket(value)) attributes[attribute] = value;
+    const value = recordValue(fields, key);
+    if (isQuantityBucket(value)) Reflect.set(attributes, attribute, value);
   }
   for (const [key, attribute] of Object.entries(CODE_ANCHOR_FINALIZATION_QUANTITY_BUCKET_ATTRIBUTE_KEYS)) {
-    const value = fields[key as CodeAnchorFinalizationQuantityBucketField];
-    if (value !== undefined && isQuantityBucket(value)) attributes[attribute] = value;
+    const value = recordValue(fields, key);
+    if (isQuantityBucket(value)) Reflect.set(attributes, attribute, value);
   }
   for (const [key, value] of Object.entries(fields)) {
     if (
@@ -1036,11 +1036,13 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
     )
       continue;
     if (!Number.isFinite(value) || value < 0) continue;
-    const attribute = FIELD_ATTRIBUTE_KEYS[key as NumericTelemetryField];
-    if (attribute === undefined) continue;
-    attributes[attribute] = QUANTITY_FIELD_KEYS.has(key as NumericTelemetryField)
-      ? quantityBucket(value)
-      : boundedNumber(value);
+    const attribute = recordValue(FIELD_ATTRIBUTE_KEYS, key);
+    if (typeof attribute !== 'string') continue;
+    Reflect.set(
+      attributes,
+      attribute,
+      recordValue(QUANTITY_FIELD_KEYS, key) === true ? quantityBucket(value) : boundedNumber(value),
+    );
   }
   return attributes;
 }
@@ -1207,7 +1209,7 @@ function mergeTelemetryFields(
 ): AnonymousTelemetryFields {
   const phaseChanged = next.phase !== undefined && next.phase !== current.phase;
   const stageChanged = next.stage !== undefined && next.stage !== current.stage;
-  const merged: Record<string, unknown> = {
+  const merged: AnonymousTelemetryFields = {
     ...current,
     ...(phaseChanged
       ? {
@@ -1225,77 +1227,50 @@ function mergeTelemetryFields(
       : {}),
     ...(stageChanged ? {stageElapsedMilliseconds: undefined, transactionMilliseconds: undefined} : {}),
   };
-  for (const [key, value] of Object.entries(next)) {
+  for (const [key, value] of recordEntries(next)) {
     if (value === undefined) continue;
     if (typeof value === 'number') {
       if (!Number.isFinite(value) || value < 0) continue;
-      const previous = merged[key];
-      merged[key] = typeof previous === 'number' ? Math.max(previous, value) : value;
+      const previous = recordValue(merged, key);
+      Reflect.set(merged, key, typeof previous === 'number' ? Math.max(previous, value) : value);
     } else if (
       (key === 'autoUpdateRepairRequired' && typeof value === 'boolean') ||
-      (key === 'autoUpdateResult' &&
-        ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS.includes(value as AnonymousTelemetryAutoUpdateResult)) ||
+      (key === 'autoUpdateResult' && isOneOf(value, ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS)) ||
       (key === 'codeAnchorFinalizationTrigger' &&
-        ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_TRIGGERS.includes(
-          value as AnonymousTelemetryCodeAnchorFinalizationTrigger,
-        )) ||
+        isOneOf(value, ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_TRIGGERS)) ||
       (key === 'codeAnchorFinalizationResult' &&
-        ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_RESULTS.includes(
-          value as AnonymousTelemetryCodeAnchorFinalizationResult,
-        )) ||
+        isOneOf(value, ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_RESULTS)) ||
       (key === 'contextBriefCodeAnchorGap' && typeof value === 'boolean') ||
       (key === 'contextBriefRecoveryPresent' && typeof value === 'boolean') ||
       (key === 'contextBriefOutputTruncated' && typeof value === 'boolean') ||
-      (key === 'contextBriefContract' &&
-        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CONTRACTS.includes(value as AnonymousTelemetryContextBriefContract)) ||
-      (key === 'contextBriefMode' &&
-        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_MODES.includes(value as AnonymousTelemetryContextBriefMode)) ||
-      (key === 'contextBriefGapClass' &&
-        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_GAP_CLASSES.includes(value as AnonymousTelemetryContextBriefGapClass)) ||
-      (key === 'contextBriefReturnedLane' &&
-        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_RETURNED_LANES.includes(
-          value as AnonymousTelemetryContextBriefReturnedLane,
-        )) ||
+      (key === 'contextBriefContract' && isOneOf(value, ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CONTRACTS)) ||
+      (key === 'contextBriefMode' && isOneOf(value, ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_MODES)) ||
+      (key === 'contextBriefGapClass' && isOneOf(value, ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_GAP_CLASSES)) ||
+      (key === 'contextBriefReturnedLane' && isOneOf(value, ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_RETURNED_LANES)) ||
       (key === 'contextBriefCodeAnchorCoverage' &&
-        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CODE_ANCHOR_COVERAGES.includes(
-          value as AnonymousTelemetryContextBriefCodeAnchorCoverage,
-        )) ||
-      (key === 'contextBriefScope' &&
-        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_SCOPES.includes(value as AnonymousTelemetryContextBriefScope)) ||
+        isOneOf(value, ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CODE_ANCHOR_COVERAGES)) ||
+      (key === 'contextBriefScope' && isOneOf(value, ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_SCOPES)) ||
       (key === 'contextBriefCitationCoverage' &&
-        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_COVERAGES.includes(
-          value as AnonymousTelemetryContextBriefCitationCoverage,
-        )) ||
-      (key === 'contextBriefCitationResult' &&
-        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_RESULTS.includes(
-          value as AnonymousTelemetryContextBriefCitationResult,
-        )) ||
+        isOneOf(value, ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_COVERAGES)) ||
+      (key === 'contextBriefCitationResult' && isOneOf(value, ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_RESULTS)) ||
       (key === 'contextBriefCitationUnknownReason' &&
-        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_UNKNOWN_REASONS.includes(
-          value as AnonymousTelemetryContextBriefCitationUnknownReason,
-        )) ||
-      (key === 'phase' && ANONYMOUS_TELEMETRY_PHASES.includes(value as AnonymousTelemetryPhase)) ||
-      (key === 'subphase' && ANONYMOUS_TELEMETRY_SUBPHASES.includes(value as AnonymousTelemetrySubphase)) ||
-      (key === 'phaseOutcome' &&
-        ['failure', 'interrupted', 'success', 'timed-out', 'unavailable'].includes(value as string)) ||
-      (key === 'degradationReason' && isDegradationReason(value)) ||
-      (key === 'stage' && ANONYMOUS_TELEMETRY_STAGES.includes(value as AnonymousTelemetryStage)) ||
-      (key === 'waitingReason' &&
-        ANONYMOUS_TELEMETRY_WAITING_REASONS.includes(value as AnonymousTelemetryWaitingReason)) ||
-      (key === 'requestKind' &&
-        ANONYMOUS_TELEMETRY_GRAPH_REQUEST_KINDS.includes(value as AnonymousTelemetryGraphRequestKind)) ||
-      (key === 'requestScope' &&
-        ANONYMOUS_TELEMETRY_GRAPH_REQUEST_SCOPES.includes(value as AnonymousTelemetryGraphRequestScope)) ||
-      (key === 'snapshotFreshness' &&
-        ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS.includes(value as AnonymousTelemetryGraphSnapshotFreshness)) ||
-      (key === 'snapshotSelection' &&
-        ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS.includes(value as AnonymousTelemetryGraphSnapshotSelection)) ||
+        isOneOf(value, ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_UNKNOWN_REASONS)) ||
+      (key === 'phase' && isOneOf(value, ANONYMOUS_TELEMETRY_PHASES)) ||
+      (key === 'subphase' && isOneOf(value, ANONYMOUS_TELEMETRY_SUBPHASES)) ||
+      (key === 'phaseOutcome' && isOneOf(value, ['failure', 'interrupted', 'success', 'timed-out', 'unavailable'])) ||
+      (key === 'degradationReason' && typeof value === 'string' && isDegradationReason(value)) ||
+      (key === 'stage' && isOneOf(value, ANONYMOUS_TELEMETRY_STAGES)) ||
+      (key === 'waitingReason' && isOneOf(value, ANONYMOUS_TELEMETRY_WAITING_REASONS)) ||
+      (key === 'requestKind' && isOneOf(value, ANONYMOUS_TELEMETRY_GRAPH_REQUEST_KINDS)) ||
+      (key === 'requestScope' && isOneOf(value, ANONYMOUS_TELEMETRY_GRAPH_REQUEST_SCOPES)) ||
+      (key === 'snapshotFreshness' && isOneOf(value, ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS)) ||
+      (key === 'snapshotSelection' && isOneOf(value, ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS)) ||
       ((key in GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS ||
         key in CONTEXT_BRIEF_QUANTITY_BUCKET_ATTRIBUTE_KEYS ||
         key in CODE_ANCHOR_FINALIZATION_QUANTITY_BUCKET_ATTRIBUTE_KEYS) &&
-        isQuantityBucket(value as string))
+        isQuantityBucket(value))
     ) {
-      merged[key] = value;
+      Reflect.set(merged, key, value);
     }
   }
   return merged;
@@ -1394,7 +1369,25 @@ function quantityBucket(value: number): string {
   return `2^${exponent}`;
 }
 
-function isQuantityBucket(value: string): value is AnonymousTelemetryQuantityBucket {
+function recordValue(record: object, key: string): unknown {
+  for (const [candidateKey, value] of recordEntries(record)) {
+    if (candidateKey === key) return value;
+  }
+  return undefined;
+}
+
+function recordEntries(record: object): readonly (readonly [string, unknown])[] {
+  const entries: [string, unknown][] = [];
+  for (const key of Object.keys(record)) entries.push([key, Reflect.get(record, key)]);
+  return entries;
+}
+
+function isOneOf<const Values extends readonly string[]>(value: unknown, options: Values): value is Values[number] {
+  return typeof value === 'string' && options.some(option => option === value);
+}
+
+function isQuantityBucket(value: unknown): value is AnonymousTelemetryQuantityBucket {
+  if (typeof value !== 'string') return false;
   if (value === '0') return true;
   const match = /^2\^(\d{1,2})$/u.exec(value);
   if (match === null) return false;

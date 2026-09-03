@@ -1,4 +1,5 @@
 import {sha256HexSync} from '../crypto/sha256.js';
+import {Predicate} from 'effect';
 
 export const CODE_MEMORY_LINK_CLIENT_DESCRIPTOR_VERSION = 2 as const;
 
@@ -153,10 +154,10 @@ function digest(value: unknown): string {
 }
 
 function record(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!Predicate.isObject(value)) {
     invalid('client descriptor must be an object');
   }
-  return value as Record<string, unknown>;
+  return value;
 }
 
 function matchingHash(value: unknown, label: string): string {

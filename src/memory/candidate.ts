@@ -681,12 +681,10 @@ function readCandidateAudit(
       .split('\n')
       .map(line =>
         line.trim()
-          ? Option.getOrUndefined(
-              Option.liftThrowable((content: string) => JSON.parse(content) as CandidateAuditEvent)(line),
-            )
+          ? Option.getOrUndefined(Option.liftThrowable((content: string): unknown => JSON.parse(content))(line))
           : undefined,
       )
-      .filter((event): event is CandidateAuditEvent => event !== undefined)
+      .filter((event): event is CandidateAuditEvent => event !== undefined && candidateAuditEventIsValid(event))
       .slice(-MAX_CANDIDATE_AUDIT_EVENTS);
   });
 }

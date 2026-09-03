@@ -1,5 +1,6 @@
 import {sha256HexSync} from '../crypto/sha256.js';
 import {benchmarkMeasurement, type BenchmarkMeasurementV1} from './benchmark.js';
+import {Predicate} from 'effect';
 
 export const CODE_MEMORY_LINK_BENCH_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_BENCH_ID = 'code-memory-link-bench-v1' as const;
@@ -703,8 +704,8 @@ function stringArray(value: unknown, label: string): string[] {
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, allowed: readonly string[], required = allowed): void {
@@ -728,8 +729,10 @@ function nonEmptyString(value: unknown, label: string): string {
 }
 
 function nonNegativeInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) invalid(`${label} must be a non-negative integer`);
-  return value as number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    invalid(`${label} must be a non-negative integer`);
+  }
+  return value;
 }
 
 function nonNegativeIntegerArray(value: unknown, label: string): number[] {

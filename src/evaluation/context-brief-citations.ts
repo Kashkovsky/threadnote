@@ -483,12 +483,7 @@ export function evaluateContextBriefCitationFixture(
     const matching = citations.filter(item => item.citation.expectedStatus === expectedStatus);
     return {
       expectedStatus,
-      observed: Object.fromEntries(
-        CONTEXT_BRIEF_CITATION_STATUSES.map(observedStatus => [
-          observedStatus,
-          matching.filter(item => item.citation.observedStatus === observedStatus).length,
-        ]),
-      ) as Readonly<Record<ContextBriefCitationEvaluationStatus, number>>,
+      observed: contextBriefCitationStatusCounts(matching),
     };
   });
   const statusMetrics = CONTEXT_BRIEF_CITATION_STATUSES.map(status => {
@@ -608,6 +603,20 @@ export function evaluateContextBriefCitationFixture(
     performance,
     quality,
     version: CONTEXT_BRIEF_CITATION_EVALUATION_VERSION,
+  };
+}
+
+function contextBriefCitationStatusCounts(
+  citations: readonly {readonly citation: ContextBriefCitationEvaluationScenarioV1['citations'][number]}[],
+): Readonly<Record<ContextBriefCitationEvaluationStatus, number>> {
+  const count = (status: ContextBriefCitationEvaluationStatus) =>
+    citations.filter(item => item.citation.observedStatus === status).length;
+  return {
+    changed: count('changed'),
+    deleted: count('deleted'),
+    exact: count('exact'),
+    relocated: count('relocated'),
+    unknown: count('unknown'),
   };
 }
 

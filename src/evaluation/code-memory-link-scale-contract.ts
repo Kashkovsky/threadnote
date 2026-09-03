@@ -1,5 +1,6 @@
 import {sha256HexSync} from '../crypto/sha256.js';
 import {benchmarkMeasurement, type BenchmarkMeasurementV1} from './benchmark.js';
+import {Predicate} from 'effect';
 
 export const CODE_MEMORY_LINK_SCALE_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_SCALE_ID = 'code-memory-link-inverse-scale-v1' as const;
@@ -292,7 +293,7 @@ export function parseCodeMemoryLinkScaleArtifactV1(
   const expected = evaluateCodeMemoryLinkScaleCapture({
     budget: budgetInput,
     capture: artifact.capture,
-    createdAt: artifact.createdAt as string,
+    createdAt: stringValue(artifact.createdAt, 'artifact createdAt'),
     identity: artifact.identity,
   });
   if (artifact.budgetHash !== expected.budgetHash) invalid('artifact budget hash does not match reviewed budget');
@@ -576,7 +577,7 @@ function parseCapture(value: unknown): CodeMemoryLinkScaleRuntimeCaptureV1 {
 function parseScenario(value: unknown): CodeMemoryLinkScaleScenarioCaptureV1 {
   const scenario = record(value, 'scenario');
   exactKeys(scenario, ['cold', 'expectedTruncatedSelectorCount', 'expectedUris', 'id', 'samples', 'warmups']);
-  if (!CODE_MEMORY_LINK_SCALE_SCENARIOS.includes(scenario.id as CodeMemoryLinkScaleScenarioId)) {
+  if (!isCodeMemoryLinkScaleScenarioId(scenario.id)) {
     invalid(`unsupported scenario ${String(scenario.id)}`);
   }
   if (!Array.isArray(scenario.expectedUris)) invalid('scenario expectedUris must be an array');
@@ -592,7 +593,7 @@ function parseScenario(value: unknown): CodeMemoryLinkScaleScenarioCaptureV1 {
       'expected truncated selector count',
     ),
     expectedUris,
-    id: scenario.id as CodeMemoryLinkScaleScenarioId,
+    id: scenario.id,
     samples: scenario.samples.map(parseObservation),
     warmups: scenario.warmups.map(parseObservation),
   };
@@ -671,8 +672,8 @@ function formatMetric(value: number): string {
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): void {
@@ -688,8 +689,19 @@ function positiveInteger(value: unknown, label: string): number {
 }
 
 function nonNegativeInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) invalid(`${label} must be a non-negative safe integer`);
-  return value as number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    invalid(`${label} must be a non-negative safe integer`);
+  }
+  return value;
+}
+
+function isCodeMemoryLinkScaleScenarioId(value: unknown): value is CodeMemoryLinkScaleScenarioId {
+  return (
+    value === 'file-backlinks' ||
+    value === 'symbol-backlink' ||
+    value === 'dense-shared-selector' ||
+    value === 'no-answer'
+  );
 }
 
 function nonNegativeFinite(value: unknown, label: string): number {

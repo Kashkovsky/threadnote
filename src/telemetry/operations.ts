@@ -181,8 +181,12 @@ export function cliAnonymousTelemetryOperation(
   subcommand: string | undefined,
   nestedSubcommand: string | undefined,
 ): string {
-  const knownSubcommands = CLI_SUBCOMMANDS[topLevel as keyof typeof CLI_SUBCOMMANDS] as readonly string[] | undefined;
-  if (knownSubcommands === undefined || subcommand === undefined || !knownSubcommands.includes(subcommand)) {
+  const knownSubcommands = Object.entries(CLI_SUBCOMMANDS).find(([name]) => name === topLevel)?.[1];
+  if (
+    knownSubcommands === undefined ||
+    subcommand === undefined ||
+    !knownSubcommands.some(value => value === subcommand)
+  ) {
     return safeAnonymousTelemetryOperation(topLevel);
   }
   const nested = `${topLevel}.${subcommand}.${nestedSubcommand ?? ''}`;

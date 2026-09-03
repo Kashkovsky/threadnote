@@ -1,6 +1,8 @@
+import {Predicate} from 'effect';
 import {parseCodeGraphMonikerV1} from './cross_repository/monikers.js';
 import type {
   CodeGraphEdge,
+  CodeGraphDerivationInputs,
   CodeGraphFileFacts,
   CodeGraphProvenance,
   CodeGraphReference,
@@ -14,8 +16,14 @@ const PATH_LENGTH_MAXIMUM = 4_096;
 const SHORT_TEXT_LENGTH_MAXIMUM = 16_384;
 const TEXT_LENGTH_MAXIMUM = 8 * 1_048_576;
 const SHA256 = /^[0-9a-f]{64}$/u;
-const PROVENANCE = new Set<CodeGraphProvenance>(['declared', 'heuristic', 'model', 'resolved', 'syntactic']);
-const RELATIONS = new Set<CodeGraphRelation>([
+const PROVENANCE = [
+  'declared',
+  'heuristic',
+  'model',
+  'resolved',
+  'syntactic',
+] as const satisfies readonly CodeGraphProvenance[];
+const RELATIONS = [
   'calls',
   'configures',
   'constructs',
@@ -33,7 +41,7 @@ const RELATIONS = new Set<CodeGraphRelation>([
   'reexports',
   'semantic_association',
   'tests',
-]);
+] as const satisfies readonly CodeGraphRelation[];
 
 export class CodeGraphFactValidationError extends Error {
   override readonly name = 'CodeGraphFactValidationError';
@@ -43,24 +51,33 @@ export class CodeGraphFactValidationError extends Error {
 export function parseCodeGraphFileFacts(value: unknown): CodeGraphFileFacts {
   const input = object(value, 'Code graph file facts');
   exactKeys(input, ['diagnostics', 'edges', 'path', 'symbols'], ['derivationInputs', 'monikers', 'references']);
-  repositoryPath(input.path, 'File-fact path');
-  stringArray(input.diagnostics, 'File-fact diagnostics', TEXT_LENGTH_MAXIMUM);
-  array(input.symbols, 'File-fact symbols').forEach((symbol, index) => parseSymbol(symbol, index));
-  array(input.edges, 'File-fact edges').forEach((edge, index) => parseEdge(edge, index));
-  if (input.references !== undefined) {
-    array(input.references, 'File-fact references').forEach((reference, index) => parseReference(reference, index));
-  }
-  if (input.monikers !== undefined) {
-    array(input.monikers, 'File-fact monikers').forEach((moniker, index) => {
-      try {
-        parseCodeGraphMonikerV1(moniker);
-      } catch (cause) {
-        throw new CodeGraphFactValidationError(`File-fact moniker ${index} is invalid.`, {cause});
-      }
-    });
-  }
-  if (input.derivationInputs !== undefined) parseDerivationInputs(input.derivationInputs);
-  return input as unknown as CodeGraphFileFacts;
+  const path = repositoryPath(input.path, 'File-fact path');
+  const diagnostics = stringArray(input.diagnostics, 'File-fact diagnostics', TEXT_LENGTH_MAXIMUM);
+  const symbols = array(input.symbols, 'File-fact symbols').map(parseSymbol);
+  const edges = array(input.edges, 'File-fact edges').map(parseEdge);
+  const references =
+    input.references === undefined ? undefined : array(input.references, 'File-fact references').map(parseReference);
+  const monikers =
+    input.monikers === undefined
+      ? undefined
+      : array(input.monikers, 'File-fact monikers').map((moniker, index) => {
+          try {
+            return parseCodeGraphMonikerV1(moniker);
+          } catch (cause) {
+            throw new CodeGraphFactValidationError(`File-fact moniker ${index} is invalid.`, {cause});
+          }
+        });
+  const derivationInputs =
+    input.derivationInputs === undefined ? undefined : parseDerivationInputs(input.derivationInputs);
+  return {
+    ...(derivationInputs === undefined ? {} : {derivationInputs}),
+    diagnostics,
+    edges,
+    ...(monikers === undefined ? {} : {monikers}),
+    path,
+    ...(references === undefined ? {} : {references}),
+    symbols,
+  };
 }
 
 function parseSymbol(value: unknown, index: number): CodeGraphSymbol {
@@ -70,23 +87,32 @@ function parseSymbol(value: unknown, index: number): CodeGraphSymbol {
     ['contentHash', 'exported', 'id', 'kind', 'language', 'name', 'path', 'qualifiedName', 'span'],
     ['arity', 'documentation', 'lookupKeys', 'packageName', 'resolutionDomain', 'resolutionScopeId', 'signature'],
   );
-  optionalNonNegativeInteger(input.arity, 'Symbol arity');
-  digest(input.contentHash, 'Symbol content hash');
-  optionalText(input.documentation, 'Symbol documentation');
-  bool(input.exported, 'Symbol exported');
-  shortText(input.id, 'Symbol ID');
-  shortText(input.kind, 'Symbol kind');
-  shortText(input.language, 'Symbol language');
-  if (input.lookupKeys !== undefined) nonEmptyStringArray(input.lookupKeys, 'Symbol lookup keys', false);
-  boundedNonEmptyText(input.name, 'Symbol name');
-  optionalBoundedNonEmptyText(input.packageName, 'Symbol package name');
-  repositoryPath(input.path, 'Symbol path');
-  boundedNonEmptyText(input.qualifiedName, 'Symbol qualified name');
-  optionalShortText(input.resolutionDomain, 'Symbol resolution domain');
-  optionalShortText(input.resolutionScopeId, 'Symbol resolution scope');
-  optionalText(input.signature, 'Symbol signature');
-  parseSpan(input.span, 'Symbol span');
-  return input as unknown as CodeGraphSymbol;
+  return {
+    ...(input.arity === undefined ? {} : {arity: nonnegativeInteger(input.arity, 'Symbol arity')}),
+    contentHash: digest(input.contentHash, 'Symbol content hash'),
+    ...(input.documentation === undefined ? {} : {documentation: text(input.documentation, 'Symbol documentation')}),
+    exported: bool(input.exported, 'Symbol exported'),
+    id: shortText(input.id, 'Symbol ID'),
+    kind: shortText(input.kind, 'Symbol kind'),
+    language: shortText(input.language, 'Symbol language'),
+    ...(input.lookupKeys === undefined
+      ? {}
+      : {lookupKeys: nonEmptyStringArray(input.lookupKeys, 'Symbol lookup keys', false)}),
+    name: boundedNonEmptyText(input.name, 'Symbol name'),
+    ...(input.packageName === undefined
+      ? {}
+      : {packageName: boundedNonEmptyText(input.packageName, 'Symbol package name')}),
+    path: repositoryPath(input.path, 'Symbol path'),
+    qualifiedName: boundedNonEmptyText(input.qualifiedName, 'Symbol qualified name'),
+    ...(input.resolutionDomain === undefined
+      ? {}
+      : {resolutionDomain: shortText(input.resolutionDomain, 'Symbol resolution domain')}),
+    ...(input.resolutionScopeId === undefined
+      ? {}
+      : {resolutionScopeId: shortText(input.resolutionScopeId, 'Symbol resolution scope')}),
+    ...(input.signature === undefined ? {} : {signature: text(input.signature, 'Symbol signature')}),
+    span: parseSpan(input.span, 'Symbol span'),
+  };
 }
 
 function parseEdge(value: unknown, index: number): CodeGraphEdge {
@@ -96,17 +122,18 @@ function parseEdge(value: unknown, index: number): CodeGraphEdge {
     ['confidence', 'evidencePath', 'evidenceSpan', 'id', 'provenance', 'relation', 'sourceName', 'targetName'],
     ['sourceId', 'targetId'],
   );
-  finiteRange(input.confidence, 'Edge confidence', 0, 1);
-  repositoryPath(input.evidencePath, 'Edge evidence path');
-  parseSpan(input.evidenceSpan, 'Edge evidence span');
-  shortText(input.id, 'Edge ID');
-  provenance(input.provenance, 'Edge provenance');
-  relation(input.relation, 'Edge relation');
-  optionalShortText(input.sourceId, 'Edge source ID');
-  boundedNonEmptyText(input.sourceName, 'Edge source name');
-  optionalShortText(input.targetId, 'Edge target ID');
-  boundedNonEmptyText(input.targetName, 'Edge target name');
-  return input as unknown as CodeGraphEdge;
+  return {
+    confidence: finiteRange(input.confidence, 'Edge confidence', 0, 1),
+    evidencePath: repositoryPath(input.evidencePath, 'Edge evidence path'),
+    evidenceSpan: parseSpan(input.evidenceSpan, 'Edge evidence span'),
+    id: shortText(input.id, 'Edge ID'),
+    provenance: provenance(input.provenance, 'Edge provenance'),
+    relation: relation(input.relation, 'Edge relation'),
+    ...(input.sourceId === undefined ? {} : {sourceId: shortText(input.sourceId, 'Edge source ID')}),
+    sourceName: boundedNonEmptyText(input.sourceName, 'Edge source name'),
+    ...(input.targetId === undefined ? {} : {targetId: shortText(input.targetId, 'Edge target ID')}),
+    targetName: boundedNonEmptyText(input.targetName, 'Edge target name'),
+  };
 }
 
 function parseReference(value: unknown, index: number): CodeGraphReference {
@@ -126,58 +153,64 @@ function parseReference(value: unknown, index: number): CodeGraphReference {
     ],
     ['aliasLookupKeys', 'arity', 'exportedOnly', 'sourceId'],
   );
-  if (input.aliasLookupKeys !== undefined) {
-    nonEmptyStringArray(input.aliasLookupKeys, 'Reference alias lookup keys', false);
-  }
-  optionalNonNegativeInteger(input.arity, 'Reference arity');
-  shortText(input.edgeId, 'Reference edge ID');
-  repositoryPath(input.evidencePath, 'Reference evidence path');
-  parseSpan(input.evidenceSpan, 'Reference evidence span');
-  if (input.exportedOnly !== undefined) bool(input.exportedOnly, 'Reference exported-only state');
-  array(input.lookupTiers, 'Reference lookup tiers').forEach((tier, tierIndex) =>
-    nonEmptyStringArray(tier, `Reference lookup tier ${tierIndex}`, false),
-  );
-  provenance(input.provenance, 'Reference provenance');
-  relation(input.relation, 'Reference relation');
-  shortText(input.resolutionDomain, 'Reference resolution domain');
-  optionalShortText(input.sourceId, 'Reference source ID');
-  boundedNonEmptyText(input.sourceName, 'Reference source name');
-  boundedNonEmptyText(input.targetName, 'Reference target name');
-  return input as unknown as CodeGraphReference;
+  return {
+    ...(input.aliasLookupKeys === undefined
+      ? {}
+      : {aliasLookupKeys: nonEmptyStringArray(input.aliasLookupKeys, 'Reference alias lookup keys', false)}),
+    ...(input.arity === undefined ? {} : {arity: nonnegativeInteger(input.arity, 'Reference arity')}),
+    edgeId: shortText(input.edgeId, 'Reference edge ID'),
+    evidencePath: repositoryPath(input.evidencePath, 'Reference evidence path'),
+    evidenceSpan: parseSpan(input.evidenceSpan, 'Reference evidence span'),
+    ...(input.exportedOnly === undefined
+      ? {}
+      : {exportedOnly: bool(input.exportedOnly, 'Reference exported-only state')}),
+    lookupTiers: array(input.lookupTiers, 'Reference lookup tiers').map((tier, tierIndex) =>
+      nonEmptyStringArray(tier, `Reference lookup tier ${tierIndex}`, false),
+    ),
+    provenance: provenance(input.provenance, 'Reference provenance'),
+    relation: relation(input.relation, 'Reference relation'),
+    resolutionDomain: shortText(input.resolutionDomain, 'Reference resolution domain'),
+    ...(input.sourceId === undefined ? {} : {sourceId: shortText(input.sourceId, 'Reference source ID')}),
+    sourceName: boundedNonEmptyText(input.sourceName, 'Reference source name'),
+    targetName: boundedNonEmptyText(input.targetName, 'Reference target name'),
+  };
 }
 
-function parseDerivationInputs(value: unknown): void {
+function parseDerivationInputs(value: unknown): CodeGraphDerivationInputs {
   const input = object(value, 'File-fact derivation inputs');
   exactKeys(input, [], ['rationale']);
-  if (input.rationale === undefined) return;
-  array(input.rationale, 'File-fact rationale inputs').forEach((value, index) => {
+  if (input.rationale === undefined) return {};
+  const rationale = array(input.rationale, 'File-fact rationale inputs').map((value, index) => {
     const rationale = object(value, `File-fact rationale ${index}`);
     exactKeys(rationale, ['documentation', 'line', 'marker', 'name'], []);
-    text(rationale.documentation, 'Rationale documentation');
-    positiveInteger(rationale.line, 'Rationale line');
-    shortText(rationale.marker, 'Rationale marker');
-    boundedNonEmptyText(rationale.name, 'Rationale name');
+    return {
+      documentation: text(rationale.documentation, 'Rationale documentation'),
+      line: positiveInteger(rationale.line, 'Rationale line'),
+      marker: shortText(rationale.marker, 'Rationale marker'),
+      name: boundedNonEmptyText(rationale.name, 'Rationale name'),
+    };
   });
+  return {rationale};
 }
 
 function parseSpan(value: unknown, label: string): CodeGraphSpan {
   const input = object(value, label);
   exactKeys(input, ['column', 'endColumn', 'endLine', 'line'], []);
-  positiveInteger(input.column, `${label} column`);
-  positiveInteger(input.endColumn, `${label} end column`);
-  positiveInteger(input.endLine, `${label} end line`);
-  positiveInteger(input.line, `${label} line`);
-  if (input.endLine < input.line || (input.endLine === input.line && input.endColumn < input.column)) {
+  const column = positiveInteger(input.column, `${label} column`);
+  const endColumn = positiveInteger(input.endColumn, `${label} end column`);
+  const endLine = positiveInteger(input.endLine, `${label} end line`);
+  const line = positiveInteger(input.line, `${label} line`);
+  if (endLine < line || (endLine === line && endColumn < column)) {
     throw new CodeGraphFactValidationError(`${label} ends before it starts.`);
   }
-  return input as unknown as CodeGraphSpan;
+  return {column, endColumn, endLine, line};
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!Predicate.isObject(value)) {
     throw new CodeGraphFactValidationError(`${label} must be an object.`);
   }
-  return value as Record<string, unknown>;
+  return value;
 }
 
 function array(value: unknown, label: string): readonly unknown[] {
@@ -197,17 +230,19 @@ function exactKeys(input: Record<string, unknown>, required: readonly string[], 
   }
 }
 
-function text(value: unknown, label: string, maximum = TEXT_LENGTH_MAXIMUM): asserts value is string {
+function text(value: unknown, label: string, maximum = TEXT_LENGTH_MAXIMUM): string {
   if (typeof value !== 'string' || value.length > maximum) {
     throw new CodeGraphFactValidationError(`${label} must be a bounded string.`);
   }
+  return value;
 }
 
-function shortText(value: unknown, label: string): asserts value is string {
-  boundedNonEmptyText(value, label);
-  if (containsControlCharacter(value)) {
+function shortText(value: unknown, label: string): string {
+  const result = boundedNonEmptyText(value, label);
+  if (containsControlCharacter(result)) {
     throw new CodeGraphFactValidationError(`${label} must be non-empty and control-free.`);
   }
+  return result;
 }
 
 /**
@@ -215,37 +250,23 @@ function shortText(value: unknown, label: string): asserts value is string {
  * persisted verbatim for graph fidelity and sanitized only at presentation
  * boundaries; structural IDs and paths remain control-free.
  */
-function boundedNonEmptyText(value: unknown, label: string): asserts value is string {
-  text(value, label, SHORT_TEXT_LENGTH_MAXIMUM);
-  if (value.length === 0) throw new CodeGraphFactValidationError(`${label} must be non-empty.`);
+function boundedNonEmptyText(value: unknown, label: string): string {
+  const result = text(value, label, SHORT_TEXT_LENGTH_MAXIMUM);
+  if (result.length === 0) throw new CodeGraphFactValidationError(`${label} must be non-empty.`);
+  return result;
 }
 
-function optionalText(value: unknown, label: string): void {
-  if (value !== undefined) text(value, label);
+function stringArray(value: unknown, label: string, maximum = SHORT_TEXT_LENGTH_MAXIMUM): readonly string[] {
+  return array(value, label).map(entry => text(entry, `${label} entry`, maximum));
 }
 
-function optionalShortText(value: unknown, label: string): void {
-  if (value !== undefined) shortText(value, label);
+function nonEmptyStringArray(value: unknown, label: string, controlFree: boolean): readonly string[] {
+  return array(value, label).map(entry =>
+    controlFree ? shortText(entry, `${label} entry`) : boundedNonEmptyText(entry, `${label} entry`),
+  );
 }
 
-function optionalBoundedNonEmptyText(value: unknown, label: string): void {
-  if (value !== undefined) boundedNonEmptyText(value, label);
-}
-
-function stringArray(value: unknown, label: string, maximum = SHORT_TEXT_LENGTH_MAXIMUM): void {
-  for (const entry of array(value, label)) {
-    text(entry, `${label} entry`, maximum);
-  }
-}
-
-function nonEmptyStringArray(value: unknown, label: string, controlFree: boolean): void {
-  for (const entry of array(value, label)) {
-    if (controlFree) shortText(entry, `${label} entry`);
-    else boundedNonEmptyText(entry, `${label} entry`);
-  }
-}
-
-function repositoryPath(value: unknown, label: string): asserts value is string {
+function repositoryPath(value: unknown, label: string): string {
   if (
     typeof value !== 'string' ||
     value.length === 0 ||
@@ -259,6 +280,7 @@ function repositoryPath(value: unknown, label: string): asserts value is string 
   ) {
     throw new CodeGraphFactValidationError(`${label} must be a safe repository-relative POSIX path.`);
   }
+  return value;
 }
 
 function containsControlCharacter(value: string): boolean {
@@ -269,42 +291,51 @@ function containsControlCharacter(value: string): boolean {
   return false;
 }
 
-function digest(value: unknown, label: string): asserts value is string {
+function digest(value: unknown, label: string): string {
   if (typeof value !== 'string' || !SHA256.test(value)) {
     throw new CodeGraphFactValidationError(`${label} must be a lowercase SHA-256 digest.`);
   }
+  return value;
 }
 
-function bool(value: unknown, label: string): asserts value is boolean {
+function bool(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') throw new CodeGraphFactValidationError(`${label} must be boolean.`);
+  return value;
 }
 
-function positiveInteger(value: unknown, label: string): asserts value is number {
-  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+function positiveInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
     throw new CodeGraphFactValidationError(`${label} must be a positive safe integer.`);
   }
+  return value;
 }
 
-function optionalNonNegativeInteger(value: unknown, label: string): void {
-  if (value !== undefined && (!Number.isSafeInteger(value) || (value as number) < 0)) {
+function nonnegativeInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new CodeGraphFactValidationError(`${label} must be a non-negative safe integer.`);
   }
+  return value;
 }
 
-function finiteRange(value: unknown, label: string, minimum: number, maximum: number): void {
+function finiteRange(value: unknown, label: string, minimum: number, maximum: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) {
     throw new CodeGraphFactValidationError(`${label} must be a finite number between ${minimum} and ${maximum}.`);
   }
+  return value;
 }
 
-function provenance(value: unknown, label: string): asserts value is CodeGraphProvenance {
-  if (typeof value !== 'string' || !PROVENANCE.has(value as CodeGraphProvenance)) {
+function provenance(value: unknown, label: string): CodeGraphProvenance {
+  const matched = typeof value === 'string' ? PROVENANCE.find(candidate => candidate === value) : undefined;
+  if (matched === undefined) {
     throw new CodeGraphFactValidationError(`${label} is invalid.`);
   }
+  return matched;
 }
 
-function relation(value: unknown, label: string): asserts value is CodeGraphRelation {
-  if (typeof value !== 'string' || !RELATIONS.has(value as CodeGraphRelation)) {
+function relation(value: unknown, label: string): CodeGraphRelation {
+  const matched = typeof value === 'string' ? RELATIONS.find(candidate => candidate === value) : undefined;
+  if (matched === undefined) {
     throw new CodeGraphFactValidationError(`${label} is invalid.`);
   }
+  return matched;
 }

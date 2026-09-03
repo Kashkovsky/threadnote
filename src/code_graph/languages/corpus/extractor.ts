@@ -1,6 +1,6 @@
 import {unzipSync, type UnzipFileInfo} from 'fflate';
 import {getResolvedPDFJS} from 'unpdf';
-import {Option} from 'effect';
+import {Option, Predicate} from 'effect';
 import {sha256HexSync} from '../../../crypto/sha256.js';
 import {compareNaturalCodeUnits} from '../../ordering.js';
 import type {CodeGraphEdge, CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../types.js';
@@ -302,7 +302,7 @@ async function extractPdf(file: CodeGraphInventoryFile, options: CorpusExtractio
         text.push(pageText);
         const annotations = await abortable<PdfAnnotations>(page.getAnnotations(), controller.signal);
         for (const annotation of annotations) {
-          if (isRecord(annotation) && annotation.subtype === 'Link' && typeof annotation.url === 'string') {
+          if (Predicate.isObject(annotation) && annotation.subtype === 'Link' && typeof annotation.url === 'string') {
             links.push(annotation.url);
           }
         }
@@ -339,7 +339,7 @@ export function joinPdfTextItemsWithinLimit(items: readonly unknown[], maximumCh
   const chunks: string[] = [];
   let characters = 0;
   for (const item of items) {
-    if (!isRecord(item) || typeof item.str !== 'string') continue;
+    if (!Predicate.isObject(item) || typeof item.str !== 'string') continue;
     const hasEndOfLine = item.hasEOL === true;
     characters += item.str.length + (hasEndOfLine ? 1 : 0);
     if (characters > maximumCharacters) {
@@ -636,10 +636,10 @@ function normalizeTextDocument(content: string, extension: string): string {
 function notebookToText(content: string): string {
   try {
     const value: unknown = JSON.parse(content);
-    if (!isRecord(value) || !Array.isArray(value.cells)) return content;
+    if (!Predicate.isObject(value) || !Array.isArray(value.cells)) return content;
     return value.cells
       .flatMap((cell, index) => {
-        if (!isRecord(cell) || !Array.isArray(cell.source)) return [];
+        if (!Predicate.isObject(cell) || !Array.isArray(cell.source)) return [];
         const source = cell.source.filter((line): line is string => typeof line === 'string').join('');
         if (!source.trim()) return [];
         const label = cell.cell_type === 'markdown' ? 'Markdown' : cell.cell_type === 'code' ? 'Code' : 'Cell';
@@ -909,10 +909,6 @@ function uint24le(bytes: Uint8Array, offset: number): number {
 
 function uint32(bytes: Uint8Array, offset: number): number {
   return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function messageOf(value: unknown): string {

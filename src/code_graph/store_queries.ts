@@ -518,7 +518,7 @@ const loadFirstReusableOverlayBase = Effect.fn('codeGraph.loadFirstReusableOverl
         mode: file.mode,
         path: file.path,
         size: Number(file.size),
-        source: file.source as 'commit' | 'worktree',
+        source: persistedFileSource(file.source),
       })),
       receipt,
       snapshot: snapshotFromRow(row),
@@ -526,6 +526,11 @@ const loadFirstReusableOverlayBase = Effect.fn('codeGraph.loadFirstReusableOverl
   }
   return undefined;
 });
+
+function persistedFileSource(source: string): 'commit' | 'worktree' {
+  if (source === 'commit' || source === 'worktree') return source;
+  throw new CodeGraphStoreError('Stored code graph snapshot file source is invalid.');
+}
 
 const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt')(function* (
   snapshotId: string,

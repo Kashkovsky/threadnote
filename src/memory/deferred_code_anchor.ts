@@ -1,4 +1,4 @@
-import {Clock, Effect, FileSystem, Option, Path, Result} from 'effect';
+import {Clock, Effect, FileSystem, Option, Path, Predicate, Result} from 'effect';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {sha256Hex} from '../effect/digest.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
@@ -1470,7 +1470,7 @@ const retainDeferredCodeAnchorRouteMarkerLane = Effect.fn('memoryCodeAnchor.reta
 function parseDeferredCodeAnchorIntent(content: string): DeferredCodeAnchorIntentV1 | undefined {
   try {
     const value: unknown = JSON.parse(content);
-    if (!isRecord(value)) return undefined;
+    if (!Predicate.isObject(value)) return undefined;
     if (
       !hasExactKeys(value, [
         'authorization',
@@ -1622,7 +1622,8 @@ function deferredCodeAnchorIntentId(input: {
 }
 
 function isMemoryCodeCitationRecovery(value: unknown): value is MemoryCodeCitationCaptureRecoveryV1 {
-  if (!isRecord(value) || value.type !== 'memory-code-citation-capture-recovery' || value.version !== 1) return false;
+  if (!Predicate.isObject(value) || value.type !== 'memory-code-citation-capture-recovery' || value.version !== 1)
+    return false;
   if (
     !hasExactKeys(value, [
       'code',
@@ -1640,8 +1641,8 @@ function isMemoryCodeCitationRecovery(value: unknown): value is MemoryCodeCitati
     value.recovery !== 'prepare-current-graph' ||
     value.retryCondition !== 'after-current-graph-ready' ||
     value.retryable !== true ||
-    !isRecord(value.observedGraph) ||
-    !isRecord(value.preparation)
+    !Predicate.isObject(value.observedGraph) ||
+    !Predicate.isObject(value.preparation)
   ) {
     return false;
   }
@@ -1672,10 +1673,6 @@ function isMemoryCodeCitationRecovery(value: unknown): value is MemoryCodeCitati
     typeof value.preparation.arguments[0] === 'string' &&
     value.preparation.arguments[0].length > 0
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {

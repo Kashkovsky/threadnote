@@ -477,12 +477,12 @@ function readSeedState(path: string) {
     if (raw === undefined) {
       return {files: {}, version: 1} as const;
     }
-    const parsedResult = Result.try(() => JSON.parse(raw) as Partial<SeedStateFile>);
+    const parsedResult = Result.try((): unknown => JSON.parse(raw));
     if (Result.isFailure(parsedResult)) {
       return {files: {}, version: 1} as const;
     }
     const parsed = parsedResult.success;
-    if (parsed.version !== 1 || !isJsonObject(parsed.files)) {
+    if (!isJsonObject(parsed) || parsed.version !== 1 || !isJsonObject(parsed.files)) {
       return {files: {}, version: 1} as const;
     }
     const files: Record<string, SeedStateEntry> = {};

@@ -1,4 +1,4 @@
-import {Console, Effect} from 'effect';
+import {Console, Effect, Predicate} from 'effect';
 import {cursorCloudMemoryEndpoint} from './cloud.js';
 import {CommandExecutor, type CommandOptions} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
@@ -254,8 +254,7 @@ function parseCurlOutput(output: string): {readonly body: string; readonly statu
 function parseObject(body: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(body);
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed))
-      return parsed as Record<string, unknown>;
+    if (Predicate.isObject(parsed)) return parsed;
   } catch {
     // The caller's bounded error deliberately excludes the response body.
   }

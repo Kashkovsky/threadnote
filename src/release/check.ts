@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path, Result} from 'effect';
+import {Effect, FileSystem, Path, Predicate, Result} from 'effect';
 import {SystemInfo} from '../effect/system.js';
 import {selectUpdateChannel, type UpdateChannel} from './channel.js';
 import {fetchLatestVersion, releaseSource} from './index.js';
@@ -78,8 +78,11 @@ const readUpdateCache = Effect.fn('updateCheck.readCache')((cachePath: string) =
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const raw = yield* fs.readFileString(cachePath);
-    const parsedResult = Result.try(() => JSON.parse(raw) as Partial<UpdateCacheFile>);
+    const parsedResult = Result.try((): unknown => JSON.parse(raw));
     if (Result.isFailure(parsedResult)) {
+      return undefined;
+    }
+    if (!Predicate.isObject(parsedResult.success)) {
       return undefined;
     }
     const parsed = parsedResult.success;
@@ -92,11 +95,11 @@ const readUpdateCache = Effect.fn('updateCheck.readCache')((cachePath: string) =
       return undefined;
     }
     return {
-      channel: parsed.channel,
+      channel: parsed.channel === 'beta' ? ('beta' as const) : ('latest' as const),
       checkedAt: parsed.checkedAt,
       latestVersion: parsed.latestVersion,
       version: 3 as const,
-    };
+    } satisfies UpdateCacheFile;
   }).pipe(Effect.catch(() => Effect.succeed(undefined))),
 );
 

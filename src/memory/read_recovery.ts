@@ -2,6 +2,7 @@ import {parseResourceId} from '../storage/resource-id.js';
 import type {RuntimeConfig} from '../types.js';
 import {parsePersonalMemoryUri} from './hygiene.js';
 import {MemoryPointerNotFound} from './relocation.js';
+import {Predicate} from 'effect';
 
 export interface MemoryReadRecoveryV1 {
   readonly code: 'memory-resource-not-found';
@@ -63,8 +64,8 @@ export function memoryReadRecoveryForRequestedUri(requestedUri: string): MemoryR
 }
 
 export function isMemoryReadRecoveryV1(value: unknown): value is MemoryReadRecoveryV1 {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const recovery = value as Readonly<Record<string, unknown>>;
+  if (!Predicate.isObject(value)) return false;
+  const recovery = value;
   if (
     !hasExactObjectKeys(recovery, [
       'code',
@@ -82,19 +83,15 @@ export function isMemoryReadRecoveryV1(value: unknown): value is MemoryReadRecov
   }
   const expected = memoryReadRecoveryForRequestedUri(recovery.requestedUri);
   if (expected === undefined) return false;
-  if (typeof recovery.nextAction !== 'object' || recovery.nextAction === null || Array.isArray(recovery.nextAction)) {
+  if (!Predicate.isObject(recovery.nextAction)) {
     return false;
   }
-  const nextAction = recovery.nextAction as Readonly<Record<string, unknown>>;
+  const nextAction = recovery.nextAction;
   if (!hasExactObjectKeys(nextAction, ['arguments', 'tool'])) return false;
-  if (
-    typeof nextAction.arguments !== 'object' ||
-    nextAction.arguments === null ||
-    Array.isArray(nextAction.arguments)
-  ) {
+  if (!Predicate.isObject(nextAction.arguments)) {
     return false;
   }
-  const args = nextAction.arguments as Readonly<Record<string, unknown>>;
+  const args = nextAction.arguments;
   return (
     hasExactObjectKeys(args, ['query']) &&
     recovery.code === expected.code &&

@@ -33,6 +33,7 @@ import {
   remoteMemoryReadCursorKey,
   type RemoteMemoryReadCursorState,
 } from './read_cursor.js';
+import {Predicate} from 'effect';
 import {
   projectRemoteRecallResponse,
   REMOTE_RECALL_DEFAULT_BUDGET_TOKENS,
@@ -666,7 +667,10 @@ async function invokeRemoteTool(
       dependencies.rateLimits.consume(context.principal, operation, requestExecution(context)),
     );
     const value = await withRequestDeadline(context, () => use(context.principal, requestExecution(context)));
-    return {content: [{type: 'text', text: safeToolText(value)}], structuredContent: value as Record<string, unknown>};
+    return {
+      content: [{type: 'text', text: safeToolText(value)}],
+      ...(Predicate.isObject(value) ? {structuredContent: value} : {}),
+    };
   } catch (cause) {
     const error = publicRemoteMemoryError(cause);
     return remoteToolError(error, context.requestId);

@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo} from '../effect/system.js';
@@ -1000,7 +1000,7 @@ export function parseCodeGraphLocalProvenanceRecord(
   value: unknown,
   target?: CodeGraphLocalAssociationTarget,
 ): CodeGraphLocalProvenanceRecord | undefined {
-  if (!isRecord(value)) return undefined;
+  if (!Predicate.isObject(value)) return undefined;
   if (
     (value.schemaVersion !== LOCAL_PROVENANCE_LEGACY_SCHEMA_VERSION &&
       value.schemaVersion !== LOCAL_PROVENANCE_SCHEMA_VERSION) ||
@@ -1256,10 +1256,6 @@ function homeAbbreviatedPath(path: Path.Path, homeDirectory: string, candidate: 
   if (relative === '') return '~';
   if (!relative.startsWith('..') && !path.isAbsolute(relative)) return `~${path.sep}${relative}`;
   return candidate;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isHash(value: unknown): value is string {

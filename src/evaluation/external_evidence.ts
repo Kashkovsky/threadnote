@@ -1,6 +1,7 @@
 import {credentialScrubberBlocker} from '../share/scrubber.js';
 import type {BenchmarkArtifactV1, BenchmarkMeasurementV1} from './benchmark.js';
 import {privacySafeExternalControlPath, privacySafeExternalControlQuery} from './public_controls.js';
+import {Predicate} from 'effect';
 
 export const EXTERNAL_RELEASE_MINIMUM_SAMPLES = 25;
 export const EXTERNAL_RELEASE_MINIMUM_WARMUPS = 5;
@@ -563,12 +564,16 @@ function requireMetadataLiteral(
 
 function requirePositiveInteger(metadata: BenchmarkArtifactV1['metadata'], name: string, missing: string[]): void {
   const value = metadata[name];
-  if (!Number.isInteger(value) || (value as number) <= 0) missing.push(`${name} positive integer metadata`);
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    missing.push(`${name} positive integer metadata`);
+  }
 }
 
 function requireNonNegativeInteger(metadata: BenchmarkArtifactV1['metadata'], name: string, missing: string[]): void {
   const value = metadata[name];
-  if (!Number.isInteger(value) || (value as number) < 0) missing.push(`${name} non-negative integer metadata`);
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    missing.push(`${name} non-negative integer metadata`);
+  }
 }
 
 function validateRepositoryIdentity(
@@ -608,16 +613,16 @@ function validateControlEvidence(
   missing: string[],
 ): void {
   try {
-    const parsed = JSON.parse(String(metadata.externalControlEvidence ?? '')) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid controls');
-    const evidence = parsed as Record<string, unknown>;
+    const parsed: unknown = JSON.parse(String(metadata.externalControlEvidence ?? ''));
+    if (!Predicate.isObject(parsed)) throw new Error('invalid controls');
+    const evidence = parsed;
     const expectedKeys = languages.map(language => (language === 'bazel-build' ? 'bazel' : language)).sort();
     if (!sameSet(Object.keys(evidence), expectedKeys)) throw new Error('control count mismatch');
     for (const key of expectedKeys) {
       const value = evidence[key];
-      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid control');
+      if (!Predicate.isObject(value)) throw new Error('invalid control');
       assertExactKeys(value, ['path', 'query', 'stableNodeId'], 'control');
-      const control = value as Record<string, unknown>;
+      const control = value;
       if (typeof control.query !== 'string' || privacySafeExternalControlQuery(control.query) !== control.query) {
         throw new Error('invalid query');
       }
@@ -813,10 +818,8 @@ function validateProvenance(artifact: BenchmarkArtifactV1, releaseBound: boolean
       !SHA256_PATTERN.test(String(metadata.benchmarkValidatedManagedExecutableSha256 ?? '')) ||
       !SHA256_PATTERN.test(String(metadata.benchmarkValidatedManagedPayloadManifestSha256 ?? '')) ||
       !SHA256_PATTERN.test(String(metadata.benchmarkValidatedManagedReleaseMetadataSha256 ?? '')) ||
-      !Number.isInteger(metadata.benchmarkValidatedManagedPayloadBytes) ||
-      (metadata.benchmarkValidatedManagedPayloadBytes as number) <= 0 ||
-      !Number.isInteger(metadata.benchmarkValidatedManagedPayloadFileCount) ||
-      (metadata.benchmarkValidatedManagedPayloadFileCount as number) <= 0 ||
+      !isPositiveInteger(metadata.benchmarkValidatedManagedPayloadBytes) ||
+      !isPositiveInteger(metadata.benchmarkValidatedManagedPayloadFileCount) ||
       typeof metadata.benchmarkValidatedManagedRuntime !== 'string' ||
       metadata.benchmarkValidatedManagedRuntime.length === 0 ||
       typeof metadata.benchmarkValidatedManagedTarget !== 'string' ||
@@ -872,6 +875,10 @@ function validateProvenance(artifact: BenchmarkArtifactV1, releaseBound: boolean
       missing.push('clean exact release source provenance');
     }
   }
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
 function validateDurableStorage(measurements: ReadonlyMap<string, BenchmarkMeasurementV1>, missing: string[]): void {

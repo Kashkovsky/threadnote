@@ -1,4 +1,11 @@
-import {Cause, Clock, Crypto, Effect, FileSystem, Layer, Option, Path} from 'effect';
+import {Cause, Clock, Crypto, Effect, FileSystem, Layer, Option, Path, Predicate} from 'effect';
+import {
+  recallCodeLinkMatchesResult,
+  recallExactMatchesResult,
+  recallIndexDataBatchResult,
+  recallIndexDataResult,
+  recallMemoryLinkMatchesResult,
+} from './index_result.js';
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {SEED_STATE_FILE} from '../constants.js';
@@ -50,16 +57,10 @@ import {
   RECALL_RECENCY_RETRIEVAL_LIMIT,
   recallStatisticTerms,
 } from './index_query.js';
-import {
-  deriveIndexedRecallCodeLinks,
-  selectRecallCodeLinks,
-  type RecallCodeLinkMatch,
-  type RecallCodeLinkQueryOptions,
-} from './code_links.js';
+import {deriveIndexedRecallCodeLinks, selectRecallCodeLinks, type RecallCodeLinkQueryOptions} from './code_links.js';
 import {
   deriveIndexedRecallMemoryLinks,
   selectRecallMemoryLinks,
-  type RecallMemoryLinkMatch,
   type RecallMemoryLinkQueryOptions,
 } from './memory_links.js';
 import * as RecallIndexIdentity from './index_identity.js';
@@ -429,14 +430,14 @@ export const loadRecallIndexData = Effect.fn('recall.loadIndexData')(function* (
   config: RecallIndexConfig,
   options: LoadRecallIndexOptions,
 ) {
-  return (yield* loadRecallIndexDataInternal(config, options)) as RecallIndexData;
+  return recallIndexDataResult(yield* loadRecallIndexDataInternal(config, options));
 });
 
 export const loadRecallIndexDataBatch = Effect.fn('recall.loadIndexDataBatch')(function* (
   config: RecallIndexConfig,
   options: LoadRecallIndexBatchOptions,
 ) {
-  return (yield* loadRecallIndexDataInternal(config, options)) as readonly RecallIndexData[];
+  return recallIndexDataBatchResult(yield* loadRecallIndexDataInternal(config, options));
 });
 
 export const loadRecallIndex = Effect.fn('recall.loadIndex')(function* (
@@ -467,7 +468,7 @@ export const loadRecallExactMatches = Effect.fn('recall.loadExactMatches')(funct
   config: RecallIndexConfig,
   options: LoadRecallExactMatchesOptions,
 ) {
-  return (yield* loadRecallIndexDataInternal(config, options)) as readonly RecallExactMatch[];
+  return recallExactMatchesResult(yield* loadRecallIndexDataInternal(config, options));
 });
 
 export const loadRecallCodeLinks = Effect.fn('recall.loadCodeLinks')(function* (
@@ -476,28 +477,32 @@ export const loadRecallCodeLinks = Effect.fn('recall.loadCodeLinks')(function* (
 ) {
   let canonicalMismatchCount = 0;
   let truncatedSelectorCount = 0;
-  const first = (yield* loadRecallIndexDataInternal(config, {
-    ...options,
-    onCanonicalMismatch: (count: number) => {
-      canonicalMismatchCount += count;
-      options.onCanonicalMismatch?.(count);
-    },
-    onSearchTruncated: (count: number) => {
-      truncatedSelectorCount += count;
-    },
-  })) as readonly RecallCodeLinkMatch[];
+  const first = recallCodeLinkMatchesResult(
+    yield* loadRecallIndexDataInternal(config, {
+      ...options,
+      onCanonicalMismatch: (count: number) => {
+        canonicalMismatchCount += count;
+        options.onCanonicalMismatch?.(count);
+      },
+      onSearchTruncated: (count: number) => {
+        truncatedSelectorCount += count;
+      },
+    }),
+  );
   if (options.forceRefresh === true || canonicalMismatchCount === 0) {
     if (truncatedSelectorCount > 0) options.onSearchTruncated?.(truncatedSelectorCount);
     return first;
   }
   let refreshedTruncatedSelectorCount = 0;
-  const refreshed = (yield* loadRecallIndexDataInternal(config, {
-    ...options,
-    forceRefresh: true,
-    onSearchTruncated: (count: number) => {
-      refreshedTruncatedSelectorCount += count;
-    },
-  })) as readonly RecallCodeLinkMatch[];
+  const refreshed = recallCodeLinkMatchesResult(
+    yield* loadRecallIndexDataInternal(config, {
+      ...options,
+      forceRefresh: true,
+      onSearchTruncated: (count: number) => {
+        refreshedTruncatedSelectorCount += count;
+      },
+    }),
+  );
   if (refreshedTruncatedSelectorCount > 0) options.onSearchTruncated?.(refreshedTruncatedSelectorCount);
   return refreshed;
 });
@@ -508,31 +513,35 @@ export const loadRecallMemoryLinks = Effect.fn('recall.loadMemoryLinks')(functio
 ) {
   let canonicalMismatchCount = 0;
   let truncatedSeedOrdinals: readonly number[] = [];
-  const first = (yield* loadRecallIndexDataInternal(config, {
-    ...options,
-    onCanonicalMismatch: (count: number) => {
-      canonicalMismatchCount += count;
-      options.onCanonicalMismatch?.(count);
-    },
-    onSearchTruncated: (ordinals: readonly number[]) => {
-      truncatedSeedOrdinals = [...new Set([...truncatedSeedOrdinals, ...ordinals])].sort((a, b) => a - b);
-    },
-  })) as readonly RecallMemoryLinkMatch[];
+  const first = recallMemoryLinkMatchesResult(
+    yield* loadRecallIndexDataInternal(config, {
+      ...options,
+      onCanonicalMismatch: (count: number) => {
+        canonicalMismatchCount += count;
+        options.onCanonicalMismatch?.(count);
+      },
+      onSearchTruncated: (ordinals: readonly number[]) => {
+        truncatedSeedOrdinals = [...new Set([...truncatedSeedOrdinals, ...ordinals])].sort((a, b) => a - b);
+      },
+    }),
+  );
   if (options.forceRefresh === true || canonicalMismatchCount === 0) {
     if (truncatedSeedOrdinals.length > 0) options.onSearchTruncated?.(truncatedSeedOrdinals);
     return first;
   }
   options.onRefreshRepair?.();
   let refreshedTruncatedSeedOrdinals: readonly number[] = [];
-  const refreshed = (yield* loadRecallIndexDataInternal(config, {
-    ...options,
-    forceRefresh: true,
-    onSearchTruncated: (ordinals: readonly number[]) => {
-      refreshedTruncatedSeedOrdinals = [...new Set([...refreshedTruncatedSeedOrdinals, ...ordinals])].sort(
-        (a, b) => a - b,
-      );
-    },
-  })) as readonly RecallMemoryLinkMatch[];
+  const refreshed = recallMemoryLinkMatchesResult(
+    yield* loadRecallIndexDataInternal(config, {
+      ...options,
+      forceRefresh: true,
+      onSearchTruncated: (ordinals: readonly number[]) => {
+        refreshedTruncatedSeedOrdinals = [...new Set([...refreshedTruncatedSeedOrdinals, ...ordinals])].sort(
+          (a, b) => a - b,
+        );
+      },
+    }),
+  );
   if (refreshedTruncatedSeedOrdinals.length > 0) {
     options.onSearchTruncated?.(refreshedTruncatedSeedOrdinals);
   }
@@ -944,14 +953,15 @@ const resolveActiveRecallDatabasePath = Effect.fn('recall.resolveActiveDatabaseP
   }
   const raw = yield* fs.readFileString(pointerPath);
   const parsed = yield* Effect.try({
-    try: () => JSON.parse(raw) as Partial<RecallIndexPointer>,
+    try: () => JSON.parse(raw) as unknown,
     catch: cause => new RecallIndexCorrupt(`Lexical index pointer is invalid: ${String(cause)}`),
   }).pipe(Effect.option);
   if (Option.isNone(parsed)) {
     return fixedPath;
   }
+  if (!Predicate.isObject(parsed.value)) return fixedPath;
   const pointer = parsed.value;
-  const relative = pointer.database?.replaceAll('\\', '/');
+  const relative = typeof pointer.database === 'string' ? pointer.database.replaceAll('\\', '/') : undefined;
   if (
     pointer.version !== RECALL_INDEX_POINTER_VERSION ||
     !relative ||
@@ -1614,10 +1624,7 @@ const loadRecallCorpusStatistics = Effect.fn('recall.loadCorpusStatistics')(func
   return {
     averageDocumentLength: documentCount === 0 ? 1 : totalDocumentLength / documentCount,
     documentCount,
-    documentFrequency: Object.assign(
-      Object.create(null) as Record<string, number>,
-      Object.fromEntries(rows.map(row => [row.term, row.document_frequency])),
-    ),
+    documentFrequency: Object.assign(Object.fromEntries(rows.map(row => [row.term, row.document_frequency]))),
     totalDocumentLength,
   } satisfies RecallCorpusStatistics;
 });
@@ -1808,15 +1815,16 @@ function uriBasename(uri: string): string {
 function loadCanonicalResourcePolicy(
   config: RecallIndexConfig,
 ): Effect.Effect<CanonicalResourcePolicy, never, Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo> {
-  if (!config.manifestPath) {
+  const manifestPath = config.manifestPath;
+  if (!manifestPath) {
     return Effect.succeed({entryKeyByUri: new Map(), sourcePathByUri: new Map()});
   }
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const pathService = yield* Path.Path;
-    const manifestRaw = yield* fs.readFileString(config.manifestPath as string);
+    const manifestRaw = yield* fs.readFileString(manifestPath);
     const manifest = yield* Effect.try({
-      try: () => parseSeedManifest(manifestRaw, config.manifestPath as string),
+      try: () => parseSeedManifest(manifestRaw, manifestPath),
       catch: cause => new RecallIndexOperationError(cause instanceof Error ? cause.message : String(cause), {cause}),
     });
     const seedStateRaw = yield* fs.readFileString(pathService.join(config.agentContextHome, SEED_STATE_FILE));

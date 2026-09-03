@@ -1,4 +1,5 @@
 import {sha256HexSync} from '../crypto/sha256.js';
+import {Predicate} from 'effect';
 
 export const CODE_MEMORY_LINK_AGENT_SUITE_DEFINITION_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_AGENT_SUITE_HIDDEN_TASKS = 12 as const;
@@ -615,11 +616,11 @@ function canonicalJson(value: unknown): string {
 
 function sortJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortJson);
-  if (typeof value !== 'object' || value === null) return value;
+  if (!Predicate.isObject(value)) return value;
   return Object.fromEntries(
-    Object.keys(value as Record<string, unknown>)
+    Object.keys(value)
       .sort()
-      .map(key => [key, sortJson((value as Record<string, unknown>)[key])]),
+      .map(key => [key, sortJson(value[key])]),
   );
 }
 

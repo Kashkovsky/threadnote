@@ -205,10 +205,10 @@ export class RemoteMemoryIndexer {
   }
 
   private async withTenant<A>(tenantId: string, use: (transaction: TransactionSql) => Promise<A>): Promise<A> {
-    return (await this.sql.begin(async transaction => {
+    return await this.sql.begin<Promise<A>>(async transaction => {
       await configureTenantTransaction(transaction, tenantId);
       return use(transaction);
-    })) as A;
+    });
   }
 }
 

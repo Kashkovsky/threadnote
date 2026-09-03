@@ -120,16 +120,14 @@ export const withCliOutputConsole = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         // Machine-readable commands own stdout. Effect diagnostics, including failures from inherited detached
         // fibers, must use stderr so a late log line cannot follow and invalidate the final JSON document.
         Effect.provideService(Logger.LogToStderr, true),
-        Effect.provideService(
-          Console.Console,
-          Object.assign(Object.create(parent) as Console.Console, {
-            debug: (...arguments_: readonly unknown[]) => output.enqueueOutput(formatConsoleArguments(arguments_)),
-            error: (...arguments_: readonly unknown[]) => output.enqueueError(formatConsoleArguments(arguments_)),
-            info: (...arguments_: readonly unknown[]) => output.enqueueOutput(formatConsoleArguments(arguments_)),
-            log: (...arguments_: readonly unknown[]) => output.enqueueOutput(formatConsoleArguments(arguments_)),
-            warn: (...arguments_: readonly unknown[]) => output.enqueueError(formatConsoleArguments(arguments_)),
-          }),
-        ),
+        Effect.provideService(Console.Console, {
+          ...parent,
+          debug: (...arguments_: readonly unknown[]) => output.enqueueOutput(formatConsoleArguments(arguments_)),
+          error: (...arguments_: readonly unknown[]) => output.enqueueError(formatConsoleArguments(arguments_)),
+          info: (...arguments_: readonly unknown[]) => output.enqueueOutput(formatConsoleArguments(arguments_)),
+          log: (...arguments_: readonly unknown[]) => output.enqueueOutput(formatConsoleArguments(arguments_)),
+          warn: (...arguments_: readonly unknown[]) => output.enqueueError(formatConsoleArguments(arguments_)),
+        }),
         Effect.ensuring(output.drain.pipe(Effect.orDie)),
       ),
     );

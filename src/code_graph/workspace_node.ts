@@ -2,6 +2,7 @@ import type {CodeGraphInventoryFile} from './types.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphExternalDependencyKind, CodeGraphExternalDependencyV1} from './cross_repository/types.js';
 import {normalizeNpmPackageName} from './cross_repository/monikers.js';
+import {Predicate} from 'effect';
 import {createSourceLineIndex, sourceSpan, type SourceLineIndex} from './languages/source_line_index.js';
 import {
   basename,
@@ -312,17 +313,15 @@ function parseNxTargets(
   diagnostics: string[],
 ): readonly NxTargetManifest[] {
   if (value === undefined) return [];
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!Predicate.isObject(value)) {
     diagnostics.push(`${evidence}: Nx targets must be an object`);
     return [];
   }
-  return Object.entries(value as Record<string, unknown>)
+  return Object.entries(value)
     .sort(([left], [right]) => compareCodeUnits(left, right))
     .map(([name, target]) => ({
       dependencyAliases: nxDependsOnAliases(
-        target && typeof target === 'object' && !Array.isArray(target)
-          ? (target as Record<string, unknown>).dependsOn
-          : undefined,
+        Predicate.isObject(target) ? target.dependsOn : undefined,
         projectName,
         projectDependencies,
       ),
@@ -347,13 +346,14 @@ function nxDependsOnAliases(
       }
       continue;
     }
-    if (!dependency || typeof dependency !== 'object' || Array.isArray(dependency)) continue;
-    const record = dependency as Record<string, unknown>;
-    if (typeof record.target !== 'string' || !record.target) continue;
+    if (!Predicate.isObject(dependency)) continue;
+    const record = dependency;
+    const target = record.target;
+    if (typeof target !== 'string' || !target) continue;
     const projects = stringArray(record.projects);
     const targetProjects =
       record.dependencies === true ? projectDependencies : projects.length > 0 ? projects : [projectName];
-    aliases.push(...targetProjects.map(project => nxTargetAlias(project, record.target as string)));
+    aliases.push(...targetProjects.map(project => nxTargetAlias(project, target)));
   }
   return uniqueStrings(aliases);
 }
@@ -634,8 +634,8 @@ function lastJsonTokenIndex(
 function packageWorkspacePatterns(manifest: Record<string, unknown>): readonly string[] {
   const workspaces = manifest.workspaces;
   if (Array.isArray(workspaces)) return workspaces.filter((value): value is string => typeof value === 'string');
-  if (!workspaces || typeof workspaces !== 'object') return [];
-  const packages = (workspaces as Record<string, unknown>).packages;
+  if (!Predicate.isObject(workspaces)) return [];
+  const packages = workspaces.packages;
   return Array.isArray(packages) ? packages.filter((value): value is string => typeof value === 'string') : [];
 }
 
@@ -659,8 +659,8 @@ function typescriptReferencePaths(root: string, config: Record<string, unknown>)
   if (!Array.isArray(config.references)) return [];
   return uniqueStrings(
     config.references.flatMap(reference => {
-      if (!reference || typeof reference !== 'object' || Array.isArray(reference)) return [];
-      const value = (reference as Record<string, unknown>).path;
+      if (!Predicate.isObject(reference)) return [];
+      const value = reference.path;
       if (typeof value !== 'string') return [];
       const normalized = normalizeContainedPath(root, value);
       if (normalized === undefined) return [];
@@ -675,10 +675,7 @@ function typescriptSourceRoots(
   evidence: string,
   diagnostics: string[],
 ): readonly string[] {
-  const compilerOptions =
-    config.compilerOptions && typeof config.compilerOptions === 'object' && !Array.isArray(config.compilerOptions)
-      ? (config.compilerOptions as Record<string, unknown>)
-      : {};
+  const compilerOptions = Predicate.isObject(config.compilerOptions) ? config.compilerOptions : {};
   const declared = [
     ...(typeof compilerOptions.rootDir === 'string' ? [compilerOptions.rootDir] : []),
     ...stringArray(compilerOptions.rootDirs),
@@ -733,11 +730,11 @@ function parseJsonObject(
 ): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(jsonc ? stripJsonCommentsAndTrailingCommas(file.content!) : file.content!);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    if (!Predicate.isObject(parsed)) {
       diagnostics.push(`${file.path}: ${label} is not an object`);
       return undefined;
     }
-    return parsed as Record<string, unknown>;
+    return parsed;
   } catch (cause) {
     diagnostics.push(`${file.path}: invalid ${label} (${messageOf(cause)})`);
     return undefined;

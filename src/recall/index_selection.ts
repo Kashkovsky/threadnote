@@ -385,10 +385,7 @@ export function selectRecallQueryTermStatistics(
     return {
       averageDocumentLength: documentCount === 0 ? 1 : totalDocumentLength / documentCount,
       documentCount,
-      documentFrequency: Object.assign(
-        Object.create(null) as Record<string, number>,
-        Object.fromEntries(frequencies.map(row => [row.term, row.document_frequency])),
-      ),
+      documentFrequency: Object.fromEntries(frequencies.map(row => [row.term, row.document_frequency])),
       totalDocumentLength,
     } satisfies RecallCorpusStatistics;
   });

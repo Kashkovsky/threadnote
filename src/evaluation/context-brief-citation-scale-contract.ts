@@ -1,4 +1,5 @@
 import {benchmarkMeasurement, type BenchmarkMeasurementV1} from './benchmark.js';
+import {Predicate} from 'effect';
 
 export const CONTEXT_BRIEF_CITATION_SCALE_VERSION = 1 as const;
 export const CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS = ['local-100k', 'workset-50', 'workset-128'] as const;
@@ -662,13 +663,7 @@ function parseArtifactMemoryObserver(value: unknown): ContextBriefCitationScaleM
   if (observer.source !== 'darwin-ps' && observer.source !== 'linux-proc') {
     invalid('memory observer source is unsupported');
   }
-  const rootIdentityValidation = observer.rootIdentityValidation;
-  if (
-    (observer.source === 'darwin-ps' && rootIdentityValidation !== 'darwin-ps-lstart') ||
-    (observer.source === 'linux-proc' && rootIdentityValidation !== 'linux-proc-starttime')
-  ) {
-    invalid('memory observer source and root identity validation do not match');
-  }
+  const rootIdentityValidation = parseRootIdentityValidation(observer.source, observer.rootIdentityValidation);
   const intervalMilliseconds = positiveInteger(observer.intervalMilliseconds, 'memory observer interval');
   if (intervalMilliseconds < 10 || intervalMilliseconds > 1_000) {
     invalid('memory observer interval must be between 10 and 1000 milliseconds');
@@ -696,8 +691,7 @@ function parseArtifactMemoryObserver(value: unknown): ContextBriefCitationScaleM
       observer.retainedRootRssGrowthBytes,
       'memory observer retained root RSS growth',
     ),
-    rootIdentityValidation:
-      rootIdentityValidation as ContextBriefCitationScaleMemoryObserverV2['rootIdentityValidation'],
+    rootIdentityValidation,
     rootStartIdentity: boundedString(observer.rootStartIdentity, 'memory observer root identity'),
     sampleGapBreachCount: nonNegativeSafeInteger(
       observer.sampleGapBreachCount,
@@ -1332,10 +1326,7 @@ function parseProfile(value: unknown): ContextBriefCitationScaleProfileV1 {
     'selectedMemories',
     'worksetMembers',
   ]);
-  if (!CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS.includes(profile.id as ContextBriefCitationScaleProfileId)) {
-    invalid('profile id is unsupported');
-  }
-  const id = profile.id as ContextBriefCitationScaleProfileId;
+  const id = parseProfileId(profile.id, 'profile id');
   const expected = EXACT_PROFILE_SHAPES[id];
   for (const key of ['citationCount', 'citedRepositories', 'selectedMemories', 'worksetMembers'] as const) {
     if (profile[key] !== expected[key]) invalid(`${id} ${key} does not match the reviewed shape`);
@@ -1451,13 +1442,17 @@ function maximum(
 }
 
 function positiveInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 1) invalid(`${label} must be a positive integer`);
-  return value as number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    invalid(`${label} must be a positive integer`);
+  }
+  return value;
 }
 
 function nonNegativeSafeInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) invalid(`${label} must be a non-negative integer`);
-  return value as number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    invalid(`${label} must be a non-negative integer`);
+  }
+  return value;
 }
 
 function nonNegativeFinite(value: unknown, label: string): number {
@@ -1506,10 +1501,17 @@ function lowercaseHex(value: unknown, length: number, label: string): string {
 }
 
 function parseProfileId(value: unknown, label: string): ContextBriefCitationScaleProfileId {
-  if (!CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS.includes(value as ContextBriefCitationScaleProfileId)) {
-    invalid(`${label} is unsupported`);
-  }
-  return value as ContextBriefCitationScaleProfileId;
+  if (value === 'local-100k' || value === 'workset-50' || value === 'workset-128') return value;
+  invalid(`${label} is unsupported`);
+}
+
+function parseRootIdentityValidation(
+  source: unknown,
+  value: unknown,
+): ContextBriefCitationScaleMemoryObserverV2['rootIdentityValidation'] {
+  if (source === 'darwin-ps' && value === 'darwin-ps-lstart') return value;
+  if (source === 'linux-proc' && value === 'linux-proc-starttime') return value;
+  invalid('memory observer source and root identity validation do not match');
 }
 
 function isoInstant(value: unknown, label: string): string {
@@ -1536,8 +1538,8 @@ function exactKeys(value: Readonly<Record<string, unknown>>, expected: readonly 
 }
 
 function record(value: unknown, label: string): Readonly<Record<string, unknown>> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Readonly<Record<string, unknown>>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
 }
 
 function invalid(detail: string): never {

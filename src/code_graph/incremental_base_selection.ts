@@ -17,7 +17,9 @@ export function gitCommitDistanceGroups(output: string, headCommit: string): rea
     const fields = line.trim().split(/\s+/u).filter(Boolean);
     if (fields.length === 0) continue;
     if (fields.some(field => !GIT_OBJECT_ID.test(field))) return [];
-    const [commit, ...parents] = fields as [string, ...string[]];
+    const commit = fields[0];
+    if (commit === undefined) continue;
+    const parents = fields.slice(1);
     const previous = parentsByCommit.get(commit);
     if (previous !== undefined && previous.join('\0') !== parents.join('\0')) return [];
     parentsByCommit.set(commit, parents);

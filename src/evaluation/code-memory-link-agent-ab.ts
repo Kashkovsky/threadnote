@@ -23,6 +23,19 @@ import {
   parseCodeMemoryLinkExpectedCodexClientV1,
   type CodeMemoryLinkExpectedCodexClientV1,
 } from './code-memory-link-agent-client-identity.js';
+import {
+  armPosition,
+  assertCanonicalOrder,
+  assertUnique,
+  boolean,
+  exactKeys,
+  invalid,
+  literal,
+  matchingString,
+  nonNegativeInteger,
+  positiveInteger,
+  record,
+} from './code-memory-link-agent-ab-parse.js';
 import type {
   ArmAcceptanceMetricV1,
   BinaryScenarioFamilyMetricV1,
@@ -166,6 +179,21 @@ export type CodeMemoryLinkAgentAbClientTrialSummaryV1 = Omit<
   CodeMemoryLinkAgentAbTrialSummaryV1,
   'previousReceiptDigest' | 'trialId'
 >;
+
+export function parseCodeMemoryLinkAgentAbClientTrialSummaryV1(
+  value: unknown,
+): CodeMemoryLinkAgentAbClientTrialSummaryV1 {
+  const {
+    previousReceiptDigest: _previousReceiptDigest,
+    trialId: _trialId,
+    ...clientSummary
+  } = parseTrialSummary({
+    ...record(value, 'client trial summary'),
+    previousReceiptDigest: null,
+    trialId: 'trl_0000000000000000',
+  });
+  return clientSummary;
+}
 
 export interface CodeMemoryLinkAgentAbResultV1 {
   readonly assignmentHash: string;
@@ -843,10 +871,20 @@ function completeTrialBlocks(
         failures.push(`manifest paired block ${displayKey(key)} requires exactly one X, Y, and Z external-agent trial`);
         continue;
       }
+      const trialsByArm = new Map<CodeMemoryLinkAgentAbArm, CodeMemoryLinkAgentAbTrialV1>();
+      for (const label of CODE_MEMORY_LINK_AGENT_AB_BLIND_LABELS) {
+        const trial = byLabel.get(label);
+        if (trial !== undefined) trialsByArm.set(assignment.labels[label], trial);
+      }
+      const anchored = trialsByArm.get('anchored');
+      const taskOnly = trialsByArm.get('task-only');
+      const noMemory = trialsByArm.get('no-memory');
+      if (!anchored || !taskOnly || !noMemory) {
+        failures.push(`manifest paired block ${displayKey(key)} has an incomplete arm assignment`);
+        continue;
+      }
       blocks.push({
-        arms: Object.fromEntries(
-          CODE_MEMORY_LINK_AGENT_AB_BLIND_LABELS.map(label => [assignment.labels[label], byLabel.get(label)!]),
-        ) as unknown as Readonly<Record<CodeMemoryLinkAgentAbArm, CodeMemoryLinkAgentAbTrialV1>>,
+        arms: {anchored, 'no-memory': noMemory, 'task-only': taskOnly},
         clientId,
         scenarioFamily: task.scenarioFamily,
         taskId: task.taskId,
@@ -1175,13 +1213,12 @@ function perClientMetrics(
 function acceptanceMetrics(
   blocks: readonly CompleteTrialBlock[],
 ): CodeMemoryLinkAgentAbResultV1['metrics']['staleOrHarmfulAcceptance'] {
-  return Object.fromEntries(
-    CODE_MEMORY_LINK_AGENT_AB_ARMS.map(arm => {
-      const trials = blocks.map(block => block.arms[arm]);
-      const acceptedTrials = trials.filter(trial => trial.acceptedStaleOrHarmful).length;
-      return [arm, {acceptedTrials, rate: rate(acceptedTrials, trials.length), trials: trials.length}];
-    }),
-  ) as unknown as Readonly<Record<CodeMemoryLinkAgentAbArm, ArmAcceptanceMetricV1>>;
+  const metric = (arm: CodeMemoryLinkAgentAbArm): ArmAcceptanceMetricV1 => {
+    const trials = blocks.map(block => block.arms[arm]);
+    const acceptedTrials = trials.filter(trial => trial.acceptedStaleOrHarmful).length;
+    return {acceptedTrials, rate: rate(acceptedTrials, trials.length), trials: trials.length};
+  };
+  return {anchored: metric('anchored'), 'no-memory': metric('no-memory'), 'task-only': metric('task-only')};
 }
 
 function qualityGateFailures(
@@ -1423,12 +1460,11 @@ function monotoneSafetyFailures(
 function parseLabels(value: unknown): Readonly<Record<CodeMemoryLinkAgentAbBlindLabel, CodeMemoryLinkAgentAbArm>> {
   const labels = record(value, 'assignment labels');
   exactKeys(labels, CODE_MEMORY_LINK_AGENT_AB_BLIND_LABELS, 'assignment labels');
-  const parsed = Object.fromEntries(
-    CODE_MEMORY_LINK_AGENT_AB_BLIND_LABELS.map(label => [
-      label,
-      literal(labels[label], CODE_MEMORY_LINK_AGENT_AB_ARMS, `assignment label ${label}`),
-    ]),
-  ) as unknown as Readonly<Record<CodeMemoryLinkAgentAbBlindLabel, CodeMemoryLinkAgentAbArm>>;
+  const parsed = {
+    X: literal(labels.X, CODE_MEMORY_LINK_AGENT_AB_ARMS, 'assignment label X'),
+    Y: literal(labels.Y, CODE_MEMORY_LINK_AGENT_AB_ARMS, 'assignment label Y'),
+    Z: literal(labels.Z, CODE_MEMORY_LINK_AGENT_AB_ARMS, 'assignment label Z'),
+  };
   if (new Set(Object.values(parsed)).size !== CODE_MEMORY_LINK_AGENT_AB_ARMS.length) {
     invalid('assignment labels must map bijectively to all three arms');
   }
@@ -1575,7 +1611,7 @@ function deriveValidatedSchedule(
     block.permutation.map((blindLabel, positionIndex) => {
       const runOrder = blockIndex * CODE_MEMORY_LINK_AGENT_AB_ARMS.length + positionIndex;
       return {
-        armPosition: (positionIndex + 1) as 1 | 2 | 3,
+        armPosition: armPosition(positionIndex + 1),
         blindLabel,
         clientId: block.clientId,
         runNonce: `run_${sha256HexSync(`${scheduleSeed}\0run\0${block.clientId}\0${block.task.taskId}\0${blindLabel}`)}`,
@@ -1751,10 +1787,13 @@ function parseScenarioFamily(
   if (taskKind === 'hidden-constraint') {
     return literal(value, ['hidden:anchored-only', 'hidden:lexical'] as const, 'hidden scenario family');
   }
-  if (typeof value !== 'string' || !CONTROL_SCENARIO_FAMILY.test(value)) {
+  if (!isControlScenarioFamily(value)) {
     invalid('negative-control scenario family is invalid');
   }
-  return value as `control:${string}`;
+  return value;
+}
+function isControlScenarioFamily(value: unknown): value is `control:${string}` {
+  return typeof value === 'string' && CONTROL_SCENARIO_FAMILY.test(value);
 }
 
 function validateTrialTaskContract(
@@ -1850,11 +1889,11 @@ function allConstraintsSatisfied(trial: CodeMemoryLinkAgentAbTrialV1): boolean {
   return trial.constraintAdherence.satisfied === trial.constraintAdherence.total;
 }
 
-function groupBlocks(
+function groupBlocks<Key extends string>(
   blocks: readonly CompleteTrialBlock[],
-  keyFor: (block: CompleteTrialBlock) => string,
-): ReadonlyMap<string, readonly CompleteTrialBlock[]> {
-  const grouped = new Map<string, CompleteTrialBlock[]>();
+  keyFor: (block: CompleteTrialBlock) => Key,
+): ReadonlyMap<Key, readonly CompleteTrialBlock[]> {
+  const grouped = new Map<Key, CompleteTrialBlock[]>();
   for (const block of blocks) {
     const key = keyFor(block);
     grouped.set(key, [...(grouped.get(key) ?? []), block]);
@@ -1867,7 +1906,7 @@ function scenarioFamilyGroups(
 ): readonly (readonly [CodeMemoryLinkAgentAbScenarioFamily, readonly CompleteTrialBlock[]])[] {
   return [...groupBlocks(blocks, block => block.scenarioFamily).entries()]
     .sort(([left], [right]) => compareStrings(left, right))
-    .map(([scenarioFamily, familyBlocks]) => [scenarioFamily as CodeMemoryLinkAgentAbScenarioFamily, familyBlocks]);
+    .map(([scenarioFamily, familyBlocks]) => [scenarioFamily, familyBlocks]);
 }
 
 function compareTrialsCanonically(left: CodeMemoryLinkAgentAbTrialV1, right: CodeMemoryLinkAgentAbTrialV1): number {
@@ -1882,11 +1921,6 @@ function scheduleKey(clientId: string, taskId: string, blindLabel: CodeMemoryLin
   return `${clientId}\0${taskId}\0${blindLabel}`;
 }
 
-function armPosition(value: unknown): 1 | 2 | 3 {
-  if (value !== 1 && value !== 2 && value !== 3) invalid('arm position must be 1, 2, or 3');
-  return value;
-}
-
 function scheduleAlgorithmVersionValue(value: unknown): typeof CODE_MEMORY_LINK_AGENT_AB_SCHEDULE_ALGORITHM_VERSION {
   if (value !== CODE_MEMORY_LINK_AGENT_AB_SCHEDULE_ALGORITHM_VERSION) {
     invalid(`manifest schedule algorithm must be ${CODE_MEMORY_LINK_AGENT_AB_SCHEDULE_ALGORITHM_VERSION}`);
@@ -1896,58 +1930,6 @@ function scheduleAlgorithmVersionValue(value: unknown): typeof CODE_MEMORY_LINK_
 
 function displayKey(value: string): string {
   return value.replaceAll('\0', '/');
-}
-
-function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
-}
-
-function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
-    invalid(`${label} has unsupported or missing fields`);
-  }
-}
-
-function literal<const Values extends readonly string[]>(
-  value: unknown,
-  values: Values,
-  label: string,
-): Values[number] {
-  if (typeof value !== 'string' || !(values as readonly string[]).includes(value)) invalid(`${label} is invalid`);
-  return value;
-}
-
-function matchingString(value: unknown, pattern: RegExp, label: string): string {
-  if (typeof value !== 'string' || !pattern.test(value)) invalid(`${label} is invalid`);
-  return value;
-}
-
-function boolean(value: unknown, label: string): boolean {
-  if (typeof value !== 'boolean') invalid(`${label} must be boolean`);
-  return value;
-}
-
-function positiveInteger(value: unknown, label: string): number {
-  const parsed = nonNegativeInteger(value, label);
-  if (parsed < 1) invalid(`${label} must be a positive integer`);
-  return parsed;
-}
-
-function nonNegativeInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) invalid(`${label} must be a non-negative integer`);
-  return value as number;
-}
-
-function assertUnique(values: readonly string[], label: string): void {
-  if (new Set(values).size !== values.length) invalid(`${label} must be unique`);
-}
-
-function assertCanonicalOrder(values: readonly string[], label: string): void {
-  if (values.some((value, index) => value !== [...values].sort()[index]))
-    invalid(`${label} must be sorted canonically`);
 }
 
 function mean(values: readonly number[]): number {
@@ -1972,8 +1954,4 @@ function format(value: number): string {
 
 function formatNullable(value: number | null): string {
   return value === null ? 'unavailable' : format(value);
-}
-
-function invalid(message: string): never {
-  throw new Error(`Invalid Code Memory Link agent A/B evidence: ${message}.`);
 }

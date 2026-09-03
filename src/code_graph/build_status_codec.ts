@@ -1,3 +1,4 @@
+import {Option} from 'effect';
 import {
   CODE_GRAPH_BUILD_COMMIT_ID,
   CODE_GRAPH_BUILD_ID,
@@ -14,7 +15,6 @@ import {
   type CodeGraphSlowFileTelemetry,
 } from './progress_telemetry.js';
 import type {
-  CodeGraphActivationActivity,
   CodeGraphMaterializationActivity,
   CodeGraphMaterializationMetrics,
   CodeGraphMaterializationRows,
@@ -36,7 +36,7 @@ import type {
 
 const BUILD_ID = CODE_GRAPH_BUILD_ID;
 const COMMIT_ID = CODE_GRAPH_BUILD_COMMIT_ID;
-const VALID_PHASES = new Set<CodeGraphProgress['phase']>([
+const VALID_PHASES = [
   'activating',
   'embedding',
   'materializing',
@@ -45,9 +45,9 @@ const VALID_PHASES = new Set<CodeGraphProgress['phase']>([
   'resolving',
   'scanning',
   'waiting',
-]);
-const VALID_STATES = new Set<CodeGraphBuildState>(['completed', 'failed', 'queued', 'running']);
-const VALID_MATERIALIZATION_FALLBACK_REASONS = new Set<CodeGraphOverlayFallbackReason>([
+] as const satisfies readonly CodeGraphProgress['phase'][];
+const VALID_STATES = ['completed', 'failed', 'queued', 'running'] as const satisfies readonly CodeGraphBuildState[];
+const VALID_MATERIALIZATION_FALLBACK_REASONS = [
   'cache-incomplete',
   'disabled',
   'dynamic-aliases',
@@ -64,7 +64,7 @@ const VALID_MATERIALIZATION_FALLBACK_REASONS = new Set<CodeGraphOverlayFallbackR
   'staging-identity-mismatch',
   'staging-unavailable',
   'workspace-changed',
-]);
+] as const satisfies readonly CodeGraphOverlayFallbackReason[];
 
 const isRecord = isBuildStatusRecord;
 const isHash = isBuildStatusHash;
@@ -85,8 +85,8 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
     Number(value.owner.processId) <= 0 ||
     value.owner.runtime !== 'bun' ||
     !isText(value.owner.runtimeVersion, 64) ||
-    !VALID_PHASES.has(value.phase as CodeGraphProgress['phase']) ||
-    !VALID_STATES.has(value.state as CodeGraphBuildState)
+    !isOneOf(value.phase, VALID_PHASES) ||
+    !isOneOf(value.state, VALID_STATES)
   ) {
     return undefined;
   }
@@ -154,12 +154,12 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
       runtime: 'bun',
       runtimeVersion: value.owner.runtimeVersion,
     },
-    phase: value.phase as CodeGraphProgress['phase'],
+    phase: value.phase,
     ...(request ? {request} : {}),
     ...(resolution ? {resolution} : {}),
     ...(result ? {result} : {}),
     schemaVersion: CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
-    state: value.state as CodeGraphBuildState,
+    state: value.state,
     ...(subphase ? {subphase} : {}),
     ...(timings ? {timings} : {}),
     timestamps: {
@@ -203,22 +203,24 @@ function parseActivation(value: unknown): CodeGraphBuildActivation | undefined {
 }
 
 function parseActivationActivity(value: unknown): CodeGraphBuildActivation['activity'] | undefined {
+  const stage = oneOf(value, 'stage', [
+    'checkpointing-snapshot',
+    'committing-snapshot',
+    'copying-edges',
+    'copying-files',
+    'copying-lookup-keys',
+    'copying-reexports',
+    'copying-symbols',
+    'copying-terms',
+    'copying-workspace',
+    'recording-completion',
+    'validating-input',
+  ]);
+  const state = oneOf(value, 'state', ['completed', 'progress', 'started']);
   if (
     !isRecord(value) ||
-    ![
-      'checkpointing-snapshot',
-      'committing-snapshot',
-      'copying-edges',
-      'copying-files',
-      'copying-lookup-keys',
-      'copying-reexports',
-      'copying-symbols',
-      'copying-terms',
-      'copying-workspace',
-      'recording-completion',
-      'validating-input',
-    ].includes(String(value.stage)) ||
-    !['completed', 'progress', 'started'].includes(String(value.state)) ||
+    stage === undefined ||
+    state === undefined ||
     !isNonNegativeFinite(value.elapsedMilliseconds) ||
     !isNonNegativeFinite(value.stageElapsedMilliseconds) ||
     !isTimestamp(value.startedAt)
@@ -232,10 +234,10 @@ function parseActivationActivity(value: unknown): CodeGraphBuildActivation['acti
   return {
     elapsedMilliseconds: Number(value.elapsedMilliseconds),
     ...(value.rows === undefined ? {} : {rows: Number(value.rows)}),
-    stage: value.stage as CodeGraphActivationActivity['stage'],
+    stage,
     stageElapsedMilliseconds: Number(value.stageElapsedMilliseconds),
     startedAt: value.startedAt,
-    state: value.state as CodeGraphActivationActivity['state'],
+    state,
     ...(value.transactionMilliseconds === undefined
       ? {}
       : {transactionMilliseconds: Number(value.transactionMilliseconds)}),
@@ -335,27 +337,28 @@ function parseMaterialization(value: unknown): CodeGraphBuildMaterialization | u
 }
 
 function parseMaterializationActivity(value: unknown): CodeGraphBuildMaterialization['activity'] | undefined {
+  const stage = oneOf(value, 'stage', [
+    'attributing',
+    'committing',
+    'loading-cache',
+    'preparing-rows',
+    'restoring-indexes',
+    'writing-analysis',
+    'writing-candidates',
+    'writing-edges',
+    'writing-facts',
+    'writing-lookups',
+    'writing-receipt',
+    'writing-references',
+    'writing-symbols',
+    'writing-terms',
+  ]);
   if (
     !isRecord(value) ||
     !isBatchProgress(value.batchCompleted, value.batchTotal) ||
     !Number.isSafeInteger(value.sourceBytes) ||
     Number(value.sourceBytes) < 0 ||
-    ![
-      'attributing',
-      'committing',
-      'loading-cache',
-      'preparing-rows',
-      'restoring-indexes',
-      'writing-analysis',
-      'writing-candidates',
-      'writing-edges',
-      'writing-facts',
-      'writing-lookups',
-      'writing-references',
-      'writing-receipt',
-      'writing-symbols',
-      'writing-terms',
-    ].includes(String(value.stage)) ||
+    stage === undefined ||
     !isTimestamp(value.startedAt)
   ) {
     return undefined;
@@ -379,7 +382,7 @@ function parseMaterializationActivity(value: unknown): CodeGraphBuildMaterializa
     ...(value.factsBytes === undefined ? {} : {factsBytes: Number(value.factsBytes)}),
     ...(rows ? {rows} : {}),
     sourceBytes: Number(value.sourceBytes),
-    stage: value.stage as CodeGraphMaterializationActivity['stage'],
+    stage,
     ...(value.stageElapsedMilliseconds === undefined
       ? {}
       : {stageElapsedMilliseconds: Number(value.stageElapsedMilliseconds)}),
@@ -400,42 +403,38 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
   ) {
     return undefined;
   }
-  if (
-    value.fallbackReason !== undefined &&
-    !VALID_MATERIALIZATION_FALLBACK_REASONS.has(value.fallbackReason as CodeGraphOverlayFallbackReason)
-  ) {
-    return undefined;
-  }
+  const fallbackReason =
+    value.fallbackReason === undefined
+      ? undefined
+      : isOneOf(value.fallbackReason, VALID_MATERIALIZATION_FALLBACK_REASONS)
+        ? value.fallbackReason
+        : undefined;
+  if (value.fallbackReason !== undefined && fallbackReason === undefined) return undefined;
   const fallbackAssessment = parseOverlayFallbackAssessment(value.fallbackAssessment);
   if (value.fallbackAssessment !== undefined && fallbackAssessment === undefined) return undefined;
-  if (fallbackAssessment !== undefined && value.fallbackReason !== 'project-closure-incomplete') return undefined;
+  if (fallbackAssessment !== undefined && fallbackReason !== 'project-closure-incomplete') return undefined;
   const fallbackBoundary = parseOverlayFallbackBoundary(value.fallbackBoundary);
   if (value.fallbackBoundary !== undefined && fallbackBoundary === undefined) return undefined;
-  if (fallbackBoundary !== undefined && value.fallbackReason !== 'project-closure-unbounded') return undefined;
-  if (value.mode !== undefined && !['full', 'incremental-clean', 'incremental-overlay'].includes(String(value.mode))) {
-    return undefined;
-  }
-  if (
-    value.resolutionPublicationGate !== undefined &&
-    ![
-      'exported',
-      'foreign-path',
-      'non-typescript-domain',
-      'own-path-local',
-      'scope-mismatch',
-      'unknown-lookup-form',
-    ].includes(String(value.resolutionPublicationGate))
-  ) {
-    return undefined;
-  }
-  if (
-    value.resolutionLookupKeyForm !== undefined &&
-    !['none', 'non-typescript', 'typescript-other', 'typescript-path-scoped', 'typescript-path-unscoped'].includes(
-      String(value.resolutionLookupKeyForm),
-    )
-  ) {
-    return undefined;
-  }
+  if (fallbackBoundary !== undefined && fallbackReason !== 'project-closure-unbounded') return undefined;
+  const mode = oneOf(value, 'mode', ['full', 'incremental-clean', 'incremental-overlay']);
+  if (value.mode !== undefined && mode === undefined) return undefined;
+  const resolutionPublicationGate = oneOf(value, 'resolutionPublicationGate', [
+    'exported',
+    'foreign-path',
+    'non-typescript-domain',
+    'own-path-local',
+    'scope-mismatch',
+    'unknown-lookup-form',
+  ]);
+  if (value.resolutionPublicationGate !== undefined && resolutionPublicationGate === undefined) return undefined;
+  const resolutionLookupKeyForm = oneOf(value, 'resolutionLookupKeyForm', [
+    'none',
+    'non-typescript',
+    'typescript-other',
+    'typescript-path-scoped',
+    'typescript-path-unscoped',
+  ]);
+  if (value.resolutionLookupKeyForm !== undefined && resolutionLookupKeyForm === undefined) return undefined;
   for (const key of [
     'attributedFilesCompleted',
     'cachedFactBytesCompleted',
@@ -513,23 +512,11 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     ...(value.attributedFilesCompleted === undefined
       ? {}
       : {attributedFilesCompleted: Number(value.attributedFilesCompleted)}),
-    ...(value.fallbackReason === undefined
-      ? {}
-      : {fallbackReason: value.fallbackReason as CodeGraphMaterializationMetrics['fallbackReason']}),
+    ...(fallbackReason === undefined ? {} : {fallbackReason}),
     ...(fallbackAssessment === undefined ? {} : {fallbackAssessment}),
     ...(fallbackBoundary === undefined ? {} : {fallbackBoundary}),
-    ...(value.resolutionLookupKeyForm === undefined
-      ? {}
-      : {
-          resolutionLookupKeyForm:
-            value.resolutionLookupKeyForm as CodeGraphMaterializationMetrics['resolutionLookupKeyForm'],
-        }),
-    ...(value.resolutionPublicationGate === undefined
-      ? {}
-      : {
-          resolutionPublicationGate:
-            value.resolutionPublicationGate as CodeGraphMaterializationMetrics['resolutionPublicationGate'],
-        }),
+    ...(resolutionLookupKeyForm === undefined ? {} : {resolutionLookupKeyForm}),
+    ...(resolutionPublicationGate === undefined ? {} : {resolutionPublicationGate}),
     ...(value.attributionMilliseconds === undefined
       ? {}
       : {attributionMilliseconds: Number(value.attributionMilliseconds)}),
@@ -567,7 +554,7 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
             value.materializedShardCacheDeferredRawFactBytesCompleted,
           ),
         }),
-    ...(value.mode === undefined ? {} : {mode: value.mode as CodeGraphMaterializationMetrics['mode']}),
+    ...(mode === undefined ? {} : {mode}),
     ...(value.rawFactReplayBytesCompleted === undefined
       ? {}
       : {rawFactReplayBytesCompleted: Number(value.rawFactReplayBytesCompleted)}),
@@ -586,19 +573,20 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
 function parseOverlayFallbackAssessment(
   value: unknown,
 ): CodeGraphMaterializationMetrics['fallbackAssessment'] | undefined {
+  const detail = oneOf(value, 'detail', [
+    'dependency-model-incomplete',
+    'duplicate-project-identity',
+    'no-project-seeds',
+    'path-owner-ambiguous',
+    'path-unowned',
+    'project-model-incomplete',
+    'project-not-stable',
+    'resolution-domain-unowned',
+  ]);
   if (
     !isRecord(value) ||
     value.stage !== 'file-set-seed-assessment' ||
-    ![
-      'dependency-model-incomplete',
-      'duplicate-project-identity',
-      'no-project-seeds',
-      'path-owner-ambiguous',
-      'path-unowned',
-      'project-model-incomplete',
-      'project-not-stable',
-      'resolution-domain-unowned',
-    ].includes(String(value.detail)) ||
+    detail === undefined ||
     !isNonNegativeSafeInteger(value.changedFiles) ||
     !isNonNegativeSafeInteger(value.addedFiles) ||
     !isNonNegativeSafeInteger(value.deletedFiles) ||
@@ -610,7 +598,7 @@ function parseOverlayFallbackAssessment(
     addedFiles: Number(value.addedFiles),
     changedFiles: Number(value.changedFiles),
     deletedFiles: Number(value.deletedFiles),
-    detail: value.detail as NonNullable<CodeGraphMaterializationMetrics['fallbackAssessment']>['detail'],
+    detail,
     stage: 'file-set-seed-assessment',
   };
 }
@@ -661,55 +649,30 @@ type OverlayFallbackBoundaryPair =
     };
 
 function parseOverlayFallbackBoundaryPair(stage: unknown, metric: unknown): OverlayFallbackBoundaryPair | undefined {
-  if (typeof stage !== 'string' || typeof metric !== 'string') return undefined;
+  if (typeof stage !== 'string') return undefined;
   if (stage === 'project-closure-selection') {
-    if (!['affected-files', 'cached-fact-bytes', 'source-bytes'].includes(metric)) return undefined;
-    return {metric: metric as 'affected-files' | 'cached-fact-bytes' | 'source-bytes', stage};
+    const parsedMetric = oneOfValue(metric, ['affected-files', 'cached-fact-bytes', 'source-bytes']);
+    return parsedMetric === undefined ? undefined : {metric: parsedMetric, stage};
   }
   if (stage === 'resolution-candidate-scan') {
-    if (
-      ![
-        'candidate-lookup-keys',
-        'candidate-projection-associations',
-        'candidate-projection-file-associations',
-        'candidate-projection-observations',
-        'candidate-projection-observed-key-bytes',
-        'candidate-reexport-key-bytes',
-        'candidate-reexport-lookup-keys',
-        'candidate-reexports',
-        'candidate-scan-fact-bytes',
-        'candidate-scan-files',
-        'candidate-selected-files',
-      ].includes(metric)
-    ) {
-      return undefined;
-    }
-    return {
-      metric: metric as
-        | 'candidate-lookup-keys'
-        | 'candidate-projection-associations'
-        | 'candidate-projection-file-associations'
-        | 'candidate-projection-observations'
-        | 'candidate-projection-observed-key-bytes'
-        | 'candidate-reexport-key-bytes'
-        | 'candidate-reexport-lookup-keys'
-        | 'candidate-reexports'
-        | 'candidate-scan-fact-bytes'
-        | 'candidate-scan-files'
-        | 'candidate-selected-files',
-      stage,
-    };
+    const parsedMetric = oneOfValue(metric, [
+      'candidate-lookup-keys',
+      'candidate-projection-associations',
+      'candidate-projection-file-associations',
+      'candidate-projection-observations',
+      'candidate-projection-observed-key-bytes',
+      'candidate-reexport-key-bytes',
+      'candidate-reexport-lookup-keys',
+      'candidate-reexports',
+      'candidate-scan-fact-bytes',
+      'candidate-scan-files',
+      'candidate-selected-files',
+    ]);
+    return parsedMetric === undefined ? undefined : {metric: parsedMetric, stage};
   }
-  if (
-    stage !== 'resolution-candidate-rewrite' ||
-    !['cached-fact-bytes', 'candidate-selected-files', 'source-bytes'].includes(metric)
-  ) {
-    return undefined;
-  }
-  return {
-    metric: metric as 'cached-fact-bytes' | 'candidate-selected-files' | 'source-bytes',
-    stage,
-  };
+  if (stage !== 'resolution-candidate-rewrite') return undefined;
+  const parsedMetric = oneOfValue(metric, ['cached-fact-bytes', 'candidate-selected-files', 'source-bytes']);
+  return parsedMetric === undefined ? undefined : {metric: parsedMetric, stage};
 }
 
 function parseMaterializationSubphaseMilliseconds(
@@ -759,7 +722,9 @@ function parseMaterializationStageMilliseconds(
   const parsed: Partial<Record<CodeGraphMaterializationActivity['stage'], number>> = {};
   for (const [stage, milliseconds] of Object.entries(value)) {
     if (!allowed.has(stage) || !isNonNegativeFinite(milliseconds)) return undefined;
-    parsed[stage as CodeGraphMaterializationActivity['stage']] = Number(milliseconds);
+    const parsedStage = oneOfValue(stage, stages);
+    if (parsedStage === undefined) return undefined;
+    parsed[parsedStage] = Number(milliseconds);
   }
   return parsed;
 }
@@ -775,12 +740,12 @@ function parseMaterializationStorage(
   ) {
     return undefined;
   }
-  if (
-    value.estimateBasis !== undefined &&
-    !['cached-fact-bytes', 'final-fact-bytes', 'source-bytes-fallback'].includes(String(value.estimateBasis))
-  ) {
-    return undefined;
-  }
+  const estimateBasis = oneOf(value, 'estimateBasis', [
+    'cached-fact-bytes',
+    'final-fact-bytes',
+    'source-bytes-fallback',
+  ]);
+  if (value.estimateBasis !== undefined && estimateBasis === undefined) return undefined;
   for (const key of [
     'availableBytes',
     'durableAvailableBytes',
@@ -817,12 +782,8 @@ function parseMaterializationStorage(
     if (value[key] !== undefined && !isNonNegativeSafeInteger(value[key])) return undefined;
   }
   if (value.filesystemsShared !== undefined && typeof value.filesystemsShared !== 'boolean') return undefined;
-  if (
-    value.materializationMode !== undefined &&
-    !['direct-persistent', 'temporary-staged'].includes(String(value.materializationMode))
-  ) {
-    return undefined;
-  }
+  const materializationMode = oneOf(value, 'materializationMode', ['direct-persistent', 'temporary-staged']);
+  if (value.materializationMode !== undefined && materializationMode === undefined) return undefined;
   for (const [current, highWater] of [
     ['durableDatabaseFileBytes', 'durableDatabaseFileHighWaterBytes'],
     ['durableDatabaseGrowthBytes', 'durableDatabaseGrowthHighWaterBytes'],
@@ -916,11 +877,7 @@ function parseMaterializationStorage(
     ...(value.durableWalHighWaterBytes === undefined
       ? {}
       : {durableWalHighWaterBytes: Number(value.durableWalHighWaterBytes)}),
-    ...(value.estimateBasis === undefined
-      ? {}
-      : {
-          estimateBasis: value.estimateBasis as 'cached-fact-bytes' | 'final-fact-bytes' | 'source-bytes-fallback',
-        }),
+    ...(estimateBasis === undefined ? {} : {estimateBasis}),
     ...(value.estimatedConcurrentBuildBytes === undefined
       ? {}
       : {estimatedConcurrentBuildBytes: Number(value.estimatedConcurrentBuildBytes)}),
@@ -941,9 +898,7 @@ function parseMaterializationStorage(
       ? {}
       : {estimatedTemporaryDatabaseBytes: Number(value.estimatedTemporaryDatabaseBytes)}),
     ...(value.filesystemsShared === undefined ? {} : {filesystemsShared: value.filesystemsShared}),
-    ...(value.materializationMode === undefined
-      ? {}
-      : {materializationMode: value.materializationMode as 'direct-persistent' | 'temporary-staged'}),
+    ...(materializationMode === undefined ? {} : {materializationMode}),
     ...(value.temporaryAvailableBytes === undefined
       ? {}
       : {temporaryAvailableBytes: Number(value.temporaryAvailableBytes)}),
@@ -980,6 +935,7 @@ function isNonNegativeSafeInteger(value: unknown): boolean {
 }
 
 function parseActivity(value: unknown): CodeGraphBuildActivity | undefined {
+  const stage = oneOf(value, 'stage', ['extracting', 'persisting', 'reading']);
   if (
     !isRecord(value) ||
     !Number.isSafeInteger(value.batchCompleted) ||
@@ -990,7 +946,7 @@ function parseActivity(value: unknown): CodeGraphBuildActivity | undefined {
     !Number.isSafeInteger(value.bytes) ||
     Number(value.bytes) < 0 ||
     !isText(value.language, 64) ||
-    !['extracting', 'persisting', 'reading'].includes(String(value.stage)) ||
+    stage === undefined ||
     (value.classifier !== undefined && !isText(value.classifier, 64)) ||
     (value.degraded !== undefined && typeof value.degraded !== 'boolean') ||
     (value.role !== undefined && !isText(value.role, 64)) ||
@@ -1017,7 +973,7 @@ function parseActivity(value: unknown): CodeGraphBuildActivity | undefined {
     ...(value.relations === undefined ? {} : {relations: Number(value.relations)}),
     ...(value.role === undefined ? {} : {role: value.role}),
     ...(value.sizeBucket === undefined ? {} : {sizeBucket: value.sizeBucket}),
-    stage: value.stage as CodeGraphBuildActivity['stage'],
+    stage,
     ...(value.symbols === undefined ? {} : {symbols: Number(value.symbols)}),
   };
 }
@@ -1037,7 +993,11 @@ function parseExtraction(value: unknown): CodeGraphBuildExtraction | undefined {
   if (topSlowFiles.some(sample => sample === undefined)) return undefined;
   const metrics = value.metrics === undefined ? undefined : parseScanningMetrics(value.metrics);
   if (value.metrics !== undefined && metrics === undefined) return undefined;
-  const samples = topSlowFiles as CodeGraphSlowFileTelemetry[];
+  const samples: CodeGraphSlowFileTelemetry[] = [];
+  for (const sample of topSlowFiles) {
+    if (sample === undefined) return undefined;
+    samples.push(sample);
+  }
   if (
     samples.some(
       (sample, index) =>
@@ -1141,6 +1101,25 @@ function isNonNegativeFinite(value: unknown): boolean {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
+function oneOfValue<const Values extends readonly string[]>(
+  value: unknown,
+  options: Values,
+): Values[number] | undefined {
+  return typeof value === 'string' && options.some(option => option === value) ? value : undefined;
+}
+
+function isOneOf<const Values extends readonly string[]>(value: unknown, options: Values): value is Values[number] {
+  return oneOfValue(value, options) !== undefined;
+}
+
+function oneOf<const Values extends readonly string[]>(
+  value: unknown,
+  key: string,
+  options: Values,
+): Values[number] | undefined {
+  return isRecord(value) ? oneOfValue(value[key], options) : undefined;
+}
+
 function parseRequest(value: unknown): CodeGraphBuildStatus['request'] | undefined {
   return isRecord(value) && isHash(value.key) ? {key: value.key} : undefined;
 }
@@ -1177,27 +1156,30 @@ function parseError(value: unknown): CodeGraphBuildStatus['error'] | undefined {
 }
 
 function parseEta(value: unknown): CodeGraphBuildStatus['eta'] | undefined {
-  return isRecord(value) &&
-    value.scope === 'phase' &&
-    ['high', 'low', 'medium'].includes(String(value.confidence)) &&
-    (value.basis === undefined ||
-      ['cached-fact-bytes', 'extraction-work', 'files', 'final-fact-bytes', 'source-bytes'].includes(
-        String(value.basis),
-      )) &&
-    Number.isSafeInteger(value.remainingMilliseconds) &&
-    Number(value.remainingMilliseconds) >= 0
-    ? {
-        ...(value.basis === undefined
-          ? {}
-          : {
-              basis: value.basis as
-                'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes',
-            }),
-        confidence: value.confidence as 'high' | 'low' | 'medium',
-        remainingMilliseconds: Number(value.remainingMilliseconds),
-        scope: 'phase',
-      }
-    : undefined;
+  if (!isRecord(value) || value.scope !== 'phase') return undefined;
+  const confidence = oneOfValue(value.confidence, ['high', 'low', 'medium']);
+  const basis = Option.fromUndefinedOr(value.basis).pipe(
+    Option.flatMap(candidate =>
+      Option.fromUndefinedOr(
+        oneOfValue(candidate, ['cached-fact-bytes', 'extraction-work', 'files', 'final-fact-bytes', 'source-bytes']),
+      ),
+    ),
+  );
+  if (
+    confidence === undefined ||
+    (value.basis !== undefined && Option.isNone(basis)) ||
+    typeof value.remainingMilliseconds !== 'number' ||
+    !Number.isSafeInteger(value.remainingMilliseconds) ||
+    value.remainingMilliseconds < 0
+  ) {
+    return undefined;
+  }
+  return {
+    ...(Option.isSome(basis) ? {basis: basis.value} : {}),
+    confidence,
+    remainingMilliseconds: value.remainingMilliseconds,
+    scope: 'phase',
+  };
 }
 
 function parseResult(value: unknown): CodeGraphBuildStatus['result'] | undefined {
@@ -1206,25 +1188,15 @@ function parseResult(value: unknown): CodeGraphBuildStatus['result'] | undefined
     if (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0) return undefined;
   }
   const overlayAssessment = value.overlayAssessment;
-  if (
-    overlayAssessment !== undefined &&
-    (!isRecord(overlayAssessment) ||
-      (overlayAssessment.outcome !== 'overlay-success' &&
-        !VALID_MATERIALIZATION_FALLBACK_REASONS.has(overlayAssessment.outcome as CodeGraphOverlayFallbackReason)))
-  ) {
-    return undefined;
-  }
+  const overlayOutcome = !isRecord(overlayAssessment)
+    ? undefined
+    : oneOfValue(overlayAssessment.outcome, ['overlay-success', ...VALID_MATERIALIZATION_FALLBACK_REASONS]);
+  if (overlayAssessment !== undefined && overlayOutcome === undefined) return undefined;
   return {
     dirty: value.dirty,
     edges: Number(value.edges),
     files: Number(value.files),
-    ...(isRecord(overlayAssessment)
-      ? {
-          overlayAssessment: {
-            outcome: overlayAssessment.outcome as 'overlay-success' | CodeGraphOverlayFallbackReason,
-          },
-        }
-      : {}),
+    ...(overlayOutcome === undefined ? {} : {overlayAssessment: {outcome: overlayOutcome}}),
     snapshotId: value.snapshotId,
     symbols: Number(value.symbols),
   };

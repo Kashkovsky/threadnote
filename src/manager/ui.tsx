@@ -34,15 +34,24 @@ import {
   SharesPanel,
   actionProgressLabel,
   api,
+  clampSidebarWidth,
   bulkActionLabel,
   countFiles,
   errorMessage,
   findNodeInTrees,
   formatBulkResults,
   graphAdministrationActionLabel,
+  isAgentClient,
   isMarkdownNode,
   isMarkdownUri,
+  isMemoryKind,
+  isMemoryStatus,
   isResourceUri,
+  loadSidebarWidth,
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_KEY,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN,
   loadManagerGraph,
   loadManagerGraphAnalysis,
   loadManagerGraphCatalogPage,
@@ -78,11 +87,6 @@ type MemoryStatus = 'active' | 'archived' | 'expired' | 'superseded';
 type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor' | 'effect-ai';
 type MemoryViewMode = 'edit' | 'preview';
 type SelectId = 'agent' | 'kind' | 'status';
-
-const SIDEBAR_WIDTH_KEY = 'threadnote.manager.sidebarWidth';
-const SIDEBAR_WIDTH_DEFAULT = 300;
-const SIDEBAR_WIDTH_MIN = 260;
-const SIDEBAR_WIDTH_MAX = 440;
 
 interface MemoryMetadata {
   readonly archivedFrom?: string;
@@ -212,15 +216,6 @@ interface DropdownOption {
 }
 
 const EMPTY_SELECTED_URIS: ReadonlySet<string> = new Set();
-
-function clampSidebarWidth(width: number): number {
-  return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)));
-}
-
-function loadSidebarWidth(): number {
-  const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
-  return Number.isFinite(stored) && stored > 0 ? clampSidebarWidth(stored) : SIDEBAR_WIDTH_DEFAULT;
-}
 
 function App(): React.ReactElement {
   const dialogs = useManagerDialogs();
@@ -1061,7 +1056,7 @@ function App(): React.ReactElement {
         confirm: true,
         project: compactProject,
         topic: compactTopic,
-      }).then(result => result as {output: string}),
+      }),
     );
   }
 
@@ -1165,7 +1160,7 @@ function App(): React.ReactElement {
     : '';
   const doctorBusyMessage = doctorAction ? `${doctorAction}...` : '';
   const metadataFieldsDisabled = Boolean(memory || selectedIsDir || selectedIsResource);
-  const appStyle = {'--sidebar-width': `${sidebarWidth}px`} as React.CSSProperties;
+  const appStyle: React.CSSProperties & {'--sidebar-width': string} = {'--sidebar-width': `${sidebarWidth}px`};
   const updateIndicator = state ? managerUpdateIndicator(state) : undefined;
 
   return (
@@ -1504,7 +1499,7 @@ function App(): React.ReactElement {
                   <DropdownSelect
                     id="agent"
                     label="Agent"
-                    onChange={value => setAgent(value as AgentClient)}
+                    onChange={value => void (isAgentClient(value) && setAgent(value))}
                     openSelect={openSelect}
                     options={(state?.agents ?? []).map(item => ({
                       disabled: !item.available || (item.id !== 'codex' && item.id !== 'claude'),
@@ -1651,10 +1646,10 @@ function App(): React.ReactElement {
                   <button
                     onClick={() =>
                       void runAction('Recall complete', () =>
-                        api('/api/recall', {
+                        api<{readonly output: string}>('/api/recall', {
                           query: recallQuery,
                           ...(recallProject.trim() ? {project: recallProject.trim()} : {}),
-                        }).then(result => result as {output: string}),
+                        }),
                       )
                     }
                   >
@@ -1703,9 +1698,10 @@ function App(): React.ReactElement {
                     <button
                       onClick={() =>
                         void runAction('Compact dry run complete', () =>
-                          api('/api/compact', {project: compactProject, topic: compactTopic}).then(
-                            result => result as {output: string},
-                          ),
+                          api<{readonly output: string}>('/api/compact', {
+                            project: compactProject,
+                            topic: compactTopic,
+                          }),
                         )
                       }
                     >
@@ -1889,7 +1885,7 @@ function TargetFields(props: {
         disabled={props.disabled}
         id="kind"
         label="Kind"
-        onChange={value => set({kind: value as MemoryKind})}
+        onChange={value => void (isMemoryKind(value) && set({kind: value}))}
         openSelect={props.openSelect}
         options={(['durable', 'handoff', 'incident', 'preference', 'smoke'] as const).map(kind => ({
           label: kind,
@@ -1902,7 +1898,7 @@ function TargetFields(props: {
         disabled={props.disabled}
         id="status"
         label="Status"
-        onChange={value => set({status: value as MemoryStatus})}
+        onChange={value => void (isMemoryStatus(value) && set({status: value}))}
         openSelect={props.openSelect}
         options={(['active', 'archived', 'expired', 'superseded'] as const).map(status => ({
           label: status,

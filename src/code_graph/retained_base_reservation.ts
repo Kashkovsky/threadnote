@@ -1,4 +1,4 @@
-import {Clock, Effect, FileSystem, Path} from 'effect';
+import {Clock, Effect, FileSystem, Path, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage} from '../effect/system.js';
@@ -86,18 +86,20 @@ export const reserveCodeGraphRetainedBase = Effect.fn('codeGraph.retainedBase.re
 
 function parseReceipt(serialized: string): RetainedBaseReservation | undefined {
   try {
-    const value = JSON.parse(serialized) as Partial<RetainedBaseReservation>;
+    const value: unknown = JSON.parse(serialized);
+    if (!Predicate.isObject(value)) return undefined;
     if (
       value.version !== 1 ||
       typeof value.physicalSnapshotId !== 'string' ||
       value.physicalSnapshotId.length < 1 ||
       value.physicalSnapshotId.length > 128 ||
+      typeof value.expiresAt !== 'number' ||
       !Number.isSafeInteger(value.expiresAt) ||
-      Number(value.expiresAt) <= 0
+      value.expiresAt <= 0
     ) {
       return undefined;
     }
-    return value as RetainedBaseReservation;
+    return {expiresAt: value.expiresAt, physicalSnapshotId: value.physicalSnapshotId, version: 1};
   } catch {
     return undefined;
   }

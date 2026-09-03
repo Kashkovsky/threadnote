@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
@@ -462,35 +462,46 @@ function genericMaintenanceStatus(owner: MaintenanceIntentOwner): CodeGraphMaint
 
 function parseMaintenanceStatus(value: string, expectedOwnerDigest: string): CodeGraphMaintenanceStatus | undefined {
   try {
-    const parsed = JSON.parse(value) as Partial<StoredCodeGraphMaintenanceStatus>;
+    const parsed: unknown = JSON.parse(value);
+    if (!Predicate.isObject(parsed)) return undefined;
+    const checkoutId = parsed.checkoutId;
+    const completed = parsed.completed;
+    const ownerDigest = parsed.ownerDigest;
+    const operation = parsed.operation;
+    const phase = parsed.phase;
+    const schemaVersion = parsed.schemaVersion;
+    const snapshotId = parsed.snapshotId;
+    const startedAt = parsed.startedAt;
+    const total = parsed.total;
+    const updatedAt = parsed.updatedAt;
     if (
-      parsed.schemaVersion !== 1 ||
-      parsed.ownerDigest !== expectedOwnerDigest ||
-      parsed.operation !== 'selected-snapshot-purge' ||
-      typeof parsed.checkoutId !== 'string' ||
-      !/^[0-9a-f]{64}$/u.test(parsed.checkoutId) ||
-      typeof parsed.snapshotId !== 'string' ||
-      !/^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u.test(parsed.snapshotId) ||
-      !CODE_GRAPH_MAINTENANCE_PROGRESS_PHASES.includes(parsed.phase as CodeGraphMaintenanceProgressPhase) ||
-      !Number.isSafeInteger(parsed.completed) ||
-      !Number.isSafeInteger(parsed.total) ||
-      parsed.completed! < 0 ||
-      parsed.total! <= 0 ||
-      parsed.completed! > parsed.total! ||
-      !validMaintenanceTimestamp(parsed.startedAt) ||
-      !validMaintenanceTimestamp(parsed.updatedAt)
+      schemaVersion !== 1 ||
+      ownerDigest !== expectedOwnerDigest ||
+      operation !== 'selected-snapshot-purge' ||
+      typeof checkoutId !== 'string' ||
+      !/^[0-9a-f]{64}$/u.test(checkoutId) ||
+      typeof snapshotId !== 'string' ||
+      !/^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u.test(snapshotId) ||
+      !isCodeGraphMaintenanceProgressPhase(phase) ||
+      !isSafeInteger(completed) ||
+      !isSafeInteger(total) ||
+      completed < 0 ||
+      total <= 0 ||
+      completed > total ||
+      !validMaintenanceTimestamp(startedAt) ||
+      !validMaintenanceTimestamp(updatedAt)
     ) {
       return undefined;
     }
     return {
-      checkoutId: parsed.checkoutId,
-      completed: parsed.completed,
-      operation: parsed.operation,
-      phase: parsed.phase as CodeGraphMaintenanceProgressPhase,
-      snapshotId: parsed.snapshotId,
-      startedAt: parsed.startedAt,
-      total: parsed.total,
-      updatedAt: parsed.updatedAt,
+      checkoutId,
+      completed,
+      operation,
+      phase,
+      snapshotId,
+      startedAt,
+      total,
+      updatedAt,
     };
   } catch {
     return undefined;
@@ -505,18 +516,26 @@ function validMaintenanceTimestamp(value: unknown): value is string {
 
 function parseMaintenanceIntentOwner(value: string): MaintenanceIntentOwner | undefined {
   try {
-    const parsed = JSON.parse(value) as Partial<MaintenanceIntentOwner>;
-    return Number.isSafeInteger(parsed.processId) &&
-      parsed.processId! > 0 &&
-      typeof parsed.processStartIdentity === 'string' &&
-      parsed.processStartIdentity.length > 0 &&
-      parsed.processStartIdentity.length <= 1_024 &&
-      (parsed.startedAt === undefined || validMaintenanceTimestamp(parsed.startedAt)) &&
-      typeof parsed.token === 'string' &&
-      parsed.token.length > 0 &&
-      parsed.token.length <= 256
-      ? (parsed as MaintenanceIntentOwner)
-      : undefined;
+    const parsed: unknown = JSON.parse(value);
+    if (!Predicate.isObject(parsed)) return undefined;
+    const processId = parsed.processId;
+    const processStartIdentity = parsed.processStartIdentity;
+    const startedAt = parsed.startedAt;
+    const token = parsed.token;
+    if (
+      !isSafeInteger(processId) ||
+      processId <= 0 ||
+      typeof processStartIdentity !== 'string' ||
+      processStartIdentity.length === 0 ||
+      processStartIdentity.length > 1_024 ||
+      (startedAt !== undefined && !validMaintenanceTimestamp(startedAt)) ||
+      typeof token !== 'string' ||
+      token.length === 0 ||
+      token.length > 256
+    ) {
+      return undefined;
+    }
+    return {processId, processStartIdentity, ...(startedAt === undefined ? {} : {startedAt}), token};
   } catch {
     return undefined;
   }
@@ -542,8 +561,8 @@ function removeOwnedMaintenanceStatus(
     const info = yield* fs.stat(statusPath);
     if (info.type !== 'File' || Number(info.size) > CODE_GRAPH_MAINTENANCE_STATUS_BYTES) return;
     const content = yield* fs.readFileString(statusPath);
-    const parsed = JSON.parse(content) as Partial<StoredCodeGraphMaintenanceStatus>;
-    if (parsed.ownerDigest === ownerDigest) yield* fs.remove(statusPath, {force: true});
+    const parsed: unknown = JSON.parse(content);
+    if (Predicate.isObject(parsed) && parsed.ownerDigest === ownerDigest) yield* fs.remove(statusPath, {force: true});
   }).pipe(Effect.catch(() => Effect.void));
 }
 
@@ -552,3 +571,17 @@ export const CODE_GRAPH_GATE_LOCK_OPTIONS = {
   staleAfterMilliseconds: 120_000,
   waitTimeoutMilliseconds: 10 * 60_000,
 } as const;
+
+function isCodeGraphMaintenanceProgressPhase(value: unknown): value is CodeGraphMaintenanceProgressPhase {
+  return (
+    value === 'acquiring-gates' ||
+    value === 'waiting-builders' ||
+    value === 'verifying-vectors' ||
+    value === 'verifying-graph' ||
+    value === 'retiring-and-cleaning'
+  );
+}
+
+function isSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value);
+}

@@ -1,5 +1,5 @@
 import * as yaml from 'js-yaml';
-import {Option} from 'effect';
+import {Option, Predicate} from 'effect';
 import {sha256HexSync} from '../../../crypto/sha256.js';
 import type {CodeGraphExtractionContext} from '../types.js';
 import type {
@@ -191,10 +191,12 @@ function extractObjectConfig(facts: MutableStructuredFacts, policy: ReturnType<t
       }
       return;
     }
-    for (const key in value as Record<string, unknown>) {
+    if (!Predicate.isObject(value)) return;
+    const record = value;
+    for (const key in record) {
       if (facts.symbols.length >= maximumSymbols) break;
-      if (!Object.hasOwn(value, key)) continue;
-      addChild(key, (value as Record<string, unknown>)[key], false);
+      if (!Object.hasOwn(record, key)) continue;
+      addChild(key, record[key], false);
     }
   };
   documents.forEach((document, index) =>

@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError, Predicate} from 'effect';
 import {sha256Hex} from './digest.js';
 import {SystemInfo, type SystemInfoShape} from './system.js';
 
@@ -340,17 +340,24 @@ function selectedProcessStartIdentity(system: SystemInfoShape, processId: number
 
 function fileLockOwner(token: string): FileLockOwner | undefined {
   try {
-    const parsed = JSON.parse(token) as Partial<FileLockOwner>;
+    const parsed: unknown = JSON.parse(token);
+    if (!Predicate.isObject(parsed)) return undefined;
     if (
       parsed.version === 1 &&
+      typeof parsed.processId === 'number' &&
       Number.isSafeInteger(parsed.processId) &&
-      parsed.processId! > 0 &&
+      parsed.processId > 0 &&
       (parsed.processStartIdentity === undefined ||
         (typeof parsed.processStartIdentity === 'string' && parsed.processStartIdentity.length > 0)) &&
       typeof parsed.token === 'string' &&
       parsed.token.length > 0
     ) {
-      return parsed as FileLockOwner;
+      return {
+        ...(parsed.processStartIdentity === undefined ? {} : {processStartIdentity: parsed.processStartIdentity}),
+        processId: parsed.processId,
+        token: parsed.token,
+        version: 1,
+      };
     }
   } catch {
     // Threadnote 4 beta lock tokens used the legacy "<pid>:<nonce>" format.

@@ -354,8 +354,9 @@ function markdownHeadings(content: string): MarkdownHeading[] {
       const opening = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
       const sequence = opening?.[1];
       const suffix = opening?.[2] ?? '';
-      if (sequence && (sequence[0] === '~' || !suffix.includes('`'))) {
-        fence = {character: sequence[0] as '`' | '~', length: sequence.length};
+      const character = sequence?.[0];
+      if (sequence && (character === '~' || (character === '`' && !suffix.includes('`')))) {
+        fence = {character, length: sequence.length};
       } else {
         const heading = /^ {0,3}(#{1,6})[\t ]+(.+?)[\t ]*#*[\t ]*$/u.exec(line);
         const hashes = heading?.[1];

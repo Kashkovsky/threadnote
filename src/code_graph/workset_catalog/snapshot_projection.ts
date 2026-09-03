@@ -1,4 +1,4 @@
-import {Cause, Effect, Option, Ref, Result} from 'effect';
+import {Cause, Effect, Option, Predicate, Ref, Result} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store_build_core.js';
@@ -1280,10 +1280,10 @@ function decodeSpan(value: unknown): CodeGraphWorksetCatalogSpanV1 {
     throw corrupt('A ready snapshot symbol has an invalid evidence span.');
   }
   const parsed = parseJson(value, 'symbol evidence span');
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+  if (!Predicate.isObject(parsed)) {
     throw corrupt('A ready snapshot symbol has an invalid evidence span.');
   }
-  const record = parsed as Record<string, unknown>;
+  const record = parsed;
   return {
     column: safeCount(record.column, 'symbol span column'),
     endColumn: safeCount(record.endColumn, 'symbol span end column'),

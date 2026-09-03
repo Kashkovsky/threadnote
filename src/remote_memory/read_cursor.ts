@@ -1,6 +1,7 @@
 import {sha256HexSync} from '../crypto/sha256.js';
 import type {MemoryReadMode, MemoryReadPosition} from '../memory/read_projection.js';
 import type {AuthorizedRemotePrincipal} from './authorization.js';
+import {Predicate} from 'effect';
 
 export const REMOTE_MEMORY_READ_CURSOR_TTL_MILLISECONDS = 10 * 60_000;
 export const REMOTE_MEMORY_READ_CURSOR_MAXIMUM_BYTES = 8_192;
@@ -87,8 +88,8 @@ export function decodeRemoteMemoryReadCursor(
 }
 
 function decodeCursorPayload(value: unknown): RemoteMemoryReadCursorState | undefined {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-  const input = value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) return undefined;
+  const input = value;
   if (
     input.v !== 1 ||
     typeof input.e !== 'number' ||

@@ -1,4 +1,4 @@
-import {Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path, Predicate, Schema} from 'effect';
 import {sha256FileHex, sha256Hex} from '../effect/digest.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {resourceAccountMutationLockPath} from '../effect/resource_lock.js';
@@ -12,7 +12,7 @@ import {
 import {validatePortableSegment} from '../storage/resource-id.js';
 import {hasBoundedMigrationTreeContent, isIgnorableOperatingSystemMetadata} from './evidence.js';
 
-export const STORAGE_LAYOUT_MIGRATION_ID = 'threadnote-storage-layout-v2';
+export const STORAGE_LAYOUT_MIGRATION_ID = 'threadnote-storage-layout-v2' as const;
 const STORAGE_LAYOUT_MIGRATION_RECEIPT_VERSION = 1 as const;
 const MIGRATION_RECEIPT_RELATIVE_PATH = `migration/${STORAGE_LAYOUT_MIGRATION_ID}.json`;
 const LAYOUT_RECEIPT_RELATIVE_PATH = 'layout.json';
@@ -659,8 +659,10 @@ function preserveDuplicateFile(
 function readLayoutVersion(fs: FileSystem.FileSystem, receiptPath: string): Effect.Effect<number | undefined, unknown> {
   return fs.readFileString(receiptPath).pipe(
     Effect.map(content => {
-      const parsed = JSON.parse(content) as {readonly version?: unknown};
-      return typeof parsed.version === 'number' ? parsed.version : undefined;
+      const parsed: unknown = JSON.parse(content);
+      if (!Predicate.isObject(parsed)) return undefined;
+      const version = parsed.version;
+      return typeof version === 'number' ? version : undefined;
     }),
     Effect.catch(() => Effect.succeed(undefined)),
   );
@@ -672,7 +674,11 @@ function readMigrationReceipt(
 ): Effect.Effect<StorageLayoutMigrationReceipt | undefined, unknown> {
   return fs.readFileString(receiptPath).pipe(
     Effect.map(content => {
-      const parsed = JSON.parse(content) as Partial<StorageLayoutMigrationReceipt>;
+      const value: unknown = JSON.parse(content);
+      if (!Predicate.isObject(value)) {
+        throw new Error('Invalid Threadnote storage layout migration receipt.');
+      }
+      const parsed = value;
       if (
         parsed.id !== STORAGE_LAYOUT_MIGRATION_ID ||
         parsed.version !== STORAGE_LAYOUT_MIGRATION_RECEIPT_VERSION ||
@@ -683,13 +689,29 @@ function readMigrationReceipt(
       ) {
         throw new Error('Invalid Threadnote storage layout migration receipt.');
       }
+      const accounts: AccountMigration[] = [];
       for (const account of parsed.accounts) {
-        validatePortableSegment(account.name, account.name);
-        if (!/^[a-f0-9]{64}$/.test(account.treeSha256)) {
+        if (!Predicate.isObject(account)) {
+          throw new Error('Invalid account in storage layout migration receipt.');
+        }
+        const fields = account;
+        if (typeof fields.name !== 'string' || typeof fields.treeSha256 !== 'string') {
+          throw new Error('Invalid account in storage layout migration receipt.');
+        }
+        validatePortableSegment(fields.name, fields.name);
+        if (!/^[a-f0-9]{64}$/.test(fields.treeSha256)) {
           throw new Error('Invalid account digest in storage layout migration receipt.');
         }
+        accounts.push({name: fields.name, treeSha256: fields.treeSha256});
       }
-      return parsed as StorageLayoutMigrationReceipt;
+      return {
+        accounts,
+        id: STORAGE_LAYOUT_MIGRATION_ID,
+        sourceLayoutVersion: parsed.sourceLayoutVersion,
+        status: parsed.status === 'pending' ? ('pending' as const) : ('completed' as const),
+        targetLayoutVersion: parsed.targetLayoutVersion,
+        version: STORAGE_LAYOUT_MIGRATION_RECEIPT_VERSION,
+      };
     }),
     Effect.catch(() => Effect.succeed(undefined)),
   );

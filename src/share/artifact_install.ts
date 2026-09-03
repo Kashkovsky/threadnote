@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Path, Result} from 'effect';
+import {Console, Effect, FileSystem, Path, Predicate, Result} from 'effect';
 
 import {SystemInfo} from '../effect/system.js';
 
@@ -307,7 +307,7 @@ const collectSharedPackMembers = Effect.fn('share.collectSharedPackMembers')(fun
     if (Array.isArray(rawMembers)) {
       const fromManifest: BundleMemberFile[] = [];
       for (const entry of rawMembers) {
-        const path = (entry as {path?: unknown})?.path;
+        const path = memberPath(entry);
         if (typeof path === 'string' && path.length > 0) {
           if (!(yield* isContainedMemberPath(filesDir, path))) {
             return yield* Effect.fail(
@@ -336,7 +336,7 @@ const collectSharedBundleMembers = Effect.fn('share.collectSharedBundleMembers')
     if (Array.isArray(rawMembers)) {
       const fromManifest: BundleMemberFile[] = [];
       for (const entry of rawMembers) {
-        const path = (entry as {path?: unknown})?.path;
+        const path = memberPath(entry);
         if (typeof path === 'string' && path.length > 0) {
           if (!(yield* isContainedMemberPath(skillDir, path))) {
             return yield* Effect.fail(
@@ -422,20 +422,14 @@ const readBundleInstallMetadata = Effect.fn('share.readBundleInstallMetadata')(f
   }
   // Only trust metadata this artifact wrote for itself; a file left by a
   // different artifact sharing the install root must not be read as our state.
-  const recordedArtifact = parsed.artifact as Partial<ShareArtifactMetadata> | undefined;
-  if (
-    recordedArtifact?.agent !== artifact.artifact.agent ||
-    recordedArtifact?.kind !== artifact.artifact.kind ||
-    recordedArtifact?.name !== artifact.artifact.name ||
-    parsed.team !== artifact.team
-  ) {
+  if (!artifactMetadataMatches(parsed.artifact, artifact.artifact) || parsed.team !== artifact.team) {
     return undefined;
   }
   const map = new Map<string, BundleInstallMemberMetadata>();
   for (const entry of parsed.members) {
-    const path = (entry as {path?: unknown})?.path;
-    const sourceSha256 = (entry as {sourceSha256?: unknown})?.sourceSha256;
-    const installedSha256 = (entry as {installedSha256?: unknown})?.installedSha256;
+    const path = memberPath(entry);
+    const sourceSha256 = memberString(entry, 'sourceSha256');
+    const installedSha256 = memberString(entry, 'installedSha256');
     if (typeof path === 'string' && typeof sourceSha256 === 'string' && typeof installedSha256 === 'string') {
       map.set(path, {installedSha256, sourceSha256});
     }
@@ -690,14 +684,13 @@ const surfacePackRequirements = Effect.fn('share.surfacePackRequirements')(funct
     return;
   }
   const deps = parseJsonConfigObject(raw)?.deps;
-  if (deps === undefined || typeof deps !== 'object') {
+  if (!Predicate.isObject(deps)) {
     return;
   }
   const stringList = (value: unknown): string[] =>
     Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
-  const depsRecord = deps as Record<string, unknown>;
-  const tooling = [...stringList(depsRecord.runtime), ...stringList(depsRecord.cli), ...stringList(depsRecord.os)];
-  const mcp = stringList(depsRecord.mcp);
+  const tooling = [...stringList(deps.runtime), ...stringList(deps.cli), ...stringList(deps.os)];
+  const mcp = stringList(deps.mcp);
   if (tooling.length > 0) {
     messages.push(`This pack will NOT run until these exist (Threadnote installs files only): ${tooling.join(', ')}.`);
   }
@@ -705,6 +698,23 @@ const surfacePackRequirements = Effect.fn('share.surfacePackRequirements')(funct
     messages.push(`Configure these MCP server(s) separately: ${mcp.join(', ')}.`);
   }
 });
+
+function artifactMetadataMatches(value: unknown, artifact: ShareArtifactMetadata): boolean {
+  return (
+    Predicate.isObject(value) &&
+    value.agent === artifact.agent &&
+    value.kind === artifact.kind &&
+    value.name === artifact.name
+  );
+}
+
+function memberPath(value: unknown): string | undefined {
+  return memberString(value, 'path');
+}
+
+function memberString(value: unknown, key: string): string | undefined {
+  return Predicate.isObject(value) && typeof value[key] === 'string' ? value[key] : undefined;
+}
 
 const sharedArtifactInstallState = Effect.fn('share.sharedArtifactInstallState')(function* (
   artifact: SharedArtifactFile,

@@ -152,10 +152,10 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
   }
 
   private async withTenant<A>(tenantId: string, use: (transaction: TransactionSql) => Promise<A>): Promise<A> {
-    return (await this.sql.begin(async transaction => {
+    return await this.sql.begin<Promise<A>>(async transaction => {
       await setTenant(transaction, tenantId);
       return use(transaction);
-    })) as A;
+    });
   }
 }
 

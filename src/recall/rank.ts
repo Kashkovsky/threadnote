@@ -902,9 +902,9 @@ function fieldScore(
 }
 
 function kindIntentScore(queryTerms: readonly string[], kind: MemoryKind | undefined): number {
-  const requestedKinds = (Object.entries(MEMORY_KIND_INTENT_TERMS) as Array<[MemoryKind, ReadonlySet<string>]>)
-    .filter(([_candidateKind, terms]) => queryTerms.some(term => terms.has(term)))
-    .map(([candidateKind]) => candidateKind);
+  const requestedKinds = (['durable', 'handoff', 'incident', 'preference', 'smoke'] as const).filter(candidateKind =>
+    queryTerms.some(term => MEMORY_KIND_INTENT_TERMS[candidateKind].has(term)),
+  );
   if (requestedKinds.length === 0) {
     return 0;
   }
@@ -1321,17 +1321,17 @@ export function buildRecallTopicalCorpusStatistics(candidates: readonly RecallCa
 }
 
 function recallCorpusStatistics(corpus: readonly (readonly string[])[]): RecallCorpusStatistics {
-  const frequencies = Object.create(null) as Record<string, number>;
+  const frequencies = new Map<string, number>();
   for (const terms of corpus) {
     for (const term of new Set(terms)) {
-      frequencies[term] = (frequencies[term] ?? 0) + 1;
+      frequencies.set(term, (frequencies.get(term) ?? 0) + 1);
     }
   }
   const totalDocumentLength = corpus.reduce((sum, terms) => sum + terms.length, 0);
   return {
     averageDocumentLength: corpus.length === 0 ? 1 : totalDocumentLength / corpus.length,
     documentCount: corpus.length,
-    documentFrequency: frequencies,
+    documentFrequency: Object.fromEntries(frequencies),
     totalDocumentLength,
   };
 }

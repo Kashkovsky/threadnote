@@ -1,4 +1,4 @@
-import {Schema} from 'effect';
+import {Predicate, Schema} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {compareCodeUnits} from '../ordering.js';
 import type {CodeGraphSpan} from '../types.js';
@@ -213,13 +213,12 @@ function structurallyEqual(left: unknown, right: unknown): boolean {
       left.every((value, index) => structurallyEqual(value, right[index]))
     );
   }
-  const leftRecord = left as Readonly<Record<string, unknown>>;
-  const rightRecord = right as Readonly<Record<string, unknown>>;
-  const leftKeys = Object.keys(leftRecord).sort(compareCodeUnits);
-  const rightKeys = Object.keys(rightRecord).sort(compareCodeUnits);
+  if (!Predicate.isObject(left) || !Predicate.isObject(right)) return false;
+  const leftKeys = Object.keys(left).sort(compareCodeUnits);
+  const rightKeys = Object.keys(right).sort(compareCodeUnits);
   return (
     leftKeys.length === rightKeys.length &&
-    leftKeys.every((key, index) => key === rightKeys[index] && structurallyEqual(leftRecord[key], rightRecord[key]))
+    leftKeys.every((key, index) => key === rightKeys[index] && structurallyEqual(left[key], right[key]))
   );
 }
 

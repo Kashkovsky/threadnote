@@ -5,6 +5,7 @@ import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MODES,
+  isContextBriefMode,
   parseContextBriefRequestV1,
   type ContextBriefMode,
   type ProjectedContextBriefV1,
@@ -637,8 +638,8 @@ function canonicalContextUri(value: string): string {
 
 function optionalMode(value: unknown): ContextBriefMode {
   if (value === undefined) return 'brief';
-  if (typeof value === 'string' && (CONTEXT_BRIEF_MODES as readonly string[]).includes(value)) {
-    return value as ContextBriefMode;
+  if (typeof value === 'string' && isContextBriefMode(value)) {
+    return value;
   }
   throw new ManagerContextApiError('invalid-mode', `Mode must be one of ${CONTEXT_BRIEF_MODES.join(', ')}.`, 400);
 }

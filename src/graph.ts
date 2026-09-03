@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Effect, FileSystem, Option, Path, Predicate} from 'effect';
 
 export interface DependencyFacts {
   readonly dependencies: readonly string[];
@@ -26,10 +26,10 @@ function parsePackageJson(
   content: string,
 ): {readonly dependencies: readonly string[]; readonly publishedName?: string} | undefined {
   const parsed = Option.getOrUndefined(Option.liftThrowable((value: string): unknown => JSON.parse(value))(content));
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+  if (!Predicate.isObject(parsed)) {
     return undefined;
   }
-  const object = parsed as Record<string, unknown>;
+  const object = parsed;
   const dependencies = new Set<string>();
   for (const key of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
     const section = object[key];

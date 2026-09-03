@@ -332,7 +332,15 @@ const copyPersistentActivationRows = Effect.fn('codeGraph.copyPersistentActivati
             new CodeGraphStoreError('Persistent activation returned an invalid keyset cursor.'),
           );
         }
-        const validatedCursor = nextCursor as readonly string[];
+        const validatedCursor: string[] = [];
+        for (const value of nextCursor) {
+          if (typeof value !== 'string') {
+            return yield* Effect.fail(
+              new CodeGraphStoreError('Persistent activation returned an invalid keyset cursor.'),
+            );
+          }
+          validatedCursor.push(value);
+        }
         let tallied = 0;
         if (spec.tally) {
           const lowerPredicate = Option.match(previousCursor, {

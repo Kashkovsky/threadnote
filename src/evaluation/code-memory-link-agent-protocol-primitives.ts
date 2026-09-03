@@ -1,4 +1,5 @@
 import {sha256HexSync} from '../crypto/sha256.js';
+import {Predicate} from 'effect';
 
 export type CanonicalJsonValue =
   boolean | null | number | string | readonly CanonicalJsonValue[] | {readonly [key: string]: CanonicalJsonValue};
@@ -18,10 +19,10 @@ export function normalizeJsonValue(value: unknown, label: string, depth = 0): Ca
     if (value.length > 10_000) invalid(`${label} array is too large`);
     return value.map(entry => normalizeJsonValue(entry, label, depth + 1));
   }
-  if (typeof value !== 'object' || value === null || Object.getPrototypeOf(value) !== Object.prototype) {
+  if (!isPlainRecord(value)) {
     invalid(`${label} must contain only JSON values`);
   }
-  const object = value as Record<string, unknown>;
+  const object = value;
   const keys = Object.keys(object).sort(compareStrings);
   if (keys.length > 10_000) invalid(`${label} object is too large`);
   return Object.fromEntries(keys.map(key => [key, normalizeJsonValue(object[key], label, depth + 1)]));
@@ -55,7 +56,7 @@ export function assertSyntheticArtifactContent(
   if (artifact.mediaType === 'text/plain') return assertSyntheticText(artifact.content, `${label} content`);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(artifact.content) as unknown;
+    parsed = JSON.parse(artifact.content);
   } catch {
     invalid(`${label} is not valid JSON`);
   }
@@ -193,13 +194,17 @@ export function protocolVersion(value: unknown, label: string): 1 {
 }
 
 export function positiveInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) <= 0) invalid(`${label} must be a positive safe integer`);
-  return value as number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    invalid(`${label} must be a positive safe integer`);
+  }
+  return value;
 }
 
 export function nonnegativeInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) invalid(`${label} must be a non-negative safe integer`);
-  return value as number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    invalid(`${label} must be a non-negative safe integer`);
+  }
+  return value;
 }
 
 export function boolean(value: unknown, label: string): boolean {
@@ -235,8 +240,12 @@ export function uniqueMap<T>(values: readonly T[], key: (value: T) => string, la
 }
 
 export function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Predicate.isObject(value) && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 export function exactKeys(

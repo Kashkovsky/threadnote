@@ -754,7 +754,9 @@ export const managerGraphViewsPage = Effect.fn('codeGraph.managerViewsPage')(fun
     return yield* Effect.fail(new CodeGraphVisualizationError('Graph view identity is invalid.'));
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
-  const [checkoutId] = indexedViewId.split('.', 1) as [string];
+  const checkoutId = indexedViewId.split('.', 1)[0];
+  if (checkoutId === undefined)
+    return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph checkout is invalid.'));
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   const database = databases.find(candidate => path.basename(path.dirname(candidate)) === checkoutId);
   if (!database) return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph checkout was not found.'));
@@ -1529,7 +1531,9 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
 ) {
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
-  const [checkoutId, worktreeId] = indexedViewId.split('.', 2) as [string, string | undefined];
+  const [checkoutId, worktreeId] = indexedViewId.split('.', 2);
+  if (checkoutId === undefined)
+    return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph checkout is invalid.'));
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   const database = databases.find(candidate => path.basename(path.dirname(candidate)) === checkoutId);
   if (!database) return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph checkout was not found.'));

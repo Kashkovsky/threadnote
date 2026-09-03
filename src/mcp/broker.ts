@@ -1,4 +1,5 @@
 import type {StandaloneActiveRelease} from '../process/standalone_lease.js';
+import {Predicate} from 'effect';
 
 const MCP_BROKER_MAX_LINE_BYTES = 32 * 1024 * 1024;
 const MCP_BROKER_REPLAY_TIMEOUT_MILLISECONDS = 10_000;
@@ -452,7 +453,8 @@ function replaceJsonRpcId(line: string, id: string | number): string {
 }
 
 function replaceCancelledRequestId(line: string, requestId: string | number): string {
-  const envelope = JSON.parse(line) as {readonly params?: unknown};
+  const parsed: unknown = JSON.parse(line);
+  const envelope = Predicate.isObject(parsed) ? parsed : {};
   const params =
     typeof envelope.params === 'object' && envelope.params !== null && !Array.isArray(envelope.params)
       ? envelope.params

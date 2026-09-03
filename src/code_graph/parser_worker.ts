@@ -1,4 +1,4 @@
-import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, Queue, Stdio, Stream} from 'effect';
+import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, Predicate, Queue, Stdio, Stream} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {fromPromise, fromPromiseInterruptible} from '../effect/errors.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
@@ -848,7 +848,7 @@ function decodeRequest(line: string): ParserWorkerRequest | undefined {
   try {
     const value: unknown = JSON.parse(line);
     if (
-      !isRecord(value) ||
+      !Predicate.isObject(value) ||
       value.protocol !== PROTOCOL_VERSION ||
       typeof value.id !== 'string' ||
       !/^[a-zA-Z0-9-]{1,100}$/.test(value.id)
@@ -857,14 +857,15 @@ function decodeRequest(line: string): ParserWorkerRequest | undefined {
     }
     const file = value.file;
     if (
-      !isRecord(file) ||
+      !Predicate.isObject(file) ||
       typeof file.blobId !== 'string' ||
       typeof file.contentHash !== 'string' ||
       typeof file.language !== 'string' ||
       typeof file.mode !== 'string' ||
       typeof file.path !== 'string' ||
+      typeof file.size !== 'number' ||
       !Number.isSafeInteger(file.size) ||
-      Number(file.size) < 0 ||
+      file.size < 0 ||
       (file.source !== 'commit' && file.source !== 'worktree') ||
       (file.content !== undefined && typeof file.content !== 'string') ||
       (file.contentOmittedReason !== undefined &&
@@ -874,7 +875,21 @@ function decodeRequest(line: string): ParserWorkerRequest | undefined {
     ) {
       return undefined;
     }
-    return {file: file as unknown as CodeGraphInventoryFile, id: value.id, protocol: PROTOCOL_VERSION};
+    return {
+      file: {
+        blobId: file.blobId,
+        ...(file.content === undefined ? {} : {content: file.content}),
+        contentHash: file.contentHash,
+        ...(file.contentOmittedReason === undefined ? {} : {contentOmittedReason: file.contentOmittedReason}),
+        language: file.language,
+        mode: file.mode,
+        path: file.path,
+        size: file.size,
+        source: file.source,
+      },
+      id: value.id,
+      protocol: PROTOCOL_VERSION,
+    };
   } catch {
     return undefined;
   }
@@ -884,7 +899,7 @@ function decodeResponse(line: string, expectedId: string, expectedPath: string):
   try {
     const value: unknown = JSON.parse(line);
     if (
-      !isRecord(value) ||
+      !Predicate.isObject(value) ||
       value.protocol !== PROTOCOL_VERSION ||
       value.id !== expectedId ||
       typeof value.ok !== 'boolean'
@@ -892,8 +907,8 @@ function decodeResponse(line: string, expectedId: string, expectedPath: string):
       return undefined;
     }
     if (!value.ok) {
-      return isRecord(value.error) && typeof value.error.summary === 'string'
-        ? (value as unknown as ParserWorkerFailure)
+      return Predicate.isObject(value.error) && typeof value.error.summary === 'string'
+        ? {error: {summary: value.error.summary}, id: value.id, ok: false, protocol: PROTOCOL_VERSION}
         : undefined;
     }
     return isFileFacts(value.facts) &&
@@ -904,7 +919,16 @@ function decodeResponse(line: string, expectedId: string, expectedPath: string):
       typeof value.parseMilliseconds === 'number' &&
       Number.isFinite(value.parseMilliseconds) &&
       value.parseMilliseconds >= 0
-      ? (value as unknown as ParserWorkerSuccess)
+      ? {
+          ...(value.degradationReason === undefined ? {} : {degradationReason: value.degradationReason}),
+          degraded: value.degraded,
+          facts: value.facts,
+          id: value.id,
+          ok: true,
+          parseMilliseconds: value.parseMilliseconds,
+          protocol: PROTOCOL_VERSION,
+          recycle: value.recycle,
+        }
       : undefined;
   } catch {
     return undefined;
@@ -917,7 +941,7 @@ function protocolFailure(id: string, summary: string): ParserWorkerFailure {
 
 function isFileFacts(value: unknown): value is CodeGraphFileFacts {
   return (
-    isRecord(value) &&
+    Predicate.isObject(value) &&
     typeof value.path === 'string' &&
     Array.isArray(value.diagnostics) &&
     value.diagnostics.every(diagnostic => typeof diagnostic === 'string') &&
@@ -932,7 +956,7 @@ function isFileFacts(value: unknown): value is CodeGraphFileFacts {
 
 function isCodeGraphEdge(value: unknown): boolean {
   return (
-    isRecord(value) &&
+    Predicate.isObject(value) &&
     typeof value.confidence === 'number' &&
     Number.isFinite(value.confidence) &&
     typeof value.evidencePath === 'string' &&
@@ -949,7 +973,7 @@ function isCodeGraphEdge(value: unknown): boolean {
 
 function isCodeGraphReference(value: unknown): boolean {
   return (
-    isRecord(value) &&
+    Predicate.isObject(value) &&
     (value.aliasLookupKeys === undefined || isStringArray(value.aliasLookupKeys)) &&
     (value.arity === undefined || Number.isSafeInteger(value.arity)) &&
     typeof value.edgeId === 'string' &&
@@ -969,7 +993,7 @@ function isCodeGraphReference(value: unknown): boolean {
 
 function isCodeGraphSymbol(value: unknown): boolean {
   return (
-    isRecord(value) &&
+    Predicate.isObject(value) &&
     (value.arity === undefined || Number.isSafeInteger(value.arity)) &&
     typeof value.contentHash === 'string' &&
     (value.documentation === undefined || typeof value.documentation === 'string') &&
@@ -991,7 +1015,7 @@ function isCodeGraphSymbol(value: unknown): boolean {
 
 function isCodeGraphSpan(value: unknown): boolean {
   return (
-    isRecord(value) &&
+    Predicate.isObject(value) &&
     Number.isSafeInteger(value.column) &&
     Number.isSafeInteger(value.endColumn) &&
     Number.isSafeInteger(value.endLine) &&
@@ -1278,8 +1302,4 @@ function tokens(value: string): readonly string[] {
 
 function uniqueStrings(values: readonly string[]): readonly string[] {
   return [...new Set(values.filter(Boolean))];
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

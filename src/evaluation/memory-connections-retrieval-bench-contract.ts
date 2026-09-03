@@ -1,6 +1,7 @@
 import {sha256HexSync} from '../crypto/sha256.js';
 import {MEMORY_RELATION_TYPES, type MemoryRelation, type MemoryRelationType} from '../memory/document.js';
 import type {MemoryStatus} from '../types.js';
+import {Predicate} from 'effect';
 
 export const MEMORY_CONNECTIONS_RETRIEVAL_BENCH_ID = 'memory-connections-retrieval-bench-v1' as const;
 export const MEMORY_CONNECTIONS_RETRIEVAL_BENCH_VERSION = 1 as const;
@@ -378,8 +379,8 @@ function parseObservation(value: unknown): MemoryConnectionsRetrievalBenchObserv
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): void {
@@ -394,8 +395,12 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): voi
 }
 
 function literal<const T extends string>(value: unknown, values: readonly T[], label: string): T {
-  if (typeof value !== 'string' || !values.includes(value as T)) invalid(`${label} is invalid`);
-  return value as T;
+  if (typeof value !== 'string' || !isLiteral(value, values)) invalid(`${label} is invalid`);
+  return value;
+}
+
+function isLiteral<const T extends string>(value: string, values: readonly T[]): value is T {
+  return values.some(candidate => candidate === value);
 }
 
 function literalArray<const T extends string>(value: unknown, values: readonly T[], label: string): readonly T[] {

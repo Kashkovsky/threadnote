@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Path} from 'effect';
+import {Console, Effect, FileSystem, Path, Predicate} from 'effect';
 import {commandLauncherPath} from '../command-shim.js';
 import {runCommandEffect} from '../effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
@@ -307,10 +307,13 @@ const hasAnyLegacyHomeMarker = Effect.fn('legacyInstallations.hasHomeMarker')(fu
 
 function parseLegacyNpmVersion(content: string): string | undefined {
   try {
-    const value = JSON.parse(content) as {
-      readonly dependencies?: Readonly<Record<string, {readonly version?: unknown}>>;
-    };
-    const version = value.dependencies?.[LEGACY_THREADNOTE_PACKAGE]?.version;
+    const parsed: unknown = JSON.parse(content);
+    if (!Predicate.isObject(parsed)) return undefined;
+    const dependencies = parsed.dependencies;
+    if (!Predicate.isObject(dependencies)) return undefined;
+    const dependency = dependencies[LEGACY_THREADNOTE_PACKAGE];
+    if (!Predicate.isObject(dependency)) return undefined;
+    const version = dependency.version;
     return typeof version === 'string' && isNodeBasedThreadnoteVersion(version) ? version : undefined;
   } catch {
     return undefined;
@@ -319,11 +322,12 @@ function parseLegacyNpmVersion(content: string): string | undefined {
 
 function parseLegacyPackageManifestVersion(content: string): string | undefined {
   try {
-    const value = JSON.parse(content) as {readonly name?: unknown; readonly version?: unknown};
-    return value.name === LEGACY_THREADNOTE_PACKAGE &&
-      typeof value.version === 'string' &&
-      isNodeBasedThreadnoteVersion(value.version)
-      ? value.version
+    const parsed: unknown = JSON.parse(content);
+    if (!Predicate.isObject(parsed)) return undefined;
+    return parsed.name === LEGACY_THREADNOTE_PACKAGE &&
+      typeof parsed.version === 'string' &&
+      isNodeBasedThreadnoteVersion(parsed.version)
+      ? parsed.version
       : undefined;
   } catch {
     return undefined;
@@ -336,8 +340,10 @@ function isNodeBasedThreadnoteVersion(version: string): boolean {
 
 function pipxHasOpenViking(content: string): boolean {
   try {
-    const value = JSON.parse(content) as {readonly venvs?: Readonly<Record<string, unknown>>};
-    return value.venvs !== undefined && Object.hasOwn(value.venvs, OPENVIKING_PACKAGE);
+    const parsed: unknown = JSON.parse(content);
+    if (!Predicate.isObject(parsed)) return false;
+    const venvs = parsed.venvs;
+    return Predicate.isObject(venvs) && Object.hasOwn(venvs, OPENVIKING_PACKAGE);
   } catch {
     return false;
   }

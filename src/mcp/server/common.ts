@@ -81,12 +81,13 @@ const staleVersionNotice = Effect.fn('mcpServer.staleVersionNotice')(function* (
   if (mcpStartupVersion === undefined) {
     return undefined;
   }
+  const startupVersion = mcpStartupVersion;
   const nowMs = yield* Clock.currentTimeMillis;
   if (staleNoticeCache && nowMs - staleNoticeCache.checkedAtMs < STALE_NOTICE_TTL_MS) {
     return staleNoticeCache.notice;
   }
   const notice = yield* activeInstalledVersion().pipe(
-    Effect.map(version => (version ? formatStaleVersionNotice(mcpStartupVersion as string, version) : undefined)),
+    Effect.map(version => (version ? formatStaleVersionNotice(startupVersion, version) : undefined)),
   );
   staleNoticeCache = {checkedAtMs: nowMs, notice};
   return notice;

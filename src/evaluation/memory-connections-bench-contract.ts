@@ -1,6 +1,7 @@
 import {sha256HexSync} from '../crypto/sha256.js';
 import {MEMORY_RELATION_TYPES, type MemoryRelation, type MemoryRelationType} from '../memory/document.js';
 import {parseResourceId} from '../storage/resource-id.js';
+import {Predicate} from 'effect';
 
 export const MEMORY_CONNECTIONS_BENCH_VERSION = 1 as const;
 export const MEMORY_CONNECTIONS_BENCH_ID = 'memory-connections-bench-v1' as const;
@@ -350,8 +351,8 @@ function compareExpectedRow(
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, expected: readonly string[]): void {
@@ -413,8 +414,10 @@ function nonEmptyString(value: unknown, label: string): string {
 }
 
 function nonNegativeInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) invalid(`${label} must be a non-negative integer`);
-  return value as number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    invalid(`${label} must be a non-negative integer`);
+  }
+  return value;
 }
 
 function assertUnique(values: readonly string[], label: string): void {

@@ -67,7 +67,9 @@ export function codeGraphSourceSizeBucket(bytes: number): CodeGraphSourceSizeBuc
 }
 
 export function isCodeGraphSourceSizeBucket(value: unknown): value is CodeGraphSourceSizeBucket {
-  return CODE_GRAPH_SOURCE_SIZE_BUCKETS.includes(value as CodeGraphSourceSizeBucket);
+  return (
+    value === '0-16KiB' || value === '16-64KiB' || value === '64-256KiB' || value === '256KiB-1MiB' || value === '>1MiB'
+  );
 }
 
 /**

@@ -10,6 +10,7 @@ import {
   Option,
   Path,
   PlatformError,
+  Predicate,
   Result,
   Semaphore,
 } from 'effect';
@@ -791,10 +792,10 @@ function safeDiagnosticLabel(value: string | undefined, fallback: string): strin
 
 function parseProductionLogEntry(line: string): ProductionLogEntry | undefined {
   const parsed = Result.try(() => JSON.parse(line) as unknown);
-  if (Result.isFailure(parsed) || typeof parsed.success !== 'object' || parsed.success === null) {
+  if (Result.isFailure(parsed) || !Predicate.isObject(parsed.success)) {
     return undefined;
   }
-  const value = parsed.success as Record<string, unknown>;
+  const value = parsed.success;
   const component = oneOf(value.component, ['cli', 'mcp'] as const);
   const event = oneOf(value.event, ['invocation.finished', 'invocation.started'] as const);
   const level = oneOf(value.level, ['error', 'info', 'warn'] as const);
@@ -860,8 +861,8 @@ function parseProductionLogPhaseTimings(value: unknown): readonly ProductionLogP
   if (!Array.isArray(value) || value.length > PRODUCTION_LOG_PHASE_TIMING_MAX_COUNT) return false;
   const timings: ProductionLogPhaseTiming[] = [];
   for (const entry of value) {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
-    const record = entry as Record<string, unknown>;
+    if (!Predicate.isObject(entry)) return false;
+    const record = entry;
     const durationMilliseconds = safeNonNegativeInteger(record.durationMilliseconds);
     const errorType = optionalSafeParsedLabel(record.errorType);
     const outcome = oneOf(record.outcome, ['failure', 'interrupted', 'success', 'timed-out', 'unavailable'] as const);

@@ -1,4 +1,4 @@
-import {Cause, Effect, Exit, Layer, Option, Schema, Semaphore, Stream} from 'effect';
+import {Cause, Effect, Exit, Layer, Option, Predicate, Schema, Semaphore, Stream} from 'effect';
 import type {LocalModelManifest} from '../../models/catalog.js';
 import {parseLocalModelManifest} from '../../models/catalog.js';
 import {
@@ -731,7 +731,7 @@ function handleWorkerLine(runtime: LocalModelRuntimeShape, line: string): Effect
   );
 }
 
-function workerOperationLabel(operation: WorkerOperation): string {
+function workerOperationLabel(operation: string): string {
   return operation === 'embedMany' ? 'embed-many' : operation;
 }
 
@@ -760,7 +760,7 @@ function decodeWorkerRequest(line: string): Option.Option<WorkerRequest> {
   if (Option.isNone(parsedOption)) return Option.none();
   const parsed = parsedOption.value;
   if (
-    !isRecord(parsed) ||
+    !Predicate.isObject(parsed) ||
     parsed.protocol !== PROTOCOL_VERSION ||
     typeof parsed.id !== 'string' ||
     !/^[a-zA-Z0-9-]{1,80}$/.test(parsed.id) ||
@@ -782,7 +782,7 @@ function decodeWorkerResponse(line: string): Option.Option<WorkerResponse> {
   if (Option.isNone(parsedOption)) return Option.none();
   const parsed = parsedOption.value;
   if (
-    !isRecord(parsed) ||
+    !Predicate.isObject(parsed) ||
     parsed.protocol !== PROTOCOL_VERSION ||
     typeof parsed.id !== 'string' ||
     typeof parsed.ok !== 'boolean'
@@ -799,7 +799,7 @@ function decodeWorkerResponse(line: string): Option.Option<WorkerResponse> {
         })
       : Option.none();
   }
-  if (!isRecord(parsed.error) || typeof parsed.error.tag !== 'string') return Option.none();
+  if (!Predicate.isObject(parsed.error) || typeof parsed.error.tag !== 'string') return Option.none();
   return Option.some({
     error: {tag: parsed.error.tag},
     id: parsed.id,
@@ -809,7 +809,8 @@ function decodeWorkerResponse(line: string): Option.Option<WorkerResponse> {
 }
 
 function decodeEmbeddingRequest(value: unknown): Option.Option<LocalEmbeddingRequest> {
-  if (!isRecord(value) || !isStringArray(value.inputs) || typeof value.modelPath !== 'string') return Option.none();
+  if (!Predicate.isObject(value) || !isStringArray(value.inputs) || typeof value.modelPath !== 'string')
+    return Option.none();
   const embeddingContextPoolSize = value.embeddingContextPoolSize;
   if (
     embeddingContextPoolSize !== undefined &&
@@ -833,8 +834,8 @@ function decodeEmbeddingRequest(value: unknown): Option.Option<LocalEmbeddingReq
 
 function decodeGenerationRequest(value: unknown): Option.Option<LocalGenerationRequest> {
   if (
-    !isRecord(value) ||
-    !isRecord(value.jsonSchema) ||
+    !Predicate.isObject(value) ||
+    !Predicate.isObject(value.jsonSchema) ||
     typeof value.maxTokens !== 'number' ||
     !Number.isSafeInteger(value.maxTokens) ||
     value.maxTokens <= 0 ||
@@ -861,7 +862,7 @@ function decodeGenerationRequest(value: unknown): Option.Option<LocalGenerationR
 
 function decodeRerankingRequest(value: unknown): Option.Option<LocalRerankingRequest> {
   if (
-    !isRecord(value) ||
+    !Predicate.isObject(value) ||
     !isStringArray(value.documents) ||
     typeof value.modelPath !== 'string' ||
     typeof value.query !== 'string'
@@ -892,32 +893,35 @@ function decodeVectors(
   expectedCount: number,
   expectedDimensions: number | undefined,
 ): Option.Option<readonly (readonly number[])[]> {
-  if (
-    !Array.isArray(value) ||
-    value.length !== expectedCount ||
-    !value.every(
-      vector =>
-        Array.isArray(vector) &&
-        (expectedDimensions === undefined || vector.length === expectedDimensions) &&
-        vector.every(coordinate => typeof coordinate === 'number' && Number.isFinite(coordinate)),
-    )
-  ) {
-    return Option.none();
+  if (!Array.isArray(value) || value.length !== expectedCount) return Option.none();
+  const vectors: number[][] = [];
+  for (const vector of value) {
+    if (!Array.isArray(vector) || (expectedDimensions !== undefined && vector.length !== expectedDimensions)) {
+      return Option.none();
+    }
+    const coordinates: number[] = [];
+    for (const coordinate of vector) {
+      if (typeof coordinate !== 'number' || !Number.isFinite(coordinate)) return Option.none();
+      coordinates.push(coordinate);
+    }
+    vectors.push(coordinates);
   }
-  return Option.some(value as number[][]);
+  return Option.some(vectors);
 }
 
 function decodeScores(value: unknown, expectedCount: number): Option.Option<readonly number[]> {
-  return Array.isArray(value) &&
-    value.length === expectedCount &&
-    value.every(score => typeof score === 'number' && Number.isFinite(score))
-    ? Option.some(value as number[])
-    : Option.none();
+  if (!Array.isArray(value) || value.length !== expectedCount) return Option.none();
+  const scores: number[] = [];
+  for (const score of value) {
+    if (typeof score !== 'number' || !Number.isFinite(score)) return Option.none();
+    scores.push(score);
+  }
+  return Option.some(scores);
 }
 
 function decodeDiagnostics(value: unknown): Option.Option<LlamaCppDiagnostics> {
   if (
-    !isRecord(value) ||
+    !Predicate.isObject(value) ||
     typeof value.backend !== 'string' ||
     (value.buildType !== 'prebuilt' && value.buildType !== 'localBuild') ||
     typeof value.cpuMathCores !== 'number' ||
@@ -941,24 +945,32 @@ function decodeEmbeddingContextPlanDiagnostics(
 ): Option.Option<NonNullable<LlamaCppDiagnostics['embeddingContextPlan']>> {
   if (value === undefined) return Option.none();
   if (
-    !isRecord(value) ||
-    ![1, 2, 4, 8].includes(value.requestedContexts as number) ||
-    ![1, 2, 4, 8].includes(value.effectiveContexts as number) ||
+    !Predicate.isObject(value) ||
+    !isEmbeddingContextCount(value.requestedContexts) ||
+    !isEmbeddingContextCount(value.effectiveContexts) ||
     (value.modelGpuLayers !== undefined &&
       (typeof value.modelGpuLayers !== 'number' ||
         !Number.isSafeInteger(value.modelGpuLayers) ||
         value.modelGpuLayers < 0)) ||
-    !Array.isArray(value.threadCounts) ||
-    !value.threadCounts.every(threads => typeof threads === 'number' && Number.isSafeInteger(threads) && threads > 0)
+    !Array.isArray(value.threadCounts)
   ) {
     return Option.none();
   }
+  const threadCounts: number[] = [];
+  for (const threads of value.threadCounts) {
+    if (typeof threads !== 'number' || !Number.isSafeInteger(threads) || threads <= 0) return Option.none();
+    threadCounts.push(threads);
+  }
   return Option.some({
-    effectiveContexts: value.effectiveContexts as number,
+    effectiveContexts: value.effectiveContexts,
     ...(value.modelGpuLayers === undefined ? {} : {modelGpuLayers: value.modelGpuLayers}),
-    requestedContexts: value.requestedContexts as number,
-    threadCounts: value.threadCounts as number[],
+    requestedContexts: value.requestedContexts,
+    threadCounts,
   });
+}
+
+function isEmbeddingContextCount(value: unknown): value is number {
+  return typeof value === 'number' && [1, 2, 4, 8].includes(value);
 }
 
 function remoteEmbeddingFailure(
@@ -1159,13 +1171,13 @@ function withWorkerTransportDiagnostic<A extends object>(
   return attachAnonymousTelemetryDiagnostic(error, {
     domain: 'model-worker',
     errorType: error._tag ?? 'LocalModelWorkerError',
-    operation: workerOperationLabel(transport.operation as WorkerOperation),
+    operation: workerOperationLabel(transport.operation),
     reason: transport.reason,
   });
 }
 
 function operationErrorTag(error: unknown): string {
-  return isRecord(error) && isKnownOperationErrorTag(error._tag) ? error._tag : 'WorkerOperationFailed';
+  return Predicate.isObject(error) && isKnownOperationErrorTag(error._tag) ? error._tag : 'WorkerOperationFailed';
 }
 
 function protocolFailure(id: string): WorkerFailure {
@@ -1235,10 +1247,6 @@ function parseJson(value: string): Option.Option<unknown> {
   } catch {
     return Option.none();
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isStringArray(value: unknown): value is string[] {

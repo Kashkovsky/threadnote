@@ -750,9 +750,13 @@ function parseExpectedDigest(value: string | undefined) {
   if (value === undefined) return Effect.succeed(undefined);
   const normalized = value.trim().toLowerCase();
   const prefixed = normalized.startsWith('sha256:') ? normalized : `sha256:${normalized}`;
-  return /^sha256:[0-9a-f]{64}$/u.test(prefixed)
-    ? Effect.succeed(prefixed as CodeGraphCheckpointSha256)
+  return isCheckpointSha256(prefixed)
+    ? Effect.succeed(prefixed)
     : checkpointFailure('--expected-digest must be a lowercase SHA-256 digest.');
+}
+
+function isCheckpointSha256(value: string): value is CodeGraphCheckpointSha256 {
+  return /^sha256:[0-9a-f]{64}$/u.test(value);
 }
 
 function withPrivateSpool<A, E, R>(

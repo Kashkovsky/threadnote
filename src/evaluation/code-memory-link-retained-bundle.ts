@@ -1,4 +1,5 @@
 import {sha256HexSync} from '../crypto/sha256.js';
+import {Predicate} from 'effect';
 
 export const CODE_MEMORY_LINK_RETAINED_BUNDLE_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_RETAINED_BUNDLE_TYPE = 'code-memory-link-retained-evidence-bundle' as const;
@@ -97,12 +98,9 @@ export function createCodeMemoryLinkRetainedBundleV1(input: {
     blobs.set(hash, content);
     return hash;
   };
-  const artifacts = Object.fromEntries(
-    CODE_MEMORY_LINK_RETAINED_ARTIFACT_ROLES.map(role => [
-      role,
-      addBlob(input.artifacts[role], role, JSONL_ROLES.has(role) ? 'jsonl' : 'json'),
-    ]),
-  ) as unknown as Record<CodeMemoryLinkRetainedArtifactRole, string>;
+  const artifacts = artifactRecord(role =>
+    addBlob(input.artifacts[role], role, JSONL_ROLES.has(role) ? 'jsonl' : 'json'),
+  );
   const clients = [...input.clients]
     .sort((left, right) => compareText(left.clientId, right.clientId))
     .map(client => ({
@@ -178,15 +176,13 @@ export function verifyCodeMemoryLinkRetainedBundleV1(input: {
   }
   if (totalBytes > MAXIMUM_BUNDLE_BYTES) invalid('bundle exceeds the aggregate byte limit');
   const referenced = new Set<string>();
-  const artifacts = Object.fromEntries(
-    CODE_MEMORY_LINK_RETAINED_ARTIFACT_ROLES.map(role => {
-      const hash = index.artifacts[role];
-      const content = requiredBlob(input.blobs, hash, role);
-      referenced.add(hash);
-      assertPrivacySafeRetainedContent(content, role, JSONL_ROLES.has(role) ? 'jsonl' : 'json');
-      return [role, content];
-    }),
-  ) as unknown as Record<CodeMemoryLinkRetainedArtifactRole, string>;
+  const artifacts = artifactRecord(role => {
+    const hash = index.artifacts[role];
+    const content = requiredBlob(input.blobs, hash, role);
+    referenced.add(hash);
+    assertPrivacySafeRetainedContent(content, role, JSONL_ROLES.has(role) ? 'jsonl' : 'json');
+    return content;
+  });
   const clients = index.clients.map(client => {
     const descriptor = requiredBlob(input.blobs, client.descriptor, `${client.clientId} descriptor`);
     const configProjection = requiredBlob(input.blobs, client.configProjection, `${client.clientId} config projection`);
@@ -224,9 +220,7 @@ export function parseCodeMemoryLinkRetainedBundleIndexV1(value: unknown): CodeMe
   if (index.claim !== CODE_MEMORY_LINK_RETAINED_BUNDLE_CLAIM) invalid('bundle threat claim is unsupported');
   const artifactsInput = record(index.artifacts, 'artifact map');
   exactKeys(artifactsInput, [...CODE_MEMORY_LINK_RETAINED_ARTIFACT_ROLES], 'artifact map');
-  const artifacts = Object.fromEntries(
-    CODE_MEMORY_LINK_RETAINED_ARTIFACT_ROLES.map(role => [role, matchingHash(artifactsInput[role], role)]),
-  ) as unknown as Record<CodeMemoryLinkRetainedArtifactRole, string>;
+  const artifacts = artifactRecord(role => matchingHash(artifactsInput[role], role));
   if (!Array.isArray(index.blobs) || index.blobs.length === 0) invalid('blob map must be a non-empty array');
   const blobs = index.blobs.map((value, position) => {
     const blob = record(value, `blob ${position + 1}`);
@@ -421,9 +415,7 @@ function secretShapedKey(key: string): boolean {
 
 function canonicalIndex(index: CodeMemoryLinkRetainedBundleIndexV1): CodeMemoryLinkRetainedBundleIndexV1 {
   return {
-    artifacts: Object.fromEntries(
-      CODE_MEMORY_LINK_RETAINED_ARTIFACT_ROLES.map(role => [role, index.artifacts[role]]),
-    ) as unknown as Record<CodeMemoryLinkRetainedArtifactRole, string>,
+    artifacts: artifactRecord(role => index.artifacts[role]),
     blobs: index.blobs,
     candidateCommit: index.candidateCommit,
     claim: CODE_MEMORY_LINK_RETAINED_BUNDLE_CLAIM,
@@ -456,8 +448,8 @@ function requiredBlob(blobs: ReadonlyMap<string, string>, hash: string, label: s
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!Predicate.isObject(value)) invalid(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, expected: readonly string[], label: string): void {
@@ -478,10 +470,26 @@ function matching(value: unknown, pattern: RegExp, label: string): string {
 }
 
 function boundedInteger(value: unknown, label: string, minimum: number, maximum: number): number {
-  if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
     invalid(`${label} must be an integer from ${minimum} through ${maximum}`);
   }
-  return value as number;
+  return value;
+}
+
+function artifactRecord(
+  valueFor: (role: CodeMemoryLinkRetainedArtifactRole) => string,
+): Record<CodeMemoryLinkRetainedArtifactRole, string> {
+  return {
+    assignment: valueFor('assignment'),
+    attempts: valueFor('attempts'),
+    dogfood: valueFor('dogfood'),
+    evidence: valueFor('evidence'),
+    manifest: valueFor('manifest'),
+    result: valueFor('result'),
+    sealedLayout: valueFor('sealedLayout'),
+    sealedSuite: valueFor('sealedSuite'),
+    trials: valueFor('trials'),
+  };
 }
 
 function assertUnique(values: readonly string[], label: string): void {

@@ -1,4 +1,4 @@
-import {Clock, Effect, Path} from 'effect';
+import {Clock, Effect, Path, Predicate} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {SystemInfo} from '../../effect/system.js';
@@ -1363,15 +1363,17 @@ function boundedText(value: unknown, label: string, maximumBytes: number): strin
 }
 
 function nonNegativeInteger(value: unknown, label: string, minimum = 0): number {
-  if (!Number.isSafeInteger(value) || (value as number) < minimum) throw invalid(`Bridge ${label} is invalid.`);
-  return value as number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
+    throw invalid(`Bridge ${label} is invalid.`);
+  }
+  return value;
 }
 
 function boundedCount(value: unknown, label: string, minimum: number, maximum: number): number {
-  if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
     throw invalid(`Bridge ${label} is invalid.`);
   }
-  return value as number;
+  return value;
 }
 
 function oneOf<const Values extends readonly string[]>(value: unknown, values: Values, label: string): Values[number] {
@@ -1383,10 +1385,10 @@ function exactRecord<const Keys extends readonly string[]>(
   value: unknown,
   keys: Keys,
   label: string,
-): {[Key in Keys[number]]: unknown} {
+): Readonly<Record<string, unknown>> {
   const record = recordValue(value, label);
   exactKeys(record, keys, label);
-  return record as {[Key in Keys[number]]: unknown};
+  return record;
 }
 
 function exactKeys(value: Readonly<Record<string, unknown>>, keys: readonly string[], label: string): void {
@@ -1398,10 +1400,10 @@ function exactKeys(value: Readonly<Record<string, unknown>>, keys: readonly stri
 }
 
 function recordValue(value: unknown, label: string): Readonly<Record<string, unknown>> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!Predicate.isObject(value)) {
     throw invalid(`Bridge ${label} is invalid.`);
   }
-  return value as Readonly<Record<string, unknown>>;
+  return value;
 }
 
 function structurallyEqual(left: unknown, right: unknown): boolean {
@@ -1415,8 +1417,9 @@ function structurallyEqual(left: unknown, right: unknown): boolean {
       left.every((value, index) => structurallyEqual(value, right[index]))
     );
   }
-  const leftRecord = left as Readonly<Record<string, unknown>>;
-  const rightRecord = right as Readonly<Record<string, unknown>>;
+  if (!Predicate.isObject(left) || !Predicate.isObject(right)) return false;
+  const leftRecord = left;
+  const rightRecord = right;
   const leftKeys = Object.keys(leftRecord).sort(compareCodeUnits);
   const rightKeys = Object.keys(rightRecord).sort(compareCodeUnits);
   return (

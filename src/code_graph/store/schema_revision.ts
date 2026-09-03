@@ -201,8 +201,9 @@ const profilesByValue: ReadonlyMap<number, CatalogProfile> = new Map(
 function requiredProfile<const Key extends CodeGraphPersistentSchemaRevisionKey>(
   key: Key,
 ): Extract<CatalogProfile, {readonly key: Key}> {
-  const value = CODE_GRAPH_PERSISTENT_SCHEMA_REVISIONS.find(profile => profile.key === key) as
-    Extract<CatalogProfile, {readonly key: Key}> | undefined;
+  const value = CODE_GRAPH_PERSISTENT_SCHEMA_REVISIONS.find(
+    (profile): profile is Extract<CatalogProfile, {readonly key: Key}> => profile.key === key,
+  );
   if (value === undefined) throw new Error(`Missing code graph persistent schema profile ${key}.`);
   return value;
 }

@@ -10,6 +10,7 @@ import {
   Layer,
   Option,
   Path,
+  Predicate,
   Ref,
   Result,
   Scope,
@@ -162,6 +163,7 @@ import {
   shellQuote,
   toolRoot,
 } from '../utils.js';
+import {isRawMemoryDocument} from '../memory/parse.js';
 
 interface ManagerDirectoryEntry {
   readonly name: string;
@@ -392,8 +394,8 @@ export function createManagerServer(
     const managerRequest: ManagerRequest = {
       body: request.json.pipe(
         Effect.flatMap(parsed =>
-          typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-            ? Effect.succeed(parsed as Record<string, unknown>)
+          Predicate.isObject(parsed)
+            ? Effect.succeed(parsed)
             : Effect.fail(new ManagerOperationError('Expected a JSON object body.')),
         ),
       ),
@@ -1993,8 +1995,4 @@ function targetFromBody(body: Record<string, unknown>): TargetMemoryInput {
     team: optionalString(body.team),
     topic: optionalString(body.topic),
   };
-}
-
-function isRawMemoryDocument(text: string): boolean {
-  return /^(?:HANDOFF|MEMORY)(?:\n|\r\n?)/u.test(text);
 }

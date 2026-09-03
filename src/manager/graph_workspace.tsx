@@ -1070,7 +1070,10 @@ export function GraphWorkspace(props: {
                 <span>Node size</span>
                 <select
                   aria-label="Node size metric"
-                  onChange={event => setSizeMetric(event.target.value as GraphSizeMetric)}
+                  onChange={event => {
+                    const metric = event.target.value;
+                    if (isGraphSizeMetric(metric)) setSizeMetric(metric);
+                  }}
                   value={sizeMetric}
                 >
                   <option value="connections">Connections</option>
@@ -1238,4 +1241,8 @@ export function GraphWorkspace(props: {
       </div>
     </section>
   );
+}
+
+function isGraphSizeMetric(value: string): value is GraphSizeMetric {
+  return value === 'connections' || value === 'incoming' || value === 'outgoing';
 }

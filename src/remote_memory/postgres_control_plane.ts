@@ -15,6 +15,7 @@ import type {
 } from './cursor_oidc.js';
 import {canonicalCursorRepositoryBinding, cursorAttestationMaximumAttempts} from './cursor_oidc.js';
 import {remoteMemoryError} from './errors.js';
+import {isJsonObject} from './json.js';
 import {validatePortableSegment} from '../storage/resource-id.js';
 import {
   remoteMemoryDatabaseTimeoutMilliseconds,
@@ -732,13 +733,13 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
     execution?: RemoteMemoryRequestExecution,
   ): Promise<A> {
     requireActiveRemoteMemoryRequest(execution);
-    return (await this.sql.begin(async transaction =>
+    return await this.sql.begin<Promise<A>>(async transaction =>
       withRemoteMemoryRequestCancellation(transaction, execution, async cancellable => {
         const timeout = remoteMemoryDatabaseTimeoutMilliseconds(DATABASE_TIMEOUT_MILLISECONDS, execution);
         await setDatabaseTimeouts(cancellable, timeout);
         return use(cancellable);
       }),
-    )) as A;
+    );
   }
 
   private async withTenant<A>(
@@ -747,13 +748,13 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
     execution?: RemoteMemoryRequestExecution,
   ): Promise<A> {
     requireActiveRemoteMemoryRequest(execution);
-    return (await this.sql.begin(async transaction => {
+    return await this.sql.begin<Promise<A>>(async transaction => {
       return withRemoteMemoryRequestCancellation(transaction, execution, async cancellable => {
         const timeout = remoteMemoryDatabaseTimeoutMilliseconds(DATABASE_TIMEOUT_MILLISECONDS, execution);
         await setTenant(cancellable, tenantId, timeout);
         return use(cancellable);
       });
-    })) as A;
+    });
   }
 }
 
@@ -922,10 +923,10 @@ export function decodeStoredSharePolicyDocument(json: unknown): JsonObject {
   } catch {
     throw remoteMemoryError('conflict', 'The stored share-wide policy cannot be safely compared.');
   }
-  if (!document || typeof document !== 'object' || Array.isArray(document)) {
+  if (!isJsonObject(document)) {
     throw remoteMemoryError('conflict', 'The stored share-wide policy cannot be safely compared.');
   }
-  return document as JsonObject;
+  return document;
 }
 
 export function requireNoImplicitSharePolicyChange(

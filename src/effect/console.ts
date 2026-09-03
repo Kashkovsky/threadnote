@@ -5,11 +5,12 @@ function capturingConsole(parent: Console.Console, lines: string[]): Console.Con
   const append = (...args: readonly unknown[]): void => {
     lines.push(args.map(String).join(' '));
   };
-  return Object.assign(Object.create(parent) as Console.Console, {
+  return {
+    ...parent,
     error: append,
     log: append,
     warn: append,
-  });
+  };
 }
 
 export function captureConsole<A, E, R>(

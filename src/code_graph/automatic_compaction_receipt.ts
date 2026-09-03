@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {syncDirectoryBestEffort, syncWritableFile} from '../effect/file_durability.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {codeGraphRepositoriesRoot, codeGraphRepositoryRoot} from './layout.js';
@@ -281,8 +281,8 @@ function decodeAutomaticCompactionReceipt(
 ): CodeGraphAutomaticCompactionReceipt | undefined {
   try {
     const parsed: unknown = JSON.parse(content);
-    if (typeof parsed !== 'object' || parsed === null) return undefined;
-    const receipt = parsed as Readonly<Record<string, unknown>>;
+    if (!Predicate.isObject(parsed)) return undefined;
+    const receipt = parsed;
     const keys = Object.keys(receipt).sort();
     if (
       JSON.stringify(keys) !==

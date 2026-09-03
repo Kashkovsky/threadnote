@@ -1,4 +1,4 @@
-import {Cause, Clock, Crypto, Effect, Fiber, FileSystem, Path, Scope} from 'effect';
+import {Cause, Clock, Crypto, Effect, Fiber, FileSystem, Path, Predicate, Scope} from 'effect';
 import {isMap, isScalar, isSeq, parseDocument, type YAMLMap, type YAMLSeq} from 'yaml';
 import * as ContextBrief from '../context_brief/index.js';
 import {
@@ -31,6 +31,7 @@ import {
   type ManagerProjectRootValidation,
 } from './project_roots.js';
 import {updateManagerWorksetPrepareProgress} from './workset_progress.js';
+import {managerWorksetCatalogHttp} from './workset_catalog_http.js';
 import {validateProjectSeedPatterns} from '../seed_pattern.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import type {ProjectManifest, RuntimeConfig, SeedManifest, WorksetManifest} from '../types.js';
@@ -1679,10 +1680,9 @@ function optionalBoundedInteger(
 
 function optionalIntegerValue(value: unknown, name: string, minimum: number, maximum: number): number | undefined {
   if (value === undefined) return undefined;
-  if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum)
     throw new ManagerWorksetApiError('invalid-input', `${name} must be an integer from ${minimum} to ${maximum}.`, 400);
-  }
-  return value as number;
+  return value;
 }
 
 function optionalBoolean(value: unknown, name: string): Readonly<Record<string, boolean>> {
@@ -1888,22 +1888,8 @@ function managerWorksetErrorResponse(error: unknown): ManagerWorksetApiResponse 
     });
   }
   if (error instanceof CodeGraphWorksetCatalogError) {
-    const statuses = {busy: 409, capacity: 507, expired: 410, 'invalid-input': 400, missing: 409, stale: 409};
-    const messages = {
-      busy: 'The workset catalog is busy. Retry shortly.',
-      capacity: 'The workset catalog has reached its safe capacity.',
-      corrupt: 'The workset catalog needs repair before this operation can continue.',
-      expired: 'The saved continuation expired. Run the query again.',
-      incompatible: 'The workset catalog is incompatible with this runtime.',
-      'invalid-input': 'The workset request is invalid.',
-      missing: 'No published workset catalog is available. Prepare the workset first.',
-      stale: 'The published workset catalog is stale. Prepare the workset again.',
-      storage: 'The workset catalog could not complete the storage operation.',
-    } as const;
-    return response(statuses[error.reason as keyof typeof statuses] ?? 500, {
-      code: `catalog-${error.reason}`,
-      error: messages[error.reason],
-    });
+    const catalog = managerWorksetCatalogHttp(error.reason);
+    return response(catalog.status, {code: catalog.code, error: catalog.error});
   }
   return response(500, {code: 'workset-operation-failed', error: publicWorksetError(error)});
 }
@@ -1911,8 +1897,8 @@ function managerWorksetErrorResponse(error: unknown): ManagerWorksetApiResponse 
 function managerWorksetCauseError(cause: Cause.Cause<unknown>): {readonly code: string; readonly error: string} {
   const failure = cause.reasons.find(Cause.isFailReason)?.error;
   const result = managerWorksetErrorResponse(failure ?? cause);
-  if (typeof result.body === 'object' && result.body !== null && 'error' in result.body) {
-    const body = result.body as {readonly code?: unknown; readonly error?: unknown};
+  if (Predicate.isObject(result.body) && 'error' in result.body) {
+    const body = result.body;
     return {
       code: typeof body.code === 'string' ? body.code : 'workset-operation-failed',
       error: typeof body.error === 'string' ? body.error : publicWorksetError(failure ?? cause),

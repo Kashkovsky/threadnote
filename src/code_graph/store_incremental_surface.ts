@@ -138,7 +138,7 @@ function decodePersistedIncrementalLookupKeys(value: unknown): readonly string[]
     ) {
       return undefined;
     }
-    return parsed as string[];
+    return parsed;
   } catch {
     return undefined;
   }

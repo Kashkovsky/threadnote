@@ -94,12 +94,11 @@ export function canonicalJson(value: unknown, limits: Partial<CanonicalJsonLimit
       if (ownKeys.some(key => typeof key === 'symbol')) {
         throw new CanonicalJsonError('Canonical JSON objects cannot contain symbol keys.');
       }
-      const keys = ownKeys as string[];
+      const keys = ownKeys.filter((key): key is string => typeof key === 'string');
       entries = checkedEntryTotal(entries, keys.length, resolved.maximumContainerEntries);
-      const object = current as Record<string, unknown>;
       const properties: string[] = [];
       for (const key of keys.sort(compareCodeUnits)) {
-        const descriptor = Object.getOwnPropertyDescriptor(object, key);
+        const descriptor = Object.getOwnPropertyDescriptor(current, key);
         if (!descriptor?.enumerable || !('value' in descriptor)) {
           throw new CanonicalJsonError('Canonical JSON objects may contain only enumerable data properties.');
         }
@@ -133,7 +132,15 @@ export function parseCanonicalJson(value: string, limits: Partial<CanonicalJsonL
   }
   const rendered = canonicalJson(parsed, resolved);
   if (rendered !== value) throw new CanonicalJsonError('JSON input is not in RFC 8785 canonical form.');
-  return parsed as CanonicalJsonValue;
+  if (!isCanonicalJsonValue(parsed)) throw new CanonicalJsonError('JSON input contains an unsupported value.');
+  return parsed;
+}
+
+function isCanonicalJsonValue(value: unknown): value is CanonicalJsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isCanonicalJsonValue);
+  return typeof value === 'object' && value !== null && Object.values(value).every(isCanonicalJsonValue);
 }
 
 function resolveLimits(overrides: Partial<CanonicalJsonLimits>): CanonicalJsonLimits {

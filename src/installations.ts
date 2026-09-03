@@ -1,4 +1,4 @@
-import {Console, Crypto, Effect, FileSystem, Path} from 'effect';
+import {Console, Crypto, Effect, FileSystem, Path, Predicate} from 'effect';
 import {syncDirectoryBestEffort, syncWritableFile} from './effect/file_durability.js';
 import {withExclusiveFileLock} from './effect/file_lock.js';
 import {SystemInfo} from './effect/system.js';
@@ -498,10 +498,10 @@ const parsePromotionJournal = Effect.fn('installations.parsePromotionJournal')(f
   return yield* Effect.try({
     try: () => {
       const value = JSON.parse(content) as unknown;
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      if (!Predicate.isObject(value)) {
         throw new InstallationOperationError('expected a JSON object');
       }
-      return value as Record<string, unknown>;
+      return value;
     },
     catch: cause => new InstallationOperationError(`Could not parse promotion journal ${journalPath}.`, {cause}),
   });

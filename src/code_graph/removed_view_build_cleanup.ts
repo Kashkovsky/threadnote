@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path, PlatformError} from 'effect';
+import {Effect, FileSystem, Option, Path, PlatformError, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runtimeTextDirectoryNamePage} from '../effect/system.js';
 import {parseCodeGraphBuildStatus, type CodeGraphBuildStatus} from './build_status.js';
@@ -289,7 +289,7 @@ const readManagerContextCandidate = Effect.fn('codeGraph.readRemovedViewManagerC
     try: () => {
       const value: unknown = JSON.parse(observed.content);
       return (
-        isRecord(value) &&
+        Predicate.isObject(value) &&
         value.schemaVersion === 1 &&
         value.buildId === buildId &&
         typeof value.worktreePath === 'string' &&
@@ -513,8 +513,4 @@ function invalidSidecarResult(): CodeGraphRemovedViewCleanupPageResult {
     retryAfterMilliseconds: INVALID_SIDECAR_RETRY_MILLISECONDS,
     state: 'deferred',
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

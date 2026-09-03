@@ -25,7 +25,7 @@ export function parseResourceId(input: string): ResourceId {
   const trimmed = input.trim();
   const match = RESOURCE_ID_PATTERN.exec(trimmed);
   if (!match) return invalid(input, 'expected threadnote:// URI syntax (legacy viking:// aliases are accepted)');
-  const inputScheme = match[1].toLowerCase() as ResourceIdScheme;
+  const inputScheme = resourceIdScheme(match[1].toLowerCase());
   const namespace = decodeSegment(match[2], input, 'namespace');
   const rawPath = match[3] ?? '';
   if (match[4] !== undefined) return invalid(input, 'query parameters are not supported');
@@ -42,6 +42,11 @@ export function parseResourceId(input: string): ResourceId {
     namespace,
     segments,
   };
+}
+
+function resourceIdScheme(value: string): ResourceIdScheme {
+  if (value === 'threadnote' || value === 'viking') return value;
+  return invalid(value, 'unsupported URI scheme');
 }
 
 export function canonicalResourceUri(namespace: string, segments: readonly string[], anchor?: string): string {

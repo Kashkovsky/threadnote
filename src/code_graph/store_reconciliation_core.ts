@@ -473,7 +473,11 @@ const CLEANUP_TOKEN = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,511}$/u;
 const CODE_GRAPH_SNAPSHOT_ID = /^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u;
 
 function validRemovedViewCleanupBlockedCode(value: string): value is CodeGraphRemovedViewCleanupBlockedCode {
-  return CODE_GRAPH_REMOVED_VIEW_CLEANUP_BLOCKED_CODES.includes(value as CodeGraphRemovedViewCleanupBlockedCode);
+  return CODE_GRAPH_REMOVED_VIEW_CLEANUP_BLOCKED_CODES.some(code => code === value);
+}
+
+function validRemovedViewCleanupPhase(value: string): value is CodeGraphRemovedViewCleanupPhase {
+  return CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES.some(phase => phase === value);
 }
 
 function validCanonicalTimestamp(value: string): boolean {
@@ -521,7 +525,7 @@ function decodeRemovedViewCleanupRow(row: RemovedViewCleanupRow): CodeGraphRemov
         typeof row.provenance_record_identity === 'string')
     ) ||
     typeof row.phase !== 'string' ||
-    !CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES.includes(row.phase as CodeGraphRemovedViewCleanupPhase) ||
+    !validRemovedViewCleanupPhase(row.phase) ||
     (row.cursor_token !== null && (typeof row.cursor_token !== 'string' || !CLEANUP_TOKEN.test(row.cursor_token))) ||
     (row.phase === 'complete' && (row.cursor_token !== null || row.blocked_code !== null)) ||
     typeof row.revision !== 'number' ||
@@ -548,7 +552,7 @@ function decodeRemovedViewCleanupRow(row: RemovedViewCleanupRow): CodeGraphRemov
     epoch: row.epoch,
     expectedSnapshotId: row.expected_snapshot_id,
     nextAttemptAt: row.next_attempt_at,
-    phase: row.phase as CodeGraphRemovedViewCleanupPhase,
+    phase: row.phase,
     ...(typeof row.provenance_record_digest === 'string' ? {provenanceRecordDigest: row.provenance_record_digest} : {}),
     ...(typeof row.provenance_record_identity === 'string'
       ? {provenanceRecordIdentity: row.provenance_record_identity}

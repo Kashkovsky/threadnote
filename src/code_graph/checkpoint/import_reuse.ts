@@ -94,9 +94,7 @@ export const hydrateCodeGraphCheckpointReusableBaseReceipt = Effect.fn(
   if (
     portable.version !== CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION ||
     portable.policyExclusions.policyVersion !== CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION ||
-    portable.policyExclusions.reasons.some(
-      reason => !CODE_GRAPH_INVENTORY_EXCLUSION_REASONS.includes(reason.reason as CodeGraphInventoryExclusionReason),
-    )
+    portable.policyExclusions.reasons.some(reason => !isCodeGraphInventoryExclusionReason(reason.reason))
   ) {
     return yield* Effect.fail(hydrationError('Checkpoint inventory reuse contract is incompatible.'));
   }
@@ -184,10 +182,12 @@ export const hydrateCodeGraphCheckpointReusableBaseReceipt = Effect.fn(
       policyExclusions: {
         ...portable.policyExclusions,
         policyVersion: CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
-        reasons: portable.policyExclusions.reasons.map(reason => ({
-          ...reason,
-          reason: reason.reason as CodeGraphInventoryExclusionReason,
-        })),
+        reasons: portable.policyExclusions.reasons.map(reason => {
+          if (!isCodeGraphInventoryExclusionReason(reason.reason)) {
+            throw hydrationError('Checkpoint inventory reuse contract is incompatible.');
+          }
+          return {...reason, reason: reason.reason};
+        }),
       },
       skipped: portable.skipped,
       version: CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION,
@@ -197,3 +197,7 @@ export const hydrateCodeGraphCheckpointReusableBaseReceipt = Effect.fn(
     workspaceFingerprint: reuse.workspaceFingerprint,
   } satisfies CodeGraphReusableBaseReceiptInput;
 });
+
+function isCodeGraphInventoryExclusionReason(value: string): value is CodeGraphInventoryExclusionReason {
+  return CODE_GRAPH_INVENTORY_EXCLUSION_REASONS.some(reason => reason === value);
+}

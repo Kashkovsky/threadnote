@@ -1,4 +1,4 @@
-import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Result} from 'effect';
+import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Predicate, Result} from 'effect';
 import {
   expandWeakRecallQueryEffect,
   limitRecallRewritesForConfidence,
@@ -198,9 +198,7 @@ export interface RecallResult {
 }
 
 export function parseMemoryKind(value: string): MemoryKind {
-  if (['durable', 'handoff', 'incident', 'preference', 'smoke'].includes(value)) {
-    return value as MemoryKind;
-  }
+  if (isMemoryKind(value)) return value;
   throw new MemoryOperationError(
     `Unsupported memory kind "${value}". Expected durable, handoff, incident, preference, or smoke.`,
   );
@@ -1418,25 +1416,20 @@ function parseThreadnotePack(raw: string): {
   readonly version: 1;
 } {
   const value = JSON.parse(raw) as unknown;
-  if (typeof value !== 'object' || value === null) throw new MemoryOperationError('Pack root must be an object.');
-  const pack = value as {
-    readonly resources?: unknown;
-    readonly sourceUri?: unknown;
-    readonly version?: unknown;
-  };
+  if (!Predicate.isObject(value)) throw new MemoryOperationError('Pack root must be an object.');
+  const pack = value;
   if (pack.version !== 1 || typeof pack.sourceUri !== 'string' || !Array.isArray(pack.resources)) {
     throw new MemoryOperationError('Unsupported Threadnote pack version or shape.');
   }
   const resources = pack.resources.map(resource => {
     if (
-      typeof resource !== 'object' ||
-      resource === null ||
-      typeof (resource as {content?: unknown}).content !== 'string' ||
-      typeof (resource as {relativeUri?: unknown}).relativeUri !== 'string'
+      !Predicate.isObject(resource) ||
+      typeof resource.content !== 'string' ||
+      typeof resource.relativeUri !== 'string'
     ) {
       throw new MemoryOperationError('Pack resource entry is invalid.');
     }
-    const entry = resource as {readonly content: string; readonly relativeUri: string};
+    const entry = {content: resource.content, relativeUri: resource.relativeUri};
     if (
       !entry.relativeUri ||
       entry.relativeUri.startsWith('/') ||
@@ -1524,8 +1517,9 @@ const collectNativeExactMemoryMatches = Effect.fn('memory.collectNativeExactMemo
 });
 
 export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, options: StoreMemoryOptions) {
-  if (options.replaceUri) {
-    yield* attemptSync(() => assertResourceUri(options.replaceUri as string));
+  const replaceUri = options.replaceUri;
+  if (replaceUri) {
+    yield* attemptSync(() => assertResourceUri(replaceUri));
   }
   const ov = NATIVE_RESOURCE_BACKEND;
   if (options.replaceUri && isInSharedNamespace(config, options.replaceUri)) {
@@ -1686,6 +1680,12 @@ export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeCo
       );
   return memoryUri;
 });
+
+function isMemoryKind(value: string): value is MemoryKind {
+  return (
+    value === 'durable' || value === 'handoff' || value === 'incident' || value === 'preference' || value === 'smoke'
+  );
+}
 
 /**
  * Warn when an in-place shared replacement was asked to change the memory's

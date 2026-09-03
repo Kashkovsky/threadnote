@@ -78,7 +78,7 @@ export function parsePersistentMemoryReadCursorState(serialized: string): Stored
     throw new PersistentMemoryReadCursorStoreError('Stored memory read cursor expiry is invalid.');
   }
   assertCursorState(parsed.state);
-  return parsed as unknown as StoredCursorEnvelopeV1;
+  return {expiresAt: parsed.expiresAt, state: parsed.state, version: 1};
 }
 
 export const putPersistentMemoryReadCursor = Effect.fn('memoryReadCursorStore.put')(function* (

@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {syncDirectoryBestEffort, syncWritableFile} from '../effect/file_durability.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
@@ -349,7 +349,8 @@ const writePersistedLifecycleOpportunityCursor = Effect.fn('codeGraph.writeLifec
 
 function decodePersistedLifecycleOpportunityCursor(content: string): PersistedLifecycleOpportunityCursor | undefined {
   try {
-    const parsed = JSON.parse(content) as Partial<PersistedLifecycleOpportunityCursor>;
+    const parsed: unknown = JSON.parse(content);
+    if (!Predicate.isObject(parsed)) return undefined;
     if (
       parsed.schemaVersion !== LIFECYCLE_OPPORTUNITY_CURSOR_SCHEMA_VERSION ||
       typeof parsed.checkoutId !== 'string' ||

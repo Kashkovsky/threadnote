@@ -1336,11 +1336,15 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
   if (candidates.some(candidate => candidate === undefined)) {
     return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history changed during its bounded page.'));
   }
+  const completeCandidates: BuildHistoryCandidate[] = [];
+  for (const candidate of candidates) {
+    if (candidate !== undefined) completeCandidates.push(candidate);
+  }
   const lockPath = path.join(layout.worktreeLockRoot, `${worktreeId}.lock`);
   const initialLock = yield* inspectBuildHistoryLock(fs, lockPath);
   const nowMilliseconds = yield* Clock.currentTimeMillis;
   const observedCandidates = yield* Effect.forEach(
-    candidates as readonly BuildHistoryCandidate[],
+    completeCandidates,
     candidate =>
       observeBuildHistoryCandidate(system, candidate.status, nowMilliseconds).pipe(
         Effect.map(status => ({candidate, status})),

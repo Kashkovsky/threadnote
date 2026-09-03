@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 import React, {useMemo} from 'react';
 import {ManagerAutocompleteInput} from './dialog.js';
 import type {
@@ -14,7 +15,23 @@ import type {BulkItemResult, PanelName, ShareSummary, TreeNode} from './ui.js';
 
 const token = typeof window === 'undefined' ? '' : (new URLSearchParams(window.location.search).get('token') ?? '');
 export const GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS = 10_000;
+export const isAgentClient = Schema.is(Schema.Literals(['claude', 'codex', 'copilot', 'cursor', 'effect-ai']));
+export const isMemoryKind = Schema.is(Schema.Literals(['durable', 'handoff', 'incident', 'preference', 'smoke']));
+export const isMemoryStatus = Schema.is(Schema.Literals(['active', 'archived', 'expired', 'superseded']));
 export const GRAPH_DETAIL_REQUEST_TIMEOUT_MILLISECONDS = 30_000;
+export const SIDEBAR_WIDTH_DEFAULT = 300;
+export const SIDEBAR_WIDTH_KEY = 'threadnote.manager.sidebarWidth';
+export const SIDEBAR_WIDTH_MAX = 440;
+export const SIDEBAR_WIDTH_MIN = 260;
+
+export function clampSidebarWidth(width: number): number {
+  return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)));
+}
+
+export function loadSidebarWidth(): number {
+  const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
+  return Number.isFinite(stored) && stored > 0 ? clampSidebarWidth(stored) : SIDEBAR_WIDTH_DEFAULT;
+}
 
 function SharesPanel(props: {
   readonly createShare: () => void;

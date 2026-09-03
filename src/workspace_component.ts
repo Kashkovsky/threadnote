@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Path, Predicate} from 'effect';
 
 const WORKSPACE_COMPONENT_MANIFESTS = [
   'package.json',
@@ -44,8 +44,8 @@ function declaredWorkspaceName(manifestName: string, content: string): string | 
   if (name === 'package.json' || name === 'project.json') {
     try {
       const parsed: unknown = JSON.parse(content);
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
-      const value = (parsed as Record<string, unknown>).name;
+      if (!Predicate.isObject(parsed)) return undefined;
+      const value = parsed.name;
       return typeof value === 'string' ? value.trim() || undefined : undefined;
     } catch {
       return undefined;

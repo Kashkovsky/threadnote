@@ -1,4 +1,4 @@
-import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
+import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Predicate, Schema} from 'effect';
 import {sha256FileHex, sha256Hex} from '../effect/digest.js';
 import {
   LEGACY_OPENVIKING_HOME_DIRECTORY,
@@ -121,6 +121,10 @@ interface LegacyShareMigration {
   readonly sourceWorktreeRelative: string;
   readonly stageGitdirRelative: string;
   readonly stageWorktreeRelative: string;
+}
+
+interface LegacyTeamsFile extends Record<string, unknown> {
+  readonly teams?: Record<string, Record<string, unknown>>;
 }
 
 interface RecoveryPreflight {
@@ -272,8 +276,25 @@ const migrateOpenVikingHomeImpl = Effect.fn('homeMigration.migrate')(function* (
   return {action: 'migrated', receipt: completedReceipt};
 });
 
-export const migrateOpenVikingHome = (options: HomeMigrationOptions = {}) =>
+export const migrateOpenVikingHome = (
+  options: HomeMigrationOptions = {},
+): Effect.Effect<
+  HomeMigrationResult,
+  HomeMigrationError,
+  Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo
+> =>
   migrateOpenVikingHomeImpl(options).pipe(
+    Effect.flatMap(result =>
+      isHomeMigrationResult(result)
+        ? Effect.succeed(result)
+        : Effect.fail(
+            new HomeMigrationFailed({
+              cause: result,
+              message: 'OpenViking home migration returned an invalid result.',
+              operation: 'migrate OpenViking home',
+            }),
+          ),
+    ),
     Effect.mapError(cause =>
       isHomeMigrationError(cause)
         ? cause
@@ -283,11 +304,7 @@ export const migrateOpenVikingHome = (options: HomeMigrationOptions = {}) =>
             operation: 'migrate OpenViking home',
           }),
     ),
-  ) as Effect.Effect<
-    HomeMigrationResult,
-    HomeMigrationError,
-    Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo
-  >;
+  );
 
 export const isLegacyHomeMigrationPending = Effect.fn('homeMigration.isPending')(function* (
   options: Pick<HomeMigrationOptions, 'legacyHome' | 'targetHome'> = {},
@@ -525,7 +542,7 @@ function readJsonObject(
     Effect.map(content => {
       try {
         const value = JSON.parse(content) as unknown;
-        return isRecord(value) ? value : undefined;
+        return Predicate.isObject(value) ? value : undefined;
       } catch {
         return undefined;
       }
@@ -554,10 +571,6 @@ function pathEntryExists(fs: FileSystem.FileSystem, target: string): Effect.Effe
   return Effect.all([fs.stat(target).pipe(Effect.option), fs.readLink(target).pipe(Effect.option)]).pipe(
     Effect.map(([info, link]) => Option.isSome(info) || Option.isSome(link)),
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function recoverIntoExistingTarget(
@@ -1100,9 +1113,7 @@ function migrateLegacySharesIntoExisting(
     if (migrations.length === 0) return;
     yield* cleanupStaging;
     const teamsPath = path.join(targetHome, 'share', 'teams.json');
-    const teamsFile = JSON.parse(yield* fs.readFileString(teamsPath)) as {
-      teams?: Record<string, Record<string, unknown>>;
-    };
+    const teamsFile = parseLegacyTeamsFile(JSON.parse(yield* fs.readFileString(teamsPath)));
     for (const migration of migrations) {
       const preservesCurrentRepository = authoritativeCurrentShareGitdirs.has(path.resolve(migration.finalGitdir));
       const canonicalWorktree = path.join(targetHome, mappedLegacyRelative(migration.sourceWorktreeRelative));
@@ -1489,30 +1500,75 @@ function readReceipt(
 
 function parseReceipt(value: unknown): HomeMigrationReceipt {
   if (
-    typeof value !== 'object' ||
-    value === null ||
-    (value as Partial<HomeMigrationReceipt>).id !== HOME_MIGRATION_ID ||
-    (value as Partial<HomeMigrationReceipt>).version !== HOME_MIGRATION_RECEIPT_VERSION
+    !Predicate.isObject(value) ||
+    value.id !== HOME_MIGRATION_ID ||
+    value.version !== HOME_MIGRATION_RECEIPT_VERSION
   ) {
     throw new Error('Invalid migration receipt.');
   }
-  const receipt = value as HomeMigrationReceipt;
+  const bytes = value.bytes;
+  const completedAt = value.completedAt;
+  const directories = value.directories;
+  const files = value.files;
+  const legacyHome = value.legacyHome;
+  const preservedCurrentEntries = value.preservedCurrentEntries;
+  const sourceTreeSha256 = value.sourceTreeSha256;
+  const stagedTreeSha256 = value.stagedTreeSha256;
+  const symlinks = value.symlinks;
+  const targetHome = value.targetHome;
   if (
-    !Number.isInteger(receipt.files) ||
-    !Number.isInteger(receipt.directories) ||
-    !Number.isInteger(receipt.symlinks) ||
-    !Number.isFinite(receipt.bytes) ||
-    (receipt.preservedCurrentEntries !== undefined &&
-      (!Number.isInteger(receipt.preservedCurrentEntries) || receipt.preservedCurrentEntries < 0)) ||
-    !/^[0-9a-f]{64}$/.test(receipt.sourceTreeSha256) ||
-    (receipt.stagedTreeSha256 !== undefined && !/^[0-9a-f]{64}$/.test(receipt.stagedTreeSha256)) ||
-    !receipt.legacyHome ||
-    !receipt.targetHome ||
-    !receipt.completedAt
+    typeof files !== 'number' ||
+    !Number.isInteger(files) ||
+    typeof directories !== 'number' ||
+    !Number.isInteger(directories) ||
+    typeof symlinks !== 'number' ||
+    !Number.isInteger(symlinks) ||
+    typeof bytes !== 'number' ||
+    !Number.isFinite(bytes) ||
+    (preservedCurrentEntries !== undefined &&
+      (typeof preservedCurrentEntries !== 'number' ||
+        !Number.isInteger(preservedCurrentEntries) ||
+        preservedCurrentEntries < 0)) ||
+    typeof sourceTreeSha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(sourceTreeSha256) ||
+    (stagedTreeSha256 !== undefined &&
+      (typeof stagedTreeSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(stagedTreeSha256))) ||
+    typeof legacyHome !== 'string' ||
+    !legacyHome ||
+    typeof targetHome !== 'string' ||
+    !targetHome ||
+    typeof completedAt !== 'string' ||
+    !completedAt
   ) {
     throw new Error('Invalid migration receipt fields.');
   }
-  return receipt;
+  return {
+    bytes,
+    completedAt,
+    directories,
+    files,
+    id: HOME_MIGRATION_ID,
+    legacyHome,
+    ...(preservedCurrentEntries === undefined ? {} : {preservedCurrentEntries}),
+    sourceTreeSha256,
+    ...(stagedTreeSha256 === undefined ? {} : {stagedTreeSha256}),
+    symlinks,
+    targetHome,
+    version: HOME_MIGRATION_RECEIPT_VERSION,
+  };
+}
+
+function parseLegacyTeamsFile(value: unknown): LegacyTeamsFile {
+  if (!Predicate.isObject(value)) throw new Error('Legacy share teams file is not an object.');
+  const rawTeams = value.teams;
+  if (rawTeams === undefined) return {...value};
+  if (!Predicate.isObject(rawTeams)) throw new Error('Legacy share teams value is not an object.');
+  const teams: Record<string, Record<string, unknown>> = {};
+  for (const [name, entry] of Object.entries(rawTeams)) {
+    if (!Predicate.isObject(entry)) throw new Error(`Legacy share team ${name} is not an object.`);
+    teams[name] = entry;
+  }
+  return {...value, teams};
 }
 
 function planLegacyShareMigrations(
@@ -1533,9 +1589,9 @@ function planLegacyShareMigrations(
           path: teamsPath,
         }),
     });
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return [];
-    const teams = (parsed as {readonly teams?: unknown}).teams;
-    if (typeof teams !== 'object' || teams === null || Array.isArray(teams)) return [];
+    if (!Predicate.isObject(parsed)) return [];
+    const teams = parsed.teams;
+    if (!Predicate.isObject(teams)) return [];
 
     const plans: LegacyShareMigration[] = [];
     for (const [name, value] of Object.entries(teams)) {
@@ -1547,8 +1603,8 @@ function planLegacyShareMigrations(
           }),
         );
       }
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) continue;
-      const entry = value as {readonly gitdir?: unknown; readonly worktree?: unknown};
+      if (!Predicate.isObject(value)) continue;
+      const entry = value;
       if (typeof entry.worktree !== 'string' || typeof entry.gitdir !== 'string') continue;
       const sourceWorktreeRelative = checkedLegacyRelative(path, legacyHome, entry.worktree, 'share worktree');
       const sourceGitdirRelative = checkedLegacyRelative(path, legacyHome, entry.gitdir, 'share gitdir');
@@ -1604,9 +1660,7 @@ function migrateLegacyShares(
   return Effect.gen(function* () {
     if (migrations.length === 0) return;
     const teamsPath = path.join(stage, 'share', 'teams.json');
-    const teamsFile = JSON.parse(yield* fs.readFileString(teamsPath)) as {
-      teams?: Record<string, Record<string, unknown>>;
-    };
+    const teamsFile = parseLegacyTeamsFile(JSON.parse(yield* fs.readFileString(teamsPath)));
     for (const migration of migrations) {
       const sourceWorktree = path.join(stage, migration.sourceWorktreeRelative);
       const stageWorktree = path.join(stage, migration.stageWorktreeRelative);
@@ -1716,6 +1770,19 @@ function isHomeMigrationError(cause: unknown): cause is HomeMigrationError {
     cause instanceof HomeMigrationFailed ||
     cause instanceof HomeMigrationInsufficientSpace ||
     cause instanceof HomeMigrationUnsafe
+  );
+}
+
+function isHomeMigrationResult(value: unknown): value is HomeMigrationResult {
+  if (!Predicate.isObject(value)) return false;
+  return (
+    value.action === 'already_migrated' ||
+    value.action === 'dry_run' ||
+    value.action === 'migrated' ||
+    value.action === 'no_legacy_content' ||
+    value.action === 'no_legacy_home' ||
+    value.action === 'recovered' ||
+    value.action === 'resumed'
   );
 }
 

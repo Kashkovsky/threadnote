@@ -472,21 +472,22 @@ const selectRoutineFileBlobCacheCandidates = Effect.fn('codeGraph.selectRoutineF
       CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE,
     ],
   );
-  if (
-    rows.some(
-      row =>
-        !validRoutineCacheCursorText(row.content_hash, 1_024) ||
-        !validRoutineCacheCursorText(row.extractor_set, 4_096) ||
-        !validRoutineCacheCursorText(row.path_hint),
-    )
-  ) {
-    return yield* Effect.fail(new CodeGraphStoreError('File fact cache cleanup cursor is invalid.'));
+  const candidates: RoutineFileBlobCacheKey[] = [];
+  for (const row of rows) {
+    if (
+      !validRoutineCacheCursorText(row.content_hash, 1_024) ||
+      !validRoutineCacheCursorText(row.extractor_set, 4_096) ||
+      !validRoutineCacheCursorText(row.path_hint)
+    ) {
+      return yield* Effect.fail(new CodeGraphStoreError('File fact cache cleanup cursor is invalid.'));
+    }
+    candidates.push({
+      contentHash: row.content_hash,
+      extractorSet: row.extractor_set,
+      path: row.path_hint,
+    });
   }
-  return rows.map(row => ({
-    contentHash: row.content_hash as string,
-    extractorSet: row.extractor_set as string,
-    path: row.path_hint as string,
-  }));
+  return candidates;
 });
 
 const selectRoutineMaterializedShardCacheCandidates = Effect.fn(
@@ -500,10 +501,14 @@ const selectRoutineMaterializedShardCacheCandidates = Effect.fn(
      LIMIT ?`,
     [cursor ?? null, cursor ?? null, CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE],
   );
-  if (rows.some(row => !validRoutineCacheCursorText(row.id, 1_024))) {
-    return yield* Effect.fail(new CodeGraphStoreError('Materialized shard cache cleanup cursor is invalid.'));
+  const candidates: string[] = [];
+  for (const row of rows) {
+    if (!validRoutineCacheCursorText(row.id, 1_024)) {
+      return yield* Effect.fail(new CodeGraphStoreError('Materialized shard cache cleanup cursor is invalid.'));
+    }
+    candidates.push(row.id);
   }
-  return rows.map(row => row.id as string);
+  return candidates;
 });
 
 const deleteRoutineFileBlobCacheCandidates = Effect.fn('codeGraph.deleteRoutineFileBlobCacheCandidates')(function* (
