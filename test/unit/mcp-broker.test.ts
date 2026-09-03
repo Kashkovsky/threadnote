@@ -1,3 +1,4 @@
+import * as fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   runMcpBroker,
@@ -6,6 +7,7 @@ import {
   type McpBrokerFailureEvent,
 } from '../../src/mcp/broker.js';
 import type {StandaloneActiveRelease} from '../../src/process/standalone_lease.js';
+
 describe('MCP session broker', () => {
   it('reports a closed spawn failure without allowing the observer to alter recovery', async () => {
     const clientInput = new AsyncByteQueue();
@@ -484,7 +486,62 @@ describe('MCP session broker', () => {
     clientInput.end();
     await running;
   });
+
+  it('keeps an in-flight tool result when a progress write to the client fails', async () => {
+    await expectInFlightToolResultAfterDroppedProgress(1);
+  });
+
+  it('does not fail in-flight requests for any number of dropped progress frames while the runtime stays up', async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.integer({min: 1, max: 8}), async progressFrames => {
+        await expectInFlightToolResultAfterDroppedProgress(progressFrames);
+      }),
+      {numRuns: 15},
+    );
+  });
 });
+
+async function expectInFlightToolResultAfterDroppedProgress(progressFrames: number): Promise<void> {
+  const clientInput = new AsyncByteQueue();
+  const clientOutput = new AsyncByteQueue();
+  const release = {releaseRoot: '/threadnote/versions/4.2.2', version: '4.2.2'};
+  const spawned: FakeMcpChild[] = [];
+  const failures: McpBrokerFailureEvent[] = [];
+  const running = runMcpBroker({
+    input: clientInput,
+    onFailure: event => failures.push(event),
+    readActiveRelease: async () => release,
+    spawn: () => {
+      const child = new FakeMcpChild(release.version, {progressFramesBeforeToolResult: progressFrames});
+      spawned.push(child);
+      return child;
+    },
+    writeOutput: async line => {
+      const envelope = JSON.parse(line) as {readonly method?: string};
+      if (envelope.method === 'notifications/progress') {
+        throw new Error('temporary client write failure');
+      }
+      clientOutput.pushLine(line);
+    },
+  });
+
+  clientInput.pushLine(JSON.stringify({id: 1, jsonrpc: '2.0', method: 'initialize', params: {}}));
+  expect(JSON.parse(await clientOutput.nextLine())).toMatchObject({
+    result: {serverInfo: {version: '4.2.2'}},
+  });
+  clientInput.pushLine(JSON.stringify({jsonrpc: '2.0', method: 'notifications/initialized'}));
+  clientInput.pushLine(JSON.stringify({id: 2, jsonrpc: '2.0', method: 'tools/call', params: {name: 'health'}}));
+  expect(JSON.parse(await clientOutput.nextLine())).toEqual({
+    id: 2,
+    jsonrpc: '2.0',
+    result: {version: '4.2.2'},
+  });
+  expect(spawned).toHaveLength(1);
+  expect(failures).toEqual([]);
+
+  clientInput.end();
+  await running;
+}
 
 class FakeMcpChild implements McpBrokerChild {
   readonly #output = new AsyncByteQueue();
@@ -502,6 +559,7 @@ class FakeMcpChild implements McpBrokerChild {
     readonly options: {
       readonly exitBeforeFirstToolWrite?: boolean;
       readonly ignoreInitialize?: boolean;
+      readonly progressFramesBeforeToolResult?: number;
       readonly rejectInitialize?: boolean;
       readonly respondToTools?: boolean;
     } = {},
@@ -567,6 +625,16 @@ class FakeMcpChild implements McpBrokerChild {
       this.#end();
       throw new Error('Child exited before accepting the request.');
     } else if (envelope.method === 'tools/call' && this.options.respondToTools !== false) {
+      const progressFrames = this.options.progressFramesBeforeToolResult ?? 0;
+      for (let index = 0; index < progressFrames; index += 1) {
+        this.#output.pushLine(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'notifications/progress',
+            params: {progress: index + 1, progressToken: envelope.id},
+          }),
+        );
+      }
       this.#output.pushLine(JSON.stringify({id: envelope.id, jsonrpc: '2.0', result: {version: this.version}}));
     }
   }

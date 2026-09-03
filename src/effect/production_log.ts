@@ -63,6 +63,7 @@ const processProductionLogGates = new Map<string, {readonly semaphore: Semaphore
 export const PRODUCTION_LOG_PHASES = [
   'recall.shared-sync',
   'recall.obsidian-sync',
+  'recall.workspace-context',
   'recall.semantic-retrieval',
   'recall.lexical-ranking',
 ] as const;

@@ -208,7 +208,18 @@ class McpBroker {
   }
 
   async #observeChild(active: ActiveBrokerChild): Promise<void> {
-    await Promise.all([this.#readChildOutput(active), active.child.exited.catch(() => -1)]).catch(() => undefined);
+    // Wait for the process to exit before failing in-flight requests. A
+    // stdout-pump error is not itself a runtime exit; stop the child so the
+    // observer can settle instead of reporting exit while work continues.
+    const outputPump = this.#readChildOutput(active).catch(() => {
+      if (this.#child !== active) return;
+      try {
+        active.child.kill('SIGTERM');
+      } catch {
+        // The child can already have exited.
+      }
+    });
+    await Promise.all([outputPump, active.child.exited.catch(() => -1)]);
     if (this.#child !== active) return;
     this.#reportFailure({area: 'child', reason: 'exit'});
     this.#child = undefined;
@@ -264,7 +275,11 @@ class McpBroker {
           outgoingLine = replaceCancelledRequestId(line, route.externalId);
         }
       }
-      await this.#queueOutput(outgoingLine);
+      // Keep pumping runtime output when the editor-owned stdout write fails.
+      // A dropped progress frame must not look like a child exit while work
+      // continues, and a later result can still be delivered if the client is
+      // still reading.
+      await this.#queueOutput(outgoingLine).catch(() => undefined);
     }
   }
 

@@ -1,7 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Clock, Crypto, Effect, FileSystem, Option, Predicate, Result} from 'effect';
-import {inferProjectFromQuery, inferWorksetFromQuery, requireWorkset} from '../../manifest.js';
-import type {ProjectManifest} from '../../types.js';
 import {
   activePersonalMemoryUrisFromText,
   existingReferencedUris,
@@ -10,18 +8,7 @@ import {
   referencedUrisFromRecords,
 } from '../../memory/hygiene.js';
 import {applyScrubber} from '../../share/index.js';
-import {
-  errorMessage,
-  enrichRecallQueryWithWorkspaceProjectContext,
-  exactRecallTerms,
-  type RecallHit,
-  recallQueryRequestsBranchContext,
-  recallScoreThresholdPolicy,
-  resolveWorkspaceBranch,
-  resolveWorkspaceComponentContext,
-  resolveWorkspaceRepoName,
-  trimTrailingSlash,
-} from '../../utils.js';
+import {errorMessage, resolveWorkspaceRepoName} from '../../utils.js';
 import {
   EffectMcpServerAdapter,
   McpInput,
@@ -38,7 +25,6 @@ import {
   selectExpandedRecallCandidatesEffect,
   shouldExpandRecall,
 } from '../../effect/ai/recall.js';
-import {resolveEffectAiConfiguration} from '../../effect/ai/consolidator.js';
 import {sha256Hex} from '../../effect/digest.js';
 import {withMemoryUriLocks} from '../../effect/memory_lock.js';
 import {SystemInfo} from '../../effect/system.js';
@@ -96,8 +82,6 @@ import {
   type CursorCloudMemoryScope,
 } from '../../cursor/cloud.js';
 import {memoryIdFromIdentityAlias} from '../../memory/identity_alias.js';
-import {loadRecallExactMatches} from '../../recall/index.js';
-import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../../recall/eligibility.js';
 import {RECALL_RANKER_VERSION} from '../../recall/rank.js';
 import {
   parseRecallMemoryConnectionInput,
@@ -109,11 +93,7 @@ import {
   RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS,
   RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
 } from '../../recall/mcp_response.js';
-import {
-  lexicalIndexUnavailableWarning,
-  mergeRecallOperationalWarnings,
-  type RecallOperationalWarning,
-} from '../../recall/warning.js';
+import {mergeRecallOperationalWarnings} from '../../recall/warning.js';
 import {syncObsidianSourcesBeforeRecall} from '../../obsidian/source.js';
 import {withProductionPhaseTiming} from '../../effect/production_log.js';
 import {withAnonymousTelemetryPhase} from '../../effect/telemetry.js';
@@ -131,21 +111,17 @@ import {
 } from '../../recall/runtime.js';
 import {
   McpServerOperationError,
-  MAX_WORKSET_PASSES,
   type RecallProgressTiming,
   type RuntimeConfig,
   argumentError,
-  exactMemoryScopes,
   mcpErrorResult,
   normalizeOptionalMetadata,
   optionalResourceUri,
-  projectMemoryScopeUris,
   requiredResourceUri,
   requiredResourceUriList,
   requiredText,
   uriSegment,
   withStaleVersionNotice,
-  worksetScopeUris,
 } from './common.js';
 import {
   type WriteDurableMemoryParams,
@@ -159,6 +135,7 @@ import {
   writeDurableMemory,
 } from './memory.js';
 import {syncCursorCloudMemoryShares} from './cursor_cloud_memory.js';
+import {resolveRecallWorkspaceContext} from './recall_workspace_context.js';
 import {resourceIdIsWithin} from '../../storage/resource-id.js';
 
 function stringList(value: string | readonly string[] | undefined): readonly string[] {
@@ -927,109 +904,27 @@ function runRecallTool(
             return Effect.succeed([] as readonly string[]);
           }),
         );
-    yield* progress.report(RECALL_MCP_PROGRESS.workspaceContext);
-    const query = params.query;
-    const navigationOnly = query.length === 0;
-    const workspaceComponent =
-      !navigationOnly && !params.pinnedUri && !params.workset
-        ? yield* resolveWorkspaceComponentContext({cwd: params.callerCwd, includeProcessCwd: false})
-        : undefined;
-    const workspaceBranch =
-      !navigationOnly && !params.pinnedUri && !params.workset && recallQueryRequestsBranchContext(query)
-        ? yield* resolveWorkspaceBranch({cwd: params.callerCwd, includeProcessCwd: false})
-        : undefined;
-    const projectQuery = navigationOnly
-      ? ''
-      : yield* enrichRecallQueryWithWorkspaceProjectContext(query, {
-          cwd: params.callerCwd,
-          includeProcessCwd: false,
-        });
-    const explicitProjectName = params.pinnedUri ? undefined : params.project;
-    const queryProject = params.pinnedUri
-      ? undefined
-      : yield* inferProjectFromQuery(config.manifestPath, explicitProjectName ?? params.query);
-    const project =
-      queryProject ??
-      (navigationOnly || params.pinnedUri || explicitProjectName
-        ? undefined
-        : yield* inferProjectFromQuery(config.manifestPath, projectQuery));
-    const inferredProjectMemoryName = params.pinnedUri
-      ? undefined
-      : (project?.name ??
-        (navigationOnly
-          ? undefined
-          : yield* resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false})));
-    const recallProjectName = explicitProjectName ?? inferredProjectMemoryName;
-    const thresholdPolicy =
-      params.threshold === undefined
-        ? yield* recallScoreThresholdPolicy()
-        : {source: 'call' as const, value: params.threshold};
-    const threshold = thresholdPolicy.value;
-    const thresholdConfigured = thresholdPolicy.source !== 'default';
-    const explicitWorkset = params.workset ? yield* requireWorkset(config.manifestPath, params.workset) : undefined;
-    const passes: Array<readonly RecallHit[]> = [];
-    const scopedRecallUris = new Set(
-      [params.pinnedUri, ...(params.allowedUriScopes ?? [])].filter((uri): uri is string => uri !== undefined),
+    const workspaceContext = yield* withMcpProgressHeartbeat(
+      progress,
+      RECALL_MCP_PROGRESS.workspaceContext,
+      withProductionPhaseTiming('recall.workspace-context', resolveRecallWorkspaceContext(config, params)),
+      progressTiming.heartbeatMilliseconds,
     );
-    for (const scope of projectMemoryScopeUris(config, recallProjectName, params.includeArchived)) {
-      if (!scopedRecallUris.has(scope)) {
-        scopedRecallUris.add(scope);
-      }
-    }
-    const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
-    if (seededUri?.startsWith('threadnote://') && seededUri !== params.pinnedUri) {
-      scopedRecallUris.add(seededUri);
-    }
-
-    const sections: string[] = [];
-    const workset = params.pinnedUri
-      ? undefined
-      : explicitWorkset
-        ? explicitWorkset
-        : navigationOnly
-          ? undefined
-          : yield* inferWorksetFromQuery(config.manifestPath, projectQuery);
-    if (workset && workset.projects.length > 0) {
-      sections.push(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
-      const alreadyScoped = new Set(
-        [params.pinnedUri, seededUri, ...scopedRecallUris].filter((uri): uri is string => uri !== undefined),
-      );
-      const worksetScopes = worksetScopeUris(config, workset)
-        .filter(uri => !alreadyScoped.has(uri))
-        .slice(0, MAX_WORKSET_PASSES);
-      for (const scope of worksetScopes) {
-        scopedRecallUris.add(scope);
-      }
-    }
-
-    const eligibility = deriveRecallEligibilityPolicy({
-      explicitProject: params.project,
-      originalQuery: query,
-      pinnedHardUri: params.pinnedUri !== undefined,
-      worksetProjectNames: workset?.projects.map(member => member.name),
-    });
-
-    const exactLookup = yield* collectExactMemoryMatches(
-      config,
-      query,
-      params.includeArchived,
-      eligibility,
-      recallProjectName,
-      project,
-      params.allowedUriScopes,
-    );
-    const exactMatches = exactLookup.matches;
-    let operationalWarnings: readonly RecallOperationalWarning[] = exactLookup.operationalWarnings;
-    const effectAiResult = navigationOnly
-      ? undefined
-      : yield* resolveEffectAiConfiguration(config, (yield* SystemInfo).environment()).pipe(Effect.result);
-    const effectAi =
-      effectAiResult !== undefined && Result.isSuccess(effectAiResult) ? effectAiResult.success : undefined;
-    if (effectAiResult !== undefined && Result.isFailure(effectAiResult)) {
-      sections.push(
-        `Local AI recall unavailable: ${errorMessage(effectAiResult.failure)}. Deterministic recall continued.`,
-      );
-    }
+    const query = workspaceContext.query;
+    const navigationOnly = workspaceContext.navigationOnly;
+    const workspaceComponent = workspaceContext.workspaceComponent;
+    const workspaceBranch = workspaceContext.workspaceBranch;
+    const recallProjectName = workspaceContext.recallProjectName;
+    const threshold = workspaceContext.threshold;
+    const thresholdConfigured = workspaceContext.thresholdConfigured;
+    const passes = workspaceContext.passes;
+    const scopedRecallUris = workspaceContext.scopedRecallUris;
+    const seededUri = workspaceContext.seededUri;
+    const sections = workspaceContext.sections;
+    const eligibility = workspaceContext.eligibility;
+    const exactMatches = workspaceContext.exactMatches;
+    let operationalWarnings = workspaceContext.operationalWarnings;
+    const effectAi = workspaceContext.effectAi;
     let hybridMinimumScore = recallHybridMinimumScore(Number(threshold));
     const expansionQueries: string[] = [];
     const recallLimit = params.nodeLimit ?? 12;
@@ -1303,32 +1198,6 @@ const referencedContextSection = Effect.fn('mcpServer.referencedContext')(functi
   const candidates = referenced.slice(0, MAX_REFERENCED_CONTEXT);
   const existingRecords = yield* readMemoryRecordsByUri(config, candidates);
   return formatReferencedContextPointers(existingReferencedUris(candidates, existingRecords), MAX_REFERENCED_CONTEXT);
-});
-
-const collectExactMemoryMatches = Effect.fn('mcp_server.collectExactMemoryMatches')(function* (
-  config: RuntimeConfig,
-  query: string,
-  includeArchived: boolean,
-  eligibility: RecallEligibilityPolicy,
-  projectName: string | undefined,
-  project: ProjectManifest | undefined,
-  allowedUriScopes?: readonly string[],
-) {
-  const terms = exactRecallTerms(query);
-  if (terms.length === 0) {
-    return {matches: [], operationalWarnings: []};
-  }
-  const scopes = allowedUriScopes ?? exactMemoryScopes(config, includeArchived, query, projectName, project);
-  const result = yield* loadRecallExactMatches(config, {
-    eligibility,
-    includeInactive: includeArchived,
-    limitPerTerm: 25,
-    terms,
-    uriScopes: scopes,
-  }).pipe(Effect.result);
-  return Result.isSuccess(result)
-    ? {matches: result.success, operationalWarnings: []}
-    : {matches: [], operationalWarnings: [lexicalIndexUnavailableWarning()]};
 });
 
 export function registerReadTool(

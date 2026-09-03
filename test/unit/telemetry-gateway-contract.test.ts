@@ -1,5 +1,6 @@
 import ts from 'typescript-compiler';
 import {describe, expect, it} from 'vitest';
+import {PRODUCTION_LOG_PHASES} from '../../src/effect/production_log.js';
 import {
   ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS,
   ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_RESULTS,
@@ -268,6 +269,12 @@ describe('telemetry producer and production gateway schema', () => {
       expect(closedTelemetryErrorType(errorType)).toBe(errorType);
     }
     expect(closedTelemetryErrorType('PrivateCustomerError')).toBe('UnknownError');
+  });
+
+  it('keeps recall workspace-context production-timed without expanding the OTLP phase registry', () => {
+    expect(PRODUCTION_LOG_PHASES).toContain('recall.workspace-context');
+    expect(ANONYMOUS_TELEMETRY_PHASES).not.toContain('recall.workspace-context');
+    expect(schema.registries.phase).not.toContain('recall.workspace-context');
   });
 
   it('keeps bounded identifier, version, bucket, and numeric limits executable', () => {
