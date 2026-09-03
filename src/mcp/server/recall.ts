@@ -1223,7 +1223,7 @@ export function registerReadTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description: `${description} Accepts canonical pointers and bounded threadnote://memory/tn_ identity aliases. Paged at no more than 1500 estimated tokens by default. Optional image projection can return a complete memory as PNG pages. Start with uri or uris. To continue, pass cursor without uri, uris, mode, or section; budgetTokens may be adjusted.`,
+      description: `${description} Accepts canonical pointers and bounded threadnote://memory/tn_ identity aliases. Paged at no more than 1500 estimated tokens. Optional PNG pages. Start with uri or uris. To continue, pass cursor without uri, uris, mode, or section; budgetTokens may be adjusted.`,
       inputSchema: {
         budgetTokens: McpInput.integer('Whole-response budget; defaults to 1500 tokens', {
           minimum: MEMORY_READ_MINIMUM_BUDGET_TOKENS,

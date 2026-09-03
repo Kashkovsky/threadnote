@@ -301,6 +301,7 @@ describe('Threadnote MCP toolsets', () => {
         );
         const readContext = tools.tools.find(tool => tool.name === 'read_context');
         expect(readContext?.description).toContain('no more than 1500 estimated tokens');
+        expect(readContext?.description).toContain('Optional PNG pages');
         expect(readContext?.description).toContain('pass cursor without uri, uris, mode, or section');
       },
       {toolset: null},
