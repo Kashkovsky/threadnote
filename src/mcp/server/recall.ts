@@ -907,10 +907,7 @@ function runRecallTool(
     const workspaceContext = yield* withMcpProgressHeartbeat(
       progress,
       RECALL_MCP_PROGRESS.workspaceContext,
-      withAnonymousTelemetryPhase(
-        'recall.workspace-context',
-        withProductionPhaseTiming('recall.workspace-context', resolveRecallWorkspaceContext(config, params)),
-      ),
+      withProductionPhaseTiming('recall.workspace-context', resolveRecallWorkspaceContext(config, params)),
       progressTiming.heartbeatMilliseconds,
     );
     const query = workspaceContext.query;
