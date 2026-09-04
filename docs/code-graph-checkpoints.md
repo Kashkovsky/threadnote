@@ -100,7 +100,10 @@ Companies can enroll a repository so developer clones download a verified portab
 clean graph from scratch. Graph packs are not memory Git: they live in a digest-addressed CAS next to a checked-in
 enrollment pointer. After join, a publisher can advance a signed generation chain; clients select the newest published
 ancestor of `HEAD`. Worker results land in a separate CAS namespace from canonical frontiers. The coordinator API
-accepts only bounded metadata: no source text or graph records. `graph publisher serve --listen 127.0.0.1:port` exposes
+accepts only bounded metadata: no source text or graph records. `graph publisher serve` freezes a descendant HEAD using
+profile thresholds, verifies receipts, hydrates the publisher parse cache, recomputes missing parse, then exports a
+signed compaction checkpoint (`deltas: []`). Failed verification and unrelated HEAD keep the last signed frontier;
+`/v1/status.phase` walks frozen→assembling→verifying→published. `graph publisher serve --listen 127.0.0.1:port` exposes
 that API and a digest CAS on loopback so additional homes can join with `--coordinator` instead of a shared CAS
 directory. HTTP CAS stays 32 MiB per blob. The assembled `.cgcp` digest remains `checkpoint.manifestDigest`; HTTP
 transfers independently digest-addressed cgcp prefix and TCG1 frames listed by checkpoint metadata

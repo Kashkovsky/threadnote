@@ -1055,6 +1055,7 @@ The body remains ordinary **Markdown**.
       'The next `threadnote graph index` or committed-base ensure imports a verified shared ancestor',
     );
     expect(docs).toContain('`graph share status` reports `lastImport`');
+    expect(docs).toContain('frozen→assembling→verifying→published');
     expect(docs).toContain('shared-base-plus-local-overlay');
     expect(tips).toContain('Existing schema-v1 and uncited legacy memories remain recallable');
     expect(faqSource).toContain('Can I move a graph to another machine without a Workset or cloud?');

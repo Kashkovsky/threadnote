@@ -6,7 +6,7 @@ import type {CodeGraphDirectPersistentCapacityProtector} from '../store_models.j
 import type {CodeGraphInventoryFile, RepositoryIdentity} from '../types.js';
 import {graphShareLanguageAndRole, graphShareParseActionKey} from './action.js';
 import {decodeJsonBytes} from './atomic.js';
-import {putCasBytes} from './cas.js';
+import {putCasBytes, readVerifiedCasBlob} from './cas.js';
 import {
   graphShareControlAnnounceResult,
   graphShareControlGetCas,
@@ -22,7 +22,7 @@ import {
   readGraphShareContributionQueue,
   writeGraphShareContributionQueue,
 } from './contribution.js';
-import {sha256HexFromDigest} from './digest.js';
+import {sha256Digest, sha256HexFromDigest} from './digest.js';
 import {graphSharingFailure, GraphSharingError} from './errors.js';
 import {isGraphShareGitObjectId} from './git.js';
 import {graphShareActionDiscoveryTag} from './namespace.js';
@@ -214,6 +214,91 @@ export function quarantinedGraphShareActionKeys(
   }
   return new Set(
     [...digests].filter(([, semanticDigests]) => semanticDigests.size > 1).map(([actionKey]) => actionKey),
+  );
+}
+
+export interface VerifiedGraphShareParseReceipt {
+  readonly announcement: GraphShareResultAnnouncementV1;
+  readonly parsed: GraphShareParseResultV1;
+}
+
+export const verifyGraphShareParseReceipt = Effect.fn('codeGraph.sharing.verifyParseReceipt')(function* (input: {
+  readonly announcement: GraphShareResultAnnouncementV1;
+  readonly casRoot: string;
+  readonly graphAbi?: string;
+  readonly repositoryId: string;
+}) {
+  const resultBytes = yield* readVerifiedCasBlob(input.casRoot, input.announcement.resultManifestDigest);
+  if (sha256Digest(resultBytes) !== input.announcement.resultManifestDigest) {
+    return yield* graphSharingFailure('Parse-result CAS digest does not match the receipt.');
+  }
+  const parsed = parseGraphShareParseResult(yield* decodeJsonBytes(resultBytes));
+  if (
+    !admitsSharedParseCacheHydrate({
+      identityRepositoryId: input.repositoryId,
+      parsed,
+      quarantinedActionKeys: new Set(),
+      receipt: input.announcement,
+    })
+  ) {
+    return yield* graphSharingFailure('Parse-result action key or repository does not match the receipt.');
+  }
+  if (parsed.semanticDigest !== input.announcement.semanticDigest) {
+    return yield* graphSharingFailure('Parse-result semantic digest does not match the receipt.');
+  }
+  const attestationBytes = yield* readVerifiedCasBlob(input.casRoot, input.announcement.attestationDigest);
+  const attestation = yield* decodeJsonBytes(attestationBytes);
+  if (!isContributorSelfAttestation(attestation, input.announcement.resultManifestDigest)) {
+    return yield* graphSharingFailure('Parse-result attestation does not match the receipt.');
+  }
+  if (input.graphAbi !== undefined && !/^[0-9a-f]{64}$/u.test(input.graphAbi)) {
+    return yield* graphSharingFailure('Publisher graph ABI is invalid.');
+  }
+  return {announcement: input.announcement, parsed} satisfies VerifiedGraphShareParseReceipt;
+});
+
+export const hydratePublisherParseCache = Effect.fn('codeGraph.sharing.hydratePublisherParseCache')(function* (input: {
+  readonly databasePath: string;
+  readonly persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector;
+  readonly store: CodeGraphStoreShape;
+  readonly verified: readonly VerifiedGraphShareParseReceipt[];
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* fs.exists(input.databasePath)) || input.verified.length === 0) return {hydrated: 0};
+  let hydrated = 0;
+  for (const item of input.verified) {
+    const language = item.parsed.languageAndRole.split(':')[0] ?? 'unknown';
+    yield* input.store.cacheFacts(
+      input.databasePath,
+      [
+        {
+          blobId: item.parsed.gitBlobId,
+          contentHash: item.parsed.contentHash,
+          language,
+          mode: '100644',
+          path: item.parsed.normalizedPath,
+          size: 1,
+          source: 'commit',
+        },
+      ],
+      [item.parsed.facts],
+      item.parsed.extractorSet,
+      input.persistentCapacityProtector,
+    );
+    hydrated += 1;
+  }
+  return {hydrated};
+});
+
+function isContributorSelfAttestation(value: unknown, payloadDigest: string): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    JSON.stringify(Object.keys(value).sort()) === JSON.stringify(['kind', 'payloadDigest', 'schemaVersion']) &&
+    (value as {kind: unknown}).kind === 'contributor-self' &&
+    (value as {schemaVersion: unknown}).schemaVersion === 1 &&
+    (value as {payloadDigest: unknown}).payloadDigest === payloadDigest
   );
 }
 

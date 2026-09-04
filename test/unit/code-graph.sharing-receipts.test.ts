@@ -4,12 +4,14 @@ import {
   announceGraphShareResult,
   emptyGraphShareReceiptStore,
   selectGraphShareResultsForFrozenBatch,
+  selectGraphShareResultsForFrozenMachine,
   type GraphShareResultAnnouncementV1,
 } from '../../src/code_graph/sharing/receipts.js';
 import {
   lateResultAdmitted,
   observeCanonicalHead,
   freezeGraphShareBatch,
+  failGraphShareBatch,
   idleGraphShareFrontier,
   publishGraphShareBatch,
   verifyGraphShareBatch,
@@ -101,6 +103,148 @@ describe('graph share receipts and frozen batches', () => {
     );
     expect(selected.skippedLate).toHaveLength(1);
     expect(selected.selected).toEqual([]);
+  });
+
+  it('keeps C in pendingRange while B is frozen and treats C receipts as late', () => {
+    let machine = idleGraphShareFrontier();
+    const commitB = 'b'.repeat(40);
+    const commitC = 'c'.repeat(40);
+    machine = observeCanonicalHead(machine, {commit: commitB, isDescendantOfPublished: true, nowSeconds: 0});
+    machine = freezeGraphShareBatch(machine, {
+      actionKeys: ['a'.repeat(64)],
+      changedBytes: 1,
+      changedFiles: 1,
+      nowSeconds: 30,
+      thresholds: {maximumAgeSeconds: 30, maximumChangedBytes: 1, maximumChangedFiles: 1},
+    });
+    expect(machine.phase).toBe('frozen');
+    machine = observeCanonicalHead(machine, {commit: commitC, isDescendantOfPublished: true, nowSeconds: 31});
+    expect(machine.pendingRange).toEqual([commitC]);
+    expect(machine.buildingFrontier).toBe(commitB);
+    const forB: GraphShareResultAnnouncementV1 = {
+      actionKey: 'a'.repeat(64),
+      attestationDigest: digest('1'),
+      batchId: commitB,
+      resultManifestDigest: digest('2'),
+      semanticDigest: digest('3'),
+    };
+    const forC = {...forB, batchId: commitC, resultManifestDigest: digest('8')};
+    let store = emptyGraphShareReceiptStore();
+    store = announceGraphShareResult(store, forB).store;
+    store = announceGraphShareResult(store, forC).store;
+    const selected = selectGraphShareResultsForFrozenMachine(store, machine);
+    expect(selected.selected.map(receipt => receipt.batchId)).toEqual([commitB]);
+    expect(selected.skippedLate.map(receipt => receipt.batchId)).toEqual([commitC]);
+    const generation = machine.generation;
+    machine = assembleGraphShareBatch(machine);
+    machine = verifyGraphShareBatch(machine);
+    machine = publishGraphShareBatch(machine, digest('9'));
+    expect(machine.generation).toBe(generation + 1);
+    expect(machine.publishedFrontier).toBe(commitB);
+    expect(machine.pendingRange).toEqual([commitC]);
+  });
+
+  it('does not move generation when verify fails after freeze', () => {
+    let machine = idleGraphShareFrontier();
+    machine = observeCanonicalHead(machine, {commit: 'b'.repeat(40), isDescendantOfPublished: true, nowSeconds: 0});
+    machine = freezeGraphShareBatch(machine, {
+      actionKeys: [],
+      changedBytes: 1,
+      changedFiles: 1,
+      nowSeconds: 30,
+      thresholds: {maximumAgeSeconds: 30, maximumChangedBytes: 1, maximumChangedFiles: 1},
+    });
+    const generation = machine.generation;
+    const published = machine.publishedFrontier;
+    machine = failGraphShareBatch(machine);
+    expect(machine.phase).toBe('failed');
+    expect(machine.generation).toBe(generation);
+    expect(machine.publishedFrontier).toBe(published);
+  });
+
+  it('keeps the last published frontier when HEAD is unrelated', () => {
+    let machine = idleGraphShareFrontier();
+    const published = 'a'.repeat(40);
+    machine = {
+      ...machine,
+      generation: 1,
+      observedHead: published,
+      phase: 'published',
+      publishedFrontier: published,
+    };
+    const unrelated = 'f'.repeat(40);
+    machine = observeCanonicalHead(machine, {
+      commit: unrelated,
+      isDescendantOfPublished: false,
+      nowSeconds: 10,
+    });
+    expect(machine.publishedFrontier).toBe(published);
+    expect(machine.generation).toBe(1);
+    expect(machine.phase).toBe('collecting');
+    expect(machine.pendingRange).toEqual([unrelated]);
+  });
+
+  it('late results cannot mutate a frozen generation', () => {
+    FC.assert(
+      FC.property(hex(40), hex(40), hex(64), (headB, headC, actionKey) => {
+        FC.pre(headB !== headC);
+        let machine = idleGraphShareFrontier();
+        machine = observeCanonicalHead(machine, {commit: headB, isDescendantOfPublished: true, nowSeconds: 0});
+        machine = freezeGraphShareBatch(machine, {
+          actionKeys: [actionKey],
+          changedBytes: 1,
+          changedFiles: 1,
+          nowSeconds: 1,
+          thresholds: {maximumAgeSeconds: 0, maximumChangedBytes: 1, maximumChangedFiles: 1},
+        });
+        const frozenGeneration = machine.generation;
+        const frozenBatch = machine.frozenBatchId;
+        machine = observeCanonicalHead(machine, {commit: headC, isDescendantOfPublished: true, nowSeconds: 2});
+        const late: GraphShareResultAnnouncementV1 = {
+          actionKey,
+          attestationDigest: digest('1'),
+          batchId: headC,
+          resultManifestDigest: digest('2'),
+          semanticDigest: digest('3'),
+        };
+        const selected = selectGraphShareResultsForFrozenMachine(
+          announceGraphShareResult(emptyGraphShareReceiptStore(), late).store,
+          machine,
+        );
+        expect(selected.selected).toEqual([]);
+        expect(machine.generation).toBe(frozenGeneration);
+        expect(machine.frozenBatchId).toBe(frozenBatch);
+      }),
+      {numRuns: 20},
+    );
+  });
+
+  it('publish is a monotonic generation chain', () => {
+    FC.assert(
+      FC.property(FC.integer({max: 5, min: 1}), publishes => {
+        let machine = idleGraphShareFrontier();
+        for (let index = 0; index < publishes; index += 1) {
+          const commit = index.toString(16).repeat(40).slice(0, 40);
+          machine = observeCanonicalHead(machine, {
+            commit,
+            isDescendantOfPublished: true,
+            nowSeconds: index,
+          });
+          machine = freezeGraphShareBatch(machine, {
+            actionKeys: [],
+            changedBytes: 1,
+            changedFiles: 1,
+            nowSeconds: index + 1,
+            thresholds: {maximumAgeSeconds: 0, maximumChangedBytes: 1, maximumChangedFiles: 1},
+          });
+          machine = assembleGraphShareBatch(machine);
+          machine = verifyGraphShareBatch(machine);
+          machine = publishGraphShareBatch(machine, digest(index.toString(16)));
+        }
+        expect(machine.generation).toBe(publishes);
+      }),
+      {numRuns: 15},
+    );
   });
 
   it('coalesces collecting commits into one frozen batch', () => {

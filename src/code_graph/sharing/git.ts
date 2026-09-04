@@ -27,6 +27,31 @@ export function graphShareCommitIsAncestor(repoRoot: string, ancestor: string, d
   });
 }
 
+export function graphShareCommitDiffStats(repoRoot: string, from: string, to: string) {
+  return Effect.gen(function* () {
+    if (!isGraphShareGitObjectId(from) || !isGraphShareGitObjectId(to) || from === to) {
+      return {changedBytes: 0, changedFiles: 0};
+    }
+    const system = yield* SystemInfo;
+    const result = yield* runCommandEffect('git', ['-C', repoRoot, 'diff', '--numstat', '--', from, to], {
+      allowFailure: true,
+      env: {...system.environment(), GIT_NO_LAZY_FETCH: '1', GIT_OPTIONAL_LOCKS: '0'},
+      maxOutputBytes: 1_048_576,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode !== 0) return {changedBytes: 0, changedFiles: 0};
+    let changedBytes = 0;
+    let changedFiles = 0;
+    for (const line of result.stdout.split('\n')) {
+      const match = /^(\d+|-)\t(\d+|-)\t/u.exec(line);
+      if (match === null) continue;
+      changedFiles += 1;
+      changedBytes += (match[1] === '-' ? 0 : Number(match[1])) + (match[2] === '-' ? 0 : Number(match[2]));
+    }
+    return {changedBytes, changedFiles};
+  });
+}
+
 export function graphShareBlobExists(repoRoot: string, blobId: string) {
   return Effect.gen(function* () {
     if (!isGraphShareGitObjectId(blobId)) return false;
