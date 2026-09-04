@@ -53,7 +53,7 @@ threadnote graph checkpoint import \\
     },
     {
       type: 'paragraph',
-      text: 'Organization graph sharing reuses this checkpoint contract. A checked-in `.threadnote/graph-share.json` pointer names a digest-pinned profile and publisher key fingerprint. After `threadnote graph share join --read-only`, graph inspect can import a verified shared base and build only the local overlay. MCP then reports `source.kind: shared-base-plus-local-overlay` with the profile digest, frontier commit, and local commit. Missing enrollment keeps ordinary local indexing. Invalid signatures stay fail-closed for the candidate and preserve the last ready local graph. Recall does not start this work.',
+      text: 'Organization graph sharing reuses this checkpoint contract. A checked-in `.threadnote/graph-share.json` pointer names a digest-pinned profile and publisher key fingerprint. `threadnote graph share join --read-only` records local trust only. The next `threadnote graph index` imports a verified shared base and builds only the local overlay. MCP then reports `source.kind: shared-base-plus-local-overlay` with the profile digest, frontier commit, and local commit. Missing enrollment keeps ordinary local indexing. Invalid signatures stay fail-closed for the candidate and preserve the last ready local graph. Recall does not start this work.',
     },
     {
       type: 'note',

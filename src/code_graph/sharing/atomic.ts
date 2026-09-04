@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {graphSharingFailure} from './errors.js';
 
 export const writePrivateJsonFile = Effect.fn('codeGraph.sharing.writePrivateJsonFile')(function* (
@@ -12,11 +12,12 @@ export const writePrivateJsonFile = Effect.fn('codeGraph.sharing.writePrivateJso
   if (Option.isSome(yield* fs.readLink(destination).pipe(Effect.option))) {
     return yield* graphSharingFailure(`Refusing to replace a graph-sharing symbolic link: ${destination}`);
   }
-  const temporary = `${destination}.tmp`;
+  const crypto = yield* Crypto.Crypto;
+  const temporary = `${destination}.${yield* crypto.randomUUIDv4}.tmp`;
   yield* fs.writeFileString(temporary, `${JSON.stringify(value)}\n`, {mode: 0o600});
   yield* fs
     .rename(temporary, destination)
-    .pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
+    .pipe(Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
 });
 
 export const writePrivateBytesFile = Effect.fn('codeGraph.sharing.writePrivateBytesFile')(function* (
@@ -30,11 +31,12 @@ export const writePrivateBytesFile = Effect.fn('codeGraph.sharing.writePrivateBy
   if (Option.isSome(yield* fs.readLink(destination).pipe(Effect.option))) {
     return yield* graphSharingFailure(`Refusing to replace a graph-sharing symbolic link: ${destination}`);
   }
-  const temporary = `${destination}.tmp`;
+  const crypto = yield* Crypto.Crypto;
+  const temporary = `${destination}.${yield* crypto.randomUUIDv4}.tmp`;
   yield* fs.writeFile(temporary, bytes, {mode: 0o600});
   yield* fs
     .rename(temporary, destination)
-    .pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
+    .pipe(Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
 });
 
 export const readJsonFile = Effect.fn('codeGraph.sharing.readJsonFile')(function* (target: string) {

@@ -106,6 +106,7 @@ git add .threadnote/graph-share.json && git commit -m "Enroll graph sharing"
 threadnote graph index --full
 threadnote graph publisher bootstrap
 threadnote graph share join --read-only
+threadnote graph index
 threadnote graph share status
 threadnote graph share leave
 ```
@@ -118,9 +119,11 @@ Threadnote rejects the pointer when `repositoryId` does not match the checkout i
 authorize a new host.
 
 `join` writes a mode-0600 trust receipt under `~/.threadnote/graph-sharing/`. Until that receipt exists, Threadnote
-makes no CAS or registry request from the enrollment file and keeps the existing local graph. `join --read-only` still
-downloads a verified base and never uploads. Invalid enrollment, digest mismatch, and signature failure fail closed for
-the candidate and keep the last ready local graph. Missing enrollment is ordinary local indexing.
+makes no CAS or registry request from the enrollment file and keeps the existing local graph. `join` records trust only;
+the next `graph index` downloads and imports a verified checkpoint. `join --read-only` never uploads. Invalid enrollment,
+digest mismatch, and signature failure fail closed for the candidate and keep the last ready local graph. `leave` revokes
+the receipt and clears shared-base provenance so inspect no longer reports a shared source. Missing enrollment is ordinary
+local indexing.
 
 When inspect returns a graph built from a shared base, MCP includes `source.kind: "shared-base-plus-local-overlay"`
 with the profile digest, frontier commit, and local commit. Recall does not start this work.

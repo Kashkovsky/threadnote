@@ -3,6 +3,7 @@ import {readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {parseSha256Digest, SHA256_HEX, type Sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 import {graphSharingLayout, graphSharingProvenancePath} from './layout.js';
+import {lookupGraphShareTrustReceipt} from './trust.js';
 
 export interface SharedGraphProvenanceV1 {
   readonly checkpointDigest: Sha256Digest;
@@ -33,6 +34,27 @@ export const readSharedGraphProvenance = Effect.fn('codeGraph.sharing.readProven
   const target = graphSharingProvenancePath(path, layout.provenanceRoot, checkoutId);
   if (!(yield* fs.exists(target))) return undefined;
   return parseProvenance(yield* readJsonFile(target));
+});
+
+export const loadSharedGraphQuerySource = Effect.fn('codeGraph.sharing.loadQuerySource')(function* (input: {
+  readonly checkoutId: string;
+  readonly localCommit: string;
+  readonly repositoryId: string;
+  readonly snapshot: {readonly baseSnapshotId?: string; readonly id: string};
+  readonly threadnoteHome: string;
+}) {
+  const provenance = yield* readSharedGraphProvenance(input.threadnoteHome, input.checkoutId).pipe(
+    Effect.orElseSucceed(() => undefined),
+  );
+  if (provenance === undefined || provenance.repositoryId !== input.repositoryId) return undefined;
+  const trust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.repositoryId).pipe(
+    Effect.orElseSucceed(() => undefined),
+  );
+  if (trust === undefined || trust.profileDigest !== provenance.profileDigest) return undefined;
+  if (input.snapshot.id !== provenance.snapshotId && input.snapshot.baseSnapshotId !== provenance.snapshotId) {
+    return undefined;
+  }
+  return sharedGraphQuerySource(provenance, input.localCommit);
 });
 
 export const removeSharedGraphProvenance = Effect.fn('codeGraph.sharing.removeProvenance')(function* (

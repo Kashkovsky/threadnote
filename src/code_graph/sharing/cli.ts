@@ -34,7 +34,10 @@ export function makeGraphSharingCommands(
       cas: optionalString('cas', 'Digest-addressed CAS directory that stores the enrolled profile'),
       cwd: codeGraphCliBounds.cwd,
       json: codeGraphCliBounds.json,
-      readOnly: boolean('read-only', 'Download verified shared bases without enabling contribution'),
+      readOnly: boolean(
+        'read-only',
+        'Trust the enrolled profile without contribution; the next graph index may import a verified base',
+      ),
     },
     options => withRuntimeEffect(config => runGraphShareJoinCommand(config, options)),
   ).pipe(Command.withDescription('Trust an enrolled publisher profile for this checkout'));
@@ -44,7 +47,7 @@ export function makeGraphSharingCommands(
     {
       cwd: codeGraphCliBounds.cwd,
       json: codeGraphCliBounds.json,
-      purge: boolean('purge', 'Remove local shared-base provenance for this checkout'),
+      purge: boolean('purge', 'Leave also clears provenance; this flag is kept for compatibility'),
     },
     options => withRuntimeEffect(config => runGraphShareLeaveCommand(config, options)),
   ).pipe(Command.withDescription('Revoke local graph-sharing consent for this repository'));

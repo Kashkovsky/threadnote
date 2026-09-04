@@ -1,8 +1,8 @@
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {sha256FileHex} from '../../effect/digest.js';
 import {writePrivateBytesFile} from './atomic.js';
 import {parseSha256Digest, sha256Digest, sha256HexFromDigest} from './digest.js';
-import {graphSharingFailure} from './errors.js';
+import {graphSharingFailure, graphSharingUnavailable} from './errors.js';
 import {graphSharingCasBlobPath} from './layout.js';
 
 export const putCasBytes = Effect.fn('codeGraph.sharing.putCasBytes')(function* (casRoot: string, bytes: Uint8Array) {
@@ -11,10 +11,7 @@ export const putCasBytes = Effect.fn('codeGraph.sharing.putCasBytes')(function* 
   const destination = graphSharingCasBlobPath(path, casRoot, sha256HexFromDigest(digest));
   const fs = yield* FileSystem.FileSystem;
   if (yield* fs.exists(destination)) {
-    const existing = yield* verifyCasBlob(casRoot, digest);
-    if (existing.length !== bytes.length) {
-      return yield* graphSharingFailure(`CAS object already exists with a different size: ${digest}`);
-    }
+    yield* verifyCasBlob(casRoot, digest);
     return digest;
   }
   yield* writePrivateBytesFile(destination, bytes);
@@ -24,19 +21,34 @@ export const putCasBytes = Effect.fn('codeGraph.sharing.putCasBytes')(function* 
 export const putCasFile = Effect.fn('codeGraph.sharing.putCasFile')(function* (casRoot: string, sourcePath: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const crypto = yield* Crypto.Crypto;
   if (Option.isSome(yield* fs.readLink(sourcePath).pipe(Effect.option))) {
     return yield* graphSharingFailure('CAS source must not be a symbolic link.');
   }
-  const hex = yield* sha256FileHex(sourcePath);
-  const digest = parseSha256Digest(hex);
-  const destination = graphSharingCasBlobPath(path, casRoot, hex);
-  if (yield* fs.exists(destination)) {
-    yield* verifyCasBlob(casRoot, digest);
-    return digest;
-  }
-  const bytes = yield* fs.readFile(sourcePath);
-  yield* writePrivateBytesFile(destination, bytes);
-  return digest;
+  const incoming = path.join(casRoot, 'incoming');
+  yield* fs.makeDirectory(incoming, {recursive: true, mode: 0o700});
+  const staging = path.join(incoming, `${yield* crypto.randomUUIDv4}.tmp`);
+  return yield* Effect.acquireUseRelease(
+    fs.copyFile(sourcePath, staging).pipe(Effect.as(staging)),
+    stagingPath =>
+      Effect.gen(function* () {
+        yield* fs.chmod(stagingPath, 0o600);
+        const hex = yield* sha256FileHex(stagingPath);
+        const digest = parseSha256Digest(hex);
+        const destination = graphSharingCasBlobPath(path, casRoot, hex);
+        if (Option.isSome(yield* fs.readLink(destination).pipe(Effect.option))) {
+          return yield* graphSharingFailure(`CAS object must not be a symbolic link: ${digest}`);
+        }
+        if (yield* fs.exists(destination)) {
+          yield* verifyCasBlob(casRoot, digest);
+          return digest;
+        }
+        yield* fs.makeDirectory(path.dirname(destination), {recursive: true, mode: 0o700});
+        yield* fs.rename(stagingPath, destination);
+        return digest;
+      }),
+    stagingPath => fs.remove(stagingPath, {force: true}).pipe(Effect.ignore),
+  );
 });
 
 export const verifyCasBlob = Effect.fn('codeGraph.sharing.verifyCasBlob')(function* (casRoot: string, digest: string) {
@@ -48,12 +60,21 @@ export const verifyCasBlob = Effect.fn('codeGraph.sharing.verifyCasBlob')(functi
     return yield* graphSharingFailure(`CAS object must not be a symbolic link: ${expected}`);
   }
   if (!(yield* fs.exists(target))) {
-    return yield* graphSharingFailure(`CAS object is missing: ${expected}`);
+    return yield* graphSharingUnavailable(`CAS object is missing: ${expected}`);
   }
   const actual = parseSha256Digest(yield* sha256FileHex(target), 'CAS digest');
   if (actual !== expected) {
     return yield* graphSharingFailure(`CAS object digest mismatch: ${expected}`);
   }
+  return target;
+});
+
+export const readVerifiedCasBlob = Effect.fn('codeGraph.sharing.readVerifiedCasBlob')(function* (
+  casRoot: string,
+  digest: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const target = yield* verifyCasBlob(casRoot, digest);
   return yield* fs.readFile(target);
 });
 

@@ -12,7 +12,7 @@ import {
   type GraphSharePublisherKeyV1,
 } from './artifacts.js';
 import {readJsonFile, writePrivateJsonFile} from './atomic.js';
-import {putCasBytes, putCasFile, verifyCasBlob} from './cas.js';
+import {putCasBytes, putCasFile, readVerifiedCasBlob} from './cas.js';
 import {parseSha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
@@ -113,7 +113,7 @@ export const runGraphPublisherBootstrap = Effect.fn('codeGraph.sharing.publisher
   }
   const pointer = parseGraphShareProfilePointer(enrollment.profile);
   const profile = parseGraphShareProfile(
-    JSON.parse(new TextDecoder().decode(yield* verifyCasBlob(casRoot, pointer.digest))) as unknown,
+    JSON.parse(new TextDecoder().decode(yield* readVerifiedCasBlob(casRoot, pointer.digest))) as unknown,
   );
   const profileDigest = graphShareProfileDigest(profile);
   if (profileDigest !== pointer.digest || profile.repositoryId !== enrollment.repositoryId) {

@@ -1,9 +1,17 @@
 import {Effect, FileSystem, Path} from 'effect';
+import {withExclusiveFileLock} from '../../effect/file_lock.js';
 import {readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {graphSharingFailure} from './errors.js';
 import {parseSha256Digest, SHA256_DIGEST, SHA256_HEX, type Sha256Digest} from './digest.js';
 import {graphSharingLayout} from './layout.js';
 import type {GraphShareEnrollmentV1, GraphShareProfileV1} from './profile.js';
+
+const GRAPH_SHARE_TRUST_LOCK_OPTIONS = {
+  heartbeatIntervalMilliseconds: 10_000,
+  retryIntervalMilliseconds: 25,
+  staleAfterMilliseconds: 30_000,
+  waitTimeoutMilliseconds: 30_000,
+} as const;
 
 export const GRAPH_SHARE_TRUST_SCHEMA_VERSION = 1 as const;
 export const GRAPH_SHARE_ACCESS_MODES = ['join', 'read-only'] as const;
@@ -53,30 +61,40 @@ export const writeGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.writeTru
   threadnoteHome: string,
   receipt: GraphShareTrustReceiptV1,
 ) {
-  const path = yield* Path.Path;
-  const layout = graphSharingLayout(path, threadnoteHome);
-  const document = yield* readGraphShareTrustDocument(threadnoteHome);
-  const receipts = [...document.receipts.filter(item => item.repositoryId !== receipt.repositoryId), receipt].sort(
-    (left, right) => (left.repositoryId < right.repositoryId ? -1 : left.repositoryId > right.repositoryId ? 1 : 0),
+  return yield* withGraphShareTrustReceiptsLock(
+    threadnoteHome,
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const layout = graphSharingLayout(path, threadnoteHome);
+      const document = yield* readGraphShareTrustDocument(threadnoteHome);
+      const receipts = [...document.receipts.filter(item => item.repositoryId !== receipt.repositoryId), receipt].sort(
+        (left, right) => (left.repositoryId < right.repositoryId ? -1 : left.repositoryId > right.repositoryId ? 1 : 0),
+      );
+      yield* writePrivateJsonFile(layout.trustReceiptsPath, {
+        receipts,
+        schemaVersion: GRAPH_SHARE_TRUST_SCHEMA_VERSION,
+      } satisfies GraphShareTrustDocumentV1);
+      return receipt;
+    }),
   );
-  yield* writePrivateJsonFile(layout.trustReceiptsPath, {
-    receipts,
-    schemaVersion: GRAPH_SHARE_TRUST_SCHEMA_VERSION,
-  } satisfies GraphShareTrustDocumentV1);
-  return receipt;
 });
 
 export const removeGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.removeTrustReceipt')(function* (
   threadnoteHome: string,
   repositoryId: string,
 ) {
-  const path = yield* Path.Path;
-  const layout = graphSharingLayout(path, threadnoteHome);
-  const document = yield* readGraphShareTrustDocument(threadnoteHome);
-  yield* writePrivateJsonFile(layout.trustReceiptsPath, {
-    receipts: document.receipts.filter(item => item.repositoryId !== repositoryId),
-    schemaVersion: GRAPH_SHARE_TRUST_SCHEMA_VERSION,
-  } satisfies GraphShareTrustDocumentV1);
+  yield* withGraphShareTrustReceiptsLock(
+    threadnoteHome,
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const layout = graphSharingLayout(path, threadnoteHome);
+      const document = yield* readGraphShareTrustDocument(threadnoteHome);
+      yield* writePrivateJsonFile(layout.trustReceiptsPath, {
+        receipts: document.receipts.filter(item => item.repositoryId !== repositoryId),
+        schemaVersion: GRAPH_SHARE_TRUST_SCHEMA_VERSION,
+      } satisfies GraphShareTrustDocumentV1);
+    }),
+  );
 });
 
 export function trustReceiptFromEnrollment(
@@ -126,6 +144,15 @@ export const resolveGraphShareCasRoot = Effect.fn('codeGraph.sharing.resolveCasR
   if (state.casRoot !== undefined && state.casRoot.trim().length > 0) return path.resolve(state.casRoot);
   return graphSharingLayout(path, threadnoteHome).casRoot;
 });
+
+function withGraphShareTrustReceiptsLock<A, E, R>(threadnoteHome: string, effect: Effect.Effect<A, E, R>) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const layout = graphSharingLayout(path, threadnoteHome);
+    return yield* withExclusiveFileLock(fs, layout.trustReceiptsLockPath, GRAPH_SHARE_TRUST_LOCK_OPTIONS, effect);
+  });
+}
 
 function parseTrustDocument(value: unknown): GraphShareTrustDocumentV1 {
   if (!isRecord(value) || value.schemaVersion !== GRAPH_SHARE_TRUST_SCHEMA_VERSION || !Array.isArray(value.receipts)) {

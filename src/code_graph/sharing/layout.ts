@@ -16,6 +16,7 @@ export interface GraphSharingLayout {
   readonly publisherKeyPath: string;
   readonly quarantineRoot: string;
   readonly root: string;
+  readonly trustReceiptsLockPath: string;
   readonly trustReceiptsPath: string;
 }
 
@@ -32,6 +33,7 @@ export function graphSharingLayout(path: Path.Path, threadnoteHome: string, casR
     publisherKeyPath: path.join(root, 'keys', GRAPH_SHARING_PUBLISHER_KEY_FILE),
     quarantineRoot: path.join(root, 'quarantine'),
     root,
+    trustReceiptsLockPath: path.join(root, `${GRAPH_SHARING_TRUST_RECEIPTS_FILE}.lock`),
     trustReceiptsPath: path.join(root, GRAPH_SHARING_TRUST_RECEIPTS_FILE),
   };
 }

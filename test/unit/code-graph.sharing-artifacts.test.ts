@@ -1,5 +1,7 @@
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, Result} from 'effect';
+import * as FC from 'effect/testing/FastCheck';
+import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {
   generateGraphSharePublisherKey,
   graphShareFrontierCanonicalBytes,
@@ -31,6 +33,8 @@ const MANIFEST: GraphShareFrontierManifestV1 = {
   sourceCommit: 'a'.repeat(40),
 };
 
+const HEX = '0123456789abcdef';
+
 describe('graph share frontier signatures', () => {
   effectIt.effect('signs generation-one frontiers and fail-closes on tamper', () =>
     Effect.gen(function* () {
@@ -44,5 +48,44 @@ describe('graph share frontier signatures', () => {
       const result = yield* verifyGraphShareFrontier(key.fingerprint, tampered, signed.envelope).pipe(Effect.result);
       expect(Result.isFailure(result)).toBe(true);
     }),
+  );
+
+  effectIt.effect('fail-closes when the expected publisher fingerprint does not match', () =>
+    Effect.gen(function* () {
+      const key = yield* generateGraphSharePublisherKey();
+      const signed = yield* signGraphShareFrontier(key, MANIFEST);
+      const result = yield* verifyGraphShareFrontier(`sha256:${'0'.repeat(64)}`, MANIFEST, signed.envelope).pipe(
+        Effect.result,
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(parseGraphShareFrontierManifest(JSON.parse(canonicalJson(MANIFEST)) as unknown)).toEqual(MANIFEST);
+      yield* verifyGraphShareFrontier(key.fingerprint, MANIFEST, signed.envelope);
+    }),
+  );
+
+  effectIt.effect.prop(
+    'signed frontiers round-trip canonical JSON and fail closed on payload tamper',
+    {
+      sourceCommit: FC.array(FC.constantFrom(...HEX), {maxLength: 40, minLength: 40}).map(characters =>
+        characters.join(''),
+      ),
+    },
+    ({sourceCommit}) =>
+      Effect.gen(function* () {
+        const manifest: GraphShareFrontierManifestV1 = {
+          ...MANIFEST,
+          checkpoint: {...MANIFEST.checkpoint, sourceCommit},
+          sourceCommit,
+        };
+        const parsed = parseGraphShareFrontierManifest(JSON.parse(canonicalJson(manifest)) as unknown);
+        expect(parsed).toEqual(manifest);
+        const key = yield* generateGraphSharePublisherKey();
+        const signed = yield* signGraphShareFrontier(key, parsed);
+        yield* verifyGraphShareFrontier(key.fingerprint, parsed, signed.envelope);
+        const tampered = {...parsed, sourceCommit: sourceCommit === 'a'.repeat(40) ? 'b'.repeat(40) : 'a'.repeat(40)};
+        const result = yield* verifyGraphShareFrontier(key.fingerprint, tampered, signed.envelope).pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+      }),
+    {fastCheck: {numRuns: 16}},
   );
 });

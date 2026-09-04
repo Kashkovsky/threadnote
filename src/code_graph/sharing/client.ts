@@ -1,4 +1,4 @@
-import {Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
+import {Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {importCodeGraphCheckpointSnapshot} from '../checkpoint/commands.js';
 import {SystemInfo} from '../../effect/system.js';
 import {resolveRepositoryIdentity} from '../repository.js';
@@ -10,10 +10,9 @@ import {
   parseGraphShareSignatureEnvelope,
   verifyGraphShareFrontier,
 } from './artifacts.js';
-import {readJsonFile, writePrivateBytesFile, writePrivateJsonFile} from './atomic.js';
-import {verifyCasBlob} from './cas.js';
-import {parseSha256Digest} from './digest.js';
-import {GraphSharingError, graphSharingFailure} from './errors.js';
+import {readJsonFile, writePrivateJsonFile} from './atomic.js';
+import {readVerifiedCasBlob, verifyCasBlob} from './cas.js';
+import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
 import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {
   assertEnrollmentMatchesIdentity,
@@ -24,7 +23,7 @@ import {
   parseGraphShareProfilePointer,
   type GraphShareEnrollmentV1,
 } from './profile.js';
-import {removeSharedGraphProvenance, writeSharedGraphProvenance} from './provenance.js';
+import {readSharedGraphProvenance, removeSharedGraphProvenance, writeSharedGraphProvenance} from './provenance.js';
 import {
   lookupGraphShareTrustReceipt,
   removeGraphShareTrustReceipt,
@@ -33,6 +32,7 @@ import {
   writeGraphShareClientState,
   writeGraphShareTrustReceipt,
   type GraphShareAccessMode,
+  type GraphShareTrustReceiptV1,
 } from './trust.js';
 
 export interface GraphShareJoinOptions {
@@ -64,7 +64,7 @@ export interface SharedGraphImportRequest {
 const sharingProgress = (
   onProgress: SharedGraphImportRequest['onProgress'],
   subphase: 'applying-deltas' | 'building-local-overlay' | 'discovering-shared-base' | 'downloading-checkpoint',
-) => onProgress?.({phase: 'sharing', subphase}) ?? Effect.void;
+) => (onProgress?.({phase: 'sharing', subphase}) ?? Effect.void).pipe(Effect.ignore);
 
 export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
   config: RuntimeConfig,
@@ -78,8 +78,10 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
   const enrollment = parseGraphShareEnrollment(yield* readJsonFile(graphShareEnrollmentPath(path, identity.repoRoot)));
   assertEnrollmentMatchesIdentity(enrollment, identity.repositoryId);
   const pointer = parseGraphShareProfilePointer(enrollment.profile);
-  const profile = parseGraphShareProfile(
-    JSON.parse(new TextDecoder().decode(yield* verifyCasBlob(casRoot, pointer.digest))) as unknown,
+  const profile = yield* decodeJson(
+    yield* readVerifiedCasBlob(casRoot, pointer.digest),
+    parseGraphShareProfile,
+    'Organization graph profile is invalid.',
   );
   const profileDigest = graphShareProfileDigest(profile);
   assertProfileMatchesEnrollment(profile, enrollment, profileDigest);
@@ -104,9 +106,9 @@ export const runGraphShareLeave = Effect.fn('codeGraph.sharing.leave')(function*
   const cwd = yield* commandCwd(options.cwd);
   const identity = yield* resolveRepositoryIdentity(cwd);
   yield* removeGraphShareTrustReceipt(config.agentContextHome, identity.repositoryId);
-  if (options.purge) yield* removeSharedGraphProvenance(config.agentContextHome, identity.checkoutId);
+  yield* removeSharedGraphProvenance(config.agentContextHome, identity.checkoutId);
   return {
-    purged: Boolean(options.purge),
+    purged: true,
     repositoryId: identity.repositoryId,
     type: 'code-graph-share-leave' as const,
     version: 1 as const,
@@ -174,15 +176,31 @@ export const maybeImportSharedGraphBase = Effect.fn('codeGraph.sharing.maybeImpo
   }
   const trust = yield* lookupGraphShareTrustReceipt(request.threadnoteHome, request.identity.repositoryId);
   if (trust === undefined) return {imported: false as const, reason: 'untrusted' as const};
+  const enrollmentPointer = yield* decodeValue(
+    parseGraphShareProfilePointer,
+    enrollment.value.profile,
+    'Enrollment profile pointer is invalid.',
+  ).pipe(Effect.option);
+  if (enrollmentPointer._tag === 'None') return {imported: false as const, reason: 'invalid-enrollment' as const};
+  if (
+    trust.publisherKeyFingerprint !== enrollment.value.publisherKeyFingerprint ||
+    trust.profileDigest !== enrollmentPointer.value.digest
+  ) {
+    return {imported: false as const, reason: 'trust-pin-mismatch' as const};
+  }
   const casRoot = yield* resolveGraphShareCasRoot(request.threadnoteHome);
   yield* sharingProgress(request.onProgress, 'downloading-checkpoint');
   return yield* importVerifiedSharedCheckpoint({
     casRoot,
     enrollment: enrollment.value,
     request,
+    trust,
   }).pipe(
-    Effect.catch(() =>
-      quarantineSharedFailure(request.threadnoteHome, 'Shared graph import failed.').pipe(
+    Effect.catchIf(isUnavailableSharingFailure, () =>
+      Effect.succeed({imported: false as const, reason: 'unavailable' as const}),
+    ),
+    Effect.catch(error =>
+      quarantineSharedFailure(request.threadnoteHome, request.identity.repositoryId, error).pipe(
         Effect.as({imported: false as const, reason: 'quarantined' as const}),
       ),
     ),
@@ -193,8 +211,8 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
   readonly casRoot: string;
   readonly enrollment: GraphShareEnrollmentV1;
   readonly request: SharedGraphImportRequest;
+  readonly trust: GraphShareTrustReceiptV1;
 }) {
-  const crypto = yield* Crypto.Crypto;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const pointer = yield* decodeValue(
@@ -203,7 +221,7 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     'Enrollment profile pointer is invalid.',
   );
   const profile = yield* decodeJson(
-    yield* verifyCasBlob(input.casRoot, pointer.digest),
+    yield* readVerifiedCasBlob(input.casRoot, pointer.digest),
     parseGraphShareProfile,
     'Organization graph profile is invalid.',
   );
@@ -216,40 +234,53 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     undefined,
     'Profile does not match the enrollment pointer.',
   );
+  if (profileDigest !== input.trust.profileDigest) {
+    return {imported: false as const, reason: 'trust-pin-mismatch' as const};
+  }
   const layout = graphSharingLayout(path, input.request.threadnoteHome, input.casRoot);
+  const pointerPath = graphSharingFrontierPointerPath(path, layout.frontiersRoot, input.request.identity.repositoryId);
+  if (!(yield* fs.exists(pointerPath))) {
+    return yield* graphSharingUnavailable('Shared frontier pointer is missing.');
+  }
   const frontierPointer = yield* decodeValue(
     parseGraphShareFrontierPointer,
-    yield* readJsonFile(
-      graphSharingFrontierPointerPath(path, layout.frontiersRoot, input.request.identity.repositoryId),
-    ),
+    yield* readJsonFile(pointerPath),
     'Frontier pointer is invalid.',
   );
   const manifest = yield* decodeJson(
-    yield* verifyCasBlob(input.casRoot, frontierPointer.manifestDigest),
+    yield* readVerifiedCasBlob(input.casRoot, frontierPointer.manifestDigest),
     parseGraphShareFrontierManifest,
     'Frontier manifest is invalid.',
   );
   const envelope = yield* decodeJson(
-    yield* verifyCasBlob(input.casRoot, frontierPointer.envelopeDigest),
+    yield* readVerifiedCasBlob(input.casRoot, frontierPointer.envelopeDigest),
     parseGraphShareSignatureEnvelope,
     'Frontier signature envelope is invalid.',
   );
-  yield* verifyGraphShareFrontier(parseSha256Digest(input.enrollment.publisherKeyFingerprint), manifest, envelope);
+  yield* verifyGraphShareFrontier(input.trust.publisherKeyFingerprint, manifest, envelope);
   if (manifest.repositoryId !== input.request.identity.repositoryId || manifest.profileDigest !== profileDigest) {
     return yield* graphSharingFailure('Frontier manifest does not match the enrolled repository profile.');
   }
-  const checkpointBytes = yield* verifyCasBlob(input.casRoot, manifest.checkpoint.manifestDigest);
-  const spool = path.join(layout.root, 'downloads', `${yield* crypto.randomUUIDv4}.cgcp`);
-  yield* writePrivateBytesFile(spool, checkpointBytes);
+  const existing = yield* readSharedGraphProvenance(
+    input.request.threadnoteHome,
+    input.request.identity.checkoutId,
+  ).pipe(Effect.orElseSucceed(() => undefined));
+  if (
+    existing?.checkpointDigest === manifest.checkpoint.manifestDigest &&
+    existing.repositoryId === input.request.identity.repositoryId &&
+    existing.profileDigest === profileDigest
+  ) {
+    return {imported: false as const, reason: 'already-installed' as const, snapshotId: existing.snapshotId};
+  }
+  const checkpointPath = yield* verifyCasBlob(input.casRoot, manifest.checkpoint.manifestDigest);
   yield* sharingProgress(input.request.onProgress, 'applying-deltas');
   const imported = yield* importCodeGraphCheckpointSnapshot(runtimeConfigForHome(input.request.threadnoteHome), {
     cwd: input.request.cwd,
     expectedDigest: manifest.checkpoint.manifestDigest,
     followOnIndex: false,
-    input: spool,
+    input: checkpointPath,
     quiet: true,
   });
-  yield* fs.remove(spool, {force: true});
   yield* sharingProgress(input.request.onProgress, 'building-local-overlay');
   yield* writeSharedGraphProvenance(input.request.threadnoteHome, input.request.identity.checkoutId, {
     checkpointDigest: manifest.checkpoint.manifestDigest,
@@ -264,17 +295,22 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
 
 const quarantineSharedFailure = Effect.fn('codeGraph.sharing.quarantine')(function* (
   threadnoteHome: string,
+  repositoryId: string,
   cause: unknown,
 ) {
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
   const layout = graphSharingLayout(path, threadnoteHome);
   const message = cause instanceof Error ? cause.message : String(cause);
-  yield* writePrivateJsonFile(path.join(layout.quarantineRoot, `${yield* crypto.randomUUIDv4}.json`), {
+  yield* writePrivateJsonFile(path.join(layout.quarantineRoot, `${repositoryId}.json`), {
     message,
+    repositoryId,
     schemaVersion: 1,
   });
 });
+
+function isUnavailableSharingFailure(error: unknown): error is GraphSharingError {
+  return Schema.is(GraphSharingError)(error) && error.kind === 'unavailable';
+}
 
 function runtimeConfigForHome(threadnoteHome: string): RuntimeConfig {
   return {

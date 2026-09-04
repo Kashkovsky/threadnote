@@ -1049,6 +1049,7 @@ The body remains ordinary **Markdown**.
     expect(docs).toContain('A secret embedded in source can appear');
     expect(commands).toContain('threadnote graph share init --write-config --organization acme');
     expect(docs).toContain('threadnote graph share join --read-only');
+    expect(docs).toContain('The next `threadnote graph index` imports a verified shared base');
     expect(docs).toContain('shared-base-plus-local-overlay');
     expect(tips).toContain('Existing schema-v1 and uncited legacy memories remain recallable');
     expect(faqSource).toContain('Can I move a graph to another machine without a Workset or cloud?');

@@ -174,10 +174,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 identity: initialIdentity,
                 onProgress: options.onProgress,
                 threadnoteHome: request.threadnoteHome,
-              }).pipe(
-                Effect.catch(() => Effect.void),
-                Effect.catchDefect(() => Effect.void),
-              );
+              }).pipe(Effect.ignore);
             }
             const capacityProtection: DirectPersistentCapacityProtection = {
               availableDiskBytes:
