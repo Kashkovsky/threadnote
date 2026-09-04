@@ -120,38 +120,36 @@ describe('code graph reference-resolution progress', () => {
         const observations: CodeGraphResolutionActivity[] = [];
         const capacityBoundaries: Array<{readonly finalFactBytes: number; readonly rowCount: number}> = [];
 
-        const result = yield* Effect.gen(function* () {
-          const store = yield* CodeGraphStore;
-          return yield* store.withSession(
-            fixture.databasePath,
-            Effect.gen(function* () {
-              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
-                ...snapshot,
-                state: 'building',
-              });
-              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-              yield* store.stageActivationFacts(
-                fixture.databasePath,
-                [target, ...callers],
-                unresolved.map(entry => entry.edge),
-                unresolved.map(entry => entry.reference),
-                undefined,
-                0,
-              );
-              const resolution = yield* store.resolveStagedReferences(
-                fixture.databasePath,
-                progress => Effect.sync(() => observations.push(progress)),
-                (boundary, transaction) =>
-                  Effect.sync(() => capacityBoundaries.push(boundary)).pipe(Effect.andThen(transaction)),
-              );
-              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-              return {
-                graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
-                resolution,
-              };
-            }),
-          );
-        });
+        const store = yield* CodeGraphStore;
+        const result = yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+            yield* store.stageActivationFacts(
+              fixture.databasePath,
+              [target, ...callers],
+              unresolved.map(entry => entry.edge),
+              unresolved.map(entry => entry.reference),
+              undefined,
+              0,
+            );
+            const resolution = yield* store.resolveStagedReferences(
+              fixture.databasePath,
+              progress => Effect.sync(() => observations.push(progress)),
+              (boundary, transaction) =>
+                Effect.sync(() => capacityBoundaries.push(boundary)).pipe(Effect.andThen(transaction)),
+            );
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            return {
+              graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
+              resolution,
+            };
+          }),
+        );
 
         expect(result.resolution).toMatchObject({
           aliasesDiscovered: 5_001,
@@ -206,80 +204,76 @@ describe('code graph reference-resolution progress', () => {
         let firstTransactionAttempts = 0;
         let resumedTransactions = 0;
 
-        const result = yield* Effect.gen(function* () {
-          const store = yield* CodeGraphStore;
-          return yield* store.withSession(
-            fixture.databasePath,
-            Effect.gen(function* () {
-              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
-                ...snapshot,
-                state: 'building',
+        const store = yield* CodeGraphStore;
+        const result = yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+            yield* store.stageActivationFacts(
+              fixture.databasePath,
+              [target, ...callers],
+              unresolved.map(entry => entry.edge),
+              unresolved.map(entry => entry.reference),
+              undefined,
+              0,
+            );
+            const failSecondTransaction: CodeGraphWriterGate = transaction =>
+              Effect.gen(function* () {
+                firstTransactionAttempts += 1;
+                if (firstTransactionAttempts === 2) {
+                  return yield* CodeGraphStoreError.of('Injected second resolution transaction failure.');
+                }
+                return yield* transaction;
               });
-              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-              yield* store.stageActivationFacts(
-                fixture.databasePath,
-                [target, ...callers],
-                unresolved.map(entry => entry.edge),
-                unresolved.map(entry => entry.reference),
-                undefined,
-                0,
-              );
-              const failSecondTransaction: CodeGraphWriterGate = transaction =>
-                Effect.gen(function* () {
-                  firstTransactionAttempts += 1;
-                  if (firstTransactionAttempts === 2) {
-                    return yield* Effect.fail(
-                      new CodeGraphStoreError('Injected second resolution transaction failure.'),
-                    );
-                  }
-                  return yield* transaction;
-                });
-              const pageLimits = {
-                candidateCount: PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES,
-                payloadBytes: PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES,
-                references: 1,
-              };
-              const firstFailure = yield* resolveActivationReferences(
-                progress => Effect.sync(() => firstProgress.push(progress)),
-                failSecondTransaction,
-                (boundary, transactions) =>
-                  Effect.sync(() => firstCapacityRows.push(boundary.rowCount)).pipe(Effect.andThen(transactions)),
-                pageLimits,
-              ).pipe(Effect.flip);
-              const sql = yield* SqlClient.SqlClient;
-              const afterFailure = yield* sql<{readonly remaining: number; readonly resolved: number}>`
+            const pageLimits = {
+              candidateCount: PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES,
+              payloadBytes: PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES,
+              references: 1,
+            };
+            const firstFailure = yield* resolveActivationReferences(
+              progress => Effect.sync(() => firstProgress.push(progress)),
+              failSecondTransaction,
+              (boundary, transactions) =>
+                Effect.sync(() => firstCapacityRows.push(boundary.rowCount)).pipe(Effect.andThen(transactions)),
+              pageLimits,
+            ).pipe(Effect.flip);
+            const sql = yield* SqlClient.SqlClient;
+            const afterFailure = yield* sql<{readonly remaining: number; readonly resolved: number}>`
                 SELECT
                   (SELECT COUNT(*) FROM building_references WHERE snapshot_id = ${snapshot.id}) AS remaining,
                   (SELECT COUNT(*) FROM edges
                    WHERE snapshot_id = ${snapshot.id} AND target_id IS NOT NULL) AS resolved
               `;
-              const resumed = yield* resolveActivationReferences(
-                undefined,
-                transaction =>
-                  Effect.sync(() => {
-                    resumedTransactions += 1;
-                  }).pipe(Effect.andThen(transaction)),
-                (boundary, transactions) =>
-                  Effect.sync(() => resumedCapacityRows.push(boundary.rowCount)).pipe(Effect.andThen(transactions)),
-                pageLimits,
-              );
-              const afterResume = yield* sql<{readonly remaining: number; readonly resolved: number}>`
+            const resumed = yield* resolveActivationReferences(
+              undefined,
+              transaction =>
+                Effect.sync(() => {
+                  resumedTransactions += 1;
+                }).pipe(Effect.andThen(transaction)),
+              (boundary, transactions) =>
+                Effect.sync(() => resumedCapacityRows.push(boundary.rowCount)).pipe(Effect.andThen(transactions)),
+              pageLimits,
+            );
+            const afterResume = yield* sql<{readonly remaining: number; readonly resolved: number}>`
                 SELECT
                   (SELECT COUNT(*) FROM building_references WHERE snapshot_id = ${snapshot.id}) AS remaining,
                   (SELECT COUNT(*) FROM edges
                    WHERE snapshot_id = ${snapshot.id} AND target_id IS NOT NULL) AS resolved
               `;
-              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-              return {
-                afterFailure: afterFailure[0],
-                afterResume: afterResume[0],
-                firstFailure,
-                graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
-                resumed,
-              };
-            }),
-          );
-        });
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            return {
+              afterFailure: afterFailure[0],
+              afterResume: afterResume[0],
+              firstFailure,
+              graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
+              resumed,
+            };
+          }),
+        );
 
         expect(result.firstFailure).toBeInstanceOf(CodeGraphStoreError);
         expect(firstCapacityRows).toEqual([88]);
@@ -315,71 +309,69 @@ describe('code graph reference-resolution progress', () => {
         let firstTransactionAttempts = 0;
         let resumedTransactions = 0;
 
-        const result = yield* Effect.gen(function* () {
-          const store = yield* CodeGraphStore;
-          return yield* store.withSession(
-            fixture.databasePath,
-            Effect.gen(function* () {
-              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
-                ...snapshot,
-                state: 'building',
+        const store = yield* CodeGraphStore;
+        const result = yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+            yield* store.stageActivationFacts(
+              fixture.databasePath,
+              callers,
+              unresolved.map(entry => entry.edge),
+              unresolved.map(entry => entry.reference),
+              undefined,
+              0,
+            );
+            const dieBeforeSecondTransaction: CodeGraphWriterGate = transaction =>
+              Effect.gen(function* () {
+                firstTransactionAttempts += 1;
+                if (firstTransactionAttempts === 2) {
+                  return yield* Effect.die(new Error('Injected deferred-edge publication crash.'));
+                }
+                return yield* transaction;
               });
-              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-              yield* store.stageActivationFacts(
-                fixture.databasePath,
-                callers,
-                unresolved.map(entry => entry.edge),
-                unresolved.map(entry => entry.reference),
-                undefined,
-                0,
-              );
-              const dieBeforeSecondTransaction: CodeGraphWriterGate = transaction =>
-                Effect.gen(function* () {
-                  firstTransactionAttempts += 1;
-                  if (firstTransactionAttempts === 2) {
-                    return yield* Effect.die(new Error('Injected deferred-edge publication crash.'));
-                  }
-                  return yield* transaction;
-                });
-              const firstExit = yield* resolveActivationReferences(
-                undefined,
-                dieBeforeSecondTransaction,
-                (boundary, transaction) =>
-                  Effect.sync(() => firstCapacityRows.push(boundary.rowCount)).pipe(Effect.andThen(transaction)),
-              ).pipe(Effect.exit);
-              const sql = yield* SqlClient.SqlClient;
-              const afterCrash = yield* sql<{readonly remaining: number; readonly unresolved: number}>`
+            const firstExit = yield* resolveActivationReferences(
+              undefined,
+              dieBeforeSecondTransaction,
+              (boundary, transaction) =>
+                Effect.sync(() => firstCapacityRows.push(boundary.rowCount)).pipe(Effect.andThen(transaction)),
+            ).pipe(Effect.exit);
+            const sql = yield* SqlClient.SqlClient;
+            const afterCrash = yield* sql<{readonly remaining: number; readonly unresolved: number}>`
                 SELECT
                   (SELECT COUNT(*) FROM building_references WHERE snapshot_id = ${snapshot.id}) AS remaining,
                   (SELECT COUNT(*) FROM edges
                    WHERE snapshot_id = ${snapshot.id} AND target_id IS NULL) AS unresolved
               `;
-              const resumed = yield* resolveActivationReferences(
-                undefined,
-                transaction =>
-                  Effect.sync(() => {
-                    resumedTransactions += 1;
-                  }).pipe(Effect.andThen(transaction)),
-                (boundary, transaction) =>
-                  Effect.sync(() => resumedCapacityRows.push(boundary.rowCount)).pipe(Effect.andThen(transaction)),
-              );
-              const afterResume = yield* sql<{readonly remaining: number; readonly unresolved: number}>`
+            const resumed = yield* resolveActivationReferences(
+              undefined,
+              transaction =>
+                Effect.sync(() => {
+                  resumedTransactions += 1;
+                }).pipe(Effect.andThen(transaction)),
+              (boundary, transaction) =>
+                Effect.sync(() => resumedCapacityRows.push(boundary.rowCount)).pipe(Effect.andThen(transaction)),
+            );
+            const afterResume = yield* sql<{readonly remaining: number; readonly unresolved: number}>`
                 SELECT
                   (SELECT COUNT(*) FROM building_references WHERE snapshot_id = ${snapshot.id}) AS remaining,
                   (SELECT COUNT(*) FROM edges
                    WHERE snapshot_id = ${snapshot.id} AND target_id IS NULL) AS unresolved
               `;
-              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-              return {
-                afterCrash: afterCrash[0],
-                afterResume: afterResume[0],
-                firstExit,
-                graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
-                resumed,
-              };
-            }),
-          );
-        });
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            return {
+              afterCrash: afterCrash[0],
+              afterResume: afterResume[0],
+              firstExit,
+              graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
+              resumed,
+            };
+          }),
+        );
 
         expect(Exit.isFailure(result.firstExit)).toBe(true);
         expect(firstTransactionAttempts).toBe(2);

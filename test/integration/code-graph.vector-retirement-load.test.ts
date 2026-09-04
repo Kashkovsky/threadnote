@@ -134,7 +134,8 @@ function runVectorLoadCase(options: {
         const result = yield* runCodeGraphOrdinaryVectorMaintenanceUnit(input, {
           afterModelCommitBeforeFinalCursorCas: () =>
             Effect.gen(function* () {
-              if (pending === undefined) return yield* Effect.die(new TestError('Vector load measurement was absent.'));
+              if (pending === undefined)
+                return yield* Effect.die(TestError.make({message: 'Vector load measurement was absent.'}));
               const after = readVectorCounts(databasePath);
               const afterMainBytes = yield* observedFileSize(fs, databasePath);
               const afterWalBytes = yield* observedFileSize(fs, `${databasePath}-wal`);
@@ -446,6 +447,6 @@ function activeReceiptOperations(fs: FileSystem.FileSystem, path: Path.Path, thr
 function observedFileSize(fs: FileSystem.FileSystem, filePath: string) {
   return fs.stat(filePath).pipe(
     Effect.map(info => Number(info.size)),
-    Effect.catch(() => Effect.succeed(0)),
+    Effect.orElseSucceed(() => 0),
   );
 }

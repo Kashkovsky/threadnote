@@ -38,11 +38,9 @@ export const initializeCodeGraphWorksetCatalogSchema = Effect.fn('codeGraphWorks
   const pageSize = yield* readSqlitePragmaInteger(sql, 'page_size');
   const maximumPages = yield* readSqlitePragmaInteger(sql, 'max_page_count');
   if (pageSize !== CODE_GRAPH_WORKSET_CATALOG_PAGE_SIZE_BYTES || maximumPages !== CATALOG_PAGE_COUNT_MAXIMUM) {
-    return yield* Effect.fail(
-      new CodeGraphWorksetCatalogError(
-        'incompatible',
-        'Workset catalog physical capacity settings are incompatible with this release.',
-      ),
+    return yield* CodeGraphWorksetCatalogError.of(
+      'incompatible',
+      'Workset catalog physical capacity settings are incompatible with this release.',
     );
   }
   yield* sql.unsafe(`
@@ -63,20 +61,16 @@ export const initializeCodeGraphWorksetCatalogSchema = Effect.fn('codeGraphWorks
   `;
   const schemaVersion = yield* readCodeGraphWorksetCatalogMetadataInteger(sql, 'schema_version');
   if (schemaVersion !== CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION) {
-    return yield* Effect.fail(
-      new CodeGraphWorksetCatalogError(
-        'incompatible',
-        `Workset catalog schema ${String(schemaVersion ?? 'unknown')} is incompatible with ${CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION}.`,
-      ),
+    return yield* CodeGraphWorksetCatalogError.of(
+      'incompatible',
+      `Workset catalog schema ${String(schemaVersion ?? 'unknown')} is incompatible with ${CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION}.`,
     );
   }
   const projectorVersion = yield* readCodeGraphWorksetCatalogMetadataInteger(sql, 'projector_version');
   if (projectorVersion !== CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION) {
-    return yield* Effect.fail(
-      new CodeGraphWorksetCatalogError(
-        'incompatible',
-        `Workset catalog projector ${String(projectorVersion ?? 'unknown')} is incompatible with ${CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION}.`,
-      ),
+    return yield* CodeGraphWorksetCatalogError.of(
+      'incompatible',
+      `Workset catalog projector ${String(projectorVersion ?? 'unknown')} is incompatible with ${CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION}.`,
     );
   }
   yield* createCodeGraphWorksetCatalogTables(sql);
@@ -90,7 +84,7 @@ function readSqlitePragmaInteger(sql: SqlClient.SqlClient, pragma: 'max_page_cou
       const parsed = typeof value === 'bigint' ? Number(value) : value;
       return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0
         ? Effect.succeed(parsed)
-        : Effect.fail(new CodeGraphWorksetCatalogError('corrupt', 'Workset catalog capacity metadata is invalid.'));
+        : Effect.fail(CodeGraphWorksetCatalogError.of('corrupt', 'Workset catalog capacity metadata is invalid.'));
     }),
   );
 }

@@ -1,4 +1,4 @@
-import {Context, Effect, Exit, FileSystem, Layer, Option, Path, Semaphore} from 'effect';
+import {Context, Effect, Exit, FileSystem, Layer, Option, Path, Semaphore, Schema} from 'effect';
 import {Language, Parser, Query, type Node} from 'web-tree-sitter';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {fromPromise} from '../../effect/errors.js';
@@ -25,7 +25,7 @@ export interface TreeSitterRuntimeShape {
 }
 
 export class TreeSitterRuntime extends Context.Service<TreeSitterRuntime, TreeSitterRuntimeShape>()(
-  'threadnote/codeGraph/TreeSitterRuntime',
+  'threadnote/code_graph/tree_sitter/runtime/TreeSitterRuntime',
 ) {
   static readonly layer = Layer.effect(
     TreeSitterRuntime,
@@ -43,9 +43,9 @@ export class TreeSitterRuntime extends Context.Service<TreeSitterRuntime, TreeSi
             fromPromise('initialize tree-sitter parser', () => Parser.init({locateFile: () => runtimePath})),
           ),
           Effect.mapError(cause =>
-            cause instanceof TreeSitterRuntimeError
+            Schema.is(TreeSitterRuntimeError)(cause)
               ? cause
-              : new TreeSitterRuntimeError('Could not initialize the Tree-sitter WASM runtime.', {cause}),
+              : TreeSitterRuntimeError.make({cause, message: 'Could not initialize the Tree-sitter WASM runtime.'}),
           ),
         ),
       );
@@ -60,14 +60,14 @@ export class TreeSitterRuntime extends Context.Service<TreeSitterRuntime, TreeSi
               const existing = languages.get(asset.relativePath);
               if (existing) return {loading: existing};
               const installedLanguagePath = path.join(assetRoot, asset.relativePath);
-              const installedLanguageExists = yield* fs
-                .exists(installedLanguagePath)
-                .pipe(
-                  Effect.mapError(
-                    cause =>
-                      new TreeSitterRuntimeError(`Could not inspect grammar asset ${installedLanguagePath}.`, {cause}),
-                  ),
-                );
+              const installedLanguageExists = yield* fs.exists(installedLanguagePath).pipe(
+                Effect.mapError(cause =>
+                  TreeSitterRuntimeError.make({
+                    cause,
+                    message: `Could not inspect grammar asset ${installedLanguagePath}.`,
+                  }),
+                ),
+              );
               const languagePath =
                 !configuredRoot && asset.developmentRelativePath !== undefined && !installedLanguageExists
                   ? path.join(root, asset.developmentRelativePath)
@@ -77,9 +77,9 @@ export class TreeSitterRuntime extends Context.Service<TreeSitterRuntime, TreeSi
                   Effect.andThen(verifyAsset(fs, languagePath, asset.sha256, `${asset.version} grammar`)),
                   Effect.andThen(fromPromise('load tree-sitter language', () => Language.load(languagePath))),
                   Effect.mapError(cause =>
-                    cause instanceof TreeSitterRuntimeError
+                    Schema.is(TreeSitterRuntimeError)(cause)
                       ? cause
-                      : new TreeSitterRuntimeError(`Could not load grammar ${asset.relativePath}.`, {cause}),
+                      : TreeSitterRuntimeError.make({cause, message: `Could not load grammar ${asset.relativePath}.`}),
                   ),
                 ),
               );
@@ -112,7 +112,7 @@ export class TreeSitterRuntime extends Context.Service<TreeSitterRuntime, TreeSi
                   parser.setLanguage(language);
                   const tree = Option.fromNullishOr(parser.parse(source));
                   if (Option.isNone(tree))
-                    throw new TreeSitterRuntimeError('Tree-sitter did not return a syntax tree.');
+                    throw TreeSitterRuntimeError.make({message: 'Tree-sitter did not return a syntax tree.'});
                   try {
                     return use({
                       language,
@@ -134,9 +134,9 @@ export class TreeSitterRuntime extends Context.Service<TreeSitterRuntime, TreeSi
                 }
               },
               catch: cause =>
-                cause instanceof TreeSitterRuntimeError
+                Schema.is(TreeSitterRuntimeError)(cause)
                   ? cause
-                  : new TreeSitterRuntimeError('Tree-sitter parsing failed.', {cause}),
+                  : TreeSitterRuntimeError.make({cause, message: 'Tree-sitter parsing failed.'}),
             });
           }),
       });
@@ -144,9 +144,10 @@ export class TreeSitterRuntime extends Context.Service<TreeSitterRuntime, TreeSi
   );
 }
 
-export class TreeSitterRuntimeError extends Error {
-  override readonly name = 'TreeSitterRuntimeError';
-}
+export class TreeSitterRuntimeError extends Schema.TaggedError<TreeSitterRuntimeError>()('TreeSitterRuntimeError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 function verifyAsset(
   fs: FileSystem.FileSystem,
@@ -160,15 +161,15 @@ function verifyAsset(
       return actual === expectedSha256
         ? Effect.void
         : Effect.fail(
-            new TreeSitterRuntimeError(
-              `${label} checksum mismatch at ${assetPath}: expected ${expectedSha256}, received ${actual}.`,
-            ),
+            TreeSitterRuntimeError.make({
+              message: `${label} checksum mismatch at ${assetPath}: expected ${expectedSha256}, received ${actual}.`,
+            }),
           );
     }),
     Effect.mapError(cause =>
-      cause instanceof TreeSitterRuntimeError
+      Schema.is(TreeSitterRuntimeError)(cause)
         ? cause
-        : new TreeSitterRuntimeError(`Could not verify ${label} at ${assetPath}.`, {cause}),
+        : TreeSitterRuntimeError.make({cause, message: `Could not verify ${label} at ${assetPath}.`}),
     ),
   );
 }

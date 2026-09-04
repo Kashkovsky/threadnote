@@ -69,12 +69,12 @@ const fakeRuntimeLayer = Layer.succeed(
   LocalModelRuntime,
   LocalModelRuntime.of({
     diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
-    embedMany: () => Effect.die(new TestError('Unexpected embedding')),
+    embedMany: () => Effect.die(TestError.make({message: 'Unexpected embedding'})),
     generate: () =>
       Effect.succeed({
         searchPhrases: ['resume jobs after heartbeat timeout', 'recover worker after expired lease', 'lease recovery'],
       }),
-    rerank: () => Effect.die(new TestError('Unexpected reranking')),
+    rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
   }),
 );
 
@@ -82,16 +82,16 @@ const failingRuntimeLayer = Layer.succeed(
   LocalModelRuntime,
   LocalModelRuntime.of({
     diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
-    embedMany: () => Effect.die(new TestError('Unexpected embedding')),
+    embedMany: () => Effect.die(TestError.make({message: 'Unexpected embedding'})),
     generate: request =>
       Effect.fail(
-        new GenerationFailed({
+        GenerationFailed.make({
           cause: new TypeError("Cannot read properties of undefined (reading '_vocabOnly')"),
           message: `Could not create a generation context for ${request.manifest.id}: native context detail`,
           modelId: request.manifest.id,
         }),
       ),
-    rerank: () => Effect.die(new TestError('Unexpected reranking')),
+    rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
   }),
 );
 
@@ -107,7 +107,7 @@ function fakeStoreLayer(home: string) {
   return Layer.succeed(
     LocalModelStore,
     LocalModelStore.of({
-      install: () => Effect.die(new TestError('Unexpected install')),
+      install: () => Effect.die(TestError.make({message: 'Unexpected install'})),
       path: () => installation.path,
       remove: () => Effect.succeed(false),
       status: () => Effect.succeed(installation),

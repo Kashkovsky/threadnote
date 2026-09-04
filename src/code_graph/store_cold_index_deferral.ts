@@ -86,7 +86,7 @@ export const deferCodeGraphQueryIndexesForColdBuild = Effect.fn('codeGraph.defer
         }
         const inspection = yield* inspectCodeGraphQueryIndexes(sql);
         if (inspection.missing.length > 0) {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph query index schema is unavailable.'));
+          return yield* CodeGraphStoreError.of('Code graph query index schema is unavailable.');
         }
         for (const definition of CODE_GRAPH_QUERY_INDEX_DEFINITIONS) {
           yield* sql.unsafe(`DROP INDEX "${definition.name}"`);
@@ -136,7 +136,7 @@ export const restoreCodeGraphQueryIndexesAfterColdBuild = Effect.fn('codeGraph.r
     const edgeCount = nonNegativeSafeInteger(counts[0]?.edges);
     const symbolCount = nonNegativeSafeInteger(counts[0]?.symbols);
     if (edgeCount === undefined || symbolCount === undefined) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph query index row counts are invalid.'));
+      return yield* CodeGraphStoreError.of('Code graph query index row counts are invalid.');
     }
     // Reserve one receipt row, one sqlite_schema row per missing index, and a
     // conservative entry for every source row each index can contain.
@@ -172,7 +172,7 @@ export const restoreCodeGraphQueryIndexesAfterColdBuild = Effect.fn('codeGraph.r
                 SELECT value FROM activation_state WHERE key = ${DEFERRED_QUERY_INDEX_STATE_KEY} LIMIT 1
               `;
               if (marker[0]?.value !== DEFERRED_QUERY_INDEX_STATE_VALUE) {
-                return yield* Effect.fail(new CodeGraphStoreError('Code graph query index restoration changed.'));
+                return yield* CodeGraphStoreError.of('Code graph query index restoration changed.');
               }
               yield* sql.unsafe(definition.createSql);
               yield* options.observeTransaction?.() ?? Effect.void;
@@ -187,7 +187,7 @@ export const restoreCodeGraphQueryIndexesAfterColdBuild = Effect.fn('codeGraph.r
         Effect.gen(function* () {
           const restored = yield* inspectCodeGraphQueryIndexes(sql);
           if (restored.missing.length > 0) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph query index restoration is incomplete.'));
+            return yield* CodeGraphStoreError.of('Code graph query index restoration is incomplete.');
           }
           yield* recordCodeGraphSchemaInitializationReceipt(sql);
           yield* sql`DELETE FROM activation_state WHERE key = ${DEFERRED_QUERY_INDEX_STATE_KEY}`;

@@ -133,7 +133,7 @@ export const makeCodeGraphOrphanProvenanceCleaner = Effect.fn('codeGraph.makeOrp
           }
           const inventory = yield* dependencies
             .inspectInventory(input.threadnoteHome, input.checkoutId)
-            .pipe(Effect.catch(() => Effect.succeed({state: 'unavailable'} as const)));
+            .pipe(Effect.orElseSucceed(() => ({state: 'unavailable'}) as const));
           if (inventory.state === 'unavailable') {
             return {reason: 'inventory-unavailable', state: 'deferred'} as const;
           }
@@ -149,11 +149,11 @@ export const makeCodeGraphOrphanProvenanceCleaner = Effect.fn('codeGraph.makeOrp
               }),
             );
           if (claimed.state === 'failure') {
-            if (claimed.error instanceof CodeGraphMaintenanceActiveError) {
+            if (Schema.is(CodeGraphMaintenanceActiveError)(claimed.error)) {
               return {reason: 'external-maintenance', state: 'preserved'} as const;
             }
             return {
-              reason: claimed.error instanceof CodeGraphStoreBusyError ? 'writer-busy' : 'catalog-unavailable',
+              reason: Schema.is(CodeGraphStoreBusyError)(claimed.error) ? 'writer-busy' : 'catalog-unavailable',
               state: 'deferred',
             } as const;
           }
@@ -233,10 +233,9 @@ export const makeCodeGraphOrphanProvenanceCleaner = Effect.fn('codeGraph.makeOrp
             .pipe(
               Effect.catch(error =>
                 Effect.succeed({
-                  reason:
-                    error instanceof CodeGraphStoreBusyError
-                      ? ('target-busy' as const)
-                      : ('catalog-unavailable' as const),
+                  reason: Schema.is(CodeGraphStoreBusyError)(error)
+                    ? ('target-busy' as const)
+                    : ('catalog-unavailable' as const),
                   state: 'deferred' as const,
                 }),
               ),
@@ -361,8 +360,9 @@ const cleanupLockedTarget = (
     );
     if (view.state === 'failure') {
       return {
-        reason:
-          view.error instanceof CodeGraphStoreBusyError ? ('writer-busy' as const) : ('catalog-unavailable' as const),
+        reason: Schema.is(CodeGraphStoreBusyError)(view.error)
+          ? ('writer-busy' as const)
+          : ('catalog-unavailable' as const),
         state: 'deferred',
       } as const;
     }
@@ -382,7 +382,7 @@ const cleanupLockedTarget = (
         {checkoutId: input.checkoutId, worktreeId: target.worktreeId},
         cleanupEvidence,
       )
-      .pipe(Effect.catch(() => Effect.succeed({state: 'unavailable'} as const)));
+      .pipe(Effect.orElseSucceed(() => ({state: 'unavailable'}) as const));
     return cleanupResult(target.worktreeId, cleanup);
   });
 
@@ -408,14 +408,12 @@ export const makeLiveCodeGraphOrphanProvenanceCleaner = Effect.fn('codeGraph.mak
           inspectCodeGraphViewDatabaseTarget(input.threadnoteHome, input.checkoutId),
         );
         if (inspected.state !== 'ready' || inspected.databasePath !== input.databasePath) {
-          return yield* Effect.fail(
-            new CodeGraphOrphanProvenanceAuthorityChanged({
-              message: `Code graph database target changed before ${operation}.`,
-            }),
-          );
+          return yield* CodeGraphOrphanProvenanceAuthorityChanged.make({
+            message: `Code graph database target changed before ${operation}.`,
+          });
         }
         if (yield* provideLive(codeGraphMaintenanceIntentActive(input.threadnoteHome))) {
-          return yield* Effect.fail(new CodeGraphMaintenanceActiveError());
+          return yield* CodeGraphMaintenanceActiveError.of();
         }
       });
     return yield* makeCodeGraphOrphanProvenanceCleaner({
@@ -455,7 +453,7 @@ function readEvidenceCandidates(
     worktreeId =>
       dependencies
         .readEvidenceCandidate(input.threadnoteHome, {checkoutId: input.checkoutId, worktreeId})
-        .pipe(Effect.catch(() => Effect.succeed({state: 'invalid'} as const))),
+        .pipe(Effect.orElseSucceed(() => ({state: 'invalid'}) as const)),
     {concurrency: 1},
   ).pipe(
     Effect.map(evidence =>

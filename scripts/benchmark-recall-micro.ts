@@ -1,7 +1,7 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {bench, do_not_optimize, run} from 'mitata';
-import {Effect} from 'effect';
+import {DateTime, Effect} from 'effect';
 import {runCommandEffect} from '../src/effect/command.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
@@ -30,7 +30,7 @@ const benchmarkRecall = Effect.gen(function* () {
   const emitJson = arguments_.includes('--json') || outputIndex !== -1;
   const result = yield* Effect.tryPromise({
     try: () => run({format: emitJson ? 'quiet' : undefined, throw: true}),
-    catch: cause => new ScriptError('Recall microbenchmark failed.', {cause}),
+    catch: cause => ScriptError.make({message: 'Recall microbenchmark failed.', cause}),
   });
   if (!emitJson) return;
 
@@ -64,7 +64,7 @@ const benchmarkRecall = Effect.gen(function* () {
           : undefined,
       })),
     ),
-    createdAt: new Date().toISOString(),
+    createdAt: DateTime.formatIso(yield* DateTime.now),
     environment: {
       architecture: system.architecture,
       commit,
@@ -81,7 +81,7 @@ const benchmarkRecall = Effect.gen(function* () {
   };
   if (outputIndex !== -1) {
     const outputPath = arguments_[outputIndex + 1];
-    if (!outputPath) return yield* Effect.fail(new ScriptError('--output requires a path'));
+    if (!outputPath) return yield* ScriptError.make({message: '--output requires a path'});
     yield* atomicWrite(outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
   }
   if (arguments_.includes('--json') || outputIndex === -1) {

@@ -66,10 +66,8 @@ export function makeCodeGraphStoreMaintenanceMethods(runtime: CodeGraphStoreRunt
           /^[0-9a-f]{64}$/u.test(options.checkoutId);
         if (!ownerReconciliationAvailable) {
           return yield* withWriterLock(runPage).pipe(
-            Effect.catch(error =>
-              isFileLockTimeout(error)
-                ? Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const)
-                : Effect.fail(error),
+            Effect.catchIf(isFileLockTimeout, () =>
+              Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const),
             ),
             Effect.provideService(Crypto.Crypto, crypto),
             Effect.provideService(Path.Path, path),
@@ -100,13 +98,11 @@ export function makeCodeGraphStoreMaintenanceMethods(runtime: CodeGraphStoreRunt
             );
           }),
         ).pipe(
-          Effect.catch(error =>
-            isFileLockTimeout(error)
-              ? Effect.succeed({
-                  kind: 'result',
-                  result: {reason: 'writer-busy', state: 'deferred'} as const,
-                } as const)
-              : Effect.fail(error),
+          Effect.catchIf(isFileLockTimeout, () =>
+            Effect.succeed({
+              kind: 'result',
+              result: {reason: 'writer-busy', state: 'deferred'} as const,
+            } as const),
           ),
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.provideService(Path.Path, path),
@@ -124,10 +120,8 @@ export function makeCodeGraphStoreMaintenanceMethods(runtime: CodeGraphStoreRunt
         }
         if (candidate === undefined) {
           return yield* withWriterLock(runPage).pipe(
-            Effect.catch(error =>
-              isFileLockTimeout(error)
-                ? Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const)
-                : Effect.fail(error),
+            Effect.catchIf(isFileLockTimeout, () =>
+              Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const),
             ),
             Effect.provideService(Crypto.Crypto, crypto),
             Effect.provideService(Path.Path, path),
@@ -194,25 +188,19 @@ export function makeCodeGraphStoreMaintenanceMethods(runtime: CodeGraphStoreRunt
                   } as const;
                 }),
               ).pipe(
-                Effect.catch(error =>
-                  isFileLockTimeout(error)
-                    ? Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const)
-                    : Effect.fail(error),
+                Effect.catchIf(isFileLockTimeout, () =>
+                  Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const),
                 ),
               );
             }),
           ).pipe(
-            Effect.catch(error =>
-              isFileLockTimeout(error)
-                ? Effect.succeed({reason: 'snapshot-busy', state: 'deferred'} as const)
-                : Effect.fail(error),
+            Effect.catchIf(isFileLockTimeout, () =>
+              Effect.succeed({reason: 'snapshot-busy', state: 'deferred'} as const),
             ),
           ),
         ).pipe(
-          Effect.catch(error =>
-            isFileLockTimeout(error)
-              ? Effect.succeed({reason: 'worktree-busy', state: 'deferred'} as const)
-              : Effect.fail(error),
+          Effect.catchIf(isFileLockTimeout, () =>
+            Effect.succeed({reason: 'worktree-busy', state: 'deferred'} as const),
           ),
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.provideService(Path.Path, path),
@@ -224,10 +212,8 @@ export function makeCodeGraphStoreMaintenanceMethods(runtime: CodeGraphStoreRunt
           ['owner-changed', 'owner-protected', 'snapshot-busy', 'worktree-busy'].includes(ownerResult.reason)
         ) {
           const ordinary = yield* withWriterLock(runPage).pipe(
-            Effect.catch(error =>
-              isFileLockTimeout(error)
-                ? Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const)
-                : Effect.fail(error),
+            Effect.catchIf(isFileLockTimeout, () =>
+              Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const),
             ),
           );
           if (
@@ -292,7 +278,7 @@ export function makeCodeGraphStoreMaintenanceMethods(runtime: CodeGraphStoreRunt
                 Effect.tap(cleanup => (cleanup.remaining ? scheduleRoutinePhysicalCleanup(databasePath) : Effect.void)),
                 Effect.asVoid,
               )
-            : Effect.fail(new CodeGraphStoreError('The code graph database disappeared while renewing a lease.')),
+            : Effect.fail(CodeGraphStoreError.of('The code graph database disappeared while renewing a lease.')),
         ),
         Effect.mapError(cause => storeError('renew code graph snapshot lease', cause)),
       ),

@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path, PlatformError, Predicate} from 'effect';
+import {Effect, FileSystem, Option, Path, PlatformError, Predicate, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runtimeTextDirectoryNamePage} from '../effect/system.js';
 import {parseCodeGraphBuildStatus, type CodeGraphBuildStatus} from './build_status.js';
@@ -65,9 +65,10 @@ type BuildStatusCursor =
       readonly mode: 'verify';
     };
 
-class InvalidBuildSidecarError extends Error {
-  readonly _tag = 'InvalidBuildSidecarError' as const;
-}
+class InvalidBuildSidecarError extends Schema.TaggedError<InvalidBuildSidecarError>()('InvalidBuildSidecarError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 /**
  * Remove at most one exact terminal status for the tombstoned snapshot.
@@ -119,13 +120,13 @@ const cleanupBuildStatusUnit = Effect.fn('codeGraph.cleanupRemovedViewBuildStatu
   const page = yield* runtimeTextDirectoryNamePage(directory, CODE_GRAPH_REMOVED_VIEW_BUILD_DIRECTORY_ENTRY_LIMIT).pipe(
     Effect.mapError(error =>
       error instanceof TypeError
-        ? new InvalidBuildSidecarError('Build status inventory contains a non-text name.')
+        ? InvalidBuildSidecarError.make({message: 'Build status inventory contains a non-text name.'})
         : error,
     ),
   );
   const statusNames = codeGraphRemovedViewBuildStatusInventory(page);
   if (statusNames === undefined) {
-    return yield* Effect.fail(new InvalidBuildSidecarError('Build status inventory exceeded its status limit.'));
+    return yield* InvalidBuildSidecarError.make({message: 'Build status inventory exceeded its status limit.'});
   }
 
   const parsedCursor = cursorToken === undefined ? undefined : parseBuildStatusCursor(cursorToken);
@@ -150,7 +151,7 @@ const cleanupBuildStatusUnit = Effect.fn('codeGraph.cleanupRemovedViewBuildStatu
   for (const name of pageNames) {
     const observed = yield* readBuildStatusCandidate(fs, path, path.join(directory, name), checkoutId, worktreeId);
     if (observed === undefined) {
-      return yield* Effect.fail(new InvalidBuildSidecarError('Build status disappeared during its bounded page.'));
+      return yield* InvalidBuildSidecarError.make({message: 'Build status disappeared during its bounded page.'});
     }
     digest = nextBuildStatusScanDigest(digest, observed);
     if (
@@ -166,7 +167,7 @@ const cleanupBuildStatusUnit = Effect.fn('codeGraph.cleanupRemovedViewBuildStatu
     const lastBuildId = pageNames.at(-1)?.slice(0, -5);
     if (hasMore) {
       if (lastBuildId === undefined) {
-        return yield* Effect.fail(new InvalidBuildSidecarError('Build status page cursor is unavailable.'));
+        return yield* InvalidBuildSidecarError.make({message: 'Build status page cursor is unavailable.'});
       }
       return scan.mode === 'scan'
         ? ({cursorToken: buildScanCursor(lastBuildId, digest), state: 'progress'} as const)
@@ -201,7 +202,7 @@ const cleanupBuildStatusUnit = Effect.fn('codeGraph.cleanupRemovedViewBuildStatu
     finalStatus.status.result?.snapshotId !== expectedSnapshotId ||
     !sameOptionalObservedSidecar(initialContext, finalContext)
   ) {
-    return yield* Effect.fail(new InvalidBuildSidecarError('Build status authority changed.'));
+    return yield* InvalidBuildSidecarError.make({message: 'Build status authority changed.'});
   }
 
   if (finalContext !== undefined) yield* fs.remove(contextFile, {force: false});
@@ -212,7 +213,7 @@ const cleanupBuildStatusUnit = Effect.fn('codeGraph.cleanupRemovedViewBuildStatu
     !sameObservedSidecar(candidate, ownedStatus) ||
     ownedStatus.status.result?.snapshotId !== expectedSnapshotId
   ) {
-    return yield* Effect.fail(new InvalidBuildSidecarError('Build status changed before removal.'));
+    return yield* InvalidBuildSidecarError.make({message: 'Build status changed before removal.'});
   }
   yield* fs.remove(candidate.file, {force: false});
   return {
@@ -235,21 +236,21 @@ const inspectBuildStatusDirectory = Effect.fn('codeGraph.inspectRemovedViewBuild
   if (repository === undefined) return undefined;
   const canonicalRepository = yield* fs.realPath(repositoryRoot);
   if (canonicalRepository !== path.join(canonicalHome, 'indexes', 'code-graph', 'repositories', checkoutId)) {
-    return yield* Effect.fail(new InvalidBuildSidecarError('Build status repository escaped containment.'));
+    return yield* InvalidBuildSidecarError.make({message: 'Build status repository escaped containment.'});
   }
 
   const statusRoot = path.join(repositoryRoot, STATUS_DIRECTORY);
   if ((yield* optionalDirectory(fs, statusRoot)) === undefined) return undefined;
   const canonicalStatusRoot = yield* fs.realPath(statusRoot);
   if (canonicalStatusRoot !== path.join(canonicalRepository, STATUS_DIRECTORY)) {
-    return yield* Effect.fail(new InvalidBuildSidecarError('Build status root escaped containment.'));
+    return yield* InvalidBuildSidecarError.make({message: 'Build status root escaped containment.'});
   }
 
   const directory = path.join(statusRoot, worktreeId);
   if ((yield* optionalDirectory(fs, directory)) === undefined) return undefined;
   const canonicalDirectory = yield* fs.realPath(directory);
   if (canonicalDirectory !== path.join(canonicalStatusRoot, worktreeId)) {
-    return yield* Effect.fail(new InvalidBuildSidecarError('Build status worktree escaped containment.'));
+    return yield* InvalidBuildSidecarError.make({message: 'Build status worktree escaped containment.'});
   }
   return canonicalDirectory;
 });
@@ -265,7 +266,7 @@ const readBuildStatusCandidate = Effect.fn('codeGraph.readRemovedViewBuildStatus
   if (observed === undefined) return undefined;
   const parsed = yield* Effect.try({
     try: () => parseCodeGraphBuildStatus(JSON.parse(observed.content)),
-    catch: () => new InvalidBuildSidecarError('Build status manifest is invalid.'),
+    catch: () => InvalidBuildSidecarError.make({message: 'Build status manifest is invalid.'}),
   });
   if (
     parsed === undefined ||
@@ -273,7 +274,7 @@ const readBuildStatusCandidate = Effect.fn('codeGraph.readRemovedViewBuildStatus
     parsed.identity.worktreeId !== worktreeId ||
     path.basename(file) !== `${parsed.buildId}.json`
   ) {
-    return yield* Effect.fail(new InvalidBuildSidecarError('Build status manifest is invalid.'));
+    return yield* InvalidBuildSidecarError.make({message: 'Build status manifest is invalid.'});
   }
   return {...observed, status: parsed} satisfies BuildStatusCandidate;
 });
@@ -298,9 +299,9 @@ const readManagerContextCandidate = Effect.fn('codeGraph.readRemovedViewManagerC
         !value.worktreePath.includes('\0')
       );
     },
-    catch: () => new InvalidBuildSidecarError('Build manager context is invalid.'),
+    catch: () => InvalidBuildSidecarError.make({message: 'Build manager context is invalid.'}),
   });
-  if (!valid) return yield* Effect.fail(new InvalidBuildSidecarError('Build manager context is invalid.'));
+  if (!valid) return yield* InvalidBuildSidecarError.make({message: 'Build manager context is invalid.'});
   return observed;
 });
 
@@ -310,12 +311,12 @@ const readObservedSidecar = Effect.fn('codeGraph.readRemovedViewBuildSidecar')(f
   bytesLimit: number,
 ) {
   if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
-    return yield* Effect.fail(new InvalidBuildSidecarError('Build sidecar is a symbolic link.'));
+    return yield* InvalidBuildSidecarError.make({message: 'Build sidecar is a symbolic link.'});
   }
   const pathInfo = yield* optionalFileInfo(fs, file);
   if (pathInfo === undefined) return undefined;
   if (pathInfo.type !== 'File' || Number(pathInfo.size) > bytesLimit || (pathInfo.mode & 0o077) !== 0) {
-    return yield* Effect.fail(new InvalidBuildSidecarError('Build sidecar is not a bounded regular file.'));
+    return yield* InvalidBuildSidecarError.make({message: 'Build sidecar is not a bounded regular file.'});
   }
   return yield* Effect.scoped(
     Effect.gen(function* () {
@@ -323,7 +324,7 @@ const readObservedSidecar = Effect.fn('codeGraph.readRemovedViewBuildSidecar')(f
       const openedBefore = yield* opened.stat;
       const pathOpened = yield* fs.stat(file);
       if (!sameObservedFileInfo(pathInfo, openedBefore) || !sameObservedFileInfo(pathInfo, pathOpened)) {
-        return yield* Effect.fail(new InvalidBuildSidecarError('Build sidecar changed while opening.'));
+        return yield* InvalidBuildSidecarError.make({message: 'Build sidecar changed while opening.'});
       }
 
       const bytes = new Uint8Array(bytesLimit + 1);
@@ -331,7 +332,7 @@ const readObservedSidecar = Effect.fn('codeGraph.readRemovedViewBuildSidecar')(f
       while (offset < bytes.length) {
         const count = Number(yield* opened.read(bytes.subarray(offset)));
         if (!Number.isSafeInteger(count) || count < 0 || count > bytes.length - offset) {
-          return yield* Effect.fail(new InvalidBuildSidecarError('Build sidecar returned an invalid read size.'));
+          return yield* InvalidBuildSidecarError.make({message: 'Build sidecar returned an invalid read size.'});
         }
         if (count === 0) break;
         offset += count;
@@ -344,11 +345,11 @@ const readObservedSidecar = Effect.fn('codeGraph.readRemovedViewBuildSidecar')(f
         offset > bytesLimit ||
         BigInt(offset) !== pathInfo.size
       ) {
-        return yield* Effect.fail(new InvalidBuildSidecarError('Build sidecar changed during bounded read.'));
+        return yield* InvalidBuildSidecarError.make({message: 'Build sidecar changed during bounded read.'});
       }
       const content = yield* Effect.try({
         try: () => new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes.subarray(0, offset)),
-        catch: () => new InvalidBuildSidecarError('Build sidecar is not valid UTF-8.'),
+        catch: () => InvalidBuildSidecarError.make({message: 'Build sidecar is not valid UTF-8.'}),
       });
       return {
         content,
@@ -477,12 +478,12 @@ function sidecarIdentity(info: FileSystem.File.Info, contentDigest: string): str
 function optionalDirectory(fs: FileSystem.FileSystem, directory: string) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(new InvalidBuildSidecarError('Build status directory is a symbolic link.'));
+      return yield* InvalidBuildSidecarError.make({message: 'Build status directory is a symbolic link.'});
     }
     const info = yield* optionalFileInfo(fs, directory);
     if (info === undefined) return undefined;
     if (info.type !== 'Directory') {
-      return yield* Effect.fail(new InvalidBuildSidecarError('Build status directory is not a directory.'));
+      return yield* InvalidBuildSidecarError.make({message: 'Build status directory is not a directory.'});
     }
     return info;
   });
@@ -491,16 +492,15 @@ function optionalDirectory(fs: FileSystem.FileSystem, directory: string) {
 function optionalFileInfo(fs: FileSystem.FileSystem, file: string) {
   return fs.stat(file).pipe(
     Effect.map(info => info as FileSystem.File.Info | undefined),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed(undefined)
-        : Effect.fail(error),
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.void,
     ),
   );
 }
 
 function classifyFailure(cause: unknown): CodeGraphRemovedViewCleanupPageResult {
-  if (cause instanceof InvalidBuildSidecarError) return invalidSidecarResult();
+  if (Schema.is(InvalidBuildSidecarError)(cause)) return invalidSidecarResult();
   if (cause instanceof PlatformError.PlatformError && cause.reason._tag === 'PermissionDenied') {
     return {blockedCode: 'permission-denied', retryAfterMilliseconds: 30_000, state: 'deferred'};
   }

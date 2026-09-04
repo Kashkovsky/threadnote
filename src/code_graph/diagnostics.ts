@@ -1,4 +1,4 @@
-import {Effect, Path} from 'effect';
+import {DateTime, Effect, Path} from 'effect';
 import {analyzeCodeGraph, type CodeGraphAnalysisCoverage, type CodeGraphAnalysisStatistics} from './analysis.js';
 import {codeGraphAnalysisLimitsForView} from './analysis_render.js';
 import {
@@ -304,7 +304,7 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
   const analyses = entries.flatMap(entry => entry.views.flatMap(view => (view.analysis ? [view.analysis] : [])));
   return {
     databases: entries,
-    generatedAt: new Date().toISOString(),
+    generatedAt: DateTime.formatIso(yield* DateTime.now),
     mode: {analyze: options.analyze === true, deep: options.deep === true},
     obsoleteStores: {
       bytes: obsolete.bytes,

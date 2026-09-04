@@ -6,10 +6,10 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const [repository, home, marker, transactionMode] = process.argv.slice(2);
 if (!repository || !home || !marker) {
-  throw new TestError('Expected repository, Threadnote home, and marker arguments.');
+  throw TestError.make({message: 'Expected repository, Threadnote home, and marker arguments.'});
 }
 if (transactionMode !== undefined && transactionMode !== 'single') {
-  throw new TestError('Transaction mode must be omitted or single.');
+  throw TestError.make({message: 'Transaction mode must be omitted or single.'});
 }
 
 let paused = false;

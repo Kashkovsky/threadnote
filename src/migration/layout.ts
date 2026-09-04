@@ -123,7 +123,7 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
     return {accounts: 0, action: 'no_legacy_layout'} satisfies StorageLayoutMigrationResult;
   }
   if (hasMaterialLegacyRoot && existingReceipt?.status === 'completed') {
-    return yield* new StorageLayoutMigrationConflict({
+    return yield* StorageLayoutMigrationConflict.make({
       message: 'A completed storage migration receipt conflicts with a remaining legacy canonical-store directory.',
       path: legacyRoot,
     });
@@ -163,7 +163,7 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
         const targetExists = yield* fs.exists(target);
         if (sourceExists) yield* assertAccountDirectory(fs, source);
         if (!sourceExists && !targetExists) {
-          return yield* new StorageLayoutMigrationConflict({
+          return yield* StorageLayoutMigrationConflict.make({
             message: `Account "${account.name}" disappeared during the storage layout migration.`,
             path: source,
           });
@@ -176,7 +176,7 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
         yield* advanceCanonicalMutationGeneration(fs, path, home, account.name);
         if (!sourceHasMaterial) {
           if (!targetExists) {
-            return yield* new StorageLayoutMigrationConflict({
+            return yield* StorageLayoutMigrationConflict.make({
               message: `Canonical account "${account.name}" is missing for the pending migration receipt.`,
               path: target,
             });
@@ -209,7 +209,7 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
             shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
           )
         ) {
-          return yield* new StorageLayoutMigrationConflict({
+          return yield* StorageLayoutMigrationConflict.make({
             message: `Legacy account "${account.name}" changed while its storage migration was running.`,
             path: source,
           });
@@ -225,7 +225,7 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
         shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
       )
     ) {
-      return yield* new StorageLayoutMigrationConflict({
+      return yield* StorageLayoutMigrationConflict.make({
         message: 'Material entries remain in the legacy canonical-store directory.',
         path: legacyRoot,
       });
@@ -248,7 +248,7 @@ function planMigration(
   return Effect.gen(function* () {
     yield* assertLegacyStorageAncestors(fs, path, path.dirname(dataRoot));
     if ((yield* inspectLegacyRoot(fs, legacyRoot)) !== 'directory') {
-      return yield* new StorageLayoutMigrationConflict({
+      return yield* StorageLayoutMigrationConflict.make({
         message: 'The pending storage migration has no legacy source directory.',
         path: legacyRoot,
       });
@@ -258,7 +258,7 @@ function planMigration(
     for (const name of names) {
       const source = path.join(legacyRoot, name);
       if (Option.isSome(yield* fs.readLink(source).pipe(Effect.option))) {
-        return yield* new StorageLayoutMigrationConflict({
+        return yield* StorageLayoutMigrationConflict.make({
           message: 'Symbolic links are not allowed as Threadnote account roots.',
           path: source,
         });
@@ -334,7 +334,7 @@ function verifyResumedTargetDigest(
       ? yield* digestMergedDirectories(fs, path, source, target)
       : yield* digestDirectory(fs, path, target);
     if (legacyDigest === account.treeSha256) return targetDigest;
-    return yield* new StorageLayoutMigrationConflict({
+    return yield* StorageLayoutMigrationConflict.make({
       message: `Canonical account "${account.name}" does not match the pending migration receipt.`,
       path: target,
     });
@@ -380,7 +380,7 @@ function assertLegacyStorageAncestors(fs: FileSystem.FileSystem, path: Path.Path
   return Effect.gen(function* () {
     const dataRoot = path.join(home, 'data');
     if (Option.isSome(yield* fs.readLink(dataRoot).pipe(Effect.option))) {
-      return yield* new StorageLayoutMigrationConflict({
+      return yield* StorageLayoutMigrationConflict.make({
         message: 'The Threadnote data directory must not be a symbolic link during storage migration.',
         path: dataRoot,
       });
@@ -388,7 +388,7 @@ function assertLegacyStorageAncestors(fs: FileSystem.FileSystem, path: Path.Path
     if (!(yield* fs.exists(dataRoot))) return;
     const info = yield* fs.stat(dataRoot);
     if (info.type !== 'Directory') {
-      return yield* new StorageLayoutMigrationConflict({
+      return yield* StorageLayoutMigrationConflict.make({
         message: 'The Threadnote data path must be a regular directory during storage migration.',
         path: dataRoot,
       });
@@ -396,7 +396,7 @@ function assertLegacyStorageAncestors(fs: FileSystem.FileSystem, path: Path.Path
     const canonicalHome = yield* fs.realPath(home);
     const canonicalDataRoot = yield* fs.realPath(dataRoot);
     if (path.resolve(canonicalDataRoot) !== path.resolve(canonicalHome, 'data')) {
-      return yield* new StorageLayoutMigrationConflict({
+      return yield* StorageLayoutMigrationConflict.make({
         message: 'The Threadnote data directory resolves outside its owned canonical path.',
         path: dataRoot,
       });
@@ -407,7 +407,7 @@ function assertLegacyStorageAncestors(fs: FileSystem.FileSystem, path: Path.Path
 function inspectLegacyRoot(fs: FileSystem.FileSystem, legacyRoot: string) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(legacyRoot).pipe(Effect.option))) {
-      return yield* new StorageLayoutMigrationConflict({
+      return yield* StorageLayoutMigrationConflict.make({
         message: 'The legacy canonical-store root must not be a symbolic link.',
         path: legacyRoot,
       });
@@ -415,7 +415,7 @@ function inspectLegacyRoot(fs: FileSystem.FileSystem, legacyRoot: string) {
     if (!(yield* fs.exists(legacyRoot))) return 'absent' as const;
     const info = yield* fs.stat(legacyRoot);
     if (info.type !== 'Directory') {
-      return yield* new StorageLayoutMigrationConflict({
+      return yield* StorageLayoutMigrationConflict.make({
         message: 'The legacy canonical-store root must be a regular directory.',
         path: legacyRoot,
       });
@@ -427,14 +427,14 @@ function inspectLegacyRoot(fs: FileSystem.FileSystem, legacyRoot: string) {
 function assertAccountDirectory(fs: FileSystem.FileSystem, source: string) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(source).pipe(Effect.option))) {
-      return yield* new StorageLayoutMigrationConflict({
+      return yield* StorageLayoutMigrationConflict.make({
         message: 'Symbolic links are not allowed as Threadnote account roots.',
         path: source,
       });
     }
     const info = yield* fs.stat(source);
     if (info.type !== 'Directory') {
-      return yield* new StorageLayoutMigrationConflict({
+      return yield* StorageLayoutMigrationConflict.make({
         message: 'Every entry in the legacy canonical store must be an account directory.',
         path: source,
       });
@@ -456,7 +456,7 @@ function digestDirectory(
           const absolute = path.join(directory, name);
           const relative = path.join(relativeDirectory, name).split(path.sep).join('/');
           if (Option.isSome(yield* fs.readLink(absolute).pipe(Effect.option))) {
-            return yield* new StorageLayoutMigrationConflict({
+            return yield* StorageLayoutMigrationConflict.make({
               message: 'Symbolic links are not allowed in the canonical Threadnote store.',
               path: absolute,
             });
@@ -473,7 +473,7 @@ function digestDirectory(
               )}\n`,
             );
           } else {
-            return yield* new StorageLayoutMigrationConflict({
+            return yield* StorageLayoutMigrationConflict.make({
               message: `Unsupported canonical-store entry type: ${info.type}.`,
               path: absolute,
             });
@@ -497,7 +497,7 @@ function digestMergedDirectories(
       Option.isSome(yield* fs.readLink(targetRoot).pipe(Effect.option)) ||
       (yield* fs.stat(targetRoot)).type !== 'Directory'
     ) {
-      return yield* new StorageLayoutMigrationConflict({
+      return yield* StorageLayoutMigrationConflict.make({
         message: 'The canonical account destination must be a regular directory.',
         path: targetRoot,
       });
@@ -526,7 +526,7 @@ function digestMergedDirectories(
           const relative = path.join(relativeDirectory, name).split(path.sep).join('/');
           for (const absolute of [sourcePath, targetPath]) {
             if (absolute && Option.isSome(yield* fs.readLink(absolute).pipe(Effect.option))) {
-              return yield* new StorageLayoutMigrationConflict({
+              return yield* StorageLayoutMigrationConflict.make({
                 message: 'Symbolic links are not allowed in the canonical Threadnote store.',
                 path: absolute,
               });
@@ -535,7 +535,7 @@ function digestMergedDirectories(
           const sourceInfo = sourcePath ? yield* fs.stat(sourcePath) : undefined;
           const targetInfo = targetPath ? yield* fs.stat(targetPath) : undefined;
           if (sourceInfo && targetInfo && sourceInfo.type !== targetInfo.type) {
-            return yield* new StorageLayoutMigrationConflict({
+            return yield* StorageLayoutMigrationConflict.make({
               message: `Legacy and canonical entries have different types at "${relative}".`,
               path: targetPath!,
             });
@@ -555,7 +555,7 @@ function digestMergedDirectories(
                 Effect.provideService(FileSystem.FileSystem, fs),
               );
               if (size !== targetSize || digest !== targetDigest) {
-                return yield* new StorageLayoutMigrationConflict({
+                return yield* StorageLayoutMigrationConflict.make({
                   message: `Legacy and canonical files differ at "${relative}".`,
                   path: targetPath,
                 });
@@ -563,7 +563,7 @@ function digestMergedDirectories(
             }
             entries.push(`file\0${relative}\0${size}\0${digest}\n`);
           } else {
-            return yield* new StorageLayoutMigrationConflict({
+            return yield* StorageLayoutMigrationConflict.make({
               message: `Unsupported canonical-store entry type: ${info?.type ?? 'missing'}.`,
               path: sourcePath ?? targetPath ?? targetRoot,
             });
@@ -593,7 +593,7 @@ function mergeDirectories(
         const source = path.join(sourceDirectory, name);
         const target = path.join(targetDirectory, name);
         if (Option.isSome(yield* fs.readLink(source).pipe(Effect.option))) {
-          return yield* new StorageLayoutMigrationConflict({
+          return yield* StorageLayoutMigrationConflict.make({
             message: 'Symbolic links are not allowed in the canonical Threadnote store.',
             path: source,
           });
@@ -611,7 +611,7 @@ function mergeDirectories(
           continue;
         }
         if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-          return yield* new StorageLayoutMigrationConflict({
+          return yield* StorageLayoutMigrationConflict.make({
             message: 'Symbolic links are not allowed in the canonical Threadnote store.',
             path: target,
           });
@@ -629,7 +629,7 @@ function mergeDirectories(
             continue;
           }
         }
-        return yield* new StorageLayoutMigrationConflict({
+        return yield* StorageLayoutMigrationConflict.make({
           message: `Cannot safely merge different entries at "${target}".`,
           path: target,
         });
@@ -664,7 +664,7 @@ function readLayoutVersion(fs: FileSystem.FileSystem, receiptPath: string): Effe
       const version = parsed.version;
       return typeof version === 'number' ? version : undefined;
     }),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
 }
 
@@ -713,7 +713,7 @@ function readMigrationReceipt(
         version: STORAGE_LAYOUT_MIGRATION_RECEIPT_VERSION,
       };
     }),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
 }
 

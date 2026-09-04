@@ -1,5 +1,5 @@
 import {readdirSync} from '../helpers/node-fs.js';
-import {Effect, Fiber} from 'effect';
+import {Clock, Effect, Fiber} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 
 const shareMocks = vi.hoisted(() => ({
@@ -244,9 +244,9 @@ describe('Effect share transaction', () => {
         );
         const explicitSync = yield* Effect.forkChild(runShareSync(config, {}));
         yield* Effect.promise(() => syncStarted);
-        const startedAt = Date.now();
+        const startedAt = yield* Clock.currentTimeMillis;
         const automaticRead = yield* syncSharedReposBeforeAgentRead(config);
-        const elapsed = Date.now() - startedAt;
+        const elapsed = (yield* Clock.currentTimeMillis) - startedAt;
         expect(automaticRead).toEqual({syncedTeams: [], warnings: []});
         expect(elapsed).toBeLessThan(200);
         expect(automaticReadEntered).toBe(false);

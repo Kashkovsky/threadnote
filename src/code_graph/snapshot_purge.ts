@@ -1,4 +1,4 @@
-import {Clock, Effect, FileSystem, Path} from 'effect';
+import {Clock, Effect, FileSystem, Path, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {codeGraphRepositoryLockPath} from './layout.js';
@@ -23,9 +23,13 @@ import {
 } from './vector_maintenance.js';
 import {inspectCodeGraphViewDatabaseTarget} from './view_removal.js';
 
-class CodeGraphSnapshotPurgeError extends Error {
-  readonly _tag = 'CodeGraphSnapshotPurgeError' as const;
-}
+class CodeGraphSnapshotPurgeError extends Schema.TaggedError<CodeGraphSnapshotPurgeError>()(
+  'CodeGraphSnapshotPurgeError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 const HASH_ID = /^[0-9a-f]{64}$/u;
 const SNAPSHOT_ID = /^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u;
@@ -186,9 +190,9 @@ export const purgeCodeGraphSnapshot = Effect.fn('codeGraph.purgeSnapshotAction')
                             currentTarget.state === 'ready' && currentTarget.databasePath === inspected.databasePath
                               ? Effect.void
                               : Effect.fail(
-                                  new CodeGraphSnapshotPurgeError(
-                                    'Code graph database target changed before snapshot purge.',
-                                  ),
+                                  CodeGraphSnapshotPurgeError.make({
+                                    message: 'Code graph database target changed before snapshot purge.',
+                                  }),
                                 ),
                           ),
                           Effect.provideService(FileSystem.FileSystem, fs),
@@ -205,14 +209,12 @@ export const purgeCodeGraphSnapshot = Effect.fn('codeGraph.purgeSnapshotAction')
     ),
     0,
   ).pipe(
-    Effect.catch(cause =>
-      isFileLockTimeout(cause)
-        ? Effect.fail(
-            new CodeGraphStoreBusyError('Code graph maintenance is busy.', {
-              operation: 'purge selected code graph snapshot',
-            }),
-          )
-        : Effect.fail(cause),
+    Effect.catchIf(isFileLockTimeout, () =>
+      Effect.fail(
+        CodeGraphStoreBusyError.of('Code graph maintenance is busy.', {
+          operation: 'purge selected code graph snapshot',
+        }),
+      ),
     ),
   );
 });
@@ -280,15 +282,15 @@ export function renderCodeGraphSnapshotPurgeResult(result: CodeGraphSnapshotPurg
 
 export function codeGraphSnapshotPurgeTargetFailure(result: CodeGraphSnapshotPurgeActionResult): Error | undefined {
   if (result.state === 'not-found')
-    return new CodeGraphSnapshotPurgeError('The selected code graph snapshot does not exist.');
+    return CodeGraphSnapshotPurgeError.make({message: 'The selected code graph snapshot does not exist.'});
   if (result.state === 'approval-required')
-    return new CodeGraphSnapshotPurgeError('A fresh snapshot purge approval digest is required.');
+    return CodeGraphSnapshotPurgeError.make({message: 'A fresh snapshot purge approval digest is required.'});
   if (result.state === 'state-changed')
-    return new CodeGraphSnapshotPurgeError('The selected snapshot changed; preview it again.');
+    return CodeGraphSnapshotPurgeError.make({message: 'The selected snapshot changed; preview it again.'});
   if (result.state === 'blocked') {
-    return new CodeGraphSnapshotPurgeError(
-      `The selected snapshot is protected: ${result.blockers.map(blocker => blocker.code).join(', ')}.`,
-    );
+    return CodeGraphSnapshotPurgeError.make({
+      message: `The selected snapshot is protected: ${result.blockers.map(blocker => blocker.code).join(', ')}.`,
+    });
   }
   return undefined;
 }
@@ -436,11 +438,11 @@ const validateSnapshotPurgeTarget = Effect.fn('codeGraph.validateSnapshotPurgeTa
   target: CodeGraphSnapshotPurgeTarget,
 ) {
   if (!HASH_ID.test(target.checkoutId)) {
-    return yield* Effect.fail(
-      new CodeGraphSnapshotPurgeError('Code graph checkout identity must be 64 lowercase hexadecimal characters.'),
-    );
+    return yield* CodeGraphSnapshotPurgeError.make({
+      message: 'Code graph checkout identity must be 64 lowercase hexadecimal characters.',
+    });
   }
   if (!SNAPSHOT_ID.test(target.snapshotId)) {
-    return yield* Effect.fail(new CodeGraphSnapshotPurgeError('Code graph snapshot identity is invalid.'));
+    return yield* CodeGraphSnapshotPurgeError.make({message: 'Code graph snapshot identity is invalid.'});
   }
 });

@@ -16,6 +16,7 @@ import {
 import {basename, delimiter, dirname, isAbsolute, join, relative, resolve} from 'node:path';
 import {spawn} from 'node:child_process';
 import {type CodeMemoryLinkAppServerCommand} from './code-memory-link-app-server-client.js';
+import {randomUuidV4} from '../src/crypto/uuid.js';
 
 export const CODE_MEMORY_LINK_CODEX_CONFIG_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION = 'codex-cli 0.149.0-alpha.4.1' as const;
@@ -269,7 +270,7 @@ export async function createCodeMemoryLinkCodexIsolation(input: {
     copyFixtureTree(input.fixtureThreadnoteHome, threadnoteHome, {allowAgentControlFiles: true}),
     copyPrivateFile(input.config.authSourcePath, join(codexHome, 'auth.json')),
   ]);
-  const proxyPacketPath = join(privateRoot, `proxy-${crypto.randomUUID()}.json`);
+  const proxyPacketPath = join(privateRoot, `proxy-${randomUuidV4()}.json`);
   await writeFile(proxyPacketPath, `${JSON.stringify(input.proxyPacket({repositoryRoot, threadnoteHome}))}\n`, {
     mode: 0o600,
   });

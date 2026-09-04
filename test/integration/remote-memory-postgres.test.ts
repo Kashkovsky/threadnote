@@ -1,6 +1,7 @@
 import type {Sql, TransactionSql} from 'postgres';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
+import {randomUuidV4} from '../../src/crypto/uuid.js';
 import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {formatRemoteMemoryUri} from '../../src/memory_domain/address.js';
@@ -275,7 +276,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
   });
 
   it('rejects runtime rewrites and premature minimization of active workload attribution', async () => {
-    const attestationId = crypto.randomUUID();
+    const attestationId = randomUuidV4();
     await withTenant(
       fixture.migratorSql,
       TENANT_A,
@@ -285,7 +286,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
           turn_id, team_id, owner_id, repository_urls, expires_at
         ) VALUES (
           ${TENANT_A}, ${SHARE_A}, ${attestationId}, ${PRINCIPAL_A}, 'https://cursor.example',
-          'active-subject', ${crypto.randomUUID()}, 'active-agent', 'active-turn',
+          'active-subject', ${randomUuidV4()}, 'active-agent', 'active-turn',
           'active-team', 'active-owner', ARRAY['https://github.com/example/threadnote.git'],
           ${new Date('2099-01-01T00:00:00.000Z').toISOString()}
         )
@@ -455,7 +456,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
 
   it('replays one exact receipt when the same Git beta import plan is applied concurrently', async () => {
     const operator = new PostgresRemoteMemoryOperatorAdapter(fixture.migratorSql);
-    const topic = `concurrent-import-${crypto.randomUUID()}`;
+    const topic = `concurrent-import-${randomUuidV4()}`;
     const uri = formatRemoteMemoryUri({kind: 'durable', project: PROJECT, shareId: SHARE_A_MULTI_MEMBER, topic});
     const canonicalContent = formatMemoryDocument(
       'MEMORY',
@@ -511,7 +512,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
 
   it('enforces citation sharing policy at direct adapter ingress while preserving clean v4 on export', async () => {
     const operator = new PostgresRemoteMemoryOperatorAdapter(fixture.migratorSql);
-    const suffix = crypto.randomUUID();
+    const suffix = randomUuidV4();
     const clean = operatorPortableRecord(
       SHARE_A_MULTI_MEMBER,
       `direct-citation-clean-${suffix}`,
@@ -1148,7 +1149,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
       'request-cleanup-disabled-tenant',
     );
     const alias = 'threadnote://user/legacy-beta/memories/durable/projects/threadnote/cleanup-disabled-tenant.md';
-    const attestationId = crypto.randomUUID();
+    const attestationId = randomUuidV4();
     await withTenant(fixture.migratorSql, TENANT_B, async transaction => {
       await transaction`
         UPDATE remote_memory.idempotency_records SET outcome_expires_at = ${new Date(0).toISOString()}
@@ -1168,7 +1169,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
           turn_id, team_id, owner_id, repository_urls, expires_at
         ) VALUES (
           ${TENANT_B}, ${SHARE_B}, ${attestationId}, ${PRINCIPAL_B}, 'https://cursor.example',
-          'sensitive-subject', ${crypto.randomUUID()}, 'sensitive-agent', 'sensitive-turn',
+          'sensitive-subject', ${randomUuidV4()}, 'sensitive-agent', 'sensitive-turn',
           'sensitive-team', 'sensitive-owner', ARRAY['https://github.com/private/repository.git'],
           ${new Date(0).toISOString()}
         )
@@ -1310,7 +1311,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
             tenant_id, share_id, id, head_id, base_revision_id, generation, status,
             markdown_body, content_hash, oauth_principal_id, operation_id
           ) VALUES (
-            ${TENANT_A}, ${SHARE_A}, ${crypto.randomUUID()}, ${heads[0].head_id}, ${heads[1].revision_id},
+            ${TENANT_A}, ${SHARE_A}, ${randomUuidV4()}, ${heads[0].head_id}, ${heads[1].revision_id},
             999999, 'active', 'invalid base head', 'invalid', ${PRINCIPAL_A}, 'invalid-base-head'
           )
         `,
@@ -1320,7 +1321,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
 
   it('fails closed when direct adapter export encounters dirty, local-identity, or malformed citations', async () => {
     const operator = new PostgresRemoteMemoryOperatorAdapter(fixture.migratorSql);
-    const suffix = crypto.randomUUID();
+    const suffix = randomUuidV4();
     const scenarios = [
       {
         content: operatorCitationContent(`000-forged-export-dirty-${suffix}`, operatorCitation({sourceDirty: true})),
@@ -1558,8 +1559,8 @@ async function insertForgedPortableRow(
   topic: string,
   content: string,
 ): Promise<void> {
-  const headId = crypto.randomUUID();
-  const revisionId = crypto.randomUUID();
+  const headId = randomUuidV4();
+  const revisionId = randomUuidV4();
   const uri = formatRemoteMemoryUri({kind: 'durable', project: PROJECT, shareId, topic});
   await withTenant(sql, tenantId, async transaction => {
     await transaction`

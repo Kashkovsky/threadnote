@@ -1,6 +1,6 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Clock, Effect, FileSystem, Path} from 'effect';
+import {Clock, DateTime, Effect, FileSystem, Path} from 'effect';
 import {sha256HexSync} from '../src/crypto/sha256.js';
 import {runCommandEffect} from '../src/effect/command.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
@@ -97,7 +97,7 @@ const benchmarkRecallCrossScopeSqlite = Effect.gen(function* () {
       {concurrency: 'unbounded'},
     );
     const artifact = {
-      createdAt: new Date().toISOString(),
+      createdAt: DateTime.formatIso(yield* DateTime.now),
       environment: {
         architecture: system.architecture,
         commit,
@@ -133,9 +133,7 @@ const benchmarkRecallCrossScopeSqlite = Effect.gen(function* () {
     if (options.outputPath) yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
     yield* printJson(artifact);
   });
-  yield* benchmark.pipe(
-    Effect.ensuring(fs.remove(home, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void))),
-  );
+  yield* benchmark.pipe(Effect.ensuring(fs.remove(home, {force: true, recursive: true}).pipe(Effect.ignore)));
 });
 
 function runPass(
@@ -307,7 +305,7 @@ function writeFixture(
     const commonSiblingIndex = Array.from({length: documents}, (_unused, index) => index).find(
       index => index >= Math.max(Math.min(140, documents - 2), Math.floor(documents / 2)) && index % 2 === 1,
     );
-    if (commonSiblingIndex === undefined) return yield* Effect.fail(new ScriptError('Fixture has no sibling document'));
+    if (commonSiblingIndex === undefined) return yield* ScriptError.make({message: 'Fixture has no sibling document'});
     return {
       mainDocuments: mainRecords.length,
       manifestSha256: sha256HexSync(
@@ -427,10 +425,11 @@ export function parseRecallCrossScopeSqliteBenchmarkArguments(
     else if (argument === '--top-k') topK = positiveInteger(args[++index], argument);
     else if (argument === '--warmups') warmups = nonNegativeInteger(args[++index], argument);
     else if (argument === '--output') outputPath = requiredValue(args[++index], argument);
-    else throw new ScriptError(`Unknown cross-scope SQLite benchmark option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown cross-scope SQLite benchmark option: ${argument}`});
   }
-  if (documents < 300) throw new ScriptError('--documents must be at least 300 to preserve the buried target shape');
-  if (documents > 100_000) throw new ScriptError('--documents must not exceed 100,000');
+  if (documents < 300)
+    throw ScriptError.make({message: '--documents must be at least 300 to preserve the buried target shape'});
+  if (documents > 100_000) throw ScriptError.make({message: '--documents must not exceed 100,000'});
   return {documents, outputPath, samples, topK, warmups};
 }
 
@@ -440,22 +439,22 @@ const git = Effect.fn('benchmark.git')((arguments_: readonly string[]) =>
 
 function positiveInteger(value: string | undefined, option: string): number {
   const parsed = nonNegativeInteger(value, option);
-  if (parsed < 1) throw new ScriptError(`${option} requires a positive integer`);
+  if (parsed < 1) throw ScriptError.make({message: `${option} requires a positive integer`});
   return parsed;
 }
 
 function nonNegativeInteger(value: string | undefined, option: string): number {
   const raw = requiredValue(value, option);
-  if (!/^\d+$/u.test(raw)) throw new ScriptError(`${option} requires a non-negative integer`);
+  if (!/^\d+$/u.test(raw)) throw ScriptError.make({message: `${option} requires a non-negative integer`});
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new ScriptError(`${option} requires a non-negative integer`);
+    throw ScriptError.make({message: `${option} requires a non-negative integer`});
   }
   return parsed;
 }
 
 function requiredValue(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 

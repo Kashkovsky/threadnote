@@ -35,11 +35,9 @@ const evaluateRecall = Effect.gen(function* () {
     ? parseRecallEvaluationBaselineV1(yield* readJsonFile(options.baselinePath))
     : undefined;
   if (baseline && baseline.fixture.hash !== hash) {
-    return yield* Effect.fail(
-      new ScriptError(
-        `Recall baseline fixture hash ${baseline.fixture.hash} does not match generated fixture hash ${hash}`,
-      ),
-    );
+    return yield* ScriptError.make({
+      message: `Recall baseline fixture hash ${baseline.fixture.hash} does not match generated fixture hash ${hash}`,
+    });
   }
   const gate = baseline ? evaluateRecallNonInferiority(baselineResult(baseline), result) : undefined;
   const artifact = {
@@ -116,13 +114,15 @@ function parseArguments(args: readonly string[]): EvaluationOptions {
     else if (argument === '--max-failures') maximumPrintedFailures = positiveInteger(args[++index], '--max-failures');
     else if (argument === '--output') outputPath = requiredValue(args[++index], '--output');
     else if (argument === '--seed') seed = positiveInteger(args[++index], '--seed');
-    else throw new ScriptError(`Unknown recall-v2 evaluation option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown recall-v2 evaluation option: ${argument}`});
   }
   if (failOnRegression && !baselinePath) {
-    throw new ScriptError('--fail-on-regression cannot be combined with --no-baseline');
+    throw ScriptError.make({message: '--fail-on-regression cannot be combined with --no-baseline'});
   }
   if (globalEligibility && baselinePath) {
-    throw new ScriptError('--global-eligibility requires --no-baseline so retrieval contracts are not conflated');
+    throw ScriptError.make({
+      message: '--global-eligibility requires --no-baseline so retrieval contracts are not conflated',
+    });
   }
   return {
     baselinePath,
@@ -140,13 +140,13 @@ function parseArguments(args: readonly string[]): EvaluationOptions {
 function positiveInteger(value: string | undefined, option: string): number {
   const parsed = Number.parseInt(requiredValue(value, option), 10);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new ScriptError(`${option} requires a positive integer`);
+    throw ScriptError.make({message: `${option} requires a positive integer`});
   }
   return parsed;
 }
 
 function requiredValue(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 

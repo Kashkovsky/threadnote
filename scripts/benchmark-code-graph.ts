@@ -1,7 +1,8 @@
 import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
-import {Clock, Deferred, Effect, Exit, FileSystem, Option, Path, PlatformError} from 'effect';
+import {Clock, DateTime, Deferred, Effect, Exit, FileSystem, Option, Path, PlatformError, Schema} from 'effect';
+import {succeedUndefined} from '../src/effect/optional.js';
 import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
 import {CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM} from '../src/code_graph/materialized_shard_cache_admission.js';
@@ -259,21 +260,27 @@ export function validateSqliteWriterSettingsEvidence(
     const phaseEvidence = evidence.filter(settings => settings.benchmarkPhase === benchmarkPhase);
     const connection = phaseEvidence.filter(settings => settings.phase === 'connection').at(-1);
     if (!connection || connection.journalMode.toLowerCase() !== 'wal') {
-      throw new ScriptError(`SQLite writer profile ${profile} did not report a WAL connection for ${benchmarkPhase}.`);
+      throw ScriptError.make({
+        message: `SQLite writer profile ${profile} did not report a WAL connection for ${benchmarkPhase}.`,
+      });
     }
     if (requested.mainCacheKiB !== undefined && connection.cacheSizePragma !== -requested.mainCacheKiB) {
-      throw new ScriptError(`SQLite writer profile ${profile} did not apply its cache size for ${benchmarkPhase}.`);
+      throw ScriptError.make({
+        message: `SQLite writer profile ${profile} did not apply its cache size for ${benchmarkPhase}.`,
+      });
     }
     if (requested.mmapSizeBytes !== undefined && connection.mmapSizeBytes !== requested.mmapSizeBytes) {
-      throw new ScriptError(`SQLite writer profile ${profile} did not apply its mmap size for ${benchmarkPhase}.`);
+      throw ScriptError.make({
+        message: `SQLite writer profile ${profile} did not apply its mmap size for ${benchmarkPhase}.`,
+      });
     }
     if (
       requested.walAutoCheckpointPages !== undefined &&
       connection.walAutoCheckpointPages !== requested.walAutoCheckpointPages
     ) {
-      throw new ScriptError(
-        `SQLite writer profile ${profile} did not apply its WAL checkpoint cadence for ${benchmarkPhase}.`,
-      );
+      throw ScriptError.make({
+        message: `SQLite writer profile ${profile} did not apply its WAL checkpoint cadence for ${benchmarkPhase}.`,
+      });
     }
   }
   if (requested.reconstructibleBuildSynchronous === 'normal') {
@@ -284,9 +291,9 @@ export function validateSqliteWriterSettingsEvidence(
         (settings, index) => index > building && settings.phase === 'publication' && settings.synchronous === 2,
       );
       if (building < 0 || publication < 0) {
-        throw new ScriptError(
-          `SQLite writer profile ${profile} did not restore FULL after NORMAL before ${benchmarkPhase} publication.`,
-        );
+        throw ScriptError.make({
+          message: `SQLite writer profile ${profile} did not restore FULL after NORMAL before ${benchmarkPhase} publication.`,
+        });
       }
     }
   }
@@ -555,7 +562,7 @@ const benchmarkCodeGraph = Effect.scoped(
     const system = yield* SystemInfo;
     const options = parseArguments(yield* scriptArguments());
     if (options.embeddingContexts !== undefined) {
-      process.env[THREADNOTE_EMBEDDING_CONTEXTS_ENV] = String(options.embeddingContexts);
+      system.setEnvironmentVariable(THREADNOTE_EMBEDDING_CONTEXTS_ENV, String(options.embeddingContexts));
     }
     const threadnoteSourceRoot = yield* path.fromFileUrl(new URL('..', import.meta.url));
     const ratchet = options.ratchetPath ? yield* readJsonFile(options.ratchetPath) : undefined;
@@ -568,8 +575,8 @@ const benchmarkCodeGraph = Effect.scoped(
       : undefined;
     const releaseEvidenceSource = yield* validateReleaseEvidenceSource(
       threadnoteSourceRoot,
-      process.env.THREADNOTE_BENCHMARK_RELEASE_REF?.trim() || undefined,
-      process.env.THREADNOTE_BENCHMARK_RELEASE_SHA?.trim() || undefined,
+      system.environment().THREADNOTE_BENCHMARK_RELEASE_REF?.trim() || undefined,
+      system.environment().THREADNOTE_BENCHMARK_RELEASE_SHA?.trim() || undefined,
     );
     const largeEvidenceRun = options.profile === 'production-large' || options.repository !== undefined;
     const checkpointedEvidenceRun = largeEvidenceRun || longScaleEvidenceRun;
@@ -579,14 +586,14 @@ const benchmarkCodeGraph = Effect.scoped(
     if (externalPrepared && releaseEvidenceSource) {
       assertPerformanceControlSet(externalPrepared.externalControls ?? []);
       if (!externalPrepared.publicRepository) {
-        return yield* Effect.fail(
-          new ScriptError('Release-bound external evidence requires a public GitHub repository.'),
-        );
+        return yield* ScriptError.make({
+          message: 'Release-bound external evidence requires a public GitHub repository.',
+        });
       }
       if (!isReviewedPublicBenchmarkRepository(externalPrepared.publicRepository)) {
-        return yield* Effect.fail(
-          new ScriptError('Release-bound external evidence requires a reviewed public benchmark repository.'),
-        );
+        return yield* ScriptError.make({
+          message: 'Release-bound external evidence requires a reviewed public benchmark repository.',
+        });
       }
     }
     const externalPreflight = externalPrepared
@@ -601,7 +608,7 @@ const benchmarkCodeGraph = Effect.scoped(
       : undefined;
     if (options.preflight) {
       if (!externalPreflight || !externalPrepared) {
-        return yield* Effect.fail(new ScriptError('External benchmark preflight was not prepared.'));
+        return yield* ScriptError.make({message: 'External benchmark preflight was not prepared.'});
       }
       yield* revalidateExternalBenchmarkPreflightState(
         threadnoteSourceRoot,
@@ -620,7 +627,7 @@ const benchmarkCodeGraph = Effect.scoped(
     }
     if (externalPrepared && options.retainHomes) {
       yield* externalPrepared.preserveHomes ??
-        Effect.fail(new ScriptError('External benchmark homes could not be retained after preflight.'));
+        Effect.fail(ScriptError.make({message: 'External benchmark homes could not be retained after preflight.'}));
     }
     const runCheckpoint =
       checkpointedEvidenceRun && options.outputPath
@@ -724,7 +731,7 @@ const benchmarkCodeGraph = Effect.scoped(
     const sqliteTemporaryRoot = path.join(samplerRoot, 'sqlite-temp');
     if (sampleProcessTree) {
       yield* fs.makeDirectory(sqliteTemporaryRoot, {recursive: true});
-      process.env.SQLITE_TMPDIR = sqliteTemporaryRoot;
+      system.setEnvironmentVariable('SQLITE_TMPDIR', sqliteTemporaryRoot);
     }
     const bootstrapExternalTelemetry = bootstrapSampler ? yield* bootstrapSampler.stop() : undefined;
     const coldStoragePeak = new SqliteStoragePeakTelemetry();
@@ -740,7 +747,7 @@ const benchmarkCodeGraph = Effect.scoped(
             benchmarkSamplerCheckpointPath(path, samplerRoot, options.outputPath, 'cold'),
             'cold',
           )
-        : Effect.succeed(undefined),
+        : succeedUndefined,
       (timeline, sampler) =>
         indexer.index({
           cwd: prepared.repository,
@@ -766,24 +773,28 @@ const benchmarkCodeGraph = Effect.scoped(
       startedAt: coldStarted,
       timeline: coldTimeline,
     } = coldMeasurement;
-    const embeddingContextPlan = !options.vectors
-      ? undefined
-      : yield* Effect.gen(function* () {
-          const runtime = yield* LocalModelRuntime;
-          const diagnostics = yield* runtime.diagnostics.pipe(
-            Effect.mapError(cause => scriptError(cause, 'Could not read the effective embedding context plan.')),
-          );
-          const plan = diagnostics.embeddingContextPlan;
-          if (
-            !plan ||
-            (options.embeddingContexts !== undefined && plan.requestedContexts !== options.embeddingContexts)
-          ) {
-            return yield* Effect.fail(
-              new ScriptError('The native worker did not report the effective embedding context plan.'),
-            );
-          }
-          return {...plan, cpuMathCores: diagnostics.cpuMathCores};
+    let embeddingContextPlan:
+      | {
+          readonly cpuMathCores: number;
+          readonly effectiveContexts: number;
+          readonly modelGpuLayers?: number;
+          readonly requestedContexts: number;
+          readonly threadCounts: readonly number[];
+        }
+      | undefined;
+    if (options.vectors) {
+      const runtime = yield* LocalModelRuntime;
+      const diagnostics = yield* runtime.diagnostics.pipe(
+        Effect.mapError(cause => scriptError(cause, 'Could not read the effective embedding context plan.')),
+      );
+      const plan = diagnostics.embeddingContextPlan;
+      if (!plan || (options.embeddingContexts !== undefined && plan.requestedContexts !== options.embeddingContexts)) {
+        return yield* ScriptError.make({
+          message: 'The native worker did not report the effective embedding context plan.',
         });
+      }
+      embeddingContextPlan = {...plan, cpuMathCores: diagnostics.cpuMathCores};
+    }
     const coldVectorMappingDigest = options.vectors
       ? yield* vectorMappingDigest(fs, path, benchmarkLayout.vectorRoot, benchmarkIdentity.worktreeId)
       : undefined;
@@ -791,7 +802,7 @@ const benchmarkCodeGraph = Effect.scoped(
     yield* runCheckpoint?.mark('hot-query-and-mutation') ?? Effect.void;
     if (options.vectors) {
       if (cold.diagnostics.some(diagnostic => diagnostic.includes('Vector graph retrieval unavailable'))) {
-        return yield* Effect.fail(new ScriptError(cold.diagnostics.join('\n')));
+        return yield* ScriptError.make({message: cold.diagnostics.join('\n')});
       }
       const semanticControl = yield* query.inspect({
         cwd: prepared.repository,
@@ -811,11 +822,9 @@ const benchmarkCodeGraph = Effect.scoped(
           .slice(0, 5)
           .map(node => `${node.path}:${node.name}:${node.score.toFixed(3)}`)
           .join(', ');
-        return yield* Effect.fail(
-          new ScriptError(
-            `Vector benchmark semantic positive control did not resolve; observed ${observed || 'no nodes'}.`,
-          ),
-        );
+        return yield* ScriptError.make({
+          message: `Vector benchmark semantic positive control did not resolve; observed ${observed || 'no nodes'}.`,
+        });
       }
     }
     const coldExternalQueryControls = prepared.externalControls
@@ -905,16 +914,16 @@ const benchmarkCodeGraph = Effect.scoped(
           deferredQueryCpuDurations.push(cpu);
           deferredDigest = queryResultStructuralDigest(result);
           if (result.freshness !== 'deferred') {
-            return yield* Effect.fail(
-              new ScriptError('The deferred-ready query benchmark observed the worktree unexpectedly.'),
-            );
+            return yield* ScriptError.make({
+              message: 'The deferred-ready query benchmark observed the worktree unexpectedly.',
+            });
           }
         } else {
           exactReadyQueryDurations.push(duration);
           exactReadyQueryCpuDurations.push(cpu);
           exactDigest = queryResultStructuralDigest(result);
           if (result.freshness !== 'current') {
-            return yield* Effect.fail(new ScriptError('The exact query benchmark did not observe current evidence.'));
+            return yield* ScriptError.make({message: 'The exact query benchmark did not observe current evidence.'});
           }
         }
         if (
@@ -922,13 +931,13 @@ const benchmarkCodeGraph = Effect.scoped(
           result.nodes.length === 0 ||
           response.structuredContent.operation !== 'query'
         ) {
-          return yield* Effect.fail(new ScriptError('The ready-query benchmark did not retain its snapshot contract.'));
+          return yield* ScriptError.make({message: 'The ready-query benchmark did not retain its snapshot contract.'});
         }
       }
       if (exactDigest !== deferredDigest) {
-        return yield* Effect.fail(
-          new ScriptError('Exact and deferred ready-query benchmark results diverged structurally.'),
-        );
+        return yield* ScriptError.make({
+          message: 'Exact and deferred ready-query benchmark results diverged structurally.',
+        });
       }
     }
 
@@ -963,7 +972,7 @@ const benchmarkCodeGraph = Effect.scoped(
                   benchmarkSamplerCheckpointPath(path, samplerRoot, options.outputPath, 'incremental'),
                   'incremental',
                 )
-              : Effect.succeed(undefined),
+              : succeedUndefined,
             (timeline, sampler) =>
               indexer.index({
                 cwd: prepared.repository,
@@ -1002,7 +1011,7 @@ const benchmarkCodeGraph = Effect.scoped(
       options.vectors &&
       incremental.diagnostics.some(diagnostic => diagnostic.includes('Vector graph retrieval unavailable'))
     ) {
-      return yield* Effect.fail(new ScriptError(incremental.diagnostics.join('\n')));
+      return yield* ScriptError.make({message: incremental.diagnostics.join('\n')});
     }
     if (options.vectors) {
       const semanticControl = yield* query.inspect({
@@ -1027,12 +1036,11 @@ const benchmarkCodeGraph = Effect.scoped(
           .slice(0, 5)
           .map(node => `${node.path}:${node.name}:${node.score.toFixed(3)}`)
           .join(', ');
-        return yield* Effect.fail(
-          new ScriptError(
+        return yield* ScriptError.make({
+          message:
             `Incremental vector benchmark semantic positive control did not resolve on the new snapshot; ` +
-              `observed ${observed || 'no nodes'}.`,
-          ),
-        );
+            `observed ${observed || 'no nodes'}.`,
+        });
       }
     }
     const incrementalExternalQueryControls = prepared.externalControls
@@ -1083,9 +1091,9 @@ const benchmarkCodeGraph = Effect.scoped(
     if (sampleProcessTree) yield* fs.makeDirectory(sameOverlaySqliteTemporaryRoot, {recursive: true});
     const sameOverlayReferenceStoragePeak = new SqliteStoragePeakTelemetry();
     sqliteWriterEvidencePhase = 'same-overlay-reference';
-    const previousSqliteTemporaryRoot = process.env.SQLITE_TMPDIR;
+    const previousSqliteTemporaryRoot = system.environment().SQLITE_TMPDIR;
     const sameOverlayReference = yield* Effect.sync(() => {
-      if (sampleProcessTree) process.env.SQLITE_TMPDIR = sameOverlaySqliteTemporaryRoot;
+      if (sampleProcessTree) system.setEnvironmentVariable('SQLITE_TMPDIR', sameOverlaySqliteTemporaryRoot);
     }).pipe(
       Effect.andThen(
         Effect.acquireUseRelease(
@@ -1109,7 +1117,7 @@ const benchmarkCodeGraph = Effect.scoped(
                       ),
                       'same-overlay-reference',
                     )
-                  : Effect.succeed(undefined),
+                  : succeedUndefined,
                 (timeline, sampler) =>
                   indexer.index({
                     cwd: prepared.repository,
@@ -1177,8 +1185,8 @@ const benchmarkCodeGraph = Effect.scoped(
       ),
       Effect.ensuring(
         Effect.sync(() => {
-          if (previousSqliteTemporaryRoot === undefined) delete process.env.SQLITE_TMPDIR;
-          else process.env.SQLITE_TMPDIR = previousSqliteTemporaryRoot;
+          if (previousSqliteTemporaryRoot === undefined) delete system.environment().SQLITE_TMPDIR;
+          else system.setEnvironmentVariable('SQLITE_TMPDIR', previousSqliteTemporaryRoot);
         }),
       ),
     );
@@ -1186,9 +1194,7 @@ const benchmarkCodeGraph = Effect.scoped(
     const sameOverlayReferenceTimeline = sameOverlayReference.measurement.timeline;
     const sameOverlayReferenceTelemetry = sameOverlayReference.telemetry;
     if (sameOverlayReference.summary.materialization?.mode !== 'full') {
-      return yield* Effect.fail(
-        new ScriptError('Same-overlay reference build did not execute a full materialization.'),
-      );
+      return yield* ScriptError.make({message: 'Same-overlay reference build did not execute a full materialization.'});
     }
     if (prepared.externalCommit) {
       yield* verifyExternalRepositoryUnchanged(prepared.repository, prepared.externalCommit);
@@ -1200,9 +1206,9 @@ const benchmarkCodeGraph = Effect.scoped(
     const coldStatusDuration =
       Number((yield* Clock.currentTimeNanos) - coldStatusStarted) / NANOSECONDS_PER_MILLISECOND;
     if (!analysisStatus.readySnapshot) {
-      return yield* Effect.fail(
-        new ScriptError('Code graph benchmark could not resolve its ready snapshot for analysis.'),
-      );
+      return yield* ScriptError.make({
+        message: 'Code graph benchmark could not resolve its ready snapshot for analysis.',
+      });
     }
     const managerPerformance = prepared.externalCommit
       ? yield* benchmarkManagerPerformance(
@@ -1235,14 +1241,14 @@ const benchmarkCodeGraph = Effect.scoped(
       analysisDurations.push(Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND);
       analysisCpuDurations.push(cpuMilliseconds(processStarted, processTelemetry()).total);
       if (result.coverage.topology.state !== 'not-requested' || result.usage.edgeVisits !== 0) {
-        return yield* Effect.fail(
-          new ScriptError('Code graph benchmark aggregate analysis unexpectedly executed a detail scan.'),
-        );
+        return yield* ScriptError.make({
+          message: 'Code graph benchmark aggregate analysis unexpectedly executed a detail scan.',
+        });
       }
       analysisComplete = result.coverage.complete;
     }
     if (!analysisComplete) {
-      return yield* Effect.fail(new ScriptError('Code graph benchmark analysis returned partial coverage.'));
+      return yield* ScriptError.make({message: 'Code graph benchmark analysis returned partial coverage.'});
     }
     const sameOverlayReferenceAnalysis = yield* analysis.analyze({
       databasePath: sameOverlayReferenceLayout.databasePath,
@@ -1254,9 +1260,9 @@ const benchmarkCodeGraph = Effect.scoped(
       sameOverlayReferenceAnalysis.coverage.topology.state !== 'not-requested' ||
       sameOverlayReferenceAnalysis.usage.edgeVisits !== 0
     ) {
-      return yield* Effect.fail(
-        new ScriptError('Code graph benchmark reference analysis unexpectedly required a detail scan.'),
-      );
+      return yield* ScriptError.make({
+        message: 'Code graph benchmark reference analysis unexpectedly required a detail scan.',
+      });
     }
 
     const statusSamples = Math.max(1, Math.min(options.samples, largeEvidenceRun ? 3 : 10));
@@ -1294,9 +1300,9 @@ const benchmarkCodeGraph = Effect.scoped(
     const coldStructuralGraphDigest = coldStructuralGraphEvidence.digest;
     const incrementalStructuralGraphDigest = incrementalStructuralGraphEvidence.digest;
     if (coldStructuralGraphDigest === incrementalStructuralGraphDigest) {
-      return yield* Effect.fail(
-        new ScriptError('The semantic one-file overlay did not change the structural code graph digest.'),
-      );
+      return yield* ScriptError.make({
+        message: 'The semantic one-file overlay did not change the structural code graph digest.',
+      });
     }
     const sameOverlayReferenceStructuralGraphEvidence = yield* sqliteStructuralGraphEvidence(
       sameOverlayReferenceLayout.databasePath,
@@ -1314,14 +1320,12 @@ const benchmarkCodeGraph = Effect.scoped(
           `${JSON.stringify(structuralGraphParityEvidence, undefined, 2)}\n`,
         );
       }
-      return yield* Effect.fail(
-        new ScriptError(codeGraphStructuralParityFailureMessage(structuralGraphParityEvidence)),
-      );
+      return yield* ScriptError.make({message: codeGraphStructuralParityFailureMessage(structuralGraphParityEvidence)});
     }
     const incrementalPrimaryQueryResult = incrementalPrimaryQueryEvidence.result;
     const sameOverlayReferencePrimaryQueryResult = sameOverlayReference.primary.result;
     if (!incrementalPrimaryQueryResult || !sameOverlayReferencePrimaryQueryResult) {
-      return yield* Effect.fail(new ScriptError('Primary query parity retained no result payload.'));
+      return yield* ScriptError.make({message: 'Primary query parity retained no result payload.'});
     }
     const primaryQueryParityEvidence = codeGraphQueryResultParityEvidence(
       incrementalPrimaryQueryResult,
@@ -1334,7 +1338,7 @@ const benchmarkCodeGraph = Effect.scoped(
           `${JSON.stringify(primaryQueryParityEvidence, undefined, 2)}\n`,
         );
       }
-      return yield* Effect.fail(new ScriptError(codeGraphQueryResultParityFailureMessage(primaryQueryParityEvidence)));
+      return yield* ScriptError.make({message: codeGraphQueryResultParityFailureMessage(primaryQueryParityEvidence)});
     }
     const coldLanguageCounts = sqliteLanguageCounts(analysisStatus.databasePath, cold.snapshot.id);
     const coldWorkspaceScopeRows = sqliteRowCount(
@@ -1385,7 +1389,7 @@ const benchmarkCodeGraph = Effect.scoped(
     }
     yield* runCheckpoint?.mark('finalizing-artifact') ?? Effect.void;
     let artifact: BenchmarkArtifactV1 = {
-      createdAt: new Date().toISOString(),
+      createdAt: DateTime.formatIso(yield* DateTime.now),
       environment: {
         architecture: system.architecture,
         commit,
@@ -1905,9 +1909,9 @@ const benchmarkCodeGraph = Effect.scoped(
     if (runtimeProvenanceRequired) {
       const finalRuntimeProvenance = yield* validateBenchmarkRuntimeProvenance(threadnoteSourceRoot);
       if (JSON.stringify(finalRuntimeProvenance) !== JSON.stringify(runtimeProvenance)) {
-        return yield* Effect.fail(
-          new ScriptError('Threadnote benchmark runtime provenance changed during the measured run.'),
-        );
+        return yield* ScriptError.make({
+          message: 'Threadnote benchmark runtime provenance changed during the measured run.',
+        });
       }
     }
     if (prepared.externalCommit) {
@@ -1923,8 +1927,8 @@ const benchmarkCodeGraph = Effect.scoped(
       yield* verifyBenchmarkSourceUnchanged(threadnoteSourceRoot, commit);
     }
     if (options.outputPath) yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
-    if (budgetFailure) return yield* Effect.fail(budgetFailure);
-    if (ratchetFailure) return yield* Effect.fail(ratchetFailure);
+    if (budgetFailure) return yield* budgetFailure;
+    if (ratchetFailure) return yield* ratchetFailure;
     if (!options.quiet) yield* printJson(artifact);
   }),
 );
@@ -1940,11 +1944,10 @@ export function directoryBytes(
     for (const name of yield* fs.readDirectory(directory)) {
       const child = path.join(directory, name);
       const info = yield* fs.stat(child).pipe(
-        Effect.map(Option.some),
-        Effect.catch(error =>
-          error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-            ? Effect.succeed(Option.none<FileSystem.File.Info>())
-            : Effect.fail(error),
+        Effect.asSome,
+        Effect.catchIf(
+          error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+          () => Effect.succeedNone,
         ),
       );
       if (Option.isNone(info)) continue;
@@ -1953,10 +1956,9 @@ export function directoryBytes(
     }
     return bytes;
   }).pipe(
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed(0)
-        : Effect.fail(error),
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.succeed(0),
     ),
   );
 }
@@ -1970,7 +1972,9 @@ export function decodeBenchmarkSource(source: Uint8Array): string {
   try {
     return new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(source);
   } catch {
-    throw new ScriptError('The incremental benchmark source must be valid UTF-8 so it can be restored byte-for-byte.');
+    throw ScriptError.make({
+      message: 'The incremental benchmark source must be valid UTF-8 so it can be restored byte-for-byte.',
+    });
   }
 }
 
@@ -1982,9 +1986,9 @@ export const applyBenchmarkOverlay = Effect.fn('benchmarkCodeGraph.applyOverlay'
 ) {
   const current = yield* fs.readFile(file);
   if (!sameBytes(current, expectedContents)) {
-    return yield* Effect.fail(
-      new ScriptError('The benchmark overlay file changed concurrently; Threadnote left the newer contents untouched.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The benchmark overlay file changed concurrently; Threadnote left the newer contents untouched.',
+    });
   }
   yield* fs.writeFile(file, benchmarkContents);
 });
@@ -1997,9 +2001,9 @@ export const restoreBenchmarkOverlay = Effect.fn('benchmarkCodeGraph.restoreOver
 ) {
   const current = yield* fs.readFile(file);
   if (!sameBytes(current, benchmarkContents)) {
-    return yield* Effect.fail(
-      new ScriptError('The benchmark overlay file changed concurrently; Threadnote left the newer contents untouched.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The benchmark overlay file changed concurrently; Threadnote left the newer contents untouched.',
+    });
   }
   yield* fs.writeFile(file, originalContents);
 });
@@ -2032,7 +2036,7 @@ export function semanticBenchmarkOverlay(filePath: string, source: string): stri
   if (/(?:^|\/)(?:build(?:\.bazel)?|workspace(?:\.bazel)?|module\.bazel|[^/]+\.(?:bzl|axl))$/.test(normalized)) {
     return insertAfterBom(source, 'load("@threadnote_benchmark_overlay//:defs.bzl", "threadnote_benchmark_overlay")');
   }
-  throw new ScriptError('The incremental benchmark path must use a supported source language.');
+  throw ScriptError.make({message: 'The incremental benchmark path must use a supported source language.'});
 }
 
 function sourceNewline(source: string): '\n' | '\r\n' {
@@ -2536,7 +2540,7 @@ export function measureSampledBenchmarkIndex<A>(
       const sampler = yield* Effect.acquireRelease(startSampler, (handle, exit) =>
         handle && !stopped
           ? handle.stop(Exit.isSuccess(exit) ? 'complete' : 'aborted').pipe(Effect.ignore)
-          : Effect.void,
+          : succeedUndefined,
       );
       const measurement = yield* measureBenchmarkIndex(timeline => run(timeline, sampler));
       yield* observeFinalStorage;
@@ -3088,7 +3092,8 @@ interface ExternalSamplerHandle {
 }
 
 export function parseCodeGraphBenchmarkRunCheckpoint(value: unknown): CodeGraphBenchmarkRunCheckpoint {
-  if (typeof value !== 'object' || value === null) throw new ScriptError('Benchmark run checkpoint must be an object.');
+  if (typeof value !== 'object' || value === null)
+    throw ScriptError.make({message: 'Benchmark run checkpoint must be an object.'});
   const checkpoint = value as Partial<CodeGraphBenchmarkRunCheckpoint>;
   if (
     checkpoint.version !== 1 ||
@@ -3098,7 +3103,7 @@ export function parseCodeGraphBenchmarkRunCheckpoint(value: unknown): CodeGraphB
     typeof checkpoint.updatedAt !== 'string' ||
     !Number.isFinite(Date.parse(checkpoint.updatedAt))
   ) {
-    throw new ScriptError('Benchmark run checkpoint is invalid.');
+    throw ScriptError.make({message: 'Benchmark run checkpoint is invalid.'});
   }
   return checkpoint as CodeGraphBenchmarkRunCheckpoint;
 }
@@ -3122,7 +3127,7 @@ const makeBenchmarkRunCheckpoint = Effect.fn('benchmarkCodeGraph.makeRunCheckpoi
   };
   yield* write('preparing-fixture', 'running');
   return {
-    finish: state => write('finished', state).pipe(Effect.catch(() => Effect.void)),
+    finish: state => write('finished', state).pipe(Effect.ignore),
     mark: phase => write(phase, 'running'),
   } satisfies CodeGraphBenchmarkRunCheckpointHandle;
 });
@@ -3208,13 +3213,13 @@ export const startExternalSampler = Effect.fn('benchmarkCodeGraph.startExternalS
     stop: (state = 'complete') =>
       Effect.gen(function* () {
         if (!stopped) {
-          yield* fs.writeFileString(phasePath, 'finish').pipe(Effect.catch(() => Effect.void));
+          yield* fs.writeFileString(phasePath, 'finish').pipe(Effect.ignore);
           const stopSignal = yield* Effect.exit(fs.writeFileString(stopPath, state));
           if (Exit.isFailure(stopSignal)) {
             yield* terminateExternalSampler(subprocess);
-            return yield* Effect.fail(
-              new ScriptError('Could not signal the code graph benchmark sampler to stop; it was terminated.'),
-            );
+            return yield* ScriptError.make({
+              message: 'Could not signal the code graph benchmark sampler to stop; it was terminated.',
+            });
           }
           stopped = true;
         }
@@ -3224,20 +3229,17 @@ export const startExternalSampler = Effect.fn('benchmarkCodeGraph.startExternalS
           exitCode = yield* Effect.promise(() =>
             subprocessExitWithin(subprocess, EXTERNAL_SAMPLER_TERMINATE_TIMEOUT_MS),
           );
-          return yield* Effect.fail(
-            new ScriptError(
+          return yield* ScriptError.make({
+            message:
               `Code graph benchmark sampler did not stop within ${EXTERNAL_SAMPLER_STOP_TIMEOUT_MS} ms; ` +
-                `it was terminated${exitCode === undefined ? ' without confirming exit' : ''}.`,
-            ),
-          );
+              `it was terminated${exitCode === undefined ? ' without confirming exit' : ''}.`,
+          });
         }
         if (exitCode !== 0) {
           const stderr = subprocess.stderr ? yield* Effect.promise(() => new Response(subprocess.stderr).text()) : '';
-          return yield* Effect.fail(
-            new ScriptError(
-              `Code graph benchmark sampler exited with ${exitCode}: ${stderr.trim() || 'no diagnostic'}`,
-            ),
-          );
+          return yield* ScriptError.make({
+            message: `Code graph benchmark sampler exited with ${exitCode}: ${stderr.trim() || 'no diagnostic'}`,
+          });
         }
         return parseCodeGraphBenchmarkSamplerArtifact(JSON.parse(yield* fs.readFileString(outputPath)));
       }),
@@ -3252,12 +3254,12 @@ const waitForExternalSamplerReady = Effect.fn('benchmarkCodeGraph.waitForExterna
   const startedAt = yield* Clock.currentTimeMillis;
   while (!(yield* fs.exists(readyPath))) {
     if (subprocess.exitCode !== null) {
-      return yield* Effect.fail(new ScriptError(`Code graph benchmark sampler exited before becoming ready.`));
+      return yield* ScriptError.make({message: `Code graph benchmark sampler exited before becoming ready.`});
     }
     if ((yield* Clock.currentTimeMillis) - startedAt >= EXTERNAL_SAMPLER_READY_TIMEOUT_MS) {
-      return yield* Effect.fail(
-        new ScriptError(`Code graph benchmark sampler was not ready within ${EXTERNAL_SAMPLER_READY_TIMEOUT_MS} ms.`),
-      );
+      return yield* ScriptError.make({
+        message: `Code graph benchmark sampler was not ready within ${EXTERNAL_SAMPLER_READY_TIMEOUT_MS} ms.`,
+      });
     }
     yield* Effect.sleep(10);
   }
@@ -3351,7 +3353,7 @@ const codeGraphStorageTelemetry = Effect.fn('benchmarkCodeGraph.storageTelemetry
 function regularFileBytes(fs: FileSystem.FileSystem, file: string): Effect.Effect<number, unknown> {
   return fs.stat(file).pipe(
     Effect.map(info => (info.type === 'File' ? Number(info.size) : 0)),
-    Effect.catch(() => Effect.succeed(0)),
+    Effect.orElseSucceed(() => 0),
   );
 }
 
@@ -3361,7 +3363,7 @@ function sqliteRowCount(databasePath: string, query: string, ...parameters: read
     const row = database.query(query).get(...parameters) as {readonly count?: bigint | number} | null;
     const count = Number(row?.count ?? 0);
     if (!Number.isSafeInteger(count) || count < 0)
-      throw new ScriptError(`Invalid SQLite row count for ${databasePath}.`);
+      throw ScriptError.make({message: `Invalid SQLite row count for ${databasePath}.`});
     return count;
   } finally {
     database.close(false);
@@ -3381,7 +3383,7 @@ function sqliteLexicalTermRowCount(databasePath: string, snapshotId: string): nu
       } | null);
     const count = Number(row?.count ?? 0);
     if (!Number.isSafeInteger(count) || count < 0) {
-      throw new ScriptError(`Invalid SQLite lexical term row count for ${databasePath}.`);
+      throw ScriptError.make({message: `Invalid SQLite lexical term row count for ${databasePath}.`});
     }
     return count;
   } finally {
@@ -3423,7 +3425,7 @@ function sqliteGroupedLanguageCounts(rows: readonly unknown[]): ReadonlyMap<stri
     const language = row.language ?? '';
     const count = Number(row.count ?? -1);
     if (!/^[a-z][a-z0-9-]*$/.test(language) || !Number.isSafeInteger(count) || count < 0) {
-      throw new ScriptError('Code graph database returned an invalid privacy-safe language aggregate.');
+      throw ScriptError.make({message: 'Code graph database returned an invalid privacy-safe language aggregate.'});
     }
     counts.set(language, count);
   }
@@ -3436,7 +3438,7 @@ function sqliteVersionString(databasePath: string): string {
     const row = database.query('SELECT sqlite_version() AS version').get() as {readonly version?: string} | null;
     const version = row?.version ?? '';
     if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
-      throw new ScriptError('Code graph database returned an invalid SQLite version.');
+      throw ScriptError.make({message: 'Code graph database returned an invalid SQLite version.'});
     }
     return version;
   } finally {
@@ -3450,7 +3452,7 @@ function sqlitePageSize(databasePath: string): number {
     const row = database.query('PRAGMA page_size').get() as {readonly page_size?: bigint | number} | null;
     const pageSize = Number(row?.page_size ?? 0);
     if (!Number.isSafeInteger(pageSize) || pageSize < 512 || pageSize > 65_536) {
-      throw new ScriptError('Code graph database returned an invalid SQLite page size.');
+      throw ScriptError.make({message: 'Code graph database returned an invalid SQLite page size.'});
     }
     return pageSize;
   } finally {
@@ -3591,7 +3593,8 @@ export const sqliteStructuralGraphEvidence = Effect.fn('benchmarkCodeGraph.struc
   );
   return yield* Effect.acquireUseRelease(
     Effect.try({
-      catch: cause => new ScriptError('Could not open the code graph structural digest read snapshot.', {cause}),
+      catch: cause =>
+        ScriptError.make({message: 'Could not open the code graph structural digest read snapshot.', cause}),
       try: () => openCodeGraphStructuralDigestReadSnapshot(databasePath, snapshotId),
     }),
     readSnapshot =>
@@ -3608,7 +3611,7 @@ export const sqliteStructuralGraphEvidence = Effect.fn('benchmarkCodeGraph.struc
         return yield* readCodeGraphStructuralGraphEvidence(readSnapshot, snapshotId, renewLeaseIfDue);
       }),
     readSnapshot => Effect.sync(() => closeCodeGraphStructuralDigestReadSnapshot(readSnapshot)),
-  ).pipe(Effect.ensuring(store.releaseSnapshotLease(databasePath, lease).pipe(Effect.catch(() => Effect.void))));
+  ).pipe(Effect.ensuring(store.releaseSnapshotLease(databasePath, lease).pipe(Effect.ignore)));
 });
 
 function openCodeGraphStructuralDigestReadSnapshot(
@@ -3624,7 +3627,7 @@ function openCodeGraphStructuralDigestReadSnapshot(
         .get(snapshotId, 'ready') as {readonly base_snapshot_id?: unknown} | undefined,
     );
     if (Option.isNone(snapshot))
-      throw new ScriptError('Ready snapshot was unavailable for the structural graph digest.');
+      throw ScriptError.make({message: 'Ready snapshot was unavailable for the structural graph digest.'});
     return {
       baseSnapshotId:
         typeof snapshot.value.base_snapshot_id === 'string'
@@ -3815,7 +3818,7 @@ const readCodeGraphStructuralGraphEvidence = Effect.fn('benchmarkCodeGraph.readS
         streamDigest.update('\n');
         rowCount += 1;
         if (!Number.isSafeInteger(rowCount)) {
-          return yield* Effect.fail(new ScriptError(`Structural digest stream ${stream.name} is too large.`));
+          return yield* ScriptError.make({message: `Structural digest stream ${stream.name} is too large.`});
         }
       }
       yield* renewLeaseIfDue;
@@ -3834,11 +3837,12 @@ export function codeGraphStructuralParityEvidence(
     referenceStreams.size !== sameOverlayReference.streams.length ||
     incremental.streams.length !== sameOverlayReference.streams.length
   ) {
-    throw new ScriptError('Structural graph digest evidence returned an inconsistent stream set.');
+    throw ScriptError.make({message: 'Structural graph digest evidence returned an inconsistent stream set.'});
   }
   const mismatchedStreams = incremental.streams.flatMap(stream => {
     const reference = referenceStreams.get(stream.name);
-    if (!reference) throw new ScriptError('Structural graph digest evidence returned an inconsistent stream set.');
+    if (!reference)
+      throw ScriptError.make({message: 'Structural graph digest evidence returned an inconsistent stream set.'});
     return stream.rowCount === reference.rowCount && stream.digest === reference.digest
       ? []
       : [{incremental: stream, name: stream.name, sameOverlayReference: reference}];
@@ -3914,7 +3918,7 @@ const vectorMappingDigest = Effect.fn('benchmarkCodeGraph.vectorMappingDigest')(
   worktreeId: string,
 ) {
   if (!(yield* fs.exists(vectorRoot))) {
-    return yield* Effect.fail(new ScriptError('Vector mapping digest requires a vector database.'));
+    return yield* ScriptError.make({message: 'Vector mapping digest requires a vector database.'});
   }
   const hash = new Bun.CryptoHasher('sha256');
   let rows = 0;
@@ -3946,7 +3950,7 @@ const vectorMappingDigest = Effect.fn('benchmarkCodeGraph.vectorMappingDigest')(
             typeof mapping.fingerprint !== 'string' ||
             !(mapping.vector instanceof Uint8Array)
           ) {
-            throw new ScriptError('Vector database returned an invalid active mapping row.');
+            throw ScriptError.make({message: 'Vector database returned an invalid active mapping row.'});
           }
           updateVectorMappingDigest(hash, mapping.symbol_id);
           updateVectorMappingDigest(hash, mapping.fingerprint);
@@ -3958,7 +3962,7 @@ const vectorMappingDigest = Effect.fn('benchmarkCodeGraph.vectorMappingDigest')(
       }
     }
   }
-  if (rows === 0) return yield* Effect.fail(new ScriptError('Vector mapping digest found no active vector rows.'));
+  if (rows === 0) return yield* ScriptError.make({message: 'Vector mapping digest found no active vector rows.'});
   return hash.digest('hex');
 });
 
@@ -4056,9 +4060,9 @@ const benchmarkExternalQueryControl = Effect.fn('benchmarkCodeGraph.externalQuer
         duration: EXTERNAL_QUERY_CONTROL_TIMEOUT_MS,
         orElse: () =>
           Effect.fail(
-            new ScriptError(
-              `External ${phase} query control timed out after ${EXTERNAL_QUERY_CONTROL_TIMEOUT_MS} milliseconds.`,
-            ),
+            ScriptError.make({
+              message: `External ${phase} query control timed out after ${EXTERNAL_QUERY_CONTROL_TIMEOUT_MS} milliseconds.`,
+            }),
           ),
       }),
     );
@@ -4107,9 +4111,7 @@ const benchmarkMcpOperationMatrix = Effect.fn('benchmarkCodeGraph.mcpOperationMa
     const structuredBytes = encodedBytes(JSON.stringify(response.structuredContent));
     const textBytes = encodedBytes(response.text);
     if (structuredBytes > 24 * 1_024 || textBytes > 24 * 1_024) {
-      return yield* Effect.fail(
-        new ScriptError(`MCP ${options.operation} output exceeded its 24 KiB per-part budget.`),
-      );
+      return yield* ScriptError.make({message: `MCP ${options.operation} output exceeded its 24 KiB per-part budget.`});
     }
     const finished = yield* Clock.currentTimeNanos;
     results.push({
@@ -4127,7 +4129,7 @@ const benchmarkMcpOperationMatrix = Effect.fn('benchmarkCodeGraph.mcpOperationMa
 
   const lexical = yield* execute({operation: 'query', query: queryText});
   const seed = lexical.nodes[0];
-  if (!seed) return yield* Effect.fail(new ScriptError('MCP operation matrix query returned no seed node.'));
+  if (!seed) return yield* ScriptError.make({message: 'MCP operation matrix query returned no seed node.'});
   yield* execute({nodeId: seed.id, operation: 'node'});
   const neighbors = yield* execute({depth: 1, nodeId: seed.id, operation: 'neighbors'});
   yield* execute({operation: 'explain', symbol: seed.id});
@@ -4184,7 +4186,7 @@ export function assertManagerVisualizationBounds(
     graph.paging.nodeLimit !== limits.nodeLimit ||
     graph.paging.edgeLimit !== limits.edgeLimit
   ) {
-    throw new ScriptError(`Manager benchmark ${label} exceeded or misreported its requested graph budget.`);
+    throw ScriptError.make({message: `Manager benchmark ${label} exceeded or misreported its requested graph budget.`});
   }
 }
 
@@ -4204,7 +4206,7 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
     view => view.snapshot.id === expectedSnapshotId && view.snapshot.state === 'ready',
   );
   if (!indexedView) {
-    return yield* Effect.fail(new ScriptError('Manager benchmark catalog did not expose the expected ready snapshot.'));
+    return yield* ScriptError.make({message: 'Manager benchmark catalog did not expose the expected ready snapshot.'});
   }
   const expectedSnapshot = Option.some(expectedSnapshotId);
   const catalogWarmSamples = Math.max(1, Math.min(samples, 5));
@@ -4241,7 +4243,7 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
     nodeLimit: MANAGER_GRAPH_MAX_NODE_LIMIT,
   });
   if (overviewCold.value.nodes.length === 0) {
-    return yield* Effect.fail(new ScriptError('Manager benchmark overview returned no graph nodes.'));
+    return yield* ScriptError.make({message: 'Manager benchmark overview returned no graph nodes.'});
   }
   for (const sample of overviewWarm) {
     assertManagerVisualizationBounds('overview warm response', sample.value, {
@@ -4250,7 +4252,7 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
     });
   }
   const project = indexedView.projects.find(candidate => (candidate.symbolCount ?? 1) > 0) ?? indexedView.projects[0];
-  if (!project) return yield* Effect.fail(new ScriptError('Manager benchmark snapshot has no project detail scope.'));
+  if (!project) return yield* ScriptError.make({message: 'Manager benchmark snapshot has no project detail scope.'});
   const detailCold = yield* timedJsonEffect(
     managerGraphVisualization(
       threadnoteHome,
@@ -4265,7 +4267,7 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
     nodeLimit: MANAGER_GRAPH_MAX_NODE_LIMIT,
   });
   if (detailCold.value.nodes.length === 0) {
-    return yield* Effect.fail(new ScriptError('Manager benchmark selected project detail returned no graph nodes.'));
+    return yield* ScriptError.make({message: 'Manager benchmark selected project detail returned no graph nodes.'});
   }
 
   for (let index = 0; index < warmups; index += 1) {
@@ -4293,7 +4295,7 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
   );
   const queryResult = querySamples[0]?.value;
   if (!queryResult || queryResult.nodes.length === 0) {
-    return yield* Effect.fail(new ScriptError('Manager benchmark bounded query returned no graph nodes.'));
+    return yield* ScriptError.make({message: 'Manager benchmark bounded query returned no graph nodes.'});
   }
   for (const sample of querySamples) {
     assertManagerVisualizationBounds('bounded query response', sample.value, {
@@ -4315,9 +4317,9 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
       Math.max(Number.EPSILON, Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND),
     );
     if (rendered.nodes !== renderGraph.nodes.length || rendered.matchedEdges > renderGraph.edges.length) {
-      return yield* Effect.fail(
-        new ScriptError('Manager benchmark layout-preparation proxy did not preserve its bounded graph input.'),
-      );
+      return yield* ScriptError.make({
+        message: 'Manager benchmark layout-preparation proxy did not preserve its bounded graph input.',
+      });
     }
   }
 
@@ -4335,7 +4337,7 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
     nodeDetail.value.snapshotId === expectedSnapshotId &&
     staleSnapshotRejected;
   if (!snapshotBindingPassed) {
-    return yield* Effect.fail(new ScriptError('Manager benchmark did not preserve exact snapshot binding.'));
+    return yield* ScriptError.make({message: 'Manager benchmark did not preserve exact snapshot binding.'});
   }
 
   const scope = `${indexedView.id}:${expectedSnapshotId}:${queryText}:${MANAGER_QUERY_NODE_LIMIT}:${MANAGER_QUERY_EDGE_LIMIT}`;
@@ -4409,7 +4411,7 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
     cancelledOutcome.state === 'cancelled' &&
     acceptedAfterCancellationOutcome.state === 'accepted';
   if (!requestCancellationPassed) {
-    return yield* Effect.fail(new ScriptError('Manager benchmark request-cancellation control failed.'));
+    return yield* ScriptError.make({message: 'Manager benchmark request-cancellation control failed.'});
   }
 
   const lateQueryCompleted = yield* Deferred.make<void>();
@@ -4451,7 +4453,7 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
     lateOutcome.state === 'stale' &&
     acceptedAfterLateResponseOutcome.state === 'accepted';
   if (!staleResponseRejectionPassed) {
-    return yield* Effect.fail(new ScriptError('Manager benchmark stale-response rejection control failed.'));
+    return yield* ScriptError.make({message: 'Manager benchmark stale-response rejection control failed.'});
   }
 
   return {
@@ -4509,7 +4511,9 @@ export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.manager
       duration: MANAGER_SEQUENCE_TIMEOUT_MS,
       orElse: () =>
         Effect.fail(
-          new ScriptError(`Manager benchmark sequence timed out after ${MANAGER_SEQUENCE_TIMEOUT_MS} milliseconds.`),
+          ScriptError.make({
+            message: `Manager benchmark sequence timed out after ${MANAGER_SEQUENCE_TIMEOUT_MS} milliseconds.`,
+          }),
         ),
     }),
   );
@@ -4522,12 +4526,12 @@ export function retryManagerBenchmarkBusy<A, E, R>(
   retryDelayMilliseconds = MANAGER_BUSY_RETRY_MILLISECONDS,
 ): Effect.Effect<A, E, R> {
   return Effect.suspend(operation).pipe(
-    Effect.catch(error =>
-      error instanceof ManagerGraphBusyError && remainingAttempts > 0
-        ? Effect.sleep(retryDelayMilliseconds).pipe(
-            Effect.andThen(retryManagerBenchmarkBusy(operation, remainingAttempts - 1, retryDelayMilliseconds)),
-          )
-        : Effect.fail(error),
+    Effect.catchIf(
+      error => Schema.is(ManagerGraphBusyError)(error) && remainingAttempts > 0,
+      () =>
+        Effect.sleep(retryDelayMilliseconds).pipe(
+          Effect.andThen(retryManagerBenchmarkBusy(operation, remainingAttempts - 1, retryDelayMilliseconds)),
+        ),
     ),
   );
 }
@@ -4635,7 +4639,7 @@ export function retainedExternalControlEvidence(
   const entries = controls
     .map(control => {
       const result = resultByLanguage.get(control.expectedLanguage);
-      if (!result) throw new ScriptError('External control evidence is missing a cold query result.');
+      if (!result) throw ScriptError.make({message: 'External control evidence is missing a cold query result.'});
       return [
         performanceControlMetadataKey(control.expectedLanguage),
         {
@@ -4647,7 +4651,7 @@ export function retainedExternalControlEvidence(
     })
     .sort(([left], [right]) => left.localeCompare(right, 'en'));
   if (new Set(entries.map(([language]) => language)).size !== entries.length) {
-    throw new ScriptError('External control evidence contains duplicate public language categories.');
+    throw ScriptError.make({message: 'External control evidence contains duplicate public language categories.'});
   }
   return JSON.stringify(Object.fromEntries(entries));
 }
@@ -4660,9 +4664,9 @@ export function assertPerformanceControlSet(controls: readonly ExternalRepositor
     actual.length !== expected.length ||
     actual.some((language, index) => language !== expected[index])
   ) {
-    throw new ScriptError(
-      `Release-bound external performance evidence requires exactly ${PERFORMANCE_CONTROL_LANGUAGES.join(', ')} controls.`,
-    );
+    throw ScriptError.make({
+      message: `Release-bound external performance evidence requires exactly ${PERFORMANCE_CONTROL_LANGUAGES.join(', ')} controls.`,
+    });
   }
 }
 
@@ -4687,10 +4691,11 @@ function assertExternalQueryPositiveControl(
       node.language === performanceControlExpectedNodeLanguage(expected.expectedLanguage),
   );
   if (result.snapshot.id !== expected.expectedSnapshotId || result.nodes.length === 0 || expectedNodes.length === 0) {
-    throw new ScriptError(
-      `External repository ${expected.phase} query did not resolve its expected tracked path and language; ` +
+    throw ScriptError.make({
+      message:
+        `External repository ${expected.phase} query did not resolve its expected tracked path and language; ` +
         'the query and path were omitted from this diagnostic.',
-    );
+    });
   }
   return {
     digest: queryResultStructuralDigest(result),
@@ -4707,7 +4712,7 @@ function assertPrimaryQueryPositiveControl(
   phase: 'cold' | 'incremental' | 'same-overlay-reference',
 ): {readonly digest: string; readonly result: CodeGraphQueryResult; readonly returnedNodes: number} {
   if (result.snapshot.id !== expectedSnapshotId || result.nodes.length === 0) {
-    throw new ScriptError(`Code graph ${phase} primary query returned no current-snapshot nodes.`);
+    throw ScriptError.make({message: `Code graph ${phase} primary query returned no current-snapshot nodes.`});
   }
   return {digest: queryResultStructuralDigest(result), result, returnedNodes: result.nodes.length};
 }
@@ -4802,7 +4807,7 @@ export function assertProductionReleaseEvidence(artifact: BenchmarkArtifactV1): 
 
 function assertProductionLargeEvidence(artifact: BenchmarkArtifactV1, requireReleaseSource = false): void {
   if (!artifact.suite.startsWith('code-graph-production-large-')) {
-    throw new ScriptError(`Production release evidence has the wrong suite: ${artifact.suite}.`);
+    throw ScriptError.make({message: `Production release evidence has the wrong suite: ${artifact.suite}.`});
   }
   const measurements = new Map(artifact.measurements.map(measurement => [measurement.name, measurement]));
   const missing = PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS.flatMap(required => {
@@ -4834,7 +4839,7 @@ function assertProductionLargeEvidence(artifact: BenchmarkArtifactV1, requireRel
   missing.push(...missingSamplerObservations(measurements));
   missing.push(...missingActivationObservations(artifact, measurements));
   if (missing.length > 0) {
-    throw new ScriptError(`Production release evidence is incomplete: ${missing.join(', ')}.`);
+    throw ScriptError.make({message: `Production release evidence is incomplete: ${missing.join(', ')}.`});
   }
 }
 
@@ -5245,9 +5250,9 @@ export const validateBenchmarkRuntimeProvenance = Effect.fn('benchmarkCodeGraph.
     {concurrency: 2},
   );
   if (!EXACT_GIT_COMMIT_PATTERN.test(sourceCommit) || dirty.length > 0) {
-    return yield* Effect.fail(
-      new ScriptError('Long code-graph benchmarks require a clean Threadnote checkout at an exact Git commit.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Long code-graph benchmarks require a clean Threadnote checkout at an exact Git commit.',
+    });
   }
   const environment = system.environment();
   if (environment.GITHUB_ACTIONS === 'true') {
@@ -5273,9 +5278,9 @@ export const validateBenchmarkRuntimeProvenance = Effect.fn('benchmarkCodeGraph.
       expectedRunnerOperatingSystem === undefined ||
       runnerOperatingSystem !== expectedRunnerOperatingSystem
     ) {
-      return yield* Effect.fail(
-        new ScriptError('GitHub Actions benchmark provenance is incomplete or does not match the checkout commit.'),
-      );
+      return yield* ScriptError.make({
+        message: 'GitHub Actions benchmark provenance is incomplete or does not match the checkout commit.',
+      });
     }
     const [realSourceRoot, realGithubWorkspace, sourceLockfileSha256, sourcePackageManifestSha256] = yield* Effect.all(
       [
@@ -5289,7 +5294,7 @@ export const validateBenchmarkRuntimeProvenance = Effect.fn('benchmarkCodeGraph.
     const normalize = (value: string) =>
       system.platform === 'win32' ? path.resolve(value).toLocaleLowerCase('en-US') : path.resolve(value);
     if (normalize(realSourceRoot) !== normalize(realGithubWorkspace)) {
-      return yield* Effect.fail(new ScriptError('GitHub Actions benchmark provenance is not bound to this workspace.'));
+      return yield* ScriptError.make({message: 'GitHub Actions benchmark provenance is not bound to this workspace.'});
     }
     yield* verifyBenchmarkSourceUnchanged(sourceRoot, sourceCommit);
     return {
@@ -5320,11 +5325,11 @@ export const revalidateExternalBenchmarkPreflightState = Effect.fn(
   expectedRuntimeProvenance: BenchmarkRuntimeProvenance | undefined,
 ) {
   if (!expectedExternalCommit || !expectedRuntimeProvenance) {
-    return yield* Effect.fail(new ScriptError('External benchmark preflight has incomplete provenance.'));
+    return yield* ScriptError.make({message: 'External benchmark preflight has incomplete provenance.'});
   }
   const runtimeProvenance = yield* validateBenchmarkRuntimeProvenance(sourceRoot);
   if (JSON.stringify(runtimeProvenance) !== JSON.stringify(expectedRuntimeProvenance)) {
-    return yield* Effect.fail(new ScriptError('Threadnote benchmark runtime provenance changed during preflight.'));
+    return yield* ScriptError.make({message: 'Threadnote benchmark runtime provenance changed during preflight.'});
   }
   yield* verifyExternalRepositoryUnchanged(externalRepository, expectedExternalCommit);
   // Keep the source checkout check last so no artifact is emitted after a
@@ -5398,9 +5403,10 @@ export function resolvedReleaseEvidenceSource(
     (!reviewedDelta && (checkoutCommit !== sha || harnessDeltaPaths.length > 0)) ||
     dirty
   ) {
-    throw new ScriptError(
-      'Release benchmark provenance requires a locally resolvable tag and either its clean exact commit or a clean descendant with only reviewed harness changes.',
-    );
+    throw ScriptError.make({
+      message:
+        'Release benchmark provenance requires a locally resolvable tag and either its clean exact commit or a clean descendant with only reviewed harness changes.',
+    });
   }
   return {
     ref,
@@ -5424,9 +5430,9 @@ const validateReleaseEvidenceSource = Effect.fn('benchmarkCodeGraph.validateRele
     !THREADNOTE_4_RELEASE_REF_PATTERN.test(ref) ||
     !EXACT_GIT_COMMIT_PATTERN.test(sha)
   ) {
-    return yield* Effect.fail(
-      new ScriptError('Release benchmark provenance requires a Threadnote 4 release tag and its exact commit SHA.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Release benchmark provenance requires a Threadnote 4 release tag and its exact commit SHA.',
+    });
   }
   const [commit, dirty, resolvedSha] = yield* Effect.all(
     [
@@ -5536,7 +5542,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     else if (argument === '--embedding-contexts') {
       const value = integer(args[++index], argument, 1);
       if (value !== 1 && value !== 2 && value !== 4 && value !== 8) {
-        throw new ScriptError(`${argument} must be 1, 2, 4, or 8.`);
+        throw ScriptError.make({message: `${argument} must be 1, 2, 4, or 8.`});
       }
       embeddingContexts = value;
     } else if (argument === '--control') {
@@ -5548,7 +5554,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     else if (argument === '--incremental-path') incrementalPath = required(args[++index], argument);
     else if (argument === '--materialization-transaction-batches') {
       const value = integer(args[++index], argument, 1);
-      if (value !== 1 && value !== 4) throw new ScriptError(`${argument} must be 1 or 4.`);
+      if (value !== 1 && value !== 4) throw ScriptError.make({message: `${argument} must be 1 or 4.`});
       materializationTransactionBatchLimit = value;
     } else if (argument === '--minimum-free-gib') minimumFreeGiB = integer(args[++index], argument, 1);
     else if (argument === '--model-home') modelHome = required(args[++index], argument);
@@ -5557,7 +5563,8 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     else if (argument === '--repository') repository = required(args[++index], argument);
     else if (argument === '--profile') {
       const value = required(args[++index], argument);
-      if (value !== 'production-large') throw new ScriptError(`Unknown code graph benchmark profile: ${value}`);
+      if (value !== 'production-large')
+        throw ScriptError.make({message: `Unknown code graph benchmark profile: ${value}`});
       profile = value;
     } else if (argument === '--profile-files') profileFiles = integer(args[++index], argument, 2);
     else if (argument === '--profile-symbols') profileSymbols = integer(args[++index], argument, 2);
@@ -5567,7 +5574,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     else if (argument === '--sqlite-writer-profile') {
       const value = required(args[++index], argument);
       if (!(value in CODE_GRAPH_SQLITE_WRITER_PROFILES)) {
-        throw new ScriptError(`Unknown SQLite writer benchmark profile: ${value}`);
+        throw ScriptError.make({message: `Unknown SQLite writer benchmark profile: ${value}`});
       }
       sqliteWriterProfile = value as CodeGraphSqliteWriterProfile;
     } else if (argument === '--warmups') warmups = integer(args[++index], argument, 0);
@@ -5576,63 +5583,72 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     else if (argument === '--preflight') preflight = true;
     else if (argument === '--retain-homes') retainHomes = true;
     else if (argument === '--vectors') vectors = true;
-    else throw new ScriptError(`Unknown code graph benchmark option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown code graph benchmark option: ${argument}`});
   }
-  if (!/^code-graph-[a-z0-9-]+$/.test(fixture)) throw new ScriptError(`Invalid code graph fixture name: ${fixture}.`);
+  if (!/^code-graph-[a-z0-9-]+$/.test(fixture))
+    throw ScriptError.make({message: `Invalid code graph fixture name: ${fixture}.`});
   if (vectors && fixture !== 'code-graph-v1') {
-    throw new ScriptError('The vector semantic control is currently defined only for code-graph-v1.');
+    throw ScriptError.make({message: 'The vector semantic control is currently defined only for code-graph-v1.'});
   }
   if (profile && scaleSymbols !== undefined) {
-    throw new ScriptError('--profile and --scale-symbols are separate fixture modes and cannot be combined.');
+    throw ScriptError.make({
+      message: '--profile and --scale-symbols are separate fixture modes and cannot be combined.',
+    });
   }
   if ((profileFiles !== undefined || profileSymbols !== undefined) && profile !== 'production-large') {
-    throw new ScriptError('--profile-files and --profile-symbols require --profile production-large.');
+    throw ScriptError.make({message: '--profile-files and --profile-symbols require --profile production-large.'});
   }
   const requiredProfileFreeGiB =
     !vectors && reducedProductionRatchetProfile(profileFiles, profileSymbols)
       ? PRODUCTION_RATCHET_REDUCED_MINIMUM_FREE_GIB
       : 120;
   if (profile === 'production-large' && minimumFreeGiB < requiredProfileFreeGiB) {
-    throw new ScriptError(
-      `The selected production-large profile requires --minimum-free-gib of at least ${requiredProfileFreeGiB}.`,
-    );
+    throw ScriptError.make({
+      message: `The selected production-large profile requires --minimum-free-gib of at least ${requiredProfileFreeGiB}.`,
+    });
   }
   if (profile === 'production-large' && fixture !== 'code-graph-v1') {
-    throw new ScriptError('The production-large profile uses the code-graph-v1 query contract.');
+    throw ScriptError.make({message: 'The production-large profile uses the code-graph-v1 query contract.'});
   }
   if (profile === 'production-large' && failOnBudget) {
-    throw new ScriptError(
-      'The opt-in production-large profile has no portable latency budget; retain and review its artifact.',
-    );
+    throw ScriptError.make({
+      message: 'The opt-in production-large profile has no portable latency budget; retain and review its artifact.',
+    });
   }
   if (sqliteWriterProfile !== undefined && sqliteWriterProfile !== 'current' && failOnBudget) {
-    throw new ScriptError('SQLite writer candidate runs retain comparison evidence and cannot use production budgets.');
+    throw ScriptError.make({
+      message: 'SQLite writer candidate runs retain comparison evidence and cannot use production budgets.',
+    });
   }
   if (
     embeddingContexts !== undefined &&
     (!vectors || scaleSymbols !== 10_000 || profile !== undefined || repository !== undefined)
   ) {
-    throw new ScriptError('--embedding-contexts requires --vectors --scale-symbols 10000.');
+    throw ScriptError.make({message: '--embedding-contexts requires --vectors --scale-symbols 10000.'});
   }
   if (embeddingContexts !== undefined && failOnBudget) {
-    throw new ScriptError('Embedding-context candidates retain comparison evidence and cannot use production budgets.');
+    throw ScriptError.make({
+      message: 'Embedding-context candidates retain comparison evidence and cannot use production budgets.',
+    });
   }
   if (preflight && ratchetPath !== undefined) {
-    throw new ScriptError('--ratchet evaluates a completed artifact and cannot be combined with --preflight.');
+    throw ScriptError.make({
+      message: '--ratchet evaluates a completed artifact and cannot be combined with --preflight.',
+    });
   }
   if (ratchetPath !== undefined && outputPath === undefined) {
-    throw new ScriptError('--ratchet requires --output so failed evidence remains reviewable.');
+    throw ScriptError.make({message: '--ratchet requires --output so failed evidence remains reviewable.'});
   }
   const legacyControlValues = [queryText, expectedPath, expectedLanguage].filter(value => value !== undefined).length;
   if (structuredControls.length > 0 && legacyControlValues > 0) {
-    throw new ScriptError(
-      '--control cannot be combined with legacy --query, --expected-path, or --expected-language flags.',
-    );
+    throw ScriptError.make({
+      message: '--control cannot be combined with legacy --query, --expected-path, or --expected-language flags.',
+    });
   }
   if (legacyControlValues > 0 && legacyControlValues < 3) {
-    throw new ScriptError(
-      'Legacy external control flags require --query, --expected-path, and --expected-language together.',
-    );
+    throw ScriptError.make({
+      message: 'Legacy external control flags require --query, --expected-path, and --expected-language together.',
+    });
   }
   const externalControls =
     structuredControls.length > 0
@@ -5641,25 +5657,29 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
         ? [{expectedLanguage, expectedPath, query: queryText}]
         : [];
   if (new Set(externalControls.map(control => control.expectedLanguage)).size !== externalControls.length) {
-    throw new ScriptError('External query controls must use unique language categories.');
+    throw ScriptError.make({message: 'External query controls must use unique language categories.'});
   }
   if (repository !== undefined) {
     if (profile !== undefined || scaleSymbols !== undefined || vectors) {
-      throw new ScriptError('--repository cannot be combined with generated profiles, scale fixtures, or vectors.');
+      throw ScriptError.make({
+        message: '--repository cannot be combined with generated profiles, scale fixtures, or vectors.',
+      });
     }
     if (!incrementalPath || externalControls.length === 0 || !outputPath) {
-      throw new ScriptError('--repository requires --incremental-path, at least one --control, and --output.');
+      throw ScriptError.make({
+        message: '--repository requires --incremental-path, at least one --control, and --output.',
+      });
     }
     if (failOnBudget) {
-      throw new ScriptError(
-        'External repositories retain same-runner evidence and do not use portable latency budgets.',
-      );
+      throw ScriptError.make({
+        message: 'External repositories retain same-runner evidence and do not use portable latency budgets.',
+      });
     }
     if ((homePath === undefined) !== (referenceHomePath === undefined)) {
-      throw new ScriptError('--home and --reference-home must be provided together.');
+      throw ScriptError.make({message: '--home and --reference-home must be provided together.'});
     }
     if (retainHomes && (homePath === undefined || referenceHomePath === undefined)) {
-      throw new ScriptError('--retain-homes requires explicit --home and --reference-home paths.');
+      throw ScriptError.make({message: '--retain-homes requires explicit --home and --reference-home paths.'});
     }
   } else if (
     incrementalPath !== undefined ||
@@ -5669,9 +5689,10 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     retainHomes ||
     preflight
   ) {
-    throw new ScriptError(
-      '--incremental-path, external controls, benchmark homes, --retain-homes, and --preflight require --repository.',
-    );
+    throw ScriptError.make({
+      message:
+        '--incremental-path, external controls, benchmark homes, --retain-homes, and --preflight require --repository.',
+    });
   }
   return {
     embeddingContexts,
@@ -5709,19 +5730,24 @@ function parseExternalRepositoryQueryControl(value: string): ExternalRepositoryQ
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new ScriptError('--control must be a JSON object with query, expectedPath, and expectedLanguage strings.');
+    throw ScriptError.make({
+      message: '--control must be a JSON object with query, expectedPath, and expectedLanguage strings.',
+    });
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new ScriptError('--control must be a JSON object with query, expectedPath, and expectedLanguage strings.');
+    throw ScriptError.make({
+      message: '--control must be a JSON object with query, expectedPath, and expectedLanguage strings.',
+    });
   }
   const candidate = parsed as Partial<Record<keyof ExternalRepositoryQueryControl, unknown>>;
   const query = typeof candidate.query === 'string' ? candidate.query.trim() : '';
   const expectedPath = typeof candidate.expectedPath === 'string' ? candidate.expectedPath.trim() : '';
   const expectedLanguage = typeof candidate.expectedLanguage === 'string' ? candidate.expectedLanguage.trim() : '';
   if (!query || !expectedPath || !/^[a-z][a-z0-9-]*$/.test(expectedLanguage)) {
-    throw new ScriptError(
-      '--control requires non-empty query and expectedPath strings plus a lowercase expectedLanguage category.',
-    );
+    throw ScriptError.make({
+      message:
+        '--control requires non-empty query and expectedPath strings plus a lowercase expectedLanguage category.',
+    });
   }
   return {expectedLanguage, expectedPath, query};
 }
@@ -5732,7 +5758,7 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   if (!options.repository || !options.incrementalPath || options.externalControls.length === 0 || !options.outputPath) {
-    return yield* Effect.fail(new ScriptError('External repository benchmark options are incomplete.'));
+    return yield* ScriptError.make({message: 'External repository benchmark options are incomplete.'});
   }
   const requestedRoot = path.resolve(options.repository);
   const repository = yield* fs.realPath(
@@ -5747,10 +5773,10 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
     {concurrency: 3},
   );
   if (!EXACT_GIT_COMMIT_PATTERN.test(externalCommit)) {
-    return yield* Effect.fail(new ScriptError('External repository did not resolve to an exact Git commit.'));
+    return yield* ScriptError.make({message: 'External repository did not resolve to an exact Git commit.'});
   }
   if (dirty.length > 0) {
-    return yield* Effect.fail(new ScriptError('External repository benchmark requires a clean checkout.'));
+    return yield* ScriptError.make({message: 'External repository benchmark requires a clean checkout.'});
   }
   const publicRepository = publicGitHubRepositoryEvidence(origin);
   const publicRepositoryVerification = yield* verifyPublicRepositoryCommit(
@@ -5767,11 +5793,9 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
       artifactContainment !== '..' &&
       !artifactContainment.startsWith(`..${path.sep}`))
   ) {
-    return yield* Effect.fail(
-      new ScriptError(
-        '--output must be outside the external repository so benchmark evidence cannot modify the checkout.',
-      ),
-    );
+    return yield* ScriptError.make({
+      message: '--output must be outside the external repository so benchmark evidence cannot modify the checkout.',
+    });
   }
 
   const [incrementalPath, externalControls] = yield* Effect.all(
@@ -5813,7 +5837,7 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
   const home = homeReservation.home;
   const referenceHome = referenceHomeReservation.home;
   if (home === referenceHome) {
-    return yield* Effect.fail(new ScriptError('Primary and same-overlay reference benchmark homes must be different.'));
+    return yield* ScriptError.make({message: 'Primary and same-overlay reference benchmark homes must be different.'});
   }
   for (const benchmarkHome of [home, referenceHome]) {
     const containment = path.relative(repository, benchmarkHome);
@@ -5821,7 +5845,7 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
       containment === '' ||
       (!path.isAbsolute(containment) && containment !== '..' && !containment.startsWith(`..${path.sep}`))
     ) {
-      return yield* Effect.fail(new ScriptError('Benchmark homes must be outside the external repository.'));
+      return yield* ScriptError.make({message: 'Benchmark homes must be outside the external repository.'});
     }
   }
   return {
@@ -5852,7 +5876,7 @@ export function publicGitHubRepositoryEvidence(remote: string): PublicGitHubRepo
         try {
           parsed = new URL(trimmed);
         } catch {
-          throw new ScriptError('External benchmark origin must be a public GitHub repository URL.');
+          throw ScriptError.make({message: 'External benchmark origin must be a public GitHub repository URL.'});
         }
         const allowedSshUser =
           parsed.protocol === 'ssh:' && (parsed.username.length === 0 || parsed.username === 'git');
@@ -5866,10 +5890,11 @@ export function publicGitHubRepositoryEvidence(remote: string): PublicGitHubRepo
           parsed.hash.length > 0 ||
           !['https:', 'ssh:'].includes(parsed.protocol)
         ) {
-          throw new ScriptError('External benchmark origin must be a public GitHub repository URL.');
+          throw ScriptError.make({message: 'External benchmark origin must be a public GitHub repository URL.'});
         }
         const match = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(parsed.pathname);
-        if (!match) throw new ScriptError('External benchmark origin must be a public GitHub repository URL.');
+        if (!match)
+          throw ScriptError.make({message: 'External benchmark origin must be a public GitHub repository URL.'});
         return [match[1], match[2]] as const;
       })();
   const name = `${owner}/${repository}`;
@@ -5928,17 +5953,17 @@ const exactCommitProofRemote = Effect.fn('benchmarkCodeGraph.exactCommitProofRem
     environment.THREADNOTE_BENCHMARK_RELEASE_REF?.trim() ||
     environment.THREADNOTE_BENCHMARK_RELEASE_SHA?.trim()
   ) {
-    return yield* Effect.fail(
-      new ScriptError('The local public-repository proof seam is test-only and unavailable for release evidence.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The local public-repository proof seam is test-only and unavailable for release evidence.',
+    });
   }
   if (!path.isAbsolute(testRemote)) {
-    return yield* Effect.fail(new ScriptError('The local public-repository proof seam requires an absolute Git path.'));
+    return yield* ScriptError.make({message: 'The local public-repository proof seam requires an absolute Git path.'});
   }
   const resolved = yield* fs.realPath(testRemote);
   const info = yield* fs.stat(resolved);
   if (info.type !== 'Directory') {
-    return yield* Effect.fail(new ScriptError('The local public-repository proof seam requires a Git directory.'));
+    return yield* ScriptError.make({message: 'The local public-repository proof seam requires a Git directory.'});
   }
   return resolved;
 });
@@ -5951,7 +5976,7 @@ export const verifyAnonymousPublicGitHubRepository = Effect.fn(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ) {
   if (!EXACT_GIT_COMMIT_PATTERN.test(externalCommit)) {
-    return yield* Effect.fail(new ScriptError('External repository proof requires an exact Git commit.'));
+    return yield* ScriptError.make({message: 'External repository proof requires an exact Git commit.'});
   }
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -5996,11 +6021,11 @@ export const verifyAnonymousPublicGitHubRepository = Effect.fn(
         externalCommit,
       ]),
     ),
-    Effect.mapError(
-      () =>
-        new ScriptError(
+    Effect.mapError(() =>
+      ScriptError.make({
+        message:
           'External benchmark commit could not be fetched from the public repository through credentials-disabled anonymous HTTPS.',
-        ),
+      }),
     ),
   );
   const resolved = yield* runProofGit([
@@ -6010,14 +6035,14 @@ export const verifyAnonymousPublicGitHubRepository = Effect.fn(
     'FETCH_HEAD^{commit}',
   ]).pipe(
     Effect.map(result => result.stdout.trim()),
-    Effect.mapError(
-      () => new ScriptError('External benchmark public-repository proof did not resolve the fetched commit.'),
+    Effect.mapError(() =>
+      ScriptError.make({message: 'External benchmark public-repository proof did not resolve the fetched commit.'}),
     ),
   );
   if (resolved !== externalCommit) {
-    return yield* Effect.fail(
-      new ScriptError('External benchmark public-repository proof resolved a different commit.'),
-    );
+    return yield* ScriptError.make({
+      message: 'External benchmark public-repository proof resolved a different commit.',
+    });
   }
   return 'anonymous-https-exact-commit-fetch' as const;
 });
@@ -6047,7 +6072,7 @@ const acquireFreshBenchmarkHome = Effect.fn('benchmarkCodeGraph.acquireFreshHome
     containment === '' ||
     (!path.isAbsolute(containment) && containment !== '..' && !containment.startsWith(`..${path.sep}`))
   ) {
-    return yield* Effect.fail(new ScriptError('Benchmark homes must be outside the external repository.'));
+    return yield* ScriptError.make({message: 'Benchmark homes must be outside the external repository.'});
   }
   const parent = path.dirname(target);
   yield* fs.makeDirectory(parent, {mode: 0o700, recursive: true});
@@ -6055,7 +6080,9 @@ const acquireFreshBenchmarkHome = Effect.fn('benchmarkCodeGraph.acquireFreshHome
   const exclusiveTarget = path.join(canonicalParent, path.basename(target));
   return yield* Effect.acquireRelease(
     fs.makeDirectory(exclusiveTarget, {mode: 0o700}).pipe(
-      Effect.mapError(() => new ScriptError('Explicit benchmark home paths must be fresh and exclusively reservable.')),
+      Effect.mapError(() =>
+        ScriptError.make({message: 'Explicit benchmark home paths must be fresh and exclusively reservable.'}),
+      ),
       Effect.andThen(
         fs.realPath(exclusiveTarget).pipe(
           Effect.flatMap(home => {
@@ -6064,7 +6091,7 @@ const acquireFreshBenchmarkHome = Effect.fn('benchmarkCodeGraph.acquireFreshHome
               (!path.isAbsolute(finalContainment) &&
                 finalContainment !== '..' &&
                 !finalContainment.startsWith(`..${path.sep}`))
-              ? Effect.fail(new ScriptError('Benchmark homes must be outside the external repository.'))
+              ? Effect.fail(ScriptError.make({message: 'Benchmark homes must be outside the external repository.'}))
               : Effect.succeed(home);
           }),
         ),
@@ -6098,15 +6125,15 @@ const externalBenchmarkPreflight = Effect.fn('benchmarkCodeGraph.externalPreflig
 ) {
   const system = yield* SystemInfo;
   if (!externalBenchmarkPlatformSupported(process.platform)) {
-    return yield* Effect.fail(
-      new ScriptError('External code-graph evidence currently requires Linux or macOS process and storage telemetry.'),
-    );
+    return yield* ScriptError.make({
+      message: 'External code-graph evidence currently requires Linux or macOS process and storage telemetry.',
+    });
   }
   if (!prepared.externalCommit || !prepared.incrementalSourcePath || !prepared.referenceHome) {
-    return yield* Effect.fail(new ScriptError('External benchmark preflight requires a complete prepared fixture.'));
+    return yield* ScriptError.make({message: 'External benchmark preflight requires a complete prepared fixture.'});
   }
   if (!runtimeProvenance) {
-    return yield* Effect.fail(new ScriptError('External benchmark preflight requires exact runtime provenance.'));
+    return yield* ScriptError.make({message: 'External benchmark preflight requires exact runtime provenance.'});
   }
   const source = decodeBenchmarkSource(
     yield* fs.readFile(path.join(prepared.repository, prepared.incrementalSourcePath)),
@@ -6123,11 +6150,9 @@ const externalBenchmarkPreflight = Effect.fn('benchmarkCodeGraph.externalPreflig
   );
   const minimumFreeBytes = minimumFreeGiB * 1_073_741_824;
   if (primaryCapacity.availableBytes < minimumFreeBytes || referenceCapacity.availableBytes < minimumFreeBytes) {
-    return yield* Effect.fail(
-      new ScriptError(
-        `External benchmark preflight requires at least ${minimumFreeGiB} GiB free on every benchmark-home filesystem.`,
-      ),
-    );
+    return yield* ScriptError.make({
+      message: `External benchmark preflight requires at least ${minimumFreeGiB} GiB free on every benchmark-home filesystem.`,
+    });
   }
   return {
     availableBytes: {
@@ -6172,16 +6197,14 @@ const productionBenchmarkGovernance = Effect.fn('benchmarkCodeGraph.productionGo
   );
   const minimumFreeBytes = minimumFreeGiB * 1_073_741_824;
   if (primaryCapacity.availableBytes < minimumFreeBytes || referenceCapacity.availableBytes < minimumFreeBytes) {
-    return yield* Effect.fail(
-      new ScriptError(
-        `Production-large benchmark requires at least ${minimumFreeGiB} GiB free on every benchmark-home filesystem.`,
-      ),
-    );
+    return yield* ScriptError.make({
+      message: `Production-large benchmark requires at least ${minimumFreeGiB} GiB free on every benchmark-home filesystem.`,
+    });
   }
   if (primaryCapacity.filesystem !== referenceCapacity.filesystem) {
-    return yield* Effect.fail(
-      new ScriptError('Production-large benchmark requires primary and reference homes on one filesystem.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Production-large benchmark requires primary and reference homes on one filesystem.',
+    });
   }
   const storageEnvironments = [primaryStorage, referenceStorage];
   // Standard GitHub-hosted Ubuntu runners contract SSD storage, while the
@@ -6191,10 +6214,10 @@ const productionBenchmarkGovernance = Effect.fn('benchmarkCodeGraph.productionGo
   // reduced non-vector profile. Self-hosted and local runs still require a
   // direct solid-state observation.
   if (!productionBenchmarkStorageGoverned(system.platform, allowGithubActionsHostedStorage, storageEnvironments)) {
-    return yield* Effect.fail(new ScriptError('Production-large benchmark requires solid-state storage.'));
+    return yield* ScriptError.make({message: 'Production-large benchmark requires solid-state storage.'});
   }
   if (system.platform === 'darwin' && storageEnvironments.some(storage => storage.location !== 'internal')) {
-    return yield* Effect.fail(new ScriptError('Production-large benchmark requires internal storage on macOS.'));
+    return yield* ScriptError.make({message: 'Production-large benchmark requires internal storage on macOS.'});
   }
   return {
     filesystemsShared: true,
@@ -6227,13 +6250,13 @@ const verifyPublicRepositoryOrigin = Effect.fn('benchmarkCodeGraph.verifyPublicR
   const remote = (yield* repositoryGit(repository, ['remote', 'get-url', 'origin'])).stdout.trim();
   const actual = publicGitHubRepositoryEvidence(remote);
   if (actual.name !== expected.name || actual.url !== expected.url) {
-    return yield* Effect.fail(new ScriptError('External benchmark public repository identity changed during the run.'));
+    return yield* ScriptError.make({message: 'External benchmark public repository identity changed during the run.'});
   }
-  const verification = yield* verifyPublicRepositoryCommit(actual, externalCommit, process.env);
+  const verification = yield* verifyPublicRepositoryCommit(actual, externalCommit, (yield* SystemInfo).environment());
   if (verification !== expectedVerification) {
-    return yield* Effect.fail(
-      new ScriptError('External benchmark public repository verification changed during the run.'),
-    );
+    return yield* ScriptError.make({
+      message: 'External benchmark public repository verification changed during the run.',
+    });
   }
 });
 
@@ -6245,7 +6268,7 @@ const filesystemCapacity = Effect.fn('benchmarkCodeGraph.filesystemCapacity')(fu
   const availableKilobytes = Number(columns[capacityIndex - 1] ?? Number.NaN);
   const filesystem = columns[0] ?? '';
   if (!filesystem || capacityIndex < 3 || !Number.isSafeInteger(availableKilobytes) || availableKilobytes < 0) {
-    return yield* Effect.fail(new ScriptError('Could not determine benchmark filesystem capacity.'));
+    return yield* ScriptError.make({message: 'Could not determine benchmark filesystem capacity.'});
   }
   return {availableBytes: availableKilobytes * 1_024, filesystem};
 });
@@ -6256,7 +6279,7 @@ export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storage
   const statArguments = process.platform === 'darwin' ? ['-f', '%T', target] : ['-f', '-c', '%T', target];
   let filesystem = yield* runCommandEffect('stat', statArguments, {timeoutMs: 10_000}).pipe(
     Effect.map(result => result.stdout.trim().toLowerCase()),
-    Effect.catch(() => Effect.succeed('unknown')),
+    Effect.orElseSucceed(() => 'unknown'),
     Effect.map(value => (/^[a-z0-9._+-]{1,64}$/.test(value) ? value : 'unknown')),
   );
   let medium: BenchmarkStorageEnvironment['medium'] = 'unknown';
@@ -6265,11 +6288,11 @@ export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storage
     const diskutil = Bun.which('diskutil') ?? '/usr/sbin/diskutil';
     const backingDevice = yield* filesystemCapacity(target).pipe(
       Effect.map(capacity => capacity.filesystem),
-      Effect.catch(() => Effect.succeed(target)),
+      Effect.orElseSucceed(() => target),
     );
     const info = yield* runCommandEffect(diskutil, ['info', backingDevice], {timeoutMs: 10_000}).pipe(
       Effect.map(result => result.stdout),
-      Effect.catch(() => Effect.succeed('')),
+      Effect.orElseSucceed(() => ''),
     );
     const classification = benchmarkDarwinStorageClassification(info);
     if (filesystem === 'unknown') filesystem = classification.filesystem;
@@ -6280,13 +6303,13 @@ export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storage
       timeoutMs: 10_000,
     }).pipe(
       Effect.map(result => result.stdout.trim()),
-      Effect.catch(() => Effect.succeed('')),
+      Effect.orElseSucceed(() => ''),
     );
     medium = benchmarkLinuxStorageClassification(filesystem, source, []);
     if (medium === 'unknown' && source.length > 0) {
       const rotational = yield* runCommandEffect('lsblk', ['-n', '-o', 'ROTA', source], {timeoutMs: 10_000}).pipe(
         Effect.map(result => result.stdout.trim().split(/\s+/).filter(Boolean)),
-        Effect.catch(() => Effect.succeed([] as string[])),
+        Effect.orElseSucceed(() => [] as string[]),
       );
       medium = benchmarkLinuxStorageClassification(filesystem, source, rotational);
     }
@@ -6342,11 +6365,12 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
     const disabledHooks = path.join(root, 'disabled-hooks');
     const emptyGitConfig = path.join(root, 'empty.gitconfig');
     const repositoryRoots = new Set<string>();
+    const inheritedEnvironment = (yield* SystemInfo).environment();
     const git = (cwd: string, args: readonly string[]) =>
       runCommandEffect('git', ['-c', `core.hooksPath=${disabledHooks}`, ...args], {
         cwd,
         env: {
-          ...process.env,
+          ...inheritedEnvironment,
           GCM_INTERACTIVE: 'never',
           GIT_CONFIG_GLOBAL: emptyGitConfig,
           GIT_CONFIG_NOSYSTEM: '1',
@@ -6360,9 +6384,9 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
       }
       for (const target of [...repositoryRoots, root]) {
         if (yield* fs.exists(target)) {
-          return yield* Effect.fail(
-            new ScriptError('Concurrent worktree benchmark cleanup left a generated path behind.'),
-          );
+          return yield* ScriptError.make({
+            message: 'Concurrent worktree benchmark cleanup left a generated path behind.',
+          });
         }
       }
     });
@@ -6406,7 +6430,7 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
         {concurrency: 2},
       );
       if (options.failureInjection === 'after-index') {
-        return yield* Effect.fail(new ScriptError('Injected concurrent worktree benchmark failure after indexing.'));
+        return yield* ScriptError.make({message: 'Injected concurrent worktree benchmark failure after indexing.'});
       }
       const [primaryQuery, linkedQuery, primaryCrossQuery, linkedCrossQuery] = yield* Effect.all(
         [
@@ -6462,7 +6486,7 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
         !primaryCrossQuery.nodes.some(node => node.name === 'linkedWorktreeSentinel') &&
         !linkedCrossQuery.nodes.some(node => node.name === 'primaryWorktreeSentinel');
       if (!isolationPassed) {
-        return yield* Effect.fail(new ScriptError('Concurrent linked-worktree graph isolation control failed.'));
+        return yield* ScriptError.make({message: 'Concurrent linked-worktree graph isolation control failed.'});
       }
       const durationMilliseconds = Math.max(
         Number.EPSILON,
@@ -6482,9 +6506,9 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
         duration: WORKTREE_ISOLATION_TIMEOUT_MS,
         orElse: () =>
           Effect.fail(
-            new ScriptError(
-              `Concurrent worktree control timed out after ${WORKTREE_ISOLATION_TIMEOUT_MS} milliseconds.`,
-            ),
+            ScriptError.make({
+              message: `Concurrent worktree control timed out after ${WORKTREE_ISOLATION_TIMEOUT_MS} milliseconds.`,
+            }),
           ),
       }),
       Effect.ensuring(cleanup.pipe(Effect.orDie)),
@@ -6581,7 +6605,7 @@ const validateExternalTrackedRegularPath = Effect.fn('benchmarkCodeGraph.validat
     option: '--control expectedPath' | '--incremental-path',
   ) {
     if (path.isAbsolute(value)) {
-      return yield* Effect.fail(new ScriptError(`${option} must name a repository-relative file.`));
+      return yield* ScriptError.make({message: `${option} must name a repository-relative file.`});
     }
     const normalized = path.normalize(value);
     const source = path.resolve(repository, normalized);
@@ -6592,7 +6616,7 @@ const validateExternalTrackedRegularPath = Effect.fn('benchmarkCodeGraph.validat
       containment.startsWith(`..${path.sep}`) ||
       path.isAbsolute(containment)
     ) {
-      return yield* Effect.fail(new ScriptError(`${option} must name a repository-relative file.`));
+      return yield* ScriptError.make({message: `${option} must name a repository-relative file.`});
     }
     const canonicalSource = yield* fs.realPath(source);
     const canonicalContainment = path.relative(repository, canonicalSource);
@@ -6602,18 +6626,16 @@ const validateExternalTrackedRegularPath = Effect.fn('benchmarkCodeGraph.validat
       canonicalContainment.startsWith(`..${path.sep}`) ||
       path.isAbsolute(canonicalContainment)
     ) {
-      return yield* Effect.fail(new ScriptError(`${option} resolved outside the external repository.`));
+      return yield* ScriptError.make({message: `${option} resolved outside the external repository.`});
     }
     const gitPath = containment.split(path.sep).join('/');
     const tracked = yield* repositoryGit(repository, ['ls-files', '--stage', '--error-unmatch', '--', gitPath]);
     if (!/^100(?:644|755)\s/.test(tracked.stdout)) {
-      return yield* Effect.fail(
-        new ScriptError(`${option} must name a tracked regular file, not a link or submodule.`),
-      );
+      return yield* ScriptError.make({message: `${option} must name a tracked regular file, not a link or submodule.`});
     }
     const info = yield* fs.stat(source);
     if (info.type !== 'File') {
-      return yield* Effect.fail(new ScriptError(`${option} must name a tracked regular file.`));
+      return yield* ScriptError.make({message: `${option} must name a tracked regular file.`});
     }
     return gitPath;
   },
@@ -6631,11 +6653,10 @@ const verifyExternalRepositoryUnchanged = Effect.fn('benchmarkCodeGraph.verifyEx
     {concurrency: 2},
   );
   if (commit !== expectedCommit || dirty.length > 0) {
-    return yield* Effect.fail(
-      new ScriptError(
+    return yield* ScriptError.make({
+      message:
         'External repository changed during the benchmark; its evidence was rejected after restoring the overlay.',
-      ),
-    );
+    });
   }
 });
 
@@ -6651,9 +6672,9 @@ const verifyBenchmarkSourceUnchanged = Effect.fn('benchmarkCodeGraph.verifyBench
     {concurrency: 2},
   );
   if (commit !== expectedCommit || dirty.length > 0) {
-    return yield* Effect.fail(
-      new ScriptError('Threadnote source changed during the external benchmark; its evidence was not published.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Threadnote source changed during the external benchmark; its evidence was not published.',
+    });
   }
 });
 
@@ -6676,7 +6697,7 @@ const canonicalizeProspectivePath = Effect.fn('benchmarkCodeGraph.canonicalizePr
     if (Option.isSome(canonical)) return path.join(canonical.value, ...suffix);
     const parent = path.dirname(current);
     if (parent === current) {
-      return yield* Effect.fail(new ScriptError(`Could not resolve an existing parent for output path ${target}.`));
+      return yield* ScriptError.make({message: `Could not resolve an existing parent for output path ${target}.`});
     }
     suffix.unshift(path.basename(current));
     current = parent;
@@ -6684,7 +6705,8 @@ const canonicalizeProspectivePath = Effect.fn('benchmarkCodeGraph.canonicalizePr
 });
 
 export function productionProfile(options: CodeGraphBenchmarkOptions): ProductionCodeGraphFixtureProfile {
-  if (options.profile !== 'production-large') throw new ScriptError('Production fixture profile was not selected.');
+  if (options.profile !== 'production-large')
+    throw ScriptError.make({message: 'Production fixture profile was not selected.'});
   if (options.profileFiles === undefined && options.profileSymbols === undefined) {
     return PRODUCTION_LARGE_CODE_GRAPH_PROFILE;
   }
@@ -6728,9 +6750,10 @@ export function productionProfile(options: CodeGraphBenchmarkOptions): Productio
   const metadataGraphSymbols = workspaceCount + 3;
   const declarationSymbols = targetGraphSymbols - sourceFiles - metadataGraphSymbols;
   if (declarationSymbols < sourceFiles) {
-    throw new ScriptError(
-      '--profile-symbols must cover the requested files, manifest/module symbols, and at least one declaration per file.',
-    );
+    throw ScriptError.make({
+      message:
+        '--profile-symbols must cover the requested files, manifest/module symbols, and at least one declaration per file.',
+    });
   }
   return validateProductionProfile({
     activeWorkspaceExcludedPackageCount,
@@ -6957,7 +6980,8 @@ const PRODUCTION_RATCHET_MILLISECOND_TARGETS = new Map<string, number>([
  * aggregates remain independently ratcheted.
  */
 export function createCodeGraphProductionRatchet(values: readonly BenchmarkArtifactV1[]): CodeGraphBenchmarkRatchetV1 {
-  if (values.length < 3) throw new ScriptError('Production ratchet generation requires at least three artifacts.');
+  if (values.length < 3)
+    throw ScriptError.make({message: 'Production ratchet generation requires at least three artifacts.'});
   const artifacts = values.map(parseBenchmarkArtifactV1);
   for (const artifact of artifacts) assertProductionLargeEvidence(artifact);
   const first = artifacts[0];
@@ -6981,10 +7005,14 @@ export function createCodeGraphProductionRatchet(values: readonly BenchmarkArtif
       artifact.environment.runnerVersion !== first.environment.runnerVersion ||
       JSON.stringify(productionRatchetMetadata(artifact)) !== JSON.stringify(metadata)
     ) {
-      throw new ScriptError('Production ratchet artifacts do not share one governed runner and fixture contract.');
+      throw ScriptError.make({
+        message: 'Production ratchet artifacts do not share one governed runner and fixture contract.',
+      });
     }
     if (productionRatchetGenerationIdentity(artifact) !== generationIdentity) {
-      throw new ScriptError('Production ratchet artifacts do not share one exact source/runtime/storage contract.');
+      throw ScriptError.make({
+        message: 'Production ratchet artifacts do not share one exact source/runtime/storage contract.',
+      });
     }
   }
   const measurements: Record<string, CodeGraphBenchmarkMeasurementRatchetV1> = {};
@@ -6993,12 +7021,12 @@ export function createCodeGraphProductionRatchet(values: readonly BenchmarkArtif
       productionRatchetMeasurements(artifact).find(measurement => measurement.name === name),
     );
     if (samples.some(sample => sample === undefined)) {
-      throw new ScriptError(`Production ratchet measurement ${name} is missing.`);
+      throw ScriptError.make({message: `Production ratchet measurement ${name} is missing.`});
     }
     const complete = samples as readonly BenchmarkArtifactV1['measurements'][number][];
     const unit = complete[0].unit;
     if (complete.some(sample => sample.unit !== unit || sample.samples !== 1)) {
-      throw new ScriptError(`Production ratchet measurement ${name} has inconsistent samples or units.`);
+      throw ScriptError.make({message: `Production ratchet measurement ${name} has inconsistent samples or units.`});
     }
     measurements[name] = productionMeasurementRatchet(
       name,
@@ -7033,7 +7061,7 @@ function productionRatchetMeasurements(
   );
   const names = retained.map(measurement => measurement.name);
   if (new Set(names).size !== names.length) {
-    throw new ScriptError('Production ratchet artifacts require unique assessed measurement names.');
+    throw ScriptError.make({message: 'Production ratchet artifacts require unique assessed measurement names.'});
   }
   return retained;
 }
@@ -7121,7 +7149,7 @@ function productionRatchetMetadata(artifact: BenchmarkArtifactV1): Readonly<Reco
     vectorEnabled: artifact.metadata.vectorEnabled,
   };
   if (Object.values(selected).some(value => !['boolean', 'number', 'string'].includes(typeof value))) {
-    throw new ScriptError('Production ratchet artifact metadata is incomplete.');
+    throw ScriptError.make({message: 'Production ratchet artifact metadata is incomplete.'});
   }
   return selected;
 }
@@ -7148,7 +7176,7 @@ function productionRatchetGenerationIdentity(artifact: BenchmarkArtifactV1): str
       (metadata.benchmarkDiskLocation !== 'internal' || metadata.benchmarkReferenceDiskLocation !== 'internal')) ||
     metadata.benchmarkDiskFilesystem !== metadata.benchmarkReferenceDiskFilesystem
   ) {
-    throw new ScriptError('Production ratchet generation requires complete governed storage evidence.');
+    throw ScriptError.make({message: 'Production ratchet generation requires complete governed storage evidence.'});
   }
   return JSON.stringify({
     commit: artifact.environment.commit,
@@ -7240,9 +7268,9 @@ function productionMeasurementRatchet(
   }
   if (productionDeterministicMeasurement(name, unit)) {
     if (minimum !== maximum) {
-      throw new ScriptError(
-        `Production ratchet deterministic measurement ${name} disagrees across governed observations.`,
-      );
+      throw ScriptError.make({
+        message: `Production ratchet deterministic measurement ${name} disagrees across governed observations.`,
+      });
     }
     return {...base, maximum, minimum};
   }
@@ -7266,7 +7294,7 @@ function productionMeasurementRatchet(
         ? absoluteHeadroom
         : Math.ceil(Math.max(maximum * (1 + relativeHeadroom), maximum + absoluteHeadroom));
     if (objective !== undefined && maximum > objective) {
-      throw new ScriptError(`Production ratchet objective ${name} has not been attained.`);
+      throw ScriptError.make({message: `Production ratchet objective ${name} has not been attained.`});
     }
     return {
       ...base,
@@ -7527,7 +7555,7 @@ export function enforceCodeGraphBenchmarkRatchet(
     );
   }
   if (failures.length > 0) {
-    throw new ScriptError(`Code graph performance ratchet failed: ${failures.join('; ')}`);
+    throw ScriptError.make({message: `Code graph performance ratchet failed: ${failures.join('; ')}`});
   }
 }
 
@@ -7788,19 +7816,19 @@ export function validateCodeGraphBenchmarkRatchet(value: unknown): void {
 function parseCodeGraphBenchmarkRatchet(value: unknown): CodeGraphBenchmarkRatchetV1 {
   const ratchet = ratchetRecord(value, 'Code graph performance ratchet');
   rejectRatchetUnknownKeys(ratchet, ['environment', 'measurements', 'metadata', 'suite', 'version'], 'ratchet');
-  if (ratchet.version !== 1) throw new ScriptError('Code graph performance ratchet version must be 1.');
+  if (ratchet.version !== 1) throw ScriptError.make({message: 'Code graph performance ratchet version must be 1.'});
   if (typeof ratchet.suite !== 'string' || ratchet.suite.trim().length === 0) {
-    throw new ScriptError('Code graph performance ratchet suite must be a non-empty string.');
+    throw ScriptError.make({message: 'Code graph performance ratchet suite must be a non-empty string.'});
   }
   const measurements = ratchetRecord(ratchet.measurements, 'Code graph performance ratchet measurements');
   const measurementEntries = Object.entries(measurements);
   if (measurementEntries.length === 0) {
-    throw new ScriptError('Code graph performance ratchet must constrain at least one measurement.');
+    throw ScriptError.make({message: 'Code graph performance ratchet must constrain at least one measurement.'});
   }
   const parsedMeasurements = Object.create(null) as Record<string, CodeGraphBenchmarkMeasurementRatchetV1>;
   for (const [name, rawLimit] of measurementEntries.sort(([left], [right]) => left.localeCompare(right))) {
     if (name.trim().length === 0) {
-      throw new ScriptError('Code graph performance ratchet measurement names must be non-empty.');
+      throw ScriptError.make({message: 'Code graph performance ratchet measurement names must be non-empty.'});
     }
     const limit = ratchetRecord(rawLimit, `Code graph performance ratchet measurement ${name}`);
     rejectRatchetUnknownKeys(
@@ -7809,7 +7837,7 @@ function parseCodeGraphBenchmarkRatchet(value: unknown): CodeGraphBenchmarkRatch
       `measurement ${name}`,
     );
     if (typeof limit.unit !== 'string' || !BENCHMARK_RATCHET_UNITS.has(limit.unit as BenchmarkMeasurementUnit)) {
-      throw new ScriptError(`Code graph performance ratchet measurement ${name} has an invalid unit.`);
+      throw ScriptError.make({message: `Code graph performance ratchet measurement ${name} has an invalid unit.`});
     }
     const minimum = optionalRatchetThreshold(limit.minimum, name, 'minimum');
     const maximum = optionalRatchetThreshold(limit.maximum, name, 'maximum');
@@ -7825,19 +7853,23 @@ function parseCodeGraphBenchmarkRatchet(value: unknown): CodeGraphBenchmarkRatch
       p95Maximum === undefined &&
       p99Maximum === undefined
     ) {
-      throw new ScriptError(`Code graph performance ratchet measurement ${name} requires at least one bound.`);
+      throw ScriptError.make({
+        message: `Code graph performance ratchet measurement ${name} requires at least one bound.`,
+      });
     }
     if (minimum !== undefined && maximum !== undefined && minimum > maximum) {
-      throw new ScriptError(`Code graph performance ratchet measurement ${name} has minimum above maximum.`);
+      throw ScriptError.make({
+        message: `Code graph performance ratchet measurement ${name} has minimum above maximum.`,
+      });
     }
     const samplesMinimum = limit.samplesMinimum;
     if (
       samplesMinimum !== undefined &&
       (typeof samplesMinimum !== 'number' || !Number.isSafeInteger(samplesMinimum) || samplesMinimum < 1)
     ) {
-      throw new ScriptError(
-        `Code graph performance ratchet measurement ${name} samplesMinimum must be a positive integer.`,
-      );
+      throw ScriptError.make({
+        message: `Code graph performance ratchet measurement ${name} samplesMinimum must be a positive integer.`,
+      });
     }
     parsedMeasurements[name] = {
       ...(maximum === undefined ? {} : {maximum}),
@@ -7876,7 +7908,9 @@ function parseRatchetConditions(
       (typeof expected !== 'boolean' && typeof expected !== 'string' && typeof expected !== 'number') ||
       (typeof expected === 'number' && !Number.isFinite(expected))
     ) {
-      throw new ScriptError(`Code graph performance ratchet ${label}.${name || '<empty>'} must be a finite primitive.`);
+      throw ScriptError.make({
+        message: `Code graph performance ratchet ${label}.${name || '<empty>'} must be a finite primitive.`,
+      });
     }
     parsed[name] = expected;
   }
@@ -7885,7 +7919,7 @@ function parseRatchetConditions(
 
 function ratchetRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new ScriptError(`${label} must be an object.`);
+    throw ScriptError.make({message: `${label} must be an object.`});
   }
   return value as Readonly<Record<string, unknown>>;
 }
@@ -7897,7 +7931,9 @@ function requireRatchetConditionKeys(
 ): void {
   const missing = required.filter(name => !(name in conditions));
   if (missing.length > 0) {
-    throw new ScriptError(`Code graph performance ratchet ${label} is missing condition(s): ${missing.join(', ')}.`);
+    throw ScriptError.make({
+      message: `Code graph performance ratchet ${label} is missing condition(s): ${missing.join(', ')}.`,
+    });
   }
 }
 
@@ -7910,7 +7946,7 @@ function rejectRatchetUnknownKeys(
     .filter(key => !allowed.includes(key))
     .sort();
   if (unknown.length > 0) {
-    throw new ScriptError(`Code graph performance ${label} has unknown field(s): ${unknown.join(', ')}.`);
+    throw ScriptError.make({message: `Code graph performance ${label} has unknown field(s): ${unknown.join(', ')}.`});
   }
 }
 
@@ -7921,7 +7957,9 @@ function optionalRatchetThreshold(
 ): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw new ScriptError(`Code graph performance ratchet measurement ${name} ${bound} must be non-negative finite.`);
+    throw ScriptError.make({
+      message: `Code graph performance ratchet measurement ${name} ${bound} must be non-negative finite.`,
+    });
   }
   return value;
 }
@@ -7939,7 +7977,8 @@ export function enforceCodeGraphBenchmarkBudget(
   value: unknown,
   scaleSymbols: number | undefined,
 ): void {
-  if (typeof value !== 'object' || value === null) throw new ScriptError('Code graph budget file must be an object.');
+  if (typeof value !== 'object' || value === null)
+    throw ScriptError.make({message: 'Code graph budget file must be an object.'});
   const record = value as {
     readonly developmentPerformance?: unknown;
     readonly developmentPerformanceByPlatform?: Readonly<Record<string, unknown>>;
@@ -7997,10 +8036,11 @@ export function enforceCodeGraphBenchmarkBudget(
         }
       : baseSelected;
   if (typeof selected !== 'object' || selected === null) {
-    throw new ScriptError(
-      `No reviewed ${artifact.metadata.vectorEnabled === true ? 'vector ' : ''}code graph performance budget exists ` +
+    throw ScriptError.make({
+      message:
+        `No reviewed ${artifact.metadata.vectorEnabled === true ? 'vector ' : ''}code graph performance budget exists ` +
         `for ${scaleSymbols ?? 'development'}.`,
-    );
+    });
   }
   const budget = selected as Readonly<Record<string, unknown>>;
   const hotQueryName =
@@ -8123,7 +8163,8 @@ export function enforceCodeGraphBenchmarkBudget(
       failures.push(`${hotQueryName} ${statistic} exceeds ${hotQueryMaximum}`);
     }
   }
-  if (failures.length > 0) throw new ScriptError(`Code graph performance budget failed: ${failures.join('; ')}`);
+  if (failures.length > 0)
+    throw ScriptError.make({message: `Code graph performance budget failed: ${failures.join('; ')}`});
 }
 
 function benchmarkRunnerClassMatchesArtifact(
@@ -8172,12 +8213,13 @@ const prepareBenchmarkEmbedding = Effect.fn('benchmarkCodeGraph.prepareEmbedding
 
 function integer(value: string | undefined, option: string, minimum: number): number {
   const parsed = Number.parseInt(required(value, option), 10);
-  if (!Number.isSafeInteger(parsed) || parsed < minimum) throw new ScriptError(`${option} must be at least ${minimum}`);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum)
+    throw ScriptError.make({message: `${option} must be at least ${minimum}`});
   return parsed;
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 

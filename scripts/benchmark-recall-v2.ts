@@ -1,6 +1,6 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Clock, Effect} from 'effect';
+import {Clock, DateTime, Effect} from 'effect';
 import {runCommandEffect} from '../src/effect/command.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
@@ -42,17 +42,17 @@ const benchmarkRecall = Effect.gen(function* () {
   const threadnoteVersion = yield* getThreadnoteVersion();
   const options = parseArguments(yield* scriptArguments());
   const initialCleanCommit = options.requireClean
-    ? yield* Effect.gen(function* () {
-        const [commit, status] = yield* Effect.all([git(['rev-parse', 'HEAD']), git(CLEAN_GIT_STATUS_ARGUMENTS)], {
-          concurrency: 'unbounded',
-        });
-        if (status.length > 0) {
-          return yield* Effect.fail(
-            new ScriptError('--require-clean requires a clean checkout with no tracked or untracked changes.'),
-          );
-        }
-        return commit;
-      })
+    ? yield* Effect.all([git(['rev-parse', 'HEAD']), git(CLEAN_GIT_STATUS_ARGUMENTS)], {
+        concurrency: 'unbounded',
+      }).pipe(
+        Effect.flatMap(([commit, status]) =>
+          status.length > 0
+            ? ScriptError.make({
+                message: '--require-clean requires a clean checkout with no tracked or untracked changes.',
+              })
+            : Effect.succeed(commit),
+        ),
+      )
     : undefined;
   const fixture = expandRecallEvaluationFixtureV2(
     createRecallEvaluationFixtureV2(),
@@ -82,7 +82,7 @@ const benchmarkRecall = Effect.gen(function* () {
     const result = runQuery();
     const finishedAt = yield* Clock.currentTimeNanos;
     durations.push(Number(finishedAt - startedAt) / NANOSECONDS_PER_MILLISECOND);
-    if (!result.results[0]) return yield* Effect.fail(new ScriptError('Recall benchmark returned no result'));
+    if (!result.results[0]) return yield* ScriptError.make({message: 'Recall benchmark returned no result'});
     const memory = system.memoryUsage();
     rss.push(memory.rss);
     externalMemory.push(memory.external);
@@ -98,13 +98,13 @@ const benchmarkRecall = Effect.gen(function* () {
     },
   );
   if (options.requireClean && (status.length > 0 || commit !== initialCleanCommit)) {
-    return yield* Effect.fail(
-      new ScriptError('--require-clean checkout changed while the recall benchmark was running.'),
-    );
+    return yield* ScriptError.make({
+      message: '--require-clean checkout changed while the recall benchmark was running.',
+    });
   }
 
   const artifact: BenchmarkArtifactV1 = {
-    createdAt: new Date().toISOString(),
+    createdAt: DateTime.formatIso(yield* DateTime.now),
     environment: {
       architecture: system.architecture,
       commit,
@@ -169,7 +169,7 @@ function parseArguments(args: readonly string[]): BenchmarkOptions {
     else if (argument === '--samples') samples = positiveInteger(args[++index], argument);
     else if (argument === '--seed') seed = positiveInteger(args[++index], argument);
     else if (argument === '--warmups') warmups = nonNegativeInteger(args[++index], argument);
-    else throw new ScriptError(`Unknown recall benchmark option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown recall benchmark option: ${argument}`});
   }
   return {documentCount, outputPath, requireClean, samples, seed, warmups};
 }
@@ -180,20 +180,20 @@ const git = Effect.fn('benchmark.git')((arguments_: readonly string[]) =>
 
 function positiveInteger(value: string | undefined, option: string): number {
   const parsed = nonNegativeInteger(value, option);
-  if (parsed < 1) throw new ScriptError(`${option} requires a positive integer`);
+  if (parsed < 1) throw ScriptError.make({message: `${option} requires a positive integer`});
   return parsed;
 }
 
 function nonNegativeInteger(value: string | undefined, option: string): number {
   const parsed = Number.parseInt(requiredValue(value, option), 10);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new ScriptError(`${option} requires a non-negative integer`);
+    throw ScriptError.make({message: `${option} requires a non-negative integer`});
   }
   return parsed;
 }
 
 function requiredValue(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 

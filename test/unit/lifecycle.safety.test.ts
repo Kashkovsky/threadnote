@@ -86,7 +86,7 @@ describe('read-only doctor', () => {
     await writeLayoutReceipt(root);
     const before = await filesystemSnapshot(root);
 
-    const report = await runEffect(captureConsole(runDoctor(config, {dryRun: true})));
+    const report = await runDoctor(config, {dryRun: true}).pipe(captureConsole, runEffect);
 
     expect(report.output).toContain('FAIL lexical recall index: not built');
     expect(await filesystemSnapshot(root)).toEqual(before);
@@ -107,7 +107,7 @@ describe('read-only doctor', () => {
     const logicalBefore = recallDatabaseLogicalSnapshot(databasePath);
     const before = await filesystemSnapshot(root, sqliteArtifacts);
 
-    const report = await runEffect(captureConsole(runDoctor(config, {dryRun: true})));
+    const report = await runDoctor(config, {dryRun: true}).pipe(captureConsole, runEffect);
 
     expect(report.output).toContain('lexical recall index: 0 canonical document(s)');
     expect(recallDatabaseLogicalSnapshot(databasePath)).toEqual(logicalBefore);
@@ -136,15 +136,18 @@ describe('read-only doctor', () => {
       verified: false,
     };
     const modelStore = LocalModelStore.of({
-      install: () => Effect.die(new TestError('Doctor must not install models.')),
+      install: () => Effect.die(TestError.make({message: 'Doctor must not install models.'})),
       path: () => modelPath,
-      remove: () => Effect.die(new TestError('Doctor must not remove models.')),
+      remove: () => Effect.die(TestError.make({message: 'Doctor must not remove models.'})),
       status: () => Effect.succeed(installation),
-      verify: () => Effect.die(new TestError('Doctor must not acquire the mutating model verification lock.')),
+      verify: () =>
+        Effect.die(TestError.make({message: 'Doctor must not acquire the mutating model verification lock.'})),
     } satisfies LocalModelStoreShape);
     const catalog = LocalModelCatalog.of({
       get: modelId =>
-        modelId === manifest.id ? Effect.succeed(manifest) : Effect.die(new TestError(`Unexpected model ${modelId}`)),
+        modelId === manifest.id
+          ? Effect.succeed(manifest)
+          : Effect.die(TestError.make({message: `Unexpected model ${modelId}`})),
       list: () => Effect.succeed([manifest]),
       selected: () => Effect.succeed(manifest),
     });
@@ -214,9 +217,10 @@ describe('repair failure propagation', () => {
     } satisfies LocalModelStoreShape);
     const modelRuntime = LocalModelRuntime.of({
       diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
-      embedMany: () => Effect.die(new TestError('Embedding must not start when lexical index setup fails.')),
-      generate: () => Effect.die(new TestError('Unexpected generation.')),
-      rerank: () => Effect.die(new TestError('Unexpected reranking.')),
+      embedMany: () =>
+        Effect.die(TestError.make({message: 'Embedding must not start when lexical index setup fails.'})),
+      generate: () => Effect.die(TestError.make({message: 'Unexpected generation.'})),
+      rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking.'})),
     });
 
     await expect(

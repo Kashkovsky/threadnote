@@ -15,9 +15,9 @@ const archiveRelease = Effect.gen(function* () {
   const root = yield* path.fromFileUrl(ROOT_URL);
   const target = Bun.env.THREADNOTE_RELEASE_TARGET?.trim();
   if (!target || !ARCHIVE_TARGET_PATTERN.test(target)) {
-    return yield* Effect.fail(
-      new ScriptError('THREADNOTE_RELEASE_TARGET must be one of darwin|linux|windows combined with arm64|x64.'),
-    );
+    return yield* ScriptError.make({
+      message: 'THREADNOTE_RELEASE_TARGET must be one of darwin|linux|windows combined with arm64|x64.',
+    });
   }
 
   const distributionRoot = path.join(root, 'dist');
@@ -28,7 +28,7 @@ const archiveRelease = Effect.gen(function* () {
   const artifactPath = path.join(artifactsRoot, artifactName);
   const checksumPath = `${artifactPath}.sha256`;
   if (!(yield* fs.exists(path.join(distributionRoot, 'release.json')))) {
-    return yield* Effect.fail(new ScriptError('dist/release.json is missing; build the release before archiving it.'));
+    return yield* ScriptError.make({message: 'dist/release.json is missing; build the release before archiving it.'});
   }
 
   yield* fs.makeDirectory(artifactsRoot, {recursive: true});

@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Option, Path} from 'effect';
+import {Console, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {runIsolatedCodeGraphIndexSnapshot} from '../code_graph/isolated_index.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from '../code_graph/local_provenance.js';
 import type {RepositoryIdentityExpectation} from '../code_graph/types.js';
@@ -32,18 +32,26 @@ interface ManagerGraphManifestCatalog {
   readonly revision: string;
 }
 
-class ManagerGraphProjectCatalogError extends Error {
-  readonly _tag = 'ManagerGraphProjectCatalogError' as const;
-}
+class ManagerGraphProjectCatalogError extends Schema.TaggedError<ManagerGraphProjectCatalogError>()(
+  'ManagerGraphProjectCatalogError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
-export class ManagerGraphProjectActionError extends Error {
-  readonly _tag = 'ManagerGraphProjectActionError' as const;
-
-  constructor(
-    readonly code: 'graph-project-stale' | 'graph-project-unavailable',
+export class ManagerGraphProjectActionError extends Schema.TaggedError<ManagerGraphProjectActionError>()(
+  'ManagerGraphProjectActionError',
+  {
+    code: Schema.Literals(['graph-project-stale', 'graph-project-unavailable']),
+    message: Schema.String,
+  },
+) {
+  static of(
+    code: 'graph-project-stale' | 'graph-project-unavailable',
     message: string,
-  ) {
-    super(message);
+  ): ManagerGraphProjectActionError {
+    return ManagerGraphProjectActionError.make({code, message});
   }
 }
 
@@ -93,54 +101,48 @@ export const runManagerManifestProjectGraphIndex = Effect.fn('managerGraphProjec
   function* (config: RuntimeConfig, body: Record<string, unknown>) {
     const projectName = yield* Effect.try({
       try: () => requireString(body.project, 'project'),
-      catch: cause => new ManagerGraphProjectActionError('graph-project-unavailable', String(cause)),
+      catch: cause => ManagerGraphProjectActionError.of('graph-project-unavailable', String(cause)),
     });
     const expectedRevision = yield* Effect.try({
       try: () => requireManifestRevision(body.expectedRevision),
-      catch: cause => new ManagerGraphProjectActionError('graph-project-unavailable', String(cause)),
+      catch: cause => ManagerGraphProjectActionError.of('graph-project-unavailable', String(cause)),
     });
     const catalog = yield* readManagerGraphManifestCatalog(config).pipe(
-      Effect.mapError(
-        () =>
-          new ManagerGraphProjectActionError(
-            'graph-project-unavailable',
-            'Configured projects could not be read. Refresh Manager and retry.',
-          ),
+      Effect.mapError(() =>
+        ManagerGraphProjectActionError.of(
+          'graph-project-unavailable',
+          'Configured projects could not be read. Refresh Manager and retry.',
+        ),
       ),
     );
     if (catalog.revision !== expectedRevision) {
-      return yield* Effect.fail(
-        new ManagerGraphProjectActionError(
-          'graph-project-stale',
-          'Configured projects changed. Refresh Manager before choosing a project to index.',
-        ),
+      return yield* ManagerGraphProjectActionError.of(
+        'graph-project-stale',
+        'Configured projects changed. Refresh Manager before choosing a project to index.',
       );
     }
     const project = catalog.projects.find(
       candidate => candidate.manifest.name.toLowerCase() === projectName.toLowerCase(),
     );
     if (!project) {
-      return yield* Effect.fail(
-        new ManagerGraphProjectActionError(
-          'graph-project-stale',
-          'The selected configured project is no longer available. Refresh Manager and choose again.',
-        ),
+      return yield* ManagerGraphProjectActionError.of(
+        'graph-project-stale',
+        'The selected configured project is no longer available. Refresh Manager and choose again.',
       );
     }
     const {identity} = yield* Effect.gen(function* () {
       const system = yield* SystemInfo;
       if (managerProjectPathIsForeign(project.manifest.path, system.platform)) {
-        return yield* Effect.fail(new ManagerGraphProjectCatalogError('Configured project path is for another host.'));
+        return yield* ManagerGraphProjectCatalogError.make({message: 'Configured project path is for another host.'});
       }
       const exactPath = yield* expandPath(project.manifest.path);
       return yield* resolveAndRecordCodeGraphLocalAssociation(config.agentContextHome, exactPath);
     }).pipe(
-      Effect.mapError(
-        () =>
-          new ManagerGraphProjectActionError(
-            'graph-project-unavailable',
-            'The selected configured project is not an available local Git repository. Check its manifest path and retry.',
-          ),
+      Effect.mapError(() =>
+        ManagerGraphProjectActionError.of(
+          'graph-project-unavailable',
+          'The selected configured project is not an available local Git repository. Check its manifest path and retry.',
+        ),
       ),
     );
     const expectedIdentity = {
@@ -175,14 +177,14 @@ const readManagerGraphManifestCatalog = Effect.fn('managerGraphProjects.readMani
   const raw = yield* fs.readFileString(config.manifestPath);
   const manifest = yield* Effect.try({
     try: () => parseSeedManifest(raw, config.manifestPath),
-    catch: () => new ManagerGraphProjectCatalogError('Configured projects could not be parsed.'),
+    catch: () => ManagerGraphProjectCatalogError.make({message: 'Configured projects could not be parsed.'}),
   });
   yield* Effect.try({
     try: () => assertManagerGraphProjectManifest(manifest),
     catch: cause =>
-      cause instanceof ManagerGraphProjectCatalogError
+      Schema.is(ManagerGraphProjectCatalogError)(cause)
         ? cause
-        : new ManagerGraphProjectCatalogError('Configured projects are invalid.'),
+        : ManagerGraphProjectCatalogError.make({message: 'Configured projects are invalid.'}),
   });
   const observed = yield* observeManagerManifestProjects(manifest.projects, 0);
   return {
@@ -245,15 +247,16 @@ export function canonicalConfiguredProjectHasReadyGraph(
 
 function assertManagerGraphProjectManifest(manifest: SeedManifest): void {
   if (manifest.projects.length > MANAGER_GRAPH_PROJECT_MAXIMUM) {
-    throw new ManagerGraphProjectCatalogError('The seed manifest has too many configured projects.');
+    throw ManagerGraphProjectCatalogError.make({message: 'The seed manifest has too many configured projects.'});
   }
   const names = new Set<string>();
   for (const project of manifest.projects) {
     if (!managerGraphProjectNameIsSafe(project.name) || !managerGraphProjectPathIsSafe(project.path)) {
-      throw new ManagerGraphProjectCatalogError('A configured project name or path is invalid.');
+      throw ManagerGraphProjectCatalogError.make({message: 'A configured project name or path is invalid.'});
     }
     const key = project.name.toLowerCase();
-    if (names.has(key)) throw new ManagerGraphProjectCatalogError('Configured project names must be unique.');
+    if (names.has(key))
+      throw ManagerGraphProjectCatalogError.make({message: 'Configured project names must be unique.'});
     names.add(key);
   }
 }
@@ -285,7 +288,7 @@ function hasControlCharacter(value: string): boolean {
 function requireManifestRevision(value: unknown): string {
   const revision = requireString(value, 'expectedRevision');
   if (!/^[0-9a-f]{64}$/.test(revision)) {
-    throw new ManagerGraphProjectCatalogError('Provide expectedRevision as an exact manifest revision.');
+    throw ManagerGraphProjectCatalogError.make({message: 'Provide expectedRevision as an exact manifest revision.'});
   }
   return revision;
 }

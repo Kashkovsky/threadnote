@@ -1,4 +1,4 @@
-import {Cause, Clock, Console, Effect, Option, Result} from 'effect';
+import {Cause, Console, DateTime, Effect, Option, Result, Schema} from 'effect';
 import {MAX_RECALL_SELECTION_CANDIDATES, type RecallSelectionCandidate} from '../effect/ai/recall.js';
 import {uriSegment} from '../manifest.js';
 import type {MemoryRecord, MemoryRelationType} from '../memory/document.js';
@@ -245,7 +245,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
     ]),
   ];
   const records = yield* input.readRecords(rankingUris);
-  const now = new Date(yield* Clock.currentTimeMillis);
+  const now = yield* DateTime.nowAsDate;
   const queryVariants = recallQueryVariants(input.query, input.queryVariants);
   const indexQueries = navigationOnly ? [] : [input.query, ...queryVariants];
   const scopeSets: ReadonlyArray<readonly string[] | undefined> = input.allowedUriScopes?.length
@@ -541,11 +541,11 @@ export function boundedRecallSemanticRetrieval<A, E, R>(
 ): Effect.Effect<BoundedRecallSemanticRetrieval<A>, never, R> {
   return retrieval.pipe(
     Effect.map(value => ({status: 'completed' as const, value})),
-    Effect.catchCause(cause =>
-      Cause.hasInterrupts(cause)
-        ? Effect.failCause(cause as Cause.Cause<never>)
-        : Effect.succeed({cause: cause, status: 'failed' as const}),
+    Effect.catchCauseIf(
+      cause => !Cause.hasInterrupts(cause),
+      cause => Effect.succeed({cause: cause, status: 'failed' as const}),
     ),
+    Effect.catchCause(cause => Effect.failCause(cause as Cause.Cause<never>)),
     Effect.timeoutOrElse({
       duration: MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS,
       orElse: () => Effect.succeed({status: 'timed-out' as const}),
@@ -692,10 +692,9 @@ export const loadRecallSemanticScoresResult = Effect.fn('recall.loadSemanticScor
             warning: Option.none(),
           } satisfies RecallSemanticScoresResult),
     ),
-    Effect.catchCause(cause =>
-      Cause.hasInterruptsOnly(cause)
-        ? Effect.failCause(cause)
-        : Effect.succeed(emptyRecallSemanticScoresResult(Option.some(semanticRecallFailureWarning(cause)))),
+    Effect.catchCauseIf(
+      cause => !Cause.hasInterruptsOnly(cause),
+      cause => Effect.succeed(emptyRecallSemanticScoresResult(Option.some(semanticRecallFailureWarning(cause)))),
     ),
   );
 });
@@ -718,7 +717,7 @@ const loadCurrentSemanticScores = Effect.fn('recall.loadCurrentSemanticScores')(
       allowedUriScopes,
     ).pipe(Effect.result);
     if (Result.isSuccess(attempt)) return attempt.success;
-    if (attempt.failure instanceof VectorCorpusGenerationChanged && retry < SEMANTIC_GENERATION_RETRY_LIMIT) {
+    if (Schema.is(VectorCorpusGenerationChanged)(attempt.failure) && retry < SEMANTIC_GENERATION_RETRY_LIMIT) {
       continue;
     }
     return yield* Effect.fail(attempt.failure);
@@ -758,7 +757,7 @@ const loadSemanticScoresAttempt = Effect.fn('recall.loadSemanticScoresAttempt')(
   }).pipe(
     Effect.map(scores => ({corpusGeneration, scores})),
     Effect.catchIf(
-      (error): error is VectorIndexCorrupt => error instanceof VectorIndexCorrupt,
+      (error): error is VectorIndexCorrupt => Schema.is(VectorIndexCorrupt)(error),
       () =>
         Effect.gen(function* () {
           const index = yield* loadRecallIndexData(config, {includeInactive: false});

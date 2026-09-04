@@ -1,10 +1,11 @@
 import * as BunPath from '@effect/platform-bun/BunPath';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {it as effectIt} from '@effect/vitest';
 import {execFileSync} from '../helpers/node-child-process.js';
 import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
-import {Effect, Exit, Layer, Option, Tracer} from 'effect';
+import {Effect, Exit, Layer, Tracer} from 'effect';
 import {TestClock} from 'effect/testing';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
 import {describe, expect} from 'vitest';
@@ -394,7 +395,7 @@ function registeredTelemetryHarness(tracer: Tracer.Tracer, onWatcherEnsure: () =
       retainedStatuses: 0,
     }),
     refresh: () => Effect.succeed(false),
-    status: () => Effect.succeed(Option.none()),
+    status: () => Effect.succeedNone,
     watch: () => Effect.die('Unexpected graph watch.'),
   });
   const store = pagedAnalysisStore([], []);
@@ -532,7 +533,7 @@ function capturingTracer(): {readonly spans: readonly Tracer.NativeSpan[]; reado
 function telemetrySystemInfoStub(): SystemInfoShape {
   return {
     architecture: 'arm64',
-    availableDiskBytes: () => Effect.succeed(undefined),
+    availableDiskBytes: () => succeedUndefined,
     currentDirectory: () => '/',
     environment: () => ({}),
     executablePath: '/opt/threadnote/bin/threadnote',
@@ -549,7 +550,7 @@ function telemetrySystemInfoStub(): SystemInfoShape {
     platform: 'darwin',
     processArguments: ['/opt/threadnote/bin/threadnote'],
     processId: 1,
-    processStartIdentity: () => Effect.succeed(undefined),
+    processStartIdentity: () => succeedUndefined,
     readLine: () => () => undefined,
     runtimeVersion: 'test',
     setEnvironmentVariable: () => undefined,

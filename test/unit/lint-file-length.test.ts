@@ -16,7 +16,7 @@ import {
 
 function runGit(repositoryRoot: string, arguments_: readonly string[]): void {
   const result = Bun.spawnSync({cmd: ['git', ...arguments_], cwd: repositoryRoot, stderr: 'pipe', stdout: 'pipe'});
-  if (result.exitCode !== 0) throw new TestError(new TextDecoder().decode(result.stderr));
+  if (result.exitCode !== 0) throw TestError.make({message: new TextDecoder().decode(result.stderr)});
 }
 
 describe('production file length lint', () => {

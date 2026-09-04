@@ -87,7 +87,7 @@ interface ProductionLogPhaseRecorderShape {
 }
 
 class ProductionLogPhaseRecorder extends Context.Service<ProductionLogPhaseRecorder, ProductionLogPhaseRecorderShape>()(
-  'threadnote/effect/ProductionLogPhaseRecorder',
+  'threadnote/effect/production_log/ProductionLogPhaseRecorder',
 ) {}
 
 /**
@@ -160,9 +160,9 @@ export function withProductionLogging<A, E, R>(
     const system = yield* SystemInfo;
     const crypto = yield* Crypto.Crypto;
     const invocationId = yield* crypto.randomUUIDv4.pipe(
-      Effect.catch(() => Effect.succeed(`${system.processId}-${startedAt}`)),
+      Effect.orElseSucceed(() => `${system.processId}-${startedAt}`),
     );
-    const version = yield* getThreadnoteVersion().pipe(Effect.catch(() => Effect.succeed('unknown')));
+    const version = yield* getThreadnoteVersion().pipe(Effect.orElseSucceed(() => 'unknown'));
     const operation = safeDiagnosticLabel(options.operation, 'unknown');
     const base = {
       architecture: system.architecture,
@@ -332,7 +332,7 @@ export const productionLogSupportExcerpt = Effect.fn('productionLog.productionLo
     ),
   ).pipe(
     Effect.timeout(PRODUCTION_LOG_PROCESS_WAIT_MILLISECONDS),
-    Effect.catch(() => Effect.succeed([])),
+    Effect.orElseSucceed(() => []),
   );
   const serializedEntries: string[] = [];
   let discardedEntries = 0;
@@ -434,19 +434,14 @@ function appendProductionLogs(
         }),
       ),
     ).pipe(Effect.timeout(lockOptions.waitTimeoutMilliseconds + 500));
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }
 
 function boundedInvocationLogWrite(
   write: Effect.Effect<void, never, FileSystem.FileSystem | Path.Path | SystemInfo | Crypto.Crypto>,
   timeoutMilliseconds: number | undefined,
 ) {
-  return timeoutMilliseconds === undefined
-    ? write
-    : write.pipe(
-        Effect.timeout(timeoutMilliseconds),
-        Effect.catch(() => Effect.void),
-      );
+  return timeoutMilliseconds === undefined ? write : write.pipe(Effect.timeout(timeoutMilliseconds), Effect.ignore);
 }
 
 function writeProductionLogBatch(
@@ -482,7 +477,7 @@ function writeProductionLogBatch(
         yield* rotateProductionLogs(fs, activePath, policy.rotatedFileCount);
       }
       yield* replaceProductionLogEntry(fs, activeTemporaryPath, activePath);
-    }).pipe(Effect.ensuring(fs.remove(activeTemporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
+    }).pipe(Effect.ensuring(fs.remove(activeTemporaryPath, {force: true}).pipe(Effect.ignore)));
   });
 }
 
@@ -591,7 +586,7 @@ function boundedProductionLogRead(fs: FileSystem.FileSystem, filePath: string, m
       }
       return {content, rejected: false, truncated: offset > 0n};
     }),
-  ).pipe(Effect.catch(() => Effect.succeed({content: '', rejected: true, truncated: false})));
+  ).pipe(Effect.orElseSucceed(() => ({content: '', rejected: true, truncated: false})));
 }
 
 function rotateProductionLogs(
@@ -651,23 +646,23 @@ function replaceProductionLogEntry(fs: FileSystem.FileSystem, source: string, ta
 function productionLogPathEntryKind(fs: FileSystem.FileSystem, filePath: string) {
   return fs.readLink(filePath).pipe(
     Effect.as('symlink' as const),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed('missing' as const)
-        : fs.stat(filePath).pipe(
-            Effect.map(info =>
-              info.type === 'File'
-                ? ('file' as const)
-                : info.type === 'Directory'
-                  ? ('directory' as const)
-                  : ('other' as const),
-            ),
-            Effect.catch(statError =>
-              statError instanceof PlatformError.PlatformError && statError.reason._tag === 'NotFound'
-                ? Effect.succeed('missing' as const)
-                : Effect.fail(statError),
-            ),
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.succeed('missing' as const),
+      () =>
+        fs.stat(filePath).pipe(
+          Effect.map(info =>
+            info.type === 'File'
+              ? ('file' as const)
+              : info.type === 'Directory'
+                ? ('directory' as const)
+                : ('other' as const),
           ),
+          Effect.catchIf(
+            statError => statError instanceof PlatformError.PlatformError && statError.reason._tag === 'NotFound',
+            () => Effect.succeed('missing' as const),
+          ),
+        ),
     ),
   );
 }
@@ -707,7 +702,7 @@ function isOwnedThreadnoteHome(fs: FileSystem.FileSystem, path: Path.Path, home:
           receipt.version === LEGACY_THREADNOTE_STORAGE_LAYOUT_VERSION)
       );
     }),
-    Effect.catch(() => Effect.succeed(false)),
+    Effect.orElseSucceed(() => false),
   );
 }
 

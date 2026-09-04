@@ -1,6 +1,6 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Clock, Effect, FileSystem, Path} from 'effect';
+import {Clock, DateTime, Effect, FileSystem, Path, Schema} from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from '../src/code_graph/indexer.js';
 import type {
   CodeGraphIndexSummary,
@@ -86,7 +86,7 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
     const ratchet = options.ratchetPath ? yield* readJsonFile(options.ratchetPath) : undefined;
     if (ratchet !== undefined) {
       yield* Effect.try({
-        catch: cause => new ScriptError(`Dirty-overlay performance ratchet is invalid: ${String(cause)}`),
+        catch: cause => ScriptError.make({message: `Dirty-overlay performance ratchet is invalid: ${String(cause)}`}),
         try: () => validateCodeGraphBenchmarkRatchet(ratchet),
       });
     }
@@ -114,9 +114,9 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
         incrementalSample.edges !== fullSample.edges ||
         incrementalSample.totalFiles !== fullSample.totalFiles
       ) {
-        return yield* Effect.fail(
-          new ScriptError(`Dirty-overlay benchmark graph shape diverged in sample ${index + 1}.`),
-        );
+        return yield* ScriptError.make({
+          message: `Dirty-overlay benchmark graph shape diverged in sample ${index + 1}.`,
+        });
       }
     }
 
@@ -129,9 +129,9 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
       governance !== undefined &&
       JSON.stringify(finalRuntimeProvenance) !== JSON.stringify(governance.runtimeProvenance)
     ) {
-      return yield* Effect.fail(
-        new ScriptError('Dirty-overlay benchmark source/runtime provenance changed during the run.'),
-      );
+      return yield* ScriptError.make({
+        message: 'Dirty-overlay benchmark source/runtime provenance changed during the run.',
+      });
     }
     const ratchetArtifact = dirtyOverlayRatchetArtifact({
       full,
@@ -143,7 +143,7 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
       runtimePlatform: system.platform,
     });
     const artifact = {
-      createdAt: new Date().toISOString(),
+      createdAt: DateTime.formatIso(yield* DateTime.now),
       environment: {
         architecture: system.architecture,
         cpu: hardware.cpuModel,
@@ -224,9 +224,9 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
     if (ratchet !== undefined) {
       return yield* Effect.try({
         catch: cause =>
-          cause instanceof ScriptError
+          Schema.is(ScriptError)(cause)
             ? cause
-            : new ScriptError(`Dirty-overlay performance ratchet failed: ${String(cause)}`),
+            : ScriptError.make({message: `Dirty-overlay performance ratchet failed: ${String(cause)}`}),
         try: () => enforceCodeGraphBenchmarkRatchet(ratchetArtifact, ratchet),
       });
     }
@@ -248,23 +248,19 @@ const prepareDirtyOverlayGovernance = Effect.fn('benchmarkCodeGraphDirtyOverlay.
     {concurrency: 3},
   );
   if (availableBytes === undefined || availableBytes < minimumFreeBytes) {
-    return yield* Effect.fail(
-      new ScriptError(
-        `Governed dirty-overlay benchmark requires at least ${minimumFreeGiB} GiB free on its temporary filesystem.`,
-      ),
-    );
+    return yield* ScriptError.make({
+      message: `Governed dirty-overlay benchmark requires at least ${minimumFreeGiB} GiB free on its temporary filesystem.`,
+    });
   }
   if (storage.medium !== 'solid-state') {
-    return yield* Effect.fail(
-      new ScriptError(`Governed dirty-overlay benchmark requires solid-state storage; detected ${storage.medium}.`),
-    );
+    return yield* ScriptError.make({
+      message: `Governed dirty-overlay benchmark requires solid-state storage; detected ${storage.medium}.`,
+    });
   }
   if (system.platform === 'darwin' && storage.location !== 'internal') {
-    return yield* Effect.fail(
-      new ScriptError(
-        `Governed dirty-overlay benchmark requires the internal macOS device; detected ${storage.location}.`,
-      ),
-    );
+    return yield* ScriptError.make({
+      message: `Governed dirty-overlay benchmark requires the internal macOS device; detected ${storage.location}.`,
+    });
   }
   return {
     availableBytes,
@@ -477,7 +473,7 @@ const runDirtyOverlayIndex = Effect.fn('benchmarkCodeGraphDirtyOverlay.run')(fun
   const changedFactBytes =
     summary.incrementalWork?.factBytes ?? finalMaterializationMetrics?.changedFactBytesCompleted ?? 0;
   if (scenario === 'unchanged-static-reexport' && changedFactBytes <= 0) {
-    return yield* Effect.fail(new ScriptError('Dirty-overlay benchmark did not retain changed-fact byte evidence.'));
+    return yield* ScriptError.make({message: 'Dirty-overlay benchmark did not retain changed-fact byte evidence.'});
   }
   const replay = incrementalOverlay
     ? incrementalDirtyOverlayReplayEvidence(changedFactBytes)
@@ -546,16 +542,16 @@ export function dirtyOverlayReplayEvidence(
     metrics.materializedShardReplayBytesCompleted === undefined ||
     metrics.rawFactReplayBytesCompleted === undefined
   ) {
-    throw new ScriptError('Dirty-overlay benchmark did not retain complete physical replay evidence.');
+    throw ScriptError.make({message: 'Dirty-overlay benchmark did not retain complete physical replay evidence.'});
   }
   const cachedFactReplayBytes = metrics.cachedFactReplayBytesCompleted;
   const materializedShardReplayBytes = metrics.materializedShardReplayBytesCompleted;
   const rawFactReplayBytes = metrics.rawFactReplayBytesCompleted;
   if (cachedFactReplayBytes !== Math.min(Number.MAX_SAFE_INTEGER, materializedShardReplayBytes + rawFactReplayBytes)) {
-    throw new ScriptError('Dirty-overlay benchmark replay-byte split is inconsistent.');
+    throw ScriptError.make({message: 'Dirty-overlay benchmark replay-byte split is inconsistent.'});
   }
   if (changedFactBytes !== metrics.changedFactBytesCompleted) {
-    throw new ScriptError('Dirty-overlay benchmark changed-fact byte evidence is inconsistent.');
+    throw ScriptError.make({message: 'Dirty-overlay benchmark changed-fact byte evidence is inconsistent.'});
   }
   return {
     attributedFiles: metrics.attributedFilesCompleted,
@@ -595,18 +591,18 @@ export function dirtyOverlayAmplificationEvidence(input: {
 export function dirtyOverlayChangedSource(scenario: DirtyOverlayBenchmarkScenario, committed: string): string {
   if (scenario === 'body-only') {
     if (!committed.includes('return 0;')) {
-      throw new ScriptError('Dirty-overlay benchmark fixture lost its body-only edit marker.');
+      throw ScriptError.make({message: 'Dirty-overlay benchmark fixture lost its body-only edit marker.'});
     }
     return committed.replace('return 0;', 'return 1000000;');
   }
   if (scenario === 'changed-export') {
     if (!committed.includes('export function dependencySurfaceControl()')) {
-      throw new ScriptError('Dirty-overlay benchmark fixture lost its dependency-surface edit marker.');
+      throw ScriptError.make({message: 'Dirty-overlay benchmark fixture lost its dependency-surface edit marker.'});
     }
     return `${committed}${committed.endsWith('\n') ? '' : '\n'}export function publishedDependencySurfaceControl(): number { return 2; }\n`;
   }
   if (!committed.includes(generatedStaticReexportControlStatement())) {
-    throw new ScriptError('Dirty-overlay benchmark fixture lost its static re-export control.');
+    throw ScriptError.make({message: 'Dirty-overlay benchmark fixture lost its static re-export control.'});
   }
   return `// Span-only benchmark edit; resolver input below is byte-identical.\n${committed}`;
 }
@@ -634,16 +630,16 @@ function validateMaterialization(
           summary.materialization.totalFiles > summary.materialization.stagedFiles
         : summary.materialization?.mode === 'incremental-overlay' && summary.materialization.stagedFiles === 1;
     if (!valid) {
-      throw new ScriptError(
-        `Incremental dirty-overlay benchmark fell back: ${JSON.stringify(summary.materialization)}.`,
-      );
+      throw ScriptError.make({
+        message: `Incremental dirty-overlay benchmark fell back: ${JSON.stringify(summary.materialization)}.`,
+      });
     }
     return;
   }
   if (summary.materialization?.mode !== 'full' || summary.materialization.fallbackReason !== 'disabled') {
-    throw new ScriptError(
-      `Full dirty-overlay benchmark did not use its control path: ${JSON.stringify(summary.materialization)}.`,
-    );
+    throw ScriptError.make({
+      message: `Full dirty-overlay benchmark did not use its control path: ${JSON.stringify(summary.materialization)}.`,
+    });
   }
 }
 
@@ -652,7 +648,8 @@ function summarize(values: readonly number[]): {
   readonly mean: number;
   readonly minimum: number;
 } {
-  if (values.length === 0) throw new ScriptError('Dirty-overlay benchmark requires at least one observation.');
+  if (values.length === 0)
+    throw ScriptError.make({message: 'Dirty-overlay benchmark requires at least one observation.'});
   return {
     maximum: Math.max(...values),
     mean: values.reduce((total, value) => total + value, 0) / values.length,
@@ -682,23 +679,25 @@ export function parseDirtyOverlayBenchmarkArguments(args: readonly string[]): Di
     else if (argument === '--scenario') {
       const value = required(args[++index], argument);
       if (value !== 'body-only' && value !== 'changed-export' && value !== 'unchanged-static-reexport') {
-        throw new ScriptError('--scenario must be body-only, changed-export, or unchanged-static-reexport.');
+        throw ScriptError.make({
+          message: '--scenario must be body-only, changed-export, or unchanged-static-reexport.',
+        });
       }
       scenario = value;
     } else if (argument === '--scale-symbols') scaleSymbols = integer(args[++index], argument, 1);
-    else throw new ScriptError(`Unknown dirty-overlay benchmark option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown dirty-overlay benchmark option: ${argument}`});
   }
   if (scenario === 'unchanged-static-reexport' && scaleSymbols < 101) {
-    throw new ScriptError('--scenario unchanged-static-reexport requires --scale-symbols at least 101.');
+    throw ScriptError.make({message: '--scenario unchanged-static-reexport requires --scale-symbols at least 101.'});
   }
   if (governed && minimumFreeGiB < 120) {
-    throw new ScriptError('--governed requires --minimum-free-gib of at least 120.');
+    throw ScriptError.make({message: '--governed requires --minimum-free-gib of at least 120.'});
   }
   if (governed && outputPath === undefined) {
-    throw new ScriptError('--governed requires --output so exact evidence is retained.');
+    throw ScriptError.make({message: '--governed requires --output so exact evidence is retained.'});
   }
   if (ratchetPath !== undefined && (!governed || outputPath === undefined)) {
-    throw new ScriptError('--ratchet requires --governed and --output.');
+    throw ScriptError.make({message: '--ratchet requires --governed and --output.'});
   }
   return {
     governed,
@@ -713,12 +712,13 @@ export function parseDirtyOverlayBenchmarkArguments(args: readonly string[]): Di
 
 function integer(value: string | undefined, option: string, minimum: number): number {
   const parsed = Number.parseInt(required(value, option), 10);
-  if (!Number.isSafeInteger(parsed) || parsed < minimum) throw new ScriptError(`${option} must be at least ${minimum}`);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum)
+    throw ScriptError.make({message: `${option} must be at least ${minimum}`});
   return parsed;
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 

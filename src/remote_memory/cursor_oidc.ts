@@ -1,6 +1,7 @@
 import {createRemoteJWKSet, jwtVerify, type JWTPayload} from 'jose';
 import type {AuthorizedRemotePrincipal} from './authorization.js';
 import {remoteMemoryError} from './errors.js';
+import {randomUuidV4} from '../crypto/uuid.js';
 import type {RemoteMemoryRequestExecution} from './request_execution.js';
 
 const CHALLENGE_LIFETIME_MILLISECONDS = 2 * 60_000;
@@ -88,7 +89,7 @@ export async function beginCursorAttestation(
   const now = options.now ?? new Date();
   const challenge: CursorAttestationChallenge = {
     audience: options.audience,
-    challengeId: crypto.randomUUID(),
+    challengeId: randomUuidV4(),
     completionUrl: options.completionUrl,
     expiresAt: new Date(now.getTime() + CHALLENGE_LIFETIME_MILLISECONDS).toISOString(),
     nonce: randomNonce(),

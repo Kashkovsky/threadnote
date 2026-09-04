@@ -241,7 +241,7 @@ describe('code graph snapshot-file citation schema repair', () => {
         .withSession(databasePath, store.initialize(databasePath), {
           onPersistentSchemaMigrationPhase: phase =>
             phase === 'recorded-revision'
-              ? Effect.die(new TestError('fault after citation schema revision publication'))
+              ? Effect.die(TestError.make({message: 'fault after citation schema revision publication'}))
               : Effect.void,
         })
         .pipe(Effect.exit);

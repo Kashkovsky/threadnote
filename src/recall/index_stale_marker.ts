@@ -23,10 +23,10 @@ export function readRecallStaleMarker(
 ): Effect.Effect<RecallStaleMarker | undefined, never> {
   return Effect.gen(function* () {
     const stalePath = `${path}.stale`;
-    if (!(yield* fs.exists(stalePath).pipe(Effect.catch(() => Effect.succeed(false))))) {
+    if (!(yield* fs.exists(stalePath).pipe(Effect.orElseSucceed(() => false)))) {
       return undefined;
     }
-    const raw = yield* fs.readFileString(stalePath).pipe(Effect.catch(() => Effect.succeed('present')));
+    const raw = yield* fs.readFileString(stalePath).pipe(Effect.orElseSucceed(() => 'present'));
     const legacyGeneration = raw.trim() || 'present';
     const value = Option.getOrUndefined(Option.liftThrowable((content: string): unknown => JSON.parse(content))(raw));
     const marker = toRecallStaleMarker(value);
@@ -139,7 +139,7 @@ export const writeRecallStaleGeneration = Effect.fn('recall.writeStaleGeneration
   yield* fs.writeFileString(temporaryPath, `${JSON.stringify(marker)}\n`, {mode: 0o600});
   yield* fs
     .rename(temporaryPath, stalePath)
-    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
+    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.ignore)));
   return generation;
 });
 
@@ -171,7 +171,7 @@ export const clearRecallStaleMarkerInvalidations = Effect.fn('recall.clearStaleM
   yield* fs.writeFileString(temporaryPath, `${JSON.stringify(cleared)}\n`, {mode: 0o600});
   yield* fs
     .rename(temporaryPath, stalePath)
-    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
+    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.ignore)));
 });
 
 const nextStaleMarkerGenerationCounter = Effect.sync(() => {

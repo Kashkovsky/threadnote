@@ -236,7 +236,7 @@ describe('code graph corpus extraction', () => {
     const extraction = extractCorpusFile(binaryFile('docs/cancelled.pdf', minimalPdf('cancelled')), {
       signal: controller.signal,
     });
-    queueMicrotask(() => controller.abort(new TestError('indexing cancelled')));
+    queueMicrotask(() => controller.abort(TestError.make({message: 'indexing cancelled'})));
 
     await expect(extraction).rejects.toThrow('indexing cancelled');
   });

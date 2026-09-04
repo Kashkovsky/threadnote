@@ -1,5 +1,5 @@
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
-import {Clock, Crypto, Effect, FileSystem, Layer, Option, Path, Result, Schema} from 'effect';
+import {Clock, Crypto, DateTime, Effect, FileSystem, Layer, Option, Path, Result, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {LocalModelRuntime} from '../effect/ai/local-model-runtime.js';
 import {sha256Hex} from '../effect/digest.js';
@@ -20,9 +20,10 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {chunkRecallDocument, RECALL_CHUNKER_VERSION, type RecallChunk} from './chunker.js';
 import {normalizeVector, type VectorSearchResult} from './vector-search.js';
 
-class VectorIndexOperationError extends Error {
-  readonly _tag = 'VectorIndexOperationError' as const;
-}
+class VectorIndexOperationError extends Schema.TaggedError<VectorIndexOperationError>()('VectorIndexOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const VECTOR_INDEX_DATABASE_VERSION = 5;
 const VECTOR_INDEX_EMBED_BATCH_SIZE = 256;
@@ -169,19 +170,17 @@ const verifyCurrentCorpusGeneration = Effect.fn('vectorIndex.verifyCurrentCorpus
   if (options.currentCorpusGeneration === undefined) return;
   const requestedGeneration = options.corpusGeneration;
   if (requestedGeneration === undefined) {
-    return yield* Effect.fail(
-      new VectorIndexOperationError('A vector corpus-generation fence requires a requested generation.'),
-    );
+    return yield* VectorIndexOperationError.make({
+      message: 'A vector corpus-generation fence requires a requested generation.',
+    });
   }
   const currentGeneration = yield* options.currentCorpusGeneration();
   if (Option.isSome(currentGeneration) && currentGeneration.value === requestedGeneration) return;
-  return yield* Effect.fail(
-    new VectorCorpusGenerationChanged({
-      message: 'The lexical recall corpus changed while vector work was in progress.',
-      modelId: manifest.id,
-      requestedGeneration,
-    }),
-  );
+  return yield* VectorCorpusGenerationChanged.make({
+    message: 'The lexical recall corpus changed while vector work was in progress.',
+    modelId: manifest.id,
+    requestedGeneration,
+  });
 });
 
 const verifySelectedCorpusGeneration = Effect.fn('vectorIndex.verifySelectedCorpusGeneration')(function* <R = never>(
@@ -191,13 +190,11 @@ const verifySelectedCorpusGeneration = Effect.fn('vectorIndex.verifySelectedCorp
 ) {
   const requestedGeneration = options.corpusGeneration;
   if (requestedGeneration !== undefined && active.corpus_generation !== requestedGeneration) {
-    return yield* Effect.fail(
-      new VectorCorpusGenerationChanged({
-        message: 'The active vector index no longer matches the requested lexical recall corpus.',
-        modelId: manifest.id,
-        requestedGeneration,
-      }),
-    );
+    return yield* VectorCorpusGenerationChanged.make({
+      message: 'The active vector index no longer matches the requested lexical recall corpus.',
+      modelId: manifest.id,
+      requestedGeneration,
+    });
   }
   yield* verifyCurrentCorpusGeneration(manifest, options);
 });
@@ -226,7 +223,7 @@ export const ensureVectorIndex = Effect.fn('vectorIndex.ensure')(function* <R = 
   const chunks = vectorChunkMappings(candidates);
   const aliases = vectorAliasMappings(candidates);
   const current = yield* currentVectorIndexStatus(config.agentContextHome, manifest, chunks, aliases, options).pipe(
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
   if (current) {
     yield* verifyCurrentCorpusGeneration(manifest, options);
@@ -240,7 +237,7 @@ export const ensureVectorIndex = Effect.fn('vectorIndex.ensure')(function* <R = 
         chunks,
         aliases,
         options,
-      ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+      ).pipe(Effect.orElseSucceed(() => undefined));
       if (lockedCurrent) {
         yield* verifyCurrentCorpusGeneration(manifest, options);
         return lockedCurrent;
@@ -315,7 +312,7 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
 ) {
   yield* verifyCurrentCorpusGeneration(manifest, options);
   if (manifest.role !== 'embedding' || !manifest.dimensions) {
-    return yield* Effect.fail(new VectorIndexOperationError(`Model ${manifest.id} is not an embedding model.`));
+    return yield* VectorIndexOperationError.make({message: `Model ${manifest.id} is not an embedding model.`});
   }
   const dimensions = manifest.dimensions;
   const fs = yield* FileSystem.FileSystem;
@@ -388,15 +385,15 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
             'l2',
             0,
             'building',
-            ${new Date(yield* Clock.currentTimeMillis).toISOString()}
+            ${DateTime.formatIso(yield* DateTime.now)}
           )
         `;
         building = yield* selectGenerationByJob(sql, jobId);
       }
       if (!building) {
-        return yield* Effect.fail(
-          new VectorIndexOperationError(`Could not create vector generation for ${manifest.id}.`),
-        );
+        return yield* VectorIndexOperationError.make({
+          message: `Could not create vector generation for ${manifest.id}.`,
+        });
       }
 
       yield* replaceVectorAliases(sql, building.generation, aliases);
@@ -480,11 +477,9 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
 
       const finalChunkCount = yield* countVectorRows(sql, building.generation);
       if (finalChunkCount !== chunks.length) {
-        return yield* Effect.fail(
-          new VectorIndexOperationError(
-            `Vector generation ${building.generation} has ${finalChunkCount}/${chunks.length} chunks.`,
-          ),
-        );
+        return yield* VectorIndexOperationError.make({
+          message: `Vector generation ${building.generation} has ${finalChunkCount}/${chunks.length} chunks.`,
+        });
       }
       yield* options.onProgress?.({chunkCount: finalChunkCount, phase: 'activating'}) ?? Effect.void;
       yield* activateVectorGenerationFenced(
@@ -552,9 +547,9 @@ export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticSco
           yield* verifySelectedCorpusGeneration(active, manifest, options);
           if (active.chunk_count === 0) return new Map<string, number>();
           if (Option.isNone(normalizedQuery)) {
-            return yield* Effect.fail(
-              new VectorIndexOperationError('The active vector corpus changed shape during semantic scoring.'),
-            );
+            return yield* VectorIndexOperationError.make({
+              message: 'The active vector corpus changed shape during semantic scoring.',
+            });
           }
           const limit = Math.min(active.chunk_count, options.limit ?? 500);
           const selection = vectorChunkSelectionPredicate(options.eligibility, options.allowedUriScopes);
@@ -576,7 +571,7 @@ export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticSco
             const pageMatches = yield* Effect.try({
               try: () => searchEncodedVectorRows(normalizedQuery.value, rows, active.dimensions, limit),
               catch: cause =>
-                new VectorIndexCorrupt({
+                VectorIndexCorrupt.make({
                   message: cause instanceof Error ? cause.message : String(cause),
                   modelId: manifest.id,
                 }),
@@ -714,9 +709,9 @@ const readActiveVectorGeneration = Effect.fn('vectorIndex.readActive')(function*
       yield* validateVectorDatabase(sql);
       const active = yield* selectActiveGeneration(sql);
       if (active && !generationIsCompatible(active, manifest)) {
-        return yield* Effect.fail(
-          new VectorIndexOperationError(`Vector index ${manifest.id}/${active.generation} is incompatible.`),
-        );
+        return yield* VectorIndexOperationError.make({
+          message: `Vector index ${manifest.id}/${active.generation} is incompatible.`,
+        });
       }
       return active;
     }),
@@ -733,7 +728,7 @@ const validateVectorGenerationRows = Effect.fn('vectorIndex.validateGenerationRo
   const path = yield* Path.Path;
   const databasePath = vectorDatabasePath(path, home, manifest.id);
   if (!(yield* fs.exists(databasePath))) {
-    return yield* Effect.fail(new VectorIndexOperationError(`Vector database for ${manifest.id} is missing.`));
+    return yield* VectorIndexOperationError.make({message: `Vector database for ${manifest.id} is missing.`});
   }
   yield* useVectorDatabaseReadOnly(
     databasePath,
@@ -755,11 +750,9 @@ const validateVectorGenerationRows = Effect.fn('vectorIndex.validateGenerationRo
         for (const row of rows) {
           const cause = encodedVectorValidationFailure(row.vector, dimensions);
           if (cause !== undefined) {
-            return yield* Effect.fail(
-              new VectorIndexOperationError(
-                `Vector chunk ${row.chunk_id} is corrupt: ${cause instanceof Error ? cause.message : String(cause)}`,
-              ),
-            );
+            return yield* VectorIndexOperationError.make({
+              message: `Vector chunk ${row.chunk_id} is corrupt: ${cause instanceof Error ? cause.message : String(cause)}`,
+            });
           }
         }
         cursor = rows.at(-1)!.chunk_id;
@@ -880,11 +873,9 @@ const validateVectorDatabase = Effect.fn('vectorIndex.validateDatabase')(functio
   const versions = yield* sql.unsafe<{readonly user_version: number}>('PRAGMA user_version');
   const version = Number(versions[0]?.user_version ?? 0);
   if (version !== VECTOR_INDEX_DATABASE_VERSION) {
-    return yield* Effect.fail(
-      new VectorIndexOperationError(
-        `Unsupported vector index schema ${version}; expected ${VECTOR_INDEX_DATABASE_VERSION}.`,
-      ),
-    );
+    return yield* VectorIndexOperationError.make({
+      message: `Unsupported vector index schema ${version}; expected ${VECTOR_INDEX_DATABASE_VERSION}.`,
+    });
   }
   yield* validateVectorDatabaseStructure(sql);
 });
@@ -896,11 +887,9 @@ const validateVectorDatabaseStructure = Effect.fn('vectorIndex.validateDatabaseS
     const rows = yield* sql.unsafe<{readonly name: string}>(`PRAGMA table_info('${table}')`);
     const actual = rows.map(row => row.name);
     if (actual.length !== expected.length || actual.some((column, index) => column !== expected[index])) {
-      return yield* Effect.fail(
-        new VectorIndexOperationError(
-          `Vector index table ${table} has invalid columns: ${actual.length > 0 ? actual.join(', ') : '(missing)'}.`,
-        ),
-      );
+      return yield* VectorIndexOperationError.make({
+        message: `Vector index table ${table} has invalid columns: ${actual.length > 0 ? actual.join(', ') : '(missing)'}.`,
+      });
     }
   }
 });
@@ -920,11 +909,9 @@ const selectActiveGeneration = Effect.fn('vectorIndex.selectActiveGeneration')(f
   if (!active) return undefined;
   assertVectorGeneration(active);
   if (Number(active.actual_chunk_count) !== Number(active.chunk_count)) {
-    return yield* Effect.fail(
-      new VectorIndexOperationError(
-        `Vector generation ${active.generation} contains ${active.actual_chunk_count}/${active.chunk_count} chunks.`,
-      ),
-    );
+    return yield* VectorIndexOperationError.make({
+      message: `Vector generation ${active.generation} contains ${active.actual_chunk_count}/${active.chunk_count} chunks.`,
+    });
   }
   return active;
 });
@@ -1174,7 +1161,7 @@ function insertVectorRows(sql: SqlClient.SqlClient, rows: readonly VectorInsertR
           const mappings = batch.map(row => {
             const vectorId = idByKey.get(row.vectorKey);
             if (vectorId === undefined) {
-              throw new VectorIndexOperationError(`Could not resolve stored vector ${row.vectorKey}.`);
+              throw VectorIndexOperationError.make({message: `Could not resolve stored vector ${row.vectorKey}.`});
             }
             return [
               row.generation,
@@ -1311,18 +1298,19 @@ function vectorStatus(
 
 function encodeVector(vector: readonly number[], dimensions: number): Uint8Array {
   if (vector.length !== dimensions) {
-    throw new VectorIndexOperationError(`Vector has ${vector.length} dimensions; expected ${dimensions}.`);
+    throw VectorIndexOperationError.make({message: `Vector has ${vector.length} dimensions; expected ${dimensions}.`});
   }
   const bytes = new Uint8Array(dimensions * 4);
   const view = new DataView(bytes.buffer);
   let squaredMagnitude = 0;
   for (const [index, component] of vector.entries()) {
-    if (!Number.isFinite(component)) throw new VectorIndexOperationError('Vector contains a non-finite component.');
+    if (!Number.isFinite(component))
+      throw VectorIndexOperationError.make({message: 'Vector contains a non-finite component.'});
     squaredMagnitude += component * component;
     view.setFloat32(index * 4, component, true);
   }
   if (Math.abs(Math.sqrt(squaredMagnitude) - 1) > 0.001) {
-    throw new VectorIndexOperationError('Vector is not L2-normalized.');
+    throw VectorIndexOperationError.make({message: 'Vector is not L2-normalized.'});
   }
   return bytes;
 }
@@ -1330,19 +1318,21 @@ function encodeVector(vector: readonly number[], dimensions: number): Uint8Array
 function validateEncodedVector(value: unknown, dimensions: number): void {
   const bytes = bytesFromSqlBlob(value);
   if (bytes.byteLength !== dimensions * 4) {
-    throw new VectorIndexOperationError(`Stored vector has ${bytes.byteLength} bytes; expected ${dimensions * 4}.`);
+    throw VectorIndexOperationError.make({
+      message: `Stored vector has ${bytes.byteLength} bytes; expected ${dimensions * 4}.`,
+    });
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let squaredMagnitude = 0;
   for (let index = 0; index < dimensions; index += 1) {
     const component = view.getFloat32(index * 4, true);
     if (!Number.isFinite(component)) {
-      throw new VectorIndexOperationError('Stored vector contains a non-finite component.');
+      throw VectorIndexOperationError.make({message: 'Stored vector contains a non-finite component.'});
     }
     squaredMagnitude += component * component;
   }
   if (Math.abs(Math.sqrt(squaredMagnitude) - 1) > 0.002) {
-    throw new VectorIndexOperationError('Stored vector is not L2-normalized.');
+    throw VectorIndexOperationError.make({message: 'Stored vector is not L2-normalized.'});
   }
 }
 
@@ -1361,7 +1351,7 @@ function bytesFromSqlBlob(value: unknown): Uint8Array {
   if (ArrayBuffer.isView(value)) {
     return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   }
-  throw new VectorIndexOperationError('Stored vector is not a binary SQLite value.');
+  throw VectorIndexOperationError.make({message: 'Stored vector is not a binary SQLite value.'});
 }
 
 function mergeSemanticMatches(
@@ -1379,17 +1369,17 @@ function searchEncodedVectorRows(
   limit: number,
 ): readonly SemanticChunkMatch[] {
   if (normalizedQuery.length !== dimensions) {
-    throw new VectorIndexOperationError(
-      `Query vector has ${normalizedQuery.length} dimensions; expected ${dimensions}.`,
-    );
+    throw VectorIndexOperationError.make({
+      message: `Query vector has ${normalizedQuery.length} dimensions; expected ${dimensions}.`,
+    });
   }
   const matches: SemanticChunkMatch[] = [];
   for (const row of rows) {
     const bytes = bytesFromSqlBlob(row.vector);
     if (bytes.byteLength !== dimensions * 4) {
-      throw new VectorIndexOperationError(
-        `Stored vector ${row.chunk_id} has ${bytes.byteLength} bytes; expected ${dimensions * 4}.`,
-      );
+      throw VectorIndexOperationError.make({
+        message: `Stored vector ${row.chunk_id} has ${bytes.byteLength} bytes; expected ${dimensions * 4}.`,
+      });
     }
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     let score = 0;
@@ -1397,13 +1387,15 @@ function searchEncodedVectorRows(
     for (let index = 0; index < dimensions; index += 1) {
       const component = view.getFloat32(index * 4, true);
       if (!Number.isFinite(component)) {
-        throw new VectorIndexOperationError(`Stored vector ${row.chunk_id} contains a non-finite component.`);
+        throw VectorIndexOperationError.make({
+          message: `Stored vector ${row.chunk_id} contains a non-finite component.`,
+        });
       }
       squaredMagnitude += component * component;
       score += normalizedQuery[index] * component;
     }
     if (Math.abs(Math.sqrt(squaredMagnitude) - 1) > 0.002) {
-      throw new VectorIndexOperationError(`Stored vector ${row.chunk_id} is not L2-normalized.`);
+      throw VectorIndexOperationError.make({message: `Stored vector ${row.chunk_id} is not L2-normalized.`});
     }
     matches.push({
       id: row.chunk_id,
@@ -1533,9 +1525,9 @@ function assertVectorGeneration(generation: VectorGenerationRow): void {
     !['building', 'ready'].includes(generation.state) ||
     !generation.created_at
   ) {
-    throw new VectorIndexOperationError(
-      `Vector generation ${generation.generation || '<unknown>'} metadata is invalid.`,
-    );
+    throw VectorIndexOperationError.make({
+      message: `Vector generation ${generation.generation || '<unknown>'} metadata is invalid.`,
+    });
   }
 }
 
@@ -1576,10 +1568,9 @@ function useVectorDatabaseReadOnly<A, E, R>(
 }
 
 function removeVectorDatabaseFiles(fs: FileSystem.FileSystem, databasePath: string): Effect.Effect<void, never> {
-  return Effect.all(
-    [databasePath, `${databasePath}-shm`, `${databasePath}-wal`].map(candidate =>
-      fs.remove(candidate, {force: true}).pipe(Effect.catch(() => Effect.void)),
-    ),
+  return Effect.forEach(
+    [databasePath, `${databasePath}-shm`, `${databasePath}-wal`],
+    candidate => fs.remove(candidate, {force: true}).pipe(Effect.ignore),
     {discard: true},
   ).pipe(Effect.asVoid);
 }
@@ -1590,7 +1581,7 @@ const removeLegacyVectorSidecars = Effect.fn('vectorIndex.removeLegacySidecars')
   root: string,
 ) {
   for (const legacy of ['active.json', 'generations', 'staging']) {
-    yield* fs.remove(path.join(root, legacy), {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void));
+    yield* fs.remove(path.join(root, legacy), {force: true, recursive: true}).pipe(Effect.ignore);
   }
   for (let version = 1; version < VECTOR_INDEX_DATABASE_VERSION; version += 1) {
     yield* removeVectorDatabaseFiles(fs, path.join(root, `vectors-v${version}.sqlite`));

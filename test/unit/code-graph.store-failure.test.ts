@@ -49,7 +49,7 @@ describe('code graph store failure classification', () => {
   );
 
   it('preserves the existing busy subtype constructor API with typed metadata defaults', () => {
-    const failure = new CodeGraphStoreBusyError('fixture busy');
+    const failure = CodeGraphStoreBusyError.of('fixture busy');
 
     expect(failure).toMatchObject({
       code: 'busy',

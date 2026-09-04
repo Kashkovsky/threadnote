@@ -228,7 +228,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
         .pipe(Effect.option);
       if (Option.isNone(lease)) return Option.none<CodeGraphIndexSummary>();
       const leaseToken = yield* Effect.acquireRelease(Effect.succeed(lease.value), token =>
-        input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+        input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.ignore),
       );
       const committedBase: CommittedBaseResult = {
         diagnostics: [

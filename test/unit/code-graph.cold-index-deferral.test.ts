@@ -23,7 +23,7 @@ import type {
   CodeGraphEdge,
   CodeGraphInventoryFile,
   CodeGraphSnapshot,
-  CodeGraphStoreError,
+  CodeGraphStoreFailure,
   CodeGraphSymbol,
   RepositoryIdentity,
 } from '../../src/code_graph/types.js';
@@ -63,11 +63,11 @@ describe('code graph cold query-index deferral', () => {
         const guard: CodeGraphDirectPersistentCapacityProtector = <A, E, R>(
           boundary: CodeGraphDirectPersistentCapacityBoundary,
           transaction: Effect.Effect<A, E, R>,
-        ): Effect.Effect<A, E | CodeGraphStoreError, R> =>
-          Effect.suspend((): Effect.Effect<A, E | CodeGraphStoreError, R> => {
+        ): Effect.Effect<A, E | CodeGraphStoreFailure, R> =>
+          Effect.suspend((): Effect.Effect<A, E | CodeGraphStoreFailure, R> => {
             boundaries.push({...boundary});
             if (pauseRestoration && boundary.operation === 'restore persistent code graph query indexes') {
-              return Effect.fail(new CodeGraphDiskCapacityPressureError(boundary.operation));
+              return Effect.fail(CodeGraphDiskCapacityPressureError.of(boundary.operation));
             }
             return transaction;
           });

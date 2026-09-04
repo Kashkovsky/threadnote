@@ -41,9 +41,9 @@ const program = Effect.gen(function* () {
     observations.push(result.state === 'deferred' ? `${result.state}:${result.blockedCode}` : result.state);
     if (result.state === 'complete') break;
   }
-  return yield* Effect.fail(
-    new TestError(`Vector child completed without a database commit barrier: ${observations.join(',')}`),
-  );
+  return yield* TestError.make({
+    message: `Vector child completed without a database commit barrier: ${observations.join(',')}`,
+  });
 }).pipe(provideTestLayer(childLayer));
 
 Effect.runPromise(program).catch(cause => {

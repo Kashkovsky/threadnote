@@ -1,4 +1,5 @@
-import {Clock, Effect, Exit, FileSystem, Path} from 'effect';
+import {DateTime, Effect, Exit, FileSystem, Path, Schema} from 'effect';
+import {succeedUndefined} from '../../effect/optional.js';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {withExclusiveFileLock} from '../../effect/file_lock.js';
 import {
@@ -229,7 +230,7 @@ export function selectProjectionForSnapshot(
        LIMIT 1`,
       [receipt.checkoutId, receipt.worktreeId, receipt.snapshotId, receipt.projectorVersion],
     )
-    .pipe(Effect.flatMap(rows => (rows.length === 0 ? Effect.succeed(undefined) : decodeProjectionMetadata(rows[0]))));
+    .pipe(Effect.flatMap(rows => (rows.length === 0 ? succeedUndefined : decodeProjectionMetadata(rows[0]))));
 }
 
 export function selectProjectionByDigest(sql: SqlClient.SqlClient, projectionDigest: string) {
@@ -241,7 +242,7 @@ export function selectProjectionByDigest(sql: SqlClient.SqlClient, projectionDig
        FROM repository_snapshots WHERE projection_digest = ? LIMIT 1`,
       [projectionDigest],
     )
-    .pipe(Effect.flatMap(rows => (rows.length === 0 ? Effect.succeed(undefined) : decodeProjectionMetadata(rows[0]))));
+    .pipe(Effect.flatMap(rows => (rows.length === 0 ? succeedUndefined : decodeProjectionMetadata(rows[0]))));
 }
 
 export function projectionState(sql: SqlClient.SqlClient, projectionDigest: string) {
@@ -302,8 +303,9 @@ export function insertProjectionHeader(
         [reservedLogicalBytes, CODE_GRAPH_WORKSET_CATALOG_LIMITS.catalogPhysicalBytesMaximum - reservedLogicalBytes],
       );
       if ((yield* changes(sql)) !== 1) {
-        return yield* Effect.fail(
-          new CodeGraphWorksetCatalogError('capacity', 'The home-global routing projection catalog is full.'),
+        return yield* CodeGraphWorksetCatalogError.of(
+          'capacity',
+          'The home-global routing projection catalog is full.',
         );
       }
       yield* sql.unsafe(
@@ -347,11 +349,9 @@ export function insertRoutingSymbol(
   return Effect.gen(function* () {
     const exactKeys = codeGraphWorksetRoutingExactKeys(symbol);
     if (exactKeys.length > CODE_GRAPH_WORKSET_CATALOG_LIMITS.exactKeysPerSymbol) {
-      return yield* Effect.fail(
-        new CodeGraphWorksetCatalogError(
-          'invalid-input',
-          `Workset routing symbol ${symbol.nodeId} has too many normalized exact keys.`,
-        ),
+      return yield* CodeGraphWorksetCatalogError.of(
+        'invalid-input',
+        `Workset routing symbol ${symbol.nodeId} has too many normalized exact keys.`,
       );
     }
     yield* sql.unsafe(
@@ -419,13 +419,13 @@ export function loadAndValidateProjection(sql: SqlClient.SqlClient, projectionDi
        LIMIT 1`,
       [projectionDigest],
     );
-    if (projectionRows.length !== 1) return yield* Effect.fail(corrupt('Routing projection metadata is missing.'));
+    if (projectionRows.length !== 1) return yield* corrupt('Routing projection metadata is missing.');
     const metadata = yield* decodeProjectionMetadata(projectionRows[0]);
     if (requireReady && metadata.state !== 'ready') {
-      return yield* Effect.fail(corrupt('Routing projection is not ready for publication.'));
+      return yield* corrupt('Routing projection is not ready for publication.');
     }
     if (metadata.symbol_count > CODE_GRAPH_WORKSET_CATALOG_LIMITS.symbolsPerProjection) {
-      return yield* Effect.fail(corrupt('Routing projection symbol count exceeds the supported bound.'));
+      return yield* corrupt('Routing projection symbol count exceeds the supported bound.');
     }
     let digestState: CodeGraphWorksetRoutingProjectionDigestStateV1 = codeGraphWorksetRoutingProjectionDigestStart();
     let afterNodeId = '';
@@ -468,7 +468,7 @@ export function loadAndValidateProjection(sql: SqlClient.SqlClient, projectionDi
         lookupKeyRows.length > nodeIds.length * CODE_GRAPH_WORKSET_CATALOG_LIMITS.lookupKeysPerSymbol ||
         exactKeyRows.length > nodeIds.length * CODE_GRAPH_WORKSET_CATALOG_LIMITS.exactKeysPerSymbol
       ) {
-        return yield* Effect.fail(corrupt('Routing projection page surface exceeds its supported bound.'));
+        return yield* corrupt('Routing projection page surface exceeds its supported bound.');
       }
       const terms = new Map<string, CodeGraphWorksetRoutingTermV1[]>();
       for (const row of termRows) {
@@ -497,7 +497,7 @@ export function loadAndValidateProjection(sql: SqlClient.SqlClient, projectionDi
         const symbol = yield* decodeRoutingSymbol(row, lookupKeys.get(nodeId) ?? [], terms.get(nodeId) ?? []);
         const expectedExactKeys = codeGraphWorksetRoutingExactKeys(symbol).map(key => `${key.kind}\0${key.exactKey}`);
         if (JSON.stringify(exactKeys.get(nodeId) ?? []) !== JSON.stringify(expectedExactKeys)) {
-          return yield* Effect.fail(corrupt('Routing projection normalized exact-key validation failed.'));
+          return yield* corrupt('Routing projection normalized exact-key validation failed.');
         }
         symbols.push(symbol);
       }
@@ -510,7 +510,7 @@ export function loadAndValidateProjection(sql: SqlClient.SqlClient, projectionDi
       yield* Effect.yieldNow;
     }
     if (digestState.symbolCount !== metadata.symbol_count) {
-      return yield* Effect.fail(corrupt('Routing projection symbol count is inconsistent.'));
+      return yield* corrupt('Routing projection symbol count is inconsistent.');
     }
     const receipt = projectionReceipt(metadata);
     const {projectionDigest: _projectionDigest, ...header} = receipt;
@@ -519,7 +519,7 @@ export function loadAndValidateProjection(sql: SqlClient.SqlClient, projectionDi
       catch: cause => corrupt('Stored routing projection metadata is invalid.', cause),
     });
     if (actualDigest !== projectionDigest) {
-      return yield* Effect.fail(corrupt('Routing projection integrity validation failed.'));
+      return yield* corrupt('Routing projection integrity validation failed.');
     }
     return {receipt, state: metadata.state};
   });
@@ -620,7 +620,7 @@ export function validateResultSetIdentityInput(result: CodeGraphWorksetQueryResu
   validateGenerationIdentity(result.workset.generation);
   resultSetProjectorVersion(projectorVersion);
   if (projectorVersion !== CODE_GRAPH_WORKSET_EVIDENCE_PROJECTOR_VERSION) {
-    throw new CodeGraphWorksetCatalogError(
+    throw CodeGraphWorksetCatalogError.of(
       'incompatible',
       'The workset result-set projector version is incompatible with this runtime.',
     );
@@ -644,8 +644,9 @@ export function validateResultSetGenerationForRegistration(
   return Effect.gen(function* () {
     const generation = yield* selectGeneration(sql, result.workset.generation.id);
     if (generation === undefined) {
-      return yield* Effect.fail(
-        new CodeGraphWorksetCatalogError('missing', 'The workset result-set catalog generation does not exist.'),
+      return yield* CodeGraphWorksetCatalogError.of(
+        'missing',
+        'The workset result-set catalog generation does not exist.',
       );
     }
     if (
@@ -654,11 +655,9 @@ export function validateResultSetGenerationForRegistration(
       generation.state !== 'ready' ||
       !(yield* generationIsPublished(sql, result.workset.generation.id, result.workset.name))
     ) {
-      return yield* Effect.fail(
-        new CodeGraphWorksetCatalogError(
-          'stale',
-          'The workset result set must be registered against the current published catalog generation.',
-        ),
+      return yield* CodeGraphWorksetCatalogError.of(
+        'stale',
+        'The workset result set must be registered against the current published catalog generation.',
       );
     }
   });
@@ -676,19 +675,15 @@ export function validateResultSetReferences(
     for (const prepared of sequence.cards) {
       const member = membersByKey.get(prepared.card.repositoryKey);
       if (member === undefined) {
-        return yield* Effect.fail(
-          new CodeGraphWorksetCatalogError(
-            'stale',
-            `Result card repository ${prepared.card.repositoryKey} is not in the pinned workset generation.`,
-          ),
+        return yield* CodeGraphWorksetCatalogError.of(
+          'stale',
+          `Result card repository ${prepared.card.repositoryKey} is not in the pinned workset generation.`,
         );
       }
       if (prepared.card.id !== codeGraphEvidenceCardId(prepared.card.ref, member.snapshot_id, member.worktree_id)) {
-        return yield* Effect.fail(
-          new CodeGraphWorksetCatalogError(
-            'invalid-input',
-            `Result card ${prepared.card.id} does not match its qualified reference and pinned snapshot.`,
-          ),
+        return yield* CodeGraphWorksetCatalogError.of(
+          'invalid-input',
+          `Result card ${prepared.card.id} does not match its qualified reference and pinned snapshot.`,
         );
       }
       for (const [ref, repositoryKeys] of prepared.referencedRepositories) {
@@ -717,21 +712,17 @@ export function validateResultSetReferences(
     for (const [ref, repositoryKeys] of expectedOwners) {
       const record = registered.get(ref);
       if (record === undefined) {
-        return yield* Effect.fail(
-          new CodeGraphWorksetCatalogError(
-            'missing',
-            `Qualified reference ${ref} must be registered before persisting a continuation.`,
-          ),
+        return yield* CodeGraphWorksetCatalogError.of(
+          'missing',
+          `Qualified reference ${ref} must be registered before persisting a continuation.`,
         );
       }
       for (const repositoryKey of repositoryKeys) {
         const member = membersByKey.get(repositoryKey);
         if (member === undefined || member.repository_id !== record.repositoryId) {
-          return yield* Effect.fail(
-            new CodeGraphWorksetCatalogError(
-              'invalid-input',
-              `Qualified reference ${ref} is isolated to a different repository.`,
-            ),
+          return yield* CodeGraphWorksetCatalogError.of(
+            'invalid-input',
+            `Qualified reference ${ref} is isolated to a different repository.`,
           );
         }
       }
@@ -841,7 +832,7 @@ export function readStoredResultSetCursor(
       'SELECT cursor FROM result_set_cursors WHERE result_set_id = ? AND offset = ? LIMIT 1',
       [resultSet.id, offset],
     );
-    if (rows.length !== 1) return yield* Effect.fail(corrupt('Stored workset continuation boundary is missing.'));
+    if (rows.length !== 1) return yield* corrupt('Stored workset continuation boundary is missing.');
     const cursor = requiredText(rows[0].cursor, 'continuation cursor');
     const expected = codeGraphWorksetContinuationHandle({
       generationDigest: resultSet.generation.digest,
@@ -849,7 +840,7 @@ export function readStoredResultSetCursor(
       projectorVersion: CODE_GRAPH_WORKSET_EVIDENCE_PROJECTOR_VERSION,
       resultSetToken: resultSet.resultSetToken,
     });
-    if (cursor !== expected) return yield* Effect.fail(corrupt('Stored workset continuation boundary is corrupt.'));
+    if (cursor !== expected) return yield* corrupt('Stored workset continuation boundary is corrupt.');
     return cursor;
   });
 }
@@ -931,7 +922,7 @@ export function selectGeneration(sql: SqlClient.SqlClient, generationId: string)
        FROM workset_generations WHERE id = ? LIMIT 1`,
       [generationId],
     )
-    .pipe(Effect.flatMap(rows => (rows.length === 0 ? Effect.succeed(undefined) : decodeGenerationRow(rows[0]))));
+    .pipe(Effect.flatMap(rows => (rows.length === 0 ? succeedUndefined : decodeGenerationRow(rows[0]))));
 }
 
 export function decodeGenerationRow(row: GenerationRow) {
@@ -1087,9 +1078,7 @@ export function changes(sql: SqlClient.SqlClient) {
   return rowCount(sql, 'SELECT changes() AS count');
 }
 
-export const currentIsoInstant = Clock.currentTimeMillis.pipe(
-  Effect.map(milliseconds => new Date(milliseconds).toISOString()),
-);
+export const currentIsoInstant = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
 export function readLimit(value: number | undefined): number {
   const limit = value ?? 100;
@@ -1218,9 +1207,9 @@ export function validateInput<A>(evaluate: () => A): Effect.Effect<A, CodeGraphW
   return Effect.try({
     try: evaluate,
     catch: cause =>
-      cause instanceof CodeGraphWorksetCatalogError
+      Schema.is(CodeGraphWorksetCatalogError)(cause)
         ? cause
-        : new CodeGraphWorksetCatalogError('invalid-input', 'Workset catalog input is invalid.', {cause}),
+        : CodeGraphWorksetCatalogError.of('invalid-input', 'Workset catalog input is invalid.', {cause}),
   });
 }
 
@@ -1228,9 +1217,9 @@ export function validateStored<A>(evaluate: () => A): Effect.Effect<A, CodeGraph
   return Effect.try({
     try: evaluate,
     catch: cause =>
-      cause instanceof CodeGraphWorksetCatalogError
+      Schema.is(CodeGraphWorksetCatalogError)(cause)
         ? cause
-        : new CodeGraphWorksetCatalogError('corrupt', 'Workset catalog data is invalid.', {cause}),
+        : CodeGraphWorksetCatalogError.of('corrupt', 'Workset catalog data is invalid.', {cause}),
   });
 }
 
@@ -1238,9 +1227,9 @@ export function mapCatalogError(operation: string) {
   return <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.mapError(cause => {
-        if (cause instanceof CodeGraphWorksetCatalogError) return cause;
+        if (Schema.is(CodeGraphWorksetCatalogError)(cause)) return cause;
         const category = storageCauseCategory(cause);
-        return new CodeGraphWorksetCatalogError(
+        return CodeGraphWorksetCatalogError.of(
           category,
           category === 'busy'
             ? `Timed out waiting to ${operation}.`
@@ -1268,9 +1257,9 @@ export function storageCauseCategory(cause: unknown): 'busy' | 'corrupt' | 'stor
 }
 
 export function invalid(message: string): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('invalid-input', message);
+  return CodeGraphWorksetCatalogError.of('invalid-input', message);
 }
 
 export function corrupt(message: string, cause?: unknown): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('corrupt', message, cause === undefined ? undefined : {cause});
+  return CodeGraphWorksetCatalogError.of('corrupt', message, cause === undefined ? undefined : {cause});
 }

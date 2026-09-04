@@ -51,7 +51,7 @@ export const makeCodeGraphWorksetTelemetryReporter = Effect.fn('codeGraph.makeWo
           operation: 'workset.prepare',
           ...(current.phase === 'failed' ? {errorType: 'CodeGraphWorksetCatalogError', outcome: 'failure'} : {}),
         });
-      }).pipe(Effect.catchCause(() => Effect.void));
+      }).pipe(Effect.ignoreCause);
 
     const terminal = (result: CodeGraphWorksetPrepareResultV1) =>
       Effect.suspend(() => {
@@ -74,7 +74,7 @@ export const makeCodeGraphWorksetTelemetryReporter = Effect.fn('codeGraph.makeWo
           },
           operation: 'workset.prepare',
           outcome,
-        }).pipe(Effect.catchCause(() => Effect.void));
+        }).pipe(Effect.ignoreCause);
       });
 
     const failure = (error: unknown, completed: number, total: number) =>
@@ -96,7 +96,7 @@ export const makeCodeGraphWorksetTelemetryReporter = Effect.fn('codeGraph.makeWo
           },
           operation: 'workset.prepare',
           outcome: 'failure',
-        }).pipe(Effect.catchCause(() => Effect.void));
+        }).pipe(Effect.ignoreCause);
       });
 
     return {failure, progress, terminal};

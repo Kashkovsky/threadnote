@@ -134,5 +134,5 @@ const readTranscriptTail = Effect.fn('trace.readTail')((transcriptPath: string) 
       offset += chunk.byteLength;
     }
     return new TextDecoder().decode(bytes).replace(/^[^\n]*(?:\n|$)/, '');
-  }).pipe(Effect.catch(() => Effect.succeed(undefined))),
+  }).pipe(Effect.orElseSucceed(() => undefined)),
 );

@@ -1,6 +1,6 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Clock, Effect} from 'effect';
+import {Clock, DateTime, Effect} from 'effect';
 import {runCommandEffect} from '../src/effect/command.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
@@ -87,7 +87,7 @@ const benchmarkRecallMonorepoShares = Effect.gen(function* () {
     {concurrency: 'unbounded'},
   );
   const artifact = {
-    createdAt: new Date().toISOString(),
+    createdAt: DateTime.formatIso(yield* DateTime.now),
     environment: {
       architecture: system.architecture,
       commit,
@@ -163,20 +163,22 @@ export function parseRecallMonorepoSharesBenchmarkArguments(
     else if (argument === '--samples') samples = positiveInteger(args[++index], argument);
     else if (argument === '--warmups') warmups = nonNegativeInteger(args[++index], argument);
     else if (argument === '--output') outputPath = requiredValue(args[++index], argument);
-    else throw new ScriptError(`Unknown monorepo/share recall benchmark option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown monorepo/share recall benchmark option: ${argument}`});
   }
-  if (packages < 2) throw new ScriptError('--packages must include a current package and a sibling package');
-  if (targetPackage >= packages) throw new ScriptError('--target-package must be smaller than --packages');
+  if (packages < 2)
+    throw ScriptError.make({message: '--packages must include a current package and a sibling package'});
+  if (targetPackage >= packages) throw ScriptError.make({message: '--target-package must be smaller than --packages'});
   const resolvedSiblingPackage = siblingPackage ?? (targetPackage + 1) % packages;
-  if (resolvedSiblingPackage >= packages) throw new ScriptError('--sibling-package must be smaller than --packages');
+  if (resolvedSiblingPackage >= packages)
+    throw ScriptError.make({message: '--sibling-package must be smaller than --packages'});
   if (resolvedSiblingPackage === targetPackage) {
-    throw new ScriptError('--sibling-package must differ from --target-package');
+    throw ScriptError.make({message: '--sibling-package must differ from --target-package'});
   }
   const physicalCandidates = packages * logicalMemoriesPerPackage * (shareAliasesPerMemory + 1);
   if (!Number.isSafeInteger(physicalCandidates) || physicalCandidates > MAXIMUM_PHYSICAL_CANDIDATES_PER_SCENARIO) {
-    throw new ScriptError(
-      `Generated workload must not exceed ${MAXIMUM_PHYSICAL_CANDIDATES_PER_SCENARIO.toLocaleString('en-US')} physical candidates per scenario.`,
-    );
+    throw ScriptError.make({
+      message: `Generated workload must not exceed ${MAXIMUM_PHYSICAL_CANDIDATES_PER_SCENARIO.toLocaleString('en-US')} physical candidates per scenario.`,
+    });
   }
   return {
     fixture: {
@@ -211,22 +213,22 @@ const git = Effect.fn('benchmark.git')((arguments_: readonly string[]) =>
 
 function positiveInteger(value: string | undefined, option: string): number {
   const parsed = nonNegativeInteger(value, option);
-  if (parsed < 1) throw new ScriptError(`${option} requires a positive integer`);
+  if (parsed < 1) throw ScriptError.make({message: `${option} requires a positive integer`});
   return parsed;
 }
 
 function nonNegativeInteger(value: string | undefined, option: string): number {
   const raw = requiredValue(value, option);
-  if (!/^\d+$/u.test(raw)) throw new ScriptError(`${option} requires a non-negative integer`);
+  if (!/^\d+$/u.test(raw)) throw ScriptError.make({message: `${option} requires a non-negative integer`});
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new ScriptError(`${option} requires a non-negative integer`);
+    throw ScriptError.make({message: `${option} requires a non-negative integer`});
   }
   return parsed;
 }
 
 function requiredValue(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 

@@ -529,7 +529,7 @@ const loadFirstReusableOverlayBase = Effect.fn('codeGraph.loadFirstReusableOverl
 
 function persistedFileSource(source: string): 'commit' | 'worktree' {
   if (source === 'commit' || source === 'worktree') return source;
-  throw new CodeGraphStoreError('Stored code graph snapshot file source is invalid.');
+  throw CodeGraphStoreError.of('Stored code graph snapshot file source is invalid.');
 }
 
 const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt')(function* (
@@ -1187,7 +1187,7 @@ const selectStoredGraph = Effect.fn('codeGraph.selectStoredGraph')(function* (sn
     SELECT * FROM snapshots WHERE id = ${snapshotId} AND state = 'ready'
   `;
   const snapshot = snapshots[0];
-  if (!snapshot) return yield* Effect.fail(new CodeGraphStoreError(`Ready snapshot ${snapshotId} was not found.`));
+  if (!snapshot) return yield* CodeGraphStoreError.of(`Ready snapshot ${snapshotId} was not found.`);
   const baseSnapshotId = Option.getOrUndefined(sqlTextOption(snapshot.base_snapshot_id));
   const [symbolRows, edgeRows] = yield* Effect.all(
     [

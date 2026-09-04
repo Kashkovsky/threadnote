@@ -1412,12 +1412,14 @@ describe('share sync git handling', () => {
       const readyDeadline = Date.now() + 10_000;
       while (!(await Bun.file(ready).exists())) {
         if (owner.exitCode !== null) {
-          throw new TestError(
-            `Receipt owner exited before acquiring the lock: ${await new Response(owner.stderr).text()}`,
-          );
+          throw TestError.make({
+            message: `Receipt owner exited before acquiring the lock: ${await new Response(owner.stderr).text()}`,
+          });
         }
         if (Date.now() >= readyDeadline) {
-          throw new TestError('Timed out waiting for the receipt owner to acquire the shared repository lock.');
+          throw TestError.make({
+            message: 'Timed out waiting for the receipt owner to acquire the shared repository lock.',
+          });
         }
         await Bun.sleep(10);
       }
@@ -1432,7 +1434,9 @@ describe('share sync git handling', () => {
       ownerExitCode = await owner.exited;
     }
     if (ownerExitCode !== 0) {
-      throw new TestError(`Receipt owner exited with ${ownerExitCode}: ${await new Response(owner.stderr).text()}`);
+      throw TestError.make({
+        message: `Receipt owner exited with ${ownerExitCode}: ${await new Response(owner.stderr).text()}`,
+      });
     }
 
     const caughtUp = await syncSharedReposBeforeAgentRead(config);

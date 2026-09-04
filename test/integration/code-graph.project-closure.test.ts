@@ -1428,7 +1428,7 @@ function inflateCachedFacts(databasePath: string, contentHashes: readonly string
     );
     for (const contentHash of contentHashes) {
       const row = read.get(contentHash);
-      if (!row) throw new TestError(`Missing cached facts for ${contentHash}.`);
+      if (!row) throw TestError.make({message: `Missing cached facts for ${contentHash}.`});
       const facts = decodeStoredCodeGraphFact(row.factsJson).facts;
       const inflated = serializeBoundedCodeGraphFact({
         ...facts,
@@ -1452,7 +1452,7 @@ function snapshotFileContentHash(databasePath: string, snapshotId: string, path:
         'SELECT content_hash AS contentHash FROM snapshot_files WHERE snapshot_id = ? AND path = ?',
       )
       .get(snapshotId, path);
-    if (!row) throw new TestError(`Missing snapshot file ${path}.`);
+    if (!row) throw TestError.make({message: `Missing snapshot file ${path}.`});
     return row.contentHash;
   } finally {
     database.close(false);

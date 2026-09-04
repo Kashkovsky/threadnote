@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import {Schema} from 'effect';
+
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This reviewed calibration adapter owns explicit process and filesystem boundaries. */
 import {lstat, mkdir, readFile, realpath, stat, writeFile} from 'node:fs/promises';
 import {dirname, join, resolve} from 'node:path';
@@ -255,7 +257,7 @@ function completedDiagnostic(
 }
 
 function terminalDiagnostic(environment: CalibrationEnvironment, cause: unknown): CalibrationDiagnosticV1 {
-  const eventSummary = cause instanceof CodeMemoryLinkCodexTerminalError ? cause.diagnostics : null;
+  const eventSummary = Schema.is(CodeMemoryLinkCodexTerminalError)(cause) ? cause.diagnostics : null;
   return sealDiagnostic({
     environment,
     contextBriefGoldCitationMatched: false,

@@ -184,7 +184,7 @@ describe('code graph parser worker pool', () => {
         environment: () => ({}),
         hardwareInfo: Effect.suspend(() => {
           hardwareLookups += 1;
-          return Effect.fail(new TestError('hardware unavailable'));
+          return Effect.fail(TestError.make({message: 'hardware unavailable'}));
         }),
       });
       yield* Effect.gen(function* () {

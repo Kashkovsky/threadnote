@@ -33,7 +33,7 @@ describe('file durability', () => {
       const fs = {
         open: (target: string, options: {readonly flag: string}) => {
           calls.push({flag: options.flag, target});
-          return Effect.fail(new TestError('directory fsync is unsupported'));
+          return Effect.fail(TestError.make({message: 'directory fsync is unsupported'}));
         },
       } as unknown as FileSystem.FileSystem;
 

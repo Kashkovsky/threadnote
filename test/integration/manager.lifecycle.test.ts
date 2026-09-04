@@ -111,7 +111,7 @@ async function availableLoopbackPort(): Promise<number> {
       const address = server.address();
       if (address === null || typeof address === 'string') {
         server.close();
-        reject(new TestError('Could not reserve a loopback TCP port.'));
+        reject(TestError.make({message: 'Could not reserve a loopback TCP port.'}));
         return;
       }
       server.close(error => (error ? reject(error) : resolve(address.port)));
@@ -122,7 +122,7 @@ async function availableLoopbackPort(): Promise<number> {
 async function managerUrl(process: ChildProcess): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     let output = '';
-    const timeout = setTimeout(() => reject(new TestError(`Manager did not start:\n${output}`)), 10_000);
+    const timeout = setTimeout(() => reject(TestError.make({message: `Manager did not start:\n${output}`})), 10_000);
     const consume = (chunk: Buffer): void => {
       output += chunk.toString('utf8');
       const match = /Threadnote manager: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(output);
@@ -135,7 +135,7 @@ async function managerUrl(process: ChildProcess): Promise<string> {
     process.stderr?.on('data', consume);
     process.once('exit', (code, signal) => {
       clearTimeout(timeout);
-      reject(new TestError(`Manager exited before startup (code=${code}, signal=${signal}):\n${output}`));
+      reject(TestError.make({message: `Manager exited before startup (code=${code}, signal=${signal}):\n${output}`}));
     });
   });
 }
@@ -144,7 +144,7 @@ async function childExit(
   process: ChildProcess,
 ): Promise<{readonly code: number | null; readonly signal: NodeJS.Signals | null}> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new TestError('Manager did not stop after SIGINT.')), 10_000);
+    const timeout = setTimeout(() => reject(TestError.make({message: 'Manager did not stop after SIGINT.'})), 10_000);
     process.once('exit', (code, signal) => {
       clearTimeout(timeout);
       resolve({code, signal});

@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 export const CODE_GRAPH_VECTOR_RETIREMENT_PAGE_ROWS = 1_000;
 export const CODE_GRAPH_VECTOR_RETIREMENT_PAGE_BYTES = 32 * 1_024 * 1_024;
 export const CODE_GRAPH_VECTOR_RETIREMENT_PAGE_FIXED_ROWS = 5;
@@ -24,9 +25,13 @@ export function sqliteStringLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-export class CodeGraphVectorRetirementError extends Error {
-  readonly _tag = 'CodeGraphVectorRetirementError' as const;
-}
+export class CodeGraphVectorRetirementError extends Schema.TaggedError<CodeGraphVectorRetirementError>()(
+  'CodeGraphVectorRetirementError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export function vectorGenerationManifestPredicate(alias: string): string {
   return `typeof(${alias}.generation) = 'text'

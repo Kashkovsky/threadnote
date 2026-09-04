@@ -1,9 +1,10 @@
-import {Crypto, Effect, FileSystem, Path, Result} from 'effect';
+import {Crypto, Effect, FileSystem, Path, Result, Schema} from 'effect';
 import type {LocalModelCatalogShape, LocalModelRole} from './catalog.js';
 
-class ModelSelectionError extends Error {
-  readonly _tag = 'ModelSelectionError' as const;
-}
+class ModelSelectionError extends Schema.TaggedError<ModelSelectionError>()('ModelSelectionError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export const MODEL_SELECTION_VERSION = 1 as const;
 
@@ -48,7 +49,7 @@ export const selectLocalModel = Effect.fn('models.select')(function* (
 ) {
   const manifest = yield* catalog.get(modelId);
   if (manifest.role !== role) {
-    return yield* Effect.fail(new ModelSelectionError(`Model ${modelId} has role ${manifest.role}, not ${role}.`));
+    return yield* ModelSelectionError.make({message: `Model ${modelId} has role ${manifest.role}, not ${role}.`});
   }
   const current = yield* readModelSelection(home);
   const selection: ModelSelection = {

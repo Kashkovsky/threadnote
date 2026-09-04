@@ -107,7 +107,10 @@ export function codeGraphDirectPersistentCapacityProtector(
                 writerLockPath: input.layout.databaseWriteLockPath,
               })
               .pipe(
-                Effect.catch(error => (['busy', 'no-space'].includes(error.code) ? Effect.void : Effect.fail(error))),
+                Effect.catchIf(
+                  error => ['busy', 'no-space'].includes(error.code),
+                  () => Effect.void,
+                ),
               ),
             observe: observeDirectPersistentCapacity({
               boundary,
@@ -119,7 +122,7 @@ export function codeGraphDirectPersistentCapacityProtector(
             }),
             onDiagnostic: diagnostic => Effect.logWarning(diagnostic),
             onWaiting: (input.onProgress?.({phase: 'waiting', reason: 'disk-capacity'}) ?? Effect.void).pipe(
-              Effect.catch(() => Effect.void),
+              Effect.ignore,
             ),
           },
           transaction,
@@ -292,9 +295,9 @@ export function cacheContentBatch(options: {
       if (!group || group.files.length === 0) return;
       const context = latestContext;
       if (!context)
-        return yield* Effect.fail(
-          new CodeGraphIndexOperationError('Code graph cache persistence context is unavailable.'),
-        );
+        return yield* CodeGraphIndexOperationError.make({
+          message: 'Code graph cache persistence context is unavailable.',
+        });
       const representative = group.files[0];
       const groupBytes = group.files.reduce((total, file) => total + file.size, 0);
       const groupFactBytes = group.facts.reduce((total, fact) => total + fact.bytes, 0);
@@ -374,9 +377,9 @@ export function cacheContentBatch(options: {
           path: file.path,
         });
         if (rowBytes > CODE_GRAPH_CACHE_TRANSACTION_LIMITS.payloadBytes) {
-          return yield* Effect.fail(
-            new CodeGraphIndexOperationError(`Code graph cache row exceeds the persistence payload ceiling.`),
-          );
+          return yield* CodeGraphIndexOperationError.make({
+            message: `Code graph cache row exceeds the persistence payload ceiling.`,
+          });
         }
         while (
           pendingRows > 0 &&
@@ -734,17 +737,17 @@ export const verifyIndexInput = Effect.fn('codeGraph.verifyIndexInput')(function
     !repositoryIdentityMatchesExpectation(verifiedIdentity, identity) ||
     (verifyOverlay && verifiedIdentity.headCommit !== identity.headCommit)
   ) {
-    return yield* Effect.fail(new WorktreeChangedDuringIndex());
+    return yield* WorktreeChangedDuringIndex.make({});
   }
   if (!verifyOverlay) return;
   if (!requestedOverlay) {
-    return yield* Effect.fail(
-      new CodeGraphIndexOperationError('Pointer activation requires an exact worktree build request state.'),
-    );
+    return yield* CodeGraphIndexOperationError.make({
+      message: 'Pointer activation requires an exact worktree build request state.',
+    });
   }
   const verifiedOverlay = yield* worktreeBuildRequestState(verifiedIdentity, threadnoteHome);
   if (!sameOverlayState(verifiedOverlay, requestedOverlay)) {
-    return yield* Effect.fail(new WorktreeChangedDuringIndex());
+    return yield* WorktreeChangedDuringIndex.make({});
   }
 });
 
@@ -853,7 +856,7 @@ export function selectedDecodedFactBytes(
 
 export function directFullSnapshotIdentity(logicalSnapshotId: string): string {
   if (!/^cgsn_[0-9a-f]{40}$/.test(logicalSnapshotId)) {
-    throw new CodeGraphIndexOperationError('Logical snapshot identity is invalid.');
+    throw CodeGraphIndexOperationError.make({message: 'Logical snapshot identity is invalid.'});
   }
   return `${logicalSnapshotId}-direct`;
 }
@@ -959,7 +962,7 @@ const observeDirectPersistentCapacity = Effect.fn('codeGraph.observeDirectPersis
       ? durableFilesystem.value === temporaryFilesystem.value
       : undefined;
   const probe = (target: string) =>
-    input.protection.availableDiskBytes(target, input.boundary).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    input.protection.availableDiskBytes(target, input.boundary).pipe(Effect.orElseSucceed(() => undefined));
   const availability =
     filesystemsShared === undefined
       ? Effect.succeed([undefined, undefined] as const)
@@ -1647,7 +1650,7 @@ export function materializationStorageFiles(
   const bytes = (file: string) =>
     fs.stat(file).pipe(
       Effect.map(info => Math.min(Number(info.size), Number.MAX_SAFE_INTEGER)),
-      Effect.catch(() => Effect.succeed(0)),
+      Effect.orElseSucceed(() => 0),
     );
   const sidecarFiles = sidecarDatabasePaths.flatMap(sidecar => [
     bytes(sidecar),

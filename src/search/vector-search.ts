@@ -23,7 +23,9 @@ export interface VectorSearchShape {
   ) => Effect.Effect<readonly VectorSearchResult[], VectorInvalid>;
 }
 
-export class VectorSearch extends Context.Service<VectorSearch, VectorSearchShape>()('threadnote/search/VectorSearch') {
+export class VectorSearch extends Context.Service<VectorSearch, VectorSearchShape>()(
+  'threadnote/search/vector-search/VectorSearch',
+) {
   static readonly layer = Layer.succeed(
     VectorSearch,
     VectorSearch.of({
@@ -99,7 +101,7 @@ function assertFiniteVector(vector: readonly number[]): void {
 }
 
 function invalidVector(cause: unknown): VectorInvalid {
-  return new VectorInvalid({message: cause instanceof Error ? cause.message : String(cause)});
+  return VectorInvalid.make({message: cause instanceof Error ? cause.message : String(cause)});
 }
 
 function compareCodeUnits(left: string, right: string): number {

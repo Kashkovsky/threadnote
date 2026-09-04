@@ -37,7 +37,7 @@ describe('workset cross-repository traversal integration', () => {
       Effect.acquireUseRelease(
         Effect.tryPromise({
           try: prepareFourMemberWorksetFixture,
-          catch: cause => new TestError('Could not prepare the four-member workset fixture.', {cause}),
+          catch: cause => TestError.make({message: 'Could not prepare the four-member workset fixture.', cause}),
         }),
         fixture =>
           Effect.gen(function* () {
@@ -49,7 +49,7 @@ describe('workset cross-repository traversal integration', () => {
 
             const published = yield* readPublishedCodeGraphWorksetCatalogGeneration(fixture.home, WORKSET_NAME);
             expect(published).toBeDefined();
-            if (published === undefined) return yield* Effect.fail(new TestError('Fixture workset was not published.'));
+            if (published === undefined) return yield* TestError.make({message: 'Fixture workset was not published.'});
             expect(published.members.map(member => member.repositoryKey)).toEqual([
               'workset-repo-000',
               'workset-repo-001',
@@ -73,7 +73,7 @@ describe('workset cross-repository traversal integration', () => {
             expect(summary?.bridgeCount).toBeGreaterThanOrEqual(1);
             expect(summary?.digest).toMatch(/^[0-9a-f]{64}$/u);
             if (summary === undefined)
-              return yield* Effect.fail(new TestError('Published bridge receipt is unavailable.'));
+              return yield* TestError.make({message: 'Published bridge receipt is unavailable.'});
 
             const page = yield* readCodeGraphWorksetCatalogBridgeGenerationPage(fixture.home, {
               generationId: published.id,
@@ -111,7 +111,7 @@ describe('workset cross-repository traversal integration', () => {
               packageBridge.source.reference.kind !== 'component' ||
               packageBridge.target.reference.kind !== 'component'
             ) {
-              return yield* Effect.fail(new TestError('Fixture exact npm package bridge is not component-qualified.'));
+              return yield* TestError.make({message: 'Fixture exact npm package bridge is not component-qualified.'});
             }
             const bridge = page?.bridges.find(
               candidate =>
@@ -142,7 +142,7 @@ describe('workset cross-repository traversal integration', () => {
               sourceReference?.kind !== 'qualified-ref' ||
               targetReference?.kind !== 'qualified-ref'
             ) {
-              return yield* Effect.fail(new TestError('Fixture exact Protobuf bridge is not qualified.'));
+              return yield* TestError.make({message: 'Fixture exact Protobuf bridge is not qualified.'});
             }
 
             const config = codeGraphWorksetRuntimeConfig(fixture);
@@ -194,7 +194,7 @@ describe('workset cross-repository traversal integration', () => {
               text: 'threadnote.session.v1.SessionDirectory ResolveTenantSession',
             });
             if (protobufQuery === undefined) {
-              return yield* Effect.fail(new TestError('Fixture Protobuf query is unavailable.'));
+              return yield* TestError.make({message: 'Fixture Protobuf query is unavailable.'});
             }
             const query = yield* executeCodeGraphWorksetV2(config, {
               deadlineMilliseconds: 10_000,
@@ -303,7 +303,7 @@ describe('workset cross-repository traversal integration', () => {
         fixture =>
           Effect.tryPromise({
             try: () => removePreparedCodeGraphWorksetFixture(fixture),
-            catch: cause => new TestError('Could not remove the four-member workset fixture.', {cause}),
+            catch: cause => TestError.make({message: 'Could not remove the four-member workset fixture.', cause}),
           }),
       ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     {timeout: 300_000},
@@ -314,7 +314,8 @@ async function prepareFourMemberWorksetFixture(): Promise<PreparedCodeGraphWorks
   const fixture = await prepareCodeGraphWorksetFixture({size: 8, stateProfile: 'all-clean'});
   try {
     const repositories = fixture.repositories.slice(0, MEMBER_COUNT);
-    if (repositories.length !== MEMBER_COUNT) throw new TestError('Fixture does not contain the four-member prefix.');
+    if (repositories.length !== MEMBER_COUNT)
+      throw TestError.make({message: 'Fixture does not contain the four-member prefix.'});
     await appendFile(
       fixture.manifestPath,
       `  - name: ${WORKSET_NAME}\n` +

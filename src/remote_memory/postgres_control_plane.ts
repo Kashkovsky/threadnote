@@ -1,5 +1,6 @@
 import postgres, {type JSONValue, type Sql, type TransactionSql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
+import {randomUuidV4} from '../crypto/uuid.js';
 import type {
   AuthorizedRemotePrincipal,
   RemoteAuthorizationStore,
@@ -337,7 +338,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
         RETURNING id
       `;
         if (!consumed[0]) return undefined;
-        const attestationId = crypto.randomUUID();
+        const attestationId = randomUuidV4();
         const rows = await transaction<AttestationRow[]>`
         INSERT INTO remote_memory.workload_attestations(
           tenant_id, share_id, id, principal_id, issuer, subject, jwt_id, cloud_agent_id,
@@ -748,13 +749,13 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
     execution?: RemoteMemoryRequestExecution,
   ): Promise<A> {
     requireActiveRemoteMemoryRequest(execution);
-    return await this.sql.begin<Promise<A>>(async transaction => {
-      return withRemoteMemoryRequestCancellation(transaction, execution, async cancellable => {
+    return await this.sql.begin<Promise<A>>(async transaction =>
+      withRemoteMemoryRequestCancellation(transaction, execution, async cancellable => {
         const timeout = remoteMemoryDatabaseTimeoutMilliseconds(DATABASE_TIMEOUT_MILLISECONDS, execution);
         await setTenant(cancellable, tenantId, timeout);
         return use(cancellable);
-      });
-    });
+      }),
+    );
   }
 }
 

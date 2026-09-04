@@ -88,7 +88,7 @@ describe('Obsidian zero-plugin bridge', () => {
         vault,
       }),
     );
-    const inventory = await runEffect(captureConsole(runObsidianSourceInventory(config, 'engineering')));
+    const inventory = await runObsidianSourceInventory(config, 'engineering').pipe(captureConsole, runEffect);
     expect(inventory.output).toContain('ADD       Engineering/Auth.md');
     expect(inventory.output).toContain('SKIP      Engineering/Secret.md');
     expect(inventory.output).not.toContain('Bridge.md');
@@ -196,15 +196,11 @@ describe('Obsidian zero-plugin bridge', () => {
 
     const projectedDirectory = join(vault, 'Threadnote', 'Memories', 'threadnote', 'durable');
     const projected = join(projectedDirectory, 'obsidian-bridge--tn_bridge.md');
-    const publishPreview = await runEffect(
-      captureConsole(
-        runObsidianProjectionPublish(config, {
-          apply: false,
-          id: 'memory',
-          uris: [memoryUri],
-        }),
-      ),
-    );
+    const publishPreview = await runObsidianProjectionPublish(config, {
+      apply: false,
+      id: 'memory',
+      uris: [memoryUri],
+    }).pipe(captureConsole, runEffect);
     expect(publishPreview.output).toContain('Would publish 1 selected memory URI');
     await expect(readFile(projected, 'utf8')).rejects.toThrow();
 
@@ -230,27 +226,31 @@ describe('Obsidian zero-plugin bridge', () => {
       'threadnote_generated',
     );
 
-    const firstInbox = await runEffect(
-      captureConsole(runObsidianInboxScan(config, {apply: true, source: 'engineering'})),
+    const firstInbox = await runObsidianInboxScan(config, {apply: true, source: 'engineering'}).pipe(
+      captureConsole,
+      runEffect,
     );
     expect(firstInbox.output).toContain('Created 1 candidate review');
-    const secondInbox = await runEffect(
-      captureConsole(runObsidianInboxScan(config, {apply: true, source: 'engineering'})),
+    const secondInbox = await runObsidianInboxScan(config, {apply: true, source: 'engineering'}).pipe(
+      captureConsole,
+      runEffect,
     );
     expect(secondInbox.output).toContain('UNCHANGED Bridge.md');
     expect(secondInbox.output).toContain('No new candidate reviews were created');
     const reviewDirectory = join(home, 'threadnote', 'candidates', 'v1', 'reviews');
     expect((await readdir(reviewDirectory)).filter(name => name.endsWith('.json'))).toHaveLength(1);
 
-    const noOpProjection = await runEffect(
-      captureConsole(runObsidianProjectionSync(config, {apply: false, id: 'memory'})),
+    const noOpProjection = await runObsidianProjectionSync(config, {apply: false, id: 'memory'}).pipe(
+      captureConsole,
+      runEffect,
     );
     expect(noOpProjection.output).toContain('UNCHANGED');
     expect(noOpProjection.output).not.toContain('UPDATE');
 
     await write(projected, `${projectedContent}\nUser edit that must survive ordinary sync.\n`);
-    const driftedProjection = await runEffect(
-      captureConsole(runObsidianProjectionSync(config, {apply: true, id: 'memory'})),
+    const driftedProjection = await runObsidianProjectionSync(config, {apply: true, id: 'memory'}).pipe(
+      captureConsole,
+      runEffect,
     );
     expect(driftedProjection.output).toContain('DRIFT');
     expect(await readFile(projected, 'utf8')).toContain('User edit that must survive ordinary sync.');

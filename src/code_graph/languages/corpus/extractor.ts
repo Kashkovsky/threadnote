@@ -871,20 +871,20 @@ function pdfExtractionBudget(options: CorpusExtractionOptions): {
 
 function abortable<A>(promise: PromiseLike<A>, signal: AbortSignal): Promise<A> {
   if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
-  return new Promise<A>((resolve, reject) => {
-    const abort = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
-    signal.addEventListener('abort', abort, {once: true});
-    void Promise.resolve(promise).then(
-      value => {
-        signal.removeEventListener('abort', abort);
-        resolve(value);
-      },
-      cause => {
-        signal.removeEventListener('abort', abort);
-        reject(cause);
-      },
-    );
-  });
+  const {promise: result, reject, resolve} = Promise.withResolvers<A>();
+  const abort = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  signal.addEventListener('abort', abort, {once: true});
+  void Promise.resolve(promise).then(
+    value => {
+      signal.removeEventListener('abort', abort);
+      resolve(value);
+    },
+    cause => {
+      signal.removeEventListener('abort', abort);
+      reject(cause);
+    },
+  );
+  return result;
 }
 
 function decodeUtf8(bytes: Uint8Array): string | undefined {

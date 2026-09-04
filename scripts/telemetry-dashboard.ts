@@ -1,18 +1,30 @@
-class ScriptError extends Error {}
+import {Effect, Schema} from 'effect';
+class ScriptError extends Schema.TaggedError<ScriptError>()('ScriptError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
-class GrafanaHttpError extends ScriptError {
-  constructor(readonly status: number) {
-    super(
-      status === 401
-        ? 'Grafana API request failed with HTTP 401; the service-account token is invalid or expired.'
-        : `Grafana API request failed with HTTP ${status}.`,
-    );
+class GrafanaHttpError extends Schema.TaggedError<GrafanaHttpError>()('GrafanaHttpError', {
+  status: Schema.Finite,
+}) {
+  override get message(): string {
+    return this.status === 401
+      ? 'Grafana API request failed with HTTP 401; the service-account token is invalid or expired.'
+      : `Grafana API request failed with HTTP ${this.status}.`;
+  }
+
+  static of(status: number): GrafanaHttpError {
+    return GrafanaHttpError.make({status});
   }
 }
 
-class GrafanaTransportError extends ScriptError {
-  constructor() {
-    super('Grafana API request failed before receiving a response.');
+class GrafanaTransportError extends Schema.TaggedError<GrafanaTransportError>()('GrafanaTransportError', {
+  message: Schema.String.pipe(
+    Schema.withConstructorDefault(Effect.succeed('Grafana API request failed before receiving a response.')),
+  ),
+}) {
+  static of(): GrafanaTransportError {
+    return GrafanaTransportError.make({});
   }
 }
 
@@ -59,7 +71,7 @@ const grafanaSharedWithMeFolderScope = 'folders:uid:sharedwithme';
 
 function record(value: unknown, path: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new ScriptError(`${path} must be an object.`);
+    throw ScriptError.make({message: `${path} must be an object.`});
   }
   return value as Record<string, unknown>;
 }
@@ -71,13 +83,16 @@ function optionalRecord(value: unknown, path: string): Record<string, unknown> {
 
 export function validateGrafanaCloudNamespace(value: string): string {
   if (value.length > 63 || !grafanaCloudNamespacePattern.test(value)) {
-    throw new ScriptError('THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE must use the stacks-<numeric-stack-id> format.');
+    throw ScriptError.make({
+      message: 'THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE must use the stacks-<numeric-stack-id> format.',
+    });
   }
   return value;
 }
 
 export function validateGitCommit(value: string, variableName: string): string {
-  if (!gitCommitPattern.test(value)) throw new ScriptError(`${variableName} must be a full lowercase Git commit SHA.`);
+  if (!gitCommitPattern.test(value))
+    throw ScriptError.make({message: `${variableName} must be a full lowercase Git commit SHA.`});
   return value;
 }
 
@@ -89,7 +104,7 @@ function cloneResolvingDatasource(value: unknown, path: string, replacements: {c
       return telemetryDashboardDatasourceUid;
     }
     if (value.includes(datasourcePlaceholder)) {
-      throw new ScriptError(`${path} embeds the Tempo data-source placeholder in an unsupported string.`);
+      throw ScriptError.make({message: `${path} embeds the Tempo data-source placeholder in an unsupported string.`});
     }
     return value;
   }
@@ -101,7 +116,7 @@ function cloneResolvingDatasource(value: unknown, path: string, replacements: {c
       Object.entries(value).map(([key, item]) => [key, cloneResolvingDatasource(item, `${path}.${key}`, replacements)]),
     );
   }
-  throw new ScriptError(`${path} contains a value that JSON cannot represent.`);
+  throw ScriptError.make({message: `${path} contains a value that JSON cannot represent.`});
 }
 
 function cloneJson(value: unknown, path: string): JsonValue {
@@ -112,7 +127,7 @@ function cloneJson(value: unknown, path: string): JsonValue {
   if (typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneJson(item, `${path}.${key}`)]));
   }
-  throw new ScriptError(`${path} contains a value that JSON cannot represent.`);
+  throw ScriptError.make({message: `${path} contains a value that JSON cannot represent.`});
 }
 
 function sortedJson(value: JsonValue): JsonValue {
@@ -133,14 +148,14 @@ export function canonicalJson(value: JsonValue): string {
 
 function validateImportContract(source: Record<string, unknown>): void {
   if (source.uid !== telemetryDashboardUid)
-    throw new ScriptError(`Dashboard uid must remain ${telemetryDashboardUid}.`);
+    throw ScriptError.make({message: `Dashboard uid must remain ${telemetryDashboardUid}.`});
   const inputs = source.__inputs;
   if (!Array.isArray(inputs) || inputs.length !== 1) {
-    throw new ScriptError('Dashboard import source must declare exactly one Tempo input.');
+    throw ScriptError.make({message: 'Dashboard import source must declare exactly one Tempo input.'});
   }
   const input = record(inputs[0], 'dashboard.__inputs[0]');
   if (input.name !== 'DS_TEMPO' || input.pluginId !== 'tempo' || input.type !== 'datasource') {
-    throw new ScriptError('Dashboard import source must declare the DS_TEMPO Tempo data-source input.');
+    throw ScriptError.make({message: 'Dashboard import source must declare the DS_TEMPO Tempo data-source input.'});
   }
 }
 
@@ -149,7 +164,8 @@ export function renderDashboardArtifact(source: unknown): DashboardArtifact {
   validateImportContract(sourceRecord);
   const replacements = {count: 0};
   const resolved = record(cloneResolvingDatasource(sourceRecord, 'dashboard', replacements), 'dashboard');
-  if (replacements.count === 0) throw new ScriptError('Dashboard import source does not use the DS_TEMPO placeholder.');
+  if (replacements.count === 0)
+    throw ScriptError.make({message: 'Dashboard import source does not use the DS_TEMPO placeholder.'});
   for (const key of ['__inputs', '__requires', ...serverOwnedDashboardKeys]) delete resolved[key];
 
   const artifact: DashboardArtifact = {
@@ -170,18 +186,20 @@ type TempoQuery = Readonly<{
 
 export function collectTempoQueries(resource: DashboardArtifact): readonly TempoQuery[] {
   const panels = resource.spec.panels;
-  if (!Array.isArray(panels) || panels.length === 0) throw new ScriptError('Dashboard artifact has no panels.');
+  if (!Array.isArray(panels) || panels.length === 0)
+    throw ScriptError.make({message: 'Dashboard artifact has no panels.'});
   const queries: TempoQuery[] = [];
   for (const [panelIndex, panelValue] of panels.entries()) {
     const panel = record(panelValue, `dashboard.panels[${panelIndex}]`);
-    if (!Number.isInteger(panel.id)) throw new ScriptError(`dashboard.panels[${panelIndex}].id must be an integer.`);
+    if (!Number.isInteger(panel.id))
+      throw ScriptError.make({message: `dashboard.panels[${panelIndex}].id must be an integer.`});
     const panelId = panel.id as number;
     const panelDatasource = record(panel.datasource, `dashboard.panels[${panelIndex}].datasource`);
     if (panelDatasource.type !== 'tempo' || panelDatasource.uid !== telemetryDashboardDatasourceUid) {
-      throw new ScriptError(`Dashboard panel ${panelId} must use the production Tempo data source.`);
+      throw ScriptError.make({message: `Dashboard panel ${panelId} must use the production Tempo data source.`});
     }
     if (!Array.isArray(panel.targets) || panel.targets.length === 0) {
-      throw new ScriptError(`Dashboard panel ${panelId} has no query targets.`);
+      throw ScriptError.make({message: `Dashboard panel ${panelId} has no query targets.`});
     }
     for (const [targetIndex, targetValue] of panel.targets.entries()) {
       const target = record(targetValue, `dashboard.panels[${panelIndex}].targets[${targetIndex}]`);
@@ -191,35 +209,41 @@ export function collectTempoQueries(resource: DashboardArtifact): readonly Tempo
       );
       if (datasource.type === '__expr__') continue;
       if (datasource.type !== 'tempo' || datasource.uid !== telemetryDashboardDatasourceUid) {
-        throw new ScriptError(`Dashboard panel ${panelId} target ${targetIndex} uses an unexpected data source.`);
+        throw ScriptError.make({
+          message: `Dashboard panel ${panelId} target ${targetIndex} uses an unexpected data source.`,
+        });
       }
       if (target.queryType !== 'traceql' || typeof target.query !== 'string' || target.query.length === 0) {
-        throw new ScriptError(`Dashboard panel ${panelId} target ${targetIndex} must contain a TraceQL query.`);
+        throw ScriptError.make({
+          message: `Dashboard panel ${panelId} target ${targetIndex} must contain a TraceQL query.`,
+        });
       }
       if (target.query.length > telemetryDashboardQueryLengthLimit) {
-        throw new ScriptError(
-          `Dashboard panel ${panelId} target ${targetIndex} exceeds the ${telemetryDashboardQueryLengthLimit}-character Tempo query limit.`,
-        );
+        throw ScriptError.make({
+          message: `Dashboard panel ${panelId} target ${targetIndex} exceeds the ${telemetryDashboardQueryLengthLimit}-character Tempo query limit.`,
+        });
       }
       if (!target.query.includes(telemetryDashboardSyntheticCanaryExclusion)) {
-        throw new ScriptError(`Dashboard panel ${panelId} target ${targetIndex} does not exclude synthetic canaries.`);
+        throw ScriptError.make({
+          message: `Dashboard panel ${panelId} target ${targetIndex} does not exclude synthetic canaries.`,
+        });
       }
       queries.push({panelId, query: target.query, target: target as Readonly<Record<string, JsonValue>>, targetIndex});
     }
   }
-  if (queries.length === 0) throw new ScriptError('Dashboard artifact has no Tempo queries.');
+  if (queries.length === 0) throw ScriptError.make({message: 'Dashboard artifact has no Tempo queries.'});
   return queries;
 }
 
 function unexpectedFullBuildExpressionTarget(resource: DashboardArtifact): Readonly<Record<string, JsonValue>> {
   const panels = resource.spec.panels;
-  if (!Array.isArray(panels)) throw new ScriptError('Dashboard artifact has no panels.');
+  if (!Array.isArray(panels)) throw ScriptError.make({message: 'Dashboard artifact has no panels.'});
   const matches = panels.filter(panelValue => isObject(panelValue) && panelValue.id === 13);
   if (matches.length !== 1)
-    throw new ScriptError('Dashboard must contain exactly one unexpected-full percentage panel.');
+    throw ScriptError.make({message: 'Dashboard must contain exactly one unexpected-full percentage panel.'});
   const panel = record(matches[0], 'dashboard panel 13');
   if (!Array.isArray(panel.targets) || panel.targets.length !== 3) {
-    throw new ScriptError('Dashboard panel 13 must contain numerator, denominator, and math targets.');
+    throw ScriptError.make({message: 'Dashboard panel 13 must contain numerator, denominator, and math targets.'});
   }
   const [numeratorValue, denominatorValue, expressionValue] = panel.targets;
   const numerator = record(numeratorValue, 'dashboard panel 13 numerator');
@@ -237,19 +261,20 @@ function unexpectedFullBuildExpressionTarget(resource: DashboardArtifact): Reado
     expression.expression !== telemetryDashboardUnexpectedFullBuildExpression ||
     !isDatasource(expression.datasource, '__expr__', '__expr__')
   ) {
-    throw new ScriptError('Dashboard panel 13 must use the guarded executable A/B percentage expression.');
+    throw ScriptError.make({message: 'Dashboard panel 13 must use the guarded executable A/B percentage expression.'});
   }
   return expression as Readonly<Record<string, JsonValue>>;
 }
 
 function validateGraphQueryStageTargets(resource: DashboardArtifact): void {
   const panels = resource.spec.panels;
-  if (!Array.isArray(panels)) throw new ScriptError('Dashboard artifact has no panels.');
+  if (!Array.isArray(panels)) throw ScriptError.make({message: 'Dashboard artifact has no panels.'});
   const matches = panels.filter(panelValue => isObject(panelValue) && panelValue.id === 23);
-  if (matches.length !== 1) throw new ScriptError('Dashboard must contain exactly one graph-query stage panel.');
+  if (matches.length !== 1)
+    throw ScriptError.make({message: 'Dashboard must contain exactly one graph-query stage panel.'});
   const panel = record(matches[0], 'dashboard panel 23');
   if (!Array.isArray(panel.targets) || panel.targets.length !== 2) {
-    throw new ScriptError('Dashboard panel 23 must contain separate outer-phase and fine-stage targets.');
+    throw ScriptError.make({message: 'Dashboard panel 23 must contain separate outer-phase and fine-stage targets.'});
   }
   const [phaseValue, stageValue] = panel.targets;
   const phase = record(phaseValue, 'dashboard panel 23 phase target');
@@ -268,7 +293,9 @@ function validateGraphQueryStageTargets(resource: DashboardArtifact): void {
     !stage.query.includes('span.threadnote.stage =~ "query-.*"') ||
     !stage.query.includes('by (span.threadnote.graph.request_kind, span.threadnote.stage, span.threadnote.subphase)')
   ) {
-    throw new ScriptError('Dashboard panel 23 must keep outer phases separate and group fine stages by closed labels.');
+    throw ScriptError.make({
+      message: 'Dashboard panel 23 must keep outer phases separate and group fine stages by closed labels.',
+    });
   }
 }
 
@@ -278,10 +305,11 @@ export function validateDashboardArtifact(value: unknown): DashboardArtifact {
   const spec = artifact.spec;
   const rendered = canonicalJson(cloneJson(artifactRecord, 'dashboard artifact'));
   if (rendered.includes(datasourcePlaceholder)) {
-    throw new ScriptError('Dashboard artifact still contains an unresolved Tempo data-source placeholder.');
+    throw ScriptError.make({message: 'Dashboard artifact still contains an unresolved Tempo data-source placeholder.'});
   }
   for (const key of ['__inputs', '__requires', ...serverOwnedDashboardKeys]) {
-    if (Object.hasOwn(spec, key)) throw new ScriptError(`Dashboard artifact retains server-owned field ${key}.`);
+    if (Object.hasOwn(spec, key))
+      throw ScriptError.make({message: `Dashboard artifact retains server-owned field ${key}.`});
   }
   collectTempoQueries(artifact);
   unexpectedFullBuildExpressionTarget(artifact);
@@ -298,7 +326,7 @@ export function validateHistoricalDashboardArtifact(value: unknown): DashboardAr
     Object.keys(artifactRecord).length !== 3 ||
     Object.keys(artifactRecord).some(key => !['dashboardUid', 'folderUid', 'spec'].includes(key))
   ) {
-    throw new ScriptError('Dashboard artifact must retain its exact dashboard and folder identity.');
+    throw ScriptError.make({message: 'Dashboard artifact must retain its exact dashboard and folder identity.'});
   }
   cloneJson(artifactRecord, 'dashboard artifact');
   return value as DashboardArtifact;
@@ -439,7 +467,9 @@ export function assessDashboardThreeWay(
 ): DashboardDeploymentDecision {
   if (options.live === options.current) return 'noop';
   if (options.historical.includes(options.live)) return 'update';
-  throw new ScriptError('Live Grafana dashboard drifted from the current and trusted historical canonical artifacts.');
+  throw ScriptError.make({
+    message: 'Live Grafana dashboard drifted from the current and trusted historical canonical artifacts.',
+  });
 }
 
 export function buildTempoQueryRequests(resource: DashboardArtifact, now = Date.now()): readonly JsonValue[] {
@@ -480,7 +510,7 @@ function grafanaUrl(baseUrl: string, path: string): URL {
   try {
     base = new URL(baseUrl);
   } catch {
-    throw new ScriptError('THREADNOTE_TELEMETRY_GRAFANA_URL must be an absolute HTTPS URL.');
+    throw ScriptError.make({message: 'THREADNOTE_TELEMETRY_GRAFANA_URL must be an absolute HTTPS URL.'});
   }
   const labels = base.hostname.split('.');
   if (
@@ -495,7 +525,9 @@ function grafanaUrl(baseUrl: string, path: string): URL {
     !base.hostname.endsWith('.grafana.net') ||
     labels.some(label => label.length === 0)
   ) {
-    throw new ScriptError('THREADNOTE_TELEMETRY_GRAFANA_URL must be an uncredentialed Grafana Cloud HTTPS origin.');
+    throw ScriptError.make({
+      message: 'THREADNOTE_TELEMETRY_GRAFANA_URL must be an uncredentialed Grafana Cloud HTTPS origin.',
+    });
   }
   return new URL(path, `${base.origin}/`);
 }
@@ -520,10 +552,10 @@ async function fetchResponse(
       signal: AbortSignal.timeout(30_000),
     });
   } catch {
-    throw new GrafanaTransportError();
+    throw GrafanaTransportError.of();
   }
   if (expectedStatus === undefined ? !response.ok : response.status !== expectedStatus) {
-    throw new GrafanaHttpError(response.status);
+    throw GrafanaHttpError.of(response.status);
   }
   return response;
 }
@@ -539,7 +571,7 @@ async function fetchJson(
   try {
     return await response.json();
   } catch {
-    throw new ScriptError('Grafana API returned malformed JSON.');
+    throw ScriptError.make({message: 'Grafana API returned malformed JSON.'});
   }
 }
 
@@ -567,7 +599,9 @@ function rejectManagedResource(metadata: Record<string, unknown>): void {
     key.startsWith('grafana.app/source') ||
     key.startsWith('provisioning.grafana.app/');
   if ([...Object.keys(annotations), ...Object.keys(labels)].some(isReservedProvenanceKey)) {
-    throw new ScriptError('Direct dashboard provisioning refuses a managed or provisioned Grafana resource.');
+    throw ScriptError.make({
+      message: 'Direct dashboard provisioning refuses a managed or provisioned Grafana resource.',
+    });
   }
 }
 
@@ -584,16 +618,18 @@ function parseLiveDashboard(value: unknown, namespace: string): LiveDashboard {
     metadata.namespace !== namespace ||
     annotations['grafana.app/folder'] !== telemetryDashboardFolderUid
   ) {
-    throw new ScriptError('Grafana dashboard identity or folder does not match the fixed deployment target.');
+    throw ScriptError.make({
+      message: 'Grafana dashboard identity or folder does not match the fixed deployment target.',
+    });
   }
   if (typeof metadata.resourceVersion !== 'string' || metadata.resourceVersion.length === 0) {
-    throw new ScriptError('Grafana dashboard response is missing metadata.resourceVersion.');
+    throw ScriptError.make({message: 'Grafana dashboard response is missing metadata.resourceVersion.'});
   }
   if (typeof metadata.uid !== 'string' || metadata.uid.length === 0) {
-    throw new ScriptError('Grafana dashboard response is missing its immutable metadata.uid.');
+    throw ScriptError.make({message: 'Grafana dashboard response is missing its immutable metadata.uid.'});
   }
   if (!Number.isInteger(spec.schemaVersion) || (spec.schemaVersion as number) < 1) {
-    throw new ScriptError('Grafana dashboard response is missing a valid server schemaVersion.');
+    throw ScriptError.make({message: 'Grafana dashboard response is missing a valid server schemaVersion.'});
   }
   return {
     annotations: cloneJson(annotations, 'Grafana dashboard response.metadata.annotations') as JsonObject,
@@ -623,17 +659,19 @@ function validateLiveFolder(value: unknown, namespace: string): void {
     spec.title !== telemetryDashboardFolderTitle ||
     Object.hasOwn(annotations, 'grafana.app/folder')
   ) {
-    throw new ScriptError('Grafana private folder identity or title does not match the fixed deployment target.');
+    throw ScriptError.make({
+      message: 'Grafana private folder identity or title does not match the fixed deployment target.',
+    });
   }
 }
 
 function validatePrivateFolderPermissions(value: unknown): void {
-  if (!Array.isArray(value)) throw new ScriptError('Grafana folder permissions response must be an array.');
+  if (!Array.isArray(value)) throw ScriptError.make({message: 'Grafana folder permissions response must be an array.'});
   for (const [index, item] of value.entries()) {
     const permission = record(item, `Grafana folder permissions response[${index}]`);
     const role = typeof permission.role === 'string' ? permission.role.toLowerCase() : '';
     if (role === 'viewer' || role === 'editor' || permission.folderId === -1 || permission.dashboardId === -1) {
-      throw new ScriptError('Grafana private folder still grants broad default Viewer or Editor access.');
+      throw ScriptError.make({message: 'Grafana private folder still grants broad default Viewer or Editor access.'});
     }
   }
 }
@@ -646,11 +684,11 @@ function validateExactPermissions(
   const permissions = record(value, 'Grafana effective permissions response');
   for (const [action, scopesValue] of Object.entries(permissions)) {
     if (!Array.isArray(scopesValue) || scopesValue.some(scope => typeof scope !== 'string')) {
-      throw new ScriptError('Grafana effective permissions response has an invalid scope list.');
+      throw ScriptError.make({message: 'Grafana effective permissions response has an invalid scope list.'});
     }
     const scopes = scopesValue as string[];
     if (!Object.hasOwn(exactScopes, action) || scopes.some(scope => scope === '*' || scope.endsWith(':*'))) {
-      throw new ScriptError(`Grafana dashboard ${actor} has a forbidden permission action or scope.`);
+      throw ScriptError.make({message: `Grafana dashboard ${actor} has a forbidden permission action or scope.`});
     }
     const expectedScopes = exactScopes[action];
     if (
@@ -659,7 +697,7 @@ function validateExactPermissions(
       new Set(scopes).size !== scopes.length ||
       expectedScopes.some(scope => !scopes.includes(scope))
     ) {
-      throw new ScriptError(`Grafana dashboard ${actor} is not restricted to the exact allowed targets.`);
+      throw ScriptError.make({message: `Grafana dashboard ${actor} is not restricted to the exact allowed targets.`});
     }
   }
   for (const [action, expectedScopes] of Object.entries(exactScopes)) {
@@ -671,7 +709,7 @@ function validateExactPermissions(
       new Set(scopes).size !== scopes.length ||
       expectedScopes.some(scope => !scopes.includes(scope))
     ) {
-      throw new ScriptError(`Grafana dashboard ${actor} is missing a required exact-target permission.`);
+      throw ScriptError.make({message: `Grafana dashboard ${actor} is missing a required exact-target permission.`});
     }
   }
 }
@@ -766,7 +804,9 @@ async function verifyTempoQueries(
       queries.map(query => query.refId as string),
     );
     if (errors.length > 0) {
-      throw new ScriptError(`Grafana rejected ${errors.length} bounded dashboard query checks (${errors.join(', ')}).`);
+      throw ScriptError.make({
+        message: `Grafana rejected ${errors.length} bounded dashboard query checks (${errors.join(', ')}).`,
+      });
     }
   }
 }
@@ -781,7 +821,9 @@ export async function verifyLiveDashboard(
   }>,
 ): Promise<void> {
   if (options.token.trim().length === 0) {
-    throw new ScriptError('THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN is required when live verification is enabled.');
+    throw ScriptError.make({
+      message: 'THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN is required when live verification is enabled.',
+    });
   }
   const namespace = validateGrafanaCloudNamespace(options.namespace);
   const fetcher = options.fetcher ?? fetch;
@@ -799,7 +841,7 @@ export async function verifyLiveDashboard(
     namespace,
   );
   if (canonicalDashboardSemantics(live.spec) !== canonicalDashboardSemantics(options.resource.spec)) {
-    throw new ScriptError('Live Grafana dashboard does not match the canonical dashboard artifact.');
+    throw ScriptError.make({message: 'Live Grafana dashboard does not match the canonical dashboard artifact.'});
   }
   await readAndValidateFolder(fetcher, options.baseUrl, namespace, options.token);
   await verifyTempoQueries(fetcher, options.baseUrl, options.token, options.resource);
@@ -832,7 +874,9 @@ function validatePostUpdate(previous: LiveDashboard, updated: LiveDashboard, exp
     updated.schemaVersion !== previous.schemaVersion ||
     canonicalDashboardSemantics(updated.spec) !== canonicalDashboardSemantics(expected.spec)
   ) {
-    throw new ScriptError('Grafana dashboard post-update state failed its identity, CAS, schema, or semantic check.');
+    throw ScriptError.make({
+      message: 'Grafana dashboard post-update state failed its identity, CAS, schema, or semantic check.',
+    });
   }
 }
 
@@ -848,7 +892,9 @@ export async function deployDashboard(
   }>,
 ): Promise<DashboardDeploymentDecision> {
   if (options.token.trim().length === 0) {
-    throw new ScriptError('THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN is required when direct deployment is enabled.');
+    throw ScriptError.make({
+      message: 'THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN is required when direct deployment is enabled.',
+    });
   }
   const namespace = validateGrafanaCloudNamespace(options.namespace);
   const currentSha = validateGitCommit(options.currentSha, 'THREADNOTE_TELEMETRY_DASHBOARD_CURRENT_SHA');
@@ -878,13 +924,13 @@ export async function deployDashboard(
   try {
     await fetchResponse(fetcher, url, options.token, {body: JSON.stringify(body), method: 'PUT'}, 200);
   } catch (error) {
-    if (!(error instanceof GrafanaTransportError)) throw error;
+    if (!Schema.is(GrafanaTransportError)(error)) throw error;
     const observed = parseLiveDashboard(await fetchJson(fetcher, url, options.token, undefined, 200), namespace);
     try {
       validatePostUpdate(live, observed, options.current);
       return decision;
     } catch {
-      throw new ScriptError('Grafana dashboard update outcome is indeterminate after a transport failure.');
+      throw ScriptError.make({message: 'Grafana dashboard update outcome is indeterminate after a transport failure.'});
     }
   }
   const updated = parseLiveDashboard(await fetchJson(fetcher, url, options.token, undefined, 200), namespace);
@@ -895,23 +941,23 @@ export async function deployDashboard(
 async function loadSource(repositoryRoot: string): Promise<unknown> {
   const source = Bun.file(`${repositoryRoot}/${telemetryDashboardSourcePath}`);
   if (!(await source.exists()))
-    throw new ScriptError(`Dashboard source is missing at ${telemetryDashboardSourcePath}.`);
+    throw ScriptError.make({message: `Dashboard source is missing at ${telemetryDashboardSourcePath}.`});
   try {
     return await source.json();
   } catch {
-    throw new ScriptError(`Dashboard source at ${telemetryDashboardSourcePath} is not valid JSON.`);
+    throw ScriptError.make({message: `Dashboard source at ${telemetryDashboardSourcePath} is not valid JSON.`});
   }
 }
 
 async function loadArtifact(repositoryRoot: string): Promise<DashboardArtifact> {
   const artifact = Bun.file(`${repositoryRoot}/${telemetryDashboardArtifactPath}`);
   if (!(await artifact.exists()))
-    throw new ScriptError(`Dashboard artifact is missing at ${telemetryDashboardArtifactPath}.`);
+    throw ScriptError.make({message: `Dashboard artifact is missing at ${telemetryDashboardArtifactPath}.`});
   try {
     return validateDashboardArtifact(await artifact.json());
   } catch (error) {
-    if (error instanceof ScriptError) throw error;
-    throw new ScriptError(`Dashboard artifact at ${telemetryDashboardArtifactPath} is not valid JSON.`);
+    if (Schema.is(ScriptError)(error)) throw error;
+    throw ScriptError.make({message: `Dashboard artifact at ${telemetryDashboardArtifactPath} is not valid JSON.`});
   }
 }
 
@@ -926,7 +972,8 @@ async function tryRunGit(repositoryRoot: string, args: readonly string[]): Promi
 
 async function runGit(repositoryRoot: string, args: readonly string[]): Promise<string> {
   const output = await tryRunGit(repositoryRoot, args);
-  if (output === undefined) throw new ScriptError('Git history does not contain the required deployment baseline.');
+  if (output === undefined)
+    throw ScriptError.make({message: 'Git history does not contain the required deployment baseline.'});
   return output;
 }
 
@@ -945,7 +992,8 @@ export async function loadHistoricalArtifacts(
     '--',
     telemetryDashboardArtifactPath,
   ]);
-  if (history === undefined) throw new ScriptError('Git history does not contain the required deployment baseline.');
+  if (history === undefined)
+    throw ScriptError.make({message: 'Git history does not contain the required deployment baseline.'});
   const revisions = history
     .split('\n')
     .filter(revision => revision.length > 0 && revision !== currentSha)
@@ -957,8 +1005,8 @@ export async function loadHistoricalArtifacts(
     try {
       artifacts.push(validateHistoricalDashboardArtifact(JSON.parse(json)));
     } catch (error) {
-      if (error instanceof ScriptError) throw error;
-      throw new ScriptError('A trusted historical dashboard artifact is not valid JSON.');
+      if (Schema.is(ScriptError)(error)) throw error;
+      throw ScriptError.make({message: 'A trusted historical dashboard artifact is not valid JSON.'});
     }
   }
   return artifacts;
@@ -975,7 +1023,7 @@ export async function formatDashboardArtifact(rendered: string): Promise<string>
 
 export function validateDashboardArtifactBytes(actual: string, expected: string): void {
   if (actual !== expected) {
-    throw new ScriptError(`Dashboard artifact is stale; run bun scripts/telemetry-dashboard.ts render.`);
+    throw ScriptError.make({message: `Dashboard artifact is stale; run bun scripts/telemetry-dashboard.ts render.`});
   }
 }
 
@@ -989,7 +1037,7 @@ async function run(command: string | undefined): Promise<void> {
   }
   const resource = await loadArtifact(repositoryRoot);
   if (canonicalJson(resource) !== canonicalJson(JSON.parse(rendered) as JsonValue)) {
-    throw new ScriptError(`Dashboard artifact is stale; run bun scripts/telemetry-dashboard.ts render.`);
+    throw ScriptError.make({message: `Dashboard artifact is stale; run bun scripts/telemetry-dashboard.ts render.`});
   }
   if (command === 'check') {
     validateDashboardArtifactBytes(
@@ -1012,7 +1060,7 @@ async function run(command: string | undefined): Promise<void> {
     const token = Bun.env.THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN?.trim() ?? '';
     validateGitCommit(currentSha, 'THREADNOTE_TELEMETRY_DASHBOARD_CURRENT_SHA');
     if ((await runGit(repositoryRoot, ['rev-parse', 'HEAD'])) !== currentSha) {
-      throw new ScriptError('Checked-out HEAD does not match the requested dashboard deployment commit.');
+      throw ScriptError.make({message: 'Checked-out HEAD does not match the requested dashboard deployment commit.'});
     }
     const historical = await loadHistoricalArtifacts(repositoryRoot, currentSha);
     const decision = await deployDashboard({baseUrl, current: resource, currentSha, historical, namespace, token});
@@ -1023,7 +1071,7 @@ async function run(command: string | undefined): Promise<void> {
     );
     return;
   }
-  throw new ScriptError('Usage: bun scripts/telemetry-dashboard.ts <render|check|deploy|verify-live>');
+  throw ScriptError.make({message: 'Usage: bun scripts/telemetry-dashboard.ts <render|check|deploy|verify-live>'});
 }
 
 if (import.meta.main) {

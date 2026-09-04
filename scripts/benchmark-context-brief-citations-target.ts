@@ -106,11 +106,9 @@ const program = Effect.scoped(
         JSON.stringify(options.profileIds) !== JSON.stringify(CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS) ||
         !/^[0-9a-f]{40}$/u.test(options.candidateCommit ?? ''))
     ) {
-      return yield* Effect.fail(
-        new ScriptError(
-          `--fail-on-budget requires an exact candidate commit, the reviewed 100k corpus, all three profiles, exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES} samples, and exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS} warmups.`,
-        ),
-      );
+      return yield* ScriptError.make({
+        message: `--fail-on-budget requires an exact candidate commit, the reviewed 100k corpus, all three profiles, exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES} samples, and exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS} warmups.`,
+      });
     }
     const evaluatedArtifact = yield* evaluateContextBriefCitationScale({
       budget,
@@ -129,7 +127,7 @@ const program = Effect.scoped(
     }
     yield* printJson(artifact);
     if (options.failOnBudget && !artifact.gate.passed) {
-      return yield* Effect.fail(new ScriptError(artifact.gate.failures.join('\n')));
+      return yield* ScriptError.make({message: artifact.gate.failures.join('\n')});
     }
   }),
 );
@@ -157,12 +155,12 @@ export function parseContextBriefCitationScaleBenchmarkArguments(
     else if (argument === '--profiles') profileIds = profiles(required(args[++index], argument));
     else if (argument === '--samples') samples = positiveInteger(args[++index], argument);
     else if (argument === '--warmups') warmups = nonNegativeInteger(args[++index], argument);
-    else throw new ScriptError(`Unknown Context Brief citation scale benchmark option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown Context Brief citation scale benchmark option: ${argument}`});
   }
   if (samples > Math.floor(CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS / profileIds.length)) {
-    throw new ScriptError(
-      `The Context Brief RSS observer supports at most ${CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS} total profile/sample observations; received ${profileIds.length * samples}.`,
-    );
+    throw ScriptError.make({
+      message: `The Context Brief RSS observer supports at most ${CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS} total profile/sample observations; received ${profileIds.length * samples}.`,
+    });
   }
   return {
     budgetPath,
@@ -186,27 +184,29 @@ function profiles(value: string): readonly ContextBriefCitationScaleProfileId[] 
       profile => !CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS.includes(profile as ContextBriefCitationScaleProfileId),
     )
   ) {
-    throw new ScriptError('--profiles must be a unique comma-separated subset of local-100k,workset-50,workset-128.');
+    throw ScriptError.make({
+      message: '--profiles must be a unique comma-separated subset of local-100k,workset-50,workset-128.',
+    });
   }
   return selected as ContextBriefCitationScaleProfileId[];
 }
 
 function positiveInteger(value: string | undefined, option: string): number {
   const parsed = nonNegativeInteger(value, option);
-  if (parsed < 1) throw new ScriptError(`${option} requires a positive integer.`);
+  if (parsed < 1) throw ScriptError.make({message: `${option} requires a positive integer.`});
   return parsed;
 }
 
 function nonNegativeInteger(value: string | undefined, option: string): number {
   const raw = required(value, option);
-  if (!/^\d+$/u.test(raw)) throw new ScriptError(`${option} requires a non-negative integer.`);
+  if (!/^\d+$/u.test(raw)) throw ScriptError.make({message: `${option} requires a non-negative integer.`});
   const parsed = Number(raw);
-  if (!Number.isSafeInteger(parsed)) throw new ScriptError(`${option} exceeds the safe integer range.`);
+  if (!Number.isSafeInteger(parsed)) throw ScriptError.make({message: `${option} exceeds the safe integer range.`});
   return parsed;
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 
@@ -214,9 +214,7 @@ export const validateContextBriefCitationRssBundleDigest = Effect.fn(
   'contextBriefCitationScale.validateRssBundleDigest',
 )(function* (observed: string, expected: string) {
   if (observed === expected) return;
-  return yield* Effect.fail(
-    new ScriptError(`Context Brief benchmark target digest ${observed}; expected ${expected}.`),
-  );
+  return yield* ScriptError.make({message: `Context Brief benchmark target digest ${observed}; expected ${expected}.`});
 });
 
 export const validateContextBriefCitationRssAcknowledgement = Effect.fn(
@@ -235,7 +233,7 @@ export const validateContextBriefCitationRssAcknowledgement = Effect.fn(
   ) {
     return;
   }
-  return yield* Effect.fail(new ScriptError('Context Brief RSS observer returned a mismatched barrier.'));
+  return yield* ScriptError.make({message: 'Context Brief RSS observer returned a mismatched barrier.'});
 });
 
 export const validateContextBriefCitationRssReadyArtifact = Effect.fn(
@@ -253,7 +251,7 @@ export const validateContextBriefCitationRssReadyArtifact = Effect.fn(
   ) {
     return;
   }
-  return yield* Effect.fail(new ScriptError('Context Brief RSS observer artifact changed its ready contract.'));
+  return yield* ScriptError.make({message: 'Context Brief RSS observer artifact changed its ready contract.'});
 });
 
 export function makeContextBriefCitationRssObserverController(
@@ -265,7 +263,7 @@ export function makeContextBriefCitationRssObserverController(
     Effect.acquireUseRelease(
       Effect.gen(function* () {
         if (finished || activeObservationId !== undefined) {
-          return yield* Effect.fail(new ScriptError('Context Brief RSS observer received overlapping work.'));
+          return yield* ScriptError.make({message: 'Context Brief RSS observer received overlapping work.'});
         }
         yield* adapter.barrier({observationId, operation: 'begin'}, 'begun');
         activeObservationId = observationId;
@@ -274,7 +272,7 @@ export function makeContextBriefCitationRssObserverController(
       () =>
         Effect.gen(function* () {
           if (activeObservationId !== observationId) {
-            return yield* Effect.fail(new ScriptError('Context Brief RSS observer lost its active observation.'));
+            return yield* ScriptError.make({message: 'Context Brief RSS observer lost its active observation.'});
           }
           yield* adapter.barrier({observationId, operation: 'end'}, 'ended');
           activeObservationId = undefined;
@@ -282,20 +280,18 @@ export function makeContextBriefCitationRssObserverController(
     );
   const finish = Effect.gen(function* () {
     if (finished || activeObservationId !== undefined) {
-      return yield* Effect.fail(new ScriptError('Context Brief RSS observer cannot finish in its current state.'));
+      return yield* ScriptError.make({message: 'Context Brief RSS observer cannot finish in its current state.'});
     }
     yield* adapter.barrier({operation: 'stop'}, 'stopped');
     const exitCode = yield* adapter.exitWithin;
     if (exitCode === undefined) {
       yield* adapter.terminate;
-      return yield* Effect.fail(new ScriptError('Context Brief RSS observer did not exit after its stop barrier.'));
+      return yield* ScriptError.make({message: 'Context Brief RSS observer did not exit after its stop barrier.'});
     }
     if (exitCode !== 0) {
-      return yield* Effect.fail(
-        new ScriptError(
-          `Context Brief RSS observer exited with ${exitCode}: ${yield* boundedObserverStderr(adapter.stderr)}`,
-        ),
-      );
+      return yield* ScriptError.make({
+        message: `Context Brief RSS observer exited with ${exitCode}: ${yield* boundedObserverStderr(adapter.stderr)}`,
+      });
     }
     const artifact = yield* adapter.readArtifact;
     yield* validateContextBriefCitationRssReadyArtifact(adapter.ready, artifact);
@@ -328,9 +324,10 @@ export const waitForContextBriefCitationRssBarrierAcknowledgement = Effect.fn(
       childExitCode() === null
         ? Effect.fail(error)
         : Effect.gen(function* () {
-            return yield* Effect.fail(
-              new ScriptError(`${error.message} ${yield* boundedObserverStderr(stderr)}`, {cause: error}),
-            );
+            return yield* ScriptError.make({
+              message: `${error.message} ${yield* boundedObserverStderr(stderr)}`,
+              cause: error,
+            });
           }),
     ),
   );
@@ -342,11 +339,11 @@ const startContextBriefCitationRssObserver = Effect.fn('contextBriefCitationScal
   const fs = yield* FileSystem.FileSystem;
   const system = yield* SystemInfo;
   if (system.platform !== 'darwin' && system.platform !== 'linux') {
-    return yield* Effect.fail(new ScriptError(`Context Brief RSS observation does not support ${system.platform}.`));
+    return yield* ScriptError.make({message: `Context Brief RSS observation does not support ${system.platform}.`});
   }
   const bundlePath = system.processArguments[1];
   if (bundlePath === undefined || bundlePath.length === 0) {
-    return yield* Effect.fail(new ScriptError('Context Brief RSS observer could not resolve the benchmark target.'));
+    return yield* ScriptError.make({message: 'Context Brief RSS observer could not resolve the benchmark target.'});
   }
   const observedBuiltArtifactSha256 = yield* sha256FileHex(bundlePath);
   yield* validateContextBriefCitationRssBundleDigest(observedBuiltArtifactSha256, expectedBuiltArtifactSha256);
@@ -376,7 +373,7 @@ const startContextBriefCitationRssObserver = Effect.fn('contextBriefCitationScal
         stdin: 'ignore',
         stdout: 'ignore',
       }),
-    catch: cause => new ScriptError('Could not start the Context Brief RSS observer.', {cause}),
+    catch: cause => ScriptError.make({message: 'Could not start the Context Brief RSS observer.', cause}),
   });
   const stderr = contextBriefCitationRssObserverStderr(child);
   const ready = yield* waitForContextBriefCitationRssReady({
@@ -386,14 +383,14 @@ const startContextBriefCitationRssObserver = Effect.fn('contextBriefCitationScal
       const value = yield* readJsonFile(paths.readyPath).pipe(Effect.provideService(FileSystem.FileSystem, fs));
       return yield* Effect.try({
         try: () => parseContextBriefCitationRssReady(value),
-        catch: cause => new ScriptError('Context Brief RSS observer ready evidence is invalid.', {cause}),
+        catch: cause => ScriptError.make({message: 'Context Brief RSS observer ready evidence is invalid.', cause}),
       });
     }),
     stderr,
   }).pipe(Effect.tapError(() => terminateContextBriefCitationRssObserver(child)));
   if (ready.intervalMilliseconds !== intervalMilliseconds) {
     yield* terminateContextBriefCitationRssObserver(child);
-    return yield* Effect.fail(new ScriptError('Context Brief RSS observer acknowledged the wrong sample interval.'));
+    return yield* ScriptError.make({message: 'Context Brief RSS observer acknowledged the wrong sample interval.'});
   }
   let sequence = 0;
   const barrier = (
@@ -426,7 +423,7 @@ const startContextBriefCitationRssObserver = Effect.fn('contextBriefCitationScal
       Effect.flatMap(value =>
         Effect.try({
           try: () => parseContextBriefCitationRssArtifact(value),
-          catch: cause => new ScriptError('Context Brief RSS observer artifact is invalid.', {cause}),
+          catch: cause => ScriptError.make({message: 'Context Brief RSS observer artifact is invalid.', cause}),
         }),
       ),
     ),
@@ -445,16 +442,14 @@ export const waitForContextBriefCitationRssReady = Effect.fn('contextBriefCitati
     const ready = yield* probe.readReady;
     if (ready !== undefined && probe.childExitCode() === null) return ready;
     if (probe.childExitCode() !== null) {
-      return yield* Effect.fail(
-        new ScriptError(
-          `Context Brief RSS observer exited before ready: ${yield* boundedObserverStderr(probe.stderr)}`,
-        ),
-      );
+      return yield* ScriptError.make({
+        message: `Context Brief RSS observer exited before ready: ${yield* boundedObserverStderr(probe.stderr)}`,
+      });
     }
     if ((yield* Clock.currentTimeMillis) - startedAt >= timeoutMilliseconds) {
-      return yield* Effect.fail(
-        new ScriptError('Timed out waiting for the Context Brief RSS observer to become ready.'),
-      );
+      return yield* ScriptError.make({
+        message: 'Timed out waiting for the Context Brief RSS observer to become ready.',
+      });
     }
     yield* Effect.sleep(10);
   }
@@ -465,17 +460,17 @@ export const terminateContextBriefCitationRssProcess = Effect.fn('contextBriefCi
     if (control.exitCode() !== null) return;
     yield* Effect.try({
       try: () => control.kill(),
-      catch: cause => new ScriptError('Could not terminate the Context Brief RSS observer.', {cause}),
+      catch: cause => ScriptError.make({message: 'Could not terminate the Context Brief RSS observer.', cause}),
     });
     const terminated = yield* Effect.promise(control.waitForExit);
     if (terminated !== undefined || control.exitCode() !== null) return;
     yield* Effect.try({
       try: () => control.kill(9),
-      catch: cause => new ScriptError('Could not kill the Context Brief RSS observer.', {cause}),
+      catch: cause => ScriptError.make({message: 'Could not kill the Context Brief RSS observer.', cause}),
     });
     const killed = yield* Effect.promise(control.waitForExit);
     if (killed === undefined && control.exitCode() === null) {
-      return yield* Effect.fail(new ScriptError('Context Brief RSS observer could not be confirmed stopped.'));
+      return yield* ScriptError.make({message: 'Context Brief RSS observer could not be confirmed stopped.'});
     }
   },
 );

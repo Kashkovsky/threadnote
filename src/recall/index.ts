@@ -1,4 +1,4 @@
-import {Cause, Clock, Crypto, Effect, FileSystem, Layer, Option, Path, Predicate} from 'effect';
+import {Cause, Clock, Crypto, Effect, FileSystem, Layer, Option, Path, Predicate, Schema} from 'effect';
 import {
   recallCodeLinkMatchesResult,
   recallExactMatchesResult,
@@ -113,9 +113,10 @@ import {
 
 export {recallUriMatchesScopes} from './index_scope.js';
 
-class RecallIndexOperationError extends Error {
-  readonly _tag = 'RecallIndexOperationError' as const;
-}
+class RecallIndexOperationError extends Schema.TaggedError<RecallIndexOperationError>()('RecallIndexOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 interface SeedStateEntry {
   readonly mtimeMs: number;
@@ -208,13 +209,18 @@ interface RecallIndexPointer {
   readonly version: typeof RECALL_INDEX_POINTER_VERSION;
 }
 
-class RecallIndexCorrupt extends Error {
-  override readonly name = 'RecallIndexCorrupt';
-}
+class RecallIndexCorrupt extends Schema.TaggedError<RecallIndexCorrupt>()('RecallIndexCorrupt', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
-class RecallIndexSchemaIncompatible extends Error {
-  override readonly name = 'RecallIndexSchemaIncompatible';
-}
+class RecallIndexSchemaIncompatible extends Schema.TaggedError<RecallIndexSchemaIncompatible>()(
+  'RecallIndexSchemaIncompatible',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 interface LoadRecallIndexOptions {
   readonly allowedUriScopes?: readonly string[];
@@ -288,10 +294,8 @@ const loadRecallIndexDataInternal = Effect.fn('recall.loadIndexDataInternal')(fu
     options.includeInactive,
   );
   return yield* executeRecallIndexQuery(databasePath, fixedDatabasePath, config, options).pipe(
-    Effect.catchCause(firstCause =>
-      isRecoverableRecallIndexCause(firstCause)
-        ? recoverRecallIndex(fs, pathService, databasePath, fixedDatabasePath, config, options, firstCause)
-        : Effect.failCause(firstCause),
+    Effect.catchCauseIf(isRecoverableRecallIndexCause, firstCause =>
+      recoverRecallIndex(fs, pathService, databasePath, fixedDatabasePath, config, options, firstCause),
     ),
   );
 });
@@ -407,12 +411,12 @@ const recoverRecallIndex = Effect.fn('recall.recoverIndex')(function* (
       ).pipe(
         Effect.catchCause(secondCause =>
           Effect.fail(
-            new RecallIndexOperationError(
-              `Lexical recall index recovery failed: ${Cause.pretty(firstCause)}; replacement failed: ${Cause.pretty(secondCause)}`,
-            ),
+            RecallIndexOperationError.make({
+              message: `Lexical recall index recovery failed: ${Cause.pretty(firstCause)}; replacement failed: ${Cause.pretty(secondCause)}`,
+            }),
           ),
         ),
-        Effect.ensuring(removeRecallDatabaseAuxiliaryFiles(fs, replacementPath).pipe(Effect.catch(() => Effect.void))),
+        Effect.ensuring(removeRecallDatabaseAuxiliaryFiles(fs, replacementPath).pipe(Effect.ignore)),
       );
       yield* writeActiveRecallDatabasePointer(
         fs,
@@ -954,7 +958,7 @@ const resolveActiveRecallDatabasePath = Effect.fn('recall.resolveActiveDatabaseP
   const raw = yield* fs.readFileString(pointerPath);
   const parsed = yield* Effect.try({
     try: () => JSON.parse(raw) as unknown,
-    catch: cause => new RecallIndexCorrupt(`Lexical index pointer is invalid: ${String(cause)}`),
+    catch: cause => RecallIndexCorrupt.make({message: `Lexical index pointer is invalid: ${String(cause)}`}),
   }).pipe(Effect.option);
   if (Option.isNone(parsed)) {
     return fixedPath;
@@ -995,7 +999,7 @@ const writeActiveRecallDatabasePointer = Effect.fn('recall.writeActiveDatabasePo
   yield* fs.writeFileString(temporaryPath, `${JSON.stringify(pointer, undefined, 2)}\n`, {mode: 0o600});
   yield* fs
     .rename(temporaryPath, pointerPath)
-    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
+    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.ignore)));
 });
 
 function useRecallDatabase<A, E, R>(
@@ -1169,11 +1173,9 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
   }
   const rows = yield* sql<RecallMetadataRow>`SELECT key, value FROM metadata WHERE key = 'schema_version'`;
   if (rows[0]?.value !== String(RECALL_INDEX_DATABASE_VERSION)) {
-    return yield* Effect.fail(
-      new RecallIndexSchemaIncompatible(
-        `Unsupported lexical index schema ${rows[0]?.value ?? 'unknown'}; expected ${RECALL_INDEX_DATABASE_VERSION}.`,
-      ),
-    );
+    return yield* RecallIndexSchemaIncompatible.make({
+      message: `Unsupported lexical index schema ${rows[0]?.value ?? 'unknown'}; expected ${RECALL_INDEX_DATABASE_VERSION}.`,
+    });
   }
 });
 
@@ -1544,7 +1546,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
   yield* dropRecallSourceScan(sql);
   yield* fs.chmod(databasePath, 0o600);
   if (markerChanged && staleMarker) {
-    yield* clearStaleMarkerInvalidations(fs, staleMarkerBasePath, staleMarker).pipe(Effect.catch(() => Effect.void));
+    yield* clearStaleMarkerInvalidations(fs, staleMarkerBasePath, staleMarker).pipe(Effect.ignore);
   }
   yield* removeLegacyRecallIndexArtifacts(fs, path, config.agentContextHome, RECALL_INDEX_DATABASE_VERSION);
 });
@@ -1634,10 +1636,10 @@ function decodeCandidateRow(row: RecallDocumentRow): RecallCandidate {
   try {
     value = JSON.parse(row.candidate_json);
   } catch (cause) {
-    throw new RecallIndexCorrupt(`Lexical index candidate ${row.uri} is invalid: ${String(cause)}`);
+    throw RecallIndexCorrupt.make({message: `Lexical index candidate ${row.uri} is invalid: ${String(cause)}`});
   }
   if (!recallCandidateIsValid(value) || stripRecallAnchor(value.uri) !== row.uri) {
-    throw new RecallIndexCorrupt(`Lexical index candidate ${row.uri} is invalid.`);
+    throw RecallIndexCorrupt.make({message: `Lexical index candidate ${row.uri} is invalid.`});
   }
   return value;
 }
@@ -1705,7 +1707,7 @@ function removeRecallDatabaseAuxiliaryFiles(fs: FileSystem.FileSystem, databaseP
 
 function isRecoverableRecallIndexCause(cause: Cause.Cause<unknown>): boolean {
   const squashed = Cause.squash(cause);
-  if (squashed instanceof RecallIndexCorrupt || squashed instanceof RecallIndexSchemaIncompatible) {
+  if (Schema.is(RecallIndexCorrupt)(squashed) || Schema.is(RecallIndexSchemaIncompatible)(squashed)) {
     return true;
   }
   return /database disk image is malformed|file is not a database|database schema is corrupt|malformed database schema/i.test(
@@ -1825,12 +1827,14 @@ function loadCanonicalResourcePolicy(
     const manifestRaw = yield* fs.readFileString(manifestPath);
     const manifest = yield* Effect.try({
       try: () => parseSeedManifest(manifestRaw, manifestPath),
-      catch: cause => new RecallIndexOperationError(cause instanceof Error ? cause.message : String(cause), {cause}),
+      catch: cause =>
+        RecallIndexOperationError.make({cause, message: cause instanceof Error ? cause.message : String(cause)}),
     });
     const seedStateRaw = yield* fs.readFileString(pathService.join(config.agentContextHome, SEED_STATE_FILE));
     const seedState = yield* Effect.try({
       try: () => parseSeedState(seedStateRaw),
-      catch: cause => new RecallIndexOperationError(cause instanceof Error ? cause.message : String(cause), {cause}),
+      catch: cause =>
+        RecallIndexOperationError.make({cause, message: cause instanceof Error ? cause.message : String(cause)}),
     });
     const entryKeyByUri = new Map<string, string>();
     const sourcePathByUri = new Map<string, string>();
@@ -1862,12 +1866,10 @@ function loadCanonicalResourcePolicy(
     }
     return {entryKeyByUri, sourcePathByUri};
   }).pipe(
-    Effect.catch(() =>
-      Effect.succeed({
-        entryKeyByUri: new Map<string, string>(),
-        sourcePathByUri: new Map<string, string>(),
-      }),
-    ),
+    Effect.orElseSucceed(() => ({
+      entryKeyByUri: new Map<string, string>(),
+      sourcePathByUri: new Map<string, string>(),
+    })),
   );
 }
 
@@ -1945,7 +1947,7 @@ function resolveSeededResourceSource(
       return undefined;
     }
     return sourcePath;
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  }).pipe(Effect.orElseSucceed(() => undefined));
 }
 
 function seededResourceMatch(
@@ -1987,6 +1989,6 @@ function verifyCanonicalResource(
   }
   return fs.readFileString(sourcePath).pipe(
     Effect.map(sourceContent => sourceContent === indexedContent),
-    Effect.catch(() => Effect.succeed(false)),
+    Effect.orElseSucceed(() => false),
   );
 }

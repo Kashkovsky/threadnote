@@ -29,9 +29,9 @@ const captureBaseline = Effect.gen(function* () {
     {concurrency: 'unbounded'},
   );
   if (status.length > 0) {
-    return yield* Effect.fail(
-      new ScriptError('Recall baselines must be captured from a clean checkout; commit or stash changes first.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Recall baselines must be captured from a clean checkout; commit or stash changes first.',
+    });
   }
   const createdAt = options.createdAt ?? sourceDate(committedAt);
   const outputPath = options.outputPath ?? baselinePath(threadnoteVersion);
@@ -87,7 +87,7 @@ function parseArguments(args: readonly string[]): Options {
     const argument = args[index];
     if (argument === '--created-at') createdAt = isoDate(requiredValue(args[++index], argument));
     else if (argument === '--output') outputPath = requiredValue(args[++index], argument);
-    else throw new ScriptError(`Unknown recall baseline option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown recall baseline option: ${argument}`});
   }
   return {createdAt, outputPath};
 }
@@ -107,12 +107,12 @@ const git = Effect.fn('captureRecallBaseline.git')((arguments_: readonly string[
 
 function isoDate(value: string): string {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) throw new ScriptError(`Invalid ISO timestamp: ${value}`);
+  if (Number.isNaN(date.getTime())) throw ScriptError.make({message: `Invalid ISO timestamp: ${value}`});
   return date.toISOString();
 }
 
 function requiredValue(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 

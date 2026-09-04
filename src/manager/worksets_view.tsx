@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import type {ProjectedContextBriefV1, ContextBriefMode} from '../context_brief/index.js';
 import type {CodeGraphWorksetTopologyResultV1} from '../code_graph/cross_repository/runtime.js';
@@ -257,7 +258,7 @@ export function WorksetsPanel(): React.ReactElement {
       if (!controller.signal.aborted && sequence === statusSequenceRef.current) {
         setStatus(undefined);
         setStatusError(
-          cause instanceof ManagerApiError && cause.code === 'maintenance-busy'
+          Schema.is(ManagerApiError)(cause) && cause.code === 'maintenance-busy'
             ? 'Readiness is temporarily unavailable while graph maintenance is active. Manifest definitions remain available.'
             : errorMessage(cause),
         );
@@ -313,7 +314,7 @@ export function WorksetsPanel(): React.ReactElement {
       setDefinitionDraft(undefined);
       setNotice(result.warnings.join(' ') || (result.changed ? 'Workset definition saved.' : 'No definition change.'));
     } catch (cause) {
-      if (cause instanceof ManagerApiError && cause.code === 'revision-conflict') {
+      if (Schema.is(ManagerApiError)(cause) && cause.code === 'revision-conflict') {
         setNotice('The manifest changed. Definitions were refreshed; your draft is preserved for review and retry.');
         await loadCatalog();
       } else {

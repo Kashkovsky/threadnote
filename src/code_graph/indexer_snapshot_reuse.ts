@@ -59,7 +59,7 @@ export const prepareReadyAnalysisSummary = Effect.fn('codeGraph.prepareReadyAnal
     Effect.ensuring(
       (
         input.onProgress?.({phase: 'activating', snapshotId: input.snapshotId, subphase: 'complete'}) ?? Effect.void
-      ).pipe(Effect.catch(() => Effect.void)),
+      ).pipe(Effect.ignore),
     ),
   );
 });
@@ -281,6 +281,6 @@ export const attemptCommittedDirtyRootAlias = Effect.fn('codeGraph.attemptCommit
           }),
         });
       }),
-    token => input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+    token => input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.ignore),
   );
 });

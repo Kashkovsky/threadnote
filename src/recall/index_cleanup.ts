@@ -61,7 +61,7 @@ function recallPointerDatabaseRelativePath(fs: FileSystem.FileSystem, pointerPat
         return undefined;
       }
     }),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
 }
 

@@ -1,5 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect} from 'effect';
+import {DateTime, Effect} from 'effect';
 import fc from 'fast-check';
 import {describe, expect} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -58,7 +58,7 @@ describe('removed view cleanup worker properties', () => {
           nextAttemptAt: now + 30_000,
           phase,
           revision,
-          updatedAt: new Date(now + rollback).toISOString(),
+          updatedAt: DateTime.formatIso(DateTime.makeUnsafe(now + rollback)),
         });
         const effectiveAction = phase === 'provenance' && action === 'progress' ? 'deferred' : action;
         const page = pageResult(phase, effectiveAction, blockedCode, delay, revision);

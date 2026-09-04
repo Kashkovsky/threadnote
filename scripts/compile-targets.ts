@@ -18,12 +18,12 @@ const compileTargets = Effect.gen(function* () {
     Effect.flatMap(content =>
       Effect.try({
         try: () => JSON.parse(content) as PackageManifest,
-        catch: cause => new ScriptError('Could not parse package.json.', {cause}),
+        catch: cause => ScriptError.make({message: 'Could not parse package.json.', cause}),
       }),
     ),
   );
   if (!manifest.version) {
-    return yield* Effect.fail(new ScriptError('package.json must declare a version.'));
+    return yield* ScriptError.make({message: 'package.json must declare a version.'});
   }
 
   const configuredTarget = Bun.env.THREADNOTE_BUILD_TARGET?.trim();
@@ -31,7 +31,7 @@ const compileTargets = Effect.gen(function* () {
     ? BUN_STANDALONE_TARGETS.filter(target => target === configuredTarget)
     : BUN_STANDALONE_TARGETS;
   if (targets.length === 0) {
-    return yield* Effect.fail(new ScriptError(`${configuredTarget} is not a supported standalone target.`));
+    return yield* ScriptError.make({message: `${configuredTarget} is not a supported standalone target.`});
   }
 
   const outputRoot = path.join(root, '.target-builds');
@@ -64,17 +64,15 @@ const compileTargets = Effect.gen(function* () {
           sourcemap: 'linked',
           target: 'bun',
         }),
-      catch: cause => new ScriptError(`Bun could not compile ${target}.`, {cause}),
+      catch: cause => ScriptError.make({message: `Bun could not compile ${target}.`, cause}),
     });
     if (!result.success) {
-      return yield* Effect.fail(
-        new ScriptError(
-          `${target}: ${result.logs
-            .map(log => log.message)
-            .filter(Boolean)
-            .join('\n')}`,
-        ),
-      );
+      return yield* ScriptError.make({
+        message: `${target}: ${result.logs
+          .map(log => log.message)
+          .filter(Boolean)
+          .join('\n')}`,
+      });
     }
     yield* Console.log(`Compiled standalone Threadnote for ${target}`);
   }

@@ -1,4 +1,4 @@
-import {Console, Crypto, Effect, FileSystem, Path, Predicate} from 'effect';
+import {Console, Crypto, Effect, FileSystem, Path, Predicate, Schema} from 'effect';
 import {syncDirectoryBestEffort, syncWritableFile} from './effect/file_durability.js';
 import {withExclusiveFileLock} from './effect/file_lock.js';
 import {SystemInfo} from './effect/system.js';
@@ -13,9 +13,13 @@ import {
 } from './process/standalone_lease.js';
 import {compareVersions} from './utils.js';
 
-class InstallationOperationError extends Error {
-  readonly _tag = 'InstallationOperationError' as const;
-}
+class InstallationOperationError extends Schema.TaggedError<InstallationOperationError>()(
+  'InstallationOperationError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 const ACTIVE_RELEASE_FILE = 'active-release.json';
 const ACTIVE_RELEASE_BACKUP_FILE = 'active-release.previous.json';
@@ -124,17 +128,15 @@ export const promoteStandaloneReleaseDirectory = Effect.fn('installations.promot
   const versionsRoot = path.dirname(resolvedReleaseRoot);
   const releaseName = path.basename(resolvedReleaseRoot);
   if (!RELEASE_VERSION_PATTERN.test(releaseName)) {
-    return yield* Effect.fail(
-      new InstallationOperationError(`Cannot promote an invalid standalone release path: ${releaseRoot}`),
-    );
+    return yield* InstallationOperationError.make({
+      message: `Cannot promote an invalid standalone release path: ${releaseRoot}`,
+    });
   }
   const resolvedStagedRoot = path.resolve(stagedRoot);
   if (!isStandaloneStagingPath(path, versionsRoot, releaseName, resolvedStagedRoot)) {
-    return yield* Effect.fail(
-      new InstallationOperationError(
-        `Standalone release staging path is not recognized within ${versionsRoot}: ${stagedRoot}`,
-      ),
-    );
+    return yield* InstallationOperationError.make({
+      message: `Standalone release staging path is not recognized within ${versionsRoot}: ${stagedRoot}`,
+    });
   }
   yield* recoverStandaloneReleasePromotion(fs, path, resolvedReleaseRoot);
   const backupRoot = releasePromotionBackupPath(path, resolvedReleaseRoot);
@@ -228,7 +230,7 @@ export const activeInstalledRelease = Effect.fn('installations.activeRelease')(f
   // read-only fallback: installation-lock recovery remains the sole mutator.
   const journalPath = path.join(root, ACTIVE_RELEASE_JOURNAL_FILE);
   const promotion = yield* readActiveReleasePromotion(fs, path, root, journalPath).pipe(
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
   return promotion ? yield* readValidatedPointer(promotion.backupPath) : undefined;
 });
@@ -362,7 +364,7 @@ function readActiveRelease(fs: FileSystem.FileSystem, file: string) {
         catch: () => undefined,
       }),
     ),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
 }
 
@@ -434,9 +436,9 @@ const readActiveReleasePromotion = Effect.fn('installations.readActiveReleasePro
     path.dirname(value.temporaryPath) !== root ||
     !/^\.active-release\.[0-9]+-[0-9a-f-]+\.next\.json$/i.test(path.basename(value.temporaryPath))
   ) {
-    return yield* Effect.fail(
-      new InstallationOperationError(`Active release promotion journal is invalid: ${journalPath}`),
-    );
+    return yield* InstallationOperationError.make({
+      message: `Active release promotion journal is invalid: ${journalPath}`,
+    });
   }
   return {
     activePath,
@@ -464,7 +466,7 @@ const readReleaseDirectoryPromotion = Effect.fn('installations.readReleaseDirect
       ? false
       : yield* Effect.all([fs.realPath(versionsRoot), fs.realPath(journalVersionsRoot)]).pipe(
           Effect.map(([expected, observed]) => expected === observed),
-          Effect.catch(() => Effect.succeed(false)),
+          Effect.orElseSucceed(() => false),
         );
   const rebasedStagedRoot =
     journalVersionsRoot && journalStagedRoot
@@ -478,9 +480,9 @@ const readReleaseDirectoryPromotion = Effect.fn('installations.readReleaseDirect
     rebasedStagedRoot === undefined ||
     !isStandaloneStagingPath(path, versionsRoot, path.basename(releaseRoot), rebasedStagedRoot)
   ) {
-    return yield* Effect.fail(
-      new InstallationOperationError(`Standalone release promotion journal is invalid: ${journalPath}`),
-    );
+    return yield* InstallationOperationError.make({
+      message: `Standalone release promotion journal is invalid: ${journalPath}`,
+    });
   }
   return {
     backupRoot,
@@ -499,11 +501,12 @@ const parsePromotionJournal = Effect.fn('installations.parsePromotionJournal')(f
     try: () => {
       const value = JSON.parse(content) as unknown;
       if (!Predicate.isObject(value)) {
-        throw new InstallationOperationError('expected a JSON object');
+        throw InstallationOperationError.make({message: 'expected a JSON object'});
       }
       return value;
     },
-    catch: cause => new InstallationOperationError(`Could not parse promotion journal ${journalPath}.`, {cause}),
+    catch: cause =>
+      InstallationOperationError.make({cause, message: `Could not parse promotion journal ${journalPath}.`}),
   });
 });
 
@@ -565,5 +568,5 @@ const writePrivateJsonAtomically = Effect.fn('installations.writePrivateJsonAtom
     yield* syncWritableFile(fs, temporary);
     yield* fs.rename(temporary, target);
     yield* syncDirectoryBestEffort(fs, directory);
-  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
 });

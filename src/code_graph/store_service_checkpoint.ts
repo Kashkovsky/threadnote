@@ -1,4 +1,5 @@
-import {Effect, Option} from 'effect';
+import {DateTime, Effect, Option} from 'effect';
+import {succeedUndefined} from '../effect/optional.js';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
   bindCheckpointImportBuild,
@@ -43,7 +44,7 @@ export function makeCodeGraphStoreCheckpointMethods(runtime: CodeGraphStoreRunti
             Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient;
               return yield* sql.withTransaction(
-                bindCheckpointImportBuild(sql, snapshotId, input, new Date().toISOString()),
+                bindCheckpointImportBuild(sql, snapshotId, input, DateTime.formatIso(yield* DateTime.now)),
               );
             }),
           ),
@@ -60,7 +61,7 @@ export function makeCodeGraphStoreCheckpointMethods(runtime: CodeGraphStoreRunti
                   return yield* readCheckpointImportReceipt(sql, snapshotId);
                 }),
               )
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load code graph checkpoint import receipt', cause)),
       ),
@@ -101,7 +102,7 @@ export function makeCodeGraphStoreCheckpointMethods(runtime: CodeGraphStoreRunti
                   return yield* selectReadySnapshotByLogicalDigest(sql, repositoryId, logicalDigest, abiDigest);
                 }),
               )
-            : Effect.succeed(undefined),
+            : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load code graph checkpoint by logical digest', cause)),
       ),
@@ -122,7 +123,7 @@ export function makeCodeGraphStoreCheckpointMethods(runtime: CodeGraphStoreRunti
             Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient;
               return yield* sql.withTransaction(
-                recordReadyCheckpointImportReceipt(sql, snapshotId, input, new Date().toISOString()),
+                recordReadyCheckpointImportReceipt(sql, snapshotId, input, DateTime.formatIso(yield* DateTime.now)),
               );
             }),
           ),
@@ -145,7 +146,13 @@ export function makeCodeGraphStoreCheckpointMethods(runtime: CodeGraphStoreRunti
             Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient;
               return yield* sql.withTransaction(
-                stageCheckpointImportRecordPage(sql, snapshotId, ownerToken, page, new Date().toISOString()),
+                stageCheckpointImportRecordPage(
+                  sql,
+                  snapshotId,
+                  ownerToken,
+                  page,
+                  DateTime.formatIso(yield* DateTime.now),
+                ),
               );
             }),
           ),

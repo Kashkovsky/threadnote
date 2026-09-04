@@ -6,7 +6,7 @@ import {startExternalSampler} from '../../scripts/benchmark-code-graph.js';
 
 const [root, checkpointPath, readyMarker] = process.argv.slice(2);
 if (!root || !checkpointPath || !readyMarker) {
-  throw new TestError('Expected sampler root, checkpoint path, and ready marker.');
+  throw TestError.make({message: 'Expected sampler root, checkpoint path, and ready marker.'});
 }
 
 await Effect.runPromise(

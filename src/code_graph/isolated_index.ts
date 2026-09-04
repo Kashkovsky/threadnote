@@ -41,7 +41,7 @@ export function recoverIsolatedCodeGraphIndexSnapshot<E, R>(
         (options.result.requestKey !== options.requestedRequestKey ||
           options.currentRequestKey !== options.requestedRequestKey))
     ) {
-      return yield* Effect.fail(new WorktreeChangedDuringIndex());
+      return yield* WorktreeChangedDuringIndex.make({});
     }
     const snapshot = yield* options.loadReadySnapshot(options.result.snapshotId);
     if (
@@ -49,9 +49,9 @@ export function recoverIsolatedCodeGraphIndexSnapshot<E, R>(
       snapshot.id !== options.result.snapshotId ||
       snapshot.repositoryId !== options.completedIdentity.repositoryId
     ) {
-      return yield* Effect.fail(
-        new CodeGraphSnapshotUnavailable('The isolated graph index completed without a readable ready snapshot.'),
-      );
+      return yield* CodeGraphSnapshotUnavailable.make({
+        message: 'The isolated graph index completed without a readable ready snapshot.',
+      });
     }
     if (
       snapshot.commit !== options.completedIdentity.headCommit ||
@@ -61,7 +61,7 @@ export function recoverIsolatedCodeGraphIndexSnapshot<E, R>(
       snapshot.edgeCount !== options.result.edges ||
       (snapshot.dirty && snapshot.worktreeId !== options.completedIdentity.worktreeId)
     ) {
-      return yield* Effect.fail(new WorktreeChangedDuringIndex());
+      return yield* WorktreeChangedDuringIndex.make({});
     }
     return {identity: options.completedIdentity, snapshot};
   });
@@ -80,9 +80,9 @@ export const runIsolatedCodeGraphIndexSnapshot = Effect.fn('codeGraph.isolatedIn
   const languagePacks = yield* CodeGraphLanguagePackRegistry;
   const identity = yield* resolveRepositoryIdentity(options.cwd);
   if (options.expectedIdentity && !repositoryIdentityMatchesExpectation(identity, options.expectedIdentity)) {
-    return yield* Effect.fail(
-      new CodeGraphIndexOperationError('Repository identity does not match the requested graph target.'),
-    );
+    return yield* CodeGraphIndexOperationError.make({
+      message: 'Repository identity does not match the requested graph target.',
+    });
   }
   const requestedOverlay = yield* worktreeBuildRequestState(identity, options.threadnoteHome);
   const ensureVectors = codeGraphIndexEnsuresVectors(options);

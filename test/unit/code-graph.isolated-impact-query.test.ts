@@ -1,4 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
@@ -249,7 +250,7 @@ function gitObjectId(length: 40 | 64): fc.Arbitrary<string> {
 function systemInfoStub(overrides: Partial<SystemInfoShape>): SystemInfoShape {
   return {
     architecture: 'arm64',
-    availableDiskBytes: () => Effect.succeed(undefined),
+    availableDiskBytes: () => succeedUndefined,
     currentDirectory: () => '/',
     environment: () => ({HOME: '/bootstrap-home', PATH: '/bootstrap-bin'}),
     executablePath: '/opt/bin/bun',
@@ -266,7 +267,7 @@ function systemInfoStub(overrides: Partial<SystemInfoShape>): SystemInfoShape {
     platform: 'darwin',
     processArguments: ['/opt/bin/bun', '/src/standalone.ts', 'mcp-server'],
     processId: 1,
-    processStartIdentity: () => Effect.succeed(undefined),
+    processStartIdentity: () => succeedUndefined,
     readLine: () => () => undefined,
     runtimeVersion: 'test',
     setEnvironmentVariable: () => undefined,

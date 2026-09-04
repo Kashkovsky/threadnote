@@ -29,15 +29,12 @@ export function createRemoteMemoryWorkerHealth(
   isStopping: () => boolean = () => false,
 ): RemoteMemoryWorkerHealth {
   let failure: RemoteMemoryWorkerFailure | undefined;
-  let resolveFailure: ((value: RemoteMemoryWorkerFailure) => void) | undefined;
-  const failurePromise = new Promise<RemoteMemoryWorkerFailure>(resolve => {
-    resolveFailure = resolve;
-  });
+  const {promise: failurePromise, resolve: resolveFailure} = Promise.withResolvers<RemoteMemoryWorkerFailure>();
   const fail = (name: RemoteMemoryWorkerName, cause: unknown) => {
     if (isStopping() || failure) return;
     failure = {cause, name};
     onFailure(name, cause);
-    resolveFailure?.(failure);
+    resolveFailure(failure);
   };
   return {
     assertReady: () => {

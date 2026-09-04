@@ -19,7 +19,7 @@ const program = Effect.scoped(
     const system = yield* SystemInfo;
     const args = yield* scriptArguments();
     if (args.includes('--built-artifact-sha256')) {
-      return yield* Effect.fail(new ScriptError('--built-artifact-sha256 is reserved for the benchmark wrapper.'));
+      return yield* ScriptError.make({message: '--built-artifact-sha256 is reserved for the benchmark wrapper.'});
     }
     const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-context-brief-citation-benchmark-build-'});
     const target = yield* path.fromFileUrl(TARGET);
@@ -27,7 +27,7 @@ const program = Effect.scoped(
       yield* fs.readFileString(path.join(path.dirname(target), '..', 'package.json')),
     ) as {readonly version?: unknown};
     if (typeof packageManifest.version !== 'string' || packageManifest.version.length === 0) {
-      return yield* Effect.fail(new ScriptError('package.json does not declare a benchmark source version.'));
+      return yield* ScriptError.make({message: 'package.json does not declare a benchmark source version.'});
     }
     const outfile = path.join(root, 'context-brief-citation-scale-benchmark.mjs');
     const result = yield* Effect.tryPromise({
@@ -44,17 +44,17 @@ const program = Effect.scoped(
           target: 'bun',
           write: true,
         }),
-      catch: cause => new ScriptError('Could not build the Context Brief citation scale benchmark target.', {cause}),
+      catch: cause =>
+        ScriptError.make({message: 'Could not build the Context Brief citation scale benchmark target.', cause}),
     });
     if (!result.success) {
-      return yield* Effect.fail(
-        new ScriptError(
+      return yield* ScriptError.make({
+        message:
           result.logs
             .map(log => log.message)
             .filter(Boolean)
             .join('\n') || 'Benchmark build failed.',
-        ),
-      );
+      });
     }
     const digest = yield* sha256Hex(yield* fs.readFile(outfile));
     const child = yield* runCommandEffect(

@@ -130,10 +130,10 @@ describe('native ResourceStore', () => {
             distinctAccounts ? `account-${index}` : 'local',
           );
 
-          const failures = yield* Effect.all(
-            accounts.map(account =>
+          const failures = yield* Effect.forEach(
+            accounts,
+            account =>
               Effect.flip(store.stat({...location(home), account}, 'threadnote://resources/first-use-race.md')),
-            ),
             {concurrency: 'unbounded'},
           );
 

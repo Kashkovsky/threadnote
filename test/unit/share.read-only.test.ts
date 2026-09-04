@@ -1,6 +1,7 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {Cause, Effect, Exit, FileSystem, Path} from 'effect';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {beforeEach, describe, expect, vi} from 'vitest';
 import {
   runShareList,
@@ -22,7 +23,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
   return {
     ...actual,
-    maybeRun: vi.fn().mockReturnValue(Effect.succeed(undefined)),
+    maybeRun: vi.fn().mockReturnValue(succeedUndefined),
     requiredExecutable: vi.fn().mockReturnValue(Effect.succeed('git')),
     runCommand: vi.fn(),
   };
@@ -34,7 +35,7 @@ describe('read-only shared teams', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(utils.requiredExecutable).mockReturnValue(Effect.succeed('git'));
-    vi.mocked(utils.maybeRun).mockReturnValue(Effect.succeed(undefined));
+    vi.mocked(utils.maybeRun).mockReturnValue(succeedUndefined);
     vi.mocked(utils.runCommand).mockImplementation((_executable, args) => {
       if (args.includes('--porcelain')) return Effect.succeed(ok());
       if (args.includes('rev-list')) return Effect.succeed(ok('0\n'));

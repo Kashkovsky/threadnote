@@ -15,6 +15,7 @@ import {
   Semaphore,
   Stream,
   SynchronizedRef,
+  Schema,
 } from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from './indexer.js';
 import {worktreeBuildRequestState, worktreeOverlayState} from './inventory.js';
@@ -204,9 +205,10 @@ interface RefreshExecutionMetrics {
   readonly highWater: number;
 }
 
-class CodeGraphWatcherError extends Error {
-  readonly _tag = 'CodeGraphWatcherError' as const;
-}
+class CodeGraphWatcherError extends Schema.TaggedError<CodeGraphWatcherError>()('CodeGraphWatcherError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const DEFAULT_IDLE_TIMEOUT_MILLISECONDS = 30 * 60_000;
 const DEFAULT_MAXIMUM_WATCHERS = 32;
@@ -228,7 +230,7 @@ export function codeGraphRefreshFailure(cause: unknown): CodeGraphRefreshFailure
   const classified = classifyCodeGraphStoreFailure(CODE_GRAPH_REFRESH_OPERATION, cause);
   const code = Object.hasOwn(CODE_GRAPH_REFRESH_FAILURE_METADATA, classified.code) ? classified.code : 'unknown';
   const defaults = CODE_GRAPH_REFRESH_FAILURE_METADATA[code];
-  const reconnectRequired = classified instanceof CodeGraphRuntimeReconnectRequiredError;
+  const reconnectRequired = Schema.is(CodeGraphRuntimeReconnectRequiredError)(classified);
   return {
     code,
     operation: CODE_GRAPH_REFRESH_OPERATION,
@@ -242,7 +244,7 @@ function codeGraphRefreshFailureFromCause(cause: Cause.Cause<unknown>): CodeGrap
 }
 
 export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGraphWatcherShape>()(
-  'threadnote/codeGraph/CodeGraphWatcher',
+  'threadnote/code_graph/watcher/CodeGraphWatcher',
 ) {
   static readonly layer = Layer.effect(
     CodeGraphWatcher,
@@ -441,20 +443,22 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
         ...watcher,
         status: (key, target) =>
           watcher.status(key).pipe(
-            Effect.flatMap(current => {
-              if (Option.isSome(current) || !target) return Effect.succeed(current);
-              return Effect.gen(function* () {
-                const identity = yield* resolveRepositoryIdentity(target.cwd);
-                const layout = codeGraphLayout(path, target.threadnoteHome, identity.checkoutId, identity.worktreeId);
-                const persisted = yield* currentCodeGraphBuildStatus(layout, identity.worktreeId);
-                return persisted ? Option.some(persistedRefreshStatus(persisted)) : Option.none();
-              }).pipe(
-                Effect.provideService(FileSystem.FileSystem, fs),
-                Effect.provideService(Path.Path, path),
-                Effect.provideService(CommandExecutor, commandExecutor),
-                Effect.provideService(SystemInfo, systemInfo),
-              );
-            }),
+            Effect.filterOrElse(
+              current => Option.isSome(current) || target === undefined,
+              () =>
+                Effect.gen(function* () {
+                  if (target === undefined) return Option.none();
+                  const identity = yield* resolveRepositoryIdentity(target.cwd);
+                  const layout = codeGraphLayout(path, target.threadnoteHome, identity.checkoutId, identity.worktreeId);
+                  const persisted = yield* currentCodeGraphBuildStatus(layout, identity.worktreeId);
+                  return persisted ? Option.some(persistedRefreshStatus(persisted)) : Option.none();
+                }).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fs),
+                  Effect.provideService(Path.Path, path),
+                  Effect.provideService(CommandExecutor, commandExecutor),
+                  Effect.provideService(SystemInfo, systemInfo),
+                ),
+            ),
           ),
       });
     }),
@@ -577,7 +581,7 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
                 Effect.andThen(
                   onRefreshFailure === undefined
                     ? Effect.void
-                    : Effect.suspend(() => onRefreshFailure(failure)).pipe(Effect.catchCause(() => Effect.void)),
+                    : Effect.suspend(() => onRefreshFailure(failure)).pipe(Effect.ignoreCause),
                 ),
                 Effect.andThen(
                   Effect.logWarning(
@@ -586,12 +590,12 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
                 ),
                 Effect.andThen(
                   recoverRun(options, failure).pipe(
-                    Effect.catchCause(recoveryCause =>
-                      Cause.hasInterruptsOnly(recoveryCause)
-                        ? Effect.failCause(recoveryCause)
-                        : Effect.logWarning(
-                            'Code graph automatic recovery scheduling failed (unknown; recovery: diagnose).',
-                          ),
+                    Effect.catchCauseIf(
+                      recoveryCause => !Cause.hasInterruptsOnly(recoveryCause),
+                      () =>
+                        Effect.logWarning(
+                          'Code graph automatic recovery scheduling failed (unknown; recovery: diagnose).',
+                        ),
                     ),
                     Effect.forkIn(scope),
                     Effect.asVoid,
@@ -787,17 +791,17 @@ export const requestCodeGraphAutomaticRecovery = Effect.fn('codeGraph.requestAut
     return yield* dependencies.coordinator.request({failureCode: failure.code, recoveryKey: options.key});
   }
   if (/^[0-9a-f]{64}$/u.test(options.key)) {
-    const routineMaintenance = dependencies
-      .resolveIdentity(options.cwd)
-      .pipe(
-        Effect.flatMap(identity =>
-          identity.worktreeId === options.key
-            ? dependencies.routineMaintenance(options, identity)
-            : Effect.fail(
-                new CodeGraphWatcherError('Code graph recovery identity changed before maintenance admission.'),
-              ),
-        ),
-      );
+    const routineMaintenance = dependencies.resolveIdentity(options.cwd).pipe(
+      Effect.flatMap(identity =>
+        identity.worktreeId === options.key
+          ? dependencies.routineMaintenance(options, identity)
+          : Effect.fail(
+              CodeGraphWatcherError.make({
+                message: 'Code graph recovery identity changed before maintenance admission.',
+              }),
+            ),
+      ),
+    );
     return yield* dependencies.coordinator
       .request({failureCode: failure.code, recoveryKey: options.key, routineMaintenance})
       .pipe(Effect.tap(logAutomaticRecoveryAdmission));

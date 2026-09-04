@@ -105,7 +105,9 @@ function prepareUntilReady(databasePath: string) {
       const result = yield* prepareCodeGraphVectorRetirement(databasePath, capacityOptions);
       if (result.state === 'ready') return;
     }
-    return yield* Effect.die(new TestError('Vector retirement schema did not become ready within sixteen steps.'));
+    return yield* Effect.die(
+      TestError.make({message: 'Vector retirement schema did not become ready within sixteen steps.'}),
+    );
   });
 }
 

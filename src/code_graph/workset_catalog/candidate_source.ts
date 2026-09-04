@@ -1,5 +1,5 @@
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
-import {Effect, FileSystem, Layer, Path} from 'effect';
+import {Effect, FileSystem, Layer, Path, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import type {
@@ -141,7 +141,7 @@ function readCandidatePage(
   return Effect.gen(function* () {
     const normalized = yield* validateRequest(request, lane);
     if (!(yield* fs.exists(databasePath))) {
-      return yield* Effect.fail(new CodeGraphWorksetCatalogError('missing', 'The workset catalog does not exist.'));
+      return yield* CodeGraphWorksetCatalogError.of('missing', 'The workset catalog does not exist.');
     }
     const read = Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -229,11 +229,11 @@ function readCompleteCoverage(sql: SqlClient.SqlClient, request: CodeGraphWorkse
       Effect.flatMap(rows =>
         validateStored(() => {
           if (rows.length === 0) {
-            throw new CodeGraphWorksetCatalogError('missing', 'No published workset generation exists.');
+            throw CodeGraphWorksetCatalogError.of('missing', 'No published workset generation exists.');
           }
           const generationId = requiredText(rows[0].generation_id, 'generation identity');
           if (generationId !== request.generationId) {
-            throw new CodeGraphWorksetCatalogError('stale', 'The published workset generation changed.');
+            throw CodeGraphWorksetCatalogError.of('stale', 'The published workset generation changed.');
           }
           const declared = requiredInteger(rows[0].member_count, 'generation member count');
           const actual = requiredInteger(rows[0].actual_member_count, 'actual generation member count');
@@ -575,9 +575,9 @@ function validateRequest(
       return {...request, cursor, query: {...request.query, terms}};
     },
     catch: cause =>
-      cause instanceof CodeGraphWorksetCatalogError
+      Schema.is(CodeGraphWorksetCatalogError)(cause)
         ? cause
-        : new CodeGraphWorksetCatalogError('invalid-input', 'Candidate request is invalid.', {cause}),
+        : CodeGraphWorksetCatalogError.of('invalid-input', 'Candidate request is invalid.', {cause}),
   });
 }
 
@@ -643,7 +643,7 @@ function decodeCursor(
     value[4] !== request.query.digest ||
     value[5] !== request.maximumHitsPerMember
   ) {
-    throw new CodeGraphWorksetCatalogError('stale', 'Candidate cursor does not belong to this request.');
+    throw CodeGraphWorksetCatalogError.of('stale', 'Candidate cursor does not belong to this request.');
   }
   const common = {
     catalogRank: positiveInteger(value[6], 'cursor catalog rank'),
@@ -763,28 +763,28 @@ function validateStored<A>(evaluate: () => A) {
   return Effect.try({
     try: evaluate,
     catch: cause =>
-      cause instanceof CodeGraphWorksetCatalogError
+      Schema.is(CodeGraphWorksetCatalogError)(cause)
         ? cause
-        : new CodeGraphWorksetCatalogError('corrupt', 'Candidate catalog data is invalid.', {cause}),
+        : CodeGraphWorksetCatalogError.of('corrupt', 'Candidate catalog data is invalid.', {cause}),
   });
 }
 
 function invalid(message: string, cause?: unknown): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('invalid-input', message, cause === undefined ? undefined : {cause});
+  return CodeGraphWorksetCatalogError.of('invalid-input', message, cause === undefined ? undefined : {cause});
 }
 
 function corrupt(message: string): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('corrupt', message);
+  return CodeGraphWorksetCatalogError.of('corrupt', message);
 }
 
 function mapCandidateError(operation: string) {
   return <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.mapError(cause => {
-        if (cause instanceof CodeGraphWorksetCatalogError) return cause;
+        if (Schema.is(CodeGraphWorksetCatalogError)(cause)) return cause;
         const detail = String(cause).toLowerCase();
         const reason = detail.includes('locked') || detail.includes('busy') ? 'busy' : 'storage';
-        return new CodeGraphWorksetCatalogError(
+        return CodeGraphWorksetCatalogError.of(
           reason,
           reason === 'busy' ? `Timed out waiting to ${operation}.` : `Unable to ${operation}.`,
           {cause},

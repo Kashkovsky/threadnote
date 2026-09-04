@@ -2,7 +2,7 @@ import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {Clock, Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {
@@ -139,9 +139,7 @@ describe('code graph cache capacity OS coordination', () => {
                 children => Effect.forEach(children, terminateCacheChild, {discard: true}),
               );
             }
-          }).pipe(
-            Effect.ensuring(fs.remove(root, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void))),
-          );
+          }).pipe(Effect.ensuring(fs.remove(root, {force: true, recursive: true}).pipe(Effect.ignore)));
         }).pipe(provideTestLayer(ApplicationLayer)),
       ),
     60_000,
@@ -207,9 +205,7 @@ describe('code graph cache capacity OS coordination', () => {
                 terminateCacheChild,
               );
             }
-          }).pipe(
-            Effect.ensuring(fs.remove(root, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void))),
-          );
+          }).pipe(Effect.ensuring(fs.remove(root, {force: true, recursive: true}).pipe(Effect.ignore)));
         }).pipe(provideTestLayer(ApplicationLayer)),
       ),
     60_000,
@@ -273,11 +269,12 @@ function terminateCacheChild(child: CacheChildProcess): Effect.Effect<void, neve
 function waitForMarkers(targets: readonly string[], label: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const deadline = Date.now() + 15_000;
+    const deadline = (yield* Clock.currentTimeMillis) + 15_000;
     while (true) {
       const present = yield* Effect.forEach(targets, target => fs.exists(target), {concurrency: CHILD_COUNT});
       if (present.every(Boolean)) return;
-      if (Date.now() >= deadline) return yield* Effect.fail(new TestError(`Cache child missed the ${label} barrier.`));
+      if ((yield* Clock.currentTimeMillis) >= deadline)
+        return yield* TestError.make({message: `Cache child missed the ${label} barrier.`});
       yield* Effect.sleep(10);
     }
   });
@@ -294,16 +291,15 @@ function readCacheReceipts(fs: FileSystem.FileSystem, ledgerRoot: string) {
               const parsed = parseCodeGraphDiskReservationReceipt(name, content);
               return parsed
                 ? Effect.succeed(parsed)
-                : Effect.fail(new TestError('Cache child emitted an invalid reservation receipt.'));
+                : Effect.fail(TestError.make({message: 'Cache child emitted an invalid reservation receipt.'}));
             }),
           ),
         {concurrency: CHILD_COUNT},
       ),
     ),
-    Effect.catch(error =>
-      error instanceof Error && error.message === 'Cache child emitted an invalid reservation receipt.'
-        ? Effect.fail(error)
-        : Effect.succeed([] as readonly CodeGraphDiskReservationReceipt[]),
+    Effect.catchIf(
+      error => !(error instanceof Error && error.message === 'Cache child emitted an invalid reservation receipt.'),
+      () => Effect.succeed([] as readonly CodeGraphDiskReservationReceipt[]),
     ),
   );
 }
@@ -321,11 +317,11 @@ function readBoundedChildStream(stream: ReadableStream<Uint8Array>, maximumBytes
             const next = await reader.read();
             if (next.done) return output + decoder.decode();
             bytes += next.value.byteLength;
-            if (bytes > maximumBytes) throw new TestError('Cache child output exceeded its byte bound.');
+            if (bytes > maximumBytes) throw TestError.make({message: 'Cache child output exceeded its byte bound.'});
             output += decoder.decode(next.value, {stream: true});
           }
         },
-        catch: cause => new TestError('Could not read bounded cache child output.', {cause}),
+        catch: cause => TestError.make({message: 'Could not read bounded cache child output.', cause}),
       }),
     reader => Effect.sync(() => reader.releaseLock()),
   );
@@ -346,7 +342,7 @@ function expectedReceiptBytes(mode: CacheMode, childId: number): number {
     temporaryFilesystemKey: FILESYSTEM_KEY,
   });
   if (projection.state !== 'measured' || projection.filesystems.length !== 1) {
-    throw new TestError('Cache child capacity projection was not measurable.');
+    throw TestError.make({message: 'Cache child capacity projection was not measurable.'});
   }
   return projection.filesystems[0].bytes;
 }

@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError, Predicate} from 'effect';
+import {Clock, Crypto, DateTime, Effect, FileSystem, Option, Path, PlatformError, Predicate, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo} from '../effect/system.js';
@@ -14,9 +14,13 @@ import {normalizeRepositoryBranchName, resolveRepositoryIdentityDetail} from './
 import {codeGraphLocalProvenanceLockPath} from './layout.js';
 import type {RepositoryIdentity} from './types.js';
 
-class CodeGraphLocalProvenanceError extends Error {
-  readonly _tag = 'CodeGraphLocalProvenanceError' as const;
-}
+class CodeGraphLocalProvenanceError extends Schema.TaggedError<CodeGraphLocalProvenanceError>()(
+  'CodeGraphLocalProvenanceError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 const LOCAL_CONTEXT_DIRECTORY = 'local-context';
 const LOCAL_WORKTREES_DIRECTORY = 'worktrees';
@@ -198,9 +202,7 @@ export const inspectCodeGraphLocalProvenanceInventory = Effect.fn('codeGraph.ins
         .map(name => name.slice(0, -5))
         .sort();
       return {state: 'ready', worktreeIds} as const satisfies CodeGraphLocalProvenanceInventory;
-    }).pipe(
-      Effect.catch(() => Effect.succeed({state: 'unavailable'} as const satisfies CodeGraphLocalProvenanceInventory)),
-    );
+    }).pipe(Effect.orElseSucceed(() => ({state: 'unavailable'}) as const satisfies CodeGraphLocalProvenanceInventory));
   },
 );
 
@@ -272,7 +274,7 @@ const recordResolvedCodeGraphLocalAssociation = Effect.fn('codeGraph.recordResol
     identity.worktreeId,
     5_000,
     recordResolvedCodeGraphLocalAssociationUnlocked(threadnoteHome, identity, options, observedGitDirectory),
-  ).pipe(Effect.catch(() => Effect.succeed(unavailableAssociation('invalid'))));
+  ).pipe(Effect.orElseSucceed(() => unavailableAssociation('invalid')));
 });
 
 const recordResolvedCodeGraphLocalAssociationUnlocked = Effect.fn('codeGraph.recordResolvedLocalAssociationUnlocked')(
@@ -319,7 +321,7 @@ const recordResolvedCodeGraphLocalAssociationUnlocked = Effect.fn('codeGraph.rec
       canonicalWorktreePath: identity.repoRoot,
       checkoutId: identity.checkoutId,
       headCommit: identity.headCommit,
-      observedAt: new Date(now).toISOString(),
+      observedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
       registration: registration.value,
       repositoryId: identity.repositoryId,
       schemaVersion: LOCAL_PROVENANCE_SCHEMA_VERSION,
@@ -345,14 +347,14 @@ const recordResolvedCodeGraphLocalAssociationUnlocked = Effect.fn('codeGraph.rec
         directory.value,
       );
       if (revalidated !== directory.value) {
-        return yield* Effect.fail(
-          new CodeGraphLocalProvenanceError('Code graph local provenance directory changed during observation.'),
-        );
+        return yield* CodeGraphLocalProvenanceError.make({
+          message: 'Code graph local provenance directory changed during observation.',
+        });
       }
       if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-        return yield* Effect.fail(
-          new CodeGraphLocalProvenanceError('Code graph local provenance target is a symbolic link.'),
-        );
+        return yield* CodeGraphLocalProvenanceError.make({
+          message: 'Code graph local provenance target is a symbolic link.',
+        });
       }
       yield* options.beforePublishValidation?.() ?? Effect.void;
       const finalIdentity = yield* resolveMatchingRepositoryIdentity(identity);
@@ -361,14 +363,14 @@ const recordResolvedCodeGraphLocalAssociationUnlocked = Effect.fn('codeGraph.rec
         finalIdentity.gitDirectory,
       );
       if (!sameCodeGraphGitWorktreeRegistration(record.registration, finalRegistration)) {
-        return yield* Effect.fail(
-          new CodeGraphLocalProvenanceError('Code graph local provenance registration changed during observation.'),
-        );
+        return yield* CodeGraphLocalProvenanceError.make({
+          message: 'Code graph local provenance registration changed during observation.',
+        });
       }
       yield* fs.rename(temporary, target);
       yield* syncDirectory(fs, directory.value);
     }).pipe(
-      Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))),
+      Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.ignore)),
       Effect.option,
     );
     return Option.isSome(written)
@@ -395,7 +397,9 @@ export const readCodeGraphLocalAssociation = Effect.fn('codeGraph.readLocalAssoc
       (target.repositoryId === undefined || identity.repositoryId === target.repositoryId)
         ? Effect.void
         : Effect.fail(
-            new CodeGraphLocalProvenanceError('Live worktree identity does not match the requested graph association.'),
+            CodeGraphLocalProvenanceError.make({
+              message: 'Live worktree identity does not match the requested graph association.',
+            }),
           ),
   }).pipe(Effect.option);
   return Option.isSome(resolved) && resolved.value.association.state === 'verified'
@@ -408,7 +412,7 @@ export const readPersistedCodeGraphLocalAssociation = Effect.fn('codeGraph.readP
   target: CodeGraphLocalAssociationTarget,
 ) {
   return yield* readPersistedCodeGraphLocalAssociationUnchecked(threadnoteHome, target).pipe(
-    Effect.catch(() => Effect.succeed(unavailableAssociation('invalid'))),
+    Effect.orElseSucceed(() => unavailableAssociation('invalid')),
   );
 });
 
@@ -419,7 +423,7 @@ export const readPersistedCodeGraphLocalAssociation = Effect.fn('codeGraph.readP
 export const readCodeGraphLocalReconciliationEvidence = Effect.fn('codeGraph.readLocalReconciliationEvidence')(
   function* (threadnoteHome: string, target: CodeGraphLocalAssociationTarget) {
     return yield* readCodeGraphLocalReconciliationEvidenceUnchecked(threadnoteHome, target).pipe(
-      Effect.catch(() => Effect.succeed({state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence)),
+      Effect.orElseSucceed(() => ({state: 'invalid'}) as const satisfies CodeGraphLocalReconciliationEvidence),
     );
   },
 );
@@ -501,8 +505,8 @@ export const readCodeGraphWorktreeReconciliationEvidenceCandidate = Effect.fn(
       } satisfies CodeGraphWorktreeReconciliationEvidenceCandidate;
     }),
   ).pipe(
-    Effect.catch(() =>
-      Effect.succeed({state: 'invalid'} as const satisfies CodeGraphWorktreeReconciliationEvidenceCandidate),
+    Effect.orElseSucceed(
+      () => ({state: 'invalid'}) as const satisfies CodeGraphWorktreeReconciliationEvidenceCandidate,
     ),
   );
 });
@@ -557,7 +561,7 @@ export const captureCodeGraphLocalProvenanceCleanupEvidence = Effect.fn(
         worktreeId: evidence.worktreeId,
       } satisfies CodeGraphLocalProvenanceCleanupEvidence;
     }),
-  ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  ).pipe(Effect.orElseSucceed(() => undefined));
 });
 
 /**
@@ -683,9 +687,7 @@ export const cleanupMissingCodeGraphLocalProvenance = Effect.fn('codeGraph.clean
     target.worktreeId,
     0,
     cleanupMissingCodeGraphLocalProvenanceUnsafe(threadnoteHome, target, options),
-  ).pipe(
-    Effect.catch(() => Effect.succeed({state: 'unavailable'} as const satisfies CodeGraphLocalProvenanceCleanupResult)),
-  );
+  ).pipe(Effect.orElseSucceed(() => ({state: 'unavailable'}) as const satisfies CodeGraphLocalProvenanceCleanupResult));
 });
 
 interface LocalProvenanceCleanupCandidate {
@@ -723,20 +725,20 @@ const readLocalProvenanceCleanupCandidate = Effect.fn('codeGraph.readLocalProven
     Number(info.size) > LOCAL_PROVENANCE_BYTES_LIMIT ||
     (system.platform !== 'win32' && (info.mode & 0o777) !== 0o600)
   ) {
-    return yield* Effect.fail(
-      new CodeGraphLocalProvenanceError('Code graph local provenance cleanup target is invalid.'),
-    );
+    return yield* CodeGraphLocalProvenanceError.make({
+      message: 'Code graph local provenance cleanup target is invalid.',
+    });
   }
   const content = yield* readBoundedObservedRegularFile(fs, file, info);
   if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
-    return yield* Effect.fail(new CodeGraphLocalProvenanceError('Code graph local provenance cleanup target changed.'));
+    return yield* CodeGraphLocalProvenanceError.make({message: 'Code graph local provenance cleanup target changed.'});
   }
   const record = parseCodeGraphLocalProvenanceRecordJson(content, target);
   if (record?.schemaVersion !== LOCAL_PROVENANCE_SCHEMA_VERSION) return undefined;
   if (!isCanonicalAbsolutePath(path, record.canonicalWorktreePath)) {
-    return yield* Effect.fail(
-      new CodeGraphLocalProvenanceError('Code graph local provenance cleanup record is invalid.'),
-    );
+    return yield* CodeGraphLocalProvenanceError.make({
+      message: 'Code graph local provenance cleanup record is invalid.',
+    });
   }
   const recordDigest = sha256HexSync(content);
   return {
@@ -1062,7 +1064,7 @@ function validTarget(target: CodeGraphLocalAssociationTarget): boolean {
 function resolveMatchingRepositoryIdentity(identity: RepositoryIdentity) {
   return Effect.gen(function* () {
     if (!validTarget(identity) || !COMMIT_ID.test(identity.headCommit)) {
-      return yield* Effect.fail(new CodeGraphLocalProvenanceError('Code graph local provenance identity is invalid.'));
+      return yield* CodeGraphLocalProvenanceError.make({message: 'Code graph local provenance identity is invalid.'});
     }
     const resolvedDetail = yield* resolveRepositoryIdentityDetail(identity.repoRoot);
     const resolved = resolvedDetail.identity;
@@ -1075,9 +1077,9 @@ function resolveMatchingRepositoryIdentity(identity: RepositoryIdentity) {
       resolved.headCommit !== identity.headCommit ||
       resolved.branch !== identity.branch
     ) {
-      return yield* Effect.fail(
-        new CodeGraphLocalProvenanceError('Code graph local provenance identity changed before observation.'),
-      );
+      return yield* CodeGraphLocalProvenanceError.make({
+        message: 'Code graph local provenance identity changed before observation.',
+      });
     }
     return resolvedDetail;
   });
@@ -1103,7 +1105,7 @@ function readObservedRecordWithoutResolution(
     const content = yield* readBoundedObservedRegularFile(fs, file, before);
     if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) return undefined;
     return parseCodeGraphLocalProvenanceRecordJson(content, target);
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  }).pipe(Effect.orElseSucceed(() => undefined));
 }
 
 function ensureLocalWorktreeDirectory(
@@ -1114,7 +1116,7 @@ function ensureLocalWorktreeDirectory(
 ) {
   return Effect.gen(function* () {
     if (!HASH_ID.test(checkoutId))
-      return yield* Effect.fail(new CodeGraphLocalProvenanceError('Code graph checkout identity is invalid.'));
+      return yield* CodeGraphLocalProvenanceError.make({message: 'Code graph checkout identity is invalid.'});
     const canonicalHome = yield* fs.realPath(threadnoteHome);
     const indexes = yield* ensureContainedDirectory(fs, path, canonicalHome, 'indexes', false);
     const codeGraph = yield* ensureContainedDirectory(fs, path, indexes, 'code-graph', false);
@@ -1153,15 +1155,15 @@ function ensureContainedDirectory(
   return Effect.gen(function* () {
     const directory = path.join(canonicalParent, name);
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphLocalProvenanceError('Code graph local provenance directory is a symbolic link.'),
-      );
+      return yield* CodeGraphLocalProvenanceError.make({
+        message: 'Code graph local provenance directory is a symbolic link.',
+      });
     }
     yield* fs.makeDirectory(directory, {recursive: true, mode: privateDirectory ? 0o700 : 0o755});
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphLocalProvenanceError('Code graph local provenance directory is a symbolic link.'),
-      );
+      return yield* CodeGraphLocalProvenanceError.make({
+        message: 'Code graph local provenance directory is a symbolic link.',
+      });
     }
     const canonical = yield* inspectContainedDirectory(fs, path, canonicalParent, directory);
     if (privateDirectory) yield* fs.chmod(canonical, 0o700);
@@ -1178,9 +1180,9 @@ function inspectOptionalContainedDirectory(
   return Effect.gen(function* () {
     const directory = path.join(canonicalParent, name);
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphLocalProvenanceError('Code graph local provenance directory is a symbolic link.'),
-      );
+      return yield* CodeGraphLocalProvenanceError.make({
+        message: 'Code graph local provenance directory is a symbolic link.',
+      });
     }
     if (!(yield* fs.exists(directory))) return undefined;
     return yield* inspectContainedDirectory(fs, path, canonicalParent, directory);
@@ -1199,9 +1201,9 @@ function inspectPrivateContainedDirectory(
     const system = yield* SystemInfo;
     const mode = system.platform === 'win32' ? 0o700 : info.mode;
     if ((mode & 0o777) === 0o700) return canonical;
-    return yield* Effect.fail(
-      new CodeGraphLocalProvenanceError('Code graph local provenance directory permissions are not private.'),
-    );
+    return yield* CodeGraphLocalProvenanceError.make({
+      message: 'Code graph local provenance directory permissions are not private.',
+    });
   });
 }
 
@@ -1213,21 +1215,21 @@ function inspectContainedDirectory(
 ) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphLocalProvenanceError('Code graph local provenance directory is a symbolic link.'),
-      );
+      return yield* CodeGraphLocalProvenanceError.make({
+        message: 'Code graph local provenance directory is a symbolic link.',
+      });
     }
     const info = yield* fs.stat(directory);
     if (info.type !== 'Directory') {
-      return yield* Effect.fail(
-        new CodeGraphLocalProvenanceError('Code graph local provenance path is not a directory.'),
-      );
+      return yield* CodeGraphLocalProvenanceError.make({
+        message: 'Code graph local provenance path is not a directory.',
+      });
     }
     const canonical = yield* fs.realPath(directory);
     if (path.dirname(canonical) !== canonicalParent || path.basename(canonical) !== path.basename(directory)) {
-      return yield* Effect.fail(
-        new CodeGraphLocalProvenanceError('Code graph local provenance path escaped its checkout.'),
-      );
+      return yield* CodeGraphLocalProvenanceError.make({
+        message: 'Code graph local provenance path escaped its checkout.',
+      });
     }
     return canonical;
   });
@@ -1332,14 +1334,14 @@ function readBoundedObservedRegularFile(fs: FileSystem.FileSystem, file: string,
         !sameObservedRegularFile(pathInfoBefore, openedInfoBefore) ||
         !sameObservedRegularFile(pathInfoBefore, pathInfoOpened)
       ) {
-        return yield* Effect.fail(
-          new CodeGraphLocalProvenanceError('Code graph local provenance changed while opening it.'),
-        );
+        return yield* CodeGraphLocalProvenanceError.make({
+          message: 'Code graph local provenance changed while opening it.',
+        });
       }
       if (Number(openedInfoBefore.size) > LOCAL_PROVENANCE_BYTES_LIMIT) {
-        return yield* Effect.fail(
-          new CodeGraphLocalProvenanceError('Code graph local provenance exceeds its bounded read limit.'),
-        );
+        return yield* CodeGraphLocalProvenanceError.make({
+          message: 'Code graph local provenance exceeds its bounded read limit.',
+        });
       }
 
       const bytes = new Uint8Array(LOCAL_PROVENANCE_BYTES_LIMIT + 1);
@@ -1347,9 +1349,9 @@ function readBoundedObservedRegularFile(fs: FileSystem.FileSystem, file: string,
       while (offset < bytes.length) {
         const count = Number(yield* opened.read(bytes.subarray(offset)));
         if (!Number.isSafeInteger(count) || count < 0 || count > bytes.length - offset) {
-          return yield* Effect.fail(
-            new CodeGraphLocalProvenanceError('Code graph local provenance returned an invalid bounded read size.'),
-          );
+          return yield* CodeGraphLocalProvenanceError.make({
+            message: 'Code graph local provenance returned an invalid bounded read size.',
+          });
         }
         if (count === 0) break;
         offset += count;
@@ -1361,18 +1363,19 @@ function readBoundedObservedRegularFile(fs: FileSystem.FileSystem, file: string,
         !sameObservedRegularFile(pathInfoBefore, openedInfoAfter) ||
         !sameObservedRegularFile(pathInfoBefore, pathInfoAfter)
       ) {
-        return yield* Effect.fail(
-          new CodeGraphLocalProvenanceError('Code graph local provenance changed during its bounded read.'),
-        );
+        return yield* CodeGraphLocalProvenanceError.make({
+          message: 'Code graph local provenance changed during its bounded read.',
+        });
       }
       if (offset > LOCAL_PROVENANCE_BYTES_LIMIT || BigInt(offset) !== openedInfoBefore.size) {
-        return yield* Effect.fail(
-          new CodeGraphLocalProvenanceError('Code graph local provenance changed size during its bounded read.'),
-        );
+        return yield* CodeGraphLocalProvenanceError.make({
+          message: 'Code graph local provenance changed size during its bounded read.',
+        });
       }
       return yield* Effect.try({
         try: () => new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes.subarray(0, offset)),
-        catch: cause => new CodeGraphLocalProvenanceError('Code graph local provenance is not valid UTF-8.', {cause}),
+        catch: cause =>
+          CodeGraphLocalProvenanceError.make({cause, message: 'Code graph local provenance is not valid UTF-8.'}),
       });
     }),
   );
@@ -1380,11 +1383,10 @@ function readBoundedObservedRegularFile(fs: FileSystem.FileSystem, file: string,
 
 function optionOnNotFound<A, E>(effect: Effect.Effect<A, E>) {
   return effect.pipe(
-    Effect.map(Option.some),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed(Option.none<A>())
-        : Effect.fail(error),
+    Effect.asSome,
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.succeedNone,
     ),
   );
 }
@@ -1393,7 +1395,7 @@ function syncFile(fs: FileSystem.FileSystem, file: string): Effect.Effect<void, 
   return Effect.scoped(
     fs.open(file, {flag: 'r'}).pipe(
       Effect.flatMap(handle => handle.sync),
-      Effect.catch(() => Effect.void),
+      Effect.ignore,
     ),
   );
 }
@@ -1402,7 +1404,7 @@ function syncDirectory(fs: FileSystem.FileSystem, directory: string): Effect.Eff
   return Effect.scoped(
     fs.open(directory, {flag: 'r'}).pipe(
       Effect.flatMap(handle => handle.sync),
-      Effect.catch(() => Effect.void),
+      Effect.ignore,
     ),
   );
 }

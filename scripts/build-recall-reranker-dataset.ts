@@ -39,13 +39,14 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === '--output') output = resolve(required(args[++index], argument));
-    else throw new ScriptError(`Unknown recall reranker dataset option: ${argument}. Pass --help for usage.`);
+    else
+      throw ScriptError.make({message: `Unknown recall reranker dataset option: ${argument}. Pass --help for usage.`});
   }
   return {output};
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 

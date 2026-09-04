@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError, Ref, Semaphore} from 'effect';
+import {Clock, Crypto, DateTime, Effect, FileSystem, Option, Path, PlatformError, Ref, Schema, Semaphore} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
@@ -51,9 +51,10 @@ export const CODE_GRAPH_BUILD_HEARTBEAT_INTERVAL_MILLISECONDS = 2_000;
 export const CODE_GRAPH_BUILD_PROGRESS_WRITE_INTERVAL_MILLISECONDS = 250;
 export const CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS = 15_000;
 
-class CodeGraphBuildStatusError extends Error {
-  readonly _tag = 'CodeGraphBuildStatusError' as const;
-}
+class CodeGraphBuildStatusError extends Schema.TaggedError<CodeGraphBuildStatusError>()('CodeGraphBuildStatusError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export type CodeGraphBuildState = 'completed' | 'failed' | 'queued' | 'running';
 export type CodeGraphBuildLiveness = 'abandoned' | 'active' | 'completed' | 'failed' | 'stalled';
@@ -281,7 +282,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
   const buildId = (yield* crypto.randomUUIDv4).toLowerCase();
   const pathHashSalt = (yield* crypto.randomUUIDv4).toLowerCase();
   const startedAtMilliseconds = yield* Clock.currentTimeMillis;
-  const startedAt = new Date(startedAtMilliseconds).toISOString();
+  const startedAt = DateTime.formatIso(DateTime.makeUnsafe(startedAtMilliseconds));
   const processStartIdentity = yield* system.processStartIdentity(system.processId);
   const file = codeGraphBuildStatusPath(path, layout, identity.worktreeId, buildId);
   let writeSequence = 0;
@@ -347,12 +348,10 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           yield* writeCodeGraphBuildStatus(fs, path, file, persisted.status, writeSequence, writeSequence === 1);
         }),
       )
-      .pipe(Effect.catch(() => Effect.void));
+      .pipe(Effect.ignore);
 
   yield* persist(current => current, true);
-  yield* writeCodeGraphManagerContext(fs, path, file, buildId, identity.repoRoot, identity.branch).pipe(
-    Effect.catch(() => Effect.void),
-  );
+  yield* writeCodeGraphManagerContext(fs, path, file, buildId, identity.repoRoot, identity.branch).pipe(Effect.ignore);
   reporterHistoryAuthority.current = Option.getOrUndefined(
     yield* inspectBuildHistoryDirectory(fs, path, layout, identity.worktreeId).pipe(Effect.option),
   );
@@ -554,7 +553,7 @@ export const corroborateCodeGraphBuildOwnerStatus = Effect.fn('codeGraph.buildSt
     const info = yield* fs.stat(file);
     if (info.type !== 'File' || Number(info.size) > STATUS_FILE_BYTES_LIMIT) return undefined;
     return parseCodeGraphBuildStatus(JSON.parse(yield* fs.readFileString(file)));
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  }).pipe(Effect.orElseSucceed(() => undefined));
   if (parsed === undefined) return 'mismatch' as const;
   return parsed.buildId === owner.buildId &&
     parsed.identity.checkoutId === layout.checkoutId &&
@@ -742,7 +741,7 @@ function observeBuildHistoryCandidate(system: SystemInfoShape, status: CodeGraph
     return Effect.succeed(observeCodeGraphBuildStatus(status, {isRunning: false, nowMilliseconds}));
   }
   const isRunning = system.isProcessRunning(status.owner.processId);
-  return (isRunning ? system.processStartIdentity(status.owner.processId) : Effect.succeed(undefined)).pipe(
+  return (isRunning ? system.processStartIdentity(status.owner.processId) : Effect.void).pipe(
     Effect.map(processStartIdentity =>
       observeCodeGraphBuildStatus(status, {
         isRunning,
@@ -997,7 +996,7 @@ function codeGraphBuildStatusPath(
   buildId: string,
 ): string {
   if (!HASH_ID.test(worktreeId) || !BUILD_ID.test(buildId))
-    throw new CodeGraphBuildStatusError('Code graph build identity is invalid.');
+    throw CodeGraphBuildStatusError.make({message: 'Code graph build identity is invalid.'});
   return path.join(layout.repositoryRoot, STATUS_DIRECTORY, worktreeId, `${buildId}.json`);
 }
 
@@ -1014,22 +1013,22 @@ function writeCodeGraphBuildStatus(
     if (initializeDirectory) {
       yield* ensurePrivateRegularDirectory(fs, path, directory);
     } else if (!(yield* regularDirectory(fs, directory))) {
-      return yield* Effect.fail(new CodeGraphBuildStatusError('Code graph build status directory was removed.'));
+      return yield* CodeGraphBuildStatusError.make({message: 'Code graph build status directory was removed.'});
     }
     if ((yield* fs.readLink(file).pipe(Effect.option))._tag === 'Some') {
-      return yield* Effect.fail(new CodeGraphBuildStatusError('Code graph build status path is a symbolic link.'));
+      return yield* CodeGraphBuildStatusError.make({message: 'Code graph build status path is a symbolic link.'});
     }
     const temporary = path.join(directory, `.${status.buildId}.${sequence}.tmp`);
     const content = `${JSON.stringify(status)}\n`;
     if (new TextEncoder().encode(content).byteLength > STATUS_FILE_BYTES_LIMIT) {
-      return yield* Effect.fail(
-        new CodeGraphBuildStatusError('Code graph build status exceeded its bounded sidecar size.'),
-      );
+      return yield* CodeGraphBuildStatusError.make({
+        message: 'Code graph build status exceeded its bounded sidecar size.',
+      });
     }
     yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
     yield* fs
       .rename(temporary, file)
-      .pipe(Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+      .pipe(Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
   });
 }
 
@@ -1060,7 +1059,7 @@ function writeCodeGraphManagerContext(
     yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
     yield* fs
       .rename(temporary, file)
-      .pipe(Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+      .pipe(Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
   });
 }
 
@@ -1079,7 +1078,7 @@ function removeCodeGraphManagerContext(
     if (observed === undefined) return;
     yield* revalidateBuildHistoryDirectoryAuthority(fs, authority);
     yield* fs.remove(file, {force: false});
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }
 
 function attachCodeGraphManagerContexts(
@@ -1127,7 +1126,7 @@ function readCodeGraphManagerContext(fs: FileSystem.FileSystem, file: string, bu
       return undefined;
     }
     return {...(value.branch === undefined ? {} : {branch: value.branch}), worktreePath: value.worktreePath};
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  }).pipe(Effect.orElseSucceed(() => undefined));
 }
 
 function ensurePrivateRegularDirectory(fs: FileSystem.FileSystem, path: Path.Path, directory: string) {
@@ -1135,11 +1134,11 @@ function ensurePrivateRegularDirectory(fs: FileSystem.FileSystem, path: Path.Pat
     const parent = path.dirname(directory);
     yield* fs.makeDirectory(parent, {recursive: true, mode: 0o700});
     if ((yield* fs.readLink(parent).pipe(Effect.option))._tag === 'Some') {
-      return yield* Effect.fail(new CodeGraphBuildStatusError('Code graph build status parent is a symbolic link.'));
+      return yield* CodeGraphBuildStatusError.make({message: 'Code graph build status parent is a symbolic link.'});
     }
     yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
     if ((yield* fs.readLink(directory).pipe(Effect.option))._tag === 'Some') {
-      return yield* Effect.fail(new CodeGraphBuildStatusError('Code graph build status directory is a symbolic link.'));
+      return yield* CodeGraphBuildStatusError.make({message: 'Code graph build status directory is a symbolic link.'});
     }
   });
 }
@@ -1154,7 +1153,7 @@ function readBuildStatusesBelow(fs: FileSystem.FileSystem, path: Path.Path, root
       {concurrency: 8},
     );
     return groups.flat().sort(compareObservedBuildStatus);
-  }).pipe(Effect.catch(() => Effect.succeed([] as readonly ObservedCodeGraphBuildStatus[])));
+  }).pipe(Effect.orElseSucceed(() => [] as readonly ObservedCodeGraphBuildStatus[]));
 }
 
 function readWorktreeStatuses(fs: FileSystem.FileSystem, path: Path.Path, directory: string) {
@@ -1189,7 +1188,7 @@ function readStatusFile(fs: FileSystem.FileSystem, file: string) {
       nowMilliseconds,
       processStartIdentity,
     });
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  }).pipe(Effect.orElseSucceed(() => undefined));
 }
 
 function pruneCodeGraphBuildHistory(
@@ -1284,9 +1283,13 @@ interface BuildHistoryDirectoryAuthority {
 
 type BuildHistoryCursor = {readonly mode: 'reset'} | {readonly afterBuildId: string; readonly mode: 'scan'};
 
-class InvalidBuildHistorySidecarError extends Error {
-  readonly _tag = 'InvalidBuildHistorySidecarError' as const;
-}
+class InvalidBuildHistorySidecarError extends Schema.TaggedError<InvalidBuildHistorySidecarError>()(
+  'InvalidBuildHistorySidecarError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildStatus.pruneHistoryUnitUnsafe')(function* (
   fs: FileSystem.FileSystem,
@@ -1307,13 +1310,13 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
   ).pipe(
     Effect.mapError(cause =>
       cause instanceof TypeError
-        ? new InvalidBuildHistorySidecarError('Build history inventory contains a non-text name.')
+        ? InvalidBuildHistorySidecarError.make({message: 'Build history inventory contains a non-text name.'})
         : cause,
     ),
   );
   const statusNames = codeGraphBuildHistoryInventory(inventoryPage);
   if (statusNames === undefined) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history inventory exceeded its limit.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history inventory exceeded its limit.'});
   }
   const parsedCursor = cursorToken === undefined ? undefined : parseBuildHistoryCursor(cursorToken);
   const afterBuildId = parsedCursor?.mode === 'scan' ? parsedCursor.afterBuildId : undefined;
@@ -1334,7 +1337,7 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
     {concurrency: 4},
   );
   if (candidates.some(candidate => candidate === undefined)) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history changed during its bounded page.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history changed during its bounded page.'});
   }
   const completeCandidates: BuildHistoryCandidate[] = [];
   for (const candidate of candidates) {
@@ -1399,7 +1402,7 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
     !sameBuildHistorySidecar(candidate, finalStatus) ||
     !sameOptionalBuildHistorySidecar(initialContext, finalContext)
   ) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history authority changed.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history authority changed.'});
   }
   if (removalKind === 'abandoned') {
     const finalLock = yield* inspectBuildHistoryLock(fs, lockPath);
@@ -1416,7 +1419,7 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
         protectedBuildId,
       )
     ) {
-      return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history owner changed.'));
+      return yield* InvalidBuildHistorySidecarError.make({message: 'Build history owner changed.'});
     }
   }
 
@@ -1429,7 +1432,7 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
   const ownedStatus = yield* readBuildHistoryCandidate(fs, path, candidate.file, layout.checkoutId, worktreeId);
   const remainingContext = yield* readBuildHistoryManagerContext(fs, contextFile, candidate.status.buildId);
   if (ownedStatus === undefined || !sameBuildHistorySidecar(candidate, ownedStatus) || remainingContext !== undefined) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history changed before removal.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history changed before removal.'});
   }
   if (removalKind === 'abandoned') {
     const ownedLock = yield* inspectBuildHistoryLock(fs, lockPath);
@@ -1446,7 +1449,7 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
         protectedBuildId,
       )
     ) {
-      return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history owner changed before removal.'));
+      return yield* InvalidBuildHistorySidecarError.make({message: 'Build history owner changed before removal.'});
     }
   }
   yield* revalidateBuildHistoryDirectoryAuthority(fs, authority);
@@ -1469,12 +1472,12 @@ const inspectBuildHistoryDirectory = Effect.fn('codeGraph.buildStatus.inspectHis
   const statusRoot = yield* freezeBuildHistoryDirectory(fs, path.join(layout.repositoryRoot, STATUS_DIRECTORY));
   if (statusRoot === undefined) return undefined;
   if (statusRoot.canonicalPath !== path.join(repositoryRoot.canonicalPath, STATUS_DIRECTORY)) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history status root escaped containment.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history status root escaped containment.'});
   }
   const directory = yield* freezeBuildHistoryDirectory(fs, path.join(statusRoot.path, worktreeId));
   if (directory === undefined) return undefined;
   if (directory.canonicalPath !== path.join(statusRoot.canonicalPath, worktreeId)) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history worktree escaped containment.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history worktree escaped containment.'});
   }
   return {directory, repositoryRoot, statusRoot} satisfies BuildHistoryDirectoryAuthority;
 });
@@ -1484,17 +1487,17 @@ const freezeBuildHistoryDirectory = Effect.fn('codeGraph.buildStatus.freezeHisto
   directory: string,
 ) {
   if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history directory is a symbolic link.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history directory is a symbolic link.'});
   }
   const info = yield* optionalBuildHistoryFileInfo(fs, directory);
   if (info === undefined) return undefined;
   if (info.type !== 'Directory') {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history path is not a directory.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history path is not a directory.'});
   }
   const canonicalPath = yield* fs.realPath(directory);
   const confirmed = yield* fs.stat(directory);
   if (!sameBuildHistoryDirectoryInfo(info, confirmed)) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history directory changed while freezing.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history directory changed while freezing.'});
   }
   return {canonicalPath, info, path: directory} satisfies FrozenBuildHistoryDirectory;
 });
@@ -1503,7 +1506,7 @@ const revalidateBuildHistoryDirectoryAuthority = Effect.fn('codeGraph.buildStatu
   function* (fs: FileSystem.FileSystem, authority: BuildHistoryDirectoryAuthority) {
     for (const frozen of [authority.repositoryRoot, authority.statusRoot, authority.directory]) {
       if (Option.isSome(yield* fs.readLink(frozen.path).pipe(Effect.option))) {
-        return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history directory became a symlink.'));
+        return yield* InvalidBuildHistorySidecarError.make({message: 'Build history directory became a symlink.'});
       }
       const current = yield* optionalBuildHistoryFileInfo(fs, frozen.path);
       if (
@@ -1511,7 +1514,7 @@ const revalidateBuildHistoryDirectoryAuthority = Effect.fn('codeGraph.buildStatu
         !sameBuildHistoryDirectoryInfo(frozen.info, current) ||
         (yield* fs.realPath(frozen.path)) !== frozen.canonicalPath
       ) {
-        return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history directory authority changed.'));
+        return yield* InvalidBuildHistorySidecarError.make({message: 'Build history directory authority changed.'});
       }
     }
   },
@@ -1528,7 +1531,7 @@ const readBuildHistoryCandidate = Effect.fn('codeGraph.buildStatus.readHistoryCa
   if (observed === undefined) return undefined;
   const status = yield* Effect.try({
     try: () => parseCodeGraphBuildStatus(JSON.parse(observed.content)),
-    catch: () => new InvalidBuildHistorySidecarError('Build history status is invalid JSON.'),
+    catch: () => InvalidBuildHistorySidecarError.make({message: 'Build history status is invalid JSON.'}),
   });
   if (
     status === undefined ||
@@ -1536,7 +1539,7 @@ const readBuildHistoryCandidate = Effect.fn('codeGraph.buildStatus.readHistoryCa
     status.identity.worktreeId !== worktreeId ||
     path.basename(file) !== `${status.buildId}.json`
   ) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history status authority is invalid.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history status authority is invalid.'});
   }
   return {...observed, status} satisfies BuildHistoryCandidate;
 });
@@ -1571,10 +1574,10 @@ const readBuildHistoryManagerContext = Effect.fn('codeGraph.buildStatus.readHist
         (value.branch === undefined || isText(value.branch, 1_024))
       );
     },
-    catch: () => new InvalidBuildHistorySidecarError('Build history Manager context is invalid JSON.'),
+    catch: () => InvalidBuildHistorySidecarError.make({message: 'Build history Manager context is invalid JSON.'}),
   });
   if (!valid) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history Manager context is invalid.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history Manager context is invalid.'});
   }
   return observed;
 });
@@ -1585,12 +1588,12 @@ const readBoundedBuildHistorySidecar = Effect.fn('codeGraph.buildStatus.readBoun
   bytesLimit: number,
 ) {
   if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history sidecar is a symbolic link.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history sidecar is a symbolic link.'});
   }
   const pathInfo = yield* optionalBuildHistoryFileInfo(fs, file);
   if (pathInfo === undefined) return undefined;
   if (pathInfo.type !== 'File' || Number(pathInfo.size) > bytesLimit || (pathInfo.mode & 0o077) !== 0) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history sidecar is not a bounded file.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history sidecar is not a bounded file.'});
   }
   return yield* Effect.scoped(
     Effect.gen(function* () {
@@ -1598,7 +1601,7 @@ const readBoundedBuildHistorySidecar = Effect.fn('codeGraph.buildStatus.readBoun
       const openedBefore = yield* opened.stat;
       const pathOpened = yield* fs.stat(file);
       if (!sameBuildHistoryFileInfo(pathInfo, openedBefore) || !sameBuildHistoryFileInfo(pathInfo, pathOpened)) {
-        return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history sidecar changed while opening.'));
+        return yield* InvalidBuildHistorySidecarError.make({message: 'Build history sidecar changed while opening.'});
       }
 
       const bytes = new Uint8Array(bytesLimit + 1);
@@ -1606,7 +1609,7 @@ const readBoundedBuildHistorySidecar = Effect.fn('codeGraph.buildStatus.readBoun
       while (offset < bytes.length) {
         const count = Number(yield* opened.read(bytes.subarray(offset)));
         if (!Number.isSafeInteger(count) || count < 0 || count > bytes.length - offset) {
-          return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history read size is invalid.'));
+          return yield* InvalidBuildHistorySidecarError.make({message: 'Build history read size is invalid.'});
         }
         if (count === 0) break;
         offset += count;
@@ -1619,11 +1622,11 @@ const readBoundedBuildHistorySidecar = Effect.fn('codeGraph.buildStatus.readBoun
         offset > bytesLimit ||
         BigInt(offset) !== pathInfo.size
       ) {
-        return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history sidecar changed during read.'));
+        return yield* InvalidBuildHistorySidecarError.make({message: 'Build history sidecar changed during read.'});
       }
       const content = yield* Effect.try({
         try: () => new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes.subarray(0, offset)),
-        catch: () => new InvalidBuildHistorySidecarError('Build history sidecar is not valid UTF-8.'),
+        catch: () => InvalidBuildHistorySidecarError.make({message: 'Build history sidecar is not valid UTF-8.'}),
       });
       return {content, file, info: pathInfo} satisfies ObservedBuildHistorySidecar;
     }),
@@ -1640,7 +1643,7 @@ const readPersistedBuildHistoryCursor = Effect.fn('codeGraph.buildStatus.readPer
   if (observed === undefined) return undefined;
   const cursorToken = parsePersistedBuildHistoryCursor(observed.content);
   if (cursorToken === undefined) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history cursor is invalid.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history cursor is invalid.'});
   }
   return {...observed, cursorToken} satisfies PersistedBuildHistoryCursor;
 });
@@ -1677,13 +1680,13 @@ const recoverPersistedBuildHistoryCursor = Effect.fn('codeGraph.buildStatus.reco
     BUILD_HISTORY_CURSOR_FILE_BYTES_LIMIT,
   );
   if (currentTemporary === undefined || !sameBuildHistorySidecar(temporary, currentTemporary)) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history cursor temporary changed.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history cursor temporary changed.'});
   }
   yield* revalidateBuildHistoryDirectoryAuthority(fs, authority);
   yield* fs.rename(temporaryFile, path.join(directory, BUILD_HISTORY_CURSOR_FILE));
   const promoted = yield* readPersistedBuildHistoryCursor(fs, path, directory);
   if (promoted === undefined || promoted.cursorToken !== cursorToken) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history cursor promotion failed.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history cursor promotion failed.'});
   }
   return promoted;
 });
@@ -1697,7 +1700,7 @@ const writePersistedBuildHistoryCursor = Effect.fn('codeGraph.buildStatus.writeP
 ) {
   if (observed?.cursorToken === cursorToken) return;
   if (parseBuildHistoryCursor(cursorToken)?.mode !== 'scan') {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history cursor progress is invalid.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history cursor progress is invalid.'});
   }
   yield* revalidateBuildHistoryDirectoryAuthority(fs, authority);
   const directory = authority.directory.path;
@@ -1705,13 +1708,13 @@ const writePersistedBuildHistoryCursor = Effect.fn('codeGraph.buildStatus.writeP
   const temporary = path.join(directory, BUILD_HISTORY_CURSOR_TEMPORARY_FILE);
   const content = `${JSON.stringify({cursorToken, schemaVersion: BUILD_HISTORY_CURSOR_SCHEMA_VERSION})}\n`;
   if (new TextEncoder().encode(content).byteLength > BUILD_HISTORY_CURSOR_FILE_BYTES_LIMIT) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history cursor exceeded its size limit.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history cursor exceeded its size limit.'});
   }
   yield* revalidateBuildHistoryDirectoryAuthority(fs, authority);
   yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
   const latest = yield* readPersistedBuildHistoryCursor(fs, path, directory);
   if (!sameOptionalBuildHistorySidecar(observed, latest)) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history cursor changed before update.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history cursor changed before update.'});
   }
   yield* revalidateBuildHistoryDirectoryAuthority(fs, authority);
   yield* fs.rename(temporary, file);
@@ -1733,7 +1736,7 @@ const removeObservedBuildHistorySidecar = Effect.fn('codeGraph.buildStatus.remov
 ) {
   const current = yield* readBoundedBuildHistorySidecar(fs, observed.file, BUILD_HISTORY_CURSOR_FILE_BYTES_LIMIT);
   if (current === undefined || !sameBuildHistorySidecar(observed, current)) {
-    return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history sidecar changed before removal.'));
+    return yield* InvalidBuildHistorySidecarError.make({message: 'Build history sidecar changed before removal.'});
   }
   yield* revalidateBuildHistoryDirectoryAuthority(fs, authority);
   yield* fs.remove(observed.file, {force: false});
@@ -1756,10 +1759,9 @@ function parsePersistedBuildHistoryCursor(content: string): string | undefined {
 function optionalBuildHistoryFileInfo(fs: FileSystem.FileSystem, file: string) {
   return fs.stat(file).pipe(
     Effect.map(info => info as FileSystem.File.Info | undefined),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed(undefined)
-        : Effect.fail(error),
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.void,
     ),
   );
 }
@@ -1824,7 +1826,7 @@ function buildHistoryScanCursor(buildId: string): string {
 }
 
 function classifyBuildHistoryFailure(cause: unknown): CodeGraphBuildHistoryPruneResult {
-  if (cause instanceof InvalidBuildHistorySidecarError) return invalidBuildHistoryResult();
+  if (Schema.is(InvalidBuildHistorySidecarError)(cause)) return invalidBuildHistoryResult();
   if (cause instanceof PlatformError.PlatformError && cause.reason._tag === 'PermissionDenied') {
     return {blockedCode: 'permission-denied', retryAfterMilliseconds: 30_000, state: 'deferred'};
   }
@@ -1844,7 +1846,7 @@ function regularDirectory(fs: FileSystem.FileSystem, directory: string) {
     if (!(yield* fs.exists(directory))) return false;
     if ((yield* fs.readLink(directory).pipe(Effect.option))._tag === 'Some') return false;
     return (yield* fs.stat(directory)).type === 'Directory';
-  }).pipe(Effect.catch(() => Effect.succeed(false)));
+  }).pipe(Effect.orElseSucceed(() => false));
 }
 
 function compareObservedBuildStatus(left: ObservedCodeGraphBuildStatus, right: ObservedCodeGraphBuildStatus): number {

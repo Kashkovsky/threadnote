@@ -221,7 +221,7 @@ describe('portable code graph exports', () => {
         write: () =>
           Effect.sync(() => {
             writes += 1;
-            if (writes === 2) throw new TestError('disk full');
+            if (writes === 2) throw TestError.make({message: 'disk full'});
           }),
       }).pipe(Effect.provideService(CodeGraphStore, fixture.store), Effect.exit);
 

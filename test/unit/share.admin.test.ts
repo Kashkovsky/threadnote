@@ -126,7 +126,7 @@ describe('share administration', () => {
       `${sharedMemory}\nAKIAABCDEFGHIJKLMNOP\n`,
     );
 
-    const result = await runEffect(captureConsole(runShareRenameEffect(config, {team: 'default', to: 'friends'})));
+    const result = await runShareRenameEffect(config, {team: 'default', to: 'friends'}).pipe(captureConsole, runEffect);
 
     const teams = await readTeams(config);
     expect(teams.teams.friends?.name).toBe('friends');
@@ -387,7 +387,7 @@ describe('share administration', () => {
       await rm(canonical, {recursive: true});
       await symlink(outside, canonical);
 
-      const result = await runEffect(captureConsole(runShareRemoveEffect(config, {team: 'default'})));
+      const result = await runShareRemoveEffect(config, {team: 'default'}).pipe(captureConsole, runEffect);
 
       expect((await readTeams(config)).teams.default).toBeUndefined();
       await expect(readFile(join(outside, 'keep.md'), 'utf8')).resolves.toBe('outside');

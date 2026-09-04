@@ -94,7 +94,7 @@ export const managerGraphBuildCatalog = Effect.fn('codeGraph.managerBuildCatalog
 ) {
   const selection = selectCodeGraphBuildStatuses(yield* readAllCodeGraphBuildStatuses(threadnoteHome));
   const maintenance = yield* observeCodeGraphMaintenanceStatus(threadnoteHome).pipe(
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
   const active = [...selection.builds, ...selection.waiters].some(
     status => status.state === 'queued' || status.state === 'running',
@@ -102,7 +102,7 @@ export const managerGraphBuildCatalog = Effect.fn('codeGraph.managerBuildCatalog
   let statusObservation =
     active || maintenance !== undefined
       ? undefined
-      : yield* observeManagerGraphCatalogStatus(threadnoteHome).pipe(Effect.catch(() => Effect.succeed(undefined)));
+      : yield* observeManagerGraphCatalogStatus(threadnoteHome).pipe(Effect.orElseSucceed(() => undefined));
   const lifecycleMaintenance = yield* Effect.serviceOption(CodeGraphMaintenanceCoordinator);
   if (statusObservation?.lifecyclePending === true && Option.isSome(lifecycleMaintenance)) {
     const lifecycle = yield* runCodeGraphLifecycleOpportunity({
@@ -117,7 +117,7 @@ export const managerGraphBuildCatalog = Effect.fn('codeGraph.managerBuildCatalog
       lifecycle.result.cleanup === 'removed-worktree-view'
     ) {
       statusObservation = yield* observeManagerGraphCatalogStatus(threadnoteHome).pipe(
-        Effect.catch(() => Effect.succeed(undefined)),
+        Effect.orElseSucceed(() => undefined),
       );
     }
   }
@@ -129,7 +129,7 @@ export const managerGraphBuildCatalog = Effect.fn('codeGraph.managerBuildCatalog
       checkoutId =>
         inspectCodeGraphStorage(threadnoteHome, checkoutId).pipe(
           Effect.map(observation => [checkoutId, managerGraphStorageSummary(observation)] as const),
-          Effect.catch(() => Effect.succeed([checkoutId, {state: 'unavailable'}] as const)),
+          Effect.orElseSucceed(() => [checkoutId, {state: 'unavailable'}] as const),
         ),
       {concurrency: 2},
     ),

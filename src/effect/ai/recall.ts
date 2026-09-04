@@ -1,4 +1,5 @@
 import {Context, Effect, Layer, Schema} from 'effect';
+import {succeedUndefined} from '../optional.js';
 import {LanguageModel} from 'effect/unstable/ai';
 import {shouldExpandRecall, type RecallConfidenceLevel} from '../../recall/rank.js';
 import type {RuntimeConfig} from '../../types.js';
@@ -66,14 +67,14 @@ export class RecallQueryExpander extends Context.Service<
   {
     readonly expand: (input: RecallExpansionInput) => Effect.Effect<readonly string[], AiRecallExpansionFailed>;
   }
->()('threadnote/effect/RecallQueryExpander') {}
+>()('threadnote/effect/ai/recall/RecallQueryExpander') {}
 
 export class RecallCandidateSelector extends Context.Service<
   RecallCandidateSelector,
   {
     readonly select: (input: RecallSelectionInput) => Effect.Effect<readonly string[], AiRecallSelectionFailed>;
   }
->()('threadnote/effect/RecallCandidateSelector') {}
+>()('threadnote/effect/ai/recall/RecallCandidateSelector') {}
 
 export const expandRecallQueryEffect = Effect.fn('RecallQueryExpander.expand')(function* (input: RecallExpansionInput) {
   const expander = yield* RecallQueryExpander;
@@ -103,9 +104,9 @@ export function recallQueryExpanderLayer(config: EffectAiConfiguration): Layer.L
             .pipe(
               Effect.map(response => normalizeRecallRewrites(input.query, response.value.queries, input.vocabulary)),
               Effect.mapError(cause =>
-                cause instanceof AiRecallExpansionFailed
+                Schema.is(AiRecallExpansionFailed)(cause)
                   ? cause
-                  : new AiRecallExpansionFailed({
+                  : AiRecallExpansionFailed.make({
                       cause,
                       message: 'Effect AI recall query expansion failed.',
                     }),
@@ -134,18 +135,18 @@ export function recallCandidateSelectorLayer(config: EffectAiConfiguration): Lay
                 Effect.try({
                   try: () => normalizeRecallCandidateSelection(response.value, input.candidates),
                   catch: cause =>
-                    cause instanceof AiRecallSelectionFailed
+                    Schema.is(AiRecallSelectionFailed)(cause)
                       ? cause
-                      : new AiRecallSelectionFailed({
+                      : AiRecallSelectionFailed.make({
                           cause,
                           message: 'Effect AI recall candidate selection failed.',
                         }),
                 }),
               ),
               Effect.mapError(cause =>
-                cause instanceof AiRecallSelectionFailed
+                Schema.is(AiRecallSelectionFailed)(cause)
                   ? cause
-                  : new AiRecallSelectionFailed({
+                  : AiRecallSelectionFailed.make({
                       cause,
                       message: 'Effect AI recall candidate selection failed.',
                     }),
@@ -187,7 +188,7 @@ export const runEffectAiRecallExpansion = Effect.fn('RecallQueryExpander.run')(f
             duration: RECALL_EXPANSION_TIMEOUT_MILLISECONDS,
             orElse: () => Effect.succeed([]),
           }),
-          Effect.catch(() => Effect.succeed([])),
+          Effect.orElseSucceed(() => []),
         ),
       ),
     ),
@@ -248,9 +249,9 @@ export function boundedRecallCandidateSelection<A, E, R>(
     Effect.map(selected => selected as A | undefined),
     Effect.timeoutOrElse({
       duration: RECALL_SELECTION_TIMEOUT_MILLISECONDS,
-      orElse: () => Effect.succeed(undefined),
+      orElse: () => succeedUndefined,
     }),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
 }
 
@@ -327,7 +328,7 @@ export function normalizeRecallCandidateSelection(
   const allowed = new Set(candidates.map(candidate => candidate.id));
   const selected = [...new Set(draft.candidateIds)].filter(id => allowed.has(id));
   if (selected.length === 0) {
-    throw new AiRecallSelectionFailed({
+    throw AiRecallSelectionFailed.make({
       cause: draft,
       message: 'Effect AI recall candidate selection returned no known candidate IDs.',
     });

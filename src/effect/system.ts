@@ -1,4 +1,5 @@
-import {Context, Deferred, Effect, Exit, Layer, Ref, Semaphore} from 'effect';
+import {Config, Context, Deferred, Effect, Exit, Layer, Option, Ref, Semaphore, Schema} from 'effect';
+import {succeedUndefined} from './optional.js';
 import {effectiveLinuxMemoryBytes, linuxCgroupMemoryFiles} from './linux_cgroup.js';
 import {withoutTelemetrySessionEnvironment} from '../telemetry/session.js';
 import {readWindowsHardwareInfo, readWindowsProcessStartIdentity} from './windows_system.js';
@@ -7,14 +8,15 @@ import {
   WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION,
 } from '../worker_protocol.js';
 
-class SystemOperationError extends Error {
-  readonly _tag = 'SystemOperationError' as const;
-}
+class SystemOperationError extends Schema.TaggedError<SystemOperationError>()('SystemOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 function systemOperationError(cause: unknown): SystemOperationError {
-  return cause instanceof SystemOperationError
+  return Schema.is(SystemOperationError)(cause)
     ? cause
-    : new SystemOperationError(cause instanceof Error ? cause.message : String(cause), {cause});
+    : SystemOperationError.make({cause, message: cause instanceof Error ? cause.message : String(cause)});
 }
 
 export interface PlatformPathShape {
@@ -176,11 +178,11 @@ export function runtimeLstat(path: string): Promise<RuntimeBigIntStats> {
 /** Read one regular file without following a stable symbolic-link target and reject path/file races. */
 export async function runtimeReadBoundedStableRegularFile(path: string, maximumBytes: number): Promise<Uint8Array> {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes >= Number.MAX_SAFE_INTEGER) {
-    throw new SystemOperationError('Invalid read bound.');
+    throw SystemOperationError.make({message: 'Invalid read bound.'});
   }
   const pathBefore = await nativeFileSystemPromises.lstat(path, {bigint: true});
   if (!stableRegularFile(pathBefore) || pathBefore.size > BigInt(maximumBytes)) {
-    throw new SystemOperationError('Target is not a bounded stable regular file.');
+    throw SystemOperationError.make({message: 'Target is not a bounded stable regular file.'});
   }
   const flags =
     nativeFileSystemModule.constants.O_RDONLY |
@@ -193,14 +195,14 @@ export async function runtimeReadBoundedStableRegularFile(path: string, maximumB
       nativeFileSystemPromises.lstat(path, {bigint: true}),
     ]);
     if (!sameStableRegularFile(pathBefore, openedBefore) || !sameStableRegularFile(pathBefore, pathOpened)) {
-      throw new SystemOperationError('Target changed while opening.');
+      throw SystemOperationError.make({message: 'Target changed while opening.'});
     }
     const bytes = new Uint8Array(maximumBytes + 1);
     let offset = 0;
     while (offset < bytes.length) {
       const {bytesRead} = await opened.read(bytes, offset, bytes.length - offset, null);
       if (!Number.isSafeInteger(bytesRead) || bytesRead < 0 || bytesRead > bytes.length - offset) {
-        throw new SystemOperationError('Target returned an invalid read size.');
+        throw SystemOperationError.make({message: 'Target returned an invalid read size.'});
       }
       if (bytesRead === 0) break;
       offset += bytesRead;
@@ -215,7 +217,7 @@ export async function runtimeReadBoundedStableRegularFile(path: string, maximumB
       offset > maximumBytes ||
       BigInt(offset) !== pathBefore.size
     ) {
-      throw new SystemOperationError('Target changed during bounded read.');
+      throw SystemOperationError.make({message: 'Target changed during bounded read.'});
     }
     return bytes.slice(0, offset);
   } finally {
@@ -248,7 +250,7 @@ function sameStableRegularFile(left: RuntimeBigIntStats, right: RuntimeBigIntSta
 /** Raw POSIX directory names stay bytes; enumeration stops immediately after the first over-limit entry. */
 export async function runtimeDirectoryNamePage(path: string, entryLimit: number): Promise<RuntimeDirectoryNamePage> {
   if (!Number.isSafeInteger(entryLimit) || entryLimit < 0)
-    throw new SystemOperationError('Runtime directory entry limit is invalid.');
+    throw SystemOperationError.make({message: 'Runtime directory entry limit is invalid.'});
   const directory = await nativeFileSystemPromises.opendir(path, {
     bufferSize: 32,
     encoding: runtimePlatform === 'win32' ? 'utf8' : 'buffer',
@@ -403,7 +405,7 @@ export function makeCachedProcessStartIdentityResolver(
   });
 }
 
-export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('threadnote/effect/SystemInfo') {
+export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('threadnote/effect/system/SystemInfo') {
   static readonly layer = Layer.effect(
     SystemInfo,
     Effect.gen(function* () {
@@ -423,6 +425,11 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
         statfs: nativeStatfs,
         ...(windowsAvailableDiskBytes === undefined ? {} : {windows: windowsAvailableDiskBytes}),
       };
+      const tmpdir = yield* Config.option(Config.string('TMPDIR')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const temp = yield* Config.option(Config.string('TEMP')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const tmp = yield* Config.option(Config.string('TMP')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const user = yield* Config.option(Config.string('USER')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const username = yield* Config.option(Config.string('USERNAME')).pipe(Effect.orElseSucceed(() => Option.none()));
       return SystemInfo.of({
         architecture: runtimeArchitecture,
         availableDiskBytes: path => availableDiskBytes(path, runtimePlatform, process.env, diskCapacityProbeAdapters),
@@ -503,12 +510,12 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
         stdinIsTTY: process.stdin.isTTY === true,
         stdoutIsTTY: process.stdout.isTTY === true,
         tempDirectory:
-          process.env.TMPDIR ??
-          process.env.TEMP ??
-          process.env.TMP ??
+          Option.getOrUndefined(tmpdir) ??
+          Option.getOrUndefined(temp) ??
+          Option.getOrUndefined(tmp) ??
           (runtimePlatform === 'win32' ? process.cwd() : '/tmp'),
         userId: process.getuid?.(),
-        userName: process.env.USER ?? process.env.USERNAME ?? 'unknown',
+        userName: Option.getOrUndefined(user) ?? Option.getOrUndefined(username) ?? 'unknown',
       });
     }),
   );
@@ -580,7 +587,7 @@ export function probeRuntimeAvailableDiskBytes(
     return adapters.fallback(path, platform, environment).pipe(
       Effect.timeoutOrElse({
         duration: timeoutMilliseconds,
-        orElse: () => Effect.succeed(undefined),
+        orElse: () => succeedUndefined,
       }),
     );
   }
@@ -588,7 +595,7 @@ export function probeRuntimeAvailableDiskBytes(
   // persistent killable native worker and retain PowerShell as one fallback.
   if (platform === 'win32' && architecture === 'arm64') {
     const nativeTimeoutMilliseconds = Math.max(1, Math.floor(timeoutMilliseconds / 2));
-    const native = adapters.windows?.(path, environment, nativeTimeoutMilliseconds) ?? Effect.succeed(undefined);
+    const native = adapters.windows?.(path, environment, nativeTimeoutMilliseconds) ?? succeedUndefined;
     return native.pipe(
       Effect.matchEffect({
         onFailure: () => adapters.fallback(path, platform, environment),
@@ -597,9 +604,9 @@ export function probeRuntimeAvailableDiskBytes(
       }),
       Effect.timeoutOrElse({
         duration: timeoutMilliseconds,
-        orElse: () => Effect.succeed(undefined),
+        orElse: () => succeedUndefined,
       }),
-      Effect.catch(() => Effect.succeed(undefined)),
+      Effect.orElseSucceed(() => undefined),
     );
   }
   return probeAvailableDiskBytes(path, platform, environment, adapters, timeoutMilliseconds);
@@ -615,12 +622,12 @@ export function probeAvailableDiskBytes(
   return adapters.statfs(path).pipe(
     Effect.matchEffect({
       onFailure: cause =>
-        isNativeStatfsUnavailable(cause) ? adapters.fallback(path, platform, environment) : Effect.succeed(undefined),
+        isNativeStatfsUnavailable(cause) ? adapters.fallback(path, platform, environment) : succeedUndefined,
       onSuccess: statistics => Effect.succeed(availableDiskBytesFromStatfs(statistics)),
     }),
     Effect.timeoutOrElse({
       duration: timeoutMilliseconds,
-      orElse: () => Effect.succeed(undefined),
+      orElse: () => succeedUndefined,
     }),
   );
 }
@@ -824,30 +831,29 @@ class WindowsDiskCapacityWorkerConnection {
     timeoutMilliseconds: number,
     signal: AbortSignal,
   ): Promise<number | undefined> {
-    if (this.closed) throw new SystemOperationError('Windows disk capacity worker is closed.');
-    if (this.pending !== undefined) throw new SystemOperationError('Windows disk capacity worker request overlapped.');
+    if (this.closed) throw SystemOperationError.make({message: 'Windows disk capacity worker is closed.'});
+    if (this.pending !== undefined)
+      throw SystemOperationError.make({message: 'Windows disk capacity worker request overlapped.'});
     if (signal.aborted) {
       this.fail('Windows disk capacity worker request was interrupted.');
-      throw new SystemOperationError('Windows disk capacity worker request was interrupted.');
+      throw SystemOperationError.make({message: 'Windows disk capacity worker request was interrupted.'});
     }
 
-    let timeout: ReturnType<typeof setTimeout> | undefined;
     let removeAbortListener = () => {};
-    const response = new Promise<number | undefined>((resolve, reject) => {
-      this.pending = {
-        id,
-        reject,
-        resolve,
-      };
-      timeout = setTimeout(
-        () => this.fail('Windows disk capacity worker request timed out.'),
-        Math.max(1, Math.floor(timeoutMilliseconds)),
-      );
-      timeout.unref?.();
-      const onAbort = () => this.fail('Windows disk capacity worker request was interrupted.');
-      signal.addEventListener('abort', onAbort, {once: true});
-      removeAbortListener = () => signal.removeEventListener('abort', onAbort);
-    });
+    const {promise: response, reject, resolve} = Promise.withResolvers<number | undefined>();
+    this.pending = {
+      id,
+      reject,
+      resolve,
+    };
+    const timeout = setTimeout(
+      () => this.fail('Windows disk capacity worker request timed out.'),
+      Math.max(1, Math.floor(timeoutMilliseconds)),
+    );
+    timeout.unref?.();
+    const onAbort = () => this.fail('Windows disk capacity worker request was interrupted.');
+    signal.addEventListener('abort', onAbort, {once: true});
+    removeAbortListener = () => signal.removeEventListener('abort', onAbort);
     const request = JSON.stringify({
       id,
       path,
@@ -857,7 +863,7 @@ class WindowsDiskCapacityWorkerConnection {
       this.fail('Could not write Windows disk capacity worker request.');
     });
     return response.finally(() => {
-      if (timeout !== undefined) clearTimeout(timeout);
+      clearTimeout(timeout);
       removeAbortListener();
     });
   }
@@ -921,7 +927,7 @@ class WindowsDiskCapacityWorkerConnection {
     const pending = this.pending;
     if (pending === undefined) return;
     this.pending = undefined;
-    pending.reject(new SystemOperationError(message));
+    pending.reject(SystemOperationError.make({message: message}));
   }
 }
 
@@ -950,7 +956,7 @@ class WindowsDiskCapacityWorkerPool {
     timeoutMilliseconds: number,
     signal: AbortSignal,
   ): Promise<number | undefined> {
-    if (this.closed) throw new SystemOperationError('Windows disk capacity worker pool is closed.');
+    if (this.closed) throw SystemOperationError.make({message: 'Windows disk capacity worker pool is closed.'});
     let connection: WindowsDiskCapacityWorkerConnection | undefined;
     try {
       connection = await this.activeConnection(environment);
@@ -963,13 +969,13 @@ class WindowsDiskCapacityWorkerPool {
   }
 
   private async activeConnection(environment: NodeJS.ProcessEnv): Promise<WindowsDiskCapacityWorkerConnection> {
-    if (this.closed) throw new SystemOperationError('Windows disk capacity worker pool is closed.');
+    if (this.closed) throw SystemOperationError.make({message: 'Windows disk capacity worker pool is closed.'});
     if (this.connection !== undefined && !this.connection.isClosed) return this.connection;
     const process = await this.spawnWorker({environment, invocation: this.invocation});
     const connection = new WindowsDiskCapacityWorkerConnection(process);
     if (this.closed) {
       await connection.close();
-      throw new SystemOperationError('Windows disk capacity worker pool closed while starting.');
+      throw SystemOperationError.make({message: 'Windows disk capacity worker pool closed while starting.'});
     }
     this.connection = connection;
     return connection;
@@ -1032,25 +1038,25 @@ function spawnWindowsDiskCapacityWorker(
 }
 
 function promiseCompletesBeforeDeadline(promise: Promise<unknown>, timeoutMilliseconds: number): Promise<boolean> {
-  return new Promise(resolve => {
-    let settled = false;
-    const finish = (completed: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      resolve(completed);
-    };
-    const timeout = setTimeout(() => finish(false), timeoutMilliseconds);
-    timeout.unref?.();
-    void promise.then(
-      () => finish(true),
-      () => finish(false),
-    );
-  });
+  const {promise: result, resolve} = Promise.withResolvers<boolean>();
+  let settled = false;
+  const finish = (completed: boolean) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeout);
+    resolve(completed);
+  };
+  const timeout = setTimeout(() => finish(false), timeoutMilliseconds);
+  timeout.unref?.();
+  void promise.then(
+    () => finish(true),
+    () => finish(false),
+  );
+  return result;
 }
 
 function isNativeStatfsUnavailable(cause: unknown): boolean {
-  const underlying = cause instanceof SystemOperationError ? cause.cause : cause;
+  const underlying = Schema.is(SystemOperationError)(cause) ? cause.cause : cause;
   if (underlying instanceof NativeStatfsUnavailableError) return true;
   if (typeof underlying !== 'object' || underlying === null || !('code' in underlying)) return false;
   const code = (underlying as {readonly code?: unknown}).code;
@@ -1093,14 +1099,14 @@ function readSystemHardwareInfo(platform: NodeJS.Platform, environment: NodeJS.P
         const cpuModel = /^(?:model name|Hardware)\s*:\s*(.+)$/m.exec(cpuInfo)?.[1]?.trim();
         const memoryKibibytes = Number(/^MemTotal:\s+(\d+)\s+kB$/m.exec(memoryInfo)?.[1]);
         if (!cpuModel || !Number.isSafeInteger(memoryKibibytes) || memoryKibibytes <= 0) {
-          throw new SystemOperationError('Linux hardware metadata is incomplete.');
+          throw SystemOperationError.make({message: 'Linux hardware metadata is incomplete.'});
         }
         const memoryBytes = memoryKibibytes * KIBIBYTE_BYTES;
         const effectiveMemoryBytes = await readLinuxEffectiveMemoryBytes(memoryBytes);
         const operatingSystem = spawnText(['uname', '-sr'], environment);
         return {cpuModel, effectiveMemoryBytes, memoryBytes, operatingSystem};
       },
-      catch: cause => new SystemOperationError('Could not read Linux hardware metadata.', {cause}),
+      catch: cause => SystemOperationError.make({cause, message: 'Could not read Linux hardware metadata.'}),
     });
   }
   if (platform === 'darwin') {
@@ -1110,17 +1116,17 @@ function readSystemHardwareInfo(platform: NodeJS.Platform, environment: NodeJS.P
         const memoryBytes = Number(spawnText(['sysctl', '-n', 'hw.memsize'], environment));
         const version = spawnText(['sw_vers', '-productVersion'], environment);
         if (!Number.isSafeInteger(memoryBytes) || memoryBytes <= 0) {
-          throw new SystemOperationError('macOS memory metadata is invalid.');
+          throw SystemOperationError.make({message: 'macOS memory metadata is invalid.'});
         }
         return {cpuModel, effectiveMemoryBytes: memoryBytes, memoryBytes, operatingSystem: `macOS ${version}`};
       },
-      catch: cause => new SystemOperationError('Could not read macOS hardware metadata.', {cause}),
+      catch: cause => SystemOperationError.make({cause, message: 'Could not read macOS hardware metadata.'}),
     });
   }
   if (platform === 'win32') {
     return readWindowsHardwareInfo(environment);
   }
-  return Effect.fail(new SystemOperationError(`Hardware metadata is not supported on ${platform}.`));
+  return Effect.fail(SystemOperationError.make({message: `Hardware metadata is not supported on ${platform}.`}));
 }
 
 async function readLinuxEffectiveMemoryBytes(physicalMemoryBytes: number): Promise<number> {
@@ -1151,10 +1157,12 @@ function spawnText(command: readonly string[], environment: NodeJS.ProcessEnv): 
     timeout: DISK_QUERY_TIMEOUT_MS,
   });
   if (result.exitCode !== 0) {
-    throw new SystemOperationError(`${command[0]} exited with ${result.exitCode}: ${result.stderr.toString().trim()}`);
+    throw SystemOperationError.make({
+      message: `${command[0]} exited with ${result.exitCode}: ${result.stderr.toString().trim()}`,
+    });
   }
   const output = result.stdout.toString().trim();
-  if (!output) throw new SystemOperationError(`${command[0]} returned no hardware metadata.`);
+  if (!output) throw SystemOperationError.make({message: `${command[0]} returned no hardware metadata.`});
   return output;
 }
 
@@ -1166,14 +1174,14 @@ export function readProcessStartIdentity(
   timeoutMilliseconds = PROCESS_IDENTITY_QUERY_TIMEOUT_MS,
   darwinProcessCommand = '/bin/ps',
 ): Effect.Effect<string | undefined> {
-  if (!Number.isSafeInteger(processId) || processId <= 0) return Effect.succeed(undefined);
+  if (!Number.isSafeInteger(processId) || processId <= 0) return succeedUndefined;
   if (platform === 'linux') {
     return Effect.tryPromise({
       try: () => Bun.file(`/proc/${processId}/stat`).text(),
       catch: () => undefined,
     }).pipe(
       Effect.map(parseLinuxProcessStartIdentity),
-      Effect.catch(() => Effect.succeed(undefined)),
+      Effect.orElseSucceed(() => undefined),
     );
   }
   if (platform === 'win32') {
@@ -1188,7 +1196,7 @@ export function readProcessStartIdentity(
       timeoutMilliseconds,
     );
   }
-  if (platform !== 'darwin') return Effect.succeed(undefined);
+  if (platform !== 'darwin') return succeedUndefined;
   return readDarwinProcessStartIdentity(processId, environment, timeoutMilliseconds, darwinProcessCommand, output =>
     parseProcessStartIdentityOutput('darwin', output),
   );
@@ -1205,7 +1213,7 @@ export function readCanonicalProcessStartIdentity(
   if (platform !== 'darwin') {
     return readProcessStartIdentity(processId, platform, environment, timeoutMilliseconds, darwinProcessCommand);
   }
-  if (!Number.isSafeInteger(processId) || processId <= 0) return Effect.succeed(undefined);
+  if (!Number.isSafeInteger(processId) || processId <= 0) return succeedUndefined;
   return readDarwinProcessStartIdentity(
     processId,
     {...environment, LANG: 'C', LC_ALL: 'C', TZ: 'UTC'},
@@ -1237,11 +1245,12 @@ export function probeWindowsProcessStartIdentity(
   timeoutMilliseconds = PROCESS_IDENTITY_QUERY_TIMEOUT_MS,
 ): Effect.Effect<string | undefined> {
   return adapters.native(processId).pipe(
-    Effect.flatMap(identity =>
-      identity === undefined ? adapters.fallback(processId, environment) : Effect.succeed(identity),
+    Effect.filterOrElse(
+      (identity): identity is string => identity !== undefined,
+      () => adapters.fallback(processId, environment),
     ),
-    Effect.timeoutOrElse({duration: timeoutMilliseconds, orElse: () => Effect.succeed(undefined)}),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.timeoutOrElse({duration: timeoutMilliseconds, orElse: () => succeedUndefined}),
+    Effect.orElseSucceed(() => undefined),
   );
 }
 
@@ -1304,8 +1313,8 @@ function readProcessStartIdentityCommand(
         }
       }),
   ).pipe(
-    Effect.timeoutOrElse({duration: timeoutMilliseconds, orElse: () => Effect.succeed(undefined)}),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.timeoutOrElse({duration: timeoutMilliseconds, orElse: () => succeedUndefined}),
+    Effect.orElseSucceed(() => undefined),
   );
 }
 
@@ -1349,7 +1358,9 @@ export function resolveHomeDirectory(environment: NodeJS.ProcessEnv, platform: N
   const windowsHome = userProfile ?? (homeDrive && homePath ? `${homeDrive}${homePath}` : undefined);
   const resolved = platform === 'win32' ? (windowsHome ?? home) : (home ?? windowsHome);
   if (!resolved) {
-    throw new SystemOperationError('Could not determine the current user home directory from the environment.');
+    throw SystemOperationError.make({
+      message: 'Could not determine the current user home directory from the environment.',
+    });
   }
   return resolved;
 }

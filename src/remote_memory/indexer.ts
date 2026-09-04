@@ -273,13 +273,13 @@ function boundedPollMilliseconds(value: number | undefined): number {
 
 async function waitForAbortableDelay(milliseconds: number, signal: AbortSignal | undefined): Promise<void> {
   if (signal?.aborted) return;
-  await new Promise<void>(resolve => {
-    const timeout = setTimeout(finish, milliseconds);
-    signal?.addEventListener('abort', finish, {once: true});
-    function finish(): void {
-      clearTimeout(timeout);
-      signal?.removeEventListener('abort', finish);
-      resolve();
-    }
-  });
+  const {promise, resolve} = Promise.withResolvers<void>();
+  const timeout = setTimeout(finish, milliseconds);
+  signal?.addEventListener('abort', finish, {once: true});
+  function finish(): void {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', finish);
+    resolve();
+  }
+  await promise;
 }

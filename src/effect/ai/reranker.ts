@@ -10,7 +10,7 @@ export interface RerankerShape {
   ) => Effect.Effect<readonly number[], InferenceInterrupted | RerankingFailed>;
 }
 
-export class Reranker extends Context.Service<Reranker, RerankerShape>()('threadnote/effect/ai/Reranker') {}
+export class Reranker extends Context.Service<Reranker, RerankerShape>()('threadnote/effect/ai/reranker') {}
 
 export interface LlamaRerankerLayerOptions {
   readonly contextSize?: number;

@@ -1,12 +1,12 @@
 import {provideTestLayer} from './effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Effect, FileSystem, Layer} from 'effect';
+import {Effect, FileSystem, Layer, Schema} from 'effect';
 import {
   type CodeGraphRemovedViewCleanupEntry,
   CodeGraphStore,
   type CodeGraphStoreShape,
 } from '../../src/code_graph/store.js';
-import {CodeGraphStoreBusyError, CodeGraphStoreError} from '../../src/code_graph/types.js';
+import {CodeGraphStoreBusyError, isCodeGraphStoreError} from '../../src/code_graph/types.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const [databasePath, nowText, markerPath, contentionMarkerPath] = process.argv.slice(2);
@@ -66,7 +66,7 @@ function claimWithBoundedBusyDeferral(
       })
       .pipe(
         Effect.catch(error => {
-          if (!(error instanceof CodeGraphStoreBusyError) || !error.retryable || performance.now() >= deadline) {
+          if (!Schema.is(CodeGraphStoreBusyError)(error) || !error.retryable || performance.now() >= deadline) {
             return Effect.fail(error);
           }
           const reportContention =
@@ -92,11 +92,10 @@ function claimWithBoundedBusyDeferral(
   return Effect.suspend(attempt);
 }
 
-Effect.runPromise(program).catch(cause => {
-  const diagnostic =
-    cause instanceof CodeGraphStoreError
-      ? {code: cause.code, name: cause.name, operation: cause.operation, retryable: cause.retryable}
-      : {name: cause instanceof Error ? cause.name : 'unknown'};
+Effect.runPromise(program).catch((cause: unknown) => {
+  const diagnostic = isCodeGraphStoreError(cause)
+    ? {code: cause.code, name: cause.name, operation: cause.operation, retryable: cause.retryable}
+    : {name: cause instanceof Error ? cause.name : 'unknown'};
   process.stderr.write(`removed-view-cleanup child failed: ${JSON.stringify(diagnostic)}\n`);
   process.exitCode = 1;
 });

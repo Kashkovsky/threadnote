@@ -1,4 +1,4 @@
-import {Effect, Path} from 'effect';
+import {Effect, Path, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {codeGraphLayout} from '../layout.js';
 import {useReadOnlyDatabase} from '../store_session.js';
@@ -15,16 +15,24 @@ const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const MAXIMUM_PAGE_SIZE = 1_024;
 const MAXIMUM_SPAN_JSON_BYTES = 4 * 1_024;
 
-export class CodeGraphSnapshotMonikerError extends Error {
-  readonly _tag = 'CodeGraphSnapshotMonikerError';
-
-  constructor(
-    readonly code: 'corrupt' | 'invalid-input' | 'limit-exceeded' | 'snapshot-missing',
+export class CodeGraphSnapshotMonikerError extends Schema.TaggedError<CodeGraphSnapshotMonikerError>()(
+  'CodeGraphSnapshotMonikerError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    code: Schema.Literals(['corrupt', 'invalid-input', 'limit-exceeded', 'snapshot-missing']),
+    message: Schema.String,
+  },
+) {
+  static of(
+    code: 'corrupt' | 'invalid-input' | 'limit-exceeded' | 'snapshot-missing',
     message: string,
     options?: ErrorOptions,
-  ) {
-    super(message, options);
-    this.name = 'CodeGraphSnapshotMonikerError';
+  ): CodeGraphSnapshotMonikerError {
+    return CodeGraphSnapshotMonikerError.make({
+      code,
+      message,
+      ...(options?.cause === undefined ? {} : {cause: options.cause}),
+    });
   }
 }
 
@@ -80,9 +88,9 @@ export const readCodeGraphSnapshotMonikers = Effect.fn('codeGraph.crossRepositor
   const normalized = normalizeInput(input);
   return yield* useReadOnlyDatabase(databasePath, readSnapshotMonikers(normalized)).pipe(
     Effect.mapError(cause =>
-      cause instanceof CodeGraphSnapshotMonikerError
+      Schema.is(CodeGraphSnapshotMonikerError)(cause)
         ? cause
-        : new CodeGraphSnapshotMonikerError('corrupt', 'Unable to read snapshot monikers.', {cause}),
+        : CodeGraphSnapshotMonikerError.of('corrupt', 'Unable to read snapshot monikers.', {cause}),
     ),
   );
 });
@@ -156,8 +164,8 @@ export function codeGraphMonikerFromStorageRow(row: CodeGraphStoredMonikerRowV1)
           };
     return parseCodeGraphMonikerV1(value);
   } catch (cause) {
-    if (cause instanceof CodeGraphSnapshotMonikerError) throw cause;
-    throw new CodeGraphSnapshotMonikerError('corrupt', 'A stored code graph moniker is not canonical.', {cause});
+    if (Schema.is(CodeGraphSnapshotMonikerError)(cause)) throw cause;
+    throw CodeGraphSnapshotMonikerError.of('corrupt', 'A stored code graph moniker is not canonical.', {cause});
   }
 }
 
@@ -170,10 +178,10 @@ interface NormalizedInput {
 
 function normalizeInput(input: CodeGraphSnapshotMonikerReadInputV1): NormalizedInput {
   if (!SHA256_HEX.test(input.repositoryId)) {
-    throw new CodeGraphSnapshotMonikerError('invalid-input', 'Snapshot moniker repository identity is invalid.');
+    throw CodeGraphSnapshotMonikerError.of('invalid-input', 'Snapshot moniker repository identity is invalid.');
   }
   if (!CODE_GRAPH_SNAPSHOT_ID.test(input.snapshotId)) {
-    throw new CodeGraphSnapshotMonikerError('invalid-input', 'Snapshot moniker snapshot identity is invalid.');
+    throw CodeGraphSnapshotMonikerError.of('invalid-input', 'Snapshot moniker snapshot identity is invalid.');
   }
   return {
     maximumMonikers: boundedInteger(
@@ -215,11 +223,9 @@ function readSnapshotMonikers(input: NormalizedInput) {
         [input.snapshotId, afterId, limit],
       );
       if (output.length + rows.length > input.maximumMonikers) {
-        return yield* Effect.fail(
-          new CodeGraphSnapshotMonikerError(
-            'limit-exceeded',
-            `The ready snapshot exceeds the ${input.maximumMonikers} moniker bridge limit.`,
-          ),
+        return yield* CodeGraphSnapshotMonikerError.of(
+          'limit-exceeded',
+          `The ready snapshot exceeds the ${input.maximumMonikers} moniker bridge limit.`,
         );
       }
       for (const row of rows) output.push(codeGraphMonikerFromStorageRow(row));
@@ -240,12 +246,12 @@ function assertReadySnapshot(sql: SqlClient.SqlClient, input: NormalizedInput) {
         const row = rows[0];
         if (row === undefined) {
           return Effect.fail(
-            new CodeGraphSnapshotMonikerError('snapshot-missing', 'The bridge source snapshot no longer exists.'),
+            CodeGraphSnapshotMonikerError.of('snapshot-missing', 'The bridge source snapshot no longer exists.'),
           );
         }
         if (row.repository_id !== input.repositoryId || row.state !== 'ready') {
           return Effect.fail(
-            new CodeGraphSnapshotMonikerError(
+            CodeGraphSnapshotMonikerError.of(
               'snapshot-missing',
               'The bridge source snapshot is no longer ready for the expected repository.',
             ),
@@ -258,18 +264,18 @@ function assertReadySnapshot(sql: SqlClient.SqlClient, input: NormalizedInput) {
 
 function parseSpan(value: unknown): unknown {
   if (typeof value !== 'string' || Buffer.byteLength(value) > MAXIMUM_SPAN_JSON_BYTES) {
-    throw new CodeGraphSnapshotMonikerError('corrupt', 'A stored moniker evidence span is invalid.');
+    throw CodeGraphSnapshotMonikerError.of('corrupt', 'A stored moniker evidence span is invalid.');
   }
   try {
     return JSON.parse(value) as unknown;
   } catch (cause) {
-    throw new CodeGraphSnapshotMonikerError('corrupt', 'A stored moniker evidence span is invalid.', {cause});
+    throw CodeGraphSnapshotMonikerError.of('corrupt', 'A stored moniker evidence span is invalid.', {cause});
   }
 }
 
 function requiredText(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.length === 0) {
-    throw new CodeGraphSnapshotMonikerError('corrupt', `Stored moniker ${label} is invalid.`);
+    throw CodeGraphSnapshotMonikerError.of('corrupt', `Stored moniker ${label} is invalid.`);
   }
   return value;
 }
@@ -281,7 +287,7 @@ function optionalText(value: unknown, label: string): string | undefined {
 
 function requiredInteger(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
-    throw new CodeGraphSnapshotMonikerError('corrupt', `Stored moniker ${label} is invalid.`);
+    throw CodeGraphSnapshotMonikerError.of('corrupt', `Stored moniker ${label} is invalid.`);
   }
   return value;
 }
@@ -289,7 +295,7 @@ function requiredInteger(value: unknown, label: string): number {
 function boundedInteger(value: number | undefined, fallback: number, minimum: number, maximum: number, label: string) {
   const resolved = value ?? fallback;
   if (!Number.isSafeInteger(resolved) || resolved < minimum || resolved > maximum) {
-    throw new CodeGraphSnapshotMonikerError(
+    throw CodeGraphSnapshotMonikerError.of(
       'invalid-input',
       `Snapshot moniker ${label} must be an integer from ${minimum} to ${maximum}.`,
     );

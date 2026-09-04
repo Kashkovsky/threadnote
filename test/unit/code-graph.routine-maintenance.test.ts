@@ -1,7 +1,7 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, FileSystem, Path, Ref} from 'effect';
+import {Clock, Deferred, Effect, Fiber, FileSystem, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
@@ -26,6 +26,7 @@ import {
   CODE_GRAPH_EXTRACTOR_GENERATION,
   CodeGraphStoreError,
   type CodeGraphSnapshot,
+  type CodeGraphStoreFailure,
   type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
@@ -871,6 +872,7 @@ describe('routine code graph maintenance', () => {
         }),
       ).toMatchObject({cleanup: 'none', expiredLeases: 99, remaining: true, retiredSnapshots: 0});
 
+      const now = yield* Clock.currentTimeMillis;
       yield* Effect.sync(() => {
         const reopened = new Database(fixture.databasePath, {readonly: true, strict: true});
         try {
@@ -892,7 +894,7 @@ describe('routine code graph maintenance', () => {
                ORDER BY expires_at
                LIMIT 100`,
             )
-            .all(Date.now()) as readonly {readonly detail: string}[];
+            .all(now) as readonly {readonly detail: string}[];
           expect(plan.some(row => row.detail.includes('snapshot_leases_expiry'))).toBe(true);
           expect(plan.some(row => /SCAN|TEMP B-TREE/iu.test(row.detail))).toBe(false);
         } finally {
@@ -1015,7 +1017,7 @@ describe('routine code graph maintenance', () => {
 
   effectIt.effect('preserves the initiating and joined callers exact store failure', () =>
     Effect.gen(function* () {
-      const expected = new CodeGraphStoreError('Exact permission failure.', {
+      const expected = CodeGraphStoreError.of('Exact permission failure.', {
         code: 'permission',
         operation: 'routine maintenance test',
         recovery: 'fix-permissions',
@@ -1096,8 +1098,8 @@ describe('routine code graph maintenance', () => {
       const pending = tick('/home', '/database/pending');
       const started = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
-      const reported = yield* Deferred.make<CodeGraphStoreError>();
-      const expected = new CodeGraphStoreError('private queued failure at /Users/private/graph.sqlite', {
+      const reported = yield* Deferred.make<CodeGraphStoreFailure>();
+      const expected = CodeGraphStoreError.of('private queued failure at /Users/private/graph.sqlite', {
         code: 'permission',
         operation: 'routine maintenance test',
         recovery: 'fix-permissions',

@@ -1,5 +1,5 @@
 import * as yaml from 'js-yaml';
-import {Console, Crypto, Effect, FileSystem, Path, Result} from 'effect';
+import {Console, Crypto, DateTime, Effect, FileSystem, Path, Result, Schema} from 'effect';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {ResourceStore} from '../effect/resource-store.js';
 import {readSeedManifest, uriSegment} from '../manifest.js';
@@ -76,15 +76,16 @@ interface ProjectMemoryLocation {
   readonly uriPath: string;
 }
 
-export class MemoryOperationError extends Error {
-  readonly _tag = 'MemoryOperationError' as const;
-}
+export class MemoryOperationError extends Schema.TaggedError<MemoryOperationError>()('MemoryOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export const attemptSync = <A>(evaluate: () => A) =>
   Effect.try({
     try: evaluate,
     catch: cause =>
-      cause instanceof MemoryOperationError ? cause : new MemoryOperationError(errorMessage(cause), {cause}),
+      Schema.is(MemoryOperationError)(cause) ? cause : MemoryOperationError.make({cause, message: errorMessage(cause)}),
   });
 
 export const NATIVE_RESOURCE_BACKEND = 'threadnote-native';
@@ -871,9 +872,9 @@ export function removeResourceWithRetry(
           const localPath = yield* localMemoryPathForUri(config, uri);
           const currentContent = localPath ? yield* readFileIfExists(localPath) : undefined;
           if (currentContent === undefined || currentContent.trim() !== options.expectedContent.trim()) {
-            return yield* Effect.fail(
-              new MemoryOperationError(`Memory changed before removal; review the current content and retry: ${uri}`),
-            );
+            return yield* MemoryOperationError.make({
+              message: `Memory changed before removal; review the current content and retry: ${uri}`,
+            });
           }
         }
         return yield* remove;
@@ -955,7 +956,7 @@ const legacyLifecycleHandoffCandidates = Effect.fn('memory.legacyLifecycleHandof
         project: inferLegacyProject(original),
         sourceAgentClient: 'threadnote',
         status: 'archived',
-        timestamp: new Date().toISOString(),
+        timestamp: DateTime.formatIso(yield* DateTime.now),
       },
       original,
       sourceUri,
@@ -1199,7 +1200,7 @@ export const readTextIfExists = Effect.fn('memory.readTextIfExists')(function* (
   if (info._tag === 'None' || info.value.type !== 'File') {
     return undefined;
   }
-  return yield* fs.readFileString(path).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  return yield* fs.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
 });
 
 function sensitiveMemoryReason(text: string): string | undefined {

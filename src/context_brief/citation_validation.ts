@@ -1,4 +1,5 @@
-import {Clock, Effect, FileSystem, Path} from 'effect';
+import {DateTime, Effect, FileSystem, Path} from 'effect';
+import {succeedUndefined} from '../effect/optional.js';
 import {
   createCodeGraphSourceSpanCanonicalizer,
   type CodeGraphEffectiveFileHashMatches,
@@ -120,7 +121,7 @@ export const validateContextBriefMemoryCitations = Effect.fn('contextBrief.valid
     candidate.codeCitations.map((citation, index) => ({citation, index, uri: candidate.uri})),
   );
   if (allTasks.length === 0) return [] as readonly ContextBriefMemoryCitationValidationV2[];
-  const observedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+  const observedAt = DateTime.formatIso(yield* DateTime.now);
   const unknown = (
     citation: MemoryCodeCitationV1,
     reason: Parameters<typeof unknownReceipt>[1],
@@ -162,13 +163,13 @@ export const validateContextBriefMemoryCitations = Effect.fn('contextBrief.valid
       const use = (status: CodeGraphStatus) => {
         const repositoryId = status.identity.repositoryId;
         const tasks = eligibleByRepository.get(repositoryId);
-        if (tasks === undefined) return Effect.succeed(undefined);
+        if (tasks === undefined) return succeedUndefined;
         if (
           resolution.requiredSnapshot !== undefined &&
           (repositoryId !== resolution.requiredSnapshot.repositoryId ||
             status.readySnapshot?.id !== resolution.requiredSnapshot.snapshotId)
         ) {
-          return Effect.succeed(undefined);
+          return succeedUndefined;
         }
         const repository = {...target, status} satisfies StatusReadyRepository;
         if (status.readySnapshot === undefined || status.stale || status.freshness !== 'current') {
@@ -194,12 +195,10 @@ export const validateContextBriefMemoryCitations = Effect.fn('contextBrief.valid
             repositoryId,
             tuples: tasks.map((task, index) => [task, results[index].receipt, results[index].cacheHit] as const),
           })),
-          Effect.catch(() =>
-            Effect.succeed({
-              repositoryId,
-              tuples: tasks.map(task => [task, unknown(task.citation, 'validation-error'), false] as const),
-            }),
-          ),
+          Effect.orElseSucceed(() => ({
+            repositoryId,
+            tuples: tasks.map(task => [task, unknown(task.citation, 'validation-error'), false] as const),
+          })),
         );
       };
       const statusAndValidate = query.withStatusSession
@@ -211,10 +210,10 @@ export const validateContextBriefMemoryCitations = Effect.fn('contextBrief.valid
       if (target.published !== undefined) {
         const repositoryId = target.published.repositoryId;
         const tasks = eligibleByRepository.get(repositoryId);
-        if (tasks === undefined) return Effect.succeed(undefined).pipe(Effect.option);
+        if (tasks === undefined) return Effect.succeedNone;
         if (!tasks.every(task => task.citation.target.kind === 'file')) return statusAndValidate.pipe(Effect.option);
         return validatePublishedRepositoryTasks(config, target.cwd, target.published, tasks, observedAt).pipe(
-          Effect.catch(() => Effect.succeed(undefined)),
+          Effect.orElseSucceed(() => undefined),
           Effect.flatMap(results =>
             results === undefined
               ? statusAndValidate
@@ -423,7 +422,7 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
   return yield* Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.acquireRelease(store.acquireSnapshotLease(repository.databasePath, snapshot.id, 60_000), token =>
-        store.releaseSnapshotLease(repository.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+        store.releaseSnapshotLease(repository.databasePath, token).pipe(Effect.ignore),
       );
       const cacheKeys = tasks.map(task =>
         validationCacheKey(repository.repositoryId, repository.worktreeId, snapshot.id, task.citation.id),
@@ -542,7 +541,7 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
         for (const [index, task] of uncachedTasks.entries()) computed.set(task, receipts[index]);
       }
 
-      const fenceCurrent = yield* repository.finalFence.pipe(Effect.catch(() => Effect.succeed(false)));
+      const fenceCurrent = yield* repository.finalFence.pipe(Effect.orElseSucceed(() => false));
       if (!fenceCurrent) {
         return tasks.map(task => ({
           cacheHit: false,

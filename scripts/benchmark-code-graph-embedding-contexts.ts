@@ -1,7 +1,7 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Console, Effect, FileSystem, Layer, Path} from 'effect';
+import {Console, DateTime, Effect, FileSystem, Layer, Path} from 'effect';
 import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
 import {SystemInfo} from '../src/effect/system.js';
 import {
@@ -95,7 +95,7 @@ interface DistributionSummary {
 
 export function embeddingContextBenchmarkSchedule(rounds: number): readonly (readonly EmbeddingContextPoolSize[])[] {
   if (!Number.isSafeInteger(rounds) || rounds < 4 || rounds > 16 || rounds % 4 !== 0) {
-    throw new ScriptError('--rounds must be one of 4, 8, 12, or 16.');
+    throw ScriptError.make({message: '--rounds must be one of 4, 8, 12, or 16.'});
   }
   return Array.from({length: rounds}, (_, index) => WILLIAMS_ORDER[index % WILLIAMS_ORDER.length]);
 }
@@ -109,17 +109,17 @@ export function parseEmbeddingContextBenchmarkArguments(args: readonly string[])
     const argument = args[index];
     const value = () => {
       const candidate = args[++index]?.trim();
-      if (!candidate) throw new ScriptError(`${argument} requires a value.`);
+      if (!candidate) throw ScriptError.make({message: `${argument} requires a value.`});
       return candidate;
     };
     if (argument === '--model-home') modelHome = value();
     else if (argument === '--output-dir') outputDirectory = value();
     else if (argument === '--rounds') rounds = Number(value());
     else if (argument === '--resume') resume = true;
-    else throw new ScriptError(`Unknown embedding-context benchmark option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown embedding-context benchmark option: ${argument}`});
   }
   if (!modelHome || !outputDirectory) {
-    throw new ScriptError('Embedding-context benchmark requires --model-home and --output-dir.');
+    throw ScriptError.make({message: 'Embedding-context benchmark requires --model-home and --output-dir.'});
   }
   embeddingContextBenchmarkSchedule(rounds);
   return {modelHome, outputDirectory, resume, rounds};
@@ -130,9 +130,9 @@ export function summarizeEmbeddingContextArtifacts(
   schedule: readonly (readonly EmbeddingContextPoolSize[])[],
 ): EmbeddingContextBenchmarkSummary {
   if (artifacts.length !== schedule.length * 4)
-    throw new ScriptError('Embedding benchmark artifact count is incomplete.');
+    throw ScriptError.make({message: 'Embedding benchmark artifact count is incomplete.'});
   const first = artifacts[0]?.artifact;
-  if (!first) throw new ScriptError('Embedding benchmark requires at least one artifact.');
+  if (!first) throw ScriptError.make({message: 'Embedding benchmark requires at least one artifact.'});
   const observations = artifacts.map(({artifact, artifactPath}, index) => {
     const round = Math.floor(index / 4);
     const position = index % 4;
@@ -142,7 +142,7 @@ export function summarizeEmbeddingContextArtifacts(
       artifact.metadata.embeddingContextPoolSizeRequested !== contexts ||
       artifact.metadata.embeddingContextPoolSizeEffective !== contexts
     ) {
-      throw new ScriptError(`Embedding benchmark artifact ${artifactPath} has the wrong context capacity.`);
+      throw ScriptError.make({message: `Embedding benchmark artifact ${artifactPath} has the wrong context capacity.`});
     }
     validateThreadPlan(artifact, artifactPath, contexts);
     validateComparableArtifact(first, artifact, artifactPath);
@@ -244,20 +244,20 @@ const benchmark = Effect.scoped(
     yield* fs.makeDirectory(outputDirectory, {recursive: true});
     const summaryPath = path.join(outputDirectory, 'summary.json');
     if (yield* fs.exists(summaryPath))
-      return yield* Effect.fail(new ScriptError(`Summary already exists: ${summaryPath}`));
+      return yield* ScriptError.make({message: `Summary already exists: ${summaryPath}`});
     const benchmarkScript = yield* path.fromFileUrl(new URL('./benchmark-code-graph.ts', import.meta.url));
     const schedule = embeddingContextBenchmarkSchedule(options.rounds);
     const source = yield* cleanSourceState(sourceRoot);
     const runManifestPath = path.join(outputDirectory, 'run.json');
     if (yield* fs.exists(runManifestPath)) {
       if (!options.resume) {
-        return yield* Effect.fail(new ScriptError(`Run manifest already exists; pass --resume: ${runManifestPath}`));
+        return yield* ScriptError.make({message: `Run manifest already exists; pass --resume: ${runManifestPath}`});
       }
       validateRunManifest(yield* readJsonFile(runManifestPath), source.commit, schedule);
     } else {
       const manifest: EmbeddingContextBenchmarkRunManifest = {
         commit: source.commit,
-        createdAt: new Date().toISOString(),
+        createdAt: DateTime.formatIso(yield* DateTime.now),
         rounds: options.rounds,
         schedule,
         version: 1,
@@ -274,7 +274,7 @@ const benchmark = Effect.scoped(
         );
         if (!(yield* fs.exists(artifactPath))) continue;
         if (!options.resume) {
-          return yield* Effect.fail(new ScriptError(`Benchmark artifact already exists: ${artifactPath}`));
+          return yield* ScriptError.make({message: `Benchmark artifact already exists: ${artifactPath}`});
         }
         const artifact = parseBenchmarkArtifactV1(yield* readJsonFile(artifactPath));
         validateObservationArtifact(artifact, artifactPath, source.commit, contexts);
@@ -353,7 +353,7 @@ function runObservation(
     },
   ).pipe(
     Effect.asVoid,
-    Effect.mapError(cause => new ScriptError(`Embedding context ${contexts} benchmark failed.`, {cause})),
+    Effect.mapError(cause => ScriptError.make({message: `Embedding context ${contexts} benchmark failed.`, cause})),
   );
 }
 
@@ -369,14 +369,16 @@ function validateObservationArtifact(
     artifact.metadata.embeddingContextPoolSizeRequested !== contexts ||
     artifact.metadata.embeddingContextPoolSizeEffective !== contexts
   ) {
-    throw new ScriptError(`Embedding benchmark artifact ${artifactPath} does not match its scheduled clean run.`);
+    throw ScriptError.make({
+      message: `Embedding benchmark artifact ${artifactPath} does not match its scheduled clean run.`,
+    });
   }
   validateThreadPlan(artifact, artifactPath, contexts);
 }
 
 function validateComparableArtifact(reference: BenchmarkArtifactV1, artifact: BenchmarkArtifactV1, path: string): void {
   if (reference.environment.dirty || artifact.environment.dirty) {
-    throw new ScriptError(`Embedding benchmark artifact ${path} was produced from dirty source.`);
+    throw ScriptError.make({message: `Embedding benchmark artifact ${path} was produced from dirty source.`});
   }
   const comparisons = [
     ['commit', reference.environment.commit, artifact.environment.commit],
@@ -416,13 +418,14 @@ function validateComparableArtifact(reference: BenchmarkArtifactV1, artifact: Be
     ],
   ] as const;
   for (const [label, expected, actual] of comparisons) {
-    if (actual !== expected) throw new ScriptError(`Embedding benchmark artifact ${path} changed ${label}.`);
+    if (actual !== expected)
+      throw ScriptError.make({message: `Embedding benchmark artifact ${path} changed ${label}.`});
   }
   if (artifact.metadata.vectorEnabled !== true || artifact.metadata.scaleSymbols !== SCALE_SYMBOLS) {
-    throw new ScriptError(`Embedding benchmark artifact ${path} is not a 10k vector run.`);
+    throw ScriptError.make({message: `Embedding benchmark artifact ${path} is not a 10k vector run.`});
   }
   if (artifact.suite !== reference.suite || artifact.version !== reference.version || artifact.warmups !== 0) {
-    throw new ScriptError(`Embedding benchmark artifact ${path} changed its benchmark contract.`);
+    throw ScriptError.make({message: `Embedding benchmark artifact ${path} changed its benchmark contract.`});
   }
 }
 
@@ -431,16 +434,18 @@ function validateThreadPlan(artifact: BenchmarkArtifactV1, path: string, context
   const gpuLayers = artifact.metadata.embeddingModelGpuLayers;
   const encoded = artifact.metadata.embeddingContextThreadCounts;
   if (typeof cpuMathCores !== 'number' || !Number.isSafeInteger(cpuMathCores) || cpuMathCores < 1) {
-    throw new ScriptError(`Embedding benchmark artifact ${path} has invalid CPU math-core telemetry.`);
+    throw ScriptError.make({message: `Embedding benchmark artifact ${path} has invalid CPU math-core telemetry.`});
   }
   if (contexts === 1) {
     if (encoded !== 'upstream-default') {
-      throw new ScriptError(`Embedding benchmark artifact ${path} changed the one-context thread default.`);
+      throw ScriptError.make({message: `Embedding benchmark artifact ${path} changed the one-context thread default.`});
     }
     return;
   }
   if (gpuLayers !== 0 || typeof encoded !== 'string') {
-    throw new ScriptError(`Embedding benchmark artifact ${path} is not a CPU-thread-partitioned observation.`);
+    throw ScriptError.make({
+      message: `Embedding benchmark artifact ${path} is not a CPU-thread-partitioned observation.`,
+    });
   }
   const threads = encoded.split(',').map(value => Number(value));
   if (
@@ -450,21 +455,22 @@ function validateThreadPlan(artifact: BenchmarkArtifactV1, path: string, context
     threads.some((value, index) => index > 0 && value > threads[index - 1]) ||
     threads[0] - threads.at(-1)! > 1
   ) {
-    throw new ScriptError(`Embedding benchmark artifact ${path} has an invalid CPU-thread partition.`);
+    throw ScriptError.make({message: `Embedding benchmark artifact ${path} has an invalid CPU-thread partition.`});
   }
 }
 
 function normalizedEnvironmentOverrides(artifact: BenchmarkArtifactV1): string {
   const encoded = artifact.metadata.environmentOverrides;
-  if (typeof encoded !== 'string') throw new ScriptError('Embedding benchmark artifact has no environment provenance.');
+  if (typeof encoded !== 'string')
+    throw ScriptError.make({message: 'Embedding benchmark artifact has no environment provenance.'});
   let parsed: unknown;
   try {
     parsed = JSON.parse(encoded);
   } catch (cause) {
-    throw new ScriptError('Embedding benchmark artifact has invalid environment provenance.', {cause});
+    throw ScriptError.make({message: 'Embedding benchmark artifact has invalid environment provenance.', cause});
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new ScriptError('Embedding benchmark artifact has invalid environment provenance.');
+    throw ScriptError.make({message: 'Embedding benchmark artifact has invalid environment provenance.'});
   }
   const values = {...(parsed as Record<string, unknown>)};
   delete values[THREADNOTE_EMBEDDING_CONTEXTS_ENV];
@@ -482,31 +488,31 @@ function validateSamplerIntegrity(artifact: BenchmarkArtifactV1, path: string): 
   ];
   for (const name of positive) {
     if (measurement(artifact, name).minimum < 1) {
-      throw new ScriptError(`Embedding benchmark artifact ${path} has no usable ${name}.`);
+      throw ScriptError.make({message: `Embedding benchmark artifact ${path} has no usable ${name}.`});
     }
   }
   if (measurement(artifact, 'cold-external-sampler-version-n1').minimum < 4) {
-    throw new ScriptError(`Embedding benchmark artifact ${path} used an unsupported sampler.`);
+    throw ScriptError.make({message: `Embedding benchmark artifact ${path} used an unsupported sampler.`});
   }
   if (measurement(artifact, 'cold-external-process-tree-failures-n1').maximum !== 0) {
-    throw new ScriptError(`Embedding benchmark artifact ${path} lost process-tree samples.`);
+    throw ScriptError.make({message: `Embedding benchmark artifact ${path} lost process-tree samples.`});
   }
   if (
     measurement(artifact, 'cold-external-process-tree-maximum-sample-gap-n1').maximum > SAMPLER_MAXIMUM_GAP_MILLISECONDS
   ) {
-    throw new ScriptError(`Embedding benchmark artifact ${path} exceeded the sampler gap ceiling.`);
+    throw ScriptError.make({message: `Embedding benchmark artifact ${path} exceeded the sampler gap ceiling.`});
   }
 }
 
 function measurement(artifact: BenchmarkArtifactV1, name: string): BenchmarkMeasurementV1 {
   const value = artifact.measurements.find(candidate => candidate.name === name);
-  if (!value) throw new ScriptError(`Embedding benchmark artifact is missing ${name}.`);
+  if (!value) throw ScriptError.make({message: `Embedding benchmark artifact is missing ${name}.`});
   return value;
 }
 
 function distribution(values: readonly number[]): DistributionSummary {
   if (values.length === 0 || values.some(value => !Number.isFinite(value) || value < 0)) {
-    throw new ScriptError('Embedding benchmark distribution is empty or invalid.');
+    throw ScriptError.make({message: 'Embedding benchmark distribution is empty or invalid.'});
   }
   const sorted = [...values].sort((left, right) => left - right);
   const percentile = (quantile: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))];
@@ -541,13 +547,13 @@ const cleanSourceState = Effect.fn('embeddingContextBenchmark.cleanSourceState')
       ),
     ],
     {concurrency: 2},
-  ).pipe(Effect.mapError(cause => new ScriptError('Could not validate benchmark source state.', {cause})));
+  ).pipe(Effect.mapError(cause => ScriptError.make({message: 'Could not validate benchmark source state.', cause})));
   const commit = commitResult.stdout.trim();
   if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(commit)) {
-    return yield* Effect.fail(new ScriptError('Embedding benchmark source commit is invalid.'));
+    return yield* ScriptError.make({message: 'Embedding benchmark source commit is invalid.'});
   }
   if (statusResult.stdout.trim()) {
-    return yield* Effect.fail(new ScriptError('Embedding context promotion evidence requires a clean checkout.'));
+    return yield* ScriptError.make({message: 'Embedding context promotion evidence requires a clean checkout.'});
   }
   return {commit};
 });
@@ -558,7 +564,7 @@ const assertSourceState = Effect.fn('embeddingContextBenchmark.assertSourceState
 ) {
   const current = yield* cleanSourceState(sourceRoot);
   if (current.commit !== expectedCommit) {
-    return yield* Effect.fail(new ScriptError('Embedding benchmark source commit changed during the run.'));
+    return yield* ScriptError.make({message: 'Embedding benchmark source commit changed during the run.'});
   }
 });
 
@@ -579,7 +585,7 @@ function validateRunManifest(
     !('schedule' in value) ||
     JSON.stringify(value.schedule) !== JSON.stringify(schedule)
   ) {
-    throw new ScriptError('Embedding context benchmark run manifest does not match this invocation.');
+    throw ScriptError.make({message: 'Embedding context benchmark run manifest does not match this invocation.'});
   }
 }
 

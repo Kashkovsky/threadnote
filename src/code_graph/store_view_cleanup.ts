@@ -1,4 +1,4 @@
-import {Clock, Effect, Option} from 'effect';
+import {Clock, DateTime, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
   type CodeGraphRemovedViewCleanupEvidence,
@@ -61,7 +61,7 @@ const purgeSelectedSnapshot = Effect.fn('codeGraph.purgeSelectedSnapshot')(funct
       if (observed.evidence.snapshot.state === 'ready') {
         yield* sql.unsafe("UPDATE snapshots SET state = 'retired' WHERE id = ? AND state = 'ready'", [snapshotId]);
         if ((yield* lastStatementChangeCount(sql)) !== 1) {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge target changed.'));
+          return yield* CodeGraphStoreError.of('Code graph snapshot purge target changed.');
         }
       }
       return {state: 'retired-core' as const};
@@ -70,12 +70,13 @@ const purgeSelectedSnapshot = Effect.fn('codeGraph.purgeSelectedSnapshot')(funct
   if (core.state !== 'retired-core') return core;
   const cleanup = yield* pruneRetiredSnapshotRowsPage(sql, snapshotId).pipe(
     Effect.map(page => ({cleanupState: 'completed' as const, ...page})),
-    Effect.catch(() =>
-      Effect.succeed({cleanupState: 'deferred' as const, deleted: 0, remaining: true} satisfies {
-        readonly cleanupState: 'deferred';
-        readonly deleted: number;
-        readonly remaining: boolean;
-      }),
+    Effect.orElseSucceed(
+      () =>
+        ({cleanupState: 'deferred' as const, deleted: 0, remaining: true}) satisfies {
+          readonly cleanupState: 'deferred';
+          readonly deleted: number;
+          readonly remaining: boolean;
+        },
     ),
   );
   const present = yield* sql.unsafe<{readonly present: unknown}>(
@@ -83,7 +84,7 @@ const purgeSelectedSnapshot = Effect.fn('codeGraph.purgeSelectedSnapshot')(funct
     [snapshotId],
   );
   if (present.length !== 1 || (present[0]?.present !== 0 && present[0]?.present !== 1)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge completion is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot purge completion is invalid.');
   }
   return {
     cleanupState: cleanup.cleanupState,
@@ -103,17 +104,15 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
 ) {
   yield* validateViewRemovalTarget(worktreeId, expectedSnapshotId);
   if (cleanupEvidence !== undefined && !validRemovedViewCleanupEvidence(cleanupEvidence)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup evidence is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph removed view cleanup evidence is invalid.');
   }
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError(
-            requireReconciliationSchema
-              ? 'Code graph reconciliation schema is unavailable.'
-              : 'Code graph removal authority schema is unavailable.',
-          ),
+        return yield* CodeGraphStoreError.of(
+          requireReconciliationSchema
+            ? 'Code graph reconciliation schema is unavailable.'
+            : 'Code graph removal authority schema is unavailable.',
         );
       }
       const active = yield* sql.unsafe<{readonly activated_at: unknown; readonly snapshot_id: unknown}>(
@@ -156,7 +155,7 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
         (removedAtValue !== undefined &&
           (typeof removedAtValue !== 'string' || !validCanonicalTimestamp(removedAtValue)))
       ) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph removed view authority is invalid.');
       }
 
       if (activeSnapshotId !== undefined && activeSnapshotId !== expectedSnapshotId) {
@@ -170,7 +169,7 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
       if (activeSnapshotId === undefined) {
         if (removedSnapshotId === expectedSnapshotId) {
           if (typeof removedAtValue !== 'string') {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority is invalid.'));
+            return yield* CodeGraphStoreError.of('Code graph removed view authority is invalid.');
           }
           yield* validateRemovedViewSnapshotAuthority(sql, expectedSnapshotId, false);
           yield* ensureRemovedViewCleanupEpoch(
@@ -201,7 +200,7 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
 
       const alreadyRemoved = removedSnapshotId === expectedSnapshotId;
       if (alreadyRemoved && typeof removedAtValue !== 'string') {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph removed view authority is invalid.');
       }
       yield* validateRemovedViewSnapshotAuthority(
         sql,
@@ -209,12 +208,12 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
         true,
         alreadyRemoved ? undefined : cleanupEvidence,
       );
-      const removedAt = nextCodeGraphActiveViewActivationTimestamp(new Date().toISOString(), [
+      const removedAt = nextCodeGraphActiveViewActivationTimestamp(DateTime.formatIso(yield* DateTime.now), [
         typeof activeActivatedAt === 'string' ? activeActivatedAt : undefined,
         typeof removedAtValue === 'string' ? removedAtValue : undefined,
       ]);
       if (removedAt === undefined) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view generation is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph removed view generation is invalid.');
       }
       yield* sql`
         INSERT INTO removed_views (worktree_id, expected_snapshot_id, removed_at)
@@ -228,7 +227,7 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
         WHERE worktree_id = ${worktreeId} AND snapshot_id = ${expectedSnapshotId}
       `;
       if ((yield* lastStatementChangeCount(sql)) !== 1) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph view pointer changed during removal.'));
+        return yield* CodeGraphStoreError.of('Code graph view pointer changed during removal.');
       }
       yield* ensureRemovedViewCleanupEpoch(
         sql,
@@ -314,7 +313,7 @@ const pruneRetiredSnapshotRowsPage = Effect.fn('codeGraph.pruneRetiredSnapshotRo
         }),
       );
       if (!Number.isSafeInteger(deleted) || deleted < 0) {
-        return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid row count.'));
+        return yield* CodeGraphStoreError.of('Retired snapshot cleanup returned an invalid row count.');
       }
       if (deleted > 0) return {deleted, remaining: true} satisfies RetiredSnapshotCleanupPage;
     }
@@ -364,7 +363,7 @@ const pruneRetiredSnapshotRowsPage = Effect.fn('codeGraph.pruneRetiredSnapshotRo
       }),
     );
     if (!Number.isSafeInteger(deleted) || deleted < 0) {
-      return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid row count.'));
+      return yield* CodeGraphStoreError.of('Retired snapshot cleanup returned an invalid row count.');
     }
     if (deleted > 0) return {deleted, remaining: true} satisfies RetiredSnapshotCleanupPage;
   }
@@ -383,7 +382,7 @@ const pruneRetiredSnapshotRowsPage = Effect.fn('codeGraph.pruneRetiredSnapshotRo
     }),
   );
   if (!Number.isSafeInteger(removed) || removed < 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid count.'));
+    return yield* CodeGraphStoreError.of('Retired snapshot cleanup returned an invalid count.');
   }
   const remaining = yield* sql.unsafe<{readonly present: number}>(
     `SELECT EXISTS(

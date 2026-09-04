@@ -157,7 +157,7 @@ export {
 } from './store_visualization.js';
 
 export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphStoreShape>()(
-  'threadnote/codeGraph/CodeGraphStore',
+  'threadnote/code_graph/store/CodeGraphStore',
 ) {
   static readonly layer = Layer.effect(
     CodeGraphStore,

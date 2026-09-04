@@ -4,6 +4,7 @@ import {mkdtemp, mkdir, readFile, rm, writeFile} from '../helpers/node-fs-promis
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {runSharePublish as runSharePublishEffect} from '../../src/effect/share.js';
 import {readMemoryWithRelocations} from '../../src/memory/relocation.js';
@@ -96,7 +97,7 @@ function mockPublishCommands(sourcePath: string, pushResult: CommandResult, sour
     return Effect.succeed(ok());
   });
   vi.mocked(utils.maybeRun).mockImplementation((dryRun, executable, args, options) =>
-    dryRun ? Effect.succeed(undefined) : vi.mocked(utils.runCommand)(executable, args, options),
+    dryRun ? succeedUndefined : vi.mocked(utils.runCommand)(executable, args, options),
   );
 }
 

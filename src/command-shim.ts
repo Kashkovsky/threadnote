@@ -137,7 +137,7 @@ const installLauncherFile = Effect.fn('commandShim.installLauncherFile')(functio
     yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o755});
     yield* fs.chmod(temporary, 0o755);
     yield* fs.rename(temporary, shimPath);
-  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
   yield* Console.log(`Wrote command launcher: ${shimPath}`);
 });
 

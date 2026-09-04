@@ -132,12 +132,12 @@ const program = Effect.gen(function* () {
         });
         await runReleaseMatrix(options, dirname(subject.executable));
       },
-      catch: cause => new ScriptError('Code Memory Link matrix execution stopped.', {cause}),
+      catch: cause => ScriptError.make({message: 'Code Memory Link matrix execution stopped.', cause}),
     });
   }
   yield* Effect.tryPromise({
     try: () => runCalibrationMatrix(options),
-    catch: cause => new ScriptError('Code Memory Link matrix execution stopped.', {cause}),
+    catch: cause => ScriptError.make({message: 'Code Memory Link matrix execution stopped.', cause}),
   });
 });
 
@@ -1038,10 +1038,10 @@ function parseArguments(arguments_: readonly string[]): Options {
     if (option === '--calibration-arg') {
       calibrationArguments.push(required(arguments_[++index], option));
     } else if (scalarOptions.has(option)) {
-      if (values.has(option)) throw new ScriptError(`${option} may be supplied only once.`);
+      if (values.has(option)) throw ScriptError.make({message: `${option} may be supplied only once.`});
       values.set(option, required(arguments_[++index], option));
     } else {
-      throw new ScriptError(`Unknown Code Memory Link matrix option: ${option}`);
+      throw ScriptError.make({message: `Unknown Code Memory Link matrix option: ${option}`});
     }
   }
   const mode = required(values.get('--mode'), '--mode');
@@ -1055,7 +1055,9 @@ function parseArguments(arguments_: readonly string[]): Options {
   if (mode === 'release') {
     for (const forbidden of ['--calibration-command', '--calibration-results']) {
       if (values.has(forbidden) || calibrationArguments.length > 0) {
-        throw new ScriptError('Release mode cannot accept calibration command, arguments, or result paths.');
+        throw ScriptError.make({
+          message: 'Release mode cannot accept calibration command, arguments, or result paths.',
+        });
       }
     }
     return {
@@ -1097,7 +1099,8 @@ function parseArguments(arguments_: readonly string[]): Options {
       '--evidence',
       '--trials',
     ]) {
-      if (values.has(forbidden)) throw new ScriptError(`Calibration mode cannot accept release option ${forbidden}.`);
+      if (values.has(forbidden))
+        throw ScriptError.make({message: `Calibration mode cannot accept release option ${forbidden}.`});
     }
     return {
       calibrationArguments,
@@ -1115,7 +1118,7 @@ function parseArguments(arguments_: readonly string[]): Options {
       timeoutMilliseconds,
     };
   }
-  throw new ScriptError('--mode must be release or calibration.');
+  throw ScriptError.make({message: '--mode must be release or calibration.'});
 }
 
 async function readJson(path: string): Promise<unknown> {
@@ -1303,11 +1306,7 @@ export function boundedCodeMemoryLinkChildFailureDiagnostic(input: {
     budgets[index] += granted;
     remaining -= granted;
   }
-  return streams
-    .map((stream, index) => {
-      return `${headers[index]}${stream.value.slice(-budgets[index])}`;
-    })
-    .join('\n');
+  return streams.map((stream, index) => `${headers[index]}${stream.value.slice(-budgets[index])}`).join('\n');
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -1435,7 +1434,7 @@ function nonnegativeInteger(value: unknown, label: string): number {
 function boundedPositiveInteger(value: string, label: string, maximum: number): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > maximum) {
-    throw new ScriptError(`${label} must be a positive integer no greater than ${maximum}.`);
+    throw ScriptError.make({message: `${label} must be a positive integer no greater than ${maximum}.`});
   }
   return parsed;
 }
@@ -1443,7 +1442,7 @@ function boundedPositiveInteger(value: string, label: string, maximum: number): 
 function boundedNonnegativeInteger(value: string, label: string, maximum: number): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > maximum) {
-    throw new ScriptError(`${label} must be a nonnegative integer no greater than ${maximum}.`);
+    throw ScriptError.make({message: `${label} must be a nonnegative integer no greater than ${maximum}.`});
   }
   return parsed;
 }
@@ -1453,7 +1452,7 @@ function sha256(value: string | Uint8Array): string {
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 

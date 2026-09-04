@@ -1,7 +1,7 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Clock, Console, Effect, FileSystem, Layer, Path} from 'effect';
+import {Clock, Console, DateTime, Effect, FileSystem, Layer, Path} from 'effect';
 import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
 import {sha256HexSync} from '../src/crypto/sha256.js';
 import {runtimeHostHardwareInfo, runtimeOperatingSystemRelease, SystemInfo} from '../src/effect/system.js';
@@ -98,7 +98,7 @@ const benchmarkWorktreeReadiness = Effect.scoped(
     const baselineRef = options.baselineRef ?? `${candidateCommit}^`;
     const baselineCommit = yield* git(repositoryRoot, ['rev-parse', '--verify', `${baselineRef}^{commit}`]);
     if (candidateCommit === baselineCommit) {
-      return yield* Effect.fail(new ScriptError('Candidate and baseline commits must differ.'));
+      return yield* ScriptError.make({message: 'Candidate and baseline commits must differ.'});
     }
     yield* git(repositoryRoot, ['merge-base', '--is-ancestor', baselineCommit, candidateCommit]);
 
@@ -129,7 +129,7 @@ const benchmarkWorktreeReadiness = Effect.scoped(
 
     const artifact = {
       schemaVersion: 1,
-      generatedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+      generatedAt: DateTime.formatIso(yield* DateTime.now),
       scope: {
         name: 'warm-linked-worktree-lexical-readiness',
         description:
@@ -186,7 +186,7 @@ const prepareRuntime = Effect.fn('worktreeReadiness.prepareRuntime')(function* (
   yield* progress(`Installing frozen dependencies for ${name} ${commit.slice(0, 12)}`);
   yield* command('bun', ['install', '--frozen-lockfile', '--ignore-scripts'], root, 5 * 60 * 1_000);
   if ((yield* git(root, ['status', '--porcelain', '--untracked-files=no'])) !== '') {
-    return yield* Effect.fail(new ScriptError(`${name} runtime checkout changed during dependency installation.`));
+    return yield* ScriptError.make({message: `${name} runtime checkout changed during dependency installation.`});
   }
   return {
     commit,
@@ -303,7 +303,9 @@ const prepareScenarioCommit = Effect.fn('worktreeReadiness.prepareScenarioCommit
     );
     yield* git(fixture.primary, ['add', FIXTURE_QUERY_PATH]);
   }
-  const date = new Date(Date.UTC(2026, 7, 4, scenario === 'graphEquivalentCommit' ? 1 : 2, run, 0)).toISOString();
+  const date = DateTime.formatIso(
+    DateTime.makeUnsafe(Date.UTC(2026, 7, 4, scenario === 'graphEquivalentCommit' ? 1 : 2, run, 0)),
+  );
   const environment = {
     ...system.environment(),
     GIT_AUTHOR_DATE: date,
@@ -334,7 +336,7 @@ const removeLinkedWorktree = Effect.fn('worktreeReadiness.removeLinkedWorktree')
 ) {
   const path = yield* Path.Path;
   if (!worktree.startsWith(`${fixture.worktreeRoot}${path.sep}`)) {
-    return yield* Effect.fail(new ScriptError(`Refusing to remove an unexpected worktree path: ${worktree}`));
+    return yield* ScriptError.make({message: `Refusing to remove an unexpected worktree path: ${worktree}`});
   }
   yield* git(fixture.primary, ['worktree', 'remove', '--force', worktree]);
 });
@@ -365,7 +367,9 @@ const runIndex = Effect.fn('worktreeReadiness.runIndex')(function* (runtime: Run
   );
   const nodes = array(query.nodes, 'query.nodes').map(value => record(value, 'query node'));
   if (!nodes.some(node => node.name === FIXTURE_QUERY && node.path === FIXTURE_QUERY_PATH)) {
-    throw new ScriptError(`${runtime.name} query control did not return ${FIXTURE_QUERY_PATH}#${FIXTURE_QUERY}.`);
+    throw ScriptError.make({
+      message: `${runtime.name} query control did not return ${FIXTURE_QUERY_PATH}#${FIXTURE_QUERY}.`,
+    });
   }
   return {
     durationMilliseconds,
@@ -409,26 +413,30 @@ const runThreadnote = Effect.fn('worktreeReadiness.runThreadnote')(function* (
 
 function assertExpectedMode(scenario: ScenarioName, baseline: Observation, candidate: Observation): void {
   if (baseline.materializationMode !== 'full') {
-    throw new ScriptError(`${scenario} baseline unexpectedly used ${baseline.materializationMode}.`);
+    throw ScriptError.make({message: `${scenario} baseline unexpectedly used ${baseline.materializationMode}.`});
   }
   const expectedCandidate = scenario === 'graphEquivalentCommit' ? 'reused-snapshot' : 'incremental-clean';
   if (candidate.materializationMode !== expectedCandidate) {
-    throw new ScriptError(`${scenario} candidate unexpectedly used ${candidate.materializationMode}.`);
+    throw ScriptError.make({message: `${scenario} candidate unexpectedly used ${candidate.materializationMode}.`});
   }
   if (scenario === 'graphEquivalentCommit' && candidate.stagedFiles !== 0) {
-    throw new ScriptError('Graph-equivalent candidate commit staged files instead of aliasing the ready graph.');
+    throw ScriptError.make({
+      message: 'Graph-equivalent candidate commit staged files instead of aliasing the ready graph.',
+    });
   }
   if (scenario === 'oneFileChange' && candidate.stagedFiles !== 1) {
-    throw new ScriptError(`One-file candidate commit staged ${candidate.stagedFiles} files instead of one.`);
+    throw ScriptError.make({
+      message: `One-file candidate commit staged ${candidate.stagedFiles} files instead of one.`,
+    });
   }
 }
 
 function assertParity(baseline: Observation, candidate: Observation, label: string): void {
   if (JSON.stringify(baseline.graph) !== JSON.stringify(candidate.graph)) {
-    throw new ScriptError(`${label} graph counts differ between the baseline and candidate.`);
+    throw ScriptError.make({message: `${label} graph counts differ between the baseline and candidate.`});
   }
   if (baseline.queryDigest !== candidate.queryDigest) {
-    throw new ScriptError(`${label} query control differs between the baseline and candidate.`);
+    throw ScriptError.make({message: `${label} query control differs between the baseline and candidate.`});
   }
 }
 
@@ -464,7 +472,7 @@ function compareJson(left: unknown, right: unknown): number {
 
 function summarize(values: readonly number[], expectedSamples: number): Summary {
   if (values.length !== expectedSamples || values.some(value => !Number.isFinite(value) || value <= 0)) {
-    throw new ScriptError(`Expected ${expectedSamples} positive benchmark observations.`);
+    throw ScriptError.make({message: `Expected ${expectedSamples} positive benchmark observations.`});
   }
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);
@@ -488,16 +496,16 @@ function validateArtifact(
     artifact.source.baseline.commit !== context.baselineCommit ||
     artifact.source.candidate.commit !== context.candidateCommit
   ) {
-    throw new ScriptError('Benchmark artifact source provenance drifted during the run.');
+    throw ScriptError.make({message: 'Benchmark artifact source provenance drifted during the run.'});
   }
   for (const [name, scenario] of Object.entries(artifact.scenarios)) {
     if (!scenario.graphParityPassed || !scenario.queryParityPassed)
-      throw new ScriptError(`${name} parity did not pass.`);
+      throw ScriptError.make({message: `${name} parity did not pass.`});
     if (!Number.isFinite(scenario.medianSpeedup) || scenario.medianSpeedup <= 1) {
-      throw new ScriptError(`${name} did not improve median readiness time.`);
+      throw ScriptError.make({message: `${name} did not improve median readiness time.`});
     }
     if (!Number.isFinite(scenario.percentFaster) || scenario.percentFaster <= 0 || scenario.percentFaster >= 100) {
-      throw new ScriptError(`${name} has an invalid percentage improvement.`);
+      throw ScriptError.make({message: `${name} has an invalid percentage improvement.`});
     }
   }
 }
@@ -509,7 +517,8 @@ function finalJsonRecord(output: string, expectedType?: string): Record<string, 
     .map(line => JSON.parse(line) as unknown)
     .filter(value => value !== null && typeof value === 'object' && !Array.isArray(value)) as Record<string, unknown>[];
   const selected = expectedType ? records.findLast(record => record.type === expectedType) : records.at(-1);
-  if (!selected) throw new ScriptError(`Threadnote command did not emit ${expectedType ?? 'a final JSON record'}.`);
+  if (!selected)
+    throw ScriptError.make({message: `Threadnote command did not emit ${expectedType ?? 'a final JSON record'}.`});
   return selected;
 }
 
@@ -527,7 +536,7 @@ const cloneAtCommit = Effect.fn('worktreeReadiness.cloneAtCommit')(function* (
   );
   yield* git(target, ['checkout', '--quiet', '--detach', commit]);
   if ((yield* git(target, ['rev-parse', 'HEAD'])) !== commit) {
-    return yield* Effect.fail(new ScriptError(`Could not prepare exact checkout ${commit}.`));
+    return yield* ScriptError.make({message: `Could not prepare exact checkout ${commit}.`});
   }
 });
 
@@ -577,53 +586,56 @@ function parseArguments(arguments_: readonly string[]): BenchmarkOptions {
     else if (argument === '--output') outputPath = required(arguments_[++index], argument);
     else if (argument === '--samples') samples = positiveInteger(arguments_[++index], argument);
     else if (argument === '--warmups') warmups = nonNegativeInteger(arguments_[++index], argument);
-    else throw new ScriptError(`Unknown worktree-readiness benchmark option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown worktree-readiness benchmark option: ${argument}`});
   }
   return {baselineRef, candidateRef, outputPath, samples, warmups};
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 
 function positiveInteger(value: string | undefined, option: string): number {
   const parsed = nonNegativeInteger(value, option);
-  if (parsed === 0) throw new ScriptError(`${option} must be at least 1.`);
+  if (parsed === 0) throw ScriptError.make({message: `${option} must be at least 1.`});
   return parsed;
 }
 
 function nonNegativeInteger(value: string | undefined, option: string): number {
   const parsed = Number.parseInt(required(value, option), 10);
-  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new ScriptError(`${option} must be a non-negative integer.`);
+  if (!Number.isSafeInteger(parsed) || parsed < 0)
+    throw ScriptError.make({message: `${option} must be a non-negative integer.`});
   return parsed;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ScriptError(`${label} must be an object.`);
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw ScriptError.make({message: `${label} must be an object.`});
   return value as Record<string, unknown>;
 }
 
 function array(value: unknown, label: string): readonly unknown[] {
-  if (!Array.isArray(value)) throw new ScriptError(`${label} must be an array.`);
+  if (!Array.isArray(value)) throw ScriptError.make({message: `${label} must be an array.`});
   return value;
 }
 
 function integerField(record_: Record<string, unknown>, key: string): number {
   const value = record_[key];
   if (!Number.isSafeInteger(value) || Number(value) < 0)
-    throw new ScriptError(`${key} must be a non-negative integer.`);
+    throw ScriptError.make({message: `${key} must be a non-negative integer.`});
   return Number(value);
 }
 
 function stringField(record_: Record<string, unknown>, key: string): string {
   const value = record_[key];
-  if (typeof value !== 'string' || value.length === 0) throw new ScriptError(`${key} must be a non-empty string.`);
+  if (typeof value !== 'string' || value.length === 0)
+    throw ScriptError.make({message: `${key} must be a non-empty string.`});
   return value;
 }
 
 function requireObservation(value: Observation | undefined, label: string): Observation {
-  if (!value) throw new ScriptError(`Missing ${label} observation.`);
+  if (!value) throw ScriptError.make({message: `Missing ${label} observation.`});
   return value;
 }
 

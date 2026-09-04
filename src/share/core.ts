@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Option, Path, Predicate, Result} from 'effect';
+import {Console, DateTime, Effect, FileSystem, Option, Path, Predicate, Result, Schema} from 'effect';
 
 import {SystemInfo} from '../effect/system.js';
 
@@ -40,12 +40,15 @@ import {
   runCommand,
 } from '../utils.js';
 
-class ShareOperationError extends Error {
-  readonly _tag = 'ShareOperationError' as const;
-}
+class ShareOperationError extends Schema.TaggedError<ShareOperationError>()('ShareOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 function shareOperationError(cause: unknown): ShareOperationError {
-  return cause instanceof ShareOperationError ? cause : new ShareOperationError(errorMessage(cause), {cause});
+  return Schema.is(ShareOperationError)(cause)
+    ? cause
+    : ShareOperationError.make({cause, message: errorMessage(cause)});
 }
 
 const NATIVE_RESOURCE_BACKEND = 'threadnote-native';
@@ -560,7 +563,7 @@ function assertSafeShareRelativePath(relativePath: string): string {
     relativePath.includes('\\') ||
     relativePath.split('/').some(segment => segment === '.' || segment === '..' || segment.length === 0)
   ) {
-    throw new ShareOperationError(`Invalid shared relative path: ${relativePath}`);
+    throw ShareOperationError.make({message: `Invalid shared relative path: ${relativePath}`});
   }
   return relativePath;
 }
@@ -571,9 +574,9 @@ function normalizeTeamName(input: string | undefined): string {
     return 'default';
   }
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(candidate) || /^\.+$/.test(candidate)) {
-    throw new ShareOperationError(
-      `Invalid team name "${input}". Team names must start with a lowercase letter or digit and contain only [a-z0-9._-]. Single-dot or dot-only names are rejected so they don't collapse to the shared-root or parent directory.`,
-    );
+    throw ShareOperationError.make({
+      message: `Invalid team name "${input}". Team names must start with a lowercase letter or digit and contain only [a-z0-9._-]. Single-dot or dot-only names are rejected so they don't collapse to the shared-root or parent directory.`,
+    });
   }
   return candidate;
 }
@@ -599,12 +602,12 @@ export const readTeamsFile = Effect.fn('share.readTeamsFile')(function* (config:
   }
   const parsed = parseJsonConfigObject(raw);
   if (!parsed) {
-    throw new ShareOperationError(`Could not parse teams file ${path}`);
+    throw ShareOperationError.make({message: `Could not parse teams file ${path}`});
   }
   if (typeof parsed.version === 'number' && parsed.version > TEAMS_FILE_VERSION) {
-    throw new ShareOperationError(
-      `Teams file ${path} was written with version ${parsed.version}; this Threadnote binary understands up to version ${TEAMS_FILE_VERSION}. Upgrade Threadnote (\`threadnote update\`) before continuing.`,
-    );
+    throw ShareOperationError.make({
+      message: `Teams file ${path} was written with version ${parsed.version}; this Threadnote binary understands up to version ${TEAMS_FILE_VERSION}. Upgrade Threadnote (\`threadnote update\`) before continuing.`,
+    });
   }
   const teams: Record<string, ShareTeamConfig> = {};
   if (typeof parsed.teams === 'object' && parsed.teams !== null && !Array.isArray(parsed.teams)) {
@@ -624,7 +627,7 @@ export const readTeamsFile = Effect.fn('share.readTeamsFile')(function* (config:
       }
       teams[name] = {
         ...(entry.access === 'read-only' || entry.access === 'read-write' ? {access: entry.access} : {}),
-        addedAt: typeof entry.addedAt === 'string' ? entry.addedAt : new Date(0).toISOString(),
+        addedAt: typeof entry.addedAt === 'string' ? entry.addedAt : DateTime.formatIso(DateTime.makeUnsafe(0)),
         gitdir: typeof entry.gitdir === 'string' ? entry.gitdir : yield* teamGitdirPath(config, name),
         name,
         remote: entry.remote,
@@ -659,22 +662,22 @@ export const resolveTeam = Effect.fn('share.resolveTeam')(function* (
   const teamsFile = yield* readTeamsFile(config);
   const entries = Object.entries(teamsFile.teams);
   if (entries.length === 0) {
-    throw new ShareOperationError('No shared teams configured. Run: threadnote share init <remote-url>');
+    throw ShareOperationError.make({message: 'No shared teams configured. Run: threadnote share init <remote-url>'});
   }
   const wantName = requested ? normalizeTeamName(requested) : (teamsFile.defaultTeam ?? entries[0][0]);
   const found = teamsFile.teams[wantName];
   if (!found) {
     const known = entries.map(([name]) => name).join(', ');
-    throw new ShareOperationError(`Team "${wantName}" is not configured. Known teams: ${known}`);
+    throw ShareOperationError.make({message: `Team "${wantName}" is not configured. Known teams: ${known}`});
   }
   return {config: found, name: wantName};
 });
 
 function assertShareTeamWritable(team: ResolvedTeam, operation: string): void {
   if (shareTeamAccess(team.config) === 'read-only') {
-    throw new ShareOperationError(
-      `Shared team "${team.name}" is read-only; cannot ${operation}. Change it with: threadnote share set-access --team ${team.name} --mode read-write`,
-    );
+    throw ShareOperationError.make({
+      message: `Shared team "${team.name}" is read-only; cannot ${operation}. Change it with: threadnote share set-access --team ${team.name} --mode read-write`,
+    });
   }
 }
 
@@ -690,15 +693,15 @@ const assertWorktreeUsable = Effect.fn('share.assertWorktreeUsable')(function* (
     return;
   }
   if (!(yield* isDirectory(worktree))) {
-    throw new ShareOperationError(`Cannot use ${worktree} as a worktree: not a directory.`);
+    throw ShareOperationError.make({message: `Cannot use ${worktree} as a worktree: not a directory.`});
   }
   const entries = yield* readdir(worktree);
   if (entries.length > 0) {
     const preview = entries.slice(0, 5).join(', ');
     const suffix = entries.length > 5 ? `, +${entries.length - 5} more` : '';
-    throw new ShareOperationError(
-      `Worktree ${worktree} is not empty (contains: ${preview}${suffix}). Move or remove its contents, then retry threadnote share init.`,
-    );
+    throw ShareOperationError.make({
+      message: `Worktree ${worktree} is not empty (contains: ${preview}${suffix}). Move or remove its contents, then retry threadnote share init.`,
+    });
   }
 });
 
@@ -802,7 +805,9 @@ export function sharedUriFor(config: ShareRuntime, personalUri: string, team: st
   const canonicalUri = parseResourceId(personalUri).canonicalUri;
   const prefix = `threadnote://user/${uriSegment(config.user)}/memories/`;
   if (!canonicalUri.startsWith(prefix)) {
-    throw new ShareOperationError(`Refusing to publish memory outside the current user namespace: ${personalUri}`);
+    throw ShareOperationError.make({
+      message: `Refusing to publish memory outside the current user namespace: ${personalUri}`,
+    });
   }
   const rest = canonicalUri.slice(prefix.length);
   return `${prefix}${SHARED_SEGMENT}/${team}/${rest}`;
@@ -812,7 +817,9 @@ export function personalUriFor(config: ShareRuntime, sharedUri: string, team: st
   const canonicalUri = parseResourceId(sharedUri).canonicalUri;
   const prefix = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`;
   if (!canonicalUri.startsWith(prefix)) {
-    throw new ShareOperationError(`Refusing to unpublish a URI outside team "${team}" shared namespace: ${sharedUri}`);
+    throw ShareOperationError.make({
+      message: `Refusing to unpublish a URI outside team "${team}" shared namespace: ${sharedUri}`,
+    });
   }
   const rest = canonicalUri.slice(prefix.length);
   return `threadnote://user/${uriSegment(config.user)}/memories/${rest}`;
@@ -822,7 +829,7 @@ export function resourceUriToWorktreeRelative(config: ShareRuntime, uri: string,
   const canonicalUri = parseResourceId(uri).canonicalUri;
   const prefix = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`;
   if (!canonicalUri.startsWith(prefix)) {
-    throw new ShareOperationError(`URI ${uri} is not inside team "${team}" shared subtree.`);
+    throw ShareOperationError.make({message: `URI ${uri} is not inside team "${team}" shared subtree.`});
   }
   return canonicalUri.slice(prefix.length);
 }
@@ -924,7 +931,7 @@ const readMemoryContent = Effect.fn('share.readMemoryContent')(function* (
   const store = yield* ResourceStore;
   const content = yield* store.read(resourceStoreLocation(config), uri);
   if (!content.trim()) {
-    throw new ShareOperationError(`Refusing to publish empty memory at ${uri}`);
+    throw ShareOperationError.make({message: `Refusing to publish empty memory at ${uri}`});
   }
   return content;
 });
@@ -1059,7 +1066,7 @@ const readSharedInboundFileContent = Effect.fn('share.readSharedInboundFileConte
   filePath: string,
 ) {
   if (!(yield* isRegularFileNoSymlink(filePath))) {
-    return yield* Effect.fail(new ShareOperationError(`Refusing to ingest non-regular shared file: ${filePath}`));
+    return yield* ShareOperationError.make({message: `Refusing to ingest non-regular shared file: ${filePath}`});
   }
   return yield* prepareSharedInboundContentEffect(uri, yield* readFile(filePath, 'utf8'));
 });
@@ -1078,15 +1085,15 @@ function prepareSharedInboundContent(uri: string, rawContent: string): string {
   const stripped = stripPersonalProvenanceForSharedPublication(canonicalMemoryDocumentContent(rawContent));
   const citationBlocker = memoryCodeCitationContentSharingBlocker(uri, stripped);
   if (citationBlocker) {
-    throw new ShareOperationError(
-      `Refusing to ingest ${uri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
-    );
+    throw ShareOperationError.make({
+      message: `Refusing to ingest ${uri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+    });
   }
   const scrub = applyScrubber(stripped, {redact: false});
   if (scrub.blocker) {
-    throw new ShareOperationError(
-      `Refusing to ingest ${uri}: possible ${scrub.blocker}. Strip the sensitive value upstream first.`,
-    );
+    throw ShareOperationError.make({
+      message: `Refusing to ingest ${uri}: possible ${scrub.blocker}. Strip the sensitive value upstream first.`,
+    });
   }
   return scrub.cleaned;
 }
@@ -1145,7 +1152,7 @@ function sharedMemoryContentsEquivalent(left: string, right: string): boolean {
 /** Remote shared edits may add an identity to a legacy record, but never drop or replace an established one. */
 function assertSharedMemoryIdentityContinuity(uri: string, currentContent: string, incomingContent: string): void {
   const issue = sharedMemoryIdentityContinuityIssue(uri, currentContent, incomingContent);
-  if (issue !== undefined) throw new ShareOperationError(issue);
+  if (issue !== undefined) throw ShareOperationError.make({message: issue});
 }
 
 function sharedMemoryIdentityContinuityIssue(
@@ -1169,8 +1176,8 @@ export const verifySharedMemoryIdentityContinuity = Effect.fn('share.verifyMemor
 ) {
   const store = yield* ResourceStore;
   const currentContent = yield* store.read(resourceStoreLocation(config), uri).pipe(
-    Effect.map(Option.some),
-    Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none())),
+    Effect.asSome,
+    Effect.catchTag('ResourceNotFound', () => Effect.succeedNone),
   );
   if (Option.isSome(currentContent)) {
     assertSharedMemoryIdentityContinuity(uri, currentContent.value, incomingContent);

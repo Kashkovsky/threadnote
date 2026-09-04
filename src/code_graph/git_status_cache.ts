@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
@@ -35,9 +35,13 @@ export interface CodeGraphGitStatusCacheOptions {
   readonly minimumIndexBytes?: number;
 }
 
-class CodeGraphGitStatusCacheUnavailable extends Error {
-  readonly _tag = 'CodeGraphGitStatusCacheUnavailable' as const;
-}
+class CodeGraphGitStatusCacheUnavailable extends Schema.TaggedError<CodeGraphGitStatusCacheUnavailable>()(
+  'CodeGraphGitStatusCacheUnavailable',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export const worktreeStatusWithPrivateCache = Effect.fn('codeGraph.worktreeStatusWithPrivateCache')(function* (
   identity: RepositoryIdentity,
@@ -66,7 +70,7 @@ const acceleratedWorktreeStatus = Effect.fn('codeGraph.acceleratedWorktreeStatus
   const path = yield* Path.Path;
   const minimumIndexBytes = options.minimumIndexBytes ?? CODE_GRAPH_GIT_STATUS_CACHE_INDEX_BYTES_MINIMUM;
   if (!Number.isSafeInteger(minimumIndexBytes) || minimumIndexBytes < 0) {
-    return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Invalid private Git index threshold.'));
+    return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Invalid private Git index threshold.'});
   }
   const resolvedIndex = (yield* runCommandEffect(
     'git',
@@ -74,10 +78,10 @@ const acceleratedWorktreeStatus = Effect.fn('codeGraph.acceleratedWorktreeStatus
     {maxOutputBytes: 16_384, timeoutMs: 30_000},
   )).stdout.trim();
   if (!path.isAbsolute(resolvedIndex) || /[\0\r\n]/.test(resolvedIndex)) {
-    return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Git index path is unavailable.'));
+    return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Git index path is unavailable.'});
   }
   if (Option.isSome(yield* fs.readLink(resolvedIndex).pipe(Effect.option))) {
-    return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Git index is symbolic.'));
+    return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Git index is symbolic.'});
   }
   const sourceIdentity = codeGraphGitIndexIdentity(yield* fs.stat(resolvedIndex));
   if (
@@ -85,7 +89,7 @@ const acceleratedWorktreeStatus = Effect.fn('codeGraph.acceleratedWorktreeStatus
     sourceIdentity.indexBytes < minimumIndexBytes ||
     sourceIdentity.indexBytes > CODE_GRAPH_GIT_STATUS_CACHE_INDEX_BYTES_MAXIMUM
   ) {
-    return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Git index is outside private-cache bounds.'));
+    return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Git index is outside private-cache bounds.'});
   }
 
   const privateHome = path.resolve(threadnoteHome);
@@ -170,7 +174,7 @@ function runCachedStatus(
     ).pipe(Effect.ensuring(fs.chmod(privateIndex, 0o600).pipe(Effect.ignore)));
     const finalSourceIdentity = codeGraphGitIndexIdentity(yield* fs.stat(sourceIndex));
     if (finalSourceIdentity === undefined || !sameCodeGraphGitIndexIdentity(finalSourceIdentity, sourceIdentity)) {
-      return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Git index changed during observation.'));
+      return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Git index changed during observation.'});
     }
     if (!metadataReusable) {
       yield* writeReceipt(fs, path, receiptPath, {
@@ -193,7 +197,7 @@ const observeSourceIndexSemanticSha256 = Effect.fn('codeGraph.observeSourceIndex
     expectedIdentity.indexBytes <= SEMANTIC_INDEX_OUTPUT_BYTES_MAXIMUM
       ? yield* fs.readFile(sourceIndex).pipe(
           Effect.map(bytes => codeGraphGitIndexSemanticSha256(bytes, identity.objectFormat)),
-          Effect.catch(() => Effect.succeed(undefined)),
+          Effect.orElseSucceed(() => undefined),
         )
       : undefined;
   const semanticSha256 =
@@ -207,7 +211,7 @@ const observeSourceIndexSemanticSha256 = Effect.fn('codeGraph.observeSourceIndex
     );
   const finalIdentity = codeGraphGitIndexIdentity(yield* fs.stat(sourceIndex));
   if (finalIdentity === undefined || !sameCodeGraphGitIndexIdentity(finalIdentity, expectedIdentity)) {
-    return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Git index changed during semantic observation.'));
+    return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Git index changed during semantic observation.'});
   }
   return semanticSha256;
 });
@@ -235,7 +239,7 @@ function initializePrivateIndex(
       finalSourceIdentity === undefined ||
       !sameCodeGraphGitIndexIdentity(finalSourceIdentity, sourceIdentity)
     ) {
-      return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Private Git index copy is incomplete.'));
+      return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Private Git index copy is incomplete.'});
     }
     yield* fs.remove(privateIndex, {force: true});
     yield* fs.rename(temporary, privateIndex);
@@ -275,7 +279,7 @@ const ensureFsmonitorDaemon = Effect.fn('codeGraph.ensureFsmonitorDaemon')(funct
   yield* fsmonitorDaemon(identity, 'start');
   const verified = yield* fsmonitorDaemon(identity, 'status');
   if (verified.exitCode !== 0) {
-    return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Git fsmonitor daemon is unavailable.'));
+    return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Git fsmonitor daemon is unavailable.'});
   }
 });
 
@@ -288,24 +292,24 @@ function ensurePrivateCacheDirectory(
   return Effect.gen(function* () {
     const relative = path.relative(privateHome, directory);
     if (!relative || path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) {
-      return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Private Git cache directory escaped home.'));
+      return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Private Git cache directory escaped home.'});
     }
     const components = relative.split(path.sep).filter(Boolean);
     let candidate = privateHome;
     for (const component of ['', ...components]) {
       if (component) candidate = path.join(candidate, component);
       if (Option.isSome(yield* fs.readLink(candidate).pipe(Effect.option))) {
-        return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Private Git cache directory is symbolic.'));
+        return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Private Git cache directory is symbolic.'});
       }
       if (!(yield* fs.exists(candidate))) {
         if (!component) {
-          return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Private Threadnote home is unavailable.'));
+          return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Private Threadnote home is unavailable.'});
         }
         yield* fs.makeDirectory(candidate, {mode: 0o700});
       }
       const info = yield* fs.stat(candidate);
       if (info.type !== 'Directory') {
-        return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Private Git cache directory is invalid.'));
+        return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Private Git cache directory is invalid.'});
       }
     }
     yield* fs.chmod(directory, 0o700);
@@ -329,7 +333,7 @@ function privateRegularFileWithinBound(fs: FileSystem.FileSystem, file: string) 
 function rejectSymbolicTarget(fs: FileSystem.FileSystem, target: string) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-      return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Private Git cache target is symbolic.'));
+      return yield* CodeGraphGitStatusCacheUnavailable.make({message: 'Private Git cache target is symbolic.'});
     }
   });
 }
@@ -342,7 +346,7 @@ function readReceipt(fs: FileSystem.FileSystem, receiptPath: string) {
       return undefined;
     }
     return parseCodeGraphGitStatusCacheReceipt(yield* fs.readFileString(receiptPath));
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  }).pipe(Effect.orElseSucceed(() => undefined));
 }
 
 function writeReceipt(

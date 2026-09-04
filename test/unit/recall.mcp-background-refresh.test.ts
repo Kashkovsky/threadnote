@@ -359,8 +359,8 @@ describe('MCP recall background vector refresh', () => {
                 ? Deferred.succeed(firstAttempted, undefined).pipe(
                     Effect.andThen(
                       Effect.fail(
-                        new EmbeddingFailed({
-                          cause: new TestError('synthetic background refresh failure'),
+                        EmbeddingFailed.make({
+                          cause: TestError.make({message: 'synthetic background refresh failure'}),
                           message: 'Synthetic background refresh failure.',
                           modelId: manifest.id,
                         }),
@@ -460,8 +460,8 @@ function fakeRuntime(
   return LocalModelRuntime.of({
     diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
     embedMany: ({inputs, manifest: requested}) => embed(inputs, requested.dimensions ?? 0),
-    generate: () => Effect.die(new TestError('Unexpected generation')),
-    rerank: () => Effect.die(new TestError('Unexpected reranking')),
+    generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+    rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
   });
 }
 
@@ -475,7 +475,7 @@ function installedModelStore(home: string): LocalModelStoreShape {
     verified: true,
   };
   return LocalModelStore.of({
-    install: () => Effect.die(new TestError('Unexpected install')),
+    install: () => Effect.die(TestError.make({message: 'Unexpected install'})),
     path: () => installation.path,
     remove: () => Effect.succeed(false),
     status: () => Effect.succeed(installation),
@@ -514,5 +514,5 @@ const awaitRefreshedRecallReadiness = Effect.fn('test.awaitRefreshedRecallReadin
     }
     yield* Effect.yieldNow;
   }
-  throw new TestError('Background refresh did not produce current lexical and vector indexes.');
+  throw TestError.make({message: 'Background refresh did not produce current lexical and vector indexes.'});
 });

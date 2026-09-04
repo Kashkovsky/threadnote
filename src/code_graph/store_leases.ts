@@ -1,4 +1,4 @@
-import {Clock, Effect} from 'effect';
+import {Clock, DateTime, Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
   type CodeGraphViewSnapshotLeaseRetainOptions,
@@ -120,7 +120,7 @@ const retireAbandonedPersistentBuild = Effect.fn('codeGraph.retireAbandonedPersi
   const sql = yield* SqlClient.SqlClient;
   if (!(yield* initializeRoutineMaintenanceSchema(sql))) return 'changed' as const;
   const now = yield* Clock.currentTimeMillis;
-  const completedAt = new Date(now).toISOString();
+  const completedAt = DateTime.formatIso(DateTime.makeUnsafe(now));
   const retired = yield* sql.withTransaction(
     Effect.gen(function* () {
       const rows = yield* sql<{readonly id: string}>`
@@ -189,10 +189,10 @@ const reapExpiredSnapshotLeasesPage = Effect.fn('codeGraph.reapExpiredSnapshotLe
   now: number,
 ) {
   if (!(yield* authorityPrimaryKeyBinary(sql, 'snapshot_leases', 'token'))) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease capability schema is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot lease capability schema is invalid.');
   }
   if ((yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX)) !== 'ready') {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease expiry index is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot lease expiry index is invalid.');
   }
   const rows = yield* sql.unsafe<BoundedSnapshotLeaseRow>(
     `SELECT ${boundedSnapshotLeaseProjection('lease')}
@@ -207,7 +207,7 @@ const reapExpiredSnapshotLeasesPage = Effect.fn('codeGraph.reapExpiredSnapshotLe
   }
   const leases = rows.map(decodeSnapshotLeaseManifest);
   if (leases.some(lease => lease === undefined)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease manifest is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph snapshot lease manifest is invalid.');
   }
   const decodedLeases: SnapshotLeaseManifest[] = [];
   for (const lease of leases) {
@@ -238,7 +238,7 @@ const reapExpiredSnapshotLeasesPage = Effect.fn('codeGraph.reapExpiredSnapshotLe
     );
     const successor = successorRows[0] === undefined ? undefined : decodeSnapshotLeaseManifest(successorRows[0]);
     if (successorRows[0] !== undefined && successor === undefined) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease manifest is invalid.'));
+      return yield* CodeGraphStoreError.of('Code graph snapshot lease manifest is invalid.');
     }
     if (successor === undefined) {
       if (retirementAuthorityCurrent) {
@@ -301,13 +301,13 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
   yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph snapshot lease authority schema is invalid.');
       }
       const ready = yield* sql<{readonly id: string}>`
         SELECT id FROM snapshots WHERE id = ${snapshotId} AND state = 'ready' LIMIT 1
       `;
       if (!ready[0]) {
-        return yield* Effect.fail(new CodeGraphStoreError(`Ready snapshot ${snapshotId} is no longer available.`));
+        return yield* CodeGraphStoreError.of(`Ready snapshot ${snapshotId} is no longer available.`);
       }
       if (token.startsWith('retained-base:')) {
         const targets = yield* sql<{
@@ -328,7 +328,7 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
         `;
         const target = targets[0];
         if (!target) {
-          return yield* Effect.fail(new CodeGraphStoreError('Retained code graph base is no longer available.'));
+          return yield* CodeGraphStoreError.of('Retained code graph base is no longer available.');
         }
         const retainedReservations = yield* sql<{
           readonly estimated_bytes: number;
@@ -356,9 +356,7 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
               row.physical_id !== target.physical_id,
           )
         ) {
-          return yield* Effect.fail(
-            new CodeGraphStoreError('The worktree already has a retained committed code graph base.'),
-          );
+          return yield* CodeGraphStoreError.of('The worktree already has a retained committed code graph base.');
         }
         const detachedReady = yield* sql<{
           readonly estimated_bytes: number;
@@ -406,9 +404,7 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
           physical.size > CODE_GRAPH_DETACHED_READY_COUNT_MAXIMUM ||
           retainedBytes > CODE_GRAPH_DETACHED_READY_ESTIMATED_BYTES_MAXIMUM
         ) {
-          return yield* Effect.fail(
-            new CodeGraphStoreError('Retained code graph bases would exceed detached-ready capacity.'),
-          );
+          return yield* CodeGraphStoreError.of('Retained code graph bases would exceed detached-ready capacity.');
         }
       }
       yield* sql`
@@ -457,7 +453,7 @@ const retainViewSnapshotLease = Effect.fn('codeGraph.retainViewSnapshotLease')(f
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph snapshot lease authority schema is invalid.');
       }
       const observation = yield* observeActiveView(sql, worktreeId, snapshotId);
       yield* options?.afterViewObserved?.() ?? Effect.void;
@@ -475,7 +471,7 @@ const retainViewSnapshotLease = Effect.fn('codeGraph.retainViewSnapshotLease')(f
         );
         const row = existing[0] === undefined ? undefined : decodeSnapshotLeaseManifest(existing[0]);
         if (existing[0] !== undefined && row === undefined) {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease manifest is invalid.'));
+          return yield* CodeGraphStoreError.of('Code graph snapshot lease manifest is invalid.');
         }
         const expiresAt = row?.expiresAt ?? 0;
         if (row?.snapshotId === snapshotId && expiresAt > now) {
@@ -574,7 +570,7 @@ const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(functio
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph snapshot lease authority schema is invalid.');
       }
       const retirementAuthorityCurrent = yield* codeGraphWorktreeReconciliationSchemaCompatible(sql);
       const now = yield* Clock.currentTimeMillis;
@@ -588,7 +584,7 @@ const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(functio
       const releasedCandidates: string[] = [];
       const row = releasedRows[0] === undefined ? undefined : decodeSnapshotLeaseManifest(releasedRows[0]);
       if (releasedRows[0] !== undefined && row === undefined) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease manifest is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph snapshot lease manifest is invalid.');
       }
       if (row?.retireWhenInactive === 1) {
         const successorRows = yield* sql.unsafe<BoundedSnapshotLeaseRow>(
@@ -603,7 +599,7 @@ const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(functio
         );
         const successor = successorRows[0] === undefined ? undefined : decodeSnapshotLeaseManifest(successorRows[0]);
         if (successorRows[0] !== undefined && successor === undefined) {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease manifest is invalid.'));
+          return yield* CodeGraphStoreError.of('Code graph snapshot lease manifest is invalid.');
         }
         if (successor === undefined) {
           if (retirementAuthorityCurrent) releasedCandidates.push(row.snapshotId);
@@ -639,13 +635,13 @@ const renewSnapshotLease = Effect.fn('codeGraph.renewSnapshotLease')(function* (
   yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
+        return yield* CodeGraphStoreError.of('Code graph snapshot lease authority schema is invalid.');
       }
       const active = yield* sql<{readonly present: number}>`
         SELECT 1 AS present FROM snapshot_leases WHERE token = ${token} AND expires_at > ${now} LIMIT 1
       `;
       if (!active[0]) {
-        return yield* Effect.fail(new CodeGraphStoreError('The code graph snapshot lease expired before renewal.'));
+        return yield* CodeGraphStoreError.of('The code graph snapshot lease expired before renewal.');
       }
       yield* sql`
         UPDATE snapshot_leases SET expires_at = ${now + duration} WHERE token = ${token}

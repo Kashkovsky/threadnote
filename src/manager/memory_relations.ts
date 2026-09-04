@@ -1,4 +1,4 @@
-import {Data, Effect, Predicate} from 'effect';
+import {Data, Effect, Predicate, Schema} from 'effect';
 import {assertMemoryDocumentSchemaWritable, type MemoryRelation} from '../memory/document.js';
 import {isMemoryId} from '../memory/identity_alias.js';
 import {
@@ -59,12 +59,10 @@ export const updateManagerMemoryRelations = Effect.fn('manager.updateMemoryRelat
   });
   const memoryRoot = `threadnote://user/${uriSegment(config.user)}/memories`;
   if (!resourceIdIsWithin(canonicalUri, memoryRoot)) {
-    return yield* Effect.fail(
-      relationError(
-        'Manager can only edit relations on the current user memory corpus.',
-        403,
-        'memory-relations-forbidden',
-      ),
+    return yield* relationError(
+      'Manager can only edit relations on the current user memory corpus.',
+      403,
+      'memory-relations-forbidden',
     );
   }
   const sharedTeam = sharedTeamNameForUri(config, canonicalUri);
@@ -73,12 +71,12 @@ export const updateManagerMemoryRelations = Effect.fn('manager.updateMemoryRelat
     Effect.mapError(() => relationOperationError()),
   );
   if (!source)
-    return yield* Effect.fail(
-      relationError('The memory no longer exists. Reload and retry.', 404, 'memory-relations-not-found'),
-    );
+    return yield* relationError('The memory no longer exists. Reload and retry.', 404, 'memory-relations-not-found');
   if (source.content !== input.expectedContent) {
-    return yield* Effect.fail(
-      relationError('The memory changed after it was opened. Reload and retry.', 409, 'memory-relations-conflict'),
+    return yield* relationError(
+      'The memory changed after it was opened. Reload and retry.',
+      409,
+      'memory-relations-conflict',
     );
   }
   yield* Effect.try({
@@ -92,8 +90,10 @@ export const updateManagerMemoryRelations = Effect.fn('manager.updateMemoryRelat
   });
   const sourceMemoryId = source.metadata.memoryId;
   if (!isMemoryId(sourceMemoryId ?? '')) {
-    return yield* Effect.fail(
-      relationError('Structured relations require an identity-bearing memory.', 409, 'memory-relations-conflict'),
+    return yield* relationError(
+      'Structured relations require an identity-bearing memory.',
+      409,
+      'memory-relations-conflict',
     );
   }
   const checkedSourceMemoryId = sourceMemoryId!;
@@ -111,22 +111,18 @@ export const updateManagerMemoryRelations = Effect.fn('manager.updateMemoryRelat
   });
   if (writeResult.isError) {
     const argumentFailure = readAnonymousTelemetryDiagnostic(writeResult)?.errorType === 'McpArgumentError';
-    return yield* Effect.fail(
-      argumentFailure
-        ? relationError(toolErrorMessage(writeResult.content), 409, 'memory-relations-conflict')
-        : relationOperationError(),
-    );
+    return yield* argumentFailure
+      ? relationError(toolErrorMessage(writeResult.content), 409, 'memory-relations-conflict')
+      : relationOperationError();
   }
   const [stored] = yield* readMemoryRecordsByUri(config, [canonicalUri]).pipe(
     Effect.mapError(() => relationOperationError()),
   );
   if (!stored || stored.metadata.memoryId !== checkedSourceMemoryId) {
-    return yield* Effect.fail(
-      relationError(
-        'The relation update could not be verified. Reload the memory.',
-        500,
-        'memory-relations-verification-failed',
-      ),
+    return yield* relationError(
+      'The relation update could not be verified. Reload the memory.',
+      500,
+      'memory-relations-verification-failed',
     );
   }
   return {
@@ -188,7 +184,7 @@ function relationResolutionError(cause: unknown): ManagerMemoryRelationsError {
   if (cause instanceof MemoryRelationWriteError || cause instanceof MemoryPointerNotFound) {
     return relationError(cause.message);
   }
-  if (cause instanceof MemoryIdentityResolutionError) {
+  if (Schema.is(MemoryIdentityResolutionError)(cause)) {
     return cause.reason === 'ambiguous' || cause.reason === 'live-mismatch'
       ? relationError(cause.message, 409, 'memory-relations-conflict')
       : relationError(cause.message);

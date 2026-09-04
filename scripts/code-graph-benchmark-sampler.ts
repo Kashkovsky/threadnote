@@ -1,7 +1,7 @@
 import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Clock, Effect, FileSystem, Layer, Option} from 'effect';
+import {Clock, DateTime, Effect, FileSystem, Layer, Option} from 'effect';
 import {
   platformPathFor,
   runtimeLstat,
@@ -92,7 +92,7 @@ export interface CodeGraphBenchmarkSamplerCheckpoint {
 
 export function parseCodeGraphBenchmarkSamplerArtifact(value: unknown): CodeGraphBenchmarkSamplerArtifact {
   if (typeof value !== 'object' || value === null)
-    throw new ScriptError('Benchmark sampler artifact must be an object.');
+    throw ScriptError.make({message: 'Benchmark sampler artifact must be an object.'});
   const artifact = value as Partial<CodeGraphBenchmarkSamplerArtifact>;
   if (
     (artifact.version !== 2 && artifact.version !== 3 && artifact.version !== 4) ||
@@ -106,7 +106,7 @@ export function parseCodeGraphBenchmarkSamplerArtifact(value: unknown): CodeGrap
     typeof artifact.phases !== 'object' ||
     artifact.phases === null
   ) {
-    throw new ScriptError('Benchmark sampler artifact is invalid.');
+    throw ScriptError.make({message: 'Benchmark sampler artifact is invalid.'});
   }
   const processTelemetry = parseSamplerProcessTelemetry(artifact.platform, artifact.processTelemetry, artifact.version);
   const temporaryTelemetry = parseSamplerTemporaryTelemetry(
@@ -117,19 +117,20 @@ export function parseCodeGraphBenchmarkSamplerArtifact(value: unknown): CodeGrap
   let phaseSamples = 0;
   for (const [phase, sample] of Object.entries(artifact.phases)) {
     if (!phase || !isSamplerPhase(sample, processTelemetry, temporaryTelemetry, artifact.version)) {
-      throw new ScriptError(`Benchmark sampler phase ${phase || '<empty>'} is invalid.`);
+      throw ScriptError.make({message: `Benchmark sampler phase ${phase || '<empty>'} is invalid.`});
     }
     phaseSamples += sample.samples;
-    if (!Number.isSafeInteger(phaseSamples)) throw new ScriptError('Benchmark sampler sample total is invalid.');
+    if (!Number.isSafeInteger(phaseSamples))
+      throw ScriptError.make({message: 'Benchmark sampler sample total is invalid.'});
   }
   if (phaseSamples !== artifact.samples)
-    throw new ScriptError('Benchmark sampler phase samples do not match its total.');
+    throw ScriptError.make({message: 'Benchmark sampler phase samples do not match its total.'});
   return artifact as CodeGraphBenchmarkSamplerArtifact;
 }
 
 export function parseCodeGraphBenchmarkSamplerCheckpoint(value: unknown): CodeGraphBenchmarkSamplerCheckpoint {
   if (typeof value !== 'object' || value === null)
-    throw new ScriptError('Benchmark sampler checkpoint must be an object.');
+    throw ScriptError.make({message: 'Benchmark sampler checkpoint must be an object.'});
   const checkpoint = value as Partial<CodeGraphBenchmarkSamplerCheckpoint>;
   if (
     (checkpoint.version !== 2 && checkpoint.version !== 3 && checkpoint.version !== 4) ||
@@ -137,11 +138,11 @@ export function parseCodeGraphBenchmarkSamplerCheckpoint(value: unknown): CodeGr
     typeof checkpoint.updatedAt !== 'string' ||
     !Number.isFinite(Date.parse(checkpoint.updatedAt))
   ) {
-    throw new ScriptError('Benchmark sampler checkpoint is invalid.');
+    throw ScriptError.make({message: 'Benchmark sampler checkpoint is invalid.'});
   }
   const sampler = parseCodeGraphBenchmarkSamplerArtifact(checkpoint.sampler);
   if (sampler.version !== checkpoint.version)
-    throw new ScriptError('Benchmark sampler checkpoint version is inconsistent.');
+    throw ScriptError.make({message: 'Benchmark sampler checkpoint version is inconsistent.'});
   return checkpoint as CodeGraphBenchmarkSamplerCheckpoint;
 }
 
@@ -151,7 +152,7 @@ function parseSamplerProcessTelemetry(
   version: CodeGraphBenchmarkSamplerArtifact['version'],
 ): CodeGraphBenchmarkSamplerProcessTelemetry {
   if (typeof value !== 'object' || value === null) {
-    throw new ScriptError('Benchmark sampler process telemetry must be an object.');
+    throw ScriptError.make({message: 'Benchmark sampler process telemetry must be an object.'});
   }
   const telemetry = value as Partial<CodeGraphBenchmarkSamplerProcessTelemetry>;
   if (telemetry.availability === 'available') {
@@ -198,7 +199,7 @@ function parseSamplerProcessTelemetry(
   ) {
     return telemetry as CodeGraphBenchmarkSamplerProcessTelemetry;
   }
-  throw new ScriptError('Benchmark sampler process telemetry does not match its platform.');
+  throw ScriptError.make({message: 'Benchmark sampler process telemetry does not match its platform.'});
 }
 
 function parseSamplerTemporaryTelemetry(
@@ -207,11 +208,12 @@ function parseSamplerTemporaryTelemetry(
   version: CodeGraphBenchmarkSamplerArtifact['version'],
 ): CodeGraphBenchmarkSamplerTemporaryTelemetry | undefined {
   if (version < 4) {
-    if (value !== undefined) throw new ScriptError('Legacy benchmark sampler temporary telemetry must be omitted.');
+    if (value !== undefined)
+      throw ScriptError.make({message: 'Legacy benchmark sampler temporary telemetry must be omitted.'});
     return undefined;
   }
   if (typeof value !== 'object' || value === null) {
-    throw new ScriptError('Benchmark sampler temporary telemetry must be an object.');
+    throw ScriptError.make({message: 'Benchmark sampler temporary telemetry must be an object.'});
   }
   const telemetry = value as Partial<CodeGraphBenchmarkSamplerTemporaryTelemetry>;
   if (
@@ -241,7 +243,7 @@ function parseSamplerTemporaryTelemetry(
   ) {
     return telemetry as CodeGraphBenchmarkSamplerTemporaryTelemetry;
   }
-  throw new ScriptError('Benchmark sampler temporary telemetry does not match its platform.');
+  throw ScriptError.make({message: 'Benchmark sampler temporary telemetry does not match its platform.'});
 }
 
 function isSamplerPhase(
@@ -429,7 +431,7 @@ const samplerMain = Effect.gen(function* () {
             ? pendingInitialProcessSample !== undefined
               ? Effect.succeed(pendingInitialProcessSample)
               : readProcessTreeSample(options.processId, clockTicksPerSecond, samplerProcessTreeExclusions)
-            : Effect.succeed(undefined),
+            : Effect.void,
         ],
         {concurrency: 'unbounded'},
       );
@@ -621,7 +623,7 @@ const writeCheckpoint = Effect.fn('codeGraphBenchmarkSampler.writeCheckpoint')(f
   const checkpoint: CodeGraphBenchmarkSamplerCheckpoint = {
     sampler,
     state,
-    updatedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+    updatedAt: DateTime.formatIso(yield* DateTime.now),
     version: sampler.version,
   };
   yield* atomicWriteFile(checkpointPath, `${JSON.stringify(checkpoint)}\n`);
@@ -1364,12 +1366,12 @@ export const linuxClockTicksPerSecond = Effect.fn('codeGraphBenchmarkSampler.lin
       return Number.isFinite(value) && value > 0 ? value : 100;
     },
     catch: scriptError,
-  }).pipe(Effect.catch(() => Effect.succeed(100)));
+  }).pipe(Effect.orElseSucceed(() => 100));
 });
 
 const canonicalDirectory = Effect.fn('codeGraphBenchmarkSampler.canonicalDirectory')(function* (directory: string) {
   const fs = yield* FileSystem.FileSystem;
-  return yield* fs.realPath(directory).pipe(Effect.catch(() => Effect.succeed(hostPath.resolve(directory))));
+  return yield* fs.realPath(directory).pipe(Effect.orElseSucceed(() => hostPath.resolve(directory)));
 });
 
 const directoryFileSnapshot = Effect.fn('codeGraphBenchmarkSampler.directoryFileSnapshot')(function* (
@@ -1420,36 +1422,37 @@ function parseArguments(args: readonly string[]): SamplerOptions {
     const flag = args[index];
     const value = args[index + 1];
     if (!flag?.startsWith('--') || value === undefined)
-      throw new ScriptError(`Invalid benchmark sampler argument ${flag}.`);
+      throw ScriptError.make({message: `Invalid benchmark sampler argument ${flag}.`});
     values.set(flag, value);
   }
   const required = (flag: string) => {
     const value = values.get(flag);
-    if (!value) throw new ScriptError(`Missing benchmark sampler argument ${flag}.`);
+    if (!value) throw ScriptError.make({message: `Missing benchmark sampler argument ${flag}.`});
     return value;
   };
   const processId = Number(required('--pid'));
   const intervalMilliseconds = Number(required('--interval-ms'));
   const checkpointIntervalMilliseconds = Number(required('--checkpoint-ms'));
-  if (!Number.isSafeInteger(processId) || processId <= 0) throw new ScriptError('Sampler PID must be positive.');
+  if (!Number.isSafeInteger(processId) || processId <= 0)
+    throw ScriptError.make({message: 'Sampler PID must be positive.'});
   if (!Number.isSafeInteger(intervalMilliseconds) || intervalMilliseconds < 10) {
-    throw new ScriptError('Sampler interval must be at least 10 milliseconds.');
+    throw ScriptError.make({message: 'Sampler interval must be at least 10 milliseconds.'});
   }
   if (!Number.isSafeInteger(checkpointIntervalMilliseconds) || checkpointIntervalMilliseconds < intervalMilliseconds) {
-    throw new ScriptError('Sampler checkpoint interval must be at least the sampling interval.');
+    throw ScriptError.make({message: 'Sampler checkpoint interval must be at least the sampling interval.'});
   }
   const outputPath = required('--output');
   const checkpointPath = required('--checkpoint-output');
   const readyPath = required('--ready');
   if (hostPath.dirname(outputPath) === outputPath)
-    throw new ScriptError('Sampler output path must have a parent directory.');
+    throw ScriptError.make({message: 'Sampler output path must have a parent directory.'});
   if (hostPath.dirname(checkpointPath) === checkpointPath) {
-    throw new ScriptError('Sampler checkpoint path must have a parent directory.');
+    throw ScriptError.make({message: 'Sampler checkpoint path must have a parent directory.'});
   }
   if (hostPath.dirname(readyPath) === readyPath)
-    throw new ScriptError('Sampler ready path must have a parent directory.');
+    throw ScriptError.make({message: 'Sampler ready path must have a parent directory.'});
   if (new Set([checkpointPath, outputPath, readyPath]).size !== 3) {
-    throw new ScriptError('Sampler checkpoint, output, and ready paths must be distinct.');
+    throw ScriptError.make({message: 'Sampler checkpoint, output, and ready paths must be distinct.'});
   }
   return {
     checkpointIntervalMilliseconds,

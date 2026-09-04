@@ -43,12 +43,12 @@ export function normalizeRepositoryPath(path: string): string | undefined {
 function normalizedProductionRoots(roots: readonly string[]): readonly string[] {
   const normalized = roots.map(root => normalizeRepositoryPath(root));
   if (normalized.some(root => root === undefined)) {
-    throw new ScriptError('Production lint roots must be repository paths.');
+    throw ScriptError.make({message: 'Production lint roots must be repository paths.'});
   }
   const validRoots = normalized as string[];
   for (const root of validRoots) {
     if (!(PRODUCTION_CODE_ROOTS as readonly string[]).includes(root)) {
-      throw new ScriptError(`Unsupported production lint root: ${root}`);
+      throw ScriptError.make({message: `Unsupported production lint root: ${root}`});
     }
   }
   return [...new Set(validRoots)].sort(comparePaths);
@@ -87,7 +87,7 @@ function gitPaths(repositoryRoot: string, arguments_: readonly string[]): readon
   });
   if (result.exitCode !== 0) {
     const detail = result.stderr ? new TextDecoder().decode(result.stderr).trim() : '';
-    throw new ScriptError(`git ${arguments_.join(' ')} failed${detail ? `: ${detail}` : '.'}`);
+    throw ScriptError.make({message: `git ${arguments_.join(' ')} failed${detail ? `: ${detail}` : '.'}`});
   }
   return decodeNullSeparated(result.stdout);
 }
@@ -146,7 +146,7 @@ export function runProductionFileLengthLint(options: RunProductionFileLengthLint
 
 function parseArguments(arguments_: readonly string[]): readonly string[] {
   if (arguments_.some(argument => argument.startsWith('-'))) {
-    throw new ScriptError('Production file lint accepts only optional production roots.');
+    throw ScriptError.make({message: 'Production file lint accepts only optional production roots.'});
   }
   return normalizedProductionRoots(arguments_.length === 0 ? PRODUCTION_CODE_ROOTS : arguments_);
 }

@@ -35,7 +35,7 @@ export function assessVectorDatabaseStorage(
   incremental: VectorDatabaseStorageMeasurement,
 ): VectorDatabaseStorageBudget {
   if (!Number.isSafeInteger(documents) || documents <= 0) {
-    throw new ScriptError('Vector database storage budget requires a positive document count.');
+    throw ScriptError.make({message: 'Vector database storage budget requires a positive document count.'});
   }
   assertMeasurement(initial);
   assertMeasurement(incremental);
@@ -62,18 +62,18 @@ function assertMeasurement(measurement: VectorDatabaseStorageMeasurement): void 
     !Number.isSafeInteger(measurement.databaseBytes) ||
     measurement.databaseBytes < 0
   ) {
-    throw new ScriptError('Invalid vector database storage measurement.');
+    throw ScriptError.make({message: 'Invalid vector database storage measurement.'});
   }
 }
 
 function safeProduct(left: number, right: number, label: string): number {
   const value = left * right;
-  if (!Number.isSafeInteger(value) || value < 0) throw new ScriptError(`Invalid ${label}.`);
+  if (!Number.isSafeInteger(value) || value < 0) throw ScriptError.make({message: `Invalid ${label}.`});
   return value;
 }
 
 function safeSum(left: number, right: number, label: string): number {
   const value = left + right;
-  if (!Number.isSafeInteger(value) || value < 0) throw new ScriptError(`Invalid ${label}.`);
+  if (!Number.isSafeInteger(value) || value < 0) throw ScriptError.make({message: `Invalid ${label}.`});
   return value;
 }

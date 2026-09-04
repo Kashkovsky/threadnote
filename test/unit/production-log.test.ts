@@ -1,7 +1,20 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
-import {Cause, Clock, Deferred, Duration, Effect, Exit, Fiber, FileSystem, Path, PlatformError, Queue} from 'effect';
+import {
+  Cause,
+  Clock,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  FileSystem,
+  Path,
+  PlatformError,
+  Queue,
+  Schema,
+} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect} from 'vitest';
@@ -33,9 +46,10 @@ interface ParsedProductionLogEntry {
   readonly schemaVersion: number;
 }
 
-class PrivateFailure extends Error {
-  override readonly name = 'PrivateFailure';
-}
+class PrivateFailure extends Schema.TaggedError<PrivateFailure>()('PrivateFailure', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 describe('production log writer', () => {
   effectIt.effect('does not create an unowned Threadnote home', () =>
@@ -68,7 +82,7 @@ describe('production log writer', () => {
           withProductionLogging(
             home,
             {component: 'cli', operation: 'remember'},
-            Effect.fail(new PrivateFailure(`${secret} ${customerText} ${localPath}`)),
+            Effect.fail(PrivateFailure.make({message: `${secret} ${customerText} ${localPath}`})),
           ),
         );
 
@@ -103,14 +117,14 @@ describe('production log writer', () => {
       Effect.gen(function* () {
         const {fs, home, path} = yield* ownedTestHome('unsafe-error-types');
         const secretType = 'sk-1234567890abcdefghijkl';
-        const secretNamedFailure = new TestError('private');
+        const secretNamedFailure = TestError.make({message: 'private'});
         secretNamedFailure.name = secretType;
         const taggedFailure = {_tag: secretType};
         const throwingFailure = new Proxy(
           {},
           {
             get: () => {
-              throw new TestError('diagnostic getter should not escape');
+              throw TestError.make({message: 'diagnostic getter should not escape'});
             },
             has: () => true,
           },
@@ -167,7 +181,7 @@ describe('production log writer', () => {
               yield* Effect.sync(() => {
                 failureRuns += 1;
               });
-              return yield* Effect.fail(new PrivateFailure('application failure'));
+              return yield* PrivateFailure.make({message: 'application failure'});
             }),
           ),
         );

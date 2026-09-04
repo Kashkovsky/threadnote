@@ -22,7 +22,7 @@ export function codeGraphWorksetRoutingProjectionLogicalBytesAppend(
   symbols: readonly CodeGraphWorksetRoutingSymbolV1[],
 ): number {
   if (!Number.isSafeInteger(currentBytes) || currentBytes < 0) {
-    throw new CodeGraphWorksetCatalogError('invalid-input', 'Workset routing projection byte state is invalid.');
+    throw CodeGraphWorksetCatalogError.of('invalid-input', 'Workset routing projection byte state is invalid.');
   }
   if (currentBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum) {
     throw projectionCapacityError();
@@ -71,7 +71,7 @@ export function* codeGraphWorksetRoutingProjectionPages(
     // serializing its complete routing surface twice at every boundary.
     const symbolBytes = codeGraphWorksetRoutingProjectionLogicalBytes([symbol]);
     if (symbolBytes > pageBytesMaximum) {
-      throw new CodeGraphWorksetCatalogError(
+      throw CodeGraphWorksetCatalogError.of(
         'capacity',
         'A routing symbol exceeds the supported projection page bound.',
       );
@@ -90,7 +90,7 @@ export function* codeGraphWorksetRoutingProjectionPages(
 function boundedPageLimit(value: number | undefined, maximum: number, label: string): number {
   const selected = value ?? maximum;
   if (!Number.isSafeInteger(selected) || selected < 1 || selected > maximum) {
-    throw new CodeGraphWorksetCatalogError(
+    throw CodeGraphWorksetCatalogError.of(
       'invalid-input',
       `Workset routing projection page ${label} bound is invalid.`,
     );
@@ -99,7 +99,7 @@ function boundedPageLimit(value: number | undefined, maximum: number, label: str
 }
 
 function projectionCapacityError(): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError(
+  return CodeGraphWorksetCatalogError.of(
     'capacity',
     'Workset routing projection exceeds the supported aggregate byte bound.',
   );

@@ -922,7 +922,7 @@ async function waitForText(file: string, timeoutMilliseconds = 2_000): Promise<s
       await Bun.sleep(5);
     }
   } while (Date.now() < deadline);
-  throw new TestError(`Timed out waiting for ${file}.`);
+  throw TestError.make({message: `Timed out waiting for ${file}.`});
 }
 
 function processEntry(

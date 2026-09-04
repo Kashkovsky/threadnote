@@ -2,7 +2,7 @@ import {TestError} from '../helpers/test-error.js';
 import {execFileSync} from '../helpers/node-child-process.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Clock, Crypto, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
+import {Clock, Crypto, DateTime, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {
   captureCodeGraphLocalProvenanceCleanupEvidence,
@@ -88,7 +88,7 @@ describe('code graph local provenance cleanup', () => {
           expect(expectedEvidence).toBeDefined();
           const replacement = {
             ...fixture.record,
-            observedAt: new Date(Date.parse(fixture.record.observedAt) + 1).toISOString(),
+            observedAt: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(fixture.record.observedAt) + 1)),
           };
           yield* fixture.fs.writeFileString(fixture.sidecar, `${JSON.stringify(replacement)}\n`, {
             flag: 'w',
@@ -208,7 +208,7 @@ describe('code graph local provenance cleanup', () => {
           const writerFiber = yield* Deferred.make<Fiber.Fiber<void, unknown>>();
           const replacement = {
             ...fixture.record,
-            observedAt: new Date(Date.parse(fixture.record.observedAt) + 1).toISOString(),
+            observedAt: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(fixture.record.observedAt) + 1)),
           };
           const result = yield* cleanupMissingCodeGraphLocalProvenance(
             fixture.home,
@@ -299,7 +299,7 @@ describe('code graph local provenance cleanup', () => {
                   {stdio: 'pipe'},
                 );
               },
-              catch: cause => new TestError('Could not create the provenance publisher fixture.', {cause}),
+              catch: cause => TestError.make({message: 'Could not create the provenance publisher fixture.', cause}),
             });
             const identity = yield* resolveRepositoryIdentity(yield* fs.realPath(repository));
             const acquired = yield* Deferred.make<void>();

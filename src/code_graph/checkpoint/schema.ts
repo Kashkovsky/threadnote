@@ -15,7 +15,7 @@ import {
 import type {CodeGraphFileFacts} from '../types.js';
 import {canonicalJson} from './canonical_json.js';
 import {codeGraphCheckpointFileFactCacheIdentity} from './file_fact_identity.js';
-import {Predicate} from 'effect';
+import {Predicate, Schema} from 'effect';
 
 export const CODE_GRAPH_CHECKPOINT_SCHEMA = 'threadnote.code-graph-checkpoint' as const;
 export const CODE_GRAPH_CHECKPOINT_MEDIA_TYPE = 'application/vnd.threadnote.code-graph-checkpoint.v1' as const;
@@ -59,9 +59,13 @@ const MAXIMUM_SHORT_TEXT_LENGTH = 16_384;
 const MAXIMUM_PATH_LENGTH = 4_096;
 const UTF8 = new TextEncoder();
 
-export class CodeGraphCheckpointSchemaError extends Error {
-  override readonly name = 'CodeGraphCheckpointSchemaError';
-}
+export class CodeGraphCheckpointSchemaError extends Schema.TaggedError<CodeGraphCheckpointSchemaError>()(
+  'CodeGraphCheckpointSchemaError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export interface CodeGraphCheckpointDigestV1 {
   readonly algorithm: 'sha256';
@@ -474,10 +478,10 @@ export function parseCodeGraphCheckpointHeaderV1(value: unknown): CodeGraphCheck
   );
   const countedRecords = checkedSum(Object.values(counts), 'Checkpoint record count');
   if (chunkRecords !== countedRecords) {
-    throw new CodeGraphCheckpointSchemaError('Checkpoint chunk and kind counts do not match.');
+    throw CodeGraphCheckpointSchemaError.make({message: 'Checkpoint chunk and kind counts do not match.'});
   }
   if (counts.file !== metadata.coverage.eligibleFiles) {
-    throw new CodeGraphCheckpointSchemaError('Checkpoint file count does not match eligible coverage.');
+    throw CodeGraphCheckpointSchemaError.make({message: 'Checkpoint file count does not match eligible coverage.'});
   }
   return {
     abi,
@@ -525,13 +529,15 @@ export function parseCodeGraphCheckpointRecordV1(value: unknown): CodeGraphCheck
     case 'file-fact': {
       exactKeys(input, ['cacheIdentity', 'factRole', 'facts', 'kind', 'path'], [], 'File-fact record');
       if (typeof input.cacheIdentity !== 'string' || !MATERIALIZED_FACT_IDENTITY.test(input.cacheIdentity)) {
-        throw new CodeGraphCheckpointSchemaError('File-fact cache identity is not a materialized derivation ID.');
+        throw CodeGraphCheckpointSchemaError.make({
+          message: 'File-fact cache identity is not a materialized derivation ID.',
+        });
       }
       const factRole = literal(input.factRole, 'materialized', 'File-fact role');
       const path = repositoryPath(input.path, 'File-fact path');
       const facts = parseFileFacts(input.facts, path);
       if (input.cacheIdentity !== codeGraphCheckpointFileFactCacheIdentity(facts)) {
-        throw new CodeGraphCheckpointSchemaError('File-fact cache identity does not match its payload.');
+        throw CodeGraphCheckpointSchemaError.make({message: 'File-fact cache identity does not match its payload.'});
       }
       return {cacheIdentity: input.cacheIdentity, factRole, facts, kind: 'file-fact', path};
     }
@@ -692,7 +698,7 @@ export function parseCodeGraphCheckpointRecordV1(value: unknown): CodeGraphCheck
         resolutionVersion: shortText(input.resolutionVersion, 'Pack resolution version'),
       };
     default:
-      throw new CodeGraphCheckpointSchemaError(`Unknown checkpoint record kind: ${kind}.`);
+      throw CodeGraphCheckpointSchemaError.make({message: `Unknown checkpoint record kind: ${kind}.`});
   }
 }
 
@@ -872,7 +878,7 @@ function parseSource(value: unknown): CodeGraphCheckpointMetadataV1['source'] {
   exactKeys(input, ['commit', 'extractorSet', 'graphContentId'], [], 'Checkpoint source');
   const graphContentId = text(input.graphContentId, 'Checkpoint graph content ID');
   if (!GRAPH_CONTENT_ID.test(graphContentId)) {
-    throw new CodeGraphCheckpointSchemaError('Checkpoint graph content ID is invalid.');
+    throw CodeGraphCheckpointSchemaError.make({message: 'Checkpoint graph content ID is invalid.'});
   }
   return {
     commit: gitObjectId(input.commit, 'Checkpoint commit'),
@@ -902,10 +908,10 @@ function parseCoverage(value: unknown): CodeGraphCheckpointCoverageV1 {
     'Coverage reason file count',
   );
   if (explainedFiles !== excludedFiles) {
-    throw new CodeGraphCheckpointSchemaError('Coverage reasons do not account for every excluded file.');
+    throw CodeGraphCheckpointSchemaError.make({message: 'Coverage reasons do not account for every excluded file.'});
   }
   if ((excludedFiles === 0) !== (state === 'complete')) {
-    throw new CodeGraphCheckpointSchemaError('Coverage state does not match the excluded-file count.');
+    throw CodeGraphCheckpointSchemaError.make({message: 'Coverage state does not match the excluded-file count.'});
   }
   return {eligibleFiles, excludedFiles, reasons, state};
 }
@@ -925,7 +931,9 @@ function parseReuse(value: unknown): CodeGraphCheckpointReuseV1 {
   const inventory = input.inventory === undefined ? undefined : parsePortableInventory(input.inventory);
   if (inventory !== undefined) {
     if (inventory.workspace.fingerprint !== workspaceFingerprint) {
-      throw new CodeGraphCheckpointSchemaError('Portable workspace fingerprint does not match reuse metadata.');
+      throw CodeGraphCheckpointSchemaError.make({
+        message: 'Portable workspace fingerprint does not match reuse metadata.',
+      });
     }
   }
   return {
@@ -955,7 +963,7 @@ function parsePortableInventory(value: unknown): CodeGraphCheckpointPortableInve
   );
   const attributionFiles = array(input.attributionFiles, 'Attribution files').map(parseAttributionFile);
   if (attributionFiles.length > CODE_GRAPH_CHECKPOINT_ATTRIBUTION_FILES_MAXIMUM) {
-    throw new CodeGraphCheckpointSchemaError('Attribution file count exceeds the portable boundary.');
+    throw CodeGraphCheckpointSchemaError.make({message: 'Attribution file count exceeds the portable boundary.'});
   }
   ensureSortedUnique(attributionFiles, file => file.path, 'Attribution files');
   const attributionContentBytes = checkedSum(
@@ -970,7 +978,7 @@ function parsePortableInventory(value: unknown): CodeGraphCheckpointPortableInve
     attributionContentBytes > CODE_GRAPH_CHECKPOINT_ATTRIBUTION_CONTENT_BYTES_MAXIMUM ||
     attributionSourceBytes > CODE_GRAPH_CHECKPOINT_ATTRIBUTION_SOURCE_BYTES_MAXIMUM
   ) {
-    throw new CodeGraphCheckpointSchemaError('Attribution context exceeds the portable byte boundary.');
+    throw CodeGraphCheckpointSchemaError.make({message: 'Attribution context exceeds the portable byte boundary.'});
   }
   const contract = sha256(input.contract, 'Inventory contract');
   const diagnostics =
@@ -1170,7 +1178,8 @@ function parseChunk(value: unknown, expectedOrdinal: number): CodeGraphCheckpoin
   const compressedBytes = positiveInteger(input.compressedBytes, 'Chunk compressed bytes');
   const digest = parseDigest(input.digest, 'Chunk digest');
   const ordinal = nonNegativeInteger(input.ordinal, 'Chunk ordinal');
-  if (ordinal !== expectedOrdinal) throw new CodeGraphCheckpointSchemaError('Chunk ordinals are not contiguous.');
+  if (ordinal !== expectedOrdinal)
+    throw CodeGraphCheckpointSchemaError.make({message: 'Chunk ordinals are not contiguous.'});
   const recordCount = positiveInteger(input.recordCount, 'Chunk record count');
   const uncompressedBytes = positiveInteger(input.uncompressedBytes, 'Chunk uncompressed bytes');
   return {compressedBytes, digest, ordinal, recordCount, uncompressedBytes};
@@ -1200,10 +1209,10 @@ function parseFileFacts(value: unknown, expectedPath: string): CodeGraphFileFact
   try {
     facts = parseCodeGraphFileFacts(value);
   } catch (cause) {
-    throw new CodeGraphCheckpointSchemaError('File-fact payload is invalid.', {cause});
+    throw CodeGraphCheckpointSchemaError.make({cause, message: 'File-fact payload is invalid.'});
   }
   if (facts.path !== expectedPath)
-    throw new CodeGraphCheckpointSchemaError('File-fact payload path does not match its key.');
+    throw CodeGraphCheckpointSchemaError.make({message: 'File-fact payload path does not match its key.'});
   canonicalJson(facts);
   return facts;
 }
@@ -1317,10 +1326,10 @@ function parseMoniker(input: Record<string, unknown>): CodeGraphCheckpointMonike
   const scheme = oneOf(input.scheme, ['package', 'protobuf'], 'Moniker scheme');
   const symbolId = input.symbolId === undefined ? undefined : shortText(input.symbolId, 'Moniker symbol ID');
   if (scheme === 'package' && (componentId === undefined || packageName === undefined)) {
-    throw new CodeGraphCheckpointSchemaError('Package moniker is missing component or package identity.');
+    throw CodeGraphCheckpointSchemaError.make({message: 'Package moniker is missing component or package identity.'});
   }
   if (scheme === 'protobuf' && symbolId === undefined) {
-    throw new CodeGraphCheckpointSchemaError('Protobuf moniker is missing its symbol identity.');
+    throw CodeGraphCheckpointSchemaError.make({message: 'Protobuf moniker is missing its symbol identity.'});
   }
   return {
     ...(componentId === undefined ? {} : {componentId}),
@@ -1351,21 +1360,21 @@ function parseSpan(value: unknown, label: string): CodeGraphCheckpointSpanV1 {
   const endLine = positiveInteger(input.endLine, `${label} end line`);
   const line = positiveInteger(input.line, `${label} line`);
   if (endLine < line || (endLine === line && endColumn < column)) {
-    throw new CodeGraphCheckpointSchemaError(`${label} ends before it starts.`);
+    throw CodeGraphCheckpointSchemaError.make({message: `${label} ends before it starts.`});
   }
   return {column, endColumn, endLine, line};
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
   if (!Predicate.isObject(value)) {
-    throw new CodeGraphCheckpointSchemaError(`${label} must be an object.`);
+    throw CodeGraphCheckpointSchemaError.make({message: `${label} must be an object.`});
   }
   return value;
 }
 
 function array(value: unknown, label: string): readonly unknown[] {
   if (!Array.isArray(value) || value.length > MAXIMUM_ARRAY_LENGTH) {
-    throw new CodeGraphCheckpointSchemaError(`${label} must be a bounded array.`);
+    throw CodeGraphCheckpointSchemaError.make({message: `${label} must be a bounded array.`});
   }
   return value;
 }
@@ -1378,88 +1387,91 @@ function exactKeys(
 ): void {
   const allowed = new Set([...required, ...optional]);
   for (const key of required) {
-    if (!Object.hasOwn(input, key)) throw new CodeGraphCheckpointSchemaError(`${label} is missing ${key}.`);
+    if (!Object.hasOwn(input, key)) throw CodeGraphCheckpointSchemaError.make({message: `${label} is missing ${key}.`});
   }
   for (const key of Object.keys(input)) {
-    if (!allowed.has(key)) throw new CodeGraphCheckpointSchemaError(`${label} contains unknown field ${key}.`);
+    if (!allowed.has(key))
+      throw CodeGraphCheckpointSchemaError.make({message: `${label} contains unknown field ${key}.`});
   }
 }
 
 function literal<T extends boolean | number | string>(value: unknown, expected: T, label: string): T {
-  if (value !== expected) throw new CodeGraphCheckpointSchemaError(`${label} is invalid.`);
+  if (value !== expected) throw CodeGraphCheckpointSchemaError.make({message: `${label} is invalid.`});
   return expected;
 }
 
 function oneOf<const T extends readonly string[]>(value: unknown, options: T, label: string): T[number] {
   if (typeof value !== 'string' || !options.some(option => option === value)) {
-    throw new CodeGraphCheckpointSchemaError(`${label} is invalid.`);
+    throw CodeGraphCheckpointSchemaError.make({message: `${label} is invalid.`});
   }
   return value;
 }
 
 function text(value: unknown, label: string, maximum = 8 * 1_048_576): string {
   if (typeof value !== 'string' || value.length > maximum) {
-    throw new CodeGraphCheckpointSchemaError(`${label} must be a bounded string.`);
+    throw CodeGraphCheckpointSchemaError.make({message: `${label} must be a bounded string.`});
   }
   return value;
 }
 
 function shortText(value: unknown, label: string): string {
   const result = text(value, label, MAXIMUM_SHORT_TEXT_LENGTH);
-  if (result.length === 0) throw new CodeGraphCheckpointSchemaError(`${label} cannot be empty.`);
+  if (result.length === 0) throw CodeGraphCheckpointSchemaError.make({message: `${label} cannot be empty.`});
   return result;
 }
 
 function boolean(value: unknown, label: string): boolean {
-  if (typeof value !== 'boolean') throw new CodeGraphCheckpointSchemaError(`${label} must be boolean.`);
+  if (typeof value !== 'boolean') throw CodeGraphCheckpointSchemaError.make({message: `${label} must be boolean.`});
   return value;
 }
 
 function nonNegativeInteger(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-    throw new CodeGraphCheckpointSchemaError(`${label} must be a non-negative safe integer.`);
+    throw CodeGraphCheckpointSchemaError.make({message: `${label} must be a non-negative safe integer.`});
   }
   return value;
 }
 
 function positiveInteger(value: unknown, label: string, maximum = Number.MAX_SAFE_INTEGER): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0 || value > maximum) {
-    throw new CodeGraphCheckpointSchemaError(`${label} must be a bounded positive safe integer.`);
+    throw CodeGraphCheckpointSchemaError.make({message: `${label} must be a bounded positive safe integer.`});
   }
   return value;
 }
 
 function finiteRange(value: unknown, label: string, minimum: number, maximum: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) {
-    throw new CodeGraphCheckpointSchemaError(`${label} must be a finite number between ${minimum} and ${maximum}.`);
+    throw CodeGraphCheckpointSchemaError.make({
+      message: `${label} must be a finite number between ${minimum} and ${maximum}.`,
+    });
   }
   return value;
 }
 
 function sha256(value: unknown, label: string): string {
   if (typeof value !== 'string' || !SHA256.test(value)) {
-    throw new CodeGraphCheckpointSchemaError(`${label} must be a lowercase SHA-256 digest.`);
+    throw CodeGraphCheckpointSchemaError.make({message: `${label} must be a lowercase SHA-256 digest.`});
   }
   return value;
 }
 
 function gitObjectId(value: unknown, label: string): string {
   if (typeof value !== 'string' || !GIT_OBJECT_ID.test(value)) {
-    throw new CodeGraphCheckpointSchemaError(`${label} must be a lowercase Git object ID.`);
+    throw CodeGraphCheckpointSchemaError.make({message: `${label} must be a lowercase Git object ID.`});
   }
   return value;
 }
 
 function mode(value: unknown, label: string): string {
   if (typeof value !== 'string' || !/^\d{6}$/u.test(value)) {
-    throw new CodeGraphCheckpointSchemaError(`${label} is invalid.`);
+    throw CodeGraphCheckpointSchemaError.make({message: `${label} is invalid.`});
   }
   return value;
 }
 
 function repositoryPath(value: unknown, label: string): string {
   if (typeof value !== 'string' || !isSafeCodeGraphCheckpointPath(value)) {
-    throw new CodeGraphCheckpointSchemaError(`${label} must be a safe repository-relative POSIX path.`);
+    throw CodeGraphCheckpointSchemaError.make({message: `${label} must be a safe repository-relative POSIX path.`});
   }
   return value;
 }
@@ -1470,7 +1482,7 @@ function workspaceRoot(value: unknown, label: string): string {
   // but never rewrite either representation at the checkpoint boundary.
   if (value === '' || value === '.') return value;
   if (typeof value !== 'string' || !isSafeCodeGraphCheckpointPath(value)) {
-    throw new CodeGraphCheckpointSchemaError(`${label} must be a safe repository-relative POSIX root.`);
+    throw CodeGraphCheckpointSchemaError.make({message: `${label} must be a safe repository-relative POSIX root.`});
   }
   return value;
 }
@@ -1514,7 +1526,7 @@ function ensureSortedUnique<T>(values: readonly T[], key: (value: T) => string, 
   for (const value of values) {
     const current = key(value);
     if (previous !== undefined && current <= previous) {
-      throw new CodeGraphCheckpointSchemaError(`${label} must be strictly sorted and unique.`);
+      throw CodeGraphCheckpointSchemaError.make({message: `${label} must be strictly sorted and unique.`});
     }
     previous = current;
   }
@@ -1523,7 +1535,8 @@ function ensureSortedUnique<T>(values: readonly T[], key: (value: T) => string, 
 function checkedSum(values: readonly number[], label: string): number {
   let total = 0;
   for (const value of values) {
-    if (value > Number.MAX_SAFE_INTEGER - total) throw new CodeGraphCheckpointSchemaError(`${label} overflows.`);
+    if (value > Number.MAX_SAFE_INTEGER - total)
+      throw CodeGraphCheckpointSchemaError.make({message: `${label} overflows.`});
     total += value;
   }
   return total;

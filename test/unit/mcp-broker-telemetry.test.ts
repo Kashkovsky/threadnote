@@ -1,4 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {Effect, Exit, Tracer} from 'effect';
 import {describe, expect} from 'vitest';
 import {emitMcpBrokerFailureEvent} from '../../src/effect/mcp_broker_process.js';
@@ -105,7 +106,7 @@ function spanAttributes(captured: CapturedSpan): Record<string, unknown> {
 function systemInfoStub(): SystemInfoShape {
   return {
     architecture: 'arm64',
-    availableDiskBytes: () => Effect.succeed(undefined),
+    availableDiskBytes: () => succeedUndefined,
     currentDirectory: () => '/Users/private/repository',
     environment: () => ({}),
     executablePath: '/Users/private/bin/threadnote',
@@ -122,7 +123,7 @@ function systemInfoStub(): SystemInfoShape {
     platform: 'darwin',
     processArguments: ['/Users/private/bin/threadnote'],
     processId: 98_765,
-    processStartIdentity: () => Effect.succeed(undefined),
+    processStartIdentity: () => succeedUndefined,
     readLine: () => () => undefined,
     runtimeVersion: 'private-version',
     setEnvironmentVariable: () => undefined,

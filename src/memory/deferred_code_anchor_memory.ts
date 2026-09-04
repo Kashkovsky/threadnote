@@ -20,8 +20,8 @@ export const readDeferredMemoryObservation = Effect.fn('memoryCodeAnchor.readMem
 ) {
   const store = yield* ResourceStore;
   const content = yield* store.read(resourceStoreLocation(config), memoryUri).pipe(
-    Effect.map(Option.some),
-    Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none())),
+    Effect.asSome,
+    Effect.catchTag('ResourceNotFound', () => Effect.succeedNone),
   );
   if (Option.isNone(content)) return undefined;
   const record = parseMemoryDocument(memoryUri, content.value);
@@ -47,7 +47,7 @@ export function reconcileInterruptedDeferredCodeAnchorCommit<A, E, R>(
       const record = parseMemoryDocument(memoryUri, actual.value);
       if (!record || !deferredCodeAnchorFinalizationVerified(expectedMemory, actual.value)) return;
       yield* cleanup;
-    }).pipe(Effect.catchCause(() => Effect.void)),
+    }).pipe(Effect.ignoreCause),
   );
 }
 

@@ -192,6 +192,6 @@ export function codeGraphMcpResponse(result: CodeGraphQueryResult, maximumEstima
   const maximumBytes = maximumEstimatedTokens * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN;
   const minimum = responseForPrefix(result, 0, 0, 0, true);
   const minimumBytes = measureAgentToolResponse(minimum).totalBytes;
-  if (minimumBytes > maximumBytes) throw new AgentResponseBudgetTooSmallError(maximumBytes, minimumBytes);
+  if (minimumBytes > maximumBytes) throw AgentResponseBudgetTooSmallError.of(maximumBytes, minimumBytes);
   return longestAdmittedPrefix(result, response => measureAgentToolResponse(response).totalBytes <= maximumBytes, true);
 }

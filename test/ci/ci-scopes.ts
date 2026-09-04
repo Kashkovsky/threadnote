@@ -179,6 +179,7 @@ function scopesForPath(path: string): CiScopes {
   }
   if (
     path === '.oxlintrc.json' ||
+    path === '.oxlintrc.strict.json' ||
     path === '.oxlintrc.max-lines.json' ||
     path === '.prettierrc.json' ||
     path === '.prettierignore'

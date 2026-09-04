@@ -1,4 +1,4 @@
-import {Console, Effect, Fiber, FileSystem, Option, Path, Semaphore} from 'effect';
+import {Clock, Console, Crypto, DateTime, Effect, Fiber, FileSystem, Option, Path, Schema, Semaphore} from 'effect';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import type {RuntimeConfig} from '../types.js';
 import {SystemInfo} from '../effect/system.js';
@@ -81,14 +81,15 @@ export type ThreadnoteProcessTerminationErrorCode =
   | 'process-signal-failed'
   | 'process-stale';
 
-export class ThreadnoteProcessTerminationError extends Error {
-  readonly _tag = 'ThreadnoteProcessTerminationError' as const;
-
-  constructor(
-    readonly code: ThreadnoteProcessTerminationErrorCode,
-    message: string,
-  ) {
-    super(message);
+export class ThreadnoteProcessTerminationError extends Schema.TaggedError<ThreadnoteProcessTerminationError>()(
+  'ThreadnoteProcessTerminationError',
+  {
+    code: Schema.String,
+    message: Schema.String,
+  },
+) {
+  static of(code: ThreadnoteProcessTerminationErrorCode, message: string): ThreadnoteProcessTerminationError {
+    return ThreadnoteProcessTerminationError.make({code, message});
   }
 }
 
@@ -164,7 +165,7 @@ export function withThreadnoteProcessRegistration<A, E, R>(
   baseRole: RegisteredThreadnoteProcessRole,
   effect: Effect.Effect<A, E, R>,
   baseOperation?: string,
-): Effect.Effect<A, E, R | SystemInfo | FileSystem.FileSystem | Path.Path> {
+): Effect.Effect<A, E, R | SystemInfo | FileSystem.FileSystem | Path.Path | Crypto.Crypto> {
   return Effect.acquireUseRelease(
     registerThreadnoteProcess(home, baseRole, baseOperation),
     () => effect,
@@ -230,12 +231,12 @@ const readThreadnoteProcessSnapshot = Effect.fn('processDiagnostics.readSnapshot
   // during this snapshot is classified from its registry row instead of being
   // reported transiently as a pre-registry release.
   const releaseLeaseDiagnostics = yield* readLiveStandaloneProcessLeases().pipe(
-    Effect.catch(() => Effect.succeed({leases: [] as const, truncated: false})),
+    Effect.orElseSucceed(() => ({leases: [] as const, truncated: false})),
   );
   const releaseLeases = releaseLeaseDiagnostics.leases;
 
   const directory = processDiagnosticsDirectory(path, config.agentContextHome);
-  const names = yield* fs.readDirectory(directory).pipe(Effect.catch(() => Effect.succeed([] as string[])));
+  const names = yield* fs.readDirectory(directory).pipe(Effect.orElseSucceed(() => [] as string[]));
   const eligibleNames = names.filter(name => /^[1-9]\d*\.json$/.test(name));
   const candidateNames = eligibleNames.slice(0, PROCESS_DIAGNOSTICS_SCAN_LIMIT);
   const files = yield* Effect.forEach(
@@ -271,7 +272,7 @@ const readThreadnoteProcessSnapshot = Effect.fn('processDiagnostics.readSnapshot
   // arbitrary process command lines, which may contain memory text or paths.
   const releaseLeaseByProcess = new Map(releaseLeases.map(lease => [lease.processId, lease] as const));
   const registeredProcessIds = new Set(live.map(value => value.processId));
-  const now = Date.now();
+  const now = yield* Clock.currentTimeMillis;
   const legacy = releaseLeases
     .filter(lease => !registeredProcessIds.has(lease.processId))
     .map(lease => {
@@ -406,13 +407,12 @@ export const terminateThreadnoteProcess = Effect.fn('processDiagnostics.terminat
 ) {
   const system = yield* SystemInfo;
   if (!Number.isSafeInteger(target.processId) || target.processId <= 0 || !isProcessReference(target.processRef)) {
-    return yield* Effect.fail(
-      new ThreadnoteProcessTerminationError('invalid-process-target', 'The process target is invalid.'),
-    );
+    return yield* ThreadnoteProcessTerminationError.of('invalid-process-target', 'The process target is invalid.');
   }
   if (target.processId === system.processId) {
-    return yield* Effect.fail(
-      new ThreadnoteProcessTerminationError('current-manager', 'The current Manager process cannot terminate itself.'),
+    return yield* ThreadnoteProcessTerminationError.of(
+      'current-manager',
+      'The current Manager process cannot terminate itself.',
     );
   }
 
@@ -512,6 +512,7 @@ function registerThreadnoteProcess(home: string, baseRole: RegisteredThreadnoteP
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const system = yield* SystemInfo;
+    const crypto = yield* Crypto.Crypto;
     const writeSemaphore = yield* Semaphore.make(1);
     const directory = processDiagnosticsDirectory(path, home);
     const active: ActiveProcessRegistration = {
@@ -525,8 +526,8 @@ function registerThreadnoteProcess(home: string, baseRole: RegisteredThreadnoteP
       processStartIdentity: yield* system.processStartIdentity(system.processId),
       originalTitle: process.title,
       path,
-      startedAt: new Date().toISOString(),
-      token: crypto.randomUUID(),
+      startedAt: DateTime.formatIso(yield* DateTime.now),
+      token: yield* crypto.randomUUIDv4,
       writeSemaphore,
     };
     registration = Option.some(active);
@@ -568,14 +569,14 @@ function writeCurrentRegistration(): Effect.Effect<void, unknown> {
     if (Option.isNone(registration)) return Effect.void;
     const active = registration.value;
     return active.writeSemaphore.withPermit(
-      Effect.suspend(() => {
-        if (Option.isNone(registration) || registration.value.token !== active.token) return Effect.void;
+      Effect.gen(function* () {
+        if (Option.isNone(registration) || registration.value.token !== active.token) return;
         const current = currentProcessActivity();
         const role = current?.role ?? active.baseRole;
         setBestEffortProcessTitle(role);
         const currentOperation = current?.operation ?? active.baseOperation;
         const stateKey = `${role}\0${currentOperation ?? ''}`;
-        if (active.queuedStateKey === stateKey) return Effect.void;
+        if (active.queuedStateKey === stateKey) return;
         const value: ProcessRegistrationFile = {
           baseRole: active.baseRole,
           ...(currentOperation === undefined ? {} : {currentOperation}),
@@ -586,10 +587,10 @@ function writeCurrentRegistration(): Effect.Effect<void, unknown> {
           schemaVersion: PROCESS_DIAGNOSTICS_SCHEMA_VERSION,
           startedAt: active.startedAt,
           token: active.token,
-          updatedAt: new Date().toISOString(),
+          updatedAt: DateTime.formatIso(yield* DateTime.now),
         };
         active.queuedStateKey = stateKey;
-        return writeRegistrationFile(active, value).pipe(
+        yield* writeRegistrationFile(active, value).pipe(
           Effect.tapError(() =>
             Effect.sync(() => {
               if (active.queuedStateKey === stateKey) active.queuedStateKey = undefined;
@@ -662,7 +663,7 @@ function readRegistrationFile(
     const source = yield* fs.readFileString(file);
     const value = yield* Effect.try(() => JSON.parse(source) as unknown);
     return isProcessRegistrationFile(value) ? Option.some(value) : Option.none();
-  }).pipe(Effect.catch(() => Effect.succeed(Option.none())));
+  }).pipe(Effect.orElseSucceed(() => Option.none()));
 }
 
 function isProcessRegistrationFile(value: unknown): value is ProcessRegistrationFile {
@@ -734,8 +735,9 @@ function resolveTerminationTarget(
     );
     const value = Option.getOrUndefined(candidate);
     if (!system.isProcessRunning(target.processId)) {
-      return yield* Effect.fail(
-        new ThreadnoteProcessTerminationError('process-not-found', 'The selected Threadnote process has exited.'),
+      return yield* ThreadnoteProcessTerminationError.of(
+        'process-not-found',
+        'The selected Threadnote process has exited.',
       );
     }
     if (
@@ -745,11 +747,9 @@ function resolveTerminationTarget(
       processReference(value) !== target.processRef ||
       !(yield* registrationMatchesRunningProcess(system, value))
     ) {
-      return yield* Effect.fail(
-        new ThreadnoteProcessTerminationError(
-          'process-stale',
-          'The selected process instance changed. Refresh the process list and try again.',
-        ),
+      return yield* ThreadnoteProcessTerminationError.of(
+        'process-stale',
+        'The selected process instance changed. Refresh the process list and try again.',
       );
     }
     return value;
@@ -763,20 +763,16 @@ function signalVerifiedProcess(
 ) {
   return Effect.gen(function* () {
     if (!system.isProcessRunning(registration.processId) || registration.processStartIdentity === undefined) {
-      return yield* Effect.fail(
-        new ThreadnoteProcessTerminationError(
-          'process-stale',
-          'The selected process instance changed. Refresh the process list and try again.',
-        ),
+      return yield* ThreadnoteProcessTerminationError.of(
+        'process-stale',
+        'The selected process instance changed. Refresh the process list and try again.',
       );
     }
     const identity = yield* system.processStartIdentity(registration.processId);
     if (identity !== registration.processStartIdentity) {
-      return yield* Effect.fail(
-        new ThreadnoteProcessTerminationError(
-          'process-stale',
-          'The selected process instance changed. Refresh the process list and try again.',
-        ),
+      return yield* ThreadnoteProcessTerminationError.of(
+        'process-stale',
+        'The selected process instance changed. Refresh the process list and try again.',
       );
     }
     yield* Effect.try({
@@ -787,18 +783,18 @@ function signalVerifiedProcess(
             ? cause.code
             : undefined;
         if (code === 'ESRCH') {
-          return new ThreadnoteProcessTerminationError(
+          return ThreadnoteProcessTerminationError.of(
             'process-not-found',
             'The selected Threadnote process has exited.',
           );
         }
         if (code === 'EPERM' || code === 'EACCES') {
-          return new ThreadnoteProcessTerminationError(
+          return ThreadnoteProcessTerminationError.of(
             'process-permission-denied',
             'Permission was denied while terminating the selected Threadnote process.',
           );
         }
-        return new ThreadnoteProcessTerminationError(
+        return ThreadnoteProcessTerminationError.of(
           'process-signal-failed',
           'The selected Threadnote process could not be terminated.',
         );
@@ -836,7 +832,7 @@ function boundedTerminationWait(value: number | undefined, fallback: number): nu
 }
 
 function removeRegistrationFile(fs: FileSystem.FileSystem, file: string) {
-  return fs.remove(file, {force: true}).pipe(Effect.catch(() => Effect.void));
+  return fs.remove(file, {force: true}).pipe(Effect.ignore);
 }
 
 function processMemoryBytes(

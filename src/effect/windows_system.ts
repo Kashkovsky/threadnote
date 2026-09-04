@@ -1,11 +1,12 @@
 import {dlopen} from 'bun:ffi';
-import {Effect, Stream} from 'effect';
+import {Effect, Stream, Schema} from 'effect';
 import {WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION} from '../worker_protocol.js';
 import {fromPromiseInterruptibleAwaiting} from './errors.js';
 
-class WindowsSystemError extends Error {
-  readonly _tag = 'WindowsSystemError' as const;
-}
+class WindowsSystemError extends Schema.TaggedError<WindowsSystemError>()('WindowsSystemError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const DOTNET_TICKS_AT_WINDOWS_FILE_TIME_EPOCH = 504_911_232_000_000_000n;
@@ -126,15 +127,13 @@ export function serveWindowsDiskCapacityWorker(
   const handleLine = (line: string) =>
     Effect.gen(function* () {
       if (encoder.encode(line).byteLength > WINDOWS_DISK_CAPACITY_WORKER_INPUT_LIMIT_BYTES) {
-        return yield* Effect.fail(new WindowsSystemError('Windows disk capacity worker request exceeded its limit.'));
+        return yield* WindowsSystemError.make({message: 'Windows disk capacity worker request exceeded its limit.'});
       }
       const request = decodeWindowsDiskCapacityWorkerRequest(line);
       if (request === undefined) {
-        return yield* Effect.fail(new WindowsSystemError('Windows disk capacity worker request was invalid.'));
+        return yield* WindowsSystemError.make({message: 'Windows disk capacity worker request was invalid.'});
       }
-      const availableBytes = yield* readAvailableBytes(request.path).pipe(
-        Effect.catch(() => Effect.succeed(undefined)),
-      );
+      const availableBytes = yield* readAvailableBytes(request.path).pipe(Effect.orElseSucceed(() => undefined));
       const response: WindowsDiskCapacityWorkerResponse = {
         availableBytes: availableBytes ?? null,
         id: request.id,
@@ -142,7 +141,7 @@ export function serveWindowsDiskCapacityWorker(
       };
       yield* fromPromiseInterruptibleAwaiting(
         () => io.writeLine(JSON.stringify(response)),
-        cause => new WindowsSystemError('Could not write Windows disk capacity worker response.', {cause}),
+        cause => WindowsSystemError.make({cause, message: 'Could not write Windows disk capacity worker response.'}),
       );
     });
   const consumeChunk = (chunk: string | Uint8Array) =>
@@ -156,12 +155,11 @@ export function serveWindowsDiskCapacityWorker(
         if (line) yield* handleLine(line);
       }
       if (encoder.encode(buffered).byteLength > WINDOWS_DISK_CAPACITY_WORKER_INPUT_LIMIT_BYTES) {
-        return yield* Effect.fail(new WindowsSystemError('Windows disk capacity worker input exceeded its limit.'));
+        return yield* WindowsSystemError.make({message: 'Windows disk capacity worker input exceeded its limit.'});
       }
     });
-  return Stream.fromAsyncIterable(
-    io.input,
-    cause => new WindowsSystemError('Could not read Windows disk capacity worker input.', {cause}),
+  return Stream.fromAsyncIterable(io.input, cause =>
+    WindowsSystemError.make({cause, message: 'Could not read Windows disk capacity worker input.'}),
   ).pipe(
     Stream.runForEach(consumeChunk),
     Effect.andThen(
@@ -194,14 +192,14 @@ export function readWindowsHardwareInfo(environment: NodeJS.ProcessEnv) {
         const memoryView = new DataView(memoryStatus.buffer);
         memoryView.setUint32(0, MEMORY_STATUS_BYTES, true);
         if (kernel.symbols.GlobalMemoryStatusEx(memoryStatus) === 0) {
-          throw new WindowsSystemError('GlobalMemoryStatusEx failed.');
+          throw WindowsSystemError.make({message: 'GlobalMemoryStatusEx failed.'});
         }
 
         const versionInfo = new Uint8Array(WINDOWS_VERSION_INFO_BYTES);
         const versionView = new DataView(versionInfo.buffer);
         versionView.setUint32(0, WINDOWS_VERSION_INFO_BYTES, true);
         if (native.symbols.RtlGetVersion(versionInfo) !== 0) {
-          throw new WindowsSystemError('RtlGetVersion failed.');
+          throw WindowsSystemError.make({message: 'RtlGetVersion failed.'});
         }
 
         const memoryBytes = Number(memoryView.getBigUint64(MEMORY_STATUS_TOTAL_PHYSICAL_OFFSET, true));
@@ -212,7 +210,7 @@ export function readWindowsHardwareInfo(environment: NodeJS.ProcessEnv) {
           true,
         )}.${versionView.getUint32(WINDOWS_VERSION_BUILD_OFFSET, true)}`;
         if (!Number.isSafeInteger(memoryBytes) || memoryBytes <= 0) {
-          throw new WindowsSystemError('Windows memory metadata is invalid.');
+          throw WindowsSystemError.make({message: 'Windows memory metadata is invalid.'});
         }
         return {
           cpuModel,
@@ -225,7 +223,7 @@ export function readWindowsHardwareInfo(environment: NodeJS.ProcessEnv) {
         kernel.close();
       }
     },
-    catch: cause => new WindowsSystemError('Could not read native Windows hardware metadata.', {cause}),
+    catch: cause => WindowsSystemError.make({cause, message: 'Could not read native Windows hardware metadata.'}),
   });
 }
 

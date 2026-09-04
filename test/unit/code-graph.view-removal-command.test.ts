@@ -2,7 +2,7 @@ import {TestError} from '../helpers/test-error.js';
 import {Database} from 'bun:sqlite';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Clock, Crypto, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
+import {Clock, Crypto, DateTime, Deferred, Effect, Fiber, FileSystem, Layer, Path, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {codeGraphVectorWriteLockPath} from '../../src/code_graph/layout.js';
@@ -159,14 +159,14 @@ describe('code graph remove-view command core', () => {
       Effect.scoped(
         Effect.gen(function* () {
           const fixture = yield* viewActionFixture;
-          const provenance = yield* seedLocalProvenance(fixture.home, new Date(0).toISOString());
+          const provenance = yield* seedLocalProvenance(fixture.home, DateTime.formatIso(DateTime.makeUnsafe(0)));
           const crypto = yield* Crypto.Crypto;
           const path = yield* Path.Path;
           const system = yield* SystemInfo;
           const lockReacquired = yield* Deferred.make<void>();
           const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
           const evidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(fixture.home, target);
-          if (evidence === undefined) throw new TestError('expected exact provenance evidence');
+          if (evidence === undefined) throw TestError.make({message: 'expected exact provenance evidence'});
 
           const result = yield* removeCodeGraphView(fixture.home, target, {
             afterProvenanceEvidenceCapture: () =>
@@ -197,14 +197,20 @@ describe('code graph remove-view command core', () => {
       Effect.scoped(
         Effect.gen(function* () {
           const replacementFixture = yield* viewActionFixture;
-          const original = yield* seedLocalProvenance(replacementFixture.home, new Date(0).toISOString());
-          const replacement = localProvenanceRecord(original.missingWorktree, new Date(1).toISOString());
+          const original = yield* seedLocalProvenance(
+            replacementFixture.home,
+            DateTime.formatIso(DateTime.makeUnsafe(0)),
+          );
+          const replacement = localProvenanceRecord(
+            original.missingWorktree,
+            DateTime.formatIso(DateTime.makeUnsafe(1)),
+          );
           const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
           const originalEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(
             replacementFixture.home,
             target,
           );
-          if (originalEvidence === undefined) throw new TestError('expected exact provenance evidence');
+          if (originalEvidence === undefined) throw TestError.make({message: 'expected exact provenance evidence'});
           const replaced = yield* removeCodeGraphView(replacementFixture.home, target, {
             apply: true,
             beforeProvenanceCleanup: () =>
@@ -219,7 +225,7 @@ describe('code graph remove-view command core', () => {
 
           const absentFixture = yield* viewActionFixture;
           const absent = yield* localProvenancePaths(absentFixture.home);
-          const published = localProvenanceRecord(absent.missingWorktree, new Date(2).toISOString());
+          const published = localProvenanceRecord(absent.missingWorktree, DateTime.formatIso(DateTime.makeUnsafe(2)));
           const absentResult = yield* removeCodeGraphView(absentFixture.home, target, {
             apply: true,
             beforeProvenanceCleanup: () =>
@@ -241,11 +247,14 @@ describe('code graph remove-view command core', () => {
         Effect.scoped(
           Effect.gen(function* () {
             const fixture = yield* viewActionFixture;
-            const original = yield* seedLocalProvenance(fixture.home, new Date(0).toISOString());
+            const original = yield* seedLocalProvenance(fixture.home, DateTime.formatIso(DateTime.makeUnsafe(0)));
             const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
             const originalEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(fixture.home, target);
-            if (originalEvidence === undefined) throw new TestError('expected exact provenance evidence');
-            const replacement = localProvenanceRecord(original.missingWorktree, new Date(1).toISOString());
+            if (originalEvidence === undefined) throw TestError.make({message: 'expected exact provenance evidence'});
+            const replacement = localProvenanceRecord(
+              original.missingWorktree,
+              DateTime.formatIso(DateTime.makeUnsafe(1)),
+            );
 
             const result = yield* removeCodeGraphView(fixture.home, target, {
               afterProvenanceEvidenceCapture: () =>
@@ -268,16 +277,19 @@ describe('code graph remove-view command core', () => {
       Effect.scoped(
         Effect.gen(function* () {
           const unchangedFixture = yield* viewActionFixture;
-          const unchanged = yield* seedLocalProvenance(unchangedFixture.home, new Date(0).toISOString());
+          const unchanged = yield* seedLocalProvenance(
+            unchangedFixture.home,
+            DateTime.formatIso(DateTime.makeUnsafe(0)),
+          );
           const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
           const unchangedEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(
             unchangedFixture.home,
             target,
           );
-          if (unchangedEvidence === undefined) throw new TestError('expected exact provenance evidence');
+          if (unchangedEvidence === undefined) throw TestError.make({message: 'expected exact provenance evidence'});
           const unchangedInterrupted = yield* removeCodeGraphView(unchangedFixture.home, target, {
             apply: true,
-            beforeProvenanceCleanup: () => Effect.fail(new TestError('simulated post-core interruption')),
+            beforeProvenanceCleanup: () => Effect.fail(TestError.make({message: 'simulated post-core interruption'})),
           }).pipe(Effect.exit);
           expect(unchangedInterrupted._tag).toBe('Failure');
           const unchangedRetry = yield* removeCodeGraphView(unchangedFixture.home, target, {apply: true});
@@ -287,17 +299,20 @@ describe('code graph remove-view command core', () => {
           expect(readCleanupEvidence(unchangedFixture.databasePath)).toEqual(cleanupEvidenceRow(unchangedEvidence));
 
           const fixture = yield* viewActionFixture;
-          const original = yield* seedLocalProvenance(fixture.home, new Date(0).toISOString());
+          const original = yield* seedLocalProvenance(fixture.home, DateTime.formatIso(DateTime.makeUnsafe(0)));
           const originalEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(fixture.home, target);
-          if (originalEvidence === undefined) throw new TestError('expected exact provenance evidence');
+          if (originalEvidence === undefined) throw TestError.make({message: 'expected exact provenance evidence'});
           const interrupted = yield* removeCodeGraphView(fixture.home, target, {
             apply: true,
-            beforeProvenanceCleanup: () => Effect.fail(new TestError('simulated post-core interruption')),
+            beforeProvenanceCleanup: () => Effect.fail(TestError.make({message: 'simulated post-core interruption'})),
           }).pipe(Effect.exit);
           expect(interrupted._tag).toBe('Failure');
           expect(removedView(fixture.databasePath)).toBe(SNAPSHOT_ID);
 
-          const replacement = localProvenanceRecord(original.missingWorktree, new Date(1).toISOString());
+          const replacement = localProvenanceRecord(
+            original.missingWorktree,
+            DateTime.formatIso(DateTime.makeUnsafe(1)),
+          );
           yield* original.fs.writeFileString(original.sidecar, `${JSON.stringify(replacement)}\n`, {
             flag: 'w',
             mode: 0o600,
@@ -321,7 +336,7 @@ describe('code graph remove-view command core', () => {
           expect(yield* store.removeView(fixture.databasePath, WORKTREE_ID, SNAPSHOT_ID)).toMatchObject({
             state: 'removed',
           });
-          const provenance = yield* seedLocalProvenance(fixture.home, new Date(0).toISOString());
+          const provenance = yield* seedLocalProvenance(fixture.home, DateTime.formatIso(DateTime.makeUnsafe(0)));
 
           const retry = yield* removeCodeGraphView(fixture.home, target, {apply: true});
 
@@ -362,7 +377,7 @@ describe('code graph remove-view command core', () => {
           expect(successes.every(result => result.state === 'removed' || result.state === 'already-removed')).toBe(
             true,
           );
-          expect(failures.every(error => error instanceof CodeGraphStoreBusyError)).toBe(true);
+          expect(failures.every(error => Schema.is(CodeGraphStoreBusyError)(error))).toBe(true);
           expect(failures.every(error => !String(error).includes(fixture.home))).toBe(true);
           expect(elapsed).toBeLessThan(5_000);
 
@@ -475,7 +490,7 @@ function seedVectorDatabase(home: string) {
         database.run('CREATE TABLE vector_pointers (worktree_id TEXT PRIMARY KEY, generation TEXT NOT NULL)');
         database
           .query(`INSERT INTO vector_generations VALUES (?, ?, 'model-command', ?, 3, 1, 0, 'ready', ?)`)
-          .run('generation-command', SNAPSHOT_ID, 'e'.repeat(64), new Date(0).toISOString());
+          .run('generation-command', SNAPSHOT_ID, 'e'.repeat(64), DateTime.formatIso(DateTime.makeUnsafe(0)));
         database
           .query('INSERT INTO vector_pointers (worktree_id, generation) VALUES (?, ?)')
           .run(WORKTREE_ID, 'generation-command');

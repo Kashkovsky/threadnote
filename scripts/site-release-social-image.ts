@@ -52,7 +52,7 @@ export function layoutReleaseSocialHeadline(headline: string): ReleaseSocialHead
     const lineHeight = Math.round(fontSize * 1.22);
     if (lines && lines.length * lineHeight <= headlineMaximumHeight) return {fontSize, lineHeight, lines};
   }
-  throw new ScriptError('The release social-card headline does not fit the bounded image layout.');
+  throw ScriptError.make({message: 'The release social-card headline does not fit the bounded image layout.'});
 }
 
 function escapeXml(value: string): string {
@@ -190,7 +190,7 @@ export function renderWebsiteReleaseSocialImagePng(
   });
   const image = renderer.render();
   if (image.width !== websiteArticleSocialImageWidth || image.height !== websiteArticleSocialImageHeight) {
-    throw new ScriptError('The release social image renderer returned unexpected dimensions.');
+    throw ScriptError.make({message: 'The release social image renderer returned unexpected dimensions.'});
   }
   return image.asPng();
 }

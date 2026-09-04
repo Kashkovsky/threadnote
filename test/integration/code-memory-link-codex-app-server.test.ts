@@ -1,3 +1,5 @@
+import {Schema} from 'effect';
+import {TestError} from '../helpers/test-error.js';
 import {createHash} from '../helpers/node-crypto.js';
 import {mkdtemp, mkdir, readFile, realpath, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
@@ -579,7 +581,9 @@ describe('Code Memory Link Codex app-server transport', () => {
       error => error,
     );
     expect(cause).toBeInstanceOf(CodeMemoryLinkCodexTerminalError);
-    if (!(cause instanceof CodeMemoryLinkCodexTerminalError)) throw cause;
+    if (!Schema.is(CodeMemoryLinkCodexTerminalError)(cause)) {
+      throw TestError.make({cause, message: 'Expected CodeMemoryLinkCodexTerminalError'});
+    }
     expect(cause.message).toMatch(expected);
     expect(cause.diagnostics).toMatchObject({
       contextBriefCallStarts: 0,

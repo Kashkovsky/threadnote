@@ -21,6 +21,7 @@ import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CodeGraphStoreNoSpaceError,
   CodeGraphStoreTransientIoError,
+  isCodeGraphStoreNoSpaceError,
 } from '../../src/code_graph/types.js';
 
 const boundedBytes = fc.integer({max: 2 ** 42, min: 0});
@@ -352,7 +353,7 @@ describe('code graph disk capacity properties', () => {
     const failure = codeGraphDiskCapacityFailure(decision, '/Users/private/graph.sqlite');
 
     expect(failure).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
-    expect(failure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+    expect(isCodeGraphStoreNoSpaceError(failure)).toBe(true);
     expect(failure).toMatchObject({
       code: 'no-space',
       operation: 'protect code graph storage',
@@ -407,11 +408,11 @@ describe('code graph disk capacity properties', () => {
     expect(isCodeGraphCapacityPause(failure)).toBe(true);
     expect(
       isCodeGraphCapacityPause(
-        new CodeGraphStoreTransientIoError('fixture', {operation: 'observe code graph storage capacity'}),
+        CodeGraphStoreTransientIoError.of('fixture', {operation: 'observe code graph storage capacity'}),
       ),
     ).toBe(false);
     expect(
-      isCodeGraphCapacityPause(new CodeGraphStoreNoSpaceError('classified write-time no-space', {operation: 'write'})),
+      isCodeGraphCapacityPause(CodeGraphStoreNoSpaceError.of('classified write-time no-space', {operation: 'write'})),
     ).toBe(false);
   });
 

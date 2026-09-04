@@ -100,21 +100,21 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
   const dryRun = options.dryRun === true;
   const preview = options.preview === true;
   if (isInSharedNamespace(config, sourceUri)) {
-    throw new ShareOperationError(`Memory ${sourceUri} is already in the shared namespace.`);
+    throw ShareOperationError.make({message: `Memory ${sourceUri} is already in the shared namespace.`});
   }
   const hasPendingCodeRefs = yield* hasDeferredCodeAnchorIntent(config, sourceUri);
   if (hasPendingCodeRefs && options.allowUncitedPendingCodeRefs !== true) {
-    throw new ShareOperationError(
-      `Refusing to publish ${sourceUri}: code citations are still pending. Prepare the graph and run \`threadnote finalize-code-refs --uri ${sourceUri}\`, or explicitly pass --allow-uncited-pending-code-refs to publish without them and discard the private intent.`,
-    );
+    throw ShareOperationError.make({
+      message: `Refusing to publish ${sourceUri}: code citations are still pending. Prepare the graph and run \`threadnote finalize-code-refs --uri ${sourceUri}\`, or explicitly pass --allow-uncited-pending-code-refs to publish without them and discard the private intent.`,
+    });
   }
   const ov = NATIVE_RESOURCE_BACKEND;
   const rawContent = yield* readMemoryContent(config, ov, sourceUri, dryRun);
   const citationBlocker = memoryCodeCitationContentSharingBlocker(sourceUri, rawContent);
   if (citationBlocker) {
-    throw new ShareOperationError(
-      `Refusing to publish ${sourceUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
-    );
+    throw ShareOperationError.make({
+      message: `Refusing to publish ${sourceUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+    });
   }
   const stripped = setMemoryVisibility(stripPersonalProvenanceForSharedPublication(rawContent), 'shared');
   const scrub = applyScrubber(stripped, {redact: options.redact === true});
@@ -139,9 +139,9 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
   }
 
   if (scrub.blocker) {
-    throw new ShareOperationError(
-      `Refusing to publish ${sourceUri}: possible ${scrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,
-    );
+    throw ShareOperationError.make({
+      message: `Refusing to publish ${sourceUri}: possible ${scrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,
+    });
   }
   const worktree = team.config.worktree;
   const relativePath = resourceUriToWorktreeRelative(config, targetUri, team.name);
@@ -150,9 +150,9 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
     const currentRawContent = dryRun ? rawContent : yield* readMemoryContent(config, ov, sourceUri, false);
     const currentCitationBlocker = memoryCodeCitationContentSharingBlocker(sourceUri, currentRawContent);
     if (currentCitationBlocker) {
-      throw new ShareOperationError(
-        `Refusing to publish ${sourceUri}: ${memoryCodeCitationSharingBlockerMessage(currentCitationBlocker)}.`,
-      );
+      throw ShareOperationError.make({
+        message: `Refusing to publish ${sourceUri}: ${memoryCodeCitationSharingBlockerMessage(currentCitationBlocker)}.`,
+      });
     }
     const currentScrub = applyScrubber(
       setMemoryVisibility(stripPersonalProvenanceForSharedPublication(currentRawContent), 'shared'),
@@ -161,9 +161,9 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
       },
     );
     if (currentScrub.blocker) {
-      throw new ShareOperationError(
-        `Refusing to publish ${sourceUri}: possible ${currentScrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,
-      );
+      throw ShareOperationError.make({
+        message: `Refusing to publish ${sourceUri}: possible ${currentScrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,
+      });
     }
     const existingTarget =
       !dryRun && (yield* resourceExists(ov, config, targetUri))
@@ -174,9 +174,9 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
       canonicalMemoryDocumentContent(setMemoryVisibility(existingTarget, 'shared')) !==
         canonicalMemoryDocumentContent(currentScrub.cleaned)
     ) {
-      throw new ShareOperationError(
-        `Refusing to publish: ${targetUri} already exists with different content. Inspect it via threadnote read and resolve the conflict explicitly.`,
-      );
+      throw ShareOperationError.make({
+        message: `Refusing to publish: ${targetUri} already exists with different content. Inspect it via threadnote read and resolve the conflict explicitly.`,
+      });
     }
     yield* assertSharedWorktreeFileReady(worktree, relativePath, currentScrub.cleaned, dryRun);
     yield* ensureSharedDirectoryChain(config, ov, targetUri, dryRun);
@@ -191,9 +191,9 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
     if (!dryRun) {
       const storedTarget = yield* readMemoryContent(config, ov, targetUri, false);
       if (canonicalMemoryDocumentContent(storedTarget) !== canonicalMemoryDocumentContent(currentScrub.cleaned)) {
-        throw new ShareOperationError(
-          `Shared target verification failed after writing ${targetUri}; personal source preserved.`,
-        );
+        throw ShareOperationError.make({
+          message: `Shared target verification failed after writing ${targetUri}; personal source preserved.`,
+        });
       }
     }
     yield* writeSharedWorktreeFile(worktree, relativePath, currentScrub.cleaned, dryRun);
@@ -204,7 +204,9 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
     if (!dryRun) {
       const sourceBeforeRemoval = yield* readMemoryContent(config, ov, sourceUri, false);
       if (sourceBeforeRemoval.trim() !== currentRawContent.trim()) {
-        throw new ShareOperationError(`Memory ${sourceUri} changed during publication; personal source preserved.`);
+        throw ShareOperationError.make({
+          message: `Memory ${sourceUri} changed during publication; personal source preserved.`,
+        });
       }
       yield* recordMemoryRelocation(config, {
         fromContent: sourceBeforeRemoval,
@@ -248,7 +250,7 @@ export const shareAgentArtifact = Effect.fn('share.shareAgentArtifact')(function
   assertShareTeamWritable(team, 'publish agent artifacts');
   const resolvedSourcePath = yield* expandPath(sourcePath);
   if (!(yield* isRegularFileNoSymlink(resolvedSourcePath))) {
-    throw new ShareOperationError(`Agent artifact source is not a regular file: ${resolvedSourcePath}`);
+    throw ShareOperationError.make({message: `Agent artifact source is not a regular file: ${resolvedSourcePath}`});
   }
 
   const artifact = yield* inferShareArtifact(resolvedSourcePath, options);
@@ -278,7 +280,7 @@ const shareSingleArtifact = Effect.fn('share.shareSingleArtifact')(function* (
   const preview = options.preview === true;
   const rawContent = yield* readFile(resolvedSourcePath, 'utf8');
   if (!rawContent.trim()) {
-    throw new ShareOperationError(`Refusing to share empty agent artifact: ${resolvedSourcePath}`);
+    throw ShareOperationError.make({message: `Refusing to share empty agent artifact: ${resolvedSourcePath}`});
   }
   // Agent artifacts are published byte-for-byte. The memory-share scrubber stays
   // on durable `share publish`; --redact is ignored here.
@@ -306,9 +308,9 @@ const shareSingleArtifact = Effect.fn('share.shareSingleArtifact')(function* (
   }
   const existingContent = (yield* readFileIfExists(targetPath)) ?? undefined;
   if (existingContent !== undefined && existingContent !== content && options.force !== true) {
-    throw new ShareOperationError(
-      `Shared artifact already exists with different content: ${yield* portablePath(targetPath)}. Pass --force to replace it.`,
-    );
+    throw ShareOperationError.make({
+      message: `Shared artifact already exists with different content: ${yield* portablePath(targetPath)}. Pass --force to replace it.`,
+    });
   }
 
   if (dryRun) {
@@ -366,15 +368,15 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
   const skillRootTargetUri = parentUri(skillMdTargetUri);
   const skillMdSourcePath = yield* pathJoin(skillDir, 'SKILL.md');
 
-  const prepared = yield* Effect.all(
-    members.map(member => prepareBundleMember(config, team, member, skillRootTargetDir, options)),
+  const prepared = yield* Effect.forEach(members, member =>
+    prepareBundleMember(config, team, member, skillRootTargetDir, options),
   );
   const skillMd = prepared.find(entry => entry.relativePath === 'SKILL.md');
   if (skillMd === undefined) {
-    throw new ShareOperationError(`Skill bundle ${artifact.agent}/${artifact.name} is missing SKILL.md.`);
+    throw ShareOperationError.make({message: `Skill bundle ${artifact.agent}/${artifact.name} is missing SKILL.md.`});
   }
   if (!skillMd.binary && typeof skillMd.content === 'string' && !skillMd.content.trim()) {
-    throw new ShareOperationError(`Refusing to share empty agent artifact: ${skillMdSourcePath}`);
+    throw ShareOperationError.make({message: `Refusing to share empty agent artifact: ${skillMdSourcePath}`});
   }
 
   const messages: string[] = [
@@ -403,19 +405,19 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
   }
 
   if (blockers.length > 0) {
-    throw new ShareOperationError(
-      `Refusing to share skill ${artifact.agent}/${artifact.name}: ${blockers
+    throw ShareOperationError.make({
+      message: `Refusing to share skill ${artifact.agent}/${artifact.name}: ${blockers
         .map(entry => `${entry.relativePath} (${entry.blocker})`)
         .join('; ')}. Strip the value or pass --allow-binary for binary files.`,
-    );
+    });
   }
 
   for (const entry of prepared) {
     const existing = yield* readFileBytesIfExists(entry.targetPath);
     if (existing !== undefined && (yield* sha256(existing)) !== entry.sha256 && options.force !== true) {
-      throw new ShareOperationError(
-        `Shared artifact already exists with different content: ${yield* portablePath(entry.targetPath)}. Pass --force to replace it.`,
-      );
+      throw ShareOperationError.make({
+        message: `Shared artifact already exists with different content: ${yield* portablePath(entry.targetPath)}. Pass --force to replace it.`,
+      });
     }
   }
 
@@ -441,7 +443,7 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
   for (const entry of markdownMembers) {
     const content = bundleTextContent(entry);
     if (content === undefined) {
-      throw new ShareOperationError(`Refusing binary markdown bundle member: ${entry.relativePath}`);
+      throw ShareOperationError.make({message: `Refusing binary markdown bundle member: ${entry.relativePath}`});
     }
     const ovHasResource = yield* resourceExists(ov, config, entry.targetUri);
     yield* ensureSharedDirectoryChain(config, ov, entry.targetUri, dryRun, {quiet: true});
@@ -569,21 +571,23 @@ export const runSharePublishBundle = Effect.fn('share.runSharePublishBundle')(fu
 const parsePackManifest = Effect.fn('share.parsePackManifest')(function* (raw: string, manifestPath: string) {
   const parsed = parseJsonConfigObject(raw);
   if (parsed === undefined) {
-    throw new ShareOperationError(`Invalid pack manifest (not a JSON object): ${manifestPath}`);
+    throw ShareOperationError.make({message: `Invalid pack manifest (not a JSON object): ${manifestPath}`});
   }
   const name = parsed.name;
   if (typeof name !== 'string' || name.trim().length === 0) {
-    throw new ShareOperationError(`Pack manifest must set a non-empty "name": ${manifestPath}`);
+    throw ShareOperationError.make({message: `Pack manifest must set a non-empty "name": ${manifestPath}`});
   }
   const agent = parsed.agent;
   if (agent !== 'codex' && agent !== 'claude') {
-    throw new ShareOperationError(`Pack manifest "agent" must be "codex" or "claude": ${manifestPath}`);
+    throw ShareOperationError.make({message: `Pack manifest "agent" must be "codex" or "claude": ${manifestPath}`});
   }
   const stringArray = (value: unknown): string[] =>
     Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
   const skills = stringArray(parsed.skills);
   if (skills.length === 0) {
-    throw new ShareOperationError(`Pack manifest must list at least one skill in "skills": ${manifestPath}`);
+    throw ShareOperationError.make({
+      message: `Pack manifest must list at least one skill in "skills": ${manifestPath}`,
+    });
   }
   const depsValue = Predicate.isObject(parsed.deps) ? parsed.deps : {};
   const pathRewrites = Array.isArray(parsed.pathRewrites)
@@ -599,9 +603,9 @@ const parsePackManifest = Effect.fn('share.parsePackManifest')(function* (raw: s
   // value would corrupt unrelated content via substring replacement.
   for (const rewrite of pathRewrites) {
     if (!(yield* pathIsAbsolute(rewrite)) || rewrite.split('/').filter(Boolean).length < 2) {
-      throw new ShareOperationError(
-        `Pack manifest pathRewrites entry must be an absolute repo-root path (got "${rewrite}"): ${manifestPath}`,
-      );
+      throw ShareOperationError.make({
+        message: `Pack manifest pathRewrites entry must be an absolute repo-root path (got "${rewrite}"): ${manifestPath}`,
+      });
     }
   }
   const manifest: PackManifest = {
@@ -632,11 +636,13 @@ const collectPackMembers = Effect.fn('share.collectPackMembers')(function* (
   const addEntry = Effect.fn('share.callback')(function* (entry: string) {
     const normalized = entry.split('/').filter(Boolean).join('/');
     if (normalized.split('/').includes('..')) {
-      throw new ShareOperationError(`Pack manifest entries must stay within the pack root (got "${entry}").`);
+      throw ShareOperationError.make({
+        message: `Pack manifest entries must stay within the pack root (got "${entry}").`,
+      });
     }
     const absolute = yield* pathJoin(manifestDir, ...normalized.split('/'));
     if (absolute !== manifestDir && !absolute.startsWith(manifestDir + (yield* pathSeparator))) {
-      throw new ShareOperationError(`Pack manifest entry escapes the pack root: ${entry}`);
+      throw ShareOperationError.make({message: `Pack manifest entry escapes the pack root: ${entry}`});
     }
     if (yield* isDirectory(absolute)) {
       for (const member of yield* collectBundleMemberFiles(absolute)) {
@@ -649,14 +655,14 @@ const collectPackMembers = Effect.fn('share.collectPackMembers')(function* (
       members.set(normalized, {absolutePath: absolute, relativePath: normalized});
       return;
     }
-    throw new ShareOperationError(`Pack manifest references a missing path: ${entry}`);
+    throw ShareOperationError.make({message: `Pack manifest references a missing path: ${entry}`});
   });
   for (const skill of manifest.skills) {
     // Accept either a skill directory or a path to its SKILL.md.
     const skillRel = skill.replace(/\/SKILL\.md$/i, '');
     const skillDir = yield* pathJoin(manifestDir, ...skillRel.split('/'));
     if (!(yield* isFile(yield* pathJoin(skillDir, 'SKILL.md')))) {
-      throw new ShareOperationError(`Pack skill "${skill}" must be a directory containing SKILL.md.`);
+      throw ShareOperationError.make({message: `Pack skill "${skill}" must be a directory containing SKILL.md.`});
     }
     yield* addEntry(skillRel);
   }
@@ -866,12 +872,12 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
   const preview = options.preview === true;
   const resolvedManifest = yield* expandPath(manifestPath);
   if (!(yield* isRegularFileNoSymlink(resolvedManifest))) {
-    throw new ShareOperationError(`Pack manifest is not a regular file: ${resolvedManifest}`);
+    throw ShareOperationError.make({message: `Pack manifest is not a regular file: ${resolvedManifest}`});
   }
   const manifest = yield* parsePackManifest(yield* readFile(resolvedManifest, 'utf8'), resolvedManifest);
   const manifestDir = yield* pathDirname(resolvedManifest);
   const artifact: ShareArtifactMetadata = {agent: manifest.agent, kind: 'pack', name: uriSegment(manifest.name)};
-  const skillNames = yield* Effect.all(manifest.skills.map(packSkillName));
+  const skillNames = yield* Effect.forEach(manifest.skills, packSkillName);
 
   const members = yield* collectPackMembers(manifestDir, manifest);
   // Auto-derive the manifest dir as a rewrite root only when it is a plausible
@@ -890,8 +896,8 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
   const indexTargetPath = yield* pathJoin(team.config.worktree, ...indexRelative.split('/'));
   const indexTargetUri = yield* workfileToResourceUri(config, team.config, indexTargetPath);
 
-  const prepared = yield* Effect.all(
-    members.map(member => preparePackMember(config, team, member, filesTargetDir, rewriteRoots, options)),
+  const prepared = yield* Effect.forEach(members, member =>
+    preparePackMember(config, team, member, filesTargetDir, rewriteRoots, options),
   );
   // Tokenize the generated index + manifest too (not just member files) so an
   // author repo-root path embedded in description/deps is normalized to the
@@ -924,11 +930,11 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
   }
 
   if (blockers.length > 0) {
-    throw new ShareOperationError(
-      `Refusing to share pack ${artifact.agent}/${artifact.name}: ${blockers
+    throw ShareOperationError.make({
+      message: `Refusing to share pack ${artifact.agent}/${artifact.name}: ${blockers
         .map(entry => `${entry.relativePath} (${entry.blocker})`)
         .join('; ')}. Strip the value or pass --allow-binary for binary files.`,
-    );
+    });
   }
   const packJson = tokenizePackPaths(buildPackManifestJson(artifact, manifest, prepared), rewriteRoots);
   // Advisory: surface machine-local absolute paths that pathRewrites did not
@@ -956,9 +962,9 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
   for (const entry of prepared) {
     const existing = yield* readFileBytesIfExists(entry.targetPath);
     if (existing !== undefined && (yield* sha256(existing)) !== entry.sha256 && options.force !== true) {
-      throw new ShareOperationError(
-        `Shared pack file already exists with different content: ${yield* portablePath(entry.targetPath)}. Pass --force to replace it.`,
-      );
+      throw ShareOperationError.make({
+        message: `Shared pack file already exists with different content: ${yield* portablePath(entry.targetPath)}. Pass --force to replace it.`,
+      });
     }
   }
 
@@ -1027,7 +1033,7 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
       for (const entry of prepared.filter(member => member.relativePath.endsWith('.md'))) {
         const content = bundleTextContent(entry);
         if (content === undefined) {
-          throw new ShareOperationError(`Refusing binary markdown pack member: ${entry.relativePath}`);
+          throw ShareOperationError.make({message: `Refusing binary markdown pack member: ${entry.relativePath}`});
         }
         yield* writeMarkdownMember(entry.targetUri, content, entry.targetPath);
       }
@@ -1114,7 +1120,7 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
       // Best-effort rollback; surface the original failure regardless.
       yield* undo().pipe(Effect.ignore);
     }
-    return yield* Effect.fail(publishResult.failure);
+    return yield* publishResult.failure;
   }
 
   const stagedPaths = [
@@ -1165,22 +1171,22 @@ const inferShareArtifact = Effect.fn('share.inferShareArtifact')(function* (
   const name = options.name ?? inferredName;
 
   if (kind !== 'skill' && kind !== 'command') {
-    throw new ShareOperationError('Could not infer artifact kind. Pass --kind skill or --kind command.');
+    throw ShareOperationError.make({message: 'Could not infer artifact kind. Pass --kind skill or --kind command.'});
   }
   if (agent !== 'codex' && agent !== 'claude') {
-    throw new ShareOperationError('Could not infer artifact agent. Pass --agent codex or --agent claude.');
+    throw ShareOperationError.make({message: 'Could not infer artifact agent. Pass --agent codex or --agent claude.'});
   }
   if (kind === 'skill' && lowerFileName !== 'skill.md') {
-    throw new ShareOperationError('Skill artifacts must point at a SKILL.md file.');
+    throw ShareOperationError.make({message: 'Skill artifacts must point at a SKILL.md file.'});
   }
   if (kind === 'command' && !lowerFileName.endsWith('.md')) {
-    throw new ShareOperationError('Command artifacts must be Markdown files.');
+    throw ShareOperationError.make({message: 'Command artifacts must be Markdown files.'});
   }
   if (kind === 'command' && agent !== 'claude') {
-    throw new ShareOperationError('Only Claude command artifacts are supported.');
+    throw ShareOperationError.make({message: 'Only Claude command artifacts are supported.'});
   }
   if (name.trim().length === 0) {
-    throw new ShareOperationError('Artifact name cannot be empty.');
+    throw ShareOperationError.make({message: 'Artifact name cannot be empty.'});
   }
   return {agent, kind, name: uriSegment(name)};
 });

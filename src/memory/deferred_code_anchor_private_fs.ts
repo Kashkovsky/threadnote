@@ -27,23 +27,23 @@ export interface DeferredCodeAnchorPrivateDirectoryAuthority {
 export function deferredCodeAnchorPathEntryKind(fs: FileSystem.FileSystem, target: string) {
   return fs.readLink(target).pipe(
     Effect.as('symlink' as const),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed('missing' as const)
-        : fs.stat(target).pipe(
-            Effect.map(info =>
-              info.type === 'Directory'
-                ? ('directory' as const)
-                : info.type === 'File'
-                  ? ('file' as const)
-                  : ('other' as const),
-            ),
-            Effect.catch(statError =>
-              statError instanceof PlatformError.PlatformError && statError.reason._tag === 'NotFound'
-                ? Effect.succeed('missing' as const)
-                : Effect.fail(statError),
-            ),
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.succeed('missing' as const),
+      () =>
+        fs.stat(target).pipe(
+          Effect.map(info =>
+            info.type === 'Directory'
+              ? ('directory' as const)
+              : info.type === 'File'
+                ? ('file' as const)
+                : ('other' as const),
           ),
+          Effect.catchIf(
+            statError => statError instanceof PlatformError.PlatformError && statError.reason._tag === 'NotFound',
+            () => Effect.succeed('missing' as const),
+          ),
+        ),
     ),
   ) satisfies Effect.Effect<DeferredCodeAnchorPathEntryKind, unknown>;
 }
@@ -55,19 +55,19 @@ export const inspectPrivateDeferredCodeAnchorDirectories = Effect.fn('memoryCode
       const kind = yield* deferredCodeAnchorPathEntryKind(fs, directory);
       if (kind === 'missing') return undefined;
       if (kind !== 'directory') {
-        return yield* Effect.fail(
-          deferredCodeAnchorError('Deferred code-anchor private directory must not be a link or non-directory.'),
+        return yield* deferredCodeAnchorError(
+          'Deferred code-anchor private directory must not be a link or non-directory.',
         );
       }
       const info = yield* fs.stat(directory);
       const birthtime = Option.getOrUndefined(info.birthtime);
       const ino = Option.getOrUndefined(info.ino);
       if (!fileSystemModeIsPrivate(runtimePlatform, info.mode)) {
-        return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor private directory is not private.'));
+        return yield* deferredCodeAnchorError('Deferred code-anchor private directory is not private.');
       }
       if (birthtime === undefined || ino === undefined) {
-        return yield* Effect.fail(
-          deferredCodeAnchorError('Deferred code-anchor private directory has insufficient identity metadata.'),
+        return yield* deferredCodeAnchorError(
+          'Deferred code-anchor private directory has insufficient identity metadata.',
         );
       }
       authorities.push({
@@ -117,7 +117,7 @@ export const readPrivateDeferredCodeAnchorDirectory = Effect.fn('memoryCodeAncho
   const names = yield* fs.readDirectory(directory);
   const after = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestors);
   if (after === undefined || !samePrivateDeferredCodeAnchorDirectories(before, after)) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor private directory changed during read.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor private directory changed during read.');
   }
   return names;
 });
@@ -129,31 +129,28 @@ export const ensurePrivateDeferredCodeAnchorDirectory = Effect.fn('memoryCodeAnc
 ) {
   const parentAuthority = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, parentDirectories);
   if (parentAuthority === undefined) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor private directory parent is unavailable.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor private directory parent is unavailable.');
   }
   const kind = yield* deferredCodeAnchorPathEntryKind(fs, directory);
   if (kind !== 'missing' && kind !== 'directory') {
-    return yield* Effect.fail(
-      deferredCodeAnchorError('Deferred code-anchor private directory must not be a link or non-directory.'),
+    return yield* deferredCodeAnchorError(
+      'Deferred code-anchor private directory must not be a link or non-directory.',
     );
   }
   if (kind === 'missing') {
-    yield* fs
-      .makeDirectory(directory, {mode: 0o700})
-      .pipe(
-        Effect.catch(error =>
-          error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists'
-            ? Effect.void
-            : Effect.fail(error),
-        ),
-      );
+    yield* fs.makeDirectory(directory, {mode: 0o700}).pipe(
+      Effect.catchIf(
+        error => error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists',
+        () => Effect.void,
+      ),
+    );
   }
   const parentAfter = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, parentDirectories);
   if (parentAfter === undefined || !samePrivateDeferredCodeAnchorDirectories(parentAuthority, parentAfter)) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor private directory parent changed.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor private directory parent changed.');
   }
   if (!(yield* validatePrivateDeferredCodeAnchorDirectories(fs, [...parentDirectories, directory]))) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor private directory is unavailable.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor private directory is unavailable.');
   }
   return directory;
 });
@@ -168,24 +165,20 @@ export const removePrivateDeferredCodeAnchorFile = Effect.fn('memoryCodeAnchor.r
   const kind = yield* deferredCodeAnchorPathEntryKind(fs, target);
   if (kind === 'missing') return false;
   if (kind !== 'file') {
-    return yield* Effect.fail(
-      deferredCodeAnchorError('Deferred code-anchor private file must not be a link or non-file.'),
-    );
+    return yield* deferredCodeAnchorError('Deferred code-anchor private file must not be a link or non-file.');
   }
   const info = yield* fs.stat(target);
   if (!fileSystemModeIsPrivate(runtimePlatform, info.mode)) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor private file is not private.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor private file is not private.');
   }
   const beforeRemoval = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestorDirectories);
   if (beforeRemoval === undefined || !samePrivateDeferredCodeAnchorDirectories(before, beforeRemoval)) {
-    return yield* Effect.fail(
-      deferredCodeAnchorError('Deferred code-anchor private directory changed before removal.'),
-    );
+    return yield* deferredCodeAnchorError('Deferred code-anchor private directory changed before removal.');
   }
   yield* fs.remove(target, {force: true});
   const after = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestorDirectories);
   if (after === undefined || !samePrivateDeferredCodeAnchorDirectories(before, after)) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor private directory changed after removal.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor private directory changed after removal.');
   }
   return true;
 });
@@ -198,22 +191,22 @@ export const removePrivateDeferredCodeAnchorRouteMarker = Effect.fn('memoryCodeA
     const kind = yield* deferredCodeAnchorPathEntryKind(fs, markerPath);
     if (kind === 'missing') return false;
     if (kind === 'directory' || kind === 'other') {
-      return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor route marker must be a file.'));
+      return yield* deferredCodeAnchorError('Deferred code-anchor route marker must be a file.');
     }
     if (kind === 'file') {
       const info = yield* fs.stat(markerPath);
       if (!fileSystemModeIsPrivate(runtimePlatform, info.mode)) {
-        return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor route marker is not private.'));
+        return yield* deferredCodeAnchorError('Deferred code-anchor route marker is not private.');
       }
     }
     const beforeRemoval = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestorDirectories);
     if (beforeRemoval === undefined || !samePrivateDeferredCodeAnchorDirectories(before, beforeRemoval)) {
-      return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor route changed before marker removal.'));
+      return yield* deferredCodeAnchorError('Deferred code-anchor route changed before marker removal.');
     }
     yield* fs.remove(markerPath, {force: true});
     const after = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestorDirectories);
     if (after === undefined || !samePrivateDeferredCodeAnchorDirectories(before, after)) {
-      return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor route changed after marker removal.'));
+      return yield* deferredCodeAnchorError('Deferred code-anchor route changed after marker removal.');
     }
     return true;
   },
@@ -284,31 +277,28 @@ const quarantinePrivateDeferredCodeAnchorEntry = Effect.fn('memoryCodeAnchor.qua
     const candidate = path.join(quarantineRoot, `q-${randomDeferredCodeAnchorTemporarySuffix()}`);
     const parentAuthority = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, quarantineAncestors);
     if (parentAuthority === undefined) {
-      return yield* Effect.fail(deferredCodeAnchorError(`Deferred code-anchor ${label} quarantine changed.`));
+      return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} quarantine changed.`);
     }
     const created = yield* fs.makeDirectory(candidate, {mode: 0o700}).pipe(
       Effect.as(true),
-      Effect.catch(error =>
-        error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists'
-          ? Effect.succeed(false)
-          : Effect.fail(error),
+      Effect.catchIf(
+        error => error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists',
+        () => Effect.succeed(false),
       ),
     );
     const parentAfter = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, quarantineAncestors);
     if (parentAfter === undefined || !samePrivateDeferredCodeAnchorDirectories(parentAuthority, parentAfter)) {
-      return yield* Effect.fail(deferredCodeAnchorError(`Deferred code-anchor ${label} quarantine changed.`));
+      return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} quarantine changed.`);
     }
     if (created) {
       if (!(yield* validatePrivateDeferredCodeAnchorDirectories(fs, [...quarantineAncestors, candidate]))) {
-        return yield* Effect.fail(
-          deferredCodeAnchorError(`Deferred code-anchor ${label} quarantine slot is unavailable.`),
-        );
+        return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} quarantine slot is unavailable.`);
       }
       slotRoot = candidate;
     }
   }
   if (slotRoot === undefined) {
-    return yield* Effect.fail(deferredCodeAnchorError(`Deferred code-anchor ${label} quarantine is contended.`));
+    return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} quarantine is contended.`);
   }
 
   const targetAncestors = [...quarantineAncestors, slotRoot];
@@ -321,24 +311,20 @@ const quarantinePrivateDeferredCodeAnchorEntry = Effect.fn('memoryCodeAnchor.qua
       renameAuthority.filter(authority => sourceAncestors.includes(authority.directory)),
     )
   ) {
-    return yield* Effect.fail(deferredCodeAnchorError(`Deferred code-anchor ${label} changed before quarantine.`));
+    return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} changed before quarantine.`);
   }
   const target = path.join(slotRoot, 'entry');
   if ((yield* deferredCodeAnchorPathEntryKind(fs, target)) !== 'missing') {
-    return yield* Effect.fail(deferredCodeAnchorError(`Deferred code-anchor ${label} quarantine target is occupied.`));
+    return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} quarantine target is occupied.`);
   }
   const beforeRename = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, combinedAncestors);
   if (beforeRename === undefined || !samePrivateDeferredCodeAnchorDirectories(renameAuthority, beforeRename)) {
-    return yield* Effect.fail(
-      deferredCodeAnchorError(`Deferred code-anchor ${label} changed before quarantine rename.`),
-    );
+    return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} changed before quarantine rename.`);
   }
   yield* fs.rename(entryPath, target);
   const after = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, combinedAncestors);
   if (after === undefined || !samePrivateDeferredCodeAnchorDirectories(renameAuthority, after)) {
-    return yield* Effect.fail(
-      deferredCodeAnchorError(`Deferred code-anchor ${label} changed during quarantine rename.`),
-    );
+    return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} changed during quarantine rename.`);
   }
   return true;
 });
@@ -358,25 +344,25 @@ export const writePrivateDeferredCodeAnchorFile = Effect.fn('memoryCodeAnchor.wr
 ) {
   const ancestorAuthority = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestorDirectories);
   if (ancestorAuthority === undefined) {
-    return yield* Effect.fail(deferredCodeAnchorError(`Deferred code-anchor ${label} parent is unavailable.`));
+    return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} parent is unavailable.`);
   }
   const temporary = path.join(path.dirname(target), `.${randomDeferredCodeAnchorTemporarySuffix()}.tmp`);
   yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
   const temporaryInfo = yield* fs.stat(temporary);
   if (temporaryInfo.type !== 'File' || !fileSystemModeIsPrivate(runtimePlatform, temporaryInfo.mode)) {
-    yield* fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void));
-    return yield* Effect.fail(deferredCodeAnchorError(`Deferred code-anchor ${label} staging file is not private.`));
+    yield* fs.remove(temporary, {force: true}).pipe(Effect.ignore);
+    return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} staging file is not private.`);
   }
   const beforeRename = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestorDirectories);
   if (beforeRename === undefined || !samePrivateDeferredCodeAnchorDirectories(ancestorAuthority, beforeRename)) {
-    yield* fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void));
-    return yield* Effect.fail(deferredCodeAnchorError(`Deferred code-anchor ${label} parent changed before write.`));
+    yield* fs.remove(temporary, {force: true}).pipe(Effect.ignore);
+    return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} parent changed before write.`);
   }
   yield* fs
     .rename(temporary, target)
     .pipe(Effect.catch(error => fs.remove(temporary, {force: true}).pipe(Effect.andThen(Effect.fail(error)))));
   if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-    return yield* Effect.fail(deferredCodeAnchorError(`Deferred code-anchor ${label} must not be a symbolic link.`));
+    return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} must not be a symbolic link.`);
   }
   const targetInfo = yield* fs.stat(target);
   if (
@@ -384,11 +370,11 @@ export const writePrivateDeferredCodeAnchorFile = Effect.fn('memoryCodeAnchor.wr
     !fileSystemModeIsPrivate(runtimePlatform, targetInfo.mode) ||
     !samePrivateDeferredCodeAnchorFile(temporaryInfo, targetInfo)
   ) {
-    return yield* Effect.fail(deferredCodeAnchorError(`Deferred code-anchor ${label} changed during write.`));
+    return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} changed during write.`);
   }
   const after = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestorDirectories);
   if (after === undefined || !samePrivateDeferredCodeAnchorDirectories(ancestorAuthority, after)) {
-    return yield* Effect.fail(deferredCodeAnchorError(`Deferred code-anchor ${label} parent changed after write.`));
+    return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} parent changed after write.`);
   }
 });
 

@@ -156,10 +156,10 @@ describe('code graph workset mixed-coverage preparation', () => {
           Effect.as({...generation, manifestDigest: codeGraphManifestDigestFromStage()}),
         ),
     );
-    mocks.readPublishedGeneration.mockReturnValue(Effect.succeed(undefined));
-    mocks.readBridgeSummary.mockReturnValue(Effect.succeed(undefined));
+    mocks.readPublishedGeneration.mockReturnValue(Effect.void);
+    mocks.readBridgeSummary.mockReturnValue(Effect.void);
     mocks.readSnapshotMonikers.mockReturnValue(Effect.succeed([]));
-    mocks.registerQualifiedRef.mockReturnValue(Effect.succeed(undefined));
+    mocks.registerQualifiedRef.mockReturnValue(Effect.void);
     mocks.replaceBridgeSet.mockImplementation(
       (
         _home: string,
@@ -272,7 +272,7 @@ describe('code graph workset mixed-coverage preparation', () => {
       ensureCommit: () => Effect.die('not used'),
       index: () => Effect.succeed(summary),
     };
-    mocks.readSnapshotMonikers.mockReturnValue(Effect.fail(new TestError('malformed moniker row')));
+    mocks.readSnapshotMonikers.mockReturnValue(Effect.fail(TestError.make({message: 'malformed moniker row'})));
 
     const result = await runEffect(
       prepareCodeGraphWorkset(config, 'engineering').pipe(
@@ -309,7 +309,7 @@ describe('code graph workset mixed-coverage preparation', () => {
       index: () => Effect.succeed(summary),
     };
     mocks.replaceBridgeSet.mockReturnValue(
-      Effect.fail(new CodeGraphWorksetCatalogError('capacity', 'bridge capacity fixture')),
+      Effect.fail(CodeGraphWorksetCatalogError.of('capacity', 'bridge capacity fixture')),
     );
 
     return Effect.gen(function* () {
@@ -346,7 +346,7 @@ describe('code graph workset mixed-coverage preparation', () => {
           bridgeAttempt += 1;
           if (bridgeAttempt === 1) {
             events.push('bridge-failed');
-            return Effect.fail(new CodeGraphWorksetCatalogError('capacity', 'bridge capacity fixture'));
+            return Effect.fail(CodeGraphWorksetCatalogError.of('capacity', 'bridge capacity fixture'));
           }
           events.push('bridge-ready');
           return Effect.succeed({
@@ -390,14 +390,14 @@ describe('code graph workset mixed-coverage preparation', () => {
           ),
       );
 
-      const outcomes = yield* Effect.all(
-        [prepareCodeGraphWorkset(config, 'engineering'), prepareCodeGraphWorkset(config, 'engineering')].map(effect =>
+      const outcomes = yield* Effect.forEach(
+        [prepareCodeGraphWorkset(config, 'engineering'), prepareCodeGraphWorkset(config, 'engineering')],
+        effect =>
           effect.pipe(
             Effect.provideService(FileSystem.FileSystem, fs),
             Effect.provideService(CodeGraphIndexer, indexer),
             Effect.exit,
           ),
-        ),
         {concurrency: 2},
       );
 
@@ -470,7 +470,7 @@ describe('code graph workset mixed-coverage preparation', () => {
           return (options.onProgress?.({phase: 'waiting', reason: 'repository-lock'}) ?? Effect.void).pipe(
             Effect.andThen(
               attempts === 1
-                ? Effect.fail(new CodeGraphStoreBusyError('busy fixture', {operation: 'workset member index'}))
+                ? Effect.fail(CodeGraphStoreBusyError.of('busy fixture', {operation: 'workset member index'}))
                 : Effect.succeed(summary),
             ),
           );
@@ -591,7 +591,7 @@ describe('code graph workset mixed-coverage preparation', () => {
     const fs = {exists: (path: string) => Effect.succeed(path === '/ready')} as unknown as FileSystem.FileSystem;
     const indexer: CodeGraphIndexerShape = {
       ensureCommit: () => Effect.die('not used'),
-      index: () => Effect.fail(new CodeGraphStoreNoSpaceError('no space fixture', {operation: 'workset index'})),
+      index: () => Effect.fail(CodeGraphStoreNoSpaceError.of('no space fixture', {operation: 'workset index'})),
     };
 
     return Effect.gen(function* () {

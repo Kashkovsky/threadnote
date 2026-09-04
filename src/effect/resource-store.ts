@@ -201,7 +201,7 @@ export interface ResourceStoreShape {
 }
 
 export class ResourceStore extends Context.Service<ResourceStore, ResourceStoreShape>()(
-  'threadnote/effect/ResourceStore',
+  'threadnote/effect/resource-store/ResourceStore',
 ) {
   static layerWith(options: ResourceStoreLayerOptions = {}) {
     return Layer.effect(
@@ -262,10 +262,7 @@ function createResourceStoreOperations(
             } satisfies ResourceRecallInvalidationFailureEvent;
             return Effect.logWarning(
               `Recall index per-URI invalidation failed after a canonical mutation attempt (${includeInactive ? 'with-inactive' : 'active'} scope); the durable canonical generation will force recovery on the next read.`,
-            ).pipe(
-              Effect.andThen(layerOptions.onRecallInvalidationFailed?.(event) ?? Effect.void),
-              Effect.catchCause(() => Effect.void),
-            );
+            ).pipe(Effect.andThen(layerOptions.onRecallInvalidationFailed?.(event) ?? Effect.void), Effect.ignoreCause);
           }),
         ),
       {concurrency: 2, discard: true},
@@ -297,7 +294,7 @@ function createResourceStoreOperations(
           Effect.flatMap(owner => {
             const processId = Option.getOrUndefined(owner)?.processId;
             return Effect.fail(
-              new ResourceIoFailed({
+              ResourceIoFailed.make({
                 cause: error,
                 message: resourceMutationLockFailureMessage(id.canonicalUri, processId),
                 operation: 'lock',
@@ -357,13 +354,13 @@ function createResourceStoreOperations(
               yield* assertCaseCompatible(fs, path.dirname(resolved.path), path.basename(resolved.path), resolved.id);
               const exists = yield* fs.exists(resolved.path);
               if (options.mode === 'create' && exists) {
-                return yield* new ResourceAlreadyExists({
+                return yield* ResourceAlreadyExists.make({
                   message: `Resource already exists: ${resolved.id.canonicalUri}`,
                   uri: resolved.id.canonicalUri,
                 });
               }
               if (options.mode === 'replace' && !exists) {
-                return yield* new ResourceNotFound({
+                return yield* ResourceNotFound.make({
                   message: `Resource does not exist: ${resolved.id.canonicalUri}`,
                   uri: resolved.id.canonicalUri,
                 });
@@ -373,7 +370,7 @@ function createResourceStoreOperations(
                 if (options.expectedFingerprint) {
                   const actualFingerprint = yield* provideLockServices(sha256Hex(yield* fs.readFile(resolved.path)));
                   if (actualFingerprint !== options.expectedFingerprint) {
-                    return yield* new ResourceConflict({
+                    return yield* ResourceConflict.make({
                       actualFingerprint,
                       expectedFingerprint: options.expectedFingerprint,
                       message: `Resource changed before compare-and-replace: ${resolved.id.canonicalUri}`,
@@ -382,7 +379,7 @@ function createResourceStoreOperations(
                   }
                 }
               } else if (options.expectedFingerprint) {
-                return yield* new ResourceNotFound({
+                return yield* ResourceNotFound.make({
                   message: `Resource does not exist for compare-and-replace: ${resolved.id.canonicalUri}`,
                   uri: resolved.id.canonicalUri,
                 });
@@ -515,14 +512,14 @@ function resolveResourcePath(fs: FileSystem.FileSystem, path: Path.Path, locatio
       relativeSegments = ['resources', ...id.segments];
     } else if (id.namespace === 'user') {
       if (id.segments[0] !== userSegment) {
-        return yield* new ResourceAccessDenied({
+        return yield* ResourceAccessDenied.make({
           message: `Resource user scope does not match the configured Threadnote user.`,
           uri: id.canonicalUri,
         });
       }
       relativeSegments = ['user', ...id.segments];
     } else {
-      return yield* new ResourceAccessDenied({
+      return yield* ResourceAccessDenied.make({
         message: `Unsupported Threadnote resource namespace: ${id.namespace}`,
         uri: id.canonicalUri,
       });
@@ -531,7 +528,7 @@ function resolveResourcePath(fs: FileSystem.FileSystem, path: Path.Path, locatio
     const resolved = path.resolve(layout.accountRoot, ...relativeSegments);
     const relative = path.relative(layout.accountRoot, resolved);
     if (escapesBoundary(relative, path)) {
-      return yield* new ResourcePathUnsafe({
+      return yield* ResourcePathUnsafe.make({
         message: `Resolved resource path escapes the Threadnote account root.`,
         path: resolved,
         uri: id.canonicalUri,
@@ -557,7 +554,7 @@ function resolveOwnedAccountBoundary(
     for (const segment of ['data', location.account]) {
       logicalCurrent = path.join(logicalCurrent, segment);
       if (Option.isSome(yield* fs.readLink(logicalCurrent).pipe(Effect.option))) {
-        return yield* new ResourcePathUnsafe({
+        return yield* ResourcePathUnsafe.make({
           message: 'Symbolic links are not allowed inside Threadnote-owned storage roots.',
           path: logicalCurrent,
           uri,
@@ -565,19 +562,16 @@ function resolveOwnedAccountBoundary(
       }
       if (!(yield* fs.exists(logicalCurrent))) {
         // First-use callers may race here. Only an existing entry is recoverable; validation below decides its safety.
-        yield* fs
-          .makeDirectory(logicalCurrent, {mode: 0o700})
-          .pipe(
-            Effect.catch(error =>
-              error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists'
-                ? Effect.void
-                : Effect.fail(error),
-            ),
-          );
+        yield* fs.makeDirectory(logicalCurrent, {mode: 0o700}).pipe(
+          Effect.catchIf(
+            error => error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists',
+            () => Effect.void,
+          ),
+        );
       }
       const info = yield* fs.stat(logicalCurrent);
       if (info.type !== 'Directory') {
-        return yield* new ResourcePathUnsafe({
+        return yield* ResourcePathUnsafe.make({
           message: 'Threadnote-owned storage root component is not a directory.',
           path: logicalCurrent,
           uri,
@@ -586,7 +580,7 @@ function resolveOwnedAccountBoundary(
       realCurrent = path.join(realCurrent, segment);
       const actual = yield* fs.realPath(logicalCurrent);
       if (actual !== realCurrent) {
-        return yield* new ResourcePathUnsafe({
+        return yield* ResourcePathUnsafe.make({
           message: 'Threadnote-owned storage root was redirected through a path alias.',
           path: logicalCurrent,
           uri,
@@ -624,7 +618,7 @@ function verifyExistingPath(
 ) {
   return Effect.gen(function* () {
     if (!(yield* fs.exists(resolved.path))) {
-      return yield* new ResourceNotFound({
+      return yield* ResourceNotFound.make({
         message: `Resource does not exist: ${resolved.id.canonicalUri}`,
         uri: resolved.id.canonicalUri,
       });
@@ -663,7 +657,7 @@ function readResourceBounded(
 ) {
   return Effect.gen(function* () {
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes >= Number.MAX_SAFE_INTEGER) {
-      return yield* new ResourceIoFailed({
+      return yield* ResourceIoFailed.make({
         cause: new Error('invalid bounded resource read size'),
         message: 'Resource read bound is invalid.',
         operation: 'read',
@@ -704,7 +698,7 @@ function readResourceBounded(
         const content = yield* Effect.try({
           try: () => new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes.subarray(0, offset)),
           catch: cause =>
-            new ResourceIoFailed({
+            ResourceIoFailed.make({
               cause,
               message: 'Resource content is not valid UTF-8.',
               operation: 'read',
@@ -760,7 +754,7 @@ function assertCaseCompatible(fs: FileSystem.FileSystem, parent: string, desired
       return entryNfc.toLocaleLowerCase() === desiredNfc.toLocaleLowerCase() && entryNfc !== desiredNfc;
     });
     if (collision) {
-      return yield* new ResourcePathUnsafe({
+      return yield* ResourcePathUnsafe.make({
         message: `Portable path collision between "${desired}" and existing "${collision}".`,
         path: pathForMessage(parent, desired),
         uri: id.canonicalUri,
@@ -858,7 +852,7 @@ function writeAtomically(
       const linked = yield* fs.link(temporary, resolved.path).pipe(Effect.result);
       if (linked._tag === 'Failure') {
         if (yield* fs.exists(resolved.path)) {
-          return yield* new ResourceAlreadyExists({
+          return yield* ResourceAlreadyExists.make({
             message: `Resource already exists: ${resolved.id.canonicalUri}`,
             uri: resolved.id.canonicalUri,
           });
@@ -887,14 +881,14 @@ function removeTemporarySiblings(
         yield* fs.remove(path.join(parent, entry), {force: true});
       }
     }
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }
 
 function syncDirectory(fs: FileSystem.FileSystem, directory: string): Effect.Effect<void, never> {
   return Effect.scoped(
     fs.open(directory, {flag: 'r'}).pipe(
       Effect.flatMap(file => file.sync),
-      Effect.catch(() => Effect.void),
+      Effect.ignore,
     ),
   );
 }
@@ -904,7 +898,7 @@ function escapesBoundary(relative: string, path: Path.Path): boolean {
 }
 
 function unsafe(resolved: ResolvedResourcePath, message: string): ResourcePathUnsafe {
-  return new ResourcePathUnsafe({message, path: resolved.path, uri: resolved.id.canonicalUri});
+  return ResourcePathUnsafe.make({message, path: resolved.path, uri: resolved.id.canonicalUri});
 }
 
 function pathForMessage(parent: string, child: string): string {
@@ -913,13 +907,13 @@ function pathForMessage(parent: string, child: string): string {
 
 function isResourceStoreError(error: unknown): error is ResourceStoreError {
   return (
-    error instanceof InvalidResourceId ||
-    error instanceof ResourceAccessDenied ||
-    error instanceof ResourceAlreadyExists ||
-    error instanceof ResourceConflict ||
-    error instanceof ResourceIoFailed ||
-    error instanceof ResourceNotFound ||
-    error instanceof ResourcePathUnsafe
+    Schema.is(InvalidResourceId)(error) ||
+    Schema.is(ResourceAccessDenied)(error) ||
+    Schema.is(ResourceAlreadyExists)(error) ||
+    Schema.is(ResourceConflict)(error) ||
+    Schema.is(ResourceIoFailed)(error) ||
+    Schema.is(ResourceNotFound)(error) ||
+    Schema.is(ResourcePathUnsafe)(error)
   );
 }
 
@@ -929,7 +923,7 @@ function mapIoError(operation: string, uri: string) {
       Effect.mapError(error =>
         isResourceStoreError(error)
           ? error
-          : new ResourceIoFailed({
+          : ResourceIoFailed.make({
               cause: error,
               message: `Resource ${operation} failed for ${uri}.`,
               operation,

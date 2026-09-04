@@ -24,16 +24,17 @@ function parseArguments(args: readonly string[]): {readonly artifacts: readonly 
     const argument = args[index];
     if (argument === '--output') {
       const value = args[++index];
-      if (!value?.trim()) throw new ScriptError('--output requires a path.');
+      if (!value?.trim()) throw ScriptError.make({message: '--output requires a path.'});
       outputPath = value;
     } else if (argument.startsWith('-')) {
-      throw new ScriptError(`Unknown production ratchet generator option: ${argument}`);
+      throw ScriptError.make({message: `Unknown production ratchet generator option: ${argument}`});
     } else {
       artifacts.push(argument);
     }
   }
-  if (outputPath === undefined) throw new ScriptError('Production ratchet generation requires --output.');
-  if (artifacts.length < 3) throw new ScriptError('Production ratchet generation requires at least three artifacts.');
+  if (outputPath === undefined) throw ScriptError.make({message: 'Production ratchet generation requires --output.'});
+  if (artifacts.length < 3)
+    throw ScriptError.make({message: 'Production ratchet generation requires at least three artifacts.'});
   return {artifacts, outputPath};
 }
 

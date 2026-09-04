@@ -1,4 +1,4 @@
-import {Cause, Effect, Option, Predicate, Ref, Result} from 'effect';
+import {Cause, Effect, Option, Predicate, Ref, Result, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store_build_core.js';
@@ -279,25 +279,23 @@ export const buildCodeGraphReadySnapshotRoutingProjectionScoped = Effect.fn(
     .readySnapshot(normalized.databasePath, normalized.worktreeId)
     .pipe(Effect.mapError(cause => storage('Unable to select a ready code graph snapshot.', cause)));
   if (!selected) {
-    return yield* Effect.fail(missing('No active ready code graph snapshot exists for this worktree.'));
+    return yield* missing('No active ready code graph snapshot exists for this worktree.');
   }
   if (normalized.snapshotId !== undefined && selected.id !== normalized.snapshotId) {
-    return yield* Effect.fail(missing('The requested ready snapshot is not active for this worktree.'));
+    return yield* missing('The requested ready snapshot is not active for this worktree.');
   }
   if (selected.repositoryId !== normalized.repositoryId || selected.state !== 'ready') {
-    return yield* Effect.fail(corrupt('The active ready snapshot has inconsistent repository provenance.'));
+    return yield* corrupt('The active ready snapshot has inconsistent repository provenance.');
   }
   if (selected.symbolCount > CODE_GRAPH_WORKSET_CATALOG_LIMITS.symbolsPerProjection) {
-    return yield* Effect.fail(
-      invalid('The ready snapshot has more symbols than one routing projection can represent.'),
-    );
+    return yield* invalid('The ready snapshot has more symbols than one routing projection can represent.');
   }
 
   const lease = yield* Effect.acquireRelease(
     store
       .acquireSnapshotLease(normalized.databasePath, selected.id, normalized.leaseDurationMilliseconds)
       .pipe(Effect.mapError(cause => storage('Unable to lease the ready code graph snapshot.', cause))),
-    lease => store.releaseSnapshotLease(normalized.databasePath, lease).pipe(Effect.catch(() => Effect.void)),
+    lease => store.releaseSnapshotLease(normalized.databasePath, lease).pipe(Effect.ignore),
   );
   const renewalFailure = yield* Ref.make<unknown | undefined>(undefined);
   const renewalIntervalMilliseconds = Math.max(1_000, Math.floor(normalized.leaseDurationMilliseconds / 3));
@@ -314,7 +312,7 @@ export const buildCodeGraphReadySnapshotRoutingProjectionScoped = Effect.fn(
     })
     .pipe(
       Effect.mapError(cause =>
-        cause instanceof CodeGraphWorksetCatalogError
+        Schema.is(CodeGraphWorksetCatalogError)(cause)
           ? cause
           : storage('Unable to read the ready code graph routing surface.', cause),
       ),
@@ -353,23 +351,21 @@ export const streamCodeGraphReadySnapshotRoutingProjectionScoped = Effect.fn(
   const selected = yield* store
     .readySnapshot(normalized.databasePath, normalized.worktreeId)
     .pipe(Effect.mapError(cause => storage('Unable to select a ready code graph snapshot.', cause)));
-  if (!selected) return yield* Effect.fail(missing('No active ready code graph snapshot exists for this worktree.'));
+  if (!selected) return yield* missing('No active ready code graph snapshot exists for this worktree.');
   if (normalized.snapshotId !== undefined && selected.id !== normalized.snapshotId) {
-    return yield* Effect.fail(missing('The requested ready snapshot is not active for this worktree.'));
+    return yield* missing('The requested ready snapshot is not active for this worktree.');
   }
   if (selected.repositoryId !== normalized.repositoryId || selected.state !== 'ready') {
-    return yield* Effect.fail(corrupt('The active ready snapshot has inconsistent repository provenance.'));
+    return yield* corrupt('The active ready snapshot has inconsistent repository provenance.');
   }
   if (selected.symbolCount > CODE_GRAPH_WORKSET_CATALOG_LIMITS.symbolsPerProjection) {
-    return yield* Effect.fail(
-      invalid('The ready snapshot has more symbols than one routing projection can represent.'),
-    );
+    return yield* invalid('The ready snapshot has more symbols than one routing projection can represent.');
   }
   const lease = yield* Effect.acquireRelease(
     store
       .acquireSnapshotLease(normalized.databasePath, selected.id, normalized.leaseDurationMilliseconds)
       .pipe(Effect.mapError(cause => storage('Unable to lease the ready code graph snapshot.', cause))),
-    lease => store.releaseSnapshotLease(normalized.databasePath, lease).pipe(Effect.catch(() => Effect.void)),
+    lease => store.releaseSnapshotLease(normalized.databasePath, lease).pipe(Effect.ignore),
   );
   const renewalFailure = yield* Ref.make<unknown | undefined>(undefined);
   const renewalIntervalMilliseconds = Math.max(1_000, Math.floor(normalized.leaseDurationMilliseconds / 3));
@@ -384,7 +380,7 @@ export const streamCodeGraphReadySnapshotRoutingProjectionScoped = Effect.fn(
     .withSession(normalized.databasePath, readProjectionStreamed(selected, normalized, sink), {readOnly: true})
     .pipe(
       Effect.mapError(cause =>
-        cause instanceof CodeGraphWorksetCatalogError
+        Schema.is(CodeGraphWorksetCatalogError)(cause)
           ? cause
           : storage('Unable to stream the ready code graph routing surface.', cause),
       ),
@@ -454,9 +450,7 @@ function readProjection(selected: CodeGraphSnapshot, input: NormalizedProjection
       safeCount(before.edge_count, 'snapshot edge count'),
     );
     if (expectedSymbolCount > CODE_GRAPH_WORKSET_CATALOG_LIMITS.symbolsPerProjection) {
-      return yield* Effect.fail(
-        invalid('The ready snapshot has more symbols than one routing projection can represent.'),
-      );
+      return yield* invalid('The ready snapshot has more symbols than one routing projection can represent.');
     }
     yield* prepareCodeGraphWorksetProjectionRoutingSurface(
       sql,
@@ -512,14 +506,12 @@ function readProjection(selected: CodeGraphSnapshot, input: NormalizedProjection
       yield* Effect.yieldNow;
     }
     if (symbols.length !== expectedSymbolCount || symbols.length !== selected.symbolCount) {
-      return yield* Effect.fail(
-        corrupt('The effective routing symbol count does not match the ready snapshot receipt.'),
-      );
+      return yield* corrupt('The effective routing symbol count does not match the ready snapshot receipt.');
     }
 
     const after = yield* selectProjectionSnapshot(sql, selected.id, input.repositoryId, input.worktreeId);
     if (!sameSnapshotProjectionRow(before, after)) {
-      return yield* Effect.fail(corrupt('The active ready snapshot changed while its routing projection was read.'));
+      return yield* corrupt('The active ready snapshot changed while its routing projection was read.');
     }
     const snapshotDigest = readySnapshotProjectionDigest({
       baseSnapshotId,
@@ -560,7 +552,7 @@ function readProjection(selected: CodeGraphSnapshot, input: NormalizedProjection
       const failure = Cause.findErrorOption(cause);
       if (Option.isSome(failure)) return Effect.fail(failure.value);
       const defect = Cause.findDefect(cause);
-      if (Result.isSuccess(defect) && defect.success instanceof CodeGraphWorksetCatalogError) {
+      if (Result.isSuccess(defect) && Schema.is(CodeGraphWorksetCatalogError)(defect.success)) {
         return Effect.fail(defect.success);
       }
       return Effect.fail(corrupt('The ready snapshot routing surface could not be decoded.', Cause.squash(cause)));
@@ -614,15 +606,13 @@ function readProjectionStreamed<E, R>(
           reservedLogicalBytes = codeGraphWorksetRoutingProjectionLogicalBytesAppend(reservedLogicalBytes, symbols);
         },
         catch: cause =>
-          cause instanceof CodeGraphWorksetCatalogError
+          Schema.is(CodeGraphWorksetCatalogError)(cause)
             ? cause
             : corrupt('The routing projection storage charge is invalid.', cause),
       }),
     );
     if (firstPass.symbolCount !== expectedSymbolCount || firstPass.symbolCount !== selected.symbolCount) {
-      return yield* Effect.fail(
-        corrupt('The effective routing symbol count does not match the ready snapshot receipt.'),
-      );
+      return yield* corrupt('The effective routing symbol count does not match the ready snapshot receipt.');
     }
     yield* validateProjectionSnapshotUnchanged(sql, selected, input, before);
     const snapshotDigest = readySnapshotProjectionDigest({
@@ -682,7 +672,7 @@ function readProjectionStreamed<E, R>(
         codeGraphWorksetRoutingProjectionDigestComplete(header, secondPass) !== projectionDigest ||
         JSON.stringify(verificationStats) !== JSON.stringify(stats)
       ) {
-        return yield* Effect.fail(corrupt('The ready snapshot routing projection changed between streaming passes.'));
+        return yield* corrupt('The ready snapshot routing projection changed between streaming passes.');
       }
       yield* validateProjectionSnapshotUnchanged(sql, selected, input, before);
       yield* sink.complete(projectionDigest, begun.stagingToken);
@@ -694,7 +684,7 @@ function readProjectionStreamed<E, R>(
       const failure = Cause.findErrorOption(cause);
       if (Option.isSome(failure)) return Effect.fail(failure.value);
       const defect = Cause.findDefect(cause);
-      if (Result.isSuccess(defect) && defect.success instanceof CodeGraphWorksetCatalogError) {
+      if (Result.isSuccess(defect) && Schema.is(CodeGraphWorksetCatalogError)(defect.success)) {
         return Effect.fail(defect.success);
       }
       return Effect.fail(corrupt('The ready snapshot routing surface could not be streamed.', Cause.squash(cause)));
@@ -787,7 +777,7 @@ function validateProjectionSnapshotUnchanged(
   return Effect.gen(function* () {
     const after = yield* selectProjectionSnapshot(sql, selected.id, input.repositoryId, input.worktreeId);
     if (!sameSnapshotProjectionRow(before, after)) {
-      return yield* Effect.fail(corrupt('The active ready snapshot changed while its routing projection was read.'));
+      return yield* corrupt('The active ready snapshot changed while its routing projection was read.');
     }
   });
 }
@@ -848,7 +838,7 @@ function normalizeInput(
       };
     },
     catch: cause =>
-      cause instanceof CodeGraphWorksetCatalogError
+      Schema.is(CodeGraphWorksetCatalogError)(cause)
         ? cause
         : invalid('Workset routing projection input is invalid.', cause),
   });
@@ -881,7 +871,7 @@ function selectProjectionSnapshot(
       [worktreeId, snapshotId, repositoryId],
     );
     if (rows.length !== 1) {
-      return yield* Effect.fail(missing('The selected snapshot is no longer an active ready worktree view.'));
+      return yield* missing('The selected snapshot is no longer an active ready worktree view.');
     }
     return rows[0];
   });
@@ -907,10 +897,10 @@ function selectExtractorGeneration(sql: SqlClient.SqlClient, snapshotId: string)
       [snapshotId],
     );
     if (rows.length !== 1) {
-      return yield* Effect.fail(corrupt('The ready snapshot has no unique extractor-generation receipt.'));
+      return yield* corrupt('The ready snapshot has no unique extractor-generation receipt.');
     }
     const generation = safeCount(rows[0].generation, 'extractor generation');
-    if (generation < 1) return yield* Effect.fail(corrupt('The ready snapshot extractor generation is invalid.'));
+    if (generation < 1) return yield* corrupt('The ready snapshot extractor generation is invalid.');
     return generation;
   });
 }
@@ -918,7 +908,7 @@ function selectExtractorGeneration(sql: SqlClient.SqlClient, snapshotId: string)
 function selectCount(sql: SqlClient.SqlClient, statement: string, parameters: readonly unknown[], label: string) {
   return Effect.gen(function* () {
     const rows = yield* sql.unsafe<CountRow>(statement, parameters);
-    if (rows.length !== 1) return yield* Effect.fail(corrupt(`The ${label} is unavailable.`));
+    if (rows.length !== 1) return yield* corrupt(`The ${label} is unavailable.`);
     return safeCount(rows[0].count, label);
   });
 }
@@ -974,30 +964,30 @@ export const configureCodeGraphWorksetProjectionTemporaryStorage = Effect.fn(
   maximumBytes: number = CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum,
 ) {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
-    return yield* Effect.fail(invalid('Workset projection temporary storage bound is invalid.'));
+    return yield* invalid('Workset projection temporary storage bound is invalid.');
   }
   yield* sql.unsafe('PRAGMA query_only = OFF');
   return yield* Effect.gen(function* () {
     yield* sql.unsafe('PRAGMA temp_store = FILE');
     if ((yield* selectProjectionTemporaryPragma(sql, 'temp_store')) !== 1) {
-      return yield* Effect.fail(temporaryStorageIncompatible());
+      return yield* temporaryStorageIncompatible();
     }
     // The surface is disposable and rebuilt after any failed statement. Keep
     // its rollback journal off disk so max_page_count bounds physical TEMP
     // growth instead of leaving a second repository-sized journal beside it.
     yield* sql.unsafe('PRAGMA temp.journal_mode = MEMORY');
     if ((yield* selectProjectionTemporaryTextPragma(sql, 'journal_mode')) !== 'memory') {
-      return yield* Effect.fail(temporaryStorageIncompatible());
+      return yield* temporaryStorageIncompatible();
     }
     const pageSizeBytes = yield* selectProjectionTemporaryPragma(sql, 'page_size');
     const maximumPages = Math.floor(maximumBytes / pageSizeBytes);
     if (!Number.isSafeInteger(maximumPages) || maximumPages < 1) {
-      return yield* Effect.fail(temporaryStorageIncompatible());
+      return yield* temporaryStorageIncompatible();
     }
     yield* sql.unsafe(`PRAGMA temp.max_page_count = ${String(maximumPages)}`);
     const configuredMaximumPages = yield* selectProjectionTemporaryPragma(sql, 'max_page_count');
     if (configuredMaximumPages !== maximumPages) {
-      return yield* Effect.fail(temporaryStorageIncompatible());
+      return yield* temporaryStorageIncompatible();
     }
     return {
       journalMode: 'memory',
@@ -1041,7 +1031,7 @@ function selectProjectionTemporaryPragma(
 }
 
 function temporaryStorageIncompatible(): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError(
+  return CodeGraphWorksetCatalogError.of(
     'incompatible',
     'SQLite temporary routing storage cannot enforce the bounded projection capacity.',
   );
@@ -1138,10 +1128,10 @@ export const prepareCodeGraphWorksetProjectionRoutingSurface = Effect.fn(
 });
 
 function projectionTemporaryStorageFailure(cause: unknown): unknown {
-  if (cause instanceof CodeGraphWorksetCatalogError) return cause;
+  if (Schema.is(CodeGraphWorksetCatalogError)(cause)) return cause;
   const classified = classifyCodeGraphStoreFailure('prepare workset routing projection temporary storage', cause);
   return classified.code === 'no-space'
-    ? new CodeGraphWorksetCatalogError(
+    ? CodeGraphWorksetCatalogError.of(
         'capacity',
         'The temporary routing projection reached its bounded storage envelope.',
         {cause},
@@ -1152,10 +1142,10 @@ function projectionTemporaryStorageFailure(cause: unknown): unknown {
 function selectTemporaryRowCount(sql: SqlClient.SqlClient, table: string, label: string) {
   return Effect.gen(function* () {
     if (table !== PROJECTION_LOOKUP_TABLE && table !== PROJECTION_TERMS_TABLE) {
-      return yield* Effect.fail(corrupt(`The ${label} table is invalid.`));
+      return yield* corrupt(`The ${label} table is invalid.`);
     }
     const rows = yield* sql.unsafe<CountRow>(`SELECT COUNT(*) AS count FROM temp.${table}`);
-    if (rows.length !== 1) return yield* Effect.fail(corrupt(`The ${label} count is unavailable.`));
+    if (rows.length !== 1) return yield* corrupt(`The ${label} count is unavailable.`);
     return safeCount(rows[0].count, `${label} count`);
   });
 }
@@ -1178,7 +1168,7 @@ function selectAnalysisReceipt(sql: SqlClient.SqlClient, snapshotId: string) {
        FROM snapshot_analysis_summary_receipts WHERE snapshot_id = ? LIMIT 2`,
       [snapshotId],
     );
-    if (rows.length > 1) return yield* Effect.fail(corrupt('The snapshot analysis receipt is not unique.'));
+    if (rows.length > 1) return yield* corrupt('The snapshot analysis receipt is not unique.');
     return rows[0] ? normalizedAnalysisReceipt(rows[0]) : undefined;
   });
 }
@@ -1190,7 +1180,7 @@ function selectComponentReceipt(sql: SqlClient.SqlClient, snapshotId: string) {
        FROM snapshot_component_edge_aggregate_receipts WHERE snapshot_id = ? LIMIT 2`,
       [snapshotId],
     );
-    if (rows.length > 1) return yield* Effect.fail(corrupt('The snapshot component receipt is not unique.'));
+    if (rows.length > 1) return yield* corrupt('The snapshot component receipt is not unique.');
     return rows[0] ? normalizedComponentReceipt(rows[0]) : undefined;
   });
 }
@@ -1451,17 +1441,17 @@ function compareText(left: string, right: string): number {
 }
 
 function invalid(message: string, cause?: unknown): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('invalid-input', message, cause === undefined ? undefined : {cause});
+  return CodeGraphWorksetCatalogError.of('invalid-input', message, cause === undefined ? undefined : {cause});
 }
 
 function missing(message: string): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('missing', message);
+  return CodeGraphWorksetCatalogError.of('missing', message);
 }
 
 function corrupt(message: string, cause?: unknown): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('corrupt', message, cause === undefined ? undefined : {cause});
+  return CodeGraphWorksetCatalogError.of('corrupt', message, cause === undefined ? undefined : {cause});
 }
 
 function storage(message: string, cause?: unknown): CodeGraphWorksetCatalogError {
-  return new CodeGraphWorksetCatalogError('storage', message, cause === undefined ? undefined : {cause});
+  return CodeGraphWorksetCatalogError.of('storage', message, cause === undefined ? undefined : {cause});
 }

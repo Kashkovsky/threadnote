@@ -1,5 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
-import {Effect, Option, Path} from 'effect';
+import {Effect, Option, Path, Schema} from 'effect';
 import {EffectMcpServerAdapter, McpInput} from '../../effect/ai/mcp.js';
 import {
   CodeGraphQueryService,
@@ -557,13 +557,13 @@ export function registerCodeGraphTool(
           orElse: timeoutResult,
         }),
         Effect.catch(error =>
-          error instanceof IsolatedCodeGraphImpactQueryTimedOut
+          Schema.is(IsolatedCodeGraphImpactQueryTimedOut)(error)
             ? timeoutResult()
             : queryTelemetry.stage(
                 'graph.query.execute',
                 'query-serialization',
                 Effect.sync(() =>
-                  error instanceof AgentResponseBudgetTooSmallError
+                  Schema.is(AgentResponseBudgetTooSmallError)(error)
                     ? argumentError(error.message)
                     : mcpErrorResult(error),
                 ),
@@ -1776,7 +1776,7 @@ const codeGraphQueryTimeoutStatusFor = Effect.fn('mcpServer.codeGraphQueryTimeou
       duration: MCP_CODE_GRAPH_TIMEOUT_STATUS_MILLISECONDS,
       orElse: () => Effect.succeed(Option.none<CodeGraphRefreshStatus>()),
     }),
-    Effect.catch(() => Effect.succeed(Option.none<CodeGraphRefreshStatus>())),
+    Effect.orElseSucceed(() => Option.none<CodeGraphRefreshStatus>()),
   );
   return Option.getOrUndefined(status);
 });

@@ -36,11 +36,7 @@ describe('code graph repository identity', () => {
 
   it('uses only the folder label for a local repository display name', async () => {
     const root = localRepository();
-    const identity = await runEffect(
-      Effect.gen(function* () {
-        return yield* resolveRepositoryIdentity(root);
-      }),
-    );
+    const identity = await runEffect(resolveRepositoryIdentity(root));
 
     expect(identity.displayName).toBe(basename(root));
     expect(identity.remoteIdentity).toBeUndefined();
@@ -69,7 +65,7 @@ describe('code graph repository identity', () => {
         const command = yield* CommandExecutor;
         const executeBytes = command.executeBytes;
         if (executeBytes === undefined)
-          return yield* Effect.fail(new TestError('binary command adapter is unavailable'));
+          return yield* TestError.make({message: 'binary command adapter is unavailable'});
         const malformed = CommandExecutor.of({
           ...command,
           executeBytes: (executable, args, options) =>
@@ -94,10 +90,8 @@ describe('code graph repository identity', () => {
     const linked = join(mkdtempSync(join(tmpdir(), 'threadnote-code-graph-linked-')), 'worktree');
     git(root, ['worktree', 'add', linked, 'linked']);
     const [primary, worktree] = await runEffect(
-      Effect.gen(function* () {
-        return yield* Effect.all([resolveRepositoryIdentity(root), resolveRepositoryIdentity(linked)], {
-          concurrency: 2,
-        });
+      Effect.all([resolveRepositoryIdentity(root), resolveRepositoryIdentity(linked)], {
+        concurrency: 2,
       }),
     );
 
@@ -114,10 +108,8 @@ describe('code graph repository identity', () => {
       git(root, ['remote', 'add', 'origin', 'https://github.com/example/shared.git']);
     }
     const [first, second] = await runEffect(
-      Effect.gen(function* () {
-        return yield* Effect.all([resolveRepositoryIdentity(firstRoot), resolveRepositoryIdentity(secondRoot)], {
-          concurrency: 2,
-        });
+      Effect.all([resolveRepositoryIdentity(firstRoot), resolveRepositoryIdentity(secondRoot)], {
+        concurrency: 2,
       }),
     );
 

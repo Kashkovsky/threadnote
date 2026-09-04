@@ -1,5 +1,6 @@
 import {exportJWK, generateKeyPair, SignJWT, type JWK, type JWTPayload} from 'jose';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
+import {randomUuidV4} from '../../src/crypto/uuid.js';
 import type {AuthorizedRemotePrincipal} from '../../src/remote_memory/authorization.js';
 import {
   authorizeCursorClaims,
@@ -91,7 +92,7 @@ async function cursorToken(
     exp: now + 300,
     iat: now,
     iss: options.issuer ?? ISSUER,
-    jti: crypto.randomUUID(),
+    jti: randomUuidV4(),
     nbf: now - 5,
     nonce: 'nonce-1',
     repo_count: 1,
@@ -153,7 +154,7 @@ class MemoryAttestationStore implements CursorAttestationStore {
     this.consumed.add(challengeId);
     const attestation: CursorWorkloadAttestation = {
       ...claims,
-      attestationId: crypto.randomUUID(),
+      attestationId: randomUuidV4(),
       nonce: undefined,
       principalId: expected.principalId,
       shareId: expected.shareId,

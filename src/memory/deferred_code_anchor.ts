@@ -1,4 +1,5 @@
-import {Clock, Effect, FileSystem, Option, Path, Predicate, Result} from 'effect';
+import {DateTime, Effect, FileSystem, Option, Path, Predicate, Result} from 'effect';
+import {succeedUndefined} from '../effect/optional.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {sha256Hex} from '../effect/digest.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
@@ -220,46 +221,42 @@ export const stageDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.stage')
   const canonicalUri = canonicalPersonalMemoryUri(config, input.memoryUri);
   const record = parseMemoryDocument(canonicalUri, input.memoryContent);
   if (!record || !record.metadata.memoryId) {
-    return yield* Effect.fail(
-      deferredCodeAnchorError('Deferred code anchors require a canonical memory with a stable memory_id.'),
-    );
+    return yield* deferredCodeAnchorError('Deferred code anchors require a canonical memory with a stable memory_id.');
   }
   if (record.metadata.status !== 'active') {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code anchors may be staged only for active memories.'));
+    return yield* deferredCodeAnchorError('Deferred code anchors may be staged only for active memories.');
   }
   if (record.metadata.visibility === 'shared' || record.metadata.visibility === 'external') {
-    return yield* Effect.fail(
-      deferredCodeAnchorError('Deferred code anchors are private-local and cannot be staged for shared memory.'),
+    return yield* deferredCodeAnchorError(
+      'Deferred code anchors are private-local and cannot be staged for shared memory.',
     );
   }
   if ((record.metadata.codeCitations?.length ?? 0) > 0) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code anchors require an uncited canonical memory.'));
+    return yield* deferredCodeAnchorError('Deferred code anchors require an uncited canonical memory.');
   }
   if (record.metadata.schemaVersion !== MEMORY_SCHEMA_VERSION) {
-    return yield* Effect.fail(
-      deferredCodeAnchorError(`Deferred code anchors require memory schema version ${MEMORY_SCHEMA_VERSION}.`),
+    return yield* deferredCodeAnchorError(
+      `Deferred code anchors require memory schema version ${MEMORY_SCHEMA_VERSION}.`,
     );
   }
   if (input.memoryMetadata.memoryId !== record.metadata.memoryId) {
-    return yield* Effect.fail(
-      deferredCodeAnchorError('Deferred code-anchor memory identity changed during preparation.'),
-    );
+    return yield* deferredCodeAnchorError('Deferred code-anchor memory identity changed during preparation.');
   }
 
   const refs = normalizeMemoryCodeRefs(input.request.codeRefs);
   if (refs.length === 0) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code anchors require at least one code reference.'));
+    return yield* deferredCodeAnchorError('Deferred code anchors require at least one code reference.');
   }
   const path = yield* Path.Path;
   if (!path.isAbsolute(input.request.callerCwd)) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor callerCwd must be absolute.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor callerCwd must be absolute.');
   }
   const query = yield* CodeGraphQueryService;
   const status = yield* query.status(config.agentContextHome, input.request.callerCwd, {
     observeWorktree: true,
     requestMaintenance: false,
   });
-  const createdAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+  const createdAt = DateTime.formatIso(yield* DateTime.now);
   const expectedMemoryHash = yield* memoryContentHash(input.memoryContent);
   const intentId = yield* deferredCodeAnchorIntentId({
     callerCwd: input.request.callerCwd,
@@ -321,7 +318,7 @@ export const findUrisWithDeferredCodeAnchorIntents = Effect.fn('memoryCodeAnchor
       const itemDirectory = itemAncestors[itemAncestors.length - 1];
       return (
         itemRootNames === undefined
-          ? Effect.succeed(undefined)
+          ? succeedUndefined
           : readPrivateDeferredCodeAnchorDirectory(fs, itemDirectory, itemAncestors)
       ).pipe(
         Effect.map(itemNames =>
@@ -741,7 +738,7 @@ const finalizeDeferredCodeAnchor = Effect.fn('memoryCodeAnchor.finalizeOne')(fun
           codeCitations: citations,
           schemaVersion: MEMORY_SCHEMA_VERSION,
           ...(sourceCommit === undefined ? {} : {sourceCommit}),
-          sourceObservedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+          sourceObservedAt: DateTime.formatIso(yield* DateTime.now),
         },
         record.body,
       );
@@ -757,8 +754,8 @@ const finalizeDeferredCodeAnchor = Effect.fn('memoryCodeAnchor.finalizeOne')(fun
         const verified = yield* store.read(resourceStoreLocation(config), entry.intent.memoryUri);
         const verifiedRecord = parseMemoryDocument(entry.intent.memoryUri, verified);
         if (!verifiedRecord || !deferredCodeAnchorFinalizationVerified(memory, verified)) {
-          return yield* Effect.fail(
-            deferredCodeAnchorError(`Deferred code-anchor verification failed for ${entry.intent.memoryUri}.`),
+          return yield* deferredCodeAnchorError(
+            `Deferred code-anchor verification failed for ${entry.intent.memoryUri}.`,
           );
         }
         yield* discardStoredDeferredCodeAnchorIntent(config, entry);
@@ -937,7 +934,7 @@ const readDeferredCodeAnchorRouteQueue = Effect.fn('memoryCodeAnchor.readRouteQu
   advanceCursor: boolean,
 ) {
   if (!isDeferredCodeAnchorRouteQueueKey(key)) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor route queue key is invalid.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor route queue key is invalid.');
   }
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -965,7 +962,7 @@ const readDeferredCodeAnchorRouteQueue = Effect.fn('memoryCodeAnchor.readRouteQu
     const page = yield* runtimeTextDirectoryNamePage(laneRoot, remaining + 1);
     const laneAfterListing = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, laneAncestors);
     if (laneAfterListing === undefined || !samePrivateDeferredCodeAnchorDirectories(laneAuthority, laneAfterListing)) {
-      return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor route lane changed during listing.'));
+      return yield* deferredCodeAnchorError('Deferred code-anchor route lane changed during listing.');
     }
     const pageEntries = page.names.slice(0, remaining);
     if (pageEntries.length === 0) continue;
@@ -1036,7 +1033,7 @@ const migrateBoundedLegacyDeferredCodeAnchorIntents = Effect.fn('memoryCodeAncho
   const page = yield* runtimeTextDirectoryNamePage(root, limit + 8);
   const rootAfterListing = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, [root]);
   if (rootAfterListing === undefined || !samePrivateDeferredCodeAnchorDirectories(rootAuthority, rootAfterListing)) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor outbox changed during legacy listing.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor outbox changed during legacy listing.');
   }
   const names = page.names.filter(name => name.endsWith('.json')).slice(0, limit);
   for (const name of names) {
@@ -1158,7 +1155,7 @@ const writeDeferredCodeAnchorRouteQueueCursor = Effect.fn('memoryCodeAnchor.writ
   lane: number,
 ) {
   if (!Number.isSafeInteger(lane) || lane < 0 || lane >= DEFERRED_CODE_ANCHOR_ROUTE_LANE_COUNT) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor route queue cursor is invalid.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor route queue cursor is invalid.');
   }
   yield* writePrivateDeferredCodeAnchorFile(
     fs,
@@ -1215,7 +1212,7 @@ const writeDeferredCodeAnchorScanCursor = Effect.fn('memoryCodeAnchor.writeScanC
   cursorName = DEFERRED_CODE_ANCHOR_SCAN_CURSOR_NAME,
 ) {
   if (!isDeferredCodeAnchorCursorValue(cursor) || !isDeferredCodeAnchorCursorName(cursorName)) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor scan cursor is invalid.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor scan cursor is invalid.');
   }
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -1318,7 +1315,7 @@ const readPrivateDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.readPriv
         catch: () => undefined,
       });
     }),
-  ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  ).pipe(Effect.orElseSucceed(() => undefined));
 });
 
 function sameDeferredCodeAnchorIntentFile(left: FileSystem.File.Info, right: FileSystem.File.Info): boolean {
@@ -1443,7 +1440,7 @@ const rotateDeferredCodeAnchorRouteMarker = Effect.fn('memoryCodeAnchor.rotateRo
   yield* fs.rename(entry.markerPath, target);
   const after = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, [...sourceAncestors, ...targetAncestors]);
   if (after === undefined || !samePrivateDeferredCodeAnchorDirectories(rotationAuthority, after)) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor route changed during marker rotation.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor route changed during marker rotation.');
   }
 });
 
@@ -1844,14 +1841,14 @@ const ensurePrivateDeferredCodeAnchorRoot = Effect.fn('memoryCodeAnchor.ensurePr
   const root = yield* deferredCodeAnchorRoot(config);
   const before = yield* deferredCodeAnchorPathEntryKind(fs, root);
   if (before === 'symlink') {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor outbox must not be a symbolic link.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor outbox must not be a symbolic link.');
   }
   if (before !== 'missing' && before !== 'directory') {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor outbox must be a private directory.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor outbox must be a private directory.');
   }
   if (before === 'missing') yield* fs.makeDirectory(root, {recursive: true, mode: 0o700});
   if (!(yield* validatePrivateDeferredCodeAnchorDirectories(fs, [root]))) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor outbox must be a private directory.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor outbox must be a private directory.');
   }
   return root;
 });
@@ -1862,12 +1859,12 @@ const existingPrivateDeferredCodeAnchorRoot = Effect.fn('memoryCodeAnchor.existi
   const fs = yield* FileSystem.FileSystem;
   const root = yield* deferredCodeAnchorRoot(config);
   if (Option.isSome(yield* fs.readLink(root).pipe(Effect.option))) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor outbox must not be a symbolic link.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor outbox must not be a symbolic link.');
   }
   const info = yield* fs.stat(root).pipe(Effect.option);
   if (Option.isNone(info)) return undefined;
   if (info.value.type !== 'Directory' || !fileSystemModeIsPrivate(runtimePlatform, info.value.mode)) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor outbox must be a private directory.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor outbox must be a private directory.');
   }
   return root;
 });
@@ -1922,10 +1919,10 @@ const deferredCodeAnchorRouteDigest = Effect.fn('memoryCodeAnchor.routeDigest')(
       !/^[a-f0-9]{64}$/u.test(route.repositoryId) ||
       !/^[a-f0-9]{64}$/u.test(route.worktreeId)
     ) {
-      return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor repository route is invalid.'));
+      return yield* deferredCodeAnchorError('Deferred code-anchor repository route is invalid.');
     }
   } else if (route.name.length === 0 || route.name.length > 256 || route.name.trim() !== route.name) {
-    return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor workset route is invalid.'));
+    return yield* deferredCodeAnchorError('Deferred code-anchor workset route is invalid.');
   }
   return yield* sha256Hex(
     [

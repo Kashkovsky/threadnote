@@ -752,13 +752,11 @@ const selectVisualizationScopeEdgeSummary = Effect.fn('codeGraph.selectVisualiza
   const endpointIds = [...new Set([...sampledEdges.values()].flatMap(edge => [edge.sourceId, edge.targetId]))].filter(
     isDefinedString,
   );
-  const endpointRows =
-    endpointIds.length === 0
-      ? []
-      : yield* Effect.gen(function* () {
-          const statement = codeGraphVisualizationScopeEndpointStatement(snapshotId, baseSnapshotId, endpointIds);
-          return yield* sql.unsafe<VisualizationScopeEndpointRow>(statement.text, statement.parameters);
-        });
+  let endpointRows: readonly VisualizationScopeEndpointRow[] = [];
+  if (endpointIds.length > 0) {
+    const statement = codeGraphVisualizationScopeEndpointStatement(snapshotId, baseSnapshotId, endpointIds);
+    endpointRows = yield* sql.unsafe<VisualizationScopeEndpointRow>(statement.text, statement.parameters);
+  }
   const symbolsById = new Map(
     endpointRows.map(row => [
       row.id,

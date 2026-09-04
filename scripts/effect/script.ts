@@ -18,7 +18,7 @@ export const readJsonFile = Effect.fn('script.readJsonFile')(function* (file: st
   const raw = yield* fs.readFileString(file);
   return yield* Effect.try({
     try: () => JSON.parse(raw) as unknown,
-    catch: cause => new ScriptError(`Could not parse JSON file ${file}.`, {cause}),
+    catch: cause => ScriptError.make({message: `Could not parse JSON file ${file}.`, cause}),
   });
 });
 
@@ -33,7 +33,7 @@ export const atomicWrite = Effect.fn('script.atomicWrite')(function* (file: stri
     yield* fs.remove(temporary, {force: true});
     yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
     yield* fs.rename(temporary, target);
-  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
 });
 
 export const fixtureHash = Effect.fn('script.fixtureHash')((content: string) => sha256Hex(content));

@@ -482,11 +482,12 @@ describe('JSON MCP host configuration', () => {
           platform: 'linux',
         });
 
-        yield* Effect.all(
+        yield* Effect.forEach(
           [
             runMcpInstall(testRuntime, 'cursor', {apply: true, name: 'team-memory', toolset: 'full'}),
             runUninstall(testRuntime, {preserveMemories: true}),
-          ].map(operation => operation.pipe(Effect.provideService(SystemInfo, testSystem))),
+          ],
+          operation => operation.pipe(Effect.provideService(SystemInfo, testSystem)),
           {concurrency: 'unbounded'},
         ).pipe(TestClock.withLive);
 
@@ -805,7 +806,7 @@ describe('MCP agent executable resolution', () => {
     const broken = await codexLauncher("printf '%s\\n' 'missing native binary' >&2\nexit 1");
     process.env.PATH = [join(broken, '..'), '/usr/bin', '/bin'].join(delimiter);
 
-    const resolution = await runEffect(captureConsole(resolveMcpClients('codex', 'repair')));
+    const resolution = await resolveMcpClients('codex', 'repair').pipe(captureConsole, runEffect);
     expect(resolution.value).toEqual([]);
     expect(resolution.output).toMatch(/codex command.*not working/i);
     await expect(runEffect(runMcpInstall(runtime(), 'codex', {apply: true}))).rejects.toThrow(

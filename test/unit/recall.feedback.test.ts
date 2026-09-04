@@ -135,8 +135,9 @@ describe('recall feedback', () => {
 
   it('serializes concurrent feedback rewrites without losing an event', async () => {
     await run(
-      Effect.all(
-        ['one', 'two'].map(suffix =>
+      Effect.forEach(
+        ['one', 'two'],
+        suffix =>
           recordRecallFeedback(directory, {
             action: 'useful',
             project: 'threadnote',
@@ -144,7 +145,6 @@ describe('recall feedback', () => {
             timestamp: '2026-07-23T00:00:00.000Z',
             uri: `threadnote://user/me/${suffix}.md`,
           }),
-        ),
         {concurrency: 2},
       ),
     );

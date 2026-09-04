@@ -1079,7 +1079,7 @@ describe('deferred code-anchor outbox', () => {
           ...store,
           read: (_location, uri) =>
             Effect.fail(
-              new ResourceIoFailed({
+              ResourceIoFailed.make({
                 cause: new Error('synthetic transient failure'),
                 message: 'synthetic transient failure',
                 operation: 'read',

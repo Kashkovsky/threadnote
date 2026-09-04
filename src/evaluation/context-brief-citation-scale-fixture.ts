@@ -177,11 +177,9 @@ export const prepareContextBriefCitationScaleFixture = Effect.fn('evaluation.pre
       ).flat();
     });
     if (selectedRecords.length > options.memoryCandidates) {
-      return yield* Effect.fail(
-        new ContextBriefCitationScaleFixtureError({
-          message: `Scale corpus requires at least ${selectedRecords.length} documents for the selected profiles and samples.`,
-        }),
-      );
+      return yield* new ContextBriefCitationScaleFixtureError({
+        message: `Scale corpus requires at least ${selectedRecords.length} documents for the selected profiles and samples.`,
+      });
     }
     yield* writeRecords(fs, selectedRecords);
     const legacyV1MemoryCandidates = options.memoryCandidates - selectedRecords.length;
@@ -191,11 +189,9 @@ export const prepareContextBriefCitationScaleFixture = Effect.fn('evaluation.pre
     const buildFinished = yield* Clock.currentTimeNanos;
     const status = yield* recallIndexStatus(config);
     if (!status.ready || status.documentCount !== options.memoryCandidates) {
-      return yield* Effect.fail(
-        new ContextBriefCitationScaleFixtureError({
-          message: `Scale recall index contains ${status.documentCount}/${options.memoryCandidates} memory candidates.`,
-        }),
-      );
+      return yield* new ContextBriefCitationScaleFixtureError({
+        message: `Scale recall index contains ${status.documentCount}/${options.memoryCandidates} memory candidates.`,
+      });
     }
     const fixtureHash = contextBriefCitationScaleFixtureHash(
       path,

@@ -50,19 +50,19 @@ const STRICT_PARSE_OPTIONS = {errors: 'all', onExcessProperty: 'error'} as const
 export function parseRemoteMemoryReceiptV1(value: unknown): RemoteMemoryReceiptV1 {
   const receipt = Schema.decodeUnknownSync(RemoteMemoryReceiptSchemaV1, STRICT_PARSE_OPTIONS)(value);
   if (receipt.indexedGeneration > receipt.shareGeneration) {
-    throw new InvalidRemoteMemoryReceipt({
+    throw InvalidRemoteMemoryReceipt.make({
       message: 'Remote memory indexed generation cannot exceed the committed share generation.',
     });
   }
   const caughtUp = receipt.indexedGeneration === receipt.shareGeneration;
   if ((receipt.consistency === 'current') !== caughtUp) {
-    throw new InvalidRemoteMemoryReceipt({
+    throw InvalidRemoteMemoryReceipt.make({
       message: 'Remote memory receipt consistency must match its committed and indexed generations.',
     });
   }
   const blocker = credentialScrubberBlocker(JSON.stringify(receipt));
   if (blocker) {
-    throw new InvalidRemoteMemoryReceipt({message: `Remote memory receipt contains a prohibited ${blocker}.`});
+    throw InvalidRemoteMemoryReceipt.make({message: `Remote memory receipt contains a prohibited ${blocker}.`});
   }
   return receipt;
 }

@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 import type {RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
 import {
   finalizeGitBetaCutover,
@@ -66,14 +67,18 @@ export interface RemoteMemoryOperatorAdapter {
   readonly provisionControlPlane?: (input: RemoteMemoryProvisioningInput) => Promise<void>;
 }
 
-export class RemoteMemoryOperatorError extends Error {
-  readonly name = 'RemoteMemoryOperatorError';
-
-  constructor(
-    readonly code: 'blocked_plan' | 'capability_unavailable' | 'invalid_input' | 'verification_failed',
+export class RemoteMemoryOperatorError extends Schema.TaggedError<RemoteMemoryOperatorError>()(
+  'RemoteMemoryOperatorError',
+  {
+    code: Schema.Literals(['blocked_plan', 'capability_unavailable', 'invalid_input', 'verification_failed']),
+    message: Schema.String,
+  },
+) {
+  static of(
+    code: 'blocked_plan' | 'capability_unavailable' | 'invalid_input' | 'verification_failed',
     message: string,
-  ) {
-    super(message);
+  ): RemoteMemoryOperatorError {
+    return RemoteMemoryOperatorError.make({code, message});
   }
 }
 
@@ -140,10 +145,10 @@ export async function applyGitBetaImportOperator(
 }> {
   verifyGitBetaImportPlan(input.plan);
   if (input.plan.dryRun) {
-    throw new RemoteMemoryOperatorError('invalid_input', 'A dry-run plan cannot be applied. Create an apply plan.');
+    throw RemoteMemoryOperatorError.of('invalid_input', 'A dry-run plan cannot be applied. Create an apply plan.');
   }
   if (input.plan.counts.blocked + input.plan.counts.conflict + input.plan.counts.invalid > 0) {
-    throw new RemoteMemoryOperatorError('blocked_plan', 'The Git beta import plan contains blocking records.');
+    throw RemoteMemoryOperatorError.of('blocked_plan', 'The Git beta import plan contains blocking records.');
   }
   const apply = requireCapability(adapter, 'apply_git_beta_import', adapter.applyGitBetaImport);
   const inspect = requireCapability(adapter, 'inspect_records', adapter.inspectRecords);
@@ -171,7 +176,7 @@ export async function applyGitBetaImportOperator(
     verified: verification.status === 'matched',
   });
   if (cutover.status !== 'ready') {
-    throw new RemoteMemoryOperatorError(
+    throw RemoteMemoryOperatorError.of(
       'verification_failed',
       'The import did not verify. Keep the Git beta environment active and do not switch transports.',
     );
@@ -196,7 +201,7 @@ function assertApplyPlanMatchesCurrentState(planned: GitBetaImportPlanV1, curren
       );
     });
   if (!matches) {
-    throw new RemoteMemoryOperatorError(
+    throw RemoteMemoryOperatorError.of(
       'blocked_plan',
       'Source or target state changed after planning. Keep Git beta active and create a new apply plan.',
     );
@@ -247,7 +252,7 @@ function requireCapability<Arguments extends readonly unknown[], Result>(
 ): (...arguments_: Arguments) => Result {
   if (operation && adapter.capabilities.available.includes(capability)) return operation;
   const reason = adapter.capabilities.unavailable[capability] ?? 'The selected operator adapter does not implement it.';
-  throw new RemoteMemoryOperatorError('capability_unavailable', `${capability} is unavailable: ${reason}`);
+  throw RemoteMemoryOperatorError.of('capability_unavailable', `${capability} is unavailable: ${reason}`);
 }
 
 function compareCodeUnits(left: string, right: string): number {

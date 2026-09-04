@@ -1,7 +1,7 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, Logger, Ref, Stream} from 'effect';
+import {Deferred, Effect, Fiber, Logger, Ref, Stream, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -127,31 +127,29 @@ describe('CodeGraphWatcher', () => {
     'deduplicates concurrent session registrations and finalizes the watcher with the session scope',
     () =>
       Effect.gen(function* () {
-        const counts = yield* Effect.gen(function* () {
-          const starts = yield* Ref.make(0);
-          const stops = yield* Ref.make(0);
-          const started = yield* Deferred.make<void>();
-          yield* Effect.scoped(
-            Effect.gen(function* () {
-              const watcher = yield* makeCodeGraphWatcher(
-                () =>
-                  Effect.acquireRelease(
-                    Ref.update(starts, count => count + 1).pipe(Effect.andThen(Deferred.succeed(started, undefined))),
-                    () => Ref.update(stops, count => count + 1),
-                  ).pipe(Effect.andThen(Effect.never), Effect.scoped),
-                () => Effect.void,
-              );
-              yield* Effect.all(
-                Array.from({length: 20}, () => watcher.ensure(options)),
-                {concurrency: 'unbounded'},
-              );
-              yield* Deferred.await(started);
-              expect(yield* Ref.get(starts)).toBe(1);
-              expect(yield* Ref.get(stops)).toBe(0);
-            }),
-          );
-          return {starts: yield* Ref.get(starts), stops: yield* Ref.get(stops)};
-        });
+        const starts = yield* Ref.make(0);
+        const stops = yield* Ref.make(0);
+        const started = yield* Deferred.make<void>();
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const watcher = yield* makeCodeGraphWatcher(
+              () =>
+                Effect.acquireRelease(
+                  Ref.update(starts, count => count + 1).pipe(Effect.andThen(Deferred.succeed(started, undefined))),
+                  () => Ref.update(stops, count => count + 1),
+                ).pipe(Effect.andThen(Effect.never), Effect.scoped),
+              () => Effect.void,
+            );
+            yield* Effect.all(
+              Array.from({length: 20}, () => watcher.ensure(options)),
+              {concurrency: 'unbounded'},
+            );
+            yield* Deferred.await(started);
+            expect(yield* Ref.get(starts)).toBe(1);
+            expect(yield* Ref.get(stops)).toBe(0);
+          }),
+        );
+        const counts = {starts: yield* Ref.get(starts), stops: yield* Ref.get(stops)};
 
         expect(counts).toEqual({starts: 1, stops: 1});
       }),
@@ -231,7 +229,7 @@ describe('CodeGraphWatcher', () => {
                 Effect.flatMap(value =>
                   value === 1
                     ? Deferred.await(firstRelease).pipe(
-                        Effect.andThen(Effect.fail(new TestError('transient watcher failure'))),
+                        Effect.andThen(Effect.fail(TestError.make({message: 'transient watcher failure'}))),
                       )
                     : Effect.never,
                 ),
@@ -346,7 +344,7 @@ describe('CodeGraphWatcher', () => {
                 Effect.andThen(Deferred.await(release)),
                 Effect.andThen(
                   Effect.fail(
-                    new CodeGraphStoreBusyError('private writer detail /Users/private/graph.sqlite', {
+                    CodeGraphStoreBusyError.of('private writer detail /Users/private/graph.sqlite', {
                       operation: 'load /Users/private/graph.sqlite',
                     }),
                   ),
@@ -355,7 +353,7 @@ describe('CodeGraphWatcher', () => {
             {
               onRefreshFailure: failure => {
                 observedFailures.push(failure);
-                throw new TestError('private telemetry defect');
+                throw TestError.make({message: 'private telemetry defect'});
               },
             },
           );
@@ -408,11 +406,11 @@ describe('CodeGraphWatcher', () => {
     Effect.gen(function* () {
       const privateMarker = '/Volumes/private/native-graph.sqlite';
       const failures = [
-        new CodeGraphStoreBusyError(`busy ${privateMarker}`),
-        new CodeGraphStoreNoSpaceError(`full ${privateMarker}`),
-        new CodeGraphStorePermissionError(`permission ${privateMarker}`),
-        new CodeGraphRuntimeReconnectRequiredError(),
-        new CodeGraphStoreTransientIoError(`io ${privateMarker}`),
+        CodeGraphStoreBusyError.of(`busy ${privateMarker}`),
+        CodeGraphStoreNoSpaceError.of(`full ${privateMarker}`),
+        CodeGraphStorePermissionError.of(`permission ${privateMarker}`),
+        CodeGraphRuntimeReconnectRequiredError.of(),
+        CodeGraphStoreTransientIoError.of(`io ${privateMarker}`),
       ];
 
       for (const failure of failures) {
@@ -439,7 +437,7 @@ describe('CodeGraphWatcher', () => {
           _tag: 'Some',
           value: {failure: {code: failure.code, operation: 'refresh code graph'}, state: 'deferred'},
         });
-        if (failure instanceof CodeGraphRuntimeReconnectRequiredError) {
+        if (Schema.is(CodeGraphRuntimeReconnectRequiredError)(failure)) {
           expect(status).toMatchObject({
             _tag: 'Some',
             value: {failure: {recovery: 'reconnect-runtime', retryable: false}, state: 'deferred'},
@@ -461,7 +459,7 @@ describe('CodeGraphWatcher', () => {
         Effect.gen(function* () {
           const watcher = yield* makeCodeGraphWatcher(
             () => Effect.never,
-            () => Effect.die(new TestError(`native defect ${privateMarker}`)),
+            () => Effect.die(TestError.make({message: `native defect ${privateMarker}`})),
           );
           yield* watcher.ensure(options);
           yield* watcher.refresh(options);
@@ -520,7 +518,7 @@ describe('CodeGraphWatcher', () => {
     return Effect.gen(function* () {
       const refreshes = yield* Ref.make(0);
       const fiber = yield* watchRepository(
-        {watch: () => Stream.die(new TestError(`watch defect ${privateMarker}`))} as never,
+        {watch: () => Stream.die(TestError.make({message: `watch defect ${privateMarker}`}))} as never,
         {} as never,
         options,
         false,
@@ -555,7 +553,7 @@ describe('CodeGraphWatcher', () => {
         {
           periodicRefreshRequired: Effect.succeed(false),
           requestAfterChange: Ref.update(events, current => [...current, 'change-maintenance']).pipe(
-            Effect.andThen(Effect.fail(new TestError('maintenance scheduling defect'))),
+            Effect.andThen(Effect.fail(TestError.make({message: 'maintenance scheduling defect'}))),
           ),
           requestInitial: Ref.update(events, current => [...current, 'initial-maintenance']),
         },
@@ -640,7 +638,7 @@ describe('CodeGraphWatcher', () => {
       for (const testCase of [
         {expectedRefreshes: 0, probe: Effect.succeed(false)},
         {expectedRefreshes: 1, probe: Effect.succeed(true)},
-        {expectedRefreshes: 0, probe: Effect.fail(new TestError('unknown freshness'))},
+        {expectedRefreshes: 0, probe: Effect.fail(TestError.make({message: 'unknown freshness'}))},
       ] as const) {
         const refreshes = yield* Ref.make(0);
         const maintenanceRequests = yield* Ref.make(0);
@@ -987,7 +985,7 @@ describe('CodeGraphWatcher', () => {
     Effect.gen(function* () {
       const failedWatcher = yield* makeCodeGraphWatcher(
         () => Effect.never,
-        () => Effect.fail(new TestError('expected refresh failure')),
+        () => Effect.fail(TestError.make({message: 'expected refresh failure'})),
       );
       yield* failedWatcher.refresh({...options, key: 'failure'});
       let afterFailure = yield* failedWatcher.metrics;
@@ -1133,37 +1131,35 @@ describe('CodeGraphWatcher', () => {
 
   effectIt.effect('caps retained session watchers and evicts the least recently used registrations', () =>
     Effect.gen(function* () {
-      const counts = yield* Effect.gen(function* () {
-        const starts = yield* Ref.make(0);
-        const stops = yield* Ref.make(0);
-        const inside = yield* Effect.scoped(
-          Effect.gen(function* () {
-            const watcher = yield* makeCodeGraphWatcher(
-              () =>
-                Effect.acquireRelease(
-                  Ref.update(starts, count => count + 1),
-                  () => Ref.update(stops, count => count + 1),
-                ).pipe(Effect.andThen(Effect.never), Effect.scoped),
-              () => Effect.void,
-              {maximumWatchers: 4},
-            );
-            for (let index = 0; index < 20; index += 1) {
-              yield* watcher.ensure({...options, key: `repository:worktree:${index}`});
-              yield* Effect.yieldNow;
-            }
-            return {
-              running: (yield* Ref.get(starts)) - (yield* Ref.get(stops)),
-              starts: yield* Ref.get(starts),
-              stops: yield* Ref.get(stops),
-            };
-          }),
-        );
-        return {
-          inside,
-          starts: yield* Ref.get(starts),
-          stops: yield* Ref.get(stops),
-        };
-      });
+      const starts = yield* Ref.make(0);
+      const stops = yield* Ref.make(0);
+      const inside = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const watcher = yield* makeCodeGraphWatcher(
+            () =>
+              Effect.acquireRelease(
+                Ref.update(starts, count => count + 1),
+                () => Ref.update(stops, count => count + 1),
+              ).pipe(Effect.andThen(Effect.never), Effect.scoped),
+            () => Effect.void,
+            {maximumWatchers: 4},
+          );
+          for (let index = 0; index < 20; index += 1) {
+            yield* watcher.ensure({...options, key: `repository:worktree:${index}`});
+            yield* Effect.yieldNow;
+          }
+          return {
+            running: (yield* Ref.get(starts)) - (yield* Ref.get(stops)),
+            starts: yield* Ref.get(starts),
+            stops: yield* Ref.get(stops),
+          };
+        }),
+      );
+      const counts = {
+        inside,
+        starts: yield* Ref.get(starts),
+        stops: yield* Ref.get(stops),
+      };
 
       expect(counts.inside).toEqual({running: 4, starts: 20, stops: 16});
       expect(counts).toMatchObject({starts: 20, stops: 20});

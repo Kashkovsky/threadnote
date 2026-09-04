@@ -236,7 +236,7 @@ describe('built self-contained distribution', () => {
     const lockId = pathResult.nodes?.find(node => node.name === 'withExclusiveFileLock')?.id;
     expect(runApplicationId).toMatch(/^cgs_[a-f0-9]{32,64}$/);
     expect(lockId).toMatch(/^cgs_[a-f0-9]{32,64}$/);
-    if (!runApplicationId || !lockId) throw new TestError('Expected packaged graph fixture node IDs.');
+    if (!runApplicationId || !lockId) throw TestError.make({message: 'Expected packaged graph fixture node IDs.'});
 
     const exactNode = await runCliJson<{
       readonly nodes?: ReadonlyArray<{readonly id?: string; readonly name?: string}>;
@@ -1282,15 +1282,15 @@ async function runCliOutput(
       readonly stderr?: unknown;
       readonly stdout?: unknown;
     };
-    throw new TestError(
-      [
+    throw TestError.make({
+      cause,
+      message: [
         `Packaged Threadnote command exited with ${String(failure.code ?? 'an unknown status')}:`,
         `${cli} --home ${home} ${args.join(' ')}`,
         `stdout:\n${boundedFailureOutput(failure.stdout)}`,
         `stderr:\n${boundedFailureOutput(failure.stderr)}`,
       ].join('\n'),
-      {cause},
-    );
+    });
   }
 }
 
@@ -1302,7 +1302,8 @@ function boundedFailureOutput(value: unknown): string {
 async function seedCoreEmbeddingFixture(): Promise<void> {
   const fixture = process.env.THREADNOTE_E2E_MODEL_PATH;
   if (!fixture) return;
-  if (!coreEmbeddingManifest) throw new TestError(`Missing built-in model manifest: ${coreEmbeddingModelId}`);
+  if (!coreEmbeddingManifest)
+    throw TestError.make({message: `Missing built-in model manifest: ${coreEmbeddingModelId}`});
 
   const directory = join(home, 'models', coreEmbeddingManifest.role, coreEmbeddingManifest.id);
   await mkdir(directory, {recursive: true});

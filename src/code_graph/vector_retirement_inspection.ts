@@ -431,9 +431,9 @@ export const inspectLegacyPointerIndexPlan = Effect.fn('codeGraph.inspectLegacyV
     readonly worktree_id: unknown;
   }>(statement.text, statement.parameters);
   if (observed.length > CODE_GRAPH_VECTOR_RETIREMENT_LEGACY_POINTER_ROWS) {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector pointer index exceeds its bounded migration limit.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector pointer index exceeds its bounded migration limit.',
+    });
   }
   let finalFactBytes = 0;
   const rows: Array<{readonly generation: string; readonly worktreeId: string}> = [];
@@ -446,15 +446,15 @@ export const inspectLegacyPointerIndexPlan = Effect.fn('codeGraph.inspectLegacyV
       !Number.isSafeInteger(row.identity_bytes) ||
       Number(row.identity_bytes) <= 64
     ) {
-      return yield* Effect.fail(
-        new CodeGraphVectorRetirementError('Code graph vector pointer index manifest is invalid.'),
-      );
+      return yield* CodeGraphVectorRetirementError.make({
+        message: 'Code graph vector pointer index manifest is invalid.',
+      });
     }
     finalFactBytes += Number(row.identity_bytes);
     if (!Number.isSafeInteger(finalFactBytes) || finalFactBytes > CODE_GRAPH_VECTOR_RETIREMENT_LEGACY_POINTER_BYTES) {
-      return yield* Effect.fail(
-        new CodeGraphVectorRetirementError('Code graph vector pointer index exceeds its bounded byte limit.'),
-      );
+      return yield* CodeGraphVectorRetirementError.make({
+        message: 'Code graph vector pointer index exceeds its bounded byte limit.',
+      });
     }
     rows.push({generation: row.generation, worktreeId: row.worktree_id});
   }
@@ -733,7 +733,7 @@ export const selectVectorRetirementMarker = Effect.fn('codeGraph.selectVectorRet
     Number(row?.page_revision) < 0 ||
     (row?.delete_authorized !== 0 && row?.delete_authorized !== 1)
   ) {
-    return yield* Effect.fail(new CodeGraphVectorRetirementError('Code graph vector retirement marker is invalid.'));
+    return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector retirement marker is invalid.'});
   }
   return {
     deleteAuthorized: row.delete_authorized === 1,
@@ -827,11 +827,11 @@ export const inspectVectorPageStorageSql = Effect.fn('codeGraph.inspectVectorPag
     Number(walAutoCheckpointPages) <= 0 ||
     (journalMode !== 'delete' && journalMode !== 'wal')
   ) {
-    return yield* Effect.fail(new CodeGraphVectorRetirementError('Code graph vector page storage is invalid.'));
+    return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector page storage is invalid.'});
   }
   const freelistBytes = Number(pageSize) * Number(freelistPages);
   if (!Number.isSafeInteger(freelistBytes)) {
-    return yield* Effect.fail(new CodeGraphVectorRetirementError('Code graph vector page storage is invalid.'));
+    return yield* CodeGraphVectorRetirementError.make({message: 'Code graph vector page storage is invalid.'});
   }
   return {
     freelistBytes,
@@ -861,7 +861,7 @@ export function vectorRetirementPageAuthorityBytes(marker: CodeGraphVectorRetire
 
 export function boundedRetirementLimit(requestedLimit: number): number {
   if (!Number.isSafeInteger(requestedLimit) || requestedLimit <= 0) {
-    throw new CodeGraphVectorRetirementError('Code graph vector retirement page limit is invalid.');
+    throw CodeGraphVectorRetirementError.make({message: 'Code graph vector retirement page limit is invalid.'});
   }
   return Math.min(requestedLimit, CODE_GRAPH_VECTOR_RETIREMENT_PAGE_ROWS);
 }
@@ -933,9 +933,9 @@ export const lastStatementChangeCount = Effect.fn('codeGraph.vectorRetirementCha
   const rows = yield* sql.unsafe<{readonly count: unknown}>('SELECT changes() AS count');
   const count = rows[0]?.count;
   if (!Number.isSafeInteger(count) || Number(count) < 0) {
-    return yield* Effect.fail(
-      new CodeGraphVectorRetirementError('Code graph vector retirement change count is invalid.'),
-    );
+    return yield* CodeGraphVectorRetirementError.make({
+      message: 'Code graph vector retirement change count is invalid.',
+    });
   }
   return Number(count);
 });

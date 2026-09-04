@@ -1,6 +1,11 @@
 {
   "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
-  "extends": ["./node_modules/@effect/tsgo/oxlint-presets/antipattern.json"],
+  "extends": [
+    "./node_modules/@effect/tsgo/oxlint-presets/correctness.json",
+    "./node_modules/@effect/tsgo/oxlint-presets/antipattern.json",
+    "./node_modules/@effect/tsgo/oxlint-presets/effect-native.json",
+    "./node_modules/@effect/tsgo/oxlint-presets/style.json"
+  ],
   "plugins": ["typescript", "effecttsgo"],
   "jsPlugins": ["./config/lint/threadnote-plugin.js"],
   "options": {
@@ -118,26 +123,15 @@
     "typescript/prefer-namespace-keyword": "error",
     "typescript/restrict-plus-operands": "error",
     "typescript/triple-slash-reference": "error",
-    "effecttsgo/class-self-mismatch": "warn",
-    "effecttsgo/duplicate-package": "warn",
-    "effecttsgo/effect-fn-implicit-any": "warn",
-    "effecttsgo/effect-in-failure": "warn",
-    "effecttsgo/effect-in-void-success": "warn",
-    "effecttsgo/floating-effect": "warn",
-    "effecttsgo/floating-effect-in-vitest": "warn",
-    "effecttsgo/lazy-promise-in-effect-sync": "warn",
-    "effecttsgo/missing-return-yield-star": "warn",
-    "effecttsgo/missing-star-in-yield-effect-gen": "warn",
-    "effecttsgo/node-builtin-import": "warn",
-    "effecttsgo/non-object-effect-service-type": "warn",
-    "effecttsgo/outdated-api": "warn",
-    "effecttsgo/overridden-schema-constructor": "warn",
-    "effecttsgo/promise-in-effect-success": "warn",
-    "effecttsgo/return-effect-in-gen": "warn",
-    "effecttsgo/run-effect-inside-effect": "warn",
-    "effecttsgo/schema-literal-non-finite": "warn",
-    "effecttsgo/schema-opaque-instance-member": "warn",
-    "effecttsgo/unsafe-effect-type-assertion": "warn"
+    "effecttsgo/any-unknown-in-error-context": "off",
+    "effecttsgo/async-function": "off",
+    "effecttsgo/global-date": "off",
+    "effecttsgo/global-fetch": "off",
+    "effecttsgo/global-timers": "off",
+    "effecttsgo/missing-pipeable-signature": "off",
+    "effecttsgo/prefer-schema-over-json": "off",
+    "effecttsgo/process-env": "off",
+    "effecttsgo/strict-boolean-expressions": "off"
   },
   "overrides": [
     {
@@ -208,6 +202,12 @@
       "files": ["test/helpers/node-*.ts"],
       "rules": {
         "effecttsgo/node-builtin-import": "off"
+      }
+    },
+    {
+      "files": ["test/**/*.ts", "scripts/**/*.ts"],
+      "rules": {
+        "effecttsgo/new-promise": "off"
       }
     },
     {

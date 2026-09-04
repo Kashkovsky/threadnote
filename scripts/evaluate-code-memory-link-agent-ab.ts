@@ -34,9 +34,9 @@ const program = Effect.gen(function* () {
     60_000,
     Effect.gen(function* () {
       if (yield* fs.exists(layout.pendingPath)) {
-        return yield* Effect.fail(
-          new ScriptError('A pending trial commit requires recovery through the trial runner before evaluation.'),
-        );
+        return yield* ScriptError.make({
+          message: 'A pending trial commit requires recovery through the trial runner before evaluation.',
+        });
       }
       const [attemptSource, evidenceSource, trialSource] = yield* Effect.all(
         [
@@ -58,10 +58,11 @@ const program = Effect.gen(function* () {
   const runtime = yield* verifyManagedDevelopmentRuntimeForSource(options.candidateCommit);
   yield* Effect.try({
     try: () => assertCodeMemoryLinkAgentAbRuntimeIdentity(result.candidate, runtime),
-    catch: cause => new ScriptError('Agent A/B candidate does not match the verified installed runtime.', {cause}),
+    catch: cause =>
+      ScriptError.make({message: 'Agent A/B candidate does not match the verified installed runtime.', cause}),
   });
   yield* Console.log(JSON.stringify(result, undefined, 2));
-  if (result.gate.status !== 'passed') return yield* Effect.fail(new ScriptError(result.gate.failures.join('\n')));
+  if (result.gate.status !== 'passed') return yield* ScriptError.make({message: result.gate.failures.join('\n')});
 });
 
 function parseArguments(args: readonly string[]): {
@@ -86,7 +87,7 @@ function parseArguments(args: readonly string[]): {
     else if (argument === '--evidence') evidencePath = required(args[++index], argument);
     else if (argument === '--manifest') manifestPath = required(args[++index], argument);
     else if (argument === '--trials') trialsPath = required(args[++index], argument);
-    else throw new ScriptError(`Unknown Code Memory Link agent A/B option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown Code Memory Link agent A/B option: ${argument}`});
   }
   if (
     assignmentPath === undefined ||
@@ -96,15 +97,16 @@ function parseArguments(args: readonly string[]): {
     manifestPath === undefined ||
     trialsPath === undefined
   ) {
-    throw new ScriptError(
-      'Agent A/B evaluation requires --assignment <json>, --attempts <jsonl>, --candidate-commit <sha>, --evidence <jsonl>, --manifest <json>, and --trials <jsonl>.',
-    );
+    throw ScriptError.make({
+      message:
+        'Agent A/B evaluation requires --assignment <json>, --attempts <jsonl>, --candidate-commit <sha>, --evidence <jsonl>, --manifest <json>, and --trials <jsonl>.',
+    });
   }
   return {assignmentPath, attemptsPath, candidateCommit, evidencePath, manifestPath, trialsPath};
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 

@@ -195,7 +195,7 @@ describe('code graph SQLite session lifetime', () => {
             onProgress: progress => {
               if (progress.phase !== 'materializing') return Effect.void;
               materializingObserved = true;
-              return Effect.fail(new TestError('fixture materialization failure'));
+              return Effect.fail(TestError.make({message: 'fixture materialization failure'}));
             },
             threadnoteHome: join(repositoryRoot, '.threadnote-failure-home'),
           });
@@ -219,7 +219,7 @@ describe('code graph SQLite session lifetime', () => {
             onProgress: progress => {
               if (progress.phase !== 'materializing') return Effect.void;
               materializingObserved = true;
-              return Effect.fail(new TestError('fixture committed-base failure'));
+              return Effect.fail(TestError.make({message: 'fixture committed-base failure'}));
             },
             threadnoteHome: join(repositoryRoot, '.threadnote-commit-failure-home'),
           });

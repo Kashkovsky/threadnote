@@ -1,5 +1,5 @@
 import {Database} from 'bun:sqlite';
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {recordCodeGraphAutomaticCompactionAttempt} from './automatic_compaction_receipt.js';
@@ -18,9 +18,13 @@ import {
   type CodeGraphStorageSemanticAttribution,
 } from './storage_attribution.js';
 
-class CodeGraphStorageOperationError extends Error {
-  readonly _tag = 'CodeGraphStorageOperationError' as const;
-}
+class CodeGraphStorageOperationError extends Schema.TaggedError<CodeGraphStorageOperationError>()(
+  'CodeGraphStorageOperationError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export const CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_BYTES = 512 * 1024 * 1024;
 export const CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_RATIO = 0.2;
@@ -95,10 +99,10 @@ export function codeGraphStorageUnattributedBytes(
     ['freelist', freelistBytes],
   ] as const) {
     if (!Number.isSafeInteger(value) || value < 0)
-      throw new CodeGraphStorageOperationError(`Invalid SQLite ${label} storage bytes.`);
+      throw CodeGraphStorageOperationError.make({message: `Invalid SQLite ${label} storage bytes.`});
   }
   if (attributedBytes > allocatedBytes || freelistBytes > allocatedBytes - attributedBytes) {
-    throw new CodeGraphStorageOperationError('SQLite storage attribution exceeds allocated page bytes.');
+    throw CodeGraphStorageOperationError.make({message: 'SQLite storage attribution exceeds allocated page bytes.'});
   }
   return allocatedBytes - attributedBytes - freelistBytes;
 }
@@ -122,7 +126,7 @@ export function codeGraphCompactionRecommendation(input: {
     ['reclaimable', reclaimableBytes],
   ] as const) {
     if (!Number.isSafeInteger(value) || value < 0)
-      throw new CodeGraphStorageOperationError(`Invalid SQLite ${label} storage bytes.`);
+      throw CodeGraphStorageOperationError.make({message: `Invalid SQLite ${label} storage bytes.`});
   }
   const compactionOpportunityBytes = reclaimableBytes + fragmentedBytes;
   if (
@@ -130,7 +134,7 @@ export function codeGraphCompactionRecommendation(input: {
     reclaimableBytes > allocatedBytes ||
     compactionOpportunityBytes > allocatedBytes
   ) {
-    throw new CodeGraphStorageOperationError('SQLite compaction opportunity exceeds allocated page bytes.');
+    throw CodeGraphStorageOperationError.make({message: 'SQLite compaction opportunity exceeds allocated page bytes.'});
   }
   const reclaimableRatio = allocatedBytes === 0 ? 0 : reclaimableBytes / allocatedBytes;
   const compactionOpportunityRatio = allocatedBytes === 0 ? 0 : compactionOpportunityBytes / allocatedBytes;
@@ -257,7 +261,7 @@ export const inspectCodeGraphStorage = Effect.fn('codeGraph.inspectStorage')(fun
       regularFileBytes(fs, `${databasePath}-wal`),
       regularFileBytes(fs, `${databasePath}-shm`),
       regularFileBytes(fs, `${databasePath}-journal`),
-      system.availableDiskBytes(repositoryRoot).pipe(Effect.catch(() => Effect.succeed(undefined))),
+      system.availableDiskBytes(repositoryRoot).pipe(Effect.orElseSucceed(() => undefined)),
     ],
     {concurrency: 4},
   );
@@ -276,12 +280,13 @@ export const inspectCodeGraphStorage = Effect.fn('codeGraph.inspectStorage')(fun
         options.attributeObjects === true,
         options.measureFragmentation === true,
       ).pipe(
-        Effect.catch(() =>
-          Effect.succeed({
-            reason: 'database-busy-or-unreadable',
-            state: 'unavailable',
-            threshold,
-          } satisfies CodeGraphUnavailablePageStorage),
+        Effect.orElseSucceed(
+          () =>
+            ({
+              reason: 'database-busy-or-unreadable',
+              state: 'unavailable',
+              threshold,
+            }) satisfies CodeGraphUnavailablePageStorage,
         ),
       );
   const walBytes = wal.state === 'available' ? wal.bytes : 0;
@@ -365,9 +370,9 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
             } satisfies CodeGraphCompactionSummary;
           }
           if (before.pageStorage.state !== 'available') {
-            return yield* Effect.fail(
-              new CodeGraphStorageOperationError('Code graph page storage could not be inspected under its lock.'),
-            );
+            return yield* CodeGraphStorageOperationError.make({
+              message: 'Code graph page storage could not be inspected under its lock.',
+            });
           }
           if (!options.force && !before.pageStorage.threshold.recommended) {
             return {
@@ -397,15 +402,15 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
           yield* vacuumDatabase(databasePath);
           const afterReceipt = yield* readCompactionReceipt(databasePath);
           if (!sameCompactionReceipt(receipt, afterReceipt)) {
-            return yield* Effect.fail(
-              new CodeGraphStorageOperationError('Code graph compaction changed the active snapshot receipt.'),
-            );
+            return yield* CodeGraphStorageOperationError.make({
+              message: 'Code graph compaction changed the active snapshot receipt.',
+            });
           }
           const after = yield* inspectCodeGraphStorage(threadnoteHome, checkoutId, {openWhileLocked: true});
           if (after.state === 'missing') {
-            return yield* Effect.fail(
-              new CodeGraphStorageOperationError('Code graph database disappeared during compaction.'),
-            );
+            return yield* CodeGraphStorageOperationError.make({
+              message: 'Code graph database disappeared during compaction.',
+            });
           }
           const summary = {
             action: 'compacted',
@@ -426,19 +431,13 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
         0,
       );
     }),
-  ).pipe(
-    Effect.catch(cause => (isFileLockTimeout(cause) ? Effect.succeed(deferred('active-build')) : Effect.fail(cause))),
-  );
+  ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed(deferred('active-build'))));
   const maintain = withExclusiveFileLock(
     fs,
     codeGraphMaintenanceLockPath(path, threadnoteHome),
     STORAGE_LOCK_OPTIONS,
     withCodeGraphMaintenanceIntent(threadnoteHome, checkoutMaintenance),
-  ).pipe(
-    Effect.catch(cause =>
-      isFileLockTimeout(cause) ? Effect.succeed(deferred('active-maintenance')) : Effect.fail(cause),
-    ),
-  );
+  ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed(deferred('active-maintenance'))));
   if (options.dryRun) return yield* maintain;
   const candidate = (opportunityBytes: number) => ({checkoutId, opportunityBytes});
   return yield* maintain.pipe(
@@ -475,9 +474,9 @@ export function codeGraphCompactionRequiredFreeBytes(
   );
   const required = vacuumWorkingBytes + safetyMargin;
   if (!Number.isSafeInteger(required) || required < 0) {
-    throw new CodeGraphStorageOperationError(
-      'Code graph compaction storage requirement exceeds the supported byte range.',
-    );
+    throw CodeGraphStorageOperationError.make({
+      message: 'Code graph compaction storage requirement exceeds the supported byte range.',
+    });
   }
   return required;
 }
@@ -488,33 +487,29 @@ const verifyCompactionDiskHeadroom = Effect.fn('codeGraph.verifyCompactionDiskHe
   storage: Pick<CodeGraphActiveStorage, 'databaseBytes' | 'walBytes'>,
 ) {
   const requiredBytes = codeGraphCompactionRequiredFreeBytes(storage);
-  const availableBytes = yield* system
-    .availableDiskBytes(directory)
-    .pipe(
-      Effect.mapError(
-        cause =>
-          new CodeGraphStorageOperationError(
-            `Could not inspect free disk space before code graph compaction. ` +
-              `Verify at least ${requiredBytes.toLocaleString()} bytes are free and retry; the database was not modified.`,
-            {cause},
-          ),
-      ),
-    );
-  if (availableBytes === undefined) {
-    return yield* Effect.fail(
-      new CodeGraphStorageOperationError(
-        `Could not determine free disk space before code graph compaction. ` +
+  const availableBytes = yield* system.availableDiskBytes(directory).pipe(
+    Effect.mapError(cause =>
+      CodeGraphStorageOperationError.make({
+        cause,
+        message:
+          `Could not inspect free disk space before code graph compaction. ` +
           `Verify at least ${requiredBytes.toLocaleString()} bytes are free and retry; the database was not modified.`,
-      ),
-    );
+      }),
+    ),
+  );
+  if (availableBytes === undefined) {
+    return yield* CodeGraphStorageOperationError.make({
+      message:
+        `Could not determine free disk space before code graph compaction. ` +
+        `Verify at least ${requiredBytes.toLocaleString()} bytes are free and retry; the database was not modified.`,
+    });
   }
   if (availableBytes < requiredBytes) {
-    return yield* Effect.fail(
-      new CodeGraphStorageOperationError(
+    return yield* CodeGraphStorageOperationError.make({
+      message:
         `Code graph compaction needs ${requiredBytes.toLocaleString()} bytes free, but only ` +
-          `${availableBytes.toLocaleString()} bytes are available. Free disk space and retry; the database was not modified.`,
-      ),
-    );
+        `${availableBytes.toLocaleString()} bytes are available. Free disk space and retry; the database was not modified.`,
+    });
   }
 });
 
@@ -524,20 +519,20 @@ function regularFileBytes(
 ): Effect.Effect<{readonly bytes: number; readonly state: 'available'} | {readonly state: 'missing'}, Error | unknown> {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(candidate).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphStorageOperationError(`Refusing symbolic-link code graph storage path: ${candidate}`),
-      );
+      return yield* CodeGraphStorageOperationError.make({
+        message: `Refusing symbolic-link code graph storage path: ${candidate}`,
+      });
     }
     const info = yield* fs.stat(candidate).pipe(Effect.option);
     if (Option.isNone(info)) return {state: 'missing'} as const;
     if (info.value.type !== 'File') {
-      return yield* Effect.fail(
-        new CodeGraphStorageOperationError(`Code graph storage path is not a regular file: ${candidate}`),
-      );
+      return yield* CodeGraphStorageOperationError.make({
+        message: `Code graph storage path is not a regular file: ${candidate}`,
+      });
     }
     const bytes = Number(info.value.size);
     if (!Number.isSafeInteger(bytes) || bytes < 0) {
-      return yield* Effect.fail(new CodeGraphStorageOperationError(`Code graph storage size is invalid: ${candidate}`));
+      return yield* CodeGraphStorageOperationError.make({message: `Code graph storage size is invalid: ${candidate}`});
     }
     return {bytes, state: 'available'} as const;
   });
@@ -596,7 +591,7 @@ function readPageStorage(
       }
     },
     catch: cause =>
-      new CodeGraphStorageOperationError(`Could not inspect code graph page storage: ${errorText(cause)}`),
+      CodeGraphStorageOperationError.make({message: `Could not inspect code graph page storage: ${errorText(cause)}`}),
   });
 }
 
@@ -697,13 +692,17 @@ function readCompactionReceipt(databasePath: string): Effect.Effect<CodeGraphCom
         database.exec('PRAGMA busy_timeout = 50');
         const integrity = database.query<{readonly quick_check?: string}, []>('PRAGMA quick_check').get();
         if (integrity?.quick_check !== 'ok')
-          throw new CodeGraphStorageOperationError(`quick_check returned ${integrity?.quick_check ?? 'no row'}`);
+          throw CodeGraphStorageOperationError.make({
+            message: `quick_check returned ${integrity?.quick_check ?? 'no row'}`,
+          });
         const schema = database
           .query<{readonly value?: string}, []>("SELECT value FROM schema_metadata WHERE key = 'schema_version'")
           .get();
         const schemaVersion = Number.parseInt(schema?.value ?? '', 10);
         if (schemaVersion !== CODE_GRAPH_SCHEMA_VERSION) {
-          throw new CodeGraphStorageOperationError(`schema version ${schema?.value ?? 'missing'} is not supported`);
+          throw CodeGraphStorageOperationError.make({
+            message: `schema version ${schema?.value ?? 'missing'} is not supported`,
+          });
         }
         const stateRows = database
           .query<{readonly count: bigint | number; readonly state: CodeGraphSnapshot['state']}, []>(
@@ -730,7 +729,9 @@ function readCompactionReceipt(databasePath: string): Effect.Effect<CodeGraphCom
       }
     },
     catch: cause =>
-      new CodeGraphStorageOperationError(`Could not verify code graph compaction receipt: ${errorText(cause)}`),
+      CodeGraphStorageOperationError.make({
+        message: `Could not verify code graph compaction receipt: ${errorText(cause)}`,
+      }),
   });
 }
 
@@ -742,16 +743,19 @@ function vacuumDatabase(databasePath: string): Effect.Effect<void, Error> {
         database.exec('PRAGMA busy_timeout = 0');
         const before = database.query<{readonly busy?: number}, []>('PRAGMA wal_checkpoint(TRUNCATE)').get();
         if (Number(before?.busy ?? 0) !== 0)
-          throw new CodeGraphStorageOperationError('active SQLite readers prevented the preflight checkpoint');
+          throw CodeGraphStorageOperationError.make({
+            message: 'active SQLite readers prevented the preflight checkpoint',
+          });
         database.exec('VACUUM');
         const after = database.query<{readonly busy?: number}, []>('PRAGMA wal_checkpoint(TRUNCATE)').get();
         if (Number(after?.busy ?? 0) !== 0)
-          throw new CodeGraphStorageOperationError('active SQLite readers prevented the final checkpoint');
+          throw CodeGraphStorageOperationError.make({message: 'active SQLite readers prevented the final checkpoint'});
       } finally {
         database.close(false);
       }
     },
-    catch: cause => new CodeGraphStorageOperationError(`Code graph compaction failed safely: ${errorText(cause)}`),
+    catch: cause =>
+      CodeGraphStorageOperationError.make({message: `Code graph compaction failed safely: ${errorText(cause)}`}),
   });
 }
 
@@ -762,42 +766,42 @@ function pragmaNumber(database: Database, pragma: 'freelist_count' | 'page_count
 
 function safeCount(value: bigint | number, label: string): number {
   const count = Number(value);
-  if (!Number.isSafeInteger(count) || count < 0) throw new CodeGraphStorageOperationError(`Invalid SQLite ${label}.`);
+  if (!Number.isSafeInteger(count) || count < 0)
+    throw CodeGraphStorageOperationError.make({message: `Invalid SQLite ${label}.`});
   return count;
 }
 
 function safeProduct(left: number, right: number, label: string): number {
   const value = left * right;
-  if (!Number.isSafeInteger(value) || value < 0) throw new CodeGraphStorageOperationError(`Invalid SQLite ${label}.`);
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw CodeGraphStorageOperationError.make({message: `Invalid SQLite ${label}.`});
   return value;
 }
 
 function requireRegularFileIdentity(fs: FileSystem.FileSystem, candidate: string) {
-  return fs.stat(candidate).pipe(
-    Effect.flatMap(info =>
-      Option.match(fileIdentity(info), {
-        onNone: () =>
-          Effect.fail(new CodeGraphStorageOperationError('Code graph database lacks stable identity metadata.')),
-        onSome: Effect.succeed,
-      }),
-    ),
-  );
+  return fs
+    .stat(candidate)
+    .pipe(
+      Effect.flatMap(info =>
+        Effect.fromOption(fileIdentity(info), () =>
+          CodeGraphStorageOperationError.make({message: 'Code graph database lacks stable identity metadata.'}),
+        ),
+      ),
+    );
 }
 
 function verifyRegularFileIdentity(fs: FileSystem.FileSystem, candidate: string, expected: CodeGraphFileIdentity) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(candidate).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphStorageOperationError('Code graph database became a symbolic link before compaction.'),
-      );
+      return yield* CodeGraphStorageOperationError.make({
+        message: 'Code graph database became a symbolic link before compaction.',
+      });
     }
     const current = yield* requireRegularFileIdentity(fs, candidate);
     if (!sameFileIdentity(expected, current)) {
-      return yield* Effect.fail(
-        new CodeGraphStorageOperationError(
-          'Code graph database changed before compaction; retry after current work finishes.',
-        ),
-      );
+      return yield* CodeGraphStorageOperationError.make({
+        message: 'Code graph database changed before compaction; retry after current work finishes.',
+      });
     }
   });
 }

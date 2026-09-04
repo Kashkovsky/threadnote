@@ -544,14 +544,12 @@ export const waitForContextBriefCitationRssAcknowledgement = Effect.fn(
     }
     const exitCode = childExitCode?.();
     if (exitCode !== undefined && exitCode !== null) {
-      return yield* Effect.fail(
-        new ScriptError(
-          `Context Brief RSS observer exited with ${exitCode} before acknowledgement sequence ${sequence}.`,
-        ),
-      );
+      return yield* ScriptError.make({
+        message: `Context Brief RSS observer exited with ${exitCode} before acknowledgement sequence ${sequence}.`,
+      });
     }
     if ((yield* Clock.currentTimeMillis) - startedAt >= timeoutMilliseconds) {
-      return yield* Effect.fail(new ScriptError('Timed out waiting for the RSS observer acknowledgement.'));
+      return yield* ScriptError.make({message: 'Timed out waiting for the RSS observer acknowledgement.'});
     }
     yield* Effect.sleep(5);
   }
@@ -565,10 +563,10 @@ export const runContextBriefCitationRssObserverMode = Effect.fn('contextBriefCit
   const fs = yield* FileSystem.FileSystem;
   const system = yield* SystemInfo;
   if (options.rootProcessId === system.processId) {
-    return yield* Effect.fail(new ScriptError('RSS observer cannot observe itself as the benchmark root.'));
+    return yield* ScriptError.make({message: 'RSS observer cannot observe itself as the benchmark root.'});
   }
   if (system.platform !== 'linux' && system.platform !== 'darwin') {
-    return yield* Effect.fail(new ScriptError(`RSS observer does not support ${system.platform}.`));
+    return yield* ScriptError.make({message: `RSS observer does not support ${system.platform}.`});
   }
   const clockTicksPerSecond = yield* linuxClockTicksPerSecond();
   const initial = yield* requiredProcessTreeSample(
@@ -588,7 +586,7 @@ export const runContextBriefCitationRssObserverMode = Effect.fn('contextBriefCit
     telemetry.scope !== 'recursive-process-tree' ||
     (telemetry.source !== 'linux-proc' && telemetry.source !== 'darwin-ps')
   ) {
-    return yield* Effect.fail(new ScriptError('RSS observer process-tree inspection is unavailable.'));
+    return yield* ScriptError.make({message: 'RSS observer process-tree inspection is unavailable.'});
   }
   const ready = parseContextBriefCitationRssReady({
     intervalMilliseconds: options.intervalMilliseconds,
@@ -611,16 +609,16 @@ export const runContextBriefCitationRssObserverMode = Effect.fn('contextBriefCit
       (yield* Clock.monotonicTimeNanos) - startedAt >
       BigInt(MAXIMUM_RUNTIME_MILLISECONDS) * NANOSECONDS_PER_MILLISECOND
     ) {
-      return yield* Effect.fail(new ScriptError('RSS observer exceeded its bounded runtime.'));
+      return yield* ScriptError.make({message: 'RSS observer exceeded its bounded runtime.'});
     }
     if (!system.isProcessRunning(options.rootProcessId)) {
-      return yield* Effect.fail(new ScriptError('RSS observer benchmark root exited before the stop barrier.'));
+      return yield* ScriptError.make({message: 'RSS observer benchmark root exited before the stop barrier.'});
     }
     const requestText = yield* readOptionalText(options.requestPath);
     let handledBarrier = false;
     if (requestText !== undefined && requestText !== lastRequestText) {
       if (requestText.length > MAXIMUM_REQUEST_BYTES) {
-        return yield* Effect.fail(new ScriptError('RSS observer request exceeds its byte bound.'));
+        return yield* ScriptError.make({message: 'RSS observer request exceeds its byte bound.'});
       }
       const request = parseContextBriefCitationRssRequest(parseJson(requestText, 'request'));
       const barrierSample = yield* requiredProcessTreeSample(
@@ -658,7 +656,7 @@ export const runContextBriefCitationRssObserverMode = Effect.fn('contextBriefCit
       const observedAtNanos = yield* Clock.monotonicTimeNanos;
       const observedAtMilliseconds = monotonicMilliseconds(observedAtNanos);
       if (sample !== undefined && sample.rootStartIdentity !== state.rootStartIdentity) {
-        return yield* Effect.fail(new ScriptError('RSS observer benchmark root identity changed.'));
+        return yield* ScriptError.make({message: 'RSS observer benchmark root identity changed.'});
       }
       state = observeContextBriefCitationRssSample(state, {
         attempts: 1,
@@ -920,13 +918,13 @@ const requiredProcessTreeSample = Effect.fn('contextBriefCitationRss.requiredPro
     const observedAtMilliseconds = monotonicMilliseconds(observedAtNanos);
     if (sample !== undefined) {
       if (expectedRootStartIdentity !== undefined && sample.rootStartIdentity !== expectedRootStartIdentity) {
-        return yield* Effect.fail(new ScriptError('RSS observer benchmark root identity changed.'));
+        return yield* ScriptError.make({message: 'RSS observer benchmark root identity changed.'});
       }
       return {attempts, failures, observedAtMilliseconds, sample} satisfies ContextBriefCitationRssSampleAttempt;
     }
     failures += 1;
     if (observedAtNanos - startedAt >= BigInt(timeoutMilliseconds) * NANOSECONDS_PER_MILLISECOND) {
-      return yield* Effect.fail(new ScriptError('RSS observer could not complete a process-tree barrier sample.'));
+      return yield* ScriptError.make({message: 'RSS observer could not complete a process-tree barrier sample.'});
     }
     yield* Effect.sleep(10);
   }
@@ -1010,7 +1008,7 @@ function parseJson(text: string, label: string): unknown {
   try {
     return JSON.parse(text) as unknown;
   } catch (cause) {
-    throw new ScriptError(`RSS observer ${label} is not valid JSON.`, {cause});
+    throw ScriptError.make({message: `RSS observer ${label} is not valid JSON.`, cause});
   }
 }
 
@@ -1074,5 +1072,5 @@ function stableJson(value: unknown): string {
 }
 
 function invalid(message: string): never {
-  throw new ScriptError(message);
+  throw ScriptError.make({message: message});
 }

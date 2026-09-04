@@ -390,7 +390,7 @@ const readStdinWithTimeout = Effect.fn('hooks.readStdin')(function* (timeoutMs: 
       (output, chunk) => `${output}${chunk}`.slice(0, maxBytes),
     ),
     Effect.timeoutOrElse({duration: timeoutMs, orElse: () => Effect.succeed('')}),
-    Effect.catch(() => Effect.succeed('')),
+    Effect.orElseSucceed(() => ''),
   );
 });
 
@@ -414,5 +414,5 @@ function emitUpdateBannerIfOutdated(config: RuntimeConfig) {
     yield* Console.log(
       `[threadnote] v${result.latestVersion} available (current v${result.currentVersion}). Run: threadnote update\n`,
     );
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }

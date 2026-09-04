@@ -2,7 +2,7 @@ import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
-import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {Clock, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS, CodeGraphStore} from '../../src/code_graph/store.js';
@@ -126,7 +126,7 @@ describe('removed code graph view cleanup OS crash coordination', () => {
           const entered = yield* Deferred.make<void>();
           const neverOpen = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never));
           const fiber = yield* store
-            .claimRemovedViewCleanupCandidates(databasePath, Date.now(), 32, {
+            .claimRemovedViewCleanupCandidates(databasePath, yield* Clock.currentTimeMillis, 32, {
               beforeDatabaseOpen: () => neverOpen,
               waitTimeoutMilliseconds: 30_000,
             })
@@ -135,7 +135,11 @@ describe('removed code graph view cleanup OS crash coordination', () => {
           yield* Fiber.interrupt(fiber);
           expect(readQueueProgress(databasePath)).toEqual({cursor: undefined, leased: 0, revisions: 0, rows: 32});
 
-          const claimed = yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now(), 32);
+          const claimed = yield* store.claimRemovedViewCleanupCandidates(
+            databasePath,
+            yield* Clock.currentTimeMillis,
+            32,
+          );
           expect(claimed).toHaveLength(32);
           expect(claimed.map(entry => entry.revision)).toEqual(Array(32).fill(1));
         }),
@@ -255,20 +259,20 @@ function waitForMarker(fs: FileSystem.FileSystem, markerPath: string, child: Cle
     // The child deliberately allows 30 seconds to acquire the writer gate.
     // Keep the process-start barrier above that contract so a slow CI runner
     // cannot turn valid lock backpressure into a premature marker timeout.
-    const deadline = Date.now() + CHILD_MARKER_TIMEOUT_MILLISECONDS;
+    const deadline = (yield* Clock.currentTimeMillis) + CHILD_MARKER_TIMEOUT_MILLISECONDS;
     while (!(yield* fs.exists(markerPath))) {
       if (child.exitCode !== null) {
         yield* Effect.promise(() => child.exited);
         const streams = yield* collectChildStreams(child);
-        return yield* Effect.fail(
-          new TestError(`Cleanup child exited before its commit marker: ${JSON.stringify(streams)}`),
-        );
+        return yield* TestError.make({
+          message: `Cleanup child exited before its commit marker: ${JSON.stringify(streams)}`,
+        });
       }
-      if (Date.now() >= deadline) {
+      if ((yield* Clock.currentTimeMillis) >= deadline) {
         child.kill('SIGKILL');
         yield* Effect.promise(() => child.exited);
         const streams = yield* collectChildStreams(child);
-        return yield* Effect.fail(new TestError(`Cleanup child missed its commit marker: ${JSON.stringify(streams)}`));
+        return yield* TestError.make({message: `Cleanup child missed its commit marker: ${JSON.stringify(streams)}`});
       }
       yield* Effect.sleep(10);
     }
@@ -298,11 +302,11 @@ function readBoundedChildStream(stream: ReadableStream<Uint8Array>, maximumBytes
             const next = await reader.read();
             if (next.done) return output + decoder.decode();
             bytes += next.value.byteLength;
-            if (bytes > maximumBytes) throw new TestError('Cleanup child output exceeded its byte bound.');
+            if (bytes > maximumBytes) throw TestError.make({message: 'Cleanup child output exceeded its byte bound.'});
             output += decoder.decode(next.value, {stream: true});
           }
         },
-        catch: cause => new TestError('Could not read bounded cleanup child output.', {cause}),
+        catch: cause => TestError.make({message: 'Could not read bounded cleanup child output.', cause}),
       }),
     reader => Effect.sync(() => reader.releaseLock()),
   );
@@ -313,7 +317,7 @@ function readMarker(fs: FileSystem.FileSystem, markerPath: string) {
     Effect.flatMap(content =>
       Effect.try({
         try: () => JSON.parse(content) as CleanupChildMarker,
-        catch: cause => new TestError('Cleanup child marker was invalid.', {cause}),
+        catch: cause => TestError.make({message: 'Cleanup child marker was invalid.', cause}),
       }),
     ),
     Effect.filterOrFail(
@@ -324,7 +328,7 @@ function readMarker(fs: FileSystem.FileSystem, markerPath: string) {
         marker.revisions.length === 32 &&
         marker.worktreeIds.every(value => /^[0-9a-f]{64}$/u.test(value)) &&
         marker.revisions.every(value => Number.isSafeInteger(value)),
-      () => new TestError('Cleanup child marker shape was invalid.'),
+      () => TestError.make({message: 'Cleanup child marker shape was invalid.'}),
     ),
   );
 }

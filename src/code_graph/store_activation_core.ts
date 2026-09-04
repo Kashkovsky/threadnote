@@ -309,7 +309,7 @@ const copyPersistentActivationRows = Effect.fn('codeGraph.copyPersistentActivati
         const changed = yield* sql.unsafe<{readonly count: number}>('SELECT changes() AS count');
         const inserted = Number(changed[0]?.count ?? 0);
         if (!Number.isSafeInteger(inserted) || inserted < 0) {
-          return yield* Effect.fail(new CodeGraphStoreError('Persistent activation returned an invalid row count.'));
+          return yield* CodeGraphStoreError.of('Persistent activation returned an invalid row count.');
         }
         if (inserted === 0) {
           return {cursor: Option.none<readonly string[]>(), inserted, tallied: 0};
@@ -324,20 +324,16 @@ const copyPersistentActivationRows = Effect.fn('codeGraph.copyPersistentActivati
         );
         const row = last[0];
         if (!row) {
-          return yield* Effect.fail(new CodeGraphStoreError('Persistent activation lost its keyset cursor.'));
+          return yield* CodeGraphStoreError.of('Persistent activation lost its keyset cursor.');
         }
         const nextCursor = spec.keyColumns.map(column => row[column]);
         if (nextCursor.some(value => typeof value !== 'string')) {
-          return yield* Effect.fail(
-            new CodeGraphStoreError('Persistent activation returned an invalid keyset cursor.'),
-          );
+          return yield* CodeGraphStoreError.of('Persistent activation returned an invalid keyset cursor.');
         }
         const validatedCursor: string[] = [];
         for (const value of nextCursor) {
           if (typeof value !== 'string') {
-            return yield* Effect.fail(
-              new CodeGraphStoreError('Persistent activation returned an invalid keyset cursor.'),
-            );
+            return yield* CodeGraphStoreError.of('Persistent activation returned an invalid keyset cursor.');
           }
           validatedCursor.push(value);
         }
@@ -363,7 +359,7 @@ const copyPersistentActivationRows = Effect.fn('codeGraph.copyPersistentActivati
           );
           tallied = Number(tallyRows[0]?.count ?? 0);
           if (!Number.isSafeInteger(tallied) || tallied < 0 || tallied > inserted) {
-            return yield* Effect.fail(new CodeGraphStoreError('Persistent activation returned an invalid tally.'));
+            return yield* CodeGraphStoreError.of('Persistent activation returned an invalid tally.');
           }
         }
         return {cursor: Option.some(validatedCursor), inserted, tallied};
@@ -543,7 +539,7 @@ const lastStatementChangeCount = Effect.fn('codeGraph.lastStatementChangeCount')
   const rows = yield* sql.unsafe<{readonly count: number}>('SELECT changes() AS count');
   const count = Number(rows[0]?.count ?? -1);
   if (!Number.isSafeInteger(count) || count < 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('SQLite returned an invalid changed-row count.'));
+    return yield* CodeGraphStoreError.of('SQLite returned an invalid changed-row count.');
   }
   return count;
 });
@@ -601,16 +597,14 @@ const validateStagedEdgeSymbols = Effect.fn('codeGraph.validateStagedEdgeSymbols
     const page = rows[0];
     const rowsExamined = Number(page?.rows_examined ?? 0);
     if (!Number.isSafeInteger(rowsExamined) || rowsExamined < 0) {
-      return yield* Effect.fail(new CodeGraphStoreError('Staged edge validation returned an invalid row count.'));
+      return yield* CodeGraphStoreError.of('Staged edge validation returned an invalid row count.');
     }
     if (page?.invalid_id) {
-      return yield* Effect.fail(
-        new CodeGraphStoreError(`Code graph edge ${page.invalid_id} references a missing symbol.`),
-      );
+      return yield* CodeGraphStoreError.of(`Code graph edge ${page.invalid_id} references a missing symbol.`);
     }
     if (rowsExamined === 0) return examined;
     if (typeof page?.cursor !== 'string' || (Option.isSome(cursor) && page.cursor <= cursor.value)) {
-      return yield* Effect.fail(new CodeGraphStoreError('Staged edge validation cursor did not advance.'));
+      return yield* CodeGraphStoreError.of('Staged edge validation cursor did not advance.');
     }
     cursor = Option.some(page.cursor);
     examined += rowsExamined;
@@ -666,7 +660,7 @@ const countPersistedFullReuseRows = Effect.fn('codeGraph.countPersistedFullReuse
       Option.isSome(lookupCursor) &&
       (next[0] < lookupCursor.value[0] || (next[0] === lookupCursor.value[0] && next[1] <= lookupCursor.value[1]))
     ) {
-      return yield* Effect.fail(new CodeGraphStoreError('Persistent lookup count cursor did not advance.'));
+      return yield* CodeGraphStoreError.of('Persistent lookup count cursor did not advance.');
     }
     lookupCursor = Option.some(next);
     yield* observe('validating-input', 'progress', lookupCount);
@@ -758,7 +752,7 @@ const drainCompletedPersistentBuildRowsPage = Effect.fn('codeGraph.drainComplete
       }),
     );
     if (!Number.isSafeInteger(deleted) || deleted < 0) {
-      return yield* Effect.fail(new CodeGraphStoreError('Completed build cleanup returned an invalid count.'));
+      return yield* CodeGraphStoreError.of('Completed build cleanup returned an invalid count.');
     }
     if (deleted > 0) return {deleted} satisfies CompletedBuildCleanupPage;
   }
@@ -801,14 +795,14 @@ const persistedIncrementalFactCounts = Effect.fn('codeGraph.persistedIncremental
     readonly symbols: number;
   }>(statement.text, statement.parameters);
   const row = rows[0];
-  if (!row) return yield* Effect.fail(new CodeGraphStoreError(`Reusable base ${baseSnapshotId} is unavailable.`));
+  if (!row) return yield* CodeGraphStoreError.of(`Reusable base ${baseSnapshotId} is unavailable.`);
   const counts = {
     edges: Number(row.edges),
     files: Number(row.files),
     symbols: Number(row.symbols),
   };
   if (Object.values(counts).some(value => !Number.isSafeInteger(value) || value < 0)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental graph counts are invalid.'));
+    return yield* CodeGraphStoreError.of('Persisted incremental graph counts are invalid.');
   }
   return counts;
 });

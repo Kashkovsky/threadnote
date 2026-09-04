@@ -131,7 +131,7 @@ export const inspectCodeGraphQueryIndexes = Effect.fn('codeGraph.inspectQueryInd
   const current = new Set<string>();
   for (const row of rows) {
     if (typeof row.name !== 'string' || typeof row.sql !== 'string' || row.type !== 'index') {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph query index schema is incompatible.'));
+      return yield* CodeGraphStoreError.of('Code graph query index schema is incompatible.');
     }
     const expected = expectedByName.get(row.name);
     if (
@@ -139,7 +139,7 @@ export const inspectCodeGraphQueryIndexes = Effect.fn('codeGraph.inspectQueryInd
       current.has(row.name) ||
       normalizeSchemaDefinition(row.sql) !== normalizeSchemaDefinition(expected.createSql)
     ) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph query index schema is incompatible.'));
+      return yield* CodeGraphStoreError.of('Code graph query index schema is incompatible.');
     }
     current.add(row.name);
   }
@@ -155,6 +155,6 @@ export const ensureCodeGraphQueryIndexes = Effect.fn('codeGraph.ensureQueryIndex
   for (const definition of definitions) yield* sql.unsafe(definition.createSql);
   const inspection = yield* inspectCodeGraphQueryIndexes(sql, definitions);
   if (inspection.missing.length > 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph query index schema is unavailable.'));
+    return yield* CodeGraphStoreError.of('Code graph query index schema is unavailable.');
   }
 });

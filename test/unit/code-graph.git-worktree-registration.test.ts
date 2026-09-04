@@ -1,4 +1,5 @@
 import {TestError} from '../helpers/test-error.js';
+import {inheritedProcessEnvironment} from '../helpers/process-environment.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {execFileSync} from '../helpers/node-child-process.js';
 import {
@@ -84,7 +85,7 @@ describe('code graph common-gitdir worktree authority', () => {
         const command = yield* CommandExecutor;
         const executeBytes = command.executeBytes;
         if (executeBytes === undefined)
-          return yield* Effect.fail(new TestError('binary command adapter is unavailable'));
+          return yield* TestError.make({message: 'binary command adapter is unavailable'});
         const recording = CommandExecutor.of({
           ...command,
           executeBytes: (executable, args, options) => {
@@ -708,7 +709,10 @@ async function completesWithin<A>(promise: Promise<A>, milliseconds: number): Pr
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new TestError('operation exceeded bounded test deadline')), milliseconds);
+        timeout = setTimeout(
+          () => reject(TestError.make({message: 'operation exceeded bounded test deadline'})),
+          milliseconds,
+        );
       }),
     ]);
   } finally {
@@ -722,13 +726,13 @@ function withBlockedLstatWorker<A, E, R>(
 ): Effect.Effect<A, E, R> {
   return Effect.acquireUseRelease(
     Effect.sync(() => ({
-      block: process.env.THREADNOTE_CODE_GRAPH_TEST_BLOCK_WORKTREE_LSTAT,
-      pidFile: process.env.THREADNOTE_CODE_GRAPH_TEST_WORKTREE_LSTAT_PID_FILE,
+      block: inheritedProcessEnvironment().THREADNOTE_CODE_GRAPH_TEST_BLOCK_WORKTREE_LSTAT,
+      pidFile: inheritedProcessEnvironment().THREADNOTE_CODE_GRAPH_TEST_WORKTREE_LSTAT_PID_FILE,
     })).pipe(
       Effect.tap(() =>
         Effect.sync(() => {
-          process.env.THREADNOTE_CODE_GRAPH_TEST_BLOCK_WORKTREE_LSTAT = '1';
-          process.env.THREADNOTE_CODE_GRAPH_TEST_WORKTREE_LSTAT_PID_FILE = pidFile;
+          inheritedProcessEnvironment().THREADNOTE_CODE_GRAPH_TEST_BLOCK_WORKTREE_LSTAT = '1';
+          inheritedProcessEnvironment().THREADNOTE_CODE_GRAPH_TEST_WORKTREE_LSTAT_PID_FILE = pidFile;
         }),
       ),
     ),
@@ -749,7 +753,8 @@ function restoreEnvironment(name: string, value: string | undefined): void {
 async function waitForFile(path: string, timeoutMilliseconds: number): Promise<void> {
   const deadline = Date.now() + timeoutMilliseconds;
   while (!existsSync(path)) {
-    if (Date.now() >= deadline) throw new TestError('Worker did not publish its test PID before the deadline.');
+    if (Date.now() >= deadline)
+      throw TestError.make({message: 'Worker did not publish its test PID before the deadline.'});
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
@@ -763,7 +768,8 @@ async function waitForProcessExit(pid: number, timeoutMilliseconds: number): Pro
       if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH') return;
       throw error;
     }
-    if (Date.now() >= deadline) throw new TestError(`Worker ${String(pid)} survived its bounded cancellation.`);
+    if (Date.now() >= deadline)
+      throw TestError.make({message: `Worker ${String(pid)} survived its bounded cancellation.`});
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }

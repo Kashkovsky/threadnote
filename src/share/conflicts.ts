@@ -159,13 +159,14 @@ export const resolveShareConflict = Effect.fn('share.resolveShareConflict')(func
   const mergedContent = options.mergedContent;
   const rawTake = options.take as string | undefined;
   if (rawTake !== undefined && rawTake !== 'shared' && rawTake !== 'local') {
-    throw new ShareOperationError(`Unsupported --take value "${rawTake}". Expected "shared" or "local".`);
+    throw ShareOperationError.make({message: `Unsupported --take value "${rawTake}". Expected "shared" or "local".`});
   }
   const take = rawTake;
   if ((take ? 1 : 0) + (fromFile ? 1 : 0) + (mergedContent !== undefined ? 1 : 0) !== 1) {
-    throw new ShareOperationError(
-      'Choose exactly one resolution: --take shared, --take local, --from-file <path>, or mergedContent via MCP.',
-    );
+    throw ShareOperationError.make({
+      message:
+        'Choose exactly one resolution: --take shared, --take local, --from-file <path>, or mergedContent via MCP.',
+    });
   }
   const conflict = yield* readPendingShareConflict(config, reference, options.team);
   if (take !== 'shared') assertShareTeamWritable(conflict.team, 'publish conflict resolutions');
@@ -186,7 +187,7 @@ export const resolveShareConflict = Effect.fn('share.resolveShareConflict')(func
       }
     } else {
       if (inspected.sharedContent === undefined) {
-        throw new ShareOperationError(`Cannot take shared for ${inspected.id}: ${inspected.reason}.`);
+        throw ShareOperationError.make({message: `Cannot take shared for ${inspected.id}: ${inspected.reason}.`});
       }
       if (inspected.localContent !== undefined) {
         assertSharedMemoryIdentityContinuity(inspected.uri, inspected.localContent, inspected.sharedContent);
@@ -249,7 +250,7 @@ const teamsForShareQuery = Effect.fn('share.teamsForShareQuery')(function* (
   const teams = yield* readTeamsFile(config);
   const entries = Object.entries(teams.teams);
   if (entries.length === 0) {
-    throw new ShareOperationError('No shared teams configured. Run: threadnote share init <remote-url>');
+    throw ShareOperationError.make({message: 'No shared teams configured. Run: threadnote share init <remote-url>'});
   }
   return entries.map(([name, team]) => ({config: team, name}));
 });
@@ -268,14 +269,14 @@ const readPendingShareConflict = Effect.fn('share.readPendingShareConflict')(fun
     const available = pending
       .filter(isShareableMemoryChange)
       .map(candidate => conflictId(target.team.name, candidate.relativePath));
-    throw new ShareOperationError(
-      [
+    throw ShareOperationError.make({
+      message: [
         `No pending shared memory conflict found for ${conflictId(target.team.name, target.relativePath)}.`,
         available.length > 0
           ? `Pending conflicts for this team:\n${available.map(id => `- ${id}`).join('\n')}`
           : `No pending conflicts for team "${target.team.name}".`,
       ].join('\n'),
-    );
+    });
   }
   return {change: yield* normalizePendingChange(target.team, change), team: target.team};
 });
@@ -287,13 +288,15 @@ const parseShareConflictReference = Effect.fn('share.parseShareConflictReference
 ) {
   const trimmed = reference.trim();
   if (!trimmed) {
-    throw new ShareOperationError('Provide a conflict id, relative path, or threadnote:// shared memory URI.');
+    throw ShareOperationError.make({
+      message: 'Provide a conflict id, relative path, or threadnote:// shared memory URI.',
+    });
   }
   const canonicalReference = canonicalResourceInput(trimmed);
   if (canonicalReference) {
     const teamName = sharedTeamNameForUri(config, canonicalReference);
     if (!teamName) {
-      throw new ShareOperationError(`Shared memory URI does not include a configured team: ${trimmed}`);
+      throw ShareOperationError.make({message: `Shared memory URI does not include a configured team: ${trimmed}`});
     }
     const team = yield* resolveTeam(config, optionTeam ?? teamName);
     return {
@@ -491,21 +494,21 @@ const conflictResolutionContent = Effect.fn('share.conflictResolutionContent')(f
           ? conflict.localContent
           : undefined;
   if (raw === undefined) {
-    throw new ShareOperationError(
-      `Cannot resolve ${conflict.id}: local native canonical store content is unavailable.`,
-    );
+    throw ShareOperationError.make({
+      message: `Cannot resolve ${conflict.id}: local native canonical store content is unavailable.`,
+    });
   }
   const scrub = applyScrubber(stripPersonalProvenanceForSharedPublication(raw), {redact: false});
   if (scrub.blocker) {
-    throw new ShareOperationError(
-      `Refusing to resolve ${conflict.id}: possible ${scrub.blocker}. Strip the sensitive value before writing it to shared memory.`,
-    );
+    throw ShareOperationError.make({
+      message: `Refusing to resolve ${conflict.id}: possible ${scrub.blocker}. Strip the sensitive value before writing it to shared memory.`,
+    });
   }
   const citationBlocker = memoryCodeCitationContentSharingBlocker(conflict.uri, scrub.cleaned);
   if (citationBlocker) {
-    throw new ShareOperationError(
-      `Refusing to resolve ${conflict.id}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
-    );
+    throw ShareOperationError.make({
+      message: `Refusing to resolve ${conflict.id}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+    });
   }
   return scrub.cleaned;
 });

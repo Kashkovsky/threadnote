@@ -1,4 +1,4 @@
-import {Clock, Effect} from 'effect';
+import {Clock, DateTime, Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {saturatingCapacityAdd} from './disk_capacity.js';
 import {compareCodeUnits} from './ordering.js';
@@ -60,7 +60,7 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
     (/^cgsn_[0-9a-f]{40}/u.test(snapshot.id) &&
       !persistentSnapshotMatchesLogicalIdentity(snapshot.id, claim.logicalSnapshotId))
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent build owner identity is invalid.'));
+    return yield* CodeGraphStoreError.of('Persistent build owner identity is invalid.');
   }
   yield* runWrite(initializeSchema(sql));
   const retiredUnusableReady = yield* runWrite(
@@ -85,7 +85,7 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
         yield* sql`
           UPDATE snapshots
           SET state = 'retired',
-              completed_at = COALESCE(completed_at, ${new Date().toISOString()}),
+              completed_at = COALESCE(completed_at, ${DateTime.formatIso(yield* DateTime.now)}),
               failure_summary = COALESCE(
                 failure_summary,
                 'Compact lexical storage receipt changed; rebuild required.'
@@ -131,8 +131,8 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
               !persistentSnapshotBuildIdentityMatches(current, snapshot) ||
               !['building', 'failed'].includes(current.state)
             ) {
-              return yield* Effect.fail(
-                new CodeGraphStoreError('Persistent build claim does not match the existing snapshot identity.'),
+              return yield* CodeGraphStoreError.of(
+                'Persistent build claim does not match the existing snapshot identity.',
               );
             }
           } else {
@@ -144,13 +144,13 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
             ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
             ${snapshot.graphContentId ?? snapshot.id}, ${snapshot.baseSnapshotId ?? null},
             ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
-            ${snapshot.overlayFingerprint ?? null}, 'building', 0, 0, 0, ${new Date().toISOString()}
+            ${snapshot.overlayFingerprint ?? null}, 'building', 0, 0, 0, ${DateTime.formatIso(yield* DateTime.now)}
           )
         `;
           }
           yield* sql`
           INSERT INTO snapshot_build_owners (snapshot_id, owner_token, claimed_at)
-          VALUES (${snapshot.id}, ${ownerToken}, ${new Date().toISOString()})
+          VALUES (${snapshot.id}, ${ownerToken}, ${DateTime.formatIso(yield* DateTime.now)})
           ON CONFLICT(snapshot_id) DO UPDATE SET
             owner_token = excluded.owner_token,
             claimed_at = excluded.claimed_at
@@ -306,7 +306,7 @@ const finalizePersistentMaterializationPlan = Effect.fn('codeGraph.finalizePersi
   expectedBatchCount: number,
 ) {
   if (!Number.isSafeInteger(expectedBatchCount) || expectedBatchCount < 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization batch count is invalid.'));
+    return yield* CodeGraphStoreError.of('Persistent materialization batch count is invalid.');
   }
   yield* sql.withTransaction(
     Effect.gen(function* () {
@@ -349,8 +349,8 @@ const finalizePersistentMaterializationPlan = Effect.fn('codeGraph.finalizePersi
         !contiguous(Number(row.materialization_count), row.materialization_minimum, row.materialization_maximum) ||
         !contiguous(Number(row.analysis_count), row.analysis_minimum, row.analysis_maximum)
       ) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError('Persistent full-build materialization has incomplete or non-contiguous receipts.'),
+        return yield* CodeGraphStoreError.of(
+          'Persistent full-build materialization has incomplete or non-contiguous receipts.',
         );
       }
       yield* registerPersistentMaterializationPlan(sql, snapshotId, ownerToken, expectedBatchCount);
@@ -373,7 +373,7 @@ const failBuildingSnapshot = Effect.fn('codeGraph.failBuildingSnapshot')(functio
       yield* sql`
         UPDATE snapshots
         SET state = ${targetState}, failure_summary = COALESCE(failure_summary, ${summary.slice(0, 2_000)}),
-          completed_at = ${new Date().toISOString()}
+          completed_at = ${DateTime.formatIso(yield* DateTime.now)}
         WHERE id = ${snapshotId}
           AND state = 'building'
           AND id NOT IN (SELECT snapshot_id FROM active_snapshots)

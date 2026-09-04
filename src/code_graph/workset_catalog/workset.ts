@@ -1,4 +1,4 @@
-import {Cause, Clock, Crypto, Effect, Exit, FileSystem, Path, Ref, Result, Semaphore} from 'effect';
+import {Cause, Clock, Crypto, Effect, Exit, FileSystem, Path, Ref, Result, Semaphore, Schema} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {CommandExecutor} from '../../effect/command.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file_lock.js';
@@ -27,7 +27,7 @@ import {CodeGraphStore} from '../store.js';
 import {makeCodeGraphWorksetTelemetryReporter} from '../workset_telemetry.js';
 import {
   CodeGraphRepositoryError,
-  CodeGraphStoreError,
+  isCodeGraphStoreError,
   type CodeGraphIndexSummary,
   type CodeGraphProgress,
   type CodeGraphSnapshot,
@@ -280,7 +280,7 @@ const prepareCodeGraphWorksetScoped = Effect.fn('codeGraphWorkset.prepareScoped'
   const concurrency = yield* Effect.try({
     try: () => prepareConcurrency(options.concurrency),
     catch: cause =>
-      new CodeGraphWorksetCatalogError('invalid-input', cause instanceof Error ? cause.message : String(cause), {
+      CodeGraphWorksetCatalogError.of('invalid-input', cause instanceof Error ? cause.message : String(cause), {
         cause,
       }),
   });
@@ -305,7 +305,7 @@ const prepareCodeGraphWorksetScoped = Effect.fn('codeGraphWorkset.prepareScoped'
             workset: workset.name,
           }),
         ),
-        Effect.catchCause(() => Effect.void),
+        Effect.ignoreCause,
       ),
     );
   const completeMember = (phase: 'indexing' | 'projecting', member: CodeGraphWorksetPrepareMemberV1) =>
@@ -385,16 +385,16 @@ const prepareCodeGraphWorksetScoped = Effect.fn('codeGraphWorkset.prepareScoped'
             ...(stagedGenerationId === undefined ? {} : {generationId: stagedGenerationId}),
             projectionDigests: [...projectionDigests],
           }).pipe(Effect.andThen(drainCodeGraphWorksetCatalogCleanup(config.agentContextHome)))
-      ).pipe(Effect.catchCause(() => Effect.void)),
+      ).pipe(Effect.ignoreCause),
     ),
   );
   const layout = codeGraphWorksetCatalogLayout(path, config.agentContextHome);
   yield* reportAt({completed: yield* Ref.get(completed), phase: 'waiting'});
   return yield* withExclusiveFileLock(fs, layout.prepareLockPath, WORKSET_PREPARE_LOCK_OPTIONS, critical).pipe(
     Effect.mapError(cause =>
-      cause instanceof CodeGraphWorksetCatalogError
+      Schema.is(CodeGraphWorksetCatalogError)(cause)
         ? cause
-        : new CodeGraphWorksetCatalogError(
+        : CodeGraphWorksetCatalogError.of(
             isFileLockTimeout(cause) ? 'busy' : 'storage',
             isFileLockTimeout(cause)
               ? 'Timed out waiting to prepare the home-global workset catalog.'
@@ -428,7 +428,7 @@ function reportCodeGraphWorksetPrepareProgress(
 ) {
   const event = {...progress, message: renderCodeGraphWorksetPrepareProgress(progress)};
   return Effect.all([reporter?.(event) ?? Effect.void, telemetryReporter(event)], {discard: true}).pipe(
-    Effect.catchCause(() => Effect.void),
+    Effect.ignoreCause,
   );
 }
 
@@ -455,16 +455,16 @@ function assertCurrentWorksetManifest(config: RuntimeConfig, worksetName: string
       codeGraphWorksetManifestDigest(current) === expectedDigest
         ? Effect.void
         : Effect.fail(
-            new CodeGraphWorksetCatalogError(
+            CodeGraphWorksetCatalogError.of(
               'stale',
               'The workset definition changed while its catalog generation was preparing.',
             ),
           ),
     ),
     Effect.mapError(cause =>
-      cause instanceof CodeGraphWorksetCatalogError
+      Schema.is(CodeGraphWorksetCatalogError)(cause)
         ? cause
-        : new CodeGraphWorksetCatalogError(
+        : CodeGraphWorksetCatalogError.of(
             'stale',
             'The workset definition changed while its catalog generation was preparing.',
             {cause},
@@ -498,7 +498,7 @@ export const inspectCodeGraphWorksetStatus = Effect.fn('codeGraphWorkset.status'
     published === undefined
       ? undefined
       : yield* readPublishedCodeGraphWorksetCatalogBridgeSetSummary(config.agentContextHome, published.id).pipe(
-          Effect.catch(() => Effect.succeed(undefined)),
+          Effect.orElseSucceed(() => undefined),
         );
   const publishedByProject = new Map(published?.members.map(member => [member.repositoryKey, member]) ?? []);
   const configured = yield* Effect.forEach(
@@ -633,11 +633,11 @@ function prepareConfiguredSnapshot(
         project: projectName,
       }).pipe(
         Effect.andThen(index),
-        Effect.catch(error =>
-          attempt < CODE_GRAPH_WORKSET_PREPARE_MEMBER_ATTEMPTS_MAXIMUM &&
-          codeGraphWorksetPrepareFailureDetail(error, 'index').retryable
-            ? Effect.sleep(CODE_GRAPH_WORKSET_PREPARE_RETRY_DELAY).pipe(Effect.andThen(indexAttempt(attempt + 1)))
-            : Effect.fail(error),
+        Effect.catchIf(
+          error =>
+            attempt < CODE_GRAPH_WORKSET_PREPARE_MEMBER_ATTEMPTS_MAXIMUM &&
+            codeGraphWorksetPrepareFailureDetail(error, 'index').retryable,
+          () => Effect.sleep(CODE_GRAPH_WORKSET_PREPARE_RETRY_DELAY).pipe(Effect.andThen(indexAttempt(attempt + 1))),
         ),
       );
     };
@@ -723,7 +723,7 @@ function inspectConfiguredMember(
 
 /** Convert status failures to bounded pathless diagnostics without erasing typed storage causes. */
 export function classifyCodeGraphWorksetStatusFailure(project: string, error: unknown): CodeGraphWorksetStatusMemberV1 {
-  if (error instanceof CodeGraphRepositoryError) {
+  if (Schema.is(CodeGraphRepositoryError)(error)) {
     return {
       detail: {code: 'repository', retryable: false},
       project: safeLabel(project),
@@ -731,7 +731,7 @@ export function classifyCodeGraphWorksetStatusFailure(project: string, error: un
       state: 'failed',
     };
   }
-  if (error instanceof CodeGraphStoreError) {
+  if (isCodeGraphStoreError(error)) {
     const reason =
       error.code === 'confirmed-corruption'
         ? 'status-corrupt'
@@ -836,7 +836,7 @@ export function codeGraphWorksetPrepareFailureDetail(
   error: unknown,
   stage: 'index' | 'projection',
 ): CodeGraphWorksetPrepareFailureDetailV1 {
-  if (error instanceof CodeGraphStoreError) {
+  if (isCodeGraphStoreError(error)) {
     return {
       code: error.code,
       errorType: safePrepareErrorType(error),
@@ -845,7 +845,7 @@ export function codeGraphWorksetPrepareFailureDetail(
       summary: worksetStoreRecoverySummary(error.recovery),
     };
   }
-  if (error instanceof CodeGraphRepositoryError) {
+  if (Schema.is(CodeGraphRepositoryError)(error)) {
     return {
       code: 'repository',
       errorType: error.name,
@@ -854,21 +854,20 @@ export function codeGraphWorksetPrepareFailureDetail(
     };
   }
   if (
-    error instanceof WorktreeChangedDuringIndex ||
-    error instanceof RepositoryMaintenanceInterrupted ||
-    error instanceof RepositoryRegistrationLost
+    Schema.is(WorktreeChangedDuringIndex)(error) ||
+    Schema.is(RepositoryMaintenanceInterrupted)(error) ||
+    Schema.is(RepositoryRegistrationLost)(error)
   ) {
     return {
       code: 'worktree-changed',
       errorType: error.name,
       retryable: true,
-      summary:
-        error instanceof RepositoryMaintenanceInterrupted
-          ? 'Graph maintenance superseded indexing; retry after maintenance completes.'
-          : 'The repository changed while indexing; retry when the checkout is stable.',
+      summary: Schema.is(RepositoryMaintenanceInterrupted)(error)
+        ? 'Graph maintenance superseded indexing; retry after maintenance completes.'
+        : 'The repository changed while indexing; retry when the checkout is stable.',
     };
   }
-  if (error instanceof CodeGraphWorksetCatalogError) {
+  if (Schema.is(CodeGraphWorksetCatalogError)(error)) {
     return {
       code: 'catalog',
       errorType: error.name,
@@ -960,7 +959,7 @@ export const prepareCodeGraphWorksetBridgesForGeneration = Effect.fn('codeGraphW
           threadnoteHome: config.agentContextHome,
         }).pipe(
           Effect.map(monikers => ({member, monikers, state: 'ready' as const})),
-          Effect.catch(() => Effect.succeed({member, state: 'unavailable' as const})),
+          Effect.orElseSucceed(() => ({member, state: 'unavailable' as const})),
         ),
       {concurrency: CODE_GRAPH_WORKSET_PREPARE_CONCURRENCY_DEFAULT},
     );
@@ -1006,7 +1005,7 @@ export const prepareCodeGraphWorksetBridgesForGeneration = Effect.fn('codeGraphW
       Effect.try({
         try: () => resolveCodeGraphCrossRepositoryBridges(repositories),
         catch: cause =>
-          new CodeGraphWorksetCatalogError('invalid-input', cause instanceof Error ? cause.message : String(cause), {
+          CodeGraphWorksetCatalogError.of('invalid-input', cause instanceof Error ? cause.message : String(cause), {
             cause,
           }),
       }),

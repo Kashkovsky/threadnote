@@ -2,7 +2,7 @@ import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {Clock, DateTime, Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {
@@ -42,7 +42,7 @@ describe('removed code graph view cleanup queue', () => {
               seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
               database
                 .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-                .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+                .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
               database.exec('DROP TABLE snapshot_component_edge_aggregate_receipts');
               database.exec('DROP TABLE snapshot_component_edge_aggregates');
               database
@@ -102,7 +102,7 @@ describe('removed code graph view cleanup queue', () => {
             seedSnapshot(database, NEW_SNAPSHOT_ID, OTHER_WORKTREE_ID, 'building');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
             database.exec('DROP TABLE IF EXISTS removed_view_cleanup');
             database.exec('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete');
             database.exec('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert');
@@ -200,7 +200,7 @@ describe('removed code graph view cleanup queue', () => {
             seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
             database.exec('DROP TABLE IF EXISTS removed_view_cleanup');
             database.exec('CREATE TABLE removed_view_cleanup (worktree_id TEXT PRIMARY KEY NOT NULL) WITHOUT ROWID');
             database
@@ -294,10 +294,10 @@ describe('removed code graph view cleanup queue', () => {
             seedSnapshot(database, NEW_SNAPSHOT_ID, OTHER_WORKTREE_ID, 'ready');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(OTHER_WORKTREE_ID, NEW_SNAPSHOT_ID, new Date(0).toISOString());
+              .run(OTHER_WORKTREE_ID, NEW_SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
           } finally {
             database.close(false);
           }
@@ -438,7 +438,7 @@ describe('removed code graph view cleanup queue', () => {
             seedSnapshot(database, NEW_SNAPSHOT_ID, WORKTREE_ID, 'ready');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
           } finally {
             database.close(false);
           }
@@ -536,8 +536,8 @@ describe('removed code graph view cleanup queue', () => {
             const active = database.prepare(
               'INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)',
             );
-            active.run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
-            active.run(OTHER_WORKTREE_ID, SNAPSHOT_ID, new Date(1).toISOString());
+            active.run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
+            active.run(OTHER_WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(1)));
           } finally {
             database.close(false);
           }
@@ -583,13 +583,13 @@ describe('removed code graph view cleanup queue', () => {
             seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
           } finally {
             database.close(false);
           }
         });
         yield* store.removeView(databasePath, WORKTREE_ID, SNAPSHOT_ID);
-        const [first] = yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now(), 1);
+        const [first] = yield* store.claimRemovedViewCleanupCandidates(databasePath, yield* Clock.currentTimeMillis, 1);
         expect(first).toBeDefined();
 
         yield* Effect.sync(() => {
@@ -618,7 +618,11 @@ describe('removed code graph view cleanup queue', () => {
         });
 
         expect(yield* store.authorizeRemovedViewCleanup(databasePath, first)).toEqual({state: 'stale'});
-        const [replacement] = yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now() + 1, 1);
+        const [replacement] = yield* store.claimRemovedViewCleanupCandidates(
+          databasePath,
+          (yield* Clock.currentTimeMillis) + 1,
+          1,
+        );
         expect(replacement).toBeDefined();
         expect(replacement.expectedSnapshotId).toBe(SNAPSHOT_ID);
         expect(replacement.removedAt).toBe(first.removedAt);
@@ -639,13 +643,13 @@ describe('removed code graph view cleanup queue', () => {
             seedSnapshot(database, NEW_SNAPSHOT_ID, WORKTREE_ID, 'ready');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
           } finally {
             database.close(false);
           }
         });
         yield* store.removeView(databasePath, WORKTREE_ID, SNAPSHOT_ID);
-        const now = Date.now();
+        const now = yield* Clock.currentTimeMillis;
         const [candidate] = yield* store.claimRemovedViewCleanupCandidates(databasePath, now, 32);
         expect(candidate).toBeDefined();
         const noOpFailure = yield* store
@@ -669,7 +673,7 @@ describe('removed code graph view cleanup queue', () => {
           cursorToken: 'model:' + '1'.repeat(64),
           nextAttemptAt: 2,
           phase: 'vector-pointers',
-          updatedAt: new Date(now + 1).toISOString(),
+          updatedAt: DateTime.formatIso(DateTime.makeUnsafe(now + 1)),
         });
         expect(advanced).toMatchObject({entry: {revision: 2}, state: 'updated'});
         expect(
@@ -677,7 +681,7 @@ describe('removed code graph view cleanup queue', () => {
             attempts: 0,
             nextAttemptAt: 3,
             phase: 'build-status',
-            updatedAt: new Date(now + 2).toISOString(),
+            updatedAt: DateTime.formatIso(DateTime.makeUnsafe(now + 2)),
           }),
         ).toEqual({state: 'stale'});
 
@@ -703,20 +707,24 @@ describe('removed code graph view cleanup queue', () => {
             seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ? )')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
           } finally {
             database.close(false);
           }
         });
         yield* store.removeView(databasePath, WORKTREE_ID, SNAPSHOT_ID);
-        const [candidate] = yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now(), 1);
+        const [candidate] = yield* store.claimRemovedViewCleanupCandidates(
+          databasePath,
+          yield* Clock.currentTimeMillis,
+          1,
+        );
         expect(candidate).toBeDefined();
         const update = {
           attempts: candidate.attempts,
           cursorToken: `concurrent:${'1'.repeat(64)}`,
           nextAttemptAt: candidate.nextAttemptAt,
           phase: candidate.phase,
-          updatedAt: new Date(Date.parse(candidate.updatedAt) + 1).toISOString(),
+          updatedAt: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(candidate.updatedAt) + 1)),
         } as const;
         const results = yield* Effect.all(
           [
@@ -744,7 +752,7 @@ describe('removed code graph view cleanup queue', () => {
             seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
             database
               .query("UPDATE schema_metadata SET value = ? WHERE key = 'removed_view_cleanup_epoch_sequence'")
               .run(String(Number.MAX_SAFE_INTEGER));
@@ -790,7 +798,9 @@ describe('removed code graph view cleanup queue', () => {
         });
         const metadataBeforeRevisionOverflow = readCleanupMetadata(databasePath);
         expect(
-          (yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now(), 1).pipe(Effect.exit))._tag,
+          (yield* store
+            .claimRemovedViewCleanupCandidates(databasePath, yield* Clock.currentTimeMillis, 1)
+            .pipe(Effect.exit))._tag,
         ).toBe('Failure');
         expect(readCleanupRows(databasePath)).toEqual([
           expect.objectContaining({attempts: 0, next_attempt_at: 0, revision: Number.MAX_SAFE_INTEGER}),
@@ -811,7 +821,11 @@ describe('removed code graph view cleanup queue', () => {
             database.close(false);
           }
         });
-        const [claimed] = yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now(), 1);
+        const [claimed] = yield* store.claimRemovedViewCleanupCandidates(
+          databasePath,
+          yield* Clock.currentTimeMillis,
+          1,
+        );
         expect(claimed).toBeDefined();
         const before = readCleanupRows(databasePath);
         expect(
@@ -822,7 +836,7 @@ describe('removed code graph view cleanup queue', () => {
               cursorToken: claimed.cursorToken,
               nextAttemptAt: claimed.nextAttemptAt + 1,
               phase: claimed.phase,
-              updatedAt: new Date(Date.parse(claimed.updatedAt) + 1).toISOString(),
+              updatedAt: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(claimed.updatedAt) + 1)),
             })
             .pipe(Effect.exit))._tag,
         ).toBe('Failure');
@@ -836,18 +850,18 @@ describe('removed code graph view cleanup queue', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
+        const expiresAt = (yield* TestClock.withLive(Clock.currentTimeMillis)) + 60_000;
         yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
           try {
             seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
             const insert = database.prepare(
               `INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
                VALUES (?, ?, ?, 0)`,
             );
-            const expiresAt = Date.now() + 60_000;
             database.transaction(() => {
               for (let index = 0; index < 10_000; index += 1) {
                 insert.run(`lease-${String(index).padStart(5, '0')}`, SNAPSHOT_ID, expiresAt);
@@ -901,19 +915,20 @@ describe('removed code graph view cleanup queue', () => {
             seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
           } finally {
             database.close(false);
           }
         });
         yield* store.removeView(databasePath, WORKTREE_ID, SNAPSHOT_ID);
 
+        const now = yield* Clock.currentTimeMillis;
         const plans = yield* Effect.sync(() => ({
           admission: queryPlan(
             databasePath,
             codeGraphRemovedViewCleanupAdmissionPageStatement('0'.repeat(64), 'after', 32),
           ),
-          due: queryPlan(databasePath, codeGraphRemovedViewCleanupDuePageStatement(Date.now(), 32)),
+          due: queryPlan(databasePath, codeGraphRemovedViewCleanupDuePageStatement(now, 32)),
         }));
         expect(plans.admission.some(row => /PRIMARY KEY/u.test(row.detail))).toBe(true);
         expect(plans.due.some(row => row.detail.includes('removed_view_cleanup_due'))).toBe(true);
@@ -929,14 +944,15 @@ describe('removed code graph view cleanup queue', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
-        const now = Date.now();
+        yield* TestClock.setTime(yield* TestClock.withLive(Clock.currentTimeMillis));
+        const now = yield* Clock.currentTimeMillis;
         yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
           try {
             seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
             const insert = database.prepare(
               `INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
                VALUES (?, ?, ?, 0)`,
@@ -973,11 +989,12 @@ describe('removed code graph view cleanup queue', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
+        const expiresAt = (yield* TestClock.withLive(Clock.currentTimeMillis)) + 120_000;
         yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
           try {
-            const removedAt = new Date(0).toISOString();
-            const updatedAt = new Date(1).toISOString();
+            const removedAt = DateTime.formatIso(DateTime.makeUnsafe(0));
+            const updatedAt = DateTime.formatIso(DateTime.makeUnsafe(1));
             seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
             seedSnapshot(database, NEW_SNAPSHOT_ID, OTHER_WORKTREE_ID, 'ready');
             database
@@ -985,7 +1002,7 @@ describe('removed code graph view cleanup queue', () => {
                 `INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
                  VALUES ('legacy-reader', ?, ?, 0)`,
               )
-              .run(SNAPSHOT_ID, Date.now() + 120_000);
+              .run(SNAPSHOT_ID, expiresAt);
             database
               .query('INSERT INTO removed_views (worktree_id, expected_snapshot_id, removed_at) VALUES (?, ?, ?)')
               .run(WORKTREE_ID, SNAPSHOT_ID, removedAt);
@@ -1151,19 +1168,20 @@ describe('removed code graph view cleanup queue', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
+        const expiresAt = (yield* TestClock.withLive(Clock.currentTimeMillis)) + 120_000;
         yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
           try {
             seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
             database
               .query(
                 `INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
                  VALUES ('corrupt-carrier', ?, ?, 0)`,
               )
-              .run(SNAPSHOT_ID, Date.now() + 120_000);
+              .run(SNAPSHOT_ID, expiresAt);
             database.run(
               "UPDATE snapshot_leases SET token = CAST(zeroblob(1048576) AS BLOB) WHERE token = 'corrupt-carrier'",
             );
@@ -1215,14 +1233,14 @@ describe('removed code graph view cleanup queue', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
-        const expiresAt = Date.now() + 120_000;
+        const expiresAt = (yield* TestClock.withLive(Clock.currentTimeMillis)) + 120_000;
         yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
           try {
             seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
           } finally {
             database.close(false);
           }
@@ -1328,15 +1346,16 @@ function rewriteRemovedViewCleanupStoredSql(databasePath: string, mutate: (defin
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'removed_view_cleanup'",
       )
       .get();
-    if (row === null) throw new TestError('missing canonical removed view cleanup table');
+    if (row === null) throw TestError.make({message: 'missing canonical removed view cleanup table'});
     const changed = mutate(row.sql);
-    if (changed === row.sql) throw new TestError('removed view cleanup table mutation did not change its definition');
+    if (changed === row.sql)
+      throw TestError.make({message: 'removed view cleanup table mutation did not change its definition'});
     const dueIndex = database
       .query<{readonly sql: string}, []>(
         "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'removed_view_cleanup_due'",
       )
       .get();
-    if (dueIndex === null) throw new TestError('missing canonical removed view cleanup due index');
+    if (dueIndex === null) throw TestError.make({message: 'missing canonical removed view cleanup due index'});
     database.run('PRAGMA foreign_keys = OFF');
     database.run('PRAGMA ignore_check_constraints = ON');
     database.run('BEGIN IMMEDIATE');
@@ -1405,7 +1424,7 @@ function readRemovedViewGeneration(databasePath: string): string {
     const row = database
       .query<{readonly removed_at: string}, [string]>('SELECT removed_at FROM removed_views WHERE worktree_id = ?')
       .get(WORKTREE_ID);
-    if (row === null) throw new TestError('missing removed view generation');
+    if (row === null) throw TestError.make({message: 'missing removed view generation'});
     return row.removed_at;
   } finally {
     database.close(false);

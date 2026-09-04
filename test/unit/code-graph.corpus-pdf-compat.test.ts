@@ -76,7 +76,7 @@ describe('PDF.js compatibility', () => {
 
     const extraction = extractCorpusFile(pdfFile('docs/cancelled-compatibility.pdf'), {signal: controller.signal});
     await textStarted;
-    controller.abort(new TestError('compatibility cancellation'));
+    controller.abort(TestError.make({message: 'compatibility cancellation'}));
 
     await expect(extraction).rejects.toThrow('compatibility cancellation');
     expect(cleanup).toHaveBeenCalledOnce();

@@ -41,10 +41,10 @@ export class ModelDownloadFailed extends Schema.TaggedError<ModelDownloadFailed>
 }) {}
 
 export class InsufficientDiskSpace extends Schema.TaggedError<InsufficientDiskSpace>()('InsufficientDiskSpace', {
-  availableBytes: Schema.Number,
+  availableBytes: Schema.Finite,
   message: Schema.String,
   modelId: Schema.String,
-  requiredBytes: Schema.Number,
+  requiredBytes: Schema.Finite,
 }) {}
 
 export class ModelLoadFailed extends Schema.TaggedError<ModelLoadFailed>()('ModelLoadFailed', {

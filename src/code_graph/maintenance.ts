@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import type {DoctorCheck} from '../types.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {
@@ -25,9 +25,10 @@ import {codeGraphSchemaMigrationPreservesIncompleteSnapshots} from './store_sche
 
 export {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
 
-class CodeGraphMaintenanceError extends Error {
-  readonly _tag = 'CodeGraphMaintenanceError' as const;
-}
+class CodeGraphMaintenanceError extends Schema.TaggedError<CodeGraphMaintenanceError>()('CodeGraphMaintenanceError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export interface CodeGraphRepairSummary {
   readonly databases: number;
@@ -139,7 +140,7 @@ export const inspectObsoleteCodeGraphStores = Effect.fn('codeGraph.inspectObsole
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   if (checkoutId !== undefined && !/^[0-9a-f]{64}$/.test(checkoutId)) {
-    return yield* Effect.fail(new CodeGraphMaintenanceError('Code graph checkout identity is invalid.'));
+    return yield* CodeGraphMaintenanceError.make({message: 'Code graph checkout identity is invalid.'});
   }
   const repositories = codeGraphRepositoriesRoot(path, threadnoteHome);
   if (!(yield* fs.exists(repositories))) return emptyObsoleteInventory();
@@ -261,7 +262,7 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
     }
     const checked = yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(
       Effect.map(health => ({health, state: 'checked'})),
-      Effect.catch(() => Effect.succeed<CodeGraphQuickCheck>({state: 'unreadable'})),
+      Effect.orElseSucceed((): CodeGraphQuickCheck => ({state: 'unreadable'})),
     );
     const health = checked.state === 'checked' ? checked.health : undefined;
     if (!health) {
@@ -300,7 +301,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
   if (options.targetCheckoutId !== undefined && !/^[0-9a-f]{64}$/.test(options.targetCheckoutId)) {
-    return yield* Effect.fail(new CodeGraphMaintenanceError('Code graph checkout identity is invalid.'));
+    return yield* CodeGraphMaintenanceError.make({message: 'Code graph checkout identity is invalid.'});
   }
   const repair = Effect.gen(function* () {
     const allDatabases = yield* codeGraphDatabasePaths(threadnoteHome);
@@ -342,9 +343,9 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
               const checkoutId = path.basename(repositoryRoot);
               const repositoryTarget = yield* openCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
               if (repositoryTarget === undefined) {
-                return yield* Effect.fail(
-                  new CodeGraphMaintenanceError('Code graph checkout target changed before repair.'),
-                );
+                return yield* CodeGraphMaintenanceError.make({
+                  message: 'Code graph checkout target changed before repair.',
+                });
               }
               return yield* store.withSession(
                 database,
@@ -513,11 +514,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
         }),
         0,
         options.interlock?.afterWorktreeDrain,
-      ).pipe(
-        Effect.catch(cause =>
-          isFileLockTimeout(cause) ? Effect.succeed('active-build' as const) : Effect.fail(cause),
-        ),
-      );
+      ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed('active-build' as const)));
       if (maintained !== 'maintained') {
         deferredDatabases += 1;
         yield* progress({
@@ -561,7 +558,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
         ),
         0,
         options.interlock?.afterWorktreeDrain,
-      ).pipe(Effect.catch(cause => (isFileLockTimeout(cause) ? Effect.succeed(0) : Effect.fail(cause))));
+      ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed(0)));
       if (cleaned === undefined) {
         databaseCount += 1;
         deferredDatabases += 1;
@@ -709,7 +706,7 @@ export const purgeObsoleteCodeGraphStores = Effect.fn('codeGraph.purgeObsoleteSt
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   if (!/^[0-9a-f]{64}$/.test(checkoutId)) {
-    return yield* Effect.fail(new CodeGraphMaintenanceError('Code graph checkout identity is invalid.'));
+    return yield* CodeGraphMaintenanceError.make({message: 'Code graph checkout identity is invalid.'});
   }
   return yield* withExclusiveFileLock(
     fs,
@@ -775,7 +772,7 @@ export const purgeCodeGraphIndex = Effect.fn('codeGraph.purgeIndex')(function* (
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
   if (!/^[0-9a-f]{64}$/.test(checkoutId)) {
-    return yield* Effect.fail(new CodeGraphMaintenanceError('Code graph checkout identity is invalid.'));
+    return yield* CodeGraphMaintenanceError.make({message: 'Code graph checkout identity is invalid.'});
   }
   const waitTimeoutMilliseconds = options.waitTimeoutMilliseconds ?? 0;
   const lockOptions = {...CODE_GRAPH_PURGE_LOCK_OPTIONS, waitTimeoutMilliseconds};
@@ -804,9 +801,9 @@ export const purgeCodeGraphIndex = Effect.fn('codeGraph.purgeIndex')(function* (
                   yield* options.interlock?.beforeVerification?.() ?? Effect.void;
                   const verified = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
                   if (!sameCodeGraphIndexPurgeTarget(initial, verified)) {
-                    return yield* Effect.fail(
-                      new CodeGraphMaintenanceError('Code graph checkout target changed before purge.'),
-                    );
+                    return yield* CodeGraphMaintenanceError.make({
+                      message: 'Code graph checkout target changed before purge.',
+                    });
                   }
                   if (verified === undefined || options.dryRun) {
                     return {existed: verified !== undefined, quarantine: undefined};
@@ -821,9 +818,9 @@ export const purgeCodeGraphIndex = Effect.fn('codeGraph.purgeIndex')(function* (
                   const moved = yield* inspectQuarantinedCodeGraphIndexPurgeTarget(fs, quarantine);
                   if (!sameCodeGraphIndexPurgeTarget(verified, moved)) {
                     yield* restoreQuarantinedCodeGraphIndexPurgeTarget(fs, quarantine, verified.path);
-                    return yield* Effect.fail(
-                      new CodeGraphMaintenanceError('Code graph checkout target changed before purge.'),
-                    );
+                    return yield* CodeGraphMaintenanceError.make({
+                      message: 'Code graph checkout target changed before purge.',
+                    });
                   }
                   return {existed: true, quarantine};
                 }),
@@ -908,9 +905,9 @@ function cleanTemporaryVectorFiles(
   return Effect.gen(function* () {
     const verified = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
     if (!sameCodeGraphIndexPurgeTarget(repositoryTarget, verified)) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError('Code graph checkout target changed before temporary-file cleanup.'),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: 'Code graph checkout target changed before temporary-file cleanup.',
+      });
     }
     if ((yield* fs.readLink(directory).pipe(Effect.option))._tag === 'Some') return 0;
     if (!(yield* fs.exists(directory))) return 0;
@@ -948,9 +945,9 @@ function cleanTemporaryMaterializationSpoolFiles(
   return Effect.gen(function* () {
     const verified = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
     if (!sameCodeGraphIndexPurgeTarget(repositoryTarget, verified)) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError('Code graph checkout target changed before spool cleanup.'),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: 'Code graph checkout target changed before spool cleanup.',
+      });
     }
     const root = repositoryTarget.path;
     let removed = 0;
@@ -1009,7 +1006,7 @@ function cleanTemporaryMaterializationSpoolFile(
         target.dev !== openedInfo.dev ||
         target.ino !== openedIno
       ) {
-        return yield* Effect.fail(new CodeGraphMaintenanceError('Temporary graph file changed while opening.'));
+        return yield* CodeGraphMaintenanceError.make({message: 'Temporary graph file changed while opening.'});
       }
       yield* verifyCodeGraphSpoolCleanupAuthority(fs, path, threadnoteHome, checkoutId, repositoryTarget, target);
       if (dryRun) return 1;
@@ -1045,12 +1042,12 @@ function verifyCodeGraphSpoolCleanupAuthority(
   return Effect.gen(function* () {
     const currentRepository = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
     if (!sameCodeGraphIndexPurgeTarget(repositoryTarget, currentRepository)) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError('Code graph checkout target changed during spool cleanup.'),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: 'Code graph checkout target changed during spool cleanup.',
+      });
     }
     if (Option.isSome(yield* fs.readLink(fileTarget.path).pipe(Effect.option))) {
-      return yield* Effect.fail(new CodeGraphMaintenanceError('Temporary graph file became a symbolic link.'));
+      return yield* CodeGraphMaintenanceError.make({message: 'Temporary graph file became a symbolic link.'});
     }
     const currentInfo = yield* fs.stat(fileTarget.path).pipe(Effect.option);
     const currentIno = Option.isSome(currentInfo) ? Option.getOrUndefined(currentInfo.value.ino) : undefined;
@@ -1061,7 +1058,7 @@ function verifyCodeGraphSpoolCleanupAuthority(
       currentInfo.value.dev !== fileTarget.dev ||
       currentIno !== fileTarget.ino
     ) {
-      return yield* Effect.fail(new CodeGraphMaintenanceError('Temporary graph file target changed during cleanup.'));
+      return yield* CodeGraphMaintenanceError.make({message: 'Temporary graph file target changed during cleanup.'});
     }
   });
 }
@@ -1077,7 +1074,7 @@ function restoreQuarantinedSpool(
     if ((!quarantineIsLink && !(yield* fs.exists(quarantine))) || originalIsLink || (yield* fs.exists(original)))
       return;
     yield* fs.rename(quarantine, original);
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }
 
 function cleanTemporaryVectorFilesContained(
@@ -1202,14 +1199,14 @@ function openCodeGraphIndexPurgeTarget(
     const openedInfo = yield* opened.stat;
     const openedIno = Option.getOrUndefined(openedInfo.ino);
     if (openedInfo.type !== 'Directory' || openedIno === undefined) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError('Refusing code graph purge without stable checkout identity metadata.'),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: 'Refusing code graph purge without stable checkout identity metadata.',
+      });
     }
     const target = {dev: openedInfo.dev, ino: openedIno, path: planned.path} satisfies CodeGraphIndexPurgeTarget;
     const current = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
     if (!sameCodeGraphIndexPurgeTarget(target, current)) {
-      return yield* Effect.fail(new CodeGraphMaintenanceError('Code graph checkout target changed before purge.'));
+      return yield* CodeGraphMaintenanceError.make({message: 'Code graph checkout target changed before purge.'});
     }
     return target;
   });
@@ -1225,36 +1222,36 @@ function inspectCodeGraphIndexPurgeTarget(
     const repositories = codeGraphRepositoriesRoot(path, threadnoteHome);
     if (!(yield* fs.exists(repositories))) return undefined;
     if (yield* isSymbolicLink(fs, repositories)) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError('Refusing code graph purge through a symbolic-link repositories root.'),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: 'Refusing code graph purge through a symbolic-link repositories root.',
+      });
     }
     const repositoriesInfo = yield* fs.stat(repositories).pipe(Effect.option);
     if (repositoriesInfo._tag === 'None' || repositoriesInfo.value.type !== 'Directory') {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError('Refusing code graph purge because the repositories root is not a directory.'),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: 'Refusing code graph purge because the repositories root is not a directory.',
+      });
     }
     const canonicalRepositories = yield* fs.realPath(repositories);
     const canonicalHome = yield* fs.realPath(threadnoteHome);
     const expectedRepositories = path.join(canonicalHome, 'indexes', 'code-graph', 'repositories');
     if (canonicalRepositories !== expectedRepositories) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError('Refusing code graph purge outside the canonical Threadnote home.'),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: 'Refusing code graph purge outside the canonical Threadnote home.',
+      });
     }
     const repositoryRoot = codeGraphRepositoryRoot(path, threadnoteHome, checkoutId);
     if (!(yield* fs.exists(repositoryRoot))) return undefined;
     if (yield* isSymbolicLink(fs, repositoryRoot)) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError('Refusing code graph purge through a symbolic-link checkout root.'),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: 'Refusing code graph purge through a symbolic-link checkout root.',
+      });
     }
     const repositoryInfo = yield* fs.stat(repositoryRoot).pipe(Effect.option);
     if (repositoryInfo._tag === 'None' || repositoryInfo.value.type !== 'Directory') {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError('Refusing code graph purge because the checkout root is not a directory.'),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: 'Refusing code graph purge because the checkout root is not a directory.',
+      });
     }
     const canonicalRepository = yield* fs.realPath(repositoryRoot);
     if (
@@ -1262,15 +1259,15 @@ function inspectCodeGraphIndexPurgeTarget(
       path.basename(canonicalRepository) !== checkoutId ||
       !isContained(path, canonicalRepositories, canonicalRepository)
     ) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError('Refusing code graph purge outside the repositories root.'),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: 'Refusing code graph purge outside the repositories root.',
+      });
     }
     const ino = Option.getOrUndefined(repositoryInfo.value.ino);
     if (ino === undefined) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError('Refusing code graph purge without stable checkout identity metadata.'),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: 'Refusing code graph purge without stable checkout identity metadata.',
+      });
     }
     return {dev: repositoryInfo.value.dev, ino, path: canonicalRepository};
   });
@@ -1305,7 +1302,7 @@ function restoreQuarantinedCodeGraphIndexPurgeTarget(
   return Effect.gen(function* () {
     if (yield* fs.exists(target)) return;
     yield* fs.rename(quarantine, target);
-  }).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ignore);
 }
 
 function isSymbolicLink(fs: FileSystem.FileSystem, candidate: string): Effect.Effect<boolean, never> {
@@ -1318,9 +1315,9 @@ function isSymbolicLink(fs: FileSystem.FileSystem, candidate: string): Effect.Ef
 function refuseUnsafeObsoleteInventory(inventory: ObsoleteCodeGraphStoreInventory): Effect.Effect<void, Error> {
   return inventory.unsafeEntryCount > 0
     ? Effect.fail(
-        new CodeGraphMaintenanceError(
-          `Refusing obsolete code graph cleanup: ${inventory.unsafeEntryCount} obsolete-shaped entry/entries are symbolic links, non-files, or outside the checkout root.`,
-        ),
+        CodeGraphMaintenanceError.make({
+          message: `Refusing obsolete code graph cleanup: ${inventory.unsafeEntryCount} obsolete-shaped entry/entries are symbolic links, non-files, or outside the checkout root.`,
+        }),
       )
     : Effect.void;
 }
@@ -1335,27 +1332,27 @@ function verifyObsoletePurgeTarget(
   return Effect.gen(function* () {
     const parsed = obsoleteGraphFileName(file.fileName);
     if (!parsed || parsed.schemaVersion !== file.schemaVersion || parsed.kind !== file.kind) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError(`Refusing unexpected obsolete graph target ${file.fileName}.`),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: `Refusing unexpected obsolete graph target ${file.fileName}.`,
+      });
     }
     const repositoryRoot = codeGraphRepositoryRoot(path, threadnoteHome, checkoutId);
     if (yield* isSymbolicLink(fs, repositoryRoot)) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError('Refusing obsolete graph cleanup through a symbolic-link checkout root.'),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: 'Refusing obsolete graph cleanup through a symbolic-link checkout root.',
+      });
     }
     const candidate = path.join(repositoryRoot, file.fileName);
     if (yield* isSymbolicLink(fs, candidate)) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError(`Refusing symbolic-link obsolete graph target ${file.fileName}.`),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: `Refusing symbolic-link obsolete graph target ${file.fileName}.`,
+      });
     }
     const info = yield* fs.stat(candidate).pipe(Effect.option);
     if (info._tag === 'None' || info.value.type !== 'File') {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError(`Obsolete graph target changed before cleanup: ${file.fileName}.`),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: `Obsolete graph target changed before cleanup: ${file.fileName}.`,
+      });
     }
     const canonicalRoot = yield* fs.realPath(repositoryRoot);
     const canonical = yield* fs.realPath(candidate);
@@ -1364,9 +1361,9 @@ function verifyObsoletePurgeTarget(
       path.dirname(canonical) !== canonicalRoot ||
       !isContained(path, canonicalRoot, canonical)
     ) {
-      return yield* Effect.fail(
-        new CodeGraphMaintenanceError(`Obsolete graph target escaped its checkout root: ${file.fileName}.`),
-      );
+      return yield* CodeGraphMaintenanceError.make({
+        message: `Obsolete graph target escaped its checkout root: ${file.fileName}.`,
+      });
     }
   });
 }

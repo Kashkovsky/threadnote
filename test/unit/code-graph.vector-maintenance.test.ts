@@ -279,7 +279,7 @@ function seedVectorDatabase(
       });
       if (result.state === 'ready') return databasePath;
     }
-    return yield* Effect.die(new TestError('Vector retirement schema did not become ready.'));
+    return yield* Effect.die(TestError.make({message: 'Vector retirement schema did not become ready.'}));
   });
 }
 

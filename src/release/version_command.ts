@@ -1,4 +1,4 @@
-import {Console, Effect, Result} from 'effect';
+import {Console, Effect, Result, Schema} from 'effect';
 import {heading, info, keyValue, success, warning, withSpinnerEffect} from '../cli_ui.js';
 import type {RuntimeConfig, VersionOptions} from '../types.js';
 import {currentPackageVersion, fetchLatestVersion, latestUpdateVersionLabel, resolveReleaseSource} from './index.js';
@@ -7,9 +7,10 @@ import {compareVersions, errorMessage} from '../utils.js';
 import {whatsNewLinesForVersion, whatsNewLinesForVersionRange} from './notes.js';
 import {SystemInfo} from '../effect/system.js';
 
-class VersionCommandError extends Error {
-  readonly _tag = 'VersionCommandError' as const;
-}
+class VersionCommandError extends Schema.TaggedError<VersionCommandError>()('VersionCommandError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export const runVersion = Effect.fn('runVersion')(function* (config: RuntimeConfig, options: VersionOptions) {
   const currentVersion = yield* currentPackageVersion();
@@ -17,7 +18,7 @@ export const runVersion = Effect.fn('runVersion')(function* (config: RuntimeConf
   const system = yield* SystemInfo;
   const source = yield* Effect.try({
     try: () => resolveReleaseSource(options.source, options.allowUntrustedSource, system.environment()),
-    catch: cause => new VersionCommandError('Could not resolve the release source.', {cause}),
+    catch: cause => VersionCommandError.make({cause, message: 'Could not resolve the release source.'}),
   });
   const latest = yield* withSpinnerEffect(
     'Checking GitHub for the latest standalone Threadnote release',

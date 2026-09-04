@@ -39,7 +39,9 @@ describe('external performance evidence', () => {
       const result = yield* retryManagerBenchmarkBusy(
         () => {
           attempts += 1;
-          return attempts < 3 ? Effect.fail(new ManagerGraphBusyError('busy')) : Effect.succeed('measured' as const);
+          return attempts < 3
+            ? Effect.fail(ManagerGraphBusyError.make({message: 'busy'}))
+            : Effect.succeed('measured' as const);
         },
         2,
         0,
@@ -48,7 +50,7 @@ describe('external performance evidence', () => {
       expect(result).toBe('measured');
       expect(attempts).toBe(3);
 
-      const terminal = new TestError('terminal');
+      const terminal = TestError.make({message: 'terminal'});
       const observed = yield* retryManagerBenchmarkBusy(() => Effect.fail(terminal), 2, 0).pipe(Effect.flip);
       expect(observed).toBe(terminal);
     }),
@@ -261,14 +263,12 @@ describe('external performance evidence', () => {
   );
 
   effectIt.effect('treats an already-removed owned fixture root as a completed teardown', () =>
-    Effect.gen(function* () {
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const fixture = yield* prepareCodeGraphFixture('code-graph-v1');
-          yield* fs.remove(fixture.root, {force: true, recursive: true});
-        }),
-      ).pipe(provideTestLayer(ApplicationLayer));
-    }),
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const fixture = yield* prepareCodeGraphFixture('code-graph-v1');
+        yield* fs.remove(fixture.root, {force: true, recursive: true});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });

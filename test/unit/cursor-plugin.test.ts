@@ -192,6 +192,6 @@ async function pathExists(path: string): Promise<boolean> {
 
 function svgPathData(svg: string): string {
   const pathData = /<path\b[^>]*\bd="([^"]+)"/.exec(svg)?.[1];
-  if (!pathData) throw new TestError('SVG does not contain a path with geometry data');
+  if (!pathData) throw TestError.make({message: 'SVG does not contain a path with geometry data'});
   return pathData;
 }

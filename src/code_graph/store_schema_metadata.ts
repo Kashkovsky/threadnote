@@ -122,19 +122,15 @@ const inspectRuntimeSchemaMetadataVersion = Effect.fn('codeGraph.inspectRuntimeS
     typeof row.bounded_value !== 'string' ||
     !/^(?:0|[1-9][0-9]{0,14})$/u.test(row.bounded_value)
   ) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError('Code graph runtime schema metadata is invalid.', {
-        operation: 'check code graph runtime compatibility',
-      }),
-    );
+    return yield* CodeGraphStoreError.of('Code graph runtime schema metadata is invalid.', {
+      operation: 'check code graph runtime compatibility',
+    });
   }
   const version = Number(row.bounded_value);
   if (!Number.isSafeInteger(version) || version < 0) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError('Code graph runtime schema metadata is invalid.', {
-        operation: 'check code graph runtime compatibility',
-      }),
-    );
+    return yield* CodeGraphStoreError.of('Code graph runtime schema metadata is invalid.', {
+      operation: 'check code graph runtime compatibility',
+    });
   }
   return version;
 });
@@ -149,9 +145,7 @@ export const assertCodeGraphRuntimeSchemaCompatible = Effect.fn('codeGraph.asser
       'persistent_extension_schema_revision',
     );
     if (codeGraphRuntimeSchemaRequiresReconnect(schemaVersion, persistentExtensionRevision)) {
-      return yield* Effect.fail(
-        new CodeGraphRuntimeReconnectRequiredError({operation: 'check code graph runtime compatibility'}),
-      );
+      return yield* CodeGraphRuntimeReconnectRequiredError.of({operation: 'check code graph runtime compatibility'});
     }
   },
 );

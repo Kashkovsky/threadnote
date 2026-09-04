@@ -1,4 +1,4 @@
-import {Effect, Option} from 'effect';
+import {DateTime, Effect, Option, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import * as SqlError from 'effect/unstable/sql/SqlError';
 import {CODE_GRAPH_CACHE_TRANSACTION_LIMITS, codeGraphTextFieldsCapacityBytes} from './cache_capacity.js';
@@ -28,7 +28,7 @@ import {
   useExistingDatabase,
   useReadOnlyDatabase,
 } from './store_session.js';
-import {CodeGraphStoreError} from './types.js';
+import {CodeGraphStoreError, isCodeGraphStoreError} from './types.js';
 import {storeError} from './store_utilities.js';
 import {CodeGraphPromotionCapacityPlanChanged, type CodeGraphActivationLease} from './store_internal_models.js';
 import {
@@ -128,9 +128,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
   ) =>
     Effect.gen(function* () {
       if (batches.length === 0) return;
+      const createdAt = DateTime.formatIso(yield* DateTime.now);
       const chunks = yield* Effect.try({
         catch: cause => cacheCapacityPlanningError('materialized file shards', cause),
-        try: () => prepareMaterializedShardCacheBatchChunks(batches, new Date().toISOString()),
+        try: () => prepareMaterializedShardCacheBatchChunks(batches, createdAt),
       });
       yield* prepare(databasePath);
       yield* useDatabase(
@@ -215,9 +216,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
               // effect calls store.initialize immediately afterward.
               yield* ensureSchemaInitialized(databasePath, sql).pipe(
                 Effect.mapError(cause =>
-                  cause instanceof CodeGraphStoreError
-                    ? cause
-                    : storeError('initialize code graph database session', cause),
+                  isCodeGraphStoreError(cause) ? cause : storeError('initialize code graph database session', cause),
                 ),
                 Effect.asVoid,
               );
@@ -309,10 +308,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
               } satisfies CodeGraphViewSnapshotLeaseRetainResult;
             }
             if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
-              return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+              return yield* CodeGraphStoreError.of('Code graph database target is a symbolic link.');
             }
             if ((yield* fs.stat(databasePath)).type !== 'File') {
-              return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+              return yield* CodeGraphStoreError.of('Code graph database target is not a regular file.');
             }
             return yield* useDatabase(
               databasePath,
@@ -420,8 +419,8 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             const mode = yield* activationMode(sql);
             if (mode?.mode === 'persisted-delta') {
               if (checkpointImportReceipt !== undefined) {
-                return yield* Effect.fail(
-                  new CodeGraphStoreError('Checkpoint imports require a self-contained persistent full build.'),
+                return yield* CodeGraphStoreError.of(
+                  'Checkpoint imports require a self-contained persistent full build.',
                 );
               }
               const publication = withWriterGate(
@@ -443,9 +442,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             }
             if (mode?.mode === 'persisted-full') {
               if (mode.snapshotId !== snapshot.id) {
-                return yield* Effect.fail(
-                  new CodeGraphStoreError('Persistent full-build activation identity changed.'),
-                );
+                return yield* CodeGraphStoreError.of('Persistent full-build activation identity changed.');
               }
               yield* activatePersistedFullSnapshot(
                 sql,
@@ -464,8 +461,8 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
               return snapshot.id;
             }
             if (checkpointImportReceipt !== undefined) {
-              return yield* Effect.fail(
-                new CodeGraphStoreError('Checkpoint imports require a self-contained persistent full build.'),
+              return yield* CodeGraphStoreError.of(
+                'Checkpoint imports require a self-contained persistent full build.',
               );
             }
             const publication = withWriterGate(
@@ -509,15 +506,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
       ),
     cacheFacts: (databasePath, files, facts, extractorSet, persistentCapacityProtector) =>
       Effect.gen(function* () {
+        const createdAt = DateTime.formatIso(yield* DateTime.now);
         const chunks = yield* Effect.try({
           catch: cause => cacheCapacityPlanningError('file facts', cause),
-          try: () =>
-            prepareFreshFactCacheChunks(
-              files,
-              facts.map(ensureBoundedCodeGraphFact),
-              extractorSet,
-              new Date().toISOString(),
-            ),
+          try: () => prepareFreshFactCacheChunks(files, facts.map(ensureBoundedCodeGraphFact), extractorSet, createdAt),
         });
         yield* prepare(databasePath);
         yield* useDatabase(
@@ -552,6 +544,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
       persistentCapacityProtector,
     ) =>
       Effect.gen(function* () {
+        const createdAt = DateTime.formatIso(yield* DateTime.now);
         const chunks = yield* Effect.try({
           catch: cause => cacheCapacityPlanningError('materialized file shards', cause),
           try: () =>
@@ -560,7 +553,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
               facts.map(ensureBoundedCodeGraphFact),
               extractorSet,
               derivationIdentity,
-              new Date().toISOString(),
+              createdAt,
             ),
         });
         yield* prepare(databasePath);
@@ -592,7 +585,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
         const rowCount = batches.reduce((total, batch) => saturatingCapacityAdd(total, batch.files.length), 0);
         if (batches.length === 0) return;
         if (rowCount > CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows) {
-          return yield* Effect.fail(new CodeGraphStoreError('Materialized file shard association group is too large.'));
+          return yield* CodeGraphStoreError.of('Materialized file shard association group is too large.');
         }
         const finalFactBytes = batches.reduce(
           (total, batch) =>
@@ -607,9 +600,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           0,
         );
         if (finalFactBytes > CODE_GRAPH_CACHE_TRANSACTION_LIMITS.payloadBytes) {
-          return yield* Effect.fail(
-            new CodeGraphStoreError('Materialized file shard association group payload is too large.'),
-          );
+          return yield* CodeGraphStoreError.of('Materialized file shard association group payload is too large.');
         }
         yield* prepare(databasePath);
         yield* persistentCapacityProtector(
@@ -669,10 +660,8 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
               : transaction
           ).pipe(
             Effect.map(value => ({state: 'completed' as const, value})),
-            Effect.catch(error =>
-              error instanceof CodeGraphPromotionCapacityPlanChanged
-                ? Effect.succeed({state: 'retry' as const})
-                : Effect.fail(error),
+            Effect.catchIf(Schema.is(CodeGraphPromotionCapacityPlanChanged), () =>
+              Effect.succeed({state: 'retry' as const}),
             ),
           );
           if (attempted.state === 'retry') {
@@ -694,10 +683,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           return {expectedSnapshotId, state: 'not-found'} satisfies CodeGraphViewObservationResult;
         }
         if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+          return yield* CodeGraphStoreError.of('Code graph database target is a symbolic link.');
         }
         if ((yield* fs.stat(databasePath)).type !== 'File') {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+          return yield* CodeGraphStoreError.of('Code graph database target is not a regular file.');
         }
         return yield* useReadOnlyDatabase(
           databasePath,
@@ -715,10 +704,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           return {snapshotId, state: 'not-found'} satisfies CodeGraphSnapshotPurgeObservationResult;
         }
         if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+          return yield* CodeGraphStoreError.of('Code graph database target is a symbolic link.');
         }
         if ((yield* fs.stat(databasePath)).type !== 'File') {
-          return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+          return yield* CodeGraphStoreError.of('Code graph database target is not a regular file.');
         }
         return yield* useReadOnlyDatabase(
           databasePath,
@@ -738,10 +727,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             return {worktreeIds: []} as const satisfies CodeGraphOrphanProvenanceCandidatePage;
           }
           if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is a symbolic link.');
           }
           if ((yield* fs.stat(databasePath)).type !== 'File') {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is not a regular file.');
           }
           return yield* useExistingDatabase(
             databasePath,
@@ -763,10 +752,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             return {state: 'absent'} as const satisfies CodeGraphOrphanProvenanceViewObservation;
           }
           if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is a symbolic link.');
           }
           if ((yield* fs.stat(databasePath)).type !== 'File') {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is not a regular file.');
           }
           return yield* useExistingDatabase(
             databasePath,
@@ -786,10 +775,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
           if (!(yield* fs.exists(databasePath))) return [];
           if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is a symbolic link.');
           }
           if ((yield* fs.stat(databasePath)).type !== 'File') {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is not a regular file.');
           }
           return yield* useExistingDatabase(
             databasePath,
@@ -811,10 +800,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             return {reason: 'incompatible-schema', state: 'deferred'} as const;
           }
           if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is a symbolic link.');
           }
           if ((yield* fs.stat(databasePath)).type !== 'File') {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is not a regular file.');
           }
           return yield* useExistingDatabase(
             databasePath,
@@ -844,10 +833,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             return {expectedSnapshotId, state: 'not-found'} satisfies CodeGraphViewRemovalResult;
           }
           if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is a symbolic link.');
           }
           if ((yield* fs.stat(databasePath)).type !== 'File') {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is not a regular file.');
           }
           const remove = Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient;
@@ -890,17 +879,17 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
         Effect.gen(function* () {
           yield* validateSnapshotPurgeInput(snapshotId, nowMilliseconds);
           if (!/^[0-9a-f]{64}$/u.test(expectedGraphEvidenceDigest)) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge approval is invalid.'));
+            return yield* CodeGraphStoreError.of('Code graph snapshot purge approval is invalid.');
           }
           yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
           if (!(yield* fs.exists(databasePath))) {
             return {snapshotId, state: 'not-found'} satisfies CodeGraphSnapshotPurgeStoreResult;
           }
           if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is a symbolic link.');
           }
           if ((yield* fs.stat(databasePath)).type !== 'File') {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is not a regular file.');
           }
           return yield* useExistingDatabase(
             databasePath,
@@ -921,10 +910,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
           if (!(yield* fs.exists(databasePath))) return [];
           if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is a symbolic link.');
           }
           if ((yield* fs.stat(databasePath)).type !== 'File') {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is not a regular file.');
           }
           return yield* useExistingDatabase(
             databasePath,
@@ -945,10 +934,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
           if (!(yield* fs.exists(databasePath))) return {state: 'stale'} as const;
           if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is a symbolic link.');
           }
           if ((yield* fs.stat(databasePath)).type !== 'File') {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is not a regular file.');
           }
           return yield* useExistingDatabase(
             databasePath,
@@ -969,10 +958,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
           if (!(yield* fs.exists(databasePath))) return {state: 'stale'} as const;
           if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is a symbolic link.');
           }
           if ((yield* fs.stat(databasePath)).type !== 'File') {
-            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+            return yield* CodeGraphStoreError.of('Code graph database target is not a regular file.');
           }
           return yield* useExistingDatabase(
             databasePath,

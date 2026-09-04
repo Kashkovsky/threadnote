@@ -1,4 +1,4 @@
-import {Crypto, Effect, FileSystem, Option, Path, PlatformError} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path, PlatformError, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
@@ -74,9 +74,13 @@ export {
   selectCodeGraphVectorRetirementMarkerCandidate,
 } from './vector_retirement.js';
 
-class CodeGraphVectorMaintenanceError extends Error {
-  readonly _tag = 'CodeGraphVectorMaintenanceError' as const;
-}
+class CodeGraphVectorMaintenanceError extends Schema.TaggedError<CodeGraphVectorMaintenanceError>()(
+  'CodeGraphVectorMaintenanceError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 const VECTOR_DATABASE_VERSION = 2;
 const VECTOR_DATABASE_NAME = `vectors-v${VECTOR_DATABASE_VERSION}.sqlite`;
@@ -299,7 +303,7 @@ export const withPreparedCodeGraphRemovedViewVectorUnit = Effect.fn('codeGraph.w
         validateVectorDatabaseCandidate(fs, path, candidate).pipe(Effect.andThen(effect)),
       ).pipe(
         Effect.map(onSuccess),
-        Effect.catch(() => Effect.succeed(preservedResult())),
+        Effect.orElseSucceed(() => preservedResult()),
         Effect.provideService(Crypto.Crypto, crypto),
         Effect.provideService(Path.Path, path),
         Effect.provideService(SystemInfo, system),
@@ -592,9 +596,9 @@ function runCodeGraphOrdinaryVectorMaintenanceWithCursor(
                 directoryInfo.dev !== databaseInfo.dev ||
                 !sameVectorDatabaseFileIdentity(candidate.fileIdentity, vectorDatabaseFileIdentity(databaseInfo))
               ) {
-                return yield* Effect.fail(
-                  new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor filesystem changed.'),
-                );
+                return yield* CodeGraphVectorMaintenanceError.make({
+                  message: 'Code graph ordinary vector cursor filesystem changed.',
+                });
               }
               yield* writeOrdinaryVectorCursorCas(fs, path, crypto, authority, cursorToken, intentToken);
               intentPublished = true;
@@ -676,9 +680,9 @@ function runCodeGraphOrdinaryVectorMaintenanceWithCursor(
                   yield* inspectCodeGraphVectorPageStorage(candidate.databasePath),
                 )
               ) {
-                return yield* Effect.fail(
-                  new CodeGraphVectorMaintenanceError('Code graph ordinary vector checkpoint authority changed.'),
-                );
+                return yield* CodeGraphVectorMaintenanceError.make({
+                  message: 'Code graph ordinary vector checkpoint authority changed.',
+                });
               }
               if (!verifyCompletion) {
                 yield* writeOrdinaryVectorCursorCas(fs, path, crypto, authority, cursorToken, nextToken);
@@ -699,9 +703,9 @@ function runCodeGraphOrdinaryVectorMaintenanceWithCursor(
                     vectorInventoryDigest(before.candidates) !== cursor.digest ||
                     !sameVectorDatabaseInventory(inventory, before)
                   ) {
-                    return yield* Effect.fail(
-                      new CodeGraphVectorMaintenanceError('Code graph ordinary vector inventory changed.'),
-                    );
+                    return yield* CodeGraphVectorMaintenanceError.make({
+                      message: 'Code graph ordinary vector inventory changed.',
+                    });
                   }
                   let observedDirty = false;
                   for (const lockedCandidate of before.candidates) {
@@ -716,9 +720,9 @@ function runCodeGraphOrdinaryVectorMaintenanceWithCursor(
                     vectorInventoryDigest(after.candidates) !== cursor.digest ||
                     !sameVectorDatabaseInventory(before, after)
                   ) {
-                    return yield* Effect.fail(
-                      new CodeGraphVectorMaintenanceError('Code graph ordinary vector inventory changed.'),
-                    );
+                    return yield* CodeGraphVectorMaintenanceError.make({
+                      message: 'Code graph ordinary vector inventory changed.',
+                    });
                   }
                   if (preparation.afterFinalVerificationBeforeCursorCas !== undefined) {
                     yield* preparation.afterFinalVerificationBeforeCursorCas();
@@ -730,7 +734,7 @@ function runCodeGraphOrdinaryVectorMaintenanceWithCursor(
             }),
           ),
           storage,
-        ).pipe(Effect.catch(() => Effect.succeed(ordinaryVectorModelUnavailable())));
+        ).pipe(Effect.orElseSucceed(() => ordinaryVectorModelUnavailable()));
       });
 
     if (modelCursor.phase === 'verified') {
@@ -896,7 +900,7 @@ export function codeGraphOrdinaryVectorMaintenanceBoundary(
     finalFactBytes <= 0 ||
     rowCount <= 0
   ) {
-    throw new CodeGraphVectorMaintenanceError('Code graph ordinary vector capacity boundary is invalid.');
+    throw CodeGraphVectorMaintenanceError.make({message: 'Code graph ordinary vector capacity boundary is invalid.'});
   }
   return {finalFactBytes, operation: 'maintain code graph vector retirement', rowCount};
 }
@@ -952,9 +956,9 @@ function inspectOrdinaryVectorCursorAuthority(
     const directory = vectorRoot;
     const info = yield* fs.stat(directory);
     if (info.type !== 'Directory' || (yield* fs.realPath(directory)) !== directory) {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor directory is invalid.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph ordinary vector cursor directory is invalid.',
+      });
     }
     const authority = {
       cursorPath: path.join(directory, ORDINARY_VECTOR_CURSOR_FILE),
@@ -966,9 +970,9 @@ function inspectOrdinaryVectorCursorAuthority(
     } satisfies OrdinaryVectorCursorAuthority;
     for (const target of [authority.cursorPath, authority.temporaryPath]) {
       if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-        return yield* Effect.fail(
-          new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor authority contains a symbolic link.'),
-        );
+        return yield* CodeGraphVectorMaintenanceError.make({
+          message: 'Code graph ordinary vector cursor authority contains a symbolic link.',
+        });
       }
     }
     return authority;
@@ -988,21 +992,21 @@ function revalidateOrdinaryVectorCursorAuthority(
       authority.vectorRoot !== authority.directory ||
       !sameVectorDatabaseFileIdentity(authority.directoryIdentity, vectorDatabaseFileIdentity(info))
     ) {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor directory changed identity.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph ordinary vector cursor directory changed identity.',
+      });
     }
     for (const target of [authority.cursorPath, authority.temporaryPath]) {
       if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-        return yield* Effect.fail(
-          new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor authority became a symbolic link.'),
-        );
+        return yield* CodeGraphVectorMaintenanceError.make({
+          message: 'Code graph ordinary vector cursor authority became a symbolic link.',
+        });
       }
       const targetInfo = yield* optionalVectorFileInfo(fs, target);
       if (Option.isSome(targetInfo) && targetInfo.value.type !== 'File') {
-        return yield* Effect.fail(
-          new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor authority changed type.'),
-        );
+        return yield* CodeGraphVectorMaintenanceError.make({
+          message: 'Code graph ordinary vector cursor authority changed type.',
+        });
       }
     }
   });
@@ -1018,9 +1022,9 @@ function recoverOrdinaryVectorCursorTemporary(
     const info = yield* optionalVectorFileInfo(fs, authority.temporaryPath);
     if (Option.isNone(info)) return;
     if (info.value.type !== 'File') {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor temporary is invalid.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph ordinary vector cursor temporary is invalid.',
+      });
     }
     yield* removeOrdinaryVectorCursorFileIfOwned(
       fs,
@@ -1075,15 +1079,15 @@ function writeOrdinaryVectorCursorCas(
       observed.state === 'invalid' ||
       (observed.state === 'cursor' ? observed.cursorToken : undefined) !== expectedToken
     ) {
-      return yield* Effect.fail(new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor CAS changed.'));
+      return yield* CodeGraphVectorMaintenanceError.make({message: 'Code graph ordinary vector cursor CAS changed.'});
     }
     if (nextToken === undefined) {
       if (observed.state === 'cursor') {
         const info = yield* fs.stat(authority.cursorPath);
         if (info.type !== 'File') {
-          return yield* Effect.fail(
-            new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor changed type.'),
-          );
+          return yield* CodeGraphVectorMaintenanceError.make({
+            message: 'Code graph ordinary vector cursor changed type.',
+          });
         }
         yield* removeOrdinaryVectorCursorFileIfOwned(
           fs,
@@ -1101,18 +1105,18 @@ function writeOrdinaryVectorCursorCas(
       parseOrdinaryVectorPhaseCursor(nextToken) === undefined ||
       new TextEncoder().encode(content).byteLength > ORDINARY_VECTOR_CURSOR_LIMIT + 1
     ) {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor exceeded its exact bound.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph ordinary vector cursor exceeded its exact bound.',
+      });
     }
     yield* recoverOrdinaryVectorCursorTemporary(fs, path, authority);
     yield* revalidateOrdinaryVectorCursorAuthority(fs, path, authority);
     yield* fs.writeFileString(authority.temporaryPath, content, {flag: 'wx', mode: 0o600});
     const temporaryInfo = yield* fs.stat(authority.temporaryPath);
     if (temporaryInfo.type !== 'File') {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor temporary changed type.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph ordinary vector cursor temporary changed type.',
+      });
     }
     temporaryIdentity = vectorDatabaseFileIdentity(temporaryInfo);
     yield* syncOrdinaryVectorFile(fs, authority.temporaryPath);
@@ -1122,9 +1126,9 @@ function writeOrdinaryVectorCursorCas(
       reobserved.state === 'invalid' ||
       (reobserved.state === 'cursor' ? reobserved.cursorToken : undefined) !== expectedToken
     ) {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor CAS changed before publication.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph ordinary vector cursor CAS changed before publication.',
+      });
     }
     yield* revalidateOrdinaryVectorCursorAuthority(fs, path, authority);
     const finalTemporaryInfo = yield* fs.stat(authority.temporaryPath);
@@ -1133,9 +1137,9 @@ function writeOrdinaryVectorCursorCas(
       temporaryIdentity === undefined ||
       !sameVectorDatabaseFileIdentity(temporaryIdentity, vectorDatabaseFileIdentity(finalTemporaryInfo))
     ) {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor temporary changed identity.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph ordinary vector cursor temporary changed identity.',
+      });
     }
     yield* fs.rename(authority.temporaryPath, authority.cursorPath);
     temporaryIdentity = undefined;
@@ -1143,9 +1147,7 @@ function writeOrdinaryVectorCursorCas(
     yield* syncOrdinaryVectorDirectory(fs, authority.directory);
   }).pipe(
     Effect.onError(() =>
-      cleanupOrdinaryVectorCursorTemporary(fs, path, authority, temporaryIdentity).pipe(
-        Effect.catch(() => Effect.void),
-      ),
+      cleanupOrdinaryVectorCursorTemporary(fs, path, authority, temporaryIdentity).pipe(Effect.ignore),
     ),
   );
 }
@@ -1170,9 +1172,9 @@ function removeOrdinaryVectorCursorFileIfOwned(
   return Effect.gen(function* () {
     yield* revalidateOrdinaryVectorCursorAuthority(fs, path, authority);
     if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor file became a symbolic link.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph ordinary vector cursor file became a symbolic link.',
+      });
     }
     const observed = yield* optionalVectorFileInfo(fs, file);
     if (Option.isNone(observed)) return;
@@ -1180,15 +1182,15 @@ function removeOrdinaryVectorCursorFileIfOwned(
       observed.value.type !== 'File' ||
       !sameVectorDatabaseFileIdentity(expectedIdentity, vectorDatabaseFileIdentity(observed.value))
     ) {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor file changed identity.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph ordinary vector cursor file changed identity.',
+      });
     }
     yield* revalidateOrdinaryVectorCursorAuthority(fs, path, authority);
     if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor file became a symbolic link.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph ordinary vector cursor file became a symbolic link.',
+      });
     }
     const confirmed = yield* optionalVectorFileInfo(fs, file);
     if (
@@ -1196,9 +1198,9 @@ function removeOrdinaryVectorCursorFileIfOwned(
       confirmed.value.type !== 'File' ||
       !sameVectorDatabaseFileIdentity(expectedIdentity, vectorDatabaseFileIdentity(confirmed.value))
     ) {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph ordinary vector cursor file changed before removal.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph ordinary vector cursor file changed before removal.',
+      });
     }
     yield* fs.remove(file, {force: false});
   });
@@ -1208,7 +1210,7 @@ function syncOrdinaryVectorFile(fs: FileSystem.FileSystem, file: string): Effect
   return Effect.scoped(
     fs.open(file, {flag: 'r'}).pipe(
       Effect.flatMap(handle => handle.sync),
-      Effect.catch(() => Effect.void),
+      Effect.ignore,
     ),
   );
 }
@@ -1217,7 +1219,7 @@ function syncOrdinaryVectorDirectory(fs: FileSystem.FileSystem, directory: strin
   return Effect.scoped(
     fs.open(directory, {flag: 'r'}).pipe(
       Effect.flatMap(handle => handle.sync),
-      Effect.catch(() => Effect.void),
+      Effect.ignore,
     ),
   );
 }
@@ -1232,14 +1234,16 @@ function ensureOrdinaryVectorUnitDeadline(
   return Effect.suspend(() =>
     ordinaryVectorMonotonicMilliseconds(preparation) < preparation.deadlineMonotonicMilliseconds
       ? Effect.void
-      : Effect.fail(new CodeGraphVectorMaintenanceError('Code graph ordinary vector maintenance deadline expired.')),
+      : Effect.fail(
+          CodeGraphVectorMaintenanceError.make({message: 'Code graph ordinary vector maintenance deadline expired.'}),
+        ),
   );
 }
 function ensureVectorUnitDeadline(preparation: CodeGraphRemovedViewVectorUnitPreparation): Effect.Effect<void, Error> {
   return Effect.suspend(() =>
     (preparation.monotonicMilliseconds?.() ?? performance.now()) < preparation.deadlineMonotonicMilliseconds
       ? Effect.void
-      : Effect.fail(new CodeGraphVectorMaintenanceError('Code graph vector cleanup deadline expired.')),
+      : Effect.fail(CodeGraphVectorMaintenanceError.make({message: 'Code graph vector cleanup deadline expired.'})),
   );
 }
 
@@ -1448,14 +1452,12 @@ export const withCodeGraphSnapshotVectorEvidenceLocks = Effect.fn('codeGraph.wit
       verifyAndUse,
     );
     return yield* locked.pipe(
-      Effect.catch(cause =>
-        isFileLockTimeout(cause)
-          ? Effect.fail(
-              new CodeGraphStoreBusyError('Code graph vector store is busy.', {
-                operation: 'purge selected code graph snapshot',
-              }),
-            )
-          : Effect.fail(cause),
+      Effect.catchIf(isFileLockTimeout, () =>
+        Effect.fail(
+          CodeGraphStoreBusyError.of('Code graph vector store is busy.', {
+            operation: 'purge selected code graph snapshot',
+          }),
+        ),
       ),
     );
   },
@@ -1491,9 +1493,9 @@ const validateSnapshotVectorTarget = Effect.fn('codeGraph.validateSnapshotVector
   snapshotId: string,
 ) {
   if (!HASH_ID.test(checkoutId) || !validSnapshotId(snapshotId)) {
-    return yield* Effect.fail(
-      new CodeGraphVectorMaintenanceError('Code graph vector snapshot purge target is invalid.'),
-    );
+    return yield* CodeGraphVectorMaintenanceError.make({
+      message: 'Code graph vector snapshot purge target is invalid.',
+    });
   }
 });
 
@@ -1601,7 +1603,7 @@ export const cleanupCodeGraphVectorPointers = Effect.fn('codeGraph.cleanupVector
   expectedSnapshotId: string,
 ) {
   if (!HASH_ID.test(checkoutId) || !HASH_ID.test(worktreeId) || !validSnapshotId(expectedSnapshotId)) {
-    return yield* Effect.fail(new CodeGraphVectorMaintenanceError('Code graph vector cleanup target is invalid.'));
+    return yield* CodeGraphVectorMaintenanceError.make({message: 'Code graph vector cleanup target is invalid.'});
   }
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -1743,32 +1745,32 @@ const inspectCanonicalVectorRoot = Effect.fn('codeGraph.inspectCanonicalVectorRo
   checkoutId: string,
 ) {
   if (Option.isSome(yield* fs.readLink(threadnoteHome).pipe(Effect.option))) {
-    return yield* Effect.fail(new CodeGraphVectorMaintenanceError('Threadnote home is a symbolic link.'));
+    return yield* CodeGraphVectorMaintenanceError.make({message: 'Threadnote home is a symbolic link.'});
   }
   const homeInfo = yield* optionalVectorFileInfo(fs, threadnoteHome);
   if (Option.isNone(homeInfo)) return undefined;
   if (homeInfo.value.type !== 'Directory')
-    return yield* Effect.fail(new CodeGraphVectorMaintenanceError('Threadnote home is invalid.'));
+    return yield* CodeGraphVectorMaintenanceError.make({message: 'Threadnote home is invalid.'});
   let current = yield* fs.realPath(threadnoteHome);
   for (const segment of ['indexes', 'code-graph', 'repositories', checkoutId, 'vectors']) {
     const candidate = path.join(current, segment);
     if (Option.isSome(yield* fs.readLink(candidate).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph vector containment contains a symbolic link.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph vector containment contains a symbolic link.',
+      });
     }
     const info = yield* optionalVectorFileInfo(fs, candidate);
     if (Option.isNone(info)) return undefined;
     if (info.value.type !== 'Directory') {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph vector containment has an invalid entry type.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph vector containment has an invalid entry type.',
+      });
     }
     const canonical = yield* fs.realPath(candidate);
     if (canonical !== candidate || path.dirname(canonical) !== current || path.basename(canonical) !== segment) {
-      return yield* Effect.fail(
-        new CodeGraphVectorMaintenanceError('Code graph vector root escaped its derived-store containment.'),
-      );
+      return yield* CodeGraphVectorMaintenanceError.make({
+        message: 'Code graph vector root escaped its derived-store containment.',
+      });
     }
     current = canonical;
   }
@@ -1785,21 +1787,19 @@ const validateVectorDatabaseCandidate = Effect.fn('codeGraph.validateVectorDatab
     Option.isSome(yield* fs.readLink(candidate.modelRoot).pipe(Effect.option)) ||
     Option.isSome(yield* fs.readLink(candidate.databasePath).pipe(Effect.option))
   ) {
-    return yield* Effect.fail(
-      new CodeGraphVectorMaintenanceError('Code graph vector cleanup target became a symbolic link.'),
-    );
+    return yield* CodeGraphVectorMaintenanceError.make({
+      message: 'Code graph vector cleanup target became a symbolic link.',
+    });
   }
   const [vectorInfo, modelInfo, databaseInfo] = yield* Effect.all(
     [fs.stat(candidate.vectorRoot), fs.stat(candidate.modelRoot), fs.stat(candidate.databasePath)],
     {concurrency: 1},
   );
   if (vectorInfo.type !== 'Directory' || modelInfo.type !== 'Directory' || databaseInfo.type !== 'File') {
-    return yield* Effect.fail(new CodeGraphVectorMaintenanceError('Code graph vector cleanup target changed type.'));
+    return yield* CodeGraphVectorMaintenanceError.make({message: 'Code graph vector cleanup target changed type.'});
   }
   if (!sameVectorDatabaseFileIdentity(candidate.fileIdentity, vectorDatabaseFileIdentity(databaseInfo))) {
-    return yield* Effect.fail(
-      new CodeGraphVectorMaintenanceError('Code graph vector cleanup target changed identity.'),
-    );
+    return yield* CodeGraphVectorMaintenanceError.make({message: 'Code graph vector cleanup target changed identity.'});
   }
   const [canonicalVectorRoot, canonicalModelRoot, canonicalDatabasePath] = yield* Effect.all(
     [fs.realPath(candidate.vectorRoot), fs.realPath(candidate.modelRoot), fs.realPath(candidate.databasePath)],
@@ -1812,9 +1812,9 @@ const validateVectorDatabaseCandidate = Effect.fn('codeGraph.validateVectorDatab
     path.dirname(canonicalModelRoot) !== canonicalVectorRoot ||
     path.dirname(canonicalDatabasePath) !== canonicalModelRoot
   ) {
-    return yield* Effect.fail(
-      new CodeGraphVectorMaintenanceError('Code graph vector cleanup target escaped its derived-store root.'),
-    );
+    return yield* CodeGraphVectorMaintenanceError.make({
+      message: 'Code graph vector cleanup target escaped its derived-store root.',
+    });
   }
 });
 
@@ -1850,11 +1850,10 @@ function sameVectorDatabaseFileIdentity(
 
 function optionalVectorFileInfo(fs: FileSystem.FileSystem, candidate: string) {
   return fs.stat(candidate).pipe(
-    Effect.map(Option.some),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed(Option.none<FileSystem.File.Info>())
-        : Effect.fail(error),
+    Effect.asSome,
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.succeedNone,
     ),
   );
 }

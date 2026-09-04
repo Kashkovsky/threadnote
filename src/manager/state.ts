@@ -48,7 +48,7 @@ export const fetchManagerLatestVersion = Effect.fn('manager.fetchLatestVersion')
 ) {
   if (isDevelopmentBuildVersion(currentVersion)) return undefined;
   return yield* fetchLatestVersion(source, selectUpdateChannel(currentVersion)).pipe(
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
 });
 

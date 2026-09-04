@@ -1,11 +1,15 @@
-import {Option} from 'effect';
+import {Effect, Option, Schema} from 'effect';
 import type {CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphInventoryFile} from './types.js';
 
-export class CodeGraphIndexOperationError extends Error {
-  readonly _tag = 'CodeGraphIndexOperationError' as const;
-}
+export class CodeGraphIndexOperationError extends Schema.TaggedError<CodeGraphIndexOperationError>()(
+  'CodeGraphIndexOperationError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 export function sameOverlayState(
   left: {readonly dirty: boolean; readonly fingerprint?: string},
   right: {readonly dirty: boolean; readonly fingerprint?: string},
@@ -86,30 +90,45 @@ export function inventoryFilesForPaths(
   return selected;
 }
 
-export class WorktreeChangedDuringIndex extends Error {
-  override readonly name = 'WorktreeChangedDuringIndex';
+export class WorktreeChangedDuringIndex extends Schema.TaggedError<WorktreeChangedDuringIndex>()(
+  'WorktreeChangedDuringIndex',
+  {
+    message: Schema.String.pipe(
+      Schema.withConstructorDefault(
+        Effect.succeed('Worktree files changed during code graph indexing; retry the operation.'),
+      ),
+    ),
+  },
+) {}
 
-  constructor() {
-    super('Worktree files changed during code graph indexing; retry the operation.');
-  }
-}
+export class CachedCodeGraphFactUnavailableDuringIndex extends Schema.TaggedError<CachedCodeGraphFactUnavailableDuringIndex>()(
+  'CachedCodeGraphFactUnavailableDuringIndex',
+  {
+    message: Schema.String.pipe(
+      Schema.withConstructorDefault(
+        Effect.succeed('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
+      ),
+    ),
+  },
+) {}
 
-export class CachedCodeGraphFactUnavailableDuringIndex extends CodeGraphIndexOperationError {
-  override readonly name = 'CachedCodeGraphFactUnavailableDuringIndex';
+export class RepositoryRegistrationLost extends Schema.TaggedError<RepositoryRegistrationLost>()(
+  'RepositoryRegistrationLost',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String.pipe(
+      Schema.withConstructorDefault(Effect.succeed('Repository registration was lost during code graph indexing.')),
+    ),
+  },
+) {}
 
-  constructor() {
-    super('A cached code graph fact disappeared during indexing; retry with a full rebuild.');
-  }
-}
-
-export class RepositoryRegistrationLost extends Error {
-  override readonly name = 'RepositoryRegistrationLost';
-}
-
-export class RepositoryMaintenanceInterrupted extends Error {
-  override readonly name = 'RepositoryMaintenanceInterrupted';
-
-  constructor() {
-    super('Code graph indexing was superseded by repair or purge; retry the operation.');
-  }
-}
+export class RepositoryMaintenanceInterrupted extends Schema.TaggedError<RepositoryMaintenanceInterrupted>()(
+  'RepositoryMaintenanceInterrupted',
+  {
+    message: Schema.String.pipe(
+      Schema.withConstructorDefault(
+        Effect.succeed('Code graph indexing was superseded by repair or purge; retry the operation.'),
+      ),
+    ),
+  },
+) {}

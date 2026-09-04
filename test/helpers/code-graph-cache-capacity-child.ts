@@ -4,7 +4,12 @@ import {Crypto, Effect, FileSystem, Layer, Path} from 'effect';
 import {codeGraphPersistentCapacityDemand} from '../../src/code_graph/disk_capacity.js';
 import {withCodeGraphDiskReservation} from '../../src/code_graph/disk_reservation.js';
 import {CodeGraphStore, type CodeGraphDirectPersistentCapacityProtector} from '../../src/code_graph/store.js';
-import {CodeGraphStoreError, type CodeGraphFileFacts, type CodeGraphInventoryFile} from '../../src/code_graph/types.js';
+import {
+  CodeGraphStoreError,
+  type CodeGraphFileFacts,
+  type CodeGraphInventoryFile,
+  isCodeGraphStoreError,
+} from '../../src/code_graph/types.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const EXTRACTOR_SET = 'cache-os-extractor-v1';
@@ -119,9 +124,7 @@ const program = Effect.gen(function* () {
           : transaction,
     ).pipe(
       Effect.mapError(cause =>
-        cause instanceof CodeGraphStoreError
-          ? cause
-          : new CodeGraphStoreError('Cache child reservation coordination failed.'),
+        isCodeGraphStoreError(cause) ? cause : CodeGraphStoreError.of('Cache child reservation coordination failed.'),
       ),
       Effect.provideService(Crypto.Crypto, crypto),
       Effect.provideService(FileSystem.FileSystem, fs),

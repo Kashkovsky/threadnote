@@ -237,7 +237,7 @@ const legacyThreadnotePackageVersion = Effect.fn('legacyInstallations.legacyPack
 ) {
   const manifest = yield* fs
     .readFileString(path.join(packageRoot, 'package.json'))
-    .pipe(Effect.catch(() => Effect.succeed('')));
+    .pipe(Effect.orElseSucceed(() => ''));
   return parseLegacyPackageManifestVersion(manifest);
 });
 

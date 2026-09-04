@@ -1,4 +1,4 @@
-import {Predicate} from 'effect';
+import {Predicate, Schema} from 'effect';
 import {parseCodeGraphMonikerV1} from './cross_repository/monikers.js';
 import type {
   CodeGraphEdge,
@@ -43,9 +43,13 @@ const RELATIONS = [
   'tests',
 ] as const satisfies readonly CodeGraphRelation[];
 
-export class CodeGraphFactValidationError extends Error {
-  override readonly name = 'CodeGraphFactValidationError';
-}
+export class CodeGraphFactValidationError extends Schema.TaggedError<CodeGraphFactValidationError>()(
+  'CodeGraphFactValidationError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 /** Exact recursive validator for parser facts crossing a durable or portable boundary. */
 export function parseCodeGraphFileFacts(value: unknown): CodeGraphFileFacts {
@@ -64,7 +68,7 @@ export function parseCodeGraphFileFacts(value: unknown): CodeGraphFileFacts {
           try {
             return parseCodeGraphMonikerV1(moniker);
           } catch (cause) {
-            throw new CodeGraphFactValidationError(`File-fact moniker ${index} is invalid.`, {cause});
+            throw CodeGraphFactValidationError.make({cause, message: `File-fact moniker ${index} is invalid.`});
           }
         });
   const derivationInputs =
@@ -201,21 +205,21 @@ function parseSpan(value: unknown, label: string): CodeGraphSpan {
   const endLine = positiveInteger(input.endLine, `${label} end line`);
   const line = positiveInteger(input.line, `${label} line`);
   if (endLine < line || (endLine === line && endColumn < column)) {
-    throw new CodeGraphFactValidationError(`${label} ends before it starts.`);
+    throw CodeGraphFactValidationError.make({message: `${label} ends before it starts.`});
   }
   return {column, endColumn, endLine, line};
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
   if (!Predicate.isObject(value)) {
-    throw new CodeGraphFactValidationError(`${label} must be an object.`);
+    throw CodeGraphFactValidationError.make({message: `${label} must be an object.`});
   }
   return value;
 }
 
 function array(value: unknown, label: string): readonly unknown[] {
   if (!Array.isArray(value) || value.length > ARRAY_ENTRIES_MAXIMUM) {
-    throw new CodeGraphFactValidationError(`${label} must be a bounded array.`);
+    throw CodeGraphFactValidationError.make({message: `${label} must be a bounded array.`});
   }
   return value;
 }
@@ -223,16 +227,18 @@ function array(value: unknown, label: string): readonly unknown[] {
 function exactKeys(input: Record<string, unknown>, required: readonly string[], optional: readonly string[]): void {
   const allowed = new Set([...required, ...optional]);
   for (const key of required) {
-    if (!Object.hasOwn(input, key)) throw new CodeGraphFactValidationError(`Code graph facts are missing ${key}.`);
+    if (!Object.hasOwn(input, key))
+      throw CodeGraphFactValidationError.make({message: `Code graph facts are missing ${key}.`});
   }
   for (const key of Object.keys(input)) {
-    if (!allowed.has(key)) throw new CodeGraphFactValidationError(`Code graph facts contain unknown field ${key}.`);
+    if (!allowed.has(key))
+      throw CodeGraphFactValidationError.make({message: `Code graph facts contain unknown field ${key}.`});
   }
 }
 
 function text(value: unknown, label: string, maximum = TEXT_LENGTH_MAXIMUM): string {
   if (typeof value !== 'string' || value.length > maximum) {
-    throw new CodeGraphFactValidationError(`${label} must be a bounded string.`);
+    throw CodeGraphFactValidationError.make({message: `${label} must be a bounded string.`});
   }
   return value;
 }
@@ -240,7 +246,7 @@ function text(value: unknown, label: string, maximum = TEXT_LENGTH_MAXIMUM): str
 function shortText(value: unknown, label: string): string {
   const result = boundedNonEmptyText(value, label);
   if (containsControlCharacter(result)) {
-    throw new CodeGraphFactValidationError(`${label} must be non-empty and control-free.`);
+    throw CodeGraphFactValidationError.make({message: `${label} must be non-empty and control-free.`});
   }
   return result;
 }
@@ -252,7 +258,7 @@ function shortText(value: unknown, label: string): string {
  */
 function boundedNonEmptyText(value: unknown, label: string): string {
   const result = text(value, label, SHORT_TEXT_LENGTH_MAXIMUM);
-  if (result.length === 0) throw new CodeGraphFactValidationError(`${label} must be non-empty.`);
+  if (result.length === 0) throw CodeGraphFactValidationError.make({message: `${label} must be non-empty.`});
   return result;
 }
 
@@ -278,7 +284,7 @@ function repositoryPath(value: unknown, label: string): string {
     containsControlCharacter(value) ||
     value.split('/').some(segment => segment.length === 0 || segment === '.' || segment === '..')
   ) {
-    throw new CodeGraphFactValidationError(`${label} must be a safe repository-relative POSIX path.`);
+    throw CodeGraphFactValidationError.make({message: `${label} must be a safe repository-relative POSIX path.`});
   }
   return value;
 }
@@ -293,33 +299,35 @@ function containsControlCharacter(value: string): boolean {
 
 function digest(value: unknown, label: string): string {
   if (typeof value !== 'string' || !SHA256.test(value)) {
-    throw new CodeGraphFactValidationError(`${label} must be a lowercase SHA-256 digest.`);
+    throw CodeGraphFactValidationError.make({message: `${label} must be a lowercase SHA-256 digest.`});
   }
   return value;
 }
 
 function bool(value: unknown, label: string): boolean {
-  if (typeof value !== 'boolean') throw new CodeGraphFactValidationError(`${label} must be boolean.`);
+  if (typeof value !== 'boolean') throw CodeGraphFactValidationError.make({message: `${label} must be boolean.`});
   return value;
 }
 
 function positiveInteger(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
-    throw new CodeGraphFactValidationError(`${label} must be a positive safe integer.`);
+    throw CodeGraphFactValidationError.make({message: `${label} must be a positive safe integer.`});
   }
   return value;
 }
 
 function nonnegativeInteger(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-    throw new CodeGraphFactValidationError(`${label} must be a non-negative safe integer.`);
+    throw CodeGraphFactValidationError.make({message: `${label} must be a non-negative safe integer.`});
   }
   return value;
 }
 
 function finiteRange(value: unknown, label: string, minimum: number, maximum: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) {
-    throw new CodeGraphFactValidationError(`${label} must be a finite number between ${minimum} and ${maximum}.`);
+    throw CodeGraphFactValidationError.make({
+      message: `${label} must be a finite number between ${minimum} and ${maximum}.`,
+    });
   }
   return value;
 }
@@ -327,7 +335,7 @@ function finiteRange(value: unknown, label: string, minimum: number, maximum: nu
 function provenance(value: unknown, label: string): CodeGraphProvenance {
   const matched = typeof value === 'string' ? PROVENANCE.find(candidate => candidate === value) : undefined;
   if (matched === undefined) {
-    throw new CodeGraphFactValidationError(`${label} is invalid.`);
+    throw CodeGraphFactValidationError.make({message: `${label} is invalid.`});
   }
   return matched;
 }
@@ -335,7 +343,7 @@ function provenance(value: unknown, label: string): CodeGraphProvenance {
 function relation(value: unknown, label: string): CodeGraphRelation {
   const matched = typeof value === 'string' ? RELATIONS.find(candidate => candidate === value) : undefined;
   if (matched === undefined) {
-    throw new CodeGraphFactValidationError(`${label} is invalid.`);
+    throw CodeGraphFactValidationError.make({message: `${label} is invalid.`});
   }
   return matched;
 }

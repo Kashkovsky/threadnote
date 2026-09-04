@@ -74,10 +74,10 @@ export const readCodeGraphInventoryReuseEnvironment = Effect.fn('codeGraph.readI
     {concurrency: 2},
   );
   if (gitInfoExcludeResult.exitCode !== 0 || gitInfoExcludeResult.stdout.trim().length === 0) {
-    return yield* Effect.fail(new CodeGraphInventoryError('Git exclude policy path is unavailable.'));
+    return yield* CodeGraphInventoryError.make({message: 'Git exclude policy path is unavailable.'});
   }
   if (globalExcludeResult.exitCode !== 0 && globalExcludeResult.exitCode !== 1) {
-    return yield* Effect.fail(new CodeGraphInventoryError('Global Git exclude policy is unavailable.'));
+    return yield* CodeGraphInventoryError.make({message: 'Global Git exclude policy is unavailable.'});
   }
   const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
   const observedGitInfoExcludePath = gitInfoExcludeResult.stdout.trim();

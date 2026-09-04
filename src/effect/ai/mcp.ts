@@ -199,7 +199,7 @@ type ResourceTemplateHandler = (
   uri: string,
   context: McpRequestContext,
 ) => Effect.Effect<
-  typeof McpSchema.ReadResourceResult.Type,
+  McpSchema.ReadResourceResult,
   McpSchema.InternalError | McpSchema.InvalidParams,
   ApplicationServices
 >;
@@ -277,8 +277,9 @@ export class EffectMcpServerRegistry {
       Effect.gen(function* () {
         const server = yield* McpServer.McpServer;
         options.prepareServer?.(server);
-        const applicationServices = omitAnonymousTelemetryRecorder(
-          omitProductionLogPhaseRecorder(yield* Effect.context<ApplicationServices>()),
+        const applicationServices = (yield* Effect.context<ApplicationServices>()).pipe(
+          omitProductionLogPhaseRecorder,
+          omitAnonymousTelemetryRecorder,
         );
         for (const registration of resourceTemplates) {
           yield* server.addResourceTemplate({
@@ -292,7 +293,7 @@ export class EffectMcpServerRegistry {
                 ).pipe(Effect.provideContext(applicationServices)),
               ).pipe(Effect.catchCause(mcpResourceFailureResult)),
             routerPath: registration.definition.routerPath,
-            template: new McpSchema.ResourceTemplate({
+            template: McpSchema.ResourceTemplate.make({
               _meta: registration.definition.meta,
               description: registration.definition.description,
               mimeType: registration.definition.mimeType,
@@ -309,7 +310,7 @@ export class EffectMcpServerRegistry {
               : flattenJsonSchemaConstraints(Schema.toJsonSchemaDocument(input).schema);
           yield* server.addTool({
             annotations: Context.empty(),
-            tool: new McpSchema.Tool({
+            tool: McpSchema.Tool.make({
               annotations: registration.definition.annotations,
               description: registration.definition.description,
               inputSchema,
@@ -1077,13 +1078,13 @@ export function mcpResourceFailureResult(
   }
   const error = Option.getOrUndefined(Cause.findErrorOption(cause));
   if (
-    (error instanceof McpSchema.InvalidParams || error instanceof McpSchema.InternalError) &&
+    (Schema.is(McpSchema.InvalidParams)(error) || Schema.is(McpSchema.InternalError)(error)) &&
     hasMcpResourceErrorBrand(error)
   ) {
     return Effect.fail(error);
   }
   return Effect.fail(
-    new McpSchema.InternalError({
+    McpSchema.InternalError.make({
       data: MCP_RESOURCE_ERROR_DATA,
       message: 'Threadnote resource request failed.',
     }),
@@ -1096,7 +1097,7 @@ export function mcpToolFailureResult(cause: Cause.Cause<unknown>): Effect.Effect
   }
   return Effect.succeed(
     attachAnonymousTelemetryError(
-      new McpSchema.CallToolResult({
+      McpSchema.CallToolResult.make({
         content: [{type: 'text', text: causeMessage(cause)}],
         isError: true,
       }),
@@ -1171,7 +1172,7 @@ const numberSchema = (
   options: {readonly integer?: boolean; readonly maximum?: number; readonly minimum?: number},
 ) =>
   annotate(
-    Schema.Number.check(
+    Schema.Finite.check(
       Schema.isFinite(),
       ...(options.integer ? [Schema.isInt()] : []),
       ...(options.minimum === undefined ? [] : [Schema.isGreaterThanOrEqualTo(options.minimum)]),

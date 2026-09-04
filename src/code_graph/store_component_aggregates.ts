@@ -1,4 +1,4 @@
-import {Effect, Option} from 'effect';
+import {DateTime, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../crypto/sha256.js';
 import type {CodeGraphVisualizationScopeEdge} from './store_models.js';
@@ -54,14 +54,14 @@ const materializeSnapshotComponentEdgeAggregates = Effect.fn('codeGraph.material
     const edges = rows.map(componentEdgeFromRow);
     const edgeCount = edges.reduce((total, edge) => total + edge.count, 0);
     if (!Number.isSafeInteger(edgeCount) || edgeCount < 0) {
-      return yield* Effect.fail(new CodeGraphStoreError('Component edge aggregation returned an invalid edge count.'));
+      return yield* CodeGraphStoreError.of('Component edge aggregation returned an invalid edge count.');
     }
     yield* sql`
     INSERT INTO snapshot_component_edge_aggregate_receipts (
       snapshot_id, version, row_count, edge_count, digest, created_at
     ) VALUES (
       ${snapshotId}, ${COMPONENT_EDGE_AGGREGATE_VERSION}, ${edges.length}, ${edgeCount},
-      ${componentEdgeAggregateDigest(edges)}, ${new Date().toISOString()}
+      ${componentEdgeAggregateDigest(edges)}, ${DateTime.formatIso(yield* DateTime.now)}
     )
   `;
     yield* sql.unsafe(`DROP TABLE temp.${COMPONENT_SCOPE_TEMP_TABLE}`);

@@ -168,7 +168,7 @@ function writeFeedbackEvents(
     yield* fs.writeFileString(temporaryPath, content, {mode: 0o600});
     yield* fs
       .rename(temporaryPath, path)
-      .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
+      .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.ignore)));
   });
 }
 

@@ -386,7 +386,7 @@ esac
           typeof cause === 'object' && cause !== null
             ? `${'stdout' in cause ? String(cause.stdout) : ''}${'stderr' in cause ? String(cause.stderr) : ''}`
             : '';
-        throw new TestError(`POSIX bootstrap failed:\n${output}`, {cause});
+        throw TestError.make({message: `POSIX bootstrap failed:\n${output}`, cause});
       });
       const output = `${result.stdout}${result.stderr}`;
       expect(output).toContain(`Installed standalone Threadnote ${packageManifest.version}`);
@@ -744,7 +744,7 @@ async function writeTarGzipFixture(file: string, entry: TarFixtureEntry): Promis
 
 function writeTarText(target: Uint8Array, offset: number, length: number, value: string): void {
   const bytes = new TextEncoder().encode(value);
-  if (bytes.byteLength > length) throw new TestError(`Tar fixture field is too long: ${value}`);
+  if (bytes.byteLength > length) throw TestError.make({message: `Tar fixture field is too long: ${value}`});
   target.set(bytes, offset);
 }
 

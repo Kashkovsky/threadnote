@@ -162,14 +162,13 @@ export const makeCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeWorktree
               }),
             );
           if (candidates.state === 'failure') {
-            if (candidates.error instanceof CodeGraphMaintenanceActiveError) {
+            if (Schema.is(CodeGraphMaintenanceActiveError)(candidates.error)) {
               return {reason: 'external-maintenance', state: 'preserved'} as const;
             }
             return {
-              reason:
-                candidates.error instanceof CodeGraphStoreBusyError
-                  ? ('writer-busy' as const)
-                  : ('catalog-unavailable' as const),
+              reason: Schema.is(CodeGraphStoreBusyError)(candidates.error)
+                ? ('writer-busy' as const)
+                : ('catalog-unavailable' as const),
               state: 'deferred',
             } as const;
           }
@@ -188,7 +187,7 @@ export const makeCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeWorktree
                   Effect.map(evidence =>
                     evidence.state === 'candidate' ? ({candidate, evidence} satisfies MissingCandidate) : undefined,
                   ),
-                  Effect.catch(() => Effect.succeed(undefined)),
+                  Effect.orElseSucceed(() => undefined),
                 ),
             {concurrency: 1},
           ).pipe(Effect.map(values => values.filter((value): value is MissingCandidate => value !== undefined)));
@@ -366,15 +365,14 @@ export const makeCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeWorktree
                   .pipe(
                     Effect.match({
                       onFailure: cause => {
-                        if (cause instanceof CodeGraphMaintenanceActiveError) {
+                        if (Schema.is(CodeGraphMaintenanceActiveError)(cause)) {
                           return {nextCursor, reason: 'external-maintenance', state: 'preserved'} as const;
                         }
                         return {
                           nextCursor,
-                          reason:
-                            cause instanceof CodeGraphStoreBusyError
-                              ? ('writer-busy' as const)
-                              : ('catalog-unavailable' as const),
+                          reason: Schema.is(CodeGraphStoreBusyError)(cause)
+                            ? ('writer-busy' as const)
+                            : ('catalog-unavailable' as const),
                           state: 'deferred',
                         } as const;
                       },
@@ -387,10 +385,9 @@ export const makeCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeWorktree
               Effect.match({
                 onFailure: cause => ({
                   nextCursor,
-                  reason:
-                    cause instanceof CodeGraphStoreBusyError
-                      ? ('target-busy' as const)
-                      : ('catalog-unavailable' as const),
+                  reason: Schema.is(CodeGraphStoreBusyError)(cause)
+                    ? ('target-busy' as const)
+                    : ('catalog-unavailable' as const),
                   state: 'deferred' as const,
                 }),
                 onSuccess: result => result,
@@ -422,14 +419,12 @@ export const makeLiveCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeLive
     Effect.gen(function* () {
       const inspected = yield* provideLive(inspectCodeGraphViewDatabaseTarget(input.threadnoteHome, input.checkoutId));
       if (inspected.state !== 'ready' || inspected.databasePath !== input.databasePath) {
-        return yield* Effect.fail(
-          new CodeGraphWorktreeAuthorityChanged({
-            message: `Code graph database target changed before ${operation}.`,
-          }),
-        );
+        return yield* CodeGraphWorktreeAuthorityChanged.make({
+          message: `Code graph database target changed before ${operation}.`,
+        });
       }
       if (yield* provideLive(codeGraphMaintenanceIntentActive(input.threadnoteHome))) {
-        return yield* Effect.fail(new CodeGraphMaintenanceActiveError());
+        return yield* CodeGraphMaintenanceActiveError.of();
       }
     });
   return yield* makeCodeGraphWorktreeReconciler({

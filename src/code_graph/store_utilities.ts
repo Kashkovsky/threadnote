@@ -1,4 +1,4 @@
-import {Effect, Option} from 'effect';
+import {DateTime, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {isFileLockTimeout} from '../effect/file_lock.js';
@@ -8,13 +8,18 @@ import {
   codeGraphStoreBusyFailure,
   sanitizeCodeGraphStoreDiagnostic as sanitizeStoreDiagnostic,
 } from './store_failure.js';
-import {type CodeGraphSymbol, type RepositoryIdentity, CodeGraphStoreError} from './types.js';
+import {
+  type CodeGraphSymbol,
+  type RepositoryIdentity,
+  isCodeGraphStoreError,
+  type CodeGraphStoreFailure,
+} from './types.js';
 
 const upsertRepository = Effect.fn('codeGraph.upsertRepository')(function* (
   sql: SqlClient.SqlClient,
   identity: RepositoryIdentity,
 ) {
-  const now = new Date().toISOString();
+  const now = DateTime.formatIso(yield* DateTime.now);
   yield* sql`
     INSERT INTO repositories (id, display_name, object_format, created_at, last_used_at)
     VALUES (${identity.repositoryId}, ${identity.displayName}, ${identity.objectFormat}, ${now}, ${now})
@@ -135,8 +140,8 @@ function activationEdgeId(
   ).slice(0, 32)}`;
 }
 
-function storeError(operation: string, cause: unknown): CodeGraphStoreError {
-  if (cause instanceof CodeGraphStoreError) return cause;
+function storeError(operation: string, cause: unknown): CodeGraphStoreFailure {
+  if (isCodeGraphStoreError(cause)) return cause;
   return isFileLockTimeout(cause)
     ? codeGraphStoreBusyFailure(operation)
     : classifyCodeGraphStoreFailure(operation, cause);

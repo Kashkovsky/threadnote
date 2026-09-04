@@ -1,4 +1,4 @@
-import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Predicate, Schema} from 'effect';
+import {Console, Crypto, DateTime, Effect, FileSystem, Option, Path, Predicate, Schema} from 'effect';
 import {sha256FileHex, sha256Hex} from '../effect/digest.js';
 import {
   LEGACY_OPENVIKING_HOME_DIRECTORY,
@@ -147,9 +147,9 @@ export class HomeMigrationFailed extends Schema.TaggedError<HomeMigrationFailed>
 export class HomeMigrationInsufficientSpace extends Schema.TaggedError<HomeMigrationInsufficientSpace>()(
   'HomeMigrationInsufficientSpace',
   {
-    availableBytes: Schema.Number,
+    availableBytes: Schema.Finite,
     message: Schema.String,
-    requiredBytes: Schema.Number,
+    requiredBytes: Schema.Finite,
   },
 ) {}
 
@@ -186,12 +186,10 @@ const migrateOpenVikingHomeImpl = Effect.fn('homeMigration.migrate')(function* (
       return {action: 'no_legacy_home'};
     }
     if (!(yield* isRecoverableThreadnoteTarget(fs, path, targetHome))) {
-      return yield* Effect.fail(
-        new HomeMigrationConflict({
-          message: `Target home already exists without a matching ${HOME_MIGRATION_ID} receipt or a recognizable Threadnote layout.`,
-          path: targetHome,
-        }),
-      );
+      return yield* HomeMigrationConflict.make({
+        message: `Target home already exists without a matching ${HOME_MIGRATION_ID} receipt or a recognizable Threadnote layout.`,
+        path: targetHome,
+      });
     }
     if (!(yield* hasMaterialLegacyHomeContent(fs, path, system, legacyHome))) {
       return {action: 'no_legacy_content'};
@@ -226,7 +224,7 @@ const migrateOpenVikingHomeImpl = Effect.fn('homeMigration.migrate')(function* (
   if (availableBytes !== undefined) {
     yield* assertSufficientHomeMigrationDiskSpace(inventory.bytes + duplicatedShareBytes, availableBytes);
   }
-  const now = new Date(yield* Clock.currentTimeMillis).toISOString();
+  const now = DateTime.formatIso(yield* DateTime.now);
   const receipt: HomeMigrationReceipt = {
     bytes: inventory.bytes,
     completedAt: now,
@@ -253,12 +251,10 @@ const migrateOpenVikingHomeImpl = Effect.fn('homeMigration.migrate')(function* (
 
   const sourceAfterCopy = yield* inventoryHome(fs, path, legacyHome, shouldIncludeLegacyPath);
   if (sourceAfterCopy.treeSha256 !== inventory.treeSha256) {
-    return yield* Effect.fail(
-      new HomeMigrationConflict({
-        message: 'The legacy home changed during migration. The staged copy was retained; rerun after writes stop.',
-        path: legacyHome,
-      }),
-    );
+    return yield* HomeMigrationConflict.make({
+      message: 'The legacy home changed during migration. The staged copy was retained; rerun after writes stop.',
+      path: legacyHome,
+    });
   }
 
   yield* migrateLegacyShares(fs, path, stage, shareMigrations);
@@ -284,21 +280,17 @@ export const migrateOpenVikingHome = (
   Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo
 > =>
   migrateOpenVikingHomeImpl(options).pipe(
-    Effect.flatMap(result =>
-      isHomeMigrationResult(result)
-        ? Effect.succeed(result)
-        : Effect.fail(
-            new HomeMigrationFailed({
-              cause: result,
-              message: 'OpenViking home migration returned an invalid result.',
-              operation: 'migrate OpenViking home',
-            }),
-          ),
+    Effect.filterOrFail(isHomeMigrationResult, result =>
+      HomeMigrationFailed.make({
+        cause: result,
+        message: 'OpenViking home migration returned an invalid result.',
+        operation: 'migrate OpenViking home',
+      }),
     ),
     Effect.mapError(cause =>
       isHomeMigrationError(cause)
         ? cause
-        : new HomeMigrationFailed({
+        : HomeMigrationFailed.make({
             cause,
             message: cause instanceof Error ? cause.message : String(cause),
             operation: 'migrate OpenViking home',
@@ -547,7 +539,7 @@ function readJsonObject(
         return undefined;
       }
     }),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
 }
 
@@ -556,7 +548,7 @@ function isOwnedDirectory(fs: FileSystem.FileSystem, directory: string): Effect.
     if (!(yield* pathEntryExists(fs, directory))) return false;
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) return false;
     return (yield* fs.stat(directory)).type === 'Directory';
-  }).pipe(Effect.catch(() => Effect.succeed(false)));
+  }).pipe(Effect.orElseSucceed(() => false));
 }
 
 function isOwnedFile(fs: FileSystem.FileSystem, file: string): Effect.Effect<boolean, never> {
@@ -564,7 +556,7 @@ function isOwnedFile(fs: FileSystem.FileSystem, file: string): Effect.Effect<boo
     if (!(yield* pathEntryExists(fs, file))) return false;
     if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) return false;
     return (yield* fs.stat(file)).type === 'File';
-  }).pipe(Effect.catch(() => Effect.succeed(false)));
+  }).pipe(Effect.orElseSucceed(() => false));
 }
 
 function pathEntryExists(fs: FileSystem.FileSystem, target: string): Effect.Effect<boolean, never> {
@@ -596,7 +588,7 @@ function recoverIntoExistingTarget(
     const preflight = yield* preflightMappedInventory(fs, path, targetHome, inventory, shareMigrations);
     const receipt: HomeMigrationReceipt = {
       bytes: inventory.bytes,
-      completedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+      completedAt: DateTime.formatIso(yield* DateTime.now),
       directories: inventory.directories,
       files: inventory.files,
       id: HOME_MIGRATION_ID,
@@ -622,7 +614,7 @@ function recoverIntoExistingTarget(
     );
     const sourceAfterCopy = yield* inventoryHome(fs, path, legacyHome, shouldIncludeLegacyPath);
     if (sourceAfterCopy.treeSha256 !== inventory.treeSha256) {
-      return yield* new HomeMigrationConflict({
+      return yield* HomeMigrationConflict.make({
         message: 'The legacy home changed during recovery. Copied files were retained; rerun after writes stop.',
         path: legacyHome,
       });
@@ -701,7 +693,7 @@ function preflightMappedInventory(
         const link = yield* fs.readLink(target).pipe(Effect.option);
         if (Option.isSome(link) && (yield* sha256Hex(link.value)) === entry.digest) continue;
       }
-      return yield* new HomeMigrationConflict({
+      return yield* HomeMigrationConflict.make({
         message: `Recovery would overwrite different existing content: ${mappedLegacyRelative(entry.relativePath)}.`,
         path: target,
       });
@@ -753,12 +745,12 @@ function findCurrentShareRecoveryState(
       }
 
       if (completeCheckout) {
-        return yield* new HomeMigrationConflict({
+        return yield* HomeMigrationConflict.make({
           message: `Current managed share worktree "${root.teamName}" does not point at its registered Git directory; recovery stopped without changing either copy.`,
           path: marker,
         });
       }
-      return yield* new HomeMigrationConflict({
+      return yield* HomeMigrationConflict.make({
         message: `Current managed share checkout is incomplete or unsafe: team "${root.teamName}" does not match the preserved legacy repository, so recovery will not combine them.`,
         path: gitdirExists ? root.currentGitdir : root.currentWorktree,
       });
@@ -806,7 +798,7 @@ function inspectLegacyDerivedShareState(
       }
     }
     return {preservedLegacyEntries} satisfies LegacyDerivedShareState;
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  }).pipe(Effect.orElseSucceed(() => undefined));
 }
 
 function compareLegacyDerivedTree(
@@ -999,7 +991,7 @@ function readGitdirMarker(
     const value = (yield* fs.readFileString(marker)).trim();
     const gitdir = /^gitdir:\s*(.+)$/i.exec(value)?.[1]?.trim();
     return gitdir ? path.resolve(path.dirname(marker), gitdir) : undefined;
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  }).pipe(Effect.orElseSucceed(() => undefined));
 }
 
 function isRelativePathWithin(root: string, candidate: string): boolean {
@@ -1057,7 +1049,7 @@ function verifyMappedInventory(
           Number(info.size) !== entry.size ||
           (yield* sha256FileHex(target)) !== entry.digest
         ) {
-          return yield* new HomeMigrationConflict({
+          return yield* HomeMigrationConflict.make({
             message: `Recovered file failed validation: ${mappedLegacyRelative(entry.relativePath)}.`,
             path: target,
           });
@@ -1065,7 +1057,7 @@ function verifyMappedInventory(
       } else {
         const link = yield* fs.readLink(target);
         if ((yield* sha256Hex(link)) !== entry.digest) {
-          return yield* new HomeMigrationConflict({
+          return yield* HomeMigrationConflict.make({
             message: `Recovered symbolic link failed validation: ${mappedLegacyRelative(entry.relativePath)}.`,
             path: target,
           });
@@ -1231,7 +1223,7 @@ function copyMissingLegacyTree(
         yield* fs.copyFile(source, staged);
         yield* fs.chmod(staged, 0o600 | (entry.mode & 0o100));
         if (!(yield* inventoryEntryMatches(fs, staged, entry))) {
-          return yield* new HomeMigrationConflict({
+          return yield* HomeMigrationConflict.make({
             message: `Staged share file failed validation: ${entry.relativePath}.`,
             path: staged,
           });
@@ -1243,7 +1235,7 @@ function copyMissingLegacyTree(
         yield* fs.makeDirectory(path.dirname(staged), {recursive: true, mode: 0o700});
         yield* fs.symlink(yield* fs.readLink(source), staged);
         if (!(yield* inventoryEntryMatches(fs, staged, entry))) {
-          return yield* new HomeMigrationConflict({
+          return yield* HomeMigrationConflict.make({
             message: `Staged share symbolic link failed validation: ${entry.relativePath}.`,
             path: staged,
           });
@@ -1266,14 +1258,14 @@ function installStagedShareEntry(
         yield* fs.remove(staged, {force: true});
         return;
       }
-      return yield* new HomeMigrationConflict({
+      return yield* HomeMigrationConflict.make({
         message: `Share recovery target changed while copying: ${expected.relativePath}.`,
         path: target,
       });
     }
     yield* fs.rename(staged, target);
     if (!(yield* inventoryEntryMatches(fs, target, expected))) {
-      return yield* new HomeMigrationConflict({
+      return yield* HomeMigrationConflict.make({
         message: `Recovered share entry failed validation: ${expected.relativePath}.`,
         path: target,
       });
@@ -1303,7 +1295,7 @@ function inventoryEntryMatches(
       return Option.isSome(link) && (yield* sha256Hex(link.value)) === expected.digest;
     }
     return yield* isOwnedDirectory(fs, target);
-  }).pipe(Effect.catch(() => Effect.succeed(false)));
+  }).pipe(Effect.orElseSucceed(() => false));
 }
 
 function rewriteLegacyShareGitConfig(config: string, migration: LegacyShareMigration): string {
@@ -1320,7 +1312,7 @@ function assertSeparateHomes(path: Path.Path, legacyHome: string, targetHome: st
     path.parse(legacyHome).root === legacyHome ||
     path.parse(targetHome).root === targetHome
   ) {
-    throw new HomeMigrationUnsafe({
+    throw HomeMigrationUnsafe.make({
       message: 'Legacy and target homes must be separate, non-root directories and cannot contain each other.',
       path: targetHome,
     });
@@ -1346,21 +1338,17 @@ function inventoryHome(
           if (Option.isSome(symbolicLink)) {
             const target = symbolicLink.value;
             if (path.isAbsolute(target)) {
-              return yield* Effect.fail(
-                new HomeMigrationUnsafe({
-                  message: `Absolute symbolic links are not migrated because they would retain a dependency on the legacy home: ${relativePath}.`,
-                  path: absolutePath,
-                }),
-              );
+              return yield* HomeMigrationUnsafe.make({
+                message: `Absolute symbolic links are not migrated because they would retain a dependency on the legacy home: ${relativePath}.`,
+                path: absolutePath,
+              });
             }
             const resolved = path.resolve(path.dirname(absolutePath), target);
             if (!isWithinOrSame(path, root, resolved)) {
-              return yield* Effect.fail(
-                new HomeMigrationUnsafe({
-                  message: `Symbolic link escapes the legacy home: ${relativePath}.`,
-                  path: absolutePath,
-                }),
-              );
+              return yield* HomeMigrationUnsafe.make({
+                message: `Symbolic link escapes the legacy home: ${relativePath}.`,
+                path: absolutePath,
+              });
             }
             entries.push({
               digest: yield* sha256Hex(target),
@@ -1384,12 +1372,10 @@ function inventoryHome(
               type: 'file',
             });
           } else {
-            return yield* Effect.fail(
-              new HomeMigrationUnsafe({
-                message: `Unsupported filesystem entry in legacy home: ${relativePath} (${info.type}).`,
-                path: absolutePath,
-              }),
-            );
+            return yield* HomeMigrationUnsafe.make({
+              message: `Unsupported filesystem entry in legacy home: ${relativePath} (${info.type}).`,
+              path: absolutePath,
+            });
           }
         }
       });
@@ -1445,12 +1431,10 @@ function verifyCopiedInventory(
   return Effect.gen(function* () {
     const actual = yield* inventoryHome(fs, path, stage, () => true);
     if (actual.treeSha256 !== expected.treeSha256) {
-      return yield* Effect.fail(
-        new HomeMigrationConflict({
-          message: 'Staged home validation failed: copied file metadata or hashes do not match.',
-          path: stage,
-        }),
-      );
+      return yield* HomeMigrationConflict.make({
+        message: 'Staged home validation failed: copied file metadata or hashes do not match.',
+        path: stage,
+      });
     }
   });
 }
@@ -1494,7 +1478,7 @@ function readReceipt(
 ): Effect.Effect<HomeMigrationReceipt | undefined, unknown> {
   return fs.readFileString(receiptPath).pipe(
     Effect.map(content => parseReceipt(JSON.parse(content))),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
 }
 
@@ -1584,7 +1568,7 @@ function planLegacyShareMigrations(
     const parsed = yield* Effect.try({
       try: () => JSON.parse(raw) as unknown,
       catch: () =>
-        new HomeMigrationUnsafe({
+        HomeMigrationUnsafe.make({
           message: 'Legacy share teams file is not valid JSON.',
           path: teamsPath,
         }),
@@ -1596,12 +1580,10 @@ function planLegacyShareMigrations(
     const plans: LegacyShareMigration[] = [];
     for (const [name, value] of Object.entries(teams)) {
       if (!/^[a-z0-9][a-z0-9._-]*$/.test(name) || /^\.+$/.test(name)) {
-        return yield* Effect.fail(
-          new HomeMigrationUnsafe({
-            message: `Legacy share has an unsafe team name: ${name}.`,
-            path: teamsPath,
-          }),
-        );
+        return yield* HomeMigrationUnsafe.make({
+          message: `Legacy share has an unsafe team name: ${name}.`,
+          path: teamsPath,
+        });
       }
       if (!Predicate.isObject(value)) continue;
       const entry = value;
@@ -1627,7 +1609,7 @@ function planLegacyShareMigrations(
 function checkedLegacyRelative(path: Path.Path, legacyHome: string, value: string, label: string): string {
   const absolute = path.resolve(value);
   if (!isWithin(path, legacyHome, absolute)) {
-    throw new HomeMigrationUnsafe({
+    throw HomeMigrationUnsafe.make({
       message: `Legacy ${label} is outside the owned home and cannot be migrated safely.`,
       path: absolute,
     });
@@ -1665,12 +1647,10 @@ function migrateLegacyShares(
       const sourceWorktree = path.join(stage, migration.sourceWorktreeRelative);
       const stageWorktree = path.join(stage, migration.stageWorktreeRelative);
       if (!(yield* fs.exists(sourceWorktree))) {
-        return yield* Effect.fail(
-          new HomeMigrationUnsafe({
-            message: `Legacy share worktree is missing: ${migration.name}.`,
-            path: sourceWorktree,
-          }),
-        );
+        return yield* HomeMigrationUnsafe.make({
+          message: `Legacy share worktree is missing: ${migration.name}.`,
+          path: sourceWorktree,
+        });
       }
       yield* fs.makeDirectory(path.dirname(stageWorktree), {recursive: true, mode: 0o700});
       yield* fs.copy(sourceWorktree, stageWorktree, {preserveTimestamps: true});
@@ -1683,12 +1663,10 @@ function migrateLegacyShares(
       const sourceGitdir = path.join(stage, migration.sourceGitdirRelative);
       const stageGitdir = path.join(stage, migration.stageGitdirRelative);
       if (!(yield* fs.exists(sourceGitdir))) {
-        return yield* Effect.fail(
-          new HomeMigrationUnsafe({
-            message: `Legacy share gitdir is missing: ${migration.name}.`,
-            path: sourceGitdir,
-          }),
-        );
+        return yield* HomeMigrationUnsafe.make({
+          message: `Legacy share gitdir is missing: ${migration.name}.`,
+          path: sourceGitdir,
+        });
       }
       if (sourceGitdir !== stageGitdir) {
         yield* fs.makeDirectory(path.dirname(stageGitdir), {recursive: true, mode: 0o700});
@@ -1766,10 +1744,10 @@ function isWithinOrSame(path: Path.Path, parent: string, candidate: string): boo
 
 function isHomeMigrationError(cause: unknown): cause is HomeMigrationError {
   return (
-    cause instanceof HomeMigrationConflict ||
-    cause instanceof HomeMigrationFailed ||
-    cause instanceof HomeMigrationInsufficientSpace ||
-    cause instanceof HomeMigrationUnsafe
+    Schema.is(HomeMigrationConflict)(cause) ||
+    Schema.is(HomeMigrationFailed)(cause) ||
+    Schema.is(HomeMigrationInsufficientSpace)(cause) ||
+    Schema.is(HomeMigrationUnsafe)(cause)
   );
 }
 
@@ -1798,7 +1776,7 @@ export function assertSufficientHomeMigrationDiskSpace(
   return availableBytes >= requiredBytes
     ? Effect.void
     : Effect.fail(
-        new HomeMigrationInsufficientSpace({
+        HomeMigrationInsufficientSpace.make({
           availableBytes,
           message: `Home migration needs ${requiredBytes} free bytes for a validated staged copy; only ${availableBytes} are available.`,
           requiredBytes,

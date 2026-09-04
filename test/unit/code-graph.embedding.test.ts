@@ -350,8 +350,8 @@ describe('native code graph vector generations', () => {
                   activeEmbeddings -= 1;
                 }),
             ),
-          generate: () => Effect.die(new TestError('Unexpected generation')),
-          rerank: () => Effect.die(new TestError('Unexpected reranking')),
+          generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+          rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
         });
         try {
           const result = yield* Effect.scoped(
@@ -421,7 +421,7 @@ function testEmbeddingLayer(
   const modelStoreLayer = Layer.succeed(
     LocalModelStore,
     LocalModelStore.of({
-      install: () => Effect.die(new TestError('Unexpected install')),
+      install: () => Effect.die(TestError.make({message: 'Unexpected install'})),
       path: root => `${root}/models/fake.gguf`,
       remove: () => Effect.succeed(false),
       status: root => Effect.succeed(installation(root)),
@@ -444,8 +444,8 @@ function testEmbeddingLayer(
             inputs.map(input => unitVector(requested.dimensions ?? 0, input.toLowerCase().includes('alpha') ? 0 : 1)),
           );
         },
-        generate: () => Effect.die(new TestError('Unexpected generation')),
-        rerank: () => Effect.die(new TestError('Unexpected reranking')),
+        generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+        rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
       }),
   );
   return CodeGraphEmbeddingIndex.layer.pipe(
@@ -497,7 +497,7 @@ function rebuildReleasedVectorPointerLoad(databasePath: string, pointerCount: nu
          LIMIT 1`,
       )
       .get();
-    if (!template) throw new TestError('Vector pointer load fixture has no generation template.');
+    if (!template) throw TestError.make({message: 'Vector pointer load fixture has no generation template.'});
     const insertGeneration = database.prepare(`INSERT INTO vector_generations (
          generation, snapshot_id, model_id, model_sha256, dimensions,
          template_version, count, state, created_at
@@ -559,7 +559,7 @@ function rebuildReleasedVectorPointerLoad(databasePath: string, pointerCount: nu
       )
       .all();
     if (objects.length !== 0) {
-      throw new TestError('Released vector v2 fixture unexpectedly contains retirement authority.');
+      throw TestError.make({message: 'Released vector v2 fixture unexpectedly contains retirement authority.'});
     }
   } finally {
     if (sourceAttached) database.exec('DETACH DATABASE source');

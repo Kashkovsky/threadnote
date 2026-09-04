@@ -81,7 +81,7 @@ async function startLifecycleMcpClient(): Promise<LifecycleMcpClient> {
   try {
     await client.connect(transport);
     const mcpProcessId = transport.pid;
-    if (!mcpProcessId) throw new TestError('Packaged MCP transport did not expose its process ID.');
+    if (!mcpProcessId) throw TestError.make({message: 'Packaged MCP transport did not expose its process ID.'});
     const workerProcessId = await waitForModelWorker(mcpProcessId);
     return {client, mcpProcessId, workerProcessId};
   } catch (cause) {
@@ -103,7 +103,9 @@ async function waitForModelWorker(parentProcessId: number): Promise<number> {
     if (worker) return worker.processId;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  throw new TestError(`Timed out waiting for a real local-model worker below MCP process ${parentProcessId}.`);
+  throw TestError.make({
+    message: `Timed out waiting for a real local-model worker below MCP process ${parentProcessId}.`,
+  });
 }
 
 async function processDiagnostics(): Promise<{
@@ -142,9 +144,9 @@ async function expectProcessesToExit(processIds: readonly number[]): Promise<voi
     if ((await Promise.all(processIds.map(isProcessRunning))).every(running => !running)) return;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  throw new TestError(
-    `Threadnote processes did not exit within ${lifecycleDeadlineMilliseconds} ms: ${processIds.join(', ')}`,
-  );
+  throw TestError.make({
+    message: `Threadnote processes did not exit within ${lifecycleDeadlineMilliseconds} ms: ${processIds.join(', ')}`,
+  });
 }
 
 async function isProcessRunning(processId: number): Promise<boolean> {

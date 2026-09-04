@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Path, Schema} from 'effect';
 import {
   CODE_GRAPH_SOURCE_SPAN_CANONICALIZATION_V1,
   createCodeGraphSourceSpanCanonicalizer,
@@ -7,7 +7,7 @@ import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../code_
 import {decodeUtf8} from '../code_graph/inventory_content.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphStore} from '../code_graph/store.js';
-import {CodeGraphStoreError, type CodeGraphStatus, type CodeGraphSymbol} from '../code_graph/types.js';
+import {type CodeGraphStatus, type CodeGraphSymbol, isCodeGraphStoreError} from '../code_graph/types.js';
 import {
   resolveCodeGraphQualifiedRefTargets,
   type ResolvedCodeGraphQualifiedRefTargetV1,
@@ -66,23 +66,27 @@ export interface ExpectedMemoryCodeCitationCallerIdentity {
   readonly worktreeId: string;
 }
 
-export class MemoryCodeCitationCaptureError extends Error {
-  override readonly name = 'MemoryCodeCitationCaptureError';
-  readonly failureCode?: MemoryCodeCitationCaptureFailureCode;
-  readonly recovery?: MemoryCodeCitationCaptureRecoveryV1;
-  /** Immediate retry eligibility preserved from a classified graph-store failure. */
-  readonly retryable: boolean;
-
-  constructor(
+export class MemoryCodeCitationCaptureError extends Schema.TaggedError<MemoryCodeCitationCaptureError>()(
+  'MemoryCodeCitationCaptureError',
+  {
+    failureCode: Schema.optionalKey(Schema.Literal('code-reference-unresolved')),
+    message: Schema.String,
+    recovery: Schema.optionalKey(Schema.Any),
+    retryable: Schema.Boolean,
+  },
+) {
+  static of(
     message: string,
     recovery?: MemoryCodeCitationCaptureRecoveryV1,
     failureCode?: MemoryCodeCitationCaptureFailureCode,
     retryable = false,
-  ) {
-    super(message);
-    this.recovery = recovery;
-    this.failureCode = failureCode;
-    this.retryable = retryable;
+  ): MemoryCodeCitationCaptureError {
+    return MemoryCodeCitationCaptureError.make({
+      message,
+      retryable,
+      ...(failureCode === undefined ? {} : {failureCode}),
+      ...(recovery === undefined ? {} : {recovery}),
+    });
   }
 }
 
@@ -113,7 +117,7 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
   if (refs.length === 0) return [] as readonly MemoryCodeCitationV1[];
   const path = yield* Path.Path;
   if (!path.isAbsolute(input.callerCwd)) {
-    return yield* Effect.fail(new MemoryCodeCitationCaptureError('Code citation callerCwd must be absolute.'));
+    return yield* MemoryCodeCitationCaptureError.of('Code citation callerCwd must be absolute.');
   }
 
   const query = yield* CodeGraphQueryService;
@@ -129,9 +133,7 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
 
   const invalidQualifiedRef = refs.find(ref => ref.startsWith('cgr_') && !QUALIFIED_SYMBOL_REF.test(ref));
   if (invalidQualifiedRef !== undefined) {
-    return yield* Effect.fail(
-      new MemoryCodeCitationCaptureError(`Invalid qualified code graph reference: ${invalidQualifiedRef}.`),
-    );
+    return yield* MemoryCodeCitationCaptureError.of(`Invalid qualified code graph reference: ${invalidQualifiedRef}.`);
   }
   const qualifiedRefs = refs.filter(ref => QUALIFIED_SYMBOL_REF.test(ref));
   const qualifiedTargets = yield* resolveCodeGraphQualifiedRefTargets(config, qualifiedRefs, input.callerCwd).pipe(
@@ -183,12 +185,10 @@ function resolveCaptureTarget(
     if (QUALIFIED_SYMBOL_REF.test(ref)) {
       const target = qualifiedByRef.get(ref);
       if (target === undefined) {
-        return yield* Effect.fail(
-          new MemoryCodeCitationCaptureError(
-            `Qualified code graph reference is unresolved: ${ref}.`,
-            undefined,
-            'code-reference-unresolved',
-          ),
+        return yield* MemoryCodeCitationCaptureError.of(
+          `Qualified code graph reference is unresolved: ${ref}.`,
+          undefined,
+          'code-reference-unresolved',
         );
       }
       return {
@@ -210,7 +210,7 @@ function resolveCaptureTarget(
       } satisfies CaptureTarget;
     }
     if (ref.startsWith('cgs_')) {
-      return yield* Effect.fail(new MemoryCodeCitationCaptureError(`Invalid local code graph reference: ${ref}.`));
+      return yield* MemoryCodeCitationCaptureError.of(`Invalid local code graph reference: ${ref}.`);
     }
     return {
       cwd: callerCwd,
@@ -245,7 +245,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
   return yield* Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.acquireRelease(store.acquireSnapshotLease(before.databasePath, snapshot.id, 60_000), token =>
-        store.releaseSnapshotLease(before.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+        store.releaseSnapshotLease(before.databasePath, token).pipe(Effect.ignore),
       );
       const repositoryRoot = yield* fs
         .realPath(before.identity.repoRoot)
@@ -305,14 +305,14 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
           const bytes =
             cached?.bytes ?? sourceBytes.get(codeGraphCitationSourceKey({expectedContentHash, repositoryPath}));
           if (bytes === undefined) {
-            return yield* Effect.fail(
-              new MemoryCodeCitationCaptureError(`Code citation source changed during capture: ${repositoryPath}.`),
+            return yield* MemoryCodeCitationCaptureError.of(
+              `Code citation source changed during capture: ${repositoryPath}.`,
             );
           }
           const source = needsText ? decodeUtf8(bytes) : undefined;
           if (needsText && source === undefined) {
-            return yield* Effect.fail(
-              new MemoryCodeCitationCaptureError(`Cited symbol source is not valid UTF-8: ${repositoryPath}.`),
+            return yield* MemoryCodeCitationCaptureError.of(
+              `Cited symbol source is not valid UTF-8: ${repositoryPath}.`,
             );
           }
           const loaded = {
@@ -353,24 +353,20 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
             if (target.target.kind === 'file') {
               const file = fileByPath.get(target.target.path);
               if (!file) {
-                return yield* Effect.fail(
-                  new MemoryCodeCitationCaptureError(
-                    `Code citation path is not present in the exact current graph: ${target.target.path}. Use a graph-indexed repository-relative path.`,
-                    undefined,
-                    'code-reference-unresolved',
-                  ),
+                return yield* MemoryCodeCitationCaptureError.of(
+                  `Code citation path is not present in the exact current graph: ${target.target.path}. Use a graph-indexed repository-relative path.`,
+                  undefined,
+                  'code-reference-unresolved',
                 );
               }
               return yield* captureFileCitation(file.path, file.contentHash, target.index);
             }
             const symbol = symbolById.get(target.target.nodeId);
             if (!symbol) {
-              return yield* Effect.fail(
-                new MemoryCodeCitationCaptureError(
-                  `Code graph symbol is absent from the exact current graph: ${target.target.nodeId}.`,
-                  undefined,
-                  'code-reference-unresolved',
-                ),
+              return yield* MemoryCodeCitationCaptureError.of(
+                `Code graph symbol is absent from the exact current graph: ${target.target.nodeId}.`,
+                undefined,
+                'code-reference-unresolved',
               );
             }
             if (isFileRootSymbol(symbol)) {
@@ -388,10 +384,8 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
         })
         .pipe(Effect.mapError(error => captureError(cwd, error)));
       if (!sameExactSnapshot(before, after)) {
-        return yield* Effect.fail(
-          new MemoryCodeCitationCaptureError(
-            'Repository graph or worktree changed while code citations were captured.',
-          ),
+        return yield* MemoryCodeCitationCaptureError.of(
+          'Repository graph or worktree changed while code citations were captured.',
         );
       }
       if (expectedCallerIdentity) yield* requireExpectedCallerIdentity(after, expectedCallerIdentity);
@@ -405,9 +399,7 @@ const requireExpectedCallerIdentity = Effect.fn('memoryCodeCitation.requireExpec
   expected: ExpectedMemoryCodeCitationCallerIdentity,
 ) {
   if (status.identity.repositoryId !== expected.repositoryId || status.identity.worktreeId !== expected.worktreeId) {
-    return yield* Effect.fail(
-      new MemoryCodeCitationCaptureError('Code citation caller repository identity changed during capture.'),
-    );
+    return yield* MemoryCodeCitationCaptureError.of('Code citation caller repository identity changed during capture.');
   }
 });
 
@@ -436,10 +428,8 @@ const captureSymbolCitation = Effect.fn('memoryCodeCitation.captureSymbol')(func
   const loaded = yield* readSource(symbol.path, symbol.contentHash, true);
   const fragment = loaded.canonicalizer!.fragment(symbol.span);
   if (!fragment.ok) {
-    return yield* Effect.fail(
-      new MemoryCodeCitationCaptureError(
-        `Code graph returned an invalid source span for ${symbol.id}: ${fragment.reason}.`,
-      ),
+    return yield* MemoryCodeCitationCaptureError.of(
+      `Code graph returned an invalid source span for ${symbol.id}: ${fragment.reason}.`,
     );
   }
   const signatureHash = symbol.signature === undefined ? undefined : yield* sha256Hex(symbol.signature);
@@ -477,7 +467,7 @@ export function normalizeMemoryCodeRefs(refs: readonly string[]): readonly strin
   const normalized: string[] = [];
   for (const raw of refs) {
     const ref = raw.trim();
-    if (!ref) throw new MemoryCodeCitationCaptureError('Code references must not be empty.');
+    if (!ref) throw MemoryCodeCitationCaptureError.of('Code references must not be empty.');
     if (
       !LOCAL_SYMBOL_REF.test(ref) &&
       !QUALIFIED_SYMBOL_REF.test(ref) &&
@@ -485,7 +475,7 @@ export function normalizeMemoryCodeRefs(refs: readonly string[]): readonly strin
         ref.includes('\\') ||
         ref.split('/').some(segment => !segment || segment === '.' || segment === '..'))
     ) {
-      throw new MemoryCodeCitationCaptureError(`Code reference must be a safe repository-relative path: ${ref}.`);
+      throw MemoryCodeCitationCaptureError.of(`Code reference must be a safe repository-relative path: ${ref}.`);
     }
     if (!seen.has(ref)) {
       seen.add(ref);
@@ -493,7 +483,7 @@ export function normalizeMemoryCodeRefs(refs: readonly string[]): readonly strin
     }
   }
   if (normalized.length > MAX_MEMORY_CODE_CITATIONS) {
-    throw new MemoryCodeCitationCaptureError(`A memory may cite at most ${MAX_MEMORY_CODE_CITATIONS} code references.`);
+    throw MemoryCodeCitationCaptureError.of(`A memory may cite at most ${MAX_MEMORY_CODE_CITATIONS} code references.`);
   }
   return normalized;
 }
@@ -510,13 +500,13 @@ function requireExactCurrentSnapshot(
   preparation: MemoryCodeCitationGraphPreparationV1,
 ): NonNullable<CodeGraphStatus['readySnapshot']> {
   if (status.readySnapshot === undefined) {
-    throw new MemoryCodeCitationCaptureError(
+    throw MemoryCodeCitationCaptureError.of(
       `Code citations require an already-published ready graph; ${captureRecoveryMessage(preparation)} No indexing was started.`,
       captureRecovery(status, 'ready-graph-unavailable', preparation),
     );
   }
   if (status.stale || status.freshness !== 'current') {
-    throw new MemoryCodeCitationCaptureError(
+    throw MemoryCodeCitationCaptureError.of(
       `Code citations require exact current graph evidence; ${captureRecoveryMessage(preparation)} No indexing was started.`,
       captureRecovery(status, 'exact-current-evidence-unavailable', preparation),
     );
@@ -586,12 +576,12 @@ function sameExactSnapshot(before: CodeGraphStatus, after: CodeGraphStatus): boo
 }
 
 function captureError(target: string, cause: unknown): MemoryCodeCitationCaptureError {
-  return cause instanceof MemoryCodeCitationCaptureError
+  return Schema.is(MemoryCodeCitationCaptureError)(cause)
     ? cause
-    : new MemoryCodeCitationCaptureError(
+    : MemoryCodeCitationCaptureError.of(
         `Could not capture code citation ${target}: ${cause instanceof Error ? cause.message : String(cause)}`,
         undefined,
         undefined,
-        cause instanceof CodeGraphStoreError && cause.retryable,
+        isCodeGraphStoreError(cause) && cause.retryable,
       );
 }

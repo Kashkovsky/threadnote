@@ -269,7 +269,7 @@ function readOnlyVectorRow(home: string) {
 const modelStoreLayer = Layer.succeed(
   LocalModelStore,
   LocalModelStore.of({
-    install: () => Effect.die(new TestError('Unexpected install')),
+    install: () => Effect.die(TestError.make({message: 'Unexpected install'})),
     path: home => `${home}/models/fake.gguf`,
     remove: () => Effect.succeed(false),
     status: home => Effect.succeed(installation(home)),
@@ -290,8 +290,8 @@ function semanticRuntime(
           onInputs(inputs);
           return inputs.map(vector);
         }),
-      generate: () => Effect.die(new TestError('Unexpected generation')),
-      rerank: () => Effect.die(new TestError('Unexpected reranking')),
+      generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+      rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
     }),
   );
 }

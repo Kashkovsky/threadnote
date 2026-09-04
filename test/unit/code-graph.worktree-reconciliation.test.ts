@@ -15,7 +15,7 @@ import {dirname, join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
-import {Deferred, Effect, Fiber, Layer, Path, Ref} from 'effect';
+import {Clock, Deferred, Effect, Fiber, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {afterEach, describe, expect} from 'vitest';
@@ -40,6 +40,7 @@ import {
   CODE_GRAPH_EXTRACTOR_GENERATION,
   CodeGraphStoreBusyError,
   CodeGraphStoreError,
+  isCodeGraphStoreError,
   type CodeGraphSnapshot,
 } from '../../src/code_graph/types.js';
 import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store_schema_metadata.js';
@@ -393,11 +394,11 @@ describe('automatic missing-worktree reconciliation', () => {
       const cases = [
         {
           expected: {reason: 'target-busy', state: 'deferred'},
-          failure: new CodeGraphStoreBusyError('Target gate is busy.'),
+          failure: CodeGraphStoreBusyError.of('Target gate is busy.'),
         },
         {
           expected: {reason: 'catalog-unavailable', state: 'deferred'},
-          failure: new CodeGraphStoreError('Target gate could not be inspected.', {
+          failure: CodeGraphStoreError.of('Target gate could not be inspected.', {
             code: 'permission',
             recovery: 'fix-permissions',
           }),
@@ -610,7 +611,7 @@ describe('automatic missing-worktree reconciliation', () => {
 
           const invalid = yield* Effect.flip(store.claimWorktreeReconciliationCandidates(databasePath, 1));
 
-          expect(invalid, testCase.name).toBeInstanceOf(CodeGraphStoreError);
+          expect(isCodeGraphStoreError(invalid), testCase.name).toBe(true);
           expect(invalid.message, testCase.name).toBe(
             'Code graph reconciliation cursor metadata is structurally invalid.',
           );
@@ -893,10 +894,11 @@ describe('automatic missing-worktree reconciliation', () => {
           seedCandidateViews(databasePath, [targetWorktreeId], false);
           seedReadyOrphanSnapshots(databasePath, 4_096, 1);
         });
+        const now = yield* Clock.currentTimeMillis;
         const plan = yield* Effect.sync(() => {
           const database = new Database(databasePath, {readonly: true, strict: true});
           try {
-            const statement = codeGraphExactSnapshotRetirementStatement([selectedSnapshotId], Date.now());
+            const statement = codeGraphExactSnapshotRetirementStatement([selectedSnapshotId], now);
             return database.query(`EXPLAIN QUERY PLAN ${statement.text}`).all(...statement.parameters) as readonly {
               readonly detail: string;
             }[];
@@ -1075,7 +1077,7 @@ describe('automatic missing-worktree reconciliation', () => {
           seedCandidateViews(databasePath, [targetWorktreeId], false);
           seedBlockedDescendantChain(databasePath, rootSnapshotId, 10_001);
         });
-        const statement = codeGraphExactSnapshotRetirementStatement([rootSnapshotId], Date.now());
+        const statement = codeGraphExactSnapshotRetirementStatement([rootSnapshotId], yield* Clock.currentTimeMillis);
         const plan = yield* Effect.sync(() => queryPlan(databasePath, statement));
         expect(plan.some(row => row.detail.includes('snapshots_base_state_id'))).toBe(true);
         expect(plan.some(row => /USE TEMP B-TREE|SCAN child/u.test(row.detail))).toBe(false);
@@ -1412,7 +1414,7 @@ describe('automatic missing-worktree reconciliation', () => {
         yield* store.initialize(databasePath);
         const snapshotId = `cgsn_${'0'.repeat(40)}`;
         yield* Effect.sync(() => seedCandidateViews(databasePath, [targetWorktreeId], false));
-        const refuse = () => Effect.fail(new CodeGraphMaintenanceActiveError());
+        const refuse = () => Effect.fail(CodeGraphMaintenanceActiveError.of());
 
         const claim = yield* store
           .claimWorktreeReconciliationCandidates(databasePath, 1, {beforeDatabaseOpen: refuse})
@@ -1684,7 +1686,7 @@ function createLiveReconciliationFixture(prefix: string) {
     );
     const association = yield* recordVerifiedCodeGraphLocalAssociation(home, linkedIdentity);
     if (association.state !== 'verified') {
-      return yield* Effect.fail(new TestError('Could not record the exact linked-worktree provenance fixture.'));
+      return yield* TestError.make({message: 'Could not record the exact linked-worktree provenance fixture.'});
     }
     const path = yield* Path.Path;
     const layout = codeGraphLayout(path, home, linkedIdentity.checkoutId, linkedIdentity.worktreeId);
@@ -1712,7 +1714,7 @@ function createLiveReconciliationFixture(prefix: string) {
       `${linkedIdentity.worktreeId}.json`,
     );
     if (!existsSync(provenancePath)) {
-      return yield* Effect.fail(new TestError('The exact linked-worktree provenance fixture is missing.'));
+      return yield* TestError.make({message: 'The exact linked-worktree provenance fixture is missing.'});
     }
     return {
       adminPath,
@@ -1784,7 +1786,9 @@ async function runLiveReconciliationContenders(
   const completed = Promise.all(contenders);
   await Promise.race([
     waitForContenderBarrier(barrier, count, 10_000),
-    completed.then(() => Promise.reject(new TestError('E4 contenders exited before the shared barrier was released.'))),
+    completed.then(() =>
+      Promise.reject(TestError.make({message: 'E4 contenders exited before the shared barrier was released.'})),
+    ),
   ]);
   writeFileSync(join(barrier, 'release'), 'go\n', {mode: 0o600});
   return await completed;
@@ -1827,7 +1831,7 @@ async function runLiveReconciliationContender(
       clearTimeout(timeout);
       const resultLine = stdout.split(/\r?\n/u).find(line => line.startsWith('THREADNOTE_E4_RESULT='));
       if (code !== 0 || resultLine === undefined) {
-        reject(new TestError(`E4 contender exited ${String(code)}: ${stderr || stdout}`));
+        reject(TestError.make({message: `E4 contender exited ${String(code)}: ${stderr || stdout}`}));
         return;
       }
       try {
@@ -1843,7 +1847,8 @@ async function waitForContenderBarrier(barrier: string, count: number, timeoutMi
   const deadline = Date.now() + timeoutMilliseconds;
   for (;;) {
     if (Array.from({length: count}, (_, index) => existsSync(join(barrier, `${index}.ready`))).every(Boolean)) return;
-    if (Date.now() >= deadline) throw new TestError('E4 contenders did not reach the shared barrier in time.');
+    if (Date.now() >= deadline)
+      throw TestError.make({message: 'E4 contenders did not reach the shared barrier in time.'});
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
@@ -1869,7 +1874,7 @@ const result = await Effect.runPromise(
     const barrier = process.env.THREADNOTE_E4_CONTENDER_BARRIER;
     const contender = process.env.THREADNOTE_E4_CONTENDER_ID;
     if (!home || !anchorPath || !barrier || !contender) {
-      return yield* Effect.fail(new Error('E4 contender fixture is unavailable.'));
+      return yield* Error.make({message: 'E4 contender fixture is unavailable.'});
     }
     const anchor = yield* resolveRepositoryIdentity(anchorPath);
     const path = yield* Path.Path;
@@ -2235,15 +2240,16 @@ function rebuildCanonicalTableDefinition(
     const row = database.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName) as {
       readonly sql: string;
     } | null;
-    if (row === null) throw new TestError(`missing canonical table ${tableName}`);
+    if (row === null) throw TestError.make({message: `missing canonical table ${tableName}`});
     const changed = mutate(row.sql);
-    if (changed === row.sql) throw new TestError(`canonical table mutation did not change ${tableName}`);
+    if (changed === row.sql) throw TestError.make({message: `canonical table mutation did not change ${tableName}`});
     const temporaryTable = `${tableName}_drift_fixture`;
     const temporaryDefinition = changed.replace(
       new RegExp(`^CREATE TABLE(?: IF NOT EXISTS)? "?${tableName}"?`, 'u'),
       `CREATE TABLE ${temporaryTable}`,
     );
-    if (temporaryDefinition === changed) throw new TestError(`cannot derive temporary table for ${tableName}`);
+    if (temporaryDefinition === changed)
+      throw TestError.make({message: `cannot derive temporary table for ${tableName}`});
     const columns = (
       database.query(`PRAGMA table_xinfo('${tableName}')`).all() as readonly {
         readonly hidden: number;

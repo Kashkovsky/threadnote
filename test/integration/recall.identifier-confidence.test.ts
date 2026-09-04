@@ -1,5 +1,5 @@
 import {expect, it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {DateTime, Effect, FileSystem, Option, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {ResourceStore, type ResourceStoreMutation} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -33,7 +33,7 @@ effectIt.effect('recalls an exact camelCase identifier extracted from the canoni
       const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-recall-identifier-'});
       const manifestPath = path.join(home, 'seed-manifest.yaml');
       yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
-      yield* TestClock.setTime(new Date('2026-08-20T00:00:00.000Z').getTime());
+      yield* TestClock.setTime(DateTime.toDateUtc(DateTime.makeUnsafe('2026-08-20T00:00:00.000Z')).getTime());
       const config: RuntimeConfig = {
         account: 'local',
         agentContextHome: home,

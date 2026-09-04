@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {runBinaryCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {codeGraphCommittedContentHash, codeGraphFileContentHashMatchesBytes} from './content_identity.js';
@@ -26,9 +26,13 @@ interface CommitBlobObservation extends CodeGraphCitationSourceRequest {
   readonly size: number;
 }
 
-export class CodeGraphCitationSourceError extends Error {
-  override readonly name = 'CodeGraphCitationSourceError';
-}
+export class CodeGraphCitationSourceError extends Schema.TaggedError<CodeGraphCitationSourceError>()(
+  'CodeGraphCitationSourceError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export function codeGraphCitationSourceKey(
   source: Pick<CodeGraphCitationSourceRequest, 'expectedContentHash' | 'repositoryPath'>,
@@ -56,16 +60,14 @@ export const readCodeGraphCitationSources = Effect.fn('codeGraph.readCitationSou
   const system = yield* SystemInfo;
   const requestedRetainedBytesLimit = input.retainedBytesLimit ?? CODE_GRAPH_CITATION_SOURCE_MAXIMUM_TOTAL_BYTES;
   if (!Number.isSafeInteger(requestedRetainedBytesLimit) || requestedRetainedBytesLimit < 0) {
-    return yield* Effect.fail(new CodeGraphCitationSourceError('Citation retained-byte bound is invalid.'));
+    return yield* CodeGraphCitationSourceError.make({message: 'Citation retained-byte bound is invalid.'});
   }
   const retainedBytesLimit = Math.min(CODE_GRAPH_CITATION_SOURCE_MAXIMUM_TOTAL_BYTES, requestedRetainedBytesLimit);
   const sources = deduplicateSources(input.sources);
   if (sources.length > CODE_GRAPH_CITATION_SOURCE_MAXIMUM_FILES) {
-    return yield* Effect.fail(
-      new CodeGraphCitationSourceError(
-        `Citation source request exceeds the ${CODE_GRAPH_CITATION_SOURCE_MAXIMUM_FILES}-file bound.`,
-      ),
-    );
+    return yield* CodeGraphCitationSourceError.make({
+      message: `Citation source request exceeds the ${CODE_GRAPH_CITATION_SOURCE_MAXIMUM_FILES}-file bound.`,
+    });
   }
 
   const metadata = yield* Effect.forEach(
@@ -144,7 +146,7 @@ export const readCodeGraphCitationSources = Effect.fn('codeGraph.readCitationSou
   const expressions = commitFallback.map(source => `${input.sourceCommit}:${source.repositoryPath}`);
   const checkInput = nulTerminated(expressions);
   if (checkInput.byteLength > CODE_GRAPH_CITATION_SOURCE_BATCH_INPUT_BYTES) {
-    return yield* Effect.fail(new CodeGraphCitationSourceError('Citation source batch input exceeds its byte bound.'));
+    return yield* CodeGraphCitationSourceError.make({message: 'Citation source batch input exceeds its byte bound.'});
   }
   const environment = {...system.environment(), GIT_NO_LAZY_FETCH: '1'};
   const checked = yield* runBinaryCommandEffect(
@@ -157,17 +159,19 @@ export const readCodeGraphCitationSources = Effect.fn('codeGraph.readCitationSou
       timeoutMs: CODE_GRAPH_CITATION_SOURCE_COMMAND_TIMEOUT_MILLISECONDS,
     },
   ).pipe(
-    Effect.mapError(
-      cause =>
-        new CodeGraphCitationSourceError('Could not inspect cited sources at the exact snapshot commit.', {cause}),
+    Effect.mapError(cause =>
+      CodeGraphCitationSourceError.make({
+        cause,
+        message: 'Could not inspect cited sources at the exact snapshot commit.',
+      }),
     ),
   );
   const observations = yield* Effect.try({
     try: () => parseBatchCheck(checked.stdout, commitFallback, input.objectFormat),
     catch: cause =>
-      cause instanceof CodeGraphCitationSourceError
+      Schema.is(CodeGraphCitationSourceError)(cause)
         ? cause
-        : new CodeGraphCitationSourceError('Could not parse cited source inspection.', {cause}),
+        : CodeGraphCitationSourceError.make({cause, message: 'Could not parse cited source inspection.'}),
   });
   const blobsToRead: CommitBlobObservation[] = [];
   for (const observation of observations) {
@@ -191,17 +195,19 @@ export const readCodeGraphCitationSources = Effect.fn('codeGraph.readCitationSou
       maxOutputBytes: batch.reduce((total, observation) => total + observation.size + 256, 0),
       timeoutMs: CODE_GRAPH_CITATION_SOURCE_COMMAND_TIMEOUT_MILLISECONDS,
     }).pipe(
-      Effect.mapError(
-        cause =>
-          new CodeGraphCitationSourceError('Could not read cited sources at the exact snapshot commit.', {cause}),
+      Effect.mapError(cause =>
+        CodeGraphCitationSourceError.make({
+          cause,
+          message: 'Could not read cited sources at the exact snapshot commit.',
+        }),
       ),
     );
     const blobs = yield* Effect.try({
       try: () => parseBatchBlobs(result.stdout, batch),
       catch: cause =>
-        cause instanceof CodeGraphCitationSourceError
+        Schema.is(CodeGraphCitationSourceError)(cause)
           ? cause
-          : new CodeGraphCitationSourceError('Could not parse cited source batch.', {cause}),
+          : CodeGraphCitationSourceError.make({cause, message: 'Could not parse cited source batch.'}),
     });
     for (let index = 0; index < batch.length; index += 1) {
       const observation = batch[index];
@@ -241,7 +247,9 @@ function parseBatchCheck(
   const lines = new TextDecoder('utf-8', {fatal: true}).decode(bytes).split('\n');
   if (lines.at(-1) === '') lines.pop();
   if (lines.length !== sources.length) {
-    throw new CodeGraphCitationSourceError('Git citation source inspection returned an unexpected row count.');
+    throw CodeGraphCitationSourceError.make({
+      message: 'Git citation source inspection returned an unexpected row count.',
+    });
   }
   const observations: CommitBlobObservation[] = [];
   for (let index = 0; index < sources.length; index += 1) {
@@ -288,22 +296,25 @@ function parseBatchBlobs(bytes: Uint8Array, observations: readonly CommitBlobObs
   let offset = 0;
   for (const observation of observations) {
     const newline = bytes.indexOf(0x0a, offset);
-    if (newline < 0) throw new CodeGraphCitationSourceError('Git citation source batch ended before its header.');
+    if (newline < 0)
+      throw CodeGraphCitationSourceError.make({message: 'Git citation source batch ended before its header.'});
     const header = new TextDecoder('utf-8', {fatal: true}).decode(bytes.subarray(offset, newline));
     const expected = `${observation.blobId} blob ${observation.size}`;
     if (header !== expected) {
-      throw new CodeGraphCitationSourceError('Git citation source batch returned an unexpected object header.');
+      throw CodeGraphCitationSourceError.make({
+        message: 'Git citation source batch returned an unexpected object header.',
+      });
     }
     const start = newline + 1;
     const end = start + observation.size;
     if (end >= bytes.byteLength || bytes[end] !== 0x0a) {
-      throw new CodeGraphCitationSourceError('Git citation source batch ended before its blob payload.');
+      throw CodeGraphCitationSourceError.make({message: 'Git citation source batch ended before its blob payload.'});
     }
     blobs.push(bytes.slice(start, end));
     offset = end + 1;
   }
   if (offset !== bytes.byteLength) {
-    throw new CodeGraphCitationSourceError('Git citation source batch returned trailing bytes.');
+    throw CodeGraphCitationSourceError.make({message: 'Git citation source batch returned trailing bytes.'});
   }
   return blobs;
 }

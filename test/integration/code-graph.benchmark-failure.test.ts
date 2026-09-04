@@ -6,7 +6,7 @@ import {join} from '../helpers/node-path.js';
 import {fileURLToPath} from '../helpers/node-url.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {Clock, Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {parseCodeGraphBenchmarkRunCheckpoint, startExternalSampler} from '../../scripts/benchmark-code-graph.js';
@@ -98,7 +98,7 @@ describe('production-large benchmark failure telemetry', () => {
           ...fileSystem,
           writeFileString: (file, data, options) =>
             file.endsWith('.stop')
-              ? Effect.die(new TestError('injected stop-write failure'))
+              ? Effect.die(TestError.make({message: 'injected stop-write failure'}))
               : fileSystem.writeFileString(file, data, options),
         });
         const sampler = yield* startExternalSampler(
@@ -113,9 +113,9 @@ describe('production-large benchmark failure telemetry', () => {
         const before = parseCodeGraphBenchmarkSamplerCheckpoint(
           JSON.parse(yield* fileSystem.readFileString(checkpoint)),
         );
-        const startedAt = Date.now();
+        const startedAt = yield* Clock.currentTimeMillis;
         const exit = yield* Effect.exit(sampler.stop());
-        const elapsedMilliseconds = Date.now() - startedAt;
+        const elapsedMilliseconds = (yield* Clock.currentTimeMillis) - startedAt;
         const after = parseCodeGraphBenchmarkSamplerCheckpoint(
           JSON.parse(yield* fileSystem.readFileString(checkpoint)),
         );
@@ -138,7 +138,7 @@ async function waitFor<A>(observe: () => A | Promise<A>, timeoutMilliseconds: nu
   for (;;) {
     const value = await observe();
     if (value !== undefined && value !== false && value !== null) return value;
-    if (Date.now() >= deadline) throw new TestError(`Timed out after ${timeoutMilliseconds} ms.`);
+    if (Date.now() >= deadline) throw TestError.make({message: `Timed out after ${timeoutMilliseconds} ms.`});
     await Bun.sleep(20);
   }
 }

@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {observeRepositoryBranch} from '../code_graph/repository.js';
 import {runCommandEffect} from '../effect/command.js';
 import {sha256HexSync} from '../crypto/sha256.js';
@@ -9,9 +9,10 @@ import {expandPath, portablePath} from '../utils.js';
 const UTF8 = new TextEncoder();
 const PATH_BYTES_MAXIMUM = 4_096;
 
-export class ManagerProjectRootError extends Error {
-  readonly _tag = 'ManagerProjectRootError' as const;
-}
+export class ManagerProjectRootError extends Schema.TaggedError<ManagerProjectRootError>()('ManagerProjectRootError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export interface ManagerProjectRootValidation {
   readonly fingerprint: string;
@@ -49,7 +50,7 @@ export const validateManagerProjectRoots = Effect.fn('managerProjectRoots.valida
       const root = rootsCanCollide(cheap, candidateRoot) ? yield* observeRoot(projects[index]) : cheap;
       confirmed.push(root);
       if (root.key === candidateRoot.key) {
-        return yield* Effect.fail(new ManagerProjectRootError('Another manifest project owns this repository root.'));
+        return yield* ManagerProjectRootError.make({message: 'Another manifest project owns this repository root.'});
       }
     }
     return {
@@ -59,7 +60,8 @@ export const validateManagerProjectRoots = Effect.fn('managerProjectRoots.valida
   }).pipe(
     Effect.timeoutOrElse({
       duration: 10_000,
-      orElse: () => Effect.fail(new ManagerProjectRootError('Project root validation timed out. Retry shortly.')),
+      orElse: () =>
+        Effect.fail(ManagerProjectRootError.make({message: 'Project root validation timed out. Retry shortly.'})),
     }),
   );
 });
@@ -110,21 +112,25 @@ const observeCheapRoot = Effect.fn('managerProjectRoots.observeCheap')(function*
   if (managerProjectPathIsForeign(project.path, system.platform)) return foreignRoot(project.path, system.platform);
   const expanded = yield* expandPath(project.path);
   const info = yield* fs.stat(expanded).pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catchIf(
       error => error.reason._tag === 'NotFound',
-      () => Effect.succeed(Option.none()),
+      () => Effect.succeedNone,
     ),
-    Effect.mapError(() => new ManagerProjectRootError('A configured project root could not be observed safely.')),
+    Effect.mapError(() =>
+      ManagerProjectRootError.make({message: 'A configured project root could not be observed safely.'}),
+    ),
   );
   if (Option.isNone(info)) return yield* missingRoot(fs, path, project.path, expanded, system.platform);
   if (info.value.type !== 'Directory') {
-    return yield* Effect.fail(new ManagerProjectRootError('Project path must identify a directory when it exists.'));
+    return yield* ManagerProjectRootError.make({message: 'Project path must identify a directory when it exists.'});
   }
   const canonical = yield* fs
     .realPath(expanded)
     .pipe(
-      Effect.mapError(() => new ManagerProjectRootError('A configured project root changed while it was observed.')),
+      Effect.mapError(() =>
+        ManagerProjectRootError.make({message: 'A configured project root changed while it was observed.'}),
+      ),
     );
   return presentRoot(project.path, canonical, info.value, system.platform);
 });
@@ -140,9 +146,13 @@ const observeRoot = Effect.fn('managerProjectRoots.observe')(function* (project:
     'git',
     ['-C', expanded, 'rev-parse', '--path-format=absolute', '--show-toplevel'],
     {allowFailure: true, maxOutputBytes: PATH_BYTES_MAXIMUM, timeoutMs: 5_000},
-  ).pipe(Effect.mapError(() => new ManagerProjectRootError('A configured project root could not be observed safely.')));
+  ).pipe(
+    Effect.mapError(() =>
+      ManagerProjectRootError.make({message: 'A configured project root could not be observed safely.'}),
+    ),
+  );
   if (result.exitCode === 124 || result.exitCode === 127) {
-    return yield* Effect.fail(new ManagerProjectRootError('Git could not inspect the configured project root safely.'));
+    return yield* ManagerProjectRootError.make({message: 'Git could not inspect the configured project root safely.'});
   }
   const rawRoot = result.exitCode === 0 ? result.stdout.replace(/\r?\n$/u, '') : expanded;
   if (
@@ -152,21 +162,21 @@ const observeRoot = Effect.fn('managerProjectRoots.observe')(function* (project:
     !path.isAbsolute(rawRoot) ||
     UTF8.encode(rawRoot).byteLength > PATH_BYTES_MAXIMUM
   ) {
-    return yield* Effect.fail(new ManagerProjectRootError('A configured project root is invalid.'));
+    return yield* ManagerProjectRootError.make({message: 'A configured project root is invalid.'});
   }
   const canonical = yield* fs
     .realPath(rawRoot)
-    .pipe(Effect.mapError(() => new ManagerProjectRootError('A configured project root disappeared.')));
+    .pipe(Effect.mapError(() => ManagerProjectRootError.make({message: 'A configured project root disappeared.'})));
   const info = yield* fs
     .stat(canonical)
-    .pipe(Effect.mapError(() => new ManagerProjectRootError('A configured project root disappeared.')));
+    .pipe(Effect.mapError(() => ManagerProjectRootError.make({message: 'A configured project root disappeared.'})));
   if (info.type !== 'Directory') {
-    return yield* Effect.fail(new ManagerProjectRootError('Project path must identify a repository directory.'));
+    return yield* ManagerProjectRootError.make({message: 'Project path must identify a repository directory.'});
   }
   const root = presentRoot(project.path, canonical, info, system.platform);
   const storedPath = yield* portablePath(canonical);
   if (!managerProjectStoredPathIsSafe(storedPath)) {
-    return yield* Effect.fail(new ManagerProjectRootError('The canonical project root cannot be stored safely.'));
+    return yield* ManagerProjectRootError.make({message: 'The canonical project root cannot be stored safely.'});
   }
   return {...root, path: storedPath};
 });
@@ -205,12 +215,14 @@ const missingRoot = Effect.fn('managerProjectRoots.missing')(function* (
     const parent = path.dirname(current);
     if (parent === current) break;
     const info = yield* fs.stat(current).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catchIf(
         error => error.reason._tag === 'NotFound',
-        () => Effect.succeed(Option.none()),
+        () => Effect.succeedNone,
       ),
-      Effect.mapError(() => new ManagerProjectRootError('A configured project ancestor could not be observed safely.')),
+      Effect.mapError(() =>
+        ManagerProjectRootError.make({message: 'A configured project ancestor could not be observed safely.'}),
+      ),
     );
     if (Option.isSome(info)) {
       ancestorInfo = info.value;
@@ -223,30 +235,32 @@ const missingRoot = Effect.fn('managerProjectRoots.missing')(function* (
     ancestorInfo = yield* fs
       .stat(current)
       .pipe(
-        Effect.mapError(
-          () => new ManagerProjectRootError('A configured project ancestor could not be observed safely.'),
+        Effect.mapError(() =>
+          ManagerProjectRootError.make({message: 'A configured project ancestor could not be observed safely.'}),
         ),
       );
   }
   if (ancestorInfo.type !== 'Directory') {
-    return yield* Effect.fail(new ManagerProjectRootError('Project path must identify a directory when it exists.'));
+    return yield* ManagerProjectRootError.make({message: 'Project path must identify a directory when it exists.'});
   }
   const realAncestor = yield* fs
     .realPath(current)
     .pipe(
-      Effect.mapError(() => new ManagerProjectRootError('A configured project ancestor could not be observed safely.')),
+      Effect.mapError(() =>
+        ManagerProjectRootError.make({message: 'A configured project ancestor could not be observed safely.'}),
+      ),
     );
   const canonicalInfo = yield* fs
     .stat(realAncestor)
     .pipe(
-      Effect.mapError(
-        () => new ManagerProjectRootError('A configured project ancestor changed while it was observed.'),
+      Effect.mapError(() =>
+        ManagerProjectRootError.make({message: 'A configured project ancestor changed while it was observed.'}),
       ),
     );
   if (canonicalInfo.type !== 'Directory' || fileIdentity(canonicalInfo) !== fileIdentity(ancestorInfo)) {
-    return yield* Effect.fail(
-      new ManagerProjectRootError('A configured project ancestor changed while it was observed.'),
-    );
+    return yield* ManagerProjectRootError.make({
+      message: 'A configured project ancestor changed while it was observed.',
+    });
   }
   const normalized = rootKey(path.join(realAncestor, ...suffix), platform);
   return {

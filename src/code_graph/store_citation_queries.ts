@@ -543,7 +543,7 @@ function validateUniqueTargets<T>(
 ) {
   if (values.length > CODE_GRAPH_CITATION_QUERY_MAX_TARGETS) {
     return Effect.fail(
-      new CodeGraphStoreError(
+      CodeGraphStoreError.of(
         `A citation query accepts at most ${CODE_GRAPH_CITATION_QUERY_MAX_TARGETS} ${description}s.`,
       ),
     );
@@ -551,7 +551,7 @@ function validateUniqueTargets<T>(
   const output: T[] = [];
   const seen = new Set<string>();
   for (const value of values) {
-    if (!valid(value)) return Effect.fail(new CodeGraphStoreError(`Citation query ${description} is invalid.`));
+    if (!valid(value)) return Effect.fail(CodeGraphStoreError.of(`Citation query ${description} is invalid.`));
     const identity = key(value);
     if (!seen.has(identity)) {
       seen.add(identity);
@@ -565,7 +565,7 @@ function validateMatchLimit(limit: number) {
   return Number.isSafeInteger(limit) && limit >= 1 && limit <= CODE_GRAPH_CITATION_QUERY_MAX_MATCHES_PER_TARGET
     ? Effect.succeed(limit)
     : Effect.fail(
-        new CodeGraphStoreError(
+        CodeGraphStoreError.of(
           `A citation query per-target limit must be between 1 and ${CODE_GRAPH_CITATION_QUERY_MAX_MATCHES_PER_TARGET}.`,
         ),
       );

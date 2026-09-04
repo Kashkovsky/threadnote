@@ -1,4 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Effect, FileSystem, Path} from 'effect';
@@ -258,7 +259,7 @@ describe('standalone release lifecycle', () => {
           const interrupted = yield* activateStandaloneRelease(newRelease, false, {
             afterStep: step =>
               step === 'active-previous-backed-up'
-                ? Effect.fail(new TestError('simulated active pointer crash'))
+                ? Effect.fail(TestError.make({message: 'simulated active pointer crash'}))
                 : Effect.void,
           }).pipe(Effect.provideService(SystemInfo, testSystem), Effect.flip);
           const activeMissingAfterCrash = !(yield* fs.exists(path.join(installRoot, 'active-release.json')));
@@ -313,7 +314,7 @@ describe('standalone release lifecycle', () => {
           yield* activateStandaloneRelease(newRelease, false, {
             afterStep: step =>
               step === 'active-promoted'
-                ? Effect.fail(new TestError('simulated crash after pointer promotion'))
+                ? Effect.fail(TestError.make({message: 'simulated crash after pointer promotion'}))
                 : Effect.void,
           }).pipe(Effect.provideService(SystemInfo, testSystem), Effect.flip);
 
@@ -357,7 +358,7 @@ describe('standalone release lifecycle', () => {
           yield* fs.writeFileString(path.join(stagedRoot, 'release.json'), '{"version":"4.0.2"}\n');
           yield* promoteStandaloneReleaseDirectory(fs, path, stagedRoot, releaseRoot, system.processId, {
             afterStep: observed =>
-              observed === step ? Effect.fail(new TestError(`simulated crash after ${step}`)) : Effect.void,
+              observed === step ? Effect.fail(TestError.make({message: `simulated crash after ${step}`})) : Effect.void,
           }).pipe(Effect.flip);
 
           yield* recoverStandaloneReleasePromotion(fs, path, releaseRoot);
@@ -583,7 +584,7 @@ describe('standalone release lifecycle', () => {
             environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: installRoot}),
             isProcessRunning: candidate => candidate === processId,
             processId: 99_999,
-            processStartIdentity: () => Effect.succeed(undefined),
+            processStartIdentity: () => succeedUndefined,
             signalProcess: (candidate, signal) => {
               signals.push([candidate, signal]);
             },

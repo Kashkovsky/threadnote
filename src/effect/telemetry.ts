@@ -548,7 +548,7 @@ function makeAnonymousTelemetryService(
             })
           : Effect.void,
       ),
-      Effect.catchCause(() => Effect.void),
+      Effect.ignoreCause,
       Effect.withTracerEnabled(false),
     );
   return {
@@ -605,7 +605,7 @@ function makeAnonymousTelemetryService(
                     },
                     {end: endMemory, start: startMemory},
                   ),
-                ).pipe(Effect.catchCause(() => Effect.void));
+                ).pipe(Effect.ignoreCause);
               }
               return Exit.isSuccess(exit) ? exit.value : yield* Effect.failCause(exit.cause);
             }),
@@ -704,7 +704,7 @@ export function withAnonymousTelemetryCheckpoint<A, E, R>(
                 outcome: classified.outcome,
               });
             }),
-          ).pipe(Effect.catchCause(() => Effect.void)),
+          ).pipe(Effect.ignoreCause),
         ),
       );
     });
@@ -807,7 +807,7 @@ function emitSafeSpan(
   }).pipe(
     Effect.provideService(Tracer.Tracer, tracer),
     Effect.withTracerEnabled(true),
-    Effect.catchCause(() => Effect.void),
+    Effect.ignoreCause,
     Effect.withTracerEnabled(false),
   );
 }

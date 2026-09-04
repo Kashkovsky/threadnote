@@ -213,7 +213,7 @@ describe('Manager raw memory relation boundary', () => {
         ...fixture.store,
         writeChecked: (_location, uri) =>
           Effect.fail(
-            new ResourceIoFailed({
+            ResourceIoFailed.make({
               cause: new Error('/private/storage/detail'),
               message: '/private/storage/detail',
               operation: 'write',
@@ -237,7 +237,7 @@ describe('Manager raw memory relation boundary', () => {
         read: (location, uri) =>
           uri === fixture.targetUri
             ? Effect.fail(
-                new ResourceIoFailed({
+                ResourceIoFailed.make({
                   cause: new Error('/private/target/detail'),
                   message: '/private/target/detail',
                   operation: 'read',

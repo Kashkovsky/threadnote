@@ -1,4 +1,5 @@
-import {Cause, Effect, Queue} from 'effect';
+import {Cause, Effect, Queue, Schema} from 'effect';
+import {succeedUndefined} from './optional.js';
 import {activeInstalledRelease} from '../installations.js';
 import {McpBrokerError, runMcpBroker, type McpBrokerChild, type McpBrokerFailureEvent} from '../mcp/broker.js';
 import type {StandaloneActiveRelease} from '../process/standalone_lease.js';
@@ -24,15 +25,10 @@ const mcpBrokerProgram = Effect.gen(function* () {
   const system = yield* SystemInfo;
   const agentSession = yield* Effect.sync(() =>
     takePreparedAgentSessionEnvironment(system.environment(), 'mcp-broker-runtime'),
-  ).pipe(Effect.catchCause(() => Effect.succeed(undefined)));
+  ).pipe(Effect.catchCause(() => succeedUndefined));
   const brokerFailureEvents = yield* Queue.dropping<McpBrokerFailureEvent>(64);
   yield* Effect.forkScoped(
-    Effect.forever(
-      Queue.take(brokerFailureEvents).pipe(
-        Effect.flatMap(emitMcpBrokerFailureEvent),
-        Effect.catchCause(() => Effect.void),
-      ),
-    ),
+    Effect.forever(Queue.take(brokerFailureEvents).pipe(Effect.flatMap(emitMcpBrokerFailureEvent), Effect.ignoreCause)),
   );
   yield* triggerAutoUpdateIfEnabled(agentSession).pipe(Effect.ignore);
   yield* Effect.forkScoped(
@@ -50,7 +46,8 @@ const mcpBrokerProgram = Effect.gen(function* () {
         Effect.flatMap(request =>
           activeInstalledRelease().pipe(
             Effect.matchCauseEffect({
-              onFailure: cause => Effect.sync(() => request.reject(new McpBrokerError(Cause.pretty(cause)))),
+              onFailure: cause =>
+                Effect.sync(() => request.reject(McpBrokerError.make({message: Cause.pretty(cause)}))),
               onSuccess: release => Effect.sync(() => request.resolve(release)),
             }),
           ),
@@ -65,19 +62,20 @@ const mcpBrokerProgram = Effect.gen(function* () {
         onFailure: event => {
           Queue.offerUnsafe(brokerFailureEvents, event);
         },
-        readActiveRelease: () =>
-          new Promise((resolve, reject) => {
-            if (!Queue.offerUnsafe(activeReleaseRequests, {reject, resolve})) {
-              reject(new McpBrokerError('Threadnote MCP broker active-release reader is unavailable.'));
-            }
-          }),
+        readActiveRelease: () => {
+          const {promise, reject, resolve} = Promise.withResolvers<StandaloneActiveRelease | undefined>();
+          if (!Queue.offerUnsafe(activeReleaseRequests, {reject, resolve})) {
+            reject(McpBrokerError.make({message: 'Threadnote MCP broker active-release reader is unavailable.'}));
+          }
+          return promise;
+        },
         spawn: release => spawnMcpRuntime(release, system, agentSession),
         writeOutput: writeBrokerOutput,
       }),
     catch: cause =>
-      cause instanceof McpBrokerError
+      Schema.is(McpBrokerError)(cause)
         ? cause
-        : new McpBrokerError(cause instanceof Error ? cause.message : String(cause)),
+        : McpBrokerError.make({message: cause instanceof Error ? cause.message : String(cause)}),
   });
 });
 
@@ -140,7 +138,7 @@ function spawnMcpRuntime(
 }
 
 function writeBrokerOutput(line: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    process.stdout.write(`${line}\n`, error => (error ? reject(error) : resolve()));
-  });
+  const {promise, reject, resolve} = Promise.withResolvers<void>();
+  process.stdout.write(`${line}\n`, error => (error ? reject(error) : resolve()));
+  return promise;
 }

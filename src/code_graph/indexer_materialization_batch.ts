@@ -59,7 +59,7 @@ export function secondaryIndexRestorationReporter(input: {
           unit: 'files',
         }) ?? Effect.void,
       ),
-      Effect.catch(() => Effect.void),
+      Effect.ignore,
     );
   };
 }

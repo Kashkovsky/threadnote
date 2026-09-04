@@ -1,4 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {Effect} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -90,7 +91,7 @@ describe('isolated index snapshot recovery', () => {
       const failure = yield* recoverIsolatedCodeGraphIndexSnapshot({
         completedIdentity: identity,
         currentRequestKey: result.requestKey,
-        loadReadySnapshot: () => Effect.succeed(undefined),
+        loadReadySnapshot: () => succeedUndefined,
         requestedIdentity: identity,
         requestedRequestKey: result.requestKey,
         result,

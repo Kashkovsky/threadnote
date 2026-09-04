@@ -1,4 +1,4 @@
-import {Crypto, Effect, FileSystem, Option, Path, Result} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path, Result, Schema} from 'effect';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import type {RuntimeConfig} from '../types.js';
@@ -11,8 +11,19 @@ export interface ImageProjectionConfiguration {
   readonly version: typeof IMAGE_PROJECTION_CONFIGURATION_VERSION;
 }
 
-export class ImageProjectionConfigurationError extends Error {
-  readonly _tag = 'ImageProjectionConfigurationError' as const;
+export class ImageProjectionConfigurationError extends Schema.TaggedError<ImageProjectionConfigurationError>()(
+  'ImageProjectionConfigurationError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {
+  static of(message: string, options?: ErrorOptions): ImageProjectionConfigurationError {
+    return ImageProjectionConfigurationError.make({
+      message,
+      ...(options?.cause === undefined ? {} : {cause: options.cause}),
+    });
+  }
 }
 
 const IMAGE_PROJECTION_DIRECTORY_NAME = 'image-projection';
@@ -42,9 +53,9 @@ export const readImageProjectionConfiguration = Effect.fn('imageProjection.readC
   return yield* Effect.try({
     try: () => parseImageProjectionConfiguration(document.raw, document.file),
     catch: cause =>
-      cause instanceof ImageProjectionConfigurationError
+      Schema.is(ImageProjectionConfigurationError)(cause)
         ? cause
-        : new ImageProjectionConfigurationError('Image projection configuration could not be parsed.', {cause}),
+        : ImageProjectionConfigurationError.of('Image projection configuration could not be parsed.', {cause}),
   });
 });
 
@@ -55,7 +66,7 @@ export const isImageProjectionEnabled = Effect.fn('imageProjection.isEnabled')(f
   if (imageProjectionEnvironmentDisabled(system.environment())) return false;
   return yield* readImageProjectionConfiguration(config).pipe(
     Effect.map(value => value?.enabled === true),
-    Effect.catch(() => Effect.succeed(false)),
+    Effect.orElseSucceed(() => false),
   );
 });
 
@@ -77,15 +88,13 @@ export const writeImageProjectionConfiguration = Effect.fn('imageProjection.writ
     Effect.gen(function* () {
       yield* assertRegularImageProjectionDirectory(fs, directory);
       if ((yield* fs.exists(file)) && Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
-        return yield* Effect.fail(
-          new ImageProjectionConfigurationError('Image projection configuration must not be a symbolic link.'),
+        return yield* ImageProjectionConfigurationError.of(
+          'Image projection configuration must not be a symbolic link.',
         );
       }
       const temporary = path.join(directory, `.config.${yield* crypto.randomUUIDv4}.tmp`);
       yield* fs.writeFileString(temporary, serialized, {mode: IMAGE_PROJECTION_CONFIGURATION_FILE_MODE});
-      yield* fs
-        .rename(temporary, file)
-        .pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+      yield* fs.rename(temporary, file).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
       yield* fs.chmod(file, IMAGE_PROJECTION_CONFIGURATION_FILE_MODE);
       yield* fs.chmod(directory, IMAGE_PROJECTION_DIRECTORY_MODE);
     }),
@@ -100,8 +109,8 @@ export function parseImageProjectionConfiguration(
   try {
     return parseImageProjectionConfigurationValue(JSON.parse(raw) as unknown, source);
   } catch (cause) {
-    if (cause instanceof ImageProjectionConfigurationError) throw cause;
-    throw new ImageProjectionConfigurationError(`Image projection configuration is not valid JSON: ${source}`, {cause});
+    if (Schema.is(ImageProjectionConfigurationError)(cause)) throw cause;
+    throw ImageProjectionConfigurationError.of(`Image projection configuration is not valid JSON: ${source}`, {cause});
   }
 }
 
@@ -148,23 +157,21 @@ export const imageProjectionDoctorCheck = Effect.fn('imageProjection.doctorCheck
 
 function parseImageProjectionConfigurationValue(value: unknown, source: string): ImageProjectionConfiguration {
   if (!isJsonObject(value)) {
-    throw new ImageProjectionConfigurationError(`Image projection configuration must be an object: ${source}`);
+    throw ImageProjectionConfigurationError.of(`Image projection configuration must be an object: ${source}`);
   }
   if (value.version !== IMAGE_PROJECTION_CONFIGURATION_VERSION) {
-    throw new ImageProjectionConfigurationError(
+    throw ImageProjectionConfigurationError.of(
       `Unsupported image projection configuration version in ${source}. Expected ${IMAGE_PROJECTION_CONFIGURATION_VERSION}.`,
     );
   }
   if (typeof value.enabled !== 'boolean') {
-    throw new ImageProjectionConfigurationError(
+    throw ImageProjectionConfigurationError.of(
       `Image projection configuration requires a boolean enabled field: ${source}`,
     );
   }
   const actual = Object.keys(value).sort();
   if (actual.length !== 2 || actual[0] !== 'enabled' || actual[1] !== 'version') {
-    throw new ImageProjectionConfigurationError(
-      `Image projection configuration contains unsupported fields: ${source}`,
-    );
+    throw ImageProjectionConfigurationError.of(`Image projection configuration contains unsupported fields: ${source}`);
   }
   return imageProjectionConfiguration(value.enabled);
 }
@@ -172,9 +179,7 @@ function parseImageProjectionConfigurationValue(value: unknown, source: string):
 function prepareImageProjectionDirectory(fs: FileSystem.FileSystem, directory: string) {
   return Effect.gen(function* () {
     if ((yield* fs.exists(directory)) && Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new ImageProjectionConfigurationError('Image projection directory must not be a symbolic link.'),
-      );
+      return yield* ImageProjectionConfigurationError.of('Image projection directory must not be a symbolic link.');
     }
     yield* fs.makeDirectory(directory, {mode: IMAGE_PROJECTION_DIRECTORY_MODE, recursive: true});
     yield* assertRegularImageProjectionDirectory(fs, directory);
@@ -191,14 +196,12 @@ const readImageProjectionConfigurationDocument = Effect.fn('imageProjection.read
   if (!(yield* fs.exists(file))) return undefined;
   yield* assertRegularImageProjectionDirectory(fs, path.dirname(file));
   if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
-    return yield* Effect.fail(
-      new ImageProjectionConfigurationError('Image projection configuration must not be a symbolic link.'),
-    );
+    return yield* ImageProjectionConfigurationError.of('Image projection configuration must not be a symbolic link.');
   }
   const info = yield* fs.stat(file);
   if (info.type !== 'File' || Number(info.size) > IMAGE_PROJECTION_CONFIGURATION_MAX_BYTES) {
-    return yield* Effect.fail(
-      new ImageProjectionConfigurationError('Image projection configuration must be a bounded regular file.'),
+    return yield* ImageProjectionConfigurationError.of(
+      'Image projection configuration must be a bounded regular file.',
     );
   }
   return {file, raw: yield* fs.readFileString(file)};
@@ -207,15 +210,11 @@ const readImageProjectionConfigurationDocument = Effect.fn('imageProjection.read
 function assertRegularImageProjectionDirectory(fs: FileSystem.FileSystem, directory: string) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new ImageProjectionConfigurationError('Image projection directory must not be a symbolic link.'),
-      );
+      return yield* ImageProjectionConfigurationError.of('Image projection directory must not be a symbolic link.');
     }
     const info = yield* fs.stat(directory);
     if (info.type !== 'Directory') {
-      return yield* Effect.fail(
-        new ImageProjectionConfigurationError('Image projection directory must be a regular directory.'),
-      );
+      return yield* ImageProjectionConfigurationError.of('Image projection directory must be a regular directory.');
     }
   });
 }

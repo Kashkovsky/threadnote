@@ -1,4 +1,4 @@
-import {Clock, Console, Crypto, Effect, FileSystem, Path, Result} from 'effect';
+import {Clock, Console, Crypto, DateTime, Effect, FileSystem, Path, Result, Schema} from 'effect';
 import {MAX_SECRET_MATCHES_TO_PRINT} from '../constants.js';
 import {sha256Hex} from '../effect/digest.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
@@ -89,9 +89,10 @@ interface ObsidianSourceSyncBehavior {
   readonly writeUnchangedState: boolean;
 }
 
-class ObsidianSourceError extends Error {
-  readonly _tag = 'ObsidianSourceError' as const;
-}
+class ObsidianSourceError extends Schema.TaggedError<ObsidianSourceError>()('ObsidianSourceError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const SOURCE_STATE_VERSION = 1;
 const SOURCE_STATE_FILENAME = 'state-v1.json';
@@ -112,9 +113,9 @@ export const runObsidianSourceAdd = Effect.fn('obsidian.sourceAdd')(function* (
   options: ObsidianSourceAddOptions,
 ) {
   if (options.include.length === 0) {
-    return yield* Effect.fail(
-      new ObsidianSourceError('Obsidian sources require at least one --include allowlist pattern.'),
-    );
+    return yield* ObsidianSourceError.make({
+      message: 'Obsidian sources require at least one --include allowlist pattern.',
+    });
   }
   const id = validateObsidianIdentifier(options.id, 'source id');
   const vault = yield* canonicalDirectory(options.vault, 'Obsidian vault');
@@ -193,7 +194,7 @@ export const runObsidianSourceSync = Effect.fn('obsidian.sourceSync')(function* 
   const apply = options.apply === true && options.dryRun !== true;
   const source = requireObsidianSource(yield* readObsidianConfiguration(config), options.id);
   if (!source.enabled) {
-    return yield* Effect.fail(new ObsidianSourceError(`Obsidian source "${source.id}" is disabled.`));
+    return yield* ObsidianSourceError.make({message: `Obsidian source "${source.id}" is disabled.`});
   }
   return yield* syncObsidianSource(config, source, {
     apply,
@@ -299,7 +300,7 @@ const syncObsidianSource = Effect.fn('obsidian.syncSource')(function* (
           ]),
         ),
         sourceId: source.id,
-        syncedAt: new Date(currentTimeMillis).toISOString(),
+        syncedAt: DateTime.formatIso(DateTime.makeUnsafe(currentTimeMillis)),
         version: SOURCE_STATE_VERSION,
       };
       yield* writeSourceState(statePath, nextState);
@@ -486,9 +487,9 @@ const readSourceState = Effect.fn('obsidian.readSourceState')(function* (path: s
   return yield* Effect.try({
     try: () => parseSourceState(JSON.parse(raw), sourceId),
     catch: cause =>
-      cause instanceof ObsidianSourceError
+      Schema.is(ObsidianSourceError)(cause)
         ? cause
-        : new ObsidianSourceError(cause instanceof Error ? cause.message : String(cause), {cause}),
+        : ObsidianSourceError.make({cause, message: cause instanceof Error ? cause.message : String(cause)}),
   });
 });
 
@@ -501,7 +502,7 @@ const writeSourceState = Effect.fn('obsidian.writeSourceState')(function* (path:
   yield* fs.writeFileString(temporaryPath, `${JSON.stringify(state, undefined, 2)}\n`, {mode: PRIVATE_FILE_MODE});
   yield* fs
     .rename(temporaryPath, path)
-    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
+    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.ignore)));
   yield* fs.chmod(path, PRIVATE_FILE_MODE);
 });
 
@@ -517,7 +518,7 @@ function parseSourceState(value: unknown, sourceId: string): ObsidianSourceState
     typeof value.files !== 'object' ||
     value.files === null
   ) {
-    throw new ObsidianSourceError(`Invalid Obsidian source state for "${sourceId}".`);
+    throw ObsidianSourceError.make({message: `Invalid Obsidian source state for "${sourceId}".`});
   }
   const files: Record<string, ObsidianSourceFileState> = {};
   for (const [relativePath, entry] of Object.entries(value.files)) {
@@ -532,10 +533,10 @@ function parseSourceState(value: unknown, sourceId: string): ObsidianSourceState
       !('uri' in entry) ||
       typeof entry.uri !== 'string'
     ) {
-      throw new ObsidianSourceError(`Invalid Obsidian source state entry "${relativePath}".`);
+      throw ObsidianSourceError.make({message: `Invalid Obsidian source state entry "${relativePath}".`});
     }
     if (entry.uri !== obsidianSourceUri(sourceId, relativePath)) {
-      throw new ObsidianSourceError(`Obsidian source state URI does not match "${relativePath}".`);
+      throw ObsidianSourceError.make({message: `Obsidian source state URI does not match "${relativePath}".`});
     }
     files[relativePath] = {
       contentHash: entry.contentHash,
@@ -560,7 +561,7 @@ const canonicalDirectory = Effect.fn('obsidian.canonicalDirectory')(function* (v
   const fs = yield* FileSystem.FileSystem;
   const expanded = yield* expandPath(value);
   if (!(yield* isDirectory(expanded))) {
-    return yield* Effect.fail(new ObsidianSourceError(`${label} is not a directory: ${expanded}`));
+    return yield* ObsidianSourceError.make({message: `${label} is not a directory: ${expanded}`});
   }
   return yield* fs.realPath(expanded);
 });
@@ -571,7 +572,7 @@ function normalizeRelativePath(value: string, label: string): string {
     normalized.length === 0 ||
     normalized.split('/').some(segment => segment === '' || segment === '.' || segment === '..')
   ) {
-    throw new ObsidianSourceError(`${label} must be a safe vault-relative path.`);
+    throw ObsidianSourceError.make({message: `${label} must be a safe vault-relative path.`});
   }
   return normalized;
 }
@@ -586,13 +587,17 @@ function uniquePatterns(patterns: readonly string[]): readonly string[] {
 
 function safePatterns(patterns: readonly string[], label: string): readonly string[] {
   if (patterns.some(pattern => toPosixPath(pattern).trim().startsWith('/'))) {
-    throw new ObsidianSourceError(`${label} patterns must be vault-relative and cannot contain parent traversal.`);
+    throw ObsidianSourceError.make({
+      message: `${label} patterns must be vault-relative and cannot contain parent traversal.`,
+    });
   }
   const normalized = uniquePatterns(patterns);
   if (
     normalized.some(pattern => /^[a-zA-Z]:\//.test(pattern) || pattern.split('/').some(segment => segment === '..'))
   ) {
-    throw new ObsidianSourceError(`${label} patterns must be vault-relative and cannot contain parent traversal.`);
+    throw ObsidianSourceError.make({
+      message: `${label} patterns must be vault-relative and cannot contain parent traversal.`,
+    });
   }
   return normalized;
 }
@@ -605,7 +610,7 @@ function assertSafeSourceRelativePath(relativePath: string): void {
     /^[a-zA-Z]:\//.test(normalized) ||
     normalized.split('/').some(segment => segment === '' || segment === '.' || segment === '..')
   ) {
-    throw new ObsidianSourceError(`Unsafe Obsidian source state path: ${relativePath}`);
+    throw ObsidianSourceError.make({message: `Unsafe Obsidian source state path: ${relativePath}`});
   }
 }
 

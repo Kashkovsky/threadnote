@@ -1,7 +1,7 @@
 import {it as effectIt} from '@effect/vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {BunCrypto, BunFileSystem, BunPath} from '@effect/platform-bun';
-import {Effect, FileSystem, Layer, Option, Path} from 'effect';
+import {DateTime, Effect, FileSystem, Layer, Option, Path} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
   appendCandidateAudit,
@@ -229,7 +229,7 @@ describe('candidate-memory formation', () => {
       const review = yield* buildCandidateReview(
         {...input, handoff: [], invariants: [], preferences: []},
         records,
-        new Date('2026-07-23T10:00:00.000Z'),
+        DateTime.toDateUtc(DateTime.makeUnsafe('2026-07-23T10:00:00.000Z')),
       ).pipe(provideTestLayer(WindowsTestLayer));
 
       expect(records[0]?.uri).toBe('threadnote://user/me/memories/durable/projects/threadnote/recall.md');
@@ -308,7 +308,11 @@ describe('candidate review persistence', () => {
         fs.makeTempDirectory({prefix: 'threadnote-candidates-v1-'}),
         candidateDirectory => fs.remove(candidateDirectory, {force: true, recursive: true}).pipe(Effect.ignore),
       );
-      const review = yield* buildCandidateReview(input, [], new Date('2026-07-23T10:00:00.000Z'));
+      const review = yield* buildCandidateReview(
+        input,
+        [],
+        DateTime.toDateUtc(DateTime.makeUnsafe('2026-07-23T10:00:00.000Z')),
+      );
       const {codeCitations: _v2Citations, ...legacy} = review;
       const reviewDirectory = path.join(temporaryDirectory, 'threadnote', 'candidates', 'v1', 'reviews');
       yield* fs.makeDirectory(reviewDirectory, {recursive: true});

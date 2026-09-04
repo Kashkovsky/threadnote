@@ -1,6 +1,11 @@
+import {Schema} from 'effect';
 import {ApplicationError} from '../effect/errors.js';
 import {diagnosticErrorType} from '../effect/production_log.js';
-import {CodeGraphStoreError, type CodeGraphStoreFailureCode, type CodeGraphStoreRecovery} from '../code_graph/types.js';
+import {
+  type CodeGraphStoreFailureCode,
+  type CodeGraphStoreRecovery,
+  isCodeGraphStoreError,
+} from '../code_graph/types.js';
 import {CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS} from '../code_graph/disk_capacity.js';
 
 const SAFE_TELEMETRY_ERROR_TYPES = new Set([
@@ -442,7 +447,7 @@ export function anonymousTelemetryDiagnosticFromError(error: unknown): Anonymous
     for (let depth = 0; depth <= MAXIMUM_CAUSE_DEPTH; depth += 1) {
       const attached = readAnonymousTelemetryDiagnostic(current);
       if (attached !== undefined) return attached;
-      if (current instanceof CodeGraphStoreError) {
+      if (isCodeGraphStoreError(current)) {
         return projectAnonymousTelemetryDiagnostic({
           code: current.code,
           domain: 'code-graph-storage' as const,
@@ -452,7 +457,7 @@ export function anonymousTelemetryDiagnosticFromError(error: unknown): Anonymous
           retryable: current.retryable,
         });
       }
-      if (!(current instanceof ApplicationError)) {
+      if (!Schema.is(ApplicationError)(current)) {
         return Object.freeze({errorType: directDiagnosticErrorType(current)});
       }
       current = current.cause;

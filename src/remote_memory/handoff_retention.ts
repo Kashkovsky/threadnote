@@ -1,3 +1,5 @@
+import {Schema} from 'effect';
+import {randomUuidV4} from '../crypto/uuid.js';
 import type {Sql, TransactionSql} from 'postgres';
 import type {AuthorizedRemotePrincipal} from './authorization.js';
 import {RemoteMemoryError} from './errors.js';
@@ -69,7 +71,7 @@ export class RemoteHandoffRetentionWorker {
               operationId: remoteHandoffExpiryOperationId(candidate.head_id, candidate.current_revision_id),
               uri: candidate.canonical_uri,
             },
-            `retention:${crypto.randomUUID()}`,
+            `retention:${randomUuidV4()}`,
             undefined,
             now,
           );
@@ -77,7 +79,7 @@ export class RemoteHandoffRetentionWorker {
         } catch (cause) {
           // A concurrent worker/member transition wins through normal CAS. Only
           // the committed worker counts expiry; the loser reports contention.
-          if (!(cause instanceof RemoteMemoryError) || (cause.code !== 'conflict' && cause.code !== 'not_found')) {
+          if (!Schema.is(RemoteMemoryError)(cause) || (cause.code !== 'conflict' && cause.code !== 'not_found')) {
             throw cause;
           }
           conflicted += 1;
@@ -295,13 +297,13 @@ function retentionFailureClass(cause: unknown): string {
 
 async function abortableDelay(milliseconds: number, signal: AbortSignal | undefined): Promise<void> {
   if (signal?.aborted) return;
-  await new Promise<void>(resolve => {
-    const timeout = setTimeout(done, milliseconds);
-    signal?.addEventListener('abort', done, {once: true});
-    function done(): void {
-      clearTimeout(timeout);
-      signal?.removeEventListener('abort', done);
-      resolve();
-    }
-  });
+  const {promise, resolve} = Promise.withResolvers<void>();
+  const timeout = setTimeout(done, milliseconds);
+  signal?.addEventListener('abort', done, {once: true});
+  function done(): void {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', done);
+    resolve();
+  }
+  await promise;
 }

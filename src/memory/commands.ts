@@ -1,4 +1,4 @@
-import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Predicate, Result} from 'effect';
+import {Console, Crypto, DateTime, Effect, FileSystem, Option, Path, Predicate, Result, Schema} from 'effect';
 import {
   expandWeakRecallQueryEffect,
   limitRecallRewritesForConfidence,
@@ -199,25 +199,25 @@ export interface RecallResult {
 
 export function parseMemoryKind(value: string): MemoryKind {
   if (isMemoryKind(value)) return value;
-  throw new MemoryOperationError(
-    `Unsupported memory kind "${value}". Expected durable, handoff, incident, preference, or smoke.`,
-  );
+  throw MemoryOperationError.make({
+    message: `Unsupported memory kind "${value}". Expected durable, handoff, incident, preference, or smoke.`,
+  });
 }
 
 const requireValue = <A>(value: A | undefined, message: string): Effect.Effect<A, Error> =>
-  value === undefined ? Effect.fail(new MemoryOperationError(message)) : Effect.succeed(value);
+  value === undefined ? Effect.fail(MemoryOperationError.make({message: message})) : Effect.succeed(value);
 
 export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeConfig, options: RememberOptions) {
   const text = yield* getInputText(options.text, options.stdin === true);
   if (!text.trim()) {
-    return yield* Effect.fail(new MemoryOperationError('Provide memory text with --text or --stdin.'));
+    return yield* MemoryOperationError.make({message: 'Provide memory text with --text or --stdin.'});
   }
-  const timestamp = new Date(yield* Clock.currentTimeMillis).toISOString();
+  const timestamp = DateTime.formatIso(yield* DateTime.now);
   const memoryStatus = options.status ?? 'active';
   if (options.deferCodeRefs === true && memoryStatus !== 'active') {
-    return yield* Effect.fail(
-      new MemoryOperationError('--defer-code-refs can be used only when storing an active memory.'),
-    );
+    return yield* MemoryOperationError.make({
+      message: '--defer-code-refs can be used only when storing an active memory.',
+    });
   }
   const [replaced] = options.replace ? yield* readMemoryRecordsByUri(config, [options.replace]) : [];
   if (replaced) yield* attemptSync(() => assertMemoryDocumentSchemaWritable(replaced.content));
@@ -231,9 +231,9 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
     refs: options.codeRefs,
   });
   if (citationCapture.deferred && sharedTarget) {
-    return yield* Effect.fail(
-      new MemoryOperationError('Deferred code anchors are private-local and cannot replace shared memory.'),
-    );
+    return yield* MemoryOperationError.make({
+      message: 'Deferred code anchors are private-local and cannot replace shared memory.',
+    });
   }
   const codeCitations = citationCapture.citations;
   const citationSourceCommit = commonMemoryCodeCitationCommit(codeCitations);
@@ -322,7 +322,7 @@ const captureMemoryCodeCitationsForWrite = Effect.fn('memory.captureCodeCitation
   input: {readonly callerCwd: string; readonly defer: boolean; readonly refs?: readonly string[]},
 ) {
   if (input.defer && (input.refs?.length ?? 0) === 0) {
-    return yield* Effect.fail(new MemoryOperationError('--defer-code-refs requires at least one --code-ref.'));
+    return yield* MemoryOperationError.make({message: '--defer-code-refs requires at least one --code-ref.'});
   }
   const captured = yield* captureMemoryCodeCitations(config, {
     callerCwd: input.callerCwd,
@@ -333,7 +333,7 @@ const captureMemoryCodeCitationsForWrite = Effect.fn('memory.captureCodeCitation
   }
   if (
     input.defer &&
-    captured.failure instanceof MemoryCodeCitationCaptureError &&
+    Schema.is(MemoryCodeCitationCaptureError)(captured.failure) &&
     captured.failure.recovery !== undefined
   ) {
     return {
@@ -345,7 +345,7 @@ const captureMemoryCodeCitationsForWrite = Effect.fn('memory.captureCodeCitation
       } satisfies DeferredCodeAnchorWriteRequest,
     };
   }
-  return yield* Effect.fail(captured.failure);
+  return yield* captured.failure;
 });
 
 function resolveCliCodeCitationDeferPolicy(
@@ -353,7 +353,7 @@ function resolveCliCodeCitationDeferPolicy(
   privateTarget: boolean,
 ): boolean {
   if (options.deferCodeRefs === true && options.requireCurrentCodeRefs === true) {
-    throw new MemoryOperationError('Choose only one of --defer-code-refs or --require-current-code-refs.');
+    throw MemoryOperationError.make({message: 'Choose only one of --defer-code-refs or --require-current-code-refs.'});
   }
   if (options.deferCodeRefs === true) return true;
   return options.requireCurrentCodeRefs !== true && privateTarget && (options.codeRefs?.length ?? 0) > 0;
@@ -429,9 +429,12 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
           value: yield* Effect.try({
             try: () => validatedRecallScoreThreshold(explicitThreshold, '--threshold'),
             catch: error =>
-              error instanceof InvalidRecallScoreThreshold
+              Schema.is(InvalidRecallScoreThreshold)(error)
                 ? error
-                : new InvalidRecallScoreThreshold('--threshold must be a number from 0 to 1.', {cause: error}),
+                : InvalidRecallScoreThreshold.make({
+                    message: '--threshold must be a number from 0 to 1.',
+                    cause: error,
+                  }),
           }),
         };
   const recallThreshold = thresholdPolicy.value;
@@ -634,7 +637,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
           includeInactive: includeArchived,
           project: recallProjectName,
           rankedCandidates: recallSections.expansionCandidates,
-        }).pipe(Effect.catch(() => Effect.succeed([])))
+        }).pipe(Effect.orElseSucceed(() => []))
       : [];
   const fallbackExpansionQueries =
     dryRun || !needsFallbackExpansion
@@ -850,7 +853,7 @@ export const runCompact = Effect.fn('runCompact')(function* (config: RuntimeConf
     'Provide --project for scoped memory hygiene.',
   );
   if (options.apply === true && options.dryRun === true) {
-    return yield* Effect.fail(new MemoryOperationError('Cannot combine --apply with --dry-run.'));
+    return yield* MemoryOperationError.make({message: 'Cannot combine --apply with --dry-run.'});
   }
   const apply = options.apply === true;
   const sharedAudit = yield* syncSharedReposAndLog(config);
@@ -877,9 +880,9 @@ export const runCompact = Effect.fn('runCompact')(function* (config: RuntimeConf
   );
   for (const action of plannedActions) {
     if (currentByUri.get(action.uri) !== action.expectedContent) {
-      return yield* Effect.fail(
-        new MemoryOperationError(`Memory ${action.uri} changed after the hygiene plan. Re-run compact before apply.`),
-      );
+      return yield* MemoryOperationError.make({
+        message: `Memory ${action.uri} changed after the hygiene plan. Re-run compact before apply.`,
+      });
     }
   }
 
@@ -895,9 +898,9 @@ export const runCompact = Effect.fn('runCompact')(function* (config: RuntimeConf
       Effect.gen(function* () {
         const [current] = yield* readMemoryRecordsByUri(config, [action.uri]);
         if (current?.content !== action.expectedContent) {
-          return yield* Effect.fail(
-            new MemoryOperationError(`Memory ${action.uri} changed during hygiene apply. Re-run compact.`),
-          );
+          return yield* MemoryOperationError.make({
+            message: `Memory ${action.uri} changed during hygiene apply. Re-run compact.`,
+          });
         }
         yield* writeMemoryFile(config, ov, action.uri, action.content, 'replace', false, {quiet: true});
         yield* discardDeferredCodeAnchorIntent(config, action.uri);
@@ -922,7 +925,7 @@ export const runCompactDiagnostics = Effect.fn('memory.runCompactDiagnostics')(f
 ) {
   const project = normalizeOptionalMetadata(options.project);
   if (!project) {
-    return yield* Effect.fail(new MemoryOperationError('Provide --project for scoped memory hygiene.'));
+    return yield* MemoryOperationError.make({message: 'Provide --project for scoped memory hygiene.'});
   }
   const topic = normalizeOptionalMetadata(options.topic);
   yield* syncSharedReposAndLog(config);
@@ -1110,9 +1113,9 @@ export const runHandoff = Effect.fn('runHandoff')(function* (config: RuntimeConf
     refs: options.codeRefs,
   });
   if (citationCapture.deferred && sharedTarget) {
-    return yield* Effect.fail(
-      new MemoryOperationError('Deferred code anchors are private-local and cannot replace shared memory.'),
-    );
+    return yield* MemoryOperationError.make({
+      message: 'Deferred code anchors are private-local and cannot replace shared memory.',
+    });
   }
   const codeCitations = citationCapture.citations;
   const citationMetadata: MemoryMetadata = {
@@ -1163,7 +1166,7 @@ export const runArchive = Effect.fn('runArchive')(function* (
       project: normalizeOptionalMetadata(options.project),
       sourceAgentClient: 'threadnote',
       status: 'archived',
-      timestamp: new Date().toISOString(),
+      timestamp: DateTime.formatIso(yield* DateTime.now),
       topic: normalizeOptionalMetadata(options.topic),
     };
     yield* storeMemory(config, {
@@ -1183,28 +1186,26 @@ export const runArchive = Effect.fn('runArchive')(function* (
     Effect.gen(function* () {
       const originalMemory = (yield* store.read(resourceStoreLocation(config), uri)).trim();
       if (options.expectedContent !== undefined && originalMemory !== options.expectedContent.trim()) {
-        return yield* Effect.fail(
-          new MemoryOperationError(`Memory ${uri} changed after the hygiene plan. Re-run compact before archiving.`),
-        );
+        return yield* MemoryOperationError.make({
+          message: `Memory ${uri} changed after the hygiene plan. Re-run compact before archiving.`,
+        });
       }
       yield* attemptSync(() => assertMemoryDocumentSchemaWritable(originalMemory));
       const sourceRecord = parseMemoryDocument(uri, originalMemory);
-      if (!sourceRecord) return yield* Effect.fail(new MemoryOperationError(`Cannot archive invalid memory ${uri}.`));
+      if (!sourceRecord) return yield* MemoryOperationError.make({message: `Cannot archive invalid memory ${uri}.`});
       const inferredMetadata = sourceRecord.metadata;
       if (inferredMetadata.citationErrors && inferredMetadata.citationErrors.length > 0) {
         const reasons = [...new Set(inferredMetadata.citationErrors.map(error => error.reason))].sort().join(', ');
-        return yield* Effect.fail(
-          new MemoryOperationError(
-            `Cannot archive ${uri}: malformed code citation metadata (${reasons}) must be repaired or recaptured first.`,
-          ),
-        );
+        return yield* MemoryOperationError.make({
+          message: `Cannot archive ${uri}: malformed code citation metadata (${reasons}) must be repaired or recaptured first.`,
+        });
       }
       const metadata = memoryArchiveMetadata(inferredMetadata, {
         archivedFrom: uri,
         kind: options.kind ?? inferredMetadata.kind ?? 'handoff',
         project: normalizeOptionalMetadata(options.project),
         sourceAgentClient: 'threadnote',
-        timestamp: new Date().toISOString(),
+        timestamp: DateTime.formatIso(yield* DateTime.now),
         topic: normalizeOptionalMetadata(options.topic),
       });
       const archiveUri = yield* storeMemory(config, {
@@ -1217,13 +1218,11 @@ export const runArchive = Effect.fn('runArchive')(function* (
       const currentSource = yield* store.read(resourceStoreLocation(config), uri).pipe(Effect.option);
       if (Option.isNone(currentSource) || currentSource.value.trim() !== originalMemory) {
         const rolledBack = yield* removeResourceWithRetry(ov, config, archiveUri);
-        return yield* Effect.fail(
-          new MemoryOperationError(
-            rolledBack
-              ? `Memory ${uri} changed while its archive was being stored. The archived copy was rolled back; re-run the operation.`
-              : `Memory ${uri} changed while its archive was being stored. The source was preserved, but cleanup of ${archiveUri} needs review.`,
-          ),
-        );
+        return yield* MemoryOperationError.make({
+          message: rolledBack
+            ? `Memory ${uri} changed while its archive was being stored. The archived copy was rolled back; re-run the operation.`
+            : `Memory ${uri} changed while its archive was being stored. The source was preserved, but cleanup of ${archiveUri} needs review.`,
+        });
       }
       const removedOriginal = yield* removeResourceWithRetry(ov, config, uri, {
         alreadyLocked: true,
@@ -1269,7 +1268,7 @@ export const runForget = Effect.fn('runForget')(function* (config: RuntimeConfig
         recursive: entry.type === 'directory',
       });
       if (!removed) {
-        return yield* Effect.fail(new MemoryOperationError(`Resource does not exist: ${canonicalUri}`));
+        return yield* MemoryOperationError.make({message: `Resource does not exist: ${canonicalUri}`});
       }
       yield* discardDeferredCodeAnchorIntentsWithin(config, canonicalUri);
     }),
@@ -1292,19 +1291,19 @@ export const runFinalizeCodeRefs = Effect.fn('runFinalizeCodeRefs')(function* (
 
 function assertSafeForgetTarget(id: ReturnType<typeof parseResourceId>): void {
   if (id.anchor) {
-    throw new MemoryOperationError(
-      'Refusing to forget an anchored resource; address the containing resource URI instead.',
-    );
+    throw MemoryOperationError.make({
+      message: 'Refusing to forget an anchored resource; address the containing resource URI instead.',
+    });
   }
   if (id.namespace === 'resources' && id.segments.length < 2) {
-    throw new MemoryOperationError(
-      'Refusing to forget a resources collection root. Address a narrower resource subtree.',
-    );
+    throw MemoryOperationError.make({
+      message: 'Refusing to forget a resources collection root. Address a narrower resource subtree.',
+    });
   }
   if (id.namespace === 'user' && id.segments.length <= 3) {
-    throw new MemoryOperationError(
-      'Refusing to forget a user or memory collection root. Address a narrower resource subtree.',
-    );
+    throw MemoryOperationError.make({
+      message: 'Refusing to forget a user or memory collection root. Address a narrower resource subtree.',
+    });
   }
 }
 
@@ -1342,14 +1341,15 @@ export const runExportPack = Effect.fn('runExportPack')(function* (config: Runti
 
 export const runImportPack = Effect.fn('runImportPack')(function* (config: RuntimeConfig, options: PackOptions) {
   if (!options.path) {
-    return yield* Effect.fail(new MemoryOperationError('Provide --path for import-pack.'));
+    return yield* MemoryOperationError.make({message: 'Provide --path for import-pack.'});
   }
   const inputPath = yield* expandPath(options.path);
   const fs = yield* FileSystem.FileSystem;
   const rawPack = yield* fs.readFileString(inputPath);
   const pack = yield* Effect.try({
     try: () => parseThreadnotePack(rawPack),
-    catch: cause => new MemoryOperationError(`Invalid Threadnote pack ${inputPath}: ${errorMessage(cause)}`, {cause}),
+    catch: cause =>
+      MemoryOperationError.make({message: `Invalid Threadnote pack ${inputPath}: ${errorMessage(cause)}`, cause}),
   });
   const targetUri = options.targetUri
     ? canonicalPackRoot(options.targetUri)
@@ -1362,9 +1362,9 @@ export const runImportPack = Effect.fn('runImportPack')(function* (config: Runti
   for (const resource of planned) {
     const collisionKey = resource.uri.normalize('NFC').toLocaleLowerCase();
     if (destinations.has(collisionKey)) {
-      return yield* Effect.fail(
-        new MemoryOperationError(`Threadnote pack contains colliding destination URIs: ${resource.uri}.`),
-      );
+      return yield* MemoryOperationError.make({
+        message: `Threadnote pack contains colliding destination URIs: ${resource.uri}.`,
+      });
     }
     destinations.add(collisionKey);
   }
@@ -1416,10 +1416,10 @@ function parseThreadnotePack(raw: string): {
   readonly version: 1;
 } {
   const value = JSON.parse(raw) as unknown;
-  if (!Predicate.isObject(value)) throw new MemoryOperationError('Pack root must be an object.');
+  if (!Predicate.isObject(value)) throw MemoryOperationError.make({message: 'Pack root must be an object.'});
   const pack = value;
   if (pack.version !== 1 || typeof pack.sourceUri !== 'string' || !Array.isArray(pack.resources)) {
-    throw new MemoryOperationError('Unsupported Threadnote pack version or shape.');
+    throw MemoryOperationError.make({message: 'Unsupported Threadnote pack version or shape.'});
   }
   const resources = pack.resources.map(resource => {
     if (
@@ -1427,7 +1427,7 @@ function parseThreadnotePack(raw: string): {
       typeof resource.content !== 'string' ||
       typeof resource.relativeUri !== 'string'
     ) {
-      throw new MemoryOperationError('Pack resource entry is invalid.');
+      throw MemoryOperationError.make({message: 'Pack resource entry is invalid.'});
     }
     const entry = {content: resource.content, relativeUri: resource.relativeUri};
     if (
@@ -1435,7 +1435,7 @@ function parseThreadnotePack(raw: string): {
       entry.relativeUri.startsWith('/') ||
       entry.relativeUri.split('/').some(segment => !segment || segment === '.' || segment === '..')
     ) {
-      throw new MemoryOperationError(`Unsafe pack relative URI: ${entry.relativeUri}.`);
+      throw MemoryOperationError.make({message: `Unsafe pack relative URI: ${entry.relativeUri}.`});
     }
     return entry;
   });
@@ -1444,7 +1444,7 @@ function parseThreadnotePack(raw: string): {
 
 function canonicalPackRoot(input: string): string {
   const id = parseResourceId(input);
-  if (id.anchor) throw new MemoryOperationError(`Pack resource roots cannot contain anchors: ${input}.`);
+  if (id.anchor) throw MemoryOperationError.make({message: `Pack resource roots cannot contain anchors: ${input}.`});
   return resourceIdWithoutAnchor(id).canonicalUri;
 }
 
@@ -1456,7 +1456,7 @@ function packTargetForCurrentUser(sourceUri: string, user: string): string {
   if (source.namespace === 'user' && source.segments.length > 0) {
     return canonicalResourceUri('user', [uriSegment(user), ...source.segments.slice(1)]);
   }
-  throw new MemoryOperationError(`Unsupported Threadnote pack source URI: ${sourceUri}.`);
+  throw MemoryOperationError.make({message: `Unsupported Threadnote pack source URI: ${sourceUri}.`});
 }
 
 const inferRecallUri = Effect.fn('memory.inferRecallUri')(function* (config: RuntimeConfig, query: string) {
@@ -1524,9 +1524,9 @@ export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeCo
   const ov = NATIVE_RESOURCE_BACKEND;
   if (options.replaceUri && isInSharedNamespace(config, options.replaceUri)) {
     if (options.deferredCodeAnchor) {
-      return yield* Effect.fail(
-        new MemoryOperationError('Deferred code anchors are private-local and cannot update shared memory.'),
-      );
+      return yield* MemoryOperationError.make({
+        message: 'Deferred code anchors are private-local and cannot update shared memory.',
+      });
     }
     if (options.dryRun) {
       yield* storeSharedMemoryReplacement(config, ov, options, options.replaceUri);
@@ -1715,11 +1715,11 @@ const storeSharedMemoryReplacement = Effect.fn('memory.storeSharedMemoryReplacem
   targetUri: string,
 ) {
   if (options.metadata.kind !== 'durable') {
-    return yield* Effect.fail(new MemoryOperationError('Shared memory replacement only supports durable memories.'));
+    return yield* MemoryOperationError.make({message: 'Shared memory replacement only supports durable memories.'});
   }
   const teamName = sharedTeamNameForUri(config, targetUri);
   if (!teamName) {
-    return yield* Effect.fail(new MemoryOperationError(`Memory ${targetUri} is not in the shared namespace.`));
+    return yield* MemoryOperationError.make({message: `Memory ${targetUri} is not in the shared namespace.`});
   }
   const team = yield* resolveTeam(config, teamName);
   const inferred = sharedMemoryUriParts(config, targetUri);
@@ -1738,21 +1738,17 @@ const storeSharedMemoryReplacement = Effect.fn('memory.storeSharedMemoryReplacem
   const rawMemory = formatMemoryDocument(options.title, metadata, options.bodyText);
   const citationBlocker = memoryCodeCitationSharingBlocker(metadata);
   if (citationBlocker) {
-    return yield* Effect.fail(
-      new MemoryOperationError(
-        `Refusing to update shared memory ${targetUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
-      ),
-    );
+    return yield* MemoryOperationError.make({
+      message: `Refusing to update shared memory ${targetUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+    });
   }
   const scrub = applyScrubber(stripPersonalProvenanceForSharedPublication(rawMemory), {
     redact: false,
   });
   if (scrub.blocker) {
-    return yield* Effect.fail(
-      new MemoryOperationError(
-        `Refusing to update shared memory ${targetUri}: possible ${scrub.blocker}. Strip the sensitive value first.`,
-      ),
-    );
+    return yield* MemoryOperationError.make({
+      message: `Refusing to update shared memory ${targetUri}: possible ${scrub.blocker}. Strip the sensitive value first.`,
+    });
   }
   const memory = scrub.cleaned;
   const relativePath = resourceUriToWorktreeRelative(config, targetUri, team.name);
@@ -1763,7 +1759,7 @@ const storeSharedMemoryReplacement = Effect.fn('memory.storeSharedMemoryReplacem
   }
   const [existingTarget] = options.dryRun ? [] : yield* readMemoryRecordsByUri(config, [targetUri]);
   if (!options.dryRun && !existingTarget) {
-    return yield* Effect.fail(new MemoryOperationError(`Shared memory ${targetUri} no longer exists.`));
+    return yield* MemoryOperationError.make({message: `Shared memory ${targetUri} no longer exists.`});
   }
   if (!options.dryRun) {
     yield* assertCurrentReplacementWritable(config, targetUri, options.expectedReplaceContent, existingTarget);
@@ -1922,9 +1918,9 @@ const buildHandoff = Effect.fn('memory.buildHandoff')(function* (options: Handof
     sourceAgentClient: options.sourceAgentClient ?? 'codex',
     schemaVersion: MEMORY_SCHEMA_VERSION,
     ...(commit === 'unknown' ? {} : {sourceCommit: commit}),
-    sourceObservedAt: new Date().toISOString(),
+    sourceObservedAt: DateTime.formatIso(yield* DateTime.now),
     status: 'active',
-    timestamp: new Date().toISOString(),
+    timestamp: DateTime.formatIso(yield* DateTime.now),
     topic: handoffTopicForBranch(topicBranch, {timestamped: options.timestamped, topic: options.topic}),
     workspaceScope: workspaceComponent?.scope,
   };

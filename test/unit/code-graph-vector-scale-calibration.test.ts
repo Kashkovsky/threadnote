@@ -23,7 +23,7 @@ const PerformanceBudget = Schema.Struct({
   wholeGraphAnalysisP95MillisecondsMaximum: NonNegativeFinite,
 });
 
-const budgetFile = Schema.decodeUnknownSync(
+const budgetFile = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       vectorScalePerformance: Schema.Struct({'100000': PerformanceBudget}),
@@ -32,7 +32,7 @@ const budgetFile = Schema.decodeUnknownSync(
 )(await Bun.file('test/evaluation/baselines/code-graph-v1/budgets.json').text());
 const budget = budgetFile.vectorScalePerformance['100000'];
 
-const calibration = Schema.decodeUnknownSync(
+const calibration = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       artifact: Schema.Struct({
@@ -237,7 +237,7 @@ describe('hosted macOS ARM64 100k vector calibration', () => {
   it('rederives the independent CPU-capacity cross-check from retained governed evidence', async () => {
     const source = await Bun.file(calibration.capacityCrossCheck.sourcePath).text();
     expect(sha256HexSync(source)).toBe(calibration.capacityCrossCheck.sourceSha256);
-    const governedSweep = Schema.decodeUnknownSync(
+    const governedSweep = Schema.decodeSync(
       Schema.fromJsonString(
         Schema.Struct({
           contexts: Schema.Struct({

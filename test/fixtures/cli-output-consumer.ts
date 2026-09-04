@@ -21,7 +21,7 @@ const result = (() => {
       hasStart: text.includes(startMarker),
     };
   }
-  throw new TestError(`Unsupported CLI output consumer mode: ${mode ?? '<missing>'}`);
+  throw TestError.make({message: `Unsupported CLI output consumer mode: ${mode ?? '<missing>'}`});
 })();
 
 await Bun.write(Bun.stdout, `${JSON.stringify(result)}\n`);

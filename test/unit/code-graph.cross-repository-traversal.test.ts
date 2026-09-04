@@ -260,7 +260,8 @@ function traversalFixture(): TraversalFixture {
     packageMoniker('export', '@acme/terminal', '2.4.0', 'terminal-export'),
   ]);
   const resolution = resolveCodeGraphCrossRepositoryBridges([terminal, consumer, middle]);
-  if (resolution.rejections.length > 0 || resolution.bridges.length !== 2) throw new TestError('Invalid fixture.');
+  if (resolution.rejections.length > 0 || resolution.bridges.length !== 2)
+    throw TestError.make({message: 'Invalid fixture.'});
   const first = resolution.bridges.find(bridge => bridge.source.repositoryId === consumer.repositoryId)!;
   const second = resolution.bridges.find(bridge => bridge.source.repositoryId === middle.repositoryId)!;
   const start = endpoint(consumer, {kind: 'qualified-ref', ref: qualifiedRef('start')});

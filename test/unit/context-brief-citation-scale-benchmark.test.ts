@@ -43,11 +43,11 @@ const budget = parseContextBriefCitationScaleBudgetV1(
     await Bun.file('test/evaluation/baselines/context-brief-citations-v1/scale-budgets.json').text(),
   ) as unknown,
 );
-const sampleGapCalibration = Schema.decodeUnknownSync(
+const sampleGapCalibration = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       breachThresholdMilliseconds: PositiveInteger,
-      calibrationMargin: Schema.Number,
+      calibrationMargin: Schema.Finite,
       expected: Schema.Struct({
         breachCount: NonNegativeInteger,
         derivedHardMaximumMilliseconds: PositiveInteger,
@@ -74,19 +74,19 @@ const sampleGapCalibration = Schema.decodeUnknownSync(
     }),
   ),
 )(await Bun.file('test/evaluation/baselines/context-brief-citations-v1/sample-gap-calibration-v2.json').text());
-const validationQuantileCalibration = Schema.decodeUnknownSync(
+const validationQuantileCalibration = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       benchmarkBundleSha256: Sha256,
       expected: Schema.Struct({
         firstFailingTailValuesAtProspectiveSamples: PositiveInteger,
         latestFourObservationCount: PositiveInteger,
-        latestFourP95Milliseconds: Schema.Number,
+        latestFourP95Milliseconds: Schema.Finite,
         maximumExcludedTailValuesAtProspectiveSamples: NonNegativeInteger,
-        maximumMilliseconds: Schema.Number,
+        maximumMilliseconds: Schema.Finite,
         observationCount: PositiveInteger,
-        p50Milliseconds: Schema.Number,
-        p95Milliseconds: Schema.Number,
+        p50Milliseconds: Schema.Finite,
+        p95Milliseconds: Schema.Finite,
         thresholdBreaches: NonNegativeInteger,
       }),
       fixtureSha256: Sha256,
@@ -105,7 +105,7 @@ const validationQuantileCalibration = Schema.decodeUnknownSync(
           fixtureSha256: Sha256,
           jobId: PositiveInteger,
           rawJsonSha256: Sha256,
-          validationMilliseconds: Schema.Array(Schema.Number),
+          validationMilliseconds: Schema.Array(Schema.Finite),
           workflowRun: PositiveInteger,
         }),
       ),
@@ -117,7 +117,7 @@ const validationQuantileCalibration = Schema.decodeUnknownSync(
 )(
   await Bun.file('test/evaluation/baselines/context-brief-citations-v1/validation-quantile-calibration-v1.json').text(),
 );
-const rssObserverCapacityCalibration = Schema.decodeUnknownSync(
+const rssObserverCapacityCalibration = Schema.decodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       correction: Schema.Struct({

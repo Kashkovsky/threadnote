@@ -310,7 +310,7 @@ export interface CodeGraphAnalysisShape {
  * bounded by the configured page size and surprising-link result limit.
  */
 export class CodeGraphAnalysis extends Context.Service<CodeGraphAnalysis, CodeGraphAnalysisShape>()(
-  'threadnote/codeGraph/CodeGraphAnalysis',
+  'threadnote/code_graph/analysis/CodeGraphAnalysis',
 ) {
   static readonly layer = Layer.effect(
     CodeGraphAnalysis,
@@ -447,9 +447,7 @@ export const analyzeCodeGraphWithLease = Effect.fn('codeGraph.analyzeWithSnapsho
   }
   return yield* store
     .withSession(options.databasePath, analyzeCodeGraph(store, options), {readOnly: true})
-    .pipe(
-      Effect.ensuring(store.releaseSnapshotLease(options.databasePath, lease).pipe(Effect.catch(() => Effect.void))),
-    );
+    .pipe(Effect.ensuring(store.releaseSnapshotLease(options.databasePath, lease).pipe(Effect.ignore)));
 });
 
 export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (

@@ -50,7 +50,7 @@ export interface CodeGraphLanguagePackRegistryShape {
 export class CodeGraphLanguagePackRegistry extends Context.Service<
   CodeGraphLanguagePackRegistry,
   CodeGraphLanguagePackRegistryShape
->()('threadnote/codeGraph/CodeGraphLanguagePackRegistry') {
+>()('threadnote/code_graph/languages/registry/CodeGraphLanguagePackRegistry') {
   static readonly layer = Layer.succeed(
     CodeGraphLanguagePackRegistry,
     createCodeGraphLanguagePackRegistry(BUILTIN_CODE_GRAPH_LANGUAGE_PACKS),
@@ -131,7 +131,9 @@ export function createCodeGraphLanguagePackRegistry(
   function extractRawFile(file: CodeGraphInventoryFile, projects: readonly CodeGraphWorkspaceProject[] = []) {
     const matched = match(file.path);
     if (Option.isNone(matched)) {
-      return Effect.fail(new CodeGraphLanguagePackError(`No code graph language pack accepts ${file.path}.`));
+      return Effect.fail(
+        CodeGraphLanguagePackError.make({message: `No code graph language pack accepts ${file.path}.`}),
+      );
     }
     const nearestProjectContext =
       matched.value.role === 'corpus' || /(?:^|\/)[^/]+\.xcassets\/.*\/Contents\.json$/iu.test(file.path);
@@ -207,17 +209,20 @@ function validatePacks(packs: readonly CodeGraphLanguagePack[]): void {
   const matchers = new Set<string>();
   for (const pack of packs) {
     if (!/^[a-z][a-z0-9-]*$/.test(pack.id)) {
-      throw new CodeGraphLanguagePackError(`Invalid code graph language pack id: ${pack.id}.`);
+      throw CodeGraphLanguagePackError.make({message: `Invalid code graph language pack id: ${pack.id}.`});
     }
-    if (ids.has(pack.id)) throw new CodeGraphLanguagePackError(`Duplicate code graph language pack id: ${pack.id}.`);
+    if (ids.has(pack.id))
+      throw CodeGraphLanguagePackError.make({message: `Duplicate code graph language pack id: ${pack.id}.`});
     ids.add(pack.id);
     if (pack.files.length === 0) {
-      throw new CodeGraphLanguagePackError(`Code graph language pack ${pack.id} does not declare any file matchers.`);
+      throw CodeGraphLanguagePackError.make({
+        message: `Code graph language pack ${pack.id} does not declare any file matchers.`,
+      });
     }
     for (const matcher of pack.files) {
       const key = `${matcher.kind}:${matcher.value.toLowerCase()}`;
       if (matchers.has(key)) {
-        throw new CodeGraphLanguagePackError(`Duplicate code graph file matcher: ${key}.`);
+        throw CodeGraphLanguagePackError.make({message: `Duplicate code graph file matcher: ${key}.`});
       }
       matchers.add(key);
     }

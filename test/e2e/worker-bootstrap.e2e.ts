@@ -112,9 +112,10 @@ async function runWorker(
     child.once('error', reject);
     child.once('close', code => resolve(code ?? -1));
   });
-  if (exitCode !== 0) throw new TestError(`Worker exited ${exitCode}: ${stderr.slice(0, 1_000)}`);
+  if (exitCode !== 0) throw TestError.make({message: `Worker exited ${exitCode}: ${stderr.slice(0, 1_000)}`});
   const lines = stdout.trim().split(/\r?\n/);
-  if (lines.length !== 1 || !lines[0]) throw new TestError(`Expected one worker response line, got: ${stdout}`);
+  if (lines.length !== 1 || !lines[0])
+    throw TestError.make({message: `Expected one worker response line, got: ${stdout}`});
   return JSON.parse(lines[0]) as WorkerResponse;
 }
 

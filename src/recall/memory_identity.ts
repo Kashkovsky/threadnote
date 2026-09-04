@@ -67,13 +67,11 @@ export const resolveMemoryIdentityAliases = Effect.fn('recall.resolveMemoryIdent
     return inputs.map(input => ({canonicalUri: input, expectedMemoryId: undefined, requestedUri: input}));
   }
   if (allowedUriScopes.length === 0) {
-    return yield* Effect.fail(
-      new MemoryIdentityResolutionError({
-        memoryId: memoryIds[0],
-        message: 'Stable memory identity resolution requires an explicit non-empty authorized URI scope.',
-        reason: 'scope-required',
-      }),
-    );
+    return yield* MemoryIdentityResolutionError.make({
+      memoryId: memoryIds[0],
+      message: 'Stable memory identity resolution requires an explicit non-empty authorized URI scope.',
+      reason: 'scope-required',
+    });
   }
   const candidates = yield* loadRecallMemoryIdentities(config, {
     allowedUriScopes,
@@ -103,13 +101,11 @@ export const resolveMemoryIdentityAliases = Effect.fn('recall.resolveMemoryIdent
     }
     const indexed = indexedResolutions.get(memoryId) ?? {state: 'not-found' as const};
     if (indexed.state === 'ambiguous') {
-      return yield* Effect.fail(
-        new MemoryIdentityResolutionError({
-          memoryId,
-          message: 'Stable memory identity is ambiguous or conflicted inside the authorized corpus.',
-          reason: 'ambiguous',
-        }),
-      );
+      return yield* MemoryIdentityResolutionError.make({
+        memoryId,
+        message: 'Stable memory identity is ambiguous or conflicted inside the authorized corpus.',
+        reason: 'ambiguous',
+      });
     }
     if (indexed.state === 'resolved') {
       resolved.push({canonicalUri: indexed.uri, expectedMemoryId: memoryId, requestedUri: input});
@@ -118,16 +114,14 @@ export const resolveMemoryIdentityAliases = Effect.fn('recall.resolveMemoryIdent
     const witnessed = classifyMemoryIdentityCandidates(relocationWitnesses, memoryId, allowedUriScopes);
     if (witnessed.state !== 'resolved') {
       const reason = witnessed.state;
-      return yield* Effect.fail(
-        new MemoryIdentityResolutionError({
-          memoryId,
-          message:
-            reason === 'not-found'
-              ? 'Stable memory identity does not resolve inside the authorized active corpus.'
-              : 'Stable memory identity is ambiguous or conflicted inside the authorized corpus.',
-          reason,
-        }),
-      );
+      return yield* MemoryIdentityResolutionError.make({
+        memoryId,
+        message:
+          reason === 'not-found'
+            ? 'Stable memory identity does not resolve inside the authorized active corpus.'
+            : 'Stable memory identity is ambiguous or conflicted inside the authorized corpus.',
+        reason,
+      });
     }
     resolved.push({
       canonicalUri: witnessed.uri,
@@ -154,12 +148,10 @@ export const verifyResolvedMemoryIdentity = Effect.fn('recall.verifyResolvedMemo
     resolved.identityWitness === 'private-relocation-receipt' &&
     resolved.canonicalUri === canonicalUri;
   if (observedMemoryId !== resolved.expectedMemoryId && !witnessedMissingIdentity) {
-    return yield* Effect.fail(
-      new MemoryIdentityResolutionError({
-        memoryId: resolved.expectedMemoryId,
-        message: 'Stable memory identity no longer matches the live memory bytes; refresh recall and retry.',
-        reason: 'live-mismatch',
-      }),
-    );
+    return yield* MemoryIdentityResolutionError.make({
+      memoryId: resolved.expectedMemoryId,
+      message: 'Stable memory identity no longer matches the live memory bytes; refresh recall and retry.',
+      reason: 'live-mismatch',
+    });
   }
 });

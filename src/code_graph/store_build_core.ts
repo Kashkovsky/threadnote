@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {DateTime, Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
   codeGraphUtf8ByteLength,
@@ -21,6 +21,7 @@ import {
   type CodeGraphSnapshot,
   type CodeGraphSymbol,
   CodeGraphStoreError,
+  type CodeGraphStoreFailure,
 } from './types.js';
 import {type CodeGraphBuildWorkspace, type CodeGraphWorkspaceProject} from './languages/types.js';
 import {chunk, lookupDomain, sortedBy, symbolTerms, uniqueBy} from './store_utilities.js';
@@ -53,7 +54,7 @@ const assertPersistentBuildOwner = Effect.fn('codeGraph.assertPersistentBuildOwn
     LIMIT 1
   `;
   if (!rows[0] || !['building', 'failed'].includes(rows[0].state)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent build ownership changed.'));
+    return yield* CodeGraphStoreError.of('Persistent build ownership changed.');
   }
 });
 
@@ -72,9 +73,7 @@ const registerPersistentMaterializationPlan = Effect.fn('codeGraph.registerPersi
       RETURNING expected_batch_count
     `;
   if (Number(registered[0]?.expected_batch_count ?? -1) !== expectedBatchCount) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError('Persisted full-build materialization plan changed; discard and rebuild it.'),
-    );
+    return yield* CodeGraphStoreError.of('Persisted full-build materialization plan changed; discard and rebuild it.');
   }
   yield* sql`
     INSERT INTO building_lexical_counters (
@@ -132,9 +131,7 @@ const assertPersistentMaterializationComplete = Effect.fn('codeGraph.assertPersi
       Number(row?.invalid_materialization_receipts ?? -1) !== 0 ||
       Number(row?.invalid_analysis_receipts ?? -1) !== 0
     ) {
-      return yield* Effect.fail(
-        new CodeGraphStoreError('Persistent full-build materialization has incomplete batch receipts.'),
-      );
+      return yield* CodeGraphStoreError.of('Persistent full-build materialization has incomplete batch receipts.');
     }
   },
 );
@@ -169,13 +166,11 @@ const assertPersistentMaterializationBatchPlanned = Effect.fn('codeGraph.assertP
     `;
     const row = rows[0];
     if (row === undefined) {
-      return yield* Effect.fail(new CodeGraphStoreError('Persistent build ownership changed.'));
+      return yield* CodeGraphStoreError.of('Persistent build ownership changed.');
     }
     if (row.expected_batch_count !== null) {
       if (batchIndex < Number(row.expected_batch_count)) return;
-      return yield* Effect.fail(
-        new CodeGraphStoreError('Persistent materialization batch is outside the registered plan.'),
-      );
+      return yield* CodeGraphStoreError.of('Persistent materialization batch is outside the registered plan.');
     }
     const materializationCount = Number(row.materialization_count);
     const analysisCount = Number(row.analysis_count);
@@ -187,9 +182,7 @@ const assertPersistentMaterializationBatchPlanned = Effect.fn('codeGraph.assertP
       !contiguous(analysisCount, row.analysis_minimum, row.analysis_maximum) ||
       batchIndex > materializationCount
     ) {
-      return yield* Effect.fail(
-        new CodeGraphStoreError('Persistent materialization batches must be staged in contiguous order.'),
-      );
+      return yield* CodeGraphStoreError.of('Persistent materialization batches must be staged in contiguous order.');
     }
   },
 );
@@ -543,11 +536,11 @@ interface CompactLexicalSnapshotKeyRow {
 function validatedCompactLexicalCount(
   value: number | bigint,
   description: string,
-): Effect.Effect<number, CodeGraphStoreError> {
+): Effect.Effect<number, CodeGraphStoreFailure> {
   const count = Number(value);
   return Number.isSafeInteger(count) && count >= 0
     ? Effect.succeed(count)
-    : Effect.fail(new CodeGraphStoreError(`Compact lexical ${description} is invalid.`));
+    : Effect.fail(CodeGraphStoreError.of(`Compact lexical ${description} is invalid.`));
 }
 
 const ensureCompactLexicalSnapshot = Effect.fn('codeGraph.ensureCompactLexicalSnapshot')(function* (
@@ -564,7 +557,7 @@ const ensureCompactLexicalSnapshot = Effect.fn('codeGraph.ensureCompactLexicalSn
   `;
   const row = rows[0];
   if (row === undefined) {
-    return yield* Effect.fail(new CodeGraphStoreError(`Compact lexical snapshot ${snapshotId} was not allocated.`));
+    return yield* CodeGraphStoreError.of(`Compact lexical snapshot ${snapshotId} was not allocated.`);
   }
   return yield* validatedCompactLexicalCount(row.snapshot_key, 'snapshot key');
 });
@@ -587,7 +580,7 @@ const stageCompactLexicalFacts = Effect.fn('codeGraph.stageCompactLexicalFacts')
     );
     const inserted = yield* lastStatementChangeCount(sql);
     if (inserted !== batch.length) {
-      return yield* Effect.fail(new CodeGraphStoreError('Compact lexical symbol dictionary lost rows.'));
+      return yield* CodeGraphStoreError.of('Compact lexical symbol dictionary lost rows.');
     }
     symbolCount += inserted;
   }
@@ -628,8 +621,8 @@ const stageCompactLexicalFacts = Effect.fn('codeGraph.stageCompactLexicalFacts')
       );
       const inserted = yield* lastStatementChangeCount(sql);
       if (inserted !== current.length) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError(`Compact lexical dictionary join lost ${current.length - inserted} posting(s).`),
+        return yield* CodeGraphStoreError.of(
+          `Compact lexical dictionary join lost ${current.length - inserted} posting(s).`,
         );
       }
       postingCount += inserted;
@@ -659,14 +652,14 @@ function validatedCompactLexicalReceipt(
   receipt: CompactLexicalFormatReceipt,
   expectedPostingCount: number,
   expectedSymbolCount: number,
-): Effect.Effect<CompactLexicalFormatReceipt, CodeGraphStoreError> {
+): Effect.Effect<CompactLexicalFormatReceipt, CodeGraphStoreFailure> {
   const counts = [receipt.postingCount, receipt.symbolCount, receipt.termCount];
   if (counts.some(count => !Number.isSafeInteger(count) || count < 0)) {
-    return Effect.fail(new CodeGraphStoreError('Compact lexical receipt contains an invalid count.'));
+    return Effect.fail(CodeGraphStoreError.of('Compact lexical receipt contains an invalid count.'));
   }
   if (receipt.postingCount !== expectedPostingCount || receipt.symbolCount !== expectedSymbolCount) {
     return Effect.fail(
-      new CodeGraphStoreError(
+      CodeGraphStoreError.of(
         `Compact lexical receipt mismatch (${receipt.postingCount}/${expectedPostingCount} postings, ` +
           `${receipt.symbolCount}/${expectedSymbolCount} symbols).`,
       ),
@@ -685,7 +678,7 @@ const publishCompactLexicalFormat = Effect.fn('codeGraph.publishCompactLexicalFo
       snapshot_id, format_version, posting_count, symbol_count, term_count, created_at
     ) VALUES (
       ${snapshotId}, ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}, ${receipt.postingCount},
-      ${receipt.symbolCount}, ${receipt.termCount}, ${new Date().toISOString()}
+      ${receipt.symbolCount}, ${receipt.termCount}, ${DateTime.formatIso(yield* DateTime.now)}
     )
     ON CONFLICT(snapshot_id) DO UPDATE SET
       format_version = excluded.format_version,

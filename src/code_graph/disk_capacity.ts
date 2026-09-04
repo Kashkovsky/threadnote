@@ -1,10 +1,13 @@
+import {Schema} from 'effect';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CODE_GRAPH_SCHEMA_VERSION,
-  CodeGraphStoreNoSpaceError,
-  CodeGraphStoreTransientIoError,
+  CodeGraphDiskCapacityObservationError,
+  CodeGraphDiskCapacityPressureError,
 } from './types.js';
+
+export {CodeGraphDiskCapacityObservationError, CodeGraphDiskCapacityPressureError};
 
 export const CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION = 2 as const;
 
@@ -268,21 +271,6 @@ export type CodeGraphDiskCapacityDecision =
         | 'reservation-input-unknown';
       readonly state: 'unknown';
     };
-
-export class CodeGraphDiskCapacityObservationError extends CodeGraphStoreTransientIoError {
-  constructor() {
-    super('Code graph storage capacity could not be observed; the bounded write was not started.', {
-      operation: 'observe code graph storage capacity',
-    });
-  }
-}
-
-/** A proactive pressure decision made before its guarded persistent transaction starts. */
-export class CodeGraphDiskCapacityPressureError extends CodeGraphStoreNoSpaceError {
-  constructor(operation: CodeGraphCapacityFailureOperation) {
-    super('Code graph storage capacity is insufficient; the bounded write was not started.', {operation});
-  }
-}
 
 export function codeGraphDirectPersistentCapacityDemand(
   input: CodeGraphDirectPersistentCapacityDemandInput,
@@ -554,13 +542,15 @@ export function codeGraphDiskCapacityFailure(
   operation: string,
 ): CodeGraphDiskCapacityPressureError | CodeGraphDiskCapacityObservationError {
   return decision.state === 'pressure'
-    ? new CodeGraphDiskCapacityPressureError(capacityOperation(operation))
-    : new CodeGraphDiskCapacityObservationError();
+    ? CodeGraphDiskCapacityPressureError.of(capacityOperation(operation))
+    : CodeGraphDiskCapacityObservationError.of();
 }
 
 /** Only these typed failures preserve a deterministic persistent receipt prefix. */
 export function isCodeGraphCapacityPause(cause: unknown): boolean {
-  return cause instanceof CodeGraphDiskCapacityPressureError || cause instanceof CodeGraphDiskCapacityObservationError;
+  return (
+    Schema.is(CodeGraphDiskCapacityPressureError)(cause) || Schema.is(CodeGraphDiskCapacityObservationError)(cause)
+  );
 }
 
 export function saturatingCapacityAdd(...values: readonly number[]): number {

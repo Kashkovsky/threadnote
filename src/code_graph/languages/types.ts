@@ -1,4 +1,4 @@
-import {Effect, Option} from 'effect';
+import {Effect, Option, Schema} from 'effect';
 import type {TreeSitterRuntime} from '../tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../types.js';
 import type {CodeGraphExternalDependencyV1, CodeGraphMonikerV1} from '../cross_repository/types.js';
@@ -133,6 +133,10 @@ export interface CodeGraphLanguageMatch {
   readonly role: CodeGraphFileRole;
 }
 
-export class CodeGraphLanguagePackError extends Error {
-  override readonly name = 'CodeGraphLanguagePackError';
-}
+export class CodeGraphLanguagePackError extends Schema.TaggedError<CodeGraphLanguagePackError>()(
+  'CodeGraphLanguagePackError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}

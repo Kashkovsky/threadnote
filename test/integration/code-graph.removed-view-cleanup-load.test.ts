@@ -4,7 +4,7 @@ import {createHash} from '../helpers/node-crypto.js';
 import {existsSync, statSync} from '../helpers/node-fs.js';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
-import {Effect, FileSystem, Path} from 'effect';
+import {Clock, Effect, FileSystem, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
@@ -126,7 +126,7 @@ describe('removed code graph view cleanup load and migration', () => {
                 claimed[0]?.worktreeId !== worktreeId(index) ||
                 claimed[0].epoch !== index + 1
               ) {
-                throw new TestError(`Cleanup admission diverged at bounded row ${index}.`);
+                throw TestError.make({message: `Cleanup admission diverged at bounded row ${index}.`});
               }
             }
             const surface = readCleanupSurface(databasePath);
@@ -202,7 +202,8 @@ describe('removed code graph view cleanup load and migration', () => {
               ),
               {onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase))},
             );
-            if (committedEvidence === undefined) throw new TestError('Cleanup migration evidence was not retained.');
+            if (committedEvidence === undefined)
+              throw TestError.make({message: 'Cleanup migration evidence was not retained.'});
             const mainGrowthBytes = Math.max(0, committedEvidence.databaseBytes - baselineMainBytes);
             const walGrowthBytes = Math.max(0, committedEvidence.walBytes - baselineWalBytes);
             const sharedGrowthBytes = Math.max(
@@ -282,7 +283,7 @@ describe('removed code graph view cleanup load and migration', () => {
 
           for (let attempt = 0; attempt < 2; attempt += 1) {
             const failure = yield* store
-              .claimRemovedViewCleanupCandidates(databasePath, Date.now(), 32)
+              .claimRemovedViewCleanupCandidates(databasePath, yield* Clock.currentTimeMillis, 32)
               .pipe(Effect.flip);
             expect(failure).toBeInstanceOf(CodeGraphStoreError);
             expect(failure.message).toContain('admission row is invalid');

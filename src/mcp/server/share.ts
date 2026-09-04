@@ -457,7 +457,7 @@ export const runThreadnoteGuideTool = Effect.fn('mcp_server.runThreadnoteGuideTo
 const probeRuntimeReady = Effect.fn('mcp_server.probeRuntimeReady')(function* (config: RuntimeConfig) {
   return yield* runNativeHealthTool(config).pipe(
     Effect.as(true),
-    Effect.catch(() => Effect.succeed(false)),
+    Effect.orElseSucceed(() => false),
   );
 });
 

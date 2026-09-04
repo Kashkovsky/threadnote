@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Stdio, Stream} from 'effect';
+import {Effect, FileSystem, Stdio, Stream, Schema} from 'effect';
 import {fromPromise} from '../effect/errors.js';
 import {SystemInfo} from '../effect/system.js';
 import {
@@ -11,9 +11,13 @@ import {
   validCodeGraphWorktreeAuthorityWorkerRequest,
 } from './git_worktree_registration.js';
 
-class GitWorktreeRegistrationError extends Error {
-  readonly _tag = 'GitWorktreeRegistrationError' as const;
-}
+class GitWorktreeRegistrationError extends Schema.TaggedError<GitWorktreeRegistrationError>()(
+  'GitWorktreeRegistrationError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 const UTF8 = new TextEncoder();
 
@@ -25,7 +29,7 @@ export const gitWorktreeRegistrationWorkerProgram = Effect.gen(function* () {
     CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.authorityWorkerInputBytes,
   ).pipe(
     Effect.flatMap(workerResponse),
-    Effect.catch(() => Effect.succeed({reason: 'invalid', state: 'unknown'} as const)),
+    Effect.orElseSucceed(() => ({reason: 'invalid', state: 'unknown'}) as const),
   );
   yield* Stream.run(Stream.make(UTF8.encode(`${JSON.stringify(response)}\n`)), stdio.stdout({endOnDone: false}));
 });
@@ -33,14 +37,14 @@ export const gitWorktreeRegistrationWorkerProgram = Effect.gen(function* () {
 const workerResponse = Effect.fn('codeGraph.gitWorktreeRegistrationWorkerResponse')(function* (input: Uint8Array) {
   const decoded = yield* Effect.try({
     try: () => new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(input),
-    catch: () => new GitWorktreeRegistrationError('invalid'),
+    catch: () => GitWorktreeRegistrationError.make({message: 'invalid'}),
   });
   if (!decoded.endsWith('\n') || decoded.slice(0, -1).includes('\n')) {
-    return yield* Effect.fail(new GitWorktreeRegistrationError('invalid'));
+    return yield* GitWorktreeRegistrationError.make({message: 'invalid'});
   }
   const request = yield* Effect.try({
     try: (): unknown => JSON.parse(decoded.slice(0, -1)),
-    catch: () => new GitWorktreeRegistrationError('invalid'),
+    catch: () => GitWorktreeRegistrationError.make({message: 'invalid'}),
   });
   if (validCodeGraphWorktreeAuthorityWorkerRequest(request)) {
     yield* blockAuthorityLstatForTest();
@@ -52,7 +56,7 @@ const workerResponse = Effect.fn('codeGraph.gitWorktreeRegistrationWorkerRespons
   if (validCodeGraphGitWorktreeRegistryRequest(request)) {
     return yield* fromPromise('scan Git worktree registration batch', () => scanCodeGraphGitWorktreeRegistry(request));
   }
-  return yield* Effect.fail(new GitWorktreeRegistrationError('invalid'));
+  return yield* GitWorktreeRegistrationError.make({message: 'invalid'});
 });
 
 const readBoundedStandardInput = Effect.fn('codeGraph.readGitWorktreeRegistrationWorkerInput')(function* (
@@ -64,7 +68,7 @@ const readBoundedStandardInput = Effect.fn('codeGraph.readGitWorktreeRegistratio
   yield* stdio.stdin.pipe(
     Stream.runForEach(chunk => {
       total += chunk.byteLength;
-      if (total > limit) return Effect.fail(new GitWorktreeRegistrationError('invalid'));
+      if (total > limit) return Effect.fail(GitWorktreeRegistrationError.make({message: 'invalid'}));
       chunks.push(chunk);
       return Effect.void;
     }),

@@ -29,16 +29,16 @@ const build = Effect.gen(function* () {
   const manifest = yield* readPackageManifest(fs, path.join(root, 'package.json'));
   const configuredDevelopmentVersion = Bun.env.THREADNOTE_DEVELOPMENT_BUILD_VERSION?.trim();
   if (configuredDevelopmentVersion && !isDevelopmentBuildVersion(configuredDevelopmentVersion)) {
-    return yield* Effect.fail(
-      new ScriptError('THREADNOTE_DEVELOPMENT_BUILD_VERSION must be a SHA-bound local development version.'),
-    );
+    return yield* ScriptError.make({
+      message: 'THREADNOTE_DEVELOPMENT_BUILD_VERSION must be a SHA-bound local development version.',
+    });
   }
   const version = configuredDevelopmentVersion ?? manifest.version;
   const nativeRuntimeVersion = manifest.dependencies?.[NATIVE_RUNTIME_PACKAGE];
   if (!version || !nativeRuntimeVersion || !EXACT_PACKAGE_VERSION.test(nativeRuntimeVersion)) {
-    return yield* Effect.fail(
-      new ScriptError('package.json must declare version and an exact node-llama-cpp dependency.'),
-    );
+    return yield* ScriptError.make({
+      message: 'package.json must declare version and an exact node-llama-cpp dependency.',
+    });
   }
 
   const target = buildTarget();
@@ -104,9 +104,9 @@ const build = Effect.gen(function* () {
   const nativePackage = nativePackageForTarget(target);
   const nativePackageRoot = path.join(root, 'node_modules', ...nativePackage.split('/'));
   if (!(yield* fs.exists(nativePackageRoot))) {
-    return yield* Effect.fail(
-      new ScriptError(`${nativePackage} is not installed on this target build host. Run bun install before building.`),
-    );
+    return yield* ScriptError.make({
+      message: `${nativePackage} is not installed on this target build host. Run bun install before building.`,
+    });
   }
   yield* fs.makeDirectory(nativeRuntimeRoot, {recursive: true});
   yield* bundleNativeRuntime(
@@ -150,7 +150,7 @@ function readPackageManifest(fs: FileSystem.FileSystem, path: string) {
     Effect.flatMap(content =>
       Effect.try({
         try: () => JSON.parse(content) as PackageManifest,
-        catch: cause => new ScriptError('Could not parse package.json.', {cause}),
+        catch: cause => ScriptError.make({message: 'Could not parse package.json.', cause}),
       }),
     ),
   );
@@ -167,29 +167,29 @@ const stageCodeGraphPackageAssets = Effect.fn('build.stageCodeGraphPackageAssets
     Effect.flatMap(content =>
       Effect.try({
         try: () => JSON.parse(content) as unknown,
-        catch: cause => new ScriptError('Could not parse the code graph asset manifest.', {cause}),
+        catch: cause => ScriptError.make({message: 'Could not parse the code graph asset manifest.', cause}),
       }),
     ),
   );
   if (!isRecord(manifest) || !isRecord(manifest.grammars)) {
-    return yield* Effect.fail(new ScriptError('Code graph asset manifest does not declare grammars.'));
+    return yield* ScriptError.make({message: 'Code graph asset manifest does not declare grammars.'});
   }
   for (const [id, value] of Object.entries(manifest.grammars).sort(([left], [right]) => left.localeCompare(right))) {
     if (!isRecord(value) || typeof value.path !== 'string') {
-      return yield* Effect.fail(new ScriptError(`Code graph grammar metadata is invalid for ${id}.`));
+      return yield* ScriptError.make({message: `Code graph grammar metadata is invalid for ${id}.`});
     }
     const target = path.join(outputRoot, 'assets', 'code-graph', ...value.path.split('/'));
     if (!(yield* fs.exists(target))) {
       if (typeof value.packagePath !== 'string') {
-        return yield* Effect.fail(
-          new ScriptError(`Code graph grammar ${id} is not vendored and has no package source.`),
-        );
+        return yield* ScriptError.make({
+          message: `Code graph grammar ${id} is not vendored and has no package source.`,
+        });
       }
       const source = path.join(root, ...value.packagePath.split('/'));
       if (!(yield* fs.exists(source))) {
-        return yield* Effect.fail(
-          new ScriptError(`Code graph grammar package source is missing for ${id}: ${value.packagePath}`),
-        );
+        return yield* ScriptError.make({
+          message: `Code graph grammar package source is missing for ${id}: ${value.packagePath}`,
+        });
       }
       yield* fs.makeDirectory(path.dirname(target), {recursive: true});
       yield* fs.copyFile(source, target);
@@ -199,11 +199,9 @@ const stageCodeGraphPackageAssets = Effect.fn('build.stageCodeGraphPackageAssets
       if (!(yield* fs.exists(licenseTarget)) && typeof value.licensePackagePath === 'string') {
         const licenseSource = path.join(root, ...value.licensePackagePath.split('/'));
         if (!(yield* fs.exists(licenseSource))) {
-          return yield* Effect.fail(
-            new ScriptError(
-              `Code graph grammar license package source is missing for ${id}: ${value.licensePackagePath}`,
-            ),
-          );
+          return yield* ScriptError.make({
+            message: `Code graph grammar license package source is missing for ${id}: ${value.licensePackagePath}`,
+          });
         }
         yield* fs.makeDirectory(path.dirname(licenseTarget), {recursive: true});
         yield* fs.copyFile(licenseSource, licenseTarget);
@@ -269,10 +267,11 @@ function assertNativeTargetMatchesHost(target: Bun.Build.CompileTarget): void {
   const architecture = process.arch === 'arm64' ? '(?:arm64|aarch64)' : process.arch;
   const matchesHost = new RegExp(`^bun-${platform}-${architecture}(?:-|$)`).test(target);
   if (!matchesHost) {
-    throw new ScriptError(
-      `Target ${target} does not match this ${platform}-${process.arch} build host. ` +
+    throw ScriptError.make({
+      message:
+        `Target ${target} does not match this ${platform}-${process.arch} build host. ` +
         'Native local-AI payloads must be assembled on their target OS and architecture.',
-    );
+    });
   }
 }
 
@@ -295,7 +294,7 @@ function nativePackageForTarget(target: Bun.Build.CompileTarget): string {
   if (target.startsWith('bun-windows-x64')) {
     return '@node-llama-cpp/win-x64';
   }
-  throw new ScriptError(`No prebuilt native local-AI package is mapped for ${target}.`);
+  throw ScriptError.make({message: `No prebuilt native local-AI package is mapped for ${target}.`});
 }
 
 BunRuntime.runMain(provideScriptLayer(build, BunServices.layer));

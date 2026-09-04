@@ -652,12 +652,9 @@ describe('polyglot code graph language packs', () => {
       const workspace = discoverManifestWorkspace(files);
       const attribute = createWorkspaceAttributor(workspace);
       const extracted = attribute(
-        yield* Effect.all(
-          files.map(file => runExtraction(file)),
-          {
-            concurrency: 'unbounded',
-          },
-        ),
+        yield* Effect.forEach(files, file => runExtraction(file), {
+          concurrency: 'unbounded',
+        }),
       );
       const resolved = createRepositoryFactResolver(extracted, files).resolve(extracted);
       const connected = resolved.find(file => file.path.includes('apps/app/src'))!;
@@ -735,12 +732,9 @@ describe('polyglot code graph language packs', () => {
         const shared = workspace.projects.find(project => project.root === 'libs/shared')!;
         const attribute = createWorkspaceAttributor(workspace);
         const extracted = attribute(
-          yield* Effect.all(
-            files.map(file => runExtraction(file)),
-            {
-              concurrency: 'unbounded',
-            },
-          ),
+          yield* Effect.forEach(files, file => runExtraction(file), {
+            concurrency: 'unbounded',
+          }),
         );
         const resolved = createRepositoryFactResolver(extracted, files).resolve(extracted);
         const appFacts = resolved.find(file => file.path.endsWith('/App.kt'))!;
@@ -780,12 +774,9 @@ describe('polyglot code graph language packs', () => {
       const workspace = discoverManifestWorkspace(files);
       const attribute = createWorkspaceAttributor(workspace);
       const extracted = attribute(
-        yield* Effect.all(
-          files.map(file => runExtraction(file)),
-          {
-            concurrency: 'unbounded',
-          },
-        ),
+        yield* Effect.forEach(files, file => runExtraction(file), {
+          concurrency: 'unbounded',
+        }),
       );
       const resolved = createRepositoryFactResolver(extracted, files).resolve(extracted);
       const app = resolved.find(file => file.path === 'Sources/App/Main.swift')!;
@@ -815,12 +806,9 @@ describe('polyglot code graph language packs', () => {
       const workspace = discoverManifestWorkspace(files);
       const attribute = createWorkspaceAttributor(workspace);
       const extracted = attribute(
-        yield* Effect.all(
-          files.map(file => runExtraction(file)),
-          {
-            concurrency: 'unbounded',
-          },
-        ),
+        yield* Effect.forEach(files, file => runExtraction(file), {
+          concurrency: 'unbounded',
+        }),
       );
       const resolved = createRepositoryFactResolver(extracted, files).resolve(extracted);
       const facts = resolved.find(file => file.path.endsWith('Types.swift'))!;
@@ -854,12 +842,9 @@ describe('polyglot code graph language packs', () => {
       const workspace = discoverManifestWorkspace(files);
       const attribute = createWorkspaceAttributor(workspace);
       const extracted = attribute(
-        yield* Effect.all(
-          files.map(file => runExtraction(file)),
-          {
-            concurrency: 'unbounded',
-          },
-        ),
+        yield* Effect.forEach(files, file => runExtraction(file), {
+          concurrency: 'unbounded',
+        }),
       );
       const resolved = createRepositoryFactResolver(extracted, files).resolve(extracted);
       const edge = resolved
@@ -993,7 +978,7 @@ function runExtraction(file: CodeGraphInventoryFile) {
 function inventoryFile(path: string, content: string, language?: string): CodeGraphInventoryFile {
   const match = BUILTIN_LANGUAGE_PACK_REGISTRY.match(path);
   if (Option.isNone(match) && language === undefined) {
-    throw new CodeGraphLanguagePackError(`Test file is not accepted by a language pack: ${path}.`);
+    throw CodeGraphLanguagePackError.make({message: `Test file is not accepted by a language pack: ${path}.`});
   }
   return {
     blobId: `blob-${path}`,

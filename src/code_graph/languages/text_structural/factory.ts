@@ -21,7 +21,8 @@ export function createTextStructuralLanguagePack(options: TextStructuralLanguage
         Effect.try({
           try: () => extractTextStructuralFacts(file, context, options.resolutionDomain),
           catch: cause =>
-            new CodeGraphLanguagePackError(`Could not extract bounded ${options.id} structure from ${file.path}.`, {
+            CodeGraphLanguagePackError.make({
+              message: `Could not extract bounded ${options.id} structure from ${file.path}.`,
               cause,
             }),
         }),

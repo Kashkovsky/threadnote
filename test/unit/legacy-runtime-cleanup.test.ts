@@ -141,7 +141,7 @@ function testServices(
         signalProcess: processOverrides.signalProcess,
       });
       const http = HttpService.of({
-        downloadToFile: () => Effect.die(new TestError('Unexpected download')),
+        downloadToFile: () => Effect.die(TestError.make({message: 'Unexpected download'})),
         getJson: url =>
           Effect.sync(() => {
             const challenge = new URL(url).searchParams.get('challenge') ?? '';
@@ -155,8 +155,8 @@ function testServices(
               status: 200,
             };
           }),
-        getStatus: () => Effect.die(new TestError('Unexpected status request')),
-        getText: () => Effect.die(new TestError('Unexpected text request')),
+        getStatus: () => Effect.die(TestError.make({message: 'Unexpected status request'})),
+        getText: () => Effect.die(TestError.make({message: 'Unexpected text request'})),
       } satisfies HttpServiceShape);
       return {http, system: testSystem};
     }),

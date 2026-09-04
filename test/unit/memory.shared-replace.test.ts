@@ -4,6 +4,7 @@ import {mkdir, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Cause, Effect, Exit} from 'effect';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {afterEach, beforeEach, describe, expect, vi} from 'vitest';
 import * as aiEnrichment from '../../src/effect/ai/enrichment.js';
 import {captureConsole} from '../../src/effect/console.js';
@@ -117,7 +118,7 @@ describe('remember shared replacement', () => {
 
   beforeEach(() => {
     vi.mocked(utils.maybeRun).mockImplementation((dryRun, executable, args, options) =>
-      dryRun ? Effect.succeed(undefined) : vi.mocked(utils.runCommand)(executable, args, options),
+      dryRun ? succeedUndefined : vi.mocked(utils.runCommand)(executable, args, options),
     );
     vi.mocked(utils.requiredExecutable).mockReturnValue(Effect.succeed('git'));
     vi.mocked(utils.runCommand).mockReset();

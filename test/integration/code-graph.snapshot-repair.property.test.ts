@@ -201,7 +201,7 @@ class ReleaseLeaseCommand implements FC.AsyncCommand<SnapshotModel, SnapshotReal
 
   async run(model: SnapshotModel, real: SnapshotReal): Promise<void> {
     const token = real.leaseTokens.get(this.slot);
-    if (token === undefined) throw new TestError(`Model lease ${this.slot} has no real token.`);
+    if (token === undefined) throw TestError.make({message: `Model lease ${this.slot} has no real token.`});
     await runEffect(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;

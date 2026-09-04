@@ -7,7 +7,7 @@ export class ApplicationError extends Schema.TaggedError<ApplicationError>()('Ap
 }) {}
 
 export function applicationError(operation: string, cause: unknown): ApplicationError {
-  return new ApplicationError({
+  return ApplicationError.make({
     cause,
     message: cause instanceof Error ? cause.message : String(cause),
     operation,

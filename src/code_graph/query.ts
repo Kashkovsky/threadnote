@@ -1,4 +1,4 @@
-import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path} from 'effect';
+import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path, Schema} from 'effect';
 import {CommandExecutor, runCommandEffect} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
@@ -154,7 +154,7 @@ export class CodeGraphQueryService extends Context.Service<
       use: (status: CodeGraphStatus) => Effect.Effect<A, E, R>,
     ) => Effect.Effect<A, E | unknown, R>;
   }
->()('threadnote/codeGraph/CodeGraphQuery') {
+>()('threadnote/code_graph/query/CodeGraphQueryService') {
   static readonly layer = Layer.effect(
     CodeGraphQueryService,
     Effect.gen(function* () {
@@ -413,11 +413,7 @@ export class CodeGraphQueryService extends Context.Service<
                 finalOverlay === undefined ? undefined : {identity: promotionIdentity.value, overlay: finalOverlay},
               );
             }),
-          ).pipe(
-            Effect.catch(error =>
-              error instanceof CodeGraphStoreBusyError ? Effect.succeed(status) : Effect.fail(error),
-            ),
-          );
+          ).pipe(Effect.catchIf(Schema.is(CodeGraphStoreBusyError), () => Effect.succeed(status)));
         });
       const borrowSharedReadySnapshot = Effect.fn('codeGraph.query.borrowSharedReadySnapshot')(function* (
         threadnoteHome: string,
@@ -571,11 +567,9 @@ export class CodeGraphQueryService extends Context.Service<
                     rebuilt = true;
                     result = yield* read();
                     if (result.freshness === 'stale') {
-                      return yield* Effect.fail(
-                        new WorktreeChangedDuringQuery(
-                          'Worktree files kept changing while refreshing the code graph; retry the operation.',
-                        ),
-                      );
+                      return yield* WorktreeChangedDuringQuery.make({
+                        message: 'Worktree files kept changing while refreshing the code graph; retry the operation.',
+                      });
                     }
                   }
                   return result;
@@ -597,10 +591,7 @@ export class CodeGraphQueryService extends Context.Service<
                             .acquireSnapshotLease(layout.databasePath, readyBase.id, 2 * 60_000)
                             .pipe(Effect.map(leaseToken => ({leaseToken, snapshot: readyBase}))),
                           base => inspect(base.snapshot.id),
-                          base =>
-                            store
-                              .releaseSnapshotLease(layout.databasePath, base.leaseToken)
-                              .pipe(Effect.catch(() => Effect.void)),
+                          base => store.releaseSnapshotLease(layout.databasePath, base.leaseToken).pipe(Effect.ignore),
                         )
                       : addUnavailableImpactBaseWarning(yield* inspect());
                   if (options.requestMaintenance !== false) {
@@ -616,10 +607,7 @@ export class CodeGraphQueryService extends Context.Service<
                     threadnoteHome: options.threadnoteHome,
                   }),
                   base => inspect(base.snapshot.id),
-                  base =>
-                    store
-                      .releaseSnapshotLease(layout.databasePath, base.leaseToken)
-                      .pipe(Effect.catch(() => Effect.void)),
+                  base => store.releaseSnapshotLease(layout.databasePath, base.leaseToken).pipe(Effect.ignore),
                 );
                 if (options.requestMaintenance !== false) {
                   yield* requestMaintenance(options.threadnoteHome, identity);
@@ -863,7 +851,7 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
     ? {scores: new Map<string, number>(), timedOut: false}
     : yield* embedding.search(threadnoteHome, layout, snapshotId, query, Math.min(nodeLimit, 12)).pipe(
         Effect.map(scores => ({scores, timedOut: false as const})),
-        Effect.catch(() => Effect.succeed({scores: new Map<string, number>(), timedOut: false as const})),
+        Effect.orElseSucceed(() => ({scores: new Map<string, number>(), timedOut: false as const})),
         Effect.timeoutOrElse({
           duration: semanticTimeBudgetMilliseconds,
           orElse: () =>
@@ -1265,9 +1253,9 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
       'fallback',
     ));
   if (identity.repositoryId !== input.expectedRepositoryId) {
-    return yield* Effect.fail(
-      new CodeGraphRepositoryError('Repository identity changed while waiting for the graph lock.'),
-    );
+    return yield* CodeGraphRepositoryError.make({
+      message: 'Repository identity changed while waiting for the graph lock.',
+    });
   }
   const overlay =
     input.observation?.overlay ??
@@ -1284,11 +1272,9 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
     ? yield* input.store.readySnapshotById(input.layout.databasePath, input.borrowedSnapshotId)
     : yield* input.store.readySnapshot(input.layout.databasePath, identity.worktreeId);
   if (!storedSnapshot || storedSnapshot.repositoryId !== identity.repositoryId) {
-    return yield* Effect.fail(
-      new CodeGraphSnapshotUnavailable(
-        'No ready native code graph snapshot exists. Run `threadnote graph index` first.',
-      ),
-    );
+    return yield* CodeGraphSnapshotUnavailable.make({
+      message: 'No ready native code graph snapshot exists. Run `threadnote graph index` first.',
+    });
   }
   const snapshot = {...storedSnapshot, worktreeId: identity.worktreeId};
   const runtimeCurrent = yield* codeGraphSnapshotRuntimeCurrent(
@@ -1309,17 +1295,17 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
       8,
     );
     const allowedProvenances = selectedProvenances(input.options);
-    const selected = yield* Effect.gen(function* () {
+    const selected = yield* (() => {
       switch (input.options.operation) {
         case 'node':
-          return yield* exactNodeQuery(
+          return exactNodeQuery(
             input.store,
             input.layout.databasePath,
             snapshot.id,
             required(input.options.nodeId, 'node-id'),
           );
         case 'neighbors':
-          return yield* neighborQuery(
+          return neighborQuery(
             input.store,
             input.layout.databasePath,
             snapshot.id,
@@ -1331,7 +1317,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
             allowedProvenances,
           );
         case 'path':
-          return yield* pathQuery(
+          return pathQuery(
             input.store,
             input.layout.databasePath,
             snapshot.id,
@@ -1343,7 +1329,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
             allowedProvenances,
           );
         case 'impact':
-          return yield* traversalQuery(
+          return traversalQuery(
             input.store,
             input.layout.databasePath,
             snapshot.id,
@@ -1364,7 +1350,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
             input.options.seedQueryCount,
           );
         case 'explain':
-          return yield* traversalQuery(
+          return traversalQuery(
             input.store,
             input.layout.databasePath,
             snapshot.id,
@@ -1382,7 +1368,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
             undefined,
           );
         case 'query':
-          return yield* traversalQuery(
+          return traversalQuery(
             input.store,
             input.layout.databasePath,
             snapshot.id,
@@ -1402,7 +1388,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
             input.options.packageName,
           );
       }
-    });
+    })();
     const safeSelection = sanitizeSelection(selected);
     const finalObservation = input.strictFreshness
       ? yield* withCodeGraphQueryTelemetryStage(
@@ -1415,9 +1401,9 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
               strictIdentity.repositoryId !== input.expectedRepositoryId ||
               strictIdentity.worktreeId !== identity.worktreeId
             ) {
-              return yield* Effect.fail(
-                new CodeGraphRepositoryError('Repository identity changed during the graph read.'),
-              );
+              return yield* CodeGraphRepositoryError.make({
+                message: 'Repository identity changed during the graph read.',
+              });
             }
             return {
               identity: strictIdentity,
@@ -1469,16 +1455,16 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
   });
   return yield* input.store
     .withSession(input.layout.databasePath, read, {readOnly: true})
-    .pipe(
-      Effect.ensuring(
-        input.store.releaseSnapshotLease(input.layout.databasePath, lease).pipe(Effect.catch(() => Effect.void)),
-      ),
-    );
+    .pipe(Effect.ensuring(input.store.releaseSnapshotLease(input.layout.databasePath, lease).pipe(Effect.ignore)));
 });
 
-class WorktreeChangedDuringQuery extends Error {
-  override readonly name = 'WorktreeChangedDuringQuery';
-}
+class WorktreeChangedDuringQuery extends Schema.TaggedError<WorktreeChangedDuringQuery>()(
+  'WorktreeChangedDuringQuery',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 function selectedProvenances(options: CodeGraphInspectOptions): readonly CodeGraphProvenance[] {
   return [

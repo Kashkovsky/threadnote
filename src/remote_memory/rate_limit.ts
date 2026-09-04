@@ -94,16 +94,16 @@ export class PostgresRemoteRateLimiter implements RemoteMemoryRateLimiter {
     execution?: RemoteMemoryRequestExecution,
   ): Promise<A> {
     requireActiveRemoteMemoryRequest(execution);
-    return await this.sql.begin<Promise<A>>(async transaction => {
-      return withRemoteMemoryRequestCancellation(transaction, execution, async cancellableTransaction => {
+    return await this.sql.begin<Promise<A>>(async transaction =>
+      withRemoteMemoryRequestCancellation(transaction, execution, async cancellableTransaction => {
         const timeout = remoteMemoryDatabaseTimeoutMilliseconds(5_000, execution);
         await cancellableTransaction`SELECT set_config('threadnote.tenant_id', ${tenantId}, true)`;
         await cancellableTransaction`SELECT set_config('statement_timeout', ${String(timeout)}, true)`;
         await cancellableTransaction`SELECT set_config('lock_timeout', ${String(timeout)}, true)`;
         await cancellableTransaction`SELECT set_config('transaction_timeout', ${String(timeout)}, true)`;
         return use(cancellableTransaction);
-      });
-    });
+      }),
+    );
   }
 }
 

@@ -1,4 +1,4 @@
-import {Clock, Data, Effect, FileSystem, Path} from 'effect';
+import {Clock, Data, DateTime, Effect, FileSystem, Path} from 'effect';
 import {MEMORY_SCHEMA_VERSION} from '../memory/code_citation.js';
 import {readMemoryRecordsByUri} from '../memory/commands.js';
 import {formatMemoryDocument, type MemoryMetadata, type MemoryRelation} from '../memory/document.js';
@@ -58,11 +58,9 @@ export const runMemoryConnectionsScaleWorkload = Effect.fn('evaluation.memoryCon
         const indexFinished = yield* Clock.currentTimeNanos;
         const status = yield* recallIndexStatus(corpus.config, true);
         if (!status.ready || status.documentCount !== options.memoryCandidates) {
-          return yield* Effect.fail(
-            new MemoryConnectionsScaleError({
-              message: `Recall index contains ${status.documentCount}/${options.memoryCandidates} memories.`,
-            }),
-          );
+          return yield* new MemoryConnectionsScaleError({
+            message: `Recall index contains ${status.documentCount}/${options.memoryCandidates} memories.`,
+          });
         }
         const scenarios = yield* Effect.forEach(
           MEMORY_CONNECTIONS_SCALE_SCENARIOS,
@@ -179,7 +177,7 @@ const runLookup = Effect.fn('evaluation.memoryConnectionsScale.lookup')(function
     allowedUriScopes: [memoryProjectRoot(config.user)],
     limit: 8,
     memoryRefs: [`threadnote://memory/${fixture.premiseMemoryId}`],
-    now: new Date('2026-08-31T12:00:00.000Z'),
+    now: DateTime.toDateUtc(DateTime.makeUnsafe('2026-08-31T12:00:00.000Z')),
     readRecords: uris => readMemoryRecordsByUri(config, uris),
   });
   const projection = projectRecallMcpResponse(
@@ -308,7 +306,7 @@ function recallStorageBytes(fs: FileSystem.FileSystem, databasePath: string) {
       candidate =>
         fs.stat(candidate).pipe(
           Effect.map(value => Number(value.size)),
-          Effect.catch(() => Effect.succeed(0)),
+          Effect.orElseSucceed(() => 0),
         ),
       {concurrency: 4},
     );

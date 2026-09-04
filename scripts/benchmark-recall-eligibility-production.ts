@@ -1,7 +1,7 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
-import {Clock, Effect, FileSystem, Layer, Path} from 'effect';
+import {Clock, DateTime, Effect, FileSystem, Layer, Path} from 'effect';
 import {sha256HexSync} from '../src/crypto/sha256.js';
 import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
 import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
@@ -63,7 +63,7 @@ interface Fixture {
 const modelStoreLayer = Layer.succeed(
   LocalModelStore,
   LocalModelStore.of({
-    install: () => Effect.die(new ScriptError('Unexpected model installation')),
+    install: () => Effect.die(ScriptError.make({message: 'Unexpected model installation'})),
     path: home => `${home}/models/eligibility-benchmark.gguf`,
     remove: () => Effect.succeed(false),
     status: home => Effect.succeed(modelInstallation(home)),
@@ -77,8 +77,8 @@ const runtimeLayer = Layer.succeed(
     diagnostics: Effect.succeed({backend: 'fixture', buildType: 'prebuilt', cpuMathCores: 1}),
     embedMany: ({inputs, manifest: requested}) =>
       Effect.sync(() => inputs.map(input => fixtureVector(requested.dimensions ?? 0, input))),
-    generate: () => Effect.die(new ScriptError('Unexpected generation')),
-    rerank: () => Effect.die(new ScriptError('Unexpected reranking')),
+    generate: () => Effect.die(ScriptError.make({message: 'Unexpected generation'})),
+    rerank: () => Effect.die(ScriptError.make({message: 'Unexpected reranking'})),
   }),
 );
 
@@ -106,11 +106,9 @@ const benchmarkRecallEligibilityProduction = Effect.scoped(
       includeInactive: false,
     });
     if (corpus.candidates.length !== fixture.totalDocuments) {
-      return yield* Effect.fail(
-        new ScriptError(
-          `Eligibility fixture indexed ${corpus.candidates.length}/${fixture.totalDocuments} logical documents.`,
-        ),
-      );
+      return yield* ScriptError.make({
+        message: `Eligibility fixture indexed ${corpus.candidates.length}/${fixture.totalDocuments} logical documents.`,
+      });
     }
 
     const catalog = yield* LocalModelCatalog;
@@ -157,7 +155,7 @@ const benchmarkRecallEligibilityProduction = Effect.scoped(
       benchmarkMeasurement(`vector:${profile}:latency`, 'milliseconds', vectorDurations.get(profile)!),
     ]);
     const artifact = {
-      createdAt: new Date().toISOString(),
+      createdAt: DateTime.formatIso(yield* DateTime.now),
       environment: {
         architecture: system.architecture,
         commit,
@@ -245,7 +243,7 @@ function runVectorPass(
       limit: topK,
     });
     if (scores === undefined)
-      return yield* Effect.fail(new ScriptError('Vector eligibility benchmark index is absent.'));
+      return yield* ScriptError.make({message: 'Vector eligibility benchmark index is absent.'});
     const summary = summarizeUris([...scores.keys()], fixture);
     return {...summary, eligibleRows} satisfies VectorPassResult;
   });
@@ -290,25 +288,28 @@ function assertExpectedRecovery(
   const unrestricted = summaries.get('unrestricted');
   const project = summaries.get('explicit-project');
   const approved = summaries.get('approved-authoritative');
-  if (!unrestricted || !project || !approved) throw new ScriptError(`${retriever} benchmark omitted a profile.`);
+  if (!unrestricted || !project || !approved)
+    throw ScriptError.make({message: `${retriever} benchmark omitted a profile.`});
   if (unrestricted.targetRecovered || project.targetRecovered || !approved.targetRecovered) {
-    throw new ScriptError(
-      `${retriever} eligibility did not recover the target only after both project and authority filtering.`,
-    );
+    throw ScriptError.make({
+      message: `${retriever} eligibility did not recover the target only after both project and authority filtering.`,
+    });
   }
   if (unrestricted.wrongProjectResults === 0) {
-    throw new ScriptError(`${retriever} unrestricted results did not expose stronger wrong-project competition.`);
+    throw ScriptError.make({
+      message: `${retriever} unrestricted results did not expose stronger wrong-project competition.`,
+    });
   }
   if (project.wrongProjectResults !== 0 || project.unapprovedResults === 0) {
-    throw new ScriptError(
-      `${retriever} project filtering did not replace wrong-project results with stronger same-project memories.`,
-    );
+    throw ScriptError.make({
+      message: `${retriever} project filtering did not replace wrong-project results with stronger same-project memories.`,
+    });
   }
   if (approved.unapprovedResults !== 0 || approved.wrongProjectResults !== 0) {
-    throw new ScriptError(`${retriever} approved-authoritative results retained disallowed documents.`);
+    throw ScriptError.make({message: `${retriever} approved-authoritative results retained disallowed documents.`});
   }
   if (!approved.projectlessRecovered) {
-    throw new ScriptError(`${retriever} project filtering removed approved projectless guidance.`);
+    throw ScriptError.make({message: `${retriever} project filtering removed approved projectless guidance.`});
   }
 }
 
@@ -494,15 +495,15 @@ export function parseRecallEligibilityBenchmarkArguments(args: readonly string[]
     else if (argument === '--samples') samples = positiveInteger(args[++index], argument);
     else if (argument === '--top-k') topK = positiveInteger(args[++index], argument);
     else if (argument === '--warmups') warmups = nonNegativeInteger(args[++index], argument);
-    else throw new ScriptError(`Unknown recall eligibility benchmark option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown recall eligibility benchmark option: ${argument}`});
   }
   if (distractorsPerClass < MINIMUM_DISTRACTORS_PER_CLASS) {
-    throw new ScriptError(
-      `--distractors-per-class must be at least ${MINIMUM_DISTRACTORS_PER_CLASS} to exceed the lexical posting pool`,
-    );
+    throw ScriptError.make({
+      message: `--distractors-per-class must be at least ${MINIMUM_DISTRACTORS_PER_CLASS} to exceed the lexical posting pool`,
+    });
   }
   if (distractorsPerClass > 10_000) {
-    throw new ScriptError('--distractors-per-class must not exceed 10,000');
+    throw ScriptError.make({message: '--distractors-per-class must not exceed 10,000'});
   }
   return {distractorsPerClass, outputPath, samples, topK, warmups};
 }
@@ -513,22 +514,22 @@ const git = Effect.fn('benchmark.git')((arguments_: readonly string[]) =>
 
 function positiveInteger(value: string | undefined, option: string): number {
   const parsed = nonNegativeInteger(value, option);
-  if (parsed < 1) throw new ScriptError(`${option} requires a positive integer`);
+  if (parsed < 1) throw ScriptError.make({message: `${option} requires a positive integer`});
   return parsed;
 }
 
 function nonNegativeInteger(value: string | undefined, option: string): number {
   const raw = requiredValue(value, option);
-  if (!/^\d+$/u.test(raw)) throw new ScriptError(`${option} requires a non-negative integer`);
+  if (!/^\d+$/u.test(raw)) throw ScriptError.make({message: `${option} requires a non-negative integer`});
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new ScriptError(`${option} requires a non-negative integer`);
+    throw ScriptError.make({message: `${option} requires a non-negative integer`});
   }
   return parsed;
 }
 
 function requiredValue(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 

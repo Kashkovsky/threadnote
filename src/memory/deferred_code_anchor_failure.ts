@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 import {MemoryCodeCitationCaptureError} from './code_citation_capture.js';
 import type {DeferredCodeAnchorFinalizeItemV1} from './deferred_code_anchor.js';
 
@@ -6,7 +7,7 @@ export function deferredCodeAnchorCaptureFailureItem(
   error: unknown,
   memoryUri: string,
 ): DeferredCodeAnchorFinalizeItemV1 | undefined {
-  if (!(error instanceof MemoryCodeCitationCaptureError)) return undefined;
+  if (!Schema.is(MemoryCodeCitationCaptureError)(error)) return undefined;
   if (error.recovery !== undefined) {
     return {
       code: error.recovery.code,

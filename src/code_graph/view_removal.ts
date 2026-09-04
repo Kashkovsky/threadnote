@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path, PlatformError} from 'effect';
+import {Effect, FileSystem, Option, Path, PlatformError, Schema} from 'effect';
 import {attachAnonymousTelemetryDiagnostic, attachAnonymousTelemetryReportedOutcome} from '../telemetry/diagnostic.js';
 import {
   captureCodeGraphLocalProvenanceCleanupEvidence,
@@ -16,9 +16,10 @@ import {
 } from './vector_maintenance.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
 
-class CodeGraphViewRemovalError extends Error {
-  readonly _tag = 'CodeGraphViewRemovalError' as const;
-}
+class CodeGraphViewRemovalError extends Schema.TaggedError<CodeGraphViewRemovalError>()('CodeGraphViewRemovalError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const HASH_ID = /^[0-9a-f]{64}$/;
 const SNAPSHOT_ID = /^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/;
@@ -116,7 +117,9 @@ export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(funct
             Effect.flatMap(current =>
               current.state === 'ready' && current.databasePath === inspected.databasePath
                 ? Effect.void
-                : Effect.fail(new CodeGraphViewRemovalError('Code graph database target changed before removal.')),
+                : Effect.fail(
+                    CodeGraphViewRemovalError.make({message: 'Code graph database target changed before removal.'}),
+                  ),
             ),
             Effect.provideService(FileSystem.FileSystem, fs),
             Effect.provideService(Path.Path, path),
@@ -196,16 +199,16 @@ export const inspectCodeGraphViewDatabaseTarget = Effect.fn('codeGraph.inspectVi
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   if (Option.isSome(yield* fs.readLink(threadnoteHome).pipe(Effect.option))) {
-    return yield* Effect.fail(
-      new CodeGraphViewRemovalError('Threadnote home is a symbolic link; graph view removal was refused.'),
-    );
+    return yield* CodeGraphViewRemovalError.make({
+      message: 'Threadnote home is a symbolic link; graph view removal was refused.',
+    });
   }
   const homeInfo = yield* optionalFileInfo(fs, threadnoteHome);
   if (Option.isNone(homeInfo)) return {state: 'missing'} as const satisfies CodeGraphViewDatabaseTargetInspection;
   if (homeInfo.value.type !== 'Directory') {
-    return yield* Effect.fail(
-      new CodeGraphViewRemovalError('Threadnote home is not a directory; graph view removal was refused.'),
-    );
+    return yield* CodeGraphViewRemovalError.make({
+      message: 'Threadnote home is not a directory; graph view removal was refused.',
+    });
   }
   const canonicalHome = yield* fs.realPath(threadnoteHome);
   const segments = [
@@ -219,23 +222,23 @@ export const inspectCodeGraphViewDatabaseTarget = Effect.fn('codeGraph.inspectVi
   for (const [index, segment] of segments.entries()) {
     const candidate = path.join(current, segment);
     if (Option.isSome(yield* fs.readLink(candidate).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeGraphViewRemovalError('Code graph database containment contains a symbolic link.'),
-      );
+      return yield* CodeGraphViewRemovalError.make({
+        message: 'Code graph database containment contains a symbolic link.',
+      });
     }
     const info = yield* optionalFileInfo(fs, candidate);
     if (Option.isNone(info)) return {state: 'missing'} as const satisfies CodeGraphViewDatabaseTargetInspection;
     const final = index === segments.length - 1;
     if ((final && info.value.type !== 'File') || (!final && info.value.type !== 'Directory')) {
-      return yield* Effect.fail(
-        new CodeGraphViewRemovalError('Code graph database containment has an invalid entry type.'),
-      );
+      return yield* CodeGraphViewRemovalError.make({
+        message: 'Code graph database containment has an invalid entry type.',
+      });
     }
     const canonical = yield* fs.realPath(candidate);
     if (canonical !== candidate || path.dirname(canonical) !== current || path.basename(canonical) !== segment) {
-      return yield* Effect.fail(
-        new CodeGraphViewRemovalError('Code graph database target escaped its derived-store root.'),
-      );
+      return yield* CodeGraphViewRemovalError.make({
+        message: 'Code graph database target escaped its derived-store root.',
+      });
     }
     current = canonical;
   }
@@ -248,11 +251,10 @@ export const inspectCodeGraphViewDatabaseTarget = Effect.fn('codeGraph.inspectVi
 
 function optionalFileInfo(fs: FileSystem.FileSystem, candidate: string) {
   return fs.stat(candidate).pipe(
-    Effect.map(Option.some),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed(Option.none<FileSystem.File.Info>())
-        : Effect.fail(error),
+    Effect.asSome,
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.succeedNone,
     ),
   );
 }
@@ -304,7 +306,7 @@ export function codeGraphViewRemovalTargetFailure(result: CodeGraphViewRemovalAc
 
 function codeGraphViewRemovalTargetError(message: string): CodeGraphViewRemovalError {
   return attachAnonymousTelemetryReportedOutcome(
-    attachAnonymousTelemetryDiagnostic(new CodeGraphViewRemovalError(message), {
+    attachAnonymousTelemetryDiagnostic(CodeGraphViewRemovalError.make({message: message}), {
       errorType: 'CodeGraphViewRemovalError',
     }),
     'unavailable',
@@ -338,16 +340,16 @@ const validateCodeGraphViewRemovalTarget = Effect.fn('codeGraph.validateViewRemo
   target: CodeGraphViewRemovalTarget,
 ) {
   if (!HASH_ID.test(target.checkoutId)) {
-    return yield* Effect.fail(
-      new CodeGraphViewRemovalError('Code graph checkout identity must be 64 lowercase hexadecimal characters.'),
-    );
+    return yield* CodeGraphViewRemovalError.make({
+      message: 'Code graph checkout identity must be 64 lowercase hexadecimal characters.',
+    });
   }
   if (!HASH_ID.test(target.worktreeId)) {
-    return yield* Effect.fail(
-      new CodeGraphViewRemovalError('Code graph worktree identity must be 64 lowercase hexadecimal characters.'),
-    );
+    return yield* CodeGraphViewRemovalError.make({
+      message: 'Code graph worktree identity must be 64 lowercase hexadecimal characters.',
+    });
   }
   if (!SNAPSHOT_ID.test(target.snapshotId)) {
-    return yield* Effect.fail(new CodeGraphViewRemovalError('Code graph snapshot identity is invalid.'));
+    return yield* CodeGraphViewRemovalError.make({message: 'Code graph snapshot identity is invalid.'});
   }
 });

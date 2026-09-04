@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 import React, {useEffect, useRef, useState} from 'react';
 import {useManagerDialogs} from './dialog.js';
 import {ManagerApiError, api, errorMessage} from './ui_support.js';
@@ -126,7 +127,7 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
       setDraft(undefined);
       setNotice(result.warnings.join(' ') || (result.changed ? 'Manifest project saved.' : 'No project change.'));
     } catch (cause) {
-      if (cause instanceof ManagerApiError && cause.code === 'revision-conflict') {
+      if (Schema.is(ManagerApiError)(cause) && cause.code === 'revision-conflict') {
         setNotice('The manifest changed. Projects were refreshed; your draft is preserved for review and retry.');
         await props.onRefreshCatalog();
       } else {

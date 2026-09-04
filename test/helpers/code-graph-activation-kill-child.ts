@@ -10,7 +10,7 @@ import type {
 import {runEffect} from './effect-runtime.js';
 
 const databasePath = Bun.argv[2];
-if (!databasePath) throw new TestError('Expected the code-graph database path as the first argument.');
+if (!databasePath) throw TestError.make({message: 'Expected the code-graph database path as the first argument.'});
 
 const identity: RepositoryIdentity = {
   caseMode: 'sensitive',

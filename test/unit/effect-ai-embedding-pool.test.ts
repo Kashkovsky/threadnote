@@ -87,7 +87,7 @@ function embeddingHarness(options: {
                     return Promise.reject(cause);
                   }
                 },
-                createRankingContext: () => Promise.reject(new TestError('Unexpected ranking context')),
+                createRankingContext: () => Promise.reject(TestError.make({message: 'Unexpected ranking context'})),
                 detokenize: (tokens: readonly number[]) => String.fromCodePoint(...tokens),
                 get disposed() {
                   return modelDisposed;
@@ -354,7 +354,7 @@ describe('native embedding context pool', () => {
   it.effect('rolls back earlier contexts and the model when pool construction fails', () => {
     const {layer, state} = embeddingHarness({
       context: ({contextIndex, modelIndex}) => {
-        if (contextIndex === 2) throw new TestError('context construction failed');
+        if (contextIndex === 2) throw TestError.make({message: 'context construction failed'});
         let disposed = false;
         return {
           get disposed() {
@@ -365,7 +365,7 @@ describe('native embedding context pool', () => {
             state.events.push(`model-${modelIndex}:context-${contextIndex}:dispose`);
             return Promise.resolve();
           },
-          getEmbeddingFor: () => Promise.reject(new TestError('Unexpected embedding')),
+          getEmbeddingFor: () => Promise.reject(TestError.make({message: 'Unexpected embedding'})),
         };
       },
       gpuLayers: 0,

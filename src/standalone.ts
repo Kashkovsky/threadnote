@@ -78,10 +78,11 @@ async function windowsDiskCapacityWorkerProgram() {
   return worker
     .serveWindowsDiskCapacityWorker({
       input: process.stdin,
-      writeLine: line =>
-        new Promise<void>((resolve, reject) => {
-          process.stdout.write(`${line}\n`, error => (error ? reject(error) : resolve()));
-        }),
+      writeLine: line => {
+        const {promise, reject, resolve} = Promise.withResolvers<void>();
+        process.stdout.write(`${line}\n`, error => (error ? reject(error) : resolve()));
+        return promise;
+      },
     })
     .pipe(
       Effect.ensuring(
@@ -132,13 +133,10 @@ function remoteMemoryShutdownSignal(effectSignal: AbortSignal): {
   readonly dispose: () => void;
   readonly promise: Promise<string>;
 } {
-  let resolveSignal: ((signal: string) => void) | undefined;
-  const promise = new Promise<string>(resolve => {
-    resolveSignal = resolve;
-  });
-  const onAbort = () => resolveSignal?.('runtime interruption');
-  const onSigint = () => resolveSignal?.('SIGINT');
-  const onSigterm = () => resolveSignal?.('SIGTERM');
+  const {promise, resolve} = Promise.withResolvers<string>();
+  const onAbort = () => resolve('runtime interruption');
+  const onSigint = () => resolve('SIGINT');
+  const onSigterm = () => resolve('SIGTERM');
   effectSignal.addEventListener('abort', onAbort, {once: true});
   process.once('SIGINT', onSigint);
   process.once('SIGTERM', onSigterm);
@@ -365,8 +363,12 @@ function normalizedProcessHome(
         // Normalize CLI-only --home into the environment inherited by the
         // crash-isolated model worker and by the direct MCP entrypoint. Runtime
         // diagnostics and model storage must remain in the same Threadnote home.
-        process.env.THREADNOTE_HOME = home;
+        setInheritedProcessEnvironment('THREADNOTE_HOME', home);
       }),
     ),
   );
+}
+
+function setInheritedProcessEnvironment(name: string, value: string): void {
+  process.env[name] = value;
 }

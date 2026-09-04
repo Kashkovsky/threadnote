@@ -1,5 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, Option} from 'effect';
+import {Deferred, Effect, Fiber, Option, Schema} from 'effect';
 import {describe, expect} from 'vitest';
 import {
   CODE_GRAPH_CACHE_TRANSACTION_LIMITS,
@@ -16,9 +16,10 @@ import type {CodeGraphDirectPersistentCapacityProtector, CodeGraphStoreShape} fr
 import type {TreeSitterRuntimeShape} from '../../src/code_graph/tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 
-class InjectedProgressError extends Error {
-  readonly _tag = 'InjectedProgressError' as const;
-}
+class InjectedProgressError extends Schema.TaggedError<InjectedProgressError>()('InjectedProgressError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 interface CacheCall {
   readonly cacheIdentity: string;
@@ -386,7 +387,7 @@ describe('code graph parser cache coalescer', () => {
           progress.phase === 'scanning' &&
           progress.activity?.stage === 'extracting' &&
           progress.activity.path.endsWith('000002.ts')
-            ? Effect.fail(new InjectedProgressError('injected later-window progress failure'))
+            ? Effect.fail(InjectedProgressError.make({message: 'injected later-window progress failure'}))
             : Effect.void,
       });
       const files = Array.from({length: 3}, (_, index) => cacheFile(index, 'src/failure'));

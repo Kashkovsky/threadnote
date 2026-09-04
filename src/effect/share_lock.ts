@@ -75,7 +75,7 @@ export const observeSharedRepositoryHomeLock = Effect.fn('share.observeRepositor
       return 'unhealthy' as const;
     }
     return 'active' as const;
-  }).pipe(Effect.catch(() => Effect.succeed('unhealthy' as const)));
+  }).pipe(Effect.orElseSucceed(() => 'unhealthy' as const));
 });
 
 function sharedRepositoryLockPath(pathService: Path.Path, agentContextHome: string): string {

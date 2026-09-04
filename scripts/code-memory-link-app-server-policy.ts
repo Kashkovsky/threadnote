@@ -1,3 +1,4 @@
+import {Schema} from 'effect';
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This reviewed adapter validates app-server actions before execution. */
 import {createHash} from 'node:crypto';
 import {isAbsolute, resolve, sep} from 'node:path';
@@ -29,10 +30,18 @@ const SIMPLE_FLAGS = new Map<string, ReadonlySet<string>>([
 ]);
 
 /** A reviewed action was well-formed but is outside the experiment's execution policy. */
-export class CodeMemoryLinkActionDeniedError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = 'CodeMemoryLinkActionDeniedError';
+export class CodeMemoryLinkActionDeniedError extends Schema.TaggedError<CodeMemoryLinkActionDeniedError>()(
+  'CodeMemoryLinkActionDeniedError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {
+  static of(message: string, options?: ErrorOptions): CodeMemoryLinkActionDeniedError {
+    return CodeMemoryLinkActionDeniedError.make({
+      message,
+      ...(options?.cause === undefined ? {} : {cause: options.cause}),
+    });
   }
 }
 
@@ -353,7 +362,7 @@ function denyUnsupportedAction(check: () => void): void {
     check();
   } catch (cause) {
     const error = cause instanceof Error ? cause : new Error(String(cause));
-    throw new CodeMemoryLinkActionDeniedError(
+    throw CodeMemoryLinkActionDeniedError.of(
       `Code Memory Link declined an action outside the reviewed policy: ${error.message}`,
       {cause: error},
     );

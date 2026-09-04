@@ -11,7 +11,7 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
       Effect.try({
         try: () => extractStructuredSchemaFacts(file, context),
         catch: cause =>
-          new CodeGraphLanguagePackError(`Could not extract structured facts from ${file.path}.`, {cause}),
+          CodeGraphLanguagePackError.make({message: `Could not extract structured facts from ${file.path}.`, cause}),
       }),
     version: sha256HexSync('threadnote-structured-schema-extractors-v8-bounded-generic-objects-protobuf-monikers'),
   },

@@ -11,7 +11,7 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
       Effect.try({
         try: () => extractFileFacts(file),
         catch: cause =>
-          new CodeGraphLanguagePackError(`Could not extract documentation facts from ${file.path}.`, {cause}),
+          CodeGraphLanguagePackError.make({message: `Could not extract documentation facts from ${file.path}.`, cause}),
       }),
     version: sha256HexSync('threadnote-markdown-extractor-v1'),
   },

@@ -19,7 +19,7 @@ const program = Effect.scoped(
       yield* atomicWrite(options.outputPath, `${JSON.stringify(result, undefined, 2)}\n`);
     }
     yield* printJson(result);
-    if (!result.gate.passed) return yield* Effect.fail(new ScriptError(result.gate.failures.join('\n')));
+    if (!result.gate.passed) return yield* ScriptError.make({message: result.gate.failures.join('\n')});
   }),
 );
 
@@ -30,7 +30,7 @@ function parseArguments(args: readonly string[]): {readonly fixturePath?: string
     const argument = args[index];
     if (argument === '--fixture') fixturePath = required(args[++index], argument);
     else if (argument === '--output') outputPath = required(args[++index], argument);
-    else throw new ScriptError(`Unknown CodeMemoryLinkBench option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown CodeMemoryLinkBench option: ${argument}`});
   }
   return {
     ...(fixturePath === undefined ? {} : {fixturePath}),
@@ -39,7 +39,7 @@ function parseArguments(args: readonly string[]): {readonly fixturePath?: string
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
 }
 

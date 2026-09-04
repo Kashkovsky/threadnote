@@ -1,4 +1,4 @@
-import {Clock, Effect} from 'effect';
+import {Clock, DateTime, Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
   codeGraphUtf8ByteLength,
@@ -84,7 +84,7 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
 ) {
   const runWrite: CodeGraphWriterGate = writerGate ?? (effect => effect);
   if (ownerToken === undefined) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent full-build ownership is required.'));
+    return yield* CodeGraphStoreError.of('Persistent full-build ownership is required.');
   }
   // Persistent full builds keep repository-sized facts in durable tables.
   // Their connection-private tables are bounded to one resolution page, so
@@ -98,10 +98,10 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
   `;
   const state = snapshots[0]?.state;
   if (state === undefined) {
-    return yield* Effect.fail(new CodeGraphStoreError(`Building snapshot ${snapshotId} is unavailable.`));
+    return yield* CodeGraphStoreError.of(`Building snapshot ${snapshotId} is unavailable.`);
   }
   if (state === 'ready' || state === 'retired') {
-    return yield* Effect.fail(new CodeGraphStoreError(`Snapshot ${snapshotId} cannot be materialized from ${state}.`));
+    return yield* CodeGraphStoreError.of(`Snapshot ${snapshotId} cannot be materialized from ${state}.`);
   }
   if (state === 'failed') {
     // A caught failure is explicitly discarded. A process interruption leaves
@@ -123,7 +123,7 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
   }
   if (expectedBatchCount !== undefined) {
     if (!Number.isSafeInteger(expectedBatchCount) || expectedBatchCount < 0) {
-      return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization batch count is invalid.'));
+      return yield* CodeGraphStoreError.of('Persistent materialization batch count is invalid.');
     }
     const planCapacity: CodeGraphDirectPersistentCapacityBoundary = {
       finalFactBytes: 0,
@@ -145,9 +145,7 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
       WHERE snapshot_id = ${snapshotId} AND batch_index >= ${expectedBatchCount}
     `;
     if (Number(stale[0]?.count ?? 0) > 0) {
-      return yield* Effect.fail(
-        new CodeGraphStoreError('Persisted full-build batch receipts no longer match the inventory.'),
-      );
+      return yield* CodeGraphStoreError.of('Persisted full-build batch receipts no longer match the inventory.');
     }
   }
 
@@ -204,9 +202,7 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
             );
           });
           if (mismatch) {
-            return yield* Effect.fail(
-              new CodeGraphStoreError(`Persisted full-build inventory changed at ${mismatch.path}.`),
-            );
+            return yield* CodeGraphStoreError.of(`Persisted full-build inventory changed at ${mismatch.path}.`);
           }
         }),
       ),
@@ -220,7 +216,7 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
     SELECT COUNT(*) AS count FROM snapshot_files WHERE snapshot_id = ${snapshotId}
   `;
   if (Number(fileCounts[0]?.count ?? -1) !== files.length) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persisted full-build inventory contains stale extra files.'));
+    return yield* CodeGraphStoreError.of('Persisted full-build inventory contains stale extra files.');
   }
 
   // Only the resolution cursor remains connection-private. All repository-sized
@@ -465,19 +461,15 @@ const stagePersistedFullFactBatches = Effect.fn('codeGraph.stagePersistedFullFac
     prepared &&
     (prepared.length !== batches.length || prepared.some((entry, index) => entry.batch !== batches[index]))
   ) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError('Prepared persistent materialization batches no longer match staged batches.'),
-    );
+    return yield* CodeGraphStoreError.of('Prepared persistent materialization batches no longer match staged batches.');
   }
   for (let index = 0; index < batches.length; index += 1) {
     const batch = batches[index];
     if (!Number.isSafeInteger(batch.batchIndex) || batch.batchIndex < 0) {
-      return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization batch identity is invalid.'));
+      return yield* CodeGraphStoreError.of('Persistent materialization batch identity is invalid.');
     }
     if (index > 0 && batch.batchIndex !== batches[index - 1].batchIndex + 1) {
-      return yield* Effect.fail(
-        new CodeGraphStoreError('Persistent materialization transaction batches must be contiguous.'),
-      );
+      return yield* CodeGraphStoreError.of('Persistent materialization transaction batches must be contiguous.');
     }
   }
 
@@ -562,7 +554,7 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
     ? yield* Effect.try({
         catch: () => undefined,
         try: () => codeGraphUtf8ByteLength(JSON.stringify([files, facts, deletedPaths])),
-      }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      }).pipe(Effect.orElseSucceed(() => undefined))
     : 0;
   if (freshPayloadBytes === undefined) return false;
   const foldForwardPaths = options.foldForward
@@ -975,7 +967,7 @@ const prepareSnapshotPromotionCapacity = Effect.fn('codeGraph.prepareSnapshotPro
     removedSnapshotId === undefined ? [snapshotId] : [snapshotId, removedSnapshotId],
     now,
   );
-  const activatedAt = new Date().toISOString();
+  const activatedAt = DateTime.formatIso(yield* DateTime.now);
   const fixedFactBytes = persistentBoundTextBytes(0, [identity.worktreeId, snapshotId, activatedAt, 'retired']);
   return {
     activatedAt,

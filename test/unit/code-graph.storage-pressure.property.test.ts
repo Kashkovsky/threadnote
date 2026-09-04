@@ -37,7 +37,8 @@ describe('code graph storage pressure properties', () => {
             availableBytes: sample.highAvailableBytes,
           }).pressure;
           const low = classifyCodeGraphStoragePressure({...observation, availableBytes: lowAvailableBytes}).pressure;
-          if (high === 'unknown' || low === 'unknown') throw new TestError('known byte observations became unknown');
+          if (high === 'unknown' || low === 'unknown')
+            throw TestError.make({message: 'known byte observations became unknown'});
           expect(severity[low]).toBeGreaterThanOrEqual(severity[high]);
         },
       ),

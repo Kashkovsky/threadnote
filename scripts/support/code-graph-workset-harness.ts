@@ -1,5 +1,6 @@
 import {scriptError, ScriptError} from '../effect/errors.js';
 import {Clock, Effect} from 'effect';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from '../../src/code_graph/indexer.js';
 import {
   publishCodeGraphWorksetCatalogGeneration,
@@ -180,14 +181,14 @@ const publishIndexedCodeGraphWorksetCatalogScoped = Effect.fn('codeGraphWorksetH
         query.status(fixture.home, repository.path, {requestMaintenance: false}).pipe(
           Effect.flatMap(status =>
             status.readySnapshot === undefined
-              ? Effect.succeed(undefined)
+              ? succeedUndefined
               : stageCodeGraphWorksetRoutingProjectionScoped({
                   identity: status.identity,
                   snapshotId: status.readySnapshot.id,
                   threadnoteHome: fixture.home,
                 }).pipe(Effect.map(built => ({built, identity: status.identity, project: repository.projectName}))),
           ),
-          Effect.catch(() => Effect.succeed(undefined)),
+          Effect.orElseSucceed(() => undefined),
         ),
       {concurrency: 1},
     );
@@ -210,7 +211,7 @@ const publishIndexedCodeGraphWorksetCatalogScoped = Effect.fn('codeGraphWorksetH
             ];
       });
       if (members.length === 0) {
-        return yield* Effect.fail(new ScriptError(`Fixture workset ${worksetName} has no ready routing projections.`));
+        return yield* ScriptError.make({message: `Fixture workset ${worksetName} has no ready routing projections.`});
       }
       const stagedGeneration = yield* stageCodeGraphWorksetCatalogGenerationFromReceipts(fixture.home, {
         manifestDigest: codeGraphWorksetManifestDigest(workset),
@@ -428,7 +429,7 @@ export function codeGraphWorksetBenchmarkSample(
 ): CodeGraphWorksetBenchmarkSample {
   const measurement = measured.measurement;
   if (measurement.evidenceCardCount === 0 || measurement.timeToFirstEvidenceCardMilliseconds === undefined) {
-    throw new ScriptError(`Workset benchmark control returned no evidence at size ${worksetSize}.`);
+    throw ScriptError.make({message: `Workset benchmark control returned no evidence at size ${worksetSize}.`});
   }
   return {
     completionMilliseconds: measurement.completionMilliseconds,
@@ -615,9 +616,11 @@ function fixtureRepositoryId(fixture: CodeGraphWorksetEvaluationFixtureV1, repos
 }
 
 function assertNonNegativeInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value < 0) throw new ScriptError(`${label} must be a non-negative safe integer.`);
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw ScriptError.make({message: `${label} must be a non-negative safe integer.`});
 }
 
 function assertNonNegativeFinite(value: number, label: string): void {
-  if (!Number.isFinite(value) || value < 0) throw new ScriptError(`${label} must be a non-negative finite number.`);
+  if (!Number.isFinite(value) || value < 0)
+    throw ScriptError.make({message: `${label} must be a non-negative finite number.`});
 }

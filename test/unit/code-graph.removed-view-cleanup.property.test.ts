@@ -5,7 +5,7 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
-import {Effect} from 'effect';
+import {Clock, Effect} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect} from 'vitest';
@@ -64,7 +64,11 @@ describe('removed code graph view cleanup state-machine properties', () => {
               requireReconciliationSchema: true,
             });
 
-            const [claimed] = yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now(), 1);
+            const [claimed] = yield* store.claimRemovedViewCleanupCandidates(
+              databasePath,
+              yield* Clock.currentTimeMillis,
+              1,
+            );
             expect(claimed).toBeDefined();
             let current = claimed;
             let stale: CodeGraphRemovedViewCleanupEntry | undefined;
@@ -82,7 +86,8 @@ describe('removed code graph view cleanup state-machine properties', () => {
                   const before = current;
                   const result = yield* store.updateRemovedViewCleanup(databasePath, current, transition.update);
                   expect(result.state).toBe('updated');
-                  if (result.state !== 'updated') throw new TestError('modeled cleanup update was not applied');
+                  if (result.state !== 'updated')
+                    throw TestError.make({message: 'modeled cleanup update was not applied'});
                   const expected = applyUpdate(current, transition.update);
                   expect(result.entry).toEqual(expected);
                   stale = before;
@@ -135,7 +140,7 @@ describe('removed code graph view cleanup state-machine properties', () => {
             requireReconciliationSchema: true,
           });
           const claimedA = findClaim(
-            yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now(), 32),
+            yield* store.claimRemovedViewCleanupCandidates(databasePath, yield* Clock.currentTimeMillis, 32),
             SNAPSHOT_A,
           );
           const removedAt = claimedA.removedAt;
@@ -143,7 +148,7 @@ describe('removed code graph view cleanup state-machine properties', () => {
           yield* Effect.sync(() => legacyRewriteTombstone(databasePath, SNAPSHOT_B, removedAt));
           expect(yield* store.authorizeRemovedViewCleanup(databasePath, claimedA)).toEqual({state: 'stale'});
           const claimedB = findClaim(
-            yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now() + 1, 32),
+            yield* store.claimRemovedViewCleanupCandidates(databasePath, (yield* Clock.currentTimeMillis) + 1, 32),
             SNAPSHOT_B,
           );
           expect(claimedB.epoch).toBeGreaterThan(claimedA.epoch);
@@ -154,7 +159,7 @@ describe('removed code graph view cleanup state-machine properties', () => {
           yield* Effect.sync(() => legacyReplaceTombstone(databasePath, SNAPSHOT_B, removedAt));
           expect(yield* store.authorizeRemovedViewCleanup(databasePath, claimedB)).toEqual({state: 'stale'});
           const replacementB = findClaim(
-            yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now() + 2, 32),
+            yield* store.claimRemovedViewCleanupCandidates(databasePath, (yield* Clock.currentTimeMillis) + 2, 32),
             SNAPSHOT_B,
           );
           expect(replacementB.epoch).toBeGreaterThan(claimedB.epoch);
@@ -163,7 +168,7 @@ describe('removed code graph view cleanup state-machine properties', () => {
           expect(completedB.phase).toBe('complete');
           yield* Effect.sync(() => legacyRewriteTombstone(databasePath, SNAPSHOT_A, removedAt));
           const replacementA = findClaim(
-            yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now() + 3, 32),
+            yield* store.claimRemovedViewCleanupCandidates(databasePath, (yield* Clock.currentTimeMillis) + 3, 32),
             SNAPSHOT_A,
           );
           expect(replacementA.epoch).toBeGreaterThan(replacementB.epoch);
@@ -461,7 +466,7 @@ function advanceToComplete(
       };
       const result = yield* store.updateRemovedViewCleanup(databasePath, entry, update);
       expect(result.state).toBe('updated');
-      if (result.state !== 'updated') throw new TestError('cleanup phase did not advance');
+      if (result.state !== 'updated') throw TestError.make({message: 'cleanup phase did not advance'});
       entry = result.entry;
     }
     return entry;

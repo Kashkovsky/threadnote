@@ -51,7 +51,7 @@ export function parseCodeGraphWorksetBenchmarkArguments(args: readonly string[])
     else if (argument === '--samples') samples = integer(args[++index], argument, 1, 100);
     else if (argument === '--sizes') sizes = parseBenchmarkSizes(required(args[++index], argument));
     else if (argument === '--warmups') warmups = integer(args[++index], argument, 0, 100);
-    else throw new ScriptError(`Unknown code graph workset benchmark option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown code graph workset benchmark option: ${argument}`});
   }
   return {failOnBudget, outputPath, samples, sizes, warmups};
 }
@@ -69,23 +69,23 @@ export const benchmarkCodeGraphWorkset = Effect.scoped(
         Effect.tryPromise({
           try: () => removePreparedCodeGraphWorksetFixture(fixture),
           catch: cause => scriptError(cause),
-        }).pipe(Effect.catch(() => Effect.void)),
+        }).pipe(Effect.ignore),
     );
     yield* indexPreparedCodeGraphWorksetFixture(prepared);
     const selectedWorksets = options.sizes.map(size => {
       const workset = prepared.plan.worksets.find(candidate => candidate.size === size);
-      if (!workset) throw new ScriptError(`Fixture did not emit a size-${size} workset.`);
+      if (!workset) throw ScriptError.make({message: `Fixture did not emit a size-${size} workset.`});
       return workset.name;
     });
     yield* publishIndexedCodeGraphWorksetCatalog(prepared, selectedWorksets);
     const config = codeGraphWorksetRuntimeConfig(prepared);
     const query = prepared.plan.queries.find(candidate => candidate.id === BENCHMARK_QUERY_ID);
-    if (!query) return yield* Effect.fail(new ScriptError(`Fixture is missing benchmark query ${BENCHMARK_QUERY_ID}.`));
+    if (!query) return yield* ScriptError.make({message: `Fixture is missing benchmark query ${BENCHMARK_QUERY_ID}.`});
 
     const samples = [];
     for (const worksetSize of options.sizes) {
       const workset = prepared.plan.worksets.find(candidate => candidate.size === worksetSize);
-      if (!workset) return yield* Effect.fail(new ScriptError(`Fixture did not emit a size-${worksetSize} workset.`));
+      if (!workset) return yield* ScriptError.make({message: `Fixture did not emit a size-${worksetSize} workset.`});
       for (let warmup = 0; warmup < options.warmups; warmup += 1) {
         yield* measureCodeGraphWorksetQuery(config, workset.name, query.query);
       }
@@ -138,7 +138,7 @@ export const benchmarkCodeGraphWorkset = Effect.scoped(
     yield* printJson(artifact);
     if (options.failOnBudget) {
       const failures = codeGraphWorksetBenchmarkBudgetFailures(measurements, options.sizes);
-      if (failures.length > 0) return yield* Effect.fail(new ScriptError(failures.join('\n')));
+      if (failures.length > 0) return yield* ScriptError.make({message: failures.join('\n')});
     }
   }),
 );
@@ -146,18 +146,18 @@ export const benchmarkCodeGraphWorkset = Effect.scoped(
 function parseBenchmarkSizes(value: string): readonly CodeGraphWorksetFixtureSize[] {
   const parts = value.split(',');
   if (parts.length === 0 || parts.some(part => !part.trim()))
-    throw new ScriptError('--sizes requires comma-separated sizes.');
+    throw ScriptError.make({message: '--sizes requires comma-separated sizes.'});
   const sizes = parts.map(part => Number(part.trim()));
   if (sizes.some(size => !Number.isSafeInteger(size) || size < 1)) {
-    throw new ScriptError('--sizes requires positive integer sizes.');
+    throw ScriptError.make({message: '--sizes requires positive integer sizes.'});
   }
-  if (new Set(sizes).size !== sizes.length) throw new ScriptError('--sizes sizes must be unique.');
+  if (new Set(sizes).size !== sizes.length) throw ScriptError.make({message: '--sizes sizes must be unique.'});
   const allowed = new Set<number>(CODE_GRAPH_WORKSET_FIXTURE_SUPPORTED_SIZES);
   for (const size of sizes) {
     if (!allowed.has(size)) {
-      throw new ScriptError(
-        `--sizes only accepts benchmark sizes: ${CODE_GRAPH_WORKSET_FIXTURE_SUPPORTED_SIZES.join(', ')}. Received ${size}.`,
-      );
+      throw ScriptError.make({
+        message: `--sizes only accepts benchmark sizes: ${CODE_GRAPH_WORKSET_FIXTURE_SUPPORTED_SIZES.join(', ')}. Received ${size}.`,
+      });
     }
   }
   return [...sizes].sort((left, right) => left - right) as readonly CodeGraphWorksetFixtureSize[];
@@ -166,13 +166,13 @@ function parseBenchmarkSizes(value: string): readonly CodeGraphWorksetFixtureSiz
 function integer(value: string | undefined, option: string, minimum: number, maximum: number): number {
   const parsed = Number(required(value, option));
   if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
-    throw new ScriptError(`${option} must be an integer from ${minimum} through ${maximum}.`);
+    throw ScriptError.make({message: `${option} must be an integer from ${minimum} through ${maximum}.`});
   }
   return parsed;
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 
@@ -180,9 +180,10 @@ function benchmarkCreatedAt(environment: NodeJS.ProcessEnv): string {
   const epoch = environment.SOURCE_DATE_EPOCH;
   if (epoch === undefined) return new Date().toISOString();
   if (!/^\d+$/.test(epoch))
-    throw new ScriptError('SOURCE_DATE_EPOCH must be a non-negative integer number of seconds.');
+    throw ScriptError.make({message: 'SOURCE_DATE_EPOCH must be a non-negative integer number of seconds.'});
   const date = new Date(Number(epoch) * 1_000);
-  if (!Number.isFinite(date.getTime())) throw new ScriptError('SOURCE_DATE_EPOCH is outside the supported date range.');
+  if (!Number.isFinite(date.getTime()))
+    throw ScriptError.make({message: 'SOURCE_DATE_EPOCH is outside the supported date range.'});
   return date.toISOString();
 }
 

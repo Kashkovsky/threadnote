@@ -14,6 +14,7 @@ import {
 } from '../helpers/node-fs.js';
 import {cpus, release, tmpdir, totalmem} from '../helpers/node-os.js';
 import {join, posix as posixPath, win32 as windowsPath} from '../helpers/node-path.js';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import {Clock, Deferred, Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
@@ -243,7 +244,7 @@ describe('SystemInfo disk capacity parsing', () => {
         const minimum = windowsAvailableDiskBytesFromNative(higher < lower ? higher : lower);
         const maximum = windowsAvailableDiskBytesFromNative(higher < lower ? lower : higher);
         if (minimum === undefined || maximum === undefined) {
-          throw new TestError('Valid native Windows capacities must produce safe integers.');
+          throw TestError.make({message: 'Valid native Windows capacities must produce safe integers.'});
         }
         expect(minimum).toBeLessThanOrEqual(maximum);
         expect(maximum).toBeLessThanOrEqual(Number.MAX_SAFE_INTEGER);
@@ -366,7 +367,7 @@ describe('SystemInfo disk capacity parsing', () => {
                 fallbackInvocations += 1;
                 return 16_384;
               }),
-            statfs: () => Effect.die(new TestError('Windows ARM64 must not use statfs.')),
+            statfs: () => Effect.die(TestError.make({message: 'Windows ARM64 must not use statfs.'})),
             windows,
           } satisfies Parameters<typeof probeRuntimeAvailableDiskBytes>[4];
 
@@ -419,7 +420,7 @@ describe('SystemInfo disk capacity parsing', () => {
                         fallbackInvocations += 1;
                         return 16_384;
                       }),
-                    statfs: () => Effect.die(new TestError('Windows ARM64 must not use statfs.')),
+                    statfs: () => Effect.die(TestError.make({message: 'Windows ARM64 must not use statfs.'})),
                     windows,
                   },
                   750,
@@ -468,7 +469,7 @@ describe('SystemInfo disk capacity parsing', () => {
         const lower = availableDiskBytesFromStatfs({bavail: BigInt(lowerBlocks), bsize: BigInt(blockSize)});
         const higher = availableDiskBytesFromStatfs({bavail: BigInt(higherBlocks), bsize: BigInt(blockSize)});
         if (lower === undefined || higher === undefined) {
-          throw new TestError('Valid native statfs values must produce a safe capacity.');
+          throw TestError.make({message: 'Valid native statfs values must produce a safe capacity.'});
         }
 
         expect(higher).toBe(expected);
@@ -577,8 +578,8 @@ describe('SystemInfo disk capacity parsing', () => {
   effectIt.effect('falls back when the native Windows ARM64 capacity probe is unavailable or fails', () =>
     Effect.gen(function* () {
       for (const native of [
-        () => Effect.succeed(undefined),
-        () => Effect.fail(new TestError('Native Windows capacity failed.')),
+        () => succeedUndefined,
+        () => Effect.fail(TestError.make({message: 'Native Windows capacity failed.'})),
       ]) {
         let fallbackInvocations = 0;
         let statfsInvocations = 0;
@@ -627,7 +628,7 @@ describe('SystemInfo disk capacity parsing', () => {
                 }),
               ),
             ),
-          statfs: () => Effect.die(new TestError('Windows ARM64 must not use statfs.')),
+          statfs: () => Effect.die(TestError.make({message: 'Windows ARM64 must not use statfs.'})),
           windows: () => Effect.sleep(60).pipe(Effect.as(undefined)),
         },
         100,
@@ -693,7 +694,7 @@ describe('SystemInfo disk capacity parsing', () => {
                 fallbackInvocations += 1;
                 return 42;
               }),
-            statfs: () => Effect.fail(Object.assign(new TestError('Native statfs unavailable.'), {code})),
+            statfs: () => Effect.fail(Object.assign(TestError.make({message: 'Native statfs unavailable.'}), {code})),
           },
         );
         expect(available).toBe(42);
@@ -711,7 +712,9 @@ describe('SystemInfo disk capacity parsing', () => {
                 return 99;
               }),
             statfs: () =>
-              Effect.fail(Object.assign(new TestError(`/private/ordinary-statfs-failure: ${code}`), {code})),
+              Effect.fail(
+                Object.assign(TestError.make({message: `/private/ordinary-statfs-failure: ${code}`}), {code}),
+              ),
           },
         );
         expect(available).toBeUndefined();
@@ -779,7 +782,9 @@ describe('SystemInfo disk capacity parsing', () => {
               nativeInvocations += 1;
             }).pipe(
               Effect.andThen(Effect.sleep(60)),
-              Effect.andThen(Effect.fail(Object.assign(new TestError('Native statfs unavailable.'), {code: 'ENOSYS'}))),
+              Effect.andThen(
+                Effect.fail(Object.assign(TestError.make({message: 'Native statfs unavailable.'}), {code: 'ENOSYS'})),
+              ),
             ),
         },
         100,
@@ -824,7 +829,9 @@ describe('SystemInfo disk capacity parsing', () => {
                   fallback: (path, platform, environment) =>
                     legacyAvailableDiskBytes(path, platform, environment, join(fixture.root, 'df')),
                   statfs: () =>
-                    Effect.fail(Object.assign(new TestError('Native statfs unavailable.'), {code: 'ENOSYS'})),
+                    Effect.fail(
+                      Object.assign(TestError.make({message: 'Native statfs unavailable.'}), {code: 'ENOSYS'}),
+                    ),
                 },
                 750,
               ).pipe(Effect.forkChild({startImmediately: true}));
@@ -877,7 +884,7 @@ describe('SystemInfo disk capacity parsing', () => {
 
 function windowsCapacityResponse(request: string, availableBytes: number): string {
   const id = /"id":"([1-9][0-9]{0,31})"/u.exec(request)?.[1];
-  if (id === undefined) throw new TestError('Expected a bounded Windows capacity request identity.');
+  if (id === undefined) throw TestError.make({message: 'Expected a bounded Windows capacity request identity.'});
   return JSON.stringify({availableBytes, id, protocol: 1});
 }
 
@@ -909,7 +916,7 @@ function scriptedWindowsCapacityWorker(
     kill: finish,
     stdout: output.readable,
     write: async line => {
-      if (closed) throw new TestError('Cannot write to a closed scripted Windows capacity worker.');
+      if (closed) throw TestError.make({message: 'Cannot write to a closed scripted Windows capacity worker.'});
       await writer.write(encoder.encode(`${respond(line)}\n`));
     },
   };
@@ -927,7 +934,7 @@ function waitForRecordedProcessId(path: string, timeoutMilliseconds: number) {
       }
       yield* Effect.sleep(10);
     }
-    return yield* Effect.fail(new TestError('Timed out waiting for the fallback process to start.'));
+    return yield* TestError.make({message: 'Timed out waiting for the fallback process to start.'});
   });
 }
 
@@ -938,7 +945,7 @@ function waitForProcessExit(processId: number, timeoutMilliseconds: number) {
       if (!isProcessRunning(processId)) return;
       yield* Effect.sleep(10);
     }
-    return yield* Effect.fail(new TestError('Timed out waiting for the fallback process to exit.'));
+    return yield* TestError.make({message: 'Timed out waiting for the fallback process to exit.'});
   });
 }
 
@@ -1170,8 +1177,8 @@ describe('SystemInfo process identity', () => {
         42,
         {},
         {
-          fallback: () => Effect.fail(new TestError('fallback failed')),
-          native: () => Effect.succeed(undefined),
+          fallback: () => Effect.fail(TestError.make({message: 'fallback failed'})),
+          native: () => succeedUndefined,
         },
         25,
       );
@@ -1190,7 +1197,7 @@ describe('SystemInfo process identity', () => {
                 }),
               ),
             ),
-          native: () => Effect.succeed(undefined),
+          native: () => succeedUndefined,
         },
         25,
       ).pipe(Effect.forkChild);
@@ -1468,7 +1475,7 @@ describe('SystemInfo process identity', () => {
       const system = yield* SystemInfo;
       const canonicalProcessStartIdentity = system.canonicalProcessStartIdentity;
       if (canonicalProcessStartIdentity === undefined) {
-        return yield* Effect.fail(new TestError('The production SystemInfo layer must provide the canonical channel.'));
+        return yield* TestError.make({message: 'The production SystemInfo layer must provide the canonical channel.'});
       }
       const identities = [
         yield* system.processStartIdentity(system.processId),
@@ -1506,9 +1513,7 @@ function waitForRecordedProcessIds(path: string, expectedCount: number, timeoutM
       }
       yield* Effect.sleep(10);
     }
-    return yield* Effect.fail(
-      new TestError(`Timed out waiting for ${expectedCount} process identity probes to start.`),
-    );
+    return yield* TestError.make({message: `Timed out waiting for ${expectedCount} process identity probes to start.`});
   });
 }
 

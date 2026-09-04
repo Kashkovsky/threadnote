@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path, Ref} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path, Ref, Schema} from 'effect';
 import {fromPromiseInterruptible} from '../effect/errors.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {CommandExecutor} from '../effect/command.js';
@@ -18,15 +18,17 @@ import {resolveRepositoryIdentity} from './repository.js';
 import type {CodeGraphProgress, RepositoryIdentity} from './types.js';
 import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, type CodeGraphBuilderAdmissionClass} from './builder_admission.js';
 
-class IsolatedBuilderError extends Error {
-  readonly _tag = 'IsolatedBuilderError' as const;
-}
+class IsolatedBuilderError extends Schema.TaggedError<IsolatedBuilderError>()('IsolatedBuilderError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const isolatedBuilderPromise = <A>(operation: string, evaluate: () => PromiseLike<A>) =>
-  fromPromiseInterruptible(
-    evaluate,
-    cause =>
-      new IsolatedBuilderError(`${operation}: ${cause instanceof Error ? cause.message : String(cause)}`, {cause}),
+  fromPromiseInterruptible(evaluate, cause =>
+    IsolatedBuilderError.make({
+      cause,
+      message: `${operation}: ${cause instanceof Error ? cause.message : String(cause)}`,
+    }),
   );
 
 /** Match the child heartbeat cadence so MCP does not oversample process-liveness probes. */
@@ -259,7 +261,7 @@ export function codeGraphProgressFromBuildStatus(
       };
     default: {
       const _exhaustive: never = status.phase;
-      throw new IsolatedBuilderError(`Unsupported code graph progress phase: ${String(_exhaustive)}`);
+      throw IsolatedBuilderError.make({message: `Unsupported code graph progress phase: ${String(_exhaustive)}`});
     }
   }
 }
@@ -377,9 +379,9 @@ export const runIsolatedCodeGraphIndex: (
   if (exitCode !== 0) {
     // A failed child is never rescued by a later sidecar; only enrich its failure with the exact owned status.
     const failed = yield* statusOwnedBy(readStatus, child.processId, priorBuildId, yield* Ref.get(observedBuildId));
-    return yield* Effect.fail(
-      new IsolatedBuilderError(isolatedBuilderFailureMessage(exitCode, failed?.error?.summary, child.stderrTail?.())),
-    );
+    return yield* IsolatedBuilderError.make({
+      message: isolatedBuilderFailureMessage(exitCode, failed?.error?.summary, child.stderrTail?.()),
+    });
   }
 
   return yield* awaitOwnedIsolatedBuilderResult(
@@ -416,7 +418,9 @@ export function isolatedBuilderResultFromCompletedStatus(
       symbols: status.result.symbols,
     });
   }
-  return Effect.fail(new IsolatedBuilderError('isolated graph index finished without writing a build result'));
+  return Effect.fail(
+    IsolatedBuilderError.make({message: 'isolated graph index finished without writing a build result'}),
+  );
 }
 
 /** @internal Bounded completion-sidecar grace used after a successful isolated child exit. */
@@ -487,14 +491,14 @@ export function statusBelongsToChild(
 export function assertIsolatedBuilderPlan(plan: CodeGraphIsolatedBuilderSpawnPlan): void {
   const executableName = executableBaseName(plan.executable);
   if (executableName?.startsWith('threadnote-mcp-server') === true) {
-    throw new IsolatedBuilderError('Isolated graph builder must not spawn the MCP launcher executable.');
+    throw IsolatedBuilderError.make({message: 'Isolated graph builder must not spawn the MCP launcher executable.'});
   }
   const graphAt = plan.arguments.indexOf('graph');
   if (graphAt < 0 || plan.arguments[graphAt + 1] !== 'index') {
-    throw new IsolatedBuilderError('Isolated graph builder spawn plan must invoke `graph index`.');
+    throw IsolatedBuilderError.make({message: 'Isolated graph builder spawn plan must invoke `graph index`.'});
   }
   if (plan.arguments.slice(0, graphAt).includes('mcp-server')) {
-    throw new IsolatedBuilderError('Isolated graph builder must not spawn an MCP server child.');
+    throw IsolatedBuilderError.make({message: 'Isolated graph builder must not spawn an MCP server child.'});
   }
 }
 
@@ -502,9 +506,9 @@ function assertIsolatedBuilderPlanEffect(plan: CodeGraphIsolatedBuilderSpawnPlan
   return Effect.try({
     try: () => assertIsolatedBuilderPlan(plan),
     catch: cause =>
-      cause instanceof IsolatedBuilderError
+      Schema.is(IsolatedBuilderError)(cause)
         ? cause
-        : new IsolatedBuilderError(cause instanceof Error ? cause.message : String(cause), {cause}),
+        : IsolatedBuilderError.make({cause, message: cause instanceof Error ? cause.message : String(cause)}),
   });
 }
 
@@ -587,9 +591,9 @@ function awaitExistingBuilder<E, R>(
           yield* Effect.sleep(ISOLATED_BUILDER_RESULT_POLL_MILLISECONDS);
           continue;
         }
-        return yield* Effect.fail(
-          new IsolatedBuilderError('Existing code graph builder status disappeared before completion.'),
-        );
+        return yield* IsolatedBuilderError.make({
+          message: 'Existing code graph builder status disappeared before completion.',
+        });
       }
       if (status.observation.liveness === 'completed' && status.result) {
         return {
@@ -602,14 +606,14 @@ function awaitExistingBuilder<E, R>(
         } satisfies CodeGraphIsolatedBuilderResult;
       }
       if (status.observation.liveness === 'completed') {
-        return yield* Effect.fail(
-          new IsolatedBuilderError('Existing code graph builder completed without writing a build result.'),
-        );
+        return yield* IsolatedBuilderError.make({
+          message: 'Existing code graph builder completed without writing a build result.',
+        });
       }
       if (status.observation.liveness !== 'active' && status.observation.liveness !== 'stalled') {
-        return yield* Effect.fail(
-          new IsolatedBuilderError(status.error?.summary ?? 'Existing code graph builder stopped before completion.'),
-        );
+        return yield* IsolatedBuilderError.make({
+          message: status.error?.summary ?? 'Existing code graph builder stopped before completion.',
+        });
       }
       if (status.observation.liveness === 'stalled') {
         const now = yield* Clock.currentTimeMillis;
@@ -618,9 +622,9 @@ function awaitExistingBuilder<E, R>(
           return [next, next] as const;
         });
         if (now - started >= EXISTING_BUILDER_STALLED_TIMEOUT_MILLISECONDS) {
-          return yield* Effect.fail(
-            new IsolatedBuilderError('Existing code graph builder stalled without progress; retry the refresh.'),
-          );
+          return yield* IsolatedBuilderError.make({
+            message: 'Existing code graph builder stalled without progress; retry the refresh.',
+          });
         }
       } else {
         yield* Ref.set(stalledStartedAt, undefined);
@@ -646,7 +650,7 @@ function mirrorBuildStatusProgress<E, R>(
         childProcessId,
         priorBuildId,
         yield* Ref.get(observedBuildId),
-      ).pipe(Effect.catch(() => Effect.succeed(undefined as ObservedCodeGraphBuildStatus | undefined)));
+      ).pipe(Effect.orElseSucceed(() => undefined as ObservedCodeGraphBuildStatus | undefined));
       if (status) {
         yield* Ref.update(observedBuildId, current => current ?? status.buildId);
         yield* emitProgress(onProgress, codeGraphProgressFromBuildStatus(status));
@@ -654,7 +658,7 @@ function mirrorBuildStatusProgress<E, R>(
         yield* emitProgress(onProgress, {phase: 'registering'});
       }
       yield* Effect.sleep(BUILD_STATUS_POLL_MILLISECONDS);
-    }).pipe(Effect.catchCause(() => Effect.void)),
+    }).pipe(Effect.ignoreCause),
   );
 }
 

@@ -105,7 +105,8 @@ export function adjudicateCodeGraphWindowsReplicas(
   budgetInput: unknown,
   expectedCommit: string,
 ): CodeGraphWindowsReplicaGateV1 {
-  if (!GIT_COMMIT.test(expectedCommit)) throw new ScriptError('Expected commit must be an exact lowercase Git SHA-1.');
+  if (!GIT_COMMIT.test(expectedCommit))
+    throw ScriptError.make({message: 'Expected commit must be an exact lowercase Git SHA-1.'});
   const policy = parseWindowsReplicaPolicy(budgetInput);
   const safetyBudget = windowsReplicaSafetyBudget(budgetInput, policy);
   const expectedFixtureHash = budgetFixtureHash(budgetInput);
@@ -411,13 +412,15 @@ function parseWindowsReplicaPolicy(value: unknown): WindowsReplicaPolicyV1 {
     JSON.stringify(Object.keys(policy).sort()) !== JSON.stringify(Object.keys(expected).sort()) ||
     Object.entries(expected).some(([key, expectedValue]) => policy[key] !== expectedValue)
   ) {
-    throw new ScriptError('Hosted Windows replica policy does not match the reviewed v1 contract.');
+    throw ScriptError.make({message: 'Hosted Windows replica policy does not match the reviewed v1 contract.'});
   }
   const resolved = resolvedWindowsDevelopmentBudget(budget);
   const ordinaryMaximum = requiredNumber(resolved.hotQueryP95MillisecondsMaximum, 'ordinary wall p95 maximum');
   const tolerance = requiredNumber(resolved.hotQueryWallP95ToleranceRatioMaximum, 'ordinary wall p95 tolerance');
   if (ordinaryMaximum * (1 + tolerance) !== expected.ordinaryWallP95MillisecondsMaximum) {
-    throw new ScriptError('Hosted Windows ordinary replica boundary disagrees with the reviewed development budget.');
+    throw ScriptError.make({
+      message: 'Hosted Windows ordinary replica boundary disagrees with the reviewed development budget.',
+    });
   }
   return expected;
 }
@@ -467,7 +470,7 @@ function budgetFixtureHash(value: unknown): string {
 
 function requiredMeasurement(artifact: BenchmarkArtifactV1, name: string) {
   const measurement = artifact.measurements.find(candidate => candidate.name === name);
-  if (measurement === undefined) throw new ScriptError(`Replica artifact is missing ${name}.`);
+  if (measurement === undefined) throw ScriptError.make({message: `Replica artifact is missing ${name}.`});
   return measurement;
 }
 
@@ -479,9 +482,9 @@ function assertUniqueMeasurementNames(artifact: BenchmarkArtifactV1, prefix: str
     else seen.add(measurement.name);
   }
   if (duplicates.size > 0) {
-    throw new ScriptError(
-      `${prefix} measurement names must be unique; duplicates: ${[...duplicates].sort().join(', ')}`,
-    );
+    throw ScriptError.make({
+      message: `${prefix} measurement names must be unique; duplicates: ${[...duplicates].sort().join(', ')}`,
+    });
   }
 }
 
@@ -494,7 +497,7 @@ function numberMetadata(artifact: BenchmarkArtifactV1, key: string): number {
 }
 
 function requiredRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {
-  if (!isUnknownRecord(value)) throw new ScriptError(`${label} is invalid.`);
+  if (!isUnknownRecord(value)) throw ScriptError.make({message: `${label} is invalid.`});
   return value;
 }
 
@@ -503,12 +506,12 @@ function isUnknownRecord(value: unknown): value is Readonly<Record<string, unkno
 }
 
 function requiredString(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.length === 0) throw new ScriptError(`${label} is invalid.`);
+  if (typeof value !== 'string' || value.length === 0) throw ScriptError.make({message: `${label} is invalid.`});
   return value;
 }
 
 function requiredNumber(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new ScriptError(`${label} is invalid.`);
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw ScriptError.make({message: `${label} is invalid.`});
   return value;
 }
 
@@ -533,16 +536,16 @@ function parseArguments(args: readonly string[]): AdjudicatorOptions {
     else if (argument === '--fail-on-budget') failOnBudget = true;
     else if (argument === '--input') input = requiredArgument(args[++index], argument);
     else if (argument === '--output') output = requiredArgument(args[++index], argument);
-    else throw new ScriptError(`Unknown Windows replica adjudicator option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown Windows replica adjudicator option: ${argument}`});
   }
   if (!input || !output || !expectedCommit) {
-    throw new ScriptError('--input, --output, and --expected-commit are required.');
+    throw ScriptError.make({message: '--input, --output, and --expected-commit are required.'});
   }
   return {budget, expectedCommit, failOnBudget, input, output};
 }
 
 function requiredArgument(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 
@@ -554,11 +557,11 @@ const program = Effect.gen(function* () {
   const inputs: CodeGraphWindowsReplicaInput[] = [];
   for (const name of names) {
     const match = WINDOWS_REPLICA_FILE.exec(name);
-    if (match === null) return yield* Effect.fail(new ScriptError(`Unexpected replica artifact ${name}.`));
+    if (match === null) return yield* ScriptError.make({message: `Unexpected replica artifact ${name}.`});
     const file = path.join(options.input, name);
     const raw = yield* fs.readFileString(file);
     const value: unknown = yield* Effect.try({
-      catch: cause => new ScriptError(`Could not parse replica artifact ${name}.`, {cause}),
+      catch: cause => ScriptError.make({message: `Could not parse replica artifact ${name}.`, cause}),
       try: () => JSON.parse(raw),
     });
     inputs.push({
@@ -575,7 +578,7 @@ const program = Effect.gen(function* () {
   yield* atomicWrite(options.output, `${JSON.stringify(result, undefined, 2)}\n`);
   yield* printJson(result);
   if (options.failOnBudget && !result.gate.passed) {
-    return yield* Effect.fail(new ScriptError(result.gate.failures.join('\n')));
+    return yield* ScriptError.make({message: result.gate.failures.join('\n')});
   }
 });
 

@@ -70,7 +70,7 @@ export const selectActiveViewIdentities = Effect.fn('codeGraph.selectActiveViewI
 /** Read one exact active-pointer generation without opening another database session. */
 export const selectActiveViewFence = Effect.fn('codeGraph.selectActiveViewFence')(function* (worktreeId: string) {
   if (!/^[0-9a-f]{64}$/u.test(worktreeId)) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph worktree identity is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph worktree identity is invalid.');
   }
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
@@ -94,7 +94,7 @@ export const selectActiveViewFence = Effect.fn('codeGraph.selectActiveViewFence'
     typeof snapshotId !== 'string' ||
     !CODE_GRAPH_SNAPSHOT_ID.test(snapshotId)
   ) {
-    return yield* Effect.fail(new CodeGraphStoreError('Code graph active view authority is invalid.'));
+    return yield* CodeGraphStoreError.of('Code graph active view authority is invalid.');
   }
   return {activatedAt, snapshotId, worktreeId} satisfies CodeGraphActiveViewFence;
 });

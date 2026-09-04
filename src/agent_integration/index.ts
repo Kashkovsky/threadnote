@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Path} from 'effect';
+import {Console, Effect, FileSystem, Path, Schema} from 'effect';
 import {
   AGENT_CLIENTS,
   AGENT_INTEGRATION_ARTIFACT_VERSION,
@@ -70,9 +70,10 @@ interface AgentArtifact {
 
 type AgentArtifactProfile = NonNullable<AgentIntegrationMcpReceipt['artifactProfile']>;
 
-class AgentIntegrationError extends Error {
-  readonly _tag = 'AgentIntegrationError' as const;
-}
+class AgentIntegrationError extends Schema.TaggedError<AgentIntegrationError>()('AgentIntegrationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export {readAgentIntegrationRegistry, registeredAgentClients, repairableAgentClients};
 
@@ -388,17 +389,17 @@ const writeArtifact = Effect.fn('agentIntegrations.writeArtifact')(function* (ar
   if (artifact.kind === 'block') {
     next = upsertManagedBlock(current ?? '', artifact.content);
     if (next === undefined) {
-      return yield* Effect.fail(
-        new AgentIntegrationError(`${artifact.path} has partial Threadnote markers; not modifying it.`),
-      );
+      return yield* AgentIntegrationError.make({
+        message: `${artifact.path} has partial Threadnote markers; not modifying it.`,
+      });
     }
   } else if (current !== undefined && current !== artifact.content) {
     const currentBlock = extractManagedBlock(current);
     const expectedBlock = extractManagedBlock(artifact.content);
     if (currentBlock === undefined || expectedBlock === undefined) {
-      return yield* Effect.fail(
-        new AgentIntegrationError(`${artifact.path} is not managed by Threadnote; not modifying it.`),
-      );
+      return yield* AgentIntegrationError.make({
+        message: `${artifact.path} is not managed by Threadnote; not modifying it.`,
+      });
     }
     const unmanagedContent = removeManagedBlock(current);
     next =
@@ -409,9 +410,9 @@ const writeArtifact = Effect.fn('agentIntegrations.writeArtifact')(function* (ar
         : upsertManagedBlock(current, expectedBlock);
   }
   if (next === undefined) {
-    return yield* Effect.fail(
-      new AgentIntegrationError(`${artifact.path} has partial Threadnote markers; not modifying it.`),
-    );
+    return yield* AgentIntegrationError.make({
+      message: `${artifact.path} has partial Threadnote markers; not modifying it.`,
+    });
   }
   if (current === next) {
     yield* Console.log(`${artifact.name} already current: ${artifact.path}`);

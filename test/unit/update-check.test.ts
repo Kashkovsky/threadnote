@@ -3,7 +3,9 @@ import {it as effectIt} from '@effect/vitest';
 import {mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
-import {Effect} from 'effect';
+import {DateTime, Effect} from 'effect';
+import {TestClock} from 'effect/testing';
+import * as FC from 'effect/testing/FastCheck';
 import {afterEach, describe, expect, vi} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {checkForThreadnoteUpdate} from '../../src/release/check.js';
@@ -30,10 +32,11 @@ describe('Effect update check', () => {
     Effect.gen(function* () {
       const directory = yield* Effect.promise(temporaryDirectory);
       const cachePath = join(directory, 'update.json');
+      const checkedAt = DateTime.formatIso(yield* DateTime.now);
       yield* Effect.promise(() =>
         writeFile(
           cachePath,
-          JSON.stringify({channel: 'latest', checkedAt: new Date().toISOString(), latestVersion: '2.0.0', version: 3}),
+          JSON.stringify({channel: 'latest', checkedAt, latestVersion: '2.0.0', version: 3}),
           'utf8',
         ),
       );
@@ -47,6 +50,47 @@ describe('Effect update check', () => {
       });
       expect(fetch).not.toHaveBeenCalled();
     }),
+  );
+
+  effectIt.effect.prop(
+    'refetches when cache age reaches the 24-hour TTL (property)',
+    {ageMs: FC.integer({min: 0, max: 48 * 60 * 60 * 1000})},
+    ({ageMs}) =>
+      Effect.gen(function* () {
+        const directory = yield* Effect.promise(temporaryDirectory);
+        const cachePath = join(directory, 'update.json');
+        const checkedAt = DateTime.formatIso(yield* DateTime.now);
+        yield* Effect.promise(() =>
+          writeFile(
+            cachePath,
+            JSON.stringify({channel: 'latest', checkedAt, latestVersion: '2.0.0', version: 3}),
+            'utf8',
+          ),
+        );
+        const fetch = vi.fn(async (_url: string | URL) =>
+          Response.json([
+            {
+              assets: [],
+              draft: false,
+              immutable: true,
+              prerelease: false,
+              tag_name: 'v3.0.0',
+            },
+          ]),
+        );
+        vi.stubGlobal('fetch', fetch);
+        yield* TestClock.adjust(ageMs);
+
+        const result = yield* runCheck(cachePath, '1.0.0');
+        if (ageMs < 24 * 60 * 60 * 1000) {
+          expect(fetch).not.toHaveBeenCalled();
+          expect(result).toEqual({currentVersion: '1.0.0', latestVersion: '2.0.0', outdated: true});
+        } else {
+          expect(fetch).toHaveBeenCalled();
+          expect(result).toEqual({currentVersion: '1.0.0', latestVersion: '3.0.0', outdated: true});
+        }
+      }),
+    {fastCheck: {numRuns: 16}},
   );
 
   effectIt.effect('fetches through HttpService and persists a successful result', () =>
@@ -81,12 +125,13 @@ describe('Effect update check', () => {
     Effect.gen(function* () {
       const directory = yield* Effect.promise(temporaryDirectory);
       const cachePath = join(directory, 'update.json');
+      const checkedAt = DateTime.formatIso(yield* DateTime.now);
       yield* Effect.promise(() =>
         writeFile(
           cachePath,
           JSON.stringify({
             channel: 'beta',
-            checkedAt: new Date().toISOString(),
+            checkedAt,
             latestVersion: '3.0.0-beta.2',
             version: 2,
           }),

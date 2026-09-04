@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {Effect, Schema} from 'effect';
 import {
   CodeGraphStore,
   type CodeGraphEdgeCursor,
@@ -67,9 +67,10 @@ export interface CodeGraphExportSummary {
   readonly warnings: readonly string[];
 }
 
-export class CodeGraphExportError extends Error {
-  override readonly name = 'CodeGraphExportError';
-}
+export class CodeGraphExportError extends Schema.TaggedError<CodeGraphExportError>()('CodeGraphExportError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export const CODE_GRAPH_EXPORT_LIMIT_POLICY = {
   graphml: {defaultEdgeLimit: 'all', defaultNodeLimit: 'all'},
@@ -157,15 +158,15 @@ export const exportCodeGraph = Effect.fn('codeGraph.export')(function* (request:
   const requestedLimits = yield* normalizeRequestedLimits(request);
   const snapshot = yield* store.readySnapshotById(request.databasePath, request.snapshotId);
   if (!snapshot) {
-    return yield* Effect.fail(new CodeGraphExportError(`Ready snapshot ${request.snapshotId} was not found.`));
+    return yield* CodeGraphExportError.make({message: `Ready snapshot ${request.snapshotId} was not found.`});
   }
   if (snapshot.state !== 'ready') {
-    return yield* Effect.fail(new CodeGraphExportError(`Snapshot ${request.snapshotId} is not ready for export.`));
+    return yield* CodeGraphExportError.make({message: `Snapshot ${request.snapshotId} is not ready for export.`});
   }
   if (snapshot.repositoryId !== request.repository.repositoryId) {
-    return yield* Effect.fail(
-      new CodeGraphExportError('The requested repository identity does not own the selected ready snapshot.'),
-    );
+    return yield* CodeGraphExportError.make({
+      message: 'The requested repository identity does not own the selected ready snapshot.',
+    });
   }
   const limits = resolveReadLimits(requestedLimits, snapshot);
   const metadata = exportMetadata(request, snapshot, limits);
@@ -183,9 +184,7 @@ export const exportCodeGraph = Effect.fn('codeGraph.export')(function* (request:
   return yield* Effect.raceFirst(
     store.withSession(request.databasePath, renderExport(store, request, snapshot, metadata, limits), {readOnly: true}),
     renewLease,
-  ).pipe(
-    Effect.ensuring(store.releaseSnapshotLease(request.databasePath, lease).pipe(Effect.catch(() => Effect.void))),
-  );
+  ).pipe(Effect.ensuring(store.releaseSnapshotLease(request.databasePath, lease).pipe(Effect.ignore)));
 });
 
 function renderExport(
@@ -386,9 +385,9 @@ function streamNodes(
       cursor = {id: last.id, path: last.path, qualifiedName: last.qualifiedName};
     }
     if (count !== expected) {
-      return yield* Effect.fail(
-        new CodeGraphExportError(`Snapshot node count changed during export: expected ${expected}, read ${count}.`),
-      );
+      return yield* CodeGraphExportError.make({
+        message: `Snapshot node count changed during export: expected ${expected}, read ${count}.`,
+      });
     }
     return {count} satisfies StreamResult;
   });
@@ -431,9 +430,9 @@ function streamEdges(
       };
     }
     if (scanned !== expected) {
-      return yield* Effect.fail(
-        new CodeGraphExportError(`Snapshot edge count changed during export: expected ${expected}, read ${scanned}.`),
-      );
+      return yield* CodeGraphExportError.make({
+        message: `Snapshot edge count changed during export: expected ${expected}, read ${scanned}.`,
+      });
     }
     return {
       count: written,
@@ -577,7 +576,8 @@ function normalizeRequestedLimits(request: CodeGraphExportRequest) {
   return Effect.try({
     try: () => {
       const policy = CODE_GRAPH_EXPORT_LIMIT_POLICY[request.format];
-      if (!policy) throw new CodeGraphExportError(`Unsupported code graph export format: ${String(request.format)}`);
+      if (!policy)
+        throw CodeGraphExportError.make({message: `Unsupported code graph export format: ${String(request.format)}`});
       return {
         edgeLimit: graphLimit('edge limit', request.edgeLimit, policy.defaultEdgeLimit),
         nodeLimit: graphLimit('node limit', request.nodeLimit, policy.defaultNodeLimit),
@@ -585,9 +585,9 @@ function normalizeRequestedLimits(request: CodeGraphExportRequest) {
       } satisfies CodeGraphExportRequestedLimits;
     },
     catch: cause =>
-      cause instanceof CodeGraphExportError
+      Schema.is(CodeGraphExportError)(cause)
         ? cause
-        : new CodeGraphExportError(cause instanceof Error ? cause.message : String(cause)),
+        : CodeGraphExportError.make({message: cause instanceof Error ? cause.message : String(cause)}),
   });
 }
 
@@ -612,7 +612,7 @@ function graphLimit(
   const selected = value ?? fallback;
   if (selected === 'all') return selected;
   if (!Number.isSafeInteger(selected) || selected < 0) {
-    throw new CodeGraphExportError(`${label} must be "all" or a non-negative safe integer.`);
+    throw CodeGraphExportError.make({message: `${label} must be "all" or a non-negative safe integer.`});
   }
   return selected;
 }
@@ -620,7 +620,7 @@ function graphLimit(
 function boundedPageSize(value: number | undefined): number {
   const selected = value ?? DEFAULT_PAGE_SIZE;
   if (!Number.isSafeInteger(selected) || selected < 1 || selected > MAXIMUM_PAGE_SIZE) {
-    throw new CodeGraphExportError(`page size must be an integer between 1 and ${MAXIMUM_PAGE_SIZE}.`);
+    throw CodeGraphExportError.make({message: `page size must be an integer between 1 and ${MAXIMUM_PAGE_SIZE}.`});
   }
   return selected;
 }

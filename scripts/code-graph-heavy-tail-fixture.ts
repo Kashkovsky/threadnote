@@ -55,10 +55,11 @@ export const CODE_GRAPH_HEAVY_TAIL_SMOKE_PROFILE = {
 } as const satisfies CodeGraphHeavyTailProfile;
 
 export function parseCodeGraphHeavyTailProfile(value: unknown): CodeGraphHeavyTailProfile {
-  if (typeof value !== 'object' || value === null) throw new ScriptError('Heavy-tail profile must be an object.');
+  if (typeof value !== 'object' || value === null)
+    throw ScriptError.make({message: 'Heavy-tail profile must be an object.'});
   const profile = value as Partial<CodeGraphHeavyTailProfile>;
   if (profile.id !== 'large-monorepo-heavy-tail' || profile.version !== 1) {
-    throw new ScriptError('Unsupported code graph heavy-tail profile.');
+    throw ScriptError.make({message: 'Unsupported code graph heavy-tail profile.'});
   }
   for (const field of [
     'callsPerPathologicalTypeScriptFile',
@@ -72,16 +73,19 @@ export function parseCodeGraphHeavyTailProfile(value: unknown): CodeGraphHeavyTa
   ] as const) {
     const current = profile[field];
     if (typeof current !== 'number' || !Number.isSafeInteger(current) || current < 1) {
-      throw new ScriptError(`Heavy-tail profile ${field} must be a positive safe integer.`);
+      throw ScriptError.make({message: `Heavy-tail profile ${field} must be a positive safe integer.`});
     }
   }
-  if (profile.parallelWorkers! > 8) throw new ScriptError('Heavy-tail profile parallelWorkers must not exceed 8.');
+  if (profile.parallelWorkers! > 8)
+    throw ScriptError.make({message: 'Heavy-tail profile parallelWorkers must not exceed 8.'});
   const eligibleFiles = codeGraphHeavyTailEligibleFiles(profile as CodeGraphHeavyTailProfile);
   if (profile.interruptAfterPersistedFiles! >= eligibleFiles) {
-    throw new ScriptError('Heavy-tail interruption point must be smaller than the eligible fixture file count.');
+    throw ScriptError.make({
+      message: 'Heavy-tail interruption point must be smaller than the eligible fixture file count.',
+    });
   }
   if (profile.lowSignalJsonBytes! < 128 || profile.generatedTypeScriptBytes! < 128) {
-    throw new ScriptError('Heavy-tail large-file shapes must be at least 128 bytes.');
+    throw ScriptError.make({message: 'Heavy-tail large-file shapes must be at least 128 bytes.'});
   }
   return profile as CodeGraphHeavyTailProfile;
 }
@@ -145,7 +149,9 @@ export function codeGraphHeavyTailGeneratedTypeScript(targetBytes: number): stri
     '',
   ].join('\n');
   if (targetBytes < prefix.length + suffix.length) {
-    throw new ScriptError(`Generated TypeScript target must be at least ${prefix.length + suffix.length} bytes.`);
+    throw ScriptError.make({
+      message: `Generated TypeScript target must be at least ${prefix.length + suffix.length} bytes.`,
+    });
   }
   return `${prefix}${'x'.repeat(targetBytes - prefix.length - suffix.length)}${suffix}`;
 }
@@ -154,7 +160,9 @@ export function codeGraphHeavyTailLowSignalJson(targetBytes: number): string {
   const prefix = '{"kind":"test-snapshot","frames":[],"payload":"';
   const suffix = '"}\n';
   if (targetBytes < prefix.length + suffix.length) {
-    throw new ScriptError(`Low-signal JSON target must be at least ${prefix.length + suffix.length} bytes.`);
+    throw ScriptError.make({
+      message: `Low-signal JSON target must be at least ${prefix.length + suffix.length} bytes.`,
+    });
   }
   return `${prefix}${'x'.repeat(targetBytes - prefix.length - suffix.length)}${suffix}`;
 }

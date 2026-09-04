@@ -1,5 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
-import {Effect} from 'effect';
+import {Effect, Schema} from 'effect';
 import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from '../memory/code_citation_capture.js';
 import {mcpErrorResult} from './server/common.js';
 import type {RuntimeConfig} from '../types.js';
@@ -26,7 +26,7 @@ export function captureMemoryCodeCitationsForMcp(
 
 function memoryCodeCitationCaptureErrorResult(error: unknown, operation: string): CallToolResult {
   const result = mcpErrorResult(error);
-  if (!(error instanceof MemoryCodeCitationCaptureError) || error.recovery === undefined) return result;
+  if (!Schema.is(MemoryCodeCitationCaptureError)(error) || error.recovery === undefined) return result;
   const recovery = error.recovery;
   const preparation = recovery.preparation;
   result.content = [

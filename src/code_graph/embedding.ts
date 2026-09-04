@@ -1,5 +1,5 @@
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
-import {Clock, Context, Crypto, Effect, FileSystem, Layer, Path} from 'effect';
+import {Clock, Context, Crypto, DateTime, Effect, FileSystem, Layer, Path, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
@@ -25,9 +25,10 @@ import {
   requireCodeGraphVectorRetirementSchema,
 } from './vector_retirement.js';
 
-class CodeGraphEmbeddingError extends Error {
-  readonly _tag = 'CodeGraphEmbeddingError' as const;
-}
+class CodeGraphEmbeddingError extends Schema.TaggedError<CodeGraphEmbeddingError>()('CodeGraphEmbeddingError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION = 1;
 const CODE_GRAPH_EMBEDDING_CONTEXT_CAP = 8;
@@ -113,7 +114,7 @@ export interface CodeGraphEmbeddingIndexShape {
 }
 
 export class CodeGraphEmbeddingIndex extends Context.Service<CodeGraphEmbeddingIndex, CodeGraphEmbeddingIndexShape>()(
-  'threadnote/codeGraph/CodeGraphEmbeddingIndex',
+  'threadnote/code_graph/embedding/CodeGraphEmbeddingIndex',
 ) {
   static readonly layer = Layer.effect(
     CodeGraphEmbeddingIndex,
@@ -312,7 +313,7 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
         ) VALUES (
           ${generation}, ${input.snapshot.id}, ${selected.manifest.id}, ${selected.manifest.sha256},
           ${selected.manifest.dimensions!}, ${CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION}, 0, 'building',
-          ${new Date(yield* Clock.currentTimeMillis).toISOString()}
+          ${DateTime.formatIso(yield* DateTime.now)}
         )
       `;
 
@@ -539,10 +540,10 @@ const selectedEmbeddingModel = Effect.fn('codeGraph.selectedEmbeddingModel')(fun
 ) {
   const selection = yield* readModelSelection(threadnoteHome);
   const modelId = selection.roles.embedding;
-  if (!modelId) return yield* Effect.fail(new CodeGraphEmbeddingError('No core embedding model is selected.'));
+  if (!modelId) return yield* CodeGraphEmbeddingError.make({message: 'No core embedding model is selected.'});
   const manifest = yield* catalog.get(modelId);
   if (manifest.role !== 'embedding' || !manifest.dimensions) {
-    return yield* Effect.fail(new CodeGraphEmbeddingError(`Selected model ${modelId} is not an embedding model.`));
+    return yield* CodeGraphEmbeddingError.make({message: `Selected model ${modelId} is not an embedding model.`});
   }
   const verified = yield* store.verify(threadnoteHome, manifest);
   return {manifest, modelPath: verified.path};
@@ -658,12 +659,13 @@ function insertVectorRows(sql: SqlClient.SqlClient, rows: readonly (readonly [st
 
 function encodeVector(vector: readonly number[], dimensions: number): Uint8Array {
   if (vector.length !== dimensions) {
-    throw new CodeGraphEmbeddingError(`Vector has ${vector.length} dimensions; expected ${dimensions}.`);
+    throw CodeGraphEmbeddingError.make({message: `Vector has ${vector.length} dimensions; expected ${dimensions}.`});
   }
   const bytes = new Uint8Array(dimensions * 4);
   const view = new DataView(bytes.buffer);
   for (const [index, component] of vector.entries()) {
-    if (!Number.isFinite(component)) throw new CodeGraphEmbeddingError('Vector contains a non-finite component.');
+    if (!Number.isFinite(component))
+      throw CodeGraphEmbeddingError.make({message: 'Vector contains a non-finite component.'});
     view.setFloat32(index * 4, component, true);
   }
   return bytes;
@@ -672,15 +674,18 @@ function encodeVector(vector: readonly number[], dimensions: number): Uint8Array
 function decodeVector(value: unknown, dimensions: number): readonly number[] {
   const bytes = bytesFromSqlBlob(value);
   if (bytes.byteLength !== dimensions * 4) {
-    throw new CodeGraphEmbeddingError(`Stored vector has ${bytes.byteLength} bytes; expected ${dimensions * 4}.`);
+    throw CodeGraphEmbeddingError.make({
+      message: `Stored vector has ${bytes.byteLength} bytes; expected ${dimensions * 4}.`,
+    });
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const vector = Array.from({length: dimensions}, (_, index) => view.getFloat32(index * 4, true));
   if (vector.some(component => !Number.isFinite(component))) {
-    throw new CodeGraphEmbeddingError('Stored vector contains a non-finite component.');
+    throw CodeGraphEmbeddingError.make({message: 'Stored vector contains a non-finite component.'});
   }
   const magnitude = Math.sqrt(vector.reduce((sum, component) => sum + component * component, 0));
-  if (Math.abs(magnitude - 1) > 0.002) throw new CodeGraphEmbeddingError('Stored vector is not L2-normalized.');
+  if (Math.abs(magnitude - 1) > 0.002)
+    throw CodeGraphEmbeddingError.make({message: 'Stored vector is not L2-normalized.'});
   return vector;
 }
 
@@ -699,7 +704,7 @@ function bytesFromSqlBlob(value: unknown): Uint8Array {
   if (ArrayBuffer.isView(value)) {
     return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   }
-  throw new CodeGraphEmbeddingError('Stored vector is not a binary SQLite value.');
+  throw CodeGraphEmbeddingError.make({message: 'Stored vector is not a binary SQLite value.'});
 }
 
 function mergeSearchResults(
@@ -736,7 +741,7 @@ const initializeVectorDatabase = Effect.fn('codeGraph.initializeVectorDatabase')
     return;
   }
   if (version !== 0) {
-    return yield* Effect.fail(new CodeGraphEmbeddingError('Code graph vector database version is unsupported.'));
+    return yield* CodeGraphEmbeddingError.make({message: 'Code graph vector database version is unsupported.'});
   }
   const objects = yield* sql.unsafe(
     `SELECT 1 FROM sqlite_master
@@ -744,7 +749,7 @@ const initializeVectorDatabase = Effect.fn('codeGraph.initializeVectorDatabase')
      LIMIT 1`,
   );
   if (objects.length !== 0) {
-    return yield* Effect.fail(new CodeGraphEmbeddingError('Code graph vector database initialization is incomplete.'));
+    return yield* CodeGraphEmbeddingError.make({message: 'Code graph vector database initialization is incomplete.'});
   }
   yield* sql.withTransaction(
     Effect.gen(function* () {
@@ -765,7 +770,7 @@ const requireVectorDatabaseReady = Effect.fn('codeGraph.requireVectorDatabaseRea
 ) {
   const versions = yield* sql.unsafe<{readonly user_version: unknown}>('PRAGMA user_version');
   if (versions.length !== 1 || versions[0]?.user_version !== CODE_GRAPH_VECTOR_DATABASE_VERSION) {
-    return yield* Effect.fail(new CodeGraphEmbeddingError('Code graph vector database version is unsupported.'));
+    return yield* CodeGraphEmbeddingError.make({message: 'Code graph vector database version is unsupported.'});
   }
   yield* requireCodeGraphVectorRetirementSchema(sql);
 });
@@ -847,13 +852,13 @@ const removeLegacyVectorSidecars = Effect.fn('codeGraph.removeLegacyVectorSideca
   root: string,
 ) {
   for (const legacy of ['active.json', 'generations', 'pointers']) {
-    yield* fs.remove(path.join(root, legacy), {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void));
+    yield* fs.remove(path.join(root, legacy), {force: true, recursive: true}).pipe(Effect.ignore);
   }
 });
 
 function requiredWorktreeId(layout: CodeGraphLayout): string {
   if (!/^[0-9a-f]{64}$/.test(layout.worktreeId))
-    throw new CodeGraphEmbeddingError('Code graph worktree identity is invalid.');
+    throw CodeGraphEmbeddingError.make({message: 'Code graph worktree identity is invalid.'});
   return layout.worktreeId;
 }
 

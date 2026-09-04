@@ -32,7 +32,7 @@ export class AiConsolidator extends Context.Service<
   {
     readonly consolidate: (prompt: string) => Effect.Effect<string, AiConsolidationFailed>;
   }
->()('threadnote/effect/AiConsolidator') {}
+>()('threadnote/effect/ai/consolidator/AiConsolidator') {}
 
 export const consolidateWithAiEffect = Effect.fn('AiConsolidator.consolidate')(function* (prompt: string) {
   const consolidator = yield* AiConsolidator;
@@ -98,15 +98,15 @@ export function aiConsolidatorLayer(config: EffectAiConfiguration): Layer.Layer<
               Effect.filterOrFail(
                 draft => draft.length > 0,
                 () =>
-                  new AiConsolidationFailed({
+                  AiConsolidationFailed.make({
                     cause: new Error('The model returned an empty consolidation draft.'),
                     message: 'Effect AI returned an empty consolidation draft.',
                   }),
               ),
               Effect.mapError(cause =>
-                cause instanceof AiConsolidationFailed
+                Schema.is(AiConsolidationFailed)(cause)
                   ? cause
-                  : new AiConsolidationFailed({cause, message: 'Effect AI consolidation failed.'}),
+                  : AiConsolidationFailed.make({cause, message: 'Effect AI consolidation failed.'}),
               ),
             ),
       });
@@ -150,17 +150,16 @@ export const runNativeAiConsolidation = Effect.fn('AiConsolidator.consolidateNat
   });
   if (output === undefined) return undefined;
   const draft = yield* Schema.decodeUnknownEffect(ConsolidationDraft)(output).pipe(
-    Effect.mapError(
-      cause =>
-        new AiConsolidationFailed({
-          cause,
-          message: 'Native AI returned an invalid consolidation draft.',
-        }),
+    Effect.mapError(cause =>
+      AiConsolidationFailed.make({
+        cause,
+        message: 'Native AI returned an invalid consolidation draft.',
+      }),
     ),
   );
   const value = draft.draft.trim();
   if (!value) {
-    return yield* new AiConsolidationFailed({
+    return yield* AiConsolidationFailed.make({
       cause: output,
       message: 'Native AI returned an empty consolidation draft.',
     });

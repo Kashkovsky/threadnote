@@ -1,4 +1,4 @@
-import {Effect, Result, Schedule} from 'effect';
+import {Effect, Result, Schedule, Schema} from 'effect';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {readMemoryRecordsByUri} from '../memory/index.js';
@@ -174,7 +174,7 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
     );
     if (
       Result.isFailure(capturedBatch) &&
-      capturedBatch.failure instanceof MemoryCodeCitationCaptureError &&
+      Schema.is(MemoryCodeCitationCaptureError)(capturedBatch.failure) &&
       capturedBatch.failure.recovery !== undefined
     ) {
       return unavailableContextBriefCodeLinkedMemoryEvidence(requested, 'code-anchor-resolution-unavailable');
@@ -217,7 +217,7 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
     const captureUnavailable = captureFailures.some(failure => !isUnresolvedContextBriefCodeAnchorFailure(failure));
     if (resolvedAnchors.length === 0) {
       const unexpected = captureFailures.find(isUnexpectedContextBriefCodeAnchorFailure);
-      if (unexpected !== undefined) return yield* Effect.fail(unexpected);
+      if (unexpected !== undefined) return yield* unexpected;
       return unavailableContextBriefCodeLinkedMemoryEvidence(requested, 'code-anchor-resolution-unavailable');
     }
     const resolvedOrdinals = resolvedAnchors.map(anchor => anchor.anchorOrdinal);
@@ -328,7 +328,7 @@ function retryContextBriefCodeAnchorRead<A, E, R>(
       schedule: Schedule.spaced(CONTEXT_BRIEF_CODE_ANCHOR_RETRY_MILLISECONDS),
       times: CONTEXT_BRIEF_CODE_ANCHOR_READ_RETRIES,
       while: error => {
-        if (!(error instanceof MemoryCodeCitationCaptureError) || !error.retryable || budget.remaining === 0) {
+        if (!Schema.is(MemoryCodeCitationCaptureError)(error) || !error.retryable || budget.remaining === 0) {
           return false;
         }
         budget.remaining -= 1;
@@ -339,12 +339,12 @@ function retryContextBriefCodeAnchorRead<A, E, R>(
 }
 
 function isUnresolvedContextBriefCodeAnchorFailure(error: unknown): boolean {
-  return error instanceof MemoryCodeCitationCaptureError && error.failureCode === 'code-reference-unresolved';
+  return Schema.is(MemoryCodeCitationCaptureError)(error) && error.failureCode === 'code-reference-unresolved';
 }
 
 function isUnexpectedContextBriefCodeAnchorFailure(error: unknown): boolean {
   return (
-    !(error instanceof MemoryCodeCitationCaptureError) ||
+    !Schema.is(MemoryCodeCitationCaptureError)(error) ||
     (error.failureCode === undefined && error.recovery === undefined)
   );
 }

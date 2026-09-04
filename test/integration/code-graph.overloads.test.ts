@@ -20,14 +20,12 @@ describe('TypeScript overload indexing', () => {
       return Effect.gen(function* () {
         root = createRepository();
         const home = join(root, '.threadnote-test-home');
-        const graph = yield* Effect.gen(function* () {
-          const indexer = yield* CodeGraphIndexer;
-          const path = yield* Path.Path;
-          const store = yield* CodeGraphStore;
-          const indexed = yield* indexer.index({cwd: root!, threadnoteHome: home});
-          const layout = codeGraphLayout(path, home, indexed.identity.checkoutId, indexed.identity.worktreeId);
-          return yield* store.loadGraph(layout.databasePath, indexed.snapshot.id);
-        });
+        const indexer = yield* CodeGraphIndexer;
+        const path = yield* Path.Path;
+        const store = yield* CodeGraphStore;
+        const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+        const layout = codeGraphLayout(path, home, indexed.identity.checkoutId, indexed.identity.worktreeId);
+        const graph = yield* store.loadGraph(layout.databasePath, indexed.snapshot.id);
         const parseSymbols = graph.symbols.filter(symbol => symbol.name === 'parse');
         const decodeSymbols = graph.symbols.filter(symbol => symbol.name === 'decode');
         const implementation = parseSymbols.find(symbol => symbol.signature?.includes('...values'));

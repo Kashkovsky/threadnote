@@ -402,7 +402,7 @@ describe('code graph maintenance lanes', () => {
         routine: () => Ref.update(vectorFailureCalls, current => [...current, 'routine']).pipe(Effect.as(completed())),
         vector: () =>
           Ref.update(vectorFailureCalls, current => [...current, 'vector']).pipe(
-            Effect.andThen(Effect.fail(new CodeGraphStoreError('Vector unit failed.'))),
+            Effect.andThen(Effect.fail(CodeGraphStoreError.of('Vector unit failed.'))),
           ),
       });
       expect((yield* vectorFailure(tick('/home', '/database/A')).pipe(Effect.exit))._tag).toBe('Failure');
@@ -413,7 +413,7 @@ describe('code graph maintenance lanes', () => {
       const routineFailure = yield* makeCodeGraphOrdinaryMaintenanceRunner({
         routine: () =>
           Ref.update(routineFailureCalls, current => [...current, 'routine']).pipe(
-            Effect.andThen(Effect.fail(new CodeGraphStoreError('Routine unit failed.'))),
+            Effect.andThen(Effect.fail(CodeGraphStoreError.of('Routine unit failed.'))),
           ),
         vector: () =>
           Ref.update(routineFailureCalls, current => [...current, 'vector']).pipe(
@@ -430,7 +430,7 @@ describe('code graph maintenance lanes', () => {
         routine: () => Effect.sync(() => synchronousCalls.push('routine')).pipe(Effect.as(completed())),
         vector: () => {
           synchronousCalls.push('vector');
-          throw new TestError('Synchronous vector callback failure.');
+          throw TestError.make({message: 'Synchronous vector callback failure.'});
         },
       });
       expect((yield* synchronousFailure(tick('/home', '/database/A')).pipe(Effect.exit))._tag).toBe('Failure');

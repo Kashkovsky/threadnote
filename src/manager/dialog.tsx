@@ -244,8 +244,11 @@ export function ManagerDialogProvider(props: {readonly children: React.ReactNode
   }, []);
 
   const prompt = useCallback(
-    (options: ManagerDialogOptions): Promise<ManagerDialogValues | undefined> =>
-      new Promise(resolve => present({options, resolve})),
+    (options: ManagerDialogOptions): Promise<ManagerDialogValues | undefined> => {
+      const {promise, resolve} = Promise.withResolvers<ManagerDialogValues | undefined>();
+      present({options, resolve});
+      return promise;
+    },
     [present],
   );
 

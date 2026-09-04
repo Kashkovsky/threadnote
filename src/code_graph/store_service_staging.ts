@@ -145,9 +145,7 @@ export function makeCodeGraphStoreStagingMethods(runtime: CodeGraphStoreRuntime)
               const sql = yield* SqlClient.SqlClient;
               const mode = yield* activationMode(sql);
               if (mode?.mode !== 'persisted-full') {
-                return yield* Effect.fail(
-                  new CodeGraphStoreError('Grouped fact staging requires a persistent full build.'),
-                );
+                return yield* CodeGraphStoreError.of('Grouped fact staging requires a persistent full build.');
               }
               if (materializationSpool) {
                 yield* appendPersistentMaterializationSpoolFactBatches(

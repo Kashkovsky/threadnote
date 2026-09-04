@@ -146,15 +146,13 @@ export function isolatedLocalModelRuntimeLayer(
           const transmitted: Effect.Effect<WorkerResponse, LocalModelWorkerTransportError> = Effect.tryPromise({
             try: signal => pool.request(operation, payload, signal),
             catch: (cause): LocalModelWorkerTransportError =>
-              cause instanceof LocalModelWorkerTransportError ? cause : transportError(operation, 'protocol'),
+              Schema.is(LocalModelWorkerTransportError)(cause) ? cause : transportError(operation, 'protocol'),
           });
           return Effect.gen(function* () {
             const response = yield* transmitted;
             if (!response.ok) return yield* Effect.fail<DecodedOperationError>(response.error);
             const result = decode(response.result);
-            return Option.isSome(result)
-              ? result.value
-              : yield* Effect.fail<LocalModelWorkerTransportError>(transportError(operation, 'protocol'));
+            return Option.isSome(result) ? result.value : yield* transportError(operation, 'protocol');
           });
         };
 
@@ -164,9 +162,9 @@ export function isolatedLocalModelRuntimeLayer(
             permits.withPermit(
               request('diagnostics', {}, decodeDiagnostics).pipe(
                 Effect.mapError(error =>
-                  error instanceof LocalModelWorkerTransportError
+                  Schema.is(LocalModelWorkerTransportError)(error)
                     ? withWorkerTransportDiagnostic(
-                        new NativeRuntimeUnavailable({
+                        NativeRuntimeUnavailable.make({
                           cause: genericWorkerCause(error.reason),
                           message: `The isolated local AI worker could not report runtime diagnostics: ${error.message}`,
                         }),
@@ -189,7 +187,7 @@ export function isolatedLocalModelRuntimeLayer(
                       decodeVectors(result, batch.length, input.manifest.dimensions),
                     ).pipe(
                       Effect.mapError(error =>
-                        error instanceof LocalModelWorkerTransportError
+                        Schema.is(LocalModelWorkerTransportError)(error)
                           ? workerEmbeddingFailure(input, error)
                           : remoteEmbeddingFailure(input, error),
                       ),
@@ -206,7 +204,7 @@ export function isolatedLocalModelRuntimeLayer(
               permits.withPermit(
                 request('generate', input, result => Option.some(result)).pipe(
                   Effect.mapError(error =>
-                    error instanceof LocalModelWorkerTransportError
+                    Schema.is(LocalModelWorkerTransportError)(error)
                       ? workerGenerationFailure(input, error)
                       : remoteGenerationFailure(input, error),
                   ),
@@ -219,7 +217,7 @@ export function isolatedLocalModelRuntimeLayer(
               permits.withPermit(
                 request('rerank', input, result => decodeScores(result, input.documents.length)).pipe(
                   Effect.mapError(error =>
-                    error instanceof LocalModelWorkerTransportError
+                    Schema.is(LocalModelWorkerTransportError)(error)
                       ? workerRerankingFailure(input, error)
                       : remoteRerankingFailure(input, error),
                   ),
@@ -243,12 +241,13 @@ export const localModelWorkerServer: Effect.Effect<void, never, LocalModelRuntim
   const runtime = yield* LocalModelRuntime;
   yield* serveWorker(runtime, {
     input: process.stdin as AsyncIterable<string | Uint8Array>,
-    writeLine: line =>
-      new Promise<void>((resolve, reject) => {
-        process.stdout.write(`${line}\n`, error => (error ? reject(error) : resolve()));
-      }),
+    writeLine: line => {
+      const {promise, reject, resolve} = Promise.withResolvers<void>();
+      process.stdout.write(`${line}\n`, error => (error ? reject(error) : resolve()));
+      return promise;
+    },
   }).pipe(
-    Effect.catch(() => Effect.void),
+    Effect.ignore,
     Effect.ensuring(
       Effect.sync(() => {
         if (!process.stdin.destroyed) process.stdin.pause();
@@ -262,9 +261,13 @@ export interface LocalModelWorkerServerIo {
   readonly writeLine: (line: string) => Promise<void>;
 }
 
-class LocalModelWorkerServerError extends Error {
-  readonly _tag = 'LocalModelWorkerServerError' as const;
-}
+class LocalModelWorkerServerError extends Schema.TaggedError<LocalModelWorkerServerError>()(
+  'LocalModelWorkerServerError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export function serveWorker(
   runtime: LocalModelRuntimeShape,
@@ -277,7 +280,8 @@ export function serveWorker(
       Effect.flatMap(response =>
         Effect.tryPromise({
           try: () => io.writeLine(JSON.stringify(response)),
-          catch: cause => new LocalModelWorkerServerError('Could not write local model worker response.', {cause}),
+          catch: cause =>
+            LocalModelWorkerServerError.make({cause, message: 'Could not write local model worker response.'}),
         }),
       ),
     );
@@ -293,9 +297,8 @@ export function serveWorker(
         yield* writeResponse(line);
       }
     });
-  return Stream.fromAsyncIterable(
-    io.input,
-    cause => new LocalModelWorkerServerError('Could not read local model worker input.', {cause}),
+  return Stream.fromAsyncIterable(io.input, cause =>
+    LocalModelWorkerServerError.make({cause, message: 'Could not read local model worker input.'}),
   ).pipe(
     Stream.runForEach(consumeChunk),
     Effect.andThen(
@@ -377,7 +380,7 @@ class LocalModelWorkerPool {
           );
         } catch (cause: unknown) {
           if (Option.isSome(connection)) await this.discard(connection.value);
-          if (!(cause instanceof LocalModelWorkerTransportError) || attempt === 1 || signal.aborted) throw cause;
+          if (!Schema.is(LocalModelWorkerTransportError)(cause) || attempt === 1 || signal.aborted) throw cause;
         }
       }
       throw transportError(operation, 'exit');
@@ -415,7 +418,7 @@ class LocalModelWorkerPool {
       this.connection = Option.some(connection);
       return connection;
     } catch (cause: unknown) {
-      if (cause instanceof LocalModelWorkerTransportError) throw cause;
+      if (Schema.is(LocalModelWorkerTransportError)(cause)) throw cause;
       throw transportError(operation, 'spawn');
     }
   }
@@ -513,20 +516,18 @@ class LocalModelWorkerConnection {
       throw transportError(request.operation, 'exit');
     }
 
-    let timeout: ReturnType<typeof setTimeout> | undefined;
     let removeAbortListener = () => {};
-    const response = new Promise<WorkerResponse>((resolve, reject) => {
-      this.pending = Option.some({
-        id: request.id,
-        operation: request.operation,
-        reject,
-        resolve,
-      });
-      timeout = setTimeout(() => this.fail('timeout'), deadlineMs);
-      const onAbort = () => this.fail('exit');
-      signal.addEventListener('abort', onAbort, {once: true});
-      removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+    const {promise: response, reject, resolve} = Promise.withResolvers<WorkerResponse>();
+    this.pending = Option.some({
+      id: request.id,
+      operation: request.operation,
+      reject,
+      resolve,
     });
+    const timeout = setTimeout(() => this.fail('timeout'), deadlineMs);
+    const onAbort = () => this.fail('exit');
+    signal.addEventListener('abort', onAbort, {once: true});
+    removeAbortListener = () => signal.removeEventListener('abort', onAbort);
 
     try {
       void Promise.resolve(this.process.write(`${JSON.stringify(request)}\n`)).catch(() => this.fail('write'));
@@ -535,7 +536,7 @@ class LocalModelWorkerConnection {
     }
 
     return response.finally(() => {
-      if (timeout !== undefined) clearTimeout(timeout);
+      clearTimeout(timeout);
       removeAbortListener();
     });
   }
@@ -987,7 +988,7 @@ function remoteEmbeddingFailure(
   const common = remoteModelError(request.manifest.id, request.modelPath, 'embedding', error);
   return Option.isSome(common)
     ? common.value
-    : new EmbeddingFailed({
+    : EmbeddingFailed.make({
         cause: genericWorkerCause('protocol'),
         message: 'Local AI embedding failed in the isolated worker.',
         modelId: request.manifest.id,
@@ -1009,12 +1010,12 @@ function remoteGenerationFailure(
   const common = remoteModelError(request.manifest.id, request.modelPath, 'generation', error);
   if (Option.isSome(common)) return common.value;
   if (error.tag === 'InvalidModelOutput') {
-    return new InvalidModelOutput({
+    return InvalidModelOutput.make({
       message: 'The isolated local AI worker returned invalid structured output.',
       modelId: request.manifest.id,
     });
   }
-  return new GenerationFailed({
+  return GenerationFailed.make({
     cause: genericWorkerCause('protocol'),
     message: 'Local AI generation failed in the isolated worker.',
     modelId: request.manifest.id,
@@ -1035,7 +1036,7 @@ function remoteRerankingFailure(
   const common = remoteModelError(request.manifest.id, request.modelPath, 'reranking', error);
   return Option.isSome(common)
     ? common.value
-    : new RerankingFailed({
+    : RerankingFailed.make({
         cause: genericWorkerCause('protocol'),
         message: 'Local AI reranking failed in the isolated worker.',
         modelId: request.manifest.id,
@@ -1057,7 +1058,7 @@ function remoteModelError(
 > {
   if (error.tag === 'InferenceInterrupted') {
     return Option.some(
-      new InferenceInterrupted({
+      InferenceInterrupted.make({
         message: `Local AI ${operation} was interrupted in the isolated worker.`,
         modelId,
         operation,
@@ -1066,7 +1067,7 @@ function remoteModelError(
   }
   if (error.tag === 'InsufficientMemory') {
     return Option.some(
-      new InsufficientMemory({
+      InsufficientMemory.make({
         cause: genericWorkerCause('protocol'),
         message: `The isolated local AI worker did not have enough memory for ${operation}.`,
         modelId,
@@ -1075,7 +1076,7 @@ function remoteModelError(
   }
   if (error.tag === 'ModelLoadFailed') {
     return Option.some(
-      new ModelLoadFailed({
+      ModelLoadFailed.make({
         cause: genericWorkerCause('protocol'),
         message: `The isolated local AI worker could not load the model for ${operation}.`,
         modelId,
@@ -1084,7 +1085,7 @@ function remoteModelError(
   }
   if (error.tag === 'ModelNotInstalled') {
     return Option.some(
-      new ModelNotInstalled({
+      ModelNotInstalled.make({
         message: `The local AI model required for ${operation} is not installed.`,
         modelId,
         path: modelPath,
@@ -1093,7 +1094,7 @@ function remoteModelError(
   }
   if (error.tag === 'NativeRuntimeUnavailable') {
     return Option.some(
-      new NativeRuntimeUnavailable({
+      NativeRuntimeUnavailable.make({
         cause: genericWorkerCause('protocol'),
         message: 'The isolated local AI native runtime is unavailable.',
       }),
@@ -1101,7 +1102,7 @@ function remoteModelError(
   }
   if (error.tag === 'UnsupportedNativeRuntime') {
     return Option.some(
-      new UnsupportedNativeRuntime({
+      UnsupportedNativeRuntime.make({
         cause: genericWorkerCause('protocol'),
         message: 'The isolated local AI native runtime is unsupported.',
       }),
@@ -1112,11 +1113,11 @@ function remoteModelError(
 
 function remoteNativeRuntimeError(error: DecodedOperationError): NativeRuntimeUnavailable | UnsupportedNativeRuntime {
   return error.tag === 'UnsupportedNativeRuntime'
-    ? new UnsupportedNativeRuntime({
+    ? UnsupportedNativeRuntime.make({
         cause: genericWorkerCause('protocol'),
         message: 'The isolated local AI native runtime is unsupported.',
       })
-    : new NativeRuntimeUnavailable({
+    : NativeRuntimeUnavailable.make({
         cause: genericWorkerCause('protocol'),
         message: 'The isolated local AI native runtime is unavailable.',
       });
@@ -1127,7 +1128,7 @@ function workerEmbeddingFailure(
   error: LocalModelWorkerTransportError,
 ): EmbeddingFailed {
   return withWorkerTransportDiagnostic(
-    new EmbeddingFailed({
+    EmbeddingFailed.make({
       cause: genericWorkerCause(error.reason),
       message: `Local AI embedding failed after the isolated worker retry was exhausted: ${error.message}`,
       modelId: request.manifest.id,
@@ -1141,7 +1142,7 @@ function workerGenerationFailure(
   error: LocalModelWorkerTransportError,
 ): GenerationFailed {
   return withWorkerTransportDiagnostic(
-    new GenerationFailed({
+    GenerationFailed.make({
       cause: genericWorkerCause(error.reason),
       message: `Local AI generation failed after the isolated worker retry was exhausted: ${error.message}`,
       modelId: request.manifest.id,
@@ -1155,7 +1156,7 @@ function workerRerankingFailure(
   error: LocalModelWorkerTransportError,
 ): RerankingFailed {
   return withWorkerTransportDiagnostic(
-    new RerankingFailed({
+    RerankingFailed.make({
       cause: genericWorkerCause(error.reason),
       message: `Local AI reranking failed after the isolated worker retry was exhausted: ${error.message}`,
       modelId: request.manifest.id,
@@ -1190,7 +1191,7 @@ function protocolFailure(id: string): WorkerFailure {
 }
 
 function transportError(operation: WorkerOperation, reason: WorkerFailureReason): LocalModelWorkerTransportError {
-  return new LocalModelWorkerTransportError({
+  return LocalModelWorkerTransportError.make({
     message: workerTransportMessage(operation, reason),
     operation,
     reason,
@@ -1225,20 +1226,20 @@ function parseInteger(value: string | undefined): number | undefined {
 }
 
 function completesBeforeDeadline(promise: Promise<unknown>, deadlineMs: number): Promise<boolean> {
-  return new Promise(resolve => {
-    const timer = setTimeout(() => resolve(false), deadlineMs);
-    timer.unref?.();
-    void promise.then(
-      () => {
-        clearTimeout(timer);
-        resolve(true);
-      },
-      () => {
-        clearTimeout(timer);
-        resolve(false);
-      },
-    );
-  });
+  const {promise: result, resolve} = Promise.withResolvers<boolean>();
+  const timer = setTimeout(() => resolve(false), deadlineMs);
+  timer.unref?.();
+  void promise.then(
+    () => {
+      clearTimeout(timer);
+      resolve(true);
+    },
+    () => {
+      clearTimeout(timer);
+      resolve(false);
+    },
+  );
+  return result;
 }
 
 function parseJson(value: string): Option.Option<unknown> {

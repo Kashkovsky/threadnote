@@ -351,15 +351,15 @@ function expectInstallerFailure(
     )}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
   );
   if (!(outcome instanceof Error)) {
-    throw new TestError(`${scenario} unexpectedly succeeded.\n${diagnostics}`);
+    throw TestError.make({message: `${scenario} unexpectedly succeeded.\n${diagnostics}`});
   }
   if (failure.killed === true) {
-    throw new TestError(
-      `${scenario} exceeded the ${releaseMetadataProbeTimeoutMilliseconds} ms deadline (signal ${String(
+    throw TestError.make({
+      cause: outcome,
+      message: `${scenario} exceeded the ${releaseMetadataProbeTimeoutMilliseconds} ms deadline (signal ${String(
         failure.signal ?? 'unknown',
       )}).\n${diagnostics}`,
-      {cause: outcome},
-    );
+    });
   }
   expect(stdout, diagnostics).toContain(expected.stdout);
   expect(stderr, diagnostics).toContain(expected.stderr);

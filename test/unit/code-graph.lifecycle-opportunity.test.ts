@@ -25,7 +25,7 @@ describe('code graph lifecycle opportunities', () => {
           });
           const calls = yield* Ref.make<readonly CodeGraphRoutineMaintenanceTick[]>([]);
           const unexpected = (operation: string) =>
-            Effect.die(new TestError(`pending opportunity unexpectedly called ${operation}`));
+            Effect.die(TestError.make({message: `pending opportunity unexpectedly called ${operation}`}));
           const maintenance: CodeGraphMaintenanceCoordinatorShape = {
             kickOrdinary: () => unexpected('ordinary maintenance'),
             kickReconciliation: input =>
@@ -86,7 +86,7 @@ describe('code graph lifecycle opportunities', () => {
           const secondCheckoutId = '1'.repeat(64);
           const calls = yield* Ref.make<readonly string[]>([]);
           const unexpected = (operation: string) =>
-            Effect.die(new TestError(`pending opportunity unexpectedly called ${operation}`));
+            Effect.die(TestError.make({message: `pending opportunity unexpectedly called ${operation}`}));
           const maintenance: CodeGraphMaintenanceCoordinatorShape = {
             kickOrdinary: () => unexpected('ordinary maintenance'),
             kickReconciliation: input =>
@@ -178,8 +178,10 @@ describe('code graph lifecycle opportunities', () => {
             kickOrdinary: () => record('ordinary'),
             kickReconciliation: () => record('reconciliation'),
             kickResidual: () => record('residual'),
-            request: () => Effect.die(new TestError('foreground opportunity unexpectedly detached maintenance')),
-            tick: () => Effect.die(new TestError('pending opportunity unexpectedly used process-local rotation')),
+            request: () =>
+              Effect.die(TestError.make({message: 'foreground opportunity unexpectedly detached maintenance'})),
+            tick: () =>
+              Effect.die(TestError.make({message: 'pending opportunity unexpectedly used process-local rotation'})),
           };
           const target: CodeGraphLifecycleOpportunityTarget = {
             anchorPath: '/repository/unprovable-anchor',
@@ -219,8 +221,10 @@ describe('code graph lifecycle opportunities', () => {
             kickOrdinary: input => record('ordinary', input),
             kickReconciliation: input => record('reconciliation', input),
             kickResidual: input => record('residual', input),
-            request: () => Effect.die(new TestError('foreground opportunity unexpectedly detached maintenance')),
-            tick: () => Effect.die(new TestError('pending opportunity unexpectedly used process-local rotation')),
+            request: () =>
+              Effect.die(TestError.make({message: 'foreground opportunity unexpectedly detached maintenance'})),
+            tick: () =>
+              Effect.die(TestError.make({message: 'pending opportunity unexpectedly used process-local rotation'})),
           };
           const targets: readonly CodeGraphLifecycleOpportunityTarget[] = [
             {
@@ -257,7 +261,7 @@ describe('code graph lifecycle opportunities', () => {
           });
           const calls = yield* Ref.make<readonly string[]>([]);
           const unexpected = (operation: string) =>
-            Effect.die(new TestError(`diagnostics sweep unexpectedly called ${operation}`));
+            Effect.die(TestError.make({message: `diagnostics sweep unexpectedly called ${operation}`}));
           const maintenance: CodeGraphMaintenanceCoordinatorShape = {
             kickOrdinary: () => unexpected('ordinary maintenance before reconciliation sweep'),
             kickReconciliation: input =>
@@ -298,7 +302,7 @@ describe('code graph lifecycle opportunities', () => {
             prefix: 'threadnote-lifecycle-opportunity-healthy-status-',
           });
           const unexpected = (operation: string) =>
-            Effect.die(new TestError(`healthy status unexpectedly called ${operation}`));
+            Effect.die(TestError.make({message: `healthy status unexpectedly called ${operation}`}));
           const maintenance: CodeGraphMaintenanceCoordinatorShape = {
             kickOrdinary: () => unexpected('direct ordinary maintenance'),
             kickReconciliation: () => unexpected('direct reconciliation'),
@@ -346,7 +350,7 @@ describe('code graph lifecycle opportunities', () => {
           const secondCheckoutId = '3'.repeat(64);
           const calls = yield* Ref.make<readonly string[]>([]);
           const unexpected = (operation: string) =>
-            Effect.die(new TestError(`pending opportunity unexpectedly called ${operation}`));
+            Effect.die(TestError.make({message: `pending opportunity unexpectedly called ${operation}`}));
           const shared = {
             kickOrdinary: () => unexpected('ordinary maintenance'),
             kickResidual: () => unexpected('residual maintenance'),
@@ -373,7 +377,7 @@ describe('code graph lifecycle opportunities', () => {
               ...shared,
               kickReconciliation: input =>
                 Ref.update(calls, current => [...current, input.checkoutId]).pipe(
-                  Effect.andThen(Effect.die(new TestError('simulated process crash after cursor claim'))),
+                  Effect.andThen(Effect.die(TestError.make({message: 'simulated process crash after cursor claim'}))),
                 ),
             },
             opportunity: 'diagnostics',

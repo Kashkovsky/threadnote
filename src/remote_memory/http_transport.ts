@@ -1,5 +1,6 @@
 import {WebStandardStreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import type {RemoteMemoryServiceConfig} from './config.js';
+import {randomUuidV4} from '../crypto/uuid.js';
 import {authorizeRemoteRequest, requestedRemoteShare, type AuthorizedRemotePrincipal} from './authorization.js';
 import {completeCursorAttestation} from './cursor_oidc.js';
 import {publicRemoteMemoryError, remoteMemoryError, type RemoteMemoryError} from './errors.js';
@@ -286,34 +287,30 @@ async function withDeadlineUntil<A>(
   if (signal.aborted) throw remoteMemoryError('service_unavailable', 'The remote request was cancelled.');
   const milliseconds = deadlineEpochMilliseconds - Date.now();
   if (milliseconds <= 0) throw remoteMemoryError('service_unavailable', 'The remote request deadline expired.');
-  let timeout: ReturnType<typeof setTimeout> | undefined;
   const operation = Promise.resolve().then(run);
   const settled = operation.then(
     value => ({kind: 'value' as const, value}),
     cause => ({cause, kind: 'error' as const}),
   );
-  let removeAbortListener: (() => void) | undefined;
-  const deadline = new Promise<{readonly cause: RemoteMemoryError; readonly kind: 'interrupted'}>(resolve => {
-    timeout = setTimeout(
-      () =>
-        resolve({
-          cause: remoteMemoryError('service_unavailable', 'The remote request deadline expired.'),
-          kind: 'interrupted',
-        }),
-      milliseconds,
-    );
-  });
-  const cancellation = new Promise<{readonly cause: RemoteMemoryError; readonly kind: 'interrupted'}>(resolve => {
-    const abort = () =>
-      resolve({
-        cause: remoteMemoryError('service_unavailable', 'The remote request was cancelled.'),
+  const deadline = Promise.withResolvers<{readonly cause: RemoteMemoryError; readonly kind: 'interrupted'}>();
+  const timeout = setTimeout(
+    () =>
+      deadline.resolve({
+        cause: remoteMemoryError('service_unavailable', 'The remote request deadline expired.'),
         kind: 'interrupted',
-      });
-    signal.addEventListener('abort', abort, {once: true});
-    removeAbortListener = () => signal.removeEventListener('abort', abort);
-  });
+      }),
+    milliseconds,
+  );
+  const cancellation = Promise.withResolvers<{readonly cause: RemoteMemoryError; readonly kind: 'interrupted'}>();
+  const abort = () =>
+    cancellation.resolve({
+      cause: remoteMemoryError('service_unavailable', 'The remote request was cancelled.'),
+      kind: 'interrupted',
+    });
+  signal.addEventListener('abort', abort, {once: true});
+  const removeAbortListener = () => signal.removeEventListener('abort', abort);
   try {
-    const winner = await Promise.race([settled, deadline, cancellation]);
+    const winner = await Promise.race([settled, deadline.promise, cancellation.promise]);
     if (winner.kind === 'interrupted') {
       // A cancellation response is not observable until any mutation has
       // committed or rolled back, preventing a response-before-late-commit.
@@ -324,7 +321,7 @@ async function withDeadlineUntil<A>(
     return winner.value;
   } finally {
     clearTimeout(timeout);
-    removeAbortListener?.();
+    removeAbortListener();
   }
 }
 
@@ -350,7 +347,7 @@ function deadlineController(
 
 function remoteRequestId(request: Request): string {
   const supplied = request.headers.get('x-request-id')?.trim();
-  return supplied && REQUEST_ID_PATTERN.test(supplied) ? supplied : crypto.randomUUID();
+  return supplied && REQUEST_ID_PATTERN.test(supplied) ? supplied : randomUuidV4();
 }
 
 function methodNotAllowed(requestId: string): Response {

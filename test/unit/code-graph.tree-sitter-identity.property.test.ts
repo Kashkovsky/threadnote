@@ -237,7 +237,8 @@ function callArguments(arity: number): string {
 
 function inventoryFile(path: string, content: string): CodeGraphInventoryFile {
   const match = BUILTIN_LANGUAGE_PACK_REGISTRY.match(path);
-  if (Option.isNone(match)) throw new TestError(`Fixture path is not accepted by a language pack: ${path}.`);
+  if (Option.isNone(match))
+    throw TestError.make({message: `Fixture path is not accepted by a language pack: ${path}.`});
   return {
     blobId: `fixture-${path}`,
     content,

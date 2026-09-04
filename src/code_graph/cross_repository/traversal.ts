@@ -1,4 +1,5 @@
 import {Effect} from 'effect';
+import {succeedUndefined} from '../../effect/optional.js';
 import {compareCodeUnits} from '../ordering.js';
 import type {
   CodeGraphBridgeEndpointReferenceV1,
@@ -299,7 +300,7 @@ function readAdjacency(
       ] = yield* Effect.all(
         [
           localDone
-            ? Effect.succeed(undefined)
+            ? succeedUndefined
             : dependencies.readLocalPage({
                 ...(localAfter === undefined ? {} : {after: localAfter}),
                 direction: input.direction,
@@ -307,7 +308,7 @@ function readAdjacency(
                 limit,
               }),
           bridgeDone
-            ? Effect.succeed(undefined)
+            ? succeedUndefined
             : dependencies.readBridgePage({
                 ...(bridgeAfter === undefined ? {} : {after: bridgeAfter}),
                 direction: input.direction,

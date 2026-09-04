@@ -127,7 +127,7 @@ effectIt.effect(
         Effect.gen(function* () {
           if (!home) return;
           const fs = yield* FileSystem.FileSystem;
-          yield* fs.remove(home, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void));
+          yield* fs.remove(home, {force: true, recursive: true}).pipe(Effect.ignore);
         }),
       ),
       provideTestLayer(ApplicationLayer),
@@ -226,7 +226,7 @@ effectIt.effect(
         Effect.gen(function* () {
           if (!home) return;
           const fs = yield* FileSystem.FileSystem;
-          yield* fs.remove(home, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void));
+          yield* fs.remove(home, {force: true, recursive: true}).pipe(Effect.ignore);
         }),
       ),
       provideTestLayer(ApplicationLayer),
@@ -323,7 +323,7 @@ effectIt.effect(
         Effect.gen(function* () {
           if (!home) return;
           const fs = yield* FileSystem.FileSystem;
-          yield* fs.remove(home, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void));
+          yield* fs.remove(home, {force: true, recursive: true}).pipe(Effect.ignore);
         }),
       ),
       provideTestLayer(ApplicationLayer),
@@ -405,7 +405,7 @@ effectIt.effect(
         Effect.gen(function* () {
           if (!home) return;
           const fs = yield* FileSystem.FileSystem;
-          yield* fs.remove(home, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void));
+          yield* fs.remove(home, {force: true, recursive: true}).pipe(Effect.ignore);
         }),
       ),
       provideTestLayer(ApplicationLayer),

@@ -31,6 +31,6 @@ export function codeGraphSnapshotRuntimeCurrent(
 ) {
   return store.snapshotPackProvenance(databasePath, snapshot.id).pipe(
     Effect.map(provenance => codeGraphSnapshotMatchesCurrentLanguagePacks(snapshot, provenance, languagePacks)),
-    Effect.catch(() => Effect.succeed(false)),
+    Effect.orElseSucceed(() => false),
   );
 }

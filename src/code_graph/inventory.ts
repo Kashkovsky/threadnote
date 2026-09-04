@@ -1556,22 +1556,22 @@ export function parseGitCatFileBatch(
   let offset = 0;
   for (const expected of entries) {
     const newline = bytes.indexOf(10, offset);
-    if (newline < 0) throw new CodeGraphInventoryError('Git cat-file batch ended before its header.');
+    if (newline < 0) throw CodeGraphInventoryError.of('Git cat-file batch ended before its header.');
     const header = new TextDecoder().decode(bytes.subarray(offset, newline));
     const match = /^([0-9a-f]+) blob (\d+)$/.exec(header);
     if (!match || match[1] !== expected.blobId) {
-      throw new CodeGraphInventoryError(`Git cat-file returned an unexpected object for ${expected.blobId}.`);
+      throw CodeGraphInventoryError.of(`Git cat-file returned an unexpected object for ${expected.blobId}.`);
     }
     const size = Number(match[2]);
     const start = newline + 1;
     const end = start + size;
     if (!Number.isSafeInteger(size) || size < 0 || end >= bytes.byteLength || bytes[end] !== 10) {
-      throw new CodeGraphInventoryError(`Git cat-file returned a truncated object for ${expected.blobId}.`);
+      throw CodeGraphInventoryError.of(`Git cat-file returned a truncated object for ${expected.blobId}.`);
     }
     output.push(bytes.slice(start, end));
     offset = end + 1;
   }
-  if (offset !== bytes.byteLength) throw new CodeGraphInventoryError('Git cat-file batch returned trailing bytes.');
+  if (offset !== bytes.byteLength) throw CodeGraphInventoryError.of('Git cat-file batch returned trailing bytes.');
   return output;
 }
 

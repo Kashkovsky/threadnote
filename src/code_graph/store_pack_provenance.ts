@@ -52,7 +52,7 @@ export const recordSnapshotPackProvenance = Effect.fn('codeGraph.recordSnapshotP
   const ids = new Set<string>();
   for (const pack of provenance) {
     if (!pack.id || ids.has(pack.id)) {
-      return yield* Effect.fail(new CodeGraphStoreError('Code graph language-pack provenance is invalid.'));
+      return yield* CodeGraphStoreError.of('Code graph language-pack provenance is invalid.');
     }
     ids.add(pack.id);
   }

@@ -603,7 +603,7 @@ describe('MCP code graph indexing progress', () => {
       expect(community).toBeDefined();
       expect(component).toBeDefined();
       expect(membership).toBeDefined();
-      if (!community || !component || !membership) throw new TestError('Expected topology fixtures.');
+      if (!community || !component || !membership) throw TestError.make({message: 'Expected topology fixtures.'});
       const longRepositoryText = '界'.repeat(800);
       const noisyStats = {
         ...stats,
@@ -660,7 +660,7 @@ describe('MCP code graph indexing progress', () => {
       });
       const communityId = communities.communities[0]?.id;
       expect(communityId).toMatch(/^cgc_[a-f0-9]{32}$/);
-      if (!communityId) throw new TestError('Expected one deterministic fixture community.');
+      if (!communityId) throw TestError.make({message: 'Expected one deterministic fixture community.'});
       const analysis = yield* analyzeCodeGraph(store, {
         communityId,
         databasePath: ':memory:',

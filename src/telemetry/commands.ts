@@ -1,4 +1,4 @@
-import {Console, Effect, Result} from 'effect';
+import {Console, Effect, Result, Schema} from 'effect';
 import type {RuntimeConfig} from '../types.js';
 import {errorMessage} from '../utils.js';
 import {
@@ -42,7 +42,7 @@ export const runTelemetryStatus = Effect.fn('telemetry.command.status')(function
   const optOut = telemetryEnvironmentOptOut(system.environment());
   const loaded = yield* Effect.result(readTelemetryConfiguration(config));
   if (Result.isFailure(loaded)) {
-    const renewal = yield* readTelemetryConsentRenewal(config).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    const renewal = yield* readTelemetryConsentRenewal(config).pipe(Effect.orElseSucceed(() => undefined));
     if (renewal !== undefined) {
       yield* Console.log(
         `Anonymous telemetry: disabled (consent version ${renewal.consentVersion} does not cover the current version ${TELEMETRY_CONSENT_VERSION} data contract).`,
@@ -88,13 +88,13 @@ export const runTelemetryEnable = Effect.fn('telemetry.command.enable')(function
   config: RuntimeConfig,
   options: TelemetryEnableOptions,
 ) {
-  const renewal = yield* readTelemetryConsentRenewal(config).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  const renewal = yield* readTelemetryConsentRenewal(config).pipe(Effect.orElseSucceed(() => undefined));
   const endpoint = yield* Effect.try({
     try: () => normalizeTelemetryEndpoint(options.endpoint ?? renewal?.endpoint ?? DEFAULT_TELEMETRY_ENDPOINT),
     catch: cause =>
-      cause instanceof TelemetryConfigurationError
+      Schema.is(TelemetryConfigurationError)(cause)
         ? cause
-        : new TelemetryConfigurationError('Telemetry endpoint validation failed.', {cause}),
+        : TelemetryConfigurationError.make({message: 'Telemetry endpoint validation failed.', cause}),
   });
   yield* Console.log('Enable anonymous operational telemetry for Threadnote CLI and MCP diagnostics.');
   if (renewal !== undefined) {

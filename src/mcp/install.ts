@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Path} from 'effect';
+import {Console, Effect, FileSystem, Path, Schema} from 'effect';
 import {
   installAgentIntegration,
   installAgentIntegrationInTransaction,
@@ -146,9 +146,10 @@ const finishAgentIntegrationInstall = Effect.fn('mcp.finishAgentIntegrationInsta
   yield* installAgentIntegrationInTransaction(config, agent, receipt, false);
 });
 
-class McpOperationError extends Error {
-  readonly _tag = 'McpOperationError' as const;
-}
+class McpOperationError extends Schema.TaggedError<McpOperationError>()('McpOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export const mcpConfigurationChecks = Effect.fn('mcp.configurationChecks')(function* (
   config: RuntimeConfig,
@@ -566,12 +567,12 @@ const buildMcpInstallCommand = Effect.fn('mcp.buildInstallCommand')(function* (
   },
 ) {
   if (agent === 'cursor') {
-    return yield* Effect.fail(new McpOperationError('Cursor MCP config is written directly to ~/.cursor/mcp.json.'));
+    return yield* McpOperationError.make({message: 'Cursor MCP config is written directly to ~/.cursor/mcp.json.'});
   }
   if (agent === 'copilot') {
-    return yield* Effect.fail(
-      new McpOperationError('GitHub Copilot MCP config is written directly to the VS Code user mcp.json file.'),
-    );
+    return yield* McpOperationError.make({
+      message: 'GitHub Copilot MCP config is written directly to the VS Code user mcp.json file.',
+    });
   }
   const claudeCwd = options.cwd ?? (yield* getInvocationCwd());
   const claudeScope = options.scope ?? 'user';
@@ -607,12 +608,12 @@ const buildMcpRemoveCommand = Effect.fn('mcp.buildRemoveCommand')(function* (
   options: {readonly cwd?: string; readonly scope?: ClaudeMcpScope} = {},
 ) {
   if (agent === 'cursor') {
-    return yield* Effect.fail(new McpOperationError('Cursor MCP config is removed directly from ~/.cursor/mcp.json.'));
+    return yield* McpOperationError.make({message: 'Cursor MCP config is removed directly from ~/.cursor/mcp.json.'});
   }
   if (agent === 'copilot') {
-    return yield* Effect.fail(
-      new McpOperationError('GitHub Copilot MCP config is removed directly from the VS Code user mcp.json file.'),
-    );
+    return yield* McpOperationError.make({
+      message: 'GitHub Copilot MCP config is removed directly from the VS Code user mcp.json file.',
+    });
   }
   return agent === 'codex'
     ? {executable: agentExecutable, args: ['mcp', 'remove', name]}
@@ -634,18 +635,15 @@ const requiredMcpAgentExecutable = Effect.fn('mcp.requiredAgentExecutable')(func
   }
   const discovered = yield* findExecutable([agent]);
   if (discovered) {
-    return yield* Effect.fail(
-      new McpOperationError(
+    return yield* McpOperationError.make({
+      message:
         `${agent} command was found at ${discovered} but is not working. ` +
-          `Repair or reinstall ${agent}, then run threadnote mcp-install ${agent} --apply.`,
-      ),
-    );
+        `Repair or reinstall ${agent}, then run threadnote mcp-install ${agent} --apply.`,
+    });
   }
-  return yield* Effect.fail(
-    new McpOperationError(
-      `${agent} command was not found in PATH. Install ${agent}, then run threadnote mcp-install ${agent} --apply.`,
-    ),
-  );
+  return yield* McpOperationError.make({
+    message: `${agent} command was not found in PATH. Install ${agent}, then run threadnote mcp-install ${agent} --apply.`,
+  });
 });
 
 function mcpEnvironment(config: RuntimeConfig, toolset: McpToolset, client: AgentClient): readonly string[] {
@@ -711,10 +709,10 @@ function renderCursorMcpConfig(
 ): string {
   const parsed = isEmptyConfigContent(currentContent) ? {} : parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
-    throw new McpOperationError(`${configPath} exists but is not a JSON object; not modifying it.`);
+    throw McpOperationError.make({message: `${configPath} exists but is not a JSON object; not modifying it.`});
   }
   if (parsed.mcpServers !== undefined && !isJsonObject(parsed.mcpServers)) {
-    throw new McpOperationError(`${configPath} has a non-object mcpServers field; not modifying it.`);
+    throw McpOperationError.make({message: `${configPath} has a non-object mcpServers field; not modifying it.`});
   }
   const nextConfig: Record<string, unknown> = {...parsed};
   const mcpServers = isJsonObject(parsed.mcpServers) ? {...parsed.mcpServers} : {};
@@ -731,10 +729,10 @@ function renderCopilotMcpConfig(
 ): string {
   const parsed = isEmptyConfigContent(currentContent) ? {} : parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
-    throw new McpOperationError(`${configPath} exists but is not a JSON object; not modifying it.`);
+    throw McpOperationError.make({message: `${configPath} exists but is not a JSON object; not modifying it.`});
   }
   if (parsed.servers !== undefined && !isJsonObject(parsed.servers)) {
-    throw new McpOperationError(`${configPath} has a non-object servers field; not modifying it.`);
+    throw McpOperationError.make({message: `${configPath} has a non-object servers field; not modifying it.`});
   }
   const nextConfig: Record<string, unknown> = {...parsed};
   const servers = isJsonObject(parsed.servers) ? {...parsed.servers} : {};
@@ -899,14 +897,14 @@ export function parseAgentClient(value: string): AgentClient {
   if (value === 'codex' || value === 'claude' || value === 'copilot' || value === 'cursor') {
     return value;
   }
-  throw new McpOperationError(`Unsupported agent: ${value}. Expected codex, claude, copilot, or cursor.`);
+  throw McpOperationError.make({message: `Unsupported agent: ${value}. Expected codex, claude, copilot, or cursor.`});
 }
 
 export function parseClaudeMcpScope(value: string): ClaudeMcpScope {
   if (value === 'local' || value === 'project' || value === 'user') {
     return value;
   }
-  throw new McpOperationError(`Invalid Claude MCP scope: ${value}. Expected local, project, or user.`);
+  throw McpOperationError.make({message: `Invalid Claude MCP scope: ${value}. Expected local, project, or user.`});
 }
 
 export const resolveMcpClients = Effect.fn('mcp.resolveClients')(function* (

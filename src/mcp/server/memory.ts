@@ -1,5 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
-import {Effect, FileSystem, Path, Result} from 'effect';
+import {DateTime, Effect, FileSystem, Path, Result} from 'effect';
 import {
   type ArchiveAction,
   buildCompactPlan,
@@ -213,7 +213,7 @@ export function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAc
             `Cannot archive ${action.uri}: malformed code citation metadata (${reasons}) must be repaired or recaptured first.`,
           );
         }
-        const timestamp = new Date().toISOString();
+        const timestamp = DateTime.formatIso(yield* DateTime.now);
         const archiveResult = yield* writeDurableMemory(config, {
           bodyText: memoryArchiveBody(source.body),
           metadata: memoryArchiveMetadata(source.metadata, {
@@ -443,7 +443,7 @@ const localUserMemoriesRoot = Effect.fn('mcpServer.localUserMemoriesRoot')(funct
 
 const readTextIfExists = Effect.fn('mcpServer.readTextIfExists')(function* (path: string) {
   const fs = yield* FileSystem.FileSystem;
-  return yield* fs.readFileString(path).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  return yield* fs.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
 });
 
 export interface WriteDurableMemoryParams {
@@ -811,7 +811,7 @@ export const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMe
     metadata.memoryId !== undefined &&
     metadata.relations?.some(relation => memoryIdFromIdentityAlias(relation.uri) === metadata.memoryId)
   ) {
-    return yield* Effect.fail(new McpServerOperationError('A memory cannot relate to itself.'));
+    return yield* McpServerOperationError.make({message: 'A memory cannot relate to itself.'});
   }
   // Two-pass formatting: see src/memory/index.ts:storeMemory for the rationale.
   // Drops the supersedes line when replaceUri points at the URI we're about
@@ -1371,9 +1371,9 @@ export function forgetResourceWithRetry(
     if (expectedContent) {
       const [current] = yield* readMemoryRecordsByUri(config, [uri]);
       if (!current || current.content !== expectedContent) {
-        return yield* Effect.fail(
-          new McpServerOperationError(`Memory ${uri} changed after this removal was planned. Re-run the operation.`),
-        );
+        return yield* McpServerOperationError.make({
+          message: `Memory ${uri} changed after this removal was planned. Re-run the operation.`,
+        });
       }
     }
     const removed = yield* removeResourceWithRetry('threadnote-native', config, uri, recursive);

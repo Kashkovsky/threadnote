@@ -31,17 +31,17 @@ function readStableRegularFile(
 ): Effect.Effect<StableRegularFile, Error, SystemInfo> {
   return Effect.gen(function* () {
     const linkTarget = yield* fs.readLink(target).pipe(
-      Effect.map(Option.some),
-      Effect.catch(() => Effect.succeed(Option.none<string>())),
+      Effect.asSome,
+      Effect.orElseSucceed(() => Option.none<string>()),
     );
     if (Option.isSome(linkTarget)) {
-      return yield* Effect.fail(new CodeGraphInventoryError(`Refusing to read a symbolic repository file: ${target}`));
+      return yield* CodeGraphInventoryError.make({message: `Refusing to read a symbolic repository file: ${target}`});
     }
     const pathInfoBefore = yield* fs.stat(target);
     if (pathInfoBefore.type !== 'File') {
-      return yield* Effect.fail(
-        new CodeGraphInventoryError(`Refusing to read a non-regular repository file: ${target}`),
-      );
+      return yield* CodeGraphInventoryError.make({
+        message: `Refusing to read a non-regular repository file: ${target}`,
+      });
     }
     yield* interlock?.beforeOpen ?? Effect.void;
     return yield* Effect.scoped(
@@ -52,51 +52,53 @@ function readStableRegularFile(
         const openedPath = yield* openedFilePath(fs, file);
         const pathInfoOpened = yield* fs.stat(target);
         if (!sameRegularFile(pathInfoBefore, pathInfoOpened, openedInfoBefore)) {
-          return yield* Effect.fail(
-            new CodeGraphInventoryError(`Repository file changed while it was opened: ${target}`),
-          );
+          return yield* CodeGraphInventoryError.make({
+            message: `Repository file changed while it was opened: ${target}`,
+          });
         }
         const byteLength = Number(openedInfoBefore.size);
         if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
-          return yield* Effect.fail(
-            new CodeGraphInventoryError(`Repository file size cannot be represented safely: ${target}`),
-          );
+          return yield* CodeGraphInventoryError.make({
+            message: `Repository file size cannot be represented safely: ${target}`,
+          });
         }
         const bytes = new Uint8Array(byteLength);
         let offset = 0;
         while (offset < bytes.byteLength) {
           const read = Number(yield* file.read(bytes.subarray(offset)));
           if (read <= 0) {
-            return yield* Effect.fail(
-              new CodeGraphInventoryError(`Repository file ended while it was being read: ${target}`),
-            );
+            return yield* CodeGraphInventoryError.make({
+              message: `Repository file ended while it was being read: ${target}`,
+            });
           }
           offset += read;
         }
         const openedInfoAfter = yield* file.stat;
         const linkTargetAfter = yield* fs.readLink(target).pipe(
-          Effect.map(Option.some),
-          Effect.catch(() => Effect.succeed(Option.none<string>())),
+          Effect.asSome,
+          Effect.orElseSucceed(() => Option.none<string>()),
         );
         if (Option.isSome(linkTargetAfter)) {
-          return yield* Effect.fail(
-            new CodeGraphInventoryError(`Repository file became a symbolic link while reading: ${target}`),
-          );
+          return yield* CodeGraphInventoryError.make({
+            message: `Repository file became a symbolic link while reading: ${target}`,
+          });
         }
         const pathInfoAfter = yield* fs.stat(target);
         if (
           !sameRegularFile(pathInfoBefore, pathInfoAfter, openedInfoAfter) ||
           openedInfoBefore.size !== openedInfoAfter.size
         ) {
-          return yield* Effect.fail(
-            new CodeGraphInventoryError(`Repository file changed while it was being read: ${target}`),
-          );
+          return yield* CodeGraphInventoryError.make({
+            message: `Repository file changed while it was being read: ${target}`,
+          });
         }
         return {bytes, identity: openedInfoAfter, openedPath};
       }),
     );
   }).pipe(
-    Effect.mapError(cause => new CodeGraphInventoryError(`Could not safely read repository file ${target}.`, {cause})),
+    Effect.mapError(cause =>
+      CodeGraphInventoryError.make({message: `Could not safely read repository file ${target}.`, cause}),
+    ),
   );
 }
 
@@ -112,29 +114,29 @@ export function readContainedStableRegularFile(
     yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
     const canonicalBefore = yield* fs.realPath(target);
     if (!isContainedPath(path, repositoryRoot, canonicalBefore)) {
-      return yield* Effect.fail(new CodeGraphInventoryError(`Repository file resolves outside its root: ${relative}`));
+      return yield* CodeGraphInventoryError.make({message: `Repository file resolves outside its root: ${relative}`});
     }
     const opened = yield* readStableRegularFile(fs, target, interlock);
     if (Option.isSome(opened.openedPath) && !isContainedPath(path, repositoryRoot, opened.openedPath.value)) {
-      return yield* Effect.fail(new CodeGraphInventoryError(`Opened repository file is outside its root: ${relative}`));
+      return yield* CodeGraphInventoryError.make({message: `Opened repository file is outside its root: ${relative}`});
     }
     yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
     const canonicalAfter = yield* fs.realPath(target);
     const finalInfo = yield* fs.stat(target);
     if (!isContainedPath(path, repositoryRoot, canonicalAfter)) {
-      return yield* Effect.fail(
-        new CodeGraphInventoryError(`Repository file escaped its root while reading: ${relative}`),
-      );
+      return yield* CodeGraphInventoryError.make({
+        message: `Repository file escaped its root while reading: ${relative}`,
+      });
     }
     if (!sameRegularFile(opened.identity, finalInfo, opened.identity)) {
-      return yield* Effect.fail(
-        new CodeGraphInventoryError(`Repository path no longer identifies the opened file: ${relative}`),
-      );
+      return yield* CodeGraphInventoryError.make({
+        message: `Repository path no longer identifies the opened file: ${relative}`,
+      });
     }
     return opened.bytes;
   }).pipe(
-    Effect.mapError(
-      cause => new CodeGraphInventoryError(`Could not safely read repository path ${relative}.`, {cause}),
+    Effect.mapError(cause =>
+      CodeGraphInventoryError.make({message: `Could not safely read repository path ${relative}.`, cause}),
     ),
   );
 }
@@ -165,29 +167,29 @@ export function inspectContainedStableRegularFile(
     yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
     const canonicalBefore = yield* fs.realPath(target);
     if (!isContainedPath(path, repositoryRoot, canonicalBefore)) {
-      return yield* Effect.fail(new CodeGraphInventoryError(`Repository file resolves outside its root: ${relative}`));
+      return yield* CodeGraphInventoryError.make({message: `Repository file resolves outside its root: ${relative}`});
     }
     const linkBefore = yield* fs.readLink(target).pipe(
-      Effect.map(Option.some),
-      Effect.catch(() => Effect.succeed(Option.none<string>())),
+      Effect.asSome,
+      Effect.orElseSucceed(() => Option.none<string>()),
     );
     if (Option.isSome(linkBefore)) {
-      return yield* Effect.fail(
-        new CodeGraphInventoryError(`Refusing to inspect a symbolic repository file: ${relative}`),
-      );
+      return yield* CodeGraphInventoryError.make({
+        message: `Refusing to inspect a symbolic repository file: ${relative}`,
+      });
     }
     const infoBefore = yield* fs.stat(target);
     const size = Number(infoBefore.size);
     if (infoBefore.type !== 'File' || !Number.isSafeInteger(size) || size < 0) {
-      return yield* Effect.fail(
-        new CodeGraphInventoryError(`Repository file metadata is not safely representable: ${relative}`),
-      );
+      return yield* CodeGraphInventoryError.make({
+        message: `Repository file metadata is not safely representable: ${relative}`,
+      });
     }
     yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
     const canonicalAfter = yield* fs.realPath(target);
     const linkAfter = yield* fs.readLink(target).pipe(
-      Effect.map(Option.some),
-      Effect.catch(() => Effect.succeed(Option.none<string>())),
+      Effect.asSome,
+      Effect.orElseSucceed(() => Option.none<string>()),
     );
     const infoAfter = yield* fs.stat(target);
     if (
@@ -196,14 +198,14 @@ export function inspectContainedStableRegularFile(
       !sameRegularFile(infoBefore, infoAfter, infoBefore) ||
       infoBefore.size !== infoAfter.size
     ) {
-      return yield* Effect.fail(
-        new CodeGraphInventoryError(`Repository file changed while its metadata was inspected: ${relative}`),
-      );
+      return yield* CodeGraphInventoryError.make({
+        message: `Repository file changed while its metadata was inspected: ${relative}`,
+      });
     }
     return {size};
   }).pipe(
-    Effect.mapError(
-      cause => new CodeGraphInventoryError(`Could not safely inspect repository path ${relative}.`, {cause}),
+    Effect.mapError(cause =>
+      CodeGraphInventoryError.make({message: `Could not safely inspect repository path ${relative}.`, cause}),
     ),
   );
 }
@@ -228,22 +230,20 @@ export function materializeContainedStableRegularFile(
     yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
     const canonicalBefore = yield* fs.realPath(target);
     if (!isContainedPath(path, repositoryRoot, canonicalBefore)) {
-      return yield* Effect.fail(new CodeGraphInventoryError(`Repository file resolves outside its root: ${relative}`));
+      return yield* CodeGraphInventoryError.make({message: `Repository file resolves outside its root: ${relative}`});
     }
     const linkTarget = yield* fs.readLink(target).pipe(
-      Effect.map(Option.some),
-      Effect.catch(() => Effect.succeed(Option.none<string>())),
+      Effect.asSome,
+      Effect.orElseSucceed(() => Option.none<string>()),
     );
     if (Option.isSome(linkTarget)) {
-      return yield* Effect.fail(
-        new CodeGraphInventoryError(`Refusing to read a symbolic repository file: ${relative}`),
-      );
+      return yield* CodeGraphInventoryError.make({message: `Refusing to read a symbolic repository file: ${relative}`});
     }
     const pathInfoBefore = yield* fs.stat(target);
     if (pathInfoBefore.type !== 'File') {
-      return yield* Effect.fail(
-        new CodeGraphInventoryError(`Refusing to read a non-regular repository file: ${relative}`),
-      );
+      return yield* CodeGraphInventoryError.make({
+        message: `Refusing to read a non-regular repository file: ${relative}`,
+      });
     }
     const materialized = yield* Effect.scoped(
       Effect.gen(function* () {
@@ -252,25 +252,25 @@ export function materializeContainedStableRegularFile(
         const openedPath = yield* openedFilePath(fs, file);
         const pathInfoOpened = yield* fs.stat(target);
         if (!sameRegularFile(pathInfoBefore, pathInfoOpened, openedInfoBefore)) {
-          return yield* Effect.fail(
-            new CodeGraphInventoryError(`Repository file changed while it was opened: ${relative}`),
-          );
+          return yield* CodeGraphInventoryError.make({
+            message: `Repository file changed while it was opened: ${relative}`,
+          });
         }
         if (Option.isSome(openedPath) && !isContainedPath(path, repositoryRoot, openedPath.value)) {
-          return yield* Effect.fail(
-            new CodeGraphInventoryError(`Opened repository file is outside its root: ${relative}`),
-          );
+          return yield* CodeGraphInventoryError.make({
+            message: `Opened repository file is outside its root: ${relative}`,
+          });
         }
         const size = Number(openedInfoBefore.size);
         if (!Number.isSafeInteger(size) || size < 0) {
-          return yield* Effect.fail(
-            new CodeGraphInventoryError(`Repository file size cannot be represented safely: ${relative}`),
-          );
+          return yield* CodeGraphInventoryError.make({
+            message: `Repository file size cannot be represented safely: ${relative}`,
+          });
         }
         if (expectedSize !== undefined && size !== expectedSize) {
-          return yield* Effect.fail(
-            new CodeGraphInventoryError(`Repository file size changed before it was read: ${relative}`),
-          );
+          return yield* CodeGraphInventoryError.make({
+            message: `Repository file size changed before it was read: ${relative}`,
+          });
         }
         const hasher = new Bun.CryptoHasher('sha256');
         const codeGraphHasher =
@@ -282,9 +282,9 @@ export function materializeContainedStableRegularFile(
           const view = bytes ? bytes.subarray(offset) : buffer.subarray(0, Math.min(buffer.byteLength, size - offset));
           const read = Number(yield* file.read(view));
           if (read <= 0) {
-            return yield* Effect.fail(
-              new CodeGraphInventoryError(`Repository file ended while it was being read: ${relative}`),
-            );
+            return yield* CodeGraphInventoryError.make({
+              message: `Repository file ended while it was being read: ${relative}`,
+            });
           }
           hasher.update(view.subarray(0, read));
           codeGraphHasher?.update(view.subarray(0, read));
@@ -292,8 +292,8 @@ export function materializeContainedStableRegularFile(
         }
         const openedInfoAfter = yield* file.stat;
         const linkTargetAfter = yield* fs.readLink(target).pipe(
-          Effect.map(Option.some),
-          Effect.catch(() => Effect.succeed(Option.none<string>())),
+          Effect.asSome,
+          Effect.orElseSucceed(() => Option.none<string>()),
         );
         const pathInfoAfter = yield* fs.stat(target);
         if (
@@ -301,9 +301,9 @@ export function materializeContainedStableRegularFile(
           !sameRegularFile(pathInfoBefore, pathInfoAfter, openedInfoAfter) ||
           openedInfoBefore.size !== openedInfoAfter.size
         ) {
-          return yield* Effect.fail(
-            new CodeGraphInventoryError(`Repository file changed while it was being read: ${relative}`),
-          );
+          return yield* CodeGraphInventoryError.make({
+            message: `Repository file changed while it was being read: ${relative}`,
+          });
         }
         return {
           bytes,
@@ -316,14 +316,14 @@ export function materializeContainedStableRegularFile(
     yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
     const canonicalAfter = yield* fs.realPath(target);
     if (!isContainedPath(path, repositoryRoot, canonicalAfter)) {
-      return yield* Effect.fail(
-        new CodeGraphInventoryError(`Repository file escaped its root while reading: ${relative}`),
-      );
+      return yield* CodeGraphInventoryError.make({
+        message: `Repository file escaped its root while reading: ${relative}`,
+      });
     }
     return materialized;
   }).pipe(
-    Effect.mapError(
-      cause => new CodeGraphInventoryError(`Could not safely materialize repository path ${relative}.`, {cause}),
+    Effect.mapError(cause =>
+      CodeGraphInventoryError.make({message: `Could not safely materialize repository path ${relative}.`, cause}),
     ),
   );
 }
@@ -338,16 +338,16 @@ const validateRepositoryAncestors = Effect.fn('codeGraph.validateRepositoryAnces
   for (const segment of relative.split('/').slice(0, -1)) {
     current = path.join(current, segment);
     const link = yield* fs.readLink(current).pipe(
-      Effect.map(Option.some),
-      Effect.catch(() => Effect.succeed(Option.none<string>())),
+      Effect.asSome,
+      Effect.orElseSucceed(() => Option.none<string>()),
     );
     if (Option.isSome(link)) {
-      return yield* Effect.fail(new CodeGraphInventoryError(`Repository path has a symbolic ancestor: ${relative}`));
+      return yield* CodeGraphInventoryError.make({message: `Repository path has a symbolic ancestor: ${relative}`});
     }
     const canonical = yield* fs.realPath(current);
     const info = yield* fs.stat(current);
     if (info.type !== 'Directory' || !isContainedPath(path, repositoryRoot, canonical)) {
-      return yield* Effect.fail(new CodeGraphInventoryError(`Repository path has an unsafe ancestor: ${relative}`));
+      return yield* CodeGraphInventoryError.make({message: `Repository path has an unsafe ancestor: ${relative}`});
     }
   }
 });
@@ -385,7 +385,7 @@ function openedFilePath(
 ): Effect.Effect<Option.Option<string>, never, SystemInfo> {
   const descriptor = (file as FileSystem.File & {readonly fd?: unknown}).fd;
   if (typeof descriptor !== 'number' || !Number.isSafeInteger(descriptor) || descriptor < 0) {
-    return Effect.succeed(Option.none());
+    return Effect.succeedNone;
   }
   return Effect.gen(function* () {
     const system = yield* SystemInfo;

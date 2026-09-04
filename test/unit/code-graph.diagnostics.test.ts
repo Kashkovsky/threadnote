@@ -134,7 +134,8 @@ describe('all-code-graph diagnostics', () => {
         expect.objectContaining({action: 'retry-observation', disposition: 'observe', state: 'unreadable-store'}),
       );
       const ordinaryStorage = report.databases.find(database => database.checkoutId === healthyCheckoutId)?.storage;
-      if (ordinaryStorage?.state !== 'available') throw new TestError('missing ordinary storage diagnostics');
+      if (ordinaryStorage?.state !== 'available')
+        throw TestError.make({message: 'missing ordinary storage diagnostics'});
       expect(ordinaryStorage.pageStorage).not.toHaveProperty('attribution');
       expect(JSON.stringify(report)).not.toContain(home);
       expect(renderCodeGraphDiagnostics(report)).toContain('Native code graph diagnostics');
@@ -165,9 +166,10 @@ describe('all-code-graph diagnostics', () => {
 
       const deepReport = yield* inspectAllCodeGraphs(home, {deep: true});
       const deepStorage = deepReport.databases.find(database => database.checkoutId === healthyCheckoutId)?.storage;
-      if (deepStorage?.state !== 'available') throw new TestError('missing deep storage diagnostics');
+      if (deepStorage?.state !== 'available') throw TestError.make({message: 'missing deep storage diagnostics'});
       expect(deepStorage.pageStorage).toMatchObject({state: 'available'});
-      if (deepStorage.pageStorage.state !== 'available') throw new TestError('missing deep page diagnostics');
+      if (deepStorage.pageStorage.state !== 'available')
+        throw TestError.make({message: 'missing deep page diagnostics'});
       expect(deepStorage.pageStorage.attribution).toBeDefined();
       expect(['available', 'unavailable']).toContain(deepStorage.pageStorage.attribution?.state);
       expect(JSON.stringify(deepReport)).not.toContain(home);
@@ -231,33 +233,31 @@ describe('all-code-graph diagnostics', () => {
         expect(JSON.stringify(publicReport)).not.toContain(identity.repoRoot);
 
         let gitInvocationCount = 0;
-        const repeatedLocalRefreshes = yield* Effect.gen(function* () {
-          const command = yield* CommandExecutor;
-          const mutableCommand = command as {execute: typeof command.execute};
-          const execute = command.execute;
-          return yield* Effect.acquireUseRelease(
+        const command = yield* CommandExecutor;
+        const mutableCommand = command as {execute: typeof command.execute};
+        const execute = command.execute;
+        const repeatedLocalRefreshes = yield* Effect.acquireUseRelease(
+          Effect.sync(() => {
+            mutableCommand.execute = (executable, args, options) => {
+              if (executable === 'git') gitInvocationCount += 1;
+              return execute(executable, args, options);
+            };
+          }),
+          () =>
+            Effect.all(
+              [
+                inspectAllCodeGraphsLocal(home),
+                managerGraphCatalog(home),
+                inspectAllCodeGraphsLocal(home),
+                managerGraphCatalog(home),
+              ],
+              {concurrency: 1},
+            ),
+          () =>
             Effect.sync(() => {
-              mutableCommand.execute = (executable, args, options) => {
-                if (executable === 'git') gitInvocationCount += 1;
-                return execute(executable, args, options);
-              };
+              mutableCommand.execute = execute;
             }),
-            () =>
-              Effect.all(
-                [
-                  inspectAllCodeGraphsLocal(home),
-                  managerGraphCatalog(home),
-                  inspectAllCodeGraphsLocal(home),
-                  managerGraphCatalog(home),
-                ],
-                {concurrency: 1},
-              ),
-            () =>
-              Effect.sync(() => {
-                mutableCommand.execute = execute;
-              }),
-          );
-        });
+        );
         expect(repeatedLocalRefreshes[0].databases[0]?.views[0]?.localAssociation).toMatchObject({
           available: true,
           path: identity.repoRoot,
@@ -270,27 +270,25 @@ describe('all-code-graph diagnostics', () => {
         });
         expect(gitInvocationCount).toBe(0);
 
-        const continuity = yield* Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
-          const failingFileSystem = FileSystem.FileSystem.of({
-            ...fileSystem,
-            exists: target =>
-              target === identity.repoRoot
-                ? Effect.fail(
-                    PlatformError.systemError({
-                      _tag: 'PermissionDenied',
-                      description: 'injected disconnected worktree',
-                      method: 'exists',
-                      module: 'FileSystem',
-                      pathOrDescriptor: String(target),
-                    }),
-                  )
-                : fileSystem.exists(target),
-          });
-          return yield* Effect.all([inspectAllCodeGraphsLocal(home), managerGraphCatalog(home)], {
-            concurrency: 1,
-          }).pipe(Effect.provideService(FileSystem.FileSystem, failingFileSystem));
+        const fileSystem = yield* FileSystem.FileSystem;
+        const failingFileSystem = FileSystem.FileSystem.of({
+          ...fileSystem,
+          exists: target =>
+            target === identity.repoRoot
+              ? Effect.fail(
+                  PlatformError.systemError({
+                    _tag: 'PermissionDenied',
+                    description: 'injected disconnected worktree',
+                    method: 'exists',
+                    module: 'FileSystem',
+                    pathOrDescriptor: String(target),
+                  }),
+                )
+              : fileSystem.exists(target),
         });
+        const continuity = yield* Effect.all([inspectAllCodeGraphsLocal(home), managerGraphCatalog(home)], {
+          concurrency: 1,
+        }).pipe(Effect.provideService(FileSystem.FileSystem, failingFileSystem));
         expect(continuity[0].databases[0]).toMatchObject({
           health: {integrity: 'ok'},
           views: [{localAssociation: {available: false, state: 'invalid'}}],

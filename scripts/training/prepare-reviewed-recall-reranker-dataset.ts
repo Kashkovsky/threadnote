@@ -46,10 +46,10 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
     if (argument === '--draft') draft = resolve(required(args[++index], argument));
     else if (argument === '--groups') groups = resolve(required(args[++index], argument));
     else if (argument === '--output') output = resolve(required(args[++index], argument));
-    else throw new ScriptError(`Unknown reviewed-dataset preparation option: ${argument}\n\n${usage()}`);
+    else throw ScriptError.make({message: `Unknown reviewed-dataset preparation option: ${argument}\n\n${usage()}`});
   }
   if (draft === undefined || groups === undefined || output === undefined) {
-    throw new ScriptError(`--draft, --groups, and --output are required.\n\n${usage()}`);
+    throw ScriptError.make({message: `--draft, --groups, and --output are required.\n\n${usage()}`});
   }
   return {draft, groups, output};
 }
@@ -58,12 +58,12 @@ function parseJson(content: string, source: string): unknown {
   try {
     return JSON.parse(content) as unknown;
   } catch (cause) {
-    throw new ScriptError(`Could not parse JSON file: ${source}`, {cause});
+    throw ScriptError.make({message: `Could not parse JSON file: ${source}`, cause});
   }
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 

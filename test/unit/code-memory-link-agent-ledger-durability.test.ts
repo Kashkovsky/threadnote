@@ -57,7 +57,7 @@ describe('Code Memory Link agent ledger durability', () => {
         const attemptsPath = path.join(root, 'trials.jsonl.attempts.jsonl');
         let executed = false;
         const exit = yield* persistCodeMemoryLinkAgentAttemptStartDurably(attemptsPath, 'started\n', {
-          afterStep: () => Effect.fail(new TestError('simulated host crash')),
+          afterStep: () => Effect.fail(TestError.make({message: 'simulated host crash'})),
         }).pipe(Effect.andThen(Effect.sync(() => (executed = true))), Effect.exit);
 
         expect(Exit.isFailure(exit)).toBe(true);
@@ -73,7 +73,7 @@ describe('Code Memory Link agent ledger durability', () => {
         makeDirectory: () => Effect.void,
         open: (_target: string, options: {readonly flag: string}) =>
           options.flag === 'r'
-            ? Effect.fail(new TestError('directory sync unsupported'))
+            ? Effect.fail(TestError.make({message: 'directory sync unsupported'}))
             : Effect.succeed({sync: Effect.void}),
         remove: () => Effect.void,
         rename: () => Effect.void,
@@ -132,7 +132,9 @@ describe('Code Memory Link agent ledger durability', () => {
 });
 
 function failAt(observed: CodeMemoryLinkAgentLedgerDurabilityStep, target: CodeMemoryLinkAgentLedgerDurabilityStep) {
-  return observed === target ? Effect.fail(new TestError(`simulated host crash after ${target}`)) : Effect.void;
+  return observed === target
+    ? Effect.fail(TestError.make({message: `simulated host crash after ${target}`}))
+    : Effect.void;
 }
 
 function ledgerLayout(path: Path.Path, root: string): CodeMemoryLinkAgentLedgerLayout {

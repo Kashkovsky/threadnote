@@ -200,7 +200,7 @@ export function registerStoreTool(
         const deferredCodeAnchor: DeferredCodeAnchorWriteRequest | undefined =
           !captured.ok &&
           effectiveCitationPolicy === 'defer' &&
-          captured.failure instanceof MemoryCodeCitationCaptureError &&
+          Schema.is(MemoryCodeCitationCaptureError)(captured.failure) &&
           captured.failure.recovery
             ? {
                 callerCwd: callerCwd!,

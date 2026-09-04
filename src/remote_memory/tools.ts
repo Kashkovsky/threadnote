@@ -1,6 +1,7 @@
 import {McpServer, ResourceTemplate} from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as z from 'zod/v4';
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
+import {Schema} from 'effect';
 import {InvalidRemoteMemoryAddress, parseRemoteShareAddress} from '../memory_domain/address.js';
 import {parseRemoteMemoryReceiptV1, type RemoteMemoryReceiptV1} from '../memory_domain/receipts.js';
 import {
@@ -401,7 +402,7 @@ async function invokeRemoteRecallTool(
           explain: input.explain,
         });
       } catch (cause) {
-        if (cause instanceof RemoteRecallProjectionError) {
+        if (Schema.is(RemoteRecallProjectionError)(cause)) {
           throw remoteMemoryError('invalid_request', cause.message);
         }
         throw cause;
@@ -491,7 +492,7 @@ async function invokeRemoteReadTool(
           section: cursorState?.section ?? input.section,
         });
       } catch (cause) {
-        if (cause instanceof MemoryReadProjectionError) {
+        if (Schema.is(MemoryReadProjectionError)(cause)) {
           throw remoteMemoryError('invalid_request', cause.message);
         }
         throw cause;
@@ -681,34 +682,30 @@ async function withRequestDeadline<A>(context: RemoteMcpRequestContext, run: () 
   if (context.signal.aborted) throw remoteMemoryError('service_unavailable', 'The remote request was cancelled.');
   const remaining = context.deadlineEpochMilliseconds - Date.now();
   if (remaining <= 0) throw remoteMemoryError('service_unavailable', 'The remote request deadline expired.');
-  let timeout: ReturnType<typeof setTimeout> | undefined;
   const operation = Promise.resolve().then(run);
   const settled = operation.then(
     value => ({kind: 'value' as const, value}),
     cause => ({cause, kind: 'error' as const}),
   );
-  let removeAbortListener: (() => void) | undefined;
-  const expired = new Promise<{readonly cause: RemoteMemoryError; readonly kind: 'interrupted'}>(resolve => {
-    timeout = setTimeout(
-      () =>
-        resolve({
-          cause: remoteMemoryError('service_unavailable', 'The remote request deadline expired.'),
-          kind: 'interrupted',
-        }),
-      remaining,
-    );
-  });
-  const cancelled = new Promise<{readonly cause: RemoteMemoryError; readonly kind: 'interrupted'}>(resolve => {
-    const abort = () =>
-      resolve({
-        cause: remoteMemoryError('service_unavailable', 'The remote request was cancelled.'),
+  const expired = Promise.withResolvers<{readonly cause: RemoteMemoryError; readonly kind: 'interrupted'}>();
+  const timeout = setTimeout(
+    () =>
+      expired.resolve({
+        cause: remoteMemoryError('service_unavailable', 'The remote request deadline expired.'),
         kind: 'interrupted',
-      });
-    context.signal.addEventListener('abort', abort, {once: true});
-    removeAbortListener = () => context.signal.removeEventListener('abort', abort);
-  });
+      }),
+    remaining,
+  );
+  const cancelled = Promise.withResolvers<{readonly cause: RemoteMemoryError; readonly kind: 'interrupted'}>();
+  const abort = () =>
+    cancelled.resolve({
+      cause: remoteMemoryError('service_unavailable', 'The remote request was cancelled.'),
+      kind: 'interrupted',
+    });
+  context.signal.addEventListener('abort', abort, {once: true});
+  const removeAbortListener = () => context.signal.removeEventListener('abort', abort);
   try {
-    const winner = await Promise.race([settled, expired, cancelled]);
+    const winner = await Promise.race([settled, expired.promise, cancelled.promise]);
     if (winner.kind === 'interrupted') {
       // Do not emit a timeout response while a write can still commit. Storage
       // receives the same AbortSignal and this wait is bounded by its database
@@ -720,7 +717,7 @@ async function withRequestDeadline<A>(context: RemoteMcpRequestContext, run: () 
     return winner.value;
   } finally {
     clearTimeout(timeout);
-    removeAbortListener?.();
+    removeAbortListener();
   }
 }
 
@@ -758,7 +755,7 @@ function preflightCanonicalRead(principal: AuthorizedRemotePrincipal, uri: strin
     // Git-beta aliases do not carry a remote share/project. The authoritative
     // repository resolves them inside the authenticated share, after which the
     // result is checked again before any body is returned.
-    if (cause instanceof InvalidRemoteMemoryAddress) return;
+    if (Schema.is(InvalidRemoteMemoryAddress)(cause)) return;
     throw cause;
   }
 }

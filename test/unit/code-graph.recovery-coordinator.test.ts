@@ -60,235 +60,221 @@ describe('automatic code graph recovery', () => {
 
   effectIt.effect('never turns no-space load into a second maintenance attempt', () =>
     Effect.gen(function* () {
-      yield* Effect.gen(function* () {
-        const calls = yield* Ref.make(0);
-        const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
-        const admissions = yield* Effect.all(
-          Array.from({length: 256}, () =>
-            coordinator.request({
-              failureCode: 'no-space',
-              recoveryKey,
-              routineMaintenance: Ref.update(calls, count => count + 1).pipe(Effect.as(noWorkResult)),
-            }),
-          ),
-          {concurrency: 'unbounded'},
-        );
+      const calls = yield* Ref.make(0);
+      const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
+      const admissions = yield* Effect.all(
+        Array.from({length: 256}, () =>
+          coordinator.request({
+            failureCode: 'no-space',
+            recoveryKey,
+            routineMaintenance: Ref.update(calls, count => count + 1).pipe(Effect.as(noWorkResult)),
+          }),
+        ),
+        {concurrency: 'unbounded'},
+      );
 
-        expect(yield* Ref.get(calls)).toBe(0);
-        expect(admissions).toEqual(
-          Array.from({length: 256}, () => ({
-            action: 'none',
-            code: 'no-space',
-            state: 'not-actionable-here',
-          })),
-        );
-      }).pipe(Effect.scoped);
-    }),
+      expect(yield* Ref.get(calls)).toBe(0);
+      expect(admissions).toEqual(
+        Array.from({length: 256}, () => ({
+          action: 'none',
+          code: 'no-space',
+          state: 'not-actionable-here',
+        })),
+      );
+    }).pipe(Effect.scoped),
   );
 
   effectIt.effect('fails closed when a direct recovery key is not an opaque worktree identity', () =>
     Effect.gen(function* () {
-      yield* Effect.gen(function* () {
-        const calls = yield* Ref.make(0);
-        const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
-        const admission = yield* coordinator.request({
-          failureCode: 'schema-additive',
-          recoveryKey: '/private/not-an-opaque-key',
-          routineMaintenance: Ref.update(calls, count => count + 1).pipe(Effect.as(noWorkResult)),
-        });
+      const calls = yield* Ref.make(0);
+      const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
+      const admission = yield* coordinator.request({
+        failureCode: 'schema-additive',
+        recoveryKey: '/private/not-an-opaque-key',
+        routineMaintenance: Ref.update(calls, count => count + 1).pipe(Effect.as(noWorkResult)),
+      });
 
-        expect(admission).toEqual({
-          action: 'none',
-          code: 'schema-additive',
-          state: 'not-actionable-here',
-        });
-        expect(yield* Ref.get(calls)).toBe(0);
-        expect(JSON.stringify(admission)).not.toContain('/private');
-      }).pipe(Effect.scoped);
-    }),
+      expect(admission).toEqual({
+        action: 'none',
+        code: 'schema-additive',
+        state: 'not-actionable-here',
+      });
+      expect(yield* Ref.get(calls)).toBe(0);
+      expect(JSON.stringify(admission)).not.toContain('/private');
+    }).pipe(Effect.scoped),
   );
 
   effectIt.effect('resolves a CLI-shaped key before additive admission and reuses that identity for one tick', () =>
     Effect.gen(function* () {
-      yield* Effect.gen(function* () {
-        const resolverCalls = yield* Ref.make(0);
-        const maintenanceCalls = yield* Ref.make(0);
-        const completed = yield* Deferred.make<void>();
-        const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
-        const admission = yield* requestCodeGraphAutomaticRecovery(
+      const resolverCalls = yield* Ref.make(0);
+      const maintenanceCalls = yield* Ref.make(0);
+      const completed = yield* Deferred.make<void>();
+      const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
+      const admission = yield* requestCodeGraphAutomaticRecovery(
+        {
+          coordinator,
+          resolveIdentity: () =>
+            Ref.update(resolverCalls, count => count + 1).pipe(
+              Effect.as({checkoutId: 'b'.repeat(64), worktreeId: recoveryKey}),
+            ),
+          routineMaintenance: (_options, identity) =>
+            Ref.update(maintenanceCalls, count => count + 1).pipe(
+              Effect.tap(() => {
+                expect(identity).toEqual({checkoutId: 'b'.repeat(64), worktreeId: recoveryKey});
+                return Effect.void;
+              }),
+              Effect.as(noWorkResult),
+              Effect.ensuring(Deferred.succeed(completed, undefined)),
+            ),
+        },
+        {...watchOptions, key: '/fixture/repository'},
+        refreshFailure('schema-additive'),
+      );
+      yield* Deferred.await(completed);
+
+      expect(admission).toEqual({action: 'routine-maintenance', state: 'scheduled'});
+      expect(yield* Ref.get(resolverCalls)).toBe(1);
+      expect(yield* Ref.get(maintenanceCalls)).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+
+  effectIt.effect('coalesces 256 MCP-shaped failures before resolving identity or opening maintenance', () =>
+    Effect.gen(function* () {
+      const resolverCalls = yield* Ref.make(0);
+      const maintenanceCalls = yield* Ref.make(0);
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
+      const dependencies = {
+        coordinator,
+        resolveIdentity: () =>
+          Ref.update(resolverCalls, count => count + 1).pipe(
+            Effect.as({checkoutId: 'b'.repeat(64), worktreeId: recoveryKey}),
+          ),
+        routineMaintenance: () =>
+          Ref.update(maintenanceCalls, count => count + 1).pipe(
+            Effect.andThen(Deferred.succeed(started, undefined)),
+            Effect.andThen(Deferred.await(release)),
+            Effect.as(noWorkResult),
+          ),
+      };
+      const admissions = yield* Effect.all(
+        Array.from({length: 256}, () =>
+          requestCodeGraphAutomaticRecovery(dependencies, watchOptions, refreshFailure('schema-additive')),
+        ),
+        {concurrency: 'unbounded'},
+      );
+
+      yield* Deferred.await(started);
+      expect(yield* Ref.get(resolverCalls)).toBe(1);
+      expect(yield* Ref.get(maintenanceCalls)).toBe(1);
+      expect(admissions.filter(admission => admission.state === 'scheduled')).toHaveLength(1);
+      expect(admissions.filter(admission => admission.state === 'coalesced')).toHaveLength(255);
+      yield* Deferred.succeed(release, undefined);
+    }).pipe(Effect.scoped),
+  );
+
+  effectIt.effect('does not resolve identity or mutate for any non-actionable failure class', () =>
+    Effect.gen(function* () {
+      const resolverCalls = yield* Ref.make(0);
+      const maintenanceCalls = yield* Ref.make(0);
+      const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
+      const nonActionable = failureCodes.filter(code => code !== 'schema-additive');
+      const admissions = yield* Effect.forEach(nonActionable, code =>
+        requestCodeGraphAutomaticRecovery(
           {
             coordinator,
             resolveIdentity: () =>
               Ref.update(resolverCalls, count => count + 1).pipe(
                 Effect.as({checkoutId: 'b'.repeat(64), worktreeId: recoveryKey}),
               ),
-            routineMaintenance: (_options, identity) =>
-              Ref.update(maintenanceCalls, count => count + 1).pipe(
-                Effect.tap(() => {
-                  expect(identity).toEqual({checkoutId: 'b'.repeat(64), worktreeId: recoveryKey});
-                  return Effect.void;
-                }),
-                Effect.as(noWorkResult),
-                Effect.ensuring(Deferred.succeed(completed, undefined)),
-              ),
+            routineMaintenance: () => Ref.update(maintenanceCalls, count => count + 1).pipe(Effect.as(noWorkResult)),
           },
           {...watchOptions, key: '/fixture/repository'},
-          refreshFailure('schema-additive'),
-        );
-        yield* Deferred.await(completed);
+          refreshFailure(code),
+        ),
+      );
 
-        expect(admission).toEqual({action: 'routine-maintenance', state: 'scheduled'});
-        expect(yield* Ref.get(resolverCalls)).toBe(1);
-        expect(yield* Ref.get(maintenanceCalls)).toBe(1);
-      }).pipe(Effect.scoped);
-    }),
-  );
-
-  effectIt.effect('coalesces 256 MCP-shaped failures before resolving identity or opening maintenance', () =>
-    Effect.gen(function* () {
-      yield* Effect.gen(function* () {
-        const resolverCalls = yield* Ref.make(0);
-        const maintenanceCalls = yield* Ref.make(0);
-        const started = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
-        const dependencies = {
-          coordinator,
-          resolveIdentity: () =>
-            Ref.update(resolverCalls, count => count + 1).pipe(
-              Effect.as({checkoutId: 'b'.repeat(64), worktreeId: recoveryKey}),
-            ),
-          routineMaintenance: () =>
-            Ref.update(maintenanceCalls, count => count + 1).pipe(
-              Effect.andThen(Deferred.succeed(started, undefined)),
-              Effect.andThen(Deferred.await(release)),
-              Effect.as(noWorkResult),
-            ),
-        };
-        const admissions = yield* Effect.all(
-          Array.from({length: 256}, () =>
-            requestCodeGraphAutomaticRecovery(dependencies, watchOptions, refreshFailure('schema-additive')),
-          ),
-          {concurrency: 'unbounded'},
-        );
-
-        yield* Deferred.await(started);
-        expect(yield* Ref.get(resolverCalls)).toBe(1);
-        expect(yield* Ref.get(maintenanceCalls)).toBe(1);
-        expect(admissions.filter(admission => admission.state === 'scheduled')).toHaveLength(1);
-        expect(admissions.filter(admission => admission.state === 'coalesced')).toHaveLength(255);
-        yield* Deferred.succeed(release, undefined);
-      }).pipe(Effect.scoped);
-    }),
-  );
-
-  effectIt.effect('does not resolve identity or mutate for any non-actionable failure class', () =>
-    Effect.gen(function* () {
-      yield* Effect.gen(function* () {
-        const resolverCalls = yield* Ref.make(0);
-        const maintenanceCalls = yield* Ref.make(0);
-        const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
-        const nonActionable = failureCodes.filter(code => code !== 'schema-additive');
-        const admissions = yield* Effect.forEach(nonActionable, code =>
-          requestCodeGraphAutomaticRecovery(
-            {
-              coordinator,
-              resolveIdentity: () =>
-                Ref.update(resolverCalls, count => count + 1).pipe(
-                  Effect.as({checkoutId: 'b'.repeat(64), worktreeId: recoveryKey}),
-                ),
-              routineMaintenance: () => Ref.update(maintenanceCalls, count => count + 1).pipe(Effect.as(noWorkResult)),
-            },
-            {...watchOptions, key: '/fixture/repository'},
-            refreshFailure(code),
-          ),
-        );
-
-        expect(admissions).toEqual(nonActionable.map(code => ({action: 'none', code, state: 'not-actionable-here'})));
-        expect(yield* Ref.get(resolverCalls)).toBe(0);
-        expect(yield* Ref.get(maintenanceCalls)).toBe(0);
-      }).pipe(Effect.scoped);
-    }),
+      expect(admissions).toEqual(nonActionable.map(code => ({action: 'none', code, state: 'not-actionable-here'})));
+      expect(yield* Ref.get(resolverCalls)).toBe(0);
+      expect(yield* Ref.get(maintenanceCalls)).toBe(0);
+    }).pipe(Effect.scoped),
   );
 
   effectIt.effect('single-flights additive recovery without joining a held maintenance page', () =>
     Effect.gen(function* () {
-      yield* Effect.gen(function* () {
-        const calls = yield* Ref.make(0);
-        const started = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
-        const routineMaintenance = Ref.update(calls, count => count + 1).pipe(
-          Effect.andThen(Deferred.succeed(started, undefined)),
-          Effect.andThen(Deferred.await(release)),
-          Effect.as(noWorkResult),
-        );
-        const admissions = yield* Effect.all(
-          Array.from({length: 256}, () =>
-            coordinator.request({failureCode: 'schema-additive', recoveryKey, routineMaintenance}),
-          ),
-          {concurrency: 'unbounded'},
-        );
+      const calls = yield* Ref.make(0);
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
+      const routineMaintenance = Ref.update(calls, count => count + 1).pipe(
+        Effect.andThen(Deferred.succeed(started, undefined)),
+        Effect.andThen(Deferred.await(release)),
+        Effect.as(noWorkResult),
+      );
+      const admissions = yield* Effect.all(
+        Array.from({length: 256}, () =>
+          coordinator.request({failureCode: 'schema-additive', recoveryKey, routineMaintenance}),
+        ),
+        {concurrency: 'unbounded'},
+      );
 
-        // Every caller returned while the admitted maintenance page was still held.
-        yield* Deferred.await(started);
-        expect(yield* Ref.get(calls)).toBe(1);
-        expect(admissions.filter(admission => admission.state === 'scheduled')).toHaveLength(1);
-        expect(admissions.filter(admission => admission.state === 'coalesced')).toHaveLength(255);
-        yield* Deferred.succeed(release, undefined);
-      }).pipe(Effect.scoped);
-    }),
+      // Every caller returned while the admitted maintenance page was still held.
+      yield* Deferred.await(started);
+      expect(yield* Ref.get(calls)).toBe(1);
+      expect(admissions.filter(admission => admission.state === 'scheduled')).toHaveLength(1);
+      expect(admissions.filter(admission => admission.state === 'coalesced')).toHaveLength(255);
+      yield* Deferred.succeed(release, undefined);
+    }).pipe(Effect.scoped),
   );
 
   effectIt.effect('opens a bounded cooldown after one additive recovery attempt', () =>
     Effect.gen(function* () {
-      yield* Effect.gen(function* () {
-        const calls = yield* Ref.make(0);
-        const now = yield* Ref.make(0);
-        const completed = yield* Deferred.make<void>();
-        const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator({
-          cooldownMilliseconds: 1_000,
-          nowMilliseconds: () => Ref.get(now),
-        });
-        const routineMaintenance = Ref.update(calls, count => count + 1).pipe(
-          Effect.as(noWorkResult),
-          Effect.ensuring(Deferred.succeed(completed, undefined)),
-        );
-        expect(yield* coordinator.request({failureCode: 'schema-additive', recoveryKey, routineMaintenance})).toEqual({
-          action: 'routine-maintenance',
-          state: 'scheduled',
-        });
-        yield* Deferred.await(completed);
+      const calls = yield* Ref.make(0);
+      const now = yield* Ref.make(0);
+      const completed = yield* Deferred.make<void>();
+      const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator({
+        cooldownMilliseconds: 1_000,
+        nowMilliseconds: () => Ref.get(now),
+      });
+      const routineMaintenance = Ref.update(calls, count => count + 1).pipe(
+        Effect.as(noWorkResult),
+        Effect.ensuring(Deferred.succeed(completed, undefined)),
+      );
+      expect(yield* coordinator.request({failureCode: 'schema-additive', recoveryKey, routineMaintenance})).toEqual({
+        action: 'routine-maintenance',
+        state: 'scheduled',
+      });
+      yield* Deferred.await(completed);
 
-        let duringCooldown = yield* coordinator.request({
+      let duringCooldown = yield* coordinator.request({
+        failureCode: 'schema-additive',
+        recoveryKey,
+        routineMaintenance,
+      });
+      for (let attempt = 0; attempt < 16 && duringCooldown.state === 'coalesced'; attempt += 1) {
+        yield* Effect.yieldNow;
+        duringCooldown = yield* coordinator.request({
           failureCode: 'schema-additive',
           recoveryKey,
           routineMaintenance,
         });
-        for (let attempt = 0; attempt < 16 && duringCooldown.state === 'coalesced'; attempt += 1) {
-          yield* Effect.yieldNow;
-          duringCooldown = yield* coordinator.request({
-            failureCode: 'schema-additive',
-            recoveryKey,
-            routineMaintenance,
-          });
-        }
-        expect(duringCooldown).toEqual({
-          action: 'routine-maintenance',
-          retryAfterMilliseconds: 1_000,
-          state: 'cooldown',
-        });
-        expect(yield* Ref.get(calls)).toBe(1);
+      }
+      expect(duringCooldown).toEqual({
+        action: 'routine-maintenance',
+        retryAfterMilliseconds: 1_000,
+        state: 'cooldown',
+      });
+      expect(yield* Ref.get(calls)).toBe(1);
 
-        yield* Ref.set(now, 1_000);
-        expect(yield* coordinator.request({failureCode: 'schema-additive', recoveryKey, routineMaintenance})).toEqual({
-          action: 'routine-maintenance',
-          state: 'scheduled',
-        });
-        for (let attempt = 0; attempt < 16 && (yield* Ref.get(calls)) < 2; attempt += 1) yield* Effect.yieldNow;
-        expect(yield* Ref.get(calls)).toBe(2);
-      }).pipe(Effect.scoped);
-    }),
+      yield* Ref.set(now, 1_000);
+      expect(yield* coordinator.request({failureCode: 'schema-additive', recoveryKey, routineMaintenance})).toEqual({
+        action: 'routine-maintenance',
+        state: 'scheduled',
+      });
+      for (let attempt = 0; attempt < 16 && (yield* Ref.get(calls)) < 2; attempt += 1) yield* Effect.yieldNow;
+      expect(yield* Ref.get(calls)).toBe(2);
+    }).pipe(Effect.scoped),
   );
 
   effectIt.effect('reports a failed first attempt without retaining native paths', () =>
@@ -302,7 +288,7 @@ describe('automatic code graph recovery', () => {
         const attempted = yield* Deferred.make<void>();
         const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
         const routineMaintenance = Deferred.succeed(attempted, undefined).pipe(
-          Effect.andThen(Effect.fail(new CodeGraphStorePermissionError(`permission denied at ${privateMarker}`))),
+          Effect.andThen(Effect.fail(CodeGraphStorePermissionError.of(`permission denied at ${privateMarker}`))),
         );
         expect(yield* coordinator.request({failureCode: 'schema-additive', recoveryKey, routineMaintenance})).toEqual({
           action: 'routine-maintenance',
@@ -336,7 +322,7 @@ describe('automatic code graph recovery', () => {
         const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
         const watcher = yield* makeCodeGraphWatcher(
           () => Effect.never,
-          () => Effect.fail(new CodeGraphStoreSchemaAdditiveError('additive migration required')),
+          () => Effect.fail(CodeGraphStoreSchemaAdditiveError.of('additive migration required')),
           {},
           (options, failure) =>
             requestCodeGraphAutomaticRecovery(
@@ -344,7 +330,7 @@ describe('automatic code graph recovery', () => {
                 coordinator,
                 resolveIdentity: () =>
                   Deferred.succeed(attempted, undefined).pipe(
-                    Effect.andThen(Effect.fail(new TestError(`could not resolve ${privateMarker}`))),
+                    Effect.andThen(Effect.fail(TestError.make({message: `could not resolve ${privateMarker}`}))),
                   ),
                 routineMaintenance: () => Effect.die('must not run'),
               },
@@ -404,49 +390,45 @@ describe('automatic code graph recovery', () => {
 
   effectIt.effect('publishes background failure state while recovery scheduling remains held', () =>
     Effect.gen(function* () {
-      yield* Effect.gen(function* () {
-        const recoveryCalls = yield* Ref.make(0);
-        const recoveryStarted = yield* Deferred.make<void>();
-        const watcher = yield* makeCodeGraphWatcher(
-          () => Effect.never,
-          () => Effect.fail(new CodeGraphStoreSchemaAdditiveError('additive migration required')),
-          {},
-          () =>
-            Ref.update(recoveryCalls, count => count + 1).pipe(
-              Effect.andThen(Deferred.succeed(recoveryStarted, undefined)),
-              Effect.andThen(Effect.never),
-            ),
-        );
-        yield* watcher.ensure(watchOptions);
-        expect(yield* watcher.refresh(watchOptions)).toBe(true);
-        yield* Deferred.await(recoveryStarted);
-        const status = yield* watcher.status(watchOptions.key);
+      const recoveryCalls = yield* Ref.make(0);
+      const recoveryStarted = yield* Deferred.make<void>();
+      const watcher = yield* makeCodeGraphWatcher(
+        () => Effect.never,
+        () => Effect.fail(CodeGraphStoreSchemaAdditiveError.of('additive migration required')),
+        {},
+        () =>
+          Ref.update(recoveryCalls, count => count + 1).pipe(
+            Effect.andThen(Deferred.succeed(recoveryStarted, undefined)),
+            Effect.andThen(Effect.never),
+          ),
+      );
+      yield* watcher.ensure(watchOptions);
+      expect(yield* watcher.refresh(watchOptions)).toBe(true);
+      yield* Deferred.await(recoveryStarted);
+      const status = yield* watcher.status(watchOptions.key);
 
-        expect(yield* Ref.get(recoveryCalls)).toBe(1);
-        expect(status).toMatchObject({
-          _tag: 'Some',
-          value: {failure: {code: 'schema-additive'}, state: 'deferred'},
-        });
-      }).pipe(Effect.scoped);
-    }),
+      expect(yield* Ref.get(recoveryCalls)).toBe(1);
+      expect(status).toMatchObject({
+        _tag: 'Some',
+        value: {failure: {code: 'schema-additive'}, state: 'deferred'},
+      });
+    }).pipe(Effect.scoped),
   );
 
   effectIt.effect('does not make foreground watch wait for held recovery scheduling', () =>
     Effect.gen(function* () {
-      yield* Effect.gen(function* () {
-        const recoveryStarted = yield* Deferred.make<void>();
-        const watcher = yield* makeCodeGraphWatcher(
-          () => Effect.never,
-          () => Effect.fail(new CodeGraphStoreSchemaAdditiveError('additive migration required')),
-          {},
-          () => Deferred.succeed(recoveryStarted, undefined).pipe(Effect.andThen(Effect.never)),
-        );
-        const exit = yield* Effect.exit(watcher.watch(watchOptions));
-        yield* Deferred.await(recoveryStarted);
+      const recoveryStarted = yield* Deferred.make<void>();
+      const watcher = yield* makeCodeGraphWatcher(
+        () => Effect.never,
+        () => Effect.fail(CodeGraphStoreSchemaAdditiveError.of('additive migration required')),
+        {},
+        () => Deferred.succeed(recoveryStarted, undefined).pipe(Effect.andThen(Effect.never)),
+      );
+      const exit = yield* Effect.exit(watcher.watch(watchOptions));
+      yield* Deferred.await(recoveryStarted);
 
-        expect(Exit.isFailure(exit)).toBe(true);
-      }).pipe(Effect.scoped);
-    }),
+      expect(Exit.isFailure(exit)).toBe(true);
+    }).pipe(Effect.scoped),
   );
 });
 

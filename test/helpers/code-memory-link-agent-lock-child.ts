@@ -11,7 +11,7 @@ import {atomicWrite, scriptArguments} from '../../scripts/effect/script.js';
 
 const program = Effect.gen(function* () {
   const [root] = yield* scriptArguments();
-  if (!root) return yield* Effect.fail(new ScriptError('Ledger-lock child requires a fixture root.'));
+  if (!root) return yield* ScriptError.make({message: 'Ledger-lock child requires a fixture root.'});
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;

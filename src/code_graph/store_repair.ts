@@ -27,9 +27,7 @@ const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* (
     ) &&
     (yield* codeGraphPersistentExtensionSchemaCompatible(sql));
   if (health.integrity !== 'ok' && !schemaMigrationPreviewAllowed) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError(`Code graph database is ${health.integrity}; discard and rebuild it.`),
-    );
+    return yield* CodeGraphStoreError.of(`Code graph database is ${health.integrity}; discard and rebuild it.`);
   }
   const now = yield* Clock.currentTimeMillis;
   const retainedIncompleteSnapshots = yield* sql<{readonly id: string}>`
@@ -69,11 +67,7 @@ const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* (
   `;
   const removedSnapshots = Number(candidates[0]?.count ?? 0);
   yield* sql.withTransaction(
-    Effect.gen(function* () {
-      // Reuse the bounded retired-snapshot collector. A direct full build can
-      // own tens of millions of rows, so cascading it from one repair DELETE
-      // would recreate the same long heartbeat gap that direct staging avoids.
-      yield* sql`
+    Effect.asVoid(sql`
         UPDATE snapshots
         SET state = 'retired'
         WHERE state IN ('building', 'failed')
@@ -81,8 +75,7 @@ const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* (
             SELECT 1 FROM snapshot_leases AS lease
             WHERE lease.snapshot_id = snapshots.id AND lease.expires_at > ${now}
           )
-      `;
-    }),
+      `),
   );
   yield* pruneRetiredSnapshotRows();
   yield* sql.withTransaction(pruneUnreferencedFileBlobs(sql));

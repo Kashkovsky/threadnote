@@ -1,6 +1,7 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Console, Effect} from 'effect';
+import {Console, Effect, Schema} from 'effect';
 import {fromPromiseInterruptible} from '../src/effect/errors.js';
+import {randomUuidV4} from '../src/crypto/uuid.js';
 import {parseRemoteShareAddress} from '../src/memory_domain/address.js';
 
 const PROTOCOL_VERSION = '2025-06-18';
@@ -36,10 +37,12 @@ interface JsonRpcResponse {
   };
 }
 
-class CanaryFailure extends Error {
-  readonly name = 'CanaryFailure';
-  constructor(readonly code: string) {
-    super(code);
+class CanaryFailure extends Schema.TaggedError<CanaryFailure>()('CanaryFailure', {
+  code: Schema.String,
+  message: Schema.String,
+}) {
+  static of(code: string): CanaryFailure {
+    return CanaryFailure.make({code, message: code});
   }
 }
 
@@ -62,7 +65,7 @@ async function run(signal: AbortSignal): Promise<{
   const tools = requireResult(await rpc(config, signal, 'tools/list', {}), 'tools_list_failed').tools ?? [];
   const names = tools.flatMap(tool => (typeof tool.name === 'string' ? [tool.name] : [])).sort(compareCodeUnits);
   if (JSON.stringify(names) !== JSON.stringify([...EXPECTED_TOOLS].sort(compareCodeUnits))) {
-    throw new CanaryFailure('unexpected_tool_surface');
+    throw CanaryFailure.of('unexpected_tool_surface');
   }
   checks.push({name: 'tool_surface', status: 'ok'});
 
@@ -82,7 +85,7 @@ async function run(signal: AbortSignal): Promise<{
 
   if (config.expectedUri) {
     const address = parseRemoteShareAddress(config.expectedUri);
-    if (address.shareId !== config.shareId) throw new CanaryFailure('expected_uri_share_mismatch');
+    if (address.shareId !== config.shareId) throw CanaryFailure.of('expected_uri_share_mismatch');
     requireToolSuccess(
       await callTool(config, signal, 'read_context', {uri: config.expectedUri, version: 1}),
       'expected_read_failed',
@@ -91,7 +94,7 @@ async function run(signal: AbortSignal): Promise<{
   }
 
   if (config.mode === 'write' || config.mode === 'concurrency') {
-    const marker = crypto.randomUUID();
+    const marker = randomUuidV4();
     const topic = `canary-${marker}`;
     const written = requireToolSuccess(
       await callTool(
@@ -111,7 +114,7 @@ async function run(signal: AbortSignal): Promise<{
   }
 
   if (config.mode === 'concurrency') {
-    const race = crypto.randomUUID();
+    const race = randomUuidV4();
     const raceTopic = `race-${race}`;
     const raceResults = await Promise.all([
       callTool(
@@ -129,10 +132,10 @@ async function run(signal: AbortSignal): Promise<{
     ]);
     const winners = raceResults.filter(result => !result.result?.isError).length;
     const conflicts = raceResults.filter(result => toolErrorCode(result) === 'conflict').length;
-    if (winners !== 1 || conflicts !== 1) throw new CanaryFailure('cas_race_contract_failed');
+    if (winners !== 1 || conflicts !== 1) throw CanaryFailure.of('cas_race_contract_failed');
     checks.push({name: 'single_topic_cas_race', status: 'ok'});
 
-    const independent = crypto.randomUUID();
+    const independent = randomUuidV4();
     const independentResults = await Promise.all([
       callTool(
         config,
@@ -158,7 +161,7 @@ async function run(signal: AbortSignal): Promise<{
       ),
     ]);
     if (independentResults.some(result => result.result?.isError || result.error)) {
-      throw new CanaryFailure('independent_write_progress_failed');
+      throw CanaryFailure.of('independent_write_progress_failed');
     }
     checks.push({name: 'independent_write_progress', status: 'ok'});
   }
@@ -199,7 +202,7 @@ async function rpc(
   params: Readonly<Record<string, unknown>>,
 ): Promise<JsonRpcResponse> {
   const response = await fetch(config.endpoint, {
-    body: JSON.stringify({id: crypto.randomUUID(), jsonrpc: '2.0', method, params}),
+    body: JSON.stringify({id: randomUuidV4(), jsonrpc: '2.0', method, params}),
     headers: {
       accept: 'application/json, text/event-stream',
       authorization: `Bearer ${config.token}`,
@@ -212,12 +215,12 @@ async function rpc(
     redirect: 'error',
     signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
   });
-  if (!response.ok) throw new CanaryFailure(`http_${response.status}`);
+  if (!response.ok) throw CanaryFailure.of(`http_${response.status}`);
   return boundedJson(response);
 }
 
 async function boundedJson(response: Response): Promise<JsonRpcResponse> {
-  if (!response.body) throw new CanaryFailure('empty_response');
+  if (!response.body) throw CanaryFailure.of('empty_response');
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -226,7 +229,7 @@ async function boundedJson(response: Response): Promise<JsonRpcResponse> {
       const {done, value} = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > MAX_RESPONSE_BYTES) throw new CanaryFailure('response_too_large');
+      if (total > MAX_RESPONSE_BYTES) throw CanaryFailure.of('response_too_large');
       chunks.push(value);
     }
   } finally {
@@ -241,18 +244,18 @@ async function boundedJson(response: Response): Promise<JsonRpcResponse> {
   try {
     return JSON.parse(new TextDecoder().decode(bytes)) as JsonRpcResponse;
   } catch {
-    throw new CanaryFailure('invalid_json_response');
+    throw CanaryFailure.of('invalid_json_response');
   }
 }
 
 function requireResult(response: JsonRpcResponse, code: string): NonNullable<JsonRpcResponse['result']> {
-  if (response.error || !response.result) throw new CanaryFailure(code);
+  if (response.error || !response.result) throw CanaryFailure.of(code);
   return response.result;
 }
 
 function requireToolSuccess(response: JsonRpcResponse, code: string): NonNullable<JsonRpcResponse['result']> {
   const result = requireResult(response, code);
-  if (result.isError) throw new CanaryFailure(`${code}:${toolErrorCode(response) ?? 'tool_error'}`);
+  if (result.isError) throw CanaryFailure.of(`${code}:${toolErrorCode(response) ?? 'tool_error'}`);
   return result;
 }
 
@@ -267,22 +270,22 @@ function toolErrorCode(response: JsonRpcResponse): string | undefined {
 function structuredUri(config: CanaryConfig, result: NonNullable<JsonRpcResponse['result']>): string {
   const structured = result.structuredContent;
   if (!structured || typeof structured !== 'object' || !('uri' in structured) || typeof structured.uri !== 'string') {
-    throw new CanaryFailure('write_receipt_missing_uri');
+    throw CanaryFailure.of('write_receipt_missing_uri');
   }
   const address = parseRemoteShareAddress(structured.uri);
-  if (address.shareId !== config.shareId) throw new CanaryFailure('write_receipt_share_mismatch');
+  if (address.shareId !== config.shareId) throw CanaryFailure.of('write_receipt_share_mismatch');
   return address.canonicalUri;
 }
 
 function required(value: string | undefined, name: string): string {
   const normalized = value?.trim();
-  if (!normalized) throw new CanaryFailure(`missing_${name.replaceAll(' ', '_')}`);
+  if (!normalized) throw CanaryFailure.of(`missing_${name.replaceAll(' ', '_')}`);
   return normalized;
 }
 
 function portable(value: string, name: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$/u.test(value))
-    throw new CanaryFailure(`invalid_${name.replaceAll(' ', '_')}`);
+    throw CanaryFailure.of(`invalid_${name.replaceAll(' ', '_')}`);
   return value;
 }
 
@@ -293,7 +296,7 @@ function optionalIdentifier(value: string | undefined): string | undefined {
 
 function canaryConfig(environment: Readonly<Record<string, string | undefined>>): CanaryConfig {
   const token = required(environment.THREADNOTE_CANARY_ACCESS_TOKEN, 'access token');
-  if (Buffer.byteLength(token, 'utf8') > 64 * 1024) throw new CanaryFailure('access_token_too_large');
+  if (Buffer.byteLength(token, 'utf8') > 64 * 1024) throw CanaryFailure.of('access_token_too_large');
   return {
     attestationId: optionalIdentifier(environment.THREADNOTE_CANARY_ATTESTATION_ID),
     endpoint: canaryEndpoint(required(environment.THREADNOTE_CANARY_ENDPOINT, 'endpoint')),
@@ -308,7 +311,7 @@ function canaryConfig(environment: Readonly<Record<string, string | undefined>>)
 function canaryMode(value: string | undefined): CanaryMode {
   const normalized = value?.trim() || 'read';
   if (normalized === 'read' || normalized === 'write' || normalized === 'concurrency') return normalized;
-  throw new CanaryFailure('invalid_mode');
+  throw CanaryFailure.of('invalid_mode');
 }
 
 function canaryEndpoint(value: string): URL {
@@ -316,14 +319,14 @@ function canaryEndpoint(value: string): URL {
   try {
     url = new URL(value);
   } catch {
-    throw new CanaryFailure('invalid_endpoint');
+    throw CanaryFailure.of('invalid_endpoint');
   }
   const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
   if ((!local && url.protocol !== 'https:') || (local && url.protocol !== 'http:' && url.protocol !== 'https:')) {
-    throw new CanaryFailure('insecure_endpoint');
+    throw CanaryFailure.of('insecure_endpoint');
   }
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/mcp') {
-    throw new CanaryFailure('invalid_endpoint');
+    throw CanaryFailure.of('invalid_endpoint');
   }
   return url;
 }
@@ -335,7 +338,7 @@ function compareCodeUnits(left: string, right: string): number {
 const canaryProgram = fromPromiseInterruptible(run, cause => cause).pipe(
   Effect.flatMap(result => Console.log(JSON.stringify(result))),
   Effect.catch(cause => {
-    const code = cause instanceof CanaryFailure ? cause.code : 'unexpected_failure';
+    const code = Schema.is(CanaryFailure)(cause) ? cause.code : 'unexpected_failure';
     return Console.error(JSON.stringify({error: code, status: 'failed', version: 1})).pipe(
       Effect.tap(() =>
         Effect.sync(() => {

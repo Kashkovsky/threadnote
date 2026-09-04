@@ -103,11 +103,9 @@ export const resolveCodeMemoryLinkAgentLedgerLayout = Effect.fn('codeMemoryLinkA
     path.dirname(trialsResolved) !== path.dirname(attemptsResolved) ||
     path.dirname(trialsResolved) !== path.dirname(evidenceResolved)
   ) {
-    return yield* Effect.fail(
-      new CodeMemoryLinkAgentLedgerError({
-        message: 'The attempts and evidence ledgers must be beside the trials ledger.',
-      }),
-    );
+    return yield* new CodeMemoryLinkAgentLedgerError({
+      message: 'The attempts and evidence ledgers must be beside the trials ledger.',
+    });
   }
   yield* fs.makeDirectory(path.dirname(trialsResolved), {recursive: true, mode: 0o700});
   const canonicalParent = yield* fs.realPath(path.dirname(trialsResolved));
@@ -115,18 +113,14 @@ export const resolveCodeMemoryLinkAgentLedgerLayout = Effect.fn('codeMemoryLinkA
   const attemptsPath = path.join(canonicalParent, path.basename(attemptsResolved));
   const evidencePath = path.join(canonicalParent, path.basename(evidenceResolved));
   if (attemptsPath !== `${trialsPath}.attempts.jsonl`) {
-    return yield* Effect.fail(
-      new CodeMemoryLinkAgentLedgerError({
-        message: 'The explicit attempts ledger must be named <canonical-trials-path>.attempts.jsonl.',
-      }),
-    );
+    return yield* new CodeMemoryLinkAgentLedgerError({
+      message: 'The explicit attempts ledger must be named <canonical-trials-path>.attempts.jsonl.',
+    });
   }
   if (evidencePath !== `${trialsPath}.evidence.jsonl`) {
-    return yield* Effect.fail(
-      new CodeMemoryLinkAgentLedgerError({
-        message: 'The explicit evidence ledger must be named <canonical-trials-path>.evidence.jsonl.',
-      }),
-    );
+    return yield* new CodeMemoryLinkAgentLedgerError({
+      message: 'The explicit evidence ledger must be named <canonical-trials-path>.evidence.jsonl.',
+    });
   }
   return {
     attemptsPath,
@@ -411,25 +405,21 @@ function assertRegularLedgerTarget(fs: FileSystem.FileSystem, target: string) {
   return Effect.gen(function* () {
     if (!(yield* fs.exists(target))) return;
     if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-      return yield* Effect.fail(
-        new CodeMemoryLinkAgentLedgerError({
-          message: 'Code Memory Link ledger targets must not be symbolic links.',
-        }),
-      );
+      return yield* new CodeMemoryLinkAgentLedgerError({
+        message: 'Code Memory Link ledger targets must not be symbolic links.',
+      });
     }
     const info = yield* fs.stat(target);
     if (info.type !== 'File') {
-      return yield* Effect.fail(
-        new CodeMemoryLinkAgentLedgerError({message: 'Code Memory Link ledger targets must be regular files.'}),
-      );
+      return yield* new CodeMemoryLinkAgentLedgerError({
+        message: 'Code Memory Link ledger targets must be regular files.',
+      });
     }
     const linkCount = Option.getOrUndefined(info.nlink);
     if (linkCount !== undefined && linkCount > 1) {
-      return yield* Effect.fail(
-        new CodeMemoryLinkAgentLedgerError({
-          message: 'Code Memory Link ledger targets must not have hard-link aliases.',
-        }),
-      );
+      return yield* new CodeMemoryLinkAgentLedgerError({
+        message: 'Code Memory Link ledger targets must not have hard-link aliases.',
+      });
     }
   });
 }

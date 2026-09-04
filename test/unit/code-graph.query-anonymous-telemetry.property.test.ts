@@ -1,4 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
+import {succeedUndefined} from '../../src/effect/optional.js';
 import fc from 'fast-check';
 import {Cause, Deferred, Effect, Exit, Fiber, Tracer} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -322,7 +323,7 @@ describe('code graph query anonymous telemetry', () => {
       requestKind: 'inspect.path',
       requestScope: 'local',
     });
-    const original = new TestError('private failure /Users/private/repository');
+    const original = TestError.make({message: 'private failure /Users/private/repository'});
 
     return Effect.gen(function* () {
       const exit = yield* Effect.exit(
@@ -539,7 +540,7 @@ function capturingTracer(): {
 function systemInfoStub(): SystemInfoShape {
   return {
     architecture: 'arm64',
-    availableDiskBytes: () => Effect.succeed(undefined),
+    availableDiskBytes: () => succeedUndefined,
     currentDirectory: () => '/',
     environment: () => ({}),
     executablePath: '/opt/threadnote/bin/threadnote',
@@ -556,7 +557,7 @@ function systemInfoStub(): SystemInfoShape {
     platform: 'darwin',
     processArguments: ['/opt/threadnote/bin/threadnote'],
     processId: 1,
-    processStartIdentity: () => Effect.succeed(undefined),
+    processStartIdentity: () => succeedUndefined,
     readLine: () => () => undefined,
     runtimeVersion: 'test',
     setEnvironmentVariable: () => undefined,

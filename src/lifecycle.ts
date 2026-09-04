@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Path, Result} from 'effect';
+import {Console, Effect, FileSystem, Path, Result, Schema} from 'effect';
 import {
   agentIntegrationDoctorChecks,
   migrateLegacyAgentIntegrations,
@@ -91,9 +91,10 @@ import {
   toolRoot,
 } from './utils.js';
 
-class LifecycleOperationError extends Error {
-  readonly _tag = 'LifecycleOperationError' as const;
-}
+class LifecycleOperationError extends Schema.TaggedError<LifecycleOperationError>()('LifecycleOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 const LAYOUT_RECEIPT = 'layout.json';
 interface RunInstallOptions extends InstallOptions {
@@ -188,7 +189,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* telemetryDoctorCheck(config),
     yield* imageProjectionDoctorCheck(config),
   );
-  const inferredMcpClients = yield* inferConfiguredMcpClients().pipe(Effect.catch(() => Effect.succeed([])));
+  const inferredMcpClients = yield* inferConfiguredMcpClients().pipe(Effect.orElseSucceed(() => []));
   checks.push(...(yield* safeDoctorChecks('MCP configuration', mcpConfigurationChecks(config, inferredMcpClients))));
   checks.push(
     recallIndexCheck(lexicalStatus),
@@ -233,7 +234,7 @@ export const telemetryDoctorCheck = Effect.fn('lifecycle.telemetryDoctorCheck')(
   const system = yield* SystemInfo;
   const loaded = yield* Effect.result(readTelemetryConfiguration(config));
   if (Result.isFailure(loaded)) {
-    const renewal = yield* readTelemetryConsentRenewal(config).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    const renewal = yield* readTelemetryConsentRenewal(config).pipe(Effect.orElseSucceed(() => undefined));
     if (renewal !== undefined) {
       return {
         detail: `disabled; consent v${renewal.consentVersion} needs explicit renewal for v${TELEMETRY_CONSENT_VERSION}; run \`threadnote telemetry enable\`, then \`threadnote telemetry enable --apply\` after review`,
@@ -402,7 +403,9 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
           `Rebuilt recall indexes for ${documentCount} document(s) and ${vectors.chunkCount} vector chunk(s).`,
         ),
       ),
-      Effect.mapError(cause => new LifecycleOperationError(`Recall index repair failed: ${errorMessage(cause)}`)),
+      Effect.mapError(cause =>
+        LifecycleOperationError.make({message: `Recall index repair failed: ${errorMessage(cause)}`}),
+      ),
     );
   } else {
     yield* Console.log('Would validate and rebuild the derived lexical and vector recall indexes.');
@@ -432,7 +435,9 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
       ),
     {migrateSchema: true, mode: options.deep === true ? 'deep' : 'quick'},
   ).pipe(
-    Effect.mapError(cause => new LifecycleOperationError(`Native code graph repair failed: ${errorMessage(cause)}`)),
+    Effect.mapError(cause =>
+      LifecycleOperationError.make({message: `Native code graph repair failed: ${errorMessage(cause)}`}),
+    ),
   );
   if (options.postUpdate !== false) {
     yield* maybeRunPostUpdateAfterRepair(config, {dryRun});
@@ -475,9 +480,9 @@ export const runDevelopmentInstallRepair = Effect.fn('lifecycle.developmentInsta
 ) {
   const requireExpectedActive = Effect.gen(function* () {
     if ((yield* activeInstalledVersion()) !== expectedVersion) {
-      return yield* Effect.fail(
-        new LifecycleOperationError('The active release changed during development installer repair.'),
-      );
+      return yield* LifecycleOperationError.make({
+        message: 'The active release changed during development installer repair.',
+      });
     }
   });
   yield* requireExpectedActive;
@@ -498,7 +503,7 @@ const maintainRecallIndexes = Effect.fn('lifecycle.maintainRecallIndexes')(funct
     startProgress(`${forceRefresh ? 'Rebuilding' : 'Building'} lexical recall index from canonical documents.`),
     progress =>
       Effect.gen(function* () {
-        const updateProgress = (message: string) => progress.update(message).pipe(Effect.catch(() => Effect.void));
+        const updateProgress = (message: string) => progress.update(message).pipe(Effect.ignore);
         const index = yield* loadRecallIndexData(config, {
           forceRefresh,
           includeInactive: false,
@@ -623,9 +628,9 @@ const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(
 ) {
   const dryRun = options.dryRun === true;
   if (options.eraseMemories === true && options.preserveMemories === true) {
-    return yield* Effect.fail(
-      new LifecycleOperationError('Use either --erase-memories or --preserve-memories, not both.'),
-    );
+    return yield* LifecycleOperationError.make({
+      message: 'Use either --erase-memories or --preserve-memories, not both.',
+    });
   }
   const registry = yield* readAgentIntegrationRegistry(config);
   const registeredClients = registeredAgentClients(registry);
@@ -646,7 +651,7 @@ const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(
       yield* Console.log(`WARN ${message}`);
       return;
     }
-    return yield* Effect.fail(new LifecycleOperationError(message));
+    return yield* LifecycleOperationError.make({message: message});
   }
   yield* removeMcpSnippets(config, dryRun);
   if (yield* hasManagedClaudeHooks()) {
@@ -683,7 +688,7 @@ export const memoryProjectConsistencyCheck = Effect.fn('lifecycle.memoryProjectC
       if (!pathProject) continue;
       const content = yield* fs
         .readFileString(path.join(layout.userMemoriesRoot, entry))
-        .pipe(Effect.catch(() => Effect.succeed(undefined)));
+        .pipe(Effect.orElseSucceed(() => undefined));
       if (content === undefined) continue;
       checked += 1;
       const frontProject = memoryFrontmatterField(content, 'project');

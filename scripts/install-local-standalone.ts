@@ -1,7 +1,7 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Cause, Console, Crypto, Effect, Exit, FileSystem, Layer, Option, Path} from 'effect';
+import {Cause, Console, Crypto, DateTime, Effect, Exit, FileSystem, Layer, Option, Path} from 'effect';
 import {
   commandLauncherPath,
   installCommandShim,
@@ -120,7 +120,7 @@ export function parseLocalStandaloneInstallArguments(arguments_: readonly string
     if (argument === '--json') json = true;
     else if (argument === '--take-over-global-runtime') takeOverGlobalRuntime = true;
     else if (argument === '--terminate-superseded') terminateSuperseded = true;
-    else throw new ScriptError(`Unknown local standalone install option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown local standalone install option: ${argument}`});
   }
   return {json, takeOverGlobalRuntime, terminateSuperseded};
 }
@@ -145,7 +145,7 @@ export const installLocalStandalone = Effect.fn('developmentInstall.run')(functi
   const sourceRoot = yield* path.fromFileUrl(ROOT_URL);
   const git = Option.fromNullishOr(Bun.which('git'));
   if (Option.isNone(git))
-    return yield* Effect.fail(new ScriptError('Git is required for an exact-HEAD development install.'));
+    return yield* ScriptError.make({message: 'Git is required for an exact-HEAD development install.'});
   const [sourceCommit, status] = yield* Effect.all(
     [
       runCommandEffect(git.value, ['rev-parse', 'HEAD'], {cwd: sourceRoot}),
@@ -155,12 +155,12 @@ export const installLocalStandalone = Effect.fn('developmentInstall.run')(functi
   );
   const commit = sourceCommit.stdout.trim();
   if (!GIT_COMMIT_PATTERN.test(commit)) {
-    return yield* Effect.fail(new ScriptError('The Threadnote checkout did not resolve to an exact Git commit.'));
+    return yield* ScriptError.make({message: 'The Threadnote checkout did not resolve to an exact Git commit.'});
   }
   if (status.stdout.length > 0) {
-    return yield* Effect.fail(
-      new ScriptError('Refusing a global development install from a dirty Threadnote checkout.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Refusing a global development install from a dirty Threadnote checkout.',
+    });
   }
   const manifest = yield* readPackageManifest(fs, path.join(sourceRoot, 'package.json'));
   const version = developmentBuildVersion(manifest.version, commit);
@@ -235,7 +235,7 @@ const verifyCleanSourceState = Effect.fn('developmentInstall.verifyCleanSourceSt
   expectedCommit: string,
 ) {
   const git = Option.fromNullishOr(Bun.which('git'));
-  if (Option.isNone(git)) return yield* Effect.fail(new ScriptError('Git disappeared before development activation.'));
+  if (Option.isNone(git)) return yield* ScriptError.make({message: 'Git disappeared before development activation.'});
   const [commit, status] = yield* Effect.all(
     [
       runCommandEffect(git.value, ['rev-parse', 'HEAD'], {cwd: sourceRoot}),
@@ -244,7 +244,7 @@ const verifyCleanSourceState = Effect.fn('developmentInstall.verifyCleanSourceSt
     {concurrency: 2},
   );
   if (commit.stdout.trim() !== expectedCommit || status.stdout.length > 0) {
-    return yield* Effect.fail(new ScriptError('The Threadnote checkout changed before development activation.'));
+    return yield* ScriptError.make({message: 'The Threadnote checkout changed before development activation.'});
   }
 });
 
@@ -263,7 +263,7 @@ const requireDevelopmentRuntimeOwnership = Effect.fn('developmentInstall.require
   takeOverGlobalRuntime: boolean,
 ) {
   if (!SHA256_PATTERN.test(requestedSourceCheckoutId)) {
-    return yield* Effect.fail(new ScriptError('The development source checkout identity is invalid.'));
+    return yield* ScriptError.make({message: 'The development source checkout identity is invalid.'});
   }
   const [activeVersion, owner] = yield* Effect.all([
     activeInstalledVersion(),
@@ -277,12 +277,11 @@ const requireDevelopmentRuntimeOwnership = Effect.fn('developmentInstall.require
       : conflict === 'untracked-development-activation'
         ? 'the active global development runtime changed outside its owning installer'
         : 'the active global development runtime ownership record is invalid';
-  return yield* Effect.fail(
-    new ScriptError(
+  return yield* ScriptError.make({
+    message:
       `Refusing to replace the global Threadnote runtime because ${reason}. ` +
-        'Rerun with --take-over-global-runtime only after confirming the other development task has finished.',
-    ),
-  );
+      'Rerun with --take-over-global-runtime only after confirming the other development task has finished.',
+  });
 });
 
 const readDevelopmentRuntimeOwner = Effect.fn('developmentInstall.readRuntimeOwner')(function* (installRoot: string) {
@@ -337,7 +336,7 @@ const writeDevelopmentRuntimeOwner = Effect.fn('developmentInstall.writeRuntimeO
   yield* Effect.gen(function* () {
     yield* fs.writeFileString(temporary, `${JSON.stringify(owner, undefined, 2)}\n`, {flag: 'wx', mode: 0o600});
     yield* fs.rename(temporary, file);
-  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
 });
 
 /**
@@ -369,16 +368,16 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
     if (Option.isSome(input.stagedRoot)) {
       if (yield* fs.exists(input.releaseRoot)) {
         const concurrentEvidence = yield* readDevelopmentReleaseEvidence(input.releaseRoot, input.commit).pipe(
-          Effect.mapError(
-            cause => new ScriptError('A concurrent exact-version development release is not reusable.', {cause}),
+          Effect.mapError(cause =>
+            ScriptError.make({message: 'A concurrent exact-version development release is not reusable.', cause}),
           ),
         );
         yield* requireEvidenceVersion(concurrentEvidence, input.version);
         reused = true;
       } else {
         const stagedEvidence = yield* readDevelopmentReleaseEvidence(input.stagedRoot.value, input.commit).pipe(
-          Effect.mapError(
-            cause => new ScriptError('The staged development release changed before activation.', {cause}),
+          Effect.mapError(cause =>
+            ScriptError.make({message: 'The staged development release changed before activation.', cause}),
           ),
         );
         yield* requireEvidenceVersion(stagedEvidence, input.version);
@@ -388,14 +387,13 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
     }
     const snapshots = yield* Effect.gen(function* () {
       const releaseEvidence = yield* readDevelopmentReleaseEvidence(input.releaseRoot, input.commit).pipe(
-        Effect.mapError(
-          cause =>
-            new ScriptError(
-              input.reused
-                ? 'The existing exact-version development release is not reusable.'
-                : 'The promoted development release failed validation.',
-              {cause},
-            ),
+        Effect.mapError(cause =>
+          ScriptError.make({
+            cause,
+            message: input.reused
+              ? 'The existing exact-version development release is not reusable.'
+              : 'The promoted development release failed validation.',
+          }),
         ),
       );
       yield* requireEvidenceVersion(releaseEvidence, input.version);
@@ -405,9 +403,9 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
         timeoutMs: 5 * 60_000,
       });
       if (!doctor.stdout.includes('Running Threadnote doctor checks.') || !doctor.stdout.includes('Summary:')) {
-        return yield* Effect.fail(
-          new ScriptError('The installed development executable did not complete doctor verification.'),
-        );
+        return yield* ScriptError.make({
+          message: 'The installed development executable did not complete doctor verification.',
+        });
       }
       const managedFileSnapshots: LocalFileSnapshot[] = [];
       for (const mode of ['cli', 'mcp'] as const) {
@@ -436,7 +434,8 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
               Effect.matchCauseEffect({
                 onFailure: cleanupCause =>
                   Effect.fail(
-                    new ScriptError('The new development release failed validation and could not be removed.', {
+                    ScriptError.make({
+                      message: 'The new development release failed validation and could not be removed.',
                       cause: new AggregateError([Cause.squash(validationCause), Cause.squash(cleanupCause)]),
                     }),
                   ),
@@ -463,7 +462,8 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
           Effect.matchCauseEffect({
             onFailure: rollbackCause =>
               Effect.fail(
-                new ScriptError('Development release activation failed and rollback was incomplete.', {
+                ScriptError.make({
+                  message: 'Development release activation failed and rollback was incomplete.',
                   cause: new AggregateError([Cause.squash(activationCause), Cause.squash(rollbackCause)]),
                 }),
               ),
@@ -475,11 +475,12 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
     yield* verifyActivatedDevelopmentRelease(executable, installRoot, input.version).pipe(
       Effect.catchCause(healthCause =>
         Effect.fail(
-          new ScriptError(
-            'The exact-HEAD development release is active, but doctor verification still failed after repair. ' +
+          ScriptError.make({
+            cause: Cause.squash(healthCause),
+            message:
+              'The exact-HEAD development release is active, but doctor verification still failed after repair. ' +
               'The prior release and superseded processes were preserved for diagnosis.',
-            {cause: Cause.squash(healthCause)},
-          ),
+          }),
         ),
       ),
     );
@@ -536,7 +537,7 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
             yield* fs.remove(stagedRoot, {force: true, recursive: true});
           }
           if (yield* fs.exists(stagedRoot)) {
-            return yield* Effect.fail(new ScriptError('The development staging directory still exists after cleanup.'));
+            return yield* ScriptError.make({message: 'The development staging directory still exists after cleanup.'});
           }
         }),
       );
@@ -560,7 +561,7 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
   return yield* withStandaloneInstallationLock(criticalSection).pipe(
     Effect.ensuring(
       Option.isSome(input.stagedRoot)
-        ? fs.remove(input.stagedRoot.value, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void))
+        ? fs.remove(input.stagedRoot.value, {force: true, recursive: true}).pipe(Effect.ignore)
         : Effect.void,
     ),
   );
@@ -584,9 +585,9 @@ const verifyActivatedDevelopmentRelease = Effect.fn('developmentInstall.verifyAc
   const initial = yield* runDoctorStrict();
   const initialFailures = developmentDoctorFailureCount(initial.stdout);
   if (initialFailures === undefined || (initial.exitCode !== 0 && initialFailures === 0)) {
-    return yield* Effect.fail(
-      new ScriptError('The activated development executable did not complete doctor verification.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The activated development executable did not complete doctor verification.',
+    });
   }
   if (initial.exitCode === 0 && initialFailures === 0) return;
 
@@ -599,17 +600,17 @@ const verifyActivatedDevelopmentRelease = Effect.fn('developmentInstall.verifyAc
     repairedFailures === undefined ||
     !developmentDoctorHasOnlyConcurrentRecallProjectionFailures(repaired.stdout, repairedFailures)
   ) {
-    return yield* Effect.fail(
-      new ScriptError('The activated development executable still has doctor failures after repair.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The activated development executable still has doctor failures after repair.',
+    });
   }
 
   yield* repair();
   const stabilized = yield* runDoctorStrict();
   if (stabilized.exitCode !== 0 || developmentDoctorFailureCount(stabilized.stdout) !== 0) {
-    return yield* Effect.fail(
-      new ScriptError('The activated development executable still has doctor failures after repair.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The activated development executable still has doctor failures after repair.',
+    });
   }
 });
 
@@ -648,7 +649,9 @@ export function developmentDoctorHasOnlyConcurrentRecallProjectionFailures(
 function requireEvidenceVersion(evidence: DevelopmentRuntimeEvidence, expectedVersion: string) {
   return evidence.version === expectedVersion
     ? Effect.void
-    : Effect.fail(new ScriptError('The validated development release version does not match its activation target.'));
+    : Effect.fail(
+        ScriptError.make({message: 'The validated development release version does not match its activation target.'}),
+      );
 }
 
 interface LocalFileSnapshot {
@@ -671,9 +674,7 @@ const captureFileSnapshot = Effect.fn('developmentInstall.captureFileSnapshot')(
     fs.stat(file).pipe(Effect.option),
   ]);
   if (Option.isSome(link) || (exists && Option.isNone(content))) {
-    return yield* Effect.fail(
-      new ScriptError('A managed installation file cannot be safely snapshotted for rollback.'),
-    );
+    return yield* ScriptError.make({message: 'A managed installation file cannot be safely snapshotted for rollback.'});
   }
   return {
     content,
@@ -693,13 +694,16 @@ const restoreFileSnapshots = Effect.fn('developmentInstall.restoreFileSnapshots'
   for (const snapshot of snapshots) {
     const restored = yield* Effect.exit(restoreFileSnapshot(fs, path, system, snapshot));
     if (Exit.isFailure(restored)) {
-      failures.push(new ScriptError(`Could not restore the ${snapshot.label}.`, {cause: Cause.squash(restored.cause)}));
+      failures.push(
+        ScriptError.make({message: `Could not restore the ${snapshot.label}.`, cause: Cause.squash(restored.cause)}),
+      );
     }
   }
   if (failures.length > 0) {
-    return yield* Effect.fail(
-      new AggregateError(failures, 'One or more managed installation files were not restored.'),
-    );
+    return yield* ScriptError.make({
+      cause: new AggregateError(failures, 'One or more managed installation files were not restored.'),
+      message: 'One or more managed installation files were not restored.',
+    });
   }
 });
 
@@ -724,7 +728,7 @@ const restoreFileSnapshot = Effect.fn('developmentInstall.restoreFileSnapshot')(
     yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: snapshot.mode});
     if (system.platform !== 'win32') yield* fs.chmod(temporary, snapshot.mode);
     yield* fs.rename(temporary, snapshot.file);
-  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
 });
 
 const buildAndStageDevelopmentRelease = Effect.fn('developmentInstall.buildAndStage')(function* (input: {
@@ -760,7 +764,7 @@ const buildAndStageDevelopmentRelease = Effect.fn('developmentInstall.buildAndSt
     timeoutMs: COMMAND_TIMEOUT_MILLISECONDS,
   });
   const git = Option.fromNullishOr(Bun.which('git'));
-  if (Option.isNone(git)) return yield* Effect.fail(new ScriptError('Git disappeared during the development build.'));
+  if (Option.isNone(git)) return yield* ScriptError.make({message: 'Git disappeared during the development build.'});
   const [afterCommit, afterStatus] = yield* Effect.all(
     [
       runCommandEffect(git.value, ['rev-parse', 'HEAD'], {cwd: input.sourceRoot}),
@@ -769,15 +773,15 @@ const buildAndStageDevelopmentRelease = Effect.fn('developmentInstall.buildAndSt
     {concurrency: 2},
   );
   if (afterCommit.stdout.trim() !== input.commit || afterStatus.stdout.length > 0) {
-    return yield* Effect.fail(
-      new ScriptError('The Threadnote checkout changed while building the development executable.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The Threadnote checkout changed while building the development executable.',
+    });
   }
   const distributionRoot = path.join(input.sourceRoot, 'dist');
   const releaseMetadataPath = path.join(distributionRoot, 'release.json');
   const releaseMetadata = yield* readReleaseMetadata(fs, releaseMetadataPath);
   if (releaseMetadata.version !== input.version || releaseMetadata.executable !== input.executableName) {
-    return yield* Effect.fail(new ScriptError('The development build did not embed its exact SHA-bound version.'));
+    return yield* ScriptError.make({message: 'The development build did not embed its exact SHA-bound version.'});
   }
   const executable = path.join(distributionRoot, input.executableName);
   const payloadManifest = yield* collectDevelopmentPayloadManifest(distributionRoot);
@@ -800,10 +804,10 @@ const buildAndStageDevelopmentRelease = Effect.fn('developmentInstall.buildAndSt
     {concurrency: 6},
   );
   if (versionResult.stdout.trim() !== `threadnote v${input.version}`) {
-    return yield* Effect.fail(new ScriptError('The compiled development executable reported the wrong version.'));
+    return yield* ScriptError.make({message: 'The compiled development executable reported the wrong version.'});
   }
   const receipt: DevelopmentInstallReceiptV1 = {
-    builtAt: new Date().toISOString(),
+    builtAt: DateTime.formatIso(yield* DateTime.now),
     dependencyInstallation: 'bun install --frozen-lockfile',
     executableSha256,
     payloadManifest,
@@ -853,25 +857,25 @@ const verifyLaunchers = Effect.fn('developmentInstall.verifyLaunchers')(function
       ]);
       const actual = yield* fs.readFileString(launcher);
       if (actual !== expected) {
-        return yield* Effect.fail(
-          new ScriptError(`The managed ${mode} ${kind} launcher did not activate the development release.`),
-        );
+        return yield* ScriptError.make({
+          message: `The managed ${mode} ${kind} launcher did not activate the development release.`,
+        });
       }
       if (system.platform !== 'win32') {
         const info = yield* fs.stat(launcher);
         if ((info.mode & 0o777) !== 0o755) yield* fs.chmod(launcher, 0o755);
         const repaired = yield* fs.stat(launcher);
         if ((repaired.mode & 0o777) !== 0o755) {
-          return yield* Effect.fail(
-            new ScriptError(`The managed ${mode} ${kind} launcher does not have safe executable mode.`),
-          );
+          return yield* ScriptError.make({
+            message: `The managed ${mode} ${kind} launcher does not have safe executable mode.`,
+          });
         }
       }
       if (mode === 'cli' && kind === primaryCommandLauncherKind(system.platform)) cliLauncher = launcher;
     }
   }
   if (cliLauncher === '') {
-    return yield* Effect.fail(new ScriptError('No primary CLI launcher was verified for this platform.'));
+    return yield* ScriptError.make({message: 'No primary CLI launcher was verified for this platform.'});
   }
   const version = yield* runCommandEffect(cliLauncher, ['--version'], {
     env: {...system.environment(), THREADNOTE_INSTALL_ROOT: installationRoot(path, system)},
@@ -879,9 +883,9 @@ const verifyLaunchers = Effect.fn('developmentInstall.verifyLaunchers')(function
     timeoutMs: 30_000,
   });
   if (version.stdout.trim() !== `threadnote v${expectedVersion}`) {
-    return yield* Effect.fail(
-      new ScriptError('The managed CLI launcher did not execute the activated development release.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The managed CLI launcher did not execute the activated development release.',
+    });
   }
 });
 
@@ -897,21 +901,21 @@ const requireCanonicalDevelopmentInstallRoots = Effect.fn('developmentInstall.re
   const system = yield* SystemInfo;
   const current = yield* prepareCanonicalDevelopmentInstallRoots(installationRoot(path, system));
   if (!platformPathEquals(path, system, current.installRoot, expectedInstallRoot)) {
-    return yield* Effect.fail(
-      new ScriptError('The managed Threadnote installation root changed or escaped its canonical location.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The managed Threadnote installation root changed or escaped its canonical location.',
+    });
   }
   if (!platformPathEquals(path, system, current.versionsRoot, expectedVersionsRoot)) {
-    return yield* Effect.fail(
-      new ScriptError('The managed Threadnote versions root changed or escaped its canonical location.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The managed Threadnote versions root changed or escaped its canonical location.',
+    });
   }
   if (path.basename(releaseRoot) !== version) {
-    return yield* Effect.fail(new ScriptError('The development release name does not match its version.'));
+    return yield* ScriptError.make({message: 'The development release name does not match its version.'});
   }
   const releaseParent = yield* fs.realPath(path.dirname(releaseRoot));
   if (!platformPathEquals(path, system, releaseParent, current.versionsRoot)) {
-    return yield* Effect.fail(new ScriptError('The development release parent is not the canonical versions root.'));
+    return yield* ScriptError.make({message: 'The development release parent is not the canonical versions root.'});
   }
   if (Option.isSome(stagedRoot)) {
     const name = path.basename(stagedRoot.value);
@@ -930,9 +934,9 @@ const requireCanonicalDevelopmentInstallRoots = Effect.fn('developmentInstall.re
       Option.isNone(canonical) ||
       !platformPathEquals(path, system, canonical.value, path.join(stagedParent, name))
     ) {
-      return yield* Effect.fail(
-        new ScriptError('The development staging directory changed or escaped before activation.'),
-      );
+      return yield* ScriptError.make({
+        message: 'The development staging directory changed or escaped before activation.',
+      });
     }
   }
   return current;
@@ -956,13 +960,13 @@ function readPackageManifest(fs: FileSystem.FileSystem, file: string) {
     Effect.flatMap(source =>
       Effect.try({
         try: () => JSON.parse(source) as {readonly version?: unknown},
-        catch: cause => new ScriptError('Could not parse package.json.', {cause}),
+        catch: cause => ScriptError.make({message: 'Could not parse package.json.', cause}),
       }),
     ),
     Effect.flatMap(manifest =>
       typeof manifest.version === 'string' && manifest.version.length > 0
         ? Effect.succeed({version: manifest.version})
-        : Effect.fail(new ScriptError('package.json does not declare a version.')),
+        : Effect.fail(ScriptError.make({message: 'package.json does not declare a version.'})),
     ),
   );
 }
@@ -972,12 +976,12 @@ function readReleaseMetadata(fs: FileSystem.FileSystem, file: string) {
     Effect.flatMap(source =>
       Effect.try({
         try: () => JSON.parse(source) as unknown,
-        catch: cause => new ScriptError('Could not parse the development release metadata.', {cause}),
+        catch: cause => ScriptError.make({message: 'Could not parse the development release metadata.', cause}),
       }),
     ),
     Effect.flatMap(value => {
       if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        return Effect.fail(new ScriptError('The development release metadata is invalid.'));
+        return Effect.fail(ScriptError.make({message: 'The development release metadata is invalid.'}));
       }
       const candidate = value as Partial<{
         readonly executable: string;
@@ -990,7 +994,7 @@ function readReleaseMetadata(fs: FileSystem.FileSystem, file: string) {
         typeof candidate.target === 'string' &&
         typeof candidate.version === 'string'
         ? Effect.succeed(candidate as {executable: string; runtime: string; target: string; version: string})
-        : Effect.fail(new ScriptError('The development release metadata is incomplete.'));
+        : Effect.fail(ScriptError.make({message: 'The development release metadata is incomplete.'}));
     }),
   );
 }

@@ -11,7 +11,8 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
     extract: file =>
       Effect.try({
         try: () => extractFileFacts(file),
-        catch: cause => new CodeGraphLanguagePackError(`Could not extract manifest facts from ${file.path}.`, {cause}),
+        catch: cause =>
+          CodeGraphLanguagePackError.make({message: `Could not extract manifest facts from ${file.path}.`, cause}),
       }),
     version: sha256HexSync('threadnote-manifest-extractors-v3-node-workspaces'),
   },

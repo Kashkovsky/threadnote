@@ -1,5 +1,5 @@
 import {Database} from 'bun:sqlite';
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Path, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {MEMORY_READ_CURSOR_TTL_MILLISECONDS, type MemoryReadCursorState} from './read_projection.js';
 
@@ -22,9 +22,13 @@ interface StoredCursorEnvelopeV1 {
   readonly version: 1;
 }
 
-export class PersistentMemoryReadCursorStoreError extends Error {
-  override readonly name = 'PersistentMemoryReadCursorStoreError';
-}
+export class PersistentMemoryReadCursorStoreError extends Schema.TaggedError<PersistentMemoryReadCursorStoreError>()(
+  'PersistentMemoryReadCursorStoreError',
+  {
+    cause: Schema.optionalKey(Schema.Defect()),
+    message: Schema.String,
+  },
+) {}
 
 export interface PersistentMemoryReadCursorStoreOptions {
   readonly maximumEntries?: number;
@@ -53,29 +57,31 @@ export function memoryReadCursorNamespace(input: {
 export function serializePersistentMemoryReadCursorState(state: MemoryReadCursorState, expiresAt: number): string {
   assertCursorState(state);
   if (!validTimestamp(expiresAt))
-    throw new PersistentMemoryReadCursorStoreError('Memory read cursor expiry is invalid.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor expiry is invalid.'});
   const serialized = JSON.stringify({expiresAt, state, version: 1} satisfies StoredCursorEnvelopeV1);
   if (new TextEncoder().encode(serialized).byteLength > CURSOR_STATE_MAXIMUM_BYTES) {
-    throw new PersistentMemoryReadCursorStoreError('Memory read cursor state exceeds its bounded size.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor state exceeds its bounded size.'});
   }
   return serialized;
 }
 
 export function parsePersistentMemoryReadCursorState(serialized: string): StoredCursorEnvelopeV1 {
   if (new TextEncoder().encode(serialized).byteLength > CURSOR_STATE_MAXIMUM_BYTES) {
-    throw new PersistentMemoryReadCursorStoreError('Stored memory read cursor state exceeds its bounded size.');
+    throw PersistentMemoryReadCursorStoreError.make({
+      message: 'Stored memory read cursor state exceeds its bounded size.',
+    });
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(serialized);
   } catch {
-    throw new PersistentMemoryReadCursorStoreError('Stored memory read cursor state is not valid JSON.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Stored memory read cursor state is not valid JSON.'});
   }
   if (!exactRecord(parsed, ['expiresAt', 'state', 'version']) || parsed.version !== 1) {
-    throw new PersistentMemoryReadCursorStoreError('Stored memory read cursor envelope is invalid.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Stored memory read cursor envelope is invalid.'});
   }
   if (!validTimestamp(parsed.expiresAt)) {
-    throw new PersistentMemoryReadCursorStoreError('Stored memory read cursor expiry is invalid.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Stored memory read cursor expiry is invalid.'});
   }
   assertCursorState(parsed.state);
   return {expiresAt: parsed.expiresAt, state: parsed.state, version: 1};
@@ -99,18 +105,18 @@ export const putPersistentMemoryReadCursor = Effect.fn('memoryReadCursorStore.pu
         ttlMilliseconds < 1 ||
         ttlMilliseconds > MEMORY_READ_CURSOR_TTL_MILLISECONDS
       ) {
-        throw new PersistentMemoryReadCursorStoreError('Memory read cursor TTL is invalid.');
+        throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor TTL is invalid.'});
       }
       if (
         !Number.isSafeInteger(maximumEntries) ||
         maximumEntries < 1 ||
         maximumEntries > CURSOR_STORE_MAXIMUM_ENTRIES
       ) {
-        throw new PersistentMemoryReadCursorStoreError('Memory read cursor capacity is invalid.');
+        throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor capacity is invalid.'});
       }
       const expiresAt = now + ttlMilliseconds;
       if (!validTimestamp(expiresAt)) {
-        throw new PersistentMemoryReadCursorStoreError('Memory read cursor expiry is invalid.');
+        throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor expiry is invalid.'});
       }
       return {expiresAt, maximumEntries, serialized: serializePersistentMemoryReadCursorState(state, expiresAt)};
     },
@@ -173,7 +179,7 @@ export const takePersistentMemoryReadCursor = Effect.fn('memoryReadCursorStore.t
     });
     if (!row) return undefined;
     if (typeof row.state_json !== 'string' || !validTimestamp(row.expires_at)) {
-      throw new PersistentMemoryReadCursorStoreError('Stored memory read cursor row is invalid.');
+      throw PersistentMemoryReadCursorStoreError.make({message: 'Stored memory read cursor row is invalid.'});
     }
     const envelope = parsePersistentMemoryReadCursorState(row.state_json);
     if (envelope.expiresAt !== row.expires_at || envelope.expiresAt <= now) return undefined;
@@ -193,17 +199,22 @@ function useCursorDatabase<Value>(
     yield* fs
       .makeDirectory(root, {recursive: true, mode: 0o700})
       .pipe(
-        Effect.mapError(() => new PersistentMemoryReadCursorStoreError('Memory read cursor directory is unavailable.')),
+        Effect.mapError(() =>
+          PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor directory is unavailable.'}),
+        ),
       );
     yield* fs
       .chmod(root, 0o700)
       .pipe(
-        Effect.mapError(() => new PersistentMemoryReadCursorStoreError('Memory read cursor permissions are invalid.')),
+        Effect.mapError(() =>
+          PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor permissions are invalid.'}),
+        ),
       );
     const result = yield* Effect.acquireUseRelease(
       Effect.try({
         try: () => new Database(databasePath, {create: true, strict: true}),
-        catch: () => new PersistentMemoryReadCursorStoreError('Memory read cursor database could not be opened.'),
+        catch: () =>
+          PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor database could not be opened.'}),
       }),
       database =>
         Effect.try({
@@ -213,16 +224,18 @@ function useCursorDatabase<Value>(
             return use(database);
           },
           catch: error =>
-            error instanceof PersistentMemoryReadCursorStoreError
+            Schema.is(PersistentMemoryReadCursorStoreError)(error)
               ? error
-              : new PersistentMemoryReadCursorStoreError('Memory read cursor database operation failed.'),
+              : PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor database operation failed.'}),
         }),
       database => Effect.sync(() => database.close()),
     );
     yield* fs
       .chmod(databasePath, 0o600)
       .pipe(
-        Effect.mapError(() => new PersistentMemoryReadCursorStoreError('Memory read cursor permissions are invalid.')),
+        Effect.mapError(() =>
+          PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor permissions are invalid.'}),
+        ),
       );
     return result;
   });
@@ -270,21 +283,22 @@ function inImmediateTransaction<Value>(database: Database, use: () => Value): Va
 
 function assertStoreIdentity(namespace: string, cursor: string, now: number): void {
   if (!NAMESPACE.test(namespace))
-    throw new PersistentMemoryReadCursorStoreError('Memory read cursor namespace is invalid.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor namespace is invalid.'});
   if (!CURSOR_TOKEN.test(cursor))
-    throw new PersistentMemoryReadCursorStoreError('Memory read cursor token is invalid.');
-  if (!validTimestamp(now)) throw new PersistentMemoryReadCursorStoreError('Memory read cursor timestamp is invalid.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor token is invalid.'});
+  if (!validTimestamp(now))
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor timestamp is invalid.'});
 }
 
 function assertCursorState(value: unknown): asserts value is MemoryReadCursorState {
   if (!exactRecord(value, ['mode', 'position', 'section', 'sourceHashes', 'uris'], ['section'])) {
-    throw new PersistentMemoryReadCursorStoreError('Memory read cursor state is invalid.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor state is invalid.'});
   }
   if (value.mode !== 'content' && value.mode !== 'outline') {
-    throw new PersistentMemoryReadCursorStoreError('Memory read cursor mode is invalid.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor mode is invalid.'});
   }
   if (!exactRecord(value.position, ['characterOffset', 'resourceIndex'])) {
-    throw new PersistentMemoryReadCursorStoreError('Memory read cursor position is invalid.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor position is invalid.'});
   }
   const characterOffset = value.position.characterOffset;
   const resourceIndex = value.position.resourceIndex;
@@ -296,20 +310,20 @@ function assertCursorState(value: unknown): asserts value is MemoryReadCursorSta
     !Number.isSafeInteger(resourceIndex) ||
     resourceIndex < 0
   ) {
-    throw new PersistentMemoryReadCursorStoreError('Memory read cursor position is invalid.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor position is invalid.'});
   }
   if (!Array.isArray(value.uris) || value.uris.length === 0 || !value.uris.every(uri => typeof uri === 'string')) {
-    throw new PersistentMemoryReadCursorStoreError('Memory read cursor resource identities are invalid.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor resource identities are invalid.'});
   }
   if (
     !Array.isArray(value.sourceHashes) ||
     value.sourceHashes.length !== value.uris.length ||
     !value.sourceHashes.every(hash => typeof hash === 'string' && SOURCE_HASH.test(hash))
   ) {
-    throw new PersistentMemoryReadCursorStoreError('Memory read cursor source hashes are invalid.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor source hashes are invalid.'});
   }
   if (resourceIndex >= value.uris.length || (value.section !== undefined && typeof value.section !== 'string')) {
-    throw new PersistentMemoryReadCursorStoreError('Memory read cursor state is inconsistent.');
+    throw PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor state is inconsistent.'});
   }
 }
 
@@ -332,7 +346,7 @@ function validTimestamp(value: unknown): value is number {
 }
 
 function persistentCursorStoreError(error: unknown): PersistentMemoryReadCursorStoreError {
-  return error instanceof PersistentMemoryReadCursorStoreError
+  return Schema.is(PersistentMemoryReadCursorStoreError)(error)
     ? error
-    : new PersistentMemoryReadCursorStoreError('Memory read cursor input is invalid.');
+    : PersistentMemoryReadCursorStoreError.make({message: 'Memory read cursor input is invalid.'});
 }

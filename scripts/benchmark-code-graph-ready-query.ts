@@ -1,6 +1,6 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Clock, Effect, FileSystem, Option, Path} from 'effect';
+import {Clock, DateTime, Effect, FileSystem, Option, Path} from 'effect';
 import {
   observationFromCodeGraphStatus,
   CodeGraphQueryService,
@@ -196,10 +196,10 @@ export function parseReadyQueryBenchmarkArguments(args: readonly string[]): Read
     else if (argument === '--preflight') preflight = true;
     else if (argument === '--quiet') quiet = true;
     else if (argument === '--repository') repository = required(args[++index], argument);
-    else throw new ScriptError(`Unknown ready-query benchmark option: ${argument}`);
+    else throw ScriptError.make({message: `Unknown ready-query benchmark option: ${argument}`});
   }
   if (!home || !output || !repository) {
-    throw new ScriptError('Ready-query evidence requires --repository, --home, and --output.');
+    throw ScriptError.make({message: 'Ready-query evidence requires --repository, --home, and --output.'});
   }
   return {home, output, preflight, quiet, repository};
 }
@@ -219,9 +219,9 @@ export const preflightReadyQueryBenchmark = Effect.fn('readyQueryEvidence.prefli
     hardware.logicalCpuCount < READY_QUERY_LOGICAL_CPU_MINIMUM ||
     environment.THREADNOTE_READY_QUERY_DEDICATED_RUNNER !== 'true'
   ) {
-    return yield* Effect.fail(
-      new ScriptError('Governed ready-query evidence requires the dedicated preprovisioned Linux runner.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Governed ready-query evidence requires the dedicated preprovisioned Linux runner.',
+    });
   }
   const [repository, home, runtimeProvenance] = yield* Effect.all(
     [fs.realPath(options.repository), fs.realPath(options.home), validateBenchmarkRuntimeProvenance(sourceRoot)],
@@ -234,9 +234,9 @@ export const preflightReadyQueryBenchmark = Effect.fn('readyQueryEvidence.prefli
     pathIsWithin(path, home, repository) ||
     pathIsWithin(path, repository, home)
   ) {
-    return yield* Effect.fail(
-      new ScriptError('Ready-query repository, ready home, and evidence output must be mutually isolated.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Ready-query repository, ready home, and evidence output must be mutually isolated.',
+    });
   }
   const [commit, tree, dirty, origin, trackedFiles] = yield* Effect.all(
     [
@@ -256,9 +256,9 @@ export const preflightReadyQueryBenchmark = Effect.fn('readyQueryEvidence.prefli
     dirty.length > 0 ||
     trackedFiles < READY_QUERY_MINIMUM_FILES
   ) {
-    return yield* Effect.fail(
-      new ScriptError('Ready-query evidence requires the clean pinned >=200k-file IntelliJ fixture.'),
-    );
+    return yield* ScriptError.make({
+      message: 'Ready-query evidence requires the clean pinned >=200k-file IntelliJ fixture.',
+    });
   }
   yield* validateTrackedControls(fs, repository);
   const [publicCommitProof, identity] = yield* Effect.all(
@@ -266,7 +266,7 @@ export const preflightReadyQueryBenchmark = Effect.fn('readyQueryEvidence.prefli
     {concurrency: 2},
   );
   if (identity.headCommit !== commit) {
-    return yield* Effect.fail(new ScriptError('Ready-query fixture identity changed during static preflight.'));
+    return yield* ScriptError.make({message: 'Ready-query fixture identity changed during static preflight.'});
   }
   const source = {
     clean: true,
@@ -345,7 +345,7 @@ export const benchmarkReadyQueryEvidence = Effect.scoped(
           const deferred = yield* runReadyQueryRequest(query, prepared, control, 'deferred');
           yield* observeHost;
           if (!exact.matched || !deferred.matched || exact.digest !== deferred.digest) {
-            return yield* Effect.fail(new ScriptError(`Ready-query control ${control.id} failed digest parity.`));
+            return yield* ScriptError.make({message: `Ready-query control ${control.id} failed digest parity.`});
           }
           controls.push({
             deferredDigest: deferred.digest,
@@ -396,11 +396,11 @@ export const benchmarkReadyQueryEvidence = Effect.scoped(
         );
         const finalSource = qualifyingReadyQuerySource(finalRuntimeProvenance, system.environment());
         if (JSON.stringify(finalSource) !== JSON.stringify(source)) {
-          return yield* Effect.fail(new ScriptError('Ready-query GitHub workflow provenance changed during the run.'));
+          return yield* ScriptError.make({message: 'Ready-query GitHub workflow provenance changed during the run.'});
         }
         const artifact = {
           controls,
-          createdAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+          createdAt: DateTime.formatIso(yield* DateTime.now),
           fixture: prepared.evidence.fixture,
           host: readyQueryHostEvidence(hostSamples),
           isolation: {
@@ -478,7 +478,7 @@ const runReadyQueryRequest = Effect.fn('readyQueryEvidence.request')(function* (
     Effect.timeoutOrElse({
       duration:
         freshness === 'exact' ? READY_QUERY_EXACT_TIMEOUT_MILLISECONDS : READY_QUERY_DEFERRED_TIMEOUT_MILLISECONDS,
-      orElse: () => Effect.fail(new ScriptError(`Ready-query ${freshness} request timed out.`)),
+      orElse: () => Effect.fail(ScriptError.make({message: `Ready-query ${freshness} request timed out.`})),
     }),
   );
   const {response, result} = yield* run;
@@ -490,7 +490,7 @@ const runReadyQueryRequest = Effect.fn('readyQueryEvidence.request')(function* (
     result.snapshot.commit !== READY_QUERY_REPOSITORY_COMMIT ||
     result.nodes.length === 0
   ) {
-    return yield* Effect.fail(new ScriptError(`Ready-query ${freshness} request lost its snapshot contract.`));
+    return yield* ScriptError.make({message: `Ready-query ${freshness} request lost its snapshot contract.`});
   }
   return {
     digest: yield* queryResultDigest(result),
@@ -546,18 +546,18 @@ function timingSeries(
       new Set(observedStageKeys).size !== observedStageKeys.length ||
       observedStageKeys.some(key => !expectedStageKeys.has(key))
     ) {
-      throw new ScriptError('Ready-query stage coverage contains an unexpected or duplicate event.');
+      throw ScriptError.make({message: 'Ready-query stage coverage contains an unexpected or duplicate event.'});
     }
   }
   const stages = stageKeys.map(([phase, stage]) => {
     const observations = results.map(result => {
       const matches = result.stages.filter(candidate => candidate.phase === phase && candidate.stage === stage);
-      if (matches.length !== 1) throw new ScriptError(`Ready-query stage ${phase}/${stage} is incomplete.`);
+      if (matches.length !== 1) throw ScriptError.make({message: `Ready-query stage ${phase}/${stage} is incomplete.`});
       return matches[0];
     });
     const disposition = observations[0].disposition;
     if (observations.some(observation => observation.disposition !== disposition)) {
-      throw new ScriptError(`Ready-query stage ${phase}/${stage} disposition changed within the run.`);
+      throw ScriptError.make({message: `Ready-query stage ${phase}/${stage} disposition changed within the run.`});
     }
     return {
       disposition,
@@ -609,13 +609,11 @@ const validateTrackedControls = Effect.fn('readyQueryEvidence.validateTrackedCon
       Effect.gen(function* () {
         const tracked = yield* git(repository, ['ls-files', '--stage', '--error-unmatch', '--', control.expectedPath]);
         if (!/^100(?:644|755)\s/.test(tracked.stdout)) {
-          return yield* Effect.fail(
-            new ScriptError(`Ready-query control ${control.id} is not a tracked regular file.`),
-          );
+          return yield* ScriptError.make({message: `Ready-query control ${control.id} is not a tracked regular file.`});
         }
         const info = yield* fs.stat(`${repository}/${control.expectedPath}`);
         if (info.type !== 'File') {
-          return yield* Effect.fail(new ScriptError(`Ready-query control ${control.id} is not a regular file.`));
+          return yield* ScriptError.make({message: `Ready-query control ${control.id} is not a regular file.`});
         }
       }),
     {concurrency: 4},
@@ -728,9 +726,10 @@ function qualifyingReadyQuerySource(
     !/^[1-9]\d*$/.test(github.runId ?? '') ||
     !/^[1-9]\d*$/.test(github.runAttempt ?? '')
   ) {
-    throw new ScriptError(
-      'Qualifying ready-query evidence requires the canonical enabled protected-main GitHub workflow environment.',
-    );
+    throw ScriptError.make({
+      message:
+        'Qualifying ready-query evidence requires the canonical enabled protected-main GitHub workflow environment.',
+    });
   }
   return {
     clean: true,
@@ -777,9 +776,9 @@ const prepareReadyQuerySnapshot = Effect.fn('readyQueryEvidence.prepareSnapshot'
     snapshot.extractorSet !== CODE_GRAPH_EXTRACTOR_SET_VERSION ||
     snapshot.fileCount < READY_QUERY_MINIMUM_FILES
   ) {
-    return yield* Effect.fail(
-      new ScriptError('The prepared ready home lacks a clean, current, runtime-compatible >=200k-file snapshot.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The prepared ready home lacks a clean, current, runtime-compatible >=200k-file snapshot.',
+    });
   }
   const evidence = {
     contract: READY_QUERY_EVIDENCE_SUITE,
@@ -815,7 +814,7 @@ const assertPreparedSnapshotUnchanged = Effect.fn('readyQueryEvidence.assertPrep
     status.readySnapshot.commit !== READY_QUERY_REPOSITORY_COMMIT ||
     status.readySnapshot.dirty
   ) {
-    return yield* Effect.fail(new ScriptError('Ready-query snapshot or fixture changed inside builder exclusion.'));
+    return yield* ScriptError.make({message: 'Ready-query snapshot or fixture changed inside builder exclusion.'});
   }
 });
 
@@ -828,7 +827,7 @@ const exactReadyStatus = Effect.fn('readyQueryEvidence.exactStatus')(function* (
   return yield* query.status(home, repository, {observeWorktree: true, requestMaintenance: false}).pipe(
     Effect.timeoutOrElse({
       duration: READY_QUERY_EXACT_TIMEOUT_MILLISECONDS,
-      orElse: () => Effect.fail(new ScriptError(`Ready-query ${phase} status timed out.`)),
+      orElse: () => Effect.fail(ScriptError.make({message: `Ready-query ${phase} status timed out.`})),
     }),
   );
 });
@@ -844,9 +843,9 @@ const assertReadyQueryDatabaseHealth = Effect.fn('readyQueryEvidence.databaseHea
     health.readySnapshots < 1 ||
     health.buildingSnapshots !== 0
   ) {
-    return yield* Effect.fail(
-      new ScriptError('The prepared ready home database is not stable on the current schema and extension revision.'),
-    );
+    return yield* ScriptError.make({
+      message: 'The prepared ready home database is not stable on the current schema and extension revision.',
+    });
   }
   return {...health, buildingSnapshots: 0 as const};
 });
@@ -863,7 +862,7 @@ const canonicalizeProspectivePath = Effect.fn('readyQueryEvidence.canonicalizeOu
     if (Option.isSome(canonical)) return path.join(canonical.value, ...suffix);
     const parent = path.dirname(current);
     if (parent === current) {
-      return yield* Effect.fail(new ScriptError('Could not resolve an existing parent for ready-query output.'));
+      return yield* ScriptError.make({message: 'Could not resolve an existing parent for ready-query output.'});
     }
     suffix.unshift(path.basename(current));
     current = parent;
@@ -871,7 +870,7 @@ const canonicalizeProspectivePath = Effect.fn('readyQueryEvidence.canonicalizeOu
 });
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 

@@ -29,19 +29,19 @@ export const readCanonicalMutationGeneration = Effect.fn('resourceMutationGenera
   const generationPath = resourceAccountMutationGenerationPath(path, home, account);
   if (!(yield* fs.exists(generationPath))) return '';
   if (Option.isSome(yield* fs.readLink(generationPath).pipe(Effect.option))) {
-    return yield* new CanonicalMutationGenerationInvalid({
+    return yield* CanonicalMutationGenerationInvalid.make({
       message: 'Canonical mutation generation must not be a symbolic link.',
     });
   }
   const info = yield* fs.stat(generationPath);
   if (info.type !== 'File' || Number(info.size) > MAXIMUM_CANONICAL_MUTATION_GENERATION_BYTES) {
-    return yield* new CanonicalMutationGenerationInvalid({
+    return yield* CanonicalMutationGenerationInvalid.make({
       message: 'Canonical mutation generation is not a bounded regular file.',
     });
   }
   const generation = (yield* fs.readFileString(generationPath)).trim();
   if (!CANONICAL_MUTATION_GENERATION_PATTERN.test(generation)) {
-    return yield* new CanonicalMutationGenerationInvalid({message: 'Canonical mutation generation is malformed.'});
+    return yield* CanonicalMutationGenerationInvalid.make({message: 'Canonical mutation generation is malformed.'});
   }
   return generation;
 });
@@ -73,7 +73,7 @@ export const advanceCanonicalMutationGeneration = Effect.fn('resourceMutationGen
     }),
   ).pipe(
     Effect.andThen(fs.rename(temporaryPath, generationPath)),
-    Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))),
+    Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.ignore)),
   );
   yield* syncMutationGenerationDirectory(fs, directory);
   return {
@@ -86,7 +86,7 @@ function syncMutationGenerationDirectory(fs: FileSystem.FileSystem, directory: s
   return Effect.scoped(
     fs.open(directory, {flag: 'r'}).pipe(
       Effect.flatMap(file => file.sync),
-      Effect.catch(() => Effect.void),
+      Effect.ignore,
     ),
   );
 }

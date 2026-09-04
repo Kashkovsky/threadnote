@@ -6,7 +6,7 @@ import {withSharedRepositoryHomeLock} from '../../src/effect/share_lock.js';
 
 const [home, readyPath, releasePath, remote, worktree] = process.argv.slice(2);
 if (!home || !readyPath || !releasePath || !remote || !worktree) {
-  throw new TestError('Expected home, ready path, release path, remote, and worktree arguments.');
+  throw TestError.make({message: 'Expected home, ready path, release path, remote, and worktree arguments.'});
 }
 
 await Effect.runPromise(

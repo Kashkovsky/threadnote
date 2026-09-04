@@ -85,9 +85,9 @@ describe('code graph repair process signals', () => {
             child.kill('SIGKILL');
             yield* Effect.promise(() => child.exited);
             const [capturedStdout, capturedStderr] = yield* Effect.promise(() => Promise.all([stdout, stderr]));
-            throw new TestError(
-              `Repair ignored SIGTERM. stdout=${JSON.stringify(capturedStdout)} stderr=${JSON.stringify(capturedStderr)}`,
-            );
+            throw TestError.make({
+              message: `Repair ignored SIGTERM. stdout=${JSON.stringify(capturedStdout)} stderr=${JSON.stringify(capturedStderr)}`,
+            });
           }
           expect(elapsed).toBeLessThan(3_000);
           yield* Effect.promise(() => waitFor(async () => !(await anyExists(locks)), 2_000));
@@ -126,5 +126,5 @@ async function waitFor(
     if (Array.isArray(observed) ? observed.every(Boolean) : observed) return;
     await Bun.sleep(25);
   }
-  throw new TestError('Timed out waiting for the repair signal fixture.');
+  throw TestError.make({message: 'Timed out waiting for the repair signal fixture.'});
 }

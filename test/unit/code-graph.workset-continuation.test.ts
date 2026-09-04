@@ -142,7 +142,7 @@ describe('code graph workset qualified refs and continuation', () => {
           beforePointerSwap: () =>
             Effect.sync(() => {
               calls += 1;
-            }).pipe(Effect.andThen(Effect.fail(new CodeGraphWorksetCatalogError('stale', 'snapshot lease changed')))),
+            }).pipe(Effect.andThen(Effect.fail(CodeGraphWorksetCatalogError.of('stale', 'snapshot lease changed')))),
           generationId: staged.id,
           worksetName: 'engineering',
         }),

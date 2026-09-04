@@ -1,5 +1,5 @@
 import * as BunSocket from '@effect/platform-bun/BunSocket';
-import {Console, Deferred, Effect, FileSystem, Option, Path, Stdio, Stream} from 'effect';
+import {Console, Deferred, Effect, FileSystem, Option, Path, Stdio, Stream, Schema} from 'effect';
 import {failure, success, warning} from './cli_ui.js';
 import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect, type CommandOptions} from './effect/command.js';
 import {getStatusEffect, getTextEffect} from './effect/http.js';
@@ -32,9 +32,10 @@ import {getThreadnoteVersion} from './release/runtime_version.js';
 import {compareVersions} from './release/version_compare.js';
 import {findWorkspaceComponentManifest} from './workspace_component.js';
 
-class UtilityOperationError extends Error {
-  readonly _tag = 'UtilityOperationError' as const;
-}
+class UtilityOperationError extends Schema.TaggedError<UtilityOperationError>()('UtilityOperationError', {
+  cause: Schema.optionalKey(Schema.Defect()),
+  message: Schema.String,
+}) {}
 
 export {formatShellCommand, shellQuote, withoutGitEnvironment} from './effect/command.js';
 export {compareVersions} from './release/version_compare.js';
@@ -132,7 +133,7 @@ export function escapeRegExp(value: string): string {
 export const requiredExecutable = Effect.fn('utils.requiredExecutable')(function* (command: string) {
   const executable = yield* findExecutable([command]);
   if (!executable) {
-    return yield* Effect.fail(new UtilityOperationError(`${command} was not found in PATH.`));
+    return yield* UtilityOperationError.make({message: `${command} was not found in PATH.`});
   }
   return executable;
 });
@@ -392,7 +393,7 @@ export function formatStaleVersionNotice(
 }
 
 export const readHttpStatus = Effect.fn('utils.readHttpStatus')((url: string, timeoutMs: number) =>
-  getStatusEffect(url, {timeoutMs}).pipe(Effect.catch(() => Effect.succeed(undefined))),
+  getStatusEffect(url, {timeoutMs}).pipe(Effect.orElseSucceed(() => undefined)),
 );
 
 export const isTcpPortOpen = Effect.fn('utils.isTcpPortOpen')((host: string, port: number, timeoutMs: number) =>
@@ -514,7 +515,7 @@ export const removePath = Effect.fn('utils.removePath')(function* (path: string,
 export function parsePort(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
-    throw new UtilityOperationError(`Invalid port: ${value}`);
+    throw UtilityOperationError.make({message: `Invalid port: ${value}`});
   }
   return parsed;
 }
@@ -522,7 +523,7 @@ export function parsePort(value: string): number {
 export function parsePositiveInteger(value: string, label: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new UtilityOperationError(`Invalid ${label}: ${value}`);
+    throw UtilityOperationError.make({message: `Invalid ${label}: ${value}`});
   }
   return parsed;
 }
@@ -561,50 +562,46 @@ export const assertSafeThreadnoteHomeForErase = Effect.fn('utils.assertSafeThrea
     comparable(resolvedPath) === comparable(resolvedUserHome) ||
     comparable(resolvedPath) === comparable(pathService.dirname(resolvedUserHome))
   ) {
-    return yield* Effect.fail(new UtilityOperationError(`Refusing to erase unsafe THREADNOTE_HOME: ${resolvedPath}`));
+    return yield* UtilityOperationError.make({message: `Refusing to erase unsafe THREADNOTE_HOME: ${resolvedPath}`});
   }
   if ((yield* fs.readLink(resolvedPath).pipe(Effect.option))._tag === 'Some') {
-    return yield* Effect.fail(
-      new UtilityOperationError(`Refusing to erase symbolic-link THREADNOTE_HOME: ${resolvedPath}`),
-    );
+    return yield* UtilityOperationError.make({
+      message: `Refusing to erase symbolic-link THREADNOTE_HOME: ${resolvedPath}`,
+    });
   }
   const homeInfo = yield* fs.stat(resolvedPath).pipe(Effect.option);
   if (Option.isNone(homeInfo) || homeInfo.value.type !== 'Directory') {
-    return yield* Effect.fail(
-      new UtilityOperationError(`Refusing to erase invalid THREADNOTE_HOME directory: ${resolvedPath}`),
-    );
+    return yield* UtilityOperationError.make({
+      message: `Refusing to erase invalid THREADNOTE_HOME directory: ${resolvedPath}`,
+    });
   }
   const receiptPath = pathService.join(resolvedPath, 'layout.json');
   if ((yield* fs.readLink(receiptPath).pipe(Effect.option))._tag === 'Some') {
-    return yield* Effect.fail(
-      new UtilityOperationError(`Refusing to trust symbolic-link Threadnote layout receipt: ${receiptPath}`),
-    );
+    return yield* UtilityOperationError.make({
+      message: `Refusing to trust symbolic-link Threadnote layout receipt: ${receiptPath}`,
+    });
   }
   const receiptInfo = yield* fs.stat(receiptPath).pipe(Effect.option);
   if (Option.isNone(receiptInfo) || receiptInfo.value.type !== 'File') {
-    return yield* Effect.fail(
-      new UtilityOperationError(
-        `Refusing to erase unowned THREADNOTE_HOME without a valid layout receipt: ${resolvedPath}`,
-      ),
-    );
+    return yield* UtilityOperationError.make({
+      message: `Refusing to erase unowned THREADNOTE_HOME without a valid layout receipt: ${resolvedPath}`,
+    });
   }
   const receipt = yield* fs.readFileString(receiptPath).pipe(
     Effect.flatMap(content =>
       Effect.try({
         try: () => JSON.parse(content) as unknown,
         catch: () =>
-          new UtilityOperationError(
-            `Refusing to erase THREADNOTE_HOME with an invalid layout receipt: ${resolvedPath}`,
-          ),
+          UtilityOperationError.make({
+            message: `Refusing to erase THREADNOTE_HOME with an invalid layout receipt: ${resolvedPath}`,
+          }),
       }),
     ),
   );
   if (!isThreadnoteStorageLayoutReceipt(receipt)) {
-    return yield* Effect.fail(
-      new UtilityOperationError(
-        `Refusing to erase THREADNOTE_HOME with an invalid or unsupported layout receipt: ${resolvedPath}`,
-      ),
-    );
+    return yield* UtilityOperationError.make({
+      message: `Refusing to erase THREADNOTE_HOME with an invalid or unsupported layout receipt: ${resolvedPath}`,
+    });
   }
   return resolvedPath;
 });
@@ -766,14 +763,12 @@ const nestedWorkspaceComponentContext = Effect.fn('utils.nestedWorkspaceComponen
   cwd: string,
   repoRoot: string,
 ) {
-  const resolvedRoot = yield* fs
-    .realPath(repoRoot)
-    .pipe(Effect.catch(() => Effect.succeed(pathService.resolve(repoRoot))));
+  const resolvedRoot = yield* fs.realPath(repoRoot).pipe(Effect.orElseSucceed(() => pathService.resolve(repoRoot)));
   const cwdInfo = yield* fs.stat(cwd).pipe(Effect.option);
   const logicalCurrent = pathService.resolve(
     cwdInfo._tag === 'Some' && cwdInfo.value.type === 'File' ? pathService.dirname(cwd) : cwd,
   );
-  let current = yield* fs.realPath(logicalCurrent).pipe(Effect.catch(() => Effect.succeed(logicalCurrent)));
+  let current = yield* fs.realPath(logicalCurrent).pipe(Effect.orElseSucceed(() => logicalCurrent));
   const relativeCwd = pathService.relative(resolvedRoot, current);
   if (relativeCwd.startsWith('..') || pathService.isAbsolute(relativeCwd)) {
     return undefined;
@@ -1695,7 +1690,9 @@ function hybridRankRecallHits(
         : result.results.map(ranked => {
             const hit = byUri.get(ranked.candidate.uri);
             if (!hit) {
-              throw new UtilityOperationError(`Hybrid ranker returned unknown URI: ${ranked.candidate.uri}`);
+              throw UtilityOperationError.make({
+                message: `Hybrid ranker returned unknown URI: ${ranked.candidate.uri}`,
+              });
             }
             return {
               ...hit,

@@ -24,7 +24,7 @@ export const acquireFoldForwardBaseLeases = Effect.fn('codeGraph.acquireFoldForw
   if (Option.isNone(physical))
     return Option.none<{readonly additional: readonly string[]; readonly physical: string}>();
   const physicalToken = yield* Effect.acquireRelease(Effect.succeed(physical.value), token =>
-    store.releaseSnapshotLease(databasePath, token).pipe(Effect.catch(() => Effect.void)),
+    store.releaseSnapshotLease(databasePath, token).pipe(Effect.ignore),
   );
   if (logicalSnapshotId === undefined) {
     return Option.some({additional: [], physical: physicalToken});
@@ -34,7 +34,7 @@ export const acquireFoldForwardBaseLeases = Effect.fn('codeGraph.acquireFoldForw
     .pipe(Effect.option);
   if (Option.isNone(logical)) return Option.none();
   const logicalToken = yield* Effect.acquireRelease(Effect.succeed(logical.value), token =>
-    store.releaseSnapshotLease(databasePath, token).pipe(Effect.catch(() => Effect.void)),
+    store.releaseSnapshotLease(databasePath, token).pipe(Effect.ignore),
   );
   return Option.some({additional: [logicalToken], physical: physicalToken});
 });

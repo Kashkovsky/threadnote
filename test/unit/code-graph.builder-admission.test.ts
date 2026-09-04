@@ -87,7 +87,7 @@ describe('code graph home builder admission', () => {
         yield* Deferred.await(backgroundStarted);
         yield* Deferred.succeed(releaseBackground, undefined);
         yield* Deferred.succeed(releaseSecond, undefined);
-        yield* Effect.all([firstFiber, secondFiber, currentFiber, backgroundFiber].map(Fiber.join), {
+        yield* Effect.forEach([firstFiber, secondFiber, currentFiber, backgroundFiber], Fiber.join, {
           concurrency: 'unbounded',
           discard: true,
         });

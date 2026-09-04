@@ -271,7 +271,8 @@ const program = Effect.gen(function* () {
         sourceCommit: subject.identity.sourceCommit,
       });
     },
-    catch: cause => new ScriptError('Could not prepare the Code Memory Link sealed agent experiment.', {cause}),
+    catch: cause =>
+      ScriptError.make({message: 'Could not prepare the Code Memory Link sealed agent experiment.', cause}),
   });
 });
 
@@ -2223,9 +2224,10 @@ function parseArguments(arguments_: readonly string[]): Options {
   ]);
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
-    if (!supported.has(argument)) throw new ScriptError(`Unknown Code Memory Link preparation option: ${argument}`);
+    if (!supported.has(argument))
+      throw ScriptError.make({message: `Unknown Code Memory Link preparation option: ${argument}`});
     if (values[argument] !== undefined)
-      throw new ScriptError(`Duplicate Code Memory Link preparation option: ${argument}`);
+      throw ScriptError.make({message: `Duplicate Code Memory Link preparation option: ${argument}`});
     values[argument] = required(arguments_[++index], argument);
   }
   const candidateCommit = matching(
@@ -2437,7 +2439,7 @@ function positiveInteger(value: string, label: string, maximum: number): number 
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
+  if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
 }
 
