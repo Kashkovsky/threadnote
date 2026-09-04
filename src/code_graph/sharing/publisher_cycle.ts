@@ -1,5 +1,6 @@
 import {Clock, Crypto, Effect, FileSystem, Path, Ref} from 'effect';
 import {runCodeGraphCheckpointExport} from '../checkpoint/commands.js';
+import type {CodeGraphCheckpointHeaderV1, CodeGraphCheckpointRecordV1} from '../checkpoint/schema.js';
 import {CodeGraphIndexer} from '../indexer.js';
 import {codeGraphDirectPersistentCapacityProtector} from '../indexer_materialization.js';
 import {codeGraphLayout} from '../layout.js';
@@ -18,6 +19,13 @@ import {
   type GraphShareFrontierManifestV1,
   type GraphSharePublisherKeyV1,
 } from './artifacts.js';
+import {graphShareDeltaClosureComplete, planGraphSharePublication} from './delta.js';
+import {
+  composeGraphShareTargetRecords,
+  decodeGraphShareCheckpointBytes,
+  encodeGraphShareDeltaPack,
+  putGraphShareDeltaArtifact,
+} from './delta_pack.js';
 import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {putCasFile, readVerifiedCasBlob} from './cas.js';
 import {putGraphShareCheckpointLayers} from './checkpoint_cas.js';
@@ -37,7 +45,12 @@ import {
   type GraphShareFrontierPhase,
   type GraphShareFrontierThresholds,
 } from './frontier.js';
-import {graphShareCommitDiffStats, graphShareCommitIsAncestor} from './git.js';
+import {
+  assertGraphShareCommitChain,
+  graphShareCommitDiffStats,
+  graphShareCommitIsAncestor,
+  graphShareCommitUnixSeconds,
+} from './git.js';
 import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {
   hydratePublisherParseCache,
@@ -176,7 +189,7 @@ export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advanc
   yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
   machine = verifyGraphShareBatch(machine);
   yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
-  const published = yield* exportSignedGeneration(config, options, current, identity.repositoryId);
+  const published = yield* exportSignedGeneration(config, options, current, identity.repositoryId, profile);
   machine = publishGraphShareBatch(machine, published.manifestDigest);
   yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
   return {
@@ -279,30 +292,83 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
   options: GraphPublisherCycleOptions,
   current: GraphShareFrontierManifestV1,
   repositoryId: string,
+  profile: GraphShareProfileV1,
 ) {
   const crypto = yield* Crypto.Crypto;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const cwd = yield* commandCwd(options.cwd);
+  const identity = yield* resolveRepositoryIdentity(cwd);
   const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas);
   const key = yield* loadPublisherKey(config.agentContextHome);
   const spool = path.join(casRoot, 'spool', `${yield* crypto.randomUUIDv4}.cgcp`);
   const exported = yield* runCodeGraphCheckpointExport(config, {cwd, output: spool, quiet: true});
-  const checkpointDigest = yield* putCasFile(casRoot, spool);
+  const exportedBytes = yield* fs.readFile(spool);
+  const target = decodeGraphShareCheckpointBytes(exportedBytes);
+  const previous = yield* loadPublishedTargetGraph(casRoot, current);
+  const deltaPack = encodeGraphShareDeltaPack({
+    base: {
+      commit: current.sourceCommit,
+      logicalDigest: previous.header.logical,
+      snapshotId: current.snapshotId,
+    },
+    previousRecords: previous.records,
+    target,
+  });
+  const nowSeconds = Math.floor((yield* Clock.currentTimeMillis) / 1_000);
+  const checkpointTime = yield* graphShareCommitUnixSeconds(identity.repoRoot, current.checkpoint.sourceCommit);
+  const chainDeltaBytes = yield* publishedDeltaBytes(casRoot, current);
+  const publication = planGraphSharePublication({
+    chainDeltaBytes,
+    chainDeltaCount: current.deltas.length,
+    checkpointAgeSeconds:
+      checkpointTime === undefined ? profile.frontier.compactAfterSeconds : Math.max(0, nowSeconds - checkpointTime),
+    closureComplete: graphShareDeltaClosureComplete(previous.header, target.header),
+    nextDeltaBytes: deltaPack.bytes.byteLength,
+    profile: profile.frontier,
+  });
+  yield* assertGraphShareCommitChain(identity.repoRoot, [
+    current.checkpoint.sourceCommit,
+    ...current.deltas.map(delta => delta.targetCommit),
+    exported.sourceCommit,
+  ]);
+  const checkpointDigest =
+    publication === 'compact' ? yield* putCasFile(casRoot, spool) : current.checkpoint.manifestDigest;
   yield* fs.remove(spool, {force: true});
-  if (checkpointDigest !== parseSha256Digest(exported.artifact.digest)) {
+  if (publication === 'compact' && checkpointDigest !== parseSha256Digest(exported.artifact.digest)) {
     return yield* graphSharingFailure('Checkpoint CAS digest does not match the exported artifact.');
   }
-  const layers = yield* putGraphShareCheckpointLayers(casRoot, checkpointDigest);
+  const checkpointLayers =
+    publication === 'compact'
+      ? yield* putGraphShareCheckpointLayers(casRoot, checkpointDigest)
+      : current.checkpoint.metadataDigest === undefined
+        ? undefined
+        : {metadataDigest: current.checkpoint.metadataDigest};
+  const publishedDelta = publication === 'delta' ? yield* putGraphShareDeltaArtifact(casRoot, deltaPack) : undefined;
   const signed = yield* signGraphShareFrontier(key, {
     branch: current.branch,
-    checkpoint: {
-      manifestDigest: checkpointDigest,
-      metadataDigest: layers.metadataDigest,
-      snapshotId: exported.snapshotId,
-      sourceCommit: exported.sourceCommit,
-    },
-    deltas: [],
+    checkpoint:
+      publication === 'compact'
+        ? {
+            manifestDigest: checkpointDigest,
+            metadataDigest: checkpointLayers?.metadataDigest,
+            snapshotId: exported.snapshotId,
+            sourceCommit: exported.sourceCommit,
+          }
+        : current.checkpoint,
+    deltas:
+      publication === 'compact' || publishedDelta === undefined
+        ? []
+        : [
+            ...current.deltas,
+            {
+              baseSnapshotId: current.snapshotId,
+              manifestDigest: publishedDelta.digest,
+              metadataDigest: publishedDelta.layers.metadataDigest,
+              targetCommit: exported.sourceCommit,
+              targetSnapshotId: exported.snapshotId,
+            },
+          ],
     generation: current.generation + 1,
     graphAbi: exported.graphAbi,
     graphContentId: exported.graphContentId,
@@ -315,7 +381,14 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
     snapshotId: exported.snapshotId,
     sourceCommit: exported.sourceCommit,
   });
-  const metadataBytes = yield* readVerifiedCasBlob(casRoot, layers.metadataDigest);
+  const metadataDigest =
+    publication === 'compact'
+      ? checkpointLayers?.metadataDigest
+      : (current.checkpoint.metadataDigest ?? publishedDelta?.layers.metadataDigest);
+  if (metadataDigest === undefined) {
+    return yield* graphSharingFailure('Frontier publication is missing checkpoint metadata.');
+  }
+  const metadataBytes = yield* readVerifiedCasBlob(casRoot, metadataDigest);
   const documents = yield* putSignedGraphShareFrontierDocuments(casRoot, signed, metadataBytes);
   const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
   yield* writePrivateJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, repositoryId), {
@@ -332,6 +405,37 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
     profileDigest: current.profileDigest,
     sourceCommit: exported.sourceCommit,
   };
+});
+
+const loadPublishedTargetGraph = Effect.fn('codeGraph.sharing.loadPublishedTarget')(function* (
+  casRoot: string,
+  current: GraphShareFrontierManifestV1,
+) {
+  const checkpoint = decodeGraphShareCheckpointBytes(
+    yield* readVerifiedCasBlob(casRoot, current.checkpoint.manifestDigest),
+  );
+  const deltas = [];
+  for (const delta of current.deltas) {
+    deltas.push(decodeGraphShareCheckpointBytes(yield* readVerifiedCasBlob(casRoot, delta.manifestDigest)));
+  }
+  return {
+    header: deltas.at(-1)?.header ?? checkpoint.header,
+    records: composeGraphShareTargetRecords(checkpoint.records, deltas),
+  } satisfies {
+    readonly header: CodeGraphCheckpointHeaderV1;
+    readonly records: readonly CodeGraphCheckpointRecordV1[];
+  };
+});
+
+const publishedDeltaBytes = Effect.fn('codeGraph.sharing.publishedDeltaBytes')(function* (
+  casRoot: string,
+  current: GraphShareFrontierManifestV1,
+) {
+  let total = 0;
+  for (const delta of current.deltas) {
+    total += (yield* readVerifiedCasBlob(casRoot, delta.manifestDigest)).byteLength;
+  }
+  return total;
 });
 
 const loadPublisherKey = Effect.fn('codeGraph.sharing.cycleLoadPublisherKey')(function* (threadnoteHome: string) {

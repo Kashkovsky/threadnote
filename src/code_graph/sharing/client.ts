@@ -1,5 +1,6 @@
-import {Effect, Exit, FileSystem, Option, Path, Schema} from 'effect';
+import {Crypto, Effect, Exit, FileSystem, Option, Path, Schema} from 'effect';
 import {importCodeGraphCheckpointSnapshot} from '../checkpoint/commands.js';
+import {encodeCodeGraphCheckpointPackV1} from '../checkpoint/pack.js';
 import {SystemInfo} from '../../effect/system.js';
 import {resolveRepositoryIdentity} from '../repository.js';
 import type {CodeGraphProgress, RepositoryIdentity} from '../types.js';
@@ -16,7 +17,14 @@ import {readVerifiedCasBlob} from './cas.js';
 import {ensureGraphShareCheckpointArtifact} from './checkpoint_cas.js';
 import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
 import type {Sha256Digest} from './digest.js';
-import {graphShareBlobExists, graphShareCommitIsAncestor} from './git.js';
+import {graphShareApplyBaseMatches, graphShareApplyIsAlreadyAtTarget} from './delta.js';
+import {
+  checkpointMetadataFromHeader,
+  composeGraphShareTargetRecords,
+  decodeGraphShareCheckpointBytes,
+  writeTemporaryCheckpointPack,
+} from './delta_pack.js';
+import {assertGraphShareCommitChain, graphShareBlobExists, graphShareCommitIsAncestor} from './git.js';
 import {graphShareControlGetFrontier, graphShareControlGetTag, mirrorCoordinatorCasBlob} from './control_client.js';
 import {graphShareFrontierPointerFromOciDescriptor, parseGraphShareOciDescriptor} from './descriptor.js';
 import {graphShareFrontierDiscoveryTag} from './namespace.js';
@@ -364,24 +372,64 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     manifest,
     coordinatorUrl,
   );
-  if (selected.deltas.length > 0) {
-    return yield* graphSharingFailure(
-      'Incremental frontier deltas are not applied until a checkpoint compaction is published.',
-    );
-  }
+  yield* assertGraphShareCommitChain(input.request.identity.repoRoot, [
+    selected.checkpoint.sourceCommit,
+    ...selected.deltas.map(delta => delta.targetCommit),
+    selected.sourceCommit,
+  ]);
   const existing = yield* readSharedGraphProvenance(
     input.request.threadnoteHome,
     input.request.identity.checkoutId,
   ).pipe(Effect.orElseSucceed(() => undefined));
   if (
-    existing?.checkpointDigest === selected.checkpoint.manifestDigest &&
+    existing !== undefined &&
     existing.repositoryId === input.request.identity.repositoryId &&
-    existing.profileDigest === profileDigest
+    existing.profileDigest === profileDigest &&
+    graphShareApplyIsAlreadyAtTarget(existing, selected)
   ) {
     return {
       imported: false as const,
       reason: 'already-installed' as const,
       snapshotId: existing.snapshotId,
+      checkpointDigest: selected.checkpoint.manifestDigest,
+      atGeneration: selected.generation,
+    };
+  }
+  if (
+    selected.deltas.length > 0 &&
+    existing !== undefined &&
+    existing.repositoryId === input.request.identity.repositoryId &&
+    !graphShareApplyBaseMatches(existing, selected)
+  ) {
+    return yield* graphSharingFailure('Shared graph delta base does not match the installed snapshot.');
+  }
+  if (selected.deltas.length === 0) {
+    const checkpointPath = yield* ensureGraphShareCheckpointArtifact({
+      artifactDigest: selected.checkpoint.manifestDigest,
+      casRoot: input.casRoot,
+      ...(coordinatorUrl === undefined ? {} : {coordinatorUrl}),
+      ...(selected.checkpoint.metadataDigest === undefined ? {} : {metadataDigest: selected.checkpoint.metadataDigest}),
+    });
+    yield* sharingProgress(input.request.onProgress, 'applying-deltas');
+    const imported = yield* importCodeGraphCheckpointSnapshot(runtimeConfigForHome(input.request.threadnoteHome), {
+      cwd: input.request.cwd,
+      expectedDigest: selected.checkpoint.manifestDigest,
+      followOnIndex: false,
+      input: checkpointPath,
+      quiet: true,
+    });
+    yield* sharingProgress(input.request.onProgress, 'building-local-overlay');
+    yield* writeSharedGraphProvenance(input.request.threadnoteHome, input.request.identity.checkoutId, {
+      checkpointDigest: selected.checkpoint.manifestDigest,
+      frontierCommit: selected.sourceCommit,
+      profileDigest,
+      repositoryId: input.request.identity.repositoryId,
+      schemaVersion: 1,
+      snapshotId: imported.result.snapshotId,
+    });
+    return {
+      imported: true as const,
+      snapshotId: imported.result.snapshotId,
       checkpointDigest: selected.checkpoint.manifestDigest,
       atGeneration: selected.generation,
     };
@@ -392,14 +440,69 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     ...(coordinatorUrl === undefined ? {} : {coordinatorUrl}),
     ...(selected.checkpoint.metadataDigest === undefined ? {} : {metadataDigest: selected.checkpoint.metadataDigest}),
   });
+  const deltaPaths = [];
+  for (const delta of selected.deltas) {
+    deltaPaths.push(
+      yield* ensureGraphShareCheckpointArtifact({
+        artifactDigest: delta.manifestDigest,
+        casRoot: input.casRoot,
+        ...(coordinatorUrl === undefined ? {} : {coordinatorUrl}),
+        ...(delta.metadataDigest === undefined ? {} : {metadataDigest: delta.metadataDigest}),
+      }),
+    );
+  }
   yield* sharingProgress(input.request.onProgress, 'applying-deltas');
+  const crypto = yield* Crypto.Crypto;
+  const checkpoint = decodeGraphShareCheckpointBytes(yield* fs.readFile(checkpointPath));
+  const deltas = [];
+  let previousLogical = checkpoint.header.logical.digest;
+  for (const [index, descriptor] of selected.deltas.entries()) {
+    const deltaPath = deltaPaths[index];
+    if (deltaPath === undefined) {
+      return yield* graphSharingFailure('Shared frontier delta artifact is missing.');
+    }
+    const decoded = decodeGraphShareCheckpointBytes(yield* fs.readFile(deltaPath));
+    if (decoded.header.packKind !== 'delta' || decoded.header.base === undefined) {
+      return yield* graphSharingFailure('Shared frontier delta is not a TCG1 delta pack.');
+    }
+    if (
+      decoded.header.base.snapshotId !== descriptor.baseSnapshotId ||
+      decoded.header.base.logicalDigest.digest !== previousLogical
+    ) {
+      return yield* graphSharingFailure('Shared graph delta base does not match the installed snapshot.');
+    }
+    previousLogical = decoded.header.logical.digest;
+    deltas.push(decoded);
+  }
+  const composedRecords = composeGraphShareTargetRecords(checkpoint.records, deltas);
+  const lastDelta = deltas[deltas.length - 1];
+  if (lastDelta === undefined) {
+    return yield* graphSharingFailure('Shared frontier delta chain is empty.');
+  }
+  const composed = encodeCodeGraphCheckpointPackV1(
+    checkpointMetadataFromHeader({
+      ...lastDelta.header,
+      packKind: 'checkpoint',
+      base: undefined,
+      deletions: undefined,
+    }),
+    composedRecords,
+  );
+  if (composed.header.logical.digest !== lastDelta.header.logical.digest) {
+    return yield* graphSharingFailure('Composed shared graph digest does not match the delta target.');
+  }
+  const composedPath = yield* writeTemporaryCheckpointPack(
+    path.join(layout.root, 'downloads'),
+    `${yield* crypto.randomUUIDv4}.cgcp`,
+    composed,
+  );
   const imported = yield* importCodeGraphCheckpointSnapshot(runtimeConfigForHome(input.request.threadnoteHome), {
     cwd: input.request.cwd,
-    expectedDigest: selected.checkpoint.manifestDigest,
+    expectedDigest: composed.descriptor.digest,
     followOnIndex: false,
-    input: checkpointPath,
+    input: composedPath,
     quiet: true,
-  });
+  }).pipe(Effect.ensuring(fs.remove(composedPath, {force: true}).pipe(Effect.ignore)));
   yield* sharingProgress(input.request.onProgress, 'building-local-overlay');
   yield* writeSharedGraphProvenance(input.request.threadnoteHome, input.request.identity.checkoutId, {
     checkpointDigest: selected.checkpoint.manifestDigest,

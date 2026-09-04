@@ -59,6 +59,27 @@ describe('graph share frontier signatures', () => {
       }),
     ).toThrow(/object id/i);
     expect(() => parseGraphShareFrontierManifest({...MANIFEST, sourceCommit: 'b'.repeat(40)})).toThrow(/must match/i);
+    const withDelta = {
+      ...MANIFEST,
+      deltas: [
+        {
+          baseSnapshotId: MANIFEST.checkpoint.snapshotId,
+          manifestDigest: `sha256:${'4'.repeat(64)}`,
+          targetCommit: 'b'.repeat(40),
+          targetSnapshotId: 'cgsn_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        },
+      ],
+      snapshotId: 'cgsn_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      sourceCommit: 'b'.repeat(40),
+    };
+    expect(parseGraphShareFrontierManifest(withDelta)).toEqual(withDelta);
+    expect(() => parseGraphShareFrontierManifest({...withDelta, extra: true})).toThrow(/unsupported/i);
+    expect(() =>
+      parseGraphShareFrontierManifest({
+        ...withDelta,
+        deltas: [{...withDelta.deltas[0], extra: true}],
+      }),
+    ).toThrow(/unsupported/i);
   });
 
   effectIt.effect('fail-closes when the expected publisher fingerprint does not match', () =>

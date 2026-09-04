@@ -171,6 +171,58 @@ describe('graph share import and inspect source', () => {
     }).pipe(provideTestLayer(sharingLayer)),
   );
 
+  effectIt.effect('imports a later compaction frontier after a prior checkpoint install', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-compact-apply-'});
+      const published = yield* enrolledHome(home, {includeFrontier: true, skipCheckpoint: true});
+      yield* writeSharedGraphProvenance(home, CHECKOUT_ID, {
+        checkpointDigest: published.checkpointDigest,
+        frontierCommit: 'a'.repeat(40),
+        profileDigest: published.profileDigest,
+        repositoryId: REPOSITORY_ID,
+        schemaVersion: 1,
+        snapshotId: 'cgsn_imported',
+      });
+      const nextDigest = sha256Digest(new TextEncoder().encode('compact-checkpoint'));
+      const compact: GraphShareFrontierManifestV1 = {
+        branch: 'refs/heads/main',
+        checkpoint: {
+          manifestDigest: nextDigest,
+          snapshotId: 'cgsn_compacted',
+          sourceCommit: 'a'.repeat(40),
+        },
+        deltas: [],
+        generation: 2,
+        graphAbi: 'e'.repeat(64),
+        graphContentId: `cgc_${'d'.repeat(40)}`,
+        logicalGraphDigest: `sha256:${'2'.repeat(64)}`,
+        previousManifestDigest: published.manifestDigest,
+        profileDigest: published.profileDigest,
+        publisherFence: 1,
+        repositoryId: REPOSITORY_ID,
+        schemaVersion: 1,
+        snapshotId: 'cgsn_compacted',
+        sourceCommit: 'a'.repeat(40),
+      };
+      const signed = yield* signGraphShareFrontier(published.key, compact);
+      const manifestDigest = yield* putCasBytes(published.casRoot, new TextEncoder().encode(canonicalJson(compact)));
+      const envelopeDigest = yield* putCasBytes(
+        published.casRoot,
+        new TextEncoder().encode(canonicalJson(signed.envelope)),
+      );
+      const layout = graphSharingLayout(path, home, published.casRoot);
+      yield* fs.writeFileString(
+        path.join(layout.frontiersRoot, REPOSITORY_ID, 'latest.json'),
+        `${JSON.stringify({envelopeDigest, manifestDigest, schemaVersion: 1})}\n`,
+      );
+      const result = yield* maybeImportSharedGraphBase(importRequest(published.repo, home));
+      expect(result).toEqual({imported: false, reason: 'unavailable'});
+      expect(yield* quarantineNames(home)).toEqual([]);
+    }).pipe(provideTestLayer(sharingLayer)),
+  );
+
   effectIt.effect('skips import when the trust pin disagrees with enrollment', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -452,15 +504,14 @@ describe('graph share import and inspect source', () => {
   effectIt.effect.prop(
     'already-installed import stays idempotent and keeps provenance snapshot identity',
     {
-      snapshotId: FC.array(FC.constantFrom(...'abcdef0123456789'), {maxLength: 16, minLength: 8}).map(
-        characters => `cgsn_${characters.join('')}`,
-      ),
+      suffix: FC.array(FC.constantFrom(...'abcdef0123456789'), {maxLength: 8, minLength: 4}),
     },
-    ({snapshotId}) =>
+    ({suffix}) =>
       Effect.gen(function* () {
+        const snapshotId = `cgsn_${'imported'.slice(0, 8)}${suffix.join('')}`.slice(0, 45);
         const fs = yield* FileSystem.FileSystem;
         const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-idempotent-'});
-        const published = yield* enrolledHome(home, {includeFrontier: true, skipCheckpoint: true});
+        const published = yield* enrolledHome(home, {includeFrontier: true, skipCheckpoint: true, snapshotId});
         yield* writeSharedGraphProvenance(home, CHECKOUT_ID, {
           checkpointDigest: published.checkpointDigest,
           frontierCommit: 'a'.repeat(40),
@@ -526,7 +577,7 @@ function identity(repo: string): RepositoryIdentity {
 
 const enrolledHome = Effect.fn('test.graphShare.enrolledHome')(function* (
   home: string,
-  options: {readonly includeFrontier: boolean; readonly skipCheckpoint?: boolean},
+  options: {readonly includeFrontier: boolean; readonly skipCheckpoint?: boolean; readonly snapshotId?: string},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -553,11 +604,12 @@ const enrolledHome = Effect.fn('test.graphShare.enrolledHome')(function* (
   yield* fs.writeFileString(path.join(repo, '.threadnote/graph-share.json'), `${JSON.stringify(enrollment)}\n`);
   yield* writeGraphShareTrustReceipt(home, trustReceiptFromEnrollment(enrollment, profile, profileDigest, 'read-only'));
   const checkpointDigest = sha256Digest(CHECKPOINT_BYTES);
+  const snapshotId = options.snapshotId ?? 'cgsn_imported';
   const manifest: GraphShareFrontierManifestV1 = {
     branch: 'refs/heads/main',
     checkpoint: {
       manifestDigest: checkpointDigest,
-      snapshotId: 'cgsn_imported',
+      snapshotId,
       sourceCommit: 'a'.repeat(40),
     },
     deltas: [],
@@ -570,7 +622,7 @@ const enrolledHome = Effect.fn('test.graphShare.enrolledHome')(function* (
     publisherFence: 1,
     repositoryId: REPOSITORY_ID,
     schemaVersion: 1,
-    snapshotId: 'cgsn_imported',
+    snapshotId,
     sourceCommit: 'a'.repeat(40),
   };
   const signed = yield* signGraphShareFrontier(key, manifest);

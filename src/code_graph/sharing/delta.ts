@@ -1,7 +1,17 @@
 import {canonicalJson} from '../checkpoint/canonical_json.js';
+import {
+  codeGraphCheckpointRecordOrderKey,
+  compareCodeGraphCheckpointRecordOrderKeys,
+  compareCodeGraphCheckpointRecords,
+  type CodeGraphCheckpointHeaderV1,
+  type CodeGraphCheckpointRecordOrderKeyV1,
+  type CodeGraphCheckpointRecordV1,
+} from '../checkpoint/schema.js';
 import {compareCodeUnits} from '../ordering.js';
 import {sha256Digest, type Sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
+import type {GraphShareFrontierManifestV1} from './artifacts.js';
+import type {GraphShareProfileV1} from './profile.js';
 
 export interface GraphShareLogicalModel {
   readonly records: ReadonlyMap<string, string>;
@@ -95,4 +105,150 @@ export function selectNewestPublishedAncestor<T extends {readonly sourceCommit: 
     if (candidate !== undefined && isAncestorOfHead(candidate.sourceCommit)) return candidate;
   }
   return undefined;
+}
+
+export function checkpointRecordIdentityKey(key: CodeGraphCheckpointRecordOrderKeyV1): string {
+  return canonicalJson([key.kind, ...key.identity]);
+}
+
+export function diffCheckpointRecords(
+  base: readonly CodeGraphCheckpointRecordV1[],
+  target: readonly CodeGraphCheckpointRecordV1[],
+): {
+  readonly deletions: readonly CodeGraphCheckpointRecordOrderKeyV1[];
+  readonly upserts: readonly CodeGraphCheckpointRecordV1[];
+} {
+  const targetByKey = new Map(
+    target.map(record => [checkpointRecordIdentityKey(codeGraphCheckpointRecordOrderKey(record)), record]),
+  );
+  const deletions = base
+    .map(record => codeGraphCheckpointRecordOrderKey(record))
+    .filter(key => !targetByKey.has(checkpointRecordIdentityKey(key)))
+    .sort(compareCodeGraphCheckpointRecordOrderKeys);
+  const baseByKey = new Map(
+    base.map(record => [checkpointRecordIdentityKey(codeGraphCheckpointRecordOrderKey(record)), canonicalJson(record)]),
+  );
+  const upserts = target
+    .filter(record => {
+      const key = checkpointRecordIdentityKey(codeGraphCheckpointRecordOrderKey(record));
+      return baseByKey.get(key) !== canonicalJson(record);
+    })
+    .sort(compareCodeGraphCheckpointRecords);
+  return {deletions, upserts};
+}
+
+export function applyCheckpointRecords(
+  base: readonly CodeGraphCheckpointRecordV1[],
+  delta: {
+    readonly deletions: readonly CodeGraphCheckpointRecordOrderKeyV1[];
+    readonly upserts: readonly CodeGraphCheckpointRecordV1[];
+  },
+): readonly CodeGraphCheckpointRecordV1[] {
+  const records = new Map(
+    base.map(record => [checkpointRecordIdentityKey(codeGraphCheckpointRecordOrderKey(record)), record]),
+  );
+  for (const deletion of delta.deletions) records.delete(checkpointRecordIdentityKey(deletion));
+  for (const upsert of delta.upserts) {
+    records.set(checkpointRecordIdentityKey(codeGraphCheckpointRecordOrderKey(upsert)), upsert);
+  }
+  return [...records.values()].sort(compareCodeGraphCheckpointRecords);
+}
+
+export function graphShareDeltaClosureComplete(
+  previous: CodeGraphCheckpointHeaderV1,
+  next: CodeGraphCheckpointHeaderV1,
+): boolean {
+  if (previous.repository.repositoryId !== next.repository.repositoryId) return false;
+  if (previous.abi.digest !== next.abi.digest) return false;
+  const previousReuse = previous.reuse;
+  const nextReuse = next.reuse;
+  if (previousReuse === undefined || nextReuse === undefined) return false;
+  return (
+    previousReuse.workspaceFingerprint === nextReuse.workspaceFingerprint &&
+    previousReuse.resolutionSurfaceVersion === nextReuse.resolutionSurfaceVersion &&
+    previousReuse.formatVersion === nextReuse.formatVersion
+  );
+}
+
+export function planGraphSharePublication(input: {
+  readonly chainDeltaBytes: number;
+  readonly chainDeltaCount: number;
+  readonly checkpointAgeSeconds: number;
+  readonly closureComplete: boolean;
+  readonly nextDeltaBytes: number;
+  readonly profile: GraphShareProfileV1['frontier'];
+}): 'compact' | 'delta' {
+  if (!input.closureComplete) return 'compact';
+  if (input.chainDeltaCount >= input.profile.compactAfterDeltas) return 'compact';
+  if (input.chainDeltaBytes + input.nextDeltaBytes > input.profile.compactAfterDeltaBytes) return 'compact';
+  if (input.checkpointAgeSeconds >= input.profile.compactAfterSeconds) return 'compact';
+  return 'delta';
+}
+
+export function validateGraphShareFrontierDeltaChain(manifest: GraphShareFrontierManifestV1): void {
+  if (manifest.deltas.length === 0) {
+    if (manifest.sourceCommit !== manifest.checkpoint.sourceCommit) {
+      throw graphSharingFailure('Frontier sourceCommit must match the checkpoint sourceCommit.');
+    }
+    if (manifest.snapshotId !== manifest.checkpoint.snapshotId) {
+      throw graphSharingFailure('Frontier snapshotId must match the checkpoint snapshotId.');
+    }
+    return;
+  }
+  const last = manifest.deltas[manifest.deltas.length - 1];
+  if (last === undefined || manifest.sourceCommit !== last.targetCommit) {
+    throw graphSharingFailure('Frontier sourceCommit must match the last delta targetCommit.');
+  }
+  if (manifest.snapshotId !== last.targetSnapshotId) {
+    throw graphSharingFailure('Frontier snapshotId must match the last delta targetSnapshotId.');
+  }
+  let baseSnapshotId = manifest.checkpoint.snapshotId;
+  const seen = new Set<string>([baseSnapshotId]);
+  for (const delta of manifest.deltas) {
+    if (delta.baseSnapshotId !== baseSnapshotId) {
+      throw graphSharingFailure('Frontier delta baseSnapshotId does not follow the published chain.');
+    }
+    if (seen.has(delta.targetSnapshotId)) {
+      throw graphSharingFailure('Frontier delta targetSnapshotId is not unique.');
+    }
+    seen.add(delta.targetSnapshotId);
+    baseSnapshotId = delta.targetSnapshotId;
+  }
+}
+
+export function graphShareApplyIsAlreadyAtTarget(
+  existing:
+    | {
+        readonly checkpointDigest: string;
+        readonly frontierCommit: string;
+        readonly snapshotId: string;
+      }
+    | undefined,
+  selected: GraphShareFrontierManifestV1,
+): boolean {
+  return (
+    existing !== undefined &&
+    existing.checkpointDigest === selected.checkpoint.manifestDigest &&
+    existing.frontierCommit === selected.sourceCommit &&
+    existing.snapshotId === selected.snapshotId
+  );
+}
+
+export function graphShareApplyBaseMatches(
+  existing:
+    | {
+        readonly checkpointDigest: string;
+        readonly snapshotId: string;
+      }
+    | undefined,
+  selected: GraphShareFrontierManifestV1,
+): boolean {
+  if (existing === undefined || selected.deltas.length === 0) return true;
+  if (existing.checkpointDigest !== selected.checkpoint.manifestDigest) return false;
+  if (existing.snapshotId === selected.checkpoint.snapshotId || existing.snapshotId === selected.snapshotId) {
+    return true;
+  }
+  return selected.deltas.some(
+    delta => delta.baseSnapshotId === existing.snapshotId || delta.targetSnapshotId === existing.snapshotId,
+  );
 }

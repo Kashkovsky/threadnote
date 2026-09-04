@@ -94,7 +94,7 @@ export interface CodeGraphCheckpointLanguagePackV1 {
 }
 
 export interface CodeGraphCheckpointAbiInputV1 {
-  readonly checkpointSemanticVersion: typeof CODE_GRAPH_CHECKPOINT_SEMANTIC_VERSION;
+  readonly checkpointSemanticVersion: 1 | typeof CODE_GRAPH_CHECKPOINT_SEMANTIC_VERSION;
   readonly graphSchemaVersion: number;
   readonly inventoryPolicyVersion: number;
   readonly languagePacks: readonly CodeGraphCheckpointLanguagePackV1[];
@@ -194,15 +194,26 @@ export interface CodeGraphCheckpointChunkDescriptorV1 {
 
 export type CodeGraphCheckpointCountsV1 = Readonly<Record<CodeGraphCheckpointRecordKind, number>>;
 
+export type CodeGraphCheckpointPackKindV1 = 'checkpoint' | 'delta';
+
+export interface CodeGraphCheckpointDeltaBaseV1 {
+  readonly commit: string;
+  readonly logicalDigest: CodeGraphCheckpointDigestV1;
+  readonly snapshotId: string;
+}
+
 export interface CodeGraphCheckpointHeaderV1 {
   readonly abi: CodeGraphCheckpointAbiV1;
+  readonly base?: CodeGraphCheckpointDeltaBaseV1;
   readonly chunks: readonly CodeGraphCheckpointChunkDescriptorV1[];
   readonly compressionProfile: typeof CODE_GRAPH_CHECKPOINT_COMPRESSION_PROFILE;
   readonly counts: CodeGraphCheckpointCountsV1;
   readonly coverage: CodeGraphCheckpointCoverageV1;
+  readonly deletions?: readonly CodeGraphCheckpointRecordOrderKeyV1[];
   readonly formatVersion: typeof CODE_GRAPH_CHECKPOINT_FORMAT_VERSION;
   readonly logical: CodeGraphCheckpointDigestV1;
   readonly mediaType: typeof CODE_GRAPH_CHECKPOINT_MEDIA_TYPE;
+  readonly packKind?: CodeGraphCheckpointPackKindV1;
   readonly recordSchemaVersion: typeof CODE_GRAPH_CHECKPOINT_RECORD_SCHEMA_VERSION;
   readonly repository: CodeGraphCheckpointMetadataV1['repository'];
   readonly reuse?: CodeGraphCheckpointReuseV1;
@@ -454,7 +465,7 @@ export function parseCodeGraphCheckpointHeaderV1(value: unknown): CodeGraphCheck
       'schema',
       'source',
     ],
-    ['reuse'],
+    ['base', 'deletions', 'packKind', 'reuse'],
     'Checkpoint header',
   );
   literal(input.schema, CODE_GRAPH_CHECKPOINT_SCHEMA, 'Checkpoint schema');
@@ -462,6 +473,7 @@ export function parseCodeGraphCheckpointHeaderV1(value: unknown): CodeGraphCheck
   literal(input.formatVersion, CODE_GRAPH_CHECKPOINT_FORMAT_VERSION, 'Checkpoint format version');
   literal(input.recordSchemaVersion, CODE_GRAPH_CHECKPOINT_RECORD_SCHEMA_VERSION, 'Checkpoint record schema version');
   literal(input.compressionProfile, CODE_GRAPH_CHECKPOINT_COMPRESSION_PROFILE, 'Checkpoint compression profile');
+  const packKind = parsePackKind(input.packKind);
   const abi = parseAbi(input.abi);
   const metadata = parseCodeGraphCheckpointMetadataV1({
     abi: abi.input,
@@ -480,8 +492,15 @@ export function parseCodeGraphCheckpointHeaderV1(value: unknown): CodeGraphCheck
   if (chunkRecords !== countedRecords) {
     throw CodeGraphCheckpointSchemaError.make({message: 'Checkpoint chunk and kind counts do not match.'});
   }
-  if (counts.file !== metadata.coverage.eligibleFiles) {
+  if (packKind !== 'delta' && counts.file !== metadata.coverage.eligibleFiles) {
     throw CodeGraphCheckpointSchemaError.make({message: 'Checkpoint file count does not match eligible coverage.'});
+  }
+  if (packKind === 'delta') {
+    if (input.base === undefined || input.deletions === undefined) {
+      throw CodeGraphCheckpointSchemaError.make({message: 'Delta pack header is missing its base envelope.'});
+    }
+  } else if (input.base !== undefined || input.deletions !== undefined) {
+    throw CodeGraphCheckpointSchemaError.make({message: 'Checkpoint pack header contains a delta envelope.'});
   }
   return {
     abi,
@@ -497,6 +516,13 @@ export function parseCodeGraphCheckpointHeaderV1(value: unknown): CodeGraphCheck
     ...(metadata.reuse === undefined ? {} : {reuse: metadata.reuse}),
     schema: CODE_GRAPH_CHECKPOINT_SCHEMA,
     source: metadata.source,
+    ...(packKind === undefined ? {} : {packKind}),
+    ...(packKind === 'delta'
+      ? {
+          base: parseDeltaBase(input.base),
+          deletions: parseSortedDeletions(input.deletions),
+        }
+      : {}),
   };
 }
 
@@ -809,11 +835,13 @@ function parseAbiInput(value: unknown): CodeGraphCheckpointAbiInputV1 {
     [],
     'Checkpoint ABI input',
   );
-  const checkpointSemanticVersion = literal(
-    input.checkpointSemanticVersion,
-    CODE_GRAPH_CHECKPOINT_SEMANTIC_VERSION,
-    'Checkpoint semantic version',
-  );
+  if (
+    input.checkpointSemanticVersion !== 1 &&
+    input.checkpointSemanticVersion !== CODE_GRAPH_CHECKPOINT_SEMANTIC_VERSION
+  ) {
+    throw CodeGraphCheckpointSchemaError.make({message: 'Checkpoint semantic version is invalid.'});
+  }
+  const checkpointSemanticVersion = input.checkpointSemanticVersion;
   const graphSchemaVersion = nonNegativeInteger(input.graphSchemaVersion, 'Graph schema version');
   const inventoryPolicyVersion = nonNegativeInteger(input.inventoryPolicyVersion, 'Inventory policy version');
   const languagePacks = array(input.languagePacks, 'ABI language packs').map(parseLanguagePack);
@@ -914,6 +942,48 @@ function parseCoverage(value: unknown): CodeGraphCheckpointCoverageV1 {
     throw CodeGraphCheckpointSchemaError.make({message: 'Coverage state does not match the excluded-file count.'});
   }
   return {eligibleFiles, excludedFiles, reasons, state};
+}
+
+function parsePackKind(value: unknown): CodeGraphCheckpointPackKindV1 | undefined {
+  if (value === undefined) return undefined;
+  return oneOf(value, ['checkpoint', 'delta'], 'Checkpoint pack kind');
+}
+
+function parseDeltaBase(value: unknown): CodeGraphCheckpointDeltaBaseV1 {
+  const input = object(value, 'Checkpoint delta base');
+  exactKeys(input, ['commit', 'logicalDigest', 'snapshotId'], [], 'Checkpoint delta base');
+  return {
+    commit: gitObjectId(input.commit, 'Delta base commit'),
+    logicalDigest: parseDigest(input.logicalDigest, 'Delta base logical digest'),
+    snapshotId: shortText(input.snapshotId, 'Delta base snapshot ID'),
+  };
+}
+
+function parseRecordOrderKey(value: unknown, label: string): CodeGraphCheckpointRecordOrderKeyV1 {
+  const input = object(value, label);
+  exactKeys(input, ['identity', 'kind'], [], label);
+  const kind = oneOf(input.kind, CODE_GRAPH_CHECKPOINT_RECORD_KINDS, `${label} kind`);
+  const identity = array(input.identity, `${label} identity`).map((entry, index) =>
+    shortText(entry, `${label} identity ${index}`),
+  );
+  return {identity, kind};
+}
+
+function parseSortedDeletions(value: unknown): readonly CodeGraphCheckpointRecordOrderKeyV1[] {
+  const deletions = array(value, 'Checkpoint deletions').map((deletion, index) =>
+    parseRecordOrderKey(deletion, `Checkpoint deletion ${index}`),
+  );
+  for (let index = 1; index < deletions.length; index += 1) {
+    const previous = deletions[index - 1];
+    const current = deletions[index];
+    if (previous === undefined || current === undefined) {
+      throw CodeGraphCheckpointSchemaError.make({message: 'Checkpoint deletions are not in canonical order.'});
+    }
+    if (compareCodeGraphCheckpointRecordOrderKeys(previous, current) >= 0) {
+      throw CodeGraphCheckpointSchemaError.make({message: 'Checkpoint deletions are not in canonical order.'});
+    }
+  }
+  return deletions;
 }
 
 function parseReuse(value: unknown): CodeGraphCheckpointReuseV1 {

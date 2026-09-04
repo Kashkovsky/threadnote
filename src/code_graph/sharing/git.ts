@@ -1,6 +1,7 @@
 import {Effect} from 'effect';
 import {runCommandEffect} from '../../effect/command.js';
 import {SystemInfo} from '../../effect/system.js';
+import {graphSharingFailure} from './errors.js';
 
 export const GRAPH_SHARE_GIT_OBJECT_ID = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/u;
 
@@ -51,6 +52,37 @@ export function graphShareCommitDiffStats(repoRoot: string, from: string, to: st
     return {changedBytes, changedFiles};
   });
 }
+
+export const graphShareCommitUnixSeconds = (repoRoot: string, commit: string) =>
+  Effect.gen(function* () {
+    if (!isGraphShareGitObjectId(commit)) return undefined;
+    const system = yield* SystemInfo;
+    const result = yield* runCommandEffect('git', ['-C', repoRoot, 'log', '-1', '--format=%ct', commit], {
+      allowFailure: true,
+      env: {...system.environment(), GIT_NO_LAZY_FETCH: '1', GIT_OPTIONAL_LOCKS: '0'},
+      maxOutputBytes: 64,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode !== 0) return undefined;
+    const value = Number(result.stdout.trim());
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  });
+
+export const assertGraphShareCommitChain = Effect.fn('codeGraph.sharing.assertCommitChain')(function* (
+  repoRoot: string,
+  commits: readonly string[],
+) {
+  for (let index = 1; index < commits.length; index += 1) {
+    const ancestor = commits[index - 1];
+    const descendant = commits[index];
+    if (ancestor === undefined || descendant === undefined) {
+      return yield* graphSharingFailure('Frontier Git ancestry chain is invalid.');
+    }
+    if (!(yield* graphShareCommitIsAncestor(repoRoot, ancestor, descendant))) {
+      return yield* graphSharingFailure('Frontier delta is not a Git descendant of its published base.');
+    }
+  }
+});
 
 export function graphShareBlobExists(repoRoot: string, blobId: string) {
   return Effect.gen(function* () {
