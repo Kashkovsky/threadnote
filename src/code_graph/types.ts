@@ -1019,5 +1019,11 @@ export const AnyCodeGraphStoreError = Schema.Union([
   CodeGraphDiskCapacityPressureError,
 ]);
 
+export const AnyCodeGraphStoreNoSpaceError = Schema.Union([
+  CodeGraphStoreNoSpaceError,
+  CodeGraphDiskCapacityPressureError,
+]);
+
 export const isCodeGraphStoreError = Schema.is(AnyCodeGraphStoreError);
+export const isCodeGraphStoreNoSpaceError = Schema.is(AnyCodeGraphStoreNoSpaceError);
 export type CodeGraphStoreFailure = typeof AnyCodeGraphStoreError.Type;

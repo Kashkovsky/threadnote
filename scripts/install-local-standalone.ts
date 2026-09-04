@@ -701,7 +701,7 @@ const restoreFileSnapshots = Effect.fn('developmentInstall.restoreFileSnapshots'
   }
   if (failures.length > 0) {
     return yield* ScriptError.make({
-      cause: failures,
+      cause: new AggregateError(failures, 'One or more managed installation files were not restored.'),
       message: 'One or more managed installation files were not restored.',
     });
   }

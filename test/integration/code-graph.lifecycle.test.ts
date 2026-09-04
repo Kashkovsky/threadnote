@@ -69,6 +69,7 @@ import {
   CODE_GRAPH_SCHEMA_VERSION,
   CodeGraphStoreError,
   CodeGraphStoreNoSpaceError,
+  isCodeGraphStoreNoSpaceError,
   type CodeGraphMaterializationMetrics,
   type CodeGraphProgress,
 } from '../../src/code_graph/types.js';
@@ -4613,7 +4614,7 @@ describe('native code graph lifecycle', () => {
         })
         .pipe(Effect.flip);
       expect(failure).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
-      expect(failure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(isCodeGraphStoreNoSpaceError(failure)).toBe(true);
       expect(failure).toMatchObject({code: 'no-space', recovery: 'free-space'});
       // The parser cache coalesces the 128-row/2-row inventory callbacks into
       // one protected 130-row write before staging.

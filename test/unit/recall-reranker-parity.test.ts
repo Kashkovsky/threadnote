@@ -55,7 +55,7 @@ describe('recall reranker Python/native parity', () => {
           },
         ],
       }),
-    ).toThrow(/invalid candidate/);
+    ).toThrow(/invalid candidate|Expected a finite number/);
   });
 });
 

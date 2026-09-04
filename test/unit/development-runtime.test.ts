@@ -1777,6 +1777,7 @@ function versionCommandExecutor(version: string) {
 }
 
 function nestedErrorMessages(value: unknown): readonly string[] {
+  if (Array.isArray(value)) return value.flatMap(nestedErrorMessages);
   if (value instanceof AggregateError) {
     return [value.message, ...value.errors.flatMap(nestedErrorMessages)];
   }

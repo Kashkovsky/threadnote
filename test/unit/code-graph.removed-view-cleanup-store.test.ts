@@ -850,7 +850,7 @@ describe('removed code graph view cleanup queue', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
-        const expiresAt = (yield* Clock.currentTimeMillis) + 60_000;
+        const expiresAt = (yield* TestClock.withLive(Clock.currentTimeMillis)) + 60_000;
         yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
           try {
@@ -944,6 +944,7 @@ describe('removed code graph view cleanup queue', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
+        yield* TestClock.setTime(yield* TestClock.withLive(Clock.currentTimeMillis));
         const now = yield* Clock.currentTimeMillis;
         yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
@@ -988,7 +989,7 @@ describe('removed code graph view cleanup queue', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
-        const expiresAt = (yield* Clock.currentTimeMillis) + 120_000;
+        const expiresAt = (yield* TestClock.withLive(Clock.currentTimeMillis)) + 120_000;
         yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
           try {
@@ -1167,7 +1168,7 @@ describe('removed code graph view cleanup queue', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
-        const expiresAt = (yield* Clock.currentTimeMillis) + 120_000;
+        const expiresAt = (yield* TestClock.withLive(Clock.currentTimeMillis)) + 120_000;
         yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
           try {
@@ -1232,7 +1233,7 @@ describe('removed code graph view cleanup queue', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
-        const expiresAt = (yield* Clock.currentTimeMillis) + 120_000;
+        const expiresAt = (yield* TestClock.withLive(Clock.currentTimeMillis)) + 120_000;
         yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
           try {

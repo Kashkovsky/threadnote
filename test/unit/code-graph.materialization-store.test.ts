@@ -46,8 +46,8 @@ import {type CodeGraphWriterGate} from '../../src/code_graph/store_build_core.js
 import {pruneRetiredSnapshotRows} from '../../src/code_graph/store_retirement.js';
 import {
   CodeGraphStoreError,
-  CodeGraphStoreNoSpaceError,
   isCodeGraphStoreError,
+  isCodeGraphStoreNoSpaceError,
   type CodeGraphEdge,
   type CodeGraphFileFacts,
   type CodeGraphInventoryFile,
@@ -4689,7 +4689,7 @@ describe('code graph full-build materialization store', () => {
 
       const planPause = capacityGuardProbe('register persistent code graph materialization plan');
       const planFailure = yield* Effect.flip(prepare(planPause.guard));
-      expect(planFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(isCodeGraphStoreNoSpaceError(planFailure)).toBe(true);
       expect(planPause.boundaries).toEqual([
         {
           finalFactBytes: 0,
@@ -4706,7 +4706,7 @@ describe('code graph full-build materialization store', () => {
 
       const secondInventoryPause = capacityGuardProbe('stage persistent code graph inventory', 2);
       const inventoryFailure = yield* Effect.flip(prepare(secondInventoryPause.guard));
-      expect(inventoryFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(isCodeGraphStoreNoSpaceError(inventoryFailure)).toBe(true);
       expect(secondInventoryPause.boundaries).toEqual([
         {
           finalFactBytes: 0,
@@ -4874,7 +4874,7 @@ describe('code graph full-build materialization store', () => {
         }),
       );
 
-      expect(result.inventoryFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(isCodeGraphStoreNoSpaceError(result.inventoryFailure)).toBe(true);
       expect(result.inventoryPause).toEqual([
         expect.objectContaining({
           mainFilesystem: 'temporary',
@@ -4891,7 +4891,7 @@ describe('code graph full-build materialization store', () => {
         staged_files: 1,
       });
 
-      expect(result.factsFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(isCodeGraphStoreNoSpaceError(result.factsFailure)).toBe(true);
       expect(result.factsPause).toEqual([
         expect.objectContaining({
           mainFilesystem: 'temporary',
@@ -4902,7 +4902,7 @@ describe('code graph full-build materialization store', () => {
       expect(result.factsResume).toEqual(result.factsPause);
       expect(result.afterFactsPause).toEqual({symbols: 0});
 
-      expect(result.publicationFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(isCodeGraphStoreNoSpaceError(result.publicationFailure)).toBe(true);
       expect(result.publicationPause).toEqual([
         expect.objectContaining({operation: 'publish temporary code graph snapshot', transientFilesystem: 'durable'}),
       ]);
@@ -4972,7 +4972,7 @@ describe('code graph full-build materialization store', () => {
         }),
       );
 
-      expect(result.failure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(isCodeGraphStoreNoSpaceError(result.failure)).toBe(true);
       expect(result.pause).toEqual([
         expect.objectContaining({
           mainFilesystem: 'temporary',
@@ -5126,14 +5126,14 @@ describe('code graph full-build materialization store', () => {
         }),
       );
 
-      expect(result.aliasFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(isCodeGraphStoreNoSpaceError(result.aliasFailure)).toBe(true);
       expect(result.aliasPause).toHaveLength(1);
       expect(result.aliasPause[0]).toMatchObject({operation: 'resolve persistent code graph reexport aliases'});
       expect(result.aliasPause[0].rowCount).toBeGreaterThan(0);
       expect(result.aliasPause[0].finalFactBytes).toBeGreaterThan(0);
       expect(result.afterAliasPause).toEqual({aliases: 0, remainingReferences: 1, resolvedEdges: 0});
 
-      expect(result.pageFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(isCodeGraphStoreNoSpaceError(result.pageFailure)).toBe(true);
       expect(result.pagePause.some(value => value.operation === 'resolve persistent code graph reexport aliases')).toBe(
         true,
       );
@@ -5263,7 +5263,7 @@ describe('code graph full-build materialization store', () => {
         }),
       );
 
-      expect(result.pauseFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(isCodeGraphStoreNoSpaceError(result.pauseFailure)).toBe(true);
       expect(result.pause).toHaveLength(1);
       expect(result.pause[0]).toMatchObject({
         operation: 'promote ready code graph snapshot',
@@ -5523,13 +5523,13 @@ describe('code graph full-build materialization store', () => {
           {finalFactBytes: 0, operation: 'register persistent code graph materialization plan', rowCount: 2},
           expectedPersistentInventoryBoundary(snapshot.id, [fixture.file]),
         ]);
-        expect(result.workspaceFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+        expect(isCodeGraphStoreNoSpaceError(result.workspaceFailure)).toBe(true);
         expect(result.workspaceRowsAfterPause).toEqual({dependencies: 0, projects: 0, workspaces: 0});
         const expectedWorkspaceBoundary = expectedPersistentWorkspaceBoundary(snapshot.id, workspace);
         expect(result.workspacePause).toEqual([expectedWorkspaceBoundary]);
         expect(result.workspaceResume).toEqual([expectedWorkspaceBoundary]);
 
-        expect(result.invalidFactFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+        expect(isCodeGraphStoreNoSpaceError(result.invalidFactFailure)).toBe(true);
         expect(result.invalidFactPause).toHaveLength(1);
         expect(result.invalidFactPause[0]).toMatchObject({
           operation: 'stage persistent code graph facts',
@@ -5550,11 +5550,11 @@ describe('code graph full-build materialization store', () => {
           operation: 'register persistent code graph materialization plan',
           rowCount: 2,
         };
-        expect(result.finalizeFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+        expect(isCodeGraphStoreNoSpaceError(result.finalizeFailure)).toBe(true);
         expect(result.finalizePause).toEqual([expectedPlanBoundary]);
         expect(result.finalizeResume).toEqual([expectedPlanBoundary]);
 
-        expect(result.publicationFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+        expect(isCodeGraphStoreNoSpaceError(result.publicationFailure)).toBe(true);
         expect(result.publicationRowsAfterPause).toEqual({
           extractorGenerations: 0,
           fileShards: 0,

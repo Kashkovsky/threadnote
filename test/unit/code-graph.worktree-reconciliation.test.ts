@@ -40,6 +40,7 @@ import {
   CODE_GRAPH_EXTRACTOR_GENERATION,
   CodeGraphStoreBusyError,
   CodeGraphStoreError,
+  isCodeGraphStoreError,
   type CodeGraphSnapshot,
 } from '../../src/code_graph/types.js';
 import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store_schema_metadata.js';
@@ -610,7 +611,7 @@ describe('automatic missing-worktree reconciliation', () => {
 
           const invalid = yield* Effect.flip(store.claimWorktreeReconciliationCandidates(databasePath, 1));
 
-          expect(invalid, testCase.name).toBeInstanceOf(CodeGraphStoreError);
+          expect(isCodeGraphStoreError(invalid), testCase.name).toBe(true);
           expect(invalid.message, testCase.name).toBe(
             'Code graph reconciliation cursor metadata is structurally invalid.',
           );

@@ -323,7 +323,7 @@ describe('code graph external benchmark harness', () => {
       'const incrementalExternalQueryControls',
     ]);
     expectInOrder(sameOverlay, [
-      'process.env.SQLITE_TMPDIR = sameOverlaySqliteTemporaryRoot',
+      "system.setEnvironmentVariable('SQLITE_TMPDIR', sameOverlaySqliteTemporaryRoot)",
       'applyBenchmarkOverlay(',
       'measureSampledBenchmarkIndex(',
       'const controls',

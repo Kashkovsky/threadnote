@@ -1,4 +1,4 @@
-import {Console, Effect, Predicate, Schema} from 'effect';
+import {Clock, Console, Effect, Predicate, Schema} from 'effect';
 import {cursorCloudMemoryEndpoint} from './cloud.js';
 import {CommandExecutor, type CommandOptions} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
@@ -96,10 +96,11 @@ export const completeCursorAttestationChallenge = Effect.fn('cursorCloud.complet
   input: CursorAttestationChallengeInputV1,
   expectedMemoryEndpoint: string,
   client: CursorAttestationExchangeClient,
-  nowMilliseconds = Date.now(),
+  nowMilliseconds?: number,
 ) {
+  const now = nowMilliseconds ?? (yield* Clock.currentTimeMillis);
   const challenge = yield* Effect.try({
-    try: () => validateCursorAttestationChallenge(input, expectedMemoryEndpoint, nowMilliseconds),
+    try: () => validateCursorAttestationChallenge(input, expectedMemoryEndpoint, now),
     catch: cause =>
       Schema.is(CursorAttestationError)(cause)
         ? cause
@@ -110,7 +111,7 @@ export const completeCursorAttestationChallenge = Effect.fn('cursorCloud.complet
     .pipe(
       Effect.mapError(() => CursorAttestationError.make({message: 'Cursor workload identity token minting failed.'})),
     );
-  if (!minted.token || !Number.isSafeInteger(minted.expiresAt) || minted.expiresAt * 1_000 <= nowMilliseconds) {
+  if (!minted.token || !Number.isSafeInteger(minted.expiresAt) || minted.expiresAt * 1_000 <= now) {
     return yield* CursorAttestationError.make({message: 'Cursor returned an invalid workload identity response.'});
   }
   const completion = yield* client
