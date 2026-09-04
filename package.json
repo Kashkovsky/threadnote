@@ -123,7 +123,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@types/three": "^0.185.1",
-    "@vitejs/plugin-react": "6.1.0",
+    "@vitejs/plugin-react": "6.1.1",
     "@vitest/coverage-istanbul": "4.1.11",
     "@vscode/tree-sitter-wasm": "0.3.1",
     "fast-check": "4.9.0",
