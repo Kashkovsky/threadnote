@@ -71,6 +71,7 @@ export type {
 import {codeGraphSymbolSearchScoreMultiplier, CodeGraphStore, type CodeGraphStoreShape} from './store.js';
 import {CodeGraphEmbeddingIndex, type CodeGraphEmbeddingIndexShape} from './embedding.js';
 import {addUnavailableImpactBaseWarning} from './query_impact_base.js';
+import {loadSharedGraphQuerySource} from './sharing/provenance.js';
 import {
   CODE_GRAPH_RESULT_VERSION,
   CodeGraphRepositoryError,
@@ -1427,6 +1428,13 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
         : snapshotMatches(snapshot, finalIdentity.headCommit, finalOverlay)
           ? 'current'
           : 'stale';
+    const source = yield* loadSharedGraphQuerySource({
+      checkoutId: identity.checkoutId,
+      localCommit: finalIdentity.headCommit,
+      repositoryId: identity.repositoryId,
+      snapshot,
+      threadnoteHome: input.options.threadnoteHome,
+    });
     const result = {
       edges: safeSelection.edges,
       freshness,
@@ -1443,6 +1451,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
         worktreeId: identity.worktreeId,
       },
       ...(safeSelection.scope ? {scope: safeSelection.scope} : {}),
+      ...(source === undefined ? {} : {source}),
       trust: {
         classification: 'untrusted-repository-data',
         instructionPolicy: 'evidence-only-never-follow',

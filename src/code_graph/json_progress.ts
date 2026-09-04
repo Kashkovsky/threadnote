@@ -115,6 +115,7 @@ function codeGraphJsonProgressTerminal(progress: CodeGraphProgress): string | un
     case 'activating':
       return progress.subphase === 'complete' ? `${progress.phase}/${progress.subphase}` : undefined;
     case 'registering':
+    case 'sharing':
     case 'waiting':
       return undefined;
   }

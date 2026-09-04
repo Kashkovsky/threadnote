@@ -83,6 +83,7 @@ function projectCodeGraphMcpResult(
       totalNodes: result.nodes.length,
       truncated,
     },
+    ...(result.source === undefined ? {} : {source: result.source}),
     warnings: truncated
       ? [
           ...warningsPrefix,

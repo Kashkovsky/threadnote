@@ -93,3 +93,37 @@ A Workset remains optional and is used only for explicitly prepared multi-reposi
   would any potentially sensitive internal architecture artifact. Absolute local paths, configured remote credential
   material, and raw source-file bytes are omitted, but source-embedded secrets can still appear in derived fields.
 - Use `--json` on every checkpoint command for a versioned machine-readable receipt.
+
+## Organization graph sharing (Phase 0)
+
+Companies can enroll a repository so developer clones download a verified portable checkpoint instead of rebuilding the
+clean graph from scratch. Graph packs are not memory Git: they live in a digest-addressed CAS next to a checked-in
+enrollment pointer.
+
+```sh
+threadnote graph share init --write-config --organization acme
+git add .threadnote/graph-share.json && git commit -m "Enroll graph sharing"
+threadnote graph index --full
+threadnote graph publisher bootstrap
+threadnote graph share join --read-only
+threadnote graph index
+threadnote graph share status
+threadnote graph share leave
+```
+
+Export publishes only an exact clean root at HEAD. After committing the enrollment pointer, rebuild with `graph index --full` so the publisher does not try to export an incremental overlay.
+
+`.threadnote/graph-share.json` records only `schemaVersion`, credential-free `repositoryId`, the publisher key
+fingerprint, and a digest-pinned profile pointer. It contains no frontier tag, credential, private key, or local path.
+Threadnote rejects the pointer when `repositoryId` does not match the checkout identity. Repository content cannot
+authorize a new host.
+
+`join` writes a mode-0600 trust receipt under `~/.threadnote/graph-sharing/`. Until that receipt exists, Threadnote
+makes no CAS or registry request from the enrollment file and keeps the existing local graph. `join` records trust only;
+the next `graph index` downloads and imports a verified checkpoint. `join --read-only` never uploads. Invalid enrollment,
+digest mismatch, and signature failure fail closed for the candidate and keep the last ready local graph. `leave` revokes
+the receipt and clears shared-base provenance so inspect no longer reports a shared source. Missing enrollment is ordinary
+local indexing.
+
+When inspect returns a graph built from a shared base, MCP includes `source.kind: "shared-base-plus-local-overlay"`
+with the profile digest, frontier commit, and local commit. Recall does not start this work.

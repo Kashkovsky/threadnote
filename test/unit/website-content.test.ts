@@ -32,7 +32,7 @@ import {
   renderWebsiteReleaseSocialImageSvg,
 } from '../../scripts/site-release-social-image.js';
 import {assertExternalPerformanceEvidence} from '../../scripts/benchmark-code-graph.js';
-import {docsSections, mcpTools} from '../../website/src/content/docs.js';
+import {cliCommands, docsSections, mcpTools} from '../../website/src/content/docs.js';
 import {
   ManagerOperationsVisual,
   managerOperationsVisualKinds,
@@ -1029,6 +1029,7 @@ The body remains ordinary **Markdown**.
       readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
     ]);
     const docs = JSON.stringify(docsSections);
+    const commands = JSON.stringify(cliCommands);
     const tips = JSON.stringify(proTips);
 
     expect(landingSource).toContain('Export the exact ready, clean graph for the current commit');
@@ -1046,6 +1047,10 @@ The body remains ordinary **Markdown**.
     expect(tips).toContain('derived names, signatures, and documentation');
     expect(docs).toContain('source-derived names, signatures, and documentation');
     expect(docs).toContain('A secret embedded in source can appear');
+    expect(commands).toContain('threadnote graph share init --write-config --organization acme');
+    expect(docs).toContain('threadnote graph share join --read-only');
+    expect(docs).toContain('The next `threadnote graph index` imports a verified shared base');
+    expect(docs).toContain('shared-base-plus-local-overlay');
     expect(tips).toContain('Existing schema-v1 and uncited legacy memories remain recallable');
     expect(faqSource).toContain('Can I move a graph to another machine without a Workset or cloud?');
     expect(faqSource).toContain('Portable graph checkpoints are free, manual, offline files');

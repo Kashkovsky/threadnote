@@ -59,6 +59,10 @@ describe('code graph JSON progress coalescing', () => {
       {phase: 'activating', snapshotId: 'snapshot', subphase: 'structural-ready'},
       {phase: 'activating', snapshotId: 'snapshot', subphase: 'complete'},
       {completed: 0, embedded: 0, phase: 'embedding', reused: 0, total: 1, unit: 'symbols'},
+      {phase: 'sharing', subphase: 'discovering-shared-base'},
+      {phase: 'sharing', subphase: 'downloading-checkpoint'},
+      {phase: 'sharing', subphase: 'applying-deltas'},
+      {phase: 'sharing', subphase: 'building-local-overlay'},
     ];
     let state: CodeGraphJsonProgressState = {};
 

@@ -124,6 +124,7 @@ import {
   runCodeGraphCheckpointInspect,
   runCodeGraphCheckpointVerify,
 } from '../code_graph/checkpoint/commands.js';
+import {makeGraphSharingCommands} from '../code_graph/sharing/cli.js';
 import {
   CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS,
   CODE_GRAPH_WORKSET_EVIDENCE_MINIMUM_ESTIMATED_TOKENS,
@@ -921,6 +922,12 @@ const graphCheckpoint = Command.make('checkpoint').pipe(
   ]),
 );
 
+const {graphPublisher, graphShare} = makeGraphSharingCommands(
+  withRuntimeEffect as <E, R>(
+    effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
+  ) => Effect.Effect<void, E, R>,
+);
+
 const graphPurge = Command.make(
   'purge',
   {
@@ -987,6 +994,8 @@ const graphCommand = Command.make('graph').pipe(
     graphWatch,
     graphExport,
     graphCheckpoint,
+    graphShare,
+    graphPublisher,
     graphCompact,
     graphRemoveView,
     graphPurge,

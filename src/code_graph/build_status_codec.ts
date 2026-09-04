@@ -44,6 +44,7 @@ const VALID_PHASES = [
   'registering',
   'resolving',
   'scanning',
+  'sharing',
   'waiting',
 ] as const satisfies readonly CodeGraphProgress['phase'][];
 const VALID_STATES = ['completed', 'failed', 'queued', 'running'] as const satisfies readonly CodeGraphBuildState[];

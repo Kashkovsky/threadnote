@@ -436,6 +436,21 @@ describe('MCP code graph indexing progress', () => {
     expect(new TextEncoder().encode(response.text).byteLength).toBeLessThan(20 * 1_024);
   });
 
+  it('keeps shared graph source fields after compact and a tight token budget', () => {
+    const source = {
+      deltaCount: 0,
+      frontierCommit: 'a'.repeat(40),
+      kind: 'shared-base-plus-local-overlay' as const,
+      localCommit: 'b'.repeat(40),
+      profileDigest: `sha256:${'c'.repeat(64)}`,
+    };
+    const result = {...verboseCodeGraphResult(), source};
+    const compact = compactCodeGraphMcpResult(result);
+    expect(compact.source).toEqual(source);
+    const response = codeGraphMcpResponse(result, 400);
+    expect(response.structuredContent.source).toEqual(source);
+  });
+
   it.prop(
     'honors explicit local graph response budgets across result cardinalities',
     {

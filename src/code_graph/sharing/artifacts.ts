@@ -1,0 +1,269 @@
+import {Effect} from 'effect';
+import {fromPromiseInterruptible} from '../../effect/errors.js';
+import {canonicalJson} from '../checkpoint/canonical_json.js';
+import {graphSharingFailure} from './errors.js';
+import {parseSha256Digest, sha256Digest, SHA256_HEX, type Sha256Digest} from './digest.js';
+
+function asBufferSource(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  return new Uint8Array(bytes);
+}
+
+export const GRAPH_SHARE_FRONTIER_SCHEMA_VERSION = 1 as const;
+export const GRAPH_SHARE_SIGNATURE_ALGORITHM = 'ed25519' as const;
+
+export interface GraphShareFrontierCheckpointV1 {
+  readonly manifestDigest: Sha256Digest;
+  readonly snapshotId: string;
+  readonly sourceCommit: string;
+}
+
+export interface GraphShareFrontierManifestV1 {
+  readonly branch: string;
+  readonly checkpoint: GraphShareFrontierCheckpointV1;
+  readonly deltas: readonly [];
+  readonly generation: 1;
+  readonly graphAbi: string;
+  readonly graphContentId: string;
+  readonly logicalGraphDigest: Sha256Digest;
+  readonly previousManifestDigest: null;
+  readonly profileDigest: Sha256Digest;
+  readonly publisherFence: 1;
+  readonly repositoryId: string;
+  readonly schemaVersion: typeof GRAPH_SHARE_FRONTIER_SCHEMA_VERSION;
+  readonly snapshotId: string;
+  readonly sourceCommit: string;
+}
+
+export interface GraphShareSignatureEnvelopeV1 {
+  readonly algorithm: typeof GRAPH_SHARE_SIGNATURE_ALGORITHM;
+  readonly payloadDigest: Sha256Digest;
+  readonly publicKey: string;
+  readonly publicKeyFingerprint: Sha256Digest;
+  readonly schemaVersion: 1;
+  readonly signature: string;
+}
+
+export interface GraphSharePublisherKeyV1 {
+  readonly fingerprint: Sha256Digest;
+  readonly privateKey: string;
+  readonly publicKey: string;
+  readonly schemaVersion: 1;
+}
+
+export interface GraphShareFrontierPointerV1 {
+  readonly envelopeDigest: Sha256Digest;
+  readonly manifestDigest: Sha256Digest;
+  readonly schemaVersion: 1;
+}
+
+const ED25519 = {name: 'Ed25519'} as const;
+
+export function graphShareFrontierCanonicalBytes(manifest: GraphShareFrontierManifestV1): Uint8Array {
+  return new TextEncoder().encode(canonicalJson(manifest));
+}
+
+export function graphShareFrontierDigest(manifest: GraphShareFrontierManifestV1): Sha256Digest {
+  return sha256Digest(graphShareFrontierCanonicalBytes(manifest));
+}
+
+export const generateGraphSharePublisherKey = Effect.fn('codeGraph.sharing.generatePublisherKey')(function* () {
+  const pair = yield* fromPromiseInterruptible(
+    () => crypto.subtle.generateKey(ED25519, true, ['sign', 'verify']),
+    cause => graphSharingFailure('Failed to generate a graph publisher key.', cause),
+  );
+  const publicKey = yield* exportKeyBytes(pair.publicKey, 'raw');
+  const privateKey = yield* exportKeyBytes(pair.privateKey, 'pkcs8');
+  const publicHex = bytesToHex(publicKey);
+  return {
+    fingerprint: sha256Digest(publicKey),
+    privateKey: bytesToHex(privateKey),
+    publicKey: publicHex,
+    schemaVersion: 1 as const,
+  } satisfies GraphSharePublisherKeyV1;
+});
+
+export const signGraphShareFrontier = Effect.fn('codeGraph.sharing.signFrontier')(function* (
+  key: GraphSharePublisherKeyV1,
+  manifest: GraphShareFrontierManifestV1,
+) {
+  const payload = graphShareFrontierCanonicalBytes(manifest);
+  const payloadDigest = sha256Digest(payload);
+  const privateKey = yield* importPrivateKey(key.privateKey);
+  const signature = yield* fromPromiseInterruptible(
+    () => crypto.subtle.sign(ED25519, privateKey, asBufferSource(payload)),
+    cause => graphSharingFailure('Failed to sign the graph frontier.', cause),
+  );
+  const envelope: GraphShareSignatureEnvelopeV1 = {
+    algorithm: GRAPH_SHARE_SIGNATURE_ALGORITHM,
+    payloadDigest,
+    publicKey: key.publicKey,
+    publicKeyFingerprint: key.fingerprint,
+    schemaVersion: 1,
+    signature: bytesToHex(new Uint8Array(signature)),
+  };
+  return {envelope, manifest, payloadDigest};
+});
+
+export const verifyGraphShareFrontier = Effect.fn('codeGraph.sharing.verifyFrontier')(function* (
+  expectedFingerprint: Sha256Digest,
+  manifest: GraphShareFrontierManifestV1,
+  envelope: GraphShareSignatureEnvelopeV1,
+) {
+  if (envelope.algorithm !== GRAPH_SHARE_SIGNATURE_ALGORITHM || envelope.schemaVersion !== 1) {
+    return yield* graphSharingFailure('Frontier signature algorithm is not supported.');
+  }
+  if (!SHA256_HEX.test(envelope.publicKey) || !/^[0-9a-f]{128}$/u.test(envelope.signature)) {
+    return yield* graphSharingFailure('Frontier signature encoding is invalid.');
+  }
+  const publicKeyBytes = hexToBytes(envelope.publicKey);
+  const fingerprint = sha256Digest(publicKeyBytes);
+  if (fingerprint !== envelope.publicKeyFingerprint || fingerprint !== expectedFingerprint) {
+    return yield* graphSharingFailure('Frontier publisher key fingerprint does not match enrollment.');
+  }
+  const payload = graphShareFrontierCanonicalBytes(manifest);
+  const payloadDigest = sha256Digest(payload);
+  if (payloadDigest !== envelope.payloadDigest) {
+    return yield* graphSharingFailure('Frontier signature does not cover the canonical manifest.');
+  }
+  const publicKey = yield* fromPromiseInterruptible(
+    () => crypto.subtle.importKey('raw', asBufferSource(publicKeyBytes), ED25519, true, ['verify']),
+    cause => graphSharingFailure('Frontier publisher public key is invalid.', cause),
+  );
+  const accepted = yield* fromPromiseInterruptible(
+    () =>
+      crypto.subtle.verify(ED25519, publicKey, asBufferSource(hexToBytes(envelope.signature)), asBufferSource(payload)),
+    cause => graphSharingFailure('Frontier signature verification failed.', cause),
+  );
+  if (!accepted) return yield* graphSharingFailure('Frontier publisher signature is invalid.');
+  return payloadDigest;
+});
+
+export function parseGraphShareFrontierManifest(value: unknown): GraphShareFrontierManifestV1 {
+  if (!isRecord(value)) throw graphSharingFailure('Frontier manifest is invalid.');
+  if (value.schemaVersion !== GRAPH_SHARE_FRONTIER_SCHEMA_VERSION) {
+    throw graphSharingFailure('Frontier manifest schemaVersion is not supported.');
+  }
+  if (value.generation !== 1 || value.previousManifestDigest !== null || value.publisherFence !== 1) {
+    throw graphSharingFailure('Phase 0 frontier manifests must be generation one.');
+  }
+  if (!Array.isArray(value.deltas) || value.deltas.length !== 0) {
+    throw graphSharingFailure('Phase 0 frontier manifests cannot include deltas.');
+  }
+  const checkpoint = parseCheckpoint(value.checkpoint);
+  const manifest: GraphShareFrontierManifestV1 = {
+    branch: requiredText(value.branch, 'branch'),
+    checkpoint,
+    deltas: [],
+    generation: 1,
+    graphAbi: requiredText(value.graphAbi, 'graphAbi'),
+    graphContentId: requiredText(value.graphContentId, 'graphContentId'),
+    logicalGraphDigest: parseSha256Digest(requiredText(value.logicalGraphDigest, 'logicalGraphDigest')),
+    previousManifestDigest: null,
+    profileDigest: parseSha256Digest(requiredText(value.profileDigest, 'profileDigest')),
+    publisherFence: 1,
+    repositoryId: requiredHex(value.repositoryId, 'repositoryId'),
+    schemaVersion: GRAPH_SHARE_FRONTIER_SCHEMA_VERSION,
+    snapshotId: requiredText(value.snapshotId, 'snapshotId'),
+    sourceCommit: requiredText(value.sourceCommit, 'sourceCommit'),
+  };
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(Object.keys(manifest).sort())) {
+    throw graphSharingFailure('Frontier manifest contains unsupported fields.');
+  }
+  return manifest;
+}
+
+export function parseGraphShareSignatureEnvelope(value: unknown): GraphShareSignatureEnvelopeV1 {
+  if (!isRecord(value)) throw graphSharingFailure('Frontier signature envelope is invalid.');
+  const envelope: GraphShareSignatureEnvelopeV1 = {
+    algorithm: GRAPH_SHARE_SIGNATURE_ALGORITHM,
+    payloadDigest: parseSha256Digest(requiredText(value.payloadDigest, 'payloadDigest')),
+    publicKey: requiredHex(value.publicKey, 'publicKey'),
+    publicKeyFingerprint: parseSha256Digest(requiredText(value.publicKeyFingerprint, 'publicKeyFingerprint')),
+    schemaVersion: 1,
+    signature: requiredHex(value.signature, 'signature'),
+  };
+  if (value.algorithm !== GRAPH_SHARE_SIGNATURE_ALGORITHM || value.schemaVersion !== 1) {
+    throw graphSharingFailure('Frontier signature envelope schema is invalid.');
+  }
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(Object.keys(envelope).sort())) {
+    throw graphSharingFailure('Frontier signature envelope contains unsupported fields.');
+  }
+  return envelope;
+}
+
+export function parseGraphSharePublisherKey(value: unknown): GraphSharePublisherKeyV1 {
+  if (!isRecord(value) || value.schemaVersion !== 1) {
+    throw graphSharingFailure('Publisher key file is invalid.');
+  }
+  return {
+    fingerprint: parseSha256Digest(requiredText(value.fingerprint, 'fingerprint')),
+    privateKey: requiredHex(value.privateKey, 'privateKey'),
+    publicKey: requiredHex(value.publicKey, 'publicKey'),
+    schemaVersion: 1,
+  };
+}
+
+export function parseGraphShareFrontierPointer(value: unknown): GraphShareFrontierPointerV1 {
+  if (!isRecord(value) || value.schemaVersion !== 1) {
+    throw graphSharingFailure('Frontier pointer is invalid.');
+  }
+  return {
+    envelopeDigest: parseSha256Digest(requiredText(value.envelopeDigest, 'envelopeDigest')),
+    manifestDigest: parseSha256Digest(requiredText(value.manifestDigest, 'manifestDigest')),
+    schemaVersion: 1,
+  };
+}
+
+function parseCheckpoint(value: unknown): GraphShareFrontierCheckpointV1 {
+  if (!isRecord(value)) throw graphSharingFailure('Frontier checkpoint descriptor is invalid.');
+  return {
+    manifestDigest: parseSha256Digest(requiredText(value.manifestDigest, 'checkpoint.manifestDigest')),
+    snapshotId: requiredText(value.snapshotId, 'checkpoint.snapshotId'),
+    sourceCommit: requiredText(value.sourceCommit, 'checkpoint.sourceCommit'),
+  };
+}
+
+function exportKeyBytes(key: CryptoKey, format: 'pkcs8' | 'raw') {
+  return fromPromiseInterruptible(
+    () => crypto.subtle.exportKey(format, key).then(buffer => new Uint8Array(buffer)),
+    cause => graphSharingFailure('Failed to export a graph publisher key.', cause),
+  );
+}
+
+function importPrivateKey(hex: string) {
+  return fromPromiseInterruptible(
+    () => crypto.subtle.importKey('pkcs8', asBufferSource(hexToBytes(hex)), ED25519, true, ['sign']),
+    cause => graphSharingFailure('Publisher private key is invalid.', cause),
+  );
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function requiredText(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0 || value.length > 512) {
+    throw graphSharingFailure(`Frontier field ${label} is invalid.`);
+  }
+  return value;
+}
+
+function requiredHex(value: unknown, label: string): string {
+  const text = requiredText(value, label);
+  if (!SHA256_HEX.test(text) && !/^[0-9a-f]{64,256}$/u.test(text)) {
+    throw graphSharingFailure(`Frontier field ${label} must be lowercase hex.`);
+  }
+  return text;
+}
