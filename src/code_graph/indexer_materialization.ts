@@ -201,6 +201,11 @@ function codeGraphFileProgressDimensions(
 export function cacheContentBatch(options: {
   readonly databasePath: string;
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+  readonly onCachedParserBatch?: (group: {
+    readonly cacheIdentity: string;
+    readonly facts: readonly BoundedCodeGraphFact[];
+    readonly files: readonly CodeGraphInventoryFile[];
+  }) => Effect.Effect<void, unknown>;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
   readonly parserPool: CodeGraphParserPoolShape;
   readonly persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector;
@@ -328,6 +333,13 @@ export function cacheContentBatch(options: {
         group.cacheIdentity,
         options.persistentCapacityProtector,
       );
+      yield* (
+        options.onCachedParserBatch?.({
+          cacheIdentity: group.cacheIdentity,
+          facts: group.facts,
+          files: group.files,
+        }) ?? Effect.void
+      ).pipe(Effect.ignore);
       const elapsed = Math.max(0, performance.now() - startedAt);
       persistenceMilliseconds += elapsed;
       pendingBytes -= group.payloadBytes;

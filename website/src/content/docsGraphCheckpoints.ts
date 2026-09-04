@@ -1,4 +1,37 @@
-import type {DocsArticle} from './docsTypes.js';
+import type {CliCommandReference, DocsArticle} from './docsTypes.js';
+
+export const graphCliCommand: CliCommandReference = {
+  command: 'graph',
+  summary: 'Build, inspect, analyze, report on, and export the current snapshot-aware polyglot code graph.',
+  examples: [
+    'threadnote graph query --query "session refresh"',
+    'threadnote graph query --workset commerce --query "checkout contract" --budget-tokens 1250',
+    'threadnote graph query --workset commerce --cursor cgwc_…',
+    'threadnote graph node --node-id cgs_…',
+    'threadnote graph neighbors --node-id cgs_… --direction incoming',
+    'threadnote graph explain --symbol RefreshSession',
+    'threadnote graph path --from LoginScreen --to TokenStore',
+    'threadnote graph path --workset commerce --from cgr_… --to cgr_…',
+    'threadnote graph impact --base origin/main',
+    'threadnote graph impact --workset commerce --query cgr_…',
+    'threadnote graph topology --workset commerce --json',
+    'threadnote graph analyze --view full',
+    'threadnote graph report --output architecture-report.md',
+    'threadnote graph export --format graphml --output code-graph.graphml',
+    'threadnote graph checkpoint export --output threadnote-graph.cgcp',
+    'threadnote graph checkpoint verify --input threadnote-graph.cgcp --expected-digest sha256:…',
+    'threadnote graph checkpoint import --input threadnote-graph.cgcp --expected-digest sha256:…',
+    'threadnote graph share init --write-config --organization acme',
+    'threadnote graph share join --read-only',
+    'threadnote graph share join --coordinator http://127.0.0.1:18765',
+    'threadnote graph publisher bootstrap',
+    'threadnote graph publisher serve',
+    'threadnote graph publisher serve --listen 127.0.0.1:18765',
+    'threadnote graph contribute status',
+    'threadnote graph worker --json',
+    'threadnote graph index',
+  ],
+};
 
 export const graphCheckpointsDocsArticle: DocsArticle = {
   id: 'graph-checkpoints',
@@ -53,7 +86,7 @@ threadnote graph checkpoint import \\
     },
     {
       type: 'paragraph',
-      text: 'Organization graph sharing reuses this checkpoint contract. A checked-in `.threadnote/graph-share.json` pointer names a digest-pinned profile and publisher key fingerprint. `threadnote graph share join --read-only` records local trust only. The next `threadnote graph index` imports a verified shared base and builds only the local overlay. MCP then reports `source.kind: shared-base-plus-local-overlay` with the profile digest, frontier commit, and local commit. Missing enrollment keeps ordinary local indexing. Invalid signatures stay fail-closed for the candidate and preserve the last ready local graph. Recall does not start this work.',
+      text: 'Organization graph sharing reuses this checkpoint contract. A checked-in `.threadnote/graph-share.json` pointer names a digest-pinned profile and publisher key fingerprint. `threadnote graph share join --read-only` records local trust only. The next `threadnote graph index` imports a verified shared base and builds only the local overlay. `graph publisher serve` publishes the next signed generation when HEAD advances; `graph publisher serve --listen 127.0.0.1:port` also serves the loopback coordinator and digest CAS so additional homes can join without sharing a filesystem CAS directory. Clients select the newest published ancestor. After a contributing join, local parse batches enqueue parse-result artifacts (never source text) and upload them once the coordinator is reachable. Worker CAS is separate from the canonical frontier, and the coordinator API never accepts source or graph records. MCP then reports `source.kind: shared-base-plus-local-overlay` with the profile digest, frontier commit, and local commit. Missing enrollment keeps ordinary local indexing. Invalid signatures stay fail-closed for the candidate and preserve the last ready local graph. Recall does not start this work.',
     },
     {
       type: 'note',

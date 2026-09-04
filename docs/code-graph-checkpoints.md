@@ -94,19 +94,27 @@ A Workset remains optional and is used only for explicitly prepared multi-reposi
   material, and raw source-file bytes are omitted, but source-embedded secrets can still appear in derived fields.
 - Use `--json` on every checkpoint command for a versioned machine-readable receipt.
 
-## Organization graph sharing (Phase 0)
+## Organization graph sharing
 
 Companies can enroll a repository so developer clones download a verified portable checkpoint instead of rebuilding the
 clean graph from scratch. Graph packs are not memory Git: they live in a digest-addressed CAS next to a checked-in
-enrollment pointer.
+enrollment pointer. After join, a publisher can advance a signed generation chain; clients select the newest published
+ancestor of `HEAD`. Worker results land in a separate CAS namespace from canonical frontiers. The coordinator API
+accepts only bounded metadata: no source text or graph records. `graph publisher serve --listen 127.0.0.1:port` exposes
+that API and a digest CAS on loopback so additional homes can join with `--coordinator` instead of a shared CAS
+directory. Contributing joins enqueue parse-result artifacts after local parser batches commit and upload them after the
+graph writer lock is released.
 
 ```sh
-threadnote graph share init --write-config --organization acme
+threadnote graph share init --write-config --organization acme --coordinator http://127.0.0.1:18765
 git add .threadnote/graph-share.json && git commit -m "Enroll graph sharing"
 threadnote graph index --full
 threadnote graph publisher bootstrap
-threadnote graph share join --read-only
+threadnote graph publisher serve --listen 127.0.0.1:18765 --json
+threadnote graph share join --coordinator http://127.0.0.1:18765
 threadnote graph index
+threadnote graph contribute status
+threadnote graph worker --json
 threadnote graph share status
 threadnote graph share leave
 ```

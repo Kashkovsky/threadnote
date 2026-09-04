@@ -1,4 +1,5 @@
 import {Clock, Context, Crypto, Effect, Exit, FileSystem, Layer, Option, Path, Schema} from 'effect';
+import * as HttpClient from 'effect/unstable/http/HttpClient';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {makeCodeGraphBuildReporter} from './build_status.js';
@@ -55,6 +56,7 @@ import type {
   IncrementalOverlayPreassessment,
 } from './indexer_types.js';
 import {codeGraphIndexEnsuresVectors} from './indexer_types.js';
+import type {BoundedCodeGraphFact} from './fact_budget.js';
 import {
   type CodeGraphInventory,
   type CodeGraphOverlayObservation,
@@ -71,10 +73,15 @@ import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} 
 import {CodeGraphParserPool} from './parser_worker.js';
 import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {maybeImportSharedGraphBase} from './sharing/client.js';
+import {
+  drainQueuedGraphShareContributions,
+  enqueueLocalGraphShareParseResults,
+  hydrateSharedParseCache,
+} from './sharing/parse_cache.js';
 import {graphShareEnrollmentPath} from './sharing/layout.js';
 import {CodeGraphStore} from './store.js';
 import {TreeSitterRuntime} from './tree_sitter/runtime.js';
-import type {CodeGraphIndexSummary, CodeGraphProgress, CodeGraphSnapshot} from './types.js';
+import type {CodeGraphIndexSummary, CodeGraphInventoryFile, CodeGraphProgress, CodeGraphSnapshot} from './types.js';
 import {
   makeCodeGraphBuildAnonymousTelemetryReporter,
   type CodeGraphBuildAnonymousTelemetryReporter,
@@ -98,6 +105,28 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       const command = yield* CommandExecutor;
       const crypto = yield* Crypto.Crypto;
       const system = yield* SystemInfo;
+      const http = yield* HttpClient.HttpClient;
+      const enqueueSharedParserBatch = (
+        identity: {readonly headCommit: string; readonly repositoryId: string},
+        threadnoteHome: string,
+        group: {
+          readonly cacheIdentity: string;
+          readonly facts: readonly BoundedCodeGraphFact[];
+          readonly files: readonly CodeGraphInventoryFile[];
+        },
+      ) =>
+        enqueueLocalGraphShareParseResults({
+          extractorSet: group.cacheIdentity,
+          facts: group.facts,
+          files: group.files,
+          identity,
+          threadnoteHome,
+        }).pipe(
+          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.asVoid,
+        );
       const indexAttempt = (
         request: CodeGraphIndexOptions,
         anonymousTelemetry: CodeGraphBuildAnonymousTelemetryReporter,
@@ -186,6 +215,20 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               temporaryDirectory: system.tempDirectory,
               walAutoCheckpointPages: options.sqliteWriterTuning?.walAutoCheckpointPages ?? 1_000,
             };
+            yield* hydrateSharedParseCache({
+              databasePath: layout.databasePath,
+              identity: initialIdentity,
+              persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
+                capacityProtection,
+                fs,
+                identity: initialIdentity,
+                layout,
+                onProgress: options.onProgress,
+                threadnoteHome: options.threadnoteHome,
+              }),
+              store,
+              threadnoteHome: request.threadnoteHome,
+            }).pipe(Effect.ignore);
             const repositoryBuild = withCodeGraphProcessLock(
               fs,
               layout.lockPath,
@@ -304,6 +347,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       const cacheCoalescer = cacheContentBatch({
                         databasePath: layout.databasePath,
                         languagePacks,
+                        onCachedParserBatch: group => enqueueSharedParserBatch(identity, options.threadnoteHome, group),
                         onProgress: options.onProgress,
                         parserPool,
                         persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
@@ -902,6 +946,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 }).pipe(Effect.ignore),
               ),
             );
+            yield* drainQueuedGraphShareContributions({
+              identity: initialIdentity,
+              threadnoteHome: request.threadnoteHome,
+            }).pipe(Effect.ignore);
             return summary;
           }),
         ).pipe(
@@ -913,6 +961,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           Effect.provideService(CodeGraphStore, store),
           Effect.provideService(CodeGraphLanguagePackRegistry, languagePacks),
           Effect.provideService(CodeGraphMaintenanceCoordinator, maintenance),
+          Effect.provideService(HttpClient.HttpClient, http),
           Effect.catchIf(
             cause => Schema.is(WorktreeChangedDuringIndex)(cause) && attempt === 0,
             () => indexAttempt(request, anonymousTelemetry, attempt + 1, bypassCachedFacts),
@@ -1043,6 +1092,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       const cacheCoalescer = cacheContentBatch({
                         databasePath: layout.databasePath,
                         languagePacks,
+                        onCachedParserBatch: group => enqueueSharedParserBatch(identity, options.threadnoteHome, group),
                         onProgress: options.onProgress,
                         parserPool,
                         persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
@@ -1129,6 +1179,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 }).pipe(Effect.ignore),
               ),
             );
+            yield* drainQueuedGraphShareContributions({
+              identity: initialIdentity,
+              threadnoteHome: request.threadnoteHome,
+            }).pipe(Effect.ignore);
             return lease;
           }),
         ).pipe(
@@ -1137,6 +1191,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
           Effect.provideService(SystemInfo, system),
+          Effect.provideService(HttpClient.HttpClient, http),
           Effect.catchIf(
             cause => Schema.is(CachedCodeGraphFactUnavailableDuringIndex)(cause) && !bypassCachedFacts,
             () => ensureCommitWithSummary(request, anonymousTelemetry, true),

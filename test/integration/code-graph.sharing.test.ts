@@ -7,7 +7,7 @@ import {describe, expect, it} from 'vitest';
 
 const execFilePromise = promisify(execFile);
 
-describe('code graph sharing Phase 0', () => {
+describe('code graph sharing Phases 0–2', () => {
   it('imports a verified shared checkpoint on a second home and keeps local graphs without enrollment', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-graph-share-'));
     const repository = join(root, 'repository');
@@ -173,6 +173,59 @@ describe('code graph sharing Phase 0', () => {
         await readFile(join(clientHome, 'graph-sharing', 'provenance', `${indexed.identity.checkoutId}.json`), 'utf8'),
       ) as {readonly snapshotId: string};
       expect(overlayProvenance.snapshotId).toBe(indexed.snapshot.id);
+
+      await rm(join(repository, 'src', 'dirty.ts'));
+      const contribution = JSON.parse(
+        (await runCli(['graph', 'contribute', 'status', '--home', clientHome, '--cwd', repository, '--json'])).stdout,
+      ) as {readonly mode: string; readonly queued: number};
+      expect(contribution).toMatchObject({mode: 'off', queued: 0});
+      const idleServe = JSON.parse(
+        (
+          await runCli([
+            'graph',
+            'publisher',
+            'serve',
+            '--home',
+            publisherHome,
+            '--cwd',
+            repository,
+            '--cas',
+            cas,
+            '--json',
+          ])
+        ).stdout,
+      ) as {readonly generation: number; readonly sourceCommit: string};
+      expect(idleServe.generation).toBe(1);
+      await writeFile(join(repository, 'src', 'next.ts'), 'export const next = 3;\n');
+      await git(repository, ['add', 'src/next.ts']);
+      await commit(repository, 'advance frontier');
+      await runCli(['graph', 'index', '--full', '--home', publisherHome, '--cwd', repository, '--json']);
+      const served = JSON.parse(
+        (
+          await runCli([
+            'graph',
+            'publisher',
+            'serve',
+            '--home',
+            publisherHome,
+            '--cwd',
+            repository,
+            '--cas',
+            cas,
+            '--json',
+          ])
+        ).stdout,
+      ) as {readonly generation: number; readonly sourceCommit: string};
+      expect(served.generation).toBe(2);
+      expect(served.sourceCommit).not.toBe(idleServe.sourceCommit);
+      const advanced = JSON.parse(
+        (await runCli(['graph', 'index', '--home', clientHome, '--cwd', repository, '--json'])).stdout,
+      ) as {readonly snapshot: {readonly id: string}};
+      expect(advanced.snapshot.id).toMatch(/^cgsn_/);
+      const worker = JSON.parse(
+        (await runCli(['graph', 'worker', '--json', '--home', clientHome, '--cwd', repository])).stdout,
+      ) as {readonly eligible: number; readonly skippedMissingBlob: number};
+      expect(worker).toMatchObject({eligible: 0, skippedMissingBlob: 0});
 
       const unenrolled = join(root, 'unenrolled');
       await mkdir(join(unenrolled, 'src'), {recursive: true});

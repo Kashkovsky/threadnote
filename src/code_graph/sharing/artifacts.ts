@@ -3,6 +3,7 @@ import {fromPromiseInterruptible} from '../../effect/errors.js';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
 import {graphSharingFailure} from './errors.js';
 import {parseSha256Digest, sha256Digest, SHA256_HEX, type Sha256Digest} from './digest.js';
+import {isGraphShareGitObjectId} from './git.js';
 
 function asBufferSource(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   return new Uint8Array(bytes);
@@ -11,23 +12,36 @@ function asBufferSource(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
 export const GRAPH_SHARE_FRONTIER_SCHEMA_VERSION = 1 as const;
 export const GRAPH_SHARE_SIGNATURE_ALGORITHM = 'ed25519' as const;
 
+export const GRAPH_SHARE_PROFILE_MEDIA_TYPE = 'application/vnd.threadnote.graph.profile.v1+json';
+export const GRAPH_SHARE_FRONTIER_MEDIA_TYPE = 'application/vnd.threadnote.graph.frontier.v1+json';
+export const GRAPH_SHARE_DELTA_MEDIA_TYPE = 'application/vnd.threadnote.graph.delta.v1+json';
+export const GRAPH_SHARE_RECORDS_MEDIA_TYPE = 'application/vnd.threadnote.graph.records.v1+gzip';
+export const GRAPH_SHARE_PARSE_RESULT_MEDIA_TYPE = 'application/vnd.threadnote.graph.parse-result.v1+json';
+
 export interface GraphShareFrontierCheckpointV1 {
   readonly manifestDigest: Sha256Digest;
   readonly snapshotId: string;
   readonly sourceCommit: string;
 }
 
+export interface GraphShareFrontierDeltaV1 {
+  readonly baseSnapshotId: string;
+  readonly manifestDigest: Sha256Digest;
+  readonly targetCommit: string;
+  readonly targetSnapshotId: string;
+}
+
 export interface GraphShareFrontierManifestV1 {
   readonly branch: string;
   readonly checkpoint: GraphShareFrontierCheckpointV1;
-  readonly deltas: readonly [];
-  readonly generation: 1;
+  readonly deltas: readonly GraphShareFrontierDeltaV1[];
+  readonly generation: number;
   readonly graphAbi: string;
   readonly graphContentId: string;
   readonly logicalGraphDigest: Sha256Digest;
-  readonly previousManifestDigest: null;
+  readonly previousManifestDigest: Sha256Digest | null;
   readonly profileDigest: Sha256Digest;
-  readonly publisherFence: 1;
+  readonly publisherFence: number;
   readonly repositoryId: string;
   readonly schemaVersion: typeof GRAPH_SHARE_FRONTIER_SCHEMA_VERSION;
   readonly snapshotId: string;
@@ -143,29 +157,31 @@ export function parseGraphShareFrontierManifest(value: unknown): GraphShareFront
   if (value.schemaVersion !== GRAPH_SHARE_FRONTIER_SCHEMA_VERSION) {
     throw graphSharingFailure('Frontier manifest schemaVersion is not supported.');
   }
-  if (value.generation !== 1 || value.previousManifestDigest !== null || value.publisherFence !== 1) {
-    throw graphSharingFailure('Phase 0 frontier manifests must be generation one.');
-  }
-  if (!Array.isArray(value.deltas) || value.deltas.length !== 0) {
-    throw graphSharingFailure('Phase 0 frontier manifests cannot include deltas.');
+  const generation = requiredGeneration(value.generation);
+  const previousManifestDigest = parsePreviousManifestDigest(value.previousManifestDigest, generation);
+  if (!Array.isArray(value.deltas) || value.deltas.length > 64) {
+    throw graphSharingFailure('Frontier delta list is invalid.');
   }
   const checkpoint = parseCheckpoint(value.checkpoint);
   const manifest: GraphShareFrontierManifestV1 = {
     branch: requiredText(value.branch, 'branch'),
     checkpoint,
-    deltas: [],
-    generation: 1,
+    deltas: value.deltas.map(parseDelta),
+    generation,
     graphAbi: requiredText(value.graphAbi, 'graphAbi'),
     graphContentId: requiredText(value.graphContentId, 'graphContentId'),
     logicalGraphDigest: parseSha256Digest(requiredText(value.logicalGraphDigest, 'logicalGraphDigest')),
-    previousManifestDigest: null,
+    previousManifestDigest,
     profileDigest: parseSha256Digest(requiredText(value.profileDigest, 'profileDigest')),
-    publisherFence: 1,
+    publisherFence: requiredFence(value.publisherFence),
     repositoryId: requiredHex(value.repositoryId, 'repositoryId'),
     schemaVersion: GRAPH_SHARE_FRONTIER_SCHEMA_VERSION,
     snapshotId: requiredText(value.snapshotId, 'snapshotId'),
-    sourceCommit: requiredText(value.sourceCommit, 'sourceCommit'),
+    sourceCommit: requiredGitObjectId(value.sourceCommit, 'sourceCommit'),
   };
+  if (manifest.sourceCommit !== checkpoint.sourceCommit) {
+    throw graphSharingFailure('Frontier sourceCommit must match the checkpoint sourceCommit.');
+  }
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(Object.keys(manifest).sort())) {
     throw graphSharingFailure('Frontier manifest contains unsupported fields.');
   }
@@ -219,8 +235,45 @@ function parseCheckpoint(value: unknown): GraphShareFrontierCheckpointV1 {
   return {
     manifestDigest: parseSha256Digest(requiredText(value.manifestDigest, 'checkpoint.manifestDigest')),
     snapshotId: requiredText(value.snapshotId, 'checkpoint.snapshotId'),
-    sourceCommit: requiredText(value.sourceCommit, 'checkpoint.sourceCommit'),
+    sourceCommit: requiredGitObjectId(value.sourceCommit, 'checkpoint.sourceCommit'),
   };
+}
+
+function parseDelta(value: unknown): GraphShareFrontierDeltaV1 {
+  if (!isRecord(value)) throw graphSharingFailure('Frontier delta descriptor is invalid.');
+  const delta: GraphShareFrontierDeltaV1 = {
+    baseSnapshotId: requiredText(value.baseSnapshotId, 'delta.baseSnapshotId'),
+    manifestDigest: parseSha256Digest(requiredText(value.manifestDigest, 'delta.manifestDigest')),
+    targetCommit: requiredGitObjectId(value.targetCommit, 'delta.targetCommit'),
+    targetSnapshotId: requiredText(value.targetSnapshotId, 'delta.targetSnapshotId'),
+  };
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(Object.keys(delta).sort())) {
+    throw graphSharingFailure('Frontier delta descriptor contains unsupported fields.');
+  }
+  return delta;
+}
+
+function requiredGeneration(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 1_000_000) {
+    throw graphSharingFailure('Frontier generation is invalid.');
+  }
+  return value;
+}
+
+function requiredFence(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 1_000_000) {
+    throw graphSharingFailure('Frontier publisher fence is invalid.');
+  }
+  return value;
+}
+
+function parsePreviousManifestDigest(value: unknown, generation: number): Sha256Digest | null {
+  if (generation === 1) {
+    if (value !== null) throw graphSharingFailure('Generation-one frontiers cannot name a predecessor.');
+    return null;
+  }
+  if (typeof value !== 'string') throw graphSharingFailure('Frontier predecessor digest is invalid.');
+  return parseSha256Digest(value, 'previousManifestDigest');
 }
 
 function exportKeyBytes(key: CryptoKey, format: 'pkcs8' | 'raw') {
@@ -258,6 +311,14 @@ function requiredText(value: unknown, label: string): string {
     throw graphSharingFailure(`Frontier field ${label} is invalid.`);
   }
   return value;
+}
+
+function requiredGitObjectId(value: unknown, label: string): string {
+  const text = requiredText(value, label);
+  if (!isGraphShareGitObjectId(text)) {
+    throw graphSharingFailure(`Frontier field ${label} must be a Git object id.`);
+  }
+  return text;
 }
 
 function requiredHex(value: unknown, label: string): string {

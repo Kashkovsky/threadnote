@@ -1,3 +1,4 @@
+import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Crypto, Effect, Layer} from 'effect';
 import {succeedUndefined} from './optional.js';
@@ -91,7 +92,10 @@ const ApplicationServicesLayer = Layer.mergeAll(
   systemLayer,
 );
 
-export const ApplicationLayer = ApplicationServicesLayer.pipe(Layer.provideMerge(BunServices.layer));
+export const ApplicationLayer = ApplicationServicesLayer.pipe(
+  Layer.provideMerge(BunServices.layer),
+  Layer.provideMerge(BunHttpClient.layer),
+);
 
 /**
  * Runtime application layer with explicit-consent anonymous telemetry. The

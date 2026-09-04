@@ -8,7 +8,10 @@ export const GRAPH_SHARING_PUBLISHER_KEY_FILE = 'publisher.ed25519.json';
 
 export interface GraphSharingLayout {
   readonly casRoot: string;
+  readonly clientStateLockPath: string;
   readonly clientStatePath: string;
+  readonly coordinatorStateLockPath: string;
+  readonly coordinatorStatePath: string;
   readonly frontiersRoot: string;
   readonly keysRoot: string;
   readonly profilesRoot: string;
@@ -18,6 +21,7 @@ export interface GraphSharingLayout {
   readonly root: string;
   readonly trustReceiptsLockPath: string;
   readonly trustReceiptsPath: string;
+  readonly workerRoot: string;
 }
 
 export function graphSharingLayout(path: Path.Path, threadnoteHome: string, casRoot?: string): GraphSharingLayout {
@@ -25,7 +29,10 @@ export function graphSharingLayout(path: Path.Path, threadnoteHome: string, casR
   const resolvedCas = casRoot ?? path.join(root, 'cas');
   return {
     casRoot: resolvedCas,
+    clientStateLockPath: path.join(root, `${GRAPH_SHARING_CLIENT_STATE_FILE}.lock`),
     clientStatePath: path.join(root, GRAPH_SHARING_CLIENT_STATE_FILE),
+    coordinatorStateLockPath: path.join(root, 'coordinator-state.json.lock'),
+    coordinatorStatePath: path.join(root, 'coordinator-state.json'),
     frontiersRoot: path.join(resolvedCas, 'frontiers'),
     keysRoot: path.join(root, 'keys'),
     profilesRoot: path.join(root, 'profiles'),
@@ -35,6 +42,7 @@ export function graphSharingLayout(path: Path.Path, threadnoteHome: string, casR
     root,
     trustReceiptsLockPath: path.join(root, `${GRAPH_SHARING_TRUST_RECEIPTS_FILE}.lock`),
     trustReceiptsPath: path.join(root, GRAPH_SHARING_TRUST_RECEIPTS_FILE),
+    workerRoot: path.join(resolvedCas, 'worker'),
   };
 }
 
@@ -46,10 +54,26 @@ export function graphSharingFrontierPointerPath(path: Path.Path, frontiersRoot: 
   return path.join(frontiersRoot, repositoryId, 'latest.json');
 }
 
+export function graphSharingContributionQueuePath(path: Path.Path, root: string, repositoryId: string): string {
+  return path.join(root, 'contribution', `${repositoryId}.json`);
+}
+
+export function graphSharingWorkerWorkPath(path: Path.Path, workerRoot: string, repositoryId: string): string {
+  return path.join(workerRoot, repositoryId, 'work.json');
+}
+
 export function graphSharingProvenancePath(path: Path.Path, provenanceRoot: string, checkoutId: string): string {
   return path.join(provenanceRoot, `${checkoutId}.json`);
 }
 
 export function graphSharingCasBlobPath(path: Path.Path, casRoot: string, hex: string): string {
   return path.join(casRoot, 'sha256', hex);
+}
+
+export function graphSharingCoordinatorStatePath(path: Path.Path, root: string): string {
+  return path.join(root, 'coordinator-state.json');
+}
+
+export function graphSharingTagPath(path: Path.Path, casRoot: string, name: string): string {
+  return path.join(casRoot, 'tags', name);
 }

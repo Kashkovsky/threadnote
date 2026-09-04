@@ -4,7 +4,7 @@ import {readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {graphSharingFailure} from './errors.js';
 import {parseSha256Digest, SHA256_DIGEST, SHA256_HEX, type Sha256Digest} from './digest.js';
 import {graphSharingLayout} from './layout.js';
-import type {GraphShareEnrollmentV1, GraphShareProfileV1} from './profile.js';
+import {parseGraphShareCoordinatorUrl, type GraphShareEnrollmentV1, type GraphShareProfileV1} from './profile.js';
 
 const GRAPH_SHARE_TRUST_LOCK_OPTIONS = {
   heartbeatIntervalMilliseconds: 10_000,
@@ -34,6 +34,8 @@ export interface GraphShareTrustDocumentV1 {
 
 export interface GraphShareClientStateV1 {
   readonly casRoot?: string;
+  readonly contributionMode?: 'dedicated' | 'idle' | 'off' | 'passive';
+  readonly coordinatorUrl?: string;
   readonly schemaVersion: 1;
 }
 
@@ -128,10 +130,52 @@ export const writeGraphShareClientState = Effect.fn('codeGraph.sharing.writeClie
   threadnoteHome: string,
   casRoot: string | undefined,
 ) {
-  const path = yield* Path.Path;
-  const layout = graphSharingLayout(path, threadnoteHome);
-  const state: GraphShareClientStateV1 = casRoot === undefined ? {schemaVersion: 1} : {casRoot, schemaVersion: 1};
-  yield* writePrivateJsonFile(layout.clientStatePath, state);
+  yield* patchGraphShareClientState(threadnoteHome, {casRoot});
+});
+
+export const writeGraphShareContributionMode = Effect.fn('codeGraph.sharing.writeContributionMode')(function* (
+  threadnoteHome: string,
+  contributionMode: GraphShareClientStateV1['contributionMode'],
+) {
+  return yield* patchGraphShareClientState(threadnoteHome, {contributionMode});
+});
+
+export const writeGraphShareCoordinatorUrl = Effect.fn('codeGraph.sharing.writeCoordinatorUrl')(function* (
+  threadnoteHome: string,
+  coordinatorUrl: string | undefined,
+) {
+  return yield* patchGraphShareClientState(threadnoteHome, {coordinatorUrl});
+});
+
+export const patchGraphShareClientState = Effect.fn('codeGraph.sharing.patchClientState')(function* (
+  threadnoteHome: string,
+  patch: {
+    readonly casRoot?: string | undefined;
+    readonly contributionMode?: GraphShareClientStateV1['contributionMode'];
+    readonly coordinatorUrl?: string | undefined;
+  },
+) {
+  return yield* withGraphShareClientStateLock(
+    threadnoteHome,
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const layout = graphSharingLayout(path, threadnoteHome);
+      const current = yield* readGraphShareClientState(threadnoteHome);
+      const casRoot = patch.casRoot !== undefined ? patch.casRoot : current.casRoot;
+      const contributionMode = patch.contributionMode !== undefined ? patch.contributionMode : current.contributionMode;
+      const coordinatorUrl = patch.coordinatorUrl !== undefined ? patch.coordinatorUrl : current.coordinatorUrl;
+      const state: GraphShareClientStateV1 = {
+        schemaVersion: 1,
+        ...(casRoot !== undefined && casRoot.trim().length > 0 ? {casRoot} : {}),
+        ...(contributionMode === undefined ? {} : {contributionMode}),
+        ...(coordinatorUrl === undefined || coordinatorUrl.trim().length === 0
+          ? {}
+          : {coordinatorUrl: parseGraphShareCoordinatorUrl(coordinatorUrl)}),
+      };
+      yield* writePrivateJsonFile(layout.clientStatePath, state);
+      return state;
+    }),
+  );
 });
 
 export const resolveGraphShareCasRoot = Effect.fn('codeGraph.sharing.resolveCasRoot')(function* (
@@ -151,6 +195,15 @@ function withGraphShareTrustReceiptsLock<A, E, R>(threadnoteHome: string, effect
     const path = yield* Path.Path;
     const layout = graphSharingLayout(path, threadnoteHome);
     return yield* withExclusiveFileLock(fs, layout.trustReceiptsLockPath, GRAPH_SHARE_TRUST_LOCK_OPTIONS, effect);
+  });
+}
+
+function withGraphShareClientStateLock<A, E, R>(threadnoteHome: string, effect: Effect.Effect<A, E, R>) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const layout = graphSharingLayout(path, threadnoteHome);
+    return yield* withExclusiveFileLock(fs, layout.clientStateLockPath, GRAPH_SHARE_TRUST_LOCK_OPTIONS, effect);
   });
 }
 
@@ -189,7 +242,24 @@ function parseClientState(value: unknown): GraphShareClientStateV1 {
   if (value.casRoot !== undefined && (typeof value.casRoot !== 'string' || value.casRoot.trim().length === 0)) {
     throw graphSharingFailure('Graph-sharing CAS root is invalid.');
   }
-  return value.casRoot === undefined ? {schemaVersion: 1} : {casRoot: value.casRoot, schemaVersion: 1};
+  const contributionMode =
+    value.contributionMode === 'off' ||
+    value.contributionMode === 'passive' ||
+    value.contributionMode === 'idle' ||
+    value.contributionMode === 'dedicated'
+      ? value.contributionMode
+      : undefined;
+  if (value.contributionMode !== undefined && contributionMode === undefined) {
+    throw graphSharingFailure('Graph-sharing contribution mode is invalid.');
+  }
+  const coordinatorUrl =
+    value.coordinatorUrl === undefined ? undefined : parseGraphShareCoordinatorUrl(String(value.coordinatorUrl));
+  return {
+    schemaVersion: 1,
+    ...(value.casRoot === undefined ? {} : {casRoot: value.casRoot}),
+    ...(contributionMode === undefined ? {} : {contributionMode}),
+    ...(coordinatorUrl === undefined ? {} : {coordinatorUrl}),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
