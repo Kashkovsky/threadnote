@@ -368,7 +368,7 @@ async function writeContainedWorktreeFile(worktree: string, relativePath: string
   if (await isSymlink(targetPath)) {
     throw remoteMemoryError('invalid_request', 'Refusing to replace a git worktree symbolic link.');
   }
-  const temporaryPath = `${targetPath}.${process.pid}.tmp`;
+  const temporaryPath = `${targetPath}.tmp`;
   await Bun.write(temporaryPath, content);
   const moved = await runProcess(['mv', '-f', temporaryPath, targetPath], true);
   if (moved.exitCode !== 0) {

@@ -7,10 +7,13 @@ interface FakeMigrationOptions {
   readonly failSource?: boolean;
 }
 
+const appliedMigrationCycle = ['lookup', 'begin', 'migration', 'record', 'verify', 'commit'] as const;
+
 function fakeMigrationSql(options: FakeMigrationOptions = {}): {readonly events: string[]; readonly sql: Sql} {
   const events: string[] = [];
-  let recordedChecksum: string | undefined;
-  let checksumLookupCount = 0;
+  const recordedChecksums = new Map<number, string>();
+  const checksumLookups = new Map<number, number>();
+  let appliedBootstrap = false;
 
   const connection = Object.assign(
     async (parts: TemplateStringsArray, ...values: readonly unknown[]): Promise<readonly unknown[]> => {
@@ -24,12 +27,16 @@ function fakeMigrationSql(options: FakeMigrationOptions = {}): {readonly events:
         return [];
       }
       if (query.includes('SELECT checksum FROM remote_memory.schema_migrations')) {
-        events.push(checksumLookupCount++ === 0 ? 'lookup' : 'verify');
-        return recordedChecksum === undefined ? [] : [{checksum: recordedChecksum}];
+        const version = Number(values[0]);
+        const lookups = checksumLookups.get(version) ?? 0;
+        checksumLookups.set(version, lookups + 1);
+        events.push(lookups === 0 ? 'lookup' : 'verify');
+        const checksum = recordedChecksums.get(version);
+        return checksum === undefined ? [] : [{checksum}];
       }
       if (query.includes('INSERT INTO remote_memory.schema_migrations')) {
         events.push('record');
-        recordedChecksum = options.conflictingChecksum ?? String(values[1]);
+        recordedChecksums.set(Number(values[0]), options.conflictingChecksum ?? String(values[1]));
         return [];
       }
       throw new Error(`Unexpected tagged migration query: ${query}`);
@@ -43,12 +50,13 @@ function fakeMigrationSql(options: FakeMigrationOptions = {}): {readonly events:
           events.push(query.toLowerCase());
           return [];
         }
-        if (query.includes('CREATE TABLE remote_memory.tenants')) {
-          events.push('migration');
-          if (options.failSource) throw new Error('migration source failed');
+        if (!appliedBootstrap) {
+          appliedBootstrap = true;
+          events.push('bootstrap');
           return [];
         }
-        events.push('bootstrap');
+        events.push('migration');
+        if (options.failSource) throw new Error('migration source failed');
         return [];
       },
     },
@@ -68,12 +76,8 @@ describe('remote memory PostgreSQL migrations', () => {
     expect(fixture.events).toEqual([
       'lock',
       'bootstrap',
-      'lookup',
-      'begin',
-      'migration',
-      'record',
-      'verify',
-      'commit',
+      ...appliedMigrationCycle,
+      ...appliedMigrationCycle,
       'unlock',
       'release',
     ]);
