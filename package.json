@@ -162,7 +162,7 @@
     "unpdf": "1.8.1",
     "web-tree-sitter": "0.26.11",
     "yaml": "^2.9.0",
-    "zod": "4.4.3"
+    "zod": "4.5.4"
   },
   "overrides": {
     "@effect/platform-node-shared": "4.0.0-rc.112",
