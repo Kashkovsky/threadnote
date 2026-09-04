@@ -1775,6 +1775,13 @@ function progressMessage(progress: CodeGraphProgress): string {
         `Embedding · ${Math.min(progress.total, progress.embedded + progress.reused)}/${progress.total} complete · ` +
         `${progress.reused} reused`
       );
+    case 'sharing':
+      return {
+        'applying-deltas': 'Applying shared graph checkpoint',
+        'building-local-overlay': 'Building local overlay on the shared graph base',
+        'discovering-shared-base': 'Discovering shared graph base',
+        'downloading-checkpoint': 'Downloading shared graph checkpoint',
+      }[progress.subphase];
     case 'activating': {
       if (progress.activity) {
         const activity = progress.activity;

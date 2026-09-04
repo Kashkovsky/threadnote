@@ -413,6 +413,11 @@ export type CodeGraphProgress =
       readonly phase: 'registering';
     }
   | {
+      readonly phase: 'sharing';
+      readonly subphase:
+        'applying-deltas' | 'building-local-overlay' | 'discovering-shared-base' | 'downloading-checkpoint';
+    }
+  | {
       readonly phase: 'waiting';
       readonly reason?:
         | 'database-writer'
@@ -647,6 +652,13 @@ export interface CodeGraphQueryResult {
     readonly lexicalMatches: number;
     readonly packageName: string;
     readonly type: 'package';
+  };
+  readonly source?: {
+    readonly deltaCount: number;
+    readonly frontierCommit: string;
+    readonly kind: 'shared-base-plus-local-overlay';
+    readonly localCommit: string;
+    readonly profileDigest: string;
   };
   readonly trust: {
     readonly classification: 'untrusted-repository-data';

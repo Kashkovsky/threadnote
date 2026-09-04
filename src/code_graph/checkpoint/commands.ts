@@ -71,10 +71,13 @@ export interface CodeGraphCheckpointExportOptions {
   readonly cwd?: string;
   readonly json?: boolean;
   readonly output: string;
+  readonly quiet?: boolean;
 }
 
 export interface CodeGraphCheckpointImportOptions extends CodeGraphCheckpointArtifactOptions {
   readonly cwd?: string;
+  readonly followOnIndex?: boolean;
+  readonly quiet?: boolean;
 }
 
 export interface CodeGraphCheckpointImportResultV1 {
@@ -227,18 +230,22 @@ export const runCodeGraphCheckpointExport = Effect.fn('codeGraph.checkpoint.expo
   );
   const result = {
     artifact: artifact.descriptor,
+    graphAbi: artifact.header.abi.digest,
+    graphContentId: artifact.header.source.graphContentId,
     logicalDigest: artifact.header.logical.digest,
     output,
+    snapshotId: checkpointSnapshotId(artifact.header),
     sourceCommit: artifact.header.source.commit,
     type: 'code-graph-checkpoint-export' as const,
     version: 1 as const,
   };
   if (options.json) yield* writeFinalCliOutput(JSON.stringify(result));
-  else yield* Console.log(`Exported code graph checkpoint ${artifact.descriptor.digest}: ${output}`);
+  else if (!options.quiet)
+    yield* Console.log(`Exported code graph checkpoint ${artifact.descriptor.digest}: ${output}`);
   return result;
 });
 
-export const runCodeGraphCheckpointImport = Effect.fn('codeGraph.checkpoint.import')(function* (
+export const importCodeGraphCheckpointSnapshot = Effect.fn('codeGraph.checkpoint.importSnapshot')(function* (
   config: RuntimeConfig,
   options: CodeGraphCheckpointImportOptions,
 ) {
@@ -247,7 +254,6 @@ export const runCodeGraphCheckpointImport = Effect.fn('codeGraph.checkpoint.impo
   const crypto = yield* Crypto.Crypto;
   const system = yield* SystemInfo;
   const store = yield* CodeGraphStore;
-  const indexer = yield* CodeGraphIndexer;
   const registry = yield* CodeGraphLanguagePackRegistry;
   const maintenance = yield* CodeGraphMaintenanceCoordinator;
   const cwd = yield* checkpointCommandCwd(options.cwd);
@@ -353,29 +359,24 @@ export const runCodeGraphCheckpointImport = Effect.fn('codeGraph.checkpoint.impo
       return yield* imported;
     }),
   );
-  const publication = yield* publishImportedCheckpoint(config, cwd, identity, layout.databasePath, imported.snapshot);
-  const result: CodeGraphCheckpointImportResultV1 = {
-    artifact: validated.inspection.descriptor,
-    imported: imported.mode,
-    logicalDigest: validated.inspection.header.logical.digest,
-    publication: publication.state,
-    snapshotId: publication.snapshotId,
-    trust: receipt.trust,
-    type: 'code-graph-checkpoint-import',
-    version: 1,
+  const publication = yield* publishImportedCheckpoint(cwd, identity, layout.databasePath, imported.snapshot);
+  return {
+    cwd,
+    identity,
+    result: {
+      artifact: validated.inspection.descriptor,
+      imported: imported.mode,
+      logicalDigest: validated.inspection.header.logical.digest,
+      publication: publication.state,
+      snapshotId: publication.snapshotId,
+      trust: receipt.trust,
+      type: 'code-graph-checkpoint-import',
+      version: 1,
+    } satisfies CodeGraphCheckpointImportResultV1,
+    snapshot: imported.snapshot,
   };
-  if (options.json) yield* writeFinalCliOutput(JSON.stringify(result));
-  else {
-    const action = imported.mode === 'created' ? 'Imported' : 'Reused';
-    yield* Console.log(
-      `${action} code graph checkpoint ${validated.inspection.descriptor.digest}; ` +
-        `${publicationMessage(publication.state)} (${publication.snapshotId}).`,
-    );
-  }
-  return result;
 
   function publishImportedCheckpoint(
-    runtimeConfig: RuntimeConfig,
     targetCwd: string,
     initialIdentity: RepositoryIdentity,
     databasePath: string,
@@ -403,18 +404,45 @@ export const runCodeGraphCheckpointImport = Effect.fn('codeGraph.checkpoint.impo
           }),
         );
       }
-      const ancestor = yield* checkpointCommitIsAncestor(closingIdentity, snapshot.commit, closingIdentity.headCommit);
-      if (closingIdentity.headCommit === snapshot.commit || ancestor) {
-        const summary = yield* indexer.index({
-          cwd: targetCwd,
-          ensureVectors: false,
-          threadnoteHome: runtimeConfig.agentContextHome,
-        });
-        return {snapshotId: summary.snapshot.id, state: 'rebuilt' as const};
-      }
       return {snapshotId: snapshot.id, state: 'stored' as const};
     });
   }
+});
+
+export const runCodeGraphCheckpointImport = Effect.fn('codeGraph.checkpoint.import')(function* (
+  config: RuntimeConfig,
+  options: CodeGraphCheckpointImportOptions,
+) {
+  const imported = yield* importCodeGraphCheckpointSnapshot(config, options);
+  let result: CodeGraphCheckpointImportResultV1 = imported.result;
+  if (options.followOnIndex !== false && result.publication === 'stored') {
+    const closingIdentity = yield* revalidateRepositoryIdentityFence(imported.cwd, imported.identity);
+    const ancestor = yield* checkpointCommitIsAncestor(
+      closingIdentity,
+      imported.snapshot.commit,
+      closingIdentity.headCommit,
+    );
+    if (closingIdentity.headCommit === imported.snapshot.commit || ancestor) {
+      const indexer = yield* CodeGraphIndexer;
+      const summary = yield* indexer.index({
+        cwd: imported.cwd,
+        ensureVectors: false,
+        threadnoteHome: config.agentContextHome,
+      });
+      result = {...result, publication: 'rebuilt', snapshotId: summary.snapshot.id};
+    }
+  }
+  if (!options.quiet) {
+    if (options.json) yield* writeFinalCliOutput(JSON.stringify(result));
+    else {
+      const action = imported.result.imported === 'created' ? 'Imported' : 'Reused';
+      yield* Console.log(
+        `${action} code graph checkpoint ${result.artifact.digest}; ` +
+          `${publicationMessage(result.publication)} (${result.snapshotId}).`,
+      );
+    }
+  }
+  return result;
 });
 
 function inspectCheckpointInput(

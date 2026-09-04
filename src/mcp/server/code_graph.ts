@@ -1386,6 +1386,12 @@ export function compactCodeGraphMcpProgress(progress: CodeGraphProgress | undefi
         total: progress.total,
         unit: progress.unit,
       };
+    case 'sharing':
+      return {
+        ...envelope,
+        phase: progress.phase,
+        subphase: progress.subphase,
+      };
   }
 }
 

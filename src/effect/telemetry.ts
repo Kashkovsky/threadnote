@@ -38,6 +38,7 @@ export const ANONYMOUS_TELEMETRY_PHASES = [
   'graph.registering',
   'graph.resolving',
   'graph.scanning',
+  'graph.sharing',
   'graph.waiting',
   'model.diagnostics',
   'model.embedding',
@@ -57,7 +58,11 @@ export const ANONYMOUS_TELEMETRY_PHASES = [
 export type AnonymousTelemetryPhase = (typeof ANONYMOUS_TELEMETRY_PHASES)[number];
 
 export const ANONYMOUS_TELEMETRY_SUBPHASES = [
+  'applying-deltas',
+  'building-local-overlay',
   'complete',
+  'discovering-shared-base',
+  'downloading-checkpoint',
   'fallback',
   'promoting',
   'references',

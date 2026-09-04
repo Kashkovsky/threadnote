@@ -358,9 +358,7 @@ ordinary main development under unreleased stable-version wording.
 Optional experiment evidence must distinguish a clean candidate run from exact-tag evidence. Candidate evidence can
 close implementation gates before merge, but only a tag-triggered artifact may claim exact release provenance. None of
 these experiments are publication dependencies. Keep public surrogate results, private path-free aggregate evidence,
-and checked-in same-machine comparisons separate; do not combine them into a synthetic percentile. The current beta
-closeout contract is documented in
-[`4.1.0-beta.2-release-evidence.md`](./4.1.0-beta.2-release-evidence.md).
+and checked-in same-machine comparisons separate; do not combine them into a synthetic percentile.
 
 Every Threadnote 4 version tag starts a separate production-large evidence workflow on `ubuntu-24.04`; publication
 never waits for it. Before fixture construction, the workflow pins benchmark temporary storage to the runner-temp

@@ -259,6 +259,17 @@ export function codeGraphProgressFromBuildStatus(
         total: counters.total ?? 0,
         unit: 'symbols',
       };
+    case 'sharing':
+      return {
+        phase: 'sharing',
+        subphase:
+          status.subphase === 'applying-deltas' ||
+          status.subphase === 'building-local-overlay' ||
+          status.subphase === 'discovering-shared-base' ||
+          status.subphase === 'downloading-checkpoint'
+            ? status.subphase
+            : 'discovering-shared-base',
+      };
     default: {
       const _exhaustive: never = status.phase;
       throw IsolatedBuilderError.make({message: `Unsupported code graph progress phase: ${String(_exhaustive)}`});

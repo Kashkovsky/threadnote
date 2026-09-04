@@ -325,5 +325,7 @@ export function codeGraphAnonymousTelemetryFields(progress: CodeGraphProgress): 
       };
     case 'embedding':
       return {completed: progress.completed, phase, total: progress.total};
+    case 'sharing':
+      return {phase, subphase: progress.subphase};
   }
 }

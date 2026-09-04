@@ -97,6 +97,9 @@ export const cliCommands: CliCommandReference[] = [
       'threadnote graph checkpoint export --output threadnote-graph.cgcp',
       'threadnote graph checkpoint verify --input threadnote-graph.cgcp --expected-digest sha256:…',
       'threadnote graph checkpoint import --input threadnote-graph.cgcp --expected-digest sha256:…',
+      'threadnote graph share init --write-config --organization acme',
+      'threadnote graph share join --read-only',
+      'threadnote graph publisher bootstrap',
     ],
   },
   {

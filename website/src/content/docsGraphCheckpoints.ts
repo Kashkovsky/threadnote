@@ -10,6 +10,8 @@ export const graphCheckpointsDocsArticle: DocsArticle = {
     'offline graph transfer',
     'checkpoint verify',
     'checkpoint import',
+    'graph share',
+    'shared checkpoint',
   ],
   body: [
     {
@@ -48,6 +50,10 @@ threadnote graph checkpoint import \\
     {
       type: 'paragraph',
       text: 'Import never fetches Git objects or runs repository code. The same repository and source commit must already exist locally. Threadnote verifies the runtime ABI and every exact-commit file before staging any graph rows, then publishes the ready snapshot and immutable receipt transactionally. Repeated imports reuse the same logical snapshot.',
+    },
+    {
+      type: 'paragraph',
+      text: 'Organization graph sharing reuses this checkpoint contract. A checked-in `.threadnote/graph-share.json` pointer names a digest-pinned profile and publisher key fingerprint. After `threadnote graph share join --read-only`, graph inspect can import a verified shared base and build only the local overlay. MCP then reports `source.kind: shared-base-plus-local-overlay` with the profile digest, frontier commit, and local commit. Missing enrollment keeps ordinary local indexing. Invalid signatures stay fail-closed for the candidate and preserve the last ready local graph. Recall does not start this work.',
     },
     {
       type: 'note',

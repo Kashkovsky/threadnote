@@ -70,6 +70,8 @@ import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {CodeGraphParserPool} from './parser_worker.js';
 import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
+import {maybeImportSharedGraphBase} from './sharing/client.js';
+import {graphShareEnrollmentPath} from './sharing/layout.js';
 import {CodeGraphStore} from './store.js';
 import {TreeSitterRuntime} from './tree_sitter/runtime.js';
 import type {CodeGraphIndexSummary, CodeGraphProgress, CodeGraphSnapshot} from './types.js';
@@ -166,6 +168,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
                   ),
             };
+            if (yield* fs.exists(graphShareEnrollmentPath(path, initialIdentity.repoRoot))) {
+              yield* maybeImportSharedGraphBase({
+                cwd: request.cwd,
+                identity: initialIdentity,
+                onProgress: options.onProgress,
+                threadnoteHome: request.threadnoteHome,
+              }).pipe(
+                Effect.catch(() => Effect.void),
+                Effect.catchDefect(() => Effect.void),
+              );
+            }
             const capacityProtection: DirectPersistentCapacityProtection = {
               availableDiskBytes:
                 options.diskCapacityAvailableBytes ?? ((target: string) => system.availableDiskBytes(target)),
@@ -900,6 +913,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
           Effect.provideService(SystemInfo, system),
+          Effect.provideService(CodeGraphStore, store),
+          Effect.provideService(CodeGraphLanguagePackRegistry, languagePacks),
+          Effect.provideService(CodeGraphMaintenanceCoordinator, maintenance),
           Effect.catchIf(
             cause => Schema.is(WorktreeChangedDuringIndex)(cause) && attempt === 0,
             () => indexAttempt(request, anonymousTelemetry, attempt + 1, bypassCachedFacts),
