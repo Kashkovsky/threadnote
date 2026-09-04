@@ -5,6 +5,7 @@ import {
   casProfilePointer,
   defaultGraphShareProfile,
   graphShareProfileDigest,
+  parseGraphShareCoordinatorUrl,
   parseGraphShareEnrollment,
   parseGraphShareProfile,
   parseGraphShareProfilePointer,
@@ -51,6 +52,13 @@ describe('graph share enrollment and profile', () => {
     });
     expect(() => assertEnrollmentMatchesIdentity(enrollment, 'd'.repeat(64))).toThrow(/repositoryId/);
     expect(() => assertEnrollmentMatchesIdentity(enrollment, PROFILE.repositoryId)).not.toThrow();
+  });
+
+  it('accepts loopback HTTP coordinator URLs and rejects non-loopback HTTP', () => {
+    expect(parseGraphShareCoordinatorUrl('http://127.0.0.1:18765')).toBe('http://127.0.0.1:18765');
+    expect(parseGraphShareCoordinatorUrl('http://localhost:9')).toBe('http://localhost:9');
+    expect(() => parseGraphShareCoordinatorUrl('http://example.com')).toThrow(/loopback/i);
+    expect(() => parseGraphShareCoordinatorUrl('ftp://127.0.0.1')).toThrow(/https or loopback/i);
   });
 
   it('keeps organization profile digest stable under key reorder', () => {

@@ -6,8 +6,9 @@ import {SHA256_DIGEST, SHA256_HEX, sha256Digest, type Sha256Digest} from './dige
 const STRICT = {errors: 'all', onExcessProperty: 'error'} as const;
 const ORGANIZATION = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const GIT_REF = /^refs\/heads\/[A-Za-z0-9._/-]{1,255}$/u;
-const COORDINATOR_URL = /^https:\/\/[a-z0-9.-]+(?::\d{2,5})?(?:\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=-]*)?$/u;
-const CAS_REGISTRY = /^cas:\/\/local$/u;
+const COORDINATOR_URL =
+  /^(?:https:\/\/[a-z0-9.-]+|http:\/\/(?:127\.0\.0\.1|localhost))(?::\d{1,5})?(?:\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=-]*)?$/u;
+const CAS_REGISTRY = /^cas:\/\/local(?:\/(?:canonical|worker))?$/u;
 const OCI_REGISTRY = /^oci:\/\/[a-z0-9.-]+(?:\/[A-Za-z0-9._-]+)+$/u;
 const CAS_PROFILE = /^cas:\/\/sha256:[0-9a-f]{64}$/u;
 const OCI_PROFILE = /^oci:\/\/[a-z0-9.-]+(?:\/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}$/u;
@@ -123,26 +124,55 @@ export function parseGraphShareProfilePointer(value: string): GraphShareProfileP
   throw graphSharingFailure('Enrollment profile pointer must be a digest-pinned cas:// or oci:// reference.');
 }
 
+export function parseGraphShareCoordinatorUrl(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/u, '');
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch (cause) {
+    throw graphSharingFailure('Coordinator URL is invalid.', cause);
+  }
+  const loopback = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
+  if (parsed.protocol === 'http:' && !loopback) {
+    throw graphSharingFailure('HTTP coordinator URLs must be loopback.');
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw graphSharingFailure('Coordinator URL must be https or loopback http.');
+  }
+  if (!COORDINATOR_URL.test(trimmed)) {
+    throw graphSharingFailure('Coordinator URL is invalid.');
+  }
+  const port = parsed.port.length === 0 ? (parsed.protocol === 'https:' ? 443 : 80) : Number(parsed.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw graphSharingFailure('Coordinator URL port is invalid.');
+  }
+  return trimmed;
+}
+
 export function casProfilePointer(digest: Sha256Digest): string {
   return `cas://${digest}`;
 }
 
 export function defaultGraphShareProfile(input: {
+  readonly branch: string;
   readonly canonicalRemote: string;
+  readonly coordinatorUrl?: string;
   readonly organization: string;
   readonly publisherKeyFingerprint: Sha256Digest;
   readonly repositoryId: string;
-  readonly branch: string;
 }): GraphShareProfileV1 {
   return {
     contribution: {
       activeOnlyOnAcPower: true,
       activeOnlyWhenIdle: true,
-      defaultMode: 'off',
+      defaultMode: 'passive',
       maximumCpus: 2,
       maximumMemoryBytes: 4_294_967_296,
       maximumUploadBytesPerSecond: 1_048_576,
     },
+    ...(input.coordinatorUrl === undefined
+      ? {}
+      : {coordinator: {url: parseGraphShareCoordinatorUrl(input.coordinatorUrl)}}),
     frontier: {
       batchMaximumAgeSeconds: 30,
       batchMaximumChangedBytes: 104_857_600,
@@ -155,7 +185,7 @@ export function defaultGraphShareProfile(input: {
     organization: input.organization,
     registry: {
       canonical: 'cas://local',
-      worker: 'cas://local',
+      worker: 'cas://local/worker',
     },
     repositoryId: input.repositoryId,
     retention: {

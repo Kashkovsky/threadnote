@@ -1,6 +1,6 @@
 import {cursorCloudDocsSection} from './docsCursorCloud.js';
 import {cursorCloudPersonalDocsSection} from './docsCursorCloudPersonal.js';
-import {graphCheckpointsDocsArticle} from './docsGraphCheckpoints.js';
+import {graphCheckpointsDocsArticle, graphCliCommand} from './docsGraphCheckpoints.js';
 import {
   contextBriefMcpTool,
   finalizeCodeRefsMcpTool,
@@ -76,33 +76,7 @@ export const cliCommands: CliCommandReference[] = [
       'threadnote share sync',
     ],
   },
-  {
-    command: 'graph',
-    summary: 'Build, inspect, analyze, report on, and export the current snapshot-aware polyglot code graph.',
-    examples: [
-      'threadnote graph query --query "session refresh"',
-      'threadnote graph query --workset commerce --query "checkout contract" --budget-tokens 1250',
-      'threadnote graph query --workset commerce --cursor cgwc_…',
-      'threadnote graph node --node-id cgs_…',
-      'threadnote graph neighbors --node-id cgs_… --direction incoming',
-      'threadnote graph explain --symbol RefreshSession',
-      'threadnote graph path --from LoginScreen --to TokenStore',
-      'threadnote graph path --workset commerce --from cgr_… --to cgr_…',
-      'threadnote graph impact --base origin/main',
-      'threadnote graph impact --workset commerce --query cgr_…',
-      'threadnote graph topology --workset commerce --json',
-      'threadnote graph analyze --view full',
-      'threadnote graph report --output architecture-report.md',
-      'threadnote graph export --format graphml --output code-graph.graphml',
-      'threadnote graph checkpoint export --output threadnote-graph.cgcp',
-      'threadnote graph checkpoint verify --input threadnote-graph.cgcp --expected-digest sha256:…',
-      'threadnote graph checkpoint import --input threadnote-graph.cgcp --expected-digest sha256:…',
-      'threadnote graph share init --write-config --organization acme',
-      'threadnote graph share join --read-only',
-      'threadnote graph index',
-      'threadnote graph publisher bootstrap',
-    ],
-  },
+  graphCliCommand,
   {
     command: 'seed / workset',
     summary: 'Import curated guidance, prepare named repository sets, and inspect their published graph coverage.',

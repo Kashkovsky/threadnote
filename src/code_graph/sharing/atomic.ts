@@ -1,4 +1,4 @@
-import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {graphSharingFailure} from './errors.js';
 
 export const writePrivateJsonFile = Effect.fn('codeGraph.sharing.writePrivateJsonFile')(function* (
@@ -44,9 +44,12 @@ export const readJsonFile = Effect.fn('codeGraph.sharing.readJsonFile')(function
   if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
     return yield* graphSharingFailure(`Refusing to read a graph-sharing symbolic link: ${target}`);
   }
-  const text = yield* fs.readFileString(target);
-  return yield* Effect.try({
-    try: () => JSON.parse(text) as unknown,
-    catch: cause => graphSharingFailure('Graph-sharing metadata is not valid JSON.', cause),
-  });
+  return yield* decodeJsonText(yield* fs.readFileString(target));
 });
+
+export const decodeJsonBytes = (bytes: Uint8Array) => decodeJsonText(new TextDecoder().decode(bytes));
+
+const decodeJsonText = (text: string) =>
+  Schema.decodeEffect(Schema.fromJsonString(Schema.Json), {errors: 'all'})(text).pipe(
+    Effect.mapError(cause => graphSharingFailure('Graph-sharing metadata is not valid JSON.', cause)),
+  );

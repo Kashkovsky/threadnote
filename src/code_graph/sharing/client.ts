@@ -9,15 +9,27 @@ import {
   parseGraphShareFrontierPointer,
   parseGraphShareSignatureEnvelope,
   verifyGraphShareFrontier,
+  type GraphShareFrontierManifestV1,
 } from './artifacts.js';
-import {readJsonFile, writePrivateJsonFile} from './atomic.js';
+import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {readVerifiedCasBlob, verifyCasBlob} from './cas.js';
 import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
+import {graphShareBlobExists, graphShareCommitIsAncestor} from './git.js';
+import {graphShareControlGetFrontier, mirrorCoordinatorCasBlob} from './control_client.js';
+import {graphShareFrontierDiscoveryTag} from './namespace.js';
+import {
+  GRAPH_SHARE_CONTRIBUTION_MODES,
+  effectiveGraphShareContributionMode,
+  readGraphShareContributionQueue,
+  type GraphShareContributionMode,
+} from './contribution.js';
 import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
+import {planGraphWorkerActions, readAdvertisedGraphWorkerActions} from './worker.js';
 import {
   assertEnrollmentMatchesIdentity,
   assertProfileMatchesEnrollment,
   graphShareProfileDigest,
+  parseGraphShareCoordinatorUrl,
   parseGraphShareEnrollment,
   parseGraphShareProfile,
   parseGraphShareProfilePointer,
@@ -26,10 +38,13 @@ import {
 import {readSharedGraphProvenance, removeSharedGraphProvenance, writeSharedGraphProvenance} from './provenance.js';
 import {
   lookupGraphShareTrustReceipt,
+  readGraphShareClientState,
   removeGraphShareTrustReceipt,
   resolveGraphShareCasRoot,
   trustReceiptFromEnrollment,
   writeGraphShareClientState,
+  writeGraphShareContributionMode,
+  writeGraphShareCoordinatorUrl,
   writeGraphShareTrustReceipt,
   type GraphShareAccessMode,
   type GraphShareTrustReceiptV1,
@@ -37,6 +52,7 @@ import {
 
 export interface GraphShareJoinOptions {
   readonly cas?: string;
+  readonly coordinator?: string;
   readonly cwd?: string;
   readonly json?: boolean;
   readonly readOnly?: boolean;
@@ -78,6 +94,11 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
   const enrollment = parseGraphShareEnrollment(yield* readJsonFile(graphShareEnrollmentPath(path, identity.repoRoot)));
   assertEnrollmentMatchesIdentity(enrollment, identity.repositoryId);
   const pointer = parseGraphShareProfilePointer(enrollment.profile);
+  if (options.coordinator !== undefined) {
+    const coordinatorUrl = parseGraphShareCoordinatorUrl(options.coordinator);
+    yield* writeGraphShareCoordinatorUrl(config.agentContextHome, coordinatorUrl);
+    yield* mirrorCoordinatorCasBlob(casRoot, coordinatorUrl, pointer.digest);
+  }
   const profile = yield* decodeJson(
     yield* readVerifiedCasBlob(casRoot, pointer.digest),
     parseGraphShareProfile,
@@ -85,11 +106,20 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
   );
   const profileDigest = graphShareProfileDigest(profile);
   assertProfileMatchesEnrollment(profile, enrollment, profileDigest);
+  if (profile.coordinator?.url !== undefined) {
+    yield* writeGraphShareCoordinatorUrl(config.agentContextHome, profile.coordinator.url);
+  }
   const accessMode: GraphShareAccessMode = options.readOnly ? 'read-only' : 'join';
   const receipt = yield* writeGraphShareTrustReceipt(
     config.agentContextHome,
     trustReceiptFromEnrollment(enrollment, profile, profileDigest, accessMode),
   );
+  if (accessMode === 'join') {
+    const state = yield* readGraphShareClientState(config.agentContextHome);
+    if (state.contributionMode === undefined) {
+      yield* writeGraphShareContributionMode(config.agentContextHome, profile.contribution.defaultMode);
+    }
+  }
   return {
     accessMode: receipt.accessMode,
     organization: receipt.organization,
@@ -220,8 +250,9 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     input.enrollment.profile,
     'Enrollment profile pointer is invalid.',
   );
+  const coordinatorHint = (yield* readGraphShareClientState(input.request.threadnoteHome)).coordinatorUrl;
   const profile = yield* decodeJson(
-    yield* readVerifiedCasBlob(input.casRoot, pointer.digest),
+    yield* ensureSharedCasBlob(input.casRoot, pointer.digest, coordinatorHint),
     parseGraphShareProfile,
     'Organization graph profile is invalid.',
   );
@@ -237,6 +268,18 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
   if (profileDigest !== input.trust.profileDigest) {
     return {imported: false as const, reason: 'trust-pin-mismatch' as const};
   }
+  const coordinatorUrl =
+    (yield* readGraphShareClientState(input.request.threadnoteHome)).coordinatorUrl ?? profile.coordinator?.url;
+  if (coordinatorUrl !== undefined) {
+    yield* writeGraphShareCoordinatorUrl(input.request.threadnoteHome, coordinatorUrl);
+    yield* refreshFrontierPointerFromCoordinator({
+      branch: profile.source.branches[0] ?? 'refs/heads/main',
+      casRoot: input.casRoot,
+      coordinatorUrl,
+      repositoryId: input.request.identity.repositoryId,
+      threadnoteHome: input.request.threadnoteHome,
+    }).pipe(Effect.catchIf(isUnavailableSharingFailure, () => Effect.void));
+  }
   const layout = graphSharingLayout(path, input.request.threadnoteHome, input.casRoot);
   const pointerPath = graphSharingFrontierPointerPath(path, layout.frontiersRoot, input.request.identity.repositoryId);
   if (!(yield* fs.exists(pointerPath))) {
@@ -248,12 +291,12 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     'Frontier pointer is invalid.',
   );
   const manifest = yield* decodeJson(
-    yield* readVerifiedCasBlob(input.casRoot, frontierPointer.manifestDigest),
+    yield* ensureSharedCasBlob(input.casRoot, frontierPointer.manifestDigest, coordinatorUrl),
     parseGraphShareFrontierManifest,
     'Frontier manifest is invalid.',
   );
   const envelope = yield* decodeJson(
-    yield* readVerifiedCasBlob(input.casRoot, frontierPointer.envelopeDigest),
+    yield* ensureSharedCasBlob(input.casRoot, frontierPointer.envelopeDigest, coordinatorUrl),
     parseGraphShareSignatureEnvelope,
     'Frontier signature envelope is invalid.',
   );
@@ -261,36 +304,139 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
   if (manifest.repositoryId !== input.request.identity.repositoryId || manifest.profileDigest !== profileDigest) {
     return yield* graphSharingFailure('Frontier manifest does not match the enrolled repository profile.');
   }
+  const selected = yield* selectPublishedAncestorManifest(
+    input.casRoot,
+    input.request.identity,
+    manifest,
+    coordinatorUrl,
+  );
+  if (selected.deltas.length > 0) {
+    return yield* graphSharingFailure(
+      'Incremental frontier deltas are not applied until a checkpoint compaction is published.',
+    );
+  }
   const existing = yield* readSharedGraphProvenance(
     input.request.threadnoteHome,
     input.request.identity.checkoutId,
   ).pipe(Effect.orElseSucceed(() => undefined));
   if (
-    existing?.checkpointDigest === manifest.checkpoint.manifestDigest &&
+    existing?.checkpointDigest === selected.checkpoint.manifestDigest &&
     existing.repositoryId === input.request.identity.repositoryId &&
     existing.profileDigest === profileDigest
   ) {
     return {imported: false as const, reason: 'already-installed' as const, snapshotId: existing.snapshotId};
   }
-  const checkpointPath = yield* verifyCasBlob(input.casRoot, manifest.checkpoint.manifestDigest);
+  const checkpointPath = yield* verifyCasBlob(
+    input.casRoot,
+    yield* ensureSharedCasBlob(input.casRoot, selected.checkpoint.manifestDigest, coordinatorUrl).pipe(
+      Effect.as(selected.checkpoint.manifestDigest),
+    ),
+  );
   yield* sharingProgress(input.request.onProgress, 'applying-deltas');
   const imported = yield* importCodeGraphCheckpointSnapshot(runtimeConfigForHome(input.request.threadnoteHome), {
     cwd: input.request.cwd,
-    expectedDigest: manifest.checkpoint.manifestDigest,
+    expectedDigest: selected.checkpoint.manifestDigest,
     followOnIndex: false,
     input: checkpointPath,
     quiet: true,
   });
   yield* sharingProgress(input.request.onProgress, 'building-local-overlay');
   yield* writeSharedGraphProvenance(input.request.threadnoteHome, input.request.identity.checkoutId, {
-    checkpointDigest: manifest.checkpoint.manifestDigest,
-    frontierCommit: manifest.sourceCommit,
+    checkpointDigest: selected.checkpoint.manifestDigest,
+    frontierCommit: selected.sourceCommit,
     profileDigest,
     repositoryId: input.request.identity.repositoryId,
     schemaVersion: 1,
     snapshotId: imported.result.snapshotId,
   });
   return {imported: true as const, snapshotId: imported.result.snapshotId};
+});
+
+export interface GraphShareContributeStatusOptions {
+  readonly cwd?: string;
+  readonly json?: boolean;
+}
+
+export interface GraphShareContributeSetOptions {
+  readonly cwd?: string;
+  readonly json?: boolean;
+  readonly mode?: string;
+}
+
+export interface GraphWorkerOptions {
+  readonly cas?: string;
+  readonly cwd?: string;
+  readonly json?: boolean;
+}
+
+export const runGraphContributeStatus = Effect.fn('codeGraph.sharing.contributeStatus')(function* (
+  config: RuntimeConfig,
+  options: GraphShareContributeStatusOptions,
+) {
+  const cwd = yield* commandCwd(options.cwd);
+  const identity = yield* resolveRepositoryIdentity(cwd);
+  const trust = yield* lookupGraphShareTrustReceipt(config.agentContextHome, identity.repositoryId);
+  const state = yield* readGraphShareClientState(config.agentContextHome);
+  const requested = state.contributionMode ?? 'off';
+  const mode = effectiveGraphShareContributionMode(trust?.accessMode, requested);
+  const queue = yield* readGraphShareContributionQueue(config.agentContextHome, identity.repositoryId, mode);
+  return {
+    accessMode: trust?.accessMode,
+    mode,
+    queued: queue.announcements.length,
+    repositoryId: identity.repositoryId,
+    type: 'code-graph-contribute-status' as const,
+    version: 1 as const,
+  };
+});
+
+export const runGraphContributeSet = Effect.fn('codeGraph.sharing.contributeSet')(function* (
+  config: RuntimeConfig,
+  options: GraphShareContributeSetOptions,
+) {
+  const cwd = yield* commandCwd(options.cwd);
+  const identity = yield* resolveRepositoryIdentity(cwd);
+  const trust = yield* lookupGraphShareTrustReceipt(config.agentContextHome, identity.repositoryId);
+  const requested = yield* decodeContributionMode(options.mode);
+  const mode = effectiveGraphShareContributionMode(trust?.accessMode, requested);
+  yield* writeGraphShareContributionMode(config.agentContextHome, mode);
+  return {
+    accessMode: trust?.accessMode,
+    mode,
+    repositoryId: identity.repositoryId,
+    type: 'code-graph-contribute-set' as const,
+    version: 1 as const,
+  };
+});
+
+export const runGraphWorker = Effect.fn('codeGraph.sharing.worker')(function* (
+  config: RuntimeConfig,
+  options: GraphWorkerOptions,
+) {
+  const cwd = yield* commandCwd(options.cwd);
+  const identity = yield* resolveRepositoryIdentity(cwd);
+  const trust = yield* lookupGraphShareTrustReceipt(config.agentContextHome, identity.repositoryId);
+  if (trust?.accessMode !== 'join') {
+    return {
+      eligible: 0,
+      skippedMissingBlob: 0,
+      type: 'code-graph-worker' as const,
+      version: 1 as const,
+    };
+  }
+  const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas);
+  const advertised = yield* readAdvertisedGraphWorkerActions(config.agentContextHome, identity.repositoryId, casRoot);
+  const presentBlobIds = new Set<string>();
+  for (const action of advertised) {
+    if (yield* graphShareBlobExists(identity.repoRoot, action.gitBlobId)) presentBlobIds.add(action.gitBlobId);
+  }
+  const plan = planGraphWorkerActions(advertised, presentBlobIds);
+  return {
+    eligible: plan.eligible.length,
+    skippedMissingBlob: plan.skippedMissingBlob.length,
+    type: 'code-graph-worker' as const,
+    version: 1 as const,
+  };
 });
 
 const quarantineSharedFailure = Effect.fn('codeGraph.sharing.quarantine')(function* (
@@ -330,9 +476,90 @@ function commandCwd(value: string | undefined) {
   });
 }
 
-function decodeJson<A>(bytes: Uint8Array, parse: (value: unknown) => A, message: string) {
-  return decodeValue(text => parse(JSON.parse(new TextDecoder().decode(text)) as unknown), bytes, message);
+function decodeContributionMode(value: string | undefined) {
+  return Effect.try({
+    try: () => {
+      if (value === undefined || value.trim().length === 0) {
+        throw graphSharingFailure('Contribution mode must be off, passive, idle, or dedicated.');
+      }
+      const mode = value.trim();
+      if ((GRAPH_SHARE_CONTRIBUTION_MODES as readonly string[]).includes(mode)) {
+        return mode as GraphShareContributionMode;
+      }
+      throw graphSharingFailure('Contribution mode must be off, passive, idle, or dedicated.');
+    },
+    catch: cause =>
+      Schema.is(GraphSharingError)(cause) ? cause : graphSharingFailure('Contribution mode is invalid.', cause),
+  });
 }
+
+function decodeJson<A>(bytes: Uint8Array, parse: (value: unknown) => A, message: string) {
+  return decodeJsonBytes(bytes).pipe(
+    Effect.mapError(cause => graphSharingFailure(message, cause)),
+    Effect.flatMap(value => decodeValue(parse, value, message)),
+  );
+}
+
+export const GRAPH_SHARE_ANCESTOR_WALK_LIMIT = 64;
+
+export const selectPublishedAncestorManifest = Effect.fn('codeGraph.sharing.selectPublishedAncestor')(function* (
+  casRoot: string,
+  identity: RepositoryIdentity,
+  latest: GraphShareFrontierManifestV1,
+  coordinatorUrl?: string,
+) {
+  let current = latest;
+  for (let step = 0; step < GRAPH_SHARE_ANCESTOR_WALK_LIMIT; step += 1) {
+    if (yield* graphShareCommitIsAncestor(identity.repoRoot, current.sourceCommit, identity.headCommit)) {
+      return current;
+    }
+    if (current.previousManifestDigest === null) {
+      return yield* graphSharingUnavailable('No published ancestor frontier for this HEAD.');
+    }
+    current = yield* decodeJson(
+      yield* ensureSharedCasBlob(casRoot, current.previousManifestDigest, coordinatorUrl),
+      parseGraphShareFrontierManifest,
+      'Predecessor frontier manifest is invalid.',
+    );
+  }
+  return yield* graphSharingUnavailable('Published ancestor walk exceeded the generation limit.');
+});
+
+const refreshFrontierPointerFromCoordinator = Effect.fn('codeGraph.sharing.refreshFrontierPointer')(function* (input: {
+  readonly branch: string;
+  readonly casRoot: string;
+  readonly coordinatorUrl: string;
+  readonly repositoryId: string;
+  readonly threadnoteHome: string;
+}) {
+  const path = yield* Path.Path;
+  const branchHash = graphShareFrontierDiscoveryTag(input.repositoryId, input.branch).slice('tn-frontier-'.length);
+  const frontier = yield* graphShareControlGetFrontier(input.coordinatorUrl, branchHash);
+  yield* ensureSharedCasBlob(input.casRoot, frontier.manifestDigest, input.coordinatorUrl);
+  yield* ensureSharedCasBlob(input.casRoot, frontier.envelopeDigest, input.coordinatorUrl);
+  const layout = graphSharingLayout(path, input.threadnoteHome, input.casRoot);
+  yield* writePrivateJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, input.repositoryId), {
+    envelopeDigest: frontier.envelopeDigest,
+    manifestDigest: frontier.manifestDigest,
+    schemaVersion: 1,
+  });
+});
+
+const ensureSharedCasBlob = Effect.fn('codeGraph.sharing.ensureSharedCasBlob')(function* (
+  casRoot: string,
+  digest: string,
+  coordinatorUrl: string | undefined,
+) {
+  return yield* readVerifiedCasBlob(casRoot, digest).pipe(
+    Effect.catchIf(isUnavailableSharingFailure, () =>
+      coordinatorUrl === undefined
+        ? graphSharingUnavailable(`CAS object is missing: ${digest}`)
+        : mirrorCoordinatorCasBlob(casRoot, coordinatorUrl, digest).pipe(
+            Effect.andThen(readVerifiedCasBlob(casRoot, digest)),
+          ),
+    ),
+  );
+});
 
 function decodeValue<A, I>(parse: (value: I) => A, value: I, message: string) {
   return Effect.try({

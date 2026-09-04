@@ -922,7 +922,7 @@ const graphCheckpoint = Command.make('checkpoint').pipe(
   ]),
 );
 
-const {graphPublisher, graphShare} = makeGraphSharingCommands(
+const {graphContribute, graphPublisher, graphShare, graphWorker} = makeGraphSharingCommands(
   withRuntimeEffect as <E, R>(
     effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
   ) => Effect.Effect<void, E, R>,
@@ -996,6 +996,8 @@ const graphCommand = Command.make('graph').pipe(
     graphCheckpoint,
     graphShare,
     graphPublisher,
+    graphContribute,
+    graphWorker,
     graphCompact,
     graphRemoveView,
     graphPurge,

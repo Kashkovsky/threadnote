@@ -1,12 +1,14 @@
+import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {it} from 'vitest';
-import {Effect, FileSystem, Layer, Path} from 'effect';
+import {Effect, FileSystem, Layer, Path, Schema} from 'effect';
 import {readFile} from '../helpers/node-fs-promises.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {fileURLToPath} from '../helpers/node-url.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
+import {parseGraphShareFrontierManifest} from '../../src/code_graph/sharing/artifacts.js';
 import {
   generateGraphSharePublisherKey,
   signGraphShareFrontier,
@@ -14,8 +16,9 @@ import {
   type GraphShareSignatureEnvelopeV1,
 } from '../../src/code_graph/sharing/artifacts.js';
 import {putCasBytes} from '../../src/code_graph/sharing/cas.js';
-import {maybeImportSharedGraphBase} from '../../src/code_graph/sharing/client.js';
+import {maybeImportSharedGraphBase, selectPublishedAncestorManifest} from '../../src/code_graph/sharing/client.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
+import {GraphSharingError} from '../../src/code_graph/sharing/errors.js';
 import {
   graphSharingCasBlobPath,
   graphSharingLayout,
@@ -38,7 +41,7 @@ import {
   writeGraphShareTrustReceipt,
 } from '../../src/code_graph/sharing/trust.js';
 import type {RepositoryIdentity} from '../../src/code_graph/types.js';
-import {CommandExecutor} from '../../src/effect/command.js';
+import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
 import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
@@ -49,6 +52,7 @@ const sharingLayer = CodeGraphMaintenanceCoordinator.layer.pipe(
   Layer.provideMerge(Layer.merge(CodeGraphStore.layer, CommandExecutor.layer)),
   Layer.provideMerge(SystemInfo.layer),
   Layer.provideMerge(BunServices.layer),
+  Layer.provideMerge(BunHttpClient.layer),
 );
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -231,6 +235,97 @@ describe('graph share import and inspect source', () => {
       ).toBeUndefined();
     }).pipe(provideTestLayer(sharingLayer)),
   );
+
+  effectIt.effect('walks signed predecessor frontiers until HEAD is an ancestor', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-ancestor-'});
+      const repo = path.join(home, 'repo');
+      yield* fs.makeDirectory(path.join(repo, 'src'), {recursive: true});
+      yield* fs.writeFileString(path.join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+      yield* git(repo, ['init', '-q', '--initial-branch=main']);
+      yield* git(repo, ['add', '.']);
+      yield* git(repo, ['-c', 'user.name=Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'one']);
+      const first = (yield* runCommandEffect('git', ['-C', repo, 'rev-parse', 'HEAD'])).stdout.trim();
+      yield* fs.writeFileString(path.join(repo, 'src', 'b.ts'), 'export const b = 2;\n');
+      yield* git(repo, ['add', '.']);
+      yield* git(repo, ['-c', 'user.name=Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'two']);
+      const second = (yield* runCommandEffect('git', ['-C', repo, 'rev-parse', 'HEAD'])).stdout.trim();
+      const casRoot = path.join(home, 'cas');
+      const profileDigest = sha256Digest('profile');
+      const gen1 = parseGraphShareFrontierManifest({
+        branch: 'refs/heads/main',
+        checkpoint: {
+          manifestDigest: sha256Digest('c1'),
+          snapshotId: 'cgsn_one',
+          sourceCommit: first,
+        },
+        deltas: [],
+        generation: 1,
+        graphAbi: 'e'.repeat(64),
+        graphContentId: `cgc_${'d'.repeat(40)}`,
+        logicalGraphDigest: sha256Digest('g1'),
+        previousManifestDigest: null,
+        profileDigest,
+        publisherFence: 1,
+        repositoryId: 'b'.repeat(64),
+        schemaVersion: 1,
+        snapshotId: 'cgsn_one',
+        sourceCommit: first,
+      });
+      const gen1Digest = yield* putCasBytes(casRoot, new TextEncoder().encode(canonicalJson(gen1)));
+      const gen2 = parseGraphShareFrontierManifest({
+        branch: 'refs/heads/main',
+        checkpoint: {
+          manifestDigest: sha256Digest('c2'),
+          snapshotId: 'cgsn_two',
+          sourceCommit: second,
+        },
+        deltas: [],
+        generation: 2,
+        graphAbi: 'e'.repeat(64),
+        graphContentId: `cgc_${'d'.repeat(40)}`,
+        logicalGraphDigest: sha256Digest('g2'),
+        previousManifestDigest: gen1Digest,
+        profileDigest,
+        publisherFence: 1,
+        repositoryId: 'b'.repeat(64),
+        schemaVersion: 1,
+        snapshotId: 'cgsn_two',
+        sourceCommit: second,
+      });
+      yield* git(repo, ['checkout', '-q', first]);
+      const identity = {
+        branch: 'main',
+        caseMode: 'sensitive' as const,
+        checkoutId: 'c'.repeat(64),
+        displayName: 'graph-share',
+        gitCommonDirectory: repo,
+        headCommit: first,
+        objectFormat: 'sha1' as const,
+        remoteIdentity: 'github.com/acme/graph-share',
+        repoRoot: repo,
+        repositoryId: 'b'.repeat(64),
+        worktreeId: 'd'.repeat(64),
+      };
+      const selected = yield* selectPublishedAncestorManifest(casRoot, identity, gen2);
+      expect(selected.sourceCommit).toBe(first);
+      expect(selected.generation).toBe(1);
+      const unavailable = yield* selectPublishedAncestorManifest(
+        casRoot,
+        {...identity, headCommit: 'f'.repeat(40)},
+        gen1,
+      ).pipe(
+        Effect.as(false),
+        Effect.catchIf(
+          error => Schema.is(GraphSharingError)(error) && error.kind === 'unavailable',
+          () => Effect.succeed(true),
+        ),
+      );
+      expect(unavailable).toBe(true);
+    }).pipe(provideTestLayer(sharingLayer)),
+  );
 });
 
 function importRequest(repoRoot: string, home: string) {
@@ -342,4 +437,8 @@ function quarantineNames(home: string) {
 function flipHex(value: string): string {
   const last = value.at(-1) === 'a' ? 'b' : 'a';
   return `${value.slice(0, -1)}${last}`;
+}
+
+function git(repo: string, args: readonly string[]) {
+  return runCommandEffect('git', ['-C', repo, ...args]);
 }

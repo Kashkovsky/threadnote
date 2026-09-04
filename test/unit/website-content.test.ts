@@ -1048,6 +1048,8 @@ The body remains ordinary **Markdown**.
     expect(docs).toContain('source-derived names, signatures, and documentation');
     expect(docs).toContain('A secret embedded in source can appear');
     expect(commands).toContain('threadnote graph share init --write-config --organization acme');
+    expect(commands).toContain('threadnote graph contribute status');
+    expect(commands).toContain('threadnote graph worker --json');
     expect(docs).toContain('threadnote graph share join --read-only');
     expect(docs).toContain('The next `threadnote graph index` imports a verified shared base');
     expect(docs).toContain('shared-base-plus-local-overlay');
