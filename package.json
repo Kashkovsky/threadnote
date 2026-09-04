@@ -160,7 +160,7 @@
     "three": "^0.185.1",
     "typescript-compiler": "npm:typescript@5.9.3",
     "unpdf": "1.8.1",
-    "web-tree-sitter": "0.26.11",
+    "web-tree-sitter": "0.27.0",
     "yaml": "^2.9.0",
     "zod": "4.4.3"
   },
