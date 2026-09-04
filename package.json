@@ -1,6 +1,6 @@
 {
   "name": "threadnote",
-  "version": "4.6.6",
+  "version": "4.6.7",
   "type": "module",
   "description": "Shared local context and handoffs for development agents",
   "license": "AGPL-3.0-or-later",
@@ -30,6 +30,8 @@
     "dev": "bun src/standalone.ts",
     "dev:install-global": "bun scripts/install-local-standalone.ts",
     "dev:mcp-server": "bun src/standalone.ts mcp-server",
+    "dev:runtime-status": "bun scripts/development-runtime-status.ts",
+    "release:prepare": "bun scripts/prepare-release.ts",
     "lint": "bun scripts/lint.ts && bun run lint:file-length",
     "lint:file-length": "bun scripts/lint-file-length.ts",
     "lint:fix": "bun --bun oxlint --config .oxlintrc.strict.json --threads=1 --deny-warnings --report-unused-disable-directives-severity=error --ignore-pattern 'test/evaluation/fixtures/**/repository/**' --fix config/lint src test scripts website/src website/vite.config.ts && bun run lint:file-length",

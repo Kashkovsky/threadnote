@@ -103,7 +103,8 @@ export const reviewSessionContextMcpTool = {
 
 export const finalizeCodeRefsMcpTool = {
   name: 'finalize_code_refs',
-  toolset: 'full',
-  summary: 'Finalize explicitly deferred private memory citations from already-ready exact-current graphs.',
-  keyInputs: ['uri', 'limit'],
+  toolset: 'core',
+  summary:
+    'Finalize deferred private memory citations from already-ready exact-current graphs. uri is optional; omit it to finalize up to 25 pending personal memories.',
+  keyInputs: ['uri'],
 } satisfies McpToolReference;

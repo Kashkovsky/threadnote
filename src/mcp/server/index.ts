@@ -146,8 +146,7 @@ function registerResources(
 ): void {
   server.registerResourceTemplate(
     {
-      description:
-        'Read one canonical Threadnote URI or bounded threadnote://memory/tn_ identity selector already returned by Threadnote. This template does not enumerate private memories; resources/read and read_context are bounded.',
+      description: `Read one canonical Threadnote URI or bounded threadnote://memory/tn_ identity selector already returned by Threadnote. This template does not enumerate private memories; resources/read and read_context cap complete text at ${MCP_RESOURCE_READ_MAX_BYTES} bytes.`,
       meta: {'threadnote.io/max-resource-bytes': MCP_RESOURCE_READ_MAX_BYTES},
       mimeType: MCP_RESOURCE_MIME_TYPE,
       name: 'Threadnote canonical resource',
@@ -291,10 +290,10 @@ function registerTools(
 
   if (capabilities.memoryWrite) {
     registerStoreTool(server, config, 'remember_context', 'Store memory.', memoryScope);
+    registerFinalizeCodeRefsTool(server, config);
   }
   if (toolset === 'full') {
     registerStoreTool(server, config, 'store', 'Compatibility alias for remember_context.');
-    registerFinalizeCodeRefsTool(server, config);
   }
 
   if (capabilities.memoryReview) registerCandidateMemoryTools(server, config);
@@ -307,13 +306,13 @@ function registerTools(
       {
         annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true},
         description:
-          'Preview or publish explicitly selected Threadnote memory URIs to a configured Obsidian projection. Preview is the default; set apply=true only after the user selects the memories and destination projection.',
+          'Preview or publish selected memories to a configured Obsidian projection. Preview is the default.',
         inputSchema: {
-          apply: McpInput.boolean('Write the selected memories and persist their projection selection'),
-          force: McpInput.boolean('Regenerate edited files already managed by this projection'),
-          projection: McpInput.string('Required configured Obsidian projection identifier'),
-          uri: McpInput.stringOrStrings('Required canonical Threadnote memory URI or list of URIs'),
-          uris: McpInput.stringOrStrings('Compatibility alias for uri'),
+          apply: McpInput.boolean('Write selected memories and persist the projection'),
+          force: McpInput.boolean('Regenerate managed files already in this projection'),
+          projection: McpInput.string('Configured Obsidian projection identifier'),
+          uri: McpInput.stringOrStrings('Canonical Threadnote memory URI(s)'),
+          uris: McpInput.stringOrStrings('Alias for uri'),
         },
       },
       ({apply, force, projection, uri, uris}) => {
@@ -369,8 +368,7 @@ function registerTools(
     'threadnote_guide',
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description:
-        'Return a state-aware Threadnote capability tour. Call when the user asks what Threadnote can do or how to start; present it conversationally and offer one step at a time.',
+      description: 'Return a state-aware Threadnote capability tour. Present it conversationally, one step at a time.',
       inputSchema: {},
     },
     Effect.fn('mcp_server.callback')(function* () {
@@ -384,21 +382,20 @@ function registerTools(
       {
         annotations: {readOnlyHint: false, destructiveHint: true},
         description:
-          'Publish a personal durable memory to the team repo after sensitive-data scanning; removes the source after push. Confirm with the user; never publish handoffs or preferences. Preview is read-only.',
+          'Publish a personal durable to the team repo after scanning; removes the source after push. Confirm first; never publish handoffs or preferences.',
         inputSchema: {
+          allowUncitedPendingCodeRefs: McpInput.boolean(
+            'Allow pending citations; discard private intent only after source removal.',
+          ),
           message: McpInput.string('Commit message override; defaults to "share: publish <path>"'),
-          preview: McpInput.boolean(
-            'Return the bytes that would land in the shared git repo (after frontmatter strip and redaction) without writing or committing. Use this to inspect the body before publishing.',
-          ),
+          preview: McpInput.boolean('Shared bytes without writing or committing.'),
           push: McpInput.boolean('Push to remote after committing; defaults to true'),
-          redact: McpInput.boolean(
-            'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.',
-          ),
+          redact: McpInput.boolean('Replace soft-leak local paths with placeholders; credentials still block.'),
           team: McpInput.string('Team name; defaults to the configured default team'),
           uri: McpInput.string('Required threadnote:// memory URI to publish'),
         },
       },
-      ({message, preview, push, redact, team, uri}) => {
+      ({allowUncitedPendingCodeRefs, message, preview, push, redact, team, uri}) => {
         const checkedUri = requiredResourceUri(
           uri,
           'share_publish',
@@ -408,6 +405,7 @@ function registerTools(
           return checkedUri.error;
         }
         return runSharePublishTool(config, checkedUri.value, {
+          allowUncitedPendingCodeRefs,
           message,
           preview,
           push,

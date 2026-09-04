@@ -51,7 +51,7 @@ const runImageProjectionStatus = Effect.fn('imageProjection.command.status')(fun
   }
   const enabled = loaded.success?.enabled === true;
   if (!enabled) {
-    yield* Console.log('MCP image projection: disabled (default; MCP read_context stays paged text).');
+    yield* Console.log('MCP image projection: disabled (default; MCP read_context returns complete text).');
     return;
   }
   if (imageProjectionEnvironmentDisabled(system.environment())) {

@@ -14,7 +14,6 @@ import {resolveAuthoredMemoryRelations} from '../../memory/relations.js';
 import {
   DEFAULT_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
   finalizeDeferredCodeAnchors,
-  MAX_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
   type DeferredCodeAnchorWriteRequest,
 } from '../../memory/deferred_code_anchor.js';
 import {
@@ -232,6 +231,7 @@ export function registerStoreTool(
         const authoredRelations = yield* resolveAuthoredMemoryRelations(config, relations ?? [], {
           allowedUriScopes: relationScopes,
           sourceMemoryId: replaced?.metadata.memoryId,
+          sourceUri: checkedReplaceUri.value,
         });
         const scopedMetadata = {
           ...metadata,
@@ -316,24 +316,20 @@ export function registerFinalizeCodeRefsTool(server: EffectMcpServerAdapter, con
     {
       annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true},
       description:
-        'Finalize explicitly deferred private memory code citations from already-ready exact-current graphs. Never starts indexing.',
+        'Finalize deferred private code citations from ready graphs. Never indexes. Omit uri to finalize up to 25 pending personal memories.',
       inputSchema: {
-        limit: McpInput.integer('Maximum pending memories to inspect', {
-          minimum: 1,
-          maximum: MAX_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
-        }),
-        uri: McpInput.stringOrStrings('Optional pending personal memory URI or list of URIs'),
+        uri: McpInput.string('Pending memory URI'),
       },
     },
-    ({limit, uri}) =>
+    ({uri}) =>
       Effect.gen(function* () {
-        const checkedUris = optionalResourceUriList(uri, 'finalize_code_refs');
-        if (!checkedUris.ok) return checkedUris.error;
+        const checkedUri = optionalResourceUri(uri, 'finalize_code_refs');
+        if (!checkedUri.ok) return checkedUri.error;
         const receipt = yield* withCodeAnchorFinalizationAnonymousTelemetry(
           'explicit',
           finalizeDeferredCodeAnchors(config, {
-            limit: limit ?? DEFAULT_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
-            uris: checkedUris.value,
+            limit: DEFAULT_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
+            ...(checkedUri.value === undefined ? {} : {uris: [checkedUri.value]}),
           }),
         );
         const summary = [

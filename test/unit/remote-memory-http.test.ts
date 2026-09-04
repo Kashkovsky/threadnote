@@ -10,7 +10,7 @@ import type {
   RemoteMemoryServiceDependencies,
   RemoteMemoryServiceRepository,
 } from '../../src/remote_memory/service_types.js';
-import {REMOTE_MEMORY_TOOL_NAMES} from '../../src/remote_memory/tools.js';
+import {REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES, REMOTE_MEMORY_TOOL_NAMES} from '../../src/remote_memory/tools.js';
 
 const PROTOCOL_VERSION = '2025-06-18';
 
@@ -474,72 +474,45 @@ describe('remote memory HTTP transport', () => {
     expect(test.calls).toContain('read:request-123');
   });
 
-  it('reconstructs a 1 MB remote memory from structured-first revision-pinned pages within budget', async () => {
-    const prefix = 'MEMORY\nkind: durable\n\nREMOTE_PRIVATE_SENTINEL\n';
+  it('refuses a 1 MB remote memory with an outline instead of paged reconstruction', async () => {
+    const prefix = 'MEMORY\nkind: durable\n\n# Ledger\n## Open\nREMOTE_PRIVATE_SENTINEL\n';
     const content = `${prefix}${'x'.repeat(1_000_000 - prefix.length)}`;
     const test = fixture({readContent: content, trackRateLimits: true});
     const uri = 'threadnote://share/share-1/memories/durable/threadnote/fixture.md';
-    const budgetTokens = 1_500;
-    const reconstructed: string[] = [];
-    let cursor: string | undefined;
-
-    for (let pageNumber = 0; pageNumber < 1_000; pageNumber += 1) {
-      const response = await test.handler(
-        mcpRequest({
-          id: 4_000 + pageNumber,
-          method: 'tools/call',
-          params: {
-            arguments: cursor === undefined ? {budgetTokens, uri, version: 1} : {budgetTokens, cursor, version: 1},
-            name: 'read_context',
-          },
-        }),
-      );
-      const payload = await json(response);
-      const result = payload.result as {
-        readonly content?: readonly {readonly text?: string; readonly type?: string}[];
-        readonly isError?: boolean;
-        readonly structuredContent?: Readonly<Record<string, unknown>>;
-      };
-      expect(result.isError, JSON.stringify(payload)).not.toBe(true);
-      const blocks = result.content ?? [];
-      const structured = result.structuredContent ?? {};
-      const pageContent = typeof structured.content === 'string' ? structured.content : '';
-      expect(blocks[0]?.text).toBe(pageContent);
-      const responseBytes =
-        blocks.reduce(
-          (total, block) => total + (block.type === 'text' ? Buffer.byteLength(block.text ?? '', 'utf8') : 0),
-          0,
-        ) + Buffer.byteLength(JSON.stringify(structured), 'utf8');
-      expect(responseBytes).toBeLessThanOrEqual(budgetTokens * 3);
-      expect(structured.estimatedTokens).toBe(Math.ceil(responseBytes / 3));
-      reconstructed.push(pageContent);
-      if (structured.complete === true) {
-        expect(structured.cursor).toBeUndefined();
-        break;
-      }
-      expect(structured.cursor).toMatch(/^tnrr1\.[0-9a-f]{64}\./u);
-      cursor = structured.cursor as string;
-      if (pageNumber === 999) throw new Error('Remote memory pagination did not terminate.');
-    }
-
-    expect(reconstructed.join('')).toBe(content);
-    expect(test.readInputs[0]).toEqual({uri});
-    expect(test.readInputs.slice(1).every(input => input.revision === 'revision-1')).toBe(true);
-    // Both MCP result channels carry the page body, so the bounded 1 MB fixture needs
-    // roughly twice as many requests as the former metadata-only structured result.
-    expect(test.readInputs.length).toBeLessThanOrEqual(650);
-    expect(test.calls.filter(call => call === 'rate:read_context')).toHaveLength(test.readInputs.length);
-  }, 30_000);
+    const response = await test.handler(
+      mcpRequest({
+        id: 4_000,
+        method: 'tools/call',
+        params: {arguments: {uri, version: 1}, name: 'read_context'},
+      }),
+    );
+    const payload = await json(response);
+    const result = payload.result as {
+      readonly content?: readonly {readonly text?: string; readonly type?: string}[];
+      readonly isError?: boolean;
+      readonly structuredContent?: Readonly<Record<string, unknown>>;
+    };
+    expect(result.isError, JSON.stringify(payload)).toBe(true);
+    const text = result.content?.[0]?.text ?? '';
+    expect(text).toContain(`${REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES} bytes`);
+    expect(text).toContain('mode=outline');
+    expect(text).toContain('## Open');
+    expect(text).not.toContain('REMOTE_PRIVATE_SENTINEL');
+    expect(text).not.toContain('x'.repeat(80));
+    expect(JSON.stringify(payload)).not.toContain('REMOTE_PRIVATE_SENTINEL');
+    expect(test.readInputs).toEqual([{uri}]);
+    expect(test.calls.filter(call => call === 'rate:read_context')).toEqual(['rate:read_context']);
+  });
 
   it('refuses to expose an oversized remote memory through resources/read', async () => {
-    const privateBody = `REMOTE_RESOURCE_PRIVATE_SENTINEL\n${'x'.repeat(10_000)}`;
+    const privateBody = `REMOTE_RESOURCE_PRIVATE_SENTINEL\n${'x'.repeat(70_000)}`;
     const test = fixture({readContent: privateBody});
     const uri = 'threadnote://share/share-1/memories/durable/threadnote/fixture.md';
     const response = await test.handler(mcpRequest({id: 321, method: 'resources/read', params: {uri}}));
     const serialized = JSON.stringify(await json(response));
 
     expect(serialized).toContain('resources/read cap');
-    expect(serialized).toContain('paged read_context');
+    expect(serialized).toContain('mode=outline or section');
     expect(serialized).not.toContain('REMOTE_RESOURCE_PRIVATE_SENTINEL');
   });
 

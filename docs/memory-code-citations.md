@@ -119,7 +119,7 @@ threadnote graph index --no-vectors
 threadnote finalize-code-refs --uri threadnote://user/me/memories/durable/projects/payments/retry-contract.md
 ```
 
-The full MCP toolset also exposes `finalize_code_refs`. Automatic and explicit finalization share the same engine: it
+The core MCP toolset also exposes `finalize_code_refs`. Automatic and explicit finalization share the same engine: it
 recaptures only from an already-ready exact-current graph, verifies the original repository/worktree identity, and
 uses a memory-content compare-and-swap before adding citations. The body, memory identity, creation/update timestamps,
 and lifecycle remain unchanged; `source_observed_at` records the later citation-capture time. Until finalization

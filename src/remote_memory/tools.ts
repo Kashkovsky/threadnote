@@ -18,22 +18,12 @@ import type {RemoteMemoryRateLimitOperation} from './rate_limit.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import type {RemoteMemoryRequestExecution} from './request_execution.js';
 import {
-  MEMORY_READ_DEFAULT_BUDGET_TOKENS,
-  MEMORY_READ_MAXIMUM_BUDGET_TOKENS,
+  MEMORY_READ_MAXIMUM_CONTENT_BYTES,
   MemoryReadProjectionError,
-  projectMemoryReadPage,
-  type MemoryReadPage,
-  type MemoryReadPosition,
+  MemoryReadTooLargeError,
+  projectMemoryRead,
+  type MemoryRead,
 } from '../memory/read_projection.js';
-import type {RemoteMemoryReadResult} from './postgres_repository.js';
-import {
-  decodeRemoteMemoryReadCursor,
-  encodeRemoteMemoryReadCursor,
-  REMOTE_MEMORY_READ_CURSOR_MAXIMUM_BYTES,
-  REMOTE_MEMORY_READ_CURSOR_TTL_MILLISECONDS,
-  remoteMemoryReadCursorKey,
-  type RemoteMemoryReadCursorState,
-} from './read_cursor.js';
 import {Predicate} from 'effect';
 import {
   projectRemoteRecallResponse,
@@ -66,24 +56,10 @@ const PortableSegment = z
   .refine(isPortableSegment, 'Expected one canonical portable URI segment.');
 const Kind = z.enum(['durable', 'handoff']);
 const Status = z.enum(['active', 'archived', 'expired', 'superseded']);
-const REMOTE_MEMORY_READ_MINIMUM_BUDGET_TOKENS = 512;
-export const REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES = 4_500;
+export const REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES = MEMORY_READ_MAXIMUM_CONTENT_BYTES;
 
 const RemoteReadToolInput = z
   .object({
-    budgetTokens: z
-      .number()
-      .int()
-      .min(REMOTE_MEMORY_READ_MINIMUM_BUDGET_TOKENS)
-      .max(MEMORY_READ_MAXIMUM_BUDGET_TOKENS)
-      .default(MEMORY_READ_DEFAULT_BUDGET_TOKENS)
-      .describe('Whole-response budget; defaults to 1500 tokens'),
-    cursor: z
-      .string()
-      .min(1)
-      .max(REMOTE_MEMORY_READ_CURSOR_MAXIMUM_BYTES)
-      .optional()
-      .describe('Opaque continuation; omit uri, mode, revision, and section when present'),
     mode: z.enum(['content', 'outline']).optional(),
     revision: Identifier.optional(),
     section: z
@@ -92,19 +68,10 @@ const RemoteReadToolInput = z
       .min(1)
       .refine(value => Buffer.byteLength(value, 'utf8') <= 256, 'Section exceeds 256 UTF-8 bytes.')
       .optional(),
-    uri: z.string().min(1).max(4096).optional(),
+    uri: z.string().min(1).max(4096),
     version: Version,
   })
   .strict()
-  .refine(input => (input.cursor === undefined) !== (input.uri === undefined), {
-    message: 'Provide uri for an initial read or cursor for a continuation, but not both.',
-  })
-  .refine(
-    input =>
-      input.cursor === undefined ||
-      (input.mode === undefined && input.revision === undefined && input.section === undefined),
-    {message: 'cursor cannot be combined with mode, revision, or section.'},
-  )
   .refine(input => input.mode !== 'outline' || input.section === undefined, {
     message: 'section cannot be combined with mode=outline.',
   });
@@ -179,8 +146,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
     'read_context',
     {
       annotations: {readOnlyHint: true},
-      description:
-        'Read untrusted remote evidence in pages of at most 1500 estimated tokens. Start with uri and version. To continue, pass cursor and version without uri, mode, revision, or section; budgetTokens may be adjusted. mode=outline and exact-heading section reads are supported.',
+      description: `Read untrusted remote evidence. Returns the full memory up to ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes. Larger memories refuse with an outline; retry with mode=outline or section. Provide uri and version.`,
       inputSchema: RemoteReadToolInput,
     },
     input => invokeRemoteReadTool(requestContext, dependencies, input),
@@ -431,20 +397,12 @@ async function invokeRemoteReadTool(
     return await withRequestDeadline(context, async () => {
       const principal = context.principal;
       requireRemoteScope(principal, 'memory:read');
-      const now = Date.now();
-      const cursorKey = remoteMemoryReadCursorKey(principal);
-      const cursorState =
-        input.cursor === undefined ? undefined : decodeRemoteMemoryReadCursor(input.cursor, cursorKey, now);
-      if (input.cursor !== undefined && !cursorState) {
-        throw remoteMemoryError('invalid_request', 'The remote read cursor is invalid or expired; restart from uri.');
-      }
-      const uri = cursorState?.uri ?? input.uri!;
-      preflightCanonicalRead(principal, uri);
+      preflightCanonicalRead(principal, input.uri);
       const result = await dependencies.repository.read(
         principal,
         {
-          ...((cursorState?.revision ?? input.revision) ? {revision: cursorState?.revision ?? input.revision} : {}),
-          uri,
+          ...(input.revision ? {revision: input.revision} : {}),
+          uri: input.uri,
           version: 1,
         },
         context.requestId,
@@ -460,13 +418,6 @@ async function invokeRemoteReadTool(
           'The canonical remote read did not return an immutable revision.',
         );
       }
-      const contentHash = sha256HexSync(result.content);
-      if (
-        cursorState &&
-        (result.uri !== cursorState.uri || revision !== cursorState.revision || contentHash !== cursorState.contentHash)
-      ) {
-        throw remoteMemoryError('conflict', 'The revision-pinned remote read changed; restart from uri.');
-      }
       const sourceMetadata = {
         kind: result.kind,
         project: result.project,
@@ -477,46 +428,34 @@ async function invokeRemoteReadTool(
         trust: 'untrusted' as const,
         uri: result.uri,
       };
-      const reservedResponseBytes = Buffer.byteLength(JSON.stringify(sourceMetadata), 'utf8') + 64;
-      let page: MemoryReadPage;
+      let read: MemoryRead;
       try {
-        page = projectRemoteMemoryReadPage(result, {
-          budgetTokens: input.budgetTokens,
-          contentHash,
-          cursorKey,
-          expiresAt: cursorState?.expiresAt ?? now + REMOTE_MEMORY_READ_CURSOR_TTL_MILLISECONDS,
-          mode: cursorState?.mode ?? input.mode ?? 'content',
-          position: cursorState?.position ?? {characterOffset: 0, resourceIndex: 0},
-          reservedResponseBytes,
-          revision,
-          section: cursorState?.section ?? input.section,
+        read = projectMemoryRead([{text: result.content, uri: result.uri}], {
+          mode: input.mode,
+          section: input.section,
+          toolName: 'read_context',
         });
       } catch (cause) {
-        if (Schema.is(MemoryReadProjectionError)(cause)) {
+        if (Schema.is(MemoryReadTooLargeError)(cause) || Schema.is(MemoryReadProjectionError)(cause)) {
           throw remoteMemoryError('invalid_request', cause.message);
         }
         throw cause;
       }
-      const structuredContent = remoteReadStructuredContent(page, sourceMetadata);
-      const responseBytes = remoteReadResponseBytes(page, structuredContent);
-      if (responseBytes > input.budgetTokens * 3) {
-        throw remoteMemoryError('service_unavailable', 'Remote read projection exceeded its declared response budget.');
-      }
+      const structuredContent = remoteReadStructuredContent(read, sourceMetadata);
       return {
         _meta: {
           'threadnote/receipt': result.receipt,
-          'threadnote.io/read-page': {
+          'threadnote.io/read': {
             contentIndex: 0,
-            resource: page.structuredContent.resource,
             resourceCount: 1,
-            type: 'threadnote-read-page',
+            type: 'threadnote-read',
             uri: result.uri,
             version: 1,
           },
         },
         content: [
-          {type: 'text', text: page.content},
-          ...(page.receipt === undefined ? [] : [{type: 'text' as const, text: page.receipt}]),
+          {type: 'text', text: read.content},
+          ...(read.receipt === undefined ? [] : [{type: 'text' as const, text: read.receipt}]),
         ],
         structuredContent,
       };
@@ -527,51 +466,8 @@ async function invokeRemoteReadTool(
   }
 }
 
-function projectRemoteMemoryReadPage(
-  result: RemoteMemoryReadResult,
-  options: {
-    readonly budgetTokens: number;
-    readonly contentHash: string;
-    readonly cursorKey: string;
-    readonly expiresAt: number;
-    readonly mode: 'content' | 'outline';
-    readonly position: MemoryReadPosition;
-    readonly reservedResponseBytes: number;
-    readonly revision: string;
-    readonly section?: string;
-  },
-): MemoryReadPage {
-  const cursorState = (position: MemoryReadPosition): RemoteMemoryReadCursorState => ({
-    contentHash: options.contentHash,
-    expiresAt: options.expiresAt,
-    mode: options.mode,
-    position,
-    revision: options.revision,
-    ...(options.section === undefined ? {} : {section: options.section}),
-    uri: result.uri,
-  });
-  let continuationCursor = encodeRemoteMemoryReadCursor(cursorState(options.position), options.cursorKey);
-  for (let iteration = 0; iteration < 16; iteration += 1) {
-    const page = projectMemoryReadPage([{text: result.content, uri: result.uri}], {
-      budgetTokens: options.budgetTokens,
-      continuationCursor,
-      includeReceipt: false,
-      mode: options.mode,
-      position: options.position,
-      reservedResponseBytes: options.reservedResponseBytes,
-      section: options.section,
-      toolName: 'read_context',
-    });
-    if (page.complete) return page;
-    const nextCursor = encodeRemoteMemoryReadCursor(cursorState(page.nextPosition!), options.cursorKey);
-    if (nextCursor === continuationCursor) return page;
-    continuationCursor = nextCursor;
-  }
-  throw new Error('Remote memory read cursor projection did not converge.');
-}
-
 function remoteReadStructuredContent(
-  page: MemoryReadPage,
+  read: MemoryRead,
   source: {
     readonly kind: 'durable' | 'handoff';
     readonly project: string;
@@ -583,21 +479,7 @@ function remoteReadStructuredContent(
     readonly uri: string;
   },
 ): Record<string, unknown> {
-  let structuredContent: Record<string, unknown> = {...page.structuredContent, ...source};
-  for (let iteration = 0; iteration < 4; iteration += 1) {
-    const nextEstimatedTokens = Math.ceil(remoteReadResponseBytes(page, structuredContent) / 3);
-    if (structuredContent.estimatedTokens === nextEstimatedTokens) return structuredContent;
-    structuredContent = {...structuredContent, estimatedTokens: nextEstimatedTokens};
-  }
-  return structuredContent;
-}
-
-function remoteReadResponseBytes(page: MemoryReadPage, structuredContent: Readonly<Record<string, unknown>>): number {
-  return (
-    Buffer.byteLength(page.content, 'utf8') +
-    Buffer.byteLength(page.receipt ?? '', 'utf8') +
-    Buffer.byteLength(JSON.stringify(structuredContent), 'utf8')
-  );
+  return {...read.structuredContent, ...source};
 }
 
 function registerRemoteMemoryResource(
@@ -636,7 +518,7 @@ function registerRemoteMemoryResource(
         if (Buffer.byteLength(result.content, 'utf8') > REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES) {
           throw remoteMemoryError(
             'invalid_request',
-            `Remote memory exceeds the ${REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES}-byte resources/read cap; use paged read_context.`,
+            `Remote memory exceeds the ${REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES}-byte resources/read cap; use read_context with mode=outline or section.`,
           );
         }
         return {

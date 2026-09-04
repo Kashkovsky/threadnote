@@ -188,6 +188,64 @@ describe('memory relation authoring', () => {
       expect(errorMessage(crossScopeRelocation)).toBe(errorMessage(absentTarget));
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
+
+  effectIt.effect('accepts shared projection URIs even when the target has no memory_id', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-relations-shared-'});
+      const config = yield* relationConfig(fs, path, home);
+      const identifiedUri = yield* writeSharedMemory(fs, path, config, 'shared-identified', 'tn_shared_identified');
+      const legacyUri = yield* writeSharedMemory(fs, path, config, 'shared-legacy');
+      const scope = `threadnote://user/${config.user}/memories`;
+
+      const identified = yield* resolveAuthoredMemoryRelations(config, [{type: 'related_to', uri: identifiedUri}], {
+        allowedUriScopes: [scope],
+      });
+      expect(identified.relations).toEqual([{type: 'related_to', uri: memoryIdentityAlias('tn_shared_identified')}]);
+      expect(identified.targets).toEqual([expect.objectContaining({uri: identifiedUri})]);
+
+      const legacy = yield* resolveAuthoredMemoryRelations(config, [{type: 'related_to', uri: legacyUri}], {
+        allowedUriScopes: [scope],
+      });
+      expect(legacy.relations).toEqual([{type: 'related_to', uri: legacyUri}]);
+      expect(legacy.targets).toEqual([expect.objectContaining({uri: legacyUri})]);
+
+      const self = yield* Effect.flip(
+        resolveAuthoredMemoryRelations(config, [{type: 'related_to', uri: legacyUri}], {
+          allowedUriScopes: [scope],
+          sourceUri: legacyUri,
+        }),
+      );
+      expect(errorMessage(self)).toContain('cannot relate to itself');
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect.prop(
+    'round-trips shared related_to targets with or without a stable memory_id',
+    {
+      hasMemoryId: fc.boolean(),
+      suffix: fc.stringMatching(/^[A-Za-z0-9_-]{1,24}$/u),
+    },
+    ({hasMemoryId, suffix}) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-relations-prop-'});
+        const config = yield* relationConfig(fs, path, home);
+        const topic = `shared-${suffix}`;
+        const uri = yield* writeSharedMemory(fs, path, config, topic, hasMemoryId ? `tn_${suffix}` : undefined);
+        const resolved = yield* resolveAuthoredMemoryRelations(config, [{type: 'related_to', uri}], {
+          allowedUriScopes: [`threadnote://user/${config.user}/memories`],
+        });
+        expect(resolved.relations).toEqual([
+          {
+            type: 'related_to',
+            uri: hasMemoryId ? memoryIdentityAlias(`tn_${suffix}`) : uri,
+          },
+        ]);
+      }).pipe(provideTestLayer(ApplicationLayer)),
+  );
 });
 
 function errorMessage(value: unknown): string {
@@ -249,3 +307,40 @@ function memoryFilePath(path: Path.Path, config: RuntimeConfig, topic: string, s
     `${topic}.md`,
   );
 }
+
+const writeSharedMemory = Effect.fn('test.writeSharedRelationMemory')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  config: RuntimeConfig,
+  topic: string,
+  memoryId?: string,
+) {
+  const target = path.join(
+    config.agentContextHome,
+    'data',
+    config.account,
+    'user',
+    config.user,
+    'memories',
+    'shared',
+    'default',
+    'durable',
+    'projects',
+    'threadnote',
+    `${topic}.md`,
+  );
+  yield* fs.makeDirectory(path.dirname(target), {recursive: true});
+  const uri = `threadnote://user/${config.user}/memories/shared/default/durable/projects/threadnote/${topic}.md`;
+  const metadata: MemoryMetadata = {
+    kind: 'durable',
+    ...(memoryId === undefined ? {} : {memoryId}),
+    project: 'threadnote',
+    sourceAgentClient: 'test',
+    status: 'active',
+    timestamp: '2026-08-31T00:00:00.000Z',
+    topic,
+    visibility: 'shared',
+  };
+  yield* fs.writeFileString(target, formatMemoryDocument('MEMORY', metadata, `${topic} body`));
+  return uri;
+});

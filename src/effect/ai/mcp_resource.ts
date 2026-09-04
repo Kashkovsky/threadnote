@@ -13,6 +13,7 @@ import {
 } from '../../recall/memory_identity.js';
 import {uriSegment} from '../../manifest.js';
 import {memoryReadRecoveryForError, memoryReadRecoveryText} from '../../memory/read_recovery.js';
+import {MEMORY_READ_MAXIMUM_CONTENT_BYTES} from '../../memory/read_projection.js';
 import {canonicalResourceUri, parseResourceId, resourceIdIsWithin} from '../../storage/resource-id.js';
 import {ResourceNotFound, ResourceStore} from '../resource-store.js';
 import {
@@ -21,7 +22,7 @@ import {
   MCP_RESOURCE_NOT_FOUND_ERROR_DATA,
 } from './mcp.js';
 
-export const MCP_RESOURCE_READ_MAX_BYTES = 4_500;
+export const MCP_RESOURCE_READ_MAX_BYTES = MEMORY_READ_MAXIMUM_CONTENT_BYTES;
 export const MCP_RESOURCE_MIME_TYPE = 'text/plain; charset=utf-8';
 // The MCP resources contract uses this server-error code for a resource that
 // does not exist across every protocol revision Threadnote advertises.
@@ -114,7 +115,7 @@ function canonicalThreadnoteUri(uri: string): Effect.Effect<string, McpSchema.In
 function resourceTooLarge(): McpSchema.InvalidParams {
   return McpSchema.InvalidParams.make({
     data: MCP_RESOURCE_ERROR_DATA,
-    message: `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context pagination.`,
+    message: `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context with mode=outline or section.`,
   });
 }
 

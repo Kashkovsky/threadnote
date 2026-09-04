@@ -186,7 +186,7 @@ describe('doctor report resilience', () => {
         const config = {agentContextHome: home};
 
         expect(yield* imageProjectionDoctorCheck(config)).toEqual({
-          detail: 'disabled; MCP read_context stays paged text',
+          detail: 'disabled; MCP read_context returns complete text',
           name: 'MCP image projection',
           status: 'ok',
         });
@@ -205,7 +205,7 @@ describe('doctor report resilience', () => {
           renderImageProjectionConfiguration(imageProjectionConfiguration(true)),
         );
         expect(yield* imageProjectionDoctorCheck(config)).toEqual({
-          detail: 'enabled; MCP read_context may return PNG pages',
+          detail: 'enabled; MCP read_context still returns complete text, not PNG pages',
           name: 'MCP image projection',
           status: 'ok',
         });

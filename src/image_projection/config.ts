@@ -141,7 +141,7 @@ export const imageProjectionDoctorCheck = Effect.fn('imageProjection.doctorCheck
   }
   if (loaded.success?.enabled !== true) {
     return {
-      detail: 'disabled; MCP read_context stays paged text',
+      detail: 'disabled; MCP read_context returns complete text',
       name: 'MCP image projection',
       status: 'ok' as const,
     };
@@ -149,7 +149,7 @@ export const imageProjectionDoctorCheck = Effect.fn('imageProjection.doctorCheck
   return {
     detail: imageProjectionEnvironmentDisabled(system.environment())
       ? 'persisted enabled but suppressed by THREADNOTE_IMAGE_PROJECTION'
-      : 'enabled; MCP read_context may return PNG pages',
+      : 'enabled; MCP read_context still returns complete text, not PNG pages',
     name: 'MCP image projection',
     status: 'ok' as const,
   };

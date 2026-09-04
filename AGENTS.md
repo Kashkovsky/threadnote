@@ -90,6 +90,12 @@ needed. This does not relax the active-worktree ownership guard above.
 Documentation-only and test-only changes do not require a global binary reinstall unless they alter a packaged runtime
 contract or expose a suspected runtime problem.
 
+## Contributor workflow skills
+
+Checked-in project skills live in `.cursor/skills/`. Use them for exact-HEAD global install, patch-release preparation,
+focused testing, and dogfood closeout instead of re-deriving this file or `docs/releasing.md`. Product skills shipped to
+users stay in `config/agent-skills/`.
+
 ## Never ignore dogfooding issues
 
 Any unexpected behavior encountered while using Threadnote itself is product evidence, not disposable tooling noise.

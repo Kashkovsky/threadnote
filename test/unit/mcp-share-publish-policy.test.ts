@@ -1,6 +1,8 @@
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
+import {createHash} from '../helpers/node-crypto.js';
+import {runCommandEffect} from '../../src/effect/command.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
@@ -84,6 +86,183 @@ describe('MCP share-publish citation policy', () => {
         expect(text).toContain('dirty worktree cannot be shared');
         expect(yield* fs.readFileString(sourcePath)).toBe(swapped);
         expect(yield* fs.exists(path.join(worktree, 'durable', 'projects', 'threadnote', 'policy.md'))).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('refuses pending code citations unless allowUncitedPendingCodeRefs is set', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-share-pending-'});
+        const worktree = path.join(home, 'share', 'worktrees', 'default');
+        const gitdir = path.join(home, 'share', 'teams', 'default.gitdir');
+        const sourceUri = 'threadnote://user/tester/memories/durable/projects/threadnote/pending.md';
+        const sourcePath = path.join(
+          home,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          'pending.md',
+        );
+        const pendingPath = path.join(
+          home,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'private',
+          'deferred-code-anchors',
+          'v1',
+          `${createHash('sha256').update(sourceUri).digest('hex')}.json`,
+        );
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        yield* fs.makeDirectory(path.dirname(sourcePath), {recursive: true});
+        yield* fs.makeDirectory(path.dirname(pendingPath), {recursive: true, mode: 0o700});
+        yield* fs.chmod(path.dirname(pendingPath), 0o700);
+        yield* fs.makeDirectory(worktree, {recursive: true});
+        yield* fs.makeDirectory(path.join(home, 'share'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(home, 'share', 'teams.json'),
+          `${JSON.stringify(
+            {
+              defaultTeam: 'default',
+              teams: {
+                default: {
+                  addedAt: '2026-08-26T20:00:00.000Z',
+                  gitdir,
+                  name: 'default',
+                  remote: 'git@example.com:team/memories.git',
+                  worktree,
+                },
+              },
+              version: 1,
+            },
+            undefined,
+            2,
+          )}\n`,
+        );
+        yield* fs.writeFileString(
+          sourcePath,
+          ['MEMORY', 'kind: durable', 'status: active', 'project: threadnote', 'topic: pending', '', 'Body'].join('\n'),
+        );
+        yield* fs.writeFileString(pendingPath, '{}\n');
+
+        const refused = yield* runSharePublishTool(config, sourceUri, {preview: true});
+        const refusedText = refused.content.map(item => (item.type === 'text' ? item.text : '')).join('\n');
+        expect(refused.isError).toBe(true);
+        expect(refusedText).toContain('code citations are still pending');
+        expect(refusedText).toContain('finalize_code_refs');
+        expect(refusedText).toContain('allowUncitedPendingCodeRefs');
+
+        const preview = yield* runSharePublishTool(config, sourceUri, {
+          allowUncitedPendingCodeRefs: true,
+          preview: true,
+        });
+        const previewText = preview.content.map(item => (item.type === 'text' ? item.text : '')).join('\n');
+        expect(preview.isError).toBeUndefined();
+        expect(previewText).toContain('PREVIEW source:');
+        expect(yield* fs.exists(pendingPath)).toBe(true);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('discards pending code citations after an allow-uncited publish', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-share-uncited-'});
+        const worktree = path.join(home, 'share', 'worktrees', 'default');
+        const gitdir = path.join(home, 'share', 'teams', 'default.gitdir');
+        const sourceUri = 'threadnote://user/tester/memories/durable/projects/threadnote/pending.md';
+        const sourcePath = path.join(
+          home,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          'pending.md',
+        );
+        const pendingPath = path.join(
+          home,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'private',
+          'deferred-code-anchors',
+          'v1',
+          `${createHash('sha256').update(sourceUri).digest('hex')}.json`,
+        );
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        yield* fs.makeDirectory(path.dirname(sourcePath), {recursive: true});
+        yield* fs.makeDirectory(path.dirname(pendingPath), {recursive: true, mode: 0o700});
+        yield* fs.chmod(path.dirname(pendingPath), 0o700);
+        yield* fs.makeDirectory(worktree, {recursive: true});
+        yield* fs.makeDirectory(path.join(home, 'share'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(home, 'share', 'teams.json'),
+          `${JSON.stringify(
+            {
+              defaultTeam: 'default',
+              teams: {
+                default: {
+                  addedAt: '2026-08-26T20:00:00.000Z',
+                  gitdir,
+                  name: 'default',
+                  remote: 'git@example.com:team/memories.git',
+                  worktree,
+                },
+              },
+              version: 1,
+            },
+            undefined,
+            2,
+          )}\n`,
+        );
+        yield* fs.writeFileString(
+          sourcePath,
+          ['MEMORY', 'kind: durable', 'status: active', 'project: threadnote', 'topic: pending', '', 'Body'].join('\n'),
+        );
+        yield* fs.writeFileString(pendingPath, '{}\n', {mode: 0o600});
+        yield* fs.chmod(pendingPath, 0o600);
+        yield* runCommandEffect('git', ['init', '--quiet'], {cwd: worktree});
+        yield* runCommandEffect('git', ['-C', worktree, 'config', 'user.email', 'threadnote@example.test']);
+        yield* runCommandEffect('git', ['-C', worktree, 'config', 'user.name', 'Threadnote Test']);
+        yield* runCommandEffect('git', ['-C', worktree, 'commit', '--allow-empty', '--quiet', '--message', 'init']);
+
+        const published = yield* runSharePublishTool(config, sourceUri, {
+          allowUncitedPendingCodeRefs: true,
+          push: false,
+        });
+        const publishedText = published.content.map(item => (item.type === 'text' ? item.text : '')).join('\n');
+        expect(published.isError, publishedText).not.toBe(true);
+        expect(publishedText).toContain(`Published ${sourceUri}`);
+        expect(yield* fs.exists(sourcePath)).toBe(false);
+        expect(yield* fs.exists(pendingPath)).toBe(false);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
