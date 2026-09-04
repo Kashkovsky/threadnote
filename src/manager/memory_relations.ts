@@ -100,6 +100,7 @@ export const updateManagerMemoryRelations = Effect.fn('manager.updateMemoryRelat
   const resolved = yield* resolveAuthoredMemoryRelations(config, input.relations, {
     allowedUriScopes,
     sourceMemoryId: checkedSourceMemoryId,
+    sourceUri: canonicalUri,
   }).pipe(Effect.mapError(relationResolutionError));
   const writeResult = yield* writeDurableMemory(config, {
     bodyText: source.body,

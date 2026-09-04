@@ -1,192 +1,113 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  MEMORY_READ_MAXIMUM_CONTENT_BYTES,
+  MemoryReadTooLargeError,
   memoryMarkdownOutline,
-  memoryReadCursorToken,
-  memoryReadPageEstimatedTokens,
-  memoryReadSourceHashes,
-  memoryReadSourcesMatch,
-  memoryReadWouldPage,
-  projectMemoryReadPage,
+  memoryReadContentBytes,
+  projectMemoryRead,
   selectMemoryMarkdownSection,
-  type MemoryReadPosition,
-  type MemoryReadResource,
 } from '../../src/memory/read_projection.js';
 
-describe('bounded memory read projection', () => {
-  it('concatenates every Unicode page back to the exact source within the requested budget', () => {
+describe('complete memory read projection', () => {
+  it('returns exact under-cap source bytes in one shot', () => {
     fc.assert(
-      fc.property(
-        fc.array(fc.string({maxLength: 800}), {maxLength: 3, minLength: 1}),
-        fc.integer({max: 350, min: 128}),
-        (texts, budgetTokens) => {
-          const resources = texts.map((text, index) => ({text, uri: `threadnote://test/${index}.md`}));
-          const reconstructed: string[] = [];
-          let position: MemoryReadPosition | undefined;
-          for (let pageNumber = 0; pageNumber < 10_000; pageNumber += 1) {
-            const page = projectMemoryReadPage(resources, {
-              budgetTokens,
-              continuationCursor: memoryReadCursorToken('deterministic-property-cursor'),
-              ...(position === undefined ? {} : {position}),
-            });
-            expect(page.structuredContent.content).toBe(page.content);
-            reconstructed.push(page.structuredContent.content);
-            expect(memoryReadPageEstimatedTokens(page)).toBeLessThanOrEqual(budgetTokens);
-            expect(page.structuredContent.estimatedTokens).toBe(memoryReadPageEstimatedTokens(page));
-            if (page.complete) break;
-            expect(page.nextPosition).toBeDefined();
-            position = page.nextPosition;
-            if (pageNumber === 9_999) throw new Error('Memory read pagination did not terminate.');
-          }
-          expect(reconstructed.join('')).toBe(texts.join(''));
-        },
-      ),
+      fc.property(fc.string({maxLength: 2_000}), text => {
+        const resources = [{text, uri: 'threadnote://test/complete.md'}];
+        const read = projectMemoryRead(resources);
+        expect(read.structuredContent.complete).toBe(true);
+        expect(read.structuredContent.content).toBe(text);
+        expect(read.content).toBe(text);
+        expect(read.structuredContent.contentBytes).toBe(memoryReadContentBytes(text));
+        expect(read.structuredContent).not.toHaveProperty('budgetTokens');
+        expect(read.structuredContent).not.toHaveProperty('cursor');
+      }),
       {numRuns: 50},
     );
   });
 
-  it('is deterministic for a stable source, cursor token, and position', () => {
-    const resources = [{text: `${'🙂 bounded evidence\n'.repeat(500)}`, uri: 'threadnote://test/stable.md'}];
-    const options = {
-      budgetTokens: 128,
-      continuationCursor: memoryReadCursorToken('stable-cursor'),
-    } as const;
-    expect(projectMemoryReadPage(resources, options)).toEqual(projectMemoryReadPage(resources, options));
+  it('is deterministic for a stable source', () => {
+    const resources = [{text: `${'🙂 bounded evidence\n'.repeat(50)}`, uri: 'threadnote://test/stable.md'}];
+    expect(projectMemoryRead(resources)).toEqual(projectMemoryRead(resources));
   });
 
-  it('reports measured response tokens instead of the allotted budget for a short complete page', () => {
-    const page = projectMemoryReadPage([{text: 'short evidence', uri: 'threadnote://test/short.md'}], {
-      budgetTokens: 1_500,
-      continuationCursor: memoryReadCursorToken('short-page-cursor'),
-    });
-
-    expect(page.complete).toBe(true);
-    expect(page.structuredContent.content).toBe('short evidence');
-    expect(page.structuredContent.estimatedTokens).toBe(memoryReadPageEstimatedTokens(page));
-    expect(page.structuredContent.estimatedTokens).toBeLessThan(page.structuredContent.budgetTokens);
+  it('refuses over-cap memories with an outline and no body prefix', () => {
+    const body = `${'x'.repeat(MEMORY_READ_MAXIMUM_CONTENT_BYTES + 1)}`;
+    const content = `# Ledger\n## Open\n${body}\n`;
+    expect(() => projectMemoryRead([{text: content, uri: 'threadnote://test/huge.md'}])).toThrow(
+      MemoryReadTooLargeError,
+    );
+    try {
+      projectMemoryRead([{text: content, uri: 'threadnote://test/huge.md'}]);
+    } catch (error) {
+      expect(error).toBeInstanceOf(MemoryReadTooLargeError);
+      const failure = error as MemoryReadTooLargeError;
+      expect(failure.message).toContain(`${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes`);
+      expect(failure.message).toContain('mode=outline');
+      expect(failure.message).toContain('section=');
+      expect(failure.message).toContain('## Open');
+      expect(failure.outline).toContain('# Ledger');
+      expect(failure.message.includes(body.slice(0, 80))).toBe(false);
+    }
   });
 
-  it('reports whether a first page would be incomplete', () => {
-    expect(
-      memoryReadWouldPage([{text: 'short evidence', uri: 'threadnote://test/short.md'}], {budgetTokens: 1_500}),
-    ).toBe(false);
-    expect(
-      memoryReadWouldPage(
-        [{text: `${'ASCII evidence line\n'.repeat(800)}terminal`, uri: 'threadnote://test/long.md'}],
-        {
-          budgetTokens: 1_500,
-        },
-      ),
-    ).toBe(true);
+  it('returns the complete memory at the exact byte cap', () => {
+    const text = 'a'.repeat(MEMORY_READ_MAXIMUM_CONTENT_BYTES);
+    const read = projectMemoryRead([{text, uri: 'threadnote://test/exact.md'}]);
+    expect(read.structuredContent.complete).toBe(true);
+    expect(read.structuredContent.contentBytes).toBe(MEMORY_READ_MAXIMUM_CONTENT_BYTES);
+    expect(read.content).toBe(text);
   });
 
-  it('mirrors a complete outline with its measured response budget', () => {
-    const page = projectMemoryReadPage(
+  it('refuses any over-cap payload without returning a successful prefix', () => {
+    fc.assert(
+      fc.property(fc.integer({max: 32, min: 1}), extra => {
+        const text = 'x'.repeat(MEMORY_READ_MAXIMUM_CONTENT_BYTES + extra);
+        expect(() => projectMemoryRead([{text, uri: 'threadnote://test/cap.md'}])).toThrow(MemoryReadTooLargeError);
+      }),
+      {numRuns: 10},
+    );
+  });
+
+  it('mirrors a complete outline without paging', () => {
+    const read = projectMemoryRead(
       [{text: '# Root\nintro\n## Details\nevidence\n', uri: 'threadnote://test/outline.md'}],
-      {
-        budgetTokens: 400,
-        continuationCursor: memoryReadCursorToken('outline-page-cursor'),
-        mode: 'outline',
-      },
+      {mode: 'outline'},
     );
 
-    expect(page.complete).toBe(true);
-    expect(page.content).toContain('## Details');
-    expect(page.structuredContent.content).toBe(page.content);
-    expect(page.structuredContent.estimatedTokens).toBe(memoryReadPageEstimatedTokens(page));
-    expect(page.structuredContent.estimatedTokens).toBeLessThan(page.structuredContent.budgetTokens);
+    expect(read.structuredContent.complete).toBe(true);
+    expect(read.content).toContain('## Details');
+    expect(read.structuredContent.content).toBe(read.content);
+    expect(read.structuredContent.mode).toBe('outline');
   });
 
-  it('mirrors relocation guidance for content-only and structured-first clients within one budget', () => {
+  it('mirrors relocation guidance for content-only and structured-first clients', () => {
     const requestedUri = 'threadnote://user/test/memories/durable/projects/threadnote/old.md';
     const canonicalUri = 'threadnote://user/test/memories/shared/default/durable/projects/threadnote/current.md';
-    const page = projectMemoryReadPage(
-      [
-        {
-          canonicalUri,
-          requestedUri,
-          text: 'Complete canonical evidence.',
-          uri: canonicalUri,
-        },
-      ],
+    const read = projectMemoryRead([
       {
-        budgetTokens: 1_500,
-        continuationCursor: memoryReadCursorToken('relocated-page-cursor'),
+        canonicalUri,
+        requestedUri,
+        text: 'Complete canonical evidence.',
+        uri: canonicalUri,
       },
-    );
+    ]);
 
-    expect(page.complete).toBe(true);
-    expect(page.content).toBe('Complete canonical evidence.');
-    expect(page.receipt).toContain(`requested ${requestedUri}`);
-    expect(page.receipt).toContain(`canonical ${canonicalUri}`);
-    expect(page.structuredContent).toMatchObject({canonicalUri, content: page.content, requestedUri});
-    expect(memoryReadPageEstimatedTokens(page)).toBeLessThanOrEqual(1_500);
+    expect(read.structuredContent.complete).toBe(true);
+    expect(read.content).toBe('Complete canonical evidence.');
+    expect(read.receipt).toContain(`requested ${requestedUri}`);
+    expect(read.receipt).toContain(`canonical ${canonicalUri}`);
+    expect(read.structuredContent).toMatchObject({canonicalUri, content: read.content, requestedUri});
   });
 
-  it('keeps relocation identity and exact bytes stable across every bounded page', () => {
-    fc.assert(
-      fc.property(fc.string({maxLength: 1_000}), fc.integer({max: 1_500, min: 512}), (text, budgetTokens) => {
-        const requestedUri = 'threadnote://user/test/memories/durable/projects/threadnote/old.md';
-        const canonicalUri = 'threadnote://user/test/memories/shared/default/durable/projects/threadnote/new.md';
-        const resources = [{canonicalUri, requestedUri, text, uri: canonicalUri}];
-        const reconstructed: string[] = [];
-        let position: MemoryReadPosition | undefined;
-        for (let pageNumber = 0; pageNumber < 10_000; pageNumber += 1) {
-          const page = projectMemoryReadPage(resources, {
-            budgetTokens,
-            continuationCursor: memoryReadCursorToken('relocation-property-cursor'),
-            ...(position === undefined ? {} : {position}),
-          });
-          expect(page.structuredContent).toMatchObject({canonicalUri, requestedUri});
-          expect(page.receipt).toContain(requestedUri);
-          expect(page.receipt).toContain(canonicalUri);
-          expect(memoryReadPageEstimatedTokens(page)).toBeLessThanOrEqual(budgetTokens);
-          reconstructed.push(page.content);
-          if (page.complete) break;
-          position = page.nextPosition;
-          if (pageNumber === 9_999) throw new Error('Relocated memory pagination did not terminate.');
-        }
-        expect(reconstructed.join('')).toBe(text);
-      }),
-      {numRuns: 30},
-    );
-  });
-
-  it('drops optional metadata before rejecting a leading four-byte Unicode scalar at minimum budget', () => {
-    const page = projectMemoryReadPage(
-      [{text: `🙂${'bounded evidence\n'.repeat(100)}`, uri: 'threadnote://test/minimum-budget.md'}],
-      {
-        budgetTokens: 128,
-        continuationCursor: memoryReadCursorToken('minimum-budget-cursor'),
-        warnings: ['optional warning '.repeat(100)],
-      },
-    );
-
-    expect(page.content.startsWith('🙂')).toBe(true);
-    expect(page.structuredContent.content).toBe(page.content);
-    expect(page.structuredContent.warnings).toBeUndefined();
-    expect(memoryReadPageEstimatedTokens(page)).toBeLessThanOrEqual(128);
-  });
-
-  it('retrieves a 100k-character memory exactly through bounded successive pages', () => {
-    const content = `${'🙂漢字 bounded memory\n'.repeat(5_000)}terminal`;
-    expect(content.length).toBeGreaterThan(100_000);
-    const resources = [{text: content, uri: 'threadnote://test/large.md'}];
-    const reconstructed: string[] = [];
-    let position: MemoryReadPosition | undefined;
-    for (let pageNumber = 0; pageNumber < 1_000; pageNumber += 1) {
-      const page = projectMemoryReadPage(resources, {
-        budgetTokens: 1_500,
-        continuationCursor: memoryReadCursorToken('large-memory-cursor'),
-        ...(position === undefined ? {} : {position}),
-      });
-      expect(page.structuredContent.content).toBe(page.content);
-      reconstructed.push(page.structuredContent.content);
-      if (page.complete) break;
-      position = page.nextPosition;
-      if (pageNumber === 999) throw new Error('Large memory pagination did not terminate.');
-    }
-    expect(reconstructed.join('')).toBe(content);
+  it('joins multiple under-cap URIs without a continuation cursor', () => {
+    const read = projectMemoryRead([
+      {text: 'first', uri: 'threadnote://test/one.md'},
+      {text: 'second', uri: 'threadnote://test/two.md'},
+    ]);
+    expect(read.content).toBe('first\n\nsecond');
+    expect(read.structuredContent.complete).toBe(true);
+    expect(read.structuredContent.resourceCount).toBe(2);
   });
 
   it('renders heading outlines and exact Markdown sections without including their siblings', () => {
@@ -252,21 +173,5 @@ describe('bounded memory read projection', () => {
       ),
       {numRuns: 50},
     );
-  });
-
-  it('uses opaque cursor tokens and rejects changed sources', () => {
-    const cursor = memoryReadCursorToken('private entropy and threadnote://secret/source.md');
-    expect(cursor).toMatch(/^tnrc_[0-9a-f]{32}$/u);
-    expect(cursor).not.toContain('secret');
-
-    const resources: MemoryReadResource[] = [{text: 'original', uri: 'threadnote://test/source.md'}];
-    const state = {
-      mode: 'content' as const,
-      position: {characterOffset: 3, resourceIndex: 0},
-      sourceHashes: memoryReadSourceHashes(resources),
-      uris: resources.map(resource => resource.uri),
-    };
-    expect(memoryReadSourcesMatch(resources, state.sourceHashes)).toBe(true);
-    expect(memoryReadSourcesMatch([{...resources[0], text: 'changed'}], state.sourceHashes)).toBe(false);
   });
 });

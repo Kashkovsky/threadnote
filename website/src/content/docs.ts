@@ -237,7 +237,7 @@ export const mcpTools: McpToolReference[] = [
     name: 'read_context',
     toolset: 'core',
     summary: 'Read one or more canonical threadnote:// file URIs so their content can be used as evidence.',
-    keyInputs: ['uri or uris', 'budgetTokens', 'cursor', 'mode or section'],
+    keyInputs: ['uri or uris', 'mode or section'],
   },
   {
     name: 'list_context',
@@ -246,6 +246,7 @@ export const mcpTools: McpToolReference[] = [
     keyInputs: ['uri', 'recursive', 'all', 'nodeLimit'],
   },
   rememberContextMcpTool,
+  finalizeCodeRefsMcpTool,
   {
     name: 'inspect_code_graph',
     toolset: 'core',
@@ -302,7 +303,6 @@ export const mcpTools: McpToolReference[] = [
     summary: 'Plan or apply lifecycle hygiene and read-only cross-share merge review.',
     keyInputs: ['project', 'topic', 'kind', 'apply'],
   },
-  finalizeCodeRefsMcpTool,
   {
     name: 'recall_feedback',
     toolset: 'full',
@@ -692,7 +692,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'MCP clients can read one canonical threadnote:// URI or bounded threadnote://memory/tn_ identity selector through the standard resources/read protocol without enumerating private memories. Identity selectors resolve only inside the authorized active corpus and are checked against the live document memory_id. Protocol reads are UTF-8 text capped at 4,500 bytes; use paged read_context for larger evidence.',
+            text: 'MCP clients can read one canonical threadnote:// URI or bounded threadnote://memory/tn_ identity selector through the standard resources/read protocol without enumerating private memories. Identity selectors resolve only inside the authorized active corpus and are checked against the live document memory_id. Protocol reads are UTF-8 text capped at 65,536 bytes; use read_context with mode=outline or section for larger evidence.',
           },
           {
             type: 'table',

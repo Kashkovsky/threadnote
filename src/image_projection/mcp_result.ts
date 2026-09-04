@@ -1,18 +1,9 @@
-import {Effect, Encoding, Result} from 'effect';
-import type {RuntimeConfig} from '../types.js';
-import {
-  MEMORY_READ_DEFAULT_BUDGET_TOKENS,
-  memoryReadBoundedWarnings,
-  memoryReadWouldPage,
-  type MemoryReadMode,
-  type MemoryReadResource,
-} from '../memory/read_projection.js';
+import {Encoding} from 'effect';
+import {memoryReadBoundedWarnings, type MemoryReadMode, type MemoryReadResource} from '../memory/read_projection.js';
 import {extractExactMemoryTokens, renderExactTokenAppendix} from './exact_tokens.js';
-import {isImageProjectionEnabled} from './config.js';
-import {renderMemoryTextToImages, type MemoryImageRenderer, type RenderedMemoryImages} from './render.js';
+import type {RenderedMemoryImages} from './render.js';
 
 export const IMAGE_PROJECTION_MAX_PAGES = 8 as const;
-export const IMAGE_PROJECTION_MAX_DROPPED_CHARS = 16 as const;
 
 export interface ImageProjectedReadResult {
   readonly _meta: {
@@ -56,18 +47,6 @@ export interface ImageProjectedStructuredContent {
 export type ImageProjectedContentBlock =
   | {readonly text: string; readonly type: 'text'}
   | {readonly data: string; readonly mimeType: 'image/png'; readonly type: 'image'};
-
-export interface TryProjectMemoryReadAsImagesInput {
-  readonly budgetTokens?: number;
-  readonly config: Pick<RuntimeConfig, 'agentContextHome'>;
-  readonly memoryScopeReceipt?: unknown;
-  readonly mode?: MemoryReadMode;
-  readonly render?: MemoryImageRenderer;
-  readonly requestedCursor?: string;
-  readonly resources: readonly MemoryReadResource[];
-  readonly section?: string;
-  readonly warnings?: readonly string[];
-}
 
 export function imageProjectionAttemptEligible(options: {
   readonly mode?: MemoryReadMode;
@@ -145,33 +124,3 @@ export function buildImageProjectedReadResult(options: {
     structuredContent,
   };
 }
-
-export const tryProjectMemoryReadAsImages = Effect.fn('imageProjection.tryProjectRead')(function* (
-  input: TryProjectMemoryReadAsImagesInput,
-) {
-  if (!imageProjectionAttemptEligible(input)) return undefined;
-  if (!(yield* isImageProjectionEnabled(input.config))) return undefined;
-  const budgetTokens = input.budgetTokens ?? MEMORY_READ_DEFAULT_BUDGET_TOKENS;
-  const wouldPage = Result.try(() =>
-    memoryReadWouldPage(input.resources, {
-      budgetTokens,
-      mode: input.mode,
-      section: input.section,
-    }),
-  );
-  if (Result.isFailure(wouldPage) || !wouldPage.success) return undefined;
-  const source = imageProjectionSourceText(input.resources).trim();
-  if (source.length === 0) return undefined;
-  const rendered = yield* (input.render ?? renderMemoryTextToImages)(source).pipe(
-    Effect.orElseSucceed(() => undefined),
-  );
-  if (rendered === undefined || rendered.droppedChars > IMAGE_PROJECTION_MAX_DROPPED_CHARS) return undefined;
-  return buildImageProjectedReadResult({
-    budgetTokens,
-    memoryScopeReceipt: input.memoryScopeReceipt,
-    pages: rendered.pages,
-    resources: input.resources,
-    source,
-    warnings: input.warnings,
-  });
-});

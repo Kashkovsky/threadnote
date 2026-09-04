@@ -14,7 +14,7 @@ export class MemoryRelationWriteError extends Data.TaggedError('MemoryRelationWr
 export interface AuthoredMemoryRelationTarget {
   readonly allowedUriScopes: readonly string[];
   readonly content: string;
-  readonly memoryId: string;
+  readonly memoryId?: string;
   readonly uri: string;
 }
 
@@ -94,7 +94,9 @@ export function normalizeMemoryRelationInputs(inputs: readonly RelationInput[]):
 
 /**
  * Resolve every target inside an explicit authorized scope, verify live bytes,
- * reject identity conflicts/self-links, and persist only stable identity aliases.
+ * reject identity conflicts/self-links, and persist stable identity aliases when
+ * the target has a memory_id. Active authorized memories without an identity keep
+ * their canonical projection URI.
  */
 export const resolveAuthoredMemoryRelations = Effect.fn('memory.resolveAuthoredRelations')(function* (
   config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'manifestPath' | 'user'>,
@@ -102,6 +104,7 @@ export const resolveAuthoredMemoryRelations = Effect.fn('memory.resolveAuthoredR
   options: {
     readonly allowedUriScopes: readonly string[];
     readonly sourceMemoryId?: string;
+    readonly sourceUri?: string;
   },
 ) {
   const relations = yield* Effect.try({
@@ -110,6 +113,13 @@ export const resolveAuthoredMemoryRelations = Effect.fn('memory.resolveAuthoredR
         ? cause
         : relationError(cause instanceof Error ? cause.message : 'Memory relation input is invalid.'),
     try: () => normalizeMemoryRelationInputs(inputs),
+  });
+  const sourceUri = yield* Effect.try({
+    catch: cause =>
+      cause instanceof MemoryRelationWriteError
+        ? cause
+        : relationError(cause instanceof Error ? cause.message : 'Relation source URI is invalid.'),
+    try: () => (options.sourceUri === undefined ? undefined : parseResourceId(options.sourceUri).canonicalUri),
   });
   if (relations.length === 0) return {relations: undefined, targets: []} satisfies ResolvedAuthoredMemoryRelations;
   const allowedUriScopes = options.allowedUriScopes.map(scope => parseResourceId(scope).canonicalUri);
@@ -138,37 +148,54 @@ export const resolveAuthoredMemoryRelations = Effect.fn('memory.resolveAuthoredR
       }
       yield* verifyResolvedMemoryIdentity(resolved, live.canonicalUri, live.content);
       const record = parseMemoryDocument(live.canonicalUri, live.content);
-      if (!record || record.metadata.status !== 'active' || !isMemoryId(record.metadata.memoryId ?? '')) {
+      if (!record || record.metadata.status !== 'active') {
+        return yield* relationError('Relation targets must resolve to one active canonical memory.');
+      }
+      const memoryId = record.metadata.memoryId;
+      if (memoryId !== undefined && !isMemoryId(memoryId)) {
         return yield* relationError('Relation targets must resolve to one active, identity-bearing canonical memory.');
       }
       return {
         content: live.content,
-        memoryId: record.metadata.memoryId!,
+        memoryId,
         relation: relations[index],
         uri: live.canonicalUri,
       };
     }),
   );
 
-  // Canonical-URI inputs also pass through the conflict-aware identity lane.
-  const identityChecks = yield* resolveMemoryIdentityAliases(
-    config,
-    liveTargets.map(target => memoryIdentityAlias(target.memoryId)),
-    allowedUriScopes,
+  const identityBearing = liveTargets.filter(
+    (target): target is (typeof liveTargets)[number] & {readonly memoryId: string} => target.memoryId !== undefined,
+  );
+  const identityChecks =
+    identityBearing.length === 0
+      ? []
+      : yield* resolveMemoryIdentityAliases(
+          config,
+          identityBearing.map(target => memoryIdentityAlias(target.memoryId)),
+          allowedUriScopes,
+        );
+  const identityByMemoryId = new Map(
+    identityBearing.map((target, index) => [target.memoryId, identityChecks[index]] as const),
   );
   const output: MemoryRelation[] = [];
   const targets = new Map<string, AuthoredMemoryRelationTarget>();
   const seen = new Set<string>();
-  for (const [index, target] of liveTargets.entries()) {
-    const identity = identityChecks[index];
-    if (identity.canonicalUri !== target.uri) {
-      return yield* relationError('Relation target identity changed during validation; refresh memory and retry.');
+  for (const target of liveTargets) {
+    if (target.memoryId !== undefined) {
+      const identity = identityByMemoryId.get(target.memoryId);
+      if (identity === undefined || identity.canonicalUri !== target.uri) {
+        return yield* relationError('Relation target identity changed during validation; refresh memory and retry.');
+      }
+      yield* verifyResolvedMemoryIdentity(identity, target.uri, target.content);
     }
-    yield* verifyResolvedMemoryIdentity(identity, target.uri, target.content);
-    if (options.sourceMemoryId !== undefined && target.memoryId === options.sourceMemoryId) {
+    if (
+      (options.sourceMemoryId !== undefined && target.memoryId === options.sourceMemoryId) ||
+      (sourceUri !== undefined && target.uri === sourceUri)
+    ) {
       return yield* relationError('A memory cannot relate to itself.');
     }
-    const uri = memoryIdentityAlias(target.memoryId);
+    const uri = target.memoryId === undefined ? target.uri : memoryIdentityAlias(target.memoryId);
     const key = `${target.relation.type}\n${uri}`;
     if (seen.has(key)) {
       return yield* relationError('Duplicate memory relations are not allowed.');
@@ -178,7 +205,7 @@ export const resolveAuthoredMemoryRelations = Effect.fn('memory.resolveAuthoredR
     targets.set(target.uri, {
       allowedUriScopes,
       content: target.content,
-      memoryId: target.memoryId,
+      ...(target.memoryId === undefined ? {} : {memoryId: target.memoryId}),
       uri: target.uri,
     });
   }

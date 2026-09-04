@@ -31,7 +31,7 @@ import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
 } from '../../memory/code_citation_policy.js';
-import {hasDeferredCodeAnchorIntent} from '../../memory/deferred_code_anchor.js';
+import {discardDeferredCodeAnchorIntent, hasDeferredCodeAnchorIntent} from '../../memory/deferred_code_anchor.js';
 import {recordMemoryRelocation} from '../../memory/relocation.js';
 import {type RuntimeConfig, argumentError, mcpErrorResult} from './common.js';
 import {
@@ -42,6 +42,7 @@ import {
   textFromCallToolResult,
 } from './memory.js';
 interface SharePublishToolOptions {
+  readonly allowUncitedPendingCodeRefs?: boolean;
   readonly message?: string;
   readonly preview?: boolean;
   readonly push?: boolean;
@@ -182,9 +183,9 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
       return argumentError(`Memory ${sourceUri} is already in the shared namespace.`);
     }
     const hasPendingCodeRefs = yield* hasDeferredCodeAnchorIntent(config, sourceUri);
-    if (hasPendingCodeRefs) {
+    if (hasPendingCodeRefs && options.allowUncitedPendingCodeRefs !== true) {
       return argumentError(
-        `Refusing to publish ${sourceUri}: code citations are still pending. Prepare the graph and call finalize_code_refs, or replace the memory without codeRefs to discard the private intent before publication.`,
+        `Refusing to publish ${sourceUri}: code citations are still pending. Prepare the graph and call finalize_code_refs, or pass allowUncitedPendingCodeRefs=true to publish without them and discard the private intent.`,
       );
     }
     const ov = 'threadnote-native';
@@ -248,7 +249,9 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
           [sourceUri, targetUri],
           Effect.gen(function* () {
             if (yield* hasDeferredCodeAnchorIntent(config, sourceUri)) {
-              return {kind: 'pending_code_refs' as const};
+              if (options.allowUncitedPendingCodeRefs !== true) {
+                return {kind: 'pending_code_refs' as const};
+              }
             }
             const currentReadResult = yield* runNativeReadTool(config, [sourceUri], {followRelocations: false});
             const currentSourceText = textFromCallToolResult(currentReadResult);
@@ -327,6 +330,9 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
               toUri: targetUri,
             });
             const removed = yield* removeResourceWithRetry(ov, config, sourceUri);
+            if (removed) {
+              yield* discardDeferredCodeAnchorIntent(config, sourceUri);
+            }
             return {
               gitMessages,
               kind: removed ? ('published' as const) : ('cleanup_pending' as const),
@@ -342,7 +348,7 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
     }
     if (publication.kind === 'pending_code_refs') {
       return argumentError(
-        `Refusing to publish ${sourceUri}: code citations are still pending. Prepare the graph and call finalize_code_refs, or replace the memory without codeRefs to discard the private intent before publication.`,
+        `Refusing to publish ${sourceUri}: code citations are still pending. Prepare the graph and call finalize_code_refs, or pass allowUncitedPendingCodeRefs=true to publish without them and discard the private intent.`,
       );
     }
     if (publication.kind === 'citation_blocked') {

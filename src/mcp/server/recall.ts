@@ -1,5 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
-import {Clock, Crypto, DateTime, Effect, FileSystem, Option, Predicate, Result, Schema} from 'effect';
+import {DateTime, Effect, FileSystem, Option, Predicate, Result, Schema} from 'effect';
 import {
   activePersonalMemoryUrisFromText,
   existingReferencedUris,
@@ -39,22 +39,13 @@ import {
 } from '../../memory/document.js';
 import {captureMemoryCodeCitationsForMcp} from '../memory_code_citation.js';
 import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
-import {tryProjectMemoryReadAsImages} from '../../image_projection/mcp_result.js';
 import {
-  MEMORY_READ_DEFAULT_BUDGET_TOKENS,
-  MEMORY_READ_MAXIMUM_BUDGET_TOKENS,
-  MEMORY_READ_MINIMUM_BUDGET_TOKENS,
-  memoryReadCursorToken,
-  memoryReadSourceHashes,
-  memoryReadSourcesMatch,
-  projectMemoryReadPage,
+  MEMORY_READ_MAXIMUM_CONTENT_BYTES,
+  MemoryReadProjectionError,
+  MemoryReadTooLargeError,
+  projectMemoryRead,
   type MemoryReadResource,
 } from '../../memory/read_projection.js';
-import {
-  memoryReadCursorNamespace,
-  putPersistentMemoryReadCursor,
-  takePersistentMemoryReadCursor,
-} from '../../memory/read_cursor_store.js';
 import {
   buildCandidateReview,
   candidateReviewWithAuditEvent,
@@ -1208,79 +1199,45 @@ export function registerReadTool(
   description: string,
   memoryScope?: CursorCloudMemoryScope,
 ): void {
-  const cursorNamespace = memoryReadCursorNamespace({
-    account: config.account,
-    ...(memoryScope
-      ? {
-          memoryRoot: cursorCloudScopeRoots(memoryScope).join('\n'),
-          team: cursorCloudScopeTeams(memoryScope).join(','),
-        }
-      : {}),
-    toolName: name,
-    user: config.user,
-  });
   server.registerTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description: `${description} Accepts canonical pointers and bounded threadnote://memory/tn_ identity aliases. Paged at no more than 1500 estimated tokens. Optional PNG pages. Start with uri or uris. To continue, pass cursor without uri, uris, mode, or section; budgetTokens may be adjusted.`,
+      description: `${description} Accepts canonical pointers and bounded threadnote://memory/tn_ identity aliases. Returns the full memory up to ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes. Larger memories refuse with an outline; retry with mode=outline or section.`,
       inputSchema: {
-        budgetTokens: McpInput.integer('Whole-response budget; defaults to 1500 tokens', {
-          minimum: MEMORY_READ_MINIMUM_BUDGET_TOKENS,
-          maximum: MEMORY_READ_MAXIMUM_BUDGET_TOKENS,
-        }),
-        cursor: McpInput.string(
-          'Opaque single-use continuation from the prior page; omit uri, uris, mode, and section when present',
-        ),
         mode: McpInput.literals(['content', 'outline']),
         section: McpInput.string(),
         uri: McpInput.string(),
         uris: McpInput.stringOrStrings(),
       },
     },
-    ({budgetTokens, cursor, mode, section, uri, uris}) => {
-      const requestedCursor = cursor?.trim();
-      if (requestedCursor && (uri !== undefined || uris !== undefined)) {
-        return argumentError(`${name} cursor cannot be combined with uri or uris.`);
-      }
-      if (requestedCursor && (mode !== undefined || section !== undefined)) {
-        return argumentError(`${name} cursor cannot be combined with mode or section.`);
-      }
-      const initialUris = requestedCursor
-        ? undefined
-        : requiredResourceUriList(uris ?? uri, name, 'threadnote://user/you/memories/.abstract.md');
-      if (initialUris && !initialUris.ok) {
-        return initialUris.error;
+    ({mode, section, uri, uris}) => {
+      const requestedUrisResult = requiredResourceUriList(
+        uris ?? uri,
+        name,
+        'threadnote://user/you/memories/.abstract.md',
+      );
+      if (!requestedUrisResult.ok) return requestedUrisResult.error;
+      const requestedUris = requestedUrisResult.value;
+      if (section !== undefined && requestedUris.length !== 1) {
+        return argumentError(`${name} section requires exactly one uri.`);
       }
       return Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        const continuationResult = requestedCursor
-          ? yield* takePersistentMemoryReadCursor(config.agentContextHome, cursorNamespace, requestedCursor, now).pipe(
-              Effect.map(value => ({ok: true as const, value})),
-              Effect.catch(error => Effect.succeed({error, ok: false as const})),
-            )
-          : {ok: true as const, value: undefined};
-        if (!continuationResult.ok) return mcpErrorResult(continuationResult.error);
-        const continuation = continuationResult.value;
-        if (requestedCursor && !continuation) {
-          return argumentError(`${name} cursor is invalid, expired, or already consumed; restart from the URI.`);
-        }
-        const requestedUris = continuation?.uris ?? initialUris!.value;
-        const selectedSection = continuation?.section ?? section;
-        if (selectedSection !== undefined && requestedUris.length !== 1) {
-          return argumentError(`${name} section requires exactly one uri.`);
-        }
         const outsideScope = memoryScope
           ? requestedUris.find(
-              uri => memoryIdFromIdentityAlias(uri) === undefined && !cursorCloudUriWithinScope(memoryScope, uri),
+              requestedUri =>
+                memoryIdFromIdentityAlias(requestedUri) === undefined &&
+                !cursorCloudUriWithinScope(memoryScope, requestedUri),
             )
           : undefined;
         if (outsideScope) {
           return argumentError(`${name} uri must stay within a configured Personal Cursor Cloud share.`);
         }
         const requestedShares = memoryScope
-          ? requestedUris.map(uri =>
-              memoryIdFromIdentityAlias(uri) === undefined ? cursorCloudShareForUri(memoryScope, uri) : undefined,
+          ? requestedUris.map(requestedUri =>
+              memoryIdFromIdentityAlias(requestedUri) === undefined
+                ? cursorCloudShareForUri(memoryScope, requestedUri)
+                : undefined,
             )
           : [];
         const syncTeams =
@@ -1329,78 +1286,44 @@ export function registerReadTool(
         if (relocatedOutsideScope) {
           return argumentError(`${name} relocated uri must stay within a configured Personal Cursor Cloud share.`);
         }
-        if (continuation && !memoryReadSourcesMatch(resources, continuation.sourceHashes)) {
-          return argumentError(`${name} source changed after the prior page; restart from the URI.`);
-        }
-        const imageProjected = yield* tryProjectMemoryReadAsImages({
-          budgetTokens: budgetTokens ?? MEMORY_READ_DEFAULT_BUDGET_TOKENS,
-          config,
-          memoryScopeReceipt: memoryScope ? cursorCloudMemoryScopeReceipt(memoryScope) : undefined,
-          mode: continuation?.mode ?? mode,
-          requestedCursor,
-          resources,
-          section: selectedSection,
-          warnings: syncMessages,
-        });
-        if (imageProjected !== undefined) return imageProjected;
-        const crypto = yield* Crypto.Crypto;
-        const continuationCursor = memoryReadCursorToken(yield* crypto.randomUUIDv4);
         const projected = Result.try(() =>
-          projectMemoryReadPage(resources, {
-            budgetTokens: budgetTokens ?? MEMORY_READ_DEFAULT_BUDGET_TOKENS,
-            continuationCursor,
-            mode: continuation?.mode ?? mode,
-            position: continuation?.position,
-            section: selectedSection,
+          projectMemoryRead(resources, {
+            mode,
+            section,
             toolName: name,
             warnings: syncMessages,
           }),
         );
-        if (Result.isFailure(projected)) return argumentError(errorMessage(projected.failure));
-        const page = projected.success;
-        if (!page.complete) {
-          const cursorIssuedAt = yield* Clock.currentTimeMillis;
-          const stored = yield* putPersistentMemoryReadCursor(
-            config.agentContextHome,
-            cursorNamespace,
-            continuationCursor,
-            {
-              mode: continuation?.mode ?? mode ?? 'content',
-              position: page.nextPosition!,
-              ...(selectedSection === undefined ? {} : {section: selectedSection}),
-              sourceHashes: memoryReadSourceHashes(resources),
-              uris: requestedUris,
-            },
-            cursorIssuedAt,
-          ).pipe(
-            Effect.map(() => ({ok: true as const})),
-            Effect.catch(error => Effect.succeed({error, ok: false as const})),
-          );
-          if (!stored.ok) return mcpErrorResult(stored.error);
+        if (Result.isFailure(projected)) {
+          const failure = projected.failure;
+          if (Schema.is(MemoryReadTooLargeError)(failure) || Schema.is(MemoryReadProjectionError)(failure)) {
+            return argumentError(failure.message);
+          }
+          return argumentError(errorMessage(failure));
         }
+        const read = projected.success;
         return {
           _meta: {
             ...(memoryScope ? {'threadnote.io/memory-scope': cursorCloudMemoryScopeReceipt(memoryScope)} : {}),
-            'threadnote.io/read-page': {
+            'threadnote.io/read': {
               contentIndex: 0,
-              resource: page.structuredContent.resource,
-              resourceCount: page.structuredContent.resourceCount,
-              type: 'threadnote-read-page',
-              uri: page.uri,
-              ...(page.structuredContent.requestedUri === undefined
+              resourceCount: read.structuredContent.resourceCount,
+              type: 'threadnote-read',
+              uri: read.uri,
+              ...(read.structuredContent.requestedUri === undefined
                 ? {}
-                : {requestedUri: page.structuredContent.requestedUri}),
-              ...(page.structuredContent.canonicalUri === undefined
+                : {requestedUri: read.structuredContent.requestedUri}),
+              ...(read.structuredContent.canonicalUri === undefined
                 ? {}
-                : {canonicalUri: page.structuredContent.canonicalUri}),
+                : {canonicalUri: read.structuredContent.canonicalUri}),
               version: 1,
             },
           },
           content: [
-            {type: 'text' as const, text: page.content},
-            ...(page.receipt === undefined ? [] : [{type: 'text' as const, text: page.receipt}]),
+            {type: 'text' as const, text: read.content},
+            ...(read.receipt === undefined ? [] : [{type: 'text' as const, text: read.receipt}]),
           ],
-          structuredContent: page.structuredContent,
+          structuredContent: read.structuredContent,
         };
       });
     },

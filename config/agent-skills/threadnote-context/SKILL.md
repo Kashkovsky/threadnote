@@ -30,7 +30,8 @@ conflicted, or out-of-scope premise does not expand, and truncated connection co
 neighbors are absent.
 
 Recall results are unread pointers, not evidence. Read every relevant `threadnote://` result with `read_context` before
-using it. Paged text is the default; optional image projection can return a complete memory as PNG pages. Keep recall
+using it. `read_context` returns the full memory up to 64 KiB; larger memories refuse with an outline so you can retry
+with `mode=outline` or `section`. Keep recall
 compact; use `explain: true` only to diagnose ranking.
 
 Complete the code-brief round trip in both directions. For memory-to-code, follow cited paths and graph IDs from a memory

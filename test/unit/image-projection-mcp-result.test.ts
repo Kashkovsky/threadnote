@@ -1,20 +1,10 @@
-import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {mcpCallToolResultWithTelemetryMetadata} from '../../src/effect/ai/mcp.js';
-import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
-  IMAGE_PROJECTION_MAX_DROPPED_CHARS,
-  IMAGE_PROJECTION_MAX_PAGES,
   buildImageProjectedReadResult,
   imageProjectionAttemptEligible,
   imageProjectionSourceText,
-  tryProjectMemoryReadAsImages,
 } from '../../src/image_projection/mcp_result.js';
-import {imageProjectionConfiguration, writeImageProjectionConfiguration} from '../../src/image_projection/config.js';
-import {imageProjectionRuntimeConfig} from '../helpers/image-projection-runtime-config.js';
-import {provideTestLayer} from '../helpers/effect-layer.js';
-import {TestError} from '../helpers/test-error.js';
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 
@@ -64,7 +54,7 @@ describe('image projection MCP results', () => {
     });
   });
 
-  it('bounds appended warnings the same way paged text does', () => {
+  it('bounds appended warnings', () => {
     const result = buildImageProjectedReadResult({
       budgetTokens: 1_500,
       pages: [{height: 8, png: PNG, width: 8}],
@@ -78,64 +68,4 @@ describe('image projection MCP results', () => {
     expect(Buffer.byteLength(warningLine, 'utf8')).toBeLessThanOrEqual(160);
     expect(warningLine.startsWith('sync failed:')).toBe(true);
   });
-
-  effectIt.effect('images only when paging would be incomplete, and falls back on dropped glyphs', () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-image-projection-mcp-'});
-        const config = imageProjectionRuntimeConfig(home);
-        const large = {text: `${'ASCII evidence line\n'.repeat(800)}tn_deadbeef`, uri: 'threadnote://test/large.md'};
-        const small = {text: 'fits', uri: 'threadnote://test/small.md'};
-
-        yield* writeImageProjectionConfiguration(config, imageProjectionConfiguration(true));
-
-        const completeText = yield* tryProjectMemoryReadAsImages({
-          config,
-          render: () => Effect.succeed({droppedChars: 0, pages: [{height: 8, png: PNG, width: 8}]}),
-          resources: [small],
-        });
-        expect(completeText).toBeUndefined();
-
-        const imaged = yield* tryProjectMemoryReadAsImages({
-          config,
-          render: () => Effect.succeed({droppedChars: 0, pages: [{height: 8, png: PNG, width: 8}]}),
-          resources: [large],
-        });
-        expect(imaged?.structuredContent.projection).toBe('image');
-        expect(imaged?.structuredContent.content).toBe('');
-        expect(imaged?.content.some(block => block.type === 'image')).toBe(true);
-
-        const dropped = yield* tryProjectMemoryReadAsImages({
-          config,
-          render: () =>
-            Effect.succeed({
-              droppedChars: IMAGE_PROJECTION_MAX_DROPPED_CHARS + 1,
-              pages: [{height: 8, png: PNG, width: 8}],
-            }),
-          resources: [large],
-        });
-        expect(dropped).toBeUndefined();
-
-        const tooManyPages = yield* tryProjectMemoryReadAsImages({
-          config,
-          render: () =>
-            Effect.succeed({
-              droppedChars: 0,
-              pages: Array.from({length: IMAGE_PROJECTION_MAX_PAGES + 1}, () => ({height: 8, png: PNG, width: 8})),
-            }),
-          resources: [large],
-        });
-        expect(tooManyPages).toBeUndefined();
-
-        yield* writeImageProjectionConfiguration(config, imageProjectionConfiguration(false));
-        const disabled = yield* tryProjectMemoryReadAsImages({
-          config,
-          render: () => Effect.die(TestError.make({message: 'render must not run when projection is disabled'})),
-          resources: [large],
-        });
-        expect(disabled).toBeUndefined();
-      }),
-    ).pipe(provideTestLayer(ApplicationLayer)),
-  );
 });

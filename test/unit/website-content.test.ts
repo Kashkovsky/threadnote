@@ -107,7 +107,7 @@ const toolKeys = {
     'to',
     'workset',
   ]),
-  read_context: new Set(['budgetTokens', 'cursor', 'mode', 'section', 'uri', 'uris']),
+  read_context: new Set(['mode', 'section', 'uri', 'uris']),
   recall_context: new Set([
     'budgetTokens',
     'callerCwd',

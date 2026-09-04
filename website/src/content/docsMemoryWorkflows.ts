@@ -121,7 +121,7 @@ export const memoryWorkflowsDocsSection: DocsSection = {
         },
         {
           type: 'warning',
-          text: 'Pending anchors are private recovery intent, not evidence. Sharing is blocked until finalization. The CLI can explicitly publish the currently uncited memory and discard the intent; MCP callers first replace it without codeRefs when that is the user’s deliberate choice.',
+          text: 'Pending anchors are private recovery intent, not evidence. Sharing is blocked until finalization. The CLI --allow-uncited-pending-code-refs flag and MCP allowUncitedPendingCodeRefs can publish the currently uncited memory and discard the private intent only after the personal source is removed; preview does not discard.',
         },
         {
           type: 'heading',

@@ -248,6 +248,7 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
   const authoredRelations = yield* resolveAuthoredMemoryRelations(config, relationInputs, {
     allowedUriScopes: [relationScope],
     sourceMemoryId: memoryId,
+    sourceUri: options.replace,
   });
   // Projection computes source_hash from canonical content. Keeping the
   // high-entropy digest out of Threadnote's indexed memory preserves semantic

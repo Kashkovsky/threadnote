@@ -16,6 +16,7 @@ const CLOUD_TOOL_NAMES = [
   'read_context',
   'list_context',
   'remember_context',
+  'finalize_code_refs',
   'threadnote_guide',
 ] as const;
 const CLOUD_LOCAL_TOOL_NAMES = [
