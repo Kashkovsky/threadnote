@@ -1051,11 +1051,12 @@ The body remains ordinary **Markdown**.
     expect(commands).toContain('threadnote graph contribute status');
     expect(commands).toContain('threadnote graph worker --json');
     expect(docs).toContain('threadnote graph share join --read-only');
-    expect(docs).toContain(
-      'The next `threadnote graph index` or committed-base ensure imports a verified shared ancestor',
-    );
+    expect(docs).toContain('The next `threadnote graph index` imports a verified shared ancestor');
+    expect(docs).toContain('committed-base ensure reuses or rematerializes a clean snapshot');
     expect(docs).toContain('`graph share status` reports `lastImport`');
     expect(docs).toContain('frozen→assembling→verifying→published');
+    expect(docs).toContain('application/vnd.oci.image.manifest.v1+json');
+    expect(docs).toContain('tn-frontier-*');
     expect(docs).toContain('shared-base-plus-local-overlay');
     expect(tips).toContain('Existing schema-v1 and uncited legacy memories remain recallable');
     expect(faqSource).toContain('Can I move a graph to another machine without a Workset or cloud?');

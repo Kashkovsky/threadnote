@@ -17,7 +17,8 @@ import {ensureGraphShareCheckpointArtifact} from './checkpoint_cas.js';
 import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
 import type {Sha256Digest} from './digest.js';
 import {graphShareBlobExists, graphShareCommitIsAncestor} from './git.js';
-import {graphShareControlGetFrontier, mirrorCoordinatorCasBlob} from './control_client.js';
+import {graphShareControlGetFrontier, graphShareControlGetTag, mirrorCoordinatorCasBlob} from './control_client.js';
+import {graphShareFrontierPointerFromOciDescriptor, parseGraphShareOciDescriptor} from './descriptor.js';
 import {graphShareFrontierDiscoveryTag} from './namespace.js';
 import {
   GRAPH_SHARE_CONTRIBUTION_MODES,
@@ -597,8 +598,16 @@ const refreshFrontierPointerFromCoordinator = Effect.fn('codeGraph.sharing.refre
   readonly threadnoteHome: string;
 }) {
   const path = yield* Path.Path;
-  const branchHash = graphShareFrontierDiscoveryTag(input.repositoryId, input.branch).slice('tn-frontier-'.length);
-  const frontier = yield* graphShareControlGetFrontier(input.coordinatorUrl, branchHash);
+  const tagName = graphShareFrontierDiscoveryTag(input.repositoryId, input.branch);
+  const fromDescriptor = yield* refreshFrontierPointerFromOciTag({
+    casRoot: input.casRoot,
+    coordinatorUrl: input.coordinatorUrl,
+    tagName,
+  }).pipe(Effect.option);
+  const frontier =
+    fromDescriptor._tag === 'Some'
+      ? fromDescriptor.value
+      : yield* graphShareControlGetFrontier(input.coordinatorUrl, tagName.slice('tn-frontier-'.length));
   yield* ensureSharedCasBlob(input.casRoot, frontier.manifestDigest, input.coordinatorUrl);
   yield* ensureSharedCasBlob(input.casRoot, frontier.envelopeDigest, input.coordinatorUrl);
   const layout = graphSharingLayout(path, input.threadnoteHome, input.casRoot);
@@ -607,6 +616,22 @@ const refreshFrontierPointerFromCoordinator = Effect.fn('codeGraph.sharing.refre
     manifestDigest: frontier.manifestDigest,
     schemaVersion: 1,
   });
+});
+
+const refreshFrontierPointerFromOciTag = Effect.fn('codeGraph.sharing.refreshFrontierFromOciTag')(function* (input: {
+  readonly casRoot: string;
+  readonly coordinatorUrl: string;
+  readonly tagName: string;
+}) {
+  const descriptorDigest = yield* graphShareControlGetTag(input.coordinatorUrl, input.tagName);
+  const descriptor = yield* decodeJson(
+    yield* ensureSharedCasBlob(input.casRoot, descriptorDigest, input.coordinatorUrl),
+    parseGraphShareOciDescriptor,
+    'OCI descriptor is invalid.',
+  );
+  const pointer = graphShareFrontierPointerFromOciDescriptor(descriptor);
+  yield* ensureSharedCasBlob(input.casRoot, pointer.metadataDigest, input.coordinatorUrl);
+  return pointer;
 });
 
 const ensureSharedCasBlob = Effect.fn('codeGraph.sharing.ensureSharedCasBlob')(function* (

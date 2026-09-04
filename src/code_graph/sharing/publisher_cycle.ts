@@ -1,5 +1,4 @@
 import {Clock, Crypto, Effect, FileSystem, Path, Ref} from 'effect';
-import {canonicalJson} from '../checkpoint/canonical_json.js';
 import {runCodeGraphCheckpointExport} from '../checkpoint/commands.js';
 import {CodeGraphIndexer} from '../indexer.js';
 import {codeGraphDirectPersistentCapacityProtector} from '../indexer_materialization.js';
@@ -20,8 +19,9 @@ import {
   type GraphSharePublisherKeyV1,
 } from './artifacts.js';
 import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from './atomic.js';
-import {putCasBytes, putCasFile, readVerifiedCasBlob} from './cas.js';
+import {putCasFile, readVerifiedCasBlob} from './cas.js';
 import {putGraphShareCheckpointLayers} from './checkpoint_cas.js';
+import {putGraphShareOciDescriptor, putSignedGraphShareFrontierDocuments} from './descriptor.js';
 import {loadGraphShareCoordinatorState, updateGraphShareCoordinatorMachine} from './control_server.js';
 import type {GraphShareCoordinatorStateV1} from './control_protocol.js';
 import {parseSha256Digest, type Sha256Digest} from './digest.js';
@@ -73,6 +73,7 @@ const FORCE_FREEZE_THRESHOLDS: GraphShareFrontierThresholds = {
 
 export interface GraphPublisherAdvanceResult {
   readonly checkpointDigest: Sha256Digest;
+  readonly descriptorDigest?: Sha256Digest;
   readonly envelopeDigest: Sha256Digest;
   readonly generation: number;
   readonly manifestDigest: Sha256Digest;
@@ -132,10 +133,10 @@ export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advanc
   });
   yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
   if (identity.headCommit === publishedCommit) {
-    return currentPointer(current, pointer, machine.phase, false);
+    return currentPointer(current, pointer, machine.phase);
   }
   if (!descendant) {
-    return currentPointer(current, pointer, machine.phase, false);
+    return currentPointer(current, pointer, machine.phase);
   }
   const stats = yield* graphShareCommitDiffStats(identity.repoRoot, publishedCommit, identity.headCommit);
   const actionKeys = coordinator.receipts.receipts
@@ -150,7 +151,7 @@ export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advanc
   });
   yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
   if (machine.phase !== 'frozen') {
-    return currentPointer(current, pointer, machine.phase, false);
+    return currentPointer(current, pointer, machine.phase);
   }
   const selected = selectGraphShareResultsForFrozenMachine(coordinator.receipts, machine);
   const verified = [];
@@ -164,7 +165,7 @@ export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advanc
     if (receipt._tag === 'None') {
       machine = failGraphShareBatch(machine);
       yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
-      return currentPointer(current, pointer, machine.phase, false);
+      return currentPointer(current, pointer, machine.phase);
     }
     verified.push(receipt.value);
   }
@@ -210,7 +211,6 @@ function currentPointer(
   current: GraphShareFrontierManifestV1,
   pointer: {readonly envelopeDigest: Sha256Digest; readonly manifestDigest: Sha256Digest},
   phase: GraphShareFrontierPhase,
-  published: boolean,
 ): GraphPublisherAdvanceResult {
   return {
     checkpointDigest: current.checkpoint.manifestDigest,
@@ -219,12 +219,26 @@ function currentPointer(
     manifestDigest: pointer.manifestDigest,
     phase,
     profileDigest: current.profileDigest,
-    published,
+    published: false,
     sourceCommit: current.sourceCommit,
     type: 'code-graph-publisher-serve',
     version: 1,
   };
 }
+
+export const ensureGraphSharePublishedOciDescriptor = Effect.fn('codeGraph.sharing.ensurePublishedOciDescriptor')(
+  function* (
+    casRoot: string,
+    pointer: {readonly envelopeDigest: Sha256Digest; readonly manifestDigest: Sha256Digest},
+    metadataDigest: Sha256Digest,
+  ) {
+    return yield* putGraphShareOciDescriptor(casRoot, {
+      envelope: yield* readVerifiedCasBlob(casRoot, pointer.envelopeDigest),
+      frontier: yield* readVerifiedCasBlob(casRoot, pointer.manifestDigest),
+      metadata: yield* readVerifiedCasBlob(casRoot, metadataDigest),
+    });
+  },
+);
 
 const hydratePublisherFacts = Effect.fn('codeGraph.sharing.hydratePublisherFacts')(function* (
   config: RuntimeConfig,
@@ -301,19 +315,20 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
     snapshotId: exported.snapshotId,
     sourceCommit: exported.sourceCommit,
   });
-  const manifestDigest = yield* putCasBytes(casRoot, new TextEncoder().encode(canonicalJson(signed.manifest)));
-  const envelopeDigest = yield* putCasBytes(casRoot, new TextEncoder().encode(canonicalJson(signed.envelope)));
+  const metadataBytes = yield* readVerifiedCasBlob(casRoot, layers.metadataDigest);
+  const documents = yield* putSignedGraphShareFrontierDocuments(casRoot, signed, metadataBytes);
   const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
   yield* writePrivateJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, repositoryId), {
-    envelopeDigest,
-    manifestDigest,
+    envelopeDigest: documents.envelopeDigest,
+    manifestDigest: documents.manifestDigest,
     schemaVersion: 1,
   });
   return {
     checkpointDigest,
-    envelopeDigest,
+    descriptorDigest: documents.descriptorDigest,
+    envelopeDigest: documents.envelopeDigest,
     generation: current.generation + 1,
-    manifestDigest,
+    manifestDigest: documents.manifestDigest,
     profileDigest: current.profileDigest,
     sourceCommit: exported.sourceCommit,
   };

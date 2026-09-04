@@ -15,24 +15,42 @@ import type {
   CodeGraphCheckpointMetadataV1,
   CodeGraphCheckpointRecordV1,
 } from '../../src/code_graph/checkpoint/schema.js';
-import {decodeJsonBytes, readJsonFile} from '../../src/code_graph/sharing/atomic.js';
+import {
+  GRAPH_SHARE_RECORDS_MEDIA_TYPE,
+  generateGraphSharePublisherKey,
+  signGraphShareFrontier,
+  type GraphShareFrontierManifestV1,
+} from '../../src/code_graph/sharing/artifacts.js';
+import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
 import {casBlobPath, putCasBytes, putCasFile} from '../../src/code_graph/sharing/cas.js';
 import {
+  assembleGraphShareCheckpointLayers,
   ensureGraphShareCheckpointArtifact,
+  parseGraphShareCheckpointMetadata,
   putGraphShareCheckpointLayers,
 } from '../../src/code_graph/sharing/checkpoint_cas.js';
 import {
   graphShareControlAnnounceResult,
   graphShareControlGetCas,
+  graphShareControlGetFrontier,
   graphShareControlGetJson,
   graphShareControlGetStatus,
+  graphShareControlGetTag,
   graphShareControlPostJson,
   graphShareControlPutCas,
 } from '../../src/code_graph/sharing/control_client.js';
 import {recordPublishedFrontier, runGraphShareControlServer} from '../../src/code_graph/sharing/control_server.js';
+import {
+  graphShareFrontierPointerFromOciDescriptor,
+  graphShareOciLayerMediaTypes,
+  graphShareProductionLayerMediaTypesUseRecords,
+  parseGraphShareOciDescriptor,
+  putSignedGraphShareFrontierDocuments,
+} from '../../src/code_graph/sharing/descriptor.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
 import {GraphSharingError} from '../../src/code_graph/sharing/errors.js';
-import {graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
+import {graphSharingFrontierPointerPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
+import {graphShareFrontierDiscoveryTag} from '../../src/code_graph/sharing/namespace.js';
 import {GRAPH_SHARE_HTTP_CAS_MAX_BYTES, graphSharePayloadLooksLikeGitObject} from '../../src/code_graph/sharing/oci.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
@@ -272,6 +290,130 @@ describe('graph share live coordinator and digest CAS', () => {
     ),
   );
 
+  effectIt.effect('resolves a published generation through tag, OCI descriptor, layer GET, and assemble', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-oci-http-'});
+        const publisherCas = path.join(home, 'publisher-cas');
+        const clientCas = path.join(home, 'client-cas');
+        yield* fs.makeDirectory(publisherCas, {recursive: true, mode: 0o700});
+        const pack = encodeCodeGraphCheckpointPackV1(
+          httpCheckpointMetadata(4),
+          httpCheckpointRecords(['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts']),
+          {limits: {targetUncompressedChunkBytes: 400}},
+        );
+        const artifactPath = path.join(home, 'artifact.cgcp');
+        yield* fs.writeFile(artifactPath, pack.bytes);
+        const artifactDigest = yield* putCasFile(publisherCas, artifactPath);
+        const layers = yield* putGraphShareCheckpointLayers(publisherCas, artifactDigest);
+        const repositoryId = 'a'.repeat(64);
+        const sourceCommit = HTTP_SHA1_ZERO;
+        const manifest: GraphShareFrontierManifestV1 = {
+          branch: 'refs/heads/main',
+          checkpoint: {
+            manifestDigest: artifactDigest,
+            metadataDigest: layers.metadataDigest,
+            snapshotId: 'cgsn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            sourceCommit,
+          },
+          deltas: [],
+          generation: 1,
+          graphAbi: 'c'.repeat(64),
+          graphContentId: 'cgc_' + 'd'.repeat(40),
+          logicalGraphDigest: sha256Digest('logical'),
+          previousManifestDigest: null,
+          profileDigest: sha256Digest('profile'),
+          publisherFence: 1,
+          repositoryId,
+          schemaVersion: 1,
+          snapshotId: 'cgsn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          sourceCommit,
+        };
+        const signed = yield* signGraphShareFrontier(yield* generateGraphSharePublisherKey(), manifest);
+        const metadataBytes = yield* fs.readFile(yield* casBlobPath(publisherCas, layers.metadataDigest));
+        const published = yield* putSignedGraphShareFrontierDocuments(publisherCas, signed, metadataBytes);
+        expect(graphShareProductionLayerMediaTypesUseRecords(graphShareOciLayerMediaTypes(published.descriptor))).toBe(
+          false,
+        );
+        expect(JSON.stringify(published.descriptor)).not.toContain(GRAPH_SHARE_RECORDS_MEDIA_TYPE);
+        expect(layers.metadata.mediaType).not.toBe(GRAPH_SHARE_RECORDS_MEDIA_TYPE);
+        yield* writePrivateJsonFile(
+          graphSharingFrontierPointerPath(
+            path,
+            graphSharingLayout(path, home, publisherCas).frontiersRoot,
+            repositoryId,
+          ),
+          {
+            envelopeDigest: published.envelopeDigest,
+            manifestDigest: published.manifestDigest,
+            schemaVersion: 1,
+          },
+        );
+        yield* recordPublishedFrontier(
+          {casRoot: publisherCas, organization: 'acme', repositoryId, threadnoteHome: home},
+          {
+            branch: 'refs/heads/main',
+            descriptorDigest: published.descriptorDigest,
+            envelopeDigest: published.envelopeDigest,
+            generation: 1,
+            manifestDigest: published.manifestDigest,
+            repositoryId,
+            sourceCommit,
+          },
+        );
+        const ready = yield* Deferred.make<{readonly port: number; readonly url: string}>();
+        yield* Effect.forkScoped(
+          runGraphShareControlServer({
+            casRoot: publisherCas,
+            listen: {hostname: '127.0.0.1', port: 0},
+            onListening: info => Deferred.succeed(ready, info).pipe(Effect.asVoid),
+            organization: 'acme',
+            repositoryId,
+            threadnoteHome: home,
+          }),
+        );
+        const info = yield* Deferred.await(ready);
+        const tagName = graphShareFrontierDiscoveryTag(repositoryId, 'refs/heads/main');
+        const tagged = yield* graphShareControlGetTag(info.url, tagName);
+        expect(tagged).toBe(published.descriptorDigest);
+        const descriptorBytes = yield* graphShareControlGetCas(info.url, tagged);
+        const descriptor = parseGraphShareOciDescriptor(yield* decodeJsonBytes(descriptorBytes));
+        const pointer = graphShareFrontierPointerFromOciDescriptor(descriptor);
+        expect(pointer.manifestDigest).toBe(published.manifestDigest);
+        expect(pointer.envelopeDigest).toBe(published.envelopeDigest);
+        const body = yield* graphShareControlGetCas(info.url, pointer.manifestDigest);
+        const envelope = yield* graphShareControlGetCas(info.url, pointer.envelopeDigest);
+        const metadataLayer = yield* graphShareControlGetCas(info.url, pointer.metadataDigest);
+        expect(sha256Digest(body)).toBe(published.manifestDigest);
+        expect(sha256Digest(envelope)).toBe(published.envelopeDigest);
+        const metadata = parseGraphShareCheckpointMetadata(yield* decodeJsonBytes(metadataLayer));
+        yield* putCasBytes(clientCas, metadataLayer);
+        yield* putCasBytes(clientCas, yield* graphShareControlGetCas(info.url, metadata.prefixDigest));
+        for (const chunk of metadata.chunks) {
+          yield* putCasBytes(clientCas, yield* graphShareControlGetCas(info.url, chunk.digest));
+        }
+        const assembled = path.join(home, 'assembled.cgcp');
+        const assembledDigest = yield* assembleGraphShareCheckpointLayers(clientCas, metadata, assembled);
+        expect(assembledDigest).toBe(artifactDigest);
+        expect(assembledDigest).toBe(manifest.checkpoint.manifestDigest);
+        const latest = (yield* readJsonFile(
+          graphSharingFrontierPointerPath(
+            path,
+            graphSharingLayout(path, home, publisherCas).frontiersRoot,
+            repositoryId,
+          ),
+        )) as {readonly envelopeDigest: string; readonly manifestDigest: string};
+        expect(latest.manifestDigest).toBe(published.manifestDigest);
+        expect(latest.envelopeDigest).toBe(published.envelopeDigest);
+        const frontier = yield* graphShareControlGetFrontier(info.url, tagName.slice('tn-frontier-'.length));
+        expect(frontier.manifestDigest).toBe(published.manifestDigest);
+        expect(frontier.envelopeDigest).toBe(published.envelopeDigest);
+      }).pipe(provideTestLayer(sharingLayer)),
+    ),
+  );
+
   effectIt.effect('reports published generation on GET /v1/status after recordPublishedFrontier', () =>
     TestClock.withLive(
       Effect.gen(function* () {
@@ -287,6 +429,7 @@ describe('graph share live coordinator and digest CAS', () => {
           {casRoot, organization: 'acme', repositoryId, threadnoteHome: home},
           {
             branch: 'refs/heads/main',
+            descriptorDigest: sha256Digest('oci-descriptor'),
             envelopeDigest: sha256Digest('frontier-envelope'),
             generation: 1,
             manifestDigest,

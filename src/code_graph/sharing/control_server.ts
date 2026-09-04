@@ -58,6 +58,7 @@ export interface GraphShareListenAddress {
 
 export interface GraphSharePublishedFrontier {
   readonly branch: string;
+  readonly descriptorDigest?: Sha256Digest;
   readonly envelopeDigest: Sha256Digest;
   readonly generation: number;
   readonly manifestDigest: Sha256Digest;
@@ -136,13 +137,16 @@ export const recordPublishedFrontier = Effect.fn('codeGraph.sharing.recordPublis
   stateRef?: Ref.Ref<GraphShareCoordinatorStateV1>,
 ) {
   const path = yield* Path.Path;
+  if (published.descriptorDigest === undefined) {
+    return yield* graphSharingFailure('Published frontier is missing an OCI descriptor digest.');
+  }
   const branchHash = frontierBranchHash(published.repositoryId, published.branch);
   const pointer: GraphShareFrontierPointerDigestV1 = {
     envelopeDigest: published.envelopeDigest,
     manifestDigest: published.manifestDigest,
   };
   yield* writePrivateJsonFile(graphSharingTagPath(path, options.casRoot, `tn-frontier-${branchHash}`), {
-    digest: published.manifestDigest,
+    digest: published.descriptorDigest,
     envelopeDigest: published.envelopeDigest,
     schemaVersion: 1,
   });

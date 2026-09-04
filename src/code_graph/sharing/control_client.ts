@@ -150,6 +150,20 @@ export const graphShareControlPutCas = Effect.fn('codeGraph.sharing.controlPutCa
   return digest;
 });
 
+export const graphShareControlGetTag = Effect.fn('codeGraph.sharing.controlGetTag')(function* (
+  coordinatorUrl: string,
+  name: string,
+) {
+  const url = coordinatorPath(coordinatorUrl, `/v1/tags/${name}`);
+  const response = yield* execute(HttpClientRequest.get(url), url, 10_000);
+  if (response.status === 404) return yield* graphSharingUnavailable(`Coordinator path is missing: /v1/tags/${name}`);
+  if (response.status < 200 || response.status >= 300) {
+    return yield* graphSharingFailure(`Tag GET returned HTTP ${response.status}.`);
+  }
+  const body = yield* decodeResponseJson(CoordinatorTagBody, response, JSON_STATUS_DECODE);
+  return parseSha256Digest(body.digest);
+});
+
 export const graphShareControlPutTag = Effect.fn('codeGraph.sharing.controlPutTag')(function* (
   coordinatorUrl: string,
   name: string,
