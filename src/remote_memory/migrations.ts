@@ -2,14 +2,15 @@ import type {Sql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {remoteMemoryError} from './errors.js';
 
+function migrationFile(name: string): URL {
+  return typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE
+    ? new URL(`./remote-memory/migrations/${name}`, import.meta.url)
+    : new URL(`./migrations/${name}`, import.meta.url);
+}
+
 const MIGRATIONS = [
-  {
-    file:
-      typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE
-        ? new URL('./remote-memory/migrations/001_initial.sql', import.meta.url)
-        : new URL('./migrations/001_initial.sql', import.meta.url),
-    version: 1,
-  },
+  {file: migrationFile('001_initial.sql'), version: 1},
+  {file: migrationFile('002_git_canonical_pointers.sql'), version: 2},
 ] as const;
 const MIGRATION_LOCK = 7_427_190_041;
 

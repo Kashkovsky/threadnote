@@ -60,6 +60,17 @@ services:
     volumes:
       - ./grants/001-runtime.sql:/threadnote-grants/001-runtime.sql:ro
 
+  memory-git-prepare:
+    image: alpine:3.20
+    command: ['sh', '-c', 'chown -R 1000:1000 /var/threadnote/memory-git']
+    read_only: true
+    restart: 'no'
+    security_opt:
+      - no-new-privileges:true
+    user: '0'
+    volumes:
+      - remote-memory-git:/var/threadnote/memory-git
+
   remote-memory:
     build:
       context: ../..
@@ -68,6 +79,8 @@ services:
       - ALL
     depends_on:
       runtime-grants:
+        condition: service_completed_successfully
+      memory-git-prepare:
         condition: service_completed_successfully
     environment:
       THREADNOTE_REMOTE_ALLOWED_HOSTS: ${THREADNOTE_REMOTE_ALLOWED_HOSTS:-localhost:8787}
@@ -78,6 +91,8 @@ services:
       THREADNOTE_REMOTE_DATABASE_URL: ${THREADNOTE_REMOTE_RUNTIME_DATABASE_URL:?set THREADNOTE_REMOTE_RUNTIME_DATABASE_URL}
       THREADNOTE_REMOTE_AUTO_MIGRATE: 'false'
       THREADNOTE_REMOTE_ENABLED: ${THREADNOTE_REMOTE_ENABLED:-false}
+      THREADNOTE_REMOTE_CANONICAL_STORE: ${THREADNOTE_REMOTE_CANONICAL_STORE:-postgres}
+      THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE: /var/threadnote/memory-git
       THREADNOTE_REMOTE_HOST: 0.0.0.0
       THREADNOTE_REMOTE_OAUTH_AUDIENCE: ${THREADNOTE_REMOTE_OAUTH_AUDIENCE:-http://localhost:8787/mcp}
       THREADNOTE_REMOTE_OAUTH_ISSUER: ${THREADNOTE_REMOTE_OAUTH_ISSUER:?set THREADNOTE_REMOTE_OAUTH_ISSUER}
@@ -102,6 +117,9 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp:size=64m,mode=1777
+    volumes:
+      - remote-memory-git:/var/threadnote/memory-git
 
 volumes:
   remote-memory-postgres:
+  remote-memory-git:

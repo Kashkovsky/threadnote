@@ -67,10 +67,14 @@ Names and slugs are display metadata, never authority. A client URI may narrow o
 authorized grant. Git-beta aliases are resolved only after tenant/share authorization and always return the new
 canonical URI.
 
-## ADR 4: PostgreSQL is authoritative
+## ADR 4: PostgreSQL is authoritative for the hosted SaaS flavor
 
-Decision: current heads and immutable revisions live in PostgreSQL. Every committed mutation atomically records the
-head change, share generation, idempotency outcome, outbox event, and bounded audit metadata.
+Decision: in the hosted Cursor Cloud / Postgres-as-body flavor, current heads and immutable revisions live in
+PostgreSQL. Every committed mutation atomically records the head change, share generation, idempotency outcome, outbox
+event, and bounded audit metadata.
+
+This ADR is **not** the organization default. Organization shared-memory bodies are Git-canonical (ADR 8). Keep this
+flavor as an optional hosted path with one-way Git import/export. Do not dual-write Git and Postgres bodies.
 
 Controls:
 
@@ -116,6 +120,18 @@ replication.
 
 Production choice still required: supported regions, backup locations and retention, deletion SLA, failover topology,
 and customer-visible residency controls.
+
+## ADR 8: Git is canonical for organization shared-memory bodies
+
+Decision: organization composer mode (`THREADNOTE_REMOTE_CANONICAL_STORE=git`) stores Markdown bodies in the same Git
+memory repository local `share publish` / `share sync` already uses. PostgreSQL keeps grants, OAuth, generations,
+idempotency, outbox, and `git_commit` / `git_path` / `content_hash` pointers. `markdown_body` is empty in this mode.
+
+The HTTP composer is an additional Git writer for credential-less agents. It is not the only writer. Concurrent Git
+updates fail closed with an explicit conflict; the composer never silent-merges. Local share remains a Git writer of
+the same repository. The derived lexical index is rebuildable from Git.
+
+Deploy-time configuration selects `git` or `postgres`. This is not a product feature flag.
 
 ## Compatibility
 

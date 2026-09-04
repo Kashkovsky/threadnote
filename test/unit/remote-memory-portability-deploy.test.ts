@@ -14,6 +14,9 @@ describe('remote memory reference deployment', () => {
     expect(compose).toContain('THREADNOTE_REMOTE_RUNTIME_DATABASE_URL');
     expect(compose).toContain("THREADNOTE_REMOTE_AUTO_MIGRATE: 'false'");
     expect(compose).toContain('THREADNOTE_REMOTE_ENABLED: ${THREADNOTE_REMOTE_ENABLED:-false}');
+    expect(compose).toContain('THREADNOTE_REMOTE_CANONICAL_STORE: ${THREADNOTE_REMOTE_CANONICAL_STORE:-postgres}');
+    expect(compose).toContain('remote-memory-git:/var/threadnote/memory-git');
+    expect(compose).toContain('memory-git-prepare:');
     expect(compose).toContain('runtime-grants:');
     expect(initialization).toContain('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS');
     expect(grants).toContain('REVOKE ALL ON ALL TABLES IN SCHEMA remote_memory');
@@ -37,6 +40,7 @@ describe('remote memory reference deployment', () => {
     ]);
 
     expect(dockerfile).toContain('bun install --frozen-lockfile --production --ignore-scripts');
+    expect(dockerfile).toContain('apk add --no-cache git');
     expect(dockerfile).toContain('CMD ["bun", "src/standalone.ts", "remote-memory-service"]');
     expect(packageJson.dependencies).toMatchObject({
       '@effect/platform-bun': '4.0.0-rc.112',
@@ -50,6 +54,8 @@ describe('remote memory reference deployment', () => {
 
     expect(build).toContain("const REMOTE_MEMORY_MIGRATION_DIRECTORY = 'remote-memory/migrations'");
     expect(build).toContain("path.join(root, 'src', 'remote_memory', 'migrations')");
-    expect(migrations).toContain("new URL('./remote-memory/migrations/001_initial.sql', import.meta.url)");
+    expect(migrations).toContain('new URL(`./remote-memory/migrations/${name}`, import.meta.url)');
+    expect(migrations).toContain("migrationFile('001_initial.sql')");
+    expect(migrations).toContain("migrationFile('002_git_canonical_pointers.sql')");
   });
 });

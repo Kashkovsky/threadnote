@@ -6,6 +6,7 @@ import {RemoteMemoryError} from './errors.js';
 import {rotateShares} from './indexer.js';
 import {PostgresRemoteMemoryRepository} from './postgres_repository.js';
 import {remoteRetentionPrincipalId} from './postgres_control_plane.js';
+import type {GitCanonicalMemoryStore} from './git_canonical_store.js';
 
 const DEFAULT_RETENTION_LIMIT = 64;
 const DEFAULT_RETENTION_POLL_MILLISECONDS = 60_000;
@@ -52,8 +53,11 @@ export class RemoteHandoffRetentionWorker {
   private nextCleanupTenantKey: string | undefined;
   private nextShareKey: string | undefined;
 
-  constructor(readonly sql: Sql) {
-    this.repository = new PostgresRemoteMemoryRepository(sql);
+  constructor(
+    readonly sql: Sql,
+    options: {readonly gitStore?: GitCanonicalMemoryStore} = {},
+  ) {
+    this.repository = new PostgresRemoteMemoryRepository(sql, options);
   }
 
   async runPass(limit = DEFAULT_RETENTION_LIMIT, now = new Date()): Promise<RemoteHandoffRetentionPassResult> {

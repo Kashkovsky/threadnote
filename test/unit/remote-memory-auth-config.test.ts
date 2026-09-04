@@ -66,6 +66,8 @@ describe('remote memory service configuration', () => {
     expect(config.attestationAudience).toBe('https://memory.example.test/attest/cursor');
     expect(config.cursorJwksUrl.toString()).toBe('https://api.cursor.com/keys');
     expect(config.globallyEnabled).toBe(false);
+    expect(config.canonicalStore).toBe('postgres');
+    expect(config.gitWorktree).toBeUndefined();
     expect(config.maxBodyBytes).toBe(256 * 1024);
     expect(config.readRequestsPerMinute).toBe(300);
     expect(config.writeRequestsPerMinute).toBe(60);
@@ -135,8 +137,49 @@ describe('remote memory service configuration', () => {
     expect(redacted).not.toHaveProperty('accessTokenJwksUrl');
     expect(redacted).toMatchObject({
       accessTokenIssuer: 'https://identity.example.test/tenant',
+      canonicalStore: 'postgres',
       publicBaseUrl: 'https://memory.example.test/',
     });
+  });
+
+  it('requires an absolute git worktree when the canonical store is git', () => {
+    expect(() =>
+      remoteMemoryConfigFromEnvironment({...productionEnvironment, THREADNOTE_REMOTE_CANONICAL_STORE: 'git'}),
+    ).toThrow('THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE');
+    expect(() =>
+      remoteMemoryConfigFromEnvironment({
+        ...productionEnvironment,
+        THREADNOTE_REMOTE_CANONICAL_STORE: 'git',
+        THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE: 'relative/worktree',
+      }),
+    ).toThrow('absolute path');
+    const config = remoteMemoryConfigFromEnvironment({
+      ...productionEnvironment,
+      THREADNOTE_REMOTE_CANONICAL_STORE: 'git',
+      THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE: '/var/threadnote/memory-git',
+    });
+    expect(config.canonicalStore).toBe('git');
+    expect(config.gitWorktree).toBe('/var/threadnote/memory-git');
+    expect(config.gitBranch).toBe('main');
+  });
+
+  it('rejects git remotes and branches that are not safe refnames', () => {
+    expect(() =>
+      remoteMemoryConfigFromEnvironment({
+        ...productionEnvironment,
+        THREADNOTE_REMOTE_CANONICAL_STORE: 'git',
+        THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE: '/var/threadnote/memory-git',
+        THREADNOTE_REMOTE_MEMORY_GIT_REMOTE: 'https://evil.example/repo.git',
+      }),
+    ).toThrow('safe git refname');
+    expect(() =>
+      remoteMemoryConfigFromEnvironment({
+        ...productionEnvironment,
+        THREADNOTE_REMOTE_CANONICAL_STORE: 'git',
+        THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE: '/var/threadnote/memory-git',
+        THREADNOTE_REMOTE_MEMORY_GIT_BRANCH: '-u',
+      }),
+    ).toThrow('safe git refname');
   });
 });
 

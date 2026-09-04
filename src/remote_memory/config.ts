@@ -1,5 +1,7 @@
 import {remoteMemoryError} from './errors.js';
 
+export type RemoteMemoryCanonicalStore = 'git' | 'postgres';
+
 export interface RemoteMemoryServiceConfig {
   readonly accessTokenAudience: string;
   readonly accessTokenIssuer: string;
@@ -8,9 +10,14 @@ export interface RemoteMemoryServiceConfig {
   readonly allowedHosts: readonly string[];
   readonly allowedOrigins: readonly string[];
   readonly attestationAudience: string;
+  readonly canonicalStore: RemoteMemoryCanonicalStore;
   readonly cursorIssuer: string;
   readonly cursorJwksUrl: URL;
   readonly databaseUrl: string;
+  readonly gitBranch: string;
+  readonly gitPush: boolean;
+  readonly gitRemote: string;
+  readonly gitWorktree?: string;
   readonly host: string;
   readonly globallyEnabled: boolean;
   readonly maxBodyBytes: number;
@@ -88,6 +95,19 @@ export function remoteMemoryConfigFromEnvironment(
   if (cursorIssuer === 'https://api.cursor.com' && cursorJwksUrl.toString() !== 'https://api.cursor.com/keys') {
     throw remoteMemoryError('invalid_request', "The Cursor JWKS URL must use Cursor's published /keys endpoint.");
   }
+  const canonicalStore = canonicalStoreValue(environment.THREADNOTE_REMOTE_CANONICAL_STORE);
+  const gitWorktree = environment.THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE?.trim();
+  if (canonicalStore === 'git') {
+    if (!gitWorktree) {
+      throw remoteMemoryError(
+        'invalid_request',
+        'THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE is required when THREADNOTE_REMOTE_CANONICAL_STORE=git.',
+      );
+    }
+    if (!isAbsoluteWorktree(gitWorktree)) {
+      throw remoteMemoryError('invalid_request', 'THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE must be an absolute path.');
+    }
+  }
   return {
     accessTokenAudience,
     accessTokenIssuer,
@@ -96,9 +116,20 @@ export function remoteMemoryConfigFromEnvironment(
     allowedHosts,
     allowedOrigins,
     attestationAudience,
+    canonicalStore,
     cursorIssuer,
     cursorJwksUrl,
     databaseUrl,
+    gitBranch: gitRefName(
+      environment.THREADNOTE_REMOTE_MEMORY_GIT_BRANCH?.trim() || 'main',
+      'THREADNOTE_REMOTE_MEMORY_GIT_BRANCH',
+    ),
+    gitPush: booleanValue(environment.THREADNOTE_REMOTE_MEMORY_GIT_PUSH, true),
+    gitRemote: gitRefName(
+      environment.THREADNOTE_REMOTE_MEMORY_GIT_REMOTE?.trim() || 'origin',
+      'THREADNOTE_REMOTE_MEMORY_GIT_REMOTE',
+    ),
+    ...(gitWorktree ? {gitWorktree} : {}),
     globallyEnabled: booleanValue(environment.THREADNOTE_REMOTE_ENABLED, false),
     host: environment.THREADNOTE_REMOTE_HOST?.trim() || '127.0.0.1',
     maxBodyBytes: boundedInteger(environment.THREADNOTE_REMOTE_MAX_BODY_BYTES, 256 * 1024, 1024, 1024 * 1024),
@@ -118,7 +149,12 @@ export function redactedRemoteMemoryConfig(config: RemoteMemoryServiceConfig): R
     allowedHosts: config.allowedHosts,
     allowedOrigins: config.allowedOrigins,
     attestationAudience: config.attestationAudience,
+    canonicalStore: config.canonicalStore,
     cursorIssuer: config.cursorIssuer,
+    gitBranch: config.gitBranch,
+    gitPush: config.gitPush,
+    gitRemote: config.gitRemote,
+    ...(config.gitWorktree ? {gitWorktree: config.gitWorktree} : {}),
     globallyEnabled: config.globallyEnabled,
     host: config.host,
     maxBodyBytes: config.maxBodyBytes,
@@ -254,4 +290,26 @@ function booleanValue(value: string | undefined, fallback: boolean): boolean {
   if (value === 'true') return true;
   if (value === 'false') return false;
   throw remoteMemoryError('invalid_request', 'Expected true or false.');
+}
+
+function isAbsoluteWorktree(path: string): boolean {
+  return path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path);
+}
+
+function gitRefName(value: string, key: string): string {
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(value) ||
+    value.startsWith('-') ||
+    value.includes(':') ||
+    value.includes('..')
+  ) {
+    throw remoteMemoryError('invalid_request', `${key} must be a safe git refname.`);
+  }
+  return value;
+}
+
+function canonicalStoreValue(value: string | undefined): RemoteMemoryCanonicalStore {
+  if (!value?.trim()) return 'postgres';
+  if (value === 'git' || value === 'postgres') return value;
+  throw remoteMemoryError('invalid_request', 'THREADNOTE_REMOTE_CANONICAL_STORE must be git or postgres.');
 }
