@@ -49,7 +49,7 @@ const DEVELOPMENT_RUNTIME_OWNER_FILE = 'development-runtime-owner.json';
 const DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION = 1 as const;
 const DEVELOPMENT_RUNTIME_OWNER_MAX_BYTES = 16 * 1024;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-const CLEAN_GIT_STATUS_ARGUMENTS = [
+export const CLEAN_GIT_STATUS_ARGUMENTS = [
   '-c',
   'core.fsmonitor=false',
   '-c',
@@ -248,7 +248,9 @@ const verifyCleanSourceState = Effect.fn('developmentInstall.verifyCleanSourceSt
   }
 });
 
-const developmentSourceCheckoutId = Effect.fn('developmentInstall.sourceCheckoutId')(function* (sourceRoot: string) {
+export const developmentSourceCheckoutId = Effect.fn('developmentInstall.sourceCheckoutId')(function* (
+  sourceRoot: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const system = yield* SystemInfo;
   const canonicalSourceRoot = yield* fs.realPath(sourceRoot);
@@ -284,7 +286,9 @@ const requireDevelopmentRuntimeOwnership = Effect.fn('developmentInstall.require
   });
 });
 
-const readDevelopmentRuntimeOwner = Effect.fn('developmentInstall.readRuntimeOwner')(function* (installRoot: string) {
+export const readDevelopmentRuntimeOwner = Effect.fn('developmentInstall.readRuntimeOwner')(function* (
+  installRoot: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
