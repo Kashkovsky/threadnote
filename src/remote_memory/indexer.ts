@@ -1,9 +1,13 @@
 import type {Sql, TransactionSql} from 'postgres';
+import {GitCanonicalMemoryStore} from './git_canonical_store.js';
+import {PostgresRemoteMemoryRepository} from './postgres_repository.js';
 
 const DEFAULT_BATCH_SIZE = 64;
 const DEFAULT_POLL_MILLISECONDS = 250;
 const MAX_RETRY_MILLISECONDS = 60_000;
 const MAX_PROJECTION_ATTEMPTS = 10;
+const GIT_HYDRATE_LEASE_MILLISECONDS = 5_000;
+const GIT_INGEST_INTERVAL_MILLISECONDS = 15_000;
 
 interface ShareDirectoryRow {
   readonly share_id: string;
@@ -26,6 +30,18 @@ interface IndexerHealthAggregateRow {
 
 type ProjectionResult = 'claimed_failed' | 'claimed_processed' | 'not_claimed';
 
+interface ClaimedHead {
+  readonly git_commit: string | null;
+  readonly git_path: string | null;
+  readonly head_id: string;
+  readonly kind: string;
+  readonly markdown_body: string;
+  readonly project: string;
+  readonly revision_id: string;
+  readonly generation: string | number;
+  readonly topic: string;
+}
+
 export interface RemoteMemoryIndexerOptions {
   readonly batchSize?: number;
   readonly pollMilliseconds?: number;
@@ -40,13 +56,17 @@ export interface RemoteMemoryIndexPassResult {
 /**
  * Projects committed memory heads into the derived lexical index. A pass takes
  * at most one event per share before rotating, so one hot share cannot consume
- * the whole batch. The claim, projection, failure bookkeeping, and outcome are
- * decided in one transaction; a SKIP LOCKED miss is never counted as progress.
+ * the whole batch. Git-canonical blobs are hydrated after the outbox claim
+ * commits. A SKIP LOCKED miss is never counted as progress.
  */
 export class RemoteMemoryIndexer {
+  private nextGitIngestAt = 0;
   private nextShareKey: string | undefined;
 
-  constructor(readonly sql: Sql) {}
+  constructor(
+    readonly sql: Sql,
+    readonly gitStore?: GitCanonicalMemoryStore,
+  ) {}
 
   async retryDeadLetters(input: {
     readonly eventId?: string;
@@ -66,13 +86,24 @@ export class RemoteMemoryIndexer {
     });
   }
 
-  async runPass(options: Pick<RemoteMemoryIndexerOptions, 'batchSize'> = {}): Promise<RemoteMemoryIndexPassResult> {
+  async runPass(
+    options: Pick<RemoteMemoryIndexerOptions, 'batchSize'> & {readonly ingest?: boolean} = {},
+  ): Promise<RemoteMemoryIndexPassResult> {
     const batchSize = boundedBatchSize(options.batchSize);
     const shares = rotateShares(await this.activeShares(), this.nextShareKey);
     let processed = 0;
     let failed = 0;
     let attempts = 0;
     let lastAttempted: ShareDirectoryRow | undefined;
+    if (this.gitStore && options.ingest !== false) {
+      try {
+        await new PostgresRemoteMemoryRepository(this.sql, {gitStore: this.gitStore}).ingestActiveGitShares(
+          `indexer-ingest:${Date.now()}`,
+        );
+      } catch {
+        // Git ingest is not outbox progress; run() backs off independently.
+      }
+    }
     if (shares.length > 0) {
       while (attempts < batchSize) {
         let roundClaimed = 0;
@@ -97,7 +128,11 @@ export class RemoteMemoryIndexer {
   async run(options: RemoteMemoryIndexerOptions = {}): Promise<void> {
     const pollMilliseconds = boundedPollMilliseconds(options.pollMilliseconds);
     while (!options.signal?.aborted) {
-      const pass = await this.runPass({batchSize: options.batchSize});
+      const ingestDue = Date.now() >= this.nextGitIngestAt;
+      const pass = await this.runPass({batchSize: options.batchSize, ingest: ingestDue});
+      if (ingestDue && this.gitStore) {
+        this.nextGitIngestAt = Date.now() + GIT_INGEST_INTERVAL_MILLISECONDS;
+      }
       if (pass.processed + pass.failed === 0 && !options.signal?.aborted) {
         await waitForAbortableDelay(pollMilliseconds, options.signal);
       }
@@ -112,7 +147,7 @@ export class RemoteMemoryIndexer {
   }
 
   private async claimAndProject(share: ShareDirectoryRow): Promise<ProjectionResult> {
-    return await this.sql.begin(async transaction => {
+    const claimed = await this.sql.begin(async transaction => {
       await configureTenantTransaction(transaction, share.tenant_id);
       const locked = await transaction<OutboxRow[]>`
         SELECT id, aggregate_id, event_type, generation, attempts
@@ -124,47 +159,58 @@ export class RemoteMemoryIndexer {
         LIMIT 1
       `;
       const event = locked[0];
-      if (!event) return 'not_claimed' as const;
+      if (!event) return {kind: 'not_claimed' as const};
       try {
-        await transaction.savepoint(async projection => {
-          if (event.event_type !== 'memory_head_changed') throw new Error('unsupported_outbox_event');
-          const projected = await projection`
-            INSERT INTO remote_memory.search_documents(
-              tenant_id, share_id, head_id, revision_id, generation, project, topic, kind, searchable
-            )
-            SELECT h.tenant_id, h.share_id, h.id, r.id, r.generation, h.project, h.topic, h.kind,
-              to_tsvector('simple', h.project || ' ' || h.topic || ' ' || r.markdown_body)
-            FROM remote_memory.memory_heads h
-            JOIN remote_memory.memory_revisions r
-              ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
-            WHERE h.tenant_id = ${share.tenant_id} AND h.share_id = ${share.share_id}
-              AND h.id = ${event.aggregate_id}
-            ON CONFLICT (tenant_id, share_id, head_id) DO UPDATE SET
-              revision_id = EXCLUDED.revision_id, generation = EXCLUDED.generation,
-              project = EXCLUDED.project, topic = EXCLUDED.topic, kind = EXCLUDED.kind,
-              searchable = EXCLUDED.searchable, updated_at = now()
-            RETURNING head_id
-          `;
-          if (projected.length !== 1) throw new Error('missing_outbox_aggregate');
-          await projection`
-            UPDATE remote_memory.outbox_events SET processed_at = now(), last_error_class = NULL
-            WHERE tenant_id = ${share.tenant_id} AND share_id = ${share.share_id} AND id = ${event.id}
-          `;
-          await advanceContiguousGeneration(projection, share);
-        });
-        return 'claimed_processed' as const;
-      } catch (cause) {
-        const nextAttempts = event.attempts + 1;
+        if (event.event_type !== 'memory_head_changed') throw new Error('unsupported_outbox_event');
+        const head = await loadOutboxHead(transaction, share, event.aggregate_id);
+        if (!head) throw new Error('missing_outbox_aggregate');
+        if (head.markdown_body !== '' || !head.git_commit || !head.git_path) {
+          await projectSearchDocument(transaction, share, event, head, head.markdown_body);
+          return {kind: 'claimed_processed' as const};
+        }
         await transaction`
           UPDATE remote_memory.outbox_events
-          SET attempts = attempts + 1, last_error_class = ${classifyIndexerFailure(cause)},
-            dead_lettered_at = CASE WHEN ${nextAttempts} >= ${MAX_PROJECTION_ATTEMPTS} THEN now() ELSE NULL END,
-            available_at = now() + (${remoteIndexerBackoffMilliseconds(nextAttempts)} * interval '1 millisecond')
+          SET available_at = now() + (${GIT_HYDRATE_LEASE_MILLISECONDS} * interval '1 millisecond')
           WHERE tenant_id = ${share.tenant_id} AND share_id = ${share.share_id} AND id = ${event.id}
         `;
-        return 'claimed_failed' as const;
+        return {event, head, kind: 'hydrate' as const};
+      } catch (cause) {
+        await markIndexerFailure(transaction, share, event, cause);
+        return {kind: 'claimed_failed' as const};
       }
     });
+    if (claimed.kind !== 'hydrate') return claimed.kind;
+    try {
+      if (!this.gitStore || !claimed.head.git_commit || !claimed.head.git_path) {
+        throw new Error('missing_git_canonical_blob');
+      }
+      const body = await this.gitStore.read({commit: claimed.head.git_commit, path: claimed.head.git_path});
+      return await this.sql.begin(async transaction => {
+        await configureTenantTransaction(transaction, share.tenant_id);
+        const locked = await transaction<OutboxRow[]>`
+          SELECT id, aggregate_id, event_type, generation, attempts
+          FROM remote_memory.outbox_events
+          WHERE tenant_id = ${share.tenant_id} AND share_id = ${share.share_id} AND id = ${claimed.event.id}
+            AND processed_at IS NULL AND dead_lettered_at IS NULL
+          FOR UPDATE
+        `;
+        const event = locked[0];
+        if (!event) return 'claimed_processed' as const;
+        try {
+          await projectSearchDocument(transaction, share, event, claimed.head, body);
+          return 'claimed_processed' as const;
+        } catch (cause) {
+          await markIndexerFailure(transaction, share, event, cause);
+          return 'claimed_failed' as const;
+        }
+      });
+    } catch (cause) {
+      return await this.sql.begin(async transaction => {
+        await configureTenantTransaction(transaction, share.tenant_id);
+        await markIndexerFailure(transaction, share, claimed.event, cause);
+        return 'claimed_failed' as const;
+      });
+    }
   }
 
   private async updateHealth(shares: readonly ShareDirectoryRow[], result: RemoteMemoryIndexPassResult): Promise<void> {
@@ -235,6 +281,68 @@ function shareKeyAfter(shares: readonly ShareDirectoryRow[], current: ShareDirec
   if (shares.length === 0) return undefined;
   const index = shares.findIndex(share => shareKey(share) === shareKey(current));
   return shareKey(shares[(index + 1) % shares.length]);
+}
+
+async function loadOutboxHead(
+  transaction: TransactionSql,
+  share: ShareDirectoryRow,
+  headId: string,
+): Promise<ClaimedHead | undefined> {
+  const heads = await transaction<ClaimedHead[]>`
+    SELECT h.id AS head_id, r.id AS revision_id, r.generation, h.project, h.topic, h.kind,
+      r.markdown_body, r.git_commit, r.git_path
+    FROM remote_memory.memory_heads h
+    JOIN remote_memory.memory_revisions r
+      ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
+    WHERE h.tenant_id = ${share.tenant_id} AND h.share_id = ${share.share_id}
+      AND h.id = ${headId}
+  `;
+  return heads[0];
+}
+
+async function projectSearchDocument(
+  transaction: TransactionSql,
+  share: ShareDirectoryRow,
+  event: OutboxRow,
+  head: ClaimedHead,
+  body: string,
+): Promise<void> {
+  const projected = await transaction`
+    INSERT INTO remote_memory.search_documents(
+      tenant_id, share_id, head_id, revision_id, generation, project, topic, kind, searchable
+    ) VALUES (
+      ${share.tenant_id}, ${share.share_id}, ${head.head_id}, ${head.revision_id}, ${head.generation},
+      ${head.project}, ${head.topic}, ${head.kind},
+      to_tsvector('simple', ${`${head.project} ${head.topic} ${body}`})
+    )
+    ON CONFLICT (tenant_id, share_id, head_id) DO UPDATE SET
+      revision_id = EXCLUDED.revision_id, generation = EXCLUDED.generation,
+      project = EXCLUDED.project, topic = EXCLUDED.topic, kind = EXCLUDED.kind,
+      searchable = EXCLUDED.searchable, updated_at = now()
+    RETURNING head_id
+  `;
+  if (projected.length !== 1) throw new Error('missing_outbox_aggregate');
+  await transaction`
+    UPDATE remote_memory.outbox_events SET processed_at = now(), last_error_class = NULL
+    WHERE tenant_id = ${share.tenant_id} AND share_id = ${share.share_id} AND id = ${event.id}
+  `;
+  await advanceContiguousGeneration(transaction, share);
+}
+
+async function markIndexerFailure(
+  transaction: TransactionSql,
+  share: ShareDirectoryRow,
+  event: OutboxRow,
+  cause: unknown,
+): Promise<void> {
+  const nextAttempts = event.attempts + 1;
+  await transaction`
+    UPDATE remote_memory.outbox_events
+    SET attempts = attempts + 1, last_error_class = ${classifyIndexerFailure(cause)},
+      dead_lettered_at = CASE WHEN ${nextAttempts} >= ${MAX_PROJECTION_ATTEMPTS} THEN now() ELSE NULL END,
+      available_at = now() + (${remoteIndexerBackoffMilliseconds(nextAttempts)} * interval '1 millisecond')
+    WHERE tenant_id = ${share.tenant_id} AND share_id = ${share.share_id} AND id = ${event.id}
+  `;
 }
 
 async function advanceContiguousGeneration(transaction: TransactionSql, share: ShareDirectoryRow): Promise<void> {

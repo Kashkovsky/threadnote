@@ -3,6 +3,7 @@ import {createCursorTokenVerifier} from './cursor_oidc.js';
 import {migrateRemoteMemoryDatabase} from './migrations.js';
 import {createOAuthTokenVerifier} from './oauth.js';
 import {createRemoteMemorySql, PostgresRemoteControlPlane} from './postgres_control_plane.js';
+import {GitCanonicalMemoryStore} from './git_canonical_store.js';
 import {PostgresRemoteMemoryRepository} from './postgres_repository.js';
 import {PostgresRemoteRateLimiter} from './rate_limit.js';
 import {RemoteMemoryIndexer} from './indexer.js';
@@ -41,6 +42,15 @@ export async function runRemoteMemoryService(
   try {
     if (config.autoMigrate) await migrateRemoteMemoryDatabase(sql);
     await assertRuntimeSchemaAccess(sql);
+    const gitStore =
+      config.canonicalStore === 'git' && config.gitWorktree
+        ? new GitCanonicalMemoryStore({
+            branch: config.gitBranch,
+            push: config.gitPush,
+            remote: config.gitRemote,
+            worktree: config.gitWorktree,
+          })
+        : undefined;
     const server = startRemoteMemoryServer({
       config,
       dependencies: {
@@ -58,6 +68,7 @@ export async function runRemoteMemoryService(
         }),
         readiness: async () => {
           try {
+            if (gitStore) await gitStore.assertReady();
             workerHealth.assertReady();
             return remoteMemoryWorkersReady(sql);
           } catch {
@@ -68,11 +79,11 @@ export async function runRemoteMemoryService(
           readRequestsPerMinute: config.readRequestsPerMinute,
           writeRequestsPerMinute: config.writeRequestsPerMinute,
         }),
-        repository: new PostgresRemoteMemoryRepository(sql),
+        repository: new PostgresRemoteMemoryRepository(sql, {gitStore}),
       },
     });
-    const indexer = new RemoteMemoryIndexer(sql);
-    const retention = new RemoteHandoffRetentionWorker(sql);
+    const indexer = new RemoteMemoryIndexer(sql, gitStore);
+    const retention = new RemoteHandoffRetentionWorker(sql, {gitStore});
     workerTasks = [indexer.run({signal: workers.signal}), retention.run({signal: workers.signal})];
     workerHealth.supervise('indexer', workerTasks[0]);
     workerHealth.supervise('retention', workerTasks[1]);

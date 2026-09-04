@@ -28,6 +28,7 @@ import {
 import type {AuthorizedRemotePrincipal, RemoteMemoryFeatureFlag, RemoteMemoryScope} from './authorization.js';
 import {authorizeCursorClaims, type CursorWorkloadAttestation} from './cursor_oidc.js';
 import {RemoteMemoryError, remoteMemoryError, type RemoteMemoryErrorCode} from './errors.js';
+import {GitCanonicalMemoryStore, gitCanonicalSharePath} from './git_canonical_store.js';
 import {requireJsonValue} from './json.js';
 import {
   remoteMemoryDatabaseTimeoutMilliseconds,
@@ -57,6 +58,8 @@ interface HeadRow {
   readonly created_at: Date;
   readonly current_revision_id: string;
   readonly expires_at: Date | null;
+  readonly git_commit: string | null;
+  readonly git_path: string | null;
   readonly head_id: string;
   readonly kind: 'durable' | 'handoff';
   readonly markdown_body: string;
@@ -92,6 +95,7 @@ type OperationReservation =
   {readonly kind: 'execute'} | {readonly kind: 'replay'; readonly receipt: RemoteMemoryReceiptV1};
 
 const IDEMPOTENCY_REPLAY_WINDOW_MILLISECONDS = 24 * 60 * 60_000;
+const GIT_INGEST_HYDRATE_LIMIT = 256;
 
 export interface RemoteMemoryReadResult {
   readonly content: string;
@@ -137,13 +141,15 @@ export interface RemoteHandoffTransitionInput {
 }
 
 export class PostgresRemoteMemoryRepository {
+  readonly gitStore?: GitCanonicalMemoryStore;
   readonly statementTimeoutMilliseconds: number;
 
   constructor(
     readonly sql: Sql,
-    options: {readonly statementTimeoutMilliseconds?: number} = {},
+    options: {readonly gitStore?: GitCanonicalMemoryStore; readonly statementTimeoutMilliseconds?: number} = {},
   ) {
     const timeout = options.statementTimeoutMilliseconds ?? 5_000;
+    this.gitStore = options.gitStore;
     this.statementTimeoutMilliseconds =
       Number.isSafeInteger(timeout) && timeout >= 100 && timeout <= 120_000 ? timeout : 5_000;
   }
@@ -175,7 +181,7 @@ export class PostgresRemoteMemoryRepository {
     requestId: string,
     execution?: RemoteMemoryRequestExecution,
   ): Promise<RemoteMemoryReadResult> {
-    return this.withTenant(
+    const loaded = await this.withTenant(
       principal.tenantId,
       async transaction => {
         const state = await requireShareState(transaction, principal);
@@ -186,7 +192,7 @@ export class PostgresRemoteMemoryRepository {
         const rows = input.revision
           ? await transaction<HeadRow[]>`
             SELECT h.canonical_uri, h.id AS head_id, h.kind, h.project, h.topic, r.id AS current_revision_id,
-              r.status, r.markdown_body, r.content_hash, h.retention_class, h.expires_at,
+              r.status, r.markdown_body, r.content_hash, r.git_commit, r.git_path, h.retention_class, h.expires_at,
               h.created_at, r.created_at AS updated_at
             FROM remote_memory.memory_heads h
             JOIN remote_memory.memory_revisions r
@@ -196,7 +202,7 @@ export class PostgresRemoteMemoryRepository {
           `
           : await transaction<HeadRow[]>`
             SELECT h.canonical_uri, h.id AS head_id, h.kind, h.project, h.topic, h.current_revision_id,
-              h.status, r.markdown_body, r.content_hash, h.retention_class, h.expires_at,
+              h.status, r.markdown_body, r.content_hash, r.git_commit, r.git_path, h.retention_class, h.expires_at,
               h.created_at, h.updated_at
             FROM remote_memory.memory_heads h
             JOIN remote_memory.memory_revisions r
@@ -206,18 +212,22 @@ export class PostgresRemoteMemoryRepository {
           `;
         const head = rows[0];
         if (!head) throw remoteMemoryError('not_found', 'The remote memory was not found.');
-        return {
-          content: head.markdown_body,
-          kind: head.kind,
-          project: head.project,
-          receipt: receipt(principal, state, requestId, {revision: head.current_revision_id, uri: head.canonical_uri}),
-          status: head.status,
-          topic: head.topic,
-          uri: head.canonical_uri,
-        };
+        return {head, state};
       },
       execution,
     );
+    return {
+      content: await this.revisionBody(loaded.head),
+      kind: loaded.head.kind,
+      project: loaded.head.project,
+      receipt: receipt(principal, loaded.state, requestId, {
+        revision: loaded.head.current_revision_id,
+        uri: loaded.head.canonical_uri,
+      }),
+      status: loaded.head.status,
+      topic: loaded.head.topic,
+      uri: loaded.head.canonical_uri,
+    };
   }
 
   async list(
@@ -244,7 +254,7 @@ export class PostgresRemoteMemoryRepository {
         const allowedProjects = principal.allowedProjects === 'all' ? null : [...principal.allowedProjects];
         const rows = await transaction<HeadRow[]>`
         SELECT h.canonical_uri, h.id AS head_id, h.kind, h.project, h.topic, h.current_revision_id,
-          h.status, r.markdown_body, r.content_hash, h.retention_class, h.expires_at,
+          h.status, r.markdown_body, r.content_hash, r.git_commit, r.git_path, h.retention_class, h.expires_at,
           h.created_at, h.updated_at
         FROM remote_memory.memory_heads h
         JOIN remote_memory.projects p
@@ -287,7 +297,7 @@ export class PostgresRemoteMemoryRepository {
     execution?: RemoteMemoryRequestExecution,
   ): Promise<{readonly receipt: RemoteMemoryReceiptV1; readonly results: readonly RemoteMemoryRecallResult[]}> {
     requirePrincipalProject(principal, input.project);
-    return this.withTenant(
+    const loaded = await this.withTenant(
       principal.tenantId,
       async transaction => {
         const authorizedState = await requireShareState(transaction, principal);
@@ -302,7 +312,7 @@ export class PostgresRemoteMemoryRepository {
           SELECT plainto_tsquery('simple', ${input.query}) AS value
         ), candidates AS (
           SELECT h.canonical_uri, h.id AS head_id, h.kind, h.project, h.topic,
-            h.current_revision_id, h.status, r.markdown_body, r.content_hash,
+            h.current_revision_id, h.status, r.markdown_body, r.content_hash, r.git_commit, r.git_path,
             h.retention_class, h.expires_at, h.created_at, h.updated_at,
             d.generation,
             ts_rank_cd(d.searchable, query.value) + CASE WHEN h.kind = 'handoff' THEN 0.02 ELSE 0 END AS score
@@ -318,7 +328,7 @@ export class PostgresRemoteMemoryRepository {
             AND d.searchable @@ query.value
           UNION ALL
           SELECT h.canonical_uri, h.id AS head_id, h.kind, h.project, h.topic,
-            h.current_revision_id, h.status, r.markdown_body, r.content_hash,
+            h.current_revision_id, h.status, r.markdown_body, r.content_hash, r.git_commit, r.git_path,
             h.retention_class, h.expires_at, h.created_at, h.updated_at,
             r.generation,
             ts_rank_cd(to_tsvector('simple', h.project || ' ' || h.topic || ' ' || r.markdown_body), query.value)
@@ -340,32 +350,45 @@ export class PostgresRemoteMemoryRepository {
         ) bounded_candidates
         ORDER BY canonical_uri, generation DESC, score DESC
       `;
-        const results = rows
-          .sort(
-            (left, right) =>
-              numeric(right.score) - numeric(left.score) || left.canonical_uri.localeCompare(right.canonical_uri),
-          )
-          .slice(0, limit)
-          .map(row => ({
-            excerpt: memoryExcerpt(row.markdown_body, input.query),
-            kind: row.kind,
-            project: row.project,
-            revision: row.current_revision_id,
-            score: numeric(row.score),
-            status: row.status,
-            topic: row.topic,
-            uri: row.canonical_uri,
-          }));
-        const state = authorizedState;
-        return {
-          receipt: receipt(principal, state, requestId, {
-            overlayUsed: numeric(state.indexed_generation) < numeric(state.share_generation),
-          }),
-          results,
-        };
+        const ranked = rows.sort(
+          (left, right) =>
+            numeric(right.score) - numeric(left.score) || left.canonical_uri.localeCompare(right.canonical_uri),
+        );
+        return {authorizedState, limit, ranked};
       },
       execution,
     );
+    const results: RemoteMemoryRecallResult[] = [];
+    let hydrates = 0;
+    for (const row of loaded.ranked) {
+      if (results.length >= loaded.limit || hydrates >= loaded.limit) break;
+      hydrates += 1;
+      const body = await this.revisionBody(row);
+      if (
+        row.git_commit &&
+        row.markdown_body === '' &&
+        !recallTextMatches(`${row.project} ${row.topic} ${body}`, input.query)
+      ) {
+        continue;
+      }
+      results.push({
+        excerpt: memoryExcerpt(body, input.query),
+        kind: row.kind,
+        project: row.project,
+        revision: row.current_revision_id,
+        score: numeric(row.score),
+        status: row.status,
+        topic: row.topic,
+        uri: row.canonical_uri,
+      });
+    }
+    return {
+      receipt: receipt(principal, loaded.authorizedState, requestId, {
+        overlayUsed:
+          numeric(loaded.authorizedState.indexed_generation) < numeric(loaded.authorizedState.share_generation),
+      }),
+      results,
+    };
   }
 
   async remember(
@@ -398,25 +421,15 @@ export class PostgresRemoteMemoryRepository {
       execution,
     );
     if (reservation.kind === 'replay') return reservation.receipt;
+    let gitLanded = false;
     try {
-      return await this.withTenant(
+      const planned = await this.withTenant(
         principal.tenantId,
         async transaction => {
           await requireShareState(transaction, principal);
           await requireActiveProject(transaction, principal, input.project);
           await transaction`SELECT pg_advisory_xact_lock(hashtextextended(${logicalKey}, 0))`;
-          const currentRows = await transaction<HeadRow[]>`
-        SELECT h.canonical_uri, h.id AS head_id, h.kind, h.project, h.topic, h.current_revision_id,
-          h.status, r.markdown_body, r.content_hash, h.retention_class, h.expires_at,
-          h.created_at, h.updated_at
-        FROM remote_memory.memory_heads h
-        JOIN remote_memory.memory_revisions r
-          ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
-        WHERE h.tenant_id = ${principal.tenantId} AND h.share_id = ${principal.shareId}
-          AND h.kind = ${input.kind} AND h.project = ${input.project} AND h.topic = ${input.topic}
-        FOR UPDATE OF h
-      `;
-          const current = currentRows[0];
+          const current = await this.loadTopicHead(transaction, principal, input.kind, input.project, input.topic);
           if (current?.kind === 'handoff' && current.status !== 'active') {
             throw remoteMemoryError(
               'conflict',
@@ -431,148 +444,71 @@ export class PostgresRemoteMemoryRepository {
           const share = await requireShareState(transaction, principal);
           requireFreshAttestationPolicy(principal, share, attestation, input.project);
           const proposedRevision = randomUuidV4();
-          const intent: RemoteMutationIntentV1 = {
-            ...(input.baseRevision ? {baseRevision: input.baseRevision} : {}),
-            fingerprint,
-            idempotencyKey: {
-              operationId: input.operationId,
-              principalId: principal.principalId,
-              tenantId: principal.tenantId,
-              version: REMOTE_MEMORY_REVISION_VERSION,
-            },
-            logicalKey,
+          this.assertRememberDecision(principal, input, current, logicalKey, fingerprint, proposedRevision, share);
+          return {
+            canonicalUri: formatRemoteMemoryUri({
+              kind: input.kind,
+              project: input.project,
+              shareId: principal.shareId,
+              topic: input.topic,
+            }),
+            current,
             proposedRevision,
-            version: REMOTE_MEMORY_REVISION_VERSION,
           };
-          const head: RemoteMemoryHeadV1 | undefined = current
-            ? {
-                logicalKey,
-                revision: current.current_revision_id,
-                status: current.status,
-                version: REMOTE_MEMORY_REVISION_VERSION,
-              }
-            : undefined;
-          const decision = planRemoteMutation({
-            currentShareGeneration: numeric(share.share_generation),
-            head,
-            intent,
-          });
-          if (decision.kind === 'conflict') {
-            throw remoteMemoryError(
-              'conflict',
-              'The remote memory changed; re-read it and retry with its current revision.',
-              {
-                ...(decision.currentRevision ? {currentRevision: decision.currentRevision} : {}),
-                reason: decision.reason,
-                shareGeneration: decision.shareGeneration,
-              },
-            );
-          }
-          if (decision.kind !== 'commit') {
-            throw remoteMemoryError('service_unavailable', 'The remote mutation could not be planned.');
-          }
-          const canonicalUri = formatRemoteMemoryUri({
-            kind: input.kind,
-            project: input.project,
-            shareId: principal.shareId,
-            topic: input.topic,
-          });
-          const document = makeRemoteDocument(input, current, canonicalUri, attestation, now);
-          const headId = current?.head_id ?? randomUuidV4();
-          if (!current) {
-            await transaction`
-          INSERT INTO remote_memory.memory_heads(
-            tenant_id, share_id, id, kind, project, topic, canonical_uri, status,
-            retention_class, expires_at
-          ) VALUES (
-            ${principal.tenantId}, ${principal.shareId}, ${headId}, ${input.kind}, ${input.project},
-            ${input.topic}, ${canonicalUri}, 'active', ${input.lifecycle?.retentionClass ?? null},
-            ${input.lifecycle?.expiresAt ?? null}
-          )
-        `;
-          }
-          const generationRows = await transaction<ShareStateRow[]>`
-        UPDATE remote_memory.shares SET share_generation = share_generation + 1
-        WHERE tenant_id = ${principal.tenantId} AND id = ${principal.shareId} AND status = 'active'
-          AND policy_version = ${principal.sharePolicyVersion}
-          AND policy_digest = ${principal.sharePolicyDigest}
-        RETURNING share_generation, indexed_generation, policy_version, policy_digest
-      `;
-          const committedGeneration = generationRows[0];
-          if (!committedGeneration) throw remoteMemoryError('forbidden', 'The memory share is no longer active.');
-          // The generation UPDATE is the serialization point with provisioning,
-          // which locks the share before replacing any member grant. Recheck
-          // the grant after acquiring that lock so a concurrent revocation or
-          // policy replacement cannot commit under the stale principal.
-          const committed = await requireShareState(transaction, principal);
-          if (numeric(committed.share_generation) !== numeric(committedGeneration.share_generation)) {
-            throw remoteMemoryError('service_unavailable', 'The committed memory generation could not be verified.');
-          }
-          requireFreshAttestationPolicy(principal, committed, attestation, input.project);
-          await transaction`
-        INSERT INTO remote_memory.memory_revisions(
-          tenant_id, share_id, id, head_id, base_revision_id, generation, status,
-          markdown_body, content_hash, oauth_principal_id, workload_attestation_id, operation_id
-        ) VALUES (
-          ${principal.tenantId}, ${principal.shareId}, ${proposedRevision}, ${headId},
-          ${input.baseRevision ?? null}, ${numeric(committed.share_generation)}, 'active',
-          ${document.content}, ${document.contentHash}, ${principal.principalId},
-          ${attestation?.attestationId ?? null}, ${input.operationId}
-        )
-      `;
-          await transaction`
-        UPDATE remote_memory.memory_heads SET
-          current_revision_id = ${proposedRevision}, status = 'active',
-          retention_class = ${input.lifecycle?.retentionClass ?? current?.retention_class ?? null},
-          expires_at = ${input.lifecycle?.expiresAt ?? current?.expires_at?.toISOString() ?? null},
-          updated_at = ${now.toISOString()}
-        WHERE tenant_id = ${principal.tenantId} AND share_id = ${principal.shareId} AND id = ${headId}
-      `;
-          const result = receipt(principal, committed, requestId, {
-            actor: attestation
-              ? {
-                  cloudAgentId: attestation.cloudAgentId,
-                  principalId: principal.principalId,
-                  provider: 'cursor',
-                  ...(attestation.turnId ? {turnId: attestation.turnId} : {}),
-                }
-              : {principalId: principal.principalId},
-            revision: proposedRevision,
-            uri: canonicalUri,
-          });
-          await transaction`
-        INSERT INTO remote_memory.outbox_events(
-          tenant_id, share_id, id, generation, event_type, aggregate_id
-        ) VALUES (
-          ${principal.tenantId}, ${principal.shareId}, ${randomUuidV4()},
-          ${numeric(committed.share_generation)}, 'memory_head_changed', ${headId}
-        )
-      `;
-          await transaction`
-        INSERT INTO remote_memory.audit_events(
-          tenant_id, share_id, id, request_id, principal_id, workload_attestation_id,
-          operation, result, policy_version, share_policy_version, generation
-        ) VALUES (
-          ${principal.tenantId}, ${principal.shareId}, ${randomUuidV4()}, ${requestId},
-          ${principal.principalId}, ${attestation?.attestationId ?? null}, 'remember_context', 'committed',
-          ${principal.policyVersion}, ${committed.policy_version}, ${numeric(committed.share_generation)}
-        )
-      `;
-          const recordedOutcomes = await transaction<{operation_id: string}[]>`
-        UPDATE remote_memory.idempotency_records SET outcome = ${transaction.json(result)}
-        WHERE tenant_id = ${principal.tenantId} AND principal_id = ${principal.principalId}
-          AND operation_id = ${input.operationId} AND request_hash = ${fingerprint}
-        RETURNING operation_id
-      `;
-          if (!recordedOutcomes[0]) {
-            throw remoteMemoryError('service_unavailable', 'The remote operation outcome could not be recorded.');
-          }
-          return result;
         },
         execution,
       );
+      const priorBody = planned.current ? await this.revisionBody(planned.current) : undefined;
+      const document = makeRemoteDocument(input, planned.current, planned.canonicalUri, attestation, now, priorBody);
+      const stored = await this.persistCanonicalBody({
+        current: planned.current,
+        document,
+        kind: input.kind,
+        message: `remember ${input.kind} ${input.project}/${input.topic}`,
+        project: input.project,
+        topic: input.topic,
+      });
+      gitLanded = stored.gitCommit !== null;
+      try {
+        return await this.commitRememberRevision({
+          attestation,
+          canonicalUri: planned.canonicalUri,
+          document,
+          execution,
+          expectedRevision: planned.current?.current_revision_id,
+          fingerprint,
+          input,
+          logicalKey,
+          now,
+          principal,
+          proposedRevision: planned.proposedRevision,
+          requestId,
+          stored,
+        });
+      } catch (phase3) {
+        if (!gitLanded) throw phase3;
+        return await this.commitRememberRevision({
+          attestation,
+          canonicalUri: planned.canonicalUri,
+          document,
+          execution,
+          expectedRevision: planned.current?.current_revision_id,
+          fingerprint,
+          input,
+          logicalKey,
+          now,
+          principal,
+          proposedRevision: planned.proposedRevision,
+          recoverGit: true,
+          requestId,
+          stored,
+        });
+      }
     } catch (cause) {
-      await this.retainRejectedOperation(principal, input.operationId, fingerprint, cause, execution);
+      const conflictAfterGit = gitLanded && Schema.is(RemoteMemoryError)(cause) && cause.code === 'conflict';
+      if (!gitLanded || conflictAfterGit) {
+        await this.retainRejectedOperation(principal, input.operationId, fingerprint, cause, execution);
+      }
       throw cause;
     }
   }
@@ -600,34 +536,23 @@ export class PostgresRemoteMemoryRepository {
       execution,
     );
     if (reservation.kind === 'replay') return reservation.receipt;
+    const logicalKey = formatRemoteMemoryLogicalKey({
+      kind: 'handoff',
+      project: address.project,
+      shareId: principal.shareId,
+      tenantId: principal.tenantId,
+      topic: address.topic,
+      version: REMOTE_MEMORY_REVISION_VERSION,
+    });
+    let gitLanded = false;
     try {
-      return await this.withTenant(
+      const planned = await this.withTenant(
         principal.tenantId,
         async transaction => {
           await requireShareState(transaction, principal);
           await requireActiveProject(transaction, principal, address.project);
-
-          const logicalKey = formatRemoteMemoryLogicalKey({
-            kind: 'handoff',
-            project: address.project,
-            shareId: principal.shareId,
-            tenantId: principal.tenantId,
-            topic: address.topic,
-            version: REMOTE_MEMORY_REVISION_VERSION,
-          });
           await transaction`SELECT pg_advisory_xact_lock(hashtextextended(${logicalKey}, 0))`;
-          const rows = await transaction<HeadRow[]>`
-        SELECT h.canonical_uri, h.id AS head_id, h.kind, h.project, h.topic, h.current_revision_id,
-          h.status, r.markdown_body, r.content_hash, h.retention_class, h.expires_at,
-          h.created_at, h.updated_at
-        FROM remote_memory.memory_heads h
-        JOIN remote_memory.memory_revisions r
-          ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
-        WHERE h.tenant_id = ${principal.tenantId} AND h.share_id = ${principal.shareId}
-          AND h.canonical_uri = ${address.canonicalUri} AND h.kind = 'handoff'
-        FOR UPDATE OF h
-      `;
-          const current = rows[0];
+          const current = await this.loadHeadByUri(transaction, principal, address.canonicalUri, 'handoff');
           if (!current) throw remoteMemoryError('not_found', 'The remote handoff was not found.');
           if (current.current_revision_id !== input.baseRevision) {
             throw remoteMemoryError('conflict', 'The remote handoff changed; re-read it before changing lifecycle.', {
@@ -670,85 +595,809 @@ export class PostgresRemoteMemoryRepository {
           if (decision.kind !== 'commit') {
             throw remoteMemoryError('conflict', 'The remote handoff lifecycle transition conflicted.');
           }
-          const generationRows = await transaction<ShareStateRow[]>`
+          return {current, proposedRevision, status: lifecycle.to};
+        },
+        execution,
+      );
+      const document = makeLifecycleDocument(
+        planned.current,
+        planned.status,
+        now,
+        await this.revisionBody(planned.current),
+      );
+      const stored = await this.persistCanonicalBody({
+        current: planned.current,
+        document,
+        kind: 'handoff',
+        message: `handoff ${input.operation} ${address.project}/${address.topic}`,
+        project: address.project,
+        topic: address.topic,
+      });
+      gitLanded = stored.gitCommit !== null;
+      try {
+        return await this.commitHandoffRevision({
+          address,
+          attestation,
+          document,
+          execution,
+          fingerprint,
+          input,
+          logicalKey,
+          now,
+          planned,
+          principal,
+          requestId,
+          stored,
+        });
+      } catch (phase3) {
+        if (!gitLanded) throw phase3;
+        return await this.commitHandoffRevision({
+          address,
+          attestation,
+          document,
+          execution,
+          fingerprint,
+          input,
+          logicalKey,
+          now,
+          planned,
+          principal,
+          requestId,
+          stored,
+        });
+      }
+    } catch (cause) {
+      const conflictAfterGit = gitLanded && Schema.is(RemoteMemoryError)(cause) && cause.code === 'conflict';
+      if (!gitLanded || conflictAfterGit) {
+        await this.retainRejectedOperation(principal, input.operationId, fingerprint, cause, execution);
+      }
+      throw cause;
+    }
+  }
+
+  async ingestActiveGitShares(
+    requestId: string,
+    now = new Date(),
+  ): Promise<{readonly ingested: number; readonly skipped: number}> {
+    if (!this.gitStore) {
+      throw remoteMemoryError('invalid_request', 'Git share ingest requires a git canonical store.');
+    }
+    const shares = await this.sql<{readonly share_id: string; readonly tenant_id: string}[]>`
+      SELECT tenant_id, share_id FROM remote_memory.share_directory
+      WHERE status = 'active' ORDER BY tenant_id, share_id
+    `;
+    let ingested = 0;
+    let skipped = 0;
+    for (const share of shares) {
+      const principal = await this.loadGitIngestPrincipal(share.tenant_id, share.share_id);
+      if (!principal) {
+        skipped += 1;
+        continue;
+      }
+      const result = await this.ingestGitShare(principal, `${requestId}:${share.share_id}`, now);
+      ingested += result.ingested;
+      skipped += result.skipped;
+    }
+    return {ingested, skipped};
+  }
+
+  async ingestGitShare(
+    principal: AuthorizedRemotePrincipal,
+    requestId: string,
+    now = new Date(),
+  ): Promise<{readonly ingested: number; readonly skipped: number}> {
+    const gitStore = this.gitStore;
+    if (!gitStore) {
+      throw remoteMemoryError('invalid_request', 'Git share ingest requires a git canonical store.');
+    }
+    const paths = await gitStore.listCanonicalPaths();
+    const blobCache = new Map<string, ReadonlyMap<string, string>>();
+    const blobsAt = async (commit: string): Promise<ReadonlyMap<string, string>> => {
+      const cached = blobCache.get(commit);
+      if (cached) return cached;
+      const blobs = await gitStore.listBlobIds(commit);
+      blobCache.set(commit, blobs);
+      return blobs;
+    };
+    const snapshot = await this.withTenant(principal.tenantId, async transaction => {
+      await requireShareState(transaction, principal);
+      const heads = await transaction<
+        {
+          readonly content_hash: string;
+          readonly git_commit: string | null;
+          readonly git_path: string | null;
+          readonly kind: 'durable' | 'handoff';
+          readonly project: string;
+          readonly status: HeadRow['status'];
+          readonly topic: string;
+        }[]
+      >`
+        SELECT h.kind, h.project, h.topic, h.status, r.content_hash, r.git_commit, r.git_path
+        FROM remote_memory.memory_heads h
+        JOIN remote_memory.memory_revisions r
+          ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
+        WHERE h.tenant_id = ${principal.tenantId} AND h.share_id = ${principal.shareId}
+      `;
+      const projects = await transaction<{name: string}[]>`
+        SELECT name FROM remote_memory.projects
+        WHERE tenant_id = ${principal.tenantId} AND share_id = ${principal.shareId} AND status = 'active'
+      `;
+      return {heads, projects: new Set(projects.map(project => project.name))};
+    });
+    const heads = new Map(snapshot.heads.map(head => [`${head.kind}:${head.project}:${head.topic}`, head] as const));
+    let ingested = 0;
+    let skipped = 0;
+    let hydrates = 0;
+    for (const path of paths) {
+      if (!principalAllowsProject(principal, path.project) || !snapshot.projects.has(path.project)) {
+        skipped += 1;
+        continue;
+      }
+      if (
+        (path.kind === 'durable' &&
+          !principalAllows(principal, 'memory:write:durable', 'remote_memory_durable_write')) ||
+        (path.kind === 'handoff' && !principalAllows(principal, 'memory:write:handoff', 'remote_memory_handoff_write'))
+      ) {
+        skipped += 1;
+        continue;
+      }
+      const current = heads.get(`${path.kind}:${path.project}:${path.topic}`);
+      if (current && current.status !== 'active') {
+        skipped += 1;
+        continue;
+      }
+      if (current?.git_commit === path.gitCommit && current.git_path === path.gitPath) {
+        skipped += 1;
+        continue;
+      }
+      if (current?.git_commit && current.git_path === path.gitPath) {
+        const priorBlob = (await blobsAt(current.git_commit)).get(path.gitPath);
+        if (priorBlob === path.blobId) {
+          skipped += 1;
+          continue;
+        }
+      }
+      if (hydrates >= GIT_INGEST_HYDRATE_LIMIT) {
+        skipped += 1;
+        continue;
+      }
+      hydrates += 1;
+      const content = await gitStore.read({commit: path.gitCommit, path: path.gitPath});
+      const inspected = inspectRemoteMemoryContent(content);
+      if (!inspected.allowed) {
+        skipped += 1;
+        continue;
+      }
+      const changed = await this.ingestGitFile(
+        principal,
+        {...path, contentHash: sha256HexSync(content)},
+        requestId,
+        now,
+      );
+      if (changed) ingested += 1;
+      else skipped += 1;
+    }
+    return {ingested, skipped};
+  }
+
+  private async ingestGitFile(
+    principal: AuthorizedRemotePrincipal,
+    file: {
+      readonly contentHash: string;
+      readonly gitCommit: string;
+      readonly gitPath: string;
+      readonly kind: 'durable' | 'handoff';
+      readonly project: string;
+      readonly topic: string;
+    },
+    requestId: string,
+    now: Date,
+  ): Promise<boolean> {
+    return this.withTenant(principal.tenantId, async transaction => {
+      await requireShareState(transaction, principal);
+      await requireActiveProject(transaction, principal, file.project);
+      const logicalKey = formatRemoteMemoryLogicalKey({
+        kind: file.kind,
+        project: file.project,
+        shareId: principal.shareId,
+        tenantId: principal.tenantId,
+        topic: file.topic,
+        version: REMOTE_MEMORY_REVISION_VERSION,
+      });
+      await transaction`SELECT pg_advisory_xact_lock(hashtextextended(${logicalKey}, 0))`;
+      const currentRows = await transaction<HeadRow[]>`
+        SELECT h.canonical_uri, h.id AS head_id, h.kind, h.project, h.topic, h.current_revision_id,
+          h.status, r.markdown_body, r.content_hash, r.git_commit, r.git_path, h.retention_class, h.expires_at,
+          h.created_at, h.updated_at
+        FROM remote_memory.memory_heads h
+        JOIN remote_memory.memory_revisions r
+          ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
+        WHERE h.tenant_id = ${principal.tenantId} AND h.share_id = ${principal.shareId}
+          AND h.kind = ${file.kind} AND h.project = ${file.project} AND h.topic = ${file.topic}
+        FOR UPDATE OF h
+      `;
+      const current = currentRows[0];
+      if (current && current.status !== 'active') return false;
+      if (current?.git_commit === file.gitCommit && current.git_path === file.gitPath) return false;
+      if (current?.content_hash === file.contentHash) return false;
+      const canonicalUri = formatRemoteMemoryUri({
+        kind: file.kind,
+        project: file.project,
+        shareId: principal.shareId,
+        topic: file.topic,
+      });
+      const headId = current?.head_id ?? randomUuidV4();
+      const proposedRevision = randomUuidV4();
+      if (!current) {
+        await transaction`
+          INSERT INTO remote_memory.memory_heads(
+            tenant_id, share_id, id, kind, project, topic, canonical_uri, status
+          ) VALUES (
+            ${principal.tenantId}, ${principal.shareId}, ${headId}, ${file.kind}, ${file.project},
+            ${file.topic}, ${canonicalUri}, 'active'
+          )
+        `;
+      }
+      const generationRows = await transaction<ShareStateRow[]>`
         UPDATE remote_memory.shares SET share_generation = share_generation + 1
         WHERE tenant_id = ${principal.tenantId} AND id = ${principal.shareId} AND status = 'active'
           AND policy_version = ${principal.sharePolicyVersion}
           AND policy_digest = ${principal.sharePolicyDigest}
         RETURNING share_generation, indexed_generation, policy_version, policy_digest
       `;
-          const committedGeneration = generationRows[0];
-          if (!committedGeneration) throw remoteMemoryError('forbidden', 'The memory share is no longer active.');
-          const committed = await requireShareState(transaction, principal);
-          if (numeric(committed.share_generation) !== numeric(committedGeneration.share_generation)) {
-            throw remoteMemoryError('service_unavailable', 'The committed memory generation could not be verified.');
-          }
-          requireFreshAttestationPolicy(principal, committed, attestation, address.project);
-          const document = makeLifecycleDocument(current, lifecycle.to, now);
-          await transaction`
+      const committedGeneration = generationRows[0];
+      if (!committedGeneration) throw remoteMemoryError('forbidden', 'The memory share is no longer active.');
+      const committed = await requireShareState(transaction, principal);
+      if (numeric(committed.share_generation) !== numeric(committedGeneration.share_generation)) {
+        throw remoteMemoryError('service_unavailable', 'The committed memory generation could not be verified.');
+      }
+      await transaction`
         INSERT INTO remote_memory.memory_revisions(
           tenant_id, share_id, id, head_id, base_revision_id, generation, status,
-          markdown_body, content_hash, oauth_principal_id, workload_attestation_id, operation_id
+          markdown_body, content_hash, git_commit, git_path, oauth_principal_id, operation_id
         ) VALUES (
-          ${principal.tenantId}, ${principal.shareId}, ${proposedRevision}, ${current.head_id},
-          ${input.baseRevision}, ${numeric(committed.share_generation)}, ${lifecycle.to},
-          ${document.content}, ${document.contentHash}, ${principal.principalId},
-          ${attestation?.attestationId ?? null}, ${input.operationId}
+          ${principal.tenantId}, ${principal.shareId}, ${proposedRevision}, ${headId},
+          ${current?.current_revision_id ?? null}, ${numeric(committed.share_generation)}, 'active',
+          ${''}, ${file.contentHash}, ${file.gitCommit}, ${file.gitPath},
+          ${principal.principalId}, ${`git-ingest:${file.gitCommit}:${file.gitPath}`}
         )
       `;
-          await transaction`
-        UPDATE remote_memory.memory_heads
-        SET current_revision_id = ${proposedRevision}, status = ${lifecycle.to}, updated_at = ${now.toISOString()}
-        WHERE tenant_id = ${principal.tenantId} AND share_id = ${principal.shareId} AND id = ${current.head_id}
+      await transaction`
+        UPDATE remote_memory.memory_heads SET
+          current_revision_id = ${proposedRevision}, status = 'active', updated_at = ${now.toISOString()}
+        WHERE tenant_id = ${principal.tenantId} AND share_id = ${principal.shareId} AND id = ${headId}
       `;
-          const result = receipt(principal, committed, requestId, {
-            actor: attestation
-              ? {
-                  cloudAgentId: attestation.cloudAgentId,
-                  principalId: principal.principalId,
-                  provider: 'cursor',
-                  ...(attestation.turnId ? {turnId: attestation.turnId} : {}),
-                }
-              : {principalId: principal.principalId},
-            revision: proposedRevision,
-            uri: current.canonical_uri,
-          });
-          await transaction`
+      await transaction`
         INSERT INTO remote_memory.outbox_events(
           tenant_id, share_id, id, generation, event_type, aggregate_id
         ) VALUES (
           ${principal.tenantId}, ${principal.shareId}, ${randomUuidV4()},
-          ${numeric(committed.share_generation)}, 'memory_head_changed', ${current.head_id}
+          ${numeric(committed.share_generation)}, 'memory_head_changed', ${headId}
         )
       `;
-          await transaction`
+      await transaction`
         INSERT INTO remote_memory.audit_events(
-          tenant_id, share_id, id, request_id, principal_id, workload_attestation_id,
-          operation, result, policy_version, share_policy_version, generation
+          tenant_id, share_id, id, request_id, principal_id, operation, result,
+          policy_version, share_policy_version, generation
         ) VALUES (
           ${principal.tenantId}, ${principal.shareId}, ${randomUuidV4()}, ${requestId},
-          ${principal.principalId}, ${attestation?.attestationId ?? null},
-          ${`handoff_${input.operation}`}, 'committed', ${principal.policyVersion}, ${committed.policy_version},
-          ${numeric(committed.share_generation)}
+          ${principal.principalId}, 'ingest_git_share', 'committed',
+          ${principal.policyVersion}, ${committed.policy_version}, ${numeric(committed.share_generation)}
         )
       `;
-          const recordedOutcomes = await transaction<{operation_id: string}[]>`
-        UPDATE remote_memory.idempotency_records SET outcome = ${transaction.json(result)}
-        WHERE tenant_id = ${principal.tenantId} AND principal_id = ${principal.principalId}
-          AND operation_id = ${input.operationId} AND request_hash = ${fingerprint}
-        RETURNING operation_id
-      `;
-          if (!recordedOutcomes[0]) {
-            throw remoteMemoryError('service_unavailable', 'The remote operation outcome could not be recorded.');
-          }
-          return result;
-        },
-        execution,
-      );
-    } catch (cause) {
-      await this.retainRejectedOperation(principal, input.operationId, fingerprint, cause, execution);
-      throw cause;
+      return true;
+    });
+  }
+
+  private async revisionBody(head: Pick<HeadRow, 'git_commit' | 'git_path' | 'markdown_body'>): Promise<string> {
+    if (head.git_commit && head.git_path) {
+      if (!this.gitStore) {
+        throw remoteMemoryError('service_unavailable', 'The git-canonical memory store is not configured.');
+      }
+      return this.gitStore.read({commit: head.git_commit, path: head.git_path});
     }
+    return head.markdown_body;
+  }
+
+  private async persistCanonicalBody(input: {
+    readonly current?: HeadRow;
+    readonly document: {readonly content: string; readonly contentHash: string};
+    readonly kind: 'durable' | 'handoff';
+    readonly message: string;
+    readonly project: string;
+    readonly topic: string;
+  }): Promise<{readonly gitCommit: string | null; readonly gitPath: string | null; readonly markdownBody: string}> {
+    if (!this.gitStore) {
+      return {gitCommit: null, gitPath: null, markdownBody: input.document.content};
+    }
+    const committed = await this.gitStore.commit({
+      content: input.document.content,
+      ...(input.current ? {expectedContentHash: input.current.content_hash} : {}),
+      message: input.message,
+      path: gitCanonicalSharePath(input.kind, input.project, input.topic),
+    });
+    return {gitCommit: committed.gitCommit, gitPath: committed.gitPath, markdownBody: ''};
+  }
+
+  private async loadTopicHead(
+    transaction: TransactionSql,
+    principal: AuthorizedRemotePrincipal,
+    kind: 'durable' | 'handoff',
+    project: string,
+    topic: string,
+  ): Promise<HeadRow | undefined> {
+    const rows = await transaction<HeadRow[]>`
+      SELECT h.canonical_uri, h.id AS head_id, h.kind, h.project, h.topic, h.current_revision_id,
+        h.status, r.markdown_body, r.content_hash, r.git_commit, r.git_path, h.retention_class, h.expires_at,
+        h.created_at, h.updated_at
+      FROM remote_memory.memory_heads h
+      JOIN remote_memory.memory_revisions r
+        ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
+      WHERE h.tenant_id = ${principal.tenantId} AND h.share_id = ${principal.shareId}
+        AND h.kind = ${kind} AND h.project = ${project} AND h.topic = ${topic}
+      FOR UPDATE OF h
+    `;
+    return rows[0];
+  }
+
+  private async loadHeadByUri(
+    transaction: TransactionSql,
+    principal: AuthorizedRemotePrincipal,
+    canonicalUri: string,
+    kind: 'durable' | 'handoff',
+  ): Promise<HeadRow | undefined> {
+    const rows = await transaction<HeadRow[]>`
+      SELECT h.canonical_uri, h.id AS head_id, h.kind, h.project, h.topic, h.current_revision_id,
+        h.status, r.markdown_body, r.content_hash, r.git_commit, r.git_path, h.retention_class, h.expires_at,
+        h.created_at, h.updated_at
+      FROM remote_memory.memory_heads h
+      JOIN remote_memory.memory_revisions r
+        ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
+      WHERE h.tenant_id = ${principal.tenantId} AND h.share_id = ${principal.shareId}
+        AND h.canonical_uri = ${canonicalUri} AND h.kind = ${kind}
+      FOR UPDATE OF h
+    `;
+    return rows[0];
+  }
+
+  private assertRememberDecision(
+    principal: AuthorizedRemotePrincipal,
+    input: RemoteRememberInputV1,
+    current: HeadRow | undefined,
+    logicalKey: string,
+    fingerprint: string,
+    proposedRevision: string,
+    share: ShareStateRow,
+  ): void {
+    const intent: RemoteMutationIntentV1 = {
+      ...(input.baseRevision ? {baseRevision: input.baseRevision} : {}),
+      fingerprint,
+      idempotencyKey: {
+        operationId: input.operationId,
+        principalId: principal.principalId,
+        tenantId: principal.tenantId,
+        version: REMOTE_MEMORY_REVISION_VERSION,
+      },
+      logicalKey,
+      proposedRevision,
+      version: REMOTE_MEMORY_REVISION_VERSION,
+    };
+    const head: RemoteMemoryHeadV1 | undefined = current
+      ? {
+          logicalKey,
+          revision: current.current_revision_id,
+          status: current.status,
+          version: REMOTE_MEMORY_REVISION_VERSION,
+        }
+      : undefined;
+    const decision = planRemoteMutation({
+      currentShareGeneration: numeric(share.share_generation),
+      head,
+      intent,
+    });
+    if (decision.kind === 'conflict') {
+      throw remoteMemoryError(
+        'conflict',
+        'The remote memory changed; re-read it and retry with its current revision.',
+        {
+          ...(decision.currentRevision ? {currentRevision: decision.currentRevision} : {}),
+          reason: decision.reason,
+          shareGeneration: decision.shareGeneration,
+        },
+      );
+    }
+    if (decision.kind !== 'commit') {
+      throw remoteMemoryError('service_unavailable', 'The remote mutation could not be planned.');
+    }
+  }
+
+  private async commitRememberRevision(input: {
+    readonly attestation?: CursorWorkloadAttestation;
+    readonly canonicalUri: string;
+    readonly document: {readonly contentHash: string};
+    readonly execution?: RemoteMemoryRequestExecution;
+    readonly expectedRevision?: string;
+    readonly fingerprint: string;
+    readonly input: RemoteRememberInputV1;
+    readonly logicalKey: string;
+    readonly now: Date;
+    readonly principal: AuthorizedRemotePrincipal;
+    readonly proposedRevision: string;
+    readonly recoverGit?: boolean;
+    readonly requestId: string;
+    readonly stored: {
+      readonly gitCommit: string | null;
+      readonly gitPath: string | null;
+      readonly markdownBody: string;
+    };
+  }): Promise<RemoteMemoryReceiptV1> {
+    return this.withTenant(
+      input.principal.tenantId,
+      async transaction => {
+        await requireShareState(transaction, input.principal);
+        await requireActiveProject(transaction, input.principal, input.input.project);
+        await transaction`SELECT pg_advisory_xact_lock(hashtextextended(${input.logicalKey}, 0))`;
+        const current = await this.loadTopicHead(
+          transaction,
+          input.principal,
+          input.input.kind,
+          input.input.project,
+          input.input.topic,
+        );
+        if (current?.content_hash === input.document.contentHash) {
+          return this.recordExistingRememberOutcome(transaction, input, current);
+        }
+        if (input.recoverGit && input.stored.gitCommit && current?.git_commit === input.stored.gitCommit) {
+          return this.recordExistingRememberOutcome(transaction, input, current);
+        }
+        if (current && current.current_revision_id !== input.expectedRevision) {
+          throw remoteMemoryError(
+            'conflict',
+            'The remote memory changed; re-read it and retry with its current revision.',
+            {
+              currentRevision: current.current_revision_id,
+              reason: 'stale_base',
+            },
+          );
+        }
+        const share = await requireShareState(transaction, input.principal);
+        requireFreshAttestationPolicy(input.principal, share, input.attestation, input.input.project);
+        const headId = current?.head_id ?? randomUuidV4();
+        if (!current) {
+          await transaction`
+            INSERT INTO remote_memory.memory_heads(
+              tenant_id, share_id, id, kind, project, topic, canonical_uri, status,
+              retention_class, expires_at
+            ) VALUES (
+              ${input.principal.tenantId}, ${input.principal.shareId}, ${headId}, ${input.input.kind},
+              ${input.input.project}, ${input.input.topic}, ${input.canonicalUri}, 'active',
+              ${input.input.lifecycle?.retentionClass ?? null}, ${input.input.lifecycle?.expiresAt ?? null}
+            )
+          `;
+        }
+        return this.finishRememberRevision(transaction, input, current, headId, 'active');
+      },
+      input.execution,
+    );
+  }
+
+  private async recordExistingRememberOutcome(
+    transaction: TransactionSql,
+    input: {
+      readonly attestation?: CursorWorkloadAttestation;
+      readonly canonicalUri: string;
+      readonly fingerprint: string;
+      readonly input: RemoteRememberInputV1;
+      readonly principal: AuthorizedRemotePrincipal;
+      readonly requestId: string;
+    },
+    current: HeadRow,
+  ): Promise<RemoteMemoryReceiptV1> {
+    const committed = await requireShareState(transaction, input.principal);
+    const result = receipt(input.principal, committed, input.requestId, {
+      actor: mutationActor(input.principal, input.attestation),
+      revision: current.current_revision_id,
+      uri: input.canonicalUri,
+    });
+    await this.recordIdempotentOutcome(
+      transaction,
+      input.principal,
+      input.input.operationId,
+      input.fingerprint,
+      result,
+    );
+    return result;
+  }
+
+  private async finishRememberRevision(
+    transaction: TransactionSql,
+    input: {
+      readonly attestation?: CursorWorkloadAttestation;
+      readonly canonicalUri: string;
+      readonly document: {readonly contentHash: string};
+      readonly fingerprint: string;
+      readonly input: RemoteRememberInputV1;
+      readonly now: Date;
+      readonly principal: AuthorizedRemotePrincipal;
+      readonly proposedRevision: string;
+      readonly requestId: string;
+      readonly stored: {
+        readonly gitCommit: string | null;
+        readonly gitPath: string | null;
+        readonly markdownBody: string;
+      };
+    },
+    current: HeadRow | undefined,
+    headId: string,
+    status: HeadRow['status'],
+  ): Promise<RemoteMemoryReceiptV1> {
+    const generationRows = await transaction<ShareStateRow[]>`
+      UPDATE remote_memory.shares SET share_generation = share_generation + 1
+      WHERE tenant_id = ${input.principal.tenantId} AND id = ${input.principal.shareId} AND status = 'active'
+        AND policy_version = ${input.principal.sharePolicyVersion}
+        AND policy_digest = ${input.principal.sharePolicyDigest}
+      RETURNING share_generation, indexed_generation, policy_version, policy_digest
+    `;
+    const committedGeneration = generationRows[0];
+    if (!committedGeneration) throw remoteMemoryError('forbidden', 'The memory share is no longer active.');
+    const committed = await requireShareState(transaction, input.principal);
+    if (numeric(committed.share_generation) !== numeric(committedGeneration.share_generation)) {
+      throw remoteMemoryError('service_unavailable', 'The committed memory generation could not be verified.');
+    }
+    requireFreshAttestationPolicy(input.principal, committed, input.attestation, input.input.project);
+    await transaction`
+      INSERT INTO remote_memory.memory_revisions(
+        tenant_id, share_id, id, head_id, base_revision_id, generation, status,
+        markdown_body, content_hash, git_commit, git_path, oauth_principal_id, workload_attestation_id, operation_id
+      ) VALUES (
+        ${input.principal.tenantId}, ${input.principal.shareId}, ${input.proposedRevision}, ${headId},
+        ${input.input.baseRevision ?? current?.current_revision_id ?? null}, ${numeric(committed.share_generation)},
+        ${status}, ${input.stored.markdownBody}, ${input.document.contentHash}, ${input.stored.gitCommit},
+        ${input.stored.gitPath}, ${input.principal.principalId}, ${input.attestation?.attestationId ?? null},
+        ${input.input.operationId}
+      )
+    `;
+    await transaction`
+      UPDATE remote_memory.memory_heads SET
+        current_revision_id = ${input.proposedRevision}, status = ${status},
+        retention_class = ${input.input.lifecycle?.retentionClass ?? current?.retention_class ?? null},
+        expires_at = ${input.input.lifecycle?.expiresAt ?? current?.expires_at?.toISOString() ?? null},
+        updated_at = ${input.now.toISOString()}
+      WHERE tenant_id = ${input.principal.tenantId} AND share_id = ${input.principal.shareId} AND id = ${headId}
+    `;
+    const result = receipt(input.principal, committed, input.requestId, {
+      actor: mutationActor(input.principal, input.attestation),
+      revision: input.proposedRevision,
+      uri: input.canonicalUri,
+    });
+    await transaction`
+      INSERT INTO remote_memory.outbox_events(
+        tenant_id, share_id, id, generation, event_type, aggregate_id
+      ) VALUES (
+        ${input.principal.tenantId}, ${input.principal.shareId}, ${randomUuidV4()},
+        ${numeric(committed.share_generation)}, 'memory_head_changed', ${headId}
+      )
+    `;
+    await transaction`
+      INSERT INTO remote_memory.audit_events(
+        tenant_id, share_id, id, request_id, principal_id, workload_attestation_id,
+        operation, result, policy_version, share_policy_version, generation
+      ) VALUES (
+        ${input.principal.tenantId}, ${input.principal.shareId}, ${randomUuidV4()}, ${input.requestId},
+        ${input.principal.principalId}, ${input.attestation?.attestationId ?? null}, 'remember_context', 'committed',
+        ${input.principal.policyVersion}, ${committed.policy_version}, ${numeric(committed.share_generation)}
+      )
+    `;
+    await this.recordIdempotentOutcome(
+      transaction,
+      input.principal,
+      input.input.operationId,
+      input.fingerprint,
+      result,
+    );
+    return result;
+  }
+
+  private async commitHandoffRevision(input: {
+    readonly address: {readonly project: string; readonly topic: string};
+    readonly attestation?: CursorWorkloadAttestation;
+    readonly document: {readonly contentHash: string};
+    readonly execution?: RemoteMemoryRequestExecution;
+    readonly fingerprint: string;
+    readonly input: RemoteHandoffTransitionInput;
+    readonly logicalKey: string;
+    readonly now: Date;
+    readonly planned: {
+      readonly current: HeadRow;
+      readonly proposedRevision: string;
+      readonly status: HeadRow['status'];
+    };
+    readonly principal: AuthorizedRemotePrincipal;
+    readonly requestId: string;
+    readonly stored: {
+      readonly gitCommit: string | null;
+      readonly gitPath: string | null;
+      readonly markdownBody: string;
+    };
+  }): Promise<RemoteMemoryReceiptV1> {
+    return this.withTenant(
+      input.principal.tenantId,
+      async transaction => {
+        await requireShareState(transaction, input.principal);
+        await requireActiveProject(transaction, input.principal, input.address.project);
+        await transaction`SELECT pg_advisory_xact_lock(hashtextextended(${input.logicalKey}, 0))`;
+        const current = await this.loadHeadByUri(
+          transaction,
+          input.principal,
+          input.planned.current.canonical_uri,
+          'handoff',
+        );
+        if (!current) throw remoteMemoryError('not_found', 'The remote handoff was not found.');
+        if (current.content_hash === input.document.contentHash && current.status === input.planned.status) {
+          const committed = await requireShareState(transaction, input.principal);
+          const result = receipt(input.principal, committed, input.requestId, {
+            actor: mutationActor(input.principal, input.attestation),
+            revision: current.current_revision_id,
+            uri: current.canonical_uri,
+          });
+          await this.recordIdempotentOutcome(
+            transaction,
+            input.principal,
+            input.input.operationId,
+            input.fingerprint,
+            result,
+          );
+          return result;
+        }
+        if (current.current_revision_id !== input.input.baseRevision) {
+          throw remoteMemoryError('conflict', 'The remote handoff changed; re-read it before changing lifecycle.', {
+            currentRevision: current.current_revision_id,
+            reason: 'stale_base',
+          });
+        }
+        const generationRows = await transaction<ShareStateRow[]>`
+          UPDATE remote_memory.shares SET share_generation = share_generation + 1
+          WHERE tenant_id = ${input.principal.tenantId} AND id = ${input.principal.shareId} AND status = 'active'
+            AND policy_version = ${input.principal.sharePolicyVersion}
+            AND policy_digest = ${input.principal.sharePolicyDigest}
+          RETURNING share_generation, indexed_generation, policy_version, policy_digest
+        `;
+        const committedGeneration = generationRows[0];
+        if (!committedGeneration) throw remoteMemoryError('forbidden', 'The memory share is no longer active.');
+        const committed = await requireShareState(transaction, input.principal);
+        if (numeric(committed.share_generation) !== numeric(committedGeneration.share_generation)) {
+          throw remoteMemoryError('service_unavailable', 'The committed memory generation could not be verified.');
+        }
+        requireFreshAttestationPolicy(input.principal, committed, input.attestation, input.address.project);
+        await transaction`
+          INSERT INTO remote_memory.memory_revisions(
+            tenant_id, share_id, id, head_id, base_revision_id, generation, status,
+            markdown_body, content_hash, git_commit, git_path, oauth_principal_id, workload_attestation_id, operation_id
+          ) VALUES (
+            ${input.principal.tenantId}, ${input.principal.shareId}, ${input.planned.proposedRevision}, ${current.head_id},
+            ${input.input.baseRevision}, ${numeric(committed.share_generation)}, ${input.planned.status},
+            ${input.stored.markdownBody}, ${input.document.contentHash}, ${input.stored.gitCommit}, ${input.stored.gitPath},
+            ${input.principal.principalId}, ${input.attestation?.attestationId ?? null}, ${input.input.operationId}
+          )
+        `;
+        await transaction`
+          UPDATE remote_memory.memory_heads
+          SET current_revision_id = ${input.planned.proposedRevision}, status = ${input.planned.status},
+            updated_at = ${input.now.toISOString()}
+          WHERE tenant_id = ${input.principal.tenantId} AND share_id = ${input.principal.shareId} AND id = ${current.head_id}
+        `;
+        const result = receipt(input.principal, committed, input.requestId, {
+          actor: mutationActor(input.principal, input.attestation),
+          revision: input.planned.proposedRevision,
+          uri: current.canonical_uri,
+        });
+        await transaction`
+          INSERT INTO remote_memory.outbox_events(
+            tenant_id, share_id, id, generation, event_type, aggregate_id
+          ) VALUES (
+            ${input.principal.tenantId}, ${input.principal.shareId}, ${randomUuidV4()},
+            ${numeric(committed.share_generation)}, 'memory_head_changed', ${current.head_id}
+          )
+        `;
+        await transaction`
+          INSERT INTO remote_memory.audit_events(
+            tenant_id, share_id, id, request_id, principal_id, workload_attestation_id,
+            operation, result, policy_version, share_policy_version, generation
+          ) VALUES (
+            ${input.principal.tenantId}, ${input.principal.shareId}, ${randomUuidV4()}, ${input.requestId},
+            ${input.principal.principalId}, ${input.attestation?.attestationId ?? null},
+            ${`handoff_${input.input.operation}`}, 'committed', ${input.principal.policyVersion},
+            ${committed.policy_version}, ${numeric(committed.share_generation)}
+          )
+        `;
+        await this.recordIdempotentOutcome(
+          transaction,
+          input.principal,
+          input.input.operationId,
+          input.fingerprint,
+          result,
+        );
+        return result;
+      },
+      input.execution,
+    );
+  }
+
+  private async recordIdempotentOutcome(
+    transaction: TransactionSql,
+    principal: AuthorizedRemotePrincipal,
+    operationId: string,
+    fingerprint: string,
+    result: RemoteMemoryReceiptV1,
+  ): Promise<void> {
+    const recordedOutcomes = await transaction<{operation_id: string}[]>`
+      UPDATE remote_memory.idempotency_records SET outcome = ${transaction.json(result)}
+      WHERE tenant_id = ${principal.tenantId} AND principal_id = ${principal.principalId}
+        AND operation_id = ${operationId} AND request_hash = ${fingerprint}
+      RETURNING operation_id
+    `;
+    if (!recordedOutcomes[0]) {
+      throw remoteMemoryError('service_unavailable', 'The remote operation outcome could not be recorded.');
+    }
+  }
+
+  private async loadGitIngestPrincipal(
+    tenantId: string,
+    shareId: string,
+  ): Promise<AuthorizedRemotePrincipal | undefined> {
+    return this.withTenant(tenantId, async transaction => {
+      const rows = await transaction<
+        {
+          readonly allowed_projects: string[] | null;
+          readonly capabilities: string[];
+          readonly feature_flags: string[];
+          readonly grant_policy_digest: string;
+          readonly grant_policy_version: string;
+          readonly principal_id: string;
+          readonly share_policy_digest: string;
+          readonly share_policy_version: string;
+        }[]
+      >`
+        SELECT g.principal_id, g.capabilities, g.allowed_projects,
+          g.policy_version AS grant_policy_version, g.policy_digest AS grant_policy_digest,
+          s.policy_version AS share_policy_version, s.policy_digest AS share_policy_digest,
+          s.feature_flags
+        FROM remote_memory.shares s
+        JOIN remote_memory.share_grants g
+          ON g.tenant_id = s.tenant_id AND g.share_id = s.id AND g.status = 'active'
+        WHERE s.tenant_id = ${tenantId} AND s.id = ${shareId} AND s.status = 'active'
+          AND (
+            g.capabilities && ARRAY['memory:write:durable', 'memory:write:handoff', 'memory:admin']::text[]
+          )
+        ORDER BY g.principal_id
+        LIMIT 1
+      `;
+      const row = rows[0];
+      if (!row) return undefined;
+      const capabilities = new Set(row.capabilities as RemoteMemoryScope[]);
+      return {
+        allowedProjects: row.allowed_projects === null ? 'all' : new Set(row.allowed_projects),
+        attestationRequiredForWrites: false,
+        capabilities,
+        cursorOwnerIds: new Set(),
+        cursorSubjects: new Set(),
+        featureFlags: new Set(row.feature_flags as RemoteMemoryFeatureFlag[]),
+        OAuth: {
+          issuer: 'threadnote:git-ingest',
+          scopes: capabilities,
+          subject: 'system:git-ingest',
+        },
+        policyDigest: row.grant_policy_digest,
+        policyVersion: row.grant_policy_version,
+        principalId: row.principal_id,
+        repositoryBindings: new Set(),
+        repositoriesByProject: new Map(),
+        shareId,
+        sharePolicyDigest: row.share_policy_digest,
+        sharePolicyVersion: row.share_policy_version,
+        tenantId,
+      };
+    });
   }
 
   private async reserveOperation(
@@ -1027,10 +1676,11 @@ function makeRemoteDocument(
   uri: string,
   attestation: CursorWorkloadAttestation | undefined,
   now: Date,
+  priorBody: string | undefined,
 ): {readonly content: string; readonly contentHash: string} {
   const timestamp = now.toISOString();
-  const prior = current ? parseMemoryDocument(uri, current.markdown_body) : undefined;
-  if (current) assertMemoryDocumentSchemaWritable(current.markdown_body);
+  const prior = current && priorBody ? parseMemoryDocument(uri, priorBody) : undefined;
+  if (current && priorBody) assertMemoryDocumentSchemaWritable(priorBody);
   const metadata: MemoryMetadata = {
     createdAt: prior?.metadata.createdAt ?? prior?.metadata.timestamp ?? timestamp,
     kind: input.kind,
@@ -1093,8 +1743,9 @@ function makeLifecycleDocument(
   current: HeadRow,
   status: 'active' | 'archived' | 'expired' | 'superseded',
   now: Date,
+  priorBody = current.markdown_body,
 ): {readonly content: string; readonly contentHash: string} {
-  const prior = parseMemoryDocument(current.canonical_uri, current.markdown_body);
+  const prior = parseMemoryDocument(current.canonical_uri, priorBody);
   if (!prior || prior.headerTitle !== 'HANDOFF') {
     throw remoteMemoryError('service_unavailable', 'The stored remote handoff document is invalid.');
   }
@@ -1132,12 +1783,39 @@ function memoryExcerpt(content: string, query: string): string {
   return `${start > 0 ? '…' : ''}${excerpt}${start + 600 < body.length ? '…' : ''}`;
 }
 
+function recallTextMatches(content: string, query: string): boolean {
+  const haystack = content.toLowerCase();
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every(term => haystack.includes(term));
+}
+
 function numeric(value: string | number): number {
   const parsed = typeof value === 'number' ? value : Number(value);
   if (!Number.isSafeInteger(parsed) && !Number.isFinite(parsed)) {
     throw remoteMemoryError('service_unavailable', 'A remote memory generation was invalid.');
   }
   return parsed;
+}
+
+function mutationActor(
+  principal: AuthorizedRemotePrincipal,
+  attestation: CursorWorkloadAttestation | undefined,
+): RemoteMemoryReceiptV1['actor'] {
+  return attestation
+    ? {
+        cloudAgentId: attestation.cloudAgentId,
+        principalId: principal.principalId,
+        provider: 'cursor',
+        ...(attestation.turnId ? {turnId: attestation.turnId} : {}),
+      }
+    : {principalId: principal.principalId};
+}
+
+function principalAllowsProject(principal: AuthorizedRemotePrincipal, project: string): boolean {
+  return principal.allowedProjects === 'all' || principal.allowedProjects.has(project);
 }
 
 function requirePrincipalProject(principal: AuthorizedRemotePrincipal, project: string): void {

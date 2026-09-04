@@ -17,6 +17,17 @@ capabilities dropped. Local HTTP is permitted only on loopback. Production requi
 PostgreSQL, managed secrets, network isolation, encryption at rest, signed images, and a regional backup policy. Do not
 treat Compose as a production topology.
 
+### Git-canonical organization composer
+
+Default Compose is the hosted Postgres-body flavor (`THREADNOTE_REMOTE_CANONICAL_STORE=postgres`). Organization mode
+sets `THREADNOTE_REMOTE_CANONICAL_STORE=git` and clones the team memory repository into
+`THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE` (`/var/threadnote/memory-git` in the reference Compose volume). The runtime
+container stays read-only; Git writes go only to that mounted worktree. The runtime image installs `git`, and
+`memory-git-prepare` chowns the Compose volume to the unprivileged `bun` user (uid 1000). Git-mode readiness fails
+closed when `git` is missing, the worktree is not a repository, or it is not writable. Git deploy keys stay on the
+composer host, never in a cloud agent VM. Initialize the worktree as a clone of the share remote before enabling git
+mode; an empty volume is not a repository.
+
 ### Database roles
 
 The Compose stack demonstrates three separate database identities:
