@@ -65,7 +65,7 @@ describe('agent instructions', () => {
       'authoritative',
       '`threadnote://` pointers',
       'code graph before broad source search',
-      'leave a handoff',
+      'leave a handoff and durable detailed feature memory (when applicable)',
       'Threadnote MCP tools',
       'CLI only as a fallback',
       'secrets, credentials, customer data, or raw production logs',
