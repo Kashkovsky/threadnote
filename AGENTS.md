@@ -19,7 +19,7 @@ nearest checked-in guidance remain authoritative.
 - Use stable project/topic identities and update an existing memory with `replaceUri`; do not create timestamped
   duplicates. Never store secrets, credentials, customer data, or raw production logs.
 - Prefer the Threadnote MCP tools. If they are unavailable, use the `threadnote` CLI as the fallback and treat the
-  unavailability as a dogfooding issue under the policy below.
+  unavailability as a dogfooding issue: file a privacy-safe GitHub issue rather than a Threadnote issue ledger.
 
 ## Use Effect-aware test tooling
 
@@ -96,11 +96,12 @@ Any unexpected behavior encountered while using Threadnote itself is product evi
 Do not silently bypass it or omit it from closeout.
 
 - Reproduce it with the smallest safe case, investigate the responsible code or state, and fix it when it is in scope.
-  If it cannot be fixed in the current task, record the blocker and the safest bounded workaround.
-- Maintain one active issues memory with `kind: durable`, `project: threadnote`, and `topic: dogfood-issues`. Recall and
-  read it first, then update it with `replaceUri` rather than creating another issue ledger.
-- For every issue, record the affected commit/version, symptom, minimal reproduction, expected versus actual behavior,
-  diagnosis, status, workaround if any, fix commit or PR when available, and verification performed. Keep evidence
-  privacy-safe and bounded.
+  If it cannot be fixed in the current task, record the blocker and the safest bounded workaround in the task handoff
+  and in a privacy-safe GitHub issue.
+- GitHub issues are the source of truth for product and dogfood defects. Do not maintain a Threadnote
+  `topic: dogfood-issues` ledger. The previous durable ledger is archived.
+- Keep issue evidence privacy-safe and bounded: affected commit/version, symptom, minimal reproduction, expected versus
+  actual behavior, diagnosis, workaround if any, and verification. Do not paste secrets, credentials, customer data, or
+  raw production logs.
 - If Threadnote returns an error, also prepare a privacy-safe `threadnote report-issue` preview after investigation.
-  Create a public issue only with explicit user approval.
+  Create a public GitHub issue only with explicit user approval.

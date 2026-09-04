@@ -1,6 +1,9 @@
 # Team sharing
 
-Threadnote shares reviewed durable memories and agent artifacts through a user-provided Git repository. Canonical
+Threadnote shares reviewed durable memories and agent artifacts through a user-provided Git repository. Local stdio
+MCP, personal native-file memory, and `share publish` / `share sync` work without
+`THREADNOTE_CURSOR_MEMORY_ENDPOINT`, an organization composer, or an identity provider. Organization HTTP memory is
+additive: a laptop with only Git and the Threadnote binary remains a complete personal product. Canonical
 shared resources remain under `~/.threadnote/data/.../memories/shared/<team>/`; git metadata and checked-out files are
 isolated under `~/.threadnote/share/teams/` and `~/.threadnote/share/worktrees/`. Their exact paths are recorded in
 `~/.threadnote/share/teams.json`.
