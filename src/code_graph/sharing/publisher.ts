@@ -17,6 +17,7 @@ import {
 } from './artifacts.js';
 import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {putCasBytes, putCasFile, readVerifiedCasBlob} from './cas.js';
+import {putGraphShareCheckpointLayers} from './checkpoint_cas.js';
 import {parseSha256Digest, type Sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 import {parseGraphShareListenAddress, recordPublishedFrontier, runGraphShareControlServer} from './control_server.js';
@@ -134,9 +135,10 @@ export const runGraphPublisherBootstrap = Effect.fn('codeGraph.sharing.publisher
   if (checkpointDigest !== parseSha256Digest(exported.artifact.digest)) {
     return yield* graphSharingFailure('Checkpoint CAS digest does not match the exported artifact.');
   }
+  const layers = yield* putGraphShareCheckpointLayers(casRoot, checkpointDigest);
   const signed = yield* signGraphShareFrontier(
     key,
-    manifestFromExport(exported, checkpointDigest, {
+    manifestFromExport(exported, checkpointDigest, layers.metadataDigest, {
       branch: profile.source.branches[0] ?? 'refs/heads/main',
       generation: 1,
       previousManifestDigest: null,
@@ -255,8 +257,10 @@ export const runGraphPublisherListen = Effect.fn('codeGraph.sharing.publisherLis
     {
       branch,
       envelopeDigest: published.envelopeDigest,
+      generation: published.generation,
       manifestDigest: published.manifestDigest,
       repositoryId: identity.repositoryId,
+      sourceCommit: published.sourceCommit,
     },
   );
   return yield* runGraphShareControlServer({
@@ -279,8 +283,10 @@ export const runGraphPublisherListen = Effect.fn('codeGraph.sharing.publisherLis
       Effect.map(result => ({
         branch,
         envelopeDigest: result.envelopeDigest,
+        generation: result.generation,
         manifestDigest: result.manifestDigest,
         repositoryId: identity.repositoryId,
+        sourceCommit: result.sourceCommit,
       })),
     ),
     repositoryId: identity.repositoryId,
@@ -307,9 +313,10 @@ const publishNextGeneration = Effect.fn('codeGraph.sharing.publishNextGeneration
   if (checkpointDigest !== parseSha256Digest(exported.artifact.digest)) {
     return yield* graphSharingFailure('Checkpoint CAS digest does not match the exported artifact.');
   }
+  const layers = yield* putGraphShareCheckpointLayers(casRoot, checkpointDigest);
   const signed = yield* signGraphShareFrontier(
     key,
-    manifestFromExport(exported, checkpointDigest, {
+    manifestFromExport(exported, checkpointDigest, layers.metadataDigest, {
       branch: current.branch,
       generation: current.generation + 1,
       previousManifestDigest: graphShareFrontierDigest(current),
@@ -361,6 +368,7 @@ function manifestFromExport(
     readonly sourceCommit: string;
   },
   checkpointDigest: Sha256Digest,
+  metadataDigest: Sha256Digest,
   meta: {
     readonly branch: string;
     readonly generation: number;
@@ -374,6 +382,7 @@ function manifestFromExport(
     branch: meta.branch,
     checkpoint: {
       manifestDigest: checkpointDigest,
+      metadataDigest,
       snapshotId: exported.snapshotId,
       sourceCommit: exported.sourceCommit,
     },

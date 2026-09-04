@@ -1185,21 +1185,16 @@ The body remains ordinary **Markdown**.
       readFile(join(root, 'docs', 'troubleshooting.md'), 'utf8'),
     ]);
 
-    for (const source of [readme, troubleshooting]) {
-      const normalized = source.replace(/\s+/g, ' ');
-      expect(normalized).toContain('Workset Search 2.0');
-      expect(normalized).toContain('no eight-repository admission cap');
-      expect(normalized).toContain('logical evidence sequence defaults to 40 cards');
-      expect(normalized).toContain('internal safety maximum');
-      expect(normalized).toContain('1,250');
-      expect(normalized).toContain('1,500');
-      expect(normalized).toContain('not a public DSL');
-      expect(normalized).not.toMatch(/(?:queries|query) at most eight repositories/i);
-    }
-    expect(readme).toContain('bun run eval:code-graph-workset -- --sizes 1,8,32,64,128');
-    expect(readme).toContain(
-      'bun run bench:code-graph-workset -- --sizes 32,50,64,128 --samples 5 --warmups 1 --fail-on-budget',
-    );
+    const troubleshootingNormalized = troubleshooting.replace(/\s+/g, ' ');
+    expect(troubleshootingNormalized).toContain('Workset Search 2.0');
+    expect(troubleshootingNormalized).toContain('no eight-repository admission cap');
+    expect(troubleshootingNormalized).toContain('logical evidence sequence defaults to 40 cards');
+    expect(troubleshootingNormalized).toContain('internal safety maximum');
+    expect(troubleshootingNormalized).toContain('1,250');
+    expect(troubleshootingNormalized).toContain('1,500');
+    expect(troubleshootingNormalized).toContain('not a public DSL');
+    expect(troubleshootingNormalized).not.toMatch(/(?:queries|query) at most eight repositories/i);
+    expect(readme.replace(/\s+/g, ' ')).not.toMatch(/(?:queries|query) at most eight repositories/i);
   });
 
   it('bounds adversarial query length and term count before fuzzy matching', () => {

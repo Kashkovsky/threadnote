@@ -14,12 +14,14 @@ export const GRAPH_SHARE_SIGNATURE_ALGORITHM = 'ed25519' as const;
 
 export const GRAPH_SHARE_PROFILE_MEDIA_TYPE = 'application/vnd.threadnote.graph.profile.v1+json';
 export const GRAPH_SHARE_FRONTIER_MEDIA_TYPE = 'application/vnd.threadnote.graph.frontier.v1+json';
+export const GRAPH_SHARE_CHECKPOINT_MEDIA_TYPE = 'application/vnd.threadnote.graph.checkpoint.v1+json';
 export const GRAPH_SHARE_DELTA_MEDIA_TYPE = 'application/vnd.threadnote.graph.delta.v1+json';
 export const GRAPH_SHARE_RECORDS_MEDIA_TYPE = 'application/vnd.threadnote.graph.records.v1+gzip';
 export const GRAPH_SHARE_PARSE_RESULT_MEDIA_TYPE = 'application/vnd.threadnote.graph.parse-result.v1+json';
 
 export interface GraphShareFrontierCheckpointV1 {
   readonly manifestDigest: Sha256Digest;
+  readonly metadataDigest?: Sha256Digest;
   readonly snapshotId: string;
   readonly sourceCommit: string;
 }
@@ -232,11 +234,18 @@ export function parseGraphShareFrontierPointer(value: unknown): GraphShareFronti
 
 function parseCheckpoint(value: unknown): GraphShareFrontierCheckpointV1 {
   if (!isRecord(value)) throw graphSharingFailure('Frontier checkpoint descriptor is invalid.');
-  return {
+  const checkpoint: GraphShareFrontierCheckpointV1 = {
     manifestDigest: parseSha256Digest(requiredText(value.manifestDigest, 'checkpoint.manifestDigest')),
     snapshotId: requiredText(value.snapshotId, 'checkpoint.snapshotId'),
     sourceCommit: requiredGitObjectId(value.sourceCommit, 'checkpoint.sourceCommit'),
+    ...(value.metadataDigest === undefined
+      ? {}
+      : {metadataDigest: parseSha256Digest(requiredText(value.metadataDigest, 'checkpoint.metadataDigest'))}),
   };
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(Object.keys(checkpoint).sort())) {
+    throw graphSharingFailure('Frontier checkpoint descriptor contains unsupported fields.');
+  }
+  return checkpoint;
 }
 
 function parseDelta(value: unknown): GraphShareFrontierDeltaV1 {

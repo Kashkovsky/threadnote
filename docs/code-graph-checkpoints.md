@@ -102,7 +102,10 @@ enrollment pointer. After join, a publisher can advance a signed generation chai
 ancestor of `HEAD`. Worker results land in a separate CAS namespace from canonical frontiers. The coordinator API
 accepts only bounded metadata: no source text or graph records. `graph publisher serve --listen 127.0.0.1:port` exposes
 that API and a digest CAS on loopback so additional homes can join with `--coordinator` instead of a shared CAS
-directory. Contributing joins enqueue parse-result artifacts after local parser batches commit and upload them after the
+directory. HTTP CAS stays 32 MiB per blob. The assembled `.cgcp` digest remains `checkpoint.manifestDigest`; HTTP
+transfers independently digest-addressed cgcp prefix and TCG1 frames listed by checkpoint metadata
+(`application/vnd.threadnote.graph.checkpoint.v1+json`), never the assembled artifact. Contributing joins enqueue
+parse-result artifacts after local parser batches commit and upload them after the
 graph writer lock is released.
 
 ```sh

@@ -1,5 +1,5 @@
 import * as BunHttpServer from '@effect/platform-bun/BunHttpServer';
-import {Effect, FileSystem, Layer, Path, Ref, Schema} from 'effect';
+import {Effect, FileSystem, Layer, Option, Path, Ref, Schema} from 'effect';
 import * as HttpServer from 'effect/unstable/http/HttpServer';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
@@ -23,7 +23,7 @@ import {
 } from './digest.js';
 import {graphSharingFailure, GraphSharingError} from './errors.js';
 import {withExclusiveFileLock} from '../../effect/file_lock.js';
-import {graphSharingLayout, graphSharingTagPath} from './layout.js';
+import {graphSharingCasBlobPath, graphSharingLayout, graphSharingTagPath} from './layout.js';
 import {
   GRAPH_SHARE_HTTP_CAS_MAX_BYTES,
   assertGraphShareDiscoveryTag,
@@ -31,6 +31,7 @@ import {
   parseGraphShareHttpCasPath,
   parseGraphShareHttpTagPath,
 } from './oci.js';
+import {adoptPublishedFrontier} from './frontier.js';
 import {graphShareFrontierDiscoveryTag} from './namespace.js';
 
 export const GRAPH_SHARE_PUBLISHER_WATCH_INTERVAL = '5 seconds' as const;
@@ -58,8 +59,10 @@ export interface GraphShareListenAddress {
 export interface GraphSharePublishedFrontier {
   readonly branch: string;
   readonly envelopeDigest: Sha256Digest;
+  readonly generation: number;
   readonly manifestDigest: Sha256Digest;
   readonly repositoryId: string;
+  readonly sourceCommit: string;
 }
 
 export interface GraphShareControlServerOptions<E = never, R = never> {
@@ -109,12 +112,7 @@ export const runGraphShareControlServer = Effect.fn('codeGraph.sharing.controlSe
 
 export const recordPublishedFrontier = Effect.fn('codeGraph.sharing.recordPublishedFrontier')(function* (
   options: Pick<GraphShareControlServerOptions, 'casRoot' | 'organization' | 'repositoryId' | 'threadnoteHome'>,
-  published: {
-    readonly branch: string;
-    readonly envelopeDigest: Sha256Digest;
-    readonly manifestDigest: Sha256Digest;
-    readonly repositoryId: string;
-  },
+  published: GraphSharePublishedFrontier,
   stateRef?: Ref.Ref<GraphShareCoordinatorStateV1>,
 ) {
   const path = yield* Path.Path;
@@ -128,14 +126,19 @@ export const recordPublishedFrontier = Effect.fn('codeGraph.sharing.recordPublis
     envelopeDigest: published.envelopeDigest,
     schemaVersion: 1,
   });
-  if (stateRef === undefined) return pointer;
   yield* withCoordinatorStateLock(
     options,
     Effect.gen(function* () {
-      const next = yield* Ref.modify(stateRef, current => {
-        const updated = setGraphShareCoordinatorFrontier(current, branchHash, pointer);
-        return [updated, updated] as const;
-      });
+      const current = stateRef === undefined ? yield* loadCoordinatorState(options) : yield* Ref.get(stateRef);
+      const next = {
+        ...setGraphShareCoordinatorFrontier(current, branchHash, pointer),
+        machine: adoptPublishedFrontier(current.machine, {
+          generation: published.generation,
+          manifestDigest: published.manifestDigest,
+          sourceCommit: published.sourceCommit,
+        }),
+      };
+      if (stateRef !== undefined) yield* Ref.set(stateRef, next);
       yield* persistCoordinatorState(options, next);
     }),
   );
@@ -241,6 +244,17 @@ const serveCasBlob = Effect.fn('codeGraph.sharing.serveCasBlob')(function* (
   hex: string,
   head: boolean,
 ) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const target = graphSharingCasBlobPath(path, casRoot, hex);
+  if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
+    return HttpServerResponse.jsonUnsafe({error: 'not-found'}, {status: 404});
+  }
+  if (!(yield* fs.exists(target))) return HttpServerResponse.jsonUnsafe({error: 'not-found'}, {status: 404});
+  const info = yield* fs.stat(target);
+  if (info.size > BigInt(GRAPH_SHARE_HTTP_CAS_MAX_BYTES)) {
+    return HttpServerResponse.jsonUnsafe({error: 'payload-too-large'}, {status: 413});
+  }
   const bytes = yield* readVerifiedCasBlob(casRoot, `sha256:${hex}`).pipe(Effect.orElseSucceed(() => undefined));
   if (bytes === undefined) return HttpServerResponse.jsonUnsafe({error: 'not-found'}, {status: 404});
   if (graphSharePayloadLooksLikeGitObject(bytes)) {

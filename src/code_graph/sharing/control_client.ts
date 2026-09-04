@@ -42,6 +42,7 @@ const CoordinatorStatus = Schema.Struct({
   generation: Schema.Finite,
   organization: Schema.String,
   phase: Schema.String,
+  publishedFrontier: Schema.NullOr(Schema.String),
   receipts: Schema.Array(ResultReceipt),
   repositoryId: Schema.String,
 });
@@ -63,6 +64,7 @@ export interface GraphShareCoordinatorStatusResponse {
   readonly generation: number;
   readonly organization: string;
   readonly phase: string;
+  readonly publishedFrontier: string | null;
   readonly receipts: readonly GraphShareResultAnnouncementV1[];
   readonly repositoryId: string;
 }
@@ -112,6 +114,9 @@ export const graphShareControlGetCas = Effect.fn('codeGraph.sharing.controlGetCa
   const url = coordinatorPath(coordinatorUrl, `/v1/cas/sha256/${sha256HexFromDigest(expected)}`);
   const response = yield* execute(HttpClientRequest.get(url), url, 60_000);
   if (response.status === 404) return yield* graphSharingUnavailable(`CAS object is missing: ${expected}`);
+  if (response.status === 413) {
+    return yield* graphSharingUnavailable(`CAS object exceeds the HTTP transfer limit: ${expected}`);
+  }
   if (response.status < 200 || response.status >= 300) {
     return yield* graphSharingFailure(`CAS GET returned HTTP ${response.status}.`);
   }

@@ -12,7 +12,8 @@ import {
   type GraphShareFrontierManifestV1,
 } from './artifacts.js';
 import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from './atomic.js';
-import {readVerifiedCasBlob, verifyCasBlob} from './cas.js';
+import {readVerifiedCasBlob} from './cas.js';
+import {ensureGraphShareCheckpointArtifact} from './checkpoint_cas.js';
 import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
 import {graphShareBlobExists, graphShareCommitIsAncestor} from './git.js';
 import {graphShareControlGetFrontier, mirrorCoordinatorCasBlob} from './control_client.js';
@@ -326,12 +327,12 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
   ) {
     return {imported: false as const, reason: 'already-installed' as const, snapshotId: existing.snapshotId};
   }
-  const checkpointPath = yield* verifyCasBlob(
-    input.casRoot,
-    yield* ensureSharedCasBlob(input.casRoot, selected.checkpoint.manifestDigest, coordinatorUrl).pipe(
-      Effect.as(selected.checkpoint.manifestDigest),
-    ),
-  );
+  const checkpointPath = yield* ensureGraphShareCheckpointArtifact({
+    artifactDigest: selected.checkpoint.manifestDigest,
+    casRoot: input.casRoot,
+    ...(coordinatorUrl === undefined ? {} : {coordinatorUrl}),
+    ...(selected.checkpoint.metadataDigest === undefined ? {} : {metadataDigest: selected.checkpoint.metadataDigest}),
+  });
   yield* sharingProgress(input.request.onProgress, 'applying-deltas');
   const imported = yield* importCodeGraphCheckpointSnapshot(runtimeConfigForHome(input.request.threadnoteHome), {
     cwd: input.request.cwd,

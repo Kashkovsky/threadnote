@@ -7,7 +7,20 @@ import * as FC from 'effect/testing/FastCheck';
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {codeGraphCheckpointFileFactCacheIdentity} from '../../src/code_graph/checkpoint/file_fact_identity.js';
+import {encodeCodeGraphCheckpointPackV1} from '../../src/code_graph/checkpoint/pack.js';
+import type {
+  CodeGraphCheckpointFileFactRecordV1,
+  CodeGraphCheckpointFileRecordV1,
+  CodeGraphCheckpointMetadataV1,
+  CodeGraphCheckpointRecordV1,
+} from '../../src/code_graph/checkpoint/schema.js';
 import {decodeJsonBytes, readJsonFile} from '../../src/code_graph/sharing/atomic.js';
+import {casBlobPath, putCasBytes, putCasFile} from '../../src/code_graph/sharing/cas.js';
+import {
+  ensureGraphShareCheckpointArtifact,
+  putGraphShareCheckpointLayers,
+} from '../../src/code_graph/sharing/checkpoint_cas.js';
 import {
   graphShareControlAnnounceResult,
   graphShareControlGetCas,
@@ -16,11 +29,11 @@ import {
   graphShareControlPostJson,
   graphShareControlPutCas,
 } from '../../src/code_graph/sharing/control_client.js';
-import {runGraphShareControlServer} from '../../src/code_graph/sharing/control_server.js';
+import {recordPublishedFrontier, runGraphShareControlServer} from '../../src/code_graph/sharing/control_server.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
 import {GraphSharingError} from '../../src/code_graph/sharing/errors.js';
 import {graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
-import {graphSharePayloadLooksLikeGitObject} from '../../src/code_graph/sharing/oci.js';
+import {GRAPH_SHARE_HTTP_CAS_MAX_BYTES, graphSharePayloadLooksLikeGitObject} from '../../src/code_graph/sharing/oci.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const sharingLayer = Layer.mergeAll(BunServices.layer, BunHttpClient.layer, SystemInfo.layer);
@@ -145,4 +158,218 @@ describe('graph share live coordinator and digest CAS', () => {
       }).pipe(provideTestLayer(sharingLayer)),
     ),
   );
+
+  effectIt.effect('rejects 33 MiB CAS PUT and GET of an oversized local blob with HTTP 413', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-cas-limit-'});
+        const casRoot = path.join(home, 'cas');
+        yield* fs.makeDirectory(casRoot, {recursive: true, mode: 0o700});
+        const ready = yield* Deferred.make<{readonly port: number; readonly url: string}>();
+        yield* Effect.forkScoped(
+          runGraphShareControlServer({
+            casRoot,
+            listen: {hostname: '127.0.0.1', port: 0},
+            onListening: info => Deferred.succeed(ready, info).pipe(Effect.asVoid),
+            organization: 'acme',
+            repositoryId: 'a'.repeat(64),
+            threadnoteHome: home,
+          }),
+        );
+        const info = yield* Deferred.await(ready);
+        const oversized = new Uint8Array(GRAPH_SHARE_HTTP_CAS_MAX_BYTES + 1);
+        oversized.fill(7);
+        const putRejected = yield* graphShareControlPutCas(info.url, oversized).pipe(
+          Effect.as(false),
+          Effect.catchIf(
+            error => Schema.is(GraphSharingError)(error),
+            () => Effect.succeed(true),
+          ),
+        );
+        expect(putRejected).toBe(true);
+        const digest = yield* putCasBytes(casRoot, oversized);
+        const client = yield* HttpClient.HttpClient;
+        const getResponse = yield* client.execute(
+          HttpClientRequest.get(`${info.url}/v1/cas/sha256/${sha256HexFromDigest(digest)}`),
+        );
+        expect(getResponse.status).toBe(413);
+        const getRejected = yield* graphShareControlGetCas(info.url, digest).pipe(
+          Effect.as(false),
+          Effect.catchIf(
+            error => Schema.is(GraphSharingError)(error) && error.kind === 'unavailable',
+            () => Effect.succeed(true),
+          ),
+        );
+        expect(getRejected).toBe(true);
+        const missingMetadata = yield* ensureGraphShareCheckpointArtifact({
+          artifactDigest: digest,
+          casRoot: path.join(home, 'client-cas'),
+          coordinatorUrl: info.url,
+        }).pipe(
+          Effect.as(false),
+          Effect.catchIf(
+            error => Schema.is(GraphSharingError)(error) && error.kind === 'unavailable',
+            () => Effect.succeed(true),
+          ),
+        );
+        expect(missingMetadata).toBe(true);
+      }).pipe(provideTestLayer(sharingLayer)),
+    ),
+  );
+
+  effectIt.effect('imports a chunked checkpoint from metadata layers without GETting the assembled digest', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-chunked-http-'});
+        const publisherCas = path.join(home, 'publisher-cas');
+        const clientCas = path.join(home, 'client-cas');
+        yield* fs.makeDirectory(publisherCas, {recursive: true, mode: 0o700});
+        const pack = encodeCodeGraphCheckpointPackV1(
+          httpCheckpointMetadata(4),
+          httpCheckpointRecords(['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts']),
+          {limits: {targetUncompressedChunkBytes: 400}},
+        );
+        expect(pack.header.chunks.length).toBeGreaterThan(1);
+        const artifactPath = path.join(home, 'artifact.cgcp');
+        yield* fs.writeFile(artifactPath, pack.bytes);
+        const artifactDigest = yield* putCasFile(publisherCas, artifactPath);
+        const published = yield* putGraphShareCheckpointLayers(publisherCas, artifactDigest);
+        yield* fs.remove(yield* casBlobPath(publisherCas, artifactDigest));
+        const ready = yield* Deferred.make<{readonly port: number; readonly url: string}>();
+        yield* Effect.forkScoped(
+          runGraphShareControlServer({
+            casRoot: publisherCas,
+            listen: {hostname: '127.0.0.1', port: 0},
+            onListening: info => Deferred.succeed(ready, info).pipe(Effect.asVoid),
+            organization: 'acme',
+            repositoryId: 'a'.repeat(64),
+            threadnoteHome: home,
+          }),
+        );
+        const info = yield* Deferred.await(ready);
+        const missingAssembled = yield* graphShareControlGetCas(info.url, artifactDigest).pipe(
+          Effect.as(false),
+          Effect.catchIf(
+            error => Schema.is(GraphSharingError)(error) && error.kind === 'unavailable',
+            () => Effect.succeed(true),
+          ),
+        );
+        expect(missingAssembled).toBe(true);
+        const assembledPath = yield* ensureGraphShareCheckpointArtifact({
+          artifactDigest,
+          casRoot: clientCas,
+          coordinatorUrl: info.url,
+          metadataDigest: published.metadataDigest,
+        });
+        expect(new Uint8Array(yield* fs.readFile(assembledPath))).toEqual(pack.bytes);
+        const stillMissingOnPublisher = yield* fs.exists(yield* casBlobPath(publisherCas, artifactDigest));
+        expect(stillMissingOnPublisher).toBe(false);
+      }).pipe(provideTestLayer(sharingLayer)),
+    ),
+  );
+
+  effectIt.effect('reports published generation on GET /v1/status after recordPublishedFrontier', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-status-'});
+        const casRoot = path.join(home, 'cas');
+        yield* fs.makeDirectory(casRoot, {recursive: true, mode: 0o700});
+        const repositoryId = 'a'.repeat(64);
+        const sourceCommit = 'b'.repeat(40);
+        const manifestDigest = sha256Digest('frontier-manifest');
+        yield* recordPublishedFrontier(
+          {casRoot, organization: 'acme', repositoryId, threadnoteHome: home},
+          {
+            branch: 'refs/heads/main',
+            envelopeDigest: sha256Digest('frontier-envelope'),
+            generation: 1,
+            manifestDigest,
+            repositoryId,
+            sourceCommit,
+          },
+        );
+        const ready = yield* Deferred.make<{readonly port: number; readonly url: string}>();
+        yield* Effect.forkScoped(
+          runGraphShareControlServer({
+            casRoot,
+            listen: {hostname: '127.0.0.1', port: 0},
+            onListening: info => Deferred.succeed(ready, info).pipe(Effect.asVoid),
+            organization: 'acme',
+            repositoryId,
+            threadnoteHome: home,
+          }),
+        );
+        const info = yield* Deferred.await(ready);
+        const status = yield* graphShareControlGetStatus(info.url);
+        expect(status.generation).toBe(1);
+        expect(status.phase).toBe('published');
+        expect(status.publishedFrontier).toBe(sourceCommit);
+      }).pipe(provideTestLayer(sharingLayer)),
+    ),
+  );
 });
+
+const HTTP_SHA256_ZERO = '0'.repeat(64);
+const HTTP_SHA1_ZERO = '0'.repeat(40);
+const HTTP_UTF8 = new TextEncoder();
+
+function httpCheckpointMetadata(eligibleFiles: number): CodeGraphCheckpointMetadataV1 {
+  return {
+    abi: {
+      checkpointSemanticVersion: 1,
+      graphSchemaVersion: 1,
+      inventoryPolicyVersion: 1,
+      languagePacks: [],
+      lexicalLogicalFormatVersion: 1,
+      pathPolicy: 'repository-relative-posix-v1',
+      referenceResolutionVersion: 'resolution-v1',
+      workspaceModelVersion: 'workspace-v1',
+    },
+    coverage: {eligibleFiles, excludedFiles: 0, reasons: [], state: 'complete'},
+    repository: {
+      caseMode: 'sensitive',
+      displayName: 'checkpoint-fixture',
+      objectFormat: 'sha1',
+      repositoryId: HTTP_SHA256_ZERO,
+    },
+    source: {
+      commit: HTTP_SHA1_ZERO,
+      extractorSet: 'typescript-v1',
+      graphContentId: `cgc_${HTTP_SHA1_ZERO}`,
+    },
+  };
+}
+
+function httpCheckpointRecords(paths: readonly string[]): CodeGraphCheckpointRecordV1[] {
+  return paths.flatMap(filePath => [httpFileRecord(filePath), httpFactRecord(filePath)]);
+}
+
+function httpFileRecord(filePath: string): CodeGraphCheckpointFileRecordV1 {
+  return {
+    blobId: HTTP_SHA1_ZERO,
+    contentHash: HTTP_SHA256_ZERO,
+    kind: 'file',
+    language: 'typescript',
+    mode: '100644',
+    path: filePath,
+    size: HTTP_UTF8.encode(filePath).byteLength,
+    source: 'commit',
+  };
+}
+
+function httpFactRecord(filePath: string): CodeGraphCheckpointFileFactRecordV1 {
+  const facts = {diagnostics: [], edges: [], path: filePath, symbols: []};
+  return {
+    cacheIdentity: codeGraphCheckpointFileFactCacheIdentity(facts),
+    factRole: 'materialized',
+    facts,
+    kind: 'file-fact',
+    path: filePath,
+  };
+}
