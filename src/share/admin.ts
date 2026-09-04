@@ -644,8 +644,8 @@ const preserveSharedMemoriesLocally = Effect.fn('share.preserveSharedMemoriesLoc
     const targetUri = `threadnote://user/${uriSegment(config.user)}/memories/${rel}`;
     const content = setMemoryVisibility(yield* readFile(file, 'utf8'), 'personal');
     const existing = yield* store.read(resourceStoreLocation(config), targetUri).pipe(
-      Effect.map(Option.some),
-      Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none<string>())),
+      Effect.asSome,
+      Effect.catchTag('ResourceNotFound', () => Effect.succeedNone),
     );
     if (Option.isSome(existing) && !sharedMemoryContentsEquivalent(existing.value, content)) {
       return yield* ShareOperationError.make({

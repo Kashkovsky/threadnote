@@ -1944,11 +1944,10 @@ export function directoryBytes(
     for (const name of yield* fs.readDirectory(directory)) {
       const child = path.join(directory, name);
       const info = yield* fs.stat(child).pipe(
-        Effect.map(Option.some),
-        Effect.catch(error =>
-          error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-            ? Effect.succeed(Option.none<FileSystem.File.Info>())
-            : Effect.fail(error),
+        Effect.asSome,
+        Effect.catchIf(
+          error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+          () => Effect.succeedNone,
         ),
       );
       if (Option.isNone(info)) continue;
@@ -1957,10 +1956,9 @@ export function directoryBytes(
     }
     return bytes;
   }).pipe(
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed(0)
-        : Effect.fail(error),
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.succeed(0),
     ),
   );
 }
@@ -4528,12 +4526,12 @@ export function retryManagerBenchmarkBusy<A, E, R>(
   retryDelayMilliseconds = MANAGER_BUSY_RETRY_MILLISECONDS,
 ): Effect.Effect<A, E, R> {
   return Effect.suspend(operation).pipe(
-    Effect.catch(error =>
-      Schema.is(ManagerGraphBusyError)(error) && remainingAttempts > 0
-        ? Effect.sleep(retryDelayMilliseconds).pipe(
-            Effect.andThen(retryManagerBenchmarkBusy(operation, remainingAttempts - 1, retryDelayMilliseconds)),
-          )
-        : Effect.fail(error),
+    Effect.catchIf(
+      error => Schema.is(ManagerGraphBusyError)(error) && remainingAttempts > 0,
+      () =>
+        Effect.sleep(retryDelayMilliseconds).pipe(
+          Effect.andThen(retryManagerBenchmarkBusy(operation, remainingAttempts - 1, retryDelayMilliseconds)),
+        ),
     ),
   );
 }

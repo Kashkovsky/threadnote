@@ -841,12 +841,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             persistentOwnerToken,
                           ),
                         ),
-                        Effect.catch(cause =>
-                          persistentOwnerToken !== undefined && isCodeGraphCapacityPause(cause)
-                            ? Effect.fail(cause)
-                            : store
-                                .markFailed(layout.databasePath, building.id, messageOf(cause), persistentOwnerToken)
-                                .pipe(Effect.andThen(Effect.fail(cause))),
+                        Effect.catchIf(
+                          cause => !(persistentOwnerToken !== undefined && isCodeGraphCapacityPause(cause)),
+                          cause =>
+                            store
+                              .markFailed(layout.databasePath, building.id, messageOf(cause), persistentOwnerToken)
+                              .pipe(Effect.andThen(Effect.fail(cause))),
                         ),
                       );
                     }),

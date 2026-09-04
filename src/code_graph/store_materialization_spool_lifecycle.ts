@@ -260,13 +260,14 @@ export function attachPersistentMaterializationSpool(
 ): Effect.Effect<'readonly-uri' | 'verified-path-fallback', unknown> {
   return sql.unsafe('ATTACH DATABASE ? AS materialization_spool', [materializationSpoolReadOnlyUri(spoolPath)]).pipe(
     Effect.as('readonly-uri' as const),
-    Effect.catch(error =>
-      classifyCodeGraphStoreFailure('register persistent code graph materialization plan', error).code ===
-      'transient-io'
-        ? sql
-            .unsafe('ATTACH DATABASE ? AS materialization_spool', [spoolPath])
-            .pipe(Effect.as('verified-path-fallback' as const))
-        : Effect.fail(error),
+    Effect.catchIf(
+      error =>
+        classifyCodeGraphStoreFailure('register persistent code graph materialization plan', error).code ===
+        'transient-io',
+      () =>
+        sql
+          .unsafe('ATTACH DATABASE ? AS materialization_spool', [spoolPath])
+          .pipe(Effect.as('verified-path-fallback' as const)),
     ),
   );
 }

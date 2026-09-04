@@ -42,7 +42,7 @@ const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedVi
 ) {
   const preflightReady = yield* preflightRemovedViewCleanupSchema(sql).pipe(
     Effect.as(true),
-    Effect.catch(error => (isCodeGraphStoreError(error) ? Effect.succeed(false) : Effect.fail(error))),
+    Effect.catchIf(isCodeGraphStoreError, () => Effect.succeed(false)),
   );
   if (!preflightReady) return {reason: 'incompatible-schema', state: 'deferred'} as const;
   if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, true, false))) {
@@ -92,7 +92,7 @@ const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeR
   }
   const preflightReady = yield* preflightRemovedViewCleanupSchema(sql).pipe(
     Effect.as(true),
-    Effect.catch(error => (isCodeGraphStoreError(error) ? Effect.succeed(false) : Effect.fail(error))),
+    Effect.catchIf(isCodeGraphStoreError, () => Effect.succeed(false)),
   );
   if (!preflightReady || !(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
     return {reason: 'incompatible-schema', state: 'deferred'} as const;

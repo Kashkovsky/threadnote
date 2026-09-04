@@ -684,27 +684,27 @@ function loadWritableGeneration(sql: SqlClient.SqlClient, generationId: string) 
           return {state, worksetName};
         }),
       ),
-      Effect.flatMap(generation =>
-        generation.state === 'staging'
-          ? Effect.succeed(generation)
-          : sql
-              .unsafe<{readonly count: unknown}>(
-                'SELECT COUNT(*) AS count FROM published_worksets WHERE workset_name = ? AND generation_id = ?',
-                [generation.worksetName, generationId],
-              )
-              .pipe(
-                Effect.flatMap(rows =>
-                  validateStored(() => {
-                    if (requiredInteger(rows[0]?.count, 'published pointer count') !== 1) {
-                      throw CodeGraphWorksetCatalogError.of(
-                        'stale',
-                        'A ready generation must remain published while its bridge set is replaced.',
-                      );
-                    }
-                    return generation;
-                  }),
-                ),
+      Effect.filterOrElse(
+        generation => generation.state === 'staging',
+        generation =>
+          sql
+            .unsafe<{readonly count: unknown}>(
+              'SELECT COUNT(*) AS count FROM published_worksets WHERE workset_name = ? AND generation_id = ?',
+              [generation.worksetName, generationId],
+            )
+            .pipe(
+              Effect.flatMap(rows =>
+                validateStored(() => {
+                  if (requiredInteger(rows[0]?.count, 'published pointer count') !== 1) {
+                    throw CodeGraphWorksetCatalogError.of(
+                      'stale',
+                      'A ready generation must remain published while its bridge set is replaced.',
+                    );
+                  }
+                  return generation;
+                }),
               ),
+            ),
       ),
     );
 }

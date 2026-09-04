@@ -585,7 +585,7 @@ describe('vector index generations', () => {
     });
     let embeddingCalls = 0;
     const currentGeneration = 'lexical-generation-2';
-    const generationFence = () => Effect.succeed(Option.some(currentGeneration));
+    const generationFence = () => Effect.succeedSome(currentGeneration);
     const runtimeLayer = Layer.succeed(
       LocalModelRuntime,
       LocalModelRuntime.of({
@@ -654,7 +654,7 @@ describe('vector index generations', () => {
       reportFirstEmbeddingStarted = resolve;
     });
     let embeddingCalls = 0;
-    const generationFence = () => Effect.succeed(Option.some(currentGeneration));
+    const generationFence = () => Effect.succeedSome(currentGeneration);
     const runtimeLayer = Layer.succeed(
       LocalModelRuntime,
       LocalModelRuntime.of({
@@ -784,7 +784,7 @@ describe('vector index generations', () => {
     const queryStarted = new Promise<void>(resolve => {
       reportQueryStarted = resolve;
     });
-    const generationFence = () => Effect.succeed(Option.some(currentGeneration));
+    const generationFence = () => Effect.succeedSome(currentGeneration);
     const runtimeLayer = Layer.succeed(
       LocalModelRuntime,
       LocalModelRuntime.of({

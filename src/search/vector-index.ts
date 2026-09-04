@@ -1568,10 +1568,9 @@ function useVectorDatabaseReadOnly<A, E, R>(
 }
 
 function removeVectorDatabaseFiles(fs: FileSystem.FileSystem, databasePath: string): Effect.Effect<void, never> {
-  return Effect.all(
-    [databasePath, `${databasePath}-shm`, `${databasePath}-wal`].map(candidate =>
-      fs.remove(candidate, {force: true}).pipe(Effect.ignore),
-    ),
+  return Effect.forEach(
+    [databasePath, `${databasePath}-shm`, `${databasePath}-wal`],
+    candidate => fs.remove(candidate, {force: true}).pipe(Effect.ignore),
     {discard: true},
   ).pipe(Effect.asVoid);
 }

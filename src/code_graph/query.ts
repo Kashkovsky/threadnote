@@ -413,11 +413,7 @@ export class CodeGraphQueryService extends Context.Service<
                 finalOverlay === undefined ? undefined : {identity: promotionIdentity.value, overlay: finalOverlay},
               );
             }),
-          ).pipe(
-            Effect.catch(error =>
-              Schema.is(CodeGraphStoreBusyError)(error) ? Effect.succeed(status) : Effect.fail(error),
-            ),
-          );
+          ).pipe(Effect.catchIf(Schema.is(CodeGraphStoreBusyError), () => Effect.succeed(status)));
         });
       const borrowSharedReadySnapshot = Effect.fn('codeGraph.query.borrowSharedReadySnapshot')(function* (
         threadnoteHome: string,

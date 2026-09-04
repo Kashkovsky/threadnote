@@ -294,10 +294,8 @@ const loadRecallIndexDataInternal = Effect.fn('recall.loadIndexDataInternal')(fu
     options.includeInactive,
   );
   return yield* executeRecallIndexQuery(databasePath, fixedDatabasePath, config, options).pipe(
-    Effect.catchCause(firstCause =>
-      isRecoverableRecallIndexCause(firstCause)
-        ? recoverRecallIndex(fs, pathService, databasePath, fixedDatabasePath, config, options, firstCause)
-        : Effect.failCause(firstCause),
+    Effect.catchCauseIf(isRecoverableRecallIndexCause, firstCause =>
+      recoverRecallIndex(fs, pathService, databasePath, fixedDatabasePath, config, options, firstCause),
     ),
   );
 });

@@ -259,10 +259,8 @@ export const runAutoUpdateWorker = Effect.fn('autoUpdate.runWorker')(function* (
           AUTO_UPDATE_LOCK_OPTIONS,
           Effect.exit(runOwnedAutoUpdate(config)),
         ).pipe(
-          Effect.catch(error =>
-            Schema.is(FileLockTimeout)(error)
-              ? Effect.succeed(Exit.succeed<AutoUpdateWorkerResult>({result: 'busy'}))
-              : Effect.fail(error),
+          Effect.catchIf(Schema.is(FileLockTimeout), () =>
+            Effect.succeed(Exit.succeed<AutoUpdateWorkerResult>({result: 'busy'})),
           ),
         );
         return Exit.isSuccess(owned) ? owned.value : yield* Effect.failCause(owned.cause);
@@ -299,7 +297,7 @@ export const triggerAutoUpdateIfEnabled = Effect.fn('autoUpdate.triggerIfEnabled
       yield* writeAutoUpdateState({...state, lastCheckAt: claimedAt, running: undefined});
       return {claimedAt, previousLastCheckAt: state.lastCheckAt};
     }),
-  ).pipe(Effect.catch(error => (Schema.is(FileLockTimeout)(error) ? Effect.void : Effect.fail(error))));
+  ).pipe(Effect.catchIf(Schema.is(FileLockTimeout), () => Effect.void));
   if (!claim) return false;
   const spawned = yield* spawnDetachedAutoUpdateWorker(agentSession);
   if (spawned) return true;

@@ -1176,8 +1176,8 @@ export const verifySharedMemoryIdentityContinuity = Effect.fn('share.verifyMemor
 ) {
   const store = yield* ResourceStore;
   const currentContent = yield* store.read(resourceStoreLocation(config), uri).pipe(
-    Effect.map(Option.some),
-    Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none())),
+    Effect.asSome,
+    Effect.catchTag('ResourceNotFound', () => Effect.succeedNone),
   );
   if (Option.isSome(currentContent)) {
     assertSharedMemoryIdentityContinuity(uri, currentContent.value, incomingContent);

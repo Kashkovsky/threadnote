@@ -27,23 +27,23 @@ export interface DeferredCodeAnchorPrivateDirectoryAuthority {
 export function deferredCodeAnchorPathEntryKind(fs: FileSystem.FileSystem, target: string) {
   return fs.readLink(target).pipe(
     Effect.as('symlink' as const),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed('missing' as const)
-        : fs.stat(target).pipe(
-            Effect.map(info =>
-              info.type === 'Directory'
-                ? ('directory' as const)
-                : info.type === 'File'
-                  ? ('file' as const)
-                  : ('other' as const),
-            ),
-            Effect.catch(statError =>
-              statError instanceof PlatformError.PlatformError && statError.reason._tag === 'NotFound'
-                ? Effect.succeed('missing' as const)
-                : Effect.fail(statError),
-            ),
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.succeed('missing' as const),
+      () =>
+        fs.stat(target).pipe(
+          Effect.map(info =>
+            info.type === 'Directory'
+              ? ('directory' as const)
+              : info.type === 'File'
+                ? ('file' as const)
+                : ('other' as const),
           ),
+          Effect.catchIf(
+            statError => statError instanceof PlatformError.PlatformError && statError.reason._tag === 'NotFound',
+            () => Effect.succeed('missing' as const),
+          ),
+        ),
     ),
   ) satisfies Effect.Effect<DeferredCodeAnchorPathEntryKind, unknown>;
 }
@@ -138,15 +138,12 @@ export const ensurePrivateDeferredCodeAnchorDirectory = Effect.fn('memoryCodeAnc
     );
   }
   if (kind === 'missing') {
-    yield* fs
-      .makeDirectory(directory, {mode: 0o700})
-      .pipe(
-        Effect.catch(error =>
-          error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists'
-            ? Effect.void
-            : Effect.fail(error),
-        ),
-      );
+    yield* fs.makeDirectory(directory, {mode: 0o700}).pipe(
+      Effect.catchIf(
+        error => error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists',
+        () => Effect.void,
+      ),
+    );
   }
   const parentAfter = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, parentDirectories);
   if (parentAfter === undefined || !samePrivateDeferredCodeAnchorDirectories(parentAuthority, parentAfter)) {
@@ -284,10 +281,9 @@ const quarantinePrivateDeferredCodeAnchorEntry = Effect.fn('memoryCodeAnchor.qua
     }
     const created = yield* fs.makeDirectory(candidate, {mode: 0o700}).pipe(
       Effect.as(true),
-      Effect.catch(error =>
-        error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists'
-          ? Effect.succeed(false)
-          : Effect.fail(error),
+      Effect.catchIf(
+        error => error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists',
+        () => Effect.succeed(false),
       ),
     );
     const parentAfter = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, quarantineAncestors);

@@ -358,8 +358,8 @@ function withGlobalParserSlot<A, E>(
       Effect.provideService(Crypto.Crypto, crypto),
       Effect.provideService(Path.Path, path),
       Effect.provideService(SystemInfo, system),
-      Effect.map(Option.some),
-      Effect.catchIf(isFileLockTimeout, () => Effect.succeed(Option.none<A>())),
+      Effect.asSome,
+      Effect.catchIf(isFileLockTimeout, () => Effect.succeedNone),
     );
 
   return Effect.gen(function* () {

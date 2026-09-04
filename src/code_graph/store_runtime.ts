@@ -161,8 +161,8 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
         CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS,
         cleanupSweep,
       ).pipe(
-        Effect.map(Option.some),
-        Effect.catch(error => (isFileLockTimeout(error) ? Effect.succeed(Option.none()) : Effect.fail(error))),
+        Effect.asSome,
+        Effect.catchIf(isFileLockTimeout, () => Effect.succeedNone),
         Effect.provideService(Crypto.Crypto, crypto),
         Effect.provideService(Path.Path, path),
         Effect.provideService(SystemInfo, system),
@@ -225,8 +225,8 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
         CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS,
         cleanupSweep,
       ).pipe(
-        Effect.map(Option.some),
-        Effect.catch(error => (isFileLockTimeout(error) ? Effect.succeed(Option.none()) : Effect.fail(error))),
+        Effect.asSome,
+        Effect.catchIf(isFileLockTimeout, () => Effect.succeedNone),
         Effect.provideService(Crypto.Crypto, crypto),
         Effect.provideService(Path.Path, path),
         Effect.provideService(SystemInfo, system),

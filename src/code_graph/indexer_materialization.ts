@@ -107,7 +107,10 @@ export function codeGraphDirectPersistentCapacityProtector(
                 writerLockPath: input.layout.databaseWriteLockPath,
               })
               .pipe(
-                Effect.catch(error => (['busy', 'no-space'].includes(error.code) ? Effect.void : Effect.fail(error))),
+                Effect.catchIf(
+                  error => ['busy', 'no-space'].includes(error.code),
+                  () => Effect.void,
+                ),
               ),
             observe: observeDirectPersistentCapacity({
               boundary,

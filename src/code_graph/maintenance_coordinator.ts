@@ -428,14 +428,15 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
       };
       const runReconciliationOrPreparation: CodeGraphRoutineMaintenanceRun = input =>
         runBuildHistoryMaintenance(input).pipe(
-          Effect.flatMap(history => {
-            if (history.state === 'completed' && history.remaining) return Effect.succeed(history);
-            return runReconciliationOrPreparationWithoutHistory(input).pipe(
-              Effect.map(reconciliation =>
-                history.state === 'deferred' && maintenanceResultIsEmpty(reconciliation) ? history : reconciliation,
+          Effect.filterOrElse(
+            history => history.state === 'completed' && Boolean(history.remaining),
+            history =>
+              runReconciliationOrPreparationWithoutHistory(input).pipe(
+                Effect.map(reconciliation =>
+                  history.state === 'deferred' && maintenanceResultIsEmpty(reconciliation) ? history : reconciliation,
+                ),
               ),
-            );
-          }),
+          ),
         );
       const runVectorMaintenance: CodeGraphOrdinaryMaintenanceRuns['vector'] = input =>
         Effect.sync(() => performance.now()).pipe(

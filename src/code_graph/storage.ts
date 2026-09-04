@@ -431,19 +431,13 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
         0,
       );
     }),
-  ).pipe(
-    Effect.catch(cause => (isFileLockTimeout(cause) ? Effect.succeed(deferred('active-build')) : Effect.fail(cause))),
-  );
+  ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed(deferred('active-build'))));
   const maintain = withExclusiveFileLock(
     fs,
     codeGraphMaintenanceLockPath(path, threadnoteHome),
     STORAGE_LOCK_OPTIONS,
     withCodeGraphMaintenanceIntent(threadnoteHome, checkoutMaintenance),
-  ).pipe(
-    Effect.catch(cause =>
-      isFileLockTimeout(cause) ? Effect.succeed(deferred('active-maintenance')) : Effect.fail(cause),
-    ),
-  );
+  ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed(deferred('active-maintenance'))));
   if (options.dryRun) return yield* maintain;
   const candidate = (opportunityBytes: number) => ({checkoutId, opportunityBytes});
   return yield* maintain.pipe(
@@ -785,17 +779,15 @@ function safeProduct(left: number, right: number, label: string): number {
 }
 
 function requireRegularFileIdentity(fs: FileSystem.FileSystem, candidate: string) {
-  return fs.stat(candidate).pipe(
-    Effect.flatMap(info =>
-      Option.match(fileIdentity(info), {
-        onNone: () =>
-          Effect.fail(
-            CodeGraphStorageOperationError.make({message: 'Code graph database lacks stable identity metadata.'}),
-          ),
-        onSome: Effect.succeed,
-      }),
-    ),
-  );
+  return fs
+    .stat(candidate)
+    .pipe(
+      Effect.flatMap(info =>
+        Effect.fromOption(fileIdentity(info), () =>
+          CodeGraphStorageOperationError.make({message: 'Code graph database lacks stable identity metadata.'}),
+        ),
+      ),
+    );
 }
 
 function verifyRegularFileIdentity(fs: FileSystem.FileSystem, candidate: string, expected: CodeGraphFileIdentity) {

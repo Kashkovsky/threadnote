@@ -5,7 +5,7 @@ import {createHash} from '../helpers/node-crypto.js';
 import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
-import {Effect, Layer, Option, Result} from 'effect';
+import {Effect, Layer, Result} from 'effect';
 import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
@@ -211,7 +211,7 @@ async function ensureGeneration(
       ],
       {
         corpusGeneration: requestedGeneration,
-        currentCorpusGeneration: () => Effect.succeed(Option.some(currentGeneration)),
+        currentCorpusGeneration: () => Effect.succeedSome(currentGeneration),
       },
     ).pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer), Effect.result),
   );

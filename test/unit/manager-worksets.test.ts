@@ -1016,15 +1016,15 @@ describe('Manager Worksets manifest transactions', () => {
         const current = yield* fixture(root => manifest(root));
         const revision = (yield* readManagerWorksetCatalog(current.config)).revision;
         const outcomes = yield* TestClock.withLive(
-          Effect.all(
-            ['platform-a', 'platform-b'].map(name =>
+          Effect.forEach(
+            ['platform-a', 'platform-b'],
+            name =>
               mutateManagerWorksetDefinition(current.config, {
                 expectedRevision: revision,
                 name,
                 operation: 'create' as const,
                 projects: ['api'],
               }).pipe(Effect.result),
-            ),
             {concurrency: 'unbounded'},
           ),
         );

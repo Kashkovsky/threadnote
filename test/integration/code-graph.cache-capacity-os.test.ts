@@ -297,10 +297,9 @@ function readCacheReceipts(fs: FileSystem.FileSystem, ledgerRoot: string) {
         {concurrency: CHILD_COUNT},
       ),
     ),
-    Effect.catch(error =>
-      error instanceof Error && error.message === 'Cache child emitted an invalid reservation receipt.'
-        ? Effect.fail(error)
-        : Effect.succeed([] as readonly CodeGraphDiskReservationReceipt[]),
+    Effect.catchIf(
+      error => !(error instanceof Error && error.message === 'Cache child emitted an invalid reservation receipt.'),
+      () => Effect.succeed([] as readonly CodeGraphDiskReservationReceipt[]),
     ),
   );
 }

@@ -729,16 +729,14 @@ function rankingSession(options: LocalModelLoadOptions, context: NativeRankingCo
                 modelId: options.modelId,
               }),
       ).pipe(
-        Effect.flatMap(scores =>
-          scores.length !== documents.length || scores.some(score => !Number.isFinite(score))
-            ? Effect.fail(
-                RerankingFailed.make({
-                  cause: scores,
-                  message: `Reranker ${options.modelId} returned ${scores.length} invalid scores for ${documents.length} documents.`,
-                  modelId: options.modelId,
-                }),
-              )
-            : Effect.succeed(scores),
+        Effect.filterOrFail(
+          scores => scores.length === documents.length && scores.every(score => Number.isFinite(score)),
+          scores =>
+            RerankingFailed.make({
+              cause: scores,
+              message: `Reranker ${options.modelId} returned ${scores.length} invalid scores for ${documents.length} documents.`,
+              modelId: options.modelId,
+            }),
         ),
       ),
   };

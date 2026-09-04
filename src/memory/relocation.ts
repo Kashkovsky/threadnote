@@ -127,8 +127,8 @@ export const readMemoryWithRelocations = Effect.fn('memoryRelocation.read')(func
   const store = yield* ResourceStore;
   const location = resourceStoreLocation(config);
   const direct = yield* store.read(location, requestedUri).pipe(
-    Effect.map(Option.some),
-    Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none())),
+    Effect.asSome,
+    Effect.catchTag('ResourceNotFound', () => Effect.succeedNone),
   );
   if (Option.isSome(direct)) {
     return {
@@ -175,8 +175,8 @@ export const readMemoryWithRelocations = Effect.fn('memoryRelocation.read')(func
     }
 
     const destination = yield* store.read(location, receipt.toUri).pipe(
-      Effect.map(Option.some),
-      Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none())),
+      Effect.asSome,
+      Effect.catchTag('ResourceNotFound', () => Effect.succeedNone),
     );
     if (Option.isSome(destination)) {
       const record = parseMemoryDocument(receipt.toUri, destination.value);
@@ -259,8 +259,8 @@ export const loadMemoryRelocationIdentityWitnesses = Effect.fn('memoryRelocation
     let record = destinationRecords.get(receipt.toUri);
     if (!destinationRecords.has(receipt.toUri)) {
       const destination = yield* store.read(location, receipt.toUri).pipe(
-        Effect.map(Option.some),
-        Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none())),
+        Effect.asSome,
+        Effect.catchTag('ResourceNotFound', () => Effect.succeedNone),
       );
       record = Option.isSome(destination) ? parseMemoryDocument(receipt.toUri, destination.value) : undefined;
       destinationRecords.set(receipt.toUri, record);

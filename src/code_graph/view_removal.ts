@@ -251,11 +251,10 @@ export const inspectCodeGraphViewDatabaseTarget = Effect.fn('codeGraph.inspectVi
 
 function optionalFileInfo(fs: FileSystem.FileSystem, candidate: string) {
   return fs.stat(candidate).pipe(
-    Effect.map(Option.some),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed(Option.none<FileSystem.File.Info>())
-        : Effect.fail(error),
+    Effect.asSome,
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.succeedNone,
     ),
   );
 }

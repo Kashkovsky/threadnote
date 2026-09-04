@@ -112,10 +112,10 @@ const observeCheapRoot = Effect.fn('managerProjectRoots.observeCheap')(function*
   if (managerProjectPathIsForeign(project.path, system.platform)) return foreignRoot(project.path, system.platform);
   const expanded = yield* expandPath(project.path);
   const info = yield* fs.stat(expanded).pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catchIf(
       error => error.reason._tag === 'NotFound',
-      () => Effect.succeed(Option.none()),
+      () => Effect.succeedNone,
     ),
     Effect.mapError(() =>
       ManagerProjectRootError.make({message: 'A configured project root could not be observed safely.'}),
@@ -215,10 +215,10 @@ const missingRoot = Effect.fn('managerProjectRoots.missing')(function* (
     const parent = path.dirname(current);
     if (parent === current) break;
     const info = yield* fs.stat(current).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catchIf(
         error => error.reason._tag === 'NotFound',
-        () => Effect.succeed(Option.none()),
+        () => Effect.succeedNone,
       ),
       Effect.mapError(() =>
         ManagerProjectRootError.make({message: 'A configured project ancestor could not be observed safely.'}),

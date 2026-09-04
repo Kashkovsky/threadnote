@@ -324,14 +324,14 @@ describe('isolated local model runtime', () => {
       expect(processes).toHaveLength(1);
       expect(processes[0].inputClosed).toBe(true);
 
-      const results = yield* Effect.all(
-        ['second', 'third'].map(input =>
+      const results = yield* Effect.forEach(
+        ['second', 'third'],
+        input =>
           runtime.embedMany({
             inputs: [input],
             manifest: embeddingManifest,
             modelPath: '/models/embedding.gguf',
           }),
-        ),
         {concurrency: 'unbounded'},
       );
       expect(results).toEqual([[[6, 2]], [[5, 2]]]);
@@ -410,14 +410,14 @@ describe('isolated local model runtime', () => {
 
     return Effect.gen(function* () {
       const runtime = yield* LocalModelRuntime;
-      const results = yield* Effect.all(
-        ['one', 'three', 'seven'].map(input =>
+      const results = yield* Effect.forEach(
+        ['one', 'three', 'seven'],
+        input =>
           runtime.embedMany({
             inputs: [input],
             manifest: embeddingManifest,
             modelPath: '/models/embedding.gguf',
           }),
-        ),
         {concurrency: 'unbounded'},
       );
       expect(results).toEqual([[[3, 3]], [[5, 3]], [[5, 3]]]);

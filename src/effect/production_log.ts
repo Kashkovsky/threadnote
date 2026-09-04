@@ -646,23 +646,23 @@ function replaceProductionLogEntry(fs: FileSystem.FileSystem, source: string, ta
 function productionLogPathEntryKind(fs: FileSystem.FileSystem, filePath: string) {
   return fs.readLink(filePath).pipe(
     Effect.as('symlink' as const),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed('missing' as const)
-        : fs.stat(filePath).pipe(
-            Effect.map(info =>
-              info.type === 'File'
-                ? ('file' as const)
-                : info.type === 'Directory'
-                  ? ('directory' as const)
-                  : ('other' as const),
-            ),
-            Effect.catch(statError =>
-              statError instanceof PlatformError.PlatformError && statError.reason._tag === 'NotFound'
-                ? Effect.succeed('missing' as const)
-                : Effect.fail(statError),
-            ),
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.succeed('missing' as const),
+      () =>
+        fs.stat(filePath).pipe(
+          Effect.map(info =>
+            info.type === 'File'
+              ? ('file' as const)
+              : info.type === 'Directory'
+                ? ('directory' as const)
+                : ('other' as const),
           ),
+          Effect.catchIf(
+            statError => statError instanceof PlatformError.PlatformError && statError.reason._tag === 'NotFound',
+            () => Effect.succeed('missing' as const),
+          ),
+        ),
     ),
   );
 }

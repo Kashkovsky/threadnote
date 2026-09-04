@@ -204,16 +204,20 @@ describe('native code graph lifecycle', () => {
           Ref.updateAndGet(selected, count => count + 1).pipe(
             Effect.flatMap(count => (count === 8 ? Deferred.succeed(allSelected, undefined) : Effect.void)),
             Effect.andThen(
-              Effect.raceFirst(
-                Deferred.await(allSelected),
-                Effect.sleep(5_000).pipe(
-                  Effect.andThen(Ref.get(selected)),
-                  Effect.flatMap(count =>
-                    Effect.die(
-                      TestError.make({message: `Only ${count} of 8 parallel queries selected the ready snapshot.`}),
+              Deferred.await(allSelected).pipe(
+                Effect.timeoutOrElse({
+                  duration: 5_000,
+                  orElse: () =>
+                    Ref.get(selected).pipe(
+                      Effect.flatMap(count =>
+                        Effect.die(
+                          TestError.make({
+                            message: `Only ${count} of 8 parallel queries selected the ready snapshot.`,
+                          }),
+                        ),
+                      ),
                     ),
-                  ),
-                ),
+                }),
               ),
             ),
           );

@@ -209,14 +209,12 @@ export const purgeCodeGraphSnapshot = Effect.fn('codeGraph.purgeSnapshotAction')
     ),
     0,
   ).pipe(
-    Effect.catch(cause =>
-      isFileLockTimeout(cause)
-        ? Effect.fail(
-            CodeGraphStoreBusyError.of('Code graph maintenance is busy.', {
-              operation: 'purge selected code graph snapshot',
-            }),
-          )
-        : Effect.fail(cause),
+    Effect.catchIf(isFileLockTimeout, () =>
+      Effect.fail(
+        CodeGraphStoreBusyError.of('Code graph maintenance is busy.', {
+          operation: 'purge selected code graph snapshot',
+        }),
+      ),
     ),
   );
 });

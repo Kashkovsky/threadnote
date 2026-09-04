@@ -1383,11 +1383,10 @@ function readBoundedObservedRegularFile(fs: FileSystem.FileSystem, file: string,
 
 function optionOnNotFound<A, E>(effect: Effect.Effect<A, E>) {
   return effect.pipe(
-    Effect.map(Option.some),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed(Option.none<A>())
-        : Effect.fail(error),
+    Effect.asSome,
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.succeedNone,
     ),
   );
 }

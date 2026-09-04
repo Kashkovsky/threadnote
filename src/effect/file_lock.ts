@@ -94,9 +94,7 @@ export function withExclusiveFileLock<A, E, R>(
     );
     for (;;) {
       const attempted = yield* tryAcquireFileLock(fs, lockPath, token, options).pipe(
-        Effect.flatMap(acquired =>
-          acquired ? protectedEffect.pipe(Effect.map(Option.some)) : Effect.succeed(Option.none<A>()),
-        ),
+        Effect.flatMap(acquired => (acquired ? protectedEffect.pipe(Effect.asSome) : Effect.succeedNone)),
         // Register release around the acquisition itself. Interruption or an
         // I/O failure after the atomic token write must not strand a lock owned
         // by this still-live process. A failed contender cannot remove another

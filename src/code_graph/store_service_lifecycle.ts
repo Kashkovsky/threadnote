@@ -660,10 +660,8 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
               : transaction
           ).pipe(
             Effect.map(value => ({state: 'completed' as const, value})),
-            Effect.catch(error =>
-              Schema.is(CodeGraphPromotionCapacityPlanChanged)(error)
-                ? Effect.succeed({state: 'retry' as const})
-                : Effect.fail(error),
+            Effect.catchIf(Schema.is(CodeGraphPromotionCapacityPlanChanged), () =>
+              Effect.succeed({state: 'retry' as const}),
             ),
           );
           if (attempted.state === 'retry') {

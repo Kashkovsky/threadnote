@@ -31,7 +31,7 @@ function readStableRegularFile(
 ): Effect.Effect<StableRegularFile, Error, SystemInfo> {
   return Effect.gen(function* () {
     const linkTarget = yield* fs.readLink(target).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.orElseSucceed(() => Option.none<string>()),
     );
     if (Option.isSome(linkTarget)) {
@@ -75,7 +75,7 @@ function readStableRegularFile(
         }
         const openedInfoAfter = yield* file.stat;
         const linkTargetAfter = yield* fs.readLink(target).pipe(
-          Effect.map(Option.some),
+          Effect.asSome,
           Effect.orElseSucceed(() => Option.none<string>()),
         );
         if (Option.isSome(linkTargetAfter)) {
@@ -170,7 +170,7 @@ export function inspectContainedStableRegularFile(
       return yield* CodeGraphInventoryError.make({message: `Repository file resolves outside its root: ${relative}`});
     }
     const linkBefore = yield* fs.readLink(target).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.orElseSucceed(() => Option.none<string>()),
     );
     if (Option.isSome(linkBefore)) {
@@ -188,7 +188,7 @@ export function inspectContainedStableRegularFile(
     yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
     const canonicalAfter = yield* fs.realPath(target);
     const linkAfter = yield* fs.readLink(target).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.orElseSucceed(() => Option.none<string>()),
     );
     const infoAfter = yield* fs.stat(target);
@@ -233,7 +233,7 @@ export function materializeContainedStableRegularFile(
       return yield* CodeGraphInventoryError.make({message: `Repository file resolves outside its root: ${relative}`});
     }
     const linkTarget = yield* fs.readLink(target).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.orElseSucceed(() => Option.none<string>()),
     );
     if (Option.isSome(linkTarget)) {
@@ -292,7 +292,7 @@ export function materializeContainedStableRegularFile(
         }
         const openedInfoAfter = yield* file.stat;
         const linkTargetAfter = yield* fs.readLink(target).pipe(
-          Effect.map(Option.some),
+          Effect.asSome,
           Effect.orElseSucceed(() => Option.none<string>()),
         );
         const pathInfoAfter = yield* fs.stat(target);
@@ -338,7 +338,7 @@ const validateRepositoryAncestors = Effect.fn('codeGraph.validateRepositoryAnces
   for (const segment of relative.split('/').slice(0, -1)) {
     current = path.join(current, segment);
     const link = yield* fs.readLink(current).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.orElseSucceed(() => Option.none<string>()),
     );
     if (Option.isSome(link)) {
@@ -385,7 +385,7 @@ function openedFilePath(
 ): Effect.Effect<Option.Option<string>, never, SystemInfo> {
   const descriptor = (file as FileSystem.File & {readonly fd?: unknown}).fd;
   if (typeof descriptor !== 'number' || !Number.isSafeInteger(descriptor) || descriptor < 0) {
-    return Effect.succeed(Option.none());
+    return Effect.succeedNone;
   }
   return Effect.gen(function* () {
     const system = yield* SystemInfo;

@@ -541,11 +541,11 @@ export function boundedRecallSemanticRetrieval<A, E, R>(
 ): Effect.Effect<BoundedRecallSemanticRetrieval<A>, never, R> {
   return retrieval.pipe(
     Effect.map(value => ({status: 'completed' as const, value})),
-    Effect.catchCause(cause =>
-      Cause.hasInterrupts(cause)
-        ? Effect.failCause(cause as Cause.Cause<never>)
-        : Effect.succeed({cause: cause, status: 'failed' as const}),
+    Effect.catchCauseIf(
+      cause => !Cause.hasInterrupts(cause),
+      cause => Effect.succeed({cause: cause, status: 'failed' as const}),
     ),
+    Effect.catchCause(cause => Effect.failCause(cause as Cause.Cause<never>)),
     Effect.timeoutOrElse({
       duration: MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS,
       orElse: () => Effect.succeed({status: 'timed-out' as const}),
@@ -692,10 +692,9 @@ export const loadRecallSemanticScoresResult = Effect.fn('recall.loadSemanticScor
             warning: Option.none(),
           } satisfies RecallSemanticScoresResult),
     ),
-    Effect.catchCause(cause =>
-      Cause.hasInterruptsOnly(cause)
-        ? Effect.failCause(cause)
-        : Effect.succeed(emptyRecallSemanticScoresResult(Option.some(semanticRecallFailureWarning(cause)))),
+    Effect.catchCauseIf(
+      cause => !Cause.hasInterruptsOnly(cause),
+      cause => Effect.succeed(emptyRecallSemanticScoresResult(Option.some(semanticRecallFailureWarning(cause)))),
     ),
   );
 });

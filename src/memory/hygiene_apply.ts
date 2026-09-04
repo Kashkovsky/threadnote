@@ -173,8 +173,8 @@ function requireExpectedContent(
 ) {
   return Effect.gen(function* () {
     const current = yield* store.read(location, uri).pipe(
-      Effect.map(Option.some),
-      Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none<string>())),
+      Effect.asSome,
+      Effect.catchTag('ResourceNotFound', () => Effect.succeedNone),
     );
     if (Option.isNone(current) || current.value !== expectedContent) {
       return yield* conflict(`Memory ${uri} ${reason}. Its exact duplicate was preserved; re-run compact.`);

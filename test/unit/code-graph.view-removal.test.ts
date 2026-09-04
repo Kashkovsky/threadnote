@@ -207,7 +207,7 @@ describe('code graph view removal core', () => {
           }
         });
         yield* store.releaseSnapshotLease(fixture.databasePath, targetLease);
-        const protectedSnapshots = yield* Effect.all(
+        const protectedSnapshots = yield* Effect.forEach(
           [
             snapshotId('shared'),
             snapshotId('dependent'),
@@ -215,7 +215,8 @@ describe('code graph view removal core', () => {
             snapshotId('base-middle'),
             snapshotId('base-root'),
             snapshotId('unrelated-dirty'),
-          ].map(snapshotId => store.readySnapshotById(fixture.databasePath, snapshotId)),
+          ],
+          snapshotId => store.readySnapshotById(fixture.databasePath, snapshotId),
           {concurrency: 1},
         );
         expect(sharedRemoval).toEqual({

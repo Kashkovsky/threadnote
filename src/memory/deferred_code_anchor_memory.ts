@@ -20,8 +20,8 @@ export const readDeferredMemoryObservation = Effect.fn('memoryCodeAnchor.readMem
 ) {
   const store = yield* ResourceStore;
   const content = yield* store.read(resourceStoreLocation(config), memoryUri).pipe(
-    Effect.map(Option.some),
-    Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none())),
+    Effect.asSome,
+    Effect.catchTag('ResourceNotFound', () => Effect.succeedNone),
   );
   if (Option.isNone(content)) return undefined;
   const record = parseMemoryDocument(memoryUri, content.value);

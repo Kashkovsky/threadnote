@@ -1132,10 +1132,10 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
       : inspect();
   const readTimeoutMilliseconds = options.readTimeoutMilliseconds ?? CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS;
   const result = yield* read.pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.timeoutOrElse({
       duration: readTimeoutMilliseconds,
-      orElse: () => Effect.succeed(Option.none()),
+      orElse: () => Effect.succeedNone,
     }),
   );
   if (Option.isNone(result)) {
@@ -1618,15 +1618,11 @@ function removeOpenedExportTemporary(
 }
 
 function requireExportTemporaryIdentity(info: FileSystem.File.Info) {
-  return Option.match(exportTemporaryIdentity(info), {
-    onNone: () =>
-      Effect.fail(
-        CodeGraphCommandError.make({
-          message: 'Export temporary file has insufficient identity metadata for safe publication.',
-        }),
-      ),
-    onSome: Effect.succeed,
-  });
+  return Effect.fromOption(exportTemporaryIdentity(info), () =>
+    CodeGraphCommandError.make({
+      message: 'Export temporary file has insufficient identity metadata for safe publication.',
+    }),
+  );
 }
 
 function exportTemporaryIdentity(info: FileSystem.File.Info): Option.Option<CodeGraphExportTemporaryIdentity> {

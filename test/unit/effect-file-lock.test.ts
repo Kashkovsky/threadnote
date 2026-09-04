@@ -303,9 +303,7 @@ describe('Effect file lock', () => {
             }),
           ),
           Effect.as('acquired' as const),
-          Effect.catch(error =>
-            Schema.is(FileLockTimeout)(error) ? Effect.succeed('timed-out' as const) : Effect.fail(error),
-          ),
+          Effect.catchIf(Schema.is(FileLockTimeout), () => Effect.succeed('timed-out' as const)),
         );
 
         expect(outcome).toBe('timed-out');

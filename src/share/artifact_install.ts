@@ -546,27 +546,26 @@ const prepareInstallMembers = Effect.fn('share.prepareInstallMembers')(function*
   installRoot: string,
   expandTokens: boolean,
 ) {
-  const prepared = yield* Effect.all(
-    members.map(
-      Effect.fn('share.callback')(function* (member) {
-        // A member declared in the manifest but absent from files/ (partial sync /
-        // corrupt repo) is skipped rather than crashing the whole list/install.
-        const sourceBytes = yield* readFileBytesIfExists(member.absolutePath);
-        if (sourceBytes === undefined) {
-          return undefined;
-        }
-        const installedBytes =
-          expandTokens && !isProbablyBinary(sourceBytes)
-            ? new TextEncoder().encode(expandPackRoot(new TextDecoder().decode(sourceBytes), installRoot))
-            : sourceBytes;
-        return {
-          installedBytes,
-          installedSha256: yield* sha256(installedBytes),
-          relativePath: member.relativePath,
-          sourceSha256: yield* sha256(sourceBytes),
-        };
-      }),
-    ),
+  const prepared = yield* Effect.forEach(
+    members,
+    Effect.fn('share.callback')(function* (member) {
+      // A member declared in the manifest but absent from files/ (partial sync /
+      // corrupt repo) is skipped rather than crashing the whole list/install.
+      const sourceBytes = yield* readFileBytesIfExists(member.absolutePath);
+      if (sourceBytes === undefined) {
+        return undefined;
+      }
+      const installedBytes =
+        expandTokens && !isProbablyBinary(sourceBytes)
+          ? new TextEncoder().encode(expandPackRoot(new TextDecoder().decode(sourceBytes), installRoot))
+          : sourceBytes;
+      return {
+        installedBytes,
+        installedSha256: yield* sha256(installedBytes),
+        relativePath: member.relativePath,
+        sourceSha256: yield* sha256(sourceBytes),
+      };
+    }),
   );
   return prepared.filter((member): member is PreparedInstallMember => member !== undefined);
 });

@@ -93,19 +93,17 @@ const existingShareablePathspecs = Effect.fn('share.existingShareablePathspecs')
   git: string,
   worktree: string,
 ) {
-  const rootFiles = yield* Effect.all(
-    SHAREABLE_ROOT_FILES.map(
-      Effect.fn('share.callback')(function* (file) {
-        return (yield* hasWorktreeOrTrackedPath(git, worktree, file)) ? `:(top)${file}` : undefined;
-      }),
-    ),
+  const rootFiles = yield* Effect.forEach(
+    SHAREABLE_ROOT_FILES,
+    Effect.fn('share.callback')(function* (file) {
+      return (yield* hasWorktreeOrTrackedPath(git, worktree, file)) ? `:(top)${file}` : undefined;
+    }),
   );
-  const topLevelDirs = yield* Effect.all(
-    SHAREABLE_TOP_LEVEL_DIRS.map(
-      Effect.fn('share.callback')(function* (dir) {
-        return (yield* hasWorktreeOrTrackedPath(git, worktree, dir)) ? `:(top)${dir}` : undefined;
-      }),
-    ),
+  const topLevelDirs = yield* Effect.forEach(
+    SHAREABLE_TOP_LEVEL_DIRS,
+    Effect.fn('share.callback')(function* (dir) {
+      return (yield* hasWorktreeOrTrackedPath(git, worktree, dir)) ? `:(top)${dir}` : undefined;
+    }),
   );
   return [...rootFiles, ...topLevelDirs].filter((pathspec): pathspec is string => pathspec !== undefined);
 });

@@ -382,12 +382,12 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
         Effect.onInterrupt(() =>
           settleInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id, ownerToken),
         ),
-        Effect.catch(cause =>
-          isCodeGraphCapacityPause(cause)
-            ? Effect.fail(cause)
-            : input.store
-                .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
-                .pipe(Effect.andThen(Effect.fail(cause))),
+        Effect.catchIf(
+          cause => !isCodeGraphCapacityPause(cause),
+          cause =>
+            input.store
+              .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
+              .pipe(Effect.andThen(Effect.fail(cause))),
         ),
       );
     }),
@@ -952,12 +952,12 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
         Effect.onInterrupt(() =>
           settleInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id, ownerToken),
         ),
-        Effect.catch(cause =>
-          isCodeGraphCapacityPause(cause)
-            ? Effect.fail(cause)
-            : input.store
-                .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
-                .pipe(Effect.andThen(Effect.fail(cause))),
+        Effect.catchIf(
+          cause => !isCodeGraphCapacityPause(cause),
+          cause =>
+            input.store
+              .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
+              .pipe(Effect.andThen(Effect.fail(cause))),
         ),
       );
     }),

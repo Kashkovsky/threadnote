@@ -1452,14 +1452,12 @@ export const withCodeGraphSnapshotVectorEvidenceLocks = Effect.fn('codeGraph.wit
       verifyAndUse,
     );
     return yield* locked.pipe(
-      Effect.catch(cause =>
-        isFileLockTimeout(cause)
-          ? Effect.fail(
-              CodeGraphStoreBusyError.of('Code graph vector store is busy.', {
-                operation: 'purge selected code graph snapshot',
-              }),
-            )
-          : Effect.fail(cause),
+      Effect.catchIf(isFileLockTimeout, () =>
+        Effect.fail(
+          CodeGraphStoreBusyError.of('Code graph vector store is busy.', {
+            operation: 'purge selected code graph snapshot',
+          }),
+        ),
       ),
     );
   },
@@ -1852,11 +1850,10 @@ function sameVectorDatabaseFileIdentity(
 
 function optionalVectorFileInfo(fs: FileSystem.FileSystem, candidate: string) {
   return fs.stat(candidate).pipe(
-    Effect.map(Option.some),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.succeed(Option.none<FileSystem.File.Info>())
-        : Effect.fail(error),
+    Effect.asSome,
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.succeedNone,
     ),
   );
 }

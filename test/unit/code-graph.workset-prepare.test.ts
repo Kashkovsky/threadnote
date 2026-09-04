@@ -390,14 +390,14 @@ describe('code graph workset mixed-coverage preparation', () => {
           ),
       );
 
-      const outcomes = yield* Effect.all(
-        [prepareCodeGraphWorkset(config, 'engineering'), prepareCodeGraphWorkset(config, 'engineering')].map(effect =>
+      const outcomes = yield* Effect.forEach(
+        [prepareCodeGraphWorkset(config, 'engineering'), prepareCodeGraphWorkset(config, 'engineering')],
+        effect =>
           effect.pipe(
             Effect.provideService(FileSystem.FileSystem, fs),
             Effect.provideService(CodeGraphIndexer, indexer),
             Effect.exit,
           ),
-        ),
         {concurrency: 2},
       );
 

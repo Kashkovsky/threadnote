@@ -562,15 +562,12 @@ function resolveOwnedAccountBoundary(
       }
       if (!(yield* fs.exists(logicalCurrent))) {
         // First-use callers may race here. Only an existing entry is recoverable; validation below decides its safety.
-        yield* fs
-          .makeDirectory(logicalCurrent, {mode: 0o700})
-          .pipe(
-            Effect.catch(error =>
-              error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists'
-                ? Effect.void
-                : Effect.fail(error),
-            ),
-          );
+        yield* fs.makeDirectory(logicalCurrent, {mode: 0o700}).pipe(
+          Effect.catchIf(
+            error => error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists',
+            () => Effect.void,
+          ),
+        );
       }
       const info = yield* fs.stat(logicalCurrent);
       if (info.type !== 'Directory') {

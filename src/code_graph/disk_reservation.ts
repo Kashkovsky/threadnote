@@ -346,11 +346,7 @@ export function withCodeGraphDiskReservation<A, E, R, R2>(
         lease => reservationFinalizer(options, lease),
       ).pipe(
         Effect.map(value => ({state: 'completed' as const, value})),
-        Effect.catch(error =>
-          Schema.is(CodeGraphDiskReservationClaimControl)(error)
-            ? Effect.succeed({state: error.state})
-            : Effect.fail(error),
-        ),
+        Effect.catchIf(Schema.is(CodeGraphDiskReservationClaimControl), error => Effect.succeed({state: error.state})),
       );
       if (attempted.state === 'completed') return attempted.value;
       if (attempted.state === 'unknown') {

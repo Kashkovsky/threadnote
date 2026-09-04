@@ -368,8 +368,8 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
   const skillRootTargetUri = parentUri(skillMdTargetUri);
   const skillMdSourcePath = yield* pathJoin(skillDir, 'SKILL.md');
 
-  const prepared = yield* Effect.all(
-    members.map(member => prepareBundleMember(config, team, member, skillRootTargetDir, options)),
+  const prepared = yield* Effect.forEach(members, member =>
+    prepareBundleMember(config, team, member, skillRootTargetDir, options),
   );
   const skillMd = prepared.find(entry => entry.relativePath === 'SKILL.md');
   if (skillMd === undefined) {
@@ -877,7 +877,7 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
   const manifest = yield* parsePackManifest(yield* readFile(resolvedManifest, 'utf8'), resolvedManifest);
   const manifestDir = yield* pathDirname(resolvedManifest);
   const artifact: ShareArtifactMetadata = {agent: manifest.agent, kind: 'pack', name: uriSegment(manifest.name)};
-  const skillNames = yield* Effect.all(manifest.skills.map(packSkillName));
+  const skillNames = yield* Effect.forEach(manifest.skills, packSkillName);
 
   const members = yield* collectPackMembers(manifestDir, manifest);
   // Auto-derive the manifest dir as a rewrite root only when it is a plausible
@@ -896,8 +896,8 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
   const indexTargetPath = yield* pathJoin(team.config.worktree, ...indexRelative.split('/'));
   const indexTargetUri = yield* workfileToResourceUri(config, team.config, indexTargetPath);
 
-  const prepared = yield* Effect.all(
-    members.map(member => preparePackMember(config, team, member, filesTargetDir, rewriteRoots, options)),
+  const prepared = yield* Effect.forEach(members, member =>
+    preparePackMember(config, team, member, filesTargetDir, rewriteRoots, options),
   );
   // Tokenize the generated index + manifest too (not just member files) so an
   // author repo-root path embedded in description/deps is normalized to the

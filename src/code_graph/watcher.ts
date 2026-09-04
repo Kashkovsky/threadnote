@@ -443,20 +443,22 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
         ...watcher,
         status: (key, target) =>
           watcher.status(key).pipe(
-            Effect.flatMap(current => {
-              if (Option.isSome(current) || !target) return Effect.succeed(current);
-              return Effect.gen(function* () {
-                const identity = yield* resolveRepositoryIdentity(target.cwd);
-                const layout = codeGraphLayout(path, target.threadnoteHome, identity.checkoutId, identity.worktreeId);
-                const persisted = yield* currentCodeGraphBuildStatus(layout, identity.worktreeId);
-                return persisted ? Option.some(persistedRefreshStatus(persisted)) : Option.none();
-              }).pipe(
-                Effect.provideService(FileSystem.FileSystem, fs),
-                Effect.provideService(Path.Path, path),
-                Effect.provideService(CommandExecutor, commandExecutor),
-                Effect.provideService(SystemInfo, systemInfo),
-              );
-            }),
+            Effect.filterOrElse(
+              current => Option.isSome(current) || target === undefined,
+              () =>
+                Effect.gen(function* () {
+                  if (target === undefined) return Option.none();
+                  const identity = yield* resolveRepositoryIdentity(target.cwd);
+                  const layout = codeGraphLayout(path, target.threadnoteHome, identity.checkoutId, identity.worktreeId);
+                  const persisted = yield* currentCodeGraphBuildStatus(layout, identity.worktreeId);
+                  return persisted ? Option.some(persistedRefreshStatus(persisted)) : Option.none();
+                }).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fs),
+                  Effect.provideService(Path.Path, path),
+                  Effect.provideService(CommandExecutor, commandExecutor),
+                  Effect.provideService(SystemInfo, systemInfo),
+                ),
+            ),
           ),
       });
     }),
@@ -588,12 +590,12 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
                 ),
                 Effect.andThen(
                   recoverRun(options, failure).pipe(
-                    Effect.catchCause(recoveryCause =>
-                      Cause.hasInterruptsOnly(recoveryCause)
-                        ? Effect.failCause(recoveryCause)
-                        : Effect.logWarning(
-                            'Code graph automatic recovery scheduling failed (unknown; recovery: diagnose).',
-                          ),
+                    Effect.catchCauseIf(
+                      recoveryCause => !Cause.hasInterruptsOnly(recoveryCause),
+                      () =>
+                        Effect.logWarning(
+                          'Code graph automatic recovery scheduling failed (unknown; recovery: diagnose).',
+                        ),
                     ),
                     Effect.forkIn(scope),
                     Effect.asVoid,

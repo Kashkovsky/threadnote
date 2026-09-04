@@ -514,11 +514,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
         }),
         0,
         options.interlock?.afterWorktreeDrain,
-      ).pipe(
-        Effect.catch(cause =>
-          isFileLockTimeout(cause) ? Effect.succeed('active-build' as const) : Effect.fail(cause),
-        ),
-      );
+      ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed('active-build' as const)));
       if (maintained !== 'maintained') {
         deferredDatabases += 1;
         yield* progress({
@@ -562,7 +558,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
         ),
         0,
         options.interlock?.afterWorktreeDrain,
-      ).pipe(Effect.catch(cause => (isFileLockTimeout(cause) ? Effect.succeed(0) : Effect.fail(cause))));
+      ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed(0)));
       if (cleaned === undefined) {
         databaseCount += 1;
         deferredDatabases += 1;

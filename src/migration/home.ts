@@ -280,16 +280,12 @@ export const migrateOpenVikingHome = (
   Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo
 > =>
   migrateOpenVikingHomeImpl(options).pipe(
-    Effect.flatMap(result =>
-      isHomeMigrationResult(result)
-        ? Effect.succeed(result)
-        : Effect.fail(
-            HomeMigrationFailed.make({
-              cause: result,
-              message: 'OpenViking home migration returned an invalid result.',
-              operation: 'migrate OpenViking home',
-            }),
-          ),
+    Effect.filterOrFail(isHomeMigrationResult, result =>
+      HomeMigrationFailed.make({
+        cause: result,
+        message: 'OpenViking home migration returned an invalid result.',
+        operation: 'migrate OpenViking home',
+      }),
     ),
     Effect.mapError(cause =>
       isHomeMigrationError(cause)

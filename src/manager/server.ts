@@ -398,10 +398,9 @@ export function createManagerServer(context: ApiContext) {
     const response: ManagerResponseSink = {};
     const managerRequest: ManagerRequest = {
       body: request.json.pipe(
-        Effect.flatMap(parsed =>
-          Predicate.isObject(parsed)
-            ? Effect.succeed(parsed)
-            : Effect.fail(ManagerOperationError.make({message: 'Expected a JSON object body.'})),
+        Effect.filterOrFail(
+          (parsed): parsed is Schema.JsonObject => Predicate.isObject(parsed),
+          () => ManagerOperationError.make({message: 'Expected a JSON object body.'}),
         ),
       ),
       headers: request.headers,
@@ -1041,25 +1040,23 @@ const readTree: (
       };
     }
     const entries = yield* readdir(path, {withFileTypes: true});
-    const children = yield* Effect.all(
+    const children = yield* Effect.forEach(
       entries
         .filter(entry => entry.isDirectory() || entry.isFile())
         .sort(
           (left, right) =>
             Number(right.isDirectory()) - Number(left.isDirectory()) || left.name.localeCompare(right.name),
-        )
-        .map(
-          Effect.fn('manager.readTreeChild')(function* (entry) {
-            const childRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-            return yield* readTree(
-              config,
-              yield* pathJoin(path, entry.name),
-              `${uri}/${entry.name}`,
-              childRelative,
-              options,
-            );
-          }),
         ),
+      Effect.fn('manager.readTreeChild')(function* (entry) {
+        const childRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+        return yield* readTree(
+          config,
+          yield* pathJoin(path, entry.name),
+          `${uri}/${entry.name}`,
+          childRelative,
+          options,
+        );
+      }),
     );
     return {
       children,
@@ -1366,7 +1363,7 @@ function createConsolidation(context: ApiContext, body: Record<string, unknown>)
     };
     context.jobs.set(job.id, job);
     yield* Effect.gen(function* () {
-      const sources = yield* Effect.all(input.sourceUris.map(uri => readManagedMemory(context.config, uri)));
+      const sources = yield* Effect.forEach(input.sourceUris, uri => readManagedMemory(context.config, uri));
       job.draft = yield* runConsolidationAgent(context.config, input.agent, sources);
       job.status = 'completed';
     }).pipe(
@@ -1509,28 +1506,27 @@ function consolidationPrompt(sources: readonly {readonly content: string; readon
 const shareSummaries = Effect.fn('manager.shareSummaries')(function* (config: RuntimeConfig) {
   const teamsFile = yield* readTeamsFile(config);
   const git = yield* findExecutable(['git']);
-  const entries = yield* Effect.all(
-    Object.values(teamsFile.teams).map(
-      Effect.fn('manager.callback')(function* (team) {
-        if (!git) {
-          return {...team, default: teamsFile.defaultTeam === team.name, warning: 'git not found'};
-        }
-        const status = yield* runCommand(git, ['-C', team.worktree, 'status', '--short', '--branch'], {
-          allowFailure: true,
-        });
-        const ahead = yield* gitCount(git, team.worktree, '@{u}..HEAD');
-        const behind = yield* gitCount(git, team.worktree, 'HEAD..@{u}');
-        return {
-          ...team,
-          ahead,
-          behind,
-          default: teamsFile.defaultTeam === team.name,
-          dirty: status.stdout.split('\n').some(line => line.trim().length > 0 && !line.startsWith('##')),
-          status: status.stdout.trim(),
-          warning: status.exitCode === 0 ? undefined : status.stderr.trim() || status.stdout.trim(),
-        };
-      }),
-    ),
+  const entries = yield* Effect.forEach(
+    Object.values(teamsFile.teams),
+    Effect.fn('manager.callback')(function* (team) {
+      if (!git) {
+        return {...team, default: teamsFile.defaultTeam === team.name, warning: 'git not found'};
+      }
+      const status = yield* runCommand(git, ['-C', team.worktree, 'status', '--short', '--branch'], {
+        allowFailure: true,
+      });
+      const ahead = yield* gitCount(git, team.worktree, '@{u}..HEAD');
+      const behind = yield* gitCount(git, team.worktree, 'HEAD..@{u}');
+      return {
+        ...team,
+        ahead,
+        behind,
+        default: teamsFile.defaultTeam === team.name,
+        dirty: status.stdout.split('\n').some(line => line.trim().length > 0 && !line.startsWith('##')),
+        status: status.stdout.trim(),
+        warning: status.exitCode === 0 ? undefined : status.stderr.trim() || status.stdout.trim(),
+      };
+    }),
   );
   return entries.sort((left, right) => left.name.localeCompare(right.name));
 });

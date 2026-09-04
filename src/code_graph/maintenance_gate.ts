@@ -306,10 +306,10 @@ export const withCodeGraphTargetWorktreeLock = Effect.fn('codeGraph.withTargetWo
     {...CODE_GRAPH_GATE_LOCK_OPTIONS, retryIntervalMilliseconds: 1, waitTimeoutMilliseconds: 0},
     effect,
   ).pipe(
-    Effect.catch(cause =>
-      isFileLockTimeout(cause)
-        ? Effect.fail(CodeGraphStoreBusyError.of('Code graph worktree is busy.', {operation: 'mutate graph view'}))
-        : Effect.fail(classifyCodeGraphStoreFailure('mutate graph view', cause)),
+    Effect.catchIf(
+      isFileLockTimeout,
+      () => Effect.fail(CodeGraphStoreBusyError.of('Code graph worktree is busy.', {operation: 'mutate graph view'})),
+      cause => Effect.fail(classifyCodeGraphStoreFailure('mutate graph view', cause)),
     ),
   );
 });
@@ -345,7 +345,7 @@ function codeGraphFileLockActive(
       lock,
       {...CODE_GRAPH_GATE_LOCK_OPTIONS, waitTimeoutMilliseconds: 0},
       Effect.succeed(false),
-    ).pipe(Effect.catch(cause => (isFileLockTimeout(cause) ? Effect.succeed(true) : Effect.fail(cause))));
+    ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed(true)));
   });
 }
 

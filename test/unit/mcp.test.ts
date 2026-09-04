@@ -482,11 +482,12 @@ describe('JSON MCP host configuration', () => {
           platform: 'linux',
         });
 
-        yield* Effect.all(
+        yield* Effect.forEach(
           [
             runMcpInstall(testRuntime, 'cursor', {apply: true, name: 'team-memory', toolset: 'full'}),
             runUninstall(testRuntime, {preserveMemories: true}),
-          ].map(operation => operation.pipe(Effect.provideService(SystemInfo, testSystem))),
+          ],
+          operation => operation.pipe(Effect.provideService(SystemInfo, testSystem)),
           {concurrency: 'unbounded'},
         ).pipe(TestClock.withLive);
 

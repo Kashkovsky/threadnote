@@ -65,10 +65,9 @@ export function useExistingDatabase<A, E, R>(
         readwrite: true,
       }),
     ).pipe(
-      Effect.catchCause(cause =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.failCause(cause)
-          : Effect.fail(CodeGraphStoreError.of('Existing code graph database could not be opened.')),
+      Effect.catchCauseIf(
+        cause => !Cause.hasInterruptsOnly(cause),
+        () => Effect.fail(CodeGraphStoreError.of('Existing code graph database could not be opened.')),
       ),
       Effect.flatMap(context => effect.pipe(Effect.provide(context))),
     ),

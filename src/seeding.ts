@@ -442,15 +442,18 @@ const readSeedFile = Effect.fn('seeding.readSeedFile')(function* (projectRoot: s
 
 function optionOnSeedNotFound<A>(effect: Effect.Effect<A, PlatformError.PlatformError>) {
   return effect.pipe(
-    Effect.map(Option.some),
-    Effect.catch(error => (error.reason._tag === 'NotFound' ? Effect.succeed(Option.none<A>()) : Effect.fail(error))),
+    Effect.asSome,
+    Effect.catchIf(
+      error => error.reason._tag === 'NotFound',
+      () => Effect.succeedNone,
+    ),
   );
 }
 
 function readSeedLink(fs: FileSystem.FileSystem, target: string) {
   return fs.readLink(target).pipe(
-    Effect.map(Option.some),
-    Effect.catch(error => (isMissingOrNonLink(error) ? Effect.succeed(Option.none<string>()) : Effect.fail(error))),
+    Effect.asSome,
+    Effect.catchIf(isMissingOrNonLink, () => Effect.succeedNone),
   );
 }
 

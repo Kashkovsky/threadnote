@@ -1245,8 +1245,9 @@ export function probeWindowsProcessStartIdentity(
   timeoutMilliseconds = PROCESS_IDENTITY_QUERY_TIMEOUT_MS,
 ): Effect.Effect<string | undefined> {
   return adapters.native(processId).pipe(
-    Effect.flatMap(identity =>
-      identity === undefined ? adapters.fallback(processId, environment) : Effect.succeed(identity),
+    Effect.filterOrElse(
+      (identity): identity is string => identity !== undefined,
+      () => adapters.fallback(processId, environment),
     ),
     Effect.timeoutOrElse({duration: timeoutMilliseconds, orElse: () => succeedUndefined}),
     Effect.orElseSucceed(() => undefined),

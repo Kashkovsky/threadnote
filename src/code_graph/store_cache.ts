@@ -491,9 +491,7 @@ const writeNormalMaterializedShardCacheRows = Effect.fn('codeGraph.writeNormalMa
     )
     .pipe(
       Effect.as(true),
-      Effect.catch(error =>
-        Schema.is(CodeGraphCacheCapacityPlanChanged)(error) ? Effect.succeed(false) : Effect.fail(error),
-      ),
+      Effect.catchIf(Schema.is(CodeGraphCacheCapacityPlanChanged), () => Effect.succeed(false)),
     );
 });
 
@@ -530,9 +528,7 @@ const repairMaterializedShardCacheRow = Effect.fn('codeGraph.repairMaterializedS
       )
       .pipe(
         Effect.as(true),
-        Effect.catch(error =>
-          Schema.is(CodeGraphCacheCapacityPlanChanged)(error) ? Effect.succeed(false) : Effect.fail(error),
-        ),
+        Effect.catchIf(Schema.is(CodeGraphCacheCapacityPlanChanged), () => Effect.succeed(false)),
       );
     if (!completed) {
       yield* Effect.yieldNow;

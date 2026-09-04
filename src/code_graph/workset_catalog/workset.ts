@@ -633,11 +633,11 @@ function prepareConfiguredSnapshot(
         project: projectName,
       }).pipe(
         Effect.andThen(index),
-        Effect.catch(error =>
-          attempt < CODE_GRAPH_WORKSET_PREPARE_MEMBER_ATTEMPTS_MAXIMUM &&
-          codeGraphWorksetPrepareFailureDetail(error, 'index').retryable
-            ? Effect.sleep(CODE_GRAPH_WORKSET_PREPARE_RETRY_DELAY).pipe(Effect.andThen(indexAttempt(attempt + 1)))
-            : Effect.fail(error),
+        Effect.catchIf(
+          error =>
+            attempt < CODE_GRAPH_WORKSET_PREPARE_MEMBER_ATTEMPTS_MAXIMUM &&
+            codeGraphWorksetPrepareFailureDetail(error, 'index').retryable,
+          () => Effect.sleep(CODE_GRAPH_WORKSET_PREPARE_RETRY_DELAY).pipe(Effect.andThen(indexAttempt(attempt + 1))),
         ),
       );
     };

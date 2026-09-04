@@ -239,15 +239,13 @@ export const readLocalAiAccessToken = Effect.fn('localAi.compat.readAccessToken'
 
 function requireSelectedGeneration(config: LocalAiRuntimeConfig) {
   return resolveSelectedLocalModel(config.agentContextHome, 'generation').pipe(
-    Effect.flatMap(selected =>
-      selected
-        ? Effect.succeed(selected)
-        : Effect.fail(
-            LocalAiOperationError.make({
-              message:
-                'No generation model is selected. Use `threadnote models install` and `threadnote models select generation`.',
-            }),
-          ),
+    Effect.filterOrFail(
+      selected => selected !== undefined,
+      () =>
+        LocalAiOperationError.make({
+          message:
+            'No generation model is selected. Use `threadnote models install` and `threadnote models select generation`.',
+        }),
     ),
   );
 }

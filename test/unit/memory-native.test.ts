@@ -624,10 +624,9 @@ describe('native memory workflow', () => {
               return fs.writeFileString(target, content, options);
             },
           });
-          yield* Effect.all(
-            cases.map(candidate =>
-              captureConsole(runCompact(candidate.config, {apply: true, project: candidate.project})),
-            ),
+          yield* Effect.forEach(
+            cases,
+            candidate => captureConsole(runCompact(candidate.config, {apply: true, project: candidate.project})),
             {concurrency: 'unbounded'},
           ).pipe(Effect.provideService(FileSystem.FileSystem, observedFileSystem));
 

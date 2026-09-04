@@ -492,10 +492,9 @@ function optionalDirectory(fs: FileSystem.FileSystem, directory: string) {
 function optionalFileInfo(fs: FileSystem.FileSystem, file: string) {
   return fs.stat(file).pipe(
     Effect.map(info => info as FileSystem.File.Info | undefined),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
-        ? Effect.void
-        : Effect.fail(error),
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound',
+      () => Effect.void,
     ),
   );
 }

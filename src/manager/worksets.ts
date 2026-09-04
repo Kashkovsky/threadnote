@@ -1557,10 +1557,9 @@ function requireKnownManagerWorkset(config: RuntimeConfig, requested: string) {
         ? Effect.succeed(workset.name)
         : Effect.fail(ManagerWorksetApiError.of('workset-not-found', 'Workset definition not found.', 404)),
     ),
-    Effect.catch(error =>
-      Schema.is(ManagerWorksetApiError)(error)
-        ? Effect.fail(error)
-        : Effect.fail(ManagerWorksetApiError.of('manifest-unavailable', 'The seed manifest could not be read.', 500)),
+    Effect.catchIf(
+      error => !Schema.is(ManagerWorksetApiError)(error),
+      () => Effect.fail(ManagerWorksetApiError.of('manifest-unavailable', 'The seed manifest could not be read.', 500)),
     ),
   );
 }
