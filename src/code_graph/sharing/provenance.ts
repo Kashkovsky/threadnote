@@ -2,7 +2,7 @@ import {Effect, FileSystem, Path} from 'effect';
 import {readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {parseSha256Digest, SHA256_HEX, type Sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
-import {graphSharingLayout, graphSharingProvenancePath} from './layout.js';
+import {graphSharingAttemptPath, graphSharingLayout, graphSharingProvenancePath} from './layout.js';
 import {lookupGraphShareTrustReceipt} from './trust.js';
 
 export interface SharedGraphProvenanceV1 {
@@ -12,6 +12,27 @@ export interface SharedGraphProvenanceV1 {
   readonly repositoryId: string;
   readonly schemaVersion: 1;
   readonly snapshotId: string;
+}
+
+export const SHARED_GRAPH_IMPORT_ATTEMPT_REASONS = [
+  'already-installed',
+  'imported',
+  'invalid-enrollment',
+  'quarantined',
+  'repository-mismatch',
+  'trust-pin-mismatch',
+  'unavailable',
+  'unenrolled',
+  'untrusted',
+] as const;
+
+export type SharedGraphImportAttemptReason = (typeof SHARED_GRAPH_IMPORT_ATTEMPT_REASONS)[number];
+
+export interface SharedGraphImportAttemptV1 {
+  readonly imported: boolean;
+  readonly reason: SharedGraphImportAttemptReason;
+  readonly atGeneration?: number;
+  readonly checkpointDigest?: Sha256Digest;
 }
 
 export const writeSharedGraphProvenance = Effect.fn('codeGraph.sharing.writeProvenance')(function* (
@@ -57,6 +78,28 @@ export const loadSharedGraphQuerySource = Effect.fn('codeGraph.sharing.loadQuery
   return sharedGraphQuerySource(provenance, input.localCommit);
 });
 
+export const writeSharedGraphImportAttempt = Effect.fn('codeGraph.sharing.writeImportAttempt')(function* (
+  threadnoteHome: string,
+  checkoutId: string,
+  attempt: SharedGraphImportAttemptV1,
+) {
+  const path = yield* Path.Path;
+  const layout = graphSharingLayout(path, threadnoteHome);
+  yield* writePrivateJsonFile(graphSharingAttemptPath(path, layout.attemptsRoot, checkoutId), attempt);
+});
+
+export const readSharedGraphImportAttempt = Effect.fn('codeGraph.sharing.readImportAttempt')(function* (
+  threadnoteHome: string,
+  checkoutId: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const layout = graphSharingLayout(path, threadnoteHome);
+  const target = graphSharingAttemptPath(path, layout.attemptsRoot, checkoutId);
+  if (!(yield* fs.exists(target))) return undefined;
+  return parseImportAttempt(yield* readJsonFile(target));
+});
+
 export const removeSharedGraphProvenance = Effect.fn('codeGraph.sharing.removeProvenance')(function* (
   threadnoteHome: string,
   checkoutId: string,
@@ -64,8 +107,10 @@ export const removeSharedGraphProvenance = Effect.fn('codeGraph.sharing.removePr
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const layout = graphSharingLayout(path, threadnoteHome);
-  const target = graphSharingProvenancePath(path, layout.provenanceRoot, checkoutId);
-  if (yield* fs.exists(target)) yield* fs.remove(target, {force: true});
+  const provenance = graphSharingProvenancePath(path, layout.provenanceRoot, checkoutId);
+  const attempt = graphSharingAttemptPath(path, layout.attemptsRoot, checkoutId);
+  if (yield* fs.exists(provenance)) yield* fs.remove(provenance, {force: true});
+  if (yield* fs.exists(attempt)) yield* fs.remove(attempt, {force: true});
 });
 
 export function sharedGraphQuerySource(
@@ -84,6 +129,40 @@ export function sharedGraphQuerySource(
     kind: 'shared-base-plus-local-overlay',
     localCommit,
     profileDigest: provenance.profileDigest,
+  };
+}
+
+function parseImportAttempt(value: unknown): SharedGraphImportAttemptV1 {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw graphSharingFailure('Shared graph import attempt is invalid.');
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.imported !== 'boolean' || typeof record.reason !== 'string') {
+    throw graphSharingFailure('Shared graph import attempt is invalid.');
+  }
+  if (!SHARED_GRAPH_IMPORT_ATTEMPT_REASONS.includes(record.reason as SharedGraphImportAttemptReason)) {
+    throw graphSharingFailure('Shared graph import attempt is invalid.');
+  }
+  const reason = record.reason as SharedGraphImportAttemptReason;
+  if (record.imported !== (reason === 'imported')) {
+    throw graphSharingFailure('Shared graph import attempt is invalid.');
+  }
+  const atGeneration =
+    record.atGeneration === undefined
+      ? undefined
+      : typeof record.atGeneration === 'number' && Number.isSafeInteger(record.atGeneration) && record.atGeneration >= 1
+        ? record.atGeneration
+        : undefined;
+  if (record.atGeneration !== undefined && atGeneration === undefined) {
+    throw graphSharingFailure('Shared graph import attempt is invalid.');
+  }
+  const checkpointDigest =
+    record.checkpointDigest === undefined ? undefined : parseSha256Digest(String(record.checkpointDigest));
+  return {
+    imported: record.imported,
+    reason,
+    ...(atGeneration === undefined ? {} : {atGeneration}),
+    ...(checkpointDigest === undefined ? {} : {checkpointDigest}),
   };
 }
 

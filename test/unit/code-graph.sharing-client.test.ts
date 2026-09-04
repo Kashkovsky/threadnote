@@ -3,6 +3,7 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {it} from 'vitest';
 import {Effect, FileSystem, Layer, Path, Schema} from 'effect';
+import * as FC from 'effect/testing/FastCheck';
 import {readFile} from '../helpers/node-fs-promises.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {fileURLToPath} from '../helpers/node-url.js';
@@ -19,7 +20,12 @@ import {
 } from '../../src/code_graph/sharing/artifacts.js';
 import {putCasBytes, putCasFile} from '../../src/code_graph/sharing/cas.js';
 import {putGraphShareCheckpointLayers} from '../../src/code_graph/sharing/checkpoint_cas.js';
-import {maybeImportSharedGraphBase, selectPublishedAncestorManifest} from '../../src/code_graph/sharing/client.js';
+import {
+  maybeImportSharedGraphBase,
+  captureSharedGraphImportBase,
+  runGraphShareStatus,
+  selectPublishedAncestorManifest,
+} from '../../src/code_graph/sharing/client.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
 import {GraphSharingError} from '../../src/code_graph/sharing/errors.js';
 import {
@@ -35,7 +41,9 @@ import {
 } from '../../src/code_graph/sharing/profile.js';
 import {
   loadSharedGraphQuerySource,
+  readSharedGraphImportAttempt,
   readSharedGraphProvenance,
+  writeSharedGraphImportAttempt,
   writeSharedGraphProvenance,
 } from '../../src/code_graph/sharing/provenance.js';
 import {
@@ -44,6 +52,7 @@ import {
   writeGraphShareTrustReceipt,
 } from '../../src/code_graph/sharing/trust.js';
 import type {RepositoryIdentity} from '../../src/code_graph/types.js';
+import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
@@ -70,9 +79,19 @@ describe('graph share import and inspect source', () => {
       readFile(join(repoRoot, 'src/mcp/server/recall.ts'), 'utf8'),
       readFile(join(repoRoot, 'src/mcp/server/memory.ts'), 'utf8'),
     ]);
-    expect(indexer).toContain('maybeImportSharedGraphBase');
+    expect(indexer).toContain('captureSharedGraphImportBase');
+    expect(recall).not.toContain('captureSharedGraphImportBase');
     expect(recall).not.toContain('maybeImportSharedGraphBase');
     expect(memory).not.toContain('maybeImportSharedGraphBase');
+    expect(memory).not.toContain('captureSharedGraphImportBase');
+    const ensureCommit = indexer.slice(indexer.indexOf('const ensureCommitWithSummary'));
+    expect(ensureCommit.indexOf('captureSharedGraphImportBase')).toBeGreaterThan(-1);
+    expect(ensureCommit.indexOf('captureSharedGraphImportBase')).toBeLessThan(
+      ensureCommit.indexOf('withCodeGraphProcessLock'),
+    );
+    expect(ensureCommit.indexOf('hydrateSharedParseCache')).toBeLessThan(
+      ensureCommit.indexOf('withCodeGraphProcessLock'),
+    );
   });
 
   effectIt.effect('omits inspect source when provenance is corrupt, untrusted, or not the selected snapshot', () =>
@@ -141,7 +160,13 @@ describe('graph share import and inspect source', () => {
         snapshotId: 'cgsn_imported',
       });
       const skipped = yield* maybeImportSharedGraphBase(importRequest(published.repo, home));
-      expect(skipped).toEqual({imported: false, reason: 'already-installed', snapshotId: 'cgsn_imported'});
+      expect(skipped).toEqual({
+        imported: false,
+        reason: 'already-installed',
+        snapshotId: 'cgsn_imported',
+        checkpointDigest: published.checkpointDigest,
+        atGeneration: 1,
+      });
       expect(yield* quarantineNames(home)).toEqual([]);
     }).pipe(provideTestLayer(sharingLayer)),
   );
@@ -387,6 +412,83 @@ describe('graph share import and inspect source', () => {
       ).toBe(true);
     }).pipe(provideTestLayer(sharingLayer)),
   );
+
+  effectIt.effect('records lastImport without replacing last-good provenance when transfer misses', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-last-import-'});
+      const enrolled = yield* enrolledHome(home, {includeFrontier: false});
+      yield* writeSharedGraphProvenance(home, CHECKOUT_ID, {
+        checkpointDigest: sha256Digest(CHECKPOINT_BYTES),
+        frontierCommit: 'a'.repeat(40),
+        profileDigest: enrolled.profileDigest,
+        repositoryId: REPOSITORY_ID,
+        schemaVersion: 1,
+        snapshotId: 'cgsn_previous',
+      });
+      const captured = yield* captureSharedGraphImportBase(importRequest(enrolled.repo, home));
+      expect(captured).toEqual({imported: false, reason: 'unavailable'});
+      expect((yield* readSharedGraphProvenance(home, CHECKOUT_ID))?.snapshotId).toBe('cgsn_previous');
+      expect(yield* readSharedGraphImportAttempt(home, CHECKOUT_ID)).toEqual({
+        imported: false,
+        reason: 'unavailable',
+      });
+      yield* git(enrolled.repo, ['init', '-q', '--initial-branch=main']);
+      yield* git(enrolled.repo, ['remote', 'add', 'origin', 'https://github.com/acme/graph-share.git']);
+      const identity = yield* resolveRepositoryIdentity(enrolled.repo);
+      yield* writeSharedGraphImportAttempt(home, identity.checkoutId, {
+        imported: false,
+        reason: 'unavailable',
+      });
+      const status = yield* runGraphShareStatus(runtimeConfig(home), {cwd: enrolled.repo, json: true});
+      expect(status.lastImport).toEqual({imported: false, reason: 'unavailable'});
+      expect(path.join(graphSharingLayout(path, home).attemptsRoot, `${CHECKOUT_ID}.json`)).not.toBe(
+        path.join(graphSharingLayout(path, home).provenanceRoot, `${CHECKOUT_ID}.json`),
+      );
+    }).pipe(provideTestLayer(sharingLayer)),
+  );
+
+  effectIt.effect.prop(
+    'already-installed import stays idempotent and keeps provenance snapshot identity',
+    {
+      snapshotId: FC.array(FC.constantFrom(...'abcdef0123456789'), {maxLength: 16, minLength: 8}).map(
+        characters => `cgsn_${characters.join('')}`,
+      ),
+    },
+    ({snapshotId}) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-idempotent-'});
+        const published = yield* enrolledHome(home, {includeFrontier: true, skipCheckpoint: true});
+        yield* writeSharedGraphProvenance(home, CHECKOUT_ID, {
+          checkpointDigest: published.checkpointDigest,
+          frontierCommit: 'a'.repeat(40),
+          profileDigest: published.profileDigest,
+          repositoryId: REPOSITORY_ID,
+          schemaVersion: 1,
+          snapshotId,
+        });
+        const first = yield* captureSharedGraphImportBase(importRequest(published.repo, home));
+        const second = yield* captureSharedGraphImportBase(importRequest(published.repo, home));
+        expect(first).toMatchObject({
+          imported: false,
+          reason: 'already-installed',
+          snapshotId,
+          checkpointDigest: published.checkpointDigest,
+          atGeneration: 1,
+        });
+        expect(second).toEqual(first);
+        expect((yield* readSharedGraphProvenance(home, CHECKOUT_ID))?.snapshotId).toBe(snapshotId);
+        expect(yield* readSharedGraphImportAttempt(home, CHECKOUT_ID)).toEqual({
+          imported: false,
+          reason: 'already-installed',
+          checkpointDigest: published.checkpointDigest,
+          atGeneration: 1,
+        });
+      }).pipe(provideTestLayer(sharingLayer)),
+    {fastCheck: {numRuns: 15}},
+  );
 });
 
 function importRequest(repoRoot: string, home: string) {
@@ -394,6 +496,16 @@ function importRequest(repoRoot: string, home: string) {
     cwd: repoRoot,
     identity: identity(repoRoot),
     threadnoteHome: home,
+  };
+}
+
+function runtimeConfig(home: string) {
+  return {
+    account: 'local' as const,
+    agentContextHome: home,
+    agentId: 'threadnote',
+    manifestPath: `${home}/seed-manifest.yaml`,
+    user: 'local',
   };
 }
 

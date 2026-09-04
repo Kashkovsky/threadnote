@@ -7,6 +7,7 @@ export const GRAPH_SHARING_TRUST_RECEIPTS_FILE = 'trust-receipts.json';
 export const GRAPH_SHARING_PUBLISHER_KEY_FILE = 'publisher.ed25519.json';
 
 export interface GraphSharingLayout {
+  readonly attemptsRoot: string;
   readonly casRoot: string;
   readonly clientStateLockPath: string;
   readonly clientStatePath: string;
@@ -28,6 +29,7 @@ export function graphSharingLayout(path: Path.Path, threadnoteHome: string, casR
   const root = path.join(threadnoteHome, GRAPH_SHARING_DIRECTORY);
   const resolvedCas = casRoot ?? path.join(root, 'cas');
   return {
+    attemptsRoot: path.join(root, 'attempts'),
     casRoot: resolvedCas,
     clientStateLockPath: path.join(root, `${GRAPH_SHARING_CLIENT_STATE_FILE}.lock`),
     clientStatePath: path.join(root, GRAPH_SHARING_CLIENT_STATE_FILE),
@@ -64,6 +66,10 @@ export function graphSharingWorkerWorkPath(path: Path.Path, workerRoot: string, 
 
 export function graphSharingProvenancePath(path: Path.Path, provenanceRoot: string, checkoutId: string): string {
   return path.join(provenanceRoot, `${checkoutId}.json`);
+}
+
+export function graphSharingAttemptPath(path: Path.Path, attemptsRoot: string, checkoutId: string): string {
+  return path.join(attemptsRoot, `${checkoutId}.json`);
 }
 
 export function graphSharingCasBlobPath(path: Path.Path, casRoot: string, hex: string): string {
