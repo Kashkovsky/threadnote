@@ -134,6 +134,29 @@ export function publishGraphShareBatch(
   };
 }
 
+export function adoptPublishedFrontier(
+  state: GraphShareFrontierMachineV1,
+  input: {
+    readonly generation: number;
+    readonly manifestDigest: Sha256Digest;
+    readonly sourceCommit: string;
+  },
+): GraphShareFrontierMachineV1 {
+  return {
+    ...state,
+    buildingFrontier: null,
+    collectingStartedAtSeconds: null,
+    frozenActionKeys: [],
+    frozenBatchId: null,
+    generation: input.generation,
+    observedHead: input.sourceCommit,
+    pendingRange: [],
+    phase: 'published',
+    previousManifestDigest: input.manifestDigest,
+    publishedFrontier: input.sourceCommit,
+  };
+}
+
 export function failGraphShareBatch(state: GraphShareFrontierMachineV1): GraphShareFrontierMachineV1 {
   if (state.phase !== 'frozen' && state.phase !== 'assembling' && state.phase !== 'verifying') return state;
   return {

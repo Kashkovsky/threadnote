@@ -23,6 +23,7 @@ import {
 import {parseGraphShareWorkerAdvertisements, planGraphWorkerActions} from '../../src/code_graph/sharing/worker.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {parseGraphShareFrontierManifest} from '../../src/code_graph/sharing/artifacts.js';
+import {adoptPublishedFrontier} from '../../src/code_graph/sharing/frontier.js';
 import {graphShareLanguageAndRole, graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
 import {
   admitsSharedParseCacheHydrate,
@@ -146,6 +147,26 @@ describe('graph share deltas, coordinator, contribution, and workers', () => {
       path: '/v1/results',
     });
     expect(quarantined.response.status).toBe(409);
+  });
+
+  it('surfaces published generation on GET /v1/status after adopting a frontier', () => {
+    const digest = sha256Digest('frontier');
+    const sourceCommit = 'c'.repeat(40);
+    const idle = emptyGraphShareCoordinatorState({organization: 'acme', repositoryId: 'a'.repeat(64)});
+    const adopted = {
+      ...idle,
+      machine: adoptPublishedFrontier(idle.machine, {
+        generation: 1,
+        manifestDigest: digest,
+        sourceCommit,
+      }),
+    };
+    const status = dispatchGraphShareControl(adopted, {bodyBytes: 0, method: 'GET', path: '/v1/status'});
+    expect(status.response.body).toMatchObject({
+      generation: 1,
+      phase: 'published',
+      publishedFrontier: sourceCommit,
+    });
   });
 
   it('queues contribution only after join and skips missing git blobs', () => {

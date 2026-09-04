@@ -8,14 +8,17 @@ import {dirname, join} from '../helpers/node-path.js';
 import {fileURLToPath} from '../helpers/node-url.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
-import {parseGraphShareFrontierManifest} from '../../src/code_graph/sharing/artifacts.js';
+import {codeGraphCheckpointFileFactCacheIdentity} from '../../src/code_graph/checkpoint/file_fact_identity.js';
+import {encodeCodeGraphCheckpointPackV1} from '../../src/code_graph/checkpoint/pack.js';
 import {
   generateGraphSharePublisherKey,
+  parseGraphShareFrontierManifest,
   signGraphShareFrontier,
   type GraphShareFrontierManifestV1,
   type GraphShareSignatureEnvelopeV1,
 } from '../../src/code_graph/sharing/artifacts.js';
-import {putCasBytes} from '../../src/code_graph/sharing/cas.js';
+import {putCasBytes, putCasFile} from '../../src/code_graph/sharing/cas.js';
+import {putGraphShareCheckpointLayers} from '../../src/code_graph/sharing/checkpoint_cas.js';
 import {maybeImportSharedGraphBase, selectPublishedAncestorManifest} from '../../src/code_graph/sharing/client.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
 import {GraphSharingError} from '../../src/code_graph/sharing/errors.js';
@@ -326,6 +329,64 @@ describe('graph share import and inspect source', () => {
       expect(unavailable).toBe(true);
     }).pipe(provideTestLayer(sharingLayer)),
   );
+
+  effectIt.effect('assembles a metadataDigest checkpoint from local layers when the assembled blob is absent', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-layers-import-'});
+      const enrolled = yield* enrolledHome(home, {includeFrontier: true, skipCheckpoint: true});
+      const pack = encodeCodeGraphCheckpointPackV1(
+        clientCheckpointMetadata(3),
+        clientCheckpointRecords(['src/a.ts', 'src/b.ts', 'src/c.ts']),
+        {limits: {targetUncompressedChunkBytes: 400}},
+      );
+      expect(pack.header.chunks.length).toBeGreaterThan(1);
+      const artifactPath = path.join(home, 'artifact.cgcp');
+      yield* fs.writeFile(artifactPath, pack.bytes);
+      const artifactDigest = yield* putCasFile(enrolled.casRoot, artifactPath);
+      const published = yield* putGraphShareCheckpointLayers(enrolled.casRoot, artifactDigest);
+      yield* fs.remove(graphSharingCasBlobPath(path, enrolled.casRoot, sha256HexFromDigest(artifactDigest)));
+      const manifest: GraphShareFrontierManifestV1 = {
+        branch: 'refs/heads/main',
+        checkpoint: {
+          manifestDigest: artifactDigest,
+          metadataDigest: published.metadataDigest,
+          snapshotId: 'cgsn_imported',
+          sourceCommit: 'a'.repeat(40),
+        },
+        deltas: [],
+        generation: 1,
+        graphAbi: 'e'.repeat(64),
+        graphContentId: `cgc_${'d'.repeat(40)}`,
+        logicalGraphDigest: `sha256:${'2'.repeat(64)}`,
+        previousManifestDigest: null,
+        profileDigest: enrolled.profileDigest,
+        publisherFence: 1,
+        repositoryId: REPOSITORY_ID,
+        schemaVersion: 1,
+        snapshotId: 'cgsn_imported',
+        sourceCommit: 'a'.repeat(40),
+      };
+      const signed = yield* signGraphShareFrontier(enrolled.key, manifest);
+      const manifestDigest = yield* putCasBytes(enrolled.casRoot, new TextEncoder().encode(canonicalJson(manifest)));
+      const envelopeDigest = yield* putCasBytes(
+        enrolled.casRoot,
+        new TextEncoder().encode(canonicalJson(signed.envelope)),
+      );
+      const layout = graphSharingLayout(path, home, enrolled.casRoot);
+      yield* fs.writeFileString(
+        path.join(layout.frontiersRoot, REPOSITORY_ID, 'latest.json'),
+        `${JSON.stringify({envelopeDigest, manifestDigest, schemaVersion: 1})}\n`,
+      );
+      const result = yield* maybeImportSharedGraphBase(importRequest(enrolled.repo, home));
+      expect(result.imported).toBe(false);
+      expect(result.reason).not.toBe('unavailable');
+      expect(
+        yield* fs.exists(graphSharingCasBlobPath(path, enrolled.casRoot, sha256HexFromDigest(artifactDigest))),
+      ).toBe(true);
+    }).pipe(provideTestLayer(sharingLayer)),
+  );
 });
 
 function importRequest(repoRoot: string, home: string) {
@@ -417,6 +478,7 @@ const enrolledHome = Effect.fn('test.graphShare.enrolledHome')(function* (
     checkpointDigest,
     enrollment,
     envelope: signed.envelope,
+    key,
     manifestDigest,
     profile,
     profileDigest,
@@ -441,4 +503,60 @@ function flipHex(value: string): string {
 
 function git(repo: string, args: readonly string[]) {
   return runCommandEffect('git', ['-C', repo, ...args]);
+}
+
+const CLIENT_SHA256_ZERO = '0'.repeat(64);
+const CLIENT_SHA1_ZERO = '0'.repeat(40);
+const CLIENT_UTF8 = new TextEncoder();
+
+function clientCheckpointMetadata(eligibleFiles: number) {
+  return {
+    abi: {
+      checkpointSemanticVersion: 1 as const,
+      graphSchemaVersion: 1,
+      inventoryPolicyVersion: 1,
+      languagePacks: [],
+      lexicalLogicalFormatVersion: 1,
+      pathPolicy: 'repository-relative-posix-v1' as const,
+      referenceResolutionVersion: 'resolution-v1' as const,
+      workspaceModelVersion: 'workspace-v1' as const,
+    },
+    coverage: {eligibleFiles, excludedFiles: 0, reasons: [], state: 'complete' as const},
+    repository: {
+      caseMode: 'sensitive' as const,
+      displayName: 'checkpoint-fixture',
+      objectFormat: 'sha1' as const,
+      repositoryId: CLIENT_SHA256_ZERO,
+    },
+    source: {
+      commit: CLIENT_SHA1_ZERO,
+      extractorSet: 'typescript-v1',
+      graphContentId: `cgc_${CLIENT_SHA1_ZERO}`,
+    },
+  };
+}
+
+function clientCheckpointRecords(paths: readonly string[]) {
+  return paths.flatMap(filePath => {
+    const facts = {diagnostics: [], edges: [], path: filePath, symbols: []};
+    return [
+      {
+        blobId: CLIENT_SHA1_ZERO,
+        contentHash: CLIENT_SHA256_ZERO,
+        kind: 'file' as const,
+        language: 'typescript',
+        mode: '100644',
+        path: filePath,
+        size: CLIENT_UTF8.encode(filePath).byteLength,
+        source: 'commit' as const,
+      },
+      {
+        cacheIdentity: codeGraphCheckpointFileFactCacheIdentity(facts),
+        factRole: 'materialized' as const,
+        facts,
+        kind: 'file-fact' as const,
+        path: filePath,
+      },
+    ];
+  });
 }
