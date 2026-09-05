@@ -131,10 +131,9 @@ authorize a new host.
 
 `join` writes a mode-0600 trust receipt under `~/.threadnote/graph-sharing/`. Until that receipt exists, Threadnote
 makes no CAS or registry request from the enrollment file and keeps the existing local graph. `join` records trust only;
-the next `graph index` downloads and imports a verified checkpoint. `join --read-only` never uploads. Invalid enrollment,
+the next `graph index` or committed-base `ensureCommit` downloads and imports a verified ancestor checkpoint. `join --read-only` never uploads. Invalid enrollment,
 digest mismatch, and signature failure fail closed for the candidate and keep the last ready local graph. `leave` revokes
 the receipt and clears shared-base provenance so inspect no longer reports a shared source. Missing enrollment is ordinary
-local indexing.
-
-When inspect returns a graph built from a shared base, MCP includes `source.kind: "shared-base-plus-local-overlay"`
+local indexing. Transfer misses stay fail-open: `graph share status` reports `lastImport` without replacing last-good
+provenance. When inspect returns a graph built from a shared base, MCP includes `source.kind: "shared-base-plus-local-overlay"`
 with the profile digest, frontier commit, and local commit. Recall does not start this work.

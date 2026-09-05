@@ -80,7 +80,9 @@ export const runGraphShareStatusCommand = Effect.fn('codeGraph.sharing.statusCom
   }
   yield* Console.log(
     result.enrolled
-      ? `Graph sharing enrolled${result.trusted ? `; ${result.accessMode ?? 'trusted'}` : '; not joined'}`
+      ? `Graph sharing enrolled${result.trusted ? `; ${result.accessMode ?? 'trusted'}` : '; not joined'}${
+          result.lastImport === undefined ? '' : `; last import ${result.lastImport.reason}`
+        }`
       : 'Graph sharing is not enrolled; local graph behavior is unchanged.',
   );
   return result;

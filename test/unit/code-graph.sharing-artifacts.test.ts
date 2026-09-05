@@ -1,4 +1,4 @@
-import {describe, expect, it as effectIt} from '@effect/vitest';
+import {describe, expect, it, it as effectIt} from '@effect/vitest';
 import {Effect, Result} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
@@ -49,6 +49,17 @@ describe('graph share frontier signatures', () => {
       expect(Result.isFailure(result)).toBe(true);
     }),
   );
+
+  it('rejects revspec sourceCommit and a mismatched checkpoint sourceCommit', () => {
+    expect(() =>
+      parseGraphShareFrontierManifest({
+        ...MANIFEST,
+        checkpoint: {...MANIFEST.checkpoint, sourceCommit: 'HEAD'},
+        sourceCommit: 'HEAD',
+      }),
+    ).toThrow(/object id/i);
+    expect(() => parseGraphShareFrontierManifest({...MANIFEST, sourceCommit: 'b'.repeat(40)})).toThrow(/must match/i);
+  });
 
   effectIt.effect('fail-closes when the expected publisher fingerprint does not match', () =>
     Effect.gen(function* () {

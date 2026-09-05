@@ -72,7 +72,7 @@ import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {CodeGraphParserPool} from './parser_worker.js';
 import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
-import {maybeImportSharedGraphBase} from './sharing/client.js';
+import {captureSharedGraphImportBase} from './sharing/client.js';
 import {
   drainQueuedGraphShareContributions,
   enqueueLocalGraphShareParseResults,
@@ -198,12 +198,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   ),
             };
             if (yield* fs.exists(graphShareEnrollmentPath(path, initialIdentity.repoRoot))) {
-              yield* maybeImportSharedGraphBase({
+              yield* captureSharedGraphImportBase({
                 cwd: request.cwd,
                 identity: initialIdentity,
                 onProgress: options.onProgress,
                 threadnoteHome: request.threadnoteHome,
-              }).pipe(Effect.ignore);
+              });
             }
             const capacityProtection: DirectPersistentCapacityProtection = {
               availableDiskBytes:
@@ -1024,6 +1024,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
                   ),
             };
+            const commitIdentity = {...initialIdentity, headCommit: request.commit};
             const capacityProtection: DirectPersistentCapacityProtection = {
               availableDiskBytes:
                 options.diskCapacityAvailableBytes ?? ((target: string) => system.availableDiskBytes(target)),
@@ -1034,6 +1035,28 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               temporaryDirectory: system.tempDirectory,
               walAutoCheckpointPages: options.sqliteWriterTuning?.walAutoCheckpointPages ?? 1_000,
             };
+            if (yield* fs.exists(graphShareEnrollmentPath(path, initialIdentity.repoRoot))) {
+              yield* captureSharedGraphImportBase({
+                cwd: request.cwd,
+                identity: commitIdentity,
+                onProgress: options.onProgress,
+                threadnoteHome: request.threadnoteHome,
+              });
+            }
+            yield* hydrateSharedParseCache({
+              databasePath: layout.databasePath,
+              identity: commitIdentity,
+              persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
+                capacityProtection,
+                fs,
+                identity: commitIdentity,
+                layout,
+                onProgress: options.onProgress,
+                threadnoteHome: options.threadnoteHome,
+              }),
+              store,
+              threadnoteHome: request.threadnoteHome,
+            }).pipe(Effect.ignore);
             const commitBuild = withCodeGraphProcessLock(
               fs,
               layout.lockPath,
@@ -1191,6 +1214,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
           Effect.provideService(SystemInfo, system),
+          Effect.provideService(CodeGraphStore, store),
+          Effect.provideService(CodeGraphLanguagePackRegistry, languagePacks),
+          Effect.provideService(CodeGraphMaintenanceCoordinator, maintenance),
           Effect.provideService(HttpClient.HttpClient, http),
           Effect.catchIf(
             cause => Schema.is(CachedCodeGraphFactUnavailableDuringIndex)(cause) && !bypassCachedFacts,

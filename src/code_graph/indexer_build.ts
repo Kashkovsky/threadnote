@@ -863,9 +863,22 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
     skipped: input.inventory.skipped,
   };
   const extractorSet = extractorSetIdentity(cleanInventory.files, input.languagePacks);
+  const graphContentId = graphContentIdentity(extractorSet, cleanInventory.files);
   const logicalSnapshotId = snapshotIdentity(input.identity, false, extractorSet, cleanInventory.files);
   const snapshotId = forcedSnapshotIdentity(logicalSnapshotId, input.forceGeneration);
-  const existing = yield* input.store.currentLexicalReadySnapshotById(input.layout.databasePath, snapshotId);
+  const existingExact = yield* input.store.currentLexicalReadySnapshotById(input.layout.databasePath, snapshotId);
+  const existing =
+    existingExact ??
+    (input.force
+      ? undefined
+      : yield* reusableReadySnapshotForCleanCommit({
+          databasePath: input.layout.databasePath,
+          extractorSet,
+          graphContentId,
+          headCommit: input.identity.headCommit,
+          repositoryId: input.identity.repositoryId,
+          store: input.store,
+        }));
   if (existing) {
     const lease = yield* input.store
       .acquireSnapshotLease(input.layout.databasePath, existing.id, CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS)
@@ -907,7 +920,16 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
     },
     Effect.gen(function* () {
       if (!input.force) {
-        const ready = yield* input.store.currentLexicalReadySnapshotById(input.layout.databasePath, logicalSnapshotId);
+        const ready =
+          (yield* input.store.currentLexicalReadySnapshotById(input.layout.databasePath, logicalSnapshotId)) ??
+          (yield* reusableReadySnapshotForCleanCommit({
+            databasePath: input.layout.databasePath,
+            extractorSet,
+            graphContentId,
+            headCommit: input.identity.headCommit,
+            repositoryId: input.identity.repositoryId,
+            store: input.store,
+          }));
         if (ready) {
           return {
             diagnostics: [],
@@ -929,7 +951,7 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
         edgeCount: 0,
         extractorSet,
         fileCount: 0,
-        graphContentId: graphContentIdentity(extractorSet, cleanInventory.files),
+        graphContentId,
         id: snapshotId,
         repositoryId: input.identity.repositoryId,
         state: 'building',

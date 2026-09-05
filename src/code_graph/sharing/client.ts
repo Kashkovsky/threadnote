@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Option, Path, Schema} from 'effect';
+import {Effect, Exit, FileSystem, Option, Path, Schema} from 'effect';
 import {importCodeGraphCheckpointSnapshot} from '../checkpoint/commands.js';
 import {SystemInfo} from '../../effect/system.js';
 import {resolveRepositoryIdentity} from '../repository.js';
@@ -15,6 +15,7 @@ import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {readVerifiedCasBlob} from './cas.js';
 import {ensureGraphShareCheckpointArtifact} from './checkpoint_cas.js';
 import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
+import type {Sha256Digest} from './digest.js';
 import {graphShareBlobExists, graphShareCommitIsAncestor} from './git.js';
 import {graphShareControlGetFrontier, mirrorCoordinatorCasBlob} from './control_client.js';
 import {graphShareFrontierDiscoveryTag} from './namespace.js';
@@ -36,7 +37,14 @@ import {
   parseGraphShareProfilePointer,
   type GraphShareEnrollmentV1,
 } from './profile.js';
-import {readSharedGraphProvenance, removeSharedGraphProvenance, writeSharedGraphProvenance} from './provenance.js';
+import {
+  readSharedGraphImportAttempt,
+  readSharedGraphProvenance,
+  removeSharedGraphProvenance,
+  writeSharedGraphImportAttempt,
+  writeSharedGraphProvenance,
+  type SharedGraphImportAttemptV1,
+} from './provenance.js';
 import {
   lookupGraphShareTrustReceipt,
   readGraphShareClientState,
@@ -77,6 +85,31 @@ export interface SharedGraphImportRequest {
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
   readonly threadnoteHome: string;
 }
+
+export type SharedGraphImportSkipReason =
+  | 'already-installed'
+  | 'invalid-enrollment'
+  | 'quarantined'
+  | 'repository-mismatch'
+  | 'trust-pin-mismatch'
+  | 'unavailable'
+  | 'unenrolled'
+  | 'untrusted';
+
+export type SharedGraphImportResult =
+  | {
+      readonly atGeneration: number;
+      readonly checkpointDigest: Sha256Digest;
+      readonly imported: true;
+      readonly snapshotId: string;
+    }
+  | {
+      readonly imported: false;
+      readonly reason: SharedGraphImportSkipReason;
+      readonly atGeneration?: number;
+      readonly checkpointDigest?: Sha256Digest;
+      readonly snapshotId?: string;
+    };
 
 const sharingProgress = (
   onProgress: SharedGraphImportRequest['onProgress'],
@@ -173,6 +206,9 @@ export const runGraphShareStatus = Effect.fn('codeGraph.sharing.status')(functio
   const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
   const pointerPath = graphSharingFrontierPointerPath(path, layout.frontiersRoot, identity.repositoryId);
   const frontier = enrolled && (yield* fs.exists(pointerPath)) ? yield* readJsonFile(pointerPath) : undefined;
+  const lastImport = yield* readSharedGraphImportAttempt(config.agentContextHome, identity.checkoutId).pipe(
+    Effect.orElseSucceed(() => undefined),
+  );
   return {
     accessMode: trust?.accessMode,
     enrolled,
@@ -184,6 +220,7 @@ export const runGraphShareStatus = Effect.fn('codeGraph.sharing.status')(functio
     type: 'code-graph-share-status' as const,
     version: 1 as const,
     ...(frontier === undefined ? {} : {frontier}),
+    ...(lastImport === undefined ? {} : {lastImport}),
   };
 });
 
@@ -236,6 +273,21 @@ export const maybeImportSharedGraphBase = Effect.fn('codeGraph.sharing.maybeImpo
       ),
     ),
   );
+});
+
+export const captureSharedGraphImportBase = Effect.fn('codeGraph.sharing.captureSharedImport')(function* (
+  request: SharedGraphImportRequest,
+) {
+  const exit = yield* Effect.exit(maybeImportSharedGraphBase(request));
+  const result: SharedGraphImportResult = Exit.isSuccess(exit)
+    ? exit.value
+    : {imported: false as const, reason: 'unavailable' as const};
+  yield* writeSharedGraphImportAttempt(
+    request.threadnoteHome,
+    request.identity.checkoutId,
+    sharedGraphImportAttemptFrom(result),
+  ).pipe(Effect.ignore);
+  return result;
 });
 
 const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifiedCheckpoint')(function* (input: {
@@ -325,7 +377,13 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     existing.repositoryId === input.request.identity.repositoryId &&
     existing.profileDigest === profileDigest
   ) {
-    return {imported: false as const, reason: 'already-installed' as const, snapshotId: existing.snapshotId};
+    return {
+      imported: false as const,
+      reason: 'already-installed' as const,
+      snapshotId: existing.snapshotId,
+      checkpointDigest: selected.checkpoint.manifestDigest,
+      atGeneration: selected.generation,
+    };
   }
   const checkpointPath = yield* ensureGraphShareCheckpointArtifact({
     artifactDigest: selected.checkpoint.manifestDigest,
@@ -350,7 +408,12 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     schemaVersion: 1,
     snapshotId: imported.result.snapshotId,
   });
-  return {imported: true as const, snapshotId: imported.result.snapshotId};
+  return {
+    imported: true as const,
+    snapshotId: imported.result.snapshotId,
+    checkpointDigest: selected.checkpoint.manifestDigest,
+    atGeneration: selected.generation,
+  };
 });
 
 export interface GraphShareContributeStatusOptions {
@@ -567,4 +630,21 @@ function decodeValue<A, I>(parse: (value: I) => A, value: I, message: string) {
     try: () => parse(value),
     catch: cause => (Schema.is(GraphSharingError)(cause) ? cause : graphSharingFailure(message, cause)),
   });
+}
+
+export function sharedGraphImportAttemptFrom(result: SharedGraphImportResult): SharedGraphImportAttemptV1 {
+  if (result.imported) {
+    return {
+      imported: true,
+      reason: 'imported',
+      atGeneration: result.atGeneration,
+      checkpointDigest: result.checkpointDigest,
+    };
+  }
+  return {
+    imported: false,
+    reason: result.reason,
+    ...(result.atGeneration === undefined ? {} : {atGeneration: result.atGeneration}),
+    ...(result.checkpointDigest === undefined ? {} : {checkpointDigest: result.checkpointDigest}),
+  };
 }
