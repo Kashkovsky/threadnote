@@ -5,6 +5,8 @@ import {authorizeRemoteRequest, requestedRemoteShare, type AuthorizedRemotePrinc
 import {completeCursorAttestation} from './cursor_oidc.js';
 import {publicRemoteMemoryError, remoteMemoryError, type RemoteMemoryError} from './errors.js';
 import {bearerTokenFromRequest, oauthChallenge, protectedResourceMetadata} from './oauth.js';
+import type {LocalIdp} from './local_idp.js';
+import {isLocalIdpPath} from './local_idp.js';
 import type {RemoteMemoryServiceDependencies} from './service_types.js';
 import {createRemoteMemoryMcpServer} from './tools.js';
 import type {RemoteMemoryRequestExecution} from './request_execution.js';
@@ -15,6 +17,7 @@ const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 export interface RemoteMemoryHttpHandlerOptions {
   readonly config: RemoteMemoryServiceConfig;
   readonly dependencies: RemoteMemoryServiceDependencies;
+  readonly localIdp?: LocalIdp;
 }
 
 export function createRemoteMemoryHttpHandler(
@@ -47,6 +50,10 @@ export async function handleRemoteMemoryHttpRequest(
         protectedResourceMetadata(options.config.publicBaseUrl, [options.config.accessTokenIssuer]),
         requestId,
       );
+    }
+    if (options.localIdp && isLocalIdpPath(path)) {
+      const idpResponse = await options.localIdp.handle(request);
+      if (idpResponse) return withRequestHeaders(idpResponse, requestId);
     }
     if (path === '/mcp') return await handleMcpRequest(options, request, requestId);
     if (path === '/attest/cursor/complete') {
@@ -187,8 +194,9 @@ function validateOrigin(request: Request, allowedOrigins: readonly string[], req
   let origin: string;
   try {
     const parsed = new URL(raw);
+    const loopback = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
     if (
-      parsed.protocol !== 'https:' ||
+      (parsed.protocol !== 'https:' && !(loopback && parsed.protocol === 'http:')) ||
       parsed.username ||
       parsed.password ||
       parsed.pathname !== '/' ||

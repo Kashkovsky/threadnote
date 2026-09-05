@@ -26,6 +26,7 @@ import {withAnonymousTelemetry} from '../../effect/telemetry.js';
 import {
   CURSOR_CLOUD_LOCAL_MCP_TOOLSET,
   CURSOR_CLOUD_MEMORY_ENDPOINT_ENV,
+  CURSOR_CLOUD_MODE_ENV,
   cursorCloudRemoteHybridStatus,
   cursorCloudScopeRoots,
   resolveCursorCloudMemoryScope,
@@ -177,13 +178,19 @@ function registerCursorCloudLocalTools(server: EffectMcpServerAdapter, config: R
       });
       if (!checkedCwd.ok) return checkedCwd.error;
       const system = yield* SystemInfo;
-      const endpoint = system.environment()[CURSOR_CLOUD_MEMORY_ENDPOINT_ENV]?.trim();
+      const environment = system.environment();
+      const endpoint = environment[CURSOR_CLOUD_MEMORY_ENDPOINT_ENV]?.trim();
       if (!endpoint) {
         throw McpServerOperationError.make({
           message: `${CURSOR_CLOUD_MEMORY_ENDPOINT_ENV} is required when ${CURSOR_CLOUD_LOCAL_MCP_TOOLSET} is selected.`,
         });
       }
-      const receipt = yield* cursorCloudRemoteHybridStatus(config, {cwd: checkedCwd.value, endpoint});
+      const mode = environment[CURSOR_CLOUD_MODE_ENV]?.trim() === 'org' ? 'org' : undefined;
+      const receipt = yield* cursorCloudRemoteHybridStatus(config, {
+        cwd: checkedCwd.value,
+        endpoint,
+        ...(mode ? {mode} : {}),
+      });
       return {
         content: [{type: 'text' as const, text: JSON.stringify(receipt)}],
         structuredContent: receipt,

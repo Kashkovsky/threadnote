@@ -33,6 +33,7 @@ it.effect.prop(
         const baseSystem = yield* SystemInfo;
         const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-json-mcp-property-'});
         const user = path.join(root, 'user');
+        const home = path.join(user, '.threadnote');
         const bin = path.join(root, 'bin');
         const broker = path.join(bin, 'threadnote-mcp-server');
         const configPath = path.join(user, '.cursor', 'mcp.json');
@@ -40,10 +41,15 @@ it.effect.prop(
           EXTRA_USER_VALUE: extraEnvironmentValue,
           THREADNOTE_ACCOUNT: 'local',
           THREADNOTE_AGENT_ID: 'threadnote',
-          THREADNOTE_HOME: '/tmp/threadnote-test',
+          THREADNOTE_HOME: home,
           THREADNOTE_MCP_CLIENT: 'cursor',
           THREADNOTE_MCP_TOOLSET: 'core',
           THREADNOTE_USER: 'test-user',
+        };
+        const testRuntime: RuntimeConfig = {
+          ...runtime,
+          agentContextHome: home,
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
         };
         const server = reverseEntryOrder
           ? {userMetadata: extraFieldValue, env: environment, args: [], command: broker}
@@ -64,7 +70,7 @@ it.effect.prop(
         yield* fs.makeDirectory(path.dirname(configPath), {recursive: true});
         yield* fs.writeFileString(configPath, original);
 
-        yield* runMcpInstall(runtime, 'cursor', {apply: true}).pipe(Effect.provideService(SystemInfo, testSystem));
+        yield* runMcpInstall(testRuntime, 'cursor', {apply: true}).pipe(Effect.provideService(SystemInfo, testSystem));
 
         expect(yield* fs.readFileString(configPath)).toBe(original);
       }),

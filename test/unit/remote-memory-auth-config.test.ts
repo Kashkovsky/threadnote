@@ -85,6 +85,16 @@ describe('remote memory service configuration', () => {
     expect(config.autoMigrate).toBe(true);
   });
 
+  it('accepts loopback HTTP origins for the local composer OAuth callback', () => {
+    const config = remoteMemoryConfigFromEnvironment({
+      THREADNOTE_REMOTE_ALLOWED_ORIGINS: 'https://cursor.com,http://127.0.0.1:8787,http://localhost:8787',
+      THREADNOTE_REMOTE_DATABASE_URL: 'postgres://threadnote@localhost/threadnote',
+      THREADNOTE_REMOTE_OAUTH_ISSUER: 'http://127.0.0.1:18788',
+      THREADNOTE_REMOTE_PUBLIC_URL: 'http://127.0.0.1:18788',
+    });
+    expect(config.allowedOrigins).toEqual(['https://cursor.com', 'http://127.0.0.1:8787', 'http://localhost:8787']);
+  });
+
   it('accepts only an explicit environment-wide enablement switch', () => {
     const config = remoteMemoryConfigFromEnvironment({...productionEnvironment, THREADNOTE_REMOTE_ENABLED: 'true'});
     expect(config.globallyEnabled).toBe(true);
@@ -111,6 +121,10 @@ describe('remote memory service configuration', () => {
     [{...productionEnvironment, THREADNOTE_REMOTE_ALLOWED_HOSTS: 'memory..example.test'}, 'Host'],
     [{...productionEnvironment, THREADNOTE_REMOTE_ALLOWED_ORIGINS: 'https://cursor.com/path'}, 'Origin'],
     [{...productionEnvironment, THREADNOTE_REMOTE_ALLOWED_ORIGINS: 'http://cursor.com'}, 'Origin'],
+    [
+      {...productionEnvironment, THREADNOTE_REMOTE_ALLOWED_ORIGINS: 'https://cursor.com,http://127.0.0.1:8787'},
+      'Origin',
+    ],
     [{...productionEnvironment, THREADNOTE_REMOTE_OAUTH_JWKS_URL: 'http://identity.example.test/jwks'}, 'HTTPS'],
     [{...productionEnvironment, THREADNOTE_REMOTE_CURSOR_JWKS_URL: 'http://api.cursor.com/jwks'}, 'HTTPS'],
     [{...productionEnvironment, THREADNOTE_REMOTE_PUBLIC_URL: 'https://memory.example.test/path'}, 'origin'],

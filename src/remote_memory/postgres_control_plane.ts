@@ -838,15 +838,19 @@ function validateProvisioningIdentity(issuer: string, subject: string): void {
   } catch {
     throw remoteMemoryError('invalid_request', 'Provisioning issuer is invalid.');
   }
+  const loopback = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
   if (
-    parsed.protocol !== 'https:' ||
+    (parsed.protocol !== 'https:' && !(loopback && parsed.protocol === 'http:')) ||
     parsed.username ||
     parsed.password ||
     parsed.search ||
     parsed.hash ||
     issuer !== parsed.toString().replace(/\/$/u, '')
   ) {
-    throw remoteMemoryError('invalid_request', 'Provisioning issuer must be one canonical credential-free HTTPS URL.');
+    throw remoteMemoryError(
+      'invalid_request',
+      'Provisioning issuer must be one canonical credential-free HTTPS URL, or loopback HTTP.',
+    );
   }
   const hasControlCharacter = [...subject].some(character => {
     const codePoint = character.codePointAt(0) ?? 0;

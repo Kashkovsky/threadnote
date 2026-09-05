@@ -124,6 +124,7 @@ import {
   runCodeGraphCheckpointInspect,
   runCodeGraphCheckpointVerify,
 } from '../code_graph/checkpoint/commands.js';
+import {makeComposerCommands} from './composer_cli.js';
 import {makeGraphSharingCommands} from '../code_graph/sharing/cli.js';
 import {
   CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS,
@@ -922,11 +923,10 @@ const graphCheckpoint = Command.make('checkpoint').pipe(
   ]),
 );
 
-const {graphContribute, graphPublisher, graphShare, graphWorker} = makeGraphSharingCommands(
-  withRuntimeEffect as <E, R>(
-    effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
-  ) => Effect.Effect<void, E, R>,
-);
+const withScopedRuntime = withRuntimeEffect as <E, R>(
+  effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
+) => Effect.Effect<void, E, R>;
+const {graphContribute, graphPublisher, graphShare, graphWorker} = makeGraphSharingCommands(withScopedRuntime);
 
 const graphPurge = Command.make(
   'purge',
@@ -1193,8 +1193,11 @@ const mcpInstall = Command.make(
       Argument.withDescription('codex, claude, cursor, or copilot'),
     ),
     apply: boolean('apply', 'Actually modify the selected agent config'),
+    composerUrl: optionalString('composer-url', 'Organization composer Streamable HTTP MCP URL'),
     name: defaultString('name', 'MCP server name', THREADNOTE_MCP_NAME),
+    project: optionalString('project', 'Write Cursor/Copilot MCP into this repository .cursor/mcp.json'),
     scope: defaultChoice('scope', ['user', 'local', 'project'], 'Claude MCP config scope', 'user'),
+    shareId: optionalString('share-id', 'Organization composer share binding'),
     toolset: optionalChoice('toolset', ['core', 'full'], 'Stdio adapter toolset'),
   },
   ({agent, ...options}) => withRuntimeEffect(config => runMcpInstall(config, agent, options)),
@@ -1914,6 +1917,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('models', models),
   registerTopLevelCommand('index', indexCommand),
   registerTopLevelCommand('graph', graphCommand),
+  registerTopLevelCommand('composer', makeComposerCommands(withScopedRuntime)),
   registerTopLevelCommand('local-ai', localAi),
   registerTopLevelCommand('source', source, {
     productionLog: {

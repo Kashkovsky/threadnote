@@ -1,7 +1,9 @@
-import {createRemoteJWKSet, jwtVerify, type JWTPayload} from 'jose';
+import {createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey} from 'jose';
 import {remoteMemoryError} from './errors.js';
 
 const MAX_BEARER_TOKEN_BYTES = 16 * 1024;
+
+export const COMPOSER_OAUTH_SCOPES = ['memory:read', 'memory:write:durable', 'memory:write:handoff'] as const;
 
 export interface OAuthPrincipalClaims {
   readonly issuer: string;
@@ -19,6 +21,12 @@ export interface OAuthVerifierConfig {
   readonly jwksUrl: URL;
 }
 
+export interface LocalOAuthVerifierConfig {
+  readonly audience: string;
+  readonly issuer: string;
+  readonly publicKey: CryptoKey;
+}
+
 export function bearerTokenFromRequest(request: Request): string {
   const authorization = request.headers.get('authorization');
   if (!authorization) throw remoteMemoryError('unauthorized', 'A bearer access token is required.');
@@ -31,11 +39,22 @@ export function bearerTokenFromRequest(request: Request): string {
 
 export function createOAuthTokenVerifier(config: OAuthVerifierConfig): OAuthTokenVerifier {
   const jwks = createRemoteJWKSet(config.jwksUrl, {cacheMaxAge: 5 * 60_000, timeoutDuration: 3000});
+  return createAccessTokenVerifier(jwks, config);
+}
+
+export function createLocalOAuthTokenVerifier(config: LocalOAuthVerifierConfig): OAuthTokenVerifier {
+  return createAccessTokenVerifier(config.publicKey, config);
+}
+
+function createAccessTokenVerifier(
+  key: CryptoKey | JWTVerifyGetKey,
+  config: {readonly audience: string; readonly issuer: string},
+): OAuthTokenVerifier {
   return {
     verify: async token => {
       let payload: JWTPayload;
       try {
-        ({payload} = await jwtVerify(token, jwks, {
+        ({payload} = await jwtVerify(token, key, {
           algorithms: ['RS256'],
           audience: config.audience,
           clockTolerance: 5,
@@ -66,7 +85,7 @@ export function protectedResourceMetadata(publicBaseUrl: URL, authorizationServe
     bearer_methods_supported: ['header'],
     resource: new URL('/mcp', publicBaseUrl).toString(),
     resource_documentation: new URL('/docs/remote-memory', publicBaseUrl).toString(),
-    scopes_supported: ['memory:read', 'memory:write:durable', 'memory:write:handoff', 'memory:admin'],
+    scopes_supported: [...COMPOSER_OAUTH_SCOPES, 'memory:admin'],
   } as const;
 }
 

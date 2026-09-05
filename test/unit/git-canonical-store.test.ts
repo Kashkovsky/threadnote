@@ -5,7 +5,9 @@ import {dirname, join} from '../helpers/node-path.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
   GitCanonicalMemoryStore,
+  ensureLiveGitShareWorktree,
   gitCanonicalSharePath,
+  gitRemoteUrlsMatch,
   parseGitCanonicalSharePath,
 } from '../../src/remote_memory/git_canonical_store.js';
 import {cloneGitShareWorktree, createGitShareWorktreeFixture, git} from '../helpers/git-share-worktree.js';
@@ -32,6 +34,58 @@ describe('git canonical memory store', () => {
     expect(parseGitCanonicalSharePath('durable/projects/x')).toBeUndefined();
     expect(parseGitCanonicalSharePath('durable/projects/x/y.txt')).toBeUndefined();
     expect(parseGitCanonicalSharePath('../durable/projects/x/y.md')).toBeUndefined();
+  });
+
+  it('refuses an empty git worktree and clones a live team share instead', async () => {
+    const fixture = await createGitShareWorktreeFixture();
+    try {
+      const missing = join(fixture.root, 'missing');
+      expect(await ensureLiveGitShareWorktree({cloneUrl: fixture.remote, worktree: missing})).toBe(missing);
+      expect((await git(['rev-parse', '--verify', 'HEAD'], missing)).trim()).toMatch(/^[0-9a-f]{40}$/u);
+      const emptyDir = join(fixture.root, 'empty-dir');
+      await mkdir(emptyDir, {recursive: true});
+      expect(await ensureLiveGitShareWorktree({cloneUrl: fixture.remote, worktree: emptyDir})).toBe(emptyDir);
+      const emptyRepo = join(fixture.root, 'empty-repo');
+      await mkdir(emptyRepo, {recursive: true});
+      await git(['init'], emptyRepo);
+      await expect(ensureLiveGitShareWorktree({cloneUrl: fixture.remote, worktree: emptyRepo})).rejects.toMatchObject({
+        message: expect.stringContaining('no commits'),
+      });
+      const store = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+      await expect(store.assertLiveShare()).resolves.toBeUndefined();
+      await expect(ensureLiveGitShareWorktree({cloneUrl: fixture.remote, worktree: fixture.worktree})).resolves.toBe(
+        fixture.worktree,
+      );
+      const mismatched = join(fixture.root, 'mismatched');
+      await cloneGitShareWorktree(fixture.remote, mismatched);
+      await git(['remote', 'set-url', 'origin', join(fixture.root, 'other.git')], mismatched);
+      await expect(ensureLiveGitShareWorktree({cloneUrl: fixture.remote, worktree: mismatched})).rejects.toMatchObject({
+        message: expect.stringContaining('does not match the live team share'),
+      });
+    } finally {
+      await rm(fixture.root, {force: true, recursive: true});
+    }
+  });
+
+  it('treats ssh, https, and file aliases of the same remote as equal', () => {
+    expect(
+      gitRemoteUrlsMatch(
+        'git@github.com:Kashkovsky/threadnote-share.git',
+        'https://github.com/Kashkovsky/threadnote-share.git',
+      ),
+    ).toBe(true);
+    expect(gitRemoteUrlsMatch('file:///tmp/share.git', '/tmp/share.git')).toBe(true);
+    expect(gitRemoteUrlsMatch('git@github.com:Kashkovsky/threadnote-share.git', 'git@github.com:other/repo.git')).toBe(
+      false,
+    );
+    FC.assert(
+      FC.property(portableSegment, portableSegment, (owner, repo) => {
+        const https = `https://github.com/${owner}/${repo}.git`;
+        expect(gitRemoteUrlsMatch(`git@github.com:${owner}/${repo}.git`, https)).toBe(true);
+        expect(gitRemoteUrlsMatch(`ssh://git@github.com/${owner}/${repo}`, https)).toBe(true);
+        expect(gitRemoteUrlsMatch(https, `https://github.com/${owner}/${repo}/`)).toBe(true);
+      }),
+    );
   });
 
   it('commits a memory body, hashes it, and reads the same blob back', async () => {

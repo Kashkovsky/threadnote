@@ -54,8 +54,8 @@ export function remoteMemoryConfigFromEnvironment(
     );
   }
   const allowedHosts = csv(environment.THREADNOTE_REMOTE_ALLOWED_HOSTS, [publicBaseUrl.host]).map(validateHostValue);
-  const allowedOrigins = csv(environment.THREADNOTE_REMOTE_ALLOWED_ORIGINS, ['https://cursor.com']).map(
-    validateOriginValue,
+  const allowedOrigins = csv(environment.THREADNOTE_REMOTE_ALLOWED_ORIGINS, ['https://cursor.com']).map(value =>
+    validateOriginValue(value, localService),
   );
   const accessTokenAudience = audienceValue(
     environment.THREADNOTE_REMOTE_OAUTH_AUDIENCE?.trim() || new URL('/mcp', publicBaseUrl).toString(),
@@ -174,8 +174,7 @@ function required(environment: Readonly<Record<string, string | undefined>>, key
 
 function httpsUrl(value: string, key: string): URL {
   const url = configuredUrl(value, undefined, key);
-  const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
-  if (url.protocol !== 'https:' && !(loopback && url.protocol === 'http:')) {
+  if (url.protocol !== 'https:' && !(isLoopbackHostname(url.hostname) && url.protocol === 'http:')) {
     throw remoteMemoryError('invalid_request', `${key} must use HTTPS outside localhost.`);
   }
   if (url.username || url.password || url.hash) {
@@ -263,15 +262,24 @@ function validateHostValue(value: string): string {
   return parsed.host;
 }
 
-function validateOriginValue(value: string): string {
+function validateOriginValue(value: string, localService: boolean): string {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
     throw remoteMemoryError('invalid_request', 'Allowed Origin entries must be absolute origins.');
   }
-  if (url.protocol !== 'https:' || url.origin !== value.replace(/\/$/u, '') || url.username || url.password) {
-    throw remoteMemoryError('invalid_request', 'Allowed Origin entries must be credential-free HTTPS origins.');
+  const loopbackHttp = isLoopbackHostname(url.hostname) && url.protocol === 'http:';
+  if (
+    (url.protocol !== 'https:' && !(localService && loopbackHttp)) ||
+    url.origin !== value.replace(/\/$/u, '') ||
+    url.username ||
+    url.password
+  ) {
+    throw remoteMemoryError(
+      'invalid_request',
+      'Allowed Origin entries must be credential-free HTTPS origins, or loopback HTTP on a loopback public URL.',
+    );
   }
   return url.origin;
 }
@@ -290,6 +298,10 @@ function booleanValue(value: string | undefined, fallback: boolean): boolean {
   if (value === 'true') return true;
   if (value === 'false') return false;
   throw remoteMemoryError('invalid_request', 'Expected true or false.');
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === '127.0.0.1' || hostname === 'localhost';
 }
 
 function isAbsoluteWorktree(path: string): boolean {
