@@ -78,6 +78,20 @@ export function parseGitCanonicalSharePath(
   return undefined;
 }
 
+export function gitIngestProjectsToEnsure(input: {
+  readonly allowedProjects: ReadonlySet<string> | 'all';
+  readonly gitProjects: Iterable<string>;
+  readonly knownProjects: ReadonlySet<string>;
+}): readonly string[] {
+  const unique = new Set<string>();
+  for (const project of input.gitProjects) {
+    if (input.knownProjects.has(project)) continue;
+    if (input.allowedProjects !== 'all' && !input.allowedProjects.has(project)) continue;
+    unique.add(project);
+  }
+  return [...unique].sort();
+}
+
 export function isAbsoluteGitWorktree(path: string): boolean {
   return path.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(path);
 }

@@ -1,6 +1,8 @@
 import type {Sql} from 'postgres';
 import {describe, expect, it} from 'vitest';
-import {migrateRemoteMemoryDatabase} from '../../src/remote_memory/migrations.js';
+import * as FC from 'effect/testing/FastCheck';
+import {dirname, join} from '../helpers/node-path.js';
+import {migrateRemoteMemoryDatabase, standaloneMigrationFilePath} from '../../src/remote_memory/migrations.js';
 
 interface FakeMigrationOptions {
   readonly conflictingChecksum?: string;
@@ -120,5 +122,21 @@ describe('remote memory PostgreSQL migrations', () => {
       'unlock',
       'release',
     ]);
+  });
+
+  it('resolves standalone migrations beside the compiled executable instead of bunfs', () => {
+    const executableRoot = FC.array(FC.stringMatching(/^[a-z][a-z0-9-]{0,12}$/u), {minLength: 1, maxLength: 4});
+    const migrationName = FC.constantFrom('001_initial.sql', '002_git_canonical_pointers.sql');
+    FC.assert(
+      FC.property(executableRoot, migrationName, (segments, name) => {
+        const executablePath = join('/', ...segments, 'threadnote');
+        const resolved = standaloneMigrationFilePath(executablePath, name);
+        expect(resolved).toBe(join(dirname(executablePath), 'remote-memory', 'migrations', name));
+        expect(resolved).not.toContain('bunfs');
+      }),
+    );
+    expect(() => standaloneMigrationFilePath('/opt/threadnote/threadnote', '../001_initial.sql')).toThrow(
+      'migration file name is invalid',
+    );
   });
 });

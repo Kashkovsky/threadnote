@@ -78,6 +78,7 @@ export const runComposerServeCommand = Effect.fn('composer.serveCommand')(functi
         runComposerServe(
           {
             databaseUrl,
+            executablePath: system.executablePath,
             gitCloneUrl: team.config.remote,
             gitPush: options.push === true,
             gitWorktree,

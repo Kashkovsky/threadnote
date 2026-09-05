@@ -73,16 +73,21 @@ class RemoteMemoryOperatorInvocationError extends Schema.TaggedError<RemoteMemor
 
 export interface RemoteMemoryOperatorRuntime {
   readonly createAdapter: (databaseUrl: string) => RemoteMemoryOperatorAdapter & {readonly close?: () => Promise<void>};
+  readonly executablePath?: string;
 }
 
-const defaultRuntime: RemoteMemoryOperatorRuntime = {
-  createAdapter: databaseUrl => new PostgresRemoteMemoryOperatorAdapter(createRemoteMemorySql(databaseUrl)),
-};
+export function createRemoteMemoryOperatorRuntime(executablePath?: string): RemoteMemoryOperatorRuntime {
+  return {
+    createAdapter: databaseUrl =>
+      new PostgresRemoteMemoryOperatorAdapter(createRemoteMemorySql(databaseUrl), {executablePath}),
+    ...(executablePath === undefined ? {} : {executablePath}),
+  };
+}
 
 export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(function* (
   arguments_: readonly string[],
   environment: Readonly<Record<string, string | undefined>>,
-  runtime: RemoteMemoryOperatorRuntime = defaultRuntime,
+  runtime: RemoteMemoryOperatorRuntime = createRemoteMemoryOperatorRuntime(),
 ): Effect.fn.Return<number, never, RemoteMemoryOperatorFileServices> {
   // FileSystem and Path requirements are supplied only by the hidden
   // src/standalone.ts application entrypoint.

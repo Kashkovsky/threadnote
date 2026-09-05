@@ -136,6 +136,7 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
         'audit_events',
         'rate_limit_windows',
         'search_documents',
+        'projects',
       ],
     },
     {

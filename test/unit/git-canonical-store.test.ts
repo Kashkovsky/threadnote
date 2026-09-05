@@ -7,6 +7,7 @@ import {
   GitCanonicalMemoryStore,
   ensureLiveGitShareWorktree,
   gitCanonicalSharePath,
+  gitIngestProjectsToEnsure,
   gitRemoteUrlsMatch,
   parseGitCanonicalSharePath,
 } from '../../src/remote_memory/git_canonical_store.js';
@@ -34,6 +35,60 @@ describe('git canonical memory store', () => {
     expect(parseGitCanonicalSharePath('durable/projects/x')).toBeUndefined();
     expect(parseGitCanonicalSharePath('durable/projects/x/y.txt')).toBeUndefined();
     expect(parseGitCanonicalSharePath('../durable/projects/x/y.md')).toBeUndefined();
+  });
+
+  it('catalogs unknown allowed git projects and never un-archives known ones', () => {
+    FC.assert(
+      FC.property(
+        FC.array(portableSegment, {maxLength: 8}),
+        FC.array(portableSegment, {maxLength: 8}),
+        FC.boolean(),
+        (gitProjects, knownProjects, restrict) => {
+          const known = new Set(knownProjects);
+          const allowed = restrict ? new Set(gitProjects.filter((_, index) => index % 2 === 0)) : 'all';
+          const ensured = gitIngestProjectsToEnsure({
+            allowedProjects: allowed,
+            gitProjects,
+            knownProjects: known,
+          });
+          expect(ensured).toEqual([...ensured].sort());
+          expect(new Set(ensured).size).toBe(ensured.length);
+          for (const project of ensured) {
+            expect(known.has(project)).toBe(false);
+            expect(gitProjects).toContain(project);
+            if (allowed !== 'all') expect(allowed.has(project)).toBe(true);
+          }
+          expect(
+            gitIngestProjectsToEnsure({
+              allowedProjects: allowed,
+              gitProjects,
+              knownProjects: new Set([...known, ...ensured]),
+            }),
+          ).toEqual([]);
+        },
+      ),
+    );
+    expect(
+      gitIngestProjectsToEnsure({
+        allowedProjects: 'all',
+        gitProjects: ['beta', 'alpha', 'beta'],
+        knownProjects: new Set(),
+      }),
+    ).toEqual(['alpha', 'beta']);
+    expect(
+      gitIngestProjectsToEnsure({
+        allowedProjects: new Set(['alpha']),
+        gitProjects: ['alpha', 'other-project'],
+        knownProjects: new Set(),
+      }),
+    ).toEqual(['alpha']);
+    expect(
+      gitIngestProjectsToEnsure({
+        allowedProjects: 'all',
+        gitProjects: ['alpha', 'retired'],
+        knownProjects: new Set(['retired']),
+      }),
+    ).toEqual(['alpha']);
   });
 
   it('refuses an empty git worktree and clones a live team share instead', async () => {

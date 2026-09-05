@@ -25,6 +25,7 @@ export interface ComposerListenAddress {
 
 export interface ComposerServeInput {
   readonly databaseUrl: string;
+  readonly executablePath?: string;
   readonly gitBranch?: string;
   readonly gitCloneUrl: string;
   readonly gitPush?: boolean;
@@ -133,7 +134,7 @@ export async function runComposerServe(
   let stopping: Promise<void> | undefined;
   let server: RemoteMemoryServer | undefined;
   try {
-    if (config.autoMigrate) await migrateRemoteMemoryDatabase(sql);
+    if (config.autoMigrate) await migrateRemoteMemoryDatabase(sql, {executablePath: input.executablePath});
     await sql`SELECT 1 FROM remote_memory.shares LIMIT 0`;
     const gitStore = new GitCanonicalMemoryStore({
       branch: config.gitBranch,
@@ -148,6 +149,10 @@ export async function runComposerServe(
       subject: idp.subject,
       tenantId: input.tenantId?.trim() || 'local-org',
     });
+    const repository = new PostgresRemoteMemoryRepository(sql, {gitStore});
+    await repository.ingestActiveGitShares(`composer-start:${input.shareId}`);
+    const indexer = new RemoteMemoryIndexer(sql, gitStore);
+    await indexer.runPass({batchSize: 256, ingest: false});
     const listening = startRemoteMemoryServer({
       config,
       dependencies: {
@@ -172,12 +177,11 @@ export async function runComposerServe(
           readRequestsPerMinute: config.readRequestsPerMinute,
           writeRequestsPerMinute: config.writeRequestsPerMinute,
         }),
-        repository: new PostgresRemoteMemoryRepository(sql, {gitStore}),
+        repository,
       },
       localIdp: idp,
     });
     server = listening;
-    const indexer = new RemoteMemoryIndexer(sql, gitStore);
     const retention = new RemoteHandoffRetentionWorker(sql, {gitStore});
     workerTasks = [indexer.run({signal: workers.signal}), retention.run({signal: workers.signal})];
     workerHealth.supervise('indexer', workerTasks[0]);

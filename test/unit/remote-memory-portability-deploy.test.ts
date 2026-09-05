@@ -29,6 +29,8 @@ describe('remote memory reference deployment', () => {
     const selectGrant = /GRANT SELECT ON(?<tables>[\s\S]*?)TO threadnote_remote_runtime;/u.exec(grants)?.groups?.tables;
     expect(selectGrant).toBeDefined();
     expect(selectGrant).not.toContain('remote_memory.audit_events');
+    const insertGrant = /GRANT INSERT ON(?<tables>[\s\S]*?)TO threadnote_remote_runtime;/u.exec(grants)?.groups?.tables;
+    expect(insertGrant).toContain('remote_memory.projects');
     expect(grants).not.toMatch(/GRANT (?:INSERT|UPDATE|DELETE)[\s\S]*remote_memory\.schema_migrations/u);
     expect(grants).not.toMatch(/GRANT (?:INSERT|UPDATE|DELETE)[\s\S]*remote_memory\.git_beta_import_receipts/u);
   });
@@ -54,8 +56,12 @@ describe('remote memory reference deployment', () => {
 
     expect(build).toContain("const REMOTE_MEMORY_MIGRATION_DIRECTORY = 'remote-memory/migrations'");
     expect(build).toContain("path.join(root, 'src', 'remote_memory', 'migrations')");
-    expect(migrations).toContain('new URL(`./remote-memory/migrations/${name}`, import.meta.url)');
-    expect(migrations).toContain("migrationFile('001_initial.sql')");
-    expect(migrations).toContain("migrationFile('002_git_canonical_pointers.sql')");
+    expect(migrations).toContain("STANDALONE_REMOTE_MEMORY_MIGRATION_DIRECTORY = 'remote-memory/migrations'");
+    expect(migrations).toContain('standaloneMigrationFilePath(executablePath, name)');
+    expect(migrations).not.toMatch(/\bprocess\.execPath\b/);
+    expect(migrations).not.toContain('new URL(`./remote-memory/migrations/${name}`, import.meta.url)');
+    expect(migrations).toContain('new URL(`./migrations/${name}`, import.meta.url)');
+    expect(migrations).toContain("name: '001_initial.sql'");
+    expect(migrations).toContain("name: '002_git_canonical_pointers.sql'");
   });
 });
