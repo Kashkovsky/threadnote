@@ -61,6 +61,7 @@ export interface GraphSharePublishedFrontier {
   readonly envelopeDigest: Sha256Digest;
   readonly generation: number;
   readonly manifestDigest: Sha256Digest;
+  readonly published?: boolean;
   readonly repositoryId: string;
   readonly sourceCommit: string;
 }
@@ -70,7 +71,9 @@ export interface GraphShareControlServerOptions<E = never, R = never> {
   readonly listen: GraphShareListenAddress;
   readonly onListening?: (info: {readonly port: number; readonly url: string}) => Effect.Effect<void, E, R>;
   readonly organization: string;
-  readonly republish?: Effect.Effect<GraphSharePublishedFrontier, E, R>;
+  readonly republish?: (
+    stateRef: Ref.Ref<GraphShareCoordinatorStateV1>,
+  ) => Effect.Effect<GraphSharePublishedFrontier, E, R>;
   readonly repositoryId: string;
   readonly threadnoteHome: string;
 }
@@ -95,18 +98,35 @@ export const runGraphShareControlServer = Effect.fn('codeGraph.sharing.controlSe
       Effect.flatMap(context =>
         Effect.gen(function* () {
           const server = yield* HttpServer.HttpServer;
-          const stateRef = yield* Ref.make(yield* loadCoordinatorState(options));
+          const stateRef = yield* Ref.make(yield* loadGraphShareCoordinatorState(options));
           yield* server.serve(handleGraphShareHttp(options, stateRef));
           const actualPort = server.address._tag === 'TcpAddress' ? server.address.port : options.listen.port;
           const url = `http://${options.listen.hostname}:${actualPort}`;
           yield* options.onListening?.({port: actualPort, url}) ?? Effect.void;
           if (options.republish !== undefined) {
-            yield* Effect.forkScoped(watchPublishedFrontier(options, stateRef, options.republish));
+            yield* Effect.forkScoped(watchPublishedFrontier(options, stateRef, options.republish(stateRef)));
           }
           return yield* Effect.never;
         }).pipe(Effect.provide(context)),
       ),
     ),
+  );
+});
+
+export const updateGraphShareCoordinatorMachine = Effect.fn('codeGraph.sharing.updateCoordinatorMachine')(function* (
+  options: Pick<GraphShareControlServerOptions, 'organization' | 'repositoryId' | 'threadnoteHome'>,
+  machine: GraphShareCoordinatorStateV1['machine'],
+  stateRef?: Ref.Ref<GraphShareCoordinatorStateV1>,
+) {
+  yield* withCoordinatorStateLock(
+    options,
+    Effect.gen(function* () {
+      const current =
+        stateRef === undefined ? yield* loadGraphShareCoordinatorState(options) : yield* Ref.get(stateRef);
+      const next = {...current, machine};
+      if (stateRef !== undefined) yield* Ref.set(stateRef, next);
+      yield* persistCoordinatorState(options, next);
+    }),
   );
 });
 
@@ -129,7 +149,8 @@ export const recordPublishedFrontier = Effect.fn('codeGraph.sharing.recordPublis
   yield* withCoordinatorStateLock(
     options,
     Effect.gen(function* () {
-      const current = stateRef === undefined ? yield* loadCoordinatorState(options) : yield* Ref.get(stateRef);
+      const current =
+        stateRef === undefined ? yield* loadGraphShareCoordinatorState(options) : yield* Ref.get(stateRef);
       const next = {
         ...setGraphShareCoordinatorFrontier(current, branchHash, pointer),
         machine: adoptPublishedFrontier(current.machine, {
@@ -224,7 +245,9 @@ const watchPublishedFrontier = <E, R>(
     Effect.sleep(GRAPH_SHARE_PUBLISHER_WATCH_INTERVAL).pipe(
       Effect.andThen(
         republish.pipe(
-          Effect.flatMap(published => recordPublishedFrontier(options, published, stateRef)),
+          Effect.flatMap(published =>
+            published.published === false ? Effect.void : recordPublishedFrontier(options, published, stateRef),
+          ),
           Effect.ignore,
         ),
       ),
@@ -322,7 +345,7 @@ const readBoundedBody = (request: HttpServerRequest.HttpServerRequest, maximum: 
     return bytes;
   });
 
-const loadCoordinatorState = Effect.fn('codeGraph.sharing.loadCoordinatorState')(function* (
+export const loadGraphShareCoordinatorState = Effect.fn('codeGraph.sharing.loadGraphShareCoordinatorState')(function* (
   options: Pick<GraphShareControlServerOptions, 'organization' | 'repositoryId' | 'threadnoteHome'>,
 ) {
   const path = yield* Path.Path;

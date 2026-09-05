@@ -1,6 +1,7 @@
 import {compareCodeUnits} from '../ordering.js';
 import type {Sha256Digest} from './digest.js';
 import type {GraphShareActionKey} from './action.js';
+import type {GraphShareFrontierMachineV1} from './frontier.js';
 
 export const GRAPH_SHARE_RECEIPT_SCHEMA_VERSION = 1 as const;
 
@@ -73,6 +74,41 @@ export function selectGraphShareResultsForFrozenBatch(
   for (const receipt of store.receipts) {
     if (!requested.has(receipt.actionKey) || quarantined.has(receipt.actionKey)) continue;
     if (receipt.batchId !== frozen.batchId) {
+      skippedLate.push(receipt);
+      continue;
+    }
+    selected.push(receipt);
+  }
+  return {
+    quarantined: [...quarantined].sort(compareCodeUnits),
+    selected,
+    skippedLate,
+  };
+}
+
+export function selectGraphShareResultsForFrozenMachine(
+  store: GraphShareReceiptStoreV1,
+  machine: Pick<
+    GraphShareFrontierMachineV1,
+    'buildingFrontier' | 'frozenActionKeys' | 'frozenBatchId' | 'pendingRange'
+  >,
+) {
+  const acceptedBatchIds = new Set(
+    [machine.frozenBatchId, machine.buildingFrontier].filter((value): value is string => value !== null),
+  );
+  const lateBatchIds = new Set(machine.pendingRange);
+  const requested = machine.frozenActionKeys.length === 0 ? undefined : new Set(machine.frozenActionKeys);
+  const quarantined = new Set(store.quarantine.map(item => item.actionKey));
+  const selected: GraphShareResultAnnouncementV1[] = [];
+  const skippedLate: GraphShareResultAnnouncementV1[] = [];
+  for (const receipt of store.receipts) {
+    if (requested !== undefined && !requested.has(receipt.actionKey)) continue;
+    if (quarantined.has(receipt.actionKey)) continue;
+    if (lateBatchIds.has(receipt.batchId) && !acceptedBatchIds.has(receipt.batchId)) {
+      skippedLate.push(receipt);
+      continue;
+    }
+    if (!acceptedBatchIds.has(receipt.batchId)) {
       skippedLate.push(receipt);
       continue;
     }
