@@ -55,8 +55,8 @@ function installedLauncher(
 
 beforeAll(async () => {
   temporaryRoot = await mkdtemp(join(tmpdir(), 'threadnote-native-e2e-'));
-  home = join(temporaryRoot, 'threadnote-home');
   userHome = join(temporaryRoot, 'user-home');
+  home = join(userHome, '.threadnote');
   graphRepository = join(temporaryRoot, 'code-graph-repository');
   await mkdir(join(home, 'cache'), {recursive: true});
   await mkdir(userHome, {recursive: true});
