@@ -25,6 +25,7 @@ export interface ComposerListenAddress {
 
 export interface ComposerServeInput {
   readonly databaseUrl: string;
+  readonly executablePath?: string;
   readonly gitBranch?: string;
   readonly gitCloneUrl: string;
   readonly gitPush?: boolean;
@@ -133,7 +134,7 @@ export async function runComposerServe(
   let stopping: Promise<void> | undefined;
   let server: RemoteMemoryServer | undefined;
   try {
-    if (config.autoMigrate) await migrateRemoteMemoryDatabase(sql);
+    if (config.autoMigrate) await migrateRemoteMemoryDatabase(sql, {executablePath: input.executablePath});
     await sql`SELECT 1 FROM remote_memory.shares LIMIT 0`;
     const gitStore = new GitCanonicalMemoryStore({
       branch: config.gitBranch,

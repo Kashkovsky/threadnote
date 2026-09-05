@@ -95,7 +95,9 @@ async function windowsDiskCapacityWorkerProgram() {
 
 async function remoteMemoryOperatorProgram(arguments_: readonly string[]) {
   const operator = await import('./remote_memory/operator_main.js');
-  return operator.runRemoteMemoryOperator(arguments_, process.env).pipe(
+  return operator
+    .runRemoteMemoryOperator(arguments_, process.env, operator.createRemoteMemoryOperatorRuntime(process.execPath))
+    .pipe(
     Effect.flatMap(code =>
       Effect.sync(() => {
         process.exitCode = code;
@@ -112,6 +114,7 @@ async function remoteMemoryServiceProgram() {
       signal =>
         service.runRemoteMemoryService(process.env, {
           error: message => output.error(message),
+          executablePath: process.execPath,
           shutdownSignal: () => remoteMemoryShutdownSignal(signal),
         }),
       cause => cause,

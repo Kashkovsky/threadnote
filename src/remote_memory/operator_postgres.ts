@@ -49,12 +49,15 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
 
   private readonly controlPlane: PostgresRemoteControlPlane;
 
-  constructor(readonly sql: Sql) {
+  constructor(
+    readonly sql: Sql,
+    readonly options: {readonly executablePath?: string} = {},
+  ) {
     this.controlPlane = new PostgresRemoteControlPlane(sql);
   }
 
   readonly migrateSchema = async () => {
-    await migrateRemoteMemoryDatabase(this.sql);
+    await migrateRemoteMemoryDatabase(this.sql, {executablePath: this.options.executablePath});
     return {readyVersions: [1], status: 'ready' as const, version: REMOTE_MEMORY_OPERATOR_CONTRACT_VERSION};
   };
 

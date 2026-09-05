@@ -19,6 +19,7 @@ import {startRemoteMemoryServer} from './server.js';
 
 export interface RemoteMemoryServiceRuntime {
   readonly error: (message: string) => void;
+  readonly executablePath?: string;
   readonly shutdownSignal: () => {readonly dispose: () => void; readonly promise: Promise<string>};
 }
 
@@ -40,7 +41,7 @@ export async function runRemoteMemoryService(
   let workerTasks: readonly Promise<void>[] = [];
   let stopping: Promise<void> | undefined;
   try {
-    if (config.autoMigrate) await migrateRemoteMemoryDatabase(sql);
+    if (config.autoMigrate) await migrateRemoteMemoryDatabase(sql, {executablePath: runtime.executablePath});
     await assertRuntimeSchemaAccess(sql);
     const gitStore =
       config.canonicalStore === 'git' && config.gitWorktree

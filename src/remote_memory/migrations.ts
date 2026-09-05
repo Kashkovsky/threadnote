@@ -15,19 +15,29 @@ export function standaloneMigrationFilePath(executablePath: string, name: string
   return [root, ...STANDALONE_REMOTE_MEMORY_MIGRATION_DIRECTORY.split('/'), name].join(separator);
 }
 
-function migrationFile(name: string): string | URL {
-  return typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE
-    ? standaloneMigrationFilePath(process.execPath, name)
-    : new URL(`./migrations/${name}`, import.meta.url);
+function migrationFile(name: string, executablePath: string | undefined): string | URL {
+  if (typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE) {
+    if (!executablePath) {
+      throw remoteMemoryError(
+        'service_unavailable',
+        'Standalone remote memory migrations require the executable path.',
+      );
+    }
+    return standaloneMigrationFilePath(executablePath, name);
+  }
+  return new URL(`./migrations/${name}`, import.meta.url);
 }
 
 const MIGRATIONS = [
-  {file: migrationFile('001_initial.sql'), version: 1},
-  {file: migrationFile('002_git_canonical_pointers.sql'), version: 2},
+  {name: '001_initial.sql', version: 1},
+  {name: '002_git_canonical_pointers.sql', version: 2},
 ] as const;
 const MIGRATION_LOCK = 7_427_190_041;
 
-export async function migrateRemoteMemoryDatabase(sql: Sql): Promise<void> {
+export async function migrateRemoteMemoryDatabase(
+  sql: Sql,
+  options: {readonly executablePath?: string} = {},
+): Promise<void> {
   const connection = await sql.reserve();
   await connection`SELECT pg_advisory_lock(${MIGRATION_LOCK})`;
   try {
@@ -36,7 +46,7 @@ export async function migrateRemoteMemoryDatabase(sql: Sql): Promise<void> {
         '(version integer PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())',
     );
     for (const migration of MIGRATIONS) {
-      const source = await Bun.file(migration.file).text();
+      const source = await Bun.file(migrationFile(migration.name, options.executablePath)).text();
       const checksum = sha256HexSync(source);
       const applied = await connection<{checksum: string}[]>`
         SELECT checksum FROM remote_memory.schema_migrations WHERE version = ${migration.version}
