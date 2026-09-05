@@ -105,9 +105,13 @@ profile thresholds, verifies receipts, hydrates the publisher parse cache, recom
 signed compaction checkpoint (`deltas: []`). Failed verification and unrelated HEAD keep the last signed frontier;
 `/v1/status.phase` walks frozen→assembling→verifying→published. `graph publisher serve --listen 127.0.0.1:port` exposes
 that API and a digest CAS on loopback so additional homes can join with `--coordinator` instead of a shared CAS
-directory. HTTP CAS stays 32 MiB per blob. The assembled `.cgcp` digest remains `checkpoint.manifestDigest`; HTTP
-transfers independently digest-addressed cgcp prefix and TCG1 frames listed by checkpoint metadata
-(`application/vnd.threadnote.graph.checkpoint.v1+json`), never the assembled artifact. Contributing joins enqueue
+directory. After signing, CAS also stores an OCI image-manifest document
+(`application/vnd.oci.image.manifest.v1+json`) whose layers are the frontier body, attestation envelope, and
+checkpoint metadata. The `tn-frontier-*` tag points at that document digest; `latest.json` still names
+`manifestDigest` and `envelopeDigest`. HTTP CAS stays 32 MiB per blob. The assembled `.cgcp` digest remains
+`checkpoint.manifestDigest`; HTTP transfers independently digest-addressed cgcp prefix and TCG1 frames listed by
+checkpoint metadata (`application/vnd.threadnote.graph.checkpoint.v1+json` or
+`application/vnd.threadnote.code-graph-checkpoint.v1`), never the assembled artifact. Contributing joins enqueue
 parse-result artifacts after local parser batches commit and upload them after the
 graph writer lock is released.
 
@@ -134,7 +138,8 @@ authorize a new host.
 
 `join` writes a mode-0600 trust receipt under `~/.threadnote/graph-sharing/`. Until that receipt exists, Threadnote
 makes no CAS or registry request from the enrollment file and keeps the existing local graph. `join` records trust only;
-the next `graph index` or committed-base `ensureCommit` downloads and imports a verified ancestor checkpoint. `join --read-only` never uploads. Invalid enrollment,
+the next `graph index` downloads and imports a verified ancestor checkpoint and builds the local overlay.
+Committed-base `ensureCommit` reuses or rematerializes a clean snapshot for the requested commit. `join --read-only` never uploads. Invalid enrollment,
 digest mismatch, and signature failure fail closed for the candidate and keep the last ready local graph. `leave` revokes
 the receipt and clears shared-base provenance so inspect no longer reports a shared source. Missing enrollment is ordinary
 local indexing. Transfer misses stay fail-open: `graph share status` reports `lastImport` without replacing last-good

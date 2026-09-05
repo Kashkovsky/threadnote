@@ -14,10 +14,14 @@ export const GRAPH_SHARE_SIGNATURE_ALGORITHM = 'ed25519' as const;
 
 export const GRAPH_SHARE_PROFILE_MEDIA_TYPE = 'application/vnd.threadnote.graph.profile.v1+json';
 export const GRAPH_SHARE_FRONTIER_MEDIA_TYPE = 'application/vnd.threadnote.graph.frontier.v1+json';
+export const GRAPH_SHARE_ATTESTATION_MEDIA_TYPE = 'application/vnd.threadnote.graph.attestation.v1+json';
 export const GRAPH_SHARE_CHECKPOINT_MEDIA_TYPE = 'application/vnd.threadnote.graph.checkpoint.v1+json';
+export const GRAPH_SHARE_TCG1_MEDIA_TYPE = 'application/vnd.threadnote.code-graph-checkpoint.v1';
 export const GRAPH_SHARE_DELTA_MEDIA_TYPE = 'application/vnd.threadnote.graph.delta.v1+json';
 export const GRAPH_SHARE_RECORDS_MEDIA_TYPE = 'application/vnd.threadnote.graph.records.v1+gzip';
 export const GRAPH_SHARE_PARSE_RESULT_MEDIA_TYPE = 'application/vnd.threadnote.graph.parse-result.v1+json';
+export const GRAPH_SHARE_OCI_IMAGE_MANIFEST_MEDIA_TYPE = 'application/vnd.oci.image.manifest.v1+json';
+export const GRAPH_SHARE_OCI_EMPTY_CONFIG_MEDIA_TYPE = 'application/vnd.oci.empty.v1+json';
 
 export interface GraphShareFrontierCheckpointV1 {
   readonly manifestDigest: Sha256Digest;
