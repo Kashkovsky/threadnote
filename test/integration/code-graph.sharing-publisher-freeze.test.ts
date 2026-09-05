@@ -3,10 +3,12 @@ import {Deferred, Effect, FileSystem, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runGraphShareJoin} from '../../src/code_graph/sharing/client.js';
 import {graphShareControlGetStatus} from '../../src/code_graph/sharing/control_client.js';
+import {loadGraphShareCoordinatorState} from '../../src/code_graph/sharing/control_server.js';
 import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher_cycle.js';
 import {
   runGraphPublisherBootstrap,
@@ -200,6 +202,178 @@ describe('graph share publisher freeze cycle', () => {
           expect(served.manifestDigest).toBe(bootstrapped.manifestDigest);
           expect(served.type).toBe('code-graph-publisher-serve');
           if (served.type === 'code-graph-publisher-serve') expect(served.published).toBe(false);
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    180_000,
+  );
+
+  effectIt.effect(
+    'publishes a descendant freeze from an incremental ready snapshot without a prior full index',
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-clean-export-'});
+          const repository = path.join(root, 'repository');
+          const cas = path.join(root, 'cas');
+          const publisherHome = path.join(root, 'publisher-home');
+          yield* fs.makeDirectory(path.join(repository, 'src'), {recursive: true});
+          yield* fs.writeFileString(
+            path.join(repository, 'package.json'),
+            '{"name":"graph-share-clean-export","private":true,"type":"module"}\n',
+          );
+          yield* fs.writeFileString(path.join(repository, 'src', 'index.ts'), 'export const shared = 1;\n');
+          yield* git(repository, ['init', '-q', '--initial-branch=main']);
+          yield* git(repository, ['remote', 'add', 'origin', 'https://github.com/acme/graph-share-clean-export.git']);
+          yield* git(repository, ['add', '.']);
+          yield* git(repository, [
+            '-c',
+            'user.name=Threadnote Test',
+            '-c',
+            'user.email=test@threadnote.local',
+            'commit',
+            '-qm',
+            'base',
+          ]);
+          const indexer = yield* CodeGraphIndexer;
+          yield* indexer.index({cwd: repository, ensureVectors: false, threadnoteHome: publisherHome});
+          yield* runGraphShareInit(config(publisherHome), {
+            cas,
+            cwd: repository,
+            organization: 'acme',
+            writeConfig: true,
+          });
+          yield* git(repository, ['add', '.threadnote/graph-share.json']);
+          yield* git(repository, [
+            '-c',
+            'user.name=Threadnote Test',
+            '-c',
+            'user.email=test@threadnote.local',
+            'commit',
+            '-qm',
+            'enroll',
+          ]);
+          yield* indexer.index({
+            cwd: repository,
+            ensureVectors: false,
+            force: true,
+            threadnoteHome: publisherHome,
+          });
+          const bootstrapped = yield* runGraphPublisherBootstrap(config(publisherHome), {cas, cwd: repository});
+          yield* fs.writeFileString(path.join(repository, 'src', 'next.ts'), 'export const next = 2;\n');
+          yield* git(repository, ['add', 'src/next.ts']);
+          yield* git(repository, [
+            '-c',
+            'user.name=Threadnote Test',
+            '-c',
+            'user.email=test@threadnote.local',
+            'commit',
+            '-qm',
+            'advance',
+          ]);
+          yield* indexer.index({cwd: repository, ensureVectors: false, threadnoteHome: publisherHome});
+          const advanced = yield* advanceGraphPublisherFrontier(config(publisherHome), {
+            cas,
+            cwd: repository,
+            forceFreeze: true,
+          });
+          expect(advanced.published).toBe(true);
+          expect(advanced.generation).toBe(bootstrapped.generation + 1);
+          expect(advanced.phase === 'published' || advanced.phase === 'collecting').toBe(true);
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    180_000,
+  );
+
+  effectIt.effect(
+    'fails a frozen batch instead of leaving verifying when checkpoint export cannot run',
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-export-fail-'});
+          const repository = path.join(root, 'repository');
+          const cas = path.join(root, 'cas');
+          const publisherHome = path.join(root, 'publisher-home');
+          yield* fs.makeDirectory(path.join(repository, 'src'), {recursive: true});
+          yield* fs.writeFileString(
+            path.join(repository, 'package.json'),
+            '{"name":"graph-share-export-fail","private":true,"type":"module"}\n',
+          );
+          yield* fs.writeFileString(path.join(repository, 'src', 'index.ts'), 'export const shared = 1;\n');
+          yield* git(repository, ['init', '-q', '--initial-branch=main']);
+          yield* git(repository, ['remote', 'add', 'origin', 'https://github.com/acme/graph-share-export-fail.git']);
+          yield* git(repository, ['add', '.']);
+          yield* git(repository, [
+            '-c',
+            'user.name=Threadnote Test',
+            '-c',
+            'user.email=test@threadnote.local',
+            'commit',
+            '-qm',
+            'base',
+          ]);
+          const indexer = yield* CodeGraphIndexer;
+          yield* indexer.index({cwd: repository, ensureVectors: false, threadnoteHome: publisherHome});
+          yield* runGraphShareInit(config(publisherHome), {
+            cas,
+            cwd: repository,
+            organization: 'acme',
+            writeConfig: true,
+          });
+          yield* git(repository, ['add', '.threadnote/graph-share.json']);
+          yield* git(repository, [
+            '-c',
+            'user.name=Threadnote Test',
+            '-c',
+            'user.email=test@threadnote.local',
+            'commit',
+            '-qm',
+            'enroll',
+          ]);
+          yield* indexer.index({
+            cwd: repository,
+            ensureVectors: false,
+            force: true,
+            threadnoteHome: publisherHome,
+          });
+          const bootstrapped = yield* runGraphPublisherBootstrap(config(publisherHome), {cas, cwd: repository});
+          yield* fs.writeFileString(path.join(repository, 'src', 'next.ts'), 'export const next = 2;\n');
+          yield* git(repository, ['add', 'src/next.ts']);
+          yield* git(repository, [
+            '-c',
+            'user.name=Threadnote Test',
+            '-c',
+            'user.email=test@threadnote.local',
+            'commit',
+            '-qm',
+            'advance',
+          ]);
+          yield* fs.writeFileString(path.join(repository, 'src', 'dirty.ts'), 'export const dirty = 1;\n');
+          const phases = yield* Ref.make<string[]>([]);
+          const failed = yield* advanceGraphPublisherFrontier(config(publisherHome), {
+            cas,
+            cwd: repository,
+            forceFreeze: true,
+            onMachine: machine => Ref.update(phases, current => [...current, machine.phase]),
+          }).pipe(Effect.exit);
+          expect(failed._tag).toBe('Failure');
+          const walked = yield* Ref.get(phases);
+          expect(walked).toContain('frozen');
+          expect(walked.at(-1)).toBe('failed');
+          expect(walked).not.toContain('published');
+          expect(walked).not.toContain('verifying');
+          const identity = yield* resolveRepositoryIdentity(repository);
+          const coordinator = yield* loadGraphShareCoordinatorState({
+            organization: 'acme',
+            repositoryId: identity.repositoryId,
+            threadnoteHome: publisherHome,
+          });
+          expect(coordinator.machine.phase).toBe('failed');
+          expect(coordinator.machine.generation).toBe(bootstrapped.generation);
+          expect(coordinator.machine.publishedFrontier).toBe(bootstrapped.sourceCommit);
         }).pipe(provideTestLayer(ApplicationLayer)),
       ),
     180_000,

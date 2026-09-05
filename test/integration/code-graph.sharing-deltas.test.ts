@@ -15,7 +15,7 @@ import {maybeImportSharedGraphBase, runGraphShareJoin} from '../../src/code_grap
 import {graphSharingFrontierPointerPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
 import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher_cycle.js';
 import {runGraphPublisherBootstrap, runGraphShareInit} from '../../src/code_graph/sharing/publisher.js';
-import {writeSharedGraphProvenance} from '../../src/code_graph/sharing/provenance.js';
+import {loadSharedGraphQuerySource, writeSharedGraphProvenance} from '../../src/code_graph/sharing/provenance.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -125,6 +125,24 @@ describe('graph share TCG1 delta publication and apply', () => {
           expect(clientApplied.snapshot.fileCount).toBe(clean.snapshot.fileCount);
           expect(clientApplied.snapshot.symbolCount).toBe(clean.snapshot.symbolCount);
           expect(clientApplied.snapshot.graphContentId).toBe(clean.snapshot.graphContentId);
+          expect(
+            yield* loadSharedGraphQuerySource({
+              checkoutId: identity.checkoutId,
+              localCommit: identity.headCommit,
+              repositoryId: identity.repositoryId,
+              snapshot: clientApplied.snapshot,
+              threadnoteHome: clientHome,
+            }),
+          ).toMatchObject({deltaCount: 1, kind: 'shared-base-plus-local-overlay'});
+          expect(
+            yield* loadSharedGraphQuerySource({
+              checkoutId: identity.checkoutId,
+              localCommit: identity.headCommit,
+              repositoryId: identity.repositoryId,
+              snapshot: clean.snapshot,
+              threadnoteHome: cleanHome,
+            }),
+          ).toBeUndefined();
           const reapply = yield* maybeImportSharedGraphBase({
             cwd: repository,
             identity,
@@ -138,6 +156,7 @@ describe('graph share TCG1 delta publication and apply', () => {
           });
           yield* writeSharedGraphProvenance(clientHome, identity.checkoutId, {
             checkpointDigest: `sha256:${'9'.repeat(64)}`,
+            deltaCount: 0,
             frontierCommit: frontier.sourceCommit,
             profileDigest: frontier.profileDigest,
             repositoryId: identity.repositoryId,

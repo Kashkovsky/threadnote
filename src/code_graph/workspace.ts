@@ -28,6 +28,15 @@ import {
 
 export {discoverBazelWorkspace} from './workspace_bazel.js';
 
+export function workspaceHasUninventoriedMonikerEvidence(
+  workspace: CodeGraphWorkspace,
+  filePaths: ReadonlySet<string>,
+): boolean {
+  return workspace.projects.some(project =>
+    (project.monikers ?? []).some(moniker => !filePaths.has(moniker.evidence.path)),
+  );
+}
+
 interface WorkspaceProjectPathIndex {
   readonly projectsByRoot: ReadonlyMap<string, readonly CodeGraphWorkspaceProject[]>;
   readonly projectsBySourceRoot: ReadonlyMap<string, readonly CodeGraphWorkspaceProject[]>;

@@ -162,6 +162,39 @@ describe('graph share receipts and frozen batches', () => {
     expect(machine.publishedFrontier).toBe(published);
   });
 
+  it('retries freeze after a failed verifying batch without moving the pointer', () => {
+    const commit = 'b'.repeat(40);
+    let machine = idleGraphShareFrontier();
+    machine = observeCanonicalHead(machine, {commit, isDescendantOfPublished: true, nowSeconds: 0});
+    machine = freezeGraphShareBatch(machine, {
+      actionKeys: [],
+      changedBytes: 1,
+      changedFiles: 1,
+      nowSeconds: 30,
+      thresholds: {maximumAgeSeconds: 30, maximumChangedBytes: 1, maximumChangedFiles: 1},
+    });
+    machine = assembleGraphShareBatch(machine);
+    machine = verifyGraphShareBatch(machine);
+    const generation = machine.generation;
+    const published = machine.publishedFrontier;
+    machine = failGraphShareBatch(machine);
+    expect(machine.phase).toBe('failed');
+    machine = observeCanonicalHead(machine, {commit, isDescendantOfPublished: true, nowSeconds: 40});
+    expect(machine.phase).toBe('collecting');
+    expect(machine.generation).toBe(generation);
+    expect(machine.publishedFrontier).toBe(published);
+    machine = freezeGraphShareBatch(machine, {
+      actionKeys: [],
+      changedBytes: 1,
+      changedFiles: 1,
+      nowSeconds: 40,
+      thresholds: {maximumAgeSeconds: 0, maximumChangedBytes: 1, maximumChangedFiles: 1},
+    });
+    expect(machine.phase).toBe('frozen');
+    expect(machine.generation).toBe(generation);
+    expect(machine.publishedFrontier).toBe(published);
+  });
+
   it('keeps the last published frontier when HEAD is unrelated', () => {
     let machine = idleGraphShareFrontier();
     const published = 'a'.repeat(40);

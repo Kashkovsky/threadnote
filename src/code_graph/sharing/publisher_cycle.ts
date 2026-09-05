@@ -183,13 +183,33 @@ export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advanc
     verified.push(receipt.value);
   }
   yield* hydratePublisherFacts(config, identity, verified).pipe(Effect.ignore);
-  const indexer = yield* CodeGraphIndexer;
-  yield* indexer.index({cwd, ensureVectors: false, threadnoteHome: config.agentContextHome});
-  machine = assembleGraphShareBatch(machine);
-  yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
-  machine = verifyGraphShareBatch(machine);
-  yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
-  const published = yield* exportSignedGeneration(config, options, current, identity.repositoryId, profile);
+  const published = yield* Effect.gen(function* () {
+    const indexer = yield* CodeGraphIndexer;
+    const store = yield* CodeGraphStore;
+    yield* indexer.index({cwd, ensureVectors: false, force: true, threadnoteHome: config.agentContextHome});
+    const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
+    const ready = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+    if (
+      ready === undefined ||
+      ready.dirty ||
+      ready.baseSnapshotId !== undefined ||
+      ready.commit !== identity.headCommit
+    ) {
+      return yield* graphSharingFailure(
+        'Checkpoint export requires the exact ready CLEAN root snapshot for the current repository HEAD.',
+      );
+    }
+    machine = assembleGraphShareBatch(machine);
+    yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
+    machine = verifyGraphShareBatch(machine);
+    yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
+    return yield* exportSignedGeneration(config, options, current, identity.repositoryId, profile);
+  }).pipe(
+    Effect.tapError(() => {
+      machine = failGraphShareBatch(machine);
+      return persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
+    }),
+  );
   machine = publishGraphShareBatch(machine, published.manifestDigest);
   yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
   return {

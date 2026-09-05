@@ -10,6 +10,7 @@ import {
   createWorkspaceAttributor,
   discoverManifestWorkspace,
   mergeCodeGraphWorkspaces,
+  workspaceHasUninventoriedMonikerEvidence,
 } from '../../src/code_graph/workspace.js';
 
 const files = [
@@ -123,6 +124,17 @@ const workspaceFragmentArbitrary = FC.record({
 );
 
 describe('code graph workspace properties', () => {
+  it('treats package export monikers as inventoried only when their evidence file is present', () => {
+    const workspace = discoverManifestWorkspace([
+      workspaceFile('package.json', JSON.stringify({name: 'root', private: true}), 'npm-manifest'),
+      workspaceFile('scratchpad/package.json', JSON.stringify({name: 'scratchpad', private: true}), 'npm-manifest'),
+    ]);
+    expect(
+      workspaceHasUninventoriedMonikerEvidence(workspace, new Set(['package.json', 'scratchpad/package.json'])),
+    ).toBe(false);
+    expect(workspaceHasUninventoriedMonikerEvidence(workspace, new Set(['package.json']))).toBe(true);
+  });
+
   it.prop(
     'discovers identical nested and integrated workspace models regardless of inventory order',
     {permuted: permutedFiles},

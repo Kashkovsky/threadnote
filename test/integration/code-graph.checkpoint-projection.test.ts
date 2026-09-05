@@ -6,6 +6,7 @@ import {join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Path} from 'effect';
 import {TestClock} from 'effect/testing';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {describe, expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {codeGraphCheckpointAbiInputV1} from '../../src/code_graph/checkpoint/compatibility.js';
@@ -108,14 +109,167 @@ describe('code graph checkpoint projection', () => {
     },
     60_000,
   );
+
+  effectIt.effect(
+    'omits planted dangling monikers whose evidence file is not in the snapshot',
+    () => {
+      let fixtureRoot: string | undefined;
+      return Effect.gen(function* () {
+        const fixture = createRepository();
+        fixtureRoot = fixture.root;
+        const indexer = yield* CodeGraphIndexer;
+        const path = yield* Path.Path;
+        const store = yield* CodeGraphStore;
+        const indexed = yield* indexer.index({cwd: fixture.repository, threadnoteHome: fixture.home});
+        const databasePath = codeGraphLayout(
+          path,
+          fixture.home,
+          indexed.identity.checkoutId,
+          indexed.identity.worktreeId,
+        ).databasePath;
+        const provenance = yield* store.snapshotPackProvenance(databasePath, indexed.snapshot.id);
+        expect(provenance).toBeDefined();
+        if (provenance === undefined) return;
+        yield* store.withSession(
+          databasePath,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const components = yield* sql<{readonly id: string}>`
+              SELECT id FROM workspace_components WHERE snapshot_id = ${indexed.snapshot.id} LIMIT 1
+            `;
+            const component = components[0];
+            expect(component).toBeDefined();
+            if (component === undefined) return;
+            yield* sql`
+              INSERT INTO code_graph_monikers (
+                snapshot_id, id, version, scheme, role, kind, resolution_domain, identity,
+                package_name, component_id, evidence_path, evidence_span_json
+              ) VALUES (
+                ${indexed.snapshot.id},
+                ${`cgm_${'d'.repeat(64)}`},
+                ${1},
+                ${'package'},
+                ${'export'},
+                ${'package'},
+                ${'package:npm'},
+                ${'package:npm:scratchpad'},
+                ${'scratchpad'},
+                ${component.id},
+                ${'scratchpad/package.json'},
+                ${'{"column":1,"endColumn":1,"endLine":1,"line":1}'}
+              )
+            `;
+          }),
+        );
+        const records: CodeGraphCheckpointRecordV1[] = [];
+        yield* projectCodeGraphCheckpointV1({
+          abi: codeGraphCheckpointAbiInputV1(provenance),
+          databasePath,
+          identity: indexed.identity,
+          snapshotId: indexed.snapshot.id,
+          writeMetadata: () => Effect.void,
+          writeRecords: page => Effect.sync(() => records.push(...page)),
+        });
+        expect(
+          records.filter(record => record.kind === 'moniker' && record.evidencePath === 'scratchpad/package.json'),
+        ).toEqual([]);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() =>
+            fixtureRoot === undefined ? undefined : rmSync(fixtureRoot, {force: true, recursive: true}),
+          ),
+        ),
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+      );
+    },
+    60_000,
+  );
+
+  effectIt.effect(
+    'does not index ignored package-export monikers that declared workspace discovery would otherwise keep',
+    () => {
+      let fixtureRoot: string | undefined;
+      return Effect.gen(function* () {
+        const fixture = createRepository({ignoreScratchpad: true});
+        fixtureRoot = fixture.root;
+        const indexer = yield* CodeGraphIndexer;
+        const path = yield* Path.Path;
+        const store = yield* CodeGraphStore;
+        const indexed = yield* indexer.index({cwd: fixture.repository, threadnoteHome: fixture.home});
+        const databasePath = codeGraphLayout(
+          path,
+          fixture.home,
+          indexed.identity.checkoutId,
+          indexed.identity.worktreeId,
+        ).databasePath;
+        const dangling = yield* store.withSession(
+          databasePath,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const rows = yield* sql<{readonly count: number}>`
+              SELECT COUNT(*) AS count
+              FROM code_graph_monikers AS moniker
+              LEFT JOIN snapshot_files AS evidence
+                ON evidence.snapshot_id = moniker.snapshot_id AND evidence.path = moniker.evidence_path
+              WHERE moniker.snapshot_id = ${indexed.snapshot.id} AND evidence.path IS NULL
+            `;
+            return Number(rows[0]?.count ?? -1);
+          }),
+        );
+        expect(dangling).toBe(0);
+        const provenance = yield* store.snapshotPackProvenance(databasePath, indexed.snapshot.id);
+        expect(provenance).toBeDefined();
+        if (provenance === undefined) return;
+        const records: CodeGraphCheckpointRecordV1[] = [];
+        yield* projectCodeGraphCheckpointV1({
+          abi: codeGraphCheckpointAbiInputV1(provenance),
+          databasePath,
+          identity: indexed.identity,
+          snapshotId: indexed.snapshot.id,
+          writeMetadata: () => Effect.void,
+          writeRecords: page => Effect.sync(() => records.push(...page)),
+        });
+        expect(
+          records.some(
+            record =>
+              'evidencePath' in record &&
+              typeof record.evidencePath === 'string' &&
+              record.evidencePath.startsWith('scratchpad/'),
+          ),
+        ).toBe(false);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() =>
+            fixtureRoot === undefined ? undefined : rmSync(fixtureRoot, {force: true, recursive: true}),
+          ),
+        ),
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+      );
+    },
+    60_000,
+  );
 });
 
-function createRepository(): {readonly home: string; readonly repository: string; readonly root: string} {
+function createRepository(options: {readonly ignoreScratchpad?: boolean} = {}): {
+  readonly home: string;
+  readonly repository: string;
+  readonly root: string;
+} {
   const root = mkdtempSync(join(tmpdir(), 'threadnote-checkpoint-projection-'));
   const repository = join(root, 'repository');
   const home = join(root, 'threadnote-home');
   mkdirSync(join(repository, 'src'), {recursive: true});
   mkdirSync(home, {recursive: true});
+  if (options.ignoreScratchpad === true) {
+    mkdirSync(join(repository, 'scratchpad'), {recursive: true});
+    writeFileSync(join(repository, '.threadnoteignore'), 'scratchpad/package.json\n');
+    writeFileSync(
+      join(repository, 'scratchpad', 'package.json'),
+      `${JSON.stringify({name: 'scratchpad', private: true}, null, 2)}\n`,
+    );
+  }
   writeFileSync(
     join(repository, 'package.json'),
     `${JSON.stringify(

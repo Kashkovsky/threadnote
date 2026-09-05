@@ -7,6 +7,7 @@ import {describe, expect} from 'vitest';
 import {
   CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION,
   CodeGraphStore,
+  codeGraphPackageMoniker,
   hydrateCodeGraphCheckpointReusableBaseReceipt,
   materializedFileShardIdentity,
   type CodeGraphCheckpointImportBuildInput,
@@ -229,6 +230,94 @@ describe('code graph checkpoint import store', () => {
             }),
           );
           expect(staged._tag).toBe('Failure');
+          expect(yield* store.readySnapshotById(databasePath, snapshot.id)).toBeUndefined();
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
+  effectIt.effect('rejects checkpoint import when a moniker evidence path is not inventoried', () =>
+    TestClock.withLive(
+      withFixture(({databasePath, identity, snapshot, store}) =>
+        Effect.gen(function* () {
+          const ownerToken = yield* claimPersistentBuildForTest(store, databasePath, identity, snapshot);
+          const counts = emptyCodeGraphCheckpointCounts();
+          counts.file = 1;
+          counts['workspace-scope'] = 1;
+          counts['workspace-component'] = 1;
+          counts.moniker = 1;
+          const input = {...checkpointReceiptInput(), batchCount: 1, packProvenance: [], recordCounts: counts};
+          yield* store.bindCheckpointImportBuild(databasePath, snapshot.id, input);
+          const componentId = `cgp_${'1'.repeat(32)}`;
+          const moniker = codeGraphPackageMoniker({
+            componentId,
+            evidence: {
+              path: 'scratchpad/package.json',
+              span: {column: 1, endColumn: 1, endLine: 1, line: 1},
+            },
+            packageName: 'scratchpad',
+            role: 'export',
+          });
+          expect(
+            yield* store.stageCheckpointImportRecordPage(databasePath, snapshot.id, ownerToken, {
+              batchIndex: 0,
+              digest: {algorithm: 'sha256', digest: 'd'.repeat(64)},
+              records: [
+                {
+                  blobId: 'b'.repeat(40),
+                  contentHash: 'c'.repeat(64),
+                  kind: 'file',
+                  language: 'typescript',
+                  mode: '100644',
+                  path: 'src/value.ts',
+                  size: 12,
+                  source: 'commit',
+                },
+                {
+                  buildSystem: 'node',
+                  diagnostics: [],
+                  id: 'workspace-root',
+                  kind: 'workspace-scope',
+                  name: 'checkpoint-import',
+                  provenance: 'declared',
+                  root: '',
+                },
+                {
+                  buildSystem: 'node',
+                  componentKind: 'package',
+                  diagnostics: [],
+                  id: componentId,
+                  kind: 'workspace-component',
+                  languages: ['typescript'],
+                  name: 'scratchpad',
+                  provenance: 'declared',
+                  resolutionDomain: 'typescript',
+                  root: 'scratchpad',
+                  sourceRoots: ['scratchpad'],
+                  workspaceId: 'workspace-root',
+                  workspaceRoots: [''],
+                },
+                {
+                  componentId: moniker.componentId,
+                  evidencePath: moniker.evidence.path,
+                  evidenceSpan: moniker.evidence.span,
+                  id: moniker.id,
+                  identity: moniker.identity,
+                  kind: 'moniker',
+                  monikerKind: moniker.kind,
+                  packageName: moniker.packageName,
+                  resolutionDomain: moniker.resolutionDomain,
+                  role: moniker.role,
+                  scheme: moniker.scheme,
+                  version: moniker.version,
+                },
+              ],
+            }),
+          ).toEqual({records: 4, state: 'staged'});
+          const failed = yield* Effect.flip(
+            store.finalizeCheckpointImport(databasePath, identity, snapshot, ownerToken, input),
+          );
+          expect(failed.message).toBe('Checkpoint import contains dangling relational endpoints.');
           expect(yield* store.readySnapshotById(databasePath, snapshot.id)).toBeUndefined();
         }),
       ).pipe(provideTestLayer(ApplicationLayer)),
