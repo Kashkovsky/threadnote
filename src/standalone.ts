@@ -98,13 +98,13 @@ async function remoteMemoryOperatorProgram(arguments_: readonly string[]) {
   return operator
     .runRemoteMemoryOperator(arguments_, process.env, operator.createRemoteMemoryOperatorRuntime(process.execPath))
     .pipe(
-    Effect.flatMap(code =>
-      Effect.sync(() => {
-        process.exitCode = code;
-      }),
-    ),
-    Effect.provide(BunServices.layer),
-  );
+      Effect.flatMap(code =>
+        Effect.sync(() => {
+          process.exitCode = code;
+        }),
+      ),
+      Effect.provide(BunServices.layer),
+    );
 }
 
 async function remoteMemoryServiceProgram() {
