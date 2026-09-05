@@ -1,4 +1,6 @@
 import {describe, expect, it} from 'vitest';
+import {it as effectIt} from '@effect/vitest';
+import {Effect} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {
   applyLogicalDelta,
@@ -32,32 +34,32 @@ import {
 import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
 
 describe('graph share deltas, coordinator, contribution, and workers', () => {
-  it('keeps checkpoint plus ordered deltas equal to an independent clean model', () => {
-    FC.assert(
-      FC.property(
-        FC.array(FC.tuple(FC.string({maxLength: 8, minLength: 1}), FC.string({maxLength: 8, minLength: 0})), {
-          maxLength: 8,
-        }),
-        FC.array(FC.string({maxLength: 8, minLength: 1}), {maxLength: 4}),
-        (upserts, deletions) => {
-          let clean = emptyLogicalGraph();
-          for (const [key, value] of upserts) clean = setLogicalRecord(clean, key, value);
-          for (const key of deletions) clean = deleteLogicalRecord(clean, key);
-          const base = emptyLogicalGraph();
-          const delta = diffLogicalGraphs(base, clean, {
-            baseCommit: '1'.repeat(40),
-            baseSnapshotId: 'cgsn_' + 'a'.repeat(40),
-            graphAbi: 'b'.repeat(64),
-            targetCommit: '2'.repeat(40),
-          });
-          const applied = applyLogicalDelta(base, delta);
-          expect(logicalGraphDigest(applied)).toBe(logicalGraphDigest(clean));
-          expect(logicalGraphDigest(compactLogicalGraph(applied))).toBe(logicalGraphDigest(clean));
-        },
-      ),
-      {numRuns: 40},
-    );
-  });
+  effectIt.effect.prop(
+    'keeps checkpoint plus ordered deltas equal to an independent clean model',
+    {
+      upserts: FC.array(FC.tuple(FC.string({maxLength: 8, minLength: 1}), FC.string({maxLength: 8, minLength: 0})), {
+        maxLength: 8,
+      }),
+      deletions: FC.array(FC.string({maxLength: 8, minLength: 1}), {maxLength: 4}),
+    },
+    ({upserts, deletions}) =>
+      Effect.sync(() => {
+        let clean = emptyLogicalGraph();
+        for (const [key, value] of upserts) clean = setLogicalRecord(clean, key, value);
+        for (const key of deletions) clean = deleteLogicalRecord(clean, key);
+        const base = emptyLogicalGraph();
+        const delta = diffLogicalGraphs(base, clean, {
+          baseCommit: '1'.repeat(40),
+          baseSnapshotId: 'cgsn_' + 'a'.repeat(40),
+          graphAbi: 'b'.repeat(64),
+          targetCommit: '2'.repeat(40),
+        });
+        const applied = applyLogicalDelta(base, delta);
+        expect(logicalGraphDigest(applied)).toBe(logicalGraphDigest(clean));
+        expect(logicalGraphDigest(compactLogicalGraph(applied))).toBe(logicalGraphDigest(clean));
+      }),
+    {fastCheck: {numRuns: 40}},
+  );
 
   it('selects the newest published ancestor of HEAD', () => {
     const published = [{sourceCommit: '1'.repeat(40)}, {sourceCommit: '2'.repeat(40)}, {sourceCommit: '3'.repeat(40)}];

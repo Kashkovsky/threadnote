@@ -61,7 +61,7 @@ describe('code graph schema revision entity', () => {
       checkpointArtifact: 1,
       checkpointImport: 1,
       checkpointRecordSchema: 1,
-      checkpointSemantic: 1,
+      checkpointSemantic: 2,
       inventoryReuseReceipt: 2,
       managerCatalogRevision: 1,
       resolutionSurface: 1,

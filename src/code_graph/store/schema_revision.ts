@@ -29,7 +29,7 @@ export const CODE_GRAPH_PROTOCOL_VERSIONS = {
   checkpointArtifact: 1,
   checkpointImport: 1,
   checkpointRecordSchema: 1,
-  checkpointSemantic: 1,
+  checkpointSemantic: 2,
   inventoryReuseReceipt: 2,
   managerCatalogRevision: 1,
   resolutionSurface: 1,

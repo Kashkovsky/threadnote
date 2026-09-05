@@ -6,7 +6,7 @@ import {
   CodeGraphCheckpointStreamInspectorV1,
   codeGraphCheckpointReadPlanV1,
 } from '../checkpoint/pack.js';
-import {GRAPH_SHARE_CHECKPOINT_MEDIA_TYPE} from './artifacts.js';
+import {GRAPH_SHARE_CHECKPOINT_MEDIA_TYPE, GRAPH_SHARE_DELTA_MEDIA_TYPE} from './artifacts.js';
 import {decodeJsonBytes} from './atomic.js';
 import {putCasBytes, putCasFile, readVerifiedCasBlob, verifyCasBlob} from './cas.js';
 import {mirrorCoordinatorCasBlob} from './control_client.js';
@@ -22,10 +22,12 @@ export interface GraphShareCheckpointChunkLayerV1 {
   readonly ordinal: number;
 }
 
+export type GraphShareLayerMediaType = typeof GRAPH_SHARE_CHECKPOINT_MEDIA_TYPE | typeof GRAPH_SHARE_DELTA_MEDIA_TYPE;
+
 export interface GraphShareCheckpointMetadataV1 {
   readonly artifactDigest: Sha256Digest;
   readonly chunks: readonly GraphShareCheckpointChunkLayerV1[];
-  readonly mediaType: typeof GRAPH_SHARE_CHECKPOINT_MEDIA_TYPE;
+  readonly mediaType: GraphShareLayerMediaType;
   readonly prefixDigest: Sha256Digest;
   readonly schemaVersion: typeof GRAPH_SHARE_CHECKPOINT_METADATA_SCHEMA_VERSION;
 }
@@ -39,7 +41,7 @@ export function parseGraphShareCheckpointMetadata(value: unknown): GraphShareChe
   if (!isRecord(value) || value.schemaVersion !== GRAPH_SHARE_CHECKPOINT_METADATA_SCHEMA_VERSION) {
     throw graphSharingFailure('Checkpoint metadata is invalid.');
   }
-  if (value.mediaType !== GRAPH_SHARE_CHECKPOINT_MEDIA_TYPE) {
+  if (value.mediaType !== GRAPH_SHARE_CHECKPOINT_MEDIA_TYPE && value.mediaType !== GRAPH_SHARE_DELTA_MEDIA_TYPE) {
     throw graphSharingFailure('Checkpoint metadata media type is not supported.');
   }
   if (!Array.isArray(value.chunks) || value.chunks.length > 16_384) {
@@ -48,7 +50,7 @@ export function parseGraphShareCheckpointMetadata(value: unknown): GraphShareChe
   const metadata: GraphShareCheckpointMetadataV1 = {
     artifactDigest: parseSha256Digest(requiredText(value.artifactDigest, 'artifactDigest')),
     chunks: value.chunks.map(parseChunkLayer),
-    mediaType: GRAPH_SHARE_CHECKPOINT_MEDIA_TYPE,
+    mediaType: value.mediaType,
     prefixDigest: parseSha256Digest(requiredText(value.prefixDigest, 'prefixDigest')),
     schemaVersion: GRAPH_SHARE_CHECKPOINT_METADATA_SCHEMA_VERSION,
   };
@@ -64,6 +66,7 @@ export function parseGraphShareCheckpointMetadata(value: unknown): GraphShareChe
 export const putGraphShareCheckpointLayers = Effect.fn('codeGraph.sharing.putCheckpointLayers')(function* (
   casRoot: string,
   artifactDigest: string,
+  mediaType: GraphShareLayerMediaType = GRAPH_SHARE_CHECKPOINT_MEDIA_TYPE,
 ) {
   const expected = parseSha256Digest(artifactDigest);
   const artifactPath = yield* verifyCasBlob(casRoot, expected);
@@ -96,7 +99,7 @@ export const putGraphShareCheckpointLayers = Effect.fn('codeGraph.sharing.putChe
       const metadata: GraphShareCheckpointMetadataV1 = {
         artifactDigest: expected,
         chunks,
-        mediaType: GRAPH_SHARE_CHECKPOINT_MEDIA_TYPE,
+        mediaType,
         prefixDigest,
         schemaVersion: GRAPH_SHARE_CHECKPOINT_METADATA_SCHEMA_VERSION,
       };

@@ -3,6 +3,7 @@ import {fromPromiseInterruptible} from '../../effect/errors.js';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
 import {graphSharingFailure} from './errors.js';
 import {parseSha256Digest, sha256Digest, SHA256_HEX, type Sha256Digest} from './digest.js';
+import {validateGraphShareFrontierDeltaChain} from './delta.js';
 import {isGraphShareGitObjectId} from './git.js';
 
 function asBufferSource(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
@@ -33,6 +34,7 @@ export interface GraphShareFrontierCheckpointV1 {
 export interface GraphShareFrontierDeltaV1 {
   readonly baseSnapshotId: string;
   readonly manifestDigest: Sha256Digest;
+  readonly metadataDigest?: Sha256Digest;
   readonly targetCommit: string;
   readonly targetSnapshotId: string;
 }
@@ -185,9 +187,7 @@ export function parseGraphShareFrontierManifest(value: unknown): GraphShareFront
     snapshotId: requiredText(value.snapshotId, 'snapshotId'),
     sourceCommit: requiredGitObjectId(value.sourceCommit, 'sourceCommit'),
   };
-  if (manifest.sourceCommit !== checkpoint.sourceCommit) {
-    throw graphSharingFailure('Frontier sourceCommit must match the checkpoint sourceCommit.');
-  }
+  validateGraphShareFrontierDeltaChain(manifest);
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(Object.keys(manifest).sort())) {
     throw graphSharingFailure('Frontier manifest contains unsupported fields.');
   }
@@ -259,6 +259,9 @@ function parseDelta(value: unknown): GraphShareFrontierDeltaV1 {
     manifestDigest: parseSha256Digest(requiredText(value.manifestDigest, 'delta.manifestDigest')),
     targetCommit: requiredGitObjectId(value.targetCommit, 'delta.targetCommit'),
     targetSnapshotId: requiredText(value.targetSnapshotId, 'delta.targetSnapshotId'),
+    ...(value.metadataDigest === undefined
+      ? {}
+      : {metadataDigest: parseSha256Digest(requiredText(value.metadataDigest, 'delta.metadataDigest'))}),
   };
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(Object.keys(delta).sort())) {
     throw graphSharingFailure('Frontier delta descriptor contains unsupported fields.');

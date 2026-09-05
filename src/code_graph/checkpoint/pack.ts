@@ -17,10 +17,12 @@ import {
   type CodeGraphCheckpointChunkDescriptorV1,
   type CodeGraphCheckpointAttributionFileV1,
   type CodeGraphCheckpointCountsV1,
+  type CodeGraphCheckpointDeltaBaseV1,
   type CodeGraphCheckpointDescriptorV1,
   type CodeGraphCheckpointDigestV1,
   type CodeGraphCheckpointHeaderV1,
   type CodeGraphCheckpointMetadataV1,
+  type CodeGraphCheckpointPackKindV1,
   type CodeGraphCheckpointRecordOrderKeyV1,
   type CodeGraphCheckpointRecordV1,
   type CodeGraphCheckpointSha256,
@@ -78,8 +80,16 @@ export interface CodeGraphCheckpointDecodeOptionsV1 extends CodeGraphCheckpointE
   readonly onVerifiedChunk?: (chunk: CodeGraphCheckpointVerifiedChunkV1) => void;
 }
 
+export interface CodeGraphCheckpointDeltaEncodeV1 {
+  readonly base: CodeGraphCheckpointDeltaBaseV1;
+  readonly deletions: readonly CodeGraphCheckpointRecordOrderKeyV1[];
+  readonly targetLogical: CodeGraphCheckpointDigestV1;
+}
+
 export interface CodeGraphCheckpointEncodeOptionsV1 {
+  readonly delta?: CodeGraphCheckpointDeltaEncodeV1;
   readonly limits?: Partial<CodeGraphCheckpointPackLimits>;
+  readonly packKind?: CodeGraphCheckpointPackKindV1;
 }
 
 export interface CodeGraphCheckpointEncodedChunkV1 {
@@ -174,11 +184,13 @@ export function codeGraphCheckpointAbiDigestV1(
 export class CodeGraphCheckpointStreamEncoderV1 {
   readonly #attributionFiles: Map<string, CodeGraphCheckpointAttributionFileV1>;
   readonly #counts = emptyCodeGraphCheckpointCounts();
+  readonly #delta: CodeGraphCheckpointDeltaEncodeV1 | undefined;
   readonly #filePaths = domainHasher(PATH_SET_DOMAIN);
   readonly #factPaths = domainHasher(PATH_SET_DOMAIN);
   readonly #limits: CodeGraphCheckpointPackLimits;
   readonly #logical: Bun.CryptoHasher;
   readonly #metadata: CodeGraphCheckpointMetadataV1;
+  readonly #packKind: CodeGraphCheckpointPackKindV1;
   readonly #spool = domainHasher(SPOOL_DOMAIN);
   readonly #chunkDescriptors: CodeGraphCheckpointChunkDescriptorV1[] = [];
   #chunkBytes = 0;
@@ -193,6 +205,14 @@ export class CodeGraphCheckpointStreamEncoderV1 {
     this.#limits = resolveLimits(options.limits);
     this.#metadata = parseCodeGraphCheckpointMetadataV1(metadata);
     this.#attributionFiles = checkpointAttributionFiles(this.#metadata);
+    this.#packKind = options.packKind ?? (options.delta === undefined ? 'checkpoint' : 'delta');
+    this.#delta = options.delta;
+    if (this.#packKind === 'delta' && this.#delta === undefined) {
+      throw CodeGraphCheckpointPackError.make({message: 'Delta pack encoding requires a base envelope.'});
+    }
+    if (this.#packKind === 'checkpoint' && this.#delta !== undefined) {
+      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint pack encoding cannot include a delta envelope.'});
+    }
     const anchor = canonicalBytes(this.#metadata, this.#limits.maximumHeaderBytes, 'Checkpoint logical metadata');
     this.#logical = domainHasher(LOGICAL_DOMAIN);
     this.#logical.update(u32(anchor.byteLength));
@@ -241,13 +261,15 @@ export class CodeGraphCheckpointStreamEncoderV1 {
     if (this.#finished) throw CodeGraphCheckpointPackError.make({message: 'Checkpoint encoder is already finished.'});
     this.#finished = true;
     if (this.#chunkRecords > 0) this.#flush(emit);
-    verifyFileFactParity(
-      this.#counts,
-      this.#metadata.coverage.eligibleFiles,
-      digestHex(this.#filePaths),
-      digestHex(this.#factPaths),
-    );
-    verifyAttributionFileCoverage(this.#attributionFiles);
+    if (this.#packKind === 'checkpoint') {
+      verifyFileFactParity(
+        this.#counts,
+        this.#metadata.coverage.eligibleFiles,
+        digestHex(this.#filePaths),
+        digestHex(this.#factPaths),
+      );
+      verifyAttributionFileCoverage(this.#attributionFiles);
+    }
     const abi = codeGraphCheckpointAbiDigestV1(this.#metadata.abi);
     const header = parseCodeGraphCheckpointHeaderV1({
       abi: {...abi, input: this.#metadata.abi},
@@ -256,13 +278,18 @@ export class CodeGraphCheckpointStreamEncoderV1 {
       counts: this.#counts,
       coverage: this.#metadata.coverage,
       formatVersion: CODE_GRAPH_CHECKPOINT_FORMAT_VERSION,
-      logical: {algorithm: 'sha256', digest: digestHex(this.#logical)},
+      logical:
+        this.#packKind === 'delta' && this.#delta !== undefined
+          ? this.#delta.targetLogical
+          : {algorithm: 'sha256', digest: digestHex(this.#logical)},
       mediaType: CODE_GRAPH_CHECKPOINT_MEDIA_TYPE,
+      packKind: this.#packKind,
       recordSchemaVersion: CODE_GRAPH_CHECKPOINT_RECORD_SCHEMA_VERSION,
       repository: this.#metadata.repository,
       ...(this.#metadata.reuse === undefined ? {} : {reuse: this.#metadata.reuse}),
       schema: CODE_GRAPH_CHECKPOINT_SCHEMA,
       source: this.#metadata.source,
+      ...(this.#delta === undefined ? {} : {base: this.#delta.base, deletions: this.#delta.deletions}),
     });
     const prefix = encodePrefix(header, this.#limits);
     return {
@@ -490,20 +517,22 @@ export class CodeGraphCheckpointStreamDecoderV1 {
     if (this.#state !== 'done' || this.#queue.size !== 0 || !this.#header || !this.#logical) {
       throw CodeGraphCheckpointPackError.make({message: 'Checkpoint artifact ended before its declared framing.'});
     }
-    verifyFileFactParity(
-      this.#counts,
-      this.#header.coverage.eligibleFiles,
-      digestHex(this.#filePaths),
-      digestHex(this.#factPaths),
-    );
-    verifyAttributionFileCoverage(this.#attributionFiles ?? new Map());
+    if (this.#header.packKind !== 'delta') {
+      verifyFileFactParity(
+        this.#counts,
+        this.#header.coverage.eligibleFiles,
+        digestHex(this.#filePaths),
+        digestHex(this.#factPaths),
+      );
+      verifyAttributionFileCoverage(this.#attributionFiles ?? new Map());
+      if (digestHex(this.#logical) !== this.#header.logical.digest) {
+        throw CodeGraphCheckpointPackError.make({message: 'Checkpoint logical digest does not match its records.'});
+      }
+    }
     for (const kind of CODE_GRAPH_CHECKPOINT_RECORD_KINDS) {
       if (this.#counts[kind] !== this.#header.counts[kind]) {
         throw CodeGraphCheckpointPackError.make({message: `Checkpoint ${kind} count does not match its header.`});
       }
-    }
-    if (digestHex(this.#logical) !== this.#header.logical.digest) {
-      throw CodeGraphCheckpointPackError.make({message: 'Checkpoint logical digest does not match its records.'});
     }
     const resultDescriptor = descriptor(this.#artifactBytes, digestHex(this.#artifact));
     verifyExpectedArtifact(resultDescriptor, this.#expectedDescriptor, this.#expectedDigest);
