@@ -115,6 +115,7 @@ describe('graph share import and inspect source', () => {
       const enrolled = yield* enrolledHome(home, {includeFrontier: false});
       yield* writeSharedGraphProvenance(home, CHECKOUT_ID, {
         checkpointDigest: sha256Digest(CHECKPOINT_BYTES),
+        deltaCount: 2,
         frontierCommit: 'a'.repeat(40),
         profileDigest: enrolled.profileDigest,
         repositoryId: REPOSITORY_ID,
@@ -138,7 +139,11 @@ describe('graph share import and inspect source', () => {
           snapshot: {baseSnapshotId: 'cgsn_imported', id: 'cgsn_overlay'},
           threadnoteHome: home,
         }),
-      ).toMatchObject({kind: 'shared-base-plus-local-overlay', profileDigest: enrolled.profileDigest});
+      ).toMatchObject({
+        deltaCount: 2,
+        kind: 'shared-base-plus-local-overlay',
+        profileDigest: enrolled.profileDigest,
+      });
     }).pipe(provideTestLayer(sharingLayer)),
   );
 
@@ -153,6 +158,7 @@ describe('graph share import and inspect source', () => {
       const published = yield* enrolledHome(home, {includeFrontier: true, skipCheckpoint: true});
       yield* writeSharedGraphProvenance(home, CHECKOUT_ID, {
         checkpointDigest: published.checkpointDigest,
+        deltaCount: 0,
         frontierCommit: 'a'.repeat(40),
         profileDigest: published.profileDigest,
         repositoryId: REPOSITORY_ID,
@@ -179,6 +185,7 @@ describe('graph share import and inspect source', () => {
       const published = yield* enrolledHome(home, {includeFrontier: true, skipCheckpoint: true});
       yield* writeSharedGraphProvenance(home, CHECKOUT_ID, {
         checkpointDigest: published.checkpointDigest,
+        deltaCount: 0,
         frontierCommit: 'a'.repeat(40),
         profileDigest: published.profileDigest,
         repositoryId: REPOSITORY_ID,
@@ -294,6 +301,7 @@ describe('graph share import and inspect source', () => {
       );
       yield* writeSharedGraphProvenance(home, CHECKOUT_ID, {
         checkpointDigest: `sha256:${'9'.repeat(64)}`,
+        deltaCount: 0,
         frontierCommit: 'a'.repeat(40),
         profileDigest: enrolled.profileDigest,
         repositoryId: REPOSITORY_ID,
@@ -473,6 +481,7 @@ describe('graph share import and inspect source', () => {
       const enrolled = yield* enrolledHome(home, {includeFrontier: false});
       yield* writeSharedGraphProvenance(home, CHECKOUT_ID, {
         checkpointDigest: sha256Digest(CHECKPOINT_BYTES),
+        deltaCount: 0,
         frontierCommit: 'a'.repeat(40),
         profileDigest: enrolled.profileDigest,
         repositoryId: REPOSITORY_ID,
@@ -514,6 +523,7 @@ describe('graph share import and inspect source', () => {
         const published = yield* enrolledHome(home, {includeFrontier: true, skipCheckpoint: true, snapshotId});
         yield* writeSharedGraphProvenance(home, CHECKOUT_ID, {
           checkpointDigest: published.checkpointDigest,
+          deltaCount: 0,
           frontierCommit: 'a'.repeat(40),
           profileDigest: published.profileDigest,
           repositoryId: REPOSITORY_ID,

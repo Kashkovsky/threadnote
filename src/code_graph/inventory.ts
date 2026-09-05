@@ -36,6 +36,7 @@ import {
   type CodeGraphInventoryExclusionReason,
 } from './inventory_policy.js';
 import {compareCodeUnits} from './ordering.js';
+import {workspaceHasUninventoriedMonikerEvidence} from './workspace.js';
 import {
   codeGraphExtractionPlanMetrics,
   codeGraphSourceSizeBucket,
@@ -488,7 +489,8 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
           },
         }),
     skipped,
-    ...([...overlay.changed].some(relative => languagePacks.isResolutionContext(relative))
+    ...([...overlay.changed].some(relative => languagePacks.isResolutionContext(relative)) ||
+    workspaceHasUninventoriedMonikerEvidence(declaredWorkspace.workspace, new Set(files.map(file => file.path)))
       ? {}
       : {workspace: declaredWorkspace.workspace}),
   } satisfies CodeGraphInventory;

@@ -7,6 +7,7 @@ import {lookupGraphShareTrustReceipt} from './trust.js';
 
 export interface SharedGraphProvenanceV1 {
   readonly checkpointDigest: Sha256Digest;
+  readonly deltaCount: number;
   readonly frontierCommit: string;
   readonly profileDigest: Sha256Digest;
   readonly repositoryId: string;
@@ -124,7 +125,7 @@ export function sharedGraphQuerySource(
   readonly profileDigest: Sha256Digest;
 } {
   return {
-    deltaCount: 0,
+    deltaCount: provenance.deltaCount,
     frontierCommit: provenance.frontierCommit,
     kind: 'shared-base-plus-local-overlay',
     localCommit,
@@ -181,8 +182,18 @@ function parseProvenance(value: unknown): SharedGraphProvenanceV1 {
   if (typeof record.repositoryId !== 'string' || !SHA256_HEX.test(record.repositoryId)) {
     throw graphSharingFailure('Shared graph provenance repository identity is invalid.');
   }
+  const deltaCount =
+    record.deltaCount === undefined
+      ? 0
+      : typeof record.deltaCount === 'number' && Number.isSafeInteger(record.deltaCount) && record.deltaCount >= 0
+        ? record.deltaCount
+        : undefined;
+  if (record.deltaCount !== undefined && deltaCount === undefined) {
+    throw graphSharingFailure('Shared graph provenance is invalid.');
+  }
   return {
     checkpointDigest: parseSha256Digest(String(record.checkpointDigest)),
+    deltaCount: deltaCount ?? 0,
     frontierCommit: record.frontierCommit,
     profileDigest: parseSha256Digest(String(record.profileDigest)),
     repositoryId: record.repositoryId,

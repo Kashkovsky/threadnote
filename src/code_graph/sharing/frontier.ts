@@ -54,6 +54,27 @@ export function observeCanonicalHead(
       publishedFrontier: state.publishedFrontier,
     };
   }
+  if (state.phase === 'failed') {
+    if (input.commit === state.publishedFrontier) {
+      return {
+        ...state,
+        collectingStartedAtSeconds:
+          state.pendingRange.length > 0 ? (state.collectingStartedAtSeconds ?? input.nowSeconds) : null,
+        observedHead: input.commit,
+        phase: state.pendingRange.length > 0 ? 'collecting' : 'published',
+      };
+    }
+    const pendingRange = state.pendingRange.includes(input.commit)
+      ? state.pendingRange
+      : [...state.pendingRange, input.commit];
+    return {
+      ...state,
+      collectingStartedAtSeconds: state.collectingStartedAtSeconds ?? input.nowSeconds,
+      observedHead: input.commit,
+      pendingRange,
+      phase: 'collecting',
+    };
+  }
   if (state.phase === 'frozen' || state.phase === 'assembling' || state.phase === 'verifying') {
     if (input.commit === state.observedHead || state.pendingRange.includes(input.commit)) return state;
     return {...state, observedHead: input.commit, pendingRange: [...state.pendingRange, input.commit]};

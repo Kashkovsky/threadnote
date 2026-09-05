@@ -1231,12 +1231,24 @@ function streamMonikers<E, R>(
     undefined,
     cursor =>
       sql.unsafe<MonikerRow>(
-        `SELECT id, version, scheme, role, kind, resolution_domain, identity,
-                package_name, package_version, import_path, qualified_name,
-                component_id, symbol_id, dependency_kind, evidence_path, evidence_span_json
-         FROM code_graph_monikers
-         WHERE snapshot_id = ? AND (? IS NULL OR id > ? COLLATE BINARY)
-         ORDER BY id COLLATE BINARY
+        `SELECT moniker.id, moniker.version, moniker.scheme, moniker.role, moniker.kind,
+                moniker.resolution_domain, moniker.identity, moniker.package_name,
+                moniker.package_version, moniker.import_path, moniker.qualified_name,
+                moniker.component_id, moniker.symbol_id, moniker.dependency_kind,
+                moniker.evidence_path, moniker.evidence_span_json
+         FROM code_graph_monikers AS moniker
+         LEFT JOIN snapshot_files AS evidence
+           ON evidence.snapshot_id = moniker.snapshot_id AND evidence.path = moniker.evidence_path
+         LEFT JOIN workspace_components AS component
+           ON component.snapshot_id = moniker.snapshot_id AND component.id = moniker.component_id
+         LEFT JOIN symbols AS symbol
+           ON symbol.snapshot_id = moniker.snapshot_id AND symbol.id = moniker.symbol_id
+         WHERE moniker.snapshot_id = ?
+           AND evidence.path IS NOT NULL
+           AND (moniker.component_id IS NULL OR component.id IS NOT NULL)
+           AND (moniker.symbol_id IS NULL OR symbol.id IS NOT NULL)
+           AND (? IS NULL OR moniker.id > ? COLLATE BINARY)
+         ORDER BY moniker.id COLLATE BINARY
          LIMIT ?`,
         [snapshotId, cursor ?? null, cursor ?? null, pageSize],
       ),

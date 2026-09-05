@@ -421,6 +421,7 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     yield* sharingProgress(input.request.onProgress, 'building-local-overlay');
     yield* writeSharedGraphProvenance(input.request.threadnoteHome, input.request.identity.checkoutId, {
       checkpointDigest: selected.checkpoint.manifestDigest,
+      deltaCount: selected.deltas.length,
       frontierCommit: selected.sourceCommit,
       profileDigest,
       repositoryId: input.request.identity.repositoryId,
@@ -506,6 +507,7 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
   yield* sharingProgress(input.request.onProgress, 'building-local-overlay');
   yield* writeSharedGraphProvenance(input.request.threadnoteHome, input.request.identity.checkoutId, {
     checkpointDigest: selected.checkpoint.manifestDigest,
+    deltaCount: selected.deltas.length,
     frontierCommit: selected.sourceCommit,
     profileDigest,
     repositoryId: input.request.identity.repositoryId,
