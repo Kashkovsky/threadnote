@@ -9,6 +9,14 @@ import {canonicalResourceUri, resourceIdIsWithin} from '../storage/resource-id.j
 import {uriSegment} from '../mcp/server/common.js';
 import {installCursorCloudAgentIntegration} from '../agent_integration/index.js';
 import {persistCursorCloudIdentityProfile} from './profile.js';
+import {
+  ORG_COMPOSER_POLICY,
+  THREADNOTE_ORG_MCP_NAME,
+  buildComposerHttpMcpEntry,
+  composerMcpUrl,
+  composerShareId,
+  type ComposerHttpMcpEntry,
+} from '../mcp/composer_attach.js';
 
 /** Legacy selector retained for Threadnote 4.2 Dashboard configurations. */
 export const CURSOR_CLOUD_MCP_TOOLSET = 'cursor-cloud' as const;
@@ -17,6 +25,7 @@ export const CURSOR_CLOUD_PERSONAL_MCP_TOOLSET = 'cursor-cloud-personal' as cons
 export const CURSOR_CLOUD_LOCAL_MCP_TOOLSET = 'cursor-cloud-local' as const;
 export const CURSOR_CLOUD_MEMORY_ENDPOINT_ENV = 'THREADNOTE_CURSOR_MEMORY_ENDPOINT';
 export const CURSOR_CLOUD_MEMORY_SHARE_ID_ENV = 'THREADNOTE_CURSOR_MEMORY_SHARE_ID';
+export const CURSOR_CLOUD_MODE_ENV = 'THREADNOTE_CURSOR_CLOUD_MODE';
 export const CURSOR_CLOUD_TEAM_ENV = 'THREADNOTE_CURSOR_CLOUD_TEAM';
 export const CURSOR_CLOUD_TEAMS_ENV = 'THREADNOTE_CURSOR_CLOUD_TEAMS';
 export const DEFAULT_CURSOR_CLOUD_IDENTITY = 'cursor-cloud';
@@ -24,7 +33,7 @@ export const DEFAULT_CURSOR_CLOUD_IDENTITY = 'cursor-cloud';
 const CURSOR_CLOUD_SHARE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 export const MAX_CURSOR_CLOUD_TEAMS = 16;
 
-export type CursorCloudMode = 'personal' | 'remote-hybrid';
+export type CursorCloudMode = 'org' | 'personal' | 'remote-hybrid';
 
 export class CursorCloudOperationError extends Schema.TaggedError<CursorCloudOperationError>()(
   'CursorCloudOperationError',
@@ -67,6 +76,7 @@ export interface CursorCloudLocalMcpConfig {
   readonly env: Readonly<{
     THREADNOTE_ACCOUNT: string;
     THREADNOTE_AGENT_ID: string;
+    THREADNOTE_CURSOR_CLOUD_MODE?: 'org';
     THREADNOTE_CURSOR_MEMORY_ENDPOINT: string;
     THREADNOTE_CURSOR_MEMORY_SHARE_ID: string;
     THREADNOTE_MCP_TOOLSET: typeof CURSOR_CLOUD_LOCAL_MCP_TOOLSET;
@@ -83,6 +93,14 @@ export interface CursorCloudRemoteHybridMcpConfig {
       readonly url: string;
     }>;
   }>;
+}
+
+export interface OrgCloudHybridMcpConfig {
+  readonly mcpServers: Readonly<{
+    'threadnote-local': CursorCloudLocalMcpConfig;
+    'threadnote-org': ComposerHttpMcpEntry;
+  }>;
+  readonly policy: typeof ORG_COMPOSER_POLICY;
 }
 
 export interface CursorCloudShareScope {
@@ -138,6 +156,22 @@ export interface CursorCloudRemoteHybridVerifyReceiptV1 {
   readonly provider: 'cursor-cloud';
   readonly shareId: string;
   readonly status: 'fail' | 'ok';
+  readonly version: 1;
+}
+
+export interface OrgCloudHybridVerifyReceiptV1 {
+  readonly canonicalStore: 'git';
+  readonly checks: readonly CursorCloudVerifyCheck[];
+  readonly cursorOidc: 'optional-attribution';
+  readonly endpoint: string;
+  readonly localMemoryFallback: 'disabled';
+  readonly mode: 'org';
+  readonly oauth: 'org-idp';
+  readonly provider: 'cursor-cloud';
+  readonly shareBinding: 'header';
+  readonly shareId: string;
+  readonly status: 'fail' | 'ok';
+  readonly stdioGitShare: false;
   readonly version: 1;
 }
 
@@ -244,21 +278,47 @@ export function buildCursorCloudRemoteHybridMcpConfig(
   const boundShareId = cursorCloudRemoteShareId(shareId);
   return {
     mcpServers: {
-      'threadnote-local': {
-        args: ['-lc', 'exec "$HOME/.local/bin/threadnote-mcp-server"'],
-        command: '/bin/sh',
-        env: {
-          THREADNOTE_ACCOUNT: profile.account,
-          THREADNOTE_AGENT_ID: profile.agentId,
-          THREADNOTE_CURSOR_MEMORY_ENDPOINT: url,
-          THREADNOTE_CURSOR_MEMORY_SHARE_ID: boundShareId,
-          THREADNOTE_MCP_TOOLSET: CURSOR_CLOUD_LOCAL_MCP_TOOLSET,
-          THREADNOTE_USER: profile.user,
-        },
-        type: 'stdio',
-      },
-      'threadnote-memory': {headers: {'threadnote-share-id': boundShareId}, url},
+      'threadnote-local': buildCursorCloudLocalGraphMcpConfig(profile, url, boundShareId),
+      'threadnote-memory': buildComposerHttpMcpEntry(url, boundShareId),
     },
+  };
+}
+
+export function buildOrgCloudHybridMcpConfig(
+  profile: CursorCloudProfileV1,
+  endpoint: string,
+  shareId: string,
+): OrgCloudHybridMcpConfig {
+  const url = composerMcpUrl(endpoint);
+  const boundShareId = composerShareId(shareId);
+  return {
+    mcpServers: {
+      'threadnote-local': buildCursorCloudLocalGraphMcpConfig(profile, url, boundShareId, 'org'),
+      [THREADNOTE_ORG_MCP_NAME]: buildComposerHttpMcpEntry(url, boundShareId),
+    },
+    policy: ORG_COMPOSER_POLICY,
+  };
+}
+
+function buildCursorCloudLocalGraphMcpConfig(
+  profile: CursorCloudProfileV1,
+  endpoint: string,
+  shareId: string,
+  mode?: 'org',
+): CursorCloudLocalMcpConfig {
+  return {
+    args: ['-lc', 'exec "$HOME/.local/bin/threadnote-mcp-server"'],
+    command: '/bin/sh',
+    env: {
+      THREADNOTE_ACCOUNT: profile.account,
+      THREADNOTE_AGENT_ID: profile.agentId,
+      ...(mode === 'org' ? {THREADNOTE_CURSOR_CLOUD_MODE: 'org'} : {}),
+      THREADNOTE_CURSOR_MEMORY_ENDPOINT: endpoint,
+      THREADNOTE_CURSOR_MEMORY_SHARE_ID: shareId,
+      THREADNOTE_MCP_TOOLSET: CURSOR_CLOUD_LOCAL_MCP_TOOLSET,
+      THREADNOTE_USER: profile.user,
+    },
+    type: 'stdio',
   };
 }
 
@@ -419,13 +479,19 @@ export const runCursorCloudConfig = Effect.fn('cursorCloud.config')(function* (
     user: options.user ?? config.user,
   });
   const output =
-    options.mode === 'remote-hybrid'
-      ? buildCursorCloudRemoteHybridMcpConfig(
+    options.mode === 'org'
+      ? buildOrgCloudHybridMcpConfig(
           profile,
-          requiredRemoteEndpoint(options.endpoint),
+          requiredHybridEndpoint(options.endpoint, 'org'),
           requiredRemoteShareId(options.shareId),
         )
-      : buildCursorCloudMcpConfig(profile, teams);
+      : options.mode === 'remote-hybrid'
+        ? buildCursorCloudRemoteHybridMcpConfig(
+            profile,
+            requiredHybridEndpoint(options.endpoint, 'remote-hybrid'),
+            requiredRemoteShareId(options.shareId),
+          )
+        : buildCursorCloudMcpConfig(profile, teams);
   yield* Console.log(JSON.stringify(output, undefined, 2));
 });
 
@@ -433,11 +499,12 @@ export const runCursorCloudBootstrap = Effect.fn('cursorCloud.bootstrap')(functi
   config: RuntimeConfig,
   options: CursorCloudBootstrapOptions,
 ) {
-  if (options.mode === 'remote-hybrid') {
+  if (options.mode === 'remote-hybrid' || options.mode === 'org') {
     return yield* runCursorCloudRemoteHybridBootstrap(config, {
       cwd: requiredRemoteCheckout(options.cwd),
       dryRun: options.dryRun,
-      endpoint: requiredRemoteEndpoint(options.endpoint),
+      endpoint: requiredHybridEndpoint(options.endpoint, options.mode),
+      mode: options.mode,
       shareId: requiredRemoteShareId(options.shareId),
     });
   }
@@ -485,10 +552,11 @@ export const runCursorCloudVerify = Effect.fn('cursorCloud.verify')(function* (
     readonly teams?: readonly string[];
   },
 ) {
-  if (options.mode === 'remote-hybrid') {
+  if (options.mode === 'remote-hybrid' || options.mode === 'org') {
     const receipt = yield* cursorCloudRemoteHybridStatus(config, {
       cwd: options.cwd,
-      endpoint: requiredRemoteEndpoint(options.endpoint),
+      endpoint: requiredHybridEndpoint(options.endpoint, options.mode),
+      mode: options.mode,
       shareId: requiredRemoteShareId(options.shareId),
     });
     yield* printCursorCloudVerifyReceipt(receipt, options.json);
@@ -560,14 +628,20 @@ export const runCursorCloudVerify = Effect.fn('cursorCloud.verify')(function* (
 
 export const cursorCloudRemoteHybridStatus = Effect.fn('cursorCloud.remoteHybridStatus')(function* (
   config: RuntimeConfig,
-  options: {readonly cwd: string; readonly endpoint: string; readonly shareId?: string},
+  options: {
+    readonly cwd: string;
+    readonly endpoint: string;
+    readonly mode?: 'org' | 'remote-hybrid';
+    readonly shareId?: string;
+  },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
   const graph = yield* CodeGraphQueryService;
-  const endpoint = cursorCloudMemoryEndpoint(options.endpoint);
   const environment = system.environment();
+  const org = options.mode === 'org' || environment[CURSOR_CLOUD_MODE_ENV]?.trim() === 'org';
+  const endpoint = org ? composerMcpUrl(options.endpoint) : cursorCloudMemoryEndpoint(options.endpoint);
   const environmentShareId = environment[CURSOR_CLOUD_MEMORY_SHARE_ID_ENV]?.trim();
   const shareId = requiredRemoteShareId(options.shareId ?? environmentShareId);
   const shareBindingMatches =
@@ -631,7 +705,7 @@ export const cursorCloudRemoteHybridStatus = Effect.fn('cursorCloud.remoteHybrid
   checks.push(
     {
       detail: endpoint,
-      name: 'managed MCP endpoint',
+      name: org ? 'organization composer MCP endpoint' : 'managed MCP endpoint',
       plane: 'remote-memory',
       status: 'ok',
     },
@@ -644,18 +718,37 @@ export const cursorCloudRemoteHybridStatus = Effect.fn('cursorCloud.remoteHybrid
       status: shareBindingMatches ? 'ok' : 'fail',
     },
     {
-      detail: 'OAuth is owned by Cursor and must be confirmed in Dashboard MCP status',
-      name: 'remote OAuth',
+      detail: org
+        ? 'Organization IdP OAuth is discovered from composer protected-resource metadata and was not probed'
+        : 'OAuth is owned by Cursor and must be confirmed in Dashboard MCP status',
+      name: org ? 'composer OAuth' : 'remote OAuth',
       plane: 'remote-memory',
       status: 'warn',
     },
     {
-      detail: 'local personal and Git-backed memory are not registered',
+      detail: org
+        ? 'Git-backed composer is canonical; Postgres bodies are not the organization memory store'
+        : 'local personal and Git-backed memory are not registered',
       name: 'memory fallback',
       plane: 'remote-memory',
       status: 'ok',
     },
   );
+  const status = checks.some(check => check.status === 'fail') ? ('fail' as const) : ('ok' as const);
+  if (org) {
+    return {
+      ...ORG_COMPOSER_POLICY,
+      checks,
+      endpoint,
+      localMemoryFallback: 'disabled',
+      mode: 'org',
+      provider: 'cursor-cloud',
+      shareId,
+      status,
+      stdioGitShare: false,
+      version: 1,
+    } satisfies OrgCloudHybridVerifyReceiptV1;
+  }
   return {
     checks,
     endpoint,
@@ -663,18 +756,25 @@ export const cursorCloudRemoteHybridStatus = Effect.fn('cursorCloud.remoteHybrid
     mode: 'remote-hybrid',
     provider: 'cursor-cloud',
     shareId,
-    status: checks.some(check => check.status === 'fail') ? 'fail' : 'ok',
+    status,
     version: 1,
   } satisfies CursorCloudRemoteHybridVerifyReceiptV1;
 });
 
 const runCursorCloudRemoteHybridBootstrap = Effect.fn('cursorCloud.remoteHybridBootstrap')(function* (
   config: RuntimeConfig,
-  options: {readonly cwd: string; readonly dryRun?: boolean; readonly endpoint: string; readonly shareId: string},
+  options: {
+    readonly cwd: string;
+    readonly dryRun?: boolean;
+    readonly endpoint: string;
+    readonly mode: 'org' | 'remote-hybrid';
+    readonly shareId: string;
+  },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  cursorCloudMemoryEndpoint(options.endpoint);
+  if (options.mode === 'org') composerMcpUrl(options.endpoint);
+  else cursorCloudMemoryEndpoint(options.endpoint);
   const shareId = cursorCloudRemoteShareId(options.shareId);
   if (!path.isAbsolute(options.cwd) || !(yield* fs.exists(options.cwd))) {
     throw CursorCloudOperationError.make({
@@ -686,13 +786,19 @@ const runCursorCloudRemoteHybridBootstrap = Effect.fn('cursorCloud.remoteHybridB
   } else {
     yield* fs.makeDirectory(config.agentContextHome, {recursive: true, mode: 0o700});
   }
+  if (options.mode === 'org') {
+    yield* Console.log('Organization cloud hybrid local graph adapter is ready; indexing starts on demand.');
+    yield* Console.log(`Git-backed composer memory is bound exclusively to share ${shareId}.`);
+    yield* Console.log('Cursor OIDC attribution is optional; local Git memory share was not configured.');
+    return;
+  }
   yield* Console.log('Cursor Cloud remote-hybrid local graph adapter is ready; indexing starts on demand.');
   yield* Console.log(`Managed remote memory is bound exclusively to share ${shareId}.`);
   yield* Console.log('Managed remote memory remains exclusive; no local Git memory share was configured.');
 });
 
 const printCursorCloudVerifyReceipt = Effect.fn('cursorCloud.printVerifyReceipt')(function* (
-  receipt: CursorCloudVerifyReceiptV2 | CursorCloudRemoteHybridVerifyReceiptV1,
+  receipt: CursorCloudVerifyReceiptV2 | CursorCloudRemoteHybridVerifyReceiptV1 | OrgCloudHybridVerifyReceiptV1,
   json?: boolean,
 ) {
   if (json === true) {
@@ -707,11 +813,16 @@ const printCursorCloudVerifyReceipt = Effect.fn('cursorCloud.printVerifyReceipt'
   yield* Console.log(`Status: ${receipt.status}`);
 });
 
-function requiredRemoteEndpoint(endpoint: string | undefined): string {
+function requiredHybridEndpoint(endpoint: string | undefined, mode: 'org' | 'remote-hybrid'): string {
   if (!endpoint?.trim()) {
-    throw CursorCloudOperationError.make({message: 'Cursor Cloud remote-hybrid mode requires --endpoint.'});
+    throw CursorCloudOperationError.make({
+      message:
+        mode === 'org'
+          ? 'Organization cloud hybrid mode requires --endpoint.'
+          : 'Cursor Cloud remote-hybrid mode requires --endpoint.',
+    });
   }
-  return cursorCloudMemoryEndpoint(endpoint);
+  return mode === 'org' ? composerMcpUrl(endpoint) : cursorCloudMemoryEndpoint(endpoint);
 }
 
 function requiredRemoteShareId(shareId: string | undefined): string {

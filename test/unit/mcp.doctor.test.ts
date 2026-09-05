@@ -158,7 +158,7 @@ describe('MCP doctor checks', () => {
           platform: 'linux',
         });
 
-        const checks = yield* mcpConfigurationChecks(runtime(path.join(root, '.threadnote'))).pipe(
+        const checks = yield* mcpConfigurationChecks(runtime(path.join(user, '.threadnote'))).pipe(
           Effect.provideService(SystemInfo, testSystem),
         );
         for (const name of ['codex MCP', 'cursor MCP']) {
@@ -195,7 +195,7 @@ describe('MCP doctor checks', () => {
         );
         const testSystem = SystemInfo.of({...system, homeDirectory: user, platform: 'win32'});
 
-        const checks = yield* mcpConfigurationChecks(runtime(path.join(root, '.threadnote'))).pipe(
+        const checks = yield* mcpConfigurationChecks(runtime(path.join(user, '.threadnote'))).pipe(
           Effect.provideService(SystemInfo, testSystem),
         );
         expect(checks).toContainEqual({
@@ -203,6 +203,40 @@ describe('MCP doctor checks', () => {
           name: 'cursor MCP',
           status: 'ok',
         });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('does not inspect Cursor MCP when THREADNOTE_HOME is not the personal home', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-doctor-enterprise-'});
+        const user = path.join(root, 'user');
+        const enterpriseHome = path.join(root, 'homes', 'contributor-a');
+        const cursorConfig = path.join(user, '.cursor', 'mcp.json');
+        yield* fs.makeDirectory(path.dirname(cursorConfig), {recursive: true});
+        yield* fs.makeDirectory(enterpriseHome, {recursive: true});
+        yield* fs.writeFileString(
+          cursorConfig,
+          JSON.stringify({
+            mcpServers: {
+              threadnote: {command: '/home/test/.local/bin/threadnote-mcp-server'},
+              'threadnote-org': {
+                headers: {'threadnote-share-id': 'default'},
+                url: 'http://127.0.0.1:18788/mcp',
+              },
+            },
+          }),
+        );
+        const testSystem = SystemInfo.of({...system, homeDirectory: user, platform: 'linux'});
+        const checks = yield* mcpConfigurationChecks(runtime(enterpriseHome)).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(checks.filter(check => check.name === 'cursor MCP' || check.name === 'copilot MCP')).toEqual([]);
+        expect(JSON.stringify(yield* fs.readFileString(cursorConfig))).toContain('threadnote-org');
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

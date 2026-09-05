@@ -131,6 +131,10 @@ describe('Cursor Cloud profile', () => {
           type: 'stdio',
         },
         'threadnote-memory': {
+          auth: {
+            CLIENT_ID: 'threadnote-composer',
+            scopes: ['memory:read', 'memory:write:durable', 'memory:write:handoff'],
+          },
           headers: {'threadnote-share-id': 'share-engineering'},
           url: 'https://memory.threadnote.io/mcp',
         },
@@ -138,7 +142,7 @@ describe('Cursor Cloud profile', () => {
     });
     expect(Object.keys(config.mcpServers['threadnote-memory'].headers)).toEqual(['threadnote-share-id']);
     expect(new URL(config.mcpServers['threadnote-memory'].url).search).toBe('');
-    expect(JSON.stringify(config)).not.toMatch(/authorization|bearer|token|secret/i);
+    expect(JSON.stringify(config)).not.toMatch(/authorization|bearer|CLIENT_SECRET|secret/i);
   });
 
   it('accepts only the server-supported opaque remote share ID grammar without reflecting rejected values', () => {

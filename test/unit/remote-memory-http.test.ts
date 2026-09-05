@@ -4,6 +4,8 @@ import type {AuthorizedRemotePrincipal} from '../../src/remote_memory/authorizat
 import type {RemoteMemoryServiceConfig} from '../../src/remote_memory/config.js';
 import {remoteMemoryError} from '../../src/remote_memory/errors.js';
 import {createRemoteMemoryHttpHandler} from '../../src/remote_memory/http_transport.js';
+import {createLocalIdp} from '../../src/remote_memory/local_idp.js';
+import type {LocalIdp} from '../../src/remote_memory/local_idp.js';
 import type {OAuthPrincipalClaims} from '../../src/remote_memory/oauth.js';
 import type {RemoteMemoryRecallResult} from '../../src/remote_memory/postgres_repository.js';
 import type {
@@ -22,8 +24,11 @@ interface Fixture {
 
 function fixture(
   options: {
+    readonly allowedHosts?: readonly string[];
+    readonly allowedOrigins?: readonly string[];
     readonly allowedProjects?: ReadonlySet<string> | 'all';
     readonly capabilities?: readonly string[];
+    readonly localIdp?: LocalIdp;
     readonly rateLimitFailure?: boolean;
     readonly recallResults?: readonly RemoteMemoryRecallResult[];
     readonly readContent?: string;
@@ -142,8 +147,14 @@ function fixture(
   return {
     calls,
     handler: createRemoteMemoryHttpHandler({
-      config: {...configFixture(), globallyEnabled: options.serviceEnabled ?? true},
+      config: {
+        ...configFixture(),
+        globallyEnabled: options.serviceEnabled ?? true,
+        ...(options.allowedHosts ? {allowedHosts: options.allowedHosts} : {}),
+        ...(options.allowedOrigins ? {allowedOrigins: options.allowedOrigins} : {}),
+      },
       dependencies,
+      ...(options.localIdp ? {localIdp: options.localIdp} : {}),
     }),
     readInputs,
   };
@@ -665,5 +676,45 @@ describe('remote memory HTTP transport', () => {
     expect(serialized).toContain('unsupported fields');
     expect(serialized).not.toContain(token);
     expect(test.calls).toEqual([]);
+  });
+
+  it('serves the in-process OAuth issuer next to protected-resource metadata', async () => {
+    const idp = await createLocalIdp({
+      audience: 'https://memory.example.test/mcp',
+      issuer: 'https://memory.example.test',
+      subject: 'local:tester',
+    });
+    const test = fixture({localIdp: idp});
+    const headers = {host: 'memory.example.test'};
+    const metadata = await test.handler(
+      new Request('https://memory.example.test/.well-known/oauth-authorization-server', {headers}),
+    );
+    const jwks = await test.handler(new Request('https://memory.example.test/.well-known/jwks.json', {headers}));
+    const protectedResource = await test.handler(
+      new Request('https://memory.example.test/.well-known/oauth-protected-resource', {headers}),
+    );
+
+    expect(metadata.status).toBe(200);
+    expect(await json(metadata)).toMatchObject({
+      authorization_endpoint: 'https://memory.example.test/authorize',
+      issuer: 'https://memory.example.test',
+      jwks_uri: 'https://memory.example.test/.well-known/jwks.json',
+      token_endpoint: 'https://memory.example.test/token',
+    });
+    expect((await json(jwks)).keys).toEqual([expect.objectContaining({alg: 'RS256', kid: expect.any(String)})]);
+    expect(await json(protectedResource)).toMatchObject({
+      authorization_servers: ['https://auth.example.test'],
+      resource: 'https://memory.example.test/mcp',
+    });
+  });
+
+  it('accepts the Cursor OAuth callback Origin on loopback when listed', async () => {
+    const test = fixture({allowedOrigins: ['https://cursor.com', 'http://127.0.0.1:8787']});
+    const response = await test.handler(
+      mcpRequest({id: 31, method: 'tools/list', params: {}}, {origin: 'http://127.0.0.1:8787'}),
+    );
+
+    expect(response.status).toBe(200);
+    expect(test.calls).toContain('oauth:fixture-token');
   });
 });

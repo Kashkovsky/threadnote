@@ -49,6 +49,15 @@ describe('remote memory provisioning boundary', () => {
     expect(() => validateRemoteMemoryProvisioningInput({...validProvisioning, ...invalid})).toThrow();
   });
 
+  it('accepts a loopback HTTP issuer for the local composer IdP', () => {
+    expect(() =>
+      validateRemoteMemoryProvisioningInput({...validProvisioning, issuer: 'http://127.0.0.1:18788'}),
+    ).not.toThrow();
+    expect(() =>
+      validateRemoteMemoryProvisioningInput({...validProvisioning, issuer: 'http://localhost:18788'}),
+    ).not.toThrow();
+  });
+
   it('decodes bounded JSONB text without relying on the PostgreSQL driver JSON representation', () => {
     const json = '{"displayName": "Threadnote managed memory", "projects": ["threadnote"]}';
 

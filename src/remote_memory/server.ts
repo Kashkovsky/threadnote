@@ -1,5 +1,6 @@
 import type {RemoteMemoryServiceConfig} from './config.js';
 import {createRemoteMemoryHttpHandler} from './http_transport.js';
+import type {LocalIdp} from './local_idp.js';
 import type {RemoteMemoryServiceDependencies} from './service_types.js';
 
 export interface RemoteMemoryServer {
@@ -12,11 +13,16 @@ export interface RemoteMemoryServer {
 export interface StartRemoteMemoryServerOptions {
   readonly config: RemoteMemoryServiceConfig;
   readonly dependencies: RemoteMemoryServiceDependencies;
+  readonly localIdp?: LocalIdp;
   readonly serve?: typeof Bun.serve;
 }
 
 export function startRemoteMemoryServer(options: StartRemoteMemoryServerOptions): RemoteMemoryServer {
-  const fetch = createRemoteMemoryHttpHandler(options);
+  const fetch = createRemoteMemoryHttpHandler({
+    config: options.config,
+    dependencies: options.dependencies,
+    ...(options.localIdp ? {localIdp: options.localIdp} : {}),
+  });
   const server = (options.serve ?? Bun.serve)({
     fetch,
     hostname: options.config.host,

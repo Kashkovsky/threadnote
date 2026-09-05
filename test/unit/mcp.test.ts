@@ -102,17 +102,20 @@ describe('MCP toolsets', () => {
       const path = yield* Path.Path;
       const binDirectory = '/opt/threadnote/bin';
       const brokerLauncher = path.join(binDirectory, 'threadnote-mcp-server');
+      const userHome = '/tmp/threadnote-mcp-host-user';
+      const testRuntime = runtime(path.join(userHome, '.threadnote'));
       const testSystem = SystemInfo.of({
         ...baseSystem,
         environment: () => ({
           ...baseSystem.environment(),
           THREADNOTE_BIN_DIR: binDirectory,
         }),
+        homeDirectory: userHome,
         platform: 'linux',
       });
 
       for (const agent of ['codex', 'claude', 'cursor', 'copilot'] as const) {
-        const result = yield* captureConsole(runMcpInstall(runtime(), agent, {})).pipe(
+        const result = yield* captureConsole(runMcpInstall(testRuntime, agent, {})).pipe(
           Effect.provideService(SystemInfo, testSystem),
         );
         const renderedBrokerLauncher =

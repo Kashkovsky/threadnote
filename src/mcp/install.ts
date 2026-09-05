@@ -12,6 +12,17 @@ import {THREADNOTE_MCP_CLIENT_ENV, THREADNOTE_MCP_NAME} from '../constants.js';
 import {maybeRunEffect, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset} from './toolset.js';
+import {
+  ComposerAttachError,
+  THREADNOTE_ORG_MCP_NAME,
+  buildComposerHttpMcpEntry,
+  composerHttpEntryMatches,
+  resolveComposerAttach,
+  withComposerHttpMcpEntry,
+  isManagedComposerHttpEntry,
+  type ComposerHttpMcpEntry,
+  type ComposerShareBinding,
+} from './composer_attach.js';
 import type {AgentClient, ClaudeMcpScope, DoctorCheck, JsonObject, McpInstallOptions, RuntimeConfig} from '../types.js';
 import {
   ensureDirectory,
@@ -27,6 +38,20 @@ import {
   removePathIfExists,
 } from '../utils.js';
 
+export function isPersonalThreadnoteHome(
+  agentContextHome: string,
+  userHome: string,
+  resolvePath: (...parts: string[]) => string,
+): boolean {
+  return resolvePath(agentContextHome) === resolvePath(userHome, '.threadnote');
+}
+
+const isPersonalThreadnoteHomeEffect = Effect.fn('mcp.isPersonalHome')(function* (config: RuntimeConfig) {
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  return isPersonalThreadnoteHome(config.agentContextHome, system.homeDirectory, (...parts) => path.resolve(...parts));
+});
+
 export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options: McpInstallOptions) {
   const install = runMcpInstallInTransaction(config, agent, options);
   return options.apply === true ? withAgentIntegrationLock(config, install) : install;
@@ -40,29 +65,86 @@ const runMcpInstallInTransaction = Effect.fn('mcp.runInstallInTransaction')(func
   const name = options.name ?? THREADNOTE_MCP_NAME;
   const apply = options.apply === true;
   const toolset = options.toolset ?? DEFAULT_MCP_TOOLSET;
+  const attach = yield* Effect.try({
+    try: () => resolveComposerAttach({composerUrl: options.composerUrl, shareId: options.shareId}),
+    catch: cause =>
+      Schema.is(ComposerAttachError)(cause)
+        ? cause
+        : McpOperationError.make({
+            cause,
+            message: cause instanceof Error ? cause.message : String(cause),
+          }),
+  });
+  const personalHome = yield* isPersonalThreadnoteHomeEffect(config);
+  const project = options.project?.trim() || (agent === 'claude' ? undefined : options.cwd);
+  if (attach && (agent === 'cursor' || agent === 'copilot') && !project) {
+    return yield* McpOperationError.make({
+      message:
+        agent === 'copilot'
+          ? 'Organization composer attach must write a project .vscode/mcp.json; pass --project so the user Copilot mcp.json is not rewritten.'
+          : 'Organization composer attach must write a project .cursor/mcp.json; pass --project so personal ~/.cursor/mcp.json is not rewritten.',
+    });
+  }
+  if (!personalHome && (agent === 'cursor' || agent === 'copilot') && !project) {
+    return yield* McpOperationError.make({
+      message:
+        agent === 'copilot'
+          ? 'This THREADNOTE_HOME is not the personal ~/.threadnote home; pass --project to write project .vscode/mcp.json instead of rewriting the user Copilot mcp.json.'
+          : 'This THREADNOTE_HOME is not the personal ~/.threadnote home; pass --project to write project MCP config instead of rewriting ~/.cursor/mcp.json.',
+    });
+  }
   const scope = agent === 'claude' ? (options.scope ?? 'user') : undefined;
   const cwd = options.cwd ?? (agent === 'claude' && scope !== 'user' ? yield* getInvocationCwd() : undefined);
   const legacyInferredClients =
     apply && (yield* readAgentIntegrationRegistry(config)) === undefined
-      ? yield* inferConfiguredMcpClients()
+      ? yield* inferConfiguredMcpClients(config)
       : undefined;
+
+  if (attach && name === THREADNOTE_ORG_MCP_NAME) {
+    return yield* McpOperationError.make({
+      message:
+        'Organization composer attach cannot use --name threadnote-org; that name is reserved for the HTTP composer entry.',
+    });
+  }
+
+  if (attach && agent !== 'cursor' && agent !== 'copilot') {
+    return yield* McpOperationError.make({
+      message: 'Organization composer attach writes a second HTTP MCP entry for cursor and copilot.',
+    });
+  }
 
   if (agent === 'cursor') {
     yield* runCursorMcpInstall(config, name, {
       apply,
+      attach,
       dryRunApplyCommand: options.dryRunApplyCommand,
+      project,
       toolset,
     });
-    yield* finishAgentIntegrationInstall(config, agent, {apply, legacyInferredClients, name, toolset});
+    yield* finishAgentIntegrationInstall(config, agent, {
+      apply,
+      cwd: project,
+      legacyInferredClients,
+      name,
+      toolset,
+    });
     return;
   }
   if (agent === 'copilot') {
     yield* runCopilotMcpInstall(config, name, {
       apply,
+      attach,
       dryRunApplyCommand: options.dryRunApplyCommand,
+      project,
       toolset,
     });
-    yield* finishAgentIntegrationInstall(config, agent, {apply, legacyInferredClients, name, toolset});
+    yield* finishAgentIntegrationInstall(config, agent, {
+      apply,
+      cwd: project,
+      legacyInferredClients,
+      name,
+      toolset,
+    });
     return;
   }
 
@@ -157,8 +239,9 @@ export const mcpConfigurationChecks = Effect.fn('mcp.configurationChecks')(funct
 ) {
   const checks: DoctorCheck[] = [];
   const registry = yield* readAgentIntegrationRegistry(config);
-  const inferred = registry === undefined ? (inferredClients ?? (yield* inferConfiguredMcpClients())) : [];
+  const inferred = registry === undefined ? (inferredClients ?? (yield* inferConfiguredMcpClients(config))) : [];
   const clients = registry === undefined ? inferred : registeredAgentClients(registry);
+  const personalHome = yield* isPersonalThreadnoteHomeEffect(config);
   for (const agent of clients) {
     const receipt = registry?.hosts[agent];
     const name = receipt?.mcp.name ?? THREADNOTE_MCP_NAME;
@@ -171,15 +254,36 @@ export const mcpConfigurationChecks = Effect.fn('mcp.configurationChecks')(funct
       });
       continue;
     }
+    if (!personalHome && (agent === 'cursor' || agent === 'copilot')) {
+      const project = receipt?.mcp.cwd?.trim();
+      if (!project) continue;
+      const containerKey = agent === 'cursor' ? 'mcpServers' : 'servers';
+      const configPath =
+        agent === 'cursor' ? yield* cursorMcpConfigPath(project) : yield* copilotMcpConfigPath(project);
+      checks.push(yield* orgComposerConfigurationCheck(`${agent} org composer`, configPath, containerKey));
+      continue;
+    }
     if (agent === 'cursor') {
       checks.push(
-        yield* jsonMcpConfigurationCheck('cursor MCP', yield* cursorMcpConfigPath(), 'mcpServers', name, repair),
+        yield* jsonMcpConfigurationCheck(
+          'cursor MCP',
+          yield* cursorMcpConfigPath(receipt?.mcp.cwd),
+          'mcpServers',
+          name,
+          repair,
+        ),
       );
       continue;
     }
     if (agent === 'copilot') {
       checks.push(
-        yield* jsonMcpConfigurationCheck('copilot MCP', yield* copilotMcpConfigPath(), 'servers', name, repair),
+        yield* jsonMcpConfigurationCheck(
+          'copilot MCP',
+          yield* copilotMcpConfigPath(receipt?.mcp.cwd),
+          'servers',
+          name,
+          repair,
+        ),
       );
       continue;
     }
@@ -216,6 +320,23 @@ export const mcpConfigurationChecks = Effect.fn('mcp.configurationChecks')(funct
   return checks;
 });
 
+function orgComposerConfigurationCheck(checkName: string, configPath: string, containerKey: 'mcpServers' | 'servers') {
+  return Effect.gen(function* () {
+    const raw = yield* readFileIfExists(configPath);
+    const parsed = raw ? parseJsonConfigObject(raw) : undefined;
+    const container = parsed?.[containerKey];
+    const entry = isJsonObject(container) ? container[THREADNOTE_ORG_MCP_NAME] : undefined;
+    const configured = isManagedComposerHttpEntry(entry);
+    return {
+      detail: configured
+        ? `${THREADNOTE_ORG_MCP_NAME} attached in ${configPath}`
+        : `${configPath} missing ${THREADNOTE_ORG_MCP_NAME} composer entry`,
+      name: checkName,
+      status: configured ? ('ok' as const) : ('warn' as const),
+    };
+  });
+}
+
 function jsonMcpConfigurationCheck(
   checkName: string,
   configPath: string,
@@ -246,7 +367,7 @@ function jsonMcpConfigurationCheck(
   });
 }
 
-export const inferConfiguredMcpClients = Effect.fn('mcp.inferConfiguredClients')(function* () {
+export const inferConfiguredMcpClients = Effect.fn('mcp.inferConfiguredClients')(function* (config: RuntimeConfig) {
   const clients: AgentClient[] = [];
   for (const agent of ['codex', 'claude'] as const) {
     const executable = yield* findMcpAgentExecutable(agent);
@@ -258,10 +379,12 @@ export const inferConfiguredMcpClients = Effect.fn('mcp.inferConfiguredClients')
     }).pipe(Effect.option);
     if (result._tag === 'Some' && result.value.exitCode === 0) clients.push(agent);
   }
-  const cursor = yield* readJsonMcpServer(yield* cursorMcpConfigPath(), 'mcpServers', THREADNOTE_MCP_NAME);
-  if (cursor !== undefined) clients.push('cursor');
-  const copilot = yield* readJsonMcpServer(yield* copilotMcpConfigPath(), 'servers', THREADNOTE_MCP_NAME);
-  if (copilot !== undefined) clients.push('copilot');
+  if (yield* isPersonalThreadnoteHomeEffect(config)) {
+    const cursor = yield* readJsonMcpServer(yield* cursorMcpConfigPath(), 'mcpServers', THREADNOTE_MCP_NAME);
+    if (cursor !== undefined) clients.push('cursor');
+    const copilot = yield* readJsonMcpServer(yield* copilotMcpConfigPath(), 'servers', THREADNOTE_MCP_NAME);
+    if (copilot !== undefined) clients.push('copilot');
+  }
   return clients;
 });
 
@@ -404,24 +527,43 @@ function jsonMcpConfigurationMatches(
   );
 }
 
+function jsonComposerConfigurationMatches(
+  currentContent: string | undefined,
+  containerKey: 'mcpServers' | 'servers',
+  expected: ComposerHttpMcpEntry,
+): boolean {
+  if (currentContent === undefined) return false;
+  const parsed = parseJsonConfigObject(currentContent);
+  const container = parsed?.[containerKey];
+  const actual = isJsonObject(container) ? container[THREADNOTE_ORG_MCP_NAME] : undefined;
+  return composerHttpEntryMatches(actual, expected);
+}
+
 const runCursorMcpInstall = Effect.fn('mcp.runCursorInstall')(function* (
   config: RuntimeConfig,
   name: string,
   options: {
     readonly apply: boolean;
+    readonly attach?: ComposerShareBinding;
     readonly dryRunApplyCommand?: string;
+    readonly project?: string;
     readonly toolset: McpToolset;
   },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
-  const path = yield* cursorMcpConfigPath();
+  const path = yield* cursorMcpConfigPath(options.project);
   const serverConfig = yield* buildCursorMcpServerConfig(config, {
     toolset: options.toolset,
   });
+  const composerEntry = options.attach
+    ? buildComposerHttpMcpEntry(options.attach.url, options.attach.shareId)
+    : undefined;
   const currentContent = yield* readFileIfExists(path);
-  const current = jsonMcpConfigurationMatches(currentContent, 'mcpServers', name, serverConfig);
-  const nextContent = renderCursorMcpConfig(path, currentContent, name, serverConfig);
+  const current =
+    jsonMcpConfigurationMatches(currentContent, 'mcpServers', name, serverConfig) &&
+    (composerEntry === undefined || jsonComposerConfigurationMatches(currentContent, 'mcpServers', composerEntry));
+  const nextContent = renderCursorMcpConfig(path, currentContent, name, serverConfig, composerEntry);
 
   if (!options.apply) {
     yield* Console.log(
@@ -430,6 +572,8 @@ const runCursorMcpInstall = Effect.fn('mcp.runCursorInstall')(function* (
         : 'Dry run. Re-run with --apply to modify Cursor MCP config.',
     );
     yield* printCursorMcpSnippet(config, name, {
+      attach: options.attach,
+      project: options.project,
       toolset: options.toolset,
     });
     return;
@@ -451,19 +595,34 @@ const runCopilotMcpInstall = Effect.fn('mcp.runCopilotInstall')(function* (
   name: string,
   options: {
     readonly apply: boolean;
+    readonly attach?: ComposerShareBinding;
     readonly dryRunApplyCommand?: string;
+    readonly project?: string;
     readonly toolset: McpToolset;
   },
 ) {
+  if (options.attach && !options.project) {
+    return yield* McpOperationError.make({
+      message:
+        'Organization composer attach must write a project MCP config; pass --project so the user Copilot mcp.json is not rewritten.',
+    });
+  }
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
-  const path = yield* copilotMcpConfigPath();
+  const path = options.project
+    ? pathService.join(pathService.resolve(options.project), '.vscode', 'mcp.json')
+    : yield* copilotMcpConfigPath();
   const serverConfig = yield* buildCopilotMcpServerConfig(config, {
     toolset: options.toolset,
   });
+  const composerEntry = options.attach
+    ? buildComposerHttpMcpEntry(options.attach.url, options.attach.shareId)
+    : undefined;
   const currentContent = yield* readFileIfExists(path);
-  const current = jsonMcpConfigurationMatches(currentContent, 'servers', name, serverConfig);
-  const nextContent = renderCopilotMcpConfig(path, currentContent, name, serverConfig);
+  const current =
+    jsonMcpConfigurationMatches(currentContent, 'servers', name, serverConfig) &&
+    (composerEntry === undefined || jsonComposerConfigurationMatches(currentContent, 'servers', composerEntry));
+  const nextContent = renderCopilotMcpConfig(path, currentContent, name, serverConfig, composerEntry);
 
   if (!options.apply) {
     yield* Console.log(
@@ -472,6 +631,8 @@ const runCopilotMcpInstall = Effect.fn('mcp.runCopilotInstall')(function* (
         : 'Dry run. Re-run with --apply to modify GitHub Copilot MCP config.',
     );
     yield* printCopilotMcpSnippet(config, name, {
+      attach: options.attach,
+      project: options.project,
       toolset: options.toolset,
     });
     return;
@@ -701,11 +862,21 @@ function isEmptyConfigContent(content: string | undefined): boolean {
   return content === undefined || content.trim().length === 0;
 }
 
+function withoutManagedComposerEntry(servers: Record<string, unknown>, name: string): Record<string, unknown> {
+  const next = {...servers};
+  delete next[name];
+  if (isManagedComposerHttpEntry(next[THREADNOTE_ORG_MCP_NAME])) {
+    delete next[THREADNOTE_ORG_MCP_NAME];
+  }
+  return next;
+}
+
 function renderCursorMcpConfig(
   configPath: string,
   currentContent: string | undefined,
   name: string,
   serverConfig: JsonObject,
+  composerEntry?: ComposerHttpMcpEntry,
 ): string {
   const parsed = isEmptyConfigContent(currentContent) ? {} : parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
@@ -717,6 +888,7 @@ function renderCursorMcpConfig(
   const nextConfig: Record<string, unknown> = {...parsed};
   const mcpServers = isJsonObject(parsed.mcpServers) ? {...parsed.mcpServers} : {};
   mcpServers[name] = serverConfig;
+  if (composerEntry) mcpServers[THREADNOTE_ORG_MCP_NAME] = composerEntry;
   nextConfig.mcpServers = mcpServers;
   return `${JSON.stringify(nextConfig, null, 2)}\n`;
 }
@@ -726,6 +898,7 @@ function renderCopilotMcpConfig(
   currentContent: string | undefined,
   name: string,
   serverConfig: JsonObject,
+  composerEntry?: ComposerHttpMcpEntry,
 ): string {
   const parsed = isEmptyConfigContent(currentContent) ? {} : parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
@@ -737,6 +910,7 @@ function renderCopilotMcpConfig(
   const nextConfig: Record<string, unknown> = {...parsed};
   const servers = isJsonObject(parsed.servers) ? {...parsed.servers} : {};
   servers[name] = serverConfig;
+  if (composerEntry) servers[THREADNOTE_ORG_MCP_NAME] = composerEntry;
   nextConfig.servers = servers;
   return `${JSON.stringify(nextConfig, null, 2)}\n`;
 }
@@ -759,9 +933,7 @@ const removeCursorMcpConfig = Effect.fn('mcp.removeCursorConfig')(function* (nam
     return true;
   }
   const nextConfig: Record<string, unknown> = {...parsed};
-  const mcpServers = {...parsed.mcpServers};
-  delete mcpServers[name];
-  nextConfig.mcpServers = mcpServers;
+  nextConfig.mcpServers = withoutManagedComposerEntry({...parsed.mcpServers}, name);
   const nextContent = `${JSON.stringify(nextConfig, null, 2)}\n`;
   if (dryRun) {
     yield* Console.log(`Would update Cursor MCP config: ${path}`);
@@ -790,9 +962,7 @@ const removeCopilotMcpConfig = Effect.fn('mcp.removeCopilotConfig')(function* (n
     return true;
   }
   const nextConfig: Record<string, unknown> = {...parsed};
-  const servers = {...parsed.servers};
-  delete servers[name];
-  nextConfig.servers = servers;
+  nextConfig.servers = withoutManagedComposerEntry({...parsed.servers}, name);
   const nextContent = `${JSON.stringify(nextConfig, null, 2)}\n`;
   if (dryRun) {
     yield* Console.log(`Would update GitHub Copilot MCP config: ${path}`);
@@ -842,31 +1012,52 @@ const printCursorMcpSnippet = Effect.fn('mcp.printCursorSnippet')(function* (
   config: RuntimeConfig,
   name: string,
   options: {
+    readonly attach?: ComposerShareBinding;
+    readonly project?: string;
     readonly toolset: McpToolset;
   },
 ) {
   const path = yield* Path.Path;
   const snippetPath = path.join(config.agentContextHome, 'mcp', `${name}.cursor.json`);
-  const snippet = JSON.stringify({mcpServers: {[name]: yield* buildCursorMcpServerConfig(config, options)}}, null, 2);
-  yield* Console.log(`\nSnippet (${snippetPath}; merge into ${yield* cursorMcpConfigPath()}):\n${snippet}`);
+  const stdio = yield* buildCursorMcpServerConfig(config, options);
+  const mcpServers = withComposerHttpMcpEntry({}, name, stdio, options.attach);
+  const snippet = JSON.stringify({mcpServers}, null, 2);
+  const target = yield* cursorMcpConfigPath(options.project);
+  yield* Console.log(`\nSnippet (${snippetPath}; merge into ${target}):\n${snippet}`);
 });
 
 const printCopilotMcpSnippet = Effect.fn('mcp.printCopilotSnippet')(function* (
   config: RuntimeConfig,
   name: string,
   options: {
+    readonly attach?: ComposerShareBinding;
+    readonly project?: string;
     readonly toolset: McpToolset;
   },
 ) {
   const path = yield* Path.Path;
   const snippetPath = path.join(config.agentContextHome, 'mcp', `${name}.copilot.json`);
-  const snippet = JSON.stringify({servers: {[name]: yield* buildCopilotMcpServerConfig(config, options)}}, null, 2);
-  yield* Console.log(`\nSnippet (${snippetPath}; merge into ${yield* copilotMcpConfigPath()}):\n${snippet}`);
+  const stdio = yield* buildCopilotMcpServerConfig(config, options);
+  const servers = withComposerHttpMcpEntry({}, name, stdio, options.attach);
+  const snippet = JSON.stringify({servers}, null, 2);
+  yield* Console.log(
+    `\nSnippet (${snippetPath}; merge into ${yield* copilotMcpConfigPath(options.project)}):\n${snippet}`,
+  );
 });
 
-const cursorMcpConfigPath = Effect.fn('mcp.cursorConfigPath')(() => expandPath('~/.cursor/mcp.json'));
+const cursorMcpConfigPath = Effect.fn('mcp.cursorConfigPath')(function* (project?: string) {
+  if (project?.trim()) {
+    const path = yield* Path.Path;
+    return path.join(path.resolve(project.trim()), '.cursor', 'mcp.json');
+  }
+  return yield* expandPath('~/.cursor/mcp.json');
+});
 
-const copilotMcpConfigPath = Effect.fn('mcp.copilotConfigPath')(function* () {
+const copilotMcpConfigPath = Effect.fn('mcp.copilotConfigPath')(function* (project?: string) {
+  if (project?.trim()) {
+    const path = yield* Path.Path;
+    return path.join(path.resolve(project.trim()), '.vscode', 'mcp.json');
+  }
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;

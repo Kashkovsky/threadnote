@@ -158,6 +158,17 @@ export class GitCanonicalMemoryStore {
     }
   }
 
+  async assertLiveShare(): Promise<void> {
+    await this.assertReady();
+    const head = await this.git(['rev-parse', '--verify', 'HEAD'], true);
+    if (head.exitCode !== 0 || !head.stdout.trim()) {
+      throw remoteMemoryError(
+        'service_unavailable',
+        'THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE has no commits; clone the live team share.',
+      );
+    }
+  }
+
   private serialize<A>(operation: () => Promise<A>): Promise<A> {
     const run = this.queue.then(operation, operation);
     this.queue = run.then(
@@ -453,6 +464,95 @@ function joinAbsolute(root: string, ...segments: string[]): string {
   const trimmed = root.replace(/[\\/]+$/u, '');
   const separator = trimmed.includes('\\') && !trimmed.includes('/') ? '\\' : '/';
   return [trimmed, ...segments].join(separator);
+}
+
+export interface LiveGitShareWorktreeOptions {
+  readonly branch?: string;
+  readonly cloneUrl: string;
+  readonly remoteName?: string;
+  readonly worktree: string;
+}
+
+export async function ensureLiveGitShareWorktree(options: LiveGitShareWorktreeOptions): Promise<string> {
+  const worktree = options.worktree.trim().replace(/[\\/]+$/u, '');
+  if (!worktree || !isAbsoluteGitWorktree(worktree)) {
+    throw remoteMemoryError('invalid_request', 'THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE must be an absolute path.');
+  }
+  const branch = requireGitRefName(options.branch?.trim() || 'main', 'THREADNOTE_REMOTE_MEMORY_GIT_BRANCH');
+  const cloneUrl = options.cloneUrl.trim();
+  if (!cloneUrl) {
+    throw remoteMemoryError('invalid_request', 'The live team git remote is required.');
+  }
+  const exists = (await runProcess(['test', '-d', worktree], true)).exitCode === 0;
+  if (!exists || (await isEmptyDirectory(worktree))) {
+    await cloneLiveShare(cloneUrl, worktree, branch);
+  }
+  const remoteName = requireGitRefName(options.remoteName?.trim() || 'origin', 'THREADNOTE_REMOTE_MEMORY_GIT_REMOTE');
+  const store = new GitCanonicalMemoryStore({branch, remote: remoteName, worktree});
+  await store.assertLiveShare();
+  await assertWorktreeRemoteMatches(worktree, remoteName, cloneUrl);
+  return worktree;
+}
+
+export function gitRemoteUrlsMatch(left: string, right: string): boolean {
+  const normalizedLeft = normalizeGitRemoteUrl(left);
+  return normalizedLeft.length > 0 && normalizedLeft === normalizeGitRemoteUrl(right);
+}
+
+export function normalizeGitRemoteUrl(value: string): string {
+  const trimmed = value.trim().replaceAll('\\', '/');
+  if (!trimmed) return '';
+  const stripped = trimmed.replace(/\.git$/u, '').replace(/\/+$/u, '');
+  if (stripped.startsWith('/') || /^[A-Za-z]:\//u.test(stripped)) {
+    return stripped.toLowerCase();
+  }
+  const scp = /^[^:/]+@([^:]+):(.+)$/u.exec(stripped);
+  if (scp && !stripped.includes('://')) {
+    return `${scp[1].toLowerCase()}/${scp[2].replace(/^\/+/u, '')}`;
+  }
+  try {
+    const parsed = new URL(stripped);
+    if (parsed.protocol === 'file:') {
+      return decodeURIComponent(parsed.pathname).replace(/\/+$/u, '').toLowerCase();
+    }
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname
+      .replace(/^\/+/u, '')
+      .replace(/\/+$/u, '')
+      .replace(/\.git$/u, '');
+    return path ? `${host}/${path}` : host;
+  } catch {
+    return stripped.toLowerCase();
+  }
+}
+
+async function assertWorktreeRemoteMatches(worktree: string, remoteName: string, cloneUrl: string): Promise<void> {
+  const result = await runGit(worktree, ['remote', 'get-url', remoteName], true);
+  if (result.exitCode !== 0 || !gitRemoteUrlsMatch(result.stdout.trim(), cloneUrl)) {
+    throw remoteMemoryError('invalid_request', 'The existing git worktree remote does not match the live team share.');
+  }
+}
+
+async function cloneLiveShare(cloneUrl: string, worktree: string, branch: string): Promise<void> {
+  const parent = parentDirectory(worktree);
+  const created = await runProcess(['mkdir', '-p', parent], true, 'mkdir');
+  if (created.exitCode !== 0) {
+    throw remoteMemoryError('service_unavailable', 'The composer git worktree parent could not be created.');
+  }
+  const cloned = await runProcess(['git', 'clone', '--branch', branch, '--', cloneUrl, worktree], true, 'git clone');
+  if (cloned.exitCode !== 0) {
+    throw remoteMemoryError('service_unavailable', 'Could not clone the live team git share.');
+  }
+}
+
+async function isEmptyDirectory(path: string): Promise<boolean> {
+  const listing = await runProcess(['ls', '-A', path], true, 'ls');
+  return listing.exitCode === 0 && listing.stdout.trim().length === 0;
+}
+
+function parentDirectory(path: string): string {
+  const index = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return index <= 0 ? path : path.slice(0, index);
 }
 
 function runGit(

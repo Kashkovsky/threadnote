@@ -23,6 +23,7 @@ import {
 } from './installations.js';
 import {
   inferConfiguredMcpClients,
+  isPersonalThreadnoteHome,
   mcpConfigurationChecks,
   removeMcpConfigs,
   removeMcpSnippets,
@@ -189,7 +190,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* telemetryDoctorCheck(config),
     yield* imageProjectionDoctorCheck(config),
   );
-  const inferredMcpClients = yield* inferConfiguredMcpClients().pipe(Effect.orElseSucceed(() => []));
+  const inferredMcpClients = yield* inferConfiguredMcpClients(config).pipe(Effect.orElseSucceed(() => []));
   checks.push(...(yield* safeDoctorChecks('MCP configuration', mcpConfigurationChecks(config, inferredMcpClients))));
   checks.push(
     recallIndexCheck(lexicalStatus),
@@ -410,7 +411,7 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
   } else {
     yield* Console.log('Would validate and rebuild the derived lexical and vector recall indexes.');
   }
-  const inferredMcpClients = yield* inferConfiguredMcpClients();
+  const inferredMcpClients = yield* inferConfiguredMcpClients(config);
   yield* migrateLegacyAgentIntegrations(config, inferredMcpClients, dryRun);
   const repairedIntegrationClients = yield* repairAgentIntegrations(config, dryRun);
   const registry = yield* readAgentIntegrationRegistry(config);
@@ -450,8 +451,17 @@ export const repairRegisteredMcpClients = Effect.fn('lifecycle.repairRegisteredM
   mcpClients: readonly AgentClient[],
   dryRun: boolean,
 ) {
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const personalHome = isPersonalThreadnoteHome(config.agentContextHome, system.homeDirectory, (...parts) =>
+    path.resolve(...parts),
+  );
   for (const client of mcpClients) {
     const receipt = registry?.hosts[client];
+    if (!personalHome && (client === 'cursor' || client === 'copilot')) {
+      yield* Console.log(`Skipping ${client} MCP repair for non-personal THREADNOTE_HOME.`);
+      continue;
+    }
     if (receipt?.mcp.repair !== true || receipt.mcp.toolset === undefined) {
       yield* Console.log(
         `WARN ${client} MCP settings predate repair receipts; run threadnote mcp-install ${client} --apply to manage them.`,
@@ -463,6 +473,7 @@ export const repairRegisteredMcpClients = Effect.fn('lifecycle.repairRegisteredM
       cwd: receipt.mcp.cwd,
       dryRunApplyCommand: 'threadnote repair',
       name: receipt.mcp.name,
+      project: client === 'cursor' || client === 'copilot' ? receipt.mcp.cwd : undefined,
       scope: receipt.mcp.scope,
       toolset: receipt.mcp.toolset,
     });
