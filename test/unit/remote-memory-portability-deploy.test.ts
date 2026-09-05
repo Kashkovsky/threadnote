@@ -29,6 +29,8 @@ describe('remote memory reference deployment', () => {
     const selectGrant = /GRANT SELECT ON(?<tables>[\s\S]*?)TO threadnote_remote_runtime;/u.exec(grants)?.groups?.tables;
     expect(selectGrant).toBeDefined();
     expect(selectGrant).not.toContain('remote_memory.audit_events');
+    const insertGrant = /GRANT INSERT ON(?<tables>[\s\S]*?)TO threadnote_remote_runtime;/u.exec(grants)?.groups?.tables;
+    expect(insertGrant).toContain('remote_memory.projects');
     expect(grants).not.toMatch(/GRANT (?:INSERT|UPDATE|DELETE)[\s\S]*remote_memory\.schema_migrations/u);
     expect(grants).not.toMatch(/GRANT (?:INSERT|UPDATE|DELETE)[\s\S]*remote_memory\.git_beta_import_receipts/u);
   });

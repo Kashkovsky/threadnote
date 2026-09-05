@@ -42,7 +42,8 @@ GRANT INSERT ON
   remote_memory.outbox_events,
   remote_memory.audit_events,
   remote_memory.rate_limit_windows,
-  remote_memory.search_documents
+  remote_memory.search_documents,
+  remote_memory.projects
 TO threadnote_remote_runtime;
 
 GRANT UPDATE (share_generation, indexed_generation) ON remote_memory.shares TO threadnote_remote_runtime;

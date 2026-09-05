@@ -6,6 +6,7 @@ import {formatRemoteMemoryUri} from '../../src/memory_domain/address.js';
 import {formatMemoryDocument} from '../../src/memory/document.js';
 import type {RemoteRememberInputV1} from '../../src/memory_domain/contracts.js';
 import type {AuthorizedRemotePrincipal, RemoteMemoryScope} from '../../src/remote_memory/authorization.js';
+import {provisionGitTeamShare} from '../../src/remote_memory/composer_serve.js';
 import {GitCanonicalMemoryStore, gitCanonicalSharePath} from '../../src/remote_memory/git_canonical_store.js';
 import type {OAuthPrincipalClaims} from '../../src/remote_memory/oauth.js';
 import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres_control_plane.js';
@@ -290,6 +291,86 @@ postgresDescribe('git-backed remote memory composer', () => {
   });
 });
 
+postgresDescribe('composer serve ingest of git files without a provisioned catalog', () => {
+  let fixture: RemoteMemoryPostgresFixture;
+  let gitFixture: GitShareWorktreeFixture;
+  let repository: PostgresRemoteMemoryRepository;
+  let principal: AuthorizedRemotePrincipal;
+
+  beforeAll(async () => {
+    if (!TEST_DATABASE_URL) throw new Error('THREADNOTE_TEST_POSTGRES_URL is required.');
+    fixture = await createRemoteMemoryPostgresFixture(TEST_DATABASE_URL);
+    gitFixture = await createGitShareWorktreeFixture('threadnote-git-composer-uncataloged-');
+    await provisionGitTeamShare(new PostgresRemoteControlPlane(fixture.migratorSql), {
+      issuer: ISSUER,
+      shareId: SHARE,
+      subject: 'subject-git',
+      tenantId: TENANT,
+    });
+    await withTenant(
+      fixture.migratorSql,
+      TENANT,
+      transaction =>
+        transaction`
+        INSERT INTO remote_memory.projects(tenant_id, share_id, name, status)
+        VALUES (${TENANT}, ${SHARE}, 'retired-project', 'archived')
+      `,
+    );
+    const gitStore = new GitCanonicalMemoryStore({worktree: gitFixture.worktree});
+    repository = new PostgresRemoteMemoryRepository(fixture.sql, {gitStore});
+    const authorized = await new PostgresRemoteControlPlane(fixture.sql).authorize(claims(), SHARE);
+    if (!authorized) throw new Error('Uncataloged composer fixture authorization failed.');
+    principal = authorized;
+  });
+
+  afterAll(async () => {
+    await fixture?.dispose();
+    if (gitFixture) await rm(gitFixture.root, {force: true, recursive: true});
+  });
+
+  it('creates project rows from the git layout and indexes existing markdown without postgres bodies', async () => {
+    const topic = 'preexisting-share';
+    const project = 'existing-share';
+    const laptop = join(gitFixture.root, 'existing-share-writer');
+    await cloneGitShareWorktree(gitFixture.remote, laptop);
+    await writeCanonicalMemory(laptop, 'durable', project, topic, 'Existing team markdown reached composer.');
+    await writeCanonicalMemory(
+      laptop,
+      'durable',
+      'retired-project',
+      'ignored-retired',
+      'Archived catalog entries must stay skipped.',
+    );
+
+    const ingested = await repository.ingestActiveGitShares('request-uncataloged-ingest');
+    expect(ingested.ingested).toBe(1);
+    const listed = await repository.list(principal, {limit: 10}, 'request-uncataloged-list');
+    expect(listed.entries).toEqual([expect.objectContaining({kind: 'durable', project, status: 'active', topic})]);
+    const uri = formatRemoteMemoryUri({kind: 'durable', project, shareId: SHARE, topic});
+    const read = await repository.read(principal, {uri, version: 1}, 'request-uncataloged-read');
+    expect(read.content).toContain('Existing team markdown reached composer.');
+    const stored = await withTenant(
+      fixture.sql,
+      TENANT,
+      transaction =>
+        transaction<{markdown_body: string; name: string; status: string}[]>`
+        SELECT p.name, p.status, COALESCE(r.markdown_body, '') AS markdown_body
+        FROM remote_memory.projects p
+        LEFT JOIN remote_memory.memory_heads h
+          ON h.tenant_id = p.tenant_id AND h.share_id = p.share_id AND h.project = p.name
+        LEFT JOIN remote_memory.memory_revisions r
+          ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
+        WHERE p.share_id = ${SHARE}
+        ORDER BY p.name
+      `,
+    );
+    expect(stored).toEqual([
+      {markdown_body: '', name: project, status: 'active'},
+      {markdown_body: '', name: 'retired-project', status: 'archived'},
+    ]);
+  });
+});
+
 function claims(): OAuthPrincipalClaims {
   return {issuer: ISSUER, scopes: new Set(ALL_SCOPES), subject: 'subject-git'};
 }
@@ -309,6 +390,39 @@ function rememberInput(input: {
     topic: input.topic,
     version: 1,
   };
+}
+
+async function writeCanonicalMemory(
+  worktree: string,
+  kind: 'durable' | 'handoff',
+  project: string,
+  topic: string,
+  text: string,
+): Promise<string> {
+  const path = gitCanonicalSharePath(kind, project, topic);
+  const target = join(worktree, ...path.split('/'));
+  await mkdir(dirname(target), {recursive: true});
+  await writeFile(
+    target,
+    formatMemoryDocument(
+      kind === 'durable' ? 'MEMORY' : 'HANDOFF',
+      {
+        kind,
+        project,
+        sourceAgentClient: 'share',
+        status: 'active',
+        timestamp: '2026-09-04T12:00:00.000Z',
+        topic,
+        visibility: 'shared',
+      },
+      text,
+    ),
+    'utf8',
+  );
+  await git(['add', '--', path], worktree);
+  await git(['commit', '-m', `share ${kind} ${project}/${topic}`], worktree);
+  await git(['push', 'origin', 'main'], worktree);
+  return path;
 }
 
 async function withTenant<A>(sql: Sql, tenantId: string, use: (transaction: TransactionSql) => Promise<A>): Promise<A> {

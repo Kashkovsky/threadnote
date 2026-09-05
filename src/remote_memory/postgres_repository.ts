@@ -28,7 +28,7 @@ import {
 import type {AuthorizedRemotePrincipal, RemoteMemoryFeatureFlag, RemoteMemoryScope} from './authorization.js';
 import {authorizeCursorClaims, type CursorWorkloadAttestation} from './cursor_oidc.js';
 import {RemoteMemoryError, remoteMemoryError, type RemoteMemoryErrorCode} from './errors.js';
-import {GitCanonicalMemoryStore, gitCanonicalSharePath} from './git_canonical_store.js';
+import {GitCanonicalMemoryStore, gitCanonicalSharePath, gitIngestProjectsToEnsure} from './git_canonical_store.js';
 import {requireJsonValue} from './json.js';
 import {
   remoteMemoryDatabaseTimeoutMilliseconds,
@@ -701,6 +701,22 @@ export class PostgresRemoteMemoryRepository {
     };
     const snapshot = await this.withTenant(principal.tenantId, async transaction => {
       await requireShareState(transaction, principal);
+      const knownProjects = await transaction<{name: string}[]>`
+        SELECT name FROM remote_memory.projects
+        WHERE tenant_id = ${principal.tenantId} AND share_id = ${principal.shareId}
+      `;
+      const toEnsure = gitIngestProjectsToEnsure({
+        allowedProjects: principal.allowedProjects,
+        gitProjects: paths.map(path => path.project),
+        knownProjects: new Set(knownProjects.map(project => project.name)),
+      });
+      for (const project of toEnsure) {
+        await transaction`
+          INSERT INTO remote_memory.projects(tenant_id, share_id, name, status)
+          VALUES (${principal.tenantId}, ${principal.shareId}, ${project}, 'active')
+          ON CONFLICT (tenant_id, share_id, name) DO NOTHING
+        `;
+      }
       const heads = await transaction<
         {
           readonly content_hash: string;
