@@ -54,7 +54,10 @@ describe('remote memory reference deployment', () => {
 
     expect(build).toContain("const REMOTE_MEMORY_MIGRATION_DIRECTORY = 'remote-memory/migrations'");
     expect(build).toContain("path.join(root, 'src', 'remote_memory', 'migrations')");
-    expect(migrations).toContain('new URL(`./remote-memory/migrations/${name}`, import.meta.url)');
+    expect(migrations).toContain("STANDALONE_REMOTE_MEMORY_MIGRATION_DIRECTORY = 'remote-memory/migrations'");
+    expect(migrations).toContain('standaloneMigrationFilePath(process.execPath, name)');
+    expect(migrations).not.toContain('new URL(`./remote-memory/migrations/${name}`, import.meta.url)');
+    expect(migrations).toContain('new URL(`./migrations/${name}`, import.meta.url)');
     expect(migrations).toContain("migrationFile('001_initial.sql')");
     expect(migrations).toContain("migrationFile('002_git_canonical_pointers.sql')");
   });
