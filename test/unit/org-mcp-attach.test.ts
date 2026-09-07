@@ -28,6 +28,7 @@ import {
   buildCopilotComposerHttpMcpEntry,
   composerMcpUrl,
   composerShareId,
+  composerOAuthScopes,
   isManagedComposerHttpEntry,
   resolveComposerAttach,
   stdioEnvironmentCallsComposer,
@@ -62,6 +63,54 @@ afterEach(() => {
 });
 
 describe('organization composer attach', () => {
+  effectIt.effect.prop(
+    'scope union preserves required scopes and is idempotent and permutation invariant',
+    {
+      extras: FC.array(FC.stringMatching(/^[A-Za-z][A-Za-z0-9_:.-]{0,30}$/u), {maxLength: 10}),
+    },
+    ({extras}) =>
+      Effect.sync(() => {
+        const scopes = composerOAuthScopes(extras);
+        expect(scopes.slice(0, 3)).toEqual(['memory:read', 'memory:write:durable', 'memory:write:handoff']);
+        expect(new Set(scopes)).toEqual(
+          new Set(['memory:read', 'memory:write:durable', 'memory:write:handoff', ...extras]),
+        );
+        expect(composerOAuthScopes(scopes)).toEqual(scopes);
+        expect(composerOAuthScopes([...extras].reverse())).toEqual(scopes);
+        expect(composerOAuthScopes([...extras, ...extras])).toEqual(scopes);
+      }),
+  );
+
+  it.each(['', ' offline_access', 'openid profile', 'a"b', 'a\\b', 'é', '\n', 'a'.repeat(257)])(
+    'rejects invalid provider scopes %#',
+    scope => {
+      expect(() => composerOAuthScopes([scope])).toThrow('RFC 6749');
+    },
+  );
+
+  it('bounds provider scope count and serialized size', () => {
+    expect(() => composerOAuthScopes(Array.from({length: 33}, () => 'offline_access'))).toThrow('32');
+    expect(() => composerOAuthScopes(Array.from({length: 30}, (_, i) => `scope${i}`))).toThrow('32');
+    expect(() => composerOAuthScopes(Array.from({length: 10}, (_, i) => `${i}${'a'.repeat(255)}`))).toThrow('2048');
+  });
+
+  it('compares explicit scopes while keeping customized demo entries outside removal ownership', () => {
+    const base = buildComposerHttpMcpEntry('https://composer.example.test/mcp', 'engineering');
+    const refresh = buildComposerHttpMcpEntry(base.url, 'engineering', undefined, ['offline_access']);
+    expect(isComposerHttpEntry(refresh)).toBe(true);
+    expect(isManagedComposerHttpEntry(refresh)).toBe(false);
+    expect(composerHttpEntryMatches(base, refresh)).toBe(false);
+    expect(
+      composerHttpEntryMatches(
+        {...refresh, auth: {...refresh.auth, scopes: [...refresh.auth.scopes].reverse()}},
+        refresh,
+      ),
+    ).toBe(true);
+    expect(isComposerHttpEntry({...refresh, auth: {...refresh.auth, scopes: ['offline_access']}})).toBe(false);
+    expect(
+      isComposerHttpEntry({...refresh, auth: {...refresh.auth, scopes: [...refresh.auth.scopes, 'offline_access']}}),
+    ).toBe(false);
+  });
   effectIt.effect.prop(
     'keeps stdio core Git share and binds composer share only in the HTTP header',
     {clientId: SHARE_ID, host: HOST, shareId: SHARE_ID},
@@ -386,6 +435,27 @@ describe('Team MCP install composer attach', () => {
         ).pipe(Effect.provideService(SystemInfo, testSystem));
         expect(repeated.output).toContain('Already configured:');
         expect(yield* fs.readFileString(cursorPath)).toBe(beforeRepeat);
+        const refreshOptions = {
+          apply: true,
+          composerClientId: 'registered-client',
+          composerUrl: 'https://composer.example.test/mcp',
+          project,
+          shareId: 'share-engineering',
+          composerOAuthScopes: ['offline_access'],
+        };
+        yield* captureConsole(runMcpInstall(testRuntime, 'cursor', refreshOptions)).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        const withRefresh = yield* fs.readFileString(cursorPath);
+        expect(JSON.parse(withRefresh).mcpServers['threadnote-org'].auth.scopes).toContain('offline_access');
+        const repeatRefresh = yield* captureConsole(runMcpInstall(testRuntime, 'cursor', refreshOptions)).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(repeatRefresh.output).toContain('Already configured:');
+        yield* captureConsole(runMcpInstall(testRuntime, 'cursor', {apply: true, project})).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(yield* fs.readFileString(cursorPath)).toBe(withRefresh);
         expect(mcpToolCapabilities(parseMcpToolset('core')).memoryPublish).toBe(true);
 
         const fetchSpy = vi.fn(() => Promise.reject(new Error('composer down')));

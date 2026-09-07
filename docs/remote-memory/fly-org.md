@@ -113,6 +113,68 @@ additive. An enabled endpoint or written configuration file alone does not prove
 To close HTTP access, stage `THREADNOTE_REMOTE_ENABLED=false` and restart the sole Machine. To stop all background
 Git/database activity as well, stop the Machine. Preserve the volume and authoritative Git repository.
 
+## Registered client setup
+
+Use a public native application registered with the organization IdP, authorization code with S256 PKCE, and the
+exact callback URI used by the client. Keep issuer checks enabled. Auth0 refresh tokens require both API offline
+access and a requested `offline_access` scope. Configure this explicitly; the installer retains the three required
+memory scopes and does not add provider consent scopes implicitly.
+
+For Cursor, target the intended project and supply that client's public registration:
+
+```sh
+threadnote mcp-install cursor --project /absolute/repository \
+  --composer-url https://threadnote-org.fly.dev/mcp --share-id default \
+  --composer-client-id CURSOR_PUBLIC_CLIENT_ID --composer-oauth-scope offline_access --apply
+cursor-agent mcp login threadnote-org
+cursor-agent mcp list-tools threadnote-org
+```
+
+Repeat `--composer-oauth-scope` for additional deliberate provider scopes. Tokens are case-sensitive, bounded to
+256 ASCII characters, and cannot contain whitespace, quotes or backslashes; the combined set is at most 32 scopes
+and 2048 bytes. Equivalent scope sets produce the same managed configuration. Explicit reattach updates Cursor's
+requested scopes; ordinary repair preserves existing provider scopes. Customized scopes do not expand the local
+demo's removal ownership. Copilot does not yet have a verified mapping for these additional scope options.
+
+For Codex, **0.153.4 is the minimum verified version for this Auth0 flow**. Version 0.144.5 drops the callback issuer
+parameter and fails issuer validation. Update through the client's supported installation channel; Threadnote does
+not replace Codex. Configure the exact registered direct-loopback URL and matching listener port, including any
+client-specific callback path. The example below requires that exact URI to be registered:
+
+```sh
+threadnote mcp-install codex \
+  --composer-url https://threadnote-org.fly.dev/mcp --share-id default \
+  --composer-client-id CODEX_PUBLIC_CLIENT_ID --composer-oauth-scope offline_access \
+  --composer-callback-url http://127.0.0.1:18789/callback --composer-callback-port 18789 --apply
+codex mcp login threadnote-org \
+  --scopes memory:read,memory:write:durable,memory:write:handoff,offline_access
+```
+
+Codex attach adds only `mcp_servers.threadnote-org` to `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`).
+It preserves personal stdio, instructions, integration receipts, global callback settings, unrelated configuration
+and comments. A compatible existing entry is left byte-for-byte unchanged, including `enabled=false`; explicitly
+enable it when ready for cutover. Conflicting bindings/scopes/callbacks and incompatible inline TOML require manual
+resolution. New entries require the callback pair; omitting it on a compatible existing entry preserves its callback.
+Symbolic links, nonregular or unreadable files are preserved and require manual configuration; regular-file permissions
+are retained. Codex's native login syntax cannot preserve commas inside individual scopes, so Codex attach rejects them.
+The installer rejects detected concurrent edits and never stores OAuth credentials. Protected-resource discovery
+supplies the audience/resource; do not add a redundant `oauth_resource` to this flow.
+
+Run the printed **explicit initial-login command** so requested provider scopes are part of consent. Fresh automatic
+login honoring persisted provider scopes has not been proven. Let the CLI open its authorization flow once, complete
+it, then exercise authenticated MCP requests through the actual client. Discovery alone is insufficient: verify a
+read, designated write, reconnect and refresh after the short access token expires. Inspect bounded provider exchange
+events without copying tokens or identity details into receipts.
+
+Observed client evidence on 2026-09-07: Codex 0.153.4 completed seven-tool discovery, recall/read, acknowledged write,
+CAS replacement/stale rejection, laptop Git sync and native refresh. Cursor GUI 3.19.13 / Agent 2026.09.02-c22c1a3
+completed PKCE and seven-tool discovery; execution and refresh after adding `offline_access` still require acceptance.
+These canaries do not complete P5 recovery or authorize a daily cutover by themselves.
+
+Client references: [Codex MCP configuration and callbacks](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
+[Auth0 refresh-token requirements](https://auth0.com/docs/secure/tokens/refresh-tokens/get-refresh-tokens),
+[OAuth scope-token grammar](https://www.rfc-editor.org/rfc/rfc6749#section-3.3).
+
 ## Recovery and release evidence
 
 Back up Git history and PostgreSQL control-plane state together. Recovery must preserve immutable revision pointers,

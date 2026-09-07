@@ -9,7 +9,9 @@ Execution evidence as of 2026-09-07:
 - #378 binds Git to one tenant/share; #379 adds dedicated ingestion authority, persistent failure readiness, and
   rejection of body edits that cannot preserve rich metadata.
 - #380 preserves exact OAuth issuers and supports optional `nbf`; #381 supports registered external client IDs.
-  Auth0's dedicated tenant and native clients have passed a real PKCE exchange. Actual agent MCP canaries remain open.
+  Auth0's dedicated tenant and native clients have passed real PKCE. Codex 0.153.4 has completed authenticated
+  recall/read, canary creation, CAS replacement/stale rejection, laptop Git synchronization, and native refresh.
+  Cursor Agent 2026.09.02-c22c1a3 has authenticated and discovered seven tools; tool execution and refresh remain open.
 - #382 isolates development installation repair. #383 confirms upstream Git persistence before acknowledgement;
   #384 recovers crashed worktree-lock owners. Isolated global service smokes covered rejected pushes and crash/restart.
 - #385 rejects unsafe database credentials before listening and reports every applied migration. It passed 111
@@ -18,15 +20,22 @@ Execution evidence as of 2026-09-07:
   reconciliation, strict managed metadata validation, bounded legacy progress, and persistent rejection recovery.
   It passed 142 focused tests, lint/types, two dev-cycle iterations with zero remaining findings, source and exact
   global lifecycle smokes, and full PR CI.
-- The dedicated Fly bootstrap/image passed 100 focused tests, full dev-cycle review without findings, and container
+- #387's dedicated Fly bootstrap/image passed 101 focused tests, two dev-cycle iterations without remaining findings, and container
   checks for nonroot credentials, SSH trust, Neon TLS, fresh clone and restart persistence. Runtime dependency
-  packaging defects were repaired. Live deployment and actual client acceptance remain open; the runbook is
+  packaging defects were repaired. Full PR CI passed and the image is deployed on one Frankfurt Machine with one
+  persistent encrypted volume. Health/readiness, unauthorized MCP denial and restart persistence passed. The runbook is
   [Fly organization deployment](remote-memory/fly-org.md).
 
 Neon PostgreSQL 17 in Frankfurt supports the required separate SQL-created migration/runtime roles and strict TLS.
-The incompatible, empty Fly Managed Postgres trial was removed. The Fly app is reserved. Its dedicated image and bootstrap are implemented; the repository-scoped SSH credential
-has passed pinned-host clone verification. Live deployment and recovery acceptance remain P3–P5 work. Daily org writes
-remain disabled until those gates pass.
+The incompatible, empty Fly Managed Postgres trial was removed. Fly is enabled for bounded canaries; its repository-scoped
+SSH credential has passed pinned-host clone and acknowledged push verification. Daily org use remains gated on paid
+Neon capacity/restore history and P5 recovery acceptance. The user's Codex org entry remains disabled outside explicit
+canary sessions; personal stdio and the existing Git share are preserved.
+
+The next client slice adds explicit provider scopes for Cursor and org-only native Codex attach. Review narrowed
+Codex to append/no-op/conflict handling before stdio or receipt mutation, with an explicit initial-login command.
+Persisted scopes alone do not prove fresh automatic login or refresh. The client setup and evidence boundaries are
+documented in the [Fly runbook](remote-memory/fly-org.md#registered-client-setup).
 
 The outcome is a deployable organization product and a real single-member deployment at
 `https://threadnote-org.fly.dev/mcp`. Our laptops retain local stdio, personal memory, exact-worktree graphs,

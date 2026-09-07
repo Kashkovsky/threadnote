@@ -1,6 +1,7 @@
 import {Console, Effect, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
 import {THREADNOTE_MCP_NAME} from '../constants.js';
+import {makeComposerAttachFlags} from './composer_attach_flags.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';
 import {
   runDevelopmentInstallRepair,
@@ -1193,15 +1194,10 @@ const mcpInstall = Command.make(
       Argument.withDescription('codex, claude, cursor, or copilot'),
     ),
     apply: boolean('apply', 'Actually modify the selected agent config'),
-    composerClientId: optionalString(
-      'composer-client-id',
-      'Registered public OAuth client ID for the organization composer',
-    ),
-    composerUrl: optionalString('composer-url', 'Organization composer Streamable HTTP MCP URL'),
+    ...makeComposerAttachFlags(),
     name: defaultString('name', 'MCP server name', THREADNOTE_MCP_NAME),
     project: optionalString('project', 'Write Cursor/Copilot MCP into this repository .cursor/mcp.json'),
     scope: defaultChoice('scope', ['user', 'local', 'project'], 'Claude MCP config scope', 'user'),
-    shareId: optionalString('share-id', 'Organization composer share binding'),
     toolset: optionalChoice('toolset', ['core', 'full'], 'Stdio adapter toolset'),
   },
   ({agent, ...options}) => withRuntimeEffect(config => runMcpInstall(config, agent, options)),
