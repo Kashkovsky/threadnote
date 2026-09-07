@@ -1,6 +1,7 @@
 import {Console, Effect, FileSystem, Path} from 'effect';
 import {parse, stringify} from 'smol-toml';
 import {runCommandEffect} from '../effect/command.js';
+import {fromPromise} from '../effect/errors.js';
 import {runtimeLstat, SystemInfo, type RuntimeBigIntStats} from '../effect/system.js';
 import {expandPath, findWorkingExecutable, formatShellCommand, isJsonObject} from '../utils.js';
 import {
@@ -102,14 +103,9 @@ interface CodexConfiguration {
 
 const readCodexConfiguration = Effect.fn('mcp.readCodexConfiguration')(function* (configPath: string) {
   const fs = yield* FileSystem.FileSystem;
-  const info = yield* Effect.tryPromise({
-    try: () => runtimeLstat(configPath),
-    catch: cause => ({
-      missing: typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'ENOENT',
-    }),
-  }).pipe(
-    Effect.catch(failure =>
-      failure.missing
+  const info = yield* fromPromise('mcp.lstatCodexConfiguration', () => runtimeLstat(configPath)).pipe(
+    Effect.catch(({cause}) =>
+      typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'ENOENT'
         ? Effect.void
         : Effect.fail(
             ComposerAttachError.make({
