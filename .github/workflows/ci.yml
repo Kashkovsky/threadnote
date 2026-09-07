@@ -184,7 +184,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Run isolated PostgreSQL integration coverage
-        run: bun --bun vitest run test/integration/remote-memory-postgres.test.ts
+        run: bun --bun vitest run test/integration/remote-memory-*.test.ts
         env:
           THREADNOTE_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/threadnote_ci
 

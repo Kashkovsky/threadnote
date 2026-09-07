@@ -4,7 +4,7 @@ import {randomUuidV4} from '../crypto/uuid.js';
 import {parseRemoteShareAddress} from '../memory_domain/address.js';
 import {parseRemoteCanonicalMemoryDocument} from '../memory_domain/content.js';
 import {parseResourceId} from '../storage/resource-id.js';
-import {migrateRemoteMemoryDatabase} from './migrations.js';
+import {migrateRemoteMemoryDatabase, remoteMemoryMigrationVersions} from './migrations.js';
 import {PostgresRemoteControlPlane, type RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
 import {
   REMOTE_MEMORY_OPERATOR_CONTRACT_VERSION,
@@ -58,7 +58,11 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
 
   readonly migrateSchema = async () => {
     await migrateRemoteMemoryDatabase(this.sql, {executablePath: this.options.executablePath});
-    return {readyVersions: [1], status: 'ready' as const, version: REMOTE_MEMORY_OPERATOR_CONTRACT_VERSION};
+    return {
+      readyVersions: remoteMemoryMigrationVersions(),
+      status: 'ready' as const,
+      version: REMOTE_MEMORY_OPERATOR_CONTRACT_VERSION,
+    };
   };
 
   readonly provisionControlPlane = async (input: RemoteMemoryProvisioningInput): Promise<void> => {

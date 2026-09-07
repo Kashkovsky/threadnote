@@ -78,6 +78,15 @@ updated that contract. The runtime cannot modify schema migrations, control-plan
 import receipts. Each identity has a different password and URL; URL-encode password characters in a connection URL.
 The `.env.example` values are local placeholders, not secret-management guidance.
 
+With automatic migration disabled, startup checks the account's effective privileges before listening. It rejects
+schema/table owners, database creation or administrative authority, usable/assumable role memberships, delegable
+grants, administrative parameter grants, disabled ordinary triggers, and table/column privileges outside the versioned
+runtime allowlist. It checks the authenticated backend identity as well as the effective and session roles, so role
+switching cannot disguise an administrator login. PUBLIC grants count toward this check.
+Use a separately created SQL role when a managed provider's built-in writer role has broader access. Keep
+`src/remote_memory/runtime_privileges.ts` aligned with the grants file when changing the schema contract. The
+loopback-only automatic-migration development mode retains its existing owner-account behavior.
+
 `THREADNOTE_REMOTE_ENABLED=false` is the environment-wide kill switch. Keep it false until the selected tenant/share
 canary is approved; both this switch and the share-scoped `remote_memory_ga` flag must be enabled for MCP traffic.
 

@@ -34,6 +34,10 @@ const MIGRATIONS = [
 ] as const;
 const MIGRATION_LOCK = 7_427_190_041;
 
+export function remoteMemoryMigrationVersions(): readonly number[] {
+  return MIGRATIONS.map(migration => migration.version);
+}
+
 export async function migrateRemoteMemoryDatabase(
   sql: Sql,
   options: {readonly executablePath?: string} = {},
