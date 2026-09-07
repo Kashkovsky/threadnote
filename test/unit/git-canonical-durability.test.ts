@@ -1,3 +1,4 @@
+import {testGitWorktreeLock} from '../helpers/git-worktree-lock.js';
 import {describe, expect, it} from 'vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {chmod, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
@@ -20,7 +21,7 @@ describe('git canonical durability', () => {
       await writeFile(hook, '#!/bin/sh\nexit 1\n');
       await chmod(hook, 0o700);
       const before = await head(fixture.worktree);
-      const store = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+      const store = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
       for (let attempt = 0; attempt < 2; attempt++) {
         await expect(store.commit(input)).rejects.toMatchObject({code: expect.any(String)});
         expect(await head(fixture.worktree)).toBe(before);
@@ -55,7 +56,7 @@ describe('git canonical durability', () => {
           status: await git(['status', '--porcelain'], fixture.worktree),
           diff: await git(['diff', 'HEAD'], fixture.worktree),
         };
-        const store = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+        const store = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
         await expect(store.commit(input)).rejects.toMatchObject({code: 'conflict'});
         await expect(store.listCanonicalPaths()).rejects.toMatchObject({code: 'conflict'});
         expect(await head(fixture.worktree)).toBe(before.head);
@@ -74,7 +75,7 @@ describe('git canonical durability', () => {
     try {
       await git(['update-ref', '-d', 'refs/heads/main'], fixture.remote);
       const before = await head(fixture.worktree);
-      const store = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+      const store = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
       await expect(store.commit(input)).rejects.toMatchObject({code: 'service_unavailable'});
       expect(await head(fixture.worktree)).toBe(before);
     } finally {
@@ -91,7 +92,7 @@ describe('git canonical durability', () => {
         '#!/bin/sh\nread local_ref local_sha remote_ref remote_sha\ngit -c core.hooksPath=/dev/null push origin "$local_sha:$remote_ref" || exit 2\nexit 1\n',
       );
       await chmod(hook, 0o700);
-      const store = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+      const store = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
       const receipt = await store.commit(input);
       expect(await head(fixture.remote)).toBe(receipt.gitCommit);
       expect(await head(fixture.worktree)).toBe(receipt.gitCommit);
@@ -116,7 +117,7 @@ describe('git canonical durability', () => {
         `#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\ngit -C ${quotedLaptop} push origin main\n`,
       );
       await chmod(hook, 0o700);
-      const store = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+      const store = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
       await expect(store.commit(input)).rejects.toMatchObject({
         code: 'conflict',
         details: {reason: 'git_push_rejected'},
@@ -136,7 +137,11 @@ describe('git canonical durability', () => {
     const fixture = await createGitShareWorktreeFixture();
     try {
       const remoteBefore = await head(fixture.remote);
-      const store = new GitCanonicalMemoryStore({push: false, worktree: fixture.worktree});
+      const store = new GitCanonicalMemoryStore({
+        worktreeLock: testGitWorktreeLock,
+        push: false,
+        worktree: fixture.worktree,
+      });
       const first = await store.commit(input);
       const second = await store.commit({
         ...input,
@@ -156,7 +161,7 @@ describe('git canonical durability', () => {
       FC.asyncProperty(FC.string({maxLength: 200}), async content => {
         const fixture = await createGitShareWorktreeFixture();
         try {
-          const store = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+          const store = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
           const first = await store.commit({...input, content});
           expect(await git(['show', `refs/heads/main:${path}`], fixture.remote)).toBe(content);
           expect(await store.commit({...input, content})).toEqual(first);

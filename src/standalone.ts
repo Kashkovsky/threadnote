@@ -108,28 +108,38 @@ async function remoteMemoryOperatorProgram(arguments_: readonly string[]) {
 }
 
 async function remoteMemoryServiceProgram() {
-  const service = await import('./remote_memory/main.js');
-  return Console.consoleWith(output =>
-    fromPromiseInterruptibleAwaiting(
-      signal =>
-        service.runRemoteMemoryService(process.env, {
-          error: message => output.error(message),
-          executablePath: process.execPath,
-          shutdownSignal: () => remoteMemoryShutdownSignal(signal),
-        }),
-      cause => cause,
-    ).pipe(
-      Effect.catch(cause =>
-        Console.error(`Remote memory service failed: ${service.remoteMemoryFailureClass(cause)}.`).pipe(
-          Effect.tap(() =>
-            Effect.sync(() => {
-              process.exitCode = 1;
+  const [service, locks, system] = await Promise.all([
+    import('./remote_memory/main.js'),
+    import('./effect/git_worktree_lock.js'),
+    import('./effect/system.js'),
+  ]);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const worktreeLock = yield* locks.makeGitWorktreeLock();
+      yield* Console.consoleWith(output =>
+        fromPromiseInterruptibleAwaiting(
+          signal =>
+            service.runRemoteMemoryService(process.env, {
+              error: message => output.error(message),
+              executablePath: process.execPath,
+              shutdownSignal: () => remoteMemoryShutdownSignal(signal),
+              worktreeLock,
             }),
+          cause => cause,
+        ).pipe(
+          Effect.catch(cause =>
+            Console.error(`Remote memory service failed: ${service.remoteMemoryFailureClass(cause)}.`).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  process.exitCode = 1;
+                }),
+              ),
+            ),
           ),
         ),
-      ),
-    ),
-  );
+      );
+    }),
+  ).pipe(Effect.provide(Layer.merge(system.SystemInfo.layer, BunServices.layer)));
 }
 
 function remoteMemoryShutdownSignal(effectSignal: AbortSignal): {

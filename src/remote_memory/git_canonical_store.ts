@@ -1,3 +1,4 @@
+import type {GitWorktreeLock} from '../effect/git_worktree_lock.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {assertSafeShareRelativePath} from '../share/core.js';
 import {validatePortableSegment} from '../storage/resource-id.js';
@@ -7,14 +8,13 @@ import {requireGitMemoryBinding, type GitMemoryBinding} from './git_binding.js';
 
 const GIT_TIMEOUT_MILLISECONDS = 30_000;
 const GIT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
-const LOCK_WAIT_MILLISECONDS = 10_000;
-const LOCK_RETRY_MILLISECONDS = 25;
 const COMPOSER_LOCK_NAME = 'threadnote-composer.lock';
 const COMPOSER_NAME = 'Threadnote Composer';
 const COMPOSER_EMAIL = 'threadnote-composer@invalid';
 
 export interface GitCanonicalMemoryStoreOptions {
   readonly binding?: GitMemoryBinding;
+  readonly worktreeLock?: GitWorktreeLock;
   readonly branch?: string;
   readonly push?: boolean;
   readonly remote?: string;
@@ -101,6 +101,7 @@ export function isAbsoluteGitWorktree(path: string): boolean {
 
 export class GitCanonicalMemoryStore {
   readonly binding?: GitMemoryBinding;
+  readonly worktreeLock?: GitWorktreeLock;
   readonly branch: string;
   readonly push: boolean;
   readonly remote: string;
@@ -117,6 +118,7 @@ export class GitCanonicalMemoryStore {
     this.branch = requireGitRefName(options.branch?.trim() || 'main', 'THREADNOTE_REMOTE_MEMORY_GIT_BRANCH');
     this.remote = requireGitRefName(options.remote?.trim() || 'origin', 'THREADNOTE_REMOTE_MEMORY_GIT_REMOTE');
     this.push = options.push !== false;
+    this.worktreeLock = options.worktreeLock;
   }
 
   commit(input: GitCanonicalCommitInput): Promise<GitCanonicalCommitResult> {
@@ -370,12 +372,13 @@ export class GitCanonicalMemoryStore {
   private async withLock<A>(operation: () => Promise<A>): Promise<A> {
     const gitDir = await this.absoluteGitDir();
     const lockPath = joinAbsolute(gitDir, COMPOSER_LOCK_NAME);
-    await acquireExclusiveLock(lockPath);
-    try {
-      return await operation();
-    } finally {
-      await runProcess(['rmdir', lockPath], true);
+    if (!this.worktreeLock) {
+      throw remoteMemoryError(
+        'service_unavailable',
+        'The composer Git store requires an application-scoped lock service.',
+      );
     }
+    return this.worktreeLock(lockPath, operation);
   }
 
   private async absoluteGitDir(): Promise<string> {
@@ -409,18 +412,6 @@ async function assertContainedWorktreePath(worktree: string, relativePath: strin
 async function isSymlink(path: string): Promise<boolean> {
   const result = await runProcess(['test', '-L', path], true);
   return result.exitCode === 0;
-}
-
-async function acquireExclusiveLock(lockPath: string): Promise<void> {
-  const deadline = Date.now() + LOCK_WAIT_MILLISECONDS;
-  for (;;) {
-    const created = await runProcess(['mkdir', lockPath], true);
-    if (created.exitCode === 0) return;
-    if (Date.now() >= deadline) {
-      throw remoteMemoryError('service_unavailable', 'The composer git worktree is busy.');
-    }
-    await Bun.sleep(LOCK_RETRY_MILLISECONDS);
-  }
 }
 
 function parseLsTreeBlobs(stdout: string): Map<string, string> {

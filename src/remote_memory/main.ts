@@ -1,3 +1,4 @@
+import type {GitWorktreeLock} from '../effect/git_worktree_lock.js';
 import {remoteMemoryConfigFromEnvironment, redactedRemoteMemoryConfig} from './config.js';
 import {createCursorTokenVerifier} from './cursor_oidc.js';
 import {migrateRemoteMemoryDatabase} from './migrations.js';
@@ -18,6 +19,7 @@ import {
 import {startRemoteMemoryServer} from './server.js';
 
 export interface RemoteMemoryServiceRuntime {
+  readonly worktreeLock: GitWorktreeLock;
   readonly error: (message: string) => void;
   readonly executablePath?: string;
   readonly shutdownSignal: () => {readonly dispose: () => void; readonly promise: Promise<string>};
@@ -51,6 +53,7 @@ export async function runRemoteMemoryService(
             push: config.gitPush,
             remote: config.gitRemote,
             worktree: config.gitWorktree,
+            worktreeLock: runtime.worktreeLock,
           })
         : undefined;
     const server = startRemoteMemoryServer({

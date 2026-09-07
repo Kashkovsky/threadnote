@@ -1,3 +1,4 @@
+import {makeGitWorktreeLock} from './git_worktree_lock.js';
 import {Console, Effect, Schema} from 'effect';
 import {Command} from 'effect/unstable/cli';
 import {applicationError, fromPromiseInterruptibleAwaiting} from './errors.js';
@@ -72,30 +73,36 @@ export const runComposerServeCommand = Effect.fn('composer.serveCommand')(functi
       }),
   });
   const gitWorktree = options.gitWorktree?.trim() || team.config.worktree;
-  yield* Console.consoleWith(output =>
-    fromPromiseInterruptibleAwaiting(
-      signal =>
-        runComposerServe(
-          {
-            databaseUrl,
-            executablePath: system.executablePath,
-            gitCloneUrl: team.config.remote,
-            gitPush: options.push === true,
-            gitWorktree,
-            listen: options.listen?.trim() || LOCAL_COMPOSER_DEFAULT_LISTEN,
-            shareId,
-            subject: options.subject?.trim() || `local:${config.user}`,
-            tenantId: 'local-org',
-          },
-          {
-            error: message => {
-              output.error(message);
-            },
-            shutdownSignal: () => shutdownFromAbort(signal),
-          },
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const worktreeLock = yield* makeGitWorktreeLock();
+      yield* Console.consoleWith(output =>
+        fromPromiseInterruptibleAwaiting(
+          signal =>
+            runComposerServe(
+              {
+                databaseUrl,
+                executablePath: system.executablePath,
+                gitCloneUrl: team.config.remote,
+                gitPush: options.push === true,
+                gitWorktree,
+                listen: options.listen?.trim() || LOCAL_COMPOSER_DEFAULT_LISTEN,
+                shareId,
+                subject: options.subject?.trim() || `local:${config.user}`,
+                tenantId: 'local-org',
+              },
+              {
+                error: message => {
+                  output.error(message);
+                },
+                shutdownSignal: () => shutdownFromAbort(signal),
+                worktreeLock,
+              },
+            ),
+          cause => applicationError('composer serve', cause),
         ),
-      cause => applicationError('composer serve', cause),
-    ),
+      );
+    }),
   );
 });
 

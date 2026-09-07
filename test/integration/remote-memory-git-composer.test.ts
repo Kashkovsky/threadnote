@@ -1,3 +1,4 @@
+import {testGitWorktreeLock} from '../helpers/git-worktree-lock.js';
 import {mkdir, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
@@ -71,6 +72,7 @@ postgresDescribe('git-backed remote memory composer', () => {
       tenantId: TENANT,
     });
     const gitStore = new GitCanonicalMemoryStore({
+      worktreeLock: testGitWorktreeLock,
       binding: {tenantId: TENANT, shareId: SHARE},
       worktree: gitFixture.worktree,
     });
@@ -333,6 +335,7 @@ postgresDescribe('composer serve ingest of git files without a provisioned catal
       `,
     );
     const gitStore = new GitCanonicalMemoryStore({
+      worktreeLock: testGitWorktreeLock,
       binding: {tenantId: TENANT, shareId: SHARE},
       worktree: gitFixture.worktree,
     });

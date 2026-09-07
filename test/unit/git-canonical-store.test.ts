@@ -1,3 +1,4 @@
+import {testGitWorktreeLock} from '../helpers/git-worktree-lock.js';
 import {describe, expect, it} from 'vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {mkdir, rm, writeFile} from '../helpers/node-fs-promises.js';
@@ -106,7 +107,7 @@ describe('git canonical memory store', () => {
       await expect(ensureLiveGitShareWorktree({cloneUrl: fixture.remote, worktree: emptyRepo})).rejects.toMatchObject({
         message: expect.stringContaining('no commits'),
       });
-      const store = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+      const store = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
       await expect(store.assertLiveShare()).resolves.toBeUndefined();
       await expect(ensureLiveGitShareWorktree({cloneUrl: fixture.remote, worktree: fixture.worktree})).resolves.toBe(
         fixture.worktree,
@@ -146,7 +147,7 @@ describe('git canonical memory store', () => {
   it('commits a memory body, hashes it, and reads the same blob back', async () => {
     const fixture = await createGitShareWorktreeFixture();
     try {
-      const store = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+      const store = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
       const path = gitCanonicalSharePath('durable', 'threadnote', 'composer-roundtrip');
       const content = '# MEMORY\n\nComposer wrote this body.\n';
       const committed = await store.commit({content, message: 'remember composer-roundtrip', path});
@@ -182,7 +183,7 @@ describe('git canonical memory store', () => {
     const fixture = await createGitShareWorktreeFixture();
     try {
       const path = gitCanonicalSharePath('durable', 'threadnote', 'cas-conflict');
-      const composer = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+      const composer = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
       const first = await composer.commit({
         content: '# MEMORY\n\nFirst writer.\n',
         message: 'remember first',
@@ -221,7 +222,7 @@ describe('git canonical memory store', () => {
     const fixture = await createGitShareWorktreeFixture();
     try {
       const path = gitCanonicalSharePath('durable', 'threadnote', 'offline-read');
-      const store = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+      const store = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
       const committed = await store.commit({
         content: '# MEMORY\n\nReadable without fetch.\n',
         message: 'remember offline-read',
@@ -237,7 +238,7 @@ describe('git canonical memory store', () => {
   it('rejects a malformed git commit pointer before invoking git show', async () => {
     const fixture = await createGitShareWorktreeFixture();
     try {
-      const store = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+      const store = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
       await expect(
         store.read({
           commit: '--output=/tmp/threadnote-git-show',
@@ -257,7 +258,7 @@ describe('git canonical memory store', () => {
       await git(['clone', '--separate-git-dir', gitDir, '--branch', 'main', '--', fixture.remote, worktree]);
       await git(['config', 'user.email', 'threadnote-test@example.com'], worktree);
       await git(['config', 'user.name', 'Threadnote Test'], worktree);
-      const store = new GitCanonicalMemoryStore({worktree});
+      const store = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree});
       const path = gitCanonicalSharePath('handoff', 'threadnote', 'separated-lock');
       const committed = await store.commit({
         content: '# MEMORY\n\nSeparated git dir.\n',
@@ -274,7 +275,7 @@ describe('git canonical memory store', () => {
     const fixture = await createGitShareWorktreeFixture();
     try {
       const path = gitCanonicalSharePath('durable', 'threadnote', 'interleave');
-      const composer = new GitCanonicalMemoryStore({worktree: fixture.worktree});
+      const composer = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
       const first = await composer.commit({
         content: '# MEMORY\n\nComposer first.\n',
         message: 'remember composer first',
