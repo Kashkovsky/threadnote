@@ -33,10 +33,10 @@ afterAll(async () => {
   await jwksServer.stop(true);
 });
 
-function verifier() {
+function verifier(issuer = ISSUER) {
   return createOAuthTokenVerifier({
     audience: AUDIENCE,
-    issuer: ISSUER,
+    issuer,
     jwksUrl: new URL('/jwks', jwksServer.url),
   });
 }
@@ -95,12 +95,31 @@ describe('remote memory OAuth access tokens', () => {
     expect((await verifier().verify(token)).scopes).toEqual(new Set(['memory:read', 'memory:admin']));
   });
 
+  it('accepts a bounded access token without the optional not-before claim', async () => {
+    const token = await accessToken({nbf: undefined});
+
+    expect(await verifier().verify(token)).toMatchObject({issuer: ISSUER, subject: 'oauth-subject'});
+  });
+
+  it.each([false, true])('matches the exact issuer identifier with trailing slash=%s', async trailingSlash => {
+    const issuer = `https://threadnote-org.eu.auth0.com${trailingSlash ? '/' : ''}`;
+    const otherIssuer = `https://threadnote-org.eu.auth0.com${trailingSlash ? '' : '/'}`;
+    const token = await accessToken({iss: issuer, nbf: undefined});
+
+    expect((await verifier(issuer).verify(token)).issuer).toBe(issuer);
+    await expect(verifier(otherIssuer).verify(token)).rejects.toMatchObject({code: 'unauthorized'});
+  });
+
+  it.each([null, 'invalid', 0, -1, 0.5])('rejects a malformed optional not-before claim %#', async nbf => {
+    await expectUnauthorized(await accessToken({nbf}));
+  });
+
   it.each([
     ['wrong issuer', {iss: 'https://attacker.example.test'}],
     ['wrong audience', {aud: 'https://other.example.test/mcp'}],
     ['missing subject', {sub: undefined}],
     ['missing issued-at', {iat: undefined}],
-    ['missing not-before', {nbf: undefined}],
+    ['missing expiry', {exp: undefined}],
   ])('rejects %s', async (_label, overrides) => {
     await expectUnauthorized(await accessToken(overrides));
   });

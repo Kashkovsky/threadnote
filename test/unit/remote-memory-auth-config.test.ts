@@ -59,7 +59,7 @@ describe('remote memory service configuration', () => {
     const config = remoteMemoryConfigFromEnvironment(productionEnvironment);
 
     expect(config.publicBaseUrl.toString()).toBe('https://memory.example.test/');
-    expect(config.accessTokenIssuer).toBe('https://identity.example.test/tenant');
+    expect(config.accessTokenIssuer).toBe('https://identity.example.test/tenant/');
     expect(config.allowedHosts).toEqual(['memory.example.test', 'memory.internal.test:8443']);
     expect(config.allowedOrigins).toEqual(['https://cursor.com', 'https://app.cursor.com']);
     expect(config.accessTokenAudience).toBe('https://memory.example.test/mcp');
@@ -71,6 +71,22 @@ describe('remote memory service configuration', () => {
     expect(config.maxBodyBytes).toBe(256 * 1024);
     expect(config.readRequestsPerMinute).toBe(300);
     expect(config.writeRequestsPerMinute).toBe(60);
+  });
+
+  it('preserves the exact OAuth issuer identifier after trimming environment whitespace', () => {
+    fc.assert(
+      fc.property(fc.webUrl({validSchemes: ['https']}), fc.boolean(), (url, trailingSlash) => {
+        const issuer = `${new URL(url).origin}${trailingSlash ? '/' : ''}`;
+        const config = remoteMemoryConfigFromEnvironment({
+          ...productionEnvironment,
+          THREADNOTE_REMOTE_OAUTH_ISSUER: `  ${issuer}  `,
+          THREADNOTE_REMOTE_OAUTH_JWKS_URL: `${new URL(issuer).origin}/.well-known/jwks.json`,
+        });
+
+        expect(config.accessTokenIssuer).toBe(issuer);
+      }),
+      {numRuns: 100},
+    );
   });
 
   it('permits an explicit localhost development service without database TLS', () => {
@@ -150,7 +166,7 @@ describe('remote memory service configuration', () => {
     expect(redacted).not.toHaveProperty('databaseUrl');
     expect(redacted).not.toHaveProperty('accessTokenJwksUrl');
     expect(redacted).toMatchObject({
-      accessTokenIssuer: 'https://identity.example.test/tenant',
+      accessTokenIssuer: 'https://identity.example.test/tenant/',
       canonicalStore: 'postgres',
       publicBaseUrl: 'https://memory.example.test/',
     });

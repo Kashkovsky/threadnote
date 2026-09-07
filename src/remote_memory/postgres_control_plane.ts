@@ -847,7 +847,7 @@ function validateProvisioningIdentity(issuer: string, subject: string): void {
     parsed.password ||
     parsed.search ||
     parsed.hash ||
-    issuer !== parsed.toString().replace(/\/$/u, '')
+    (issuer !== parsed.toString() && issuer !== parsed.toString().replace(/\/$/u, ''))
   ) {
     throw remoteMemoryError(
       'invalid_request',

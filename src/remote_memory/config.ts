@@ -37,15 +37,14 @@ export function remoteMemoryConfigFromEnvironment(
   if (publicBaseUrl.pathname !== '/' || publicBaseUrl.search || publicBaseUrl.hash) {
     throw remoteMemoryError('invalid_request', 'THREADNOTE_REMOTE_PUBLIC_URL must be an origin without a path.');
   }
-  const accessTokenIssuer = issuerValue(
-    httpsUrl(required(environment, 'THREADNOTE_REMOTE_OAUTH_ISSUER'), 'THREADNOTE_REMOTE_OAUTH_ISSUER'),
+  const accessTokenIssuer = required(environment, 'THREADNOTE_REMOTE_OAUTH_ISSUER');
+  assertIssuerUrl(httpsUrl(accessTokenIssuer, 'THREADNOTE_REMOTE_OAUTH_ISSUER'));
+  const cursorIssuerUrl = httpsUrl(
+    environment.THREADNOTE_REMOTE_CURSOR_ISSUER?.trim() || 'https://api.cursor.com',
+    'THREADNOTE_REMOTE_CURSOR_ISSUER',
   );
-  const cursorIssuer = issuerValue(
-    httpsUrl(
-      environment.THREADNOTE_REMOTE_CURSOR_ISSUER?.trim() || 'https://api.cursor.com',
-      'THREADNOTE_REMOTE_CURSOR_ISSUER',
-    ),
-  );
+  assertIssuerUrl(cursorIssuerUrl);
+  const cursorIssuer = cursorIssuerUrl.toString().replace(/\/$/u, '');
   const databaseUrl = databaseConnectionUrl(required(environment, 'THREADNOTE_REMOTE_DATABASE_URL'));
   const localService = publicBaseUrl.hostname === 'localhost' || publicBaseUrl.hostname === '127.0.0.1';
   const autoMigrate = booleanValue(environment.THREADNOTE_REMOTE_AUTO_MIGRATE, localService);
@@ -221,10 +220,9 @@ function databaseConnectionUrl(value: string): string {
   return value;
 }
 
-function issuerValue(url: URL): string {
+function assertIssuerUrl(url: URL): void {
   if (url.search || url.hash)
     throw remoteMemoryError('invalid_request', 'Issuer URLs cannot contain a query or fragment.');
-  return url.toString().replace(/\/$/u, '');
 }
 
 function configuredUrl(value: string | undefined, fallback: URL | undefined, key: string): URL {
