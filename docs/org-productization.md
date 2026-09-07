@@ -2,7 +2,7 @@
 
 Status: reviewed with zero blocking findings after two dev-cycle iterations, 2026-09-07.
 Audit baseline: main `9b63eb0b` (4.6.7). The implementation audit below records the original findings;
-the execution evidence here tracks which have since been addressed. Deployment and client acceptance gates remain open.
+the execution evidence here tracks which have since been addressed. Daily cutover and enterprise completion remain open.
 
 Execution evidence as of 2026-09-07:
 
@@ -11,7 +11,9 @@ Execution evidence as of 2026-09-07:
 - #380 preserves exact OAuth issuers and supports optional `nbf`; #381 supports registered external client IDs.
   Auth0's dedicated tenant and native clients have passed real PKCE. Codex 0.153.4 has completed authenticated
   recall/read, canary creation, CAS replacement/stale rejection, laptop Git synchronization, and native refresh.
-  Cursor Agent 2026.09.02-c22c1a3 has authenticated and discovered seven tools; tool execution and refresh remain open.
+  Cursor Agent 2026.09.02-c22c1a3 has completed native PKCE, refresh and a canary write. Its text-only tool delivery
+  exposed missing read revisions and recall pointers. #390 corrected both; the live native read/CAS/read/recall
+  sequence now passes. Its intentional stale-CAS probe remains blocked by client approval before reaching the server.
 - #382 isolates development installation repair. #383 confirms upstream Git persistence before acknowledgement;
   #384 recovers crashed worktree-lock owners. Isolated global service smokes covered rejected pushes and crash/restart.
 - #385 rejects unsafe database credentials before listening and reports every applied migration. It passed 111
@@ -32,17 +34,45 @@ SSH credential has passed pinned-host clone and acknowledged push verification. 
 Neon capacity/restore history and P5 recovery acceptance. The user's Codex org entry remains disabled outside explicit
 canary sessions; personal stdio and the existing Git share are preserved.
 
-The next client slice adds explicit provider scopes for Cursor and org-only native Codex attach. Review narrowed
-Codex to append/no-op/conflict handling before stdio or receipt mutation, with an explicit initial-login command.
-Persisted scopes alone do not prove fresh automatic login or refresh. The client setup and evidence boundaries are
-documented in the [Fly runbook](remote-memory/fly-org.md#registered-client-setup).
+#388 adds explicit provider scopes and org-only native Codex attach with append/no-op/conflict handling before
+stdio or receipt mutation. Actual Codex and Cursor refresh exchanges passed. Initial login remains an explicit
+client command; automatic login honoring persisted provider scopes is not claimed. #389 selects two shared vCPUs
+at the same 512 MiB after the first sustained test exposed exhausted CPU burst capacity.
 
-The first P5 sustained native Codex run failed at minute 12: eleven acknowledged fixture writes were verified,
-then a write exceeded the 10-second request deadline. Fly metrics show the one-shared-vCPU burst allowance
-depleted and quota throttling increased with latency. The timed-out body was recovered through Git ingestion;
-the original operation remains an ambiguous outcome, not an acknowledgement. The versioned deployment now
-selects two shared vCPUs at the same 512 MiB. This candidate must pass a fresh full workload with stable CPU
-balance and the unchanged acceptance thresholds before daily use; the first run remains failed evidence.
+The first P5 sustained native Codex run remains failed evidence: eleven acknowledged writes were verified, then
+minute twelve exceeded the unchanged 10-second deadline. Git ingestion recovered the timed-out body; the original
+operation remains `outcome_ambiguous`, not an acknowledgement. Exact operation replay preserved that outcome.
+
+A fresh 30-minute native Codex run on two shared vCPUs passed: 180 reads, 180 recalls, 30 CAS acknowledgements and
+30 verified ingestions, with at most two concurrent requests. p95 read was 470 ms, recall 565 ms, write 5,055 ms and
+ingestion 2,821 ms. No unexpected authorization failure or lost acknowledged write occurred. CPU burst balance
+increased over the run and the steady portion, with no throttling across 121 samples.
+
+The Git plus PostgreSQL checkpoint and isolated recovery drill also passed. All 25 table digests and catalog
+definitions matched before workers started; all 30 workload acknowledgements and 214 historical Git bodies were
+verified. The real indexer rebuilt 214 events with no pending events or missing projections and unchanged authoritative
+state. Same-state binary rollback preserved newer acknowledgements and idempotent replay. Recovery took 17 minutes
+20 seconds against the 60-minute gate. Production checkpoint restart downtime was 29 seconds.
+
+Isolated database outage, Git push rejection/replay, fresh-write recovery, membership revocation, unprovisioned identity
+denial and HTTP disablement passed. Overlapping signing-key rotation passed through the production JWKS verifier with
+a local test issuer; this does not claim an Auth0 tenant key rotation. All task-created drill containers, network,
+volumes and the local tunnel were removed; the private checkpoint and bounded receipts were retained.
+
+| Phase                      | Current status             | Remaining exit work                                                                         |
+| -------------------------- | -------------------------- | ------------------------------------------------------------------------------------------- |
+| P0 — Plan review           | Complete                   | None                                                                                        |
+| P1 — Safe Git storage      | Complete                   | None for the reviewed single-share deployment                                               |
+| P2 — OAuth and clients     | Normal flows verified      | Cursor stale-conflict visibility remains pending client approval                            |
+| P3 — Fly bootstrap         | Complete                   | None for the single-writer topology                                                         |
+| P4 — Daily cutover         | Gated                      | Verified configuration/routing, a normal repository task and outage/local-floor acceptance  |
+| P5 — Operations            | Drills and workload passed | Ongoing encrypted backups/PITR, alerts, support contract and account setup                  |
+| P6 — Product consistency   | Open                       | Trusted-context capability parity, retrieval evidence and durable roadmap updates           |
+| P7 — Enterprise completion | Open                       | Graph security/distribution, member lifecycle, isolation/HA and release/support gates below |
+
+Neon paid capacity and restore history, SMTP delivery confirmation, and account MFA/recovery remain open. A successful
+isolated checkpoint restore does not establish ongoing backup coverage or prove recovery of writes after that checkpoint.
+The [Fly runbook](remote-memory/fly-org.md) records the supported client setup and recovery boundaries.
 
 The outcome is a deployable organization product and a real single-member deployment at
 `https://threadnote-org.fly.dev/mcp`. Our laptops retain local stdio, personal memory, exact-worktree graphs,
