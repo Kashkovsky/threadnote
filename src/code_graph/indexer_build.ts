@@ -81,6 +81,7 @@ import {
 } from './indexer_snapshot_reuse.js';
 import type {
   CodeGraphIndexOptions,
+  CodeGraphSourceVerification,
   CommittedBaseResult,
   DirectPersistentCapacityProtection,
   IncrementalOverlayAssessment,
@@ -245,6 +246,7 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
   readonly existing: CodeGraphSnapshot | undefined;
   readonly fallbackSnapshotId: string;
   readonly force: boolean;
+  readonly sourceVerification?: CodeGraphSourceVerification;
   readonly fs: FileSystem.FileSystem;
   readonly identity: RepositoryIdentity;
   readonly inventory: CodeGraphInventory;
@@ -334,9 +336,10 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
           cleanFallbackAssessment = reused.value;
         }
       }
-      const resumed = input.force
-        ? yield* input.store.resumableForcedBuild(input.layout.databasePath, input.logicalSnapshotId)
-        : undefined;
+      const resumed =
+        input.force && input.sourceVerification === undefined
+          ? yield* input.store.resumableForcedBuild(input.layout.databasePath, input.logicalSnapshotId)
+          : undefined;
       const building: CodeGraphSnapshot = resumed ?? {
         commit: input.identity.headCommit,
         dirty: false,
@@ -365,6 +368,7 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
         ensureVectors: input.ensureVectors,
         existing: input.existing,
         force: input.force,
+        sourceVerification: input.sourceVerification,
         fs: input.fs,
         identity: input.identity,
         incrementalAssessment: cleanFallbackAssessment,
@@ -1005,6 +1009,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly ensureVectors: boolean;
   readonly force: boolean;
+  readonly sourceVerification?: CodeGraphSourceVerification;
   readonly fs: FileSystem.FileSystem;
   readonly identity: RepositoryIdentity;
   readonly inventory: CodeGraphInventory;
@@ -1439,21 +1444,22 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       const loadingStartedAt = yield* Clock.currentTimeMillis;
       // Attribution may inspect peer facts in this deterministic source batch (for example, TypeScript barrels).
       // Reuse only a complete batch so a hit/miss partition cannot become a persisted derivation input.
-      const materializedShards = directPersistentMaterialization
-        ? yield* input.store.loadMaterializedFileShards(
-            input.layout.databasePath,
-            files,
-            input.building.extractorSet,
-            shardDerivationIdentity,
-            {currentGraphContentId, snapshotIds: donorSnapshotIds},
-          )
-        : {
-            bytes: 0,
-            bytesByPath: new Map<string, number>(),
-            exactGenerationFiles: 0,
-            facts: new Map(),
-            materializedShardIdsByPath: new Map<string, string>(),
-          };
+      const materializedShards =
+        directPersistentMaterialization && input.sourceVerification === undefined
+          ? yield* input.store.loadMaterializedFileShards(
+              input.layout.databasePath,
+              files,
+              input.building.extractorSet,
+              shardDerivationIdentity,
+              {currentGraphContentId, snapshotIds: donorSnapshotIds},
+            )
+          : {
+              bytes: 0,
+              bytesByPath: new Map<string, number>(),
+              exactGenerationFiles: 0,
+              facts: new Map(),
+              materializedShardIdsByPath: new Map<string, string>(),
+            };
       const exactGenerationShardFiles = materializedShards.exactGenerationFiles;
       const materializedShardBatchComplete =
         directPersistentMaterialization &&
@@ -1511,10 +1517,15 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         unit: 'files',
       }) ?? Effect.void;
       const attributionStartedAt = yield* Clock.currentTimeMillis;
+      // Original worker objects flow directly into this assembly; they never become raw-cache donors.
+      const materializationFacts =
+        input.sourceVerification === undefined
+          ? cached.facts
+          : yield* input.sourceVerification.materializeFacts({facts: cached.facts, files: fallbackFiles});
       let flushShardCacheAfterAttribution = false;
       const attributedFallbackFacts = materializationSubphases.measure('attributionCompute', () =>
         attributeFacts(
-          fallbackFiles.map(file => input.languagePacks.postprocessFile(file, cached.facts.get(file.path)!)),
+          fallbackFiles.map(file => input.languagePacks.postprocessFile(file, materializationFacts.get(file.path)!)),
         ),
       );
       replayMetrics = addMaterializationReplayMetrics(replayMetrics, {

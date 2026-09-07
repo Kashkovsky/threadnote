@@ -69,6 +69,8 @@ export interface CodeGraphCheckpointArtifactOptions {
 
 export interface CodeGraphCheckpointExportOptions {
   readonly cwd?: string;
+  /** @internal Bind publication to the physical snapshot whose assembly was verified. */
+  readonly expectedSnapshotId?: string;
   readonly json?: boolean;
   readonly output: string;
   readonly quiet?: boolean;
@@ -164,6 +166,7 @@ export const runCodeGraphCheckpointExport = Effect.fn('codeGraph.checkpoint.expo
   const snapshot = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
   if (
     snapshot === undefined ||
+    (options.expectedSnapshotId !== undefined && snapshot.id !== options.expectedSnapshotId) ||
     snapshot.state !== 'ready' ||
     snapshot.dirty ||
     snapshot.commit !== identity.headCommit ||

@@ -201,6 +201,12 @@ function codeGraphFileProgressDimensions(
 export function cacheContentBatch(options: {
   readonly databasePath: string;
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+  /** Required verification runs before persistence; unlike contribution enqueue, failures propagate. */
+  readonly onSourceParserBatch?: (group: {
+    readonly cacheIdentity: string;
+    readonly facts: readonly BoundedCodeGraphFact[];
+    readonly files: readonly CodeGraphInventoryFile[];
+  }) => Effect.Effect<void, unknown>;
   readonly onCachedParserBatch?: (group: {
     readonly cacheIdentity: string;
     readonly facts: readonly BoundedCodeGraphFact[];
@@ -326,6 +332,7 @@ export function cacheContentBatch(options: {
         currentScanningMetrics(),
       );
       const startedAt = performance.now();
+      yield* options.onSourceParserBatch?.(group) ?? Effect.void;
       yield* options.store.cacheFacts(
         options.databasePath,
         group.files,

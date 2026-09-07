@@ -155,6 +155,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               request.threadnoteHome,
             ).pipe(Effect.provideService(Crypto.Crypto, crypto));
             const requestedOverlay = requestedBuildRequest.state;
+            if (
+              request.sourceVerification &&
+              (request.force !== true ||
+                request.sourceOnly !== true ||
+                request.includeOverlay !== false ||
+                requestedOverlay.dirty)
+            ) {
+              return yield* CodeGraphIndexOperationError.make({
+                message: 'Source verification requires a clean, forced source-only build without overlays.',
+              });
+            }
             yield* anonymousTelemetry.observeOverlay(requestedOverlay.dirty);
             const ensureVectors = codeGraphIndexEnsuresVectors(request);
             const requestKey = request.force
@@ -197,7 +208,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
                   ),
             };
-            if (yield* fs.exists(graphShareEnrollmentPath(path, initialIdentity.repoRoot))) {
+            if (!options.sourceOnly && (yield* fs.exists(graphShareEnrollmentPath(path, initialIdentity.repoRoot)))) {
               yield* captureSharedGraphImportBase({
                 cwd: request.cwd,
                 identity: initialIdentity,
@@ -215,20 +226,21 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               temporaryDirectory: system.tempDirectory,
               walAutoCheckpointPages: options.sqliteWriterTuning?.walAutoCheckpointPages ?? 1_000,
             };
-            yield* hydrateSharedParseCache({
-              databasePath: layout.databasePath,
-              identity: initialIdentity,
-              persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
-                capacityProtection,
-                fs,
+            if (!options.sourceOnly)
+              yield* hydrateSharedParseCache({
+                databasePath: layout.databasePath,
                 identity: initialIdentity,
-                layout,
-                onProgress: options.onProgress,
-                threadnoteHome: options.threadnoteHome,
-              }),
-              store,
-              threadnoteHome: request.threadnoteHome,
-            }).pipe(Effect.ignore);
+                persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
+                  capacityProtection,
+                  fs,
+                  identity: initialIdentity,
+                  layout,
+                  onProgress: options.onProgress,
+                  threadnoteHome: options.threadnoteHome,
+                }),
+                store,
+                threadnoteHome: request.threadnoteHome,
+              }).pipe(Effect.ignore);
             const repositoryBuild = withCodeGraphProcessLock(
               fs,
               layout.lockPath,
@@ -347,7 +359,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       const cacheCoalescer = cacheContentBatch({
                         databasePath: layout.databasePath,
                         languagePacks,
-                        onCachedParserBatch: group => enqueueSharedParserBatch(identity, options.threadnoteHome, group),
+                        onSourceParserBatch: options.sourceVerification?.observeParserBatch,
+                        onCachedParserBatch: options.sourceOnly
+                          ? undefined
+                          : group => enqueueSharedParserBatch(identity, options.threadnoteHome, group),
                         onProgress: options.onProgress,
                         parserPool,
                         persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
@@ -492,9 +507,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         : undefined;
                       const forcedSnapshotId = forcedSnapshotIdentity(logicalSnapshotId, forceGeneration);
                       const directSnapshotId = directFullSnapshotIdentity(logicalSnapshotId);
-                      const resumedForcedBuild = options.force
-                        ? yield* store.resumableForcedBuild(layout.databasePath, logicalSnapshotId)
-                        : undefined;
+                      const resumedForcedBuild =
+                        options.force && options.sourceVerification === undefined
+                          ? yield* store.resumableForcedBuild(layout.databasePath, logicalSnapshotId)
+                          : undefined;
                       const readyCandidateIds = inventory.dirty
                         ? options.incrementalOverlay === false
                           ? [directSnapshotId]
@@ -586,6 +602,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           existing,
                           fallbackSnapshotId: forcedSnapshotId,
                           force: options.force === true,
+                          sourceVerification: options.sourceVerification,
                           fs,
                           identity,
                           inventory,
@@ -946,10 +963,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 }).pipe(Effect.ignore),
               ),
             );
-            yield* drainQueuedGraphShareContributions({
-              identity: initialIdentity,
-              threadnoteHome: request.threadnoteHome,
-            }).pipe(Effect.ignore);
+            if (!options.sourceOnly)
+              yield* drainQueuedGraphShareContributions({
+                identity: initialIdentity,
+                threadnoteHome: request.threadnoteHome,
+              }).pipe(Effect.ignore);
             return summary;
           }),
         ).pipe(
@@ -963,11 +981,15 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           Effect.provideService(CodeGraphMaintenanceCoordinator, maintenance),
           Effect.provideService(HttpClient.HttpClient, http),
           Effect.catchIf(
-            cause => Schema.is(WorktreeChangedDuringIndex)(cause) && attempt === 0,
+            cause =>
+              request.sourceVerification === undefined && Schema.is(WorktreeChangedDuringIndex)(cause) && attempt === 0,
             () => indexAttempt(request, anonymousTelemetry, attempt + 1, bypassCachedFacts),
           ),
           Effect.catchIf(
-            cause => Schema.is(CachedCodeGraphFactUnavailableDuringIndex)(cause) && !bypassCachedFacts,
+            cause =>
+              request.sourceVerification === undefined &&
+              Schema.is(CachedCodeGraphFactUnavailableDuringIndex)(cause) &&
+              !bypassCachedFacts,
             () => indexAttempt(request, anonymousTelemetry, attempt, true),
           ),
         );
@@ -980,7 +1002,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             withCodeGraphBuildAnonymousTelemetry(anonymousTelemetry, indexAttempt(request, anonymousTelemetry)),
         );
       const ensureCommitWithSummary = (
-        request: Omit<CodeGraphIndexOptions, 'force' | 'includeOverlay'> & {readonly commit: string},
+        request: Omit<CodeGraphIndexOptions, 'force' | 'includeOverlay' | 'sourceVerification'> & {
+          readonly commit: string;
+        },
         anonymousTelemetry: CodeGraphBuildAnonymousTelemetryReporter,
         bypassCachedFacts = false,
       ): Effect.Effect<{readonly lease: CodeGraphCommitLease; readonly summary: CodeGraphIndexSummary}, unknown> =>
@@ -1035,7 +1059,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               temporaryDirectory: system.tempDirectory,
               walAutoCheckpointPages: options.sqliteWriterTuning?.walAutoCheckpointPages ?? 1_000,
             };
-            if (yield* fs.exists(graphShareEnrollmentPath(path, initialIdentity.repoRoot))) {
+            if (!options.sourceOnly && (yield* fs.exists(graphShareEnrollmentPath(path, initialIdentity.repoRoot)))) {
               yield* captureSharedGraphImportBase({
                 cwd: request.cwd,
                 identity: commitIdentity,
@@ -1043,20 +1067,21 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 threadnoteHome: request.threadnoteHome,
               });
             }
-            yield* hydrateSharedParseCache({
-              databasePath: layout.databasePath,
-              identity: commitIdentity,
-              persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
-                capacityProtection,
-                fs,
+            if (!options.sourceOnly)
+              yield* hydrateSharedParseCache({
+                databasePath: layout.databasePath,
                 identity: commitIdentity,
-                layout,
-                onProgress: options.onProgress,
-                threadnoteHome: options.threadnoteHome,
-              }),
-              store,
-              threadnoteHome: request.threadnoteHome,
-            }).pipe(Effect.ignore);
+                persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
+                  capacityProtection,
+                  fs,
+                  identity: commitIdentity,
+                  layout,
+                  onProgress: options.onProgress,
+                  threadnoteHome: options.threadnoteHome,
+                }),
+                store,
+                threadnoteHome: request.threadnoteHome,
+              }).pipe(Effect.ignore);
             const commitBuild = withCodeGraphProcessLock(
               fs,
               layout.lockPath,
@@ -1115,7 +1140,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       const cacheCoalescer = cacheContentBatch({
                         databasePath: layout.databasePath,
                         languagePacks,
-                        onCachedParserBatch: group => enqueueSharedParserBatch(identity, options.threadnoteHome, group),
+                        onCachedParserBatch: options.sourceOnly
+                          ? undefined
+                          : group => enqueueSharedParserBatch(identity, options.threadnoteHome, group),
                         onProgress: options.onProgress,
                         parserPool,
                         persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
@@ -1202,10 +1229,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 }).pipe(Effect.ignore),
               ),
             );
-            yield* drainQueuedGraphShareContributions({
-              identity: initialIdentity,
-              threadnoteHome: request.threadnoteHome,
-            }).pipe(Effect.ignore);
+            if (!options.sourceOnly)
+              yield* drainQueuedGraphShareContributions({
+                identity: initialIdentity,
+                threadnoteHome: request.threadnoteHome,
+              }).pipe(Effect.ignore);
             return lease;
           }),
         ).pipe(
@@ -1224,7 +1252,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           ),
         );
       const ensureCommit = (
-        request: Omit<CodeGraphIndexOptions, 'force' | 'includeOverlay'> & {readonly commit: string},
+        request: Omit<CodeGraphIndexOptions, 'force' | 'includeOverlay' | 'sourceVerification'> & {
+          readonly commit: string;
+        },
       ) =>
         Effect.flatMap(
           makeCodeGraphBuildAnonymousTelemetryReporter(

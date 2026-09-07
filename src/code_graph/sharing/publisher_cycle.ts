@@ -2,9 +2,7 @@ import {Clock, Crypto, Effect, FileSystem, Path, Ref} from 'effect';
 import {runCodeGraphCheckpointExport} from '../checkpoint/commands.js';
 import type {CodeGraphCheckpointHeaderV1, CodeGraphCheckpointRecordV1} from '../checkpoint/schema.js';
 import {CodeGraphIndexer} from '../indexer.js';
-import {codeGraphDirectPersistentCapacityProtector} from '../indexer_materialization.js';
 import {codeGraphLayout} from '../layout.js';
-import {CodeGraphMaintenanceCoordinator} from '../maintenance_coordinator.js';
 import {resolveRepositoryIdentity} from '../repository.js';
 import {CodeGraphStore} from '../store.js';
 import {SystemInfo} from '../../effect/system.js';
@@ -30,7 +28,11 @@ import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {putCasFile, readVerifiedCasBlob} from './cas.js';
 import {putGraphShareCheckpointLayers} from './checkpoint_cas.js';
 import {putGraphShareOciDescriptor, putSignedGraphShareFrontierDocuments} from './descriptor.js';
-import {loadGraphShareCoordinatorState, updateGraphShareCoordinatorMachine} from './control_server.js';
+import {
+  loadGraphShareCoordinatorState,
+  updateGraphShareCoordinatorMachine,
+  withCoordinatorStateLock,
+} from './control_server.js';
 import type {GraphShareCoordinatorStateV1} from './control_protocol.js';
 import {parseSha256Digest, type Sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
@@ -52,11 +54,7 @@ import {
   graphShareCommitUnixSeconds,
 } from './git.js';
 import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
-import {
-  hydratePublisherParseCache,
-  verifyGraphShareParseReceipt,
-  type VerifiedGraphShareParseReceipt,
-} from './parse_cache.js';
+import {verifyGraphShareParseReceipt, type VerifiedGraphShareParseReceipt} from './parse_cache.js';
 import {
   assertEnrollmentMatchesIdentity,
   parseGraphShareEnrollment,
@@ -71,7 +69,7 @@ import {
   type GraphPublisherHydrationEvidence,
 } from './publication_evidence.js';
 import {resolveGraphShareCasRoot} from './trust.js';
-import type {RepositoryIdentity} from '../types.js';
+import {makeGraphShareSourceVerification} from './source_verification.js';
 
 export interface GraphPublisherCycleOptions {
   readonly cas?: string;
@@ -173,6 +171,9 @@ export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advanc
     return currentPointer(current, pointer, machine.phase);
   }
   const selected = selectGraphShareResultsForFrozenMachine(coordinator.receipts, machine);
+  if (profilePointer.digest !== current.profileDigest) {
+    return yield* graphSharingFailure('Publisher enrollment profile differs from the current canonical frontier.');
+  }
   const verified: VerifiedGraphShareParseReceipt[] = [];
   for (const announcement of selected.selected) {
     const receipt = yield* verifyGraphShareParseReceipt({
@@ -188,12 +189,12 @@ export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advanc
     }
     verified.push(receipt.value);
   }
-  const hydration: GraphPublisherHydrationEvidence = yield* hydratePublisherFacts(config, identity, verified).pipe(
-    Effect.match({
-      onFailure: () => ({status: 'failed' as const, hydratedResults: null}),
-      onSuccess: result => ({status: 'completed' as const, hydratedResults: result.hydrated}),
-    }),
-  );
+  const hydration: GraphPublisherHydrationEvidence = {status: 'skipped-source-verification', hydratedResults: 0};
+  const verification = makeGraphShareSourceVerification({
+    repositoryId: identity.repositoryId,
+    sourceCommit: identity.headCommit,
+    verified,
+  });
   const published = yield* Effect.gen(function* () {
     const indexer = yield* CodeGraphIndexer;
     const store = yield* CodeGraphStore;
@@ -201,6 +202,9 @@ export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advanc
       cwd,
       ensureVectors: false,
       force: true,
+      includeOverlay: false,
+      sourceOnly: true,
+      sourceVerification: verification.hooks,
       threadnoteHome: config.agentContextHome,
     });
     const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
@@ -215,17 +219,26 @@ export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advanc
         'Checkpoint export requires the exact ready CLEAN root snapshot for the current repository HEAD.',
       );
     }
+    if (ready.id !== indexed.snapshot.id) {
+      return yield* graphSharingFailure('The ready graph changed after source-verified assembly.');
+    }
+    const sourceUse = yield* verification.complete();
     machine = assembleGraphShareBatch(machine);
     yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
     machine = verifyGraphShareBatch(machine);
     yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
-    const exported = yield* exportSignedGeneration(config, options, current, identity.repositoryId, profile);
+    const exported = yield* exportSignedGeneration(config, options, current, identity.repositoryId, profile, {
+      snapshotId: ready.id,
+      sourceCommit: identity.headCommit,
+      verified,
+    });
     return {
       ...exported,
       contributionEvidence: graphPublisherContributionEvidence({
         hydration,
         index: indexed,
         selectedResults: selected.selected.length,
+        sourceUse,
         verifiedResultDigests: verified.map(item => item.announcement.resultManifestDigest),
       }),
     };
@@ -298,46 +311,17 @@ export const ensureGraphSharePublishedOciDescriptor = Effect.fn('codeGraph.shari
   },
 );
 
-const hydratePublisherFacts = Effect.fn('codeGraph.sharing.hydratePublisherFacts')(function* (
-  config: RuntimeConfig,
-  identity: RepositoryIdentity,
-  verified: readonly VerifiedGraphShareParseReceipt[],
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const store = yield* CodeGraphStore;
-  const maintenance = yield* CodeGraphMaintenanceCoordinator;
-  const crypto = yield* Crypto.Crypto;
-  const system = yield* SystemInfo;
-  const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
-  return yield* hydratePublisherParseCache({
-    databasePath: layout.databasePath,
-    persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
-      capacityProtection: {
-        availableDiskBytes: (target: string) => system.availableDiskBytes(target),
-        crypto,
-        maintenance,
-        path,
-        system,
-        temporaryDirectory: system.tempDirectory,
-        walAutoCheckpointPages: 1_000,
-      },
-      fs,
-      identity,
-      layout,
-      threadnoteHome: config.agentContextHome,
-    }),
-    store,
-    verified,
-  });
-});
-
 const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGeneration')(function* (
   config: RuntimeConfig,
   options: GraphPublisherCycleOptions,
   current: GraphShareFrontierManifestV1,
   repositoryId: string,
   profile: GraphShareProfileV1,
+  expected: {
+    readonly snapshotId: string;
+    readonly sourceCommit: string;
+    readonly verified: readonly VerifiedGraphShareParseReceipt[];
+  },
 ) {
   const crypto = yield* Crypto.Crypto;
   const fs = yield* FileSystem.FileSystem;
@@ -347,7 +331,12 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
   const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas);
   const key = yield* loadPublisherKey(config.agentContextHome);
   const spool = path.join(casRoot, 'spool', `${yield* crypto.randomUUIDv4}.cgcp`);
-  const exported = yield* runCodeGraphCheckpointExport(config, {cwd, output: spool, quiet: true});
+  const exported = yield* runCodeGraphCheckpointExport(config, {
+    cwd,
+    expectedSnapshotId: expected.snapshotId,
+    output: spool,
+    quiet: true,
+  });
   const exportedBytes = yield* fs.readFile(spool);
   const target = decodeGraphShareCheckpointBytes(exportedBytes);
   const previous = yield* loadPublishedTargetGraph(casRoot, current);
@@ -390,66 +379,119 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
         ? undefined
         : {metadataDigest: current.checkpoint.metadataDigest};
   const publishedDelta = publication === 'delta' ? yield* putGraphShareDeltaArtifact(casRoot, deltaPack) : undefined;
-  const signed = yield* signGraphShareFrontier(key, {
-    branch: current.branch,
-    checkpoint:
-      publication === 'compact'
-        ? {
-            manifestDigest: checkpointDigest,
-            metadataDigest: checkpointLayers?.metadataDigest,
-            snapshotId: exported.snapshotId,
-            sourceCommit: exported.sourceCommit,
-          }
-        : current.checkpoint,
-    deltas:
-      publication === 'compact' || publishedDelta === undefined
-        ? []
-        : [
-            ...current.deltas,
-            {
-              baseSnapshotId: current.snapshotId,
-              manifestDigest: publishedDelta.digest,
-              metadataDigest: publishedDelta.layers.metadataDigest,
-              targetCommit: exported.sourceCommit,
-              targetSnapshotId: exported.snapshotId,
-            },
-          ],
-    generation: current.generation + 1,
-    graphAbi: exported.graphAbi,
-    graphContentId: exported.graphContentId,
-    logicalGraphDigest: parseSha256Digest(exported.logicalDigest),
-    previousManifestDigest: graphShareFrontierDigest(current),
-    profileDigest: current.profileDigest,
-    publisherFence: current.publisherFence,
+  const coordinatorOptions = {
+    organization: profile.organization,
     repositoryId,
-    schemaVersion: 1,
-    snapshotId: exported.snapshotId,
-    sourceCommit: exported.sourceCommit,
-  });
-  const metadataDigest =
-    publication === 'compact'
-      ? checkpointLayers?.metadataDigest
-      : (current.checkpoint.metadataDigest ?? publishedDelta?.layers.metadataDigest);
-  if (metadataDigest === undefined) {
-    return yield* graphSharingFailure('Frontier publication is missing checkpoint metadata.');
-  }
-  const metadataBytes = yield* readVerifiedCasBlob(casRoot, metadataDigest);
-  const documents = yield* putSignedGraphShareFrontierDocuments(casRoot, signed, metadataBytes);
-  const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
-  yield* writePrivateJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, repositoryId), {
-    envelopeDigest: documents.envelopeDigest,
-    manifestDigest: documents.manifestDigest,
-    schemaVersion: 1,
-  });
-  return {
-    checkpointDigest,
-    descriptorDigest: documents.descriptorDigest,
-    envelopeDigest: documents.envelopeDigest,
-    generation: current.generation + 1,
-    manifestDigest: documents.manifestDigest,
-    profileDigest: current.profileDigest,
-    sourceCommit: exported.sourceCommit,
+    threadnoteHome: config.agentContextHome,
   };
+  // Serialize the last quarantine check and canonical pointer promotion with receipt acceptance.
+  return yield* withCoordinatorStateLock(
+    coordinatorOptions,
+    Effect.gen(function* () {
+      const verifyTarget = Effect.gen(function* () {
+        const latestIdentity = yield* resolveRepositoryIdentity(cwd);
+        const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
+        const latestPointer = parseGraphShareFrontierPointer(
+          yield* readJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, repositoryId)),
+        );
+        const latestEnrollment = parseGraphShareEnrollment(
+          yield* readJsonFile(graphShareEnrollmentPath(path, latestIdentity.repoRoot)),
+        );
+        if (
+          latestIdentity.repositoryId !== repositoryId ||
+          latestIdentity.headCommit !== expected.sourceCommit ||
+          exported.sourceCommit !== expected.sourceCommit ||
+          latestPointer.manifestDigest !== graphShareFrontierDigest(current) ||
+          parseGraphShareProfilePointer(latestEnrollment.profile).digest !== current.profileDigest
+        ) {
+          return yield* graphSharingFailure('Publication source, profile, or predecessor changed during verification.');
+        }
+        const state =
+          options.stateRef === undefined
+            ? yield* loadGraphShareCoordinatorState(coordinatorOptions)
+            : yield* Ref.get(options.stateRef);
+        const quarantine = new Set(state.receipts.quarantine.map(item => item.actionKey));
+        if (
+          expected.verified.some(
+            item =>
+              quarantine.has(item.announcement.actionKey) ||
+              !state.receipts.receipts.some(
+                receipt =>
+                  receipt.actionKey === item.announcement.actionKey &&
+                  receipt.resultManifestDigest === item.announcement.resultManifestDigest &&
+                  receipt.batchId === item.announcement.batchId,
+              ),
+          )
+        ) {
+          return yield* graphSharingFailure(
+            'A selected contribution changed or entered quarantine before publication.',
+          );
+        }
+      });
+      yield* verifyTarget;
+      const signed = yield* signGraphShareFrontier(key, {
+        branch: current.branch,
+        checkpoint:
+          publication === 'compact'
+            ? {
+                manifestDigest: checkpointDigest,
+                metadataDigest: checkpointLayers?.metadataDigest,
+                snapshotId: exported.snapshotId,
+                sourceCommit: exported.sourceCommit,
+              }
+            : current.checkpoint,
+        deltas:
+          publication === 'compact' || publishedDelta === undefined
+            ? []
+            : [
+                ...current.deltas,
+                {
+                  baseSnapshotId: current.snapshotId,
+                  manifestDigest: publishedDelta.digest,
+                  metadataDigest: publishedDelta.layers.metadataDigest,
+                  targetCommit: exported.sourceCommit,
+                  targetSnapshotId: exported.snapshotId,
+                },
+              ],
+        generation: current.generation + 1,
+        graphAbi: exported.graphAbi,
+        graphContentId: exported.graphContentId,
+        logicalGraphDigest: parseSha256Digest(exported.logicalDigest),
+        previousManifestDigest: graphShareFrontierDigest(current),
+        profileDigest: current.profileDigest,
+        publisherFence: current.publisherFence,
+        repositoryId,
+        schemaVersion: 1,
+        snapshotId: exported.snapshotId,
+        sourceCommit: exported.sourceCommit,
+      });
+      const metadataDigest =
+        publication === 'compact'
+          ? checkpointLayers?.metadataDigest
+          : (current.checkpoint.metadataDigest ?? publishedDelta?.layers.metadataDigest);
+      if (metadataDigest === undefined) {
+        return yield* graphSharingFailure('Frontier publication is missing checkpoint metadata.');
+      }
+      const metadataBytes = yield* readVerifiedCasBlob(casRoot, metadataDigest);
+      const documents = yield* putSignedGraphShareFrontierDocuments(casRoot, signed, metadataBytes);
+      const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
+      yield* verifyTarget;
+      yield* writePrivateJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, repositoryId), {
+        envelopeDigest: documents.envelopeDigest,
+        manifestDigest: documents.manifestDigest,
+        schemaVersion: 1,
+      });
+      return {
+        checkpointDigest,
+        descriptorDigest: documents.descriptorDigest,
+        envelopeDigest: documents.envelopeDigest,
+        generation: current.generation + 1,
+        manifestDigest: documents.manifestDigest,
+        profileDigest: current.profileDigest,
+        sourceCommit: exported.sourceCommit,
+      };
+    }),
+  );
 });
 
 const loadPublishedTargetGraph = Effect.fn('codeGraph.sharing.loadPublishedTarget')(function* (
