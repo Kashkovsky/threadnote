@@ -589,8 +589,9 @@ async function runProcess(
   let child: ReturnType<typeof Bun.spawn>;
   try {
     child = Bun.spawn({
-      cmd: [...command],
-      env: {...process.env, ...options?.environment},
+      cmd: options?.environment
+        ? ['env', ...Object.entries(options.environment).map(([key, value]) => `${key}=${value}`), ...command]
+        : [...command],
       stderr: 'pipe',
       stdin: options?.stdin === undefined ? 'ignore' : new TextEncoder().encode(options.stdin),
       stdout: 'pipe',
