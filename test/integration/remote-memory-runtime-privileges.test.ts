@@ -38,7 +38,7 @@ postgresDescribe('remote runtime database privilege preflight', () => {
   it('accepts the deployed table/column allowlist and reports every applied migration', async () => {
     await expect(assertRemoteMemoryRuntimePrivileges(fixture.sql)).resolves.toBeUndefined();
     const receipt = await new PostgresRemoteMemoryOperatorAdapter(fixture.migratorSql).migrateSchema();
-    expect(receipt.readyVersions).toEqual([1, 2]);
+    expect(receipt.readyVersions).toEqual([1, 2, 3]);
   });
 
   it('rejects the schema owner and the bootstrap superuser', async () => {

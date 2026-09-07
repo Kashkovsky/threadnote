@@ -67,7 +67,13 @@ const RUNTIME_GRANTS: readonly RuntimeGrant[] = [
   {
     privilege: 'UPDATE',
     tables: ['shares'],
-    columns: ['share_generation', 'indexed_generation'],
+    columns: [
+      'share_generation',
+      'indexed_generation',
+      'git_ingest_snapshot_commit',
+      'git_ingest_cursor',
+      'git_ingest_rejected_path',
+    ],
   },
   {
     privilege: 'UPDATE',

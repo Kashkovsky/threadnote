@@ -1,14 +1,28 @@
 # Organization productization and dogfood deployment
 
 Status: reviewed with zero blocking findings after two dev-cycle iterations, 2026-09-07.
-Baseline: main `9b63eb0b` (4.6.7). Implementation starts with P1a, tenant/share isolation; the remaining P1
-storage contracts and subsequent gates remain open until separately verified.
+Audit baseline: main `9b63eb0b` (4.6.7). The implementation audit below records the original findings;
+the execution evidence here tracks which have since been addressed. Deployment and client acceptance gates remain open.
 
-Execution evidence: P1a is implemented in #378 with 102 focused tests, zero dev-cycle findings, and an
-exact-HEAD global smoke returning 200 for the bound share and 403 for an authorized sibling share. The next
-slice adds dedicated Git ingestion authority, persistent ingestion readiness failure, and rejection of HTTP
-body edits that would discard rich metadata. Git push/crash recovery and external lifecycle/removal convergence
-remain open P1 gates.
+Execution evidence as of 2026-09-07:
+
+- #378 binds Git to one tenant/share; #379 adds dedicated ingestion authority, persistent failure readiness, and
+  rejection of body edits that cannot preserve rich metadata.
+- #380 preserves exact OAuth issuers and supports optional `nbf`; #381 supports registered external client IDs.
+  Auth0's dedicated tenant and native clients have passed a real PKCE exchange. Actual agent MCP canaries remain open.
+- #382 isolates development installation repair. #383 confirms upstream Git persistence before acknowledgement;
+  #384 recovers crashed worktree-lock owners. Isolated global service smokes covered rejected pushes and crash/restart.
+- #385 rejects unsafe database credentials before listening and reports every applied migration. It passed 111
+  focused tests, dev-cycle review, global startup smoke against PostgreSQL/Neon, and full PR CI.
+- The lifecycle slice adds monotonic snapshot admission, immutable observation provenance, external lifecycle/removal
+  reconciliation, strict managed metadata validation, bounded legacy progress, and persistent rejection recovery.
+  It passed 142 focused tests, lint/types, two dev-cycle iterations with zero remaining findings, and the source
+  lifecycle smoke. Global installation and release checks remain separate gates.
+
+Neon PostgreSQL 17 in Frankfurt supports the required separate SQL-created migration/runtime roles and strict TLS.
+The incompatible, empty Fly Managed Postgres trial was removed. The Fly app is reserved; its org image, persistent
+clone, restricted Git credential, live deployment, and recovery acceptance are still P3–P5 work. Daily org writes
+remain disabled until those gates pass.
 
 The outcome is a deployable organization product and a real single-member deployment at
 `https://threadnote-org.fly.dev/mcp`. Our laptops retain local stdio, personal memory, exact-worktree graphs,

@@ -1,3 +1,12 @@
+import {ingestGitShare} from './git_ingest.js';
+import {
+  requireShareState,
+  requireActiveProject,
+  principalAllows,
+  requirePrincipalProject,
+  type ShareStateRow,
+  type GrantStateRow,
+} from './repository_policy.js';
 import {Schema} from 'effect';
 import type {Sql, TransactionSql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
@@ -23,7 +32,7 @@ import {
 import type {AuthorizedRemotePrincipal, RemoteMemoryFeatureFlag, RemoteMemoryScope} from './authorization.js';
 import {authorizeCursorClaims, type CursorWorkloadAttestation} from './cursor_oidc.js';
 import {RemoteMemoryError, remoteMemoryError, type RemoteMemoryErrorCode} from './errors.js';
-import {GitCanonicalMemoryStore, gitCanonicalSharePath, gitIngestProjectsToEnsure} from './git_canonical_store.js';
+import {GitCanonicalMemoryStore, gitCanonicalSharePath} from './git_canonical_store.js';
 import {requireJsonValue} from './json.js';
 import {assertGitMemoryBinding, requireGitMemoryBinding} from './git_binding.js';
 import {remoteGitIngestPrincipalId} from './git_ingest_principal.js';
@@ -34,21 +43,6 @@ import {
   withRemoteMemoryRequestCancellation,
   type RemoteMemoryRequestExecution,
 } from './request_execution.js';
-
-interface ShareStateRow {
-  readonly indexed_generation: string | number;
-  readonly policy_digest: string;
-  readonly policy_version: string;
-  readonly share_generation: string | number;
-}
-
-interface GrantStateRow extends ShareStateRow {
-  readonly allowed_projects: string[] | null;
-  readonly capabilities: string[];
-  readonly feature_flags: string[];
-  readonly grant_policy_version: string;
-  readonly grant_policy_digest: string;
-}
 
 interface HeadRow {
   readonly canonical_uri: string;
@@ -93,7 +87,6 @@ type OperationReservation =
   {readonly kind: 'execute'} | {readonly kind: 'replay'; readonly receipt: RemoteMemoryReceiptV1};
 
 const IDEMPOTENCY_REPLAY_WINDOW_MILLISECONDS = 24 * 60 * 60_000;
-const GIT_INGEST_HYDRATE_LIMIT = 256;
 
 export interface RemoteMemoryReadResult {
   readonly content: string;
@@ -701,222 +694,13 @@ export class PostgresRemoteMemoryRepository {
     now = new Date(),
   ): Promise<{readonly ingested: number; readonly skipped: number}> {
     assertGitMemoryBinding(this.gitStore?.binding, principal);
-    const gitStore = this.gitStore;
-    if (!gitStore) {
-      throw remoteMemoryError('invalid_request', 'Git share ingest requires a git canonical store.');
-    }
-    const paths = await gitStore.listCanonicalPaths();
-    const blobCache = new Map<string, ReadonlyMap<string, string>>();
-    const blobsAt = async (commit: string): Promise<ReadonlyMap<string, string>> => {
-      const cached = blobCache.get(commit);
-      if (cached) return cached;
-      const blobs = await gitStore.listBlobIds(commit);
-      blobCache.set(commit, blobs);
-      return blobs;
-    };
-    const snapshot = await this.withTenant(principal.tenantId, async transaction => {
-      await requireShareState(transaction, principal);
-      const knownProjects = await transaction<{name: string}[]>`
-        SELECT name FROM remote_memory.projects
-        WHERE tenant_id = ${principal.tenantId} AND share_id = ${principal.shareId}
-      `;
-      const toEnsure = gitIngestProjectsToEnsure({
-        allowedProjects: principal.allowedProjects,
-        gitProjects: paths.map(path => path.project),
-        knownProjects: new Set(knownProjects.map(project => project.name)),
-      });
-      for (const project of toEnsure) {
-        await transaction`
-          INSERT INTO remote_memory.projects(tenant_id, share_id, name, status)
-          VALUES (${principal.tenantId}, ${principal.shareId}, ${project}, 'active')
-          ON CONFLICT (tenant_id, share_id, name) DO NOTHING
-        `;
-      }
-      const heads = await transaction<
-        {
-          readonly content_hash: string;
-          readonly git_commit: string | null;
-          readonly git_path: string | null;
-          readonly kind: 'durable' | 'handoff';
-          readonly project: string;
-          readonly status: HeadRow['status'];
-          readonly topic: string;
-        }[]
-      >`
-        SELECT h.kind, h.project, h.topic, h.status, r.content_hash, r.git_commit, r.git_path
-        FROM remote_memory.memory_heads h
-        JOIN remote_memory.memory_revisions r
-          ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
-        WHERE h.tenant_id = ${principal.tenantId} AND h.share_id = ${principal.shareId}
-      `;
-      const projects = await transaction<{name: string}[]>`
-        SELECT name FROM remote_memory.projects
-        WHERE tenant_id = ${principal.tenantId} AND share_id = ${principal.shareId} AND status = 'active'
-      `;
-      return {heads, projects: new Set(projects.map(project => project.name))};
-    });
-    const heads = new Map(snapshot.heads.map(head => [`${head.kind}:${head.project}:${head.topic}`, head] as const));
-    let ingested = 0;
-    let skipped = 0;
-    let hydrates = 0;
-    for (const path of paths) {
-      if (!principalAllowsProject(principal, path.project) || !snapshot.projects.has(path.project)) {
-        skipped += 1;
-        continue;
-      }
-      if (
-        (path.kind === 'durable' &&
-          !principalAllows(principal, 'memory:write:durable', 'remote_memory_durable_write')) ||
-        (path.kind === 'handoff' && !principalAllows(principal, 'memory:write:handoff', 'remote_memory_handoff_write'))
-      ) {
-        skipped += 1;
-        continue;
-      }
-      const current = heads.get(`${path.kind}:${path.project}:${path.topic}`);
-      if (current && current.status !== 'active') {
-        skipped += 1;
-        continue;
-      }
-      if (current?.git_commit === path.gitCommit && current.git_path === path.gitPath) {
-        skipped += 1;
-        continue;
-      }
-      if (current?.git_commit && current.git_path === path.gitPath) {
-        const priorBlob = (await blobsAt(current.git_commit)).get(path.gitPath);
-        if (priorBlob === path.blobId) {
-          skipped += 1;
-          continue;
-        }
-      }
-      if (hydrates >= GIT_INGEST_HYDRATE_LIMIT) {
-        skipped += 1;
-        continue;
-      }
-      hydrates += 1;
-      const content = await gitStore.read({commit: path.gitCommit, path: path.gitPath});
-      const inspected = inspectRemoteMemoryContent(content);
-      if (!inspected.allowed) {
-        skipped += 1;
-        continue;
-      }
-      const changed = await this.ingestGitFile(
-        principal,
-        {...path, contentHash: sha256HexSync(content)},
-        requestId,
-        now,
-      );
-      if (changed) ingested += 1;
-      else skipped += 1;
-    }
-    return {ingested, skipped};
-  }
-
-  private async ingestGitFile(
-    principal: AuthorizedRemotePrincipal,
-    file: {
-      readonly contentHash: string;
-      readonly gitCommit: string;
-      readonly gitPath: string;
-      readonly kind: 'durable' | 'handoff';
-      readonly project: string;
-      readonly topic: string;
-    },
-    requestId: string,
-    now: Date,
-  ): Promise<boolean> {
-    return this.withTenant(principal.tenantId, async transaction => {
-      await requireShareState(transaction, principal);
-      await requireActiveProject(transaction, principal, file.project);
-      const logicalKey = formatRemoteMemoryLogicalKey({
-        kind: file.kind,
-        project: file.project,
-        shareId: principal.shareId,
-        tenantId: principal.tenantId,
-        topic: file.topic,
-        version: REMOTE_MEMORY_REVISION_VERSION,
-      });
-      await transaction`SELECT pg_advisory_xact_lock(hashtextextended(${logicalKey}, 0))`;
-      const currentRows = await transaction<HeadRow[]>`
-        SELECT h.canonical_uri, h.id AS head_id, h.kind, h.project, h.topic, h.current_revision_id,
-          h.status, r.markdown_body, r.content_hash, r.git_commit, r.git_path, h.retention_class, h.expires_at,
-          h.created_at, h.updated_at
-        FROM remote_memory.memory_heads h
-        JOIN remote_memory.memory_revisions r
-          ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
-        WHERE h.tenant_id = ${principal.tenantId} AND h.share_id = ${principal.shareId}
-          AND h.kind = ${file.kind} AND h.project = ${file.project} AND h.topic = ${file.topic}
-        FOR UPDATE OF h
-      `;
-      const current = currentRows[0];
-      if (current && current.status !== 'active') return false;
-      if (current?.git_commit === file.gitCommit && current.git_path === file.gitPath) return false;
-      if (current?.content_hash === file.contentHash) return false;
-      const canonicalUri = formatRemoteMemoryUri({
-        kind: file.kind,
-        project: file.project,
-        shareId: principal.shareId,
-        topic: file.topic,
-      });
-      const headId = current?.head_id ?? randomUuidV4();
-      const proposedRevision = randomUuidV4();
-      if (!current) {
-        await transaction`
-          INSERT INTO remote_memory.memory_heads(
-            tenant_id, share_id, id, kind, project, topic, canonical_uri, status
-          ) VALUES (
-            ${principal.tenantId}, ${principal.shareId}, ${headId}, ${file.kind}, ${file.project},
-            ${file.topic}, ${canonicalUri}, 'active'
-          )
-        `;
-      }
-      const generationRows = await transaction<ShareStateRow[]>`
-        UPDATE remote_memory.shares SET share_generation = share_generation + 1
-        WHERE tenant_id = ${principal.tenantId} AND id = ${principal.shareId} AND status = 'active'
-          AND policy_version = ${principal.sharePolicyVersion}
-          AND policy_digest = ${principal.sharePolicyDigest}
-        RETURNING share_generation, indexed_generation, policy_version, policy_digest
-      `;
-      const committedGeneration = generationRows[0];
-      if (!committedGeneration) throw remoteMemoryError('forbidden', 'The memory share is no longer active.');
-      const committed = await requireShareState(transaction, principal);
-      if (numeric(committed.share_generation) !== numeric(committedGeneration.share_generation)) {
-        throw remoteMemoryError('service_unavailable', 'The committed memory generation could not be verified.');
-      }
-      await transaction`
-        INSERT INTO remote_memory.memory_revisions(
-          tenant_id, share_id, id, head_id, base_revision_id, generation, status,
-          markdown_body, content_hash, git_commit, git_path, oauth_principal_id, operation_id
-        ) VALUES (
-          ${principal.tenantId}, ${principal.shareId}, ${proposedRevision}, ${headId},
-          ${current?.current_revision_id ?? null}, ${numeric(committed.share_generation)}, 'active',
-          ${''}, ${file.contentHash}, ${file.gitCommit}, ${file.gitPath},
-          ${principal.principalId}, ${`git-ingest:${file.gitCommit}:${file.gitPath}`}
-        )
-      `;
-      await transaction`
-        UPDATE remote_memory.memory_heads SET
-          current_revision_id = ${proposedRevision}, status = 'active', updated_at = ${now.toISOString()}
-        WHERE tenant_id = ${principal.tenantId} AND share_id = ${principal.shareId} AND id = ${headId}
-      `;
-      await transaction`
-        INSERT INTO remote_memory.outbox_events(
-          tenant_id, share_id, id, generation, event_type, aggregate_id
-        ) VALUES (
-          ${principal.tenantId}, ${principal.shareId}, ${randomUuidV4()},
-          ${numeric(committed.share_generation)}, 'memory_head_changed', ${headId}
-        )
-      `;
-      await transaction`
-        INSERT INTO remote_memory.audit_events(
-          tenant_id, share_id, id, request_id, principal_id, operation, result,
-          policy_version, share_policy_version, generation
-        ) VALUES (
-          ${principal.tenantId}, ${principal.shareId}, ${randomUuidV4()}, ${requestId},
-          ${principal.principalId}, 'ingest_git_share', 'committed',
-          ${principal.policyVersion}, ${committed.policy_version}, ${numeric(committed.share_generation)}
-        )
-      `;
-      return true;
+    if (!this.gitStore) throw remoteMemoryError('invalid_request', 'Git share ingest requires a git canonical store.');
+    return ingestGitShare({
+      gitStore: this.gitStore,
+      principal,
+      requestId,
+      now,
+      withTenant: use => this.withTenant(principal.tenantId, use),
     });
   }
 
@@ -1623,54 +1407,6 @@ async function resolveCanonicalUri(
   return canonicalUri;
 }
 
-async function requireShareState(
-  transaction: TransactionSql,
-  principal: AuthorizedRemotePrincipal,
-): Promise<GrantStateRow> {
-  const rows = await transaction<GrantStateRow[]>`
-    SELECT s.share_generation, s.indexed_generation, s.policy_version, s.policy_digest,
-      s.feature_flags, g.capabilities, g.allowed_projects, g.policy_version AS grant_policy_version,
-      g.policy_digest AS grant_policy_digest
-    FROM remote_memory.shares s
-    JOIN remote_memory.tenants t ON t.id = s.tenant_id AND t.status = 'active'
-    JOIN remote_memory.tenant_memberships m
-      ON m.tenant_id = s.tenant_id AND m.principal_id = ${principal.principalId} AND m.status = 'active'
-    JOIN remote_memory.share_grants g
-      ON g.tenant_id = s.tenant_id AND g.share_id = s.id
-      AND g.principal_id = m.principal_id AND g.status = 'active'
-    JOIN remote_memory.principals p
-      ON p.tenant_id = m.tenant_id AND p.id = m.principal_id AND p.status = 'active'
-    WHERE s.tenant_id = ${principal.tenantId} AND s.id = ${principal.shareId} AND s.status = 'active'
-  `;
-  const state = rows[0];
-  if (!state) throw remoteMemoryError('forbidden', 'The memory share grant is not active.');
-  const allowedProjects = state.allowed_projects === null ? 'all' : new Set(state.allowed_projects);
-  if (!sameSetOrAll(principal.allowedProjects, allowedProjects)) {
-    throw remoteMemoryError('forbidden', 'The memory share grant changed; authenticate again.');
-  }
-  if (
-    state.grant_policy_version !== principal.policyVersion ||
-    state.grant_policy_digest !== principal.policyDigest ||
-    state.policy_version !== principal.sharePolicyVersion ||
-    state.policy_digest !== principal.sharePolicyDigest ||
-    !setContains(state.capabilities, principal.capabilities) ||
-    !setContains(state.feature_flags, principal.featureFlags)
-  ) {
-    throw remoteMemoryError('forbidden', 'The memory share policy changed; authenticate again.');
-  }
-  return state;
-}
-
-function sameSetOrAll(left: ReadonlySet<string> | 'all', right: ReadonlySet<string> | 'all'): boolean {
-  if (left === 'all' || right === 'all') return left === right;
-  return left.size === right.size && [...left].every(value => right.has(value));
-}
-
-function setContains(current: readonly string[], authorized: ReadonlySet<string>): boolean {
-  const values = new Set(current);
-  return [...authorized].every(value => values.has(value));
-}
-
 function receipt(
   principal: AuthorizedRemotePrincipal,
   state: ShareStateRow,
@@ -1843,42 +1579,6 @@ function mutationActor(
         ...(attestation.turnId ? {turnId: attestation.turnId} : {}),
       }
     : {principalId: principal.principalId};
-}
-
-function principalAllowsProject(principal: AuthorizedRemotePrincipal, project: string): boolean {
-  return principal.allowedProjects === 'all' || principal.allowedProjects.has(project);
-}
-
-function requirePrincipalProject(principal: AuthorizedRemotePrincipal, project: string): void {
-  if (principal.allowedProjects !== 'all' && !principal.allowedProjects.has(project)) {
-    throw remoteMemoryError('forbidden', 'The project is outside the authorized share grant.');
-  }
-}
-
-async function requireActiveProject(
-  transaction: TransactionSql,
-  principal: AuthorizedRemotePrincipal,
-  project: string,
-): Promise<void> {
-  const rows = await transaction<{name: string}[]>`
-    SELECT name FROM remote_memory.projects
-    WHERE tenant_id = ${principal.tenantId} AND share_id = ${principal.shareId}
-      AND name = ${project} AND status = 'active'
-  `;
-  if (!rows[0]) throw remoteMemoryError('forbidden', 'The project is not active in the authorized memory share.');
-}
-
-function principalAllows(
-  principal: AuthorizedRemotePrincipal,
-  scope: RemoteMemoryScope,
-  feature: RemoteMemoryFeatureFlag,
-): boolean {
-  return (
-    (principal.OAuth.scopes.has(scope) || principal.OAuth.scopes.has('memory:admin')) &&
-    (principal.capabilities.has(scope) || principal.capabilities.has('memory:admin')) &&
-    principal.featureFlags.has(feature) &&
-    principal.featureFlags.has('remote_memory_ga')
-  );
 }
 
 function requireFreshAttestationPolicy(

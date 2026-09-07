@@ -253,7 +253,7 @@ postgresDescribe('git-backed remote memory composer', () => {
     ).rejects.toMatchObject({code: 'forbidden'});
   });
 
-  it('does not resurrect a terminal handoff during git ingest', async () => {
+  it('keeps an archived handoff inactive until a later explicit Git publication', async () => {
     const created = await repository.remember(
       principal,
       {
@@ -277,6 +277,10 @@ postgresDescribe('git-backed remote memory composer', () => {
       'request-git-expired-archive',
     );
     expect(archived.revision).toBeTruthy();
+    expect(await indexer.runPass({batchSize: 8})).toMatchObject({failed: 0});
+    expect(
+      (await repository.read(principal, {uri: created.uri!, version: 1}, 'archived-before-republish')).status,
+    ).toBe('archived');
     const path = gitCanonicalSharePath('handoff', PROJECT, 'git-expired');
     const laptop = join(gitFixture.root, 'laptop-expired');
     await cloneGitShareWorktree(gitFixture.remote, laptop);
@@ -295,7 +299,7 @@ postgresDescribe('git-backed remote memory composer', () => {
           topic: 'git-expired',
           visibility: 'shared',
         },
-        'Should not resurrect expired handoff.',
+        'Explicit later publication reactivates the handoff.',
       ),
       'utf8',
     );
@@ -304,8 +308,8 @@ postgresDescribe('git-backed remote memory composer', () => {
     await git(['push', 'origin', 'main'], laptop);
     expect(await indexer.runPass({batchSize: 8})).toMatchObject({failed: 0});
     const read = await repository.read(principal, {uri: created.uri!, version: 1}, 'request-git-expired-read');
-    expect(read.status).toBe('archived');
-    expect(read.content).toContain('Active handoff body.');
+    expect(read.status).toBe('active');
+    expect(read.content).toContain('Explicit later publication reactivates the handoff.');
   });
 });
 

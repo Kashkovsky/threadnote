@@ -22,7 +22,9 @@ describe('remote memory reference deployment', () => {
     expect(grants).toContain('REVOKE ALL ON ALL TABLES IN SCHEMA remote_memory');
     expect(grants).toContain('remote_memory.grant_policy_versions');
     expect(grants).toContain('remote_memory.share_policy_versions');
-    expect(grants).toContain('GRANT UPDATE (share_generation, indexed_generation) ON remote_memory.shares');
+    expect(grants).toContain(
+      'GRANT UPDATE (share_generation, indexed_generation, git_ingest_snapshot_commit, git_ingest_cursor, git_ingest_rejected_path) ON remote_memory.shares',
+    );
     expect(grants).not.toMatch(/GRANT UPDATE ON remote_memory\.shares/u);
     expect(grants).toContain('remote_memory.worker_health');
     expect(grants).toContain('GRANT UPDATE (heartbeat_at, last_success_at, last_failure_at, failure_class');
@@ -63,5 +65,6 @@ describe('remote memory reference deployment', () => {
     expect(migrations).toContain('new URL(`./migrations/${name}`, import.meta.url)');
     expect(migrations).toContain("name: '001_initial.sql'");
     expect(migrations).toContain("name: '002_git_canonical_pointers.sql'");
+    expect(migrations).toContain("name: '003_git_ingest_observations.sql'");
   });
 });

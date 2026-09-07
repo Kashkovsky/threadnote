@@ -162,7 +162,16 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
     );
   }
   const updateGrants = [
-    {columns: ['share_generation', 'indexed_generation'], table: 'shares'},
+    {
+      columns: [
+        'share_generation',
+        'indexed_generation',
+        'git_ingest_snapshot_commit',
+        'git_ingest_cursor',
+        'git_ingest_rejected_path',
+      ],
+      table: 'shares',
+    },
     {
       columns: ['current_revision_id', 'status', 'retention_class', 'expires_at', 'updated_at'],
       table: 'memory_heads',
