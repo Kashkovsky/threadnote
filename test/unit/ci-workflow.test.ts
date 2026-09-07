@@ -133,9 +133,7 @@ describe('dependency-aware CI workflow', () => {
       if: "needs.changes.outputs.code == 'true'",
     });
     expect(remotePostgres.steps?.filter(step => step.uses?.startsWith('actions/checkout@'))).toHaveLength(1);
-    expect(
-      stepForRun(remotePostgres, 'bun --bun vitest run test/integration/remote-memory-postgres.test.ts').env,
-    ).toEqual({
+    expect(stepForRun(remotePostgres, 'bun --bun vitest run test/integration/remote-memory-*.test.ts').env).toEqual({
       THREADNOTE_TEST_POSTGRES_URL: 'postgres://postgres:postgres@127.0.0.1:5432/threadnote_ci',
     });
     expect(primary.steps?.[0]?.env).toMatchObject({

@@ -8,6 +8,7 @@ export interface RemoteMemoryPostgresFixture {
   readonly migratorRoleName: string;
   readonly migratorSql: Sql;
   readonly runtimeRoleName: string;
+  readonly runtimeDatabaseUrl: string;
   readonly sql: Sql;
   readonly dispose: () => Promise<void>;
 }
@@ -58,6 +59,7 @@ export async function createRemoteMemoryPostgresFixture(databaseUrl: string): Pr
       migratorRoleName,
       migratorSql,
       runtimeRoleName,
+      runtimeDatabaseUrl: runtimeUrl,
       sql,
       dispose: async () => {
         await sql?.end({timeout: 5});

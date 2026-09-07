@@ -1,4 +1,5 @@
 import type {GitWorktreeLock} from '../effect/git_worktree_lock.js';
+import {assertRemoteMemoryRuntimePrivileges} from './runtime_privileges.js';
 import {remoteMemoryConfigFromEnvironment, redactedRemoteMemoryConfig} from './config.js';
 import {createCursorTokenVerifier} from './cursor_oidc.js';
 import {migrateRemoteMemoryDatabase} from './migrations.js';
@@ -44,6 +45,7 @@ export async function runRemoteMemoryService(
   let stopping: Promise<void> | undefined;
   try {
     if (config.autoMigrate) await migrateRemoteMemoryDatabase(sql, {executablePath: runtime.executablePath});
+    else await assertRemoteMemoryRuntimePrivileges(sql);
     await assertRuntimeSchemaAccess(sql);
     const gitStore =
       config.canonicalStore === 'git' && config.gitWorktree
