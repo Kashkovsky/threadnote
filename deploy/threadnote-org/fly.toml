@@ -57,6 +57,7 @@ kill_timeout = 60
       Host = "threadnote-org.fly.dev"
 
 [[vm]]
+  size = "shared-cpu-2x"
   cpu_kind = "shared"
   cpus = 2
   memory = "512mb"
