@@ -128,6 +128,18 @@ Adding or replacing a member grant does not replace that catalog. A share-wide c
 `expectedCurrentPolicyVersion`; an omitted `allowedProjects` means every active project in the share catalog, not an
 unprovisioned project name.
 
+## OAuth provider configuration
+
+Set `THREADNOTE_REMOTE_OAUTH_ISSUER` to the provider's exact issuer identifier, including any trailing slash.
+The same string must appear in the signed token's `iss` claim and the operator-provisioned member identity.
+For an Auth0 tenant this is typically `https://<tenant>.<region>.auth0.com/`. Issuer comparison is exact; do not
+remove the slash to match an origin. JWKS must stay on the issuer's origin.
+
+The API audience must equal the public `/mcp` URL. Configure RS256 access tokens with a five-minute lifetime;
+the verifier requires `sub`, `iat`, and `exp`, caps lifetime at ten minutes plus five seconds of clock tolerance,
+and validates `nbf` when present. A missing optional `nbf` claim is accepted; malformed or inconsistent time
+claims are rejected. The loopback demo issuer remains restricted to local development.
+
 ## Health and safe telemetry
 
 - `/healthz`: process liveness only.

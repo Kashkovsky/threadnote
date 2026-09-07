@@ -60,7 +60,7 @@ function createAccessTokenVerifier(
           clockTolerance: 5,
           issuer: config.issuer,
           maxTokenAge: '10 minutes',
-          requiredClaims: ['sub', 'iat', 'nbf', 'exp'],
+          requiredClaims: ['sub', 'iat', 'exp'],
         }));
       } catch {
         throw remoteMemoryError('unauthorized', 'The access token could not be verified.');
@@ -70,7 +70,7 @@ function createAccessTokenVerifier(
       }
       const issuedAt = numericDate(payload.iat);
       const expiresAt = numericDate(payload.exp);
-      const notBefore = numericDate(payload.nbf);
+      const notBefore = payload.nbf === undefined ? issuedAt : numericDate(payload.nbf);
       if (expiresAt <= issuedAt || expiresAt - issuedAt > 605 || notBefore > issuedAt + 5) {
         throw remoteMemoryError('unauthorized', 'The access token lifetime is invalid.');
       }

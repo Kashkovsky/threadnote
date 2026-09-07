@@ -42,7 +42,11 @@ describe('remote memory provisioning boundary', () => {
       {repositoryBindings: {threadnote: ['https://github.com:8443/example/threadnote']}},
     ],
     ['scheme-free repository', {repositoryBindings: {threadnote: ['github.com/example/threadnote']}}],
-    ['noncanonical issuer', {issuer: 'https://identity.example.test/'}],
+    ['noncanonical issuer', {issuer: 'https://IDENTITY.example.test'}],
+    ['issuer credentials', {issuer: 'https://user:credential@identity.example.test/'}],
+    ['issuer query', {issuer: 'https://identity.example.test/?query=value'}],
+    ['issuer fragment', {issuer: 'https://identity.example.test/#fragment'}],
+    ['issuer whitespace', {issuer: ' https://identity.example.test/ '}],
     ['insecure issuer', {issuer: 'http://identity.example.test'}],
     ['blank subject', {subject: '  '}],
   ] as const)('rejects an unaddressable %s before storage', (_label, invalid) => {
@@ -57,6 +61,13 @@ describe('remote memory provisioning boundary', () => {
       validateRemoteMemoryProvisioningInput({...validProvisioning, issuer: 'http://localhost:18788'}),
     ).not.toThrow();
   });
+
+  it.each(['https://identity.example.test/', 'https://identity.example.test/tenant/'])(
+    'accepts the exact provider issuer %s',
+    issuer => {
+      expect(() => validateRemoteMemoryProvisioningInput({...validProvisioning, issuer})).not.toThrow();
+    },
+  );
 
   it('decodes bounded JSONB text without relying on the PostgreSQL driver JSON representation', () => {
     const json = '{"displayName": "Threadnote managed memory", "projects": ["threadnote"]}';

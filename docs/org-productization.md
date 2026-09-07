@@ -121,6 +121,10 @@ An HTTP edit cannot silently remove metadata used by the local product; broad re
 
 ### P2 — Real OAuth and supported client attach
 
+The provider compatibility slice preserves exact OAuth issuer identifiers and accepts an absent optional `nbf`
+claim while retaining signature, audience, expiry and lifetime checks. Regression examples and a bounded issuer
+preservation property cover this contract. Provider provisioning and actual client login remain separate gates.
+
 - Configure the selected Auth0 tenant/API/client and one user's subject grant through operator provisioning.
 - Match issuer exactly, support standards-valid optional claims without relaxing audience/signature/lifetime
   checks, and retain negative tests for expired/wrong issuer/wrong audience/wrong scope tokens.
