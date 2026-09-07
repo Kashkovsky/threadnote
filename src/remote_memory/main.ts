@@ -46,6 +46,7 @@ export async function runRemoteMemoryService(
     const gitStore =
       config.canonicalStore === 'git' && config.gitWorktree
         ? new GitCanonicalMemoryStore({
+            binding: config.gitBinding,
             branch: config.gitBranch,
             push: config.gitPush,
             remote: config.gitRemote,

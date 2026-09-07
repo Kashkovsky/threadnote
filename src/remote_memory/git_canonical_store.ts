@@ -2,6 +2,7 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {assertSafeShareRelativePath} from '../share/core.js';
 import {validatePortableSegment} from '../storage/resource-id.js';
 import {remoteMemoryError} from './errors.js';
+import {requireGitMemoryBinding, type GitMemoryBinding} from './git_binding.js';
 
 const GIT_TIMEOUT_MILLISECONDS = 30_000;
 const GIT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -12,6 +13,7 @@ const COMPOSER_NAME = 'Threadnote Composer';
 const COMPOSER_EMAIL = 'threadnote-composer@invalid';
 
 export interface GitCanonicalMemoryStoreOptions {
+  readonly binding?: GitMemoryBinding;
   readonly branch?: string;
   readonly push?: boolean;
   readonly remote?: string;
@@ -97,6 +99,7 @@ export function isAbsoluteGitWorktree(path: string): boolean {
 }
 
 export class GitCanonicalMemoryStore {
+  readonly binding?: GitMemoryBinding;
   readonly branch: string;
   readonly push: boolean;
   readonly remote: string;
@@ -104,6 +107,7 @@ export class GitCanonicalMemoryStore {
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(options: GitCanonicalMemoryStoreOptions) {
+    if (options.binding) this.binding = requireGitMemoryBinding(options.binding);
     const worktree = options.worktree.trim();
     if (!worktree || !isAbsoluteGitWorktree(worktree)) {
       throw remoteMemoryError('invalid_request', 'THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE must be an absolute path.');

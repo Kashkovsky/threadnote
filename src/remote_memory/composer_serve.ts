@@ -86,6 +86,8 @@ export function composerServeEnvironment(
     THREADNOTE_REMOTE_ENABLED: 'true',
     THREADNOTE_REMOTE_HOST: input.listenAddress.hostname,
     THREADNOTE_REMOTE_MEMORY_GIT_BRANCH: input.gitBranch?.trim() || 'main',
+    THREADNOTE_REMOTE_MEMORY_GIT_TENANT_ID: input.tenantId?.trim() || 'local-org',
+    THREADNOTE_REMOTE_MEMORY_GIT_SHARE_ID: input.shareId,
     THREADNOTE_REMOTE_MEMORY_GIT_PUSH: input.gitPush === true ? 'true' : 'false',
     THREADNOTE_REMOTE_MEMORY_GIT_REMOTE: input.gitRemoteName?.trim() || 'origin',
     THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE: input.gitWorktree,
@@ -137,6 +139,7 @@ export async function runComposerServe(
     if (config.autoMigrate) await migrateRemoteMemoryDatabase(sql, {executablePath: input.executablePath});
     await sql`SELECT 1 FROM remote_memory.shares LIMIT 0`;
     const gitStore = new GitCanonicalMemoryStore({
+      binding: config.gitBinding,
       branch: config.gitBranch,
       push: config.gitPush,
       remote: config.gitRemote,

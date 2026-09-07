@@ -188,7 +188,10 @@ export class RemoteHandoffRetentionWorker {
     const shares = rotateShares(
       await this.sql<RetentionShareRow[]>`
         SELECT tenant_id, share_id FROM remote_memory.share_directory
-        WHERE status = 'active' ORDER BY tenant_id, share_id
+        WHERE status = 'active'
+          AND (${this.repository.gitStore?.binding?.tenantId ?? null}::text IS NULL OR tenant_id = ${this.repository.gitStore?.binding?.tenantId ?? null})
+          AND (${this.repository.gitStore?.binding?.shareId ?? null}::text IS NULL OR share_id = ${this.repository.gitStore?.binding?.shareId ?? null})
+        ORDER BY tenant_id, share_id
       `,
       this.nextShareKey,
     );

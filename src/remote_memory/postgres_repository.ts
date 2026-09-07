@@ -30,6 +30,7 @@ import {authorizeCursorClaims, type CursorWorkloadAttestation} from './cursor_oi
 import {RemoteMemoryError, remoteMemoryError, type RemoteMemoryErrorCode} from './errors.js';
 import {GitCanonicalMemoryStore, gitCanonicalSharePath, gitIngestProjectsToEnsure} from './git_canonical_store.js';
 import {requireJsonValue} from './json.js';
+import {assertGitMemoryBinding, requireGitMemoryBinding} from './git_binding.js';
 import {
   remoteMemoryDatabaseTimeoutMilliseconds,
   requireActiveRemoteMemoryRequest,
@@ -149,6 +150,7 @@ export class PostgresRemoteMemoryRepository {
     options: {readonly gitStore?: GitCanonicalMemoryStore; readonly statementTimeoutMilliseconds?: number} = {},
   ) {
     const timeout = options.statementTimeoutMilliseconds ?? 5_000;
+    if (options.gitStore) requireGitMemoryBinding(options.gitStore.binding);
     this.gitStore = options.gitStore;
     this.statementTimeoutMilliseconds =
       Number.isSafeInteger(timeout) && timeout >= 100 && timeout <= 120_000 ? timeout : 5_000;
@@ -159,6 +161,7 @@ export class PostgresRemoteMemoryRepository {
     requestId: string,
     execution?: RemoteMemoryRequestExecution,
   ): Promise<RemoteMemoryStatusResult> {
+    assertGitMemoryBinding(this.gitStore?.binding, principal);
     return this.withTenant(
       principal.tenantId,
       async transaction => {
@@ -181,6 +184,7 @@ export class PostgresRemoteMemoryRepository {
     requestId: string,
     execution?: RemoteMemoryRequestExecution,
   ): Promise<RemoteMemoryReadResult> {
+    assertGitMemoryBinding(this.gitStore?.binding, principal);
     const loaded = await this.withTenant(
       principal.tenantId,
       async transaction => {
@@ -246,6 +250,7 @@ export class PostgresRemoteMemoryRepository {
     readonly nextCursor?: string;
     readonly receipt: RemoteMemoryReceiptV1;
   }> {
+    assertGitMemoryBinding(this.gitStore?.binding, principal);
     return this.withTenant(
       principal.tenantId,
       async transaction => {
@@ -296,6 +301,7 @@ export class PostgresRemoteMemoryRepository {
     requestId: string,
     execution?: RemoteMemoryRequestExecution,
   ): Promise<{readonly receipt: RemoteMemoryReceiptV1; readonly results: readonly RemoteMemoryRecallResult[]}> {
+    assertGitMemoryBinding(this.gitStore?.binding, principal);
     requirePrincipalProject(principal, input.project);
     const loaded = await this.withTenant(
       principal.tenantId,
@@ -399,6 +405,7 @@ export class PostgresRemoteMemoryRepository {
     now = new Date(),
     execution?: RemoteMemoryRequestExecution,
   ): Promise<RemoteMemoryReceiptV1> {
+    assertGitMemoryBinding(this.gitStore?.binding, principal);
     requirePrincipalProject(principal, input.project);
     if (input.lifecycle?.expiresAt && Date.parse(input.lifecycle.expiresAt) <= now.getTime()) {
       throw remoteMemoryError('invalid_request', 'Remote memory expiry must be in the future.');
@@ -521,6 +528,7 @@ export class PostgresRemoteMemoryRepository {
     now = new Date(),
     execution?: RemoteMemoryRequestExecution,
   ): Promise<RemoteMemoryReceiptV1> {
+    assertGitMemoryBinding(this.gitStore?.binding, principal);
     const address = parseRemoteShareAddress(input.uri);
     if (address.shareId !== principal.shareId || address.kind !== 'handoff') {
       throw remoteMemoryError('forbidden', 'The handoff URI is outside the authorized share.');
@@ -662,9 +670,13 @@ export class PostgresRemoteMemoryRepository {
     if (!this.gitStore) {
       throw remoteMemoryError('invalid_request', 'Git share ingest requires a git canonical store.');
     }
+    const binding = requireGitMemoryBinding(this.gitStore.binding);
     const shares = await this.sql<{readonly share_id: string; readonly tenant_id: string}[]>`
       SELECT tenant_id, share_id FROM remote_memory.share_directory
-      WHERE status = 'active' ORDER BY tenant_id, share_id
+      WHERE status = 'active'
+        AND tenant_id = ${binding.tenantId}
+        AND share_id = ${binding.shareId}
+      ORDER BY tenant_id, share_id
     `;
     let ingested = 0;
     let skipped = 0;
@@ -686,6 +698,7 @@ export class PostgresRemoteMemoryRepository {
     requestId: string,
     now = new Date(),
   ): Promise<{readonly ingested: number; readonly skipped: number}> {
+    assertGitMemoryBinding(this.gitStore?.binding, principal);
     const gitStore = this.gitStore;
     if (!gitStore) {
       throw remoteMemoryError('invalid_request', 'Git share ingest requires a git canonical store.');

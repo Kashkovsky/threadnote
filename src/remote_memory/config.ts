@@ -1,4 +1,5 @@
 import {remoteMemoryError} from './errors.js';
+import {requireGitMemoryBinding, type GitMemoryBinding} from './git_binding.js';
 
 export type RemoteMemoryCanonicalStore = 'git' | 'postgres';
 
@@ -15,6 +16,7 @@ export interface RemoteMemoryServiceConfig {
   readonly cursorJwksUrl: URL;
   readonly databaseUrl: string;
   readonly gitBranch: string;
+  readonly gitBinding?: GitMemoryBinding;
   readonly gitPush: boolean;
   readonly gitRemote: string;
   readonly gitWorktree?: string;
@@ -120,6 +122,14 @@ export function remoteMemoryConfigFromEnvironment(
     cursorIssuer,
     cursorJwksUrl,
     databaseUrl,
+    ...(canonicalStore === 'git'
+      ? {
+          gitBinding: requireGitMemoryBinding({
+            tenantId: environment.THREADNOTE_REMOTE_MEMORY_GIT_TENANT_ID?.trim() ?? '',
+            shareId: environment.THREADNOTE_REMOTE_MEMORY_GIT_SHARE_ID?.trim() ?? '',
+          }),
+        }
+      : {}),
     gitBranch: gitRefName(
       environment.THREADNOTE_REMOTE_MEMORY_GIT_BRANCH?.trim() || 'main',
       'THREADNOTE_REMOTE_MEMORY_GIT_BRANCH',
