@@ -18,11 +18,16 @@ as write latency rose, followed by increasing `fly_instance_cpu_throttle`. The t
 admitted by ingestion; its original operation retained `outcome_ambiguous` and must not be blindly retried with
 a new operation ID. Read and reconcile the current revision first. This was a failed acceptance run.
 
-Two shared vCPUs are the next measured candidate, not completed capacity evidence. Repeat the complete P5
-30-minute workload after deployment, retaining client latencies, acknowledgements, CPU balance and throttling
-over the same window. Require the existing latency/error gates and no sustained burst-balance depletion; a
-restart that temporarily replenishes burst capacity does not establish steady-state readiness. Keep the
-10-second request deadline unchanged. The published base compute price is approximately $4.04 per 30 days
+The repeated 30-minute native Codex workload on two shared vCPUs passed on 2026-09-07: 180 reads, 180 recalls,
+30 acknowledged CAS writes and 30 verified ingestions, with at most two concurrent requests. Measured p95 read was
+470 ms, recall 565 ms, write 5,055 ms and ingestion 2,821 ms; no unexpected authorization failure or lost acknowledged
+write occurred. All thresholds and the 10-second request deadline remained unchanged. Across 121 CPU samples, burst
+balance increased from 101.85 to 136.07 seconds; the steady portion also increased, with zero throttling.
+
+This is bounded single-user acceptance evidence, not a general service SLA. Repeat the workload after material
+capacity or workload changes, retaining client latencies, acknowledgements, CPU balance and throttling over the same
+window. Require the latency/error gates and no sustained burst-balance depletion; a restart that temporarily replenishes
+burst capacity does not establish steady-state readiness. The published base compute price is approximately $4.04 per 30 days
 for this profile, excluding region adjustments, storage, network and database charges; verify
 [current pricing](https://fly.io/docs/about/pricing/) when deploying.
 
@@ -195,8 +200,10 @@ events without copying tokens or identity details into receipts.
 
 Observed client evidence on 2026-09-07: Codex 0.153.4 completed seven-tool discovery, recall/read, acknowledged write,
 CAS replacement/stale rejection, laptop Git sync and native refresh. Cursor GUI 3.19.13 / Agent 2026.09.02-c22c1a3
-completed PKCE, native refresh and an acknowledged canary write; its read/recall evidence requires another client
-check after the text compatibility correction below.
+completed PKCE and native refresh. After the text compatibility correction, its live read/CAS write/read/recall
+sequence passed with visible revisions and pointers; a final read preserved the acknowledgement. Cursor automatic
+approval review blocked the intentional stale-CAS probe before it reached the service, so native-client visibility
+of that expected conflict remains unverified. The probe must receive explicit client approval before retrying.
 These canaries do not complete P5 recovery or authorize a daily cutover by themselves.
 
 Cursor's text-only MCP delivery exposed a compatibility gap during its native canary: a successful recall did not
@@ -215,6 +222,42 @@ Client references: [Codex MCP configuration and callbacks](https://learn.chatgpt
 Back up Git history and PostgreSQL control-plane state together. Recovery must preserve immutable revision pointers,
 member grants, idempotency receipts and acknowledgement evidence; rebuild only derived search state. Run the drill
 against isolated resources before reopening routine writes. A Git clone alone cannot restore PostgreSQL receipts.
+
+For Git canonical mode, use this sequence with a reviewed operator script and private receipt:
+
+1. Record the sole Machine, immutable image, volume, migration inventory, bound tenant/share and acknowledged fixture
+   receipts. Arm a bounded independent restart watchdog before stopping the writer. Pause other publishers so the
+   upstream Git tip stays fixed while the checkpoint is collected.
+2. Take a consistent PostgreSQL snapshot covering the bound tenant's authoritative tables and required global catalogs.
+   Export a complete Git bundle, then verify it in a fresh offline repository with no remote or alternates. Resolve every
+   stored historical Git pointer and compare its raw body hash; verify the acknowledgement and idempotency inventory.
+   Restart the original Machine in finally and require readiness before disarming the watchdog.
+3. Restore into a fresh, isolated PostgreSQL database and Git repository with disposable credentials and no production
+   network access. Compare table digests, catalog definitions, migration checksums and retained receipts before starting
+   workers. Apply the versioned restricted runtime grants and prove no-tenant and other-tenant read/write denial.
+4. Rebuild only derived projections through the real indexer with ingestion disabled. Require every current head to have
+   the expected projection and every retained outbox event to be processed, including future-dated or dead-letter events.
+   Compare head/revision/idempotency hashes and committed generations before and after the rebuild.
+5. Read and replay acknowledged fixtures, verify bounded recall, then acknowledge a fresh isolated write. Exercise the
+   previous compatible image against the same database and Git history: read/replay the newer acknowledgement, reject
+   stale CAS and prove a fresh write and exact replay. Never restore older control-plane state over newer acknowledged
+   production writes merely to make rollback succeed.
+6. Inject dependency and authorization failures only into isolated resources. Require bounded failures, unchanged
+   acknowledged history, safe rejected-operation replay and fresh-write recovery. Preserve private checkpoint artifacts
+   and bounded receipts; remove only drill-owned resources after verification.
+
+The 2026-09-07 drill verified all 25 table digests/catalogs, 30 acknowledged workload writes and 214 historical bodies.
+The real indexer rebuilt 214 events with no pending event or missing projection and unchanged authoritative state.
+Restricted-role isolation and same-state binary rollback passed. Measured RTO was 17 minutes 20 seconds, within the
+60-minute gate; production checkpoint restart downtime was 29 seconds. Database outage returned HTTP 503 within
+10.6 seconds; Git rejection/replay and recovery preserved acknowledged history. Revocation denied an already-issued
+valid token; an unprovisioned identity was denied. Overlapping signing keys worked without service restart using a
+local test issuer and the production JWKS verifier. This is not evidence of Auth0 tenant key rotation or old-key retirement.
+HTTP disablement returned 503. All isolated drill resources were removed after receipts were retained.
+
+These results recover the quiesced checkpoint. Daily cutover still requires configured ongoing encrypted backups,
+paid PostgreSQL restore history, privacy-safe alerts and account setup. A local checkpoint and supplementary Fly
+volume snapshots alone do not establish those operational guarantees.
 
 A prior image is a rollback candidate only after its runtime privilege allowlist accepts the deployed schema/grants.
 Do not blindly roll back across an incompatible migration or restore older control-plane state over acknowledged
