@@ -14,14 +14,18 @@ Execution evidence as of 2026-09-07:
   #384 recovers crashed worktree-lock owners. Isolated global service smokes covered rejected pushes and crash/restart.
 - #385 rejects unsafe database credentials before listening and reports every applied migration. It passed 111
   focused tests, dev-cycle review, global startup smoke against PostgreSQL/Neon, and full PR CI.
-- The lifecycle slice adds monotonic snapshot admission, immutable observation provenance, external lifecycle/removal
+- #386 adds monotonic snapshot admission, immutable observation provenance, external lifecycle/removal
   reconciliation, strict managed metadata validation, bounded legacy progress, and persistent rejection recovery.
-  It passed 142 focused tests, lint/types, two dev-cycle iterations with zero remaining findings, and the source
-  lifecycle smoke. Global installation and release checks remain separate gates.
+  It passed 142 focused tests, lint/types, two dev-cycle iterations with zero remaining findings, source and exact
+  global lifecycle smokes, and full PR CI.
+- The dedicated Fly bootstrap/image passed 100 focused tests, full dev-cycle review without findings, and container
+  checks for nonroot credentials, SSH trust, Neon TLS, fresh clone and restart persistence. Runtime dependency
+  packaging defects were repaired. Live deployment and actual client acceptance remain open; the runbook is
+  [Fly organization deployment](remote-memory/fly-org.md).
 
 Neon PostgreSQL 17 in Frankfurt supports the required separate SQL-created migration/runtime roles and strict TLS.
-The incompatible, empty Fly Managed Postgres trial was removed. The Fly app is reserved; its org image, persistent
-clone, restricted Git credential, live deployment, and recovery acceptance are still P3–P5 work. Daily org writes
+The incompatible, empty Fly Managed Postgres trial was removed. The Fly app is reserved. Its dedicated image and bootstrap are implemented; the repository-scoped SSH credential
+has passed pinned-host clone verification. Live deployment and recovery acceptance remain P3–P5 work. Daily org writes
 remain disabled until those gates pass.
 
 The outcome is a deployable organization product and a real single-member deployment at

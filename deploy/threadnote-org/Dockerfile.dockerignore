@@ -1,0 +1,11 @@
+**
+!package.json
+!bun.lock
+!src
+!src/**
+!deploy
+!deploy/threadnote-org
+!deploy/threadnote-org/entrypoint.sh
+!deploy/threadnote-org/github_known_hosts
+!patches
+!patches/**

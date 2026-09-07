@@ -1,6 +1,14 @@
 import {describe, expect, it} from 'vitest';
 
 describe('remote memory reference deployment', () => {
+  it('resolves Fly build files from the configuration directory', async () => {
+    const directory = 'deploy/threadnote-org';
+    const config = Bun.TOML.parse(await Bun.file(`${directory}/fly.toml`).text()) as {
+      build: {dockerfile: string; ignorefile: string};
+    };
+    expect(await Bun.file(`${directory}/${config.build.dockerfile}`).exists()).toBe(true);
+    expect(await Bun.file(`${directory}/${config.build.ignorefile}`).exists()).toBe(true);
+  });
   // These are direct checkout file boundaries, so a Promise test is appropriate.
   it('separates bootstrap, migrator, and least-privileged runtime database identities', async () => {
     const [compose, initialization, grants] = await Promise.all([
@@ -43,12 +51,14 @@ describe('remote memory reference deployment', () => {
       Bun.file('package.json').json() as Promise<{readonly dependencies?: Readonly<Record<string, string>>}>,
     ]);
 
+    expect(dockerfile).toContain('COPY patches ./patches');
     expect(dockerfile).toContain('bun install --frozen-lockfile --production --ignore-scripts');
     expect(dockerfile).toContain('apk add --no-cache git');
     expect(dockerfile).toContain('CMD ["bun", "src/standalone.ts", "remote-memory-service"]');
     expect(packageJson.dependencies).toMatchObject({
       '@effect/platform-bun': '4.0.0-rc.112',
       effect: '4.0.0-rc.112',
+      'js-yaml': '^5.4.1',
     });
   });
 

@@ -16,6 +16,7 @@ export interface RemoteMemoryServiceConfig {
   readonly cursorJwksUrl: URL;
   readonly databaseUrl: string;
   readonly gitBranch: string;
+  readonly gitCloneUrl?: string;
   readonly gitBinding?: GitMemoryBinding;
   readonly gitPush: boolean;
   readonly gitRemote: string;
@@ -133,6 +134,9 @@ export function remoteMemoryConfigFromEnvironment(
       environment.THREADNOTE_REMOTE_MEMORY_GIT_BRANCH?.trim() || 'main',
       'THREADNOTE_REMOTE_MEMORY_GIT_BRANCH',
     ),
+    ...(environment.THREADNOTE_REMOTE_MEMORY_GIT_CLONE_URL?.trim()
+      ? {gitCloneUrl: gitCloneUrl(environment.THREADNOTE_REMOTE_MEMORY_GIT_CLONE_URL.trim(), localService)}
+      : {}),
     gitPush: booleanValue(environment.THREADNOTE_REMOTE_MEMORY_GIT_PUSH, true),
     gitRemote: gitRefName(
       environment.THREADNOTE_REMOTE_MEMORY_GIT_REMOTE?.trim() || 'origin',
@@ -148,6 +152,31 @@ export function remoteMemoryConfigFromEnvironment(
     requestTimeoutMilliseconds: boundedInteger(environment.THREADNOTE_REMOTE_REQUEST_TIMEOUT_MS, 10_000, 100, 120_000),
     writeRequestsPerMinute: boundedInteger(environment.THREADNOTE_REMOTE_WRITE_REQUESTS_PER_MINUTE, 60, 1, 100_000),
   };
+}
+
+function gitCloneUrl(value: string, localService: boolean): string {
+  const invalid = () =>
+    remoteMemoryError('invalid_request', 'The Git clone URL must use credential-free SSH or HTTPS.');
+  if (/[^\x21-\x7e]|\\/u.test(value)) throw invalid();
+  if (localService && value.startsWith('/')) return value;
+  if (/^[A-Za-z0-9_-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._~/-]+$/u.test(value)) return value;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw invalid();
+  }
+  if (
+    !['ssh:', 'https:'].includes(url.protocol) ||
+    !url.hostname ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    (url.protocol === 'https:' && url.username) ||
+    !/^\/[A-Za-z0-9._~/-]+$/u.test(url.pathname)
+  )
+    throw invalid();
+  return value;
 }
 
 export function redactedRemoteMemoryConfig(config: RemoteMemoryServiceConfig): Readonly<Record<string, unknown>> {
