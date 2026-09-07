@@ -72,7 +72,7 @@ export const cursorCloudDocsSection: DocsSection = {
         {type: 'heading', text: '1. Deploy the remote-memory service'},
         {
           type: 'paragraph',
-          text: 'Start from the repository reference deployment in `deploy/remote-memory`, but treat Docker Compose as a loopback development example only. Production needs managed TLS at the edge and to PostgreSQL, network isolation, managed secrets, immutable images, regional backups, and supervised HTTP, indexer, and retention work. Follow the full [remote-memory operations runbook](https://github.com/Kashkovsky/threadnote/blob/main/docs/remote-memory/operations.md) and [threat model](https://github.com/Kashkovsky/threadnote/blob/main/docs/remote-memory/threat-model.md).',
+          text: 'Start from the repository reference deployment in `deploy/remote-memory`, but treat Docker Compose as a loopback development example only. Production needs managed TLS at the edge and to PostgreSQL, network isolation, managed secrets, immutable images, regional backups, and supervised HTTP, indexer, and retention work. See the [threat model](https://github.com/Kashkovsky/threadnote/blob/main/docs/remote-memory/threat-model.md).',
         },
         {
           type: 'code',

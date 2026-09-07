@@ -13,7 +13,6 @@ must not change until those release gates and the corresponding service and CLI 
 
 - [Architecture and decisions](design-decisions.md)
 - [Threat model](threat-model.md)
-- [Operations, backup, restore, and incidents](operations.md)
 - [Git beta migration and exit portability](migration.md)
 - [Canary and staged-release gates](canaries-and-release.md)
 
