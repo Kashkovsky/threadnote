@@ -21,23 +21,36 @@ export class ComposerAttachError extends Schema.TaggedError<ComposerAttachError>
 }) {}
 
 export interface ComposerShareBinding {
+  readonly clientId?: string;
   readonly shareId: string;
   readonly url: string;
 }
 
 export interface ComposerMcpOAuthAuth {
-  readonly CLIENT_ID: typeof COMPOSER_OAUTH_CLIENT_ID;
+  readonly CLIENT_ID: string;
   readonly scopes: readonly (typeof COMPOSER_OAUTH_SCOPES)[number][];
 }
 
 export interface ComposerHttpMcpEntry {
   readonly [key: string]: unknown;
+  readonly type?: never;
   readonly auth: ComposerMcpOAuthAuth;
   readonly headers: Readonly<{readonly [THREADNOTE_COMPOSER_SHARE_ID_HEADER]: string}>;
   readonly url: string;
 }
 
+export interface CopilotComposerHttpMcpEntry {
+  readonly [key: string]: unknown;
+  readonly type: 'http';
+  readonly oauth: Readonly<{clientId: string}>;
+  readonly headers: ComposerHttpMcpEntry['headers'];
+  readonly url: string;
+}
+
+export type ComposerClientHttpMcpEntry = ComposerHttpMcpEntry | CopilotComposerHttpMcpEntry;
+
 export interface ComposerAttachOptions {
+  readonly composerClientId?: string;
   readonly composerUrl?: string;
   readonly shareId?: string;
 }
@@ -45,13 +58,17 @@ export interface ComposerAttachOptions {
 export function resolveComposerAttach(options: ComposerAttachOptions): ComposerShareBinding | undefined {
   const composerUrl = options.composerUrl?.trim();
   const shareId = options.shareId?.trim();
-  if (!composerUrl && !shareId) return undefined;
+  if (!composerUrl && !shareId && options.composerClientId === undefined) return undefined;
   if (!composerUrl || !shareId) {
     throw ComposerAttachError.make({
       message: 'Organization composer attach requires both --composer-url and --share-id.',
     });
   }
-  return {shareId: composerShareId(shareId), url: composerMcpUrl(composerUrl)};
+  return {
+    ...(options.composerClientId === undefined ? {} : {clientId: composerOAuthClientId(options.composerClientId)}),
+    shareId: composerShareId(shareId),
+    url: composerMcpUrl(composerUrl),
+  };
 }
 
 export function resolveComposerServeShareId(teamName: string, shareId?: string): string {
@@ -103,10 +120,14 @@ export function composerMcpUrl(endpoint: string): string {
   return parsed.toString();
 }
 
-export function buildComposerHttpMcpEntry(url: string, shareId: string): ComposerHttpMcpEntry {
+export function buildComposerHttpMcpEntry(
+  url: string,
+  shareId: string,
+  clientId: string = COMPOSER_OAUTH_CLIENT_ID,
+): ComposerHttpMcpEntry {
   return {
     auth: {
-      CLIENT_ID: COMPOSER_OAUTH_CLIENT_ID,
+      CLIENT_ID: composerOAuthClientId(clientId),
       scopes: [...COMPOSER_OAUTH_SCOPES],
     },
     headers: {[THREADNOTE_COMPOSER_SHARE_ID_HEADER]: composerShareId(shareId)},
@@ -114,11 +135,21 @@ export function buildComposerHttpMcpEntry(url: string, shareId: string): Compose
   };
 }
 
+export function buildCopilotComposerHttpMcpEntry(
+  url: string,
+  shareId: string,
+  clientId: string = COMPOSER_OAUTH_CLIENT_ID,
+): CopilotComposerHttpMcpEntry {
+  const entry = buildComposerHttpMcpEntry(url, shareId, clientId);
+  return {type: 'http', url: entry.url, headers: entry.headers, oauth: {clientId: entry.auth.CLIENT_ID}};
+}
+
 export function withComposerHttpMcpEntry(
   servers: Readonly<Record<string, JsonObject>>,
   stdioName: string,
   stdio: JsonObject,
   attach: ComposerShareBinding | undefined,
+  client: 'cursor' | 'copilot' = 'cursor',
 ): Record<string, JsonObject> {
   if (attach && stdioName === THREADNOTE_ORG_MCP_NAME) {
     throw ComposerAttachError.make({
@@ -126,7 +157,10 @@ export function withComposerHttpMcpEntry(
     });
   }
   const next: Record<string, JsonObject> = {...servers, [stdioName]: stdio};
-  if (attach) next[THREADNOTE_ORG_MCP_NAME] = buildComposerHttpMcpEntry(attach.url, attach.shareId);
+  if (attach) {
+    const build = client === 'copilot' ? buildCopilotComposerHttpMcpEntry : buildComposerHttpMcpEntry;
+    next[THREADNOTE_ORG_MCP_NAME] = build(attach.url, attach.shareId, attach.clientId);
+  }
   return next;
 }
 
@@ -141,29 +175,48 @@ export function stdioEnvironmentCallsComposer(env: Readonly<Record<string, unkno
   return typeof env.THREADNOTE_CURSOR_MEMORY_ENDPOINT === 'string' && env.THREADNOTE_CURSOR_MEMORY_ENDPOINT.length > 0;
 }
 
-export function composerHttpEntryMatches(actual: unknown, expected: ComposerHttpMcpEntry): boolean {
+export function composerHttpEntryMatches(actual: unknown, expected: ComposerClientHttpMcpEntry): boolean {
+  if (
+    !isComposerHttpEntry(actual) ||
+    actual.url !== expected.url ||
+    actual.headers[THREADNOTE_COMPOSER_SHARE_ID_HEADER] !== expected.headers[THREADNOTE_COMPOSER_SHARE_ID_HEADER]
+  )
+    return false;
+  return actual.type === 'http'
+    ? expected.type === 'http' && actual.oauth.clientId === expected.oauth.clientId
+    : expected.type !== 'http' && actual.auth.CLIENT_ID === expected.auth.CLIENT_ID;
+}
+
+export function isManagedComposerHttpEntry(actual: unknown): boolean {
   return (
-    isManagedComposerHttpEntry(actual) &&
-    actual.url === expected.url &&
-    actual.headers[THREADNOTE_COMPOSER_SHARE_ID_HEADER] === expected.headers[THREADNOTE_COMPOSER_SHARE_ID_HEADER] &&
-    actual.auth.CLIENT_ID === expected.auth.CLIENT_ID &&
-    actual.auth.scopes.length === expected.auth.scopes.length &&
-    actual.auth.scopes.every((scope, index) => scope === expected.auth.scopes[index])
+    isComposerHttpEntry(actual) &&
+    (actual.type === 'http' ? actual.oauth.clientId : actual.auth.CLIENT_ID) === COMPOSER_OAUTH_CLIENT_ID
   );
 }
 
-export function isManagedComposerHttpEntry(actual: unknown): actual is ComposerHttpMcpEntry {
-  if (!isRecord(actual) || typeof actual.url !== 'string' || !isRecord(actual.headers) || !isRecord(actual.auth)) {
-    return false;
-  }
+export function isComposerHttpEntry(actual: unknown): actual is ComposerClientHttpMcpEntry {
+  if (!isRecord(actual) || typeof actual.url !== 'string' || !isRecord(actual.headers)) return false;
   const shareId = actual.headers[THREADNOTE_COMPOSER_SHARE_ID_HEADER];
   if (typeof shareId !== 'string' || Object.keys(actual.headers).length !== 1) return false;
-  if (actual.auth.CLIENT_ID !== COMPOSER_OAUTH_CLIENT_ID || !Array.isArray(actual.auth.scopes)) return false;
-  if (actual.auth.scopes.length !== COMPOSER_OAUTH_SCOPES.length) return false;
-  if (actual.auth.scopes.some((scope, index) => scope !== COMPOSER_OAUTH_SCOPES[index])) return false;
+  let clientId: string;
+  if (actual.type === 'http') {
+    if (Object.keys(actual).some(key => !['type', 'url', 'headers', 'oauth'].includes(key))) return false;
+    if (!isRecord(actual.oauth) || typeof actual.oauth.clientId !== 'string') return false;
+    if (Object.keys(actual.oauth).length !== 1) return false;
+    clientId = actual.oauth.clientId;
+  } else {
+    if (Object.keys(actual).some(key => !['url', 'headers', 'auth'].includes(key))) return false;
+    if (!isRecord(actual.auth) || typeof actual.auth.CLIENT_ID !== 'string' || !Array.isArray(actual.auth.scopes))
+      return false;
+    if (Object.keys(actual.auth).some(key => key !== 'CLIENT_ID' && key !== 'scopes')) return false;
+    if (actual.auth.scopes.length !== COMPOSER_OAUTH_SCOPES.length) return false;
+    if (actual.auth.scopes.some((scope, index) => scope !== COMPOSER_OAUTH_SCOPES[index])) return false;
+    clientId = actual.auth.CLIENT_ID;
+  }
   try {
     composerMcpUrl(actual.url);
     composerShareId(shareId);
+    composerOAuthClientId(clientId);
     return true;
   } catch {
     return false;
@@ -172,4 +225,13 @@ export function isManagedComposerHttpEntry(actual: unknown): actual is ComposerH
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function composerOAuthClientId(value: string): string {
+  if (!/^[\x21-\x7e]{1,512}$/u.test(value)) {
+    throw ComposerAttachError.make({
+      message: 'The organization OAuth client ID must be 1–512 visible ASCII characters.',
+    });
+  }
+  return value;
 }
