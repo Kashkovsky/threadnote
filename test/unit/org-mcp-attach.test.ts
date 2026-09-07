@@ -12,6 +12,7 @@ import {
   CURSOR_CLOUD_MEMORY_ENDPOINT_ENV,
   CURSOR_CLOUD_MODE_ENV,
   buildCursorCloudProfile,
+  buildCursorCloudRemoteHybridMcpConfig,
   buildOrgCloudHybridMcpConfig,
   cursorCloudMemoryEndpoint,
   cursorCloudRemoteHybridStatus,
@@ -23,6 +24,8 @@ import {
   THREADNOTE_ORG_MCP_NAME,
   buildComposerHttpMcpEntry,
   composerHttpEntryMatches,
+  isComposerHttpEntry,
+  buildCopilotComposerHttpMcpEntry,
   composerMcpUrl,
   composerShareId,
   isManagedComposerHttpEntry,
@@ -61,8 +64,8 @@ afterEach(() => {
 describe('organization composer attach', () => {
   effectIt.effect.prop(
     'keeps stdio core Git share and binds composer share only in the HTTP header',
-    {host: HOST, shareId: SHARE_ID},
-    ({host, shareId}) =>
+    {clientId: SHARE_ID, host: HOST, shareId: SHARE_ID},
+    ({clientId, host, shareId}) =>
       Effect.sync(() => {
         const url = `https://${host}/mcp`;
         const stdio = {
@@ -72,18 +75,20 @@ describe('organization composer attach', () => {
             THREADNOTE_USER: 'tester',
           },
         } satisfies JsonObject;
-        const servers = teamStdioServers(stdio, resolveComposerAttach({composerUrl: url, shareId}));
+        const servers = teamStdioServers(
+          stdio,
+          resolveComposerAttach({composerUrl: url, shareId, composerClientId: clientId}),
+        );
         const capabilities = mcpToolCapabilities(parseMcpToolset('core'));
         expect(capabilities.graphLocal).toBe(true);
         expect(capabilities.memoryPublish).toBe(true);
         expect(servers[THREADNOTE_MCP_NAME]).toEqual(stdio);
         expect(stdioEnvironmentCallsComposer(stdio.env)).toBe(false);
         expect(
-          composerHttpEntryMatches(servers[THREADNOTE_ORG_MCP_NAME], buildComposerHttpMcpEntry(url, shareId)),
+          composerHttpEntryMatches(servers[THREADNOTE_ORG_MCP_NAME], buildComposerHttpMcpEntry(url, shareId, clientId)),
         ).toBe(true);
-        expect(JSON.stringify(servers[THREADNOTE_ORG_MCP_NAME])).not.toMatch(
-          /authorization|bearer|CLIENT_SECRET|secret/i,
-        );
+        expect(servers[THREADNOTE_ORG_MCP_NAME]).toMatchObject({auth: {CLIENT_ID: clientId}});
+        expect(JSON.stringify(servers[THREADNOTE_ORG_MCP_NAME])).not.toMatch(/"(?:authorization|CLIENT_SECRET)"\s*:/i);
         expect(new URL((servers[THREADNOTE_ORG_MCP_NAME] as {url: string}).url).search).toBe('');
         expect(ORG_COMPOSER_POLICY).toEqual({
           canonicalStore: 'git',
@@ -91,7 +96,8 @@ describe('organization composer attach', () => {
           oauth: 'org-idp',
           shareBinding: 'header',
         });
-        expect(isManagedComposerHttpEntry(servers[THREADNOTE_ORG_MCP_NAME])).toBe(true);
+        expect(isComposerHttpEntry(servers[THREADNOTE_ORG_MCP_NAME])).toBe(true);
+        expect(isManagedComposerHttpEntry(servers[THREADNOTE_ORG_MCP_NAME])).toBe(clientId === 'threadnote-composer');
         expect(() =>
           withComposerHttpMcpEntry(
             {},
@@ -114,6 +120,60 @@ describe('organization composer attach', () => {
       expect(message).toContain('opaque identifier');
       expect(message).not.toContain(shareId);
     }
+  });
+
+  it('carries a registered public OAuth client through the additive attach configuration', () => {
+    const url = 'https://composer.example.test/mcp';
+    const attach = resolveComposerAttach({
+      composerUrl: url,
+      shareId: 'engineering',
+      composerClientId: 'registered-client',
+    });
+    const servers = teamStdioServers({command: '/bin/threadnote-mcp-server'}, attach);
+
+    expect(servers[THREADNOTE_ORG_MCP_NAME]).toEqual(
+      buildComposerHttpMcpEntry(url, 'engineering', 'registered-client'),
+    );
+    expect(servers[THREADNOTE_ORG_MCP_NAME]).toMatchObject({auth: {CLIENT_ID: 'registered-client'}});
+    expect(isManagedComposerHttpEntry(servers[THREADNOTE_ORG_MCP_NAME])).toBe(false);
+    expect(
+      isManagedComposerHttpEntry({
+        ...servers[THREADNOTE_ORG_MCP_NAME],
+        auth: {
+          CLIENT_ID: 'registered-client',
+          CLIENT_SECRET: 'must-preserve',
+          scopes: ['memory:read', 'memory:write:durable', 'memory:write:handoff'],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      composerHttpEntryMatches(
+        servers[THREADNOTE_ORG_MCP_NAME],
+        buildComposerHttpMcpEntry(url, 'engineering', 'different-client'),
+      ),
+    ).toBe(false);
+  });
+
+  it('matches each client schema and preserves custom OAuth configuration', () => {
+    const cursor = buildComposerHttpMcpEntry('https://composer.example.test/mcp', 'engineering', 'registered');
+    const copilot = buildCopilotComposerHttpMcpEntry(cursor.url, 'engineering', 'registered');
+    expect(composerHttpEntryMatches(copilot, copilot)).toBe(true);
+    expect(composerHttpEntryMatches(cursor, copilot)).toBe(false);
+    expect(composerHttpEntryMatches(copilot, cursor)).toBe(false);
+    expect(isManagedComposerHttpEntry(copilot)).toBe(false);
+    expect(isComposerHttpEntry({...copilot, oauth: {...copilot.oauth, enterpriseManaged: true}})).toBe(false);
+  });
+
+  it('rejects an OAuth client ID without a composer binding', () => {
+    expect(() => resolveComposerAttach({composerClientId: 'registered-client'})).toThrow(
+      '--composer-url and --share-id',
+    );
+  });
+
+  it.each(['', ' ', 'client\nother', 'x'.repeat(513)])('rejects an invalid registered OAuth client ID %#', clientId => {
+    expect(() => buildComposerHttpMcpEntry('https://composer.example.test/mcp', 'engineering', clientId)).toThrow(
+      'OAuth client ID',
+    );
   });
 
   it('rejects credential-bearing composer URLs without reflecting them', () => {
@@ -145,6 +205,20 @@ describe('organization composer attach', () => {
 });
 
 vitestDescribe('organization cloud hybrid MCP', () => {
+  it('uses a registered OAuth client for org and remote-hybrid cloud configurations', () => {
+    expect(
+      buildOrgCloudHybridMcpConfig(profile, 'https://composer.example.test/mcp', 'engineering', 'registered-client')
+        .mcpServers[THREADNOTE_ORG_MCP_NAME],
+    ).toMatchObject({auth: {CLIENT_ID: 'registered-client'}});
+    expect(
+      buildCursorCloudRemoteHybridMcpConfig(
+        profile,
+        'https://composer.example.test/mcp',
+        'engineering',
+        'registered-client',
+      ).mcpServers['threadnote-memory'],
+    ).toMatchObject({auth: {CLIENT_ID: 'registered-client'}});
+  });
   it('binds memory HTTP to the Git-backed composer with org IdP OAuth', () => {
     const config = buildOrgCloudHybridMcpConfig(profile, 'https://composer.example.test/mcp', 'share-engineering');
     expect(config.policy).toEqual(ORG_COMPOSER_POLICY);
@@ -200,6 +274,60 @@ describe('Team MCP install composer attach', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  effectIt.effect('installs and previews a registered Copilot client using the VS Code OAuth schema', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-org-copilot-'});
+        const user = path.join(root, 'user');
+        const bin = path.join(root, 'bin');
+        const project = path.join(root, 'repo');
+        const configPath = path.join(project, '.vscode', 'mcp.json');
+        const testRuntime = runtimeConfig(path.join(user, '.threadnote'));
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({...baseSystem.environment(), THREADNOTE_BIN_DIR: bin}),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+        yield* fs.makeDirectory(bin, {recursive: true});
+        yield* fs.makeDirectory(project, {recursive: true});
+        yield* fs.writeFileString(path.join(bin, 'threadnote-mcp-server'), '');
+        const options = {
+          composerClientId: 'registered-copilot',
+          composerUrl: 'https://composer.example.test/mcp',
+          project,
+          shareId: 'engineering',
+        };
+        const preview = yield* captureConsole(runMcpInstall(testRuntime, 'copilot', options)).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(preview.output).toContain('"clientId": "registered-copilot"');
+        expect(preview.output).not.toContain('"CLIENT_ID"');
+        expect(yield* fs.exists(configPath)).toBe(false);
+        yield* captureConsole(runMcpInstall(testRuntime, 'copilot', {...options, apply: true})).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        const before = yield* fs.readFileString(configPath);
+        const installed = JSON.parse(before);
+        expect(installed.servers[THREADNOTE_ORG_MCP_NAME]).toEqual({
+          type: 'http',
+          url: options.composerUrl,
+          headers: {'threadnote-share-id': options.shareId},
+          oauth: {clientId: options.composerClientId},
+        });
+        expect(installed.servers[THREADNOTE_MCP_NAME].type).toBe('stdio');
+        const repeated = yield* captureConsole(runMcpInstall(testRuntime, 'copilot', {...options, apply: true})).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(repeated.output).toContain('Already configured:');
+        expect(yield* fs.readFileString(configPath)).toBe(before);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('attaches composer HTTP without removing stdio Git share or calling composer from stdio', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -228,6 +356,7 @@ describe('Team MCP install composer attach', () => {
         yield* captureConsole(
           runMcpInstall(testRuntime, 'cursor', {
             apply: true,
+            composerClientId: 'registered-client',
             composerUrl: 'https://composer.example.test/mcp',
             project,
             shareId: 'share-engineering',
@@ -242,7 +371,21 @@ describe('Team MCP install composer attach', () => {
         expect(stdio?.env?.THREADNOTE_MCP_TOOLSET).toBe('core');
         expect(stdioEnvironmentCallsComposer(stdio?.env ?? {})).toBe(false);
         expect(JSON.stringify(stdio?.env ?? {})).not.toMatch(/attest|oidc|CURSOR_AGENT_SOCKET/i);
-        expect(composer).toEqual(buildComposerHttpMcpEntry('https://composer.example.test/mcp', 'share-engineering'));
+        expect(composer).toEqual(
+          buildComposerHttpMcpEntry('https://composer.example.test/mcp', 'share-engineering', 'registered-client'),
+        );
+        const beforeRepeat = yield* fs.readFileString(cursorPath);
+        const repeated = yield* captureConsole(
+          runMcpInstall(testRuntime, 'cursor', {
+            apply: true,
+            composerClientId: 'registered-client',
+            composerUrl: 'https://composer.example.test/mcp',
+            project,
+            shareId: 'share-engineering',
+          }),
+        ).pipe(Effect.provideService(SystemInfo, testSystem));
+        expect(repeated.output).toContain('Already configured:');
+        expect(yield* fs.readFileString(cursorPath)).toBe(beforeRepeat);
         expect(mcpToolCapabilities(parseMcpToolset('core')).memoryPublish).toBe(true);
 
         const fetchSpy = vi.fn(() => Promise.reject(new Error('composer down')));
@@ -497,7 +640,7 @@ describe('Team MCP install composer attach', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('uninstall leaves a non-matching threadnote-org entry', () =>
+  effectIt.effect('uninstall preserves an operator-registered threadnote-org entry', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -523,7 +666,11 @@ describe('Team MCP install composer attach', () => {
             {
               mcpServers: {
                 [THREADNOTE_MCP_NAME]: {command: 'placeholder'},
-                [THREADNOTE_ORG_MCP_NAME]: {command: 'operator-owned'},
+                [THREADNOTE_ORG_MCP_NAME]: buildComposerHttpMcpEntry(
+                  'https://composer.example.test/mcp',
+                  'engineering',
+                  'operator-registered',
+                ),
               },
             },
             undefined,
@@ -538,7 +685,9 @@ describe('Team MCP install composer attach', () => {
           mcpServers: Record<string, unknown>;
         };
         expect(remaining.mcpServers[THREADNOTE_MCP_NAME]).toBeUndefined();
-        expect(remaining.mcpServers[THREADNOTE_ORG_MCP_NAME]).toEqual({command: 'operator-owned'});
+        expect(remaining.mcpServers[THREADNOTE_ORG_MCP_NAME]).toEqual(
+          buildComposerHttpMcpEntry('https://composer.example.test/mcp', 'engineering', 'operator-registered'),
+        );
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

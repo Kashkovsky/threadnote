@@ -16,11 +16,15 @@ import {
   ComposerAttachError,
   THREADNOTE_ORG_MCP_NAME,
   buildComposerHttpMcpEntry,
+  buildCopilotComposerHttpMcpEntry,
+  isComposerHttpEntry,
   composerHttpEntryMatches,
   resolveComposerAttach,
   withComposerHttpMcpEntry,
   isManagedComposerHttpEntry,
   type ComposerHttpMcpEntry,
+  type ComposerClientHttpMcpEntry,
+  type CopilotComposerHttpMcpEntry,
   type ComposerShareBinding,
 } from './composer_attach.js';
 import type {AgentClient, ClaudeMcpScope, DoctorCheck, JsonObject, McpInstallOptions, RuntimeConfig} from '../types.js';
@@ -66,7 +70,7 @@ const runMcpInstallInTransaction = Effect.fn('mcp.runInstallInTransaction')(func
   const apply = options.apply === true;
   const toolset = options.toolset ?? DEFAULT_MCP_TOOLSET;
   const attach = yield* Effect.try({
-    try: () => resolveComposerAttach({composerUrl: options.composerUrl, shareId: options.shareId}),
+    try: () => resolveComposerAttach(options),
     catch: cause =>
       Schema.is(ComposerAttachError)(cause)
         ? cause
@@ -326,7 +330,7 @@ function orgComposerConfigurationCheck(checkName: string, configPath: string, co
     const parsed = raw ? parseJsonConfigObject(raw) : undefined;
     const container = parsed?.[containerKey];
     const entry = isJsonObject(container) ? container[THREADNOTE_ORG_MCP_NAME] : undefined;
-    const configured = isManagedComposerHttpEntry(entry);
+    const configured = isComposerHttpEntry(entry);
     return {
       detail: configured
         ? `${THREADNOTE_ORG_MCP_NAME} attached in ${configPath}`
@@ -530,7 +534,7 @@ function jsonMcpConfigurationMatches(
 function jsonComposerConfigurationMatches(
   currentContent: string | undefined,
   containerKey: 'mcpServers' | 'servers',
-  expected: ComposerHttpMcpEntry,
+  expected: ComposerClientHttpMcpEntry,
 ): boolean {
   if (currentContent === undefined) return false;
   const parsed = parseJsonConfigObject(currentContent);
@@ -557,7 +561,7 @@ const runCursorMcpInstall = Effect.fn('mcp.runCursorInstall')(function* (
     toolset: options.toolset,
   });
   const composerEntry = options.attach
-    ? buildComposerHttpMcpEntry(options.attach.url, options.attach.shareId)
+    ? buildComposerHttpMcpEntry(options.attach.url, options.attach.shareId, options.attach.clientId)
     : undefined;
   const currentContent = yield* readFileIfExists(path);
   const current =
@@ -616,7 +620,7 @@ const runCopilotMcpInstall = Effect.fn('mcp.runCopilotInstall')(function* (
     toolset: options.toolset,
   });
   const composerEntry = options.attach
-    ? buildComposerHttpMcpEntry(options.attach.url, options.attach.shareId)
+    ? buildCopilotComposerHttpMcpEntry(options.attach.url, options.attach.shareId, options.attach.clientId)
     : undefined;
   const currentContent = yield* readFileIfExists(path);
   const current =
@@ -898,7 +902,7 @@ function renderCopilotMcpConfig(
   currentContent: string | undefined,
   name: string,
   serverConfig: JsonObject,
-  composerEntry?: ComposerHttpMcpEntry,
+  composerEntry?: CopilotComposerHttpMcpEntry,
 ): string {
   const parsed = isEmptyConfigContent(currentContent) ? {} : parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
@@ -1038,7 +1042,7 @@ const printCopilotMcpSnippet = Effect.fn('mcp.printCopilotSnippet')(function* (
   const path = yield* Path.Path;
   const snippetPath = path.join(config.agentContextHome, 'mcp', `${name}.copilot.json`);
   const stdio = yield* buildCopilotMcpServerConfig(config, options);
-  const servers = withComposerHttpMcpEntry({}, name, stdio, options.attach);
+  const servers = withComposerHttpMcpEntry({}, name, stdio, options.attach, 'copilot');
   const snippet = JSON.stringify({servers}, null, 2);
   yield* Console.log(
     `\nSnippet (${snippetPath}; merge into ${yield* copilotMcpConfigPath(options.project)}):\n${snippet}`,

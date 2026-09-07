@@ -273,13 +273,14 @@ export function buildCursorCloudRemoteHybridMcpConfig(
   profile: CursorCloudProfileV1,
   endpoint: string,
   shareId: string,
+  clientId?: string,
 ): CursorCloudRemoteHybridMcpConfig {
   const url = cursorCloudMemoryEndpoint(endpoint);
   const boundShareId = cursorCloudRemoteShareId(shareId);
   return {
     mcpServers: {
       'threadnote-local': buildCursorCloudLocalGraphMcpConfig(profile, url, boundShareId),
-      'threadnote-memory': buildComposerHttpMcpEntry(url, boundShareId),
+      'threadnote-memory': buildComposerHttpMcpEntry(url, boundShareId, clientId),
     },
   };
 }
@@ -288,13 +289,14 @@ export function buildOrgCloudHybridMcpConfig(
   profile: CursorCloudProfileV1,
   endpoint: string,
   shareId: string,
+  clientId?: string,
 ): OrgCloudHybridMcpConfig {
   const url = composerMcpUrl(endpoint);
   const boundShareId = composerShareId(shareId);
   return {
     mcpServers: {
       'threadnote-local': buildCursorCloudLocalGraphMcpConfig(profile, url, boundShareId, 'org'),
-      [THREADNOTE_ORG_MCP_NAME]: buildComposerHttpMcpEntry(url, boundShareId),
+      [THREADNOTE_ORG_MCP_NAME]: buildComposerHttpMcpEntry(url, boundShareId, clientId),
     },
     policy: ORG_COMPOSER_POLICY,
   };
@@ -464,6 +466,7 @@ export const runCursorCloudConfig = Effect.fn('cursorCloud.config')(function* (
   config: RuntimeConfig,
   options: {
     readonly agentId?: string;
+    readonly clientId?: string;
     readonly endpoint?: string;
     readonly mode?: CursorCloudMode;
     readonly shareId?: string;
@@ -484,12 +487,14 @@ export const runCursorCloudConfig = Effect.fn('cursorCloud.config')(function* (
           profile,
           requiredHybridEndpoint(options.endpoint, 'org'),
           requiredRemoteShareId(options.shareId),
+          options.clientId,
         )
       : options.mode === 'remote-hybrid'
         ? buildCursorCloudRemoteHybridMcpConfig(
             profile,
             requiredHybridEndpoint(options.endpoint, 'remote-hybrid'),
             requiredRemoteShareId(options.shareId),
+            options.clientId,
           )
         : buildCursorCloudMcpConfig(profile, teams);
   yield* Console.log(JSON.stringify(output, undefined, 2));

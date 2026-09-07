@@ -1193,6 +1193,10 @@ const mcpInstall = Command.make(
       Argument.withDescription('codex, claude, cursor, or copilot'),
     ),
     apply: boolean('apply', 'Actually modify the selected agent config'),
+    composerClientId: optionalString(
+      'composer-client-id',
+      'Registered public OAuth client ID for the organization composer',
+    ),
     composerUrl: optionalString('composer-url', 'Organization composer Streamable HTTP MCP URL'),
     name: defaultString('name', 'MCP server name', THREADNOTE_MCP_NAME),
     project: optionalString('project', 'Write Cursor/Copilot MCP into this repository .cursor/mcp.json'),
@@ -1563,6 +1567,7 @@ const cursorCloudConfig = Command.make(
   'config',
   {
     ...cursorCloudBaseIdentityFlags,
+    clientId: optionalString('client-id', 'Registered public OAuth client ID for the organization composer'),
     endpoint: optionalString('endpoint', 'Managed remote Streamable HTTP MCP endpoint'),
     memoryMode: defaultChoice(
       'memory-mode',
@@ -1574,16 +1579,9 @@ const cursorCloudConfig = Command.make(
     shareId: optionalString('share-id', 'Opaque managed remote memory share identifier'),
     teams: repeatedString('team', 'Personal Git memory share; repeat to expose several through one MCP'),
   },
-  ({agentId, endpoint, mode, shareId, teams, user}) =>
+  options =>
     withRuntimeEffect(config =>
-      runCursorCloudConfig(cursorCloudRuntime(config, agentId, user), {
-        agentId,
-        endpoint,
-        mode,
-        shareId,
-        teams,
-        user,
-      }),
+      runCursorCloudConfig(cursorCloudRuntime(config, options.agentId, options.user), options),
     ),
 ).pipe(Command.withDescription('Print a deterministic Cursor Dashboard MCP configuration'));
 

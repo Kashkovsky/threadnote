@@ -140,6 +140,49 @@ the verifier requires `sub`, `iat`, and `exp`, caps lifetime at ten minutes plus
 and validates `nbf` when present. A missing optional `nbf` claim is accepted; malformed or inconsistent time
 claims are rejected. The loopback demo issuer remains restricted to local development.
 
+Register a public OAuth client for each agent and use authorization code with S256 PKCE. A public client has
+no client secret in the agent configuration. Pass its ID when attaching Cursor on a laptop:
+
+```sh
+threadnote mcp-install cursor --project /absolute/repository \
+  --composer-url https://memory.example.test/mcp --share-id engineering \
+  --composer-client-id REGISTERED_PUBLIC_CLIENT_ID --apply
+```
+
+For Cursor Cloud, `threadnote cloud cursor config --mode org --endpoint https://memory.example.test/mcp
+--share-id engineering --client-id REGISTERED_PUBLIC_CLIENT_ID` prints the corresponding configuration.
+Both commands retain the existing stdio/graph split and bind the share in the HTTP header. Omitting the client ID
+retains the legacy `threadnote-composer` demo ID; use that default only with the loopback demo issuer. Production
+issuers require their registered ID. These commands do not obtain or persist tokens; complete OAuth login in the agent.
+
+Cursor's published callbacks are `http://localhost:8787/callback` for desktop and
+`https://www.cursor.com/agents/mcp/oauth/callback` for web/cloud. Register only the surfaces in use and validate an
+actual login after installation. Configuration shape alone does not establish provider or agent compatibility.
+
+VS Code/Copilot uses `type: "http"` and `oauth.clientId`; the installer and dry-run output select that schema
+for `mcp-install copilot`. Cursor uses `auth.CLIENT_ID` and explicit scopes. Register a separate public client
+with the callback URLs required by the selected application. See the
+[VS Code MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration).
+
+Codex has its own HTTP OAuth configuration; do not copy Cursor's `auth.CLIENT_ID` object into it. Register the
+client with `codex mcp add threadnote-org --url https://memory.example.test/mcp --oauth-client-id
+REGISTERED_PUBLIC_CLIENT_ID --oauth-resource https://memory.example.test/mcp`, then configure its share header
+and registered callback in the existing `mcp_servers.threadnote-org` entry:
+
+```toml
+http_headers = { threadnote-share-id = "engineering" }
+oauth = { client_id = "REGISTERED_PUBLIC_CLIENT_ID", callback_url = "http://127.0.0.1:18789/callback", callback_port = 18789 }
+```
+
+The listener port must match the registered callback, and the issuer must advertise issuer-response support for a
+fixed callback without Codex's server-specific suffix. Complete `codex mcp login threadnote-org --scopes
+memory:read,memory:write:durable,memory:write:handoff`. Keep the local Threadnote stdio entry enabled.
+Threadnote's `mcp-install --composer-url` workflow currently automates Cursor/Copilot JSON configuration only.
+
+References: [Cursor static OAuth](https://prod.cursor.com/docs/mcp#static-oauth-for-remote-servers),
+[Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference), and
+[Auth0 MCP setup](https://auth0.com/ai/docs/mcp/get-started/authorization-for-your-mcp-server).
+
 ## Health and safe telemetry
 
 - `/healthz`: process liveness only.
