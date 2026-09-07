@@ -61,6 +61,7 @@ export interface RemoteMemoryIndexPassResult {
  * commits. A SKIP LOCKED miss is never counted as progress.
  */
 export class RemoteMemoryIndexer {
+  private gitIngestFailed = false;
   private nextGitIngestAt = 0;
   private nextShareKey: string | undefined;
 
@@ -104,8 +105,10 @@ export class RemoteMemoryIndexer {
         await new PostgresRemoteMemoryRepository(this.sql, {gitStore: this.gitStore}).ingestActiveGitShares(
           `indexer-ingest:${Date.now()}`,
         );
+        this.gitIngestFailed = false;
       } catch {
-        // Git ingest is not outbox progress; run() backs off independently.
+        this.gitIngestFailed = true;
+        failed += 1;
       }
     }
     if (shares.length > 0) {
@@ -245,7 +248,13 @@ export class RemoteMemoryIndexer {
         oldestPendingAt = row.oldest_pending_at;
       }
     }
-    const failureClass = result.failed > 0 ? 'projection_failed' : deadLetters > 0 ? 'dead_lettered_event' : undefined;
+    const failureClass = this.gitIngestFailed
+      ? 'git_ingest_failed'
+      : result.failed > 0
+        ? 'projection_failed'
+        : deadLetters > 0
+          ? 'dead_lettered_event'
+          : undefined;
     await this.sql`
       UPDATE remote_memory.worker_health SET
         heartbeat_at = now(),

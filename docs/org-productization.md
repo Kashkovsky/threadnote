@@ -4,6 +4,12 @@ Status: reviewed with zero blocking findings after two dev-cycle iterations, 202
 Baseline: main `9b63eb0b` (4.6.7). Implementation starts with P1a, tenant/share isolation; the remaining P1
 storage contracts and subsequent gates remain open until separately verified.
 
+Execution evidence: P1a is implemented in #378 with 102 focused tests, zero dev-cycle findings, and an
+exact-HEAD global smoke returning 200 for the bound share and 403 for an authorized sibling share. The next
+slice adds dedicated Git ingestion authority, persistent ingestion readiness failure, and rejection of HTTP
+body edits that would discard rich metadata. Git push/crash recovery and external lifecycle/removal convergence
+remain open P1 gates.
+
 The outcome is a deployable organization product and a real single-member deployment at
 `https://threadnote-org.fly.dev/mcp`. Our laptops retain local stdio, personal memory, exact-worktree graphs,
 and the existing Git share. The org composer writes the same Git memory repository. A successful deployment
