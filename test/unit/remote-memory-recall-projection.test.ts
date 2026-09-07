@@ -35,6 +35,10 @@ describe('remote recall projection', () => {
             results.slice(0, projected.structuredContent.results.length).map(result => result.uri),
           );
           expect(projectRemoteRecallResponse({receipt, results}, {budgetTokens, explain})).toEqual(projected);
+          const textEvidence = JSON.parse(projected.text.slice(projected.text.indexOf('\n') + 1));
+          expect(textEvidence.nextAction).toEqual(projected.structuredContent.nextAction);
+          expect(textEvidence.results).toEqual(projected.structuredContent.results);
+          expect(textEvidence.omittedResults).toBe(projected.structuredContent.omittedResults);
           if (!explain) {
             expect(projected.structuredContent.results.every(result => !('excerpt' in result))).toBe(true);
           }

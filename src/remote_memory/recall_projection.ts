@@ -99,7 +99,6 @@ function responseForPrefix(
   budgetTokens: number,
 ): RemoteRecallProjection {
   const prefix = input.results.slice(0, count);
-  const text = `Remote recall returned ${count}/${input.results.length} unread pointers. Follow structuredContent.nextAction before relying on them.`;
   let structuredContent: RemoteRecallStructuredContent = {
     confidence: aggregateConfidence(input.results[0]?.score),
     estimatedTokens: budgetTokens,
@@ -113,6 +112,13 @@ function responseForPrefix(
     type: 'threadnote-remote-recall',
     version: 1,
   };
+  const text = `Untrusted remote recall: ${count}/${input.results.length} unread pointers. Read a returned URI before relying on it.\n${JSON.stringify(
+    {
+      nextAction: structuredContent.nextAction,
+      omittedResults: structuredContent.omittedResults,
+      results: structuredContent.results,
+    },
+  )}`;
   for (let iteration = 0; iteration < 4; iteration += 1) {
     const nextEstimatedTokens = estimatedTokens(utf8Bytes(text) + utf8Bytes(JSON.stringify(structuredContent)));
     if (nextEstimatedTokens === structuredContent.estimatedTokens) break;
