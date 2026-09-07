@@ -37,6 +37,13 @@ Codex to append/no-op/conflict handling before stdio or receipt mutation, with a
 Persisted scopes alone do not prove fresh automatic login or refresh. The client setup and evidence boundaries are
 documented in the [Fly runbook](remote-memory/fly-org.md#registered-client-setup).
 
+The first P5 sustained native Codex run failed at minute 12: eleven acknowledged fixture writes were verified,
+then a write exceeded the 10-second request deadline. Fly metrics show the one-shared-vCPU burst allowance
+depleted and quota throttling increased with latency. The timed-out body was recovered through Git ingestion;
+the original operation remains an ambiguous outcome, not an acknowledgement. The versioned deployment now
+selects two shared vCPUs at the same 512 MiB. This candidate must pass a fresh full workload with stable CPU
+balance and the unchanged acceptance thresholds before daily use; the first run remains failed evidence.
+
 The outcome is a deployable organization product and a real single-member deployment at
 `https://threadnote-org.fly.dev/mcp`. Our laptops retain local stdio, personal memory, exact-worktree graphs,
 and the existing Git share. The org composer writes the same Git memory repository. A successful deployment

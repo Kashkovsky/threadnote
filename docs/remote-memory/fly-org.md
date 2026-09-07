@@ -5,6 +5,33 @@ supports one active composer and one Git share. A single persistent clone has re
 The root `fly.toml` belongs to telemetry. Run the commands below from the repository root and always specify
 `deploy/threadnote-org/fly.toml`.
 
+## Compute capacity and sustained validation
+
+The initial profile is two shared vCPUs and 512 MiB on the single writer. Fly gives this profile an aggregate
+12.5% sustained CPU allowance; a single shared vCPU has 6.25%, regardless of available RAM. Burst capacity can
+make a short smoke look healthy while masking insufficient sustained capacity. See
+[Fly CPU performance](https://fly.io/docs/machines/cpu-performance/).
+
+The first native Codex workload on one shared vCPU failed its twelfth minute's write with HTTP 503 at the
+10-second deadline. Eleven prior acknowledged writes were verified. Fly's `fly_instance_cpu_balance` depleted
+as write latency rose, followed by increasing `fly_instance_cpu_throttle`. The twelfth body reached Git and was
+admitted by ingestion; its original operation retained `outcome_ambiguous` and must not be blindly retried with
+a new operation ID. Read and reconcile the current revision first. This was a failed acceptance run.
+
+Two shared vCPUs are the next measured candidate, not completed capacity evidence. Repeat the complete P5
+30-minute workload after deployment, retaining client latencies, acknowledgements, CPU balance and throttling
+over the same window. Require the existing latency/error gates and no sustained burst-balance depletion; a
+restart that temporarily replenishes burst capacity does not establish steady-state readiness. Keep the
+10-second request deadline unchanged. The published base compute price is approximately $4.04 per 30 days
+for this profile, excluding region adjustments, storage, network and database charges; verify
+[current pricing](https://fly.io/docs/about/pricing/) when deploying.
+
+Query metrics using the organization slug reported by `fly orgs list` (`personal` for this deployment), with an
+app/Machine selector. The Prometheus authorization scheme follows the actual token format: `FlyV1` for `fm2_`
+tokens, including when returned by `fly auth token`, and `Bearer` for legacy tokens. Keep tokens out of command
+arguments, logs and receipts. [Fly metrics](https://fly.io/docs/monitoring/metrics/) defines the CPU metric units
+and API. CPU capacity is independent of the paid Neon and recovery gates below.
+
 ## Release prerequisites
 
 Use a reviewed, clean commit whose focused checks and full PR CI pass. Build from that commit and record its image
