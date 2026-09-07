@@ -16,6 +16,7 @@ import type {
 } from './cursor_oidc.js';
 import {canonicalCursorRepositoryBinding, cursorAttestationMaximumAttempts} from './cursor_oidc.js';
 import {remoteMemoryError} from './errors.js';
+import {provisionGitIngestPrincipal} from './git_ingest_principal.js';
 import {isJsonObject} from './json.js';
 import {validatePortableSegment} from '../storage/resource-id.js';
 import {
@@ -637,6 +638,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
           cursor_owner_ids = EXCLUDED.cursor_owner_ids, cursor_subjects = EXCLUDED.cursor_subjects,
           cursor_attestation_required = false
       `;
+      await provisionGitIngestPrincipal(transaction, input);
       if (replaceSharePolicy) {
         const configuredProjects = [...new Set(input.projects ?? Object.keys(input.repositoryBindings ?? {}))];
         for (const project of configuredProjects) {

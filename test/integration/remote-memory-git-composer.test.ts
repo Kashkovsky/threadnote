@@ -211,12 +211,12 @@ postgresDescribe('git-backed remote memory composer', () => {
           topic: 'ignored',
           visibility: 'shared',
         },
-        'Unauthorized project must be skipped.',
+        'Canonical project is indexed independently of this member permission.',
       ),
       'utf8',
     );
     await git(['add', '--', otherPath], laptop);
-    await git(['commit', '-m', 'unauthorized project'], laptop);
+    await git(['commit', '-m', 'another canonical project'], laptop);
     await git(['push', 'origin', 'main'], laptop);
 
     expect(await indexer.runPass({batchSize: 8})).toMatchObject({failed: 0});
@@ -235,7 +235,20 @@ postgresDescribe('git-backed remote memory composer', () => {
         ORDER BY h.topic
       `,
     );
-    expect(stored).toEqual([{markdown_body: '', topic}]);
+    expect(stored).toEqual([
+      {markdown_body: '', topic: 'ignored'},
+      {markdown_body: '', topic},
+    ]);
+    await expect(
+      repository.read(
+        principal,
+        {
+          uri: formatRemoteMemoryUri({kind: 'durable', project: 'other-project', shareId: SHARE, topic: 'ignored'}),
+          version: 1,
+        },
+        'restricted-member-read',
+      ),
+    ).rejects.toMatchObject({code: 'forbidden'});
   });
 
   it('does not resurrect a terminal handoff during git ingest', async () => {

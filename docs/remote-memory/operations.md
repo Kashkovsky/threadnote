@@ -35,6 +35,19 @@ share, even if another share is provisioned in the same database. Local `compose
 from its tenant/share options. Existing Git-mode deployments must add these values before upgrading; missing
 bindings fail startup. The Postgres canonical-body flavor continues to support its existing multi-share model.
 
+Operator provisioning also creates a dedicated `system:git-ingest` identity for each tenant/share. Re-run the
+existing provisioning document once when upgrading a Git deployment; runtime credentials cannot create this
+identity. Its grant follows share feature flags and active projects, independently of interactive members.
+Git may add previously unknown projects to the catalog but cannot reactivate an archived project. Member
+permissions still govern every client read and write. Re-provisioning does not undo an explicit revocation of
+the ingestion identity. Missing or revoked ingestion authority fails ingestion; `git_ingest_failed` keeps
+readiness unhealthy until a subsequent ingestion succeeds, including across intervening projection-only passes.
+
+Remote body replacement currently accepts only the metadata emitted by the basic remote editor. A Git memory
+with citations, relations, keywords, provenance, unknown headers, or legacy metadata is rejected before any
+canonical write. Edit those records through the Git share until the remote API supports their metadata; this
+prevents silent loss of local product information. Basic remote documents retain their identity and creation time.
+
 ### Database roles
 
 The Compose stack demonstrates three separate database identities:

@@ -3,12 +3,7 @@ import type {Sql, TransactionSql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {randomUuidV4} from '../crypto/uuid.js';
 import {MEMORY_SCHEMA_VERSION} from '../memory/code_citation.js';
-import {
-  assertMemoryDocumentSchemaWritable,
-  formatMemoryDocument,
-  parseMemoryDocument,
-  type MemoryMetadata,
-} from '../memory/document.js';
+import {formatMemoryDocument, parseMemoryDocument, type MemoryMetadata} from '../memory/document.js';
 import {formatRemoteMemoryUri, parseRemoteShareAddress} from '../memory_domain/address.js';
 import {inspectRemoteMemoryContent} from '../memory_domain/content.js';
 import type {RemoteReadInputV1, RemoteRecallInputV1, RemoteRememberInputV1} from '../memory_domain/contracts.js';
@@ -31,6 +26,8 @@ import {RemoteMemoryError, remoteMemoryError, type RemoteMemoryErrorCode} from '
 import {GitCanonicalMemoryStore, gitCanonicalSharePath, gitIngestProjectsToEnsure} from './git_canonical_store.js';
 import {requireJsonValue} from './json.js';
 import {assertGitMemoryBinding, requireGitMemoryBinding} from './git_binding.js';
+import {remoteGitIngestPrincipalId} from './git_ingest_principal.js';
+import {assertRemoteBodyReplacementSupported} from './document_compatibility.js';
 import {
   remoteMemoryDatabaseTimeoutMilliseconds,
   requireActiveRemoteMemoryRequest,
@@ -683,8 +680,13 @@ export class PostgresRemoteMemoryRepository {
     for (const share of shares) {
       const principal = await this.loadGitIngestPrincipal(share.tenant_id, share.share_id);
       if (!principal) {
-        skipped += 1;
-        continue;
+        throw remoteMemoryError(
+          'service_unavailable',
+          'The Git ingest service identity is unavailable; check operator provisioning and revocation.',
+          {
+            reason: 'git_ingest_identity_unavailable',
+          },
+        );
       }
       const result = await this.ingestGitShare(principal, `${requestId}:${share.share_id}`, now);
       ingested += result.ingested;
@@ -1394,12 +1396,12 @@ export class PostgresRemoteMemoryRepository {
         FROM remote_memory.shares s
         JOIN remote_memory.share_grants g
           ON g.tenant_id = s.tenant_id AND g.share_id = s.id AND g.status = 'active'
+        JOIN remote_memory.principals p
+          ON p.tenant_id = g.tenant_id AND p.id = g.principal_id AND p.status = 'active'
+        JOIN remote_memory.tenant_memberships m
+          ON m.tenant_id = g.tenant_id AND m.principal_id = g.principal_id AND m.status = 'active'
         WHERE s.tenant_id = ${tenantId} AND s.id = ${shareId} AND s.status = 'active'
-          AND (
-            g.capabilities && ARRAY['memory:write:durable', 'memory:write:handoff', 'memory:admin']::text[]
-          )
-        ORDER BY g.principal_id
-        LIMIT 1
+          AND g.principal_id = ${remoteGitIngestPrincipalId(tenantId, shareId)}
       `;
       const row = rows[0];
       if (!row) return undefined;
@@ -1709,7 +1711,7 @@ function makeRemoteDocument(
 ): {readonly content: string; readonly contentHash: string} {
   const timestamp = now.toISOString();
   const prior = current && priorBody ? parseMemoryDocument(uri, priorBody) : undefined;
-  if (current && priorBody) assertMemoryDocumentSchemaWritable(priorBody);
+  if (current && priorBody) assertRemoteBodyReplacementSupported(priorBody);
   const metadata: MemoryMetadata = {
     createdAt: prior?.metadata.createdAt ?? prior?.metadata.timestamp ?? timestamp,
     kind: input.kind,
