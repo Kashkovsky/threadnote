@@ -11,7 +11,7 @@ Use a reviewed, clean commit whose focused checks and full PR CI pass. Build fro
 digest, source revision, migration versions and volume ID in the private operations receipt. The image includes
 Bun 1.3.14, Git, OpenSSH, CA certificates and the repository's dependency patches. Its Docker context allowlist
 excludes `.context`, `.env`, `.git`, local databases and operator credentials. Fly explicitly uses the same allowlist
-for upload/archive paths. These images support the remote service and operator; they do not package the local CLI
+for upload/archive paths; the build file paths in `fly.toml` are relative to that configuration directory. These images support the remote service and operator; they do not package the local CLI
 model assets. Use the image revision label and recorded digest for release identity.
 
 Provision a dedicated PostgreSQL database with distinct migrator and runtime roles. Apply all registered migrations

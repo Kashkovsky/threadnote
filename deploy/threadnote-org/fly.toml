@@ -4,8 +4,8 @@ kill_signal = "SIGTERM"
 kill_timeout = 60
 
 [build]
-  dockerfile = "deploy/threadnote-org/Dockerfile"
-  ignorefile = "deploy/threadnote-org/Dockerfile.dockerignore"
+  dockerfile = "Dockerfile"
+  ignorefile = "Dockerfile.dockerignore"
 
 [deploy]
   strategy = "rolling"
