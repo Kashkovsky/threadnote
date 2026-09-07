@@ -1,9 +1,11 @@
 import type {CodeGraphIndexSummary} from '../types.js';
 import type {Sha256Digest} from './digest.js';
+import type {GraphShareSourceUseEvidence} from './source_verification.js';
 
 const MAX_RESULT_DIGESTS = 128;
 
 export type GraphPublisherHydrationEvidence =
+  | {readonly status: 'skipped-source-verification'; readonly hydratedResults: 0}
   | {readonly status: 'completed'; readonly hydratedResults: number}
   | {readonly status: 'failed'; readonly hydratedResults: null};
 
@@ -22,6 +24,11 @@ export interface GraphPublisherContributionEvidence {
   readonly selectedResults: number;
   /** Receipt integrity and schema checks only; contributor identity and semantics are not authenticated. */
   readonly verifiedResults: number;
+  /** Present only after all selected original payloads passed source verification and ready assembly. */
+  readonly sourceUse?: Omit<GraphShareSourceUseEvidence, 'consumedResultManifestDigests'> & {
+    readonly consumedResultManifestDigests: readonly Sha256Digest[];
+    readonly resultDigestsTruncated: boolean;
+  };
 }
 
 export function graphPublisherContributionEvidence(input: {
@@ -30,6 +37,7 @@ export function graphPublisherContributionEvidence(input: {
     readonly snapshot: Pick<CodeGraphIndexSummary['snapshot'], 'id' | 'fileCount'>;
   };
   readonly selectedResults: number;
+  readonly sourceUse?: GraphShareSourceUseEvidence;
   readonly verifiedResultDigests: readonly Sha256Digest[];
 }): GraphPublisherContributionEvidence {
   return {
@@ -45,5 +53,16 @@ export function graphPublisherContributionEvidence(input: {
     resultManifestDigests: [...input.verifiedResultDigests].sort().slice(0, MAX_RESULT_DIGESTS),
     selectedResults: input.selectedResults,
     verifiedResults: input.verifiedResultDigests.length,
+    ...(input.sourceUse === undefined
+      ? {}
+      : {
+          sourceUse: {
+            ...input.sourceUse,
+            consumedResultManifestDigests: [...input.sourceUse.consumedResultManifestDigests]
+              .sort()
+              .slice(0, MAX_RESULT_DIGESTS),
+            resultDigestsTruncated: input.sourceUse.consumedResultManifestDigests.length > MAX_RESULT_DIGESTS,
+          },
+        }),
   };
 }

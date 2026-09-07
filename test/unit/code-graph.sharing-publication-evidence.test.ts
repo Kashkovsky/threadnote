@@ -19,6 +19,11 @@ describe('publisher contribution evidence', () => {
             index: {reusedFiles: 3, skippedFiles: 1, snapshot: {id: 'snapshot', fileCount: 5}},
             selectedResults: digests.length,
             verifiedResultDigests: digests,
+            sourceUse: {
+              consumedActions: digests.length,
+              consumedResultManifestDigests: digests,
+              sourceVerifiedFiles: digests.length,
+            },
           };
           const result = graphPublisherContributionEvidence(input);
           expect(result.canonicalInputPolicy).toBe('publisher-recompute');
@@ -26,6 +31,9 @@ describe('publisher contribution evidence', () => {
             result,
           );
           expect(digests).toEqual(before);
+          expect(result.sourceUse?.consumedResultManifestDigests).toEqual(result.resultManifestDigests);
+          expect(result.sourceUse?.resultDigestsTruncated).toBe(digests.length > 128);
+          expect(result.sourceUse?.consumedActions).toBe(digests.length);
           expect(result.resultManifestDigests.length).toBe(Math.min(128, digests.length));
           expect(result.resultDigestsTruncated).toBe(digests.length > 128);
           expect(result.verifiedResults).toBe(digests.length);

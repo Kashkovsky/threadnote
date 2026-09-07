@@ -1,5 +1,6 @@
 import {Crypto, Effect, Option, Path} from 'effect';
 import type {SystemInfoShape} from '../effect/system.js';
+import type {BoundedCodeGraphFact} from './fact_budget.js';
 import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import type {CodeGraphIncrementalWork, CodeGraphIncrementalWorkObservation} from './incremental_work.js';
 import type {CodeGraphInventoryOptions} from './inventory.js';
@@ -27,6 +28,10 @@ export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   /** Exact graph target supplied by a trusted local administration surface. */
   readonly expectedIdentity?: RepositoryIdentityExpectation;
   readonly force?: boolean;
+  /** @internal Disable graph sharing import, hydration, enqueue and drain for source-only verification. */
+  readonly sourceOnly?: boolean;
+  /** @internal Fail-closed hooks for a fresh, clean, forced source-only publication attempt. */
+  readonly sourceVerification?: CodeGraphSourceVerification;
   /** Internal benchmark/correctness escape hatch; normal indexing keeps this enabled. */
   readonly incrementalOverlay?: boolean;
   /** @internal Records read-back PRAGMA values for controlled benchmark evidence. */
@@ -41,6 +46,19 @@ export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
     boundary: CodeGraphDirectPersistentCapacityBoundary,
   ) => Effect.Effect<number | undefined, unknown>;
   readonly threadnoteHome: string;
+}
+
+export interface CodeGraphSourceVerification {
+  readonly observeParserBatch: (group: {
+    readonly cacheIdentity: string;
+    readonly facts: readonly BoundedCodeGraphFact[];
+    readonly files: readonly CodeGraphInventoryFile[];
+  }) => Effect.Effect<void, unknown>;
+  /** Returned facts flow directly into postprocessing and attribution for this assembly batch. */
+  readonly materializeFacts: (batch: {
+    readonly facts: ReadonlyMap<string, CodeGraphFileFacts>;
+    readonly files: readonly CodeGraphInventoryFile[];
+  }) => Effect.Effect<ReadonlyMap<string, CodeGraphFileFacts>, unknown>;
 }
 
 export interface DirectPersistentCapacityProtection {
@@ -133,7 +151,7 @@ export interface CodeGraphCommitLease {
 
 export interface CodeGraphIndexerShape {
   readonly ensureCommit: (
-    options: Omit<CodeGraphIndexOptions, 'force' | 'includeOverlay'> & {readonly commit: string},
+    options: Omit<CodeGraphIndexOptions, 'force' | 'includeOverlay' | 'sourceVerification'> & {readonly commit: string},
   ) => Effect.Effect<CodeGraphCommitLease, unknown>;
   readonly index: (options: CodeGraphIndexOptions) => Effect.Effect<CodeGraphIndexSummary, unknown>;
 }

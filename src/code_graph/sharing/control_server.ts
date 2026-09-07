@@ -399,7 +399,8 @@ const commitCoordinatorDispatch = (
     }),
   );
 
-function withCoordinatorStateLock<A, E, R>(
+/** @internal Serializes final publication checks with receipt/quarantine mutations. */
+export function withCoordinatorStateLock<A, E, R>(
   options: Pick<GraphShareControlServerOptions, 'threadnoteHome'>,
   effect: Effect.Effect<A, E, R>,
 ) {
