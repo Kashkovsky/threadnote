@@ -178,6 +178,9 @@ const handleGraphShareHttp = (
     const request = yield* HttpServerRequest.HttpServerRequest;
     const pathname = requestUrlPath(request.url);
     const method = request.method;
+    if (method === 'POST' && pathname === '/v1/assembly-leases') {
+      return HttpServerResponse.jsonUnsafe({error: 'publisher-operation-forbidden'}, {status: 403});
+    }
     const casHex = parseGraphShareHttpCasPath(pathname);
     if (casHex !== undefined) {
       if (method === 'GET' || method === 'HEAD') return yield* serveCasBlob(options.casRoot, casHex, method === 'HEAD');
@@ -324,6 +327,9 @@ const receiveTag = Effect.fn('codeGraph.sharing.receiveTag')(function* (
   request: HttpServerRequest.HttpServerRequest,
 ) {
   assertGraphShareDiscoveryTag(name);
+  if (!name.startsWith('tn-action-')) {
+    return HttpServerResponse.jsonUnsafe({error: 'publisher-operation-forbidden'}, {status: 403});
+  }
   yield* readBoundedBody(request, GRAPH_SHARE_CONTROL_MAX_BODY_BYTES);
   const decoded = yield* HttpServerRequest.schemaBodyJson(GraphShareHttpTagBody, STRICT).pipe(Effect.option);
   if (decoded._tag === 'None') {
