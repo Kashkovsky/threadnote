@@ -434,7 +434,7 @@ describe('remote memory HTTP transport', () => {
       totalResults: 100,
       type: 'threadnote-remote-recall',
     });
-    expect(compact.blocks[0]?.text).not.toContain(recallResults[0].uri);
+    expect(compact.blocks[0]?.text).toContain(recallResults[0].uri);
 
     const explained = await callRecall(3_101, true);
     const explainedResults = explained.structured.results as readonly Readonly<Record<string, unknown>>[];
@@ -442,10 +442,10 @@ describe('remote memory HTTP transport', () => {
     expect(explainedResults.length).toBeLessThan(compactResults.length);
     expect(explainedResults[0]?.excerpt).toEqual(expect.stringContaining('REMOTE_EXCERPT_000_'));
     expect(explained.structured.explain).toBe(true);
-    expect(explained.blocks[0]?.text).not.toContain('REMOTE_EXCERPT_000_');
+    expect(explained.blocks[0]?.text).toContain('REMOTE_EXCERPT_000_');
     expect(
       JSON.stringify({content: explained.blocks, structured: explained.structured}).match(/REMOTE_EXCERPT_000_/gu),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(test.calls.filter(call => call === 'rate:recall_context')).toHaveLength(2);
   });
 
@@ -503,6 +503,29 @@ describe('remote memory HTTP transport', () => {
     });
     expect(test.calls).toContain('rate:read_context');
     expect(test.calls).toContain('read:request-123');
+  });
+
+  it('exposes read revision and source receipts to clients that consume only text blocks', async () => {
+    const test = fixture();
+    const uri = 'threadnote://share/share-1/memories/durable/threadnote/fixture.md';
+    const response = await test.handler(
+      mcpRequest({id: 3_200, method: 'tools/call', params: {arguments: {uri, version: 1}, name: 'read_context'}}),
+    );
+    const payload = await json(response);
+    const result = payload.result as {
+      content: readonly {text: string}[];
+      structuredContent: {revision: string; receipt: unknown};
+    };
+    expect(result.content[0].text).toContain('Fixture body');
+    const sourceText = result.content.at(-1)!.text;
+    const source = JSON.parse(sourceText.slice(sourceText.indexOf('\n') + 1));
+    expect(source).toMatchObject({
+      uri,
+      revision: result.structuredContent.revision,
+      receipt: result.structuredContent.receipt,
+      trust: 'untrusted',
+    });
+    expect(sourceText).not.toContain('Fixture body');
   });
 
   it('refuses a 1 MB remote memory with an outline instead of paged reconstruction', async () => {
@@ -622,7 +645,15 @@ describe('remote memory HTTP transport', () => {
         {token: secretToken},
       ),
     );
-    const serialized = JSON.stringify(await json(response));
+    const payload = await json(response);
+    const result = payload.result as {content: readonly {text: string}[]};
+    const errorText = result.content.at(-1)!.text;
+    expect(JSON.parse(errorText.slice(errorText.indexOf('\n') + 1))).toEqual({
+      code: 'service_unavailable',
+      details: {},
+      requestId: 'request-123',
+    });
+    const serialized = JSON.stringify(payload);
 
     expect(serialized).toContain('service_unavailable');
     expect(serialized).not.toContain(secretToken);

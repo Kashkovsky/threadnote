@@ -456,6 +456,7 @@ async function invokeRemoteReadTool(
         content: [
           {type: 'text', text: read.content},
           ...(read.receipt === undefined ? [] : [{type: 'text' as const, text: read.receipt}]),
+          {type: 'text', text: safeToolText(sourceMetadata)},
         ],
         structuredContent,
       };
@@ -605,7 +606,10 @@ async function withRequestDeadline<A>(context: RemoteMcpRequestContext, run: () 
 
 function remoteToolError(error: RemoteMemoryError, requestId: string): CallToolResult {
   return {
-    content: [{type: 'text', text: error.message}],
+    content: [
+      {type: 'text', text: error.message},
+      {type: 'text', text: safeToolText({code: error.code, details: error.details, requestId})},
+    ],
     isError: true,
     structuredContent: {code: error.code, details: error.details, requestId},
   };

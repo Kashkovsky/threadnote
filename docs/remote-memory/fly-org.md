@@ -195,8 +195,16 @@ events without copying tokens or identity details into receipts.
 
 Observed client evidence on 2026-09-07: Codex 0.153.4 completed seven-tool discovery, recall/read, acknowledged write,
 CAS replacement/stale rejection, laptop Git sync and native refresh. Cursor GUI 3.19.13 / Agent 2026.09.02-c22c1a3
-completed PKCE and seven-tool discovery; execution and refresh after adding `offline_access` still require acceptance.
+completed PKCE, native refresh and an acknowledged canary write; its read/recall evidence requires another client
+check after the text compatibility correction below.
 These canaries do not complete P5 recovery or authorize a daily cutover by themselves.
+
+Cursor's text-only MCP delivery exposed a compatibility gap during its native canary: a successful recall did not
+show its returned URIs, and a read omitted its immutable revision. Remote recall now repeats its selected pointers
+and next action in budgeted text. Reads append source/revision receipts without duplicating the memory body; tool
+errors include their machine-readable code in text. Structured results remain available. Verify these fields in
+the actual client's visible tool output before treating a write/read/recall sequence as accepted. This follows the
+[MCP text compatibility guidance](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content).
 
 Client references: [Codex MCP configuration and callbacks](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
 [Auth0 refresh-token requirements](https://auth0.com/docs/secure/tokens/refresh-tokens/get-refresh-tokens),
