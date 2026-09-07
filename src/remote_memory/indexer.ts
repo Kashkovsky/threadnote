@@ -1,5 +1,6 @@
 import type {Sql, TransactionSql} from 'postgres';
 import {GitCanonicalMemoryStore} from './git_canonical_store.js';
+import {assertGitMemoryBinding, requireGitMemoryBinding} from './git_binding.js';
 import {PostgresRemoteMemoryRepository} from './postgres_repository.js';
 
 const DEFAULT_BATCH_SIZE = 64;
@@ -66,13 +67,16 @@ export class RemoteMemoryIndexer {
   constructor(
     readonly sql: Sql,
     readonly gitStore?: GitCanonicalMemoryStore,
-  ) {}
+  ) {
+    if (gitStore) requireGitMemoryBinding(gitStore.binding);
+  }
 
   async retryDeadLetters(input: {
     readonly eventId?: string;
     readonly shareId: string;
     readonly tenantId: string;
   }): Promise<number> {
+    assertGitMemoryBinding(this.gitStore?.binding, input);
     return this.withTenant(input.tenantId, async transaction => {
       const rows = await transaction<{id: string}[]>`
         UPDATE remote_memory.outbox_events
@@ -142,7 +146,10 @@ export class RemoteMemoryIndexer {
   private async activeShares(): Promise<readonly ShareDirectoryRow[]> {
     return this.sql<ShareDirectoryRow[]>`
       SELECT tenant_id, share_id FROM remote_memory.share_directory
-      WHERE status = 'active' ORDER BY tenant_id, share_id
+      WHERE status = 'active'
+        AND (${this.gitStore?.binding?.tenantId ?? null}::text IS NULL OR tenant_id = ${this.gitStore?.binding?.tenantId ?? null})
+        AND (${this.gitStore?.binding?.shareId ?? null}::text IS NULL OR share_id = ${this.gitStore?.binding?.shareId ?? null})
+      ORDER BY tenant_id, share_id
     `;
   }
 
@@ -228,6 +235,7 @@ export class RemoteMemoryIndexer {
           FROM remote_memory.outbox_events e
           JOIN remote_memory.shares s ON s.tenant_id = e.tenant_id AND s.id = e.share_id
           WHERE e.tenant_id = ${tenantId} AND e.processed_at IS NULL AND s.status = 'active'
+            AND (${this.gitStore?.binding?.shareId ?? null}::text IS NULL OR e.share_id = ${this.gitStore?.binding?.shareId ?? null})
         `,
       );
       const row = rows[0];

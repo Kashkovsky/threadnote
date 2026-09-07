@@ -70,7 +70,10 @@ postgresDescribe('git-backed remote memory composer', () => {
       subject: 'subject-git',
       tenantId: TENANT,
     });
-    const gitStore = new GitCanonicalMemoryStore({worktree: gitFixture.worktree});
+    const gitStore = new GitCanonicalMemoryStore({
+      binding: {tenantId: TENANT, shareId: SHARE},
+      worktree: gitFixture.worktree,
+    });
     repository = new PostgresRemoteMemoryRepository(fixture.sql, {gitStore});
     indexer = new RemoteMemoryIndexer(fixture.sql, gitStore);
     const authorized = await new PostgresRemoteControlPlane(fixture.sql).authorize(claims(), SHARE);
@@ -316,7 +319,10 @@ postgresDescribe('composer serve ingest of git files without a provisioned catal
         VALUES (${TENANT}, ${SHARE}, 'retired-project', 'archived')
       `,
     );
-    const gitStore = new GitCanonicalMemoryStore({worktree: gitFixture.worktree});
+    const gitStore = new GitCanonicalMemoryStore({
+      binding: {tenantId: TENANT, shareId: SHARE},
+      worktree: gitFixture.worktree,
+    });
     repository = new PostgresRemoteMemoryRepository(fixture.sql, {gitStore});
     const authorized = await new PostgresRemoteControlPlane(fixture.sql).authorize(claims(), SHARE);
     if (!authorized) throw new Error('Uncataloged composer fixture authorization failed.');

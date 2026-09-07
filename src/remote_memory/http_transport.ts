@@ -6,6 +6,7 @@ import {completeCursorAttestation} from './cursor_oidc.js';
 import {publicRemoteMemoryError, remoteMemoryError, type RemoteMemoryError} from './errors.js';
 import {bearerTokenFromRequest, oauthChallenge, protectedResourceMetadata} from './oauth.js';
 import type {LocalIdp} from './local_idp.js';
+import {assertGitMemoryBinding} from './git_binding.js';
 import {isLocalIdpPath} from './local_idp.js';
 import type {RemoteMemoryServiceDependencies} from './service_types.js';
 import {createRemoteMemoryMcpServer} from './tools.js';
@@ -148,6 +149,7 @@ async function handleAttestationCompletion(
       }),
     );
     if (!principal) throw remoteMemoryError('forbidden', 'The Cursor attestation challenge is invalid or expired.');
+    assertGitMemoryBinding(options.config.gitBinding, principal);
     const attestation = await withDeadlineUntil(deadlineEpochMilliseconds, controller.signal, () =>
       completeCursorAttestation(
         options.dependencies.attestations,
@@ -175,7 +177,14 @@ async function authenticateRequest(
 ): Promise<AuthorizedRemotePrincipal> {
   const token = bearerTokenFromRequest(request);
   const claims = await options.dependencies.oauthTokens.verify(token);
-  return authorizeRemoteRequest(options.dependencies.authorization, claims, requestedRemoteShare(request), execution);
+  const principal = await authorizeRemoteRequest(
+    options.dependencies.authorization,
+    claims,
+    requestedRemoteShare(request),
+    execution,
+  );
+  assertGitMemoryBinding(options.config.gitBinding, principal);
+  return principal;
 }
 
 function validateHost(request: Request, allowedHosts: readonly string[]): void {

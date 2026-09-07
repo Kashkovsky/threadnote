@@ -28,6 +28,7 @@ function fixture(
     readonly allowedOrigins?: readonly string[];
     readonly allowedProjects?: ReadonlySet<string> | 'all';
     readonly capabilities?: readonly string[];
+    readonly gitBinding?: RemoteMemoryServiceConfig['gitBinding'];
     readonly localIdp?: LocalIdp;
     readonly rateLimitFailure?: boolean;
     readonly recallResults?: readonly RemoteMemoryRecallResult[];
@@ -150,6 +151,7 @@ function fixture(
       config: {
         ...configFixture(),
         globallyEnabled: options.serviceEnabled ?? true,
+        ...(options.gitBinding ? {canonicalStore: 'git', gitBinding: options.gitBinding} : {}),
         ...(options.allowedHosts ? {allowedHosts: options.allowedHosts} : {}),
         ...(options.allowedOrigins ? {allowedOrigins: options.allowedOrigins} : {}),
       },
@@ -226,6 +228,20 @@ async function json(response: Response): Promise<Record<string, unknown>> {
 }
 
 describe('remote memory HTTP transport', () => {
+  it('rejects an authorized share outside the deployment before MCP dispatch', async () => {
+    for (const gitBinding of [
+      {tenantId: 'tenant-2', shareId: 'share-1'},
+      {tenantId: 'tenant-1', shareId: 'share-2'},
+    ]) {
+      const test = fixture({gitBinding});
+      const response = await test.handler(mcpRequest({id: 1, method: 'tools/list', params: {}}));
+      expect(response.status).toBe(403);
+      expect(test.calls).toEqual(['oauth:fixture-token', 'authorize:share-1']);
+    }
+    const bound = fixture({gitBinding: {tenantId: 'tenant-1', shareId: 'share-1'}});
+    expect((await bound.handler(mcpRequest({id: 1, method: 'tools/list', params: {}}))).status).toBe(200);
+  });
+
   // These examples exercise the Web Request/Response and official SDK Promise boundary.
   it('serves protected-resource metadata and bounded health/readiness endpoints without authentication', async () => {
     const test = fixture({ready: false});

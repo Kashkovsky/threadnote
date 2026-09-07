@@ -28,6 +28,13 @@ closed when `git` is missing, the worktree is not a repository, or it is not wri
 composer host, never in a cloud agent VM. Initialize the worktree as a clone of the share remote before enabling git
 mode; an empty volume is not a repository.
 
+Git mode also requires `THREADNOTE_REMOTE_MEMORY_GIT_TENANT_ID` and
+`THREADNOTE_REMOTE_MEMORY_GIT_SHARE_ID`, matching the operator-provisioned tenant and share. One composer clone
+serves exactly that pair. Requests, Git ingestion, index projection and handoff expiry cannot use it for another
+share, even if another share is provisioned in the same database. Local `composer serve` supplies this binding
+from its tenant/share options. Existing Git-mode deployments must add these values before upgrading; missing
+bindings fail startup. The Postgres canonical-body flavor continues to support its existing multi-share model.
+
 ### Database roles
 
 The Compose stack demonstrates three separate database identities:

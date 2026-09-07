@@ -171,6 +171,8 @@ describe('remote memory service configuration', () => {
       ...productionEnvironment,
       THREADNOTE_REMOTE_CANONICAL_STORE: 'git',
       THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE: '/var/threadnote/memory-git',
+      THREADNOTE_REMOTE_MEMORY_GIT_TENANT_ID: 'tenant-org',
+      THREADNOTE_REMOTE_MEMORY_GIT_SHARE_ID: 'share-org',
     });
     expect(config.canonicalStore).toBe('git');
     expect(config.gitWorktree).toBe('/var/threadnote/memory-git');
@@ -183,6 +185,8 @@ describe('remote memory service configuration', () => {
         ...productionEnvironment,
         THREADNOTE_REMOTE_CANONICAL_STORE: 'git',
         THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE: '/var/threadnote/memory-git',
+        THREADNOTE_REMOTE_MEMORY_GIT_TENANT_ID: 'tenant-org',
+        THREADNOTE_REMOTE_MEMORY_GIT_SHARE_ID: 'share-org',
         THREADNOTE_REMOTE_MEMORY_GIT_REMOTE: 'https://evil.example/repo.git',
       }),
     ).toThrow('safe git refname');
@@ -191,6 +195,8 @@ describe('remote memory service configuration', () => {
         ...productionEnvironment,
         THREADNOTE_REMOTE_CANONICAL_STORE: 'git',
         THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE: '/var/threadnote/memory-git',
+        THREADNOTE_REMOTE_MEMORY_GIT_TENANT_ID: 'tenant-org',
+        THREADNOTE_REMOTE_MEMORY_GIT_SHARE_ID: 'share-org',
         THREADNOTE_REMOTE_MEMORY_GIT_BRANCH: '-u',
       }),
     ).toThrow('safe git refname');
