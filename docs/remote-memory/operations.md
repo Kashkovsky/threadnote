@@ -48,6 +48,19 @@ with citations, relations, keywords, provenance, unknown headers, or legacy meta
 canonical write. Edit those records through the Git share until the remote API supports their metadata; this
 prevents silent loss of local product information. Basic remote documents retain their identity and creation time.
 
+The composer lock lives at `threadnote-composer.lock` in Git's resolved metadata directory. It records a
+random ownership token and process identity, refreshes its lease, and recovers a confirmed dead owner.
+Ordinary service shutdown drains accepted requests. If the lock adapter's owning scope is closed directly,
+it rejects queued requests and waits for its active operation before releasing the token.
+This serializes processes sharing one filesystem, not independent clones or machines.
+
+Older versions used an ownerless directory at the same path. An upgrade preserves that directory and refuses
+Git operations until an operator stops every old writer and its Git subprocesses, verifies the checkout and
+upstream state, and removes the confirmed empty directory with `rmdir`. Preserve unexpected contents or
+symbolic links for investigation. Never delete a live JSON lock to bypass contention. After a crash, verify
+readiness and upstream convergence before reopening writes; an unexpected dirty or divergent checkout
+requires operator recovery and is not reset automatically.
+
 ### Database roles
 
 The Compose stack demonstrates three separate database identities:

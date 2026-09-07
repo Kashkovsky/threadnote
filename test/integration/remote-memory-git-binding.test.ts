@@ -1,3 +1,4 @@
+import {testGitWorktreeLock} from '../helpers/git-worktree-lock.js';
 import {rm} from '../helpers/node-fs-promises.js';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import type {AuthorizedRemotePrincipal} from '../../src/remote_memory/authorization.js';
@@ -65,7 +66,7 @@ postgresDescribe('organization Git deployment binding', () => {
       if (!principal) throw new Error('Fixture authorization failed.');
       principals.push(principal);
     }
-    gitStore = new GitCanonicalMemoryStore({binding, worktree: gitFixture.worktree});
+    gitStore = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, binding, worktree: gitFixture.worktree});
     repository = new PostgresRemoteMemoryRepository(fixture.sql, {gitStore});
   });
 
@@ -75,7 +76,7 @@ postgresDescribe('organization Git deployment binding', () => {
   });
 
   it('requires an explicit binding before a Git store can serve organization memory', () => {
-    const unbound = new GitCanonicalMemoryStore({worktree: gitFixture.worktree});
+    const unbound = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: gitFixture.worktree});
     expect(() => new PostgresRemoteMemoryRepository(fixture.sql, {gitStore: unbound})).toThrow('binding');
     expect(() => new RemoteMemoryIndexer(fixture.sql, unbound)).toThrow('binding');
     expect(() => new RemoteHandoffRetentionWorker(fixture.sql, {gitStore: unbound})).toThrow('binding');

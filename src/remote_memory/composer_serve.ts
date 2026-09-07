@@ -139,6 +139,7 @@ export async function runComposerServe(
     if (config.autoMigrate) await migrateRemoteMemoryDatabase(sql, {executablePath: input.executablePath});
     await sql`SELECT 1 FROM remote_memory.shares LIMIT 0`;
     const gitStore = new GitCanonicalMemoryStore({
+      worktreeLock: runtime.worktreeLock,
       binding: config.gitBinding,
       branch: config.gitBranch,
       push: config.gitPush,

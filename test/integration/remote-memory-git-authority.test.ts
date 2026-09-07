@@ -1,3 +1,4 @@
+import {testGitWorktreeLock} from '../helpers/git-worktree-lock.js';
 import {describe, expect, it} from 'vitest';
 import {rm} from '../helpers/node-fs-promises.js';
 import {createGitShareWorktreeFixture} from '../helpers/git-share-worktree.js';
@@ -31,6 +32,7 @@ async function fixture() {
   };
   await operator.provision(input);
   const store = new GitCanonicalMemoryStore({
+    worktreeLock: testGitWorktreeLock,
     binding: {tenantId: input.tenantId, shareId: input.shareId},
     worktree: git.worktree,
   });
