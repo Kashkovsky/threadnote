@@ -80,6 +80,7 @@ describe('remote memory PostgreSQL migrations', () => {
       'bootstrap',
       ...appliedMigrationCycle,
       ...appliedMigrationCycle,
+      ...appliedMigrationCycle,
       'unlock',
       'release',
     ]);
@@ -126,7 +127,11 @@ describe('remote memory PostgreSQL migrations', () => {
 
   it('resolves standalone migrations beside the compiled executable instead of bunfs', () => {
     const executableRoot = FC.array(FC.stringMatching(/^[a-z][a-z0-9-]{0,12}$/u), {minLength: 1, maxLength: 4});
-    const migrationName = FC.constantFrom('001_initial.sql', '002_git_canonical_pointers.sql');
+    const migrationName = FC.constantFrom(
+      '001_initial.sql',
+      '002_git_canonical_pointers.sql',
+      '003_git_ingest_observations.sql',
+    );
     FC.assert(
       FC.property(executableRoot, migrationName, (segments, name) => {
         const executablePath = join('/', ...segments, 'threadnote');

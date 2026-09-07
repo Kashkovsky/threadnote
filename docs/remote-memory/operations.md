@@ -87,6 +87,29 @@ Use a separately created SQL role when a managed provider's built-in writer role
 `src/remote_memory/runtime_privileges.ts` aligned with the grants file when changing the schema contract. The
 loopback-only automatic-migration development mode retains its existing owner-account behavior.
 
+Git deployments apply migration 3 and the updated runtime grants before starting the lifecycle-aware ingester. Its
+share snapshot commit is an admission fence, not a completed-index checkpoint. Empty and unchanged snapshots advance
+the fence; a delayed older scan cannot then mutate a head. Each revision retains a separate Git observation commit
+when the snapshot that justified its status differs from the commit containing its body. The ingester performs Git
+ancestry and body reads outside database transactions and checks both the expected head revision and snapshot fence
+when committing a change.
+
+External managed documents supply their active, archived, expired, or superseded status. Removing a canonical file
+appends an inactive revision that preserves the last accepted body and history. A later changed or restored valid
+publication may reactivate it; an unrelated commit cannot. Git publication does not renew elapsed remote handoff
+expiry or erase its retention settings. Plain Markdown remains supported. Malformed or ambiguous managed identity or
+lifecycle metadata, future schemas, rejected content, and unsupported Git entry modes fail ingestion visibly. A prior
+active head becomes archived with its retained body; a newly rejected path creates no active head. Correct or remove
+the rejected publication to resume ingestion.
+
+Ingestion visits at most 256 candidates and hydrates at most 256 bodies per pass. A persisted rotating path cursor
+advances once per batch so initialized unchanged shares avoid per-record database writes. Larger and legacy snapshots
+make progress, including same-commit records that older versions had not validated. A remembered rejected path is
+checked first on subsequent passes, so a partial batch cannot erase a known failure. The current outer read result is
+the lifecycle authority: a retained historical document may still contain `status: active` while the result is archived.
+Explicit URI/history reads and the default all-status list remain available; inactive heads are excluded from recall
+and `list(status: active)` as soon as the lifecycle transaction commits.
+
 `THREADNOTE_REMOTE_ENABLED=false` is the environment-wide kill switch. Keep it false until the selected tenant/share
 canary is approved; both this switch and the share-scoped `remote_memory_ga` flag must be enabled for MCP traffic.
 

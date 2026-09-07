@@ -46,7 +46,7 @@ GRANT INSERT ON
   remote_memory.projects
 TO threadnote_remote_runtime;
 
-GRANT UPDATE (share_generation, indexed_generation) ON remote_memory.shares TO threadnote_remote_runtime;
+GRANT UPDATE (share_generation, indexed_generation, git_ingest_snapshot_commit, git_ingest_cursor, git_ingest_rejected_path) ON remote_memory.shares TO threadnote_remote_runtime;
 GRANT UPDATE (current_revision_id, status, retention_class, expires_at, updated_at)
   ON remote_memory.memory_heads TO threadnote_remote_runtime;
 GRANT UPDATE (issuer, subject, jwt_id, cloud_agent_id, turn_id, team_id, owner_id, repository_urls)

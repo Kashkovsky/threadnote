@@ -31,6 +31,7 @@ function migrationFile(name: string, executablePath: string | undefined): string
 const MIGRATIONS = [
   {name: '001_initial.sql', version: 1},
   {name: '002_git_canonical_pointers.sql', version: 2},
+  {name: '003_git_ingest_observations.sql', version: 3},
 ] as const;
 const MIGRATION_LOCK = 7_427_190_041;
 

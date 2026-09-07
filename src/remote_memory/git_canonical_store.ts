@@ -53,6 +53,11 @@ export interface GitCanonicalListedFile extends GitCanonicalListedPath {
   readonly contentHash: string;
 }
 
+export interface GitCanonicalSnapshot {
+  readonly gitCommit: string;
+  readonly paths: readonly (GitCanonicalListedPath & {readonly readable: boolean})[];
+}
+
 export function gitCanonicalSharePath(kind: 'durable' | 'handoff', project: string, topic: string): string {
   const projectSegment = validatePortableSegment(project);
   const topicSegment = validatePortableSegment(topic);
@@ -140,6 +145,22 @@ export class GitCanonicalMemoryStore {
 
   listCanonicalPaths(): Promise<readonly GitCanonicalListedPath[]> {
     return this.serialize(() => this.withLock(() => this.listCanonicalPathsExclusive()));
+  }
+
+  snapshot(): Promise<GitCanonicalSnapshot> {
+    return this.serialize(() => this.withLock(() => this.snapshotExclusive()));
+  }
+
+  isAncestor(ancestor: string, descendant: string): Promise<boolean> {
+    return this.serialize(async () => {
+      const result = await this.git(
+        ['merge-base', '--is-ancestor', requireGitCommit(ancestor), requireGitCommit(descendant)],
+        true,
+      );
+      if (result.exitCode > 1)
+        throw remoteMemoryError('service_unavailable', 'Git observation ancestry could not be verified.');
+      return result.exitCode === 0;
+    });
   }
 
   listBlobIds(commit: string): Promise<ReadonlyMap<string, string>> {
@@ -242,16 +263,22 @@ export class GitCanonicalMemoryStore {
   }
 
   private async listCanonicalPathsExclusive(): Promise<readonly GitCanonicalListedPath[]> {
+    const snapshot = await this.snapshotExclusive();
+    return snapshot.paths.filter(path => path.readable).map(({readable: _readable, ...path}) => path);
+  }
+
+  private async snapshotExclusive(): Promise<GitCanonicalSnapshot> {
     await this.refreshExclusive();
     const gitCommit = await this.headCommit();
-    const blobs = await this.lsTreeBlobsExclusive(gitCommit);
-    const files: GitCanonicalListedPath[] = [];
-    for (const [gitPath, blobId] of blobs) {
+    const listed = await this.git(['ls-tree', '-r', '-z', gitCommit]);
+    const blobs = parseLsTreeBlobs(listed.stdout);
+    const files: (GitCanonicalListedPath & {readonly readable: boolean})[] = [];
+    for (const [gitPath, blobId] of parseLsTreeBlobs(listed.stdout, true)) {
       const parsed = parseGitCanonicalSharePath(gitPath);
       if (!parsed) continue;
-      files.push({...parsed, blobId, gitCommit, gitPath});
+      files.push({...parsed, blobId, gitCommit, gitPath, readable: blobs.has(gitPath)});
     }
-    return files;
+    return {gitCommit, paths: files};
   }
 
   private async lsTreeBlobsExclusive(commit: string): Promise<Map<string, string>> {
@@ -414,7 +441,7 @@ async function isSymlink(path: string): Promise<boolean> {
   return result.exitCode === 0;
 }
 
-function parseLsTreeBlobs(stdout: string): Map<string, string> {
+function parseLsTreeBlobs(stdout: string, includeUnsupported = false): Map<string, string> {
   const blobs = new Map<string, string>();
   for (const record of stdout.split('\0').filter(Boolean)) {
     const tab = record.indexOf('\t');
@@ -423,8 +450,7 @@ function parseLsTreeBlobs(stdout: string): Map<string, string> {
     const gitPath = record.slice(tab + 1);
     const blobId = meta[2];
     if (
-      !['100644', '100755'].includes(meta[0] ?? '') ||
-      meta[1] !== 'blob' ||
+      (!includeUnsupported && (!['100644', '100755'].includes(meta[0] ?? '') || meta[1] !== 'blob')) ||
       !blobId ||
       !/^[0-9a-f]{40,64}$/u.test(blobId)
     )
