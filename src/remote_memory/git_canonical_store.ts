@@ -2,6 +2,7 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {assertSafeShareRelativePath} from '../share/core.js';
 import {validatePortableSegment} from '../storage/resource-id.js';
 import {remoteMemoryError} from './errors.js';
+import {randomUuidV4} from '../crypto/uuid.js';
 import {requireGitMemoryBinding, type GitMemoryBinding} from './git_binding.js';
 
 const GIT_TIMEOUT_MILLISECONDS = 30_000;
@@ -215,45 +216,24 @@ export class GitCanonicalMemoryStore {
           reason: 'git_cas',
         });
       }
-      await writeContainedWorktreeFile(this.worktree, gitPath, input.content);
-      const staged = await this.git(['add', '--', gitPath], true);
-      if (staged.exitCode !== 0) {
-        throw remoteMemoryError(
-          'service_unavailable',
-          `git add failed: ${staged.stderr.trim() || staged.stdout.trim() || 'unknown error'}`,
-        );
-      }
-      const committed = await this.git(
-        ['-c', `user.name=${COMPOSER_NAME}`, '-c', `user.email=${COMPOSER_EMAIL}`, 'commit', '-m', input.message],
-        true,
-      );
-      if (committed.exitCode !== 0) {
-        throw remoteMemoryError(
-          'service_unavailable',
-          `git commit failed: ${committed.stderr.trim() || committed.stdout.trim() || 'unknown error'}`,
-        );
-      }
-      const gitCommit = await this.headCommit();
-      if (!this.push) return {contentHash, gitCommit, gitPath};
-      const pushed = await this.git(['push', this.remote, `HEAD:${this.branch}`], true);
-      if (pushed.exitCode !== 0) {
-        const detail = `${pushed.stderr}\n${pushed.stdout}`.trim();
-        const diverged = /non-fast-forward|fetch first|\[rejected\]/i.test(detail);
-        if (diverged) {
-          await this.reconcileToUpstream();
-          throw remoteMemoryError('conflict', 'The shared git memory changed; re-read it and retry.', {
-            reason: 'git_push_rejected',
-          });
+      await assertContainedWorktreePath(this.worktree, gitPath);
+      const base = await this.headCommit();
+      const gitCommit = await this.prepareCommit(base, gitPath, input);
+      if (this.push) {
+        await this.git(['push', this.remote, `${gitCommit}:refs/heads/${this.branch}`], true);
+        // Fetch also resolves a lost push acknowledgement without exposing an unconfirmed local commit.
+        await this.refreshExclusive();
+        const remoteHas = await this.git(['merge-base', '--is-ancestor', gitCommit, 'HEAD'], true);
+        if (remoteHas.exitCode !== 0) {
+          if ((await this.headCommit()) !== base) {
+            throw remoteMemoryError('conflict', 'The shared git memory changed; re-read it and retry.', {
+              reason: 'git_push_rejected',
+            });
+          }
+          throw remoteMemoryError('service_unavailable', 'The shared git commit could not be confirmed upstream.');
         }
-        const fetched = await this.git(['fetch', '--prune', this.remote], true);
-        if (fetched.exitCode === 0) {
-          const remoteHas = await this.git(
-            ['merge-base', '--is-ancestor', gitCommit, `${this.remote}/${this.branch}`],
-            true,
-          );
-          if (remoteHas.exitCode === 0) return {contentHash, gitCommit, gitPath};
-        }
-        throw remoteMemoryError('service_unavailable', `git push failed: ${detail || 'unknown error'}`);
+      } else {
+        await this.fastForward(gitCommit);
       }
       return {contentHash, gitCommit, gitPath};
     });
@@ -283,40 +263,82 @@ export class GitCanonicalMemoryStore {
     return parseLsTreeBlobs(listed.stdout);
   }
 
-  private async reconcileToUpstream(): Promise<void> {
-    const fetched = await this.git(['fetch', '--prune', this.remote], true);
-    if (fetched.exitCode !== 0) {
+  private async prepareCommit(base: string, gitPath: string, input: GitCanonicalCommitInput): Promise<string> {
+    const temporary = joinAbsolute(await this.absoluteGitDir(), `threadnote-index-${randomUuidV4()}`);
+    await runProcess(['mkdir', '-m', '700', temporary], false);
+    try {
+      const environment = {GIT_INDEX_FILE: joinAbsolute(temporary, 'index')};
+      const run = (args: readonly string[], stdin?: string) => runGit(this.worktree, args, false, {environment, stdin});
+      await run(['read-tree', base]);
+      const blob = (await run(['hash-object', '-w', '--stdin'], input.content)).stdout.trim();
+      await run(['update-index', '--add', '--cacheinfo', '100644', blob, gitPath]);
+      const tree = (await run(['write-tree'])).stdout.trim();
+      return requireGitCommit(
+        (
+          await run(
+            ['-c', `user.name=${COMPOSER_NAME}`, '-c', `user.email=${COMPOSER_EMAIL}`, 'commit-tree', tree, '-p', base],
+            input.message,
+          )
+        ).stdout,
+      );
+    } finally {
+      await runProcess(['rm', '-rf', '--', temporary], true);
+    }
+  }
+
+  private async assertCleanBranch(): Promise<void> {
+    const branch = await this.git(['symbolic-ref', '--quiet', 'HEAD'], true);
+    if (branch.exitCode !== 0 || branch.stdout.trim() !== `refs/heads/${this.branch}`) {
+      throw remoteMemoryError('conflict', 'The composer git worktree is not on its configured branch.', {
+        reason: 'git_wrong_branch',
+      });
+    }
+    const status = await this.git(['-c', 'core.fsmonitor=false', 'status', '--porcelain=v1', '--untracked-files=all']);
+    if (status.stdout.length > 0) {
       throw remoteMemoryError(
-        'service_unavailable',
-        `git fetch failed: ${fetched.stderr.trim() || fetched.stdout.trim() || 'unknown error'}`,
+        'conflict',
+        'The composer git worktree has local changes; preserve and resolve them before retrying.',
+        {
+          reason: 'git_dirty_worktree',
+        },
       );
     }
-    const reset = await this.git(['reset', '--hard', `${this.remote}/${this.branch}`], true);
-    if (reset.exitCode !== 0) {
+  }
+
+  private async fastForward(commit: string): Promise<void> {
+    await this.assertCleanBranch();
+    const merged = await this.git(['merge', '--ff-only', '--no-overwrite-ignore', commit], true);
+    if (merged.exitCode !== 0) {
       throw remoteMemoryError(
-        'service_unavailable',
-        `git reset failed: ${reset.stderr.trim() || reset.stdout.trim() || 'unknown error'}`,
+        'conflict',
+        'The composer git worktree could not fast-forward to the memory repository.',
+        {
+          reason: 'git_not_fast_forward',
+        },
       );
     }
   }
 
   private async refreshExclusive(): Promise<void> {
-    const fetched = await this.git(['fetch', '--prune', this.remote], true);
+    await this.assertCleanBranch();
+    const upstream = `refs/remotes/${this.remote}/${this.branch}`;
+    const fetched = await this.git(['fetch', '--no-tags', this.remote, `+refs/heads/${this.branch}:${upstream}`], true);
     if (fetched.exitCode !== 0) {
-      throw remoteMemoryError(
-        'service_unavailable',
-        `git fetch failed: ${fetched.stderr.trim() || fetched.stdout.trim() || 'unknown error'}`,
-      );
+      throw remoteMemoryError('service_unavailable', 'The composer could not fetch the configured memory branch.');
     }
-    const upstream = `${this.remote}/${this.branch}`;
     const hasUpstream = await this.git(['rev-parse', '--verify', `${upstream}^{commit}`], true);
-    if (hasUpstream.exitCode !== 0) return;
-    const merged = await this.git(['merge', '--ff-only', upstream], true);
-    if (merged.exitCode !== 0) {
-      throw remoteMemoryError('conflict', 'The composer git worktree diverged from the memory repository.', {
+    if (hasUpstream.exitCode !== 0) {
+      throw remoteMemoryError('service_unavailable', 'The configured memory branch is missing upstream.');
+    }
+    const ancestor = await this.git(['merge-base', '--is-ancestor', 'HEAD', upstream], true);
+    if (ancestor.exitCode !== 0) {
+      if (!this.push && (await this.git(['merge-base', '--is-ancestor', upstream, 'HEAD'], true)).exitCode === 0)
+        return;
+      throw remoteMemoryError('conflict', 'The composer git worktree has commits not confirmed upstream.', {
         reason: 'git_not_fast_forward',
       });
     }
+    await this.fastForward(requireGitCommit(hasUpstream.stdout));
   }
 
   private async showAtCommit(commit: string, path: string): Promise<string> {
@@ -373,55 +395,20 @@ export class GitCanonicalMemoryStore {
   }
 }
 
-async function writeContainedWorktreeFile(worktree: string, relativePath: string, content: string): Promise<void> {
-  const safeRelativePath = requireSafeGitPath(relativePath);
-  const realWorktree = await realPath(worktree);
-  const segments = safeRelativePath.split('/');
+async function assertContainedWorktreePath(worktree: string, relativePath: string): Promise<void> {
+  const segments = requireSafeGitPath(relativePath).split('/');
   let current = worktree;
-  const walked: string[] = [];
-  for (const segment of segments.slice(0, -1)) {
+  for (const segment of segments) {
     current = joinAbsolute(current, segment);
-    walked.push(segment);
     if (await isSymlink(current)) {
       throw remoteMemoryError('invalid_request', 'Refusing to write through a git worktree symbolic link.');
     }
-    const created = await runProcess(['mkdir', '-m', '700', current], true);
-    if (created.exitCode !== 0 && !(await isDirectory(current))) {
-      throw remoteMemoryError('service_unavailable', 'The composer git worktree path could not be created.');
-    }
-    if ((await realPath(current)) !== joinAbsolute(realWorktree, ...walked)) {
-      throw remoteMemoryError('invalid_request', 'Refusing to write through a git worktree path alias.');
-    }
-  }
-  const targetPath = joinAbsolute(worktree, ...segments);
-  if (await isSymlink(targetPath)) {
-    throw remoteMemoryError('invalid_request', 'Refusing to replace a git worktree symbolic link.');
-  }
-  const temporaryPath = `${targetPath}.tmp`;
-  await Bun.write(temporaryPath, content);
-  const moved = await runProcess(['mv', '-f', temporaryPath, targetPath], true);
-  if (moved.exitCode !== 0) {
-    await runProcess(['rm', '-f', temporaryPath], true);
-    throw remoteMemoryError('service_unavailable', 'The composer git worktree file could not be written.');
   }
 }
 
 async function isSymlink(path: string): Promise<boolean> {
   const result = await runProcess(['test', '-L', path], true);
   return result.exitCode === 0;
-}
-
-async function isDirectory(path: string): Promise<boolean> {
-  const result = await runProcess(['test', '-d', path], true);
-  return result.exitCode === 0;
-}
-
-async function realPath(path: string): Promise<string> {
-  const resolved = await runProcess(['realpath', path], true);
-  if (resolved.exitCode !== 0 || !resolved.stdout.trim()) {
-    throw remoteMemoryError('service_unavailable', 'The composer git worktree path could not be resolved.');
-  }
-  return resolved.stdout.trim();
 }
 
 async function acquireExclusiveLock(lockPath: string): Promise<void> {
@@ -444,7 +431,13 @@ function parseLsTreeBlobs(stdout: string): Map<string, string> {
     const meta = record.slice(0, tab).split(' ');
     const gitPath = record.slice(tab + 1);
     const blobId = meta[2];
-    if (meta[1] !== 'blob' || !blobId || !/^[0-9a-f]{40,64}$/u.test(blobId)) continue;
+    if (
+      !['100644', '100755'].includes(meta[0] ?? '') ||
+      meta[1] !== 'blob' ||
+      !blobId ||
+      !/^[0-9a-f]{40,64}$/u.test(blobId)
+    )
+      continue;
     blobs.set(gitPath, blobId);
   }
   return blobs;
@@ -577,21 +570,29 @@ function runGit(
   worktree: string,
   args: readonly string[],
   allowFailure: boolean,
+  options?: GitProcessOptions,
 ): Promise<{readonly exitCode: number; readonly stderr: string; readonly stdout: string}> {
-  return runProcess(['git', '-C', worktree, ...args], allowFailure, `git ${args[0] ?? 'command'}`);
+  return runProcess(['git', '-C', worktree, ...args], allowFailure, `git ${args[0] ?? 'command'}`, options);
+}
+
+interface GitProcessOptions {
+  readonly environment?: Readonly<Record<string, string>>;
+  readonly stdin?: string;
 }
 
 async function runProcess(
   command: readonly string[],
   allowFailure: boolean,
   label = command[0] ?? 'command',
+  options?: GitProcessOptions,
 ): Promise<{readonly exitCode: number; readonly stderr: string; readonly stdout: string}> {
   let child: ReturnType<typeof Bun.spawn>;
   try {
     child = Bun.spawn({
       cmd: [...command],
+      env: {...process.env, ...options?.environment},
       stderr: 'pipe',
-      stdin: 'ignore',
+      stdin: options?.stdin === undefined ? 'ignore' : new TextEncoder().encode(options.stdin),
       stdout: 'pipe',
     });
   } catch {
