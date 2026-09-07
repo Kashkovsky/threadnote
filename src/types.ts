@@ -171,6 +171,9 @@ export interface SeedOptions {
 export interface McpInstallOptions {
   readonly apply?: boolean;
   readonly composerClientId?: string;
+  readonly composerOAuthScopes?: readonly string[];
+  readonly composerCallbackUrl?: string;
+  readonly composerCallbackPort?: number;
   readonly composerUrl?: string;
   /** @internal Recorded Claude project/local installation directory used by repair. */
   readonly cwd?: string;

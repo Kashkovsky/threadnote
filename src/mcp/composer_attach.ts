@@ -22,13 +22,15 @@ export class ComposerAttachError extends Schema.TaggedError<ComposerAttachError>
 
 export interface ComposerShareBinding {
   readonly clientId?: string;
+  readonly additionalScopes?: readonly string[];
+  readonly callback?: {readonly url: string; readonly port: number};
   readonly shareId: string;
   readonly url: string;
 }
 
 export interface ComposerMcpOAuthAuth {
   readonly CLIENT_ID: string;
-  readonly scopes: readonly (typeof COMPOSER_OAUTH_SCOPES)[number][];
+  readonly scopes: readonly string[];
 }
 
 export interface ComposerHttpMcpEntry {
@@ -51,6 +53,9 @@ export type ComposerClientHttpMcpEntry = ComposerHttpMcpEntry | CopilotComposerH
 
 export interface ComposerAttachOptions {
   readonly composerClientId?: string;
+  readonly composerOAuthScopes?: readonly string[];
+  readonly composerCallbackUrl?: string;
+  readonly composerCallbackPort?: number;
   readonly composerUrl?: string;
   readonly shareId?: string;
 }
@@ -58,7 +63,15 @@ export interface ComposerAttachOptions {
 export function resolveComposerAttach(options: ComposerAttachOptions): ComposerShareBinding | undefined {
   const composerUrl = options.composerUrl?.trim();
   const shareId = options.shareId?.trim();
-  if (!composerUrl && !shareId && options.composerClientId === undefined) return undefined;
+  if (
+    !composerUrl &&
+    !shareId &&
+    options.composerClientId === undefined &&
+    !options.composerOAuthScopes?.length &&
+    options.composerCallbackUrl === undefined &&
+    options.composerCallbackPort === undefined
+  )
+    return undefined;
   if (!composerUrl || !shareId) {
     throw ComposerAttachError.make({
       message: 'Organization composer attach requires both --composer-url and --share-id.',
@@ -66,6 +79,18 @@ export function resolveComposerAttach(options: ComposerAttachOptions): ComposerS
   }
   return {
     ...(options.composerClientId === undefined ? {} : {clientId: composerOAuthClientId(options.composerClientId)}),
+    ...(options.composerOAuthScopes?.length
+      ? {
+          additionalScopes: composerOAuthScopes(options.composerOAuthScopes).filter(
+            scope => !COMPOSER_OAUTH_SCOPES.some(required => required === scope),
+          ),
+        }
+      : {}),
+    ...(options.composerCallbackUrl === undefined && options.composerCallbackPort === undefined
+      ? {}
+      : {
+          callback: composerOAuthCallback(options.composerCallbackUrl, options.composerCallbackPort),
+        }),
     shareId: composerShareId(shareId),
     url: composerMcpUrl(composerUrl),
   };
@@ -124,11 +149,12 @@ export function buildComposerHttpMcpEntry(
   url: string,
   shareId: string,
   clientId: string = COMPOSER_OAUTH_CLIENT_ID,
+  additionalScopes: readonly string[] = [],
 ): ComposerHttpMcpEntry {
   return {
     auth: {
       CLIENT_ID: composerOAuthClientId(clientId),
-      scopes: [...COMPOSER_OAUTH_SCOPES],
+      scopes: composerOAuthScopes(additionalScopes),
     },
     headers: {[THREADNOTE_COMPOSER_SHARE_ID_HEADER]: composerShareId(shareId)},
     url: composerMcpUrl(url),
@@ -158,8 +184,15 @@ export function withComposerHttpMcpEntry(
   }
   const next: Record<string, JsonObject> = {...servers, [stdioName]: stdio};
   if (attach) {
-    const build = client === 'copilot' ? buildCopilotComposerHttpMcpEntry : buildComposerHttpMcpEntry;
-    next[THREADNOTE_ORG_MCP_NAME] = build(attach.url, attach.shareId, attach.clientId);
+    if (client === 'copilot' && (attach.additionalScopes?.length || attach.callback)) {
+      throw ComposerAttachError.make({
+        message: 'Additional OAuth scopes and callbacks are not supported for Copilot attach.',
+      });
+    }
+    next[THREADNOTE_ORG_MCP_NAME] =
+      client === 'copilot'
+        ? buildCopilotComposerHttpMcpEntry(attach.url, attach.shareId, attach.clientId)
+        : buildComposerHttpMcpEntry(attach.url, attach.shareId, attach.clientId, attach.additionalScopes);
   }
   return next;
 }
@@ -184,13 +217,18 @@ export function composerHttpEntryMatches(actual: unknown, expected: ComposerClie
     return false;
   return actual.type === 'http'
     ? expected.type === 'http' && actual.oauth.clientId === expected.oauth.clientId
-    : expected.type !== 'http' && actual.auth.CLIENT_ID === expected.auth.CLIENT_ID;
+    : expected.type !== 'http' &&
+        actual.auth.CLIENT_ID === expected.auth.CLIENT_ID &&
+        composerOAuthScopesMatch(actual.auth.scopes, expected.auth.scopes);
 }
 
 export function isManagedComposerHttpEntry(actual: unknown): boolean {
   return (
     isComposerHttpEntry(actual) &&
-    (actual.type === 'http' ? actual.oauth.clientId : actual.auth.CLIENT_ID) === COMPOSER_OAUTH_CLIENT_ID
+    (actual.type === 'http' ? actual.oauth.clientId : actual.auth.CLIENT_ID) === COMPOSER_OAUTH_CLIENT_ID &&
+    (actual.type === 'http' ||
+      (actual.auth.scopes.length === COMPOSER_OAUTH_SCOPES.length &&
+        actual.auth.scopes.every((scope, index) => scope === COMPOSER_OAUTH_SCOPES[index])))
   );
 }
 
@@ -209,8 +247,7 @@ export function isComposerHttpEntry(actual: unknown): actual is ComposerClientHt
     if (!isRecord(actual.auth) || typeof actual.auth.CLIENT_ID !== 'string' || !Array.isArray(actual.auth.scopes))
       return false;
     if (Object.keys(actual.auth).some(key => key !== 'CLIENT_ID' && key !== 'scopes')) return false;
-    if (actual.auth.scopes.length !== COMPOSER_OAUTH_SCOPES.length) return false;
-    if (actual.auth.scopes.some((scope, index) => scope !== COMPOSER_OAUTH_SCOPES[index])) return false;
+    if (!validComposerOAuthScopes(actual.auth.scopes)) return false;
     clientId = actual.auth.CLIENT_ID;
   }
   try {
@@ -234,4 +271,69 @@ function composerOAuthClientId(value: string): string {
     });
   }
   return value;
+}
+
+export function composerOAuthScopes(additionalScopes: readonly string[] = []): readonly string[] {
+  if (
+    additionalScopes.length > 32 ||
+    additionalScopes.some(scope => !/^[\x21\x23-\x5b\x5d-\x7e]{1,256}$/u.test(scope))
+  ) {
+    throw ComposerAttachError.make({
+      message:
+        'OAuth scopes require at most 32 non-empty RFC 6749 scope tokens of at most 256 ASCII characters each (no spaces, quotes, or backslashes).',
+    });
+  }
+  const extras = [...new Set(additionalScopes)]
+    .filter(scope => !COMPOSER_OAUTH_SCOPES.some(required => required === scope))
+    .sort();
+  const scopes = [...COMPOSER_OAUTH_SCOPES, ...extras];
+  if (scopes.length > 32 || scopes.join(' ').length > 2048) {
+    throw ComposerAttachError.make({
+      message: 'The complete OAuth scope set must contain at most 32 tokens and 2048 bytes.',
+    });
+  }
+  return scopes;
+}
+
+export function composerOAuthScopesMatch(actual: readonly string[], expected: readonly string[]): boolean {
+  return (
+    actual.length === expected.length &&
+    new Set(actual).size === actual.length &&
+    expected.every(scope => actual.includes(scope))
+  );
+}
+
+function validComposerOAuthScopes(scopes: readonly unknown[]): scopes is readonly string[] {
+  if (!scopes.every(scope => typeof scope === 'string')) return false;
+  try {
+    return composerOAuthScopesMatch(scopes, composerOAuthScopes(scopes));
+  } catch {
+    return false;
+  }
+}
+
+function composerOAuthCallback(url: string | undefined, port: number | undefined): {url: string; port: number} {
+  const message =
+    'Codex OAuth callback requires both a credential-free http://127.0.0.1 callback URL and a matching --composer-callback-port between 1024 and 65535, without query or fragment.';
+  if (!url || port === undefined || !Number.isInteger(port) || port < 1024 || port > 65535 || /\s/u.test(url)) {
+    throw ComposerAttachError.make({message});
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw ComposerAttachError.make({message});
+  }
+  if (
+    parsed.protocol !== 'http:' ||
+    parsed.hostname !== '127.0.0.1' ||
+    Number(parsed.port) !== port ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw ComposerAttachError.make({message});
+  }
+  return {url, port};
 }

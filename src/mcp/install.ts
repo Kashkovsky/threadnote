@@ -12,6 +12,7 @@ import {THREADNOTE_MCP_CLIENT_ENV, THREADNOTE_MCP_NAME} from '../constants.js';
 import {maybeRunEffect, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset} from './toolset.js';
+import {runCodexOrgMcpInstall} from './codex_org_attach.js';
 import {
   ComposerAttachError,
   THREADNOTE_ORG_MCP_NAME,
@@ -57,8 +58,32 @@ const isPersonalThreadnoteHomeEffect = Effect.fn('mcp.isPersonalHome')(function*
 });
 
 export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options: McpInstallOptions) {
-  const install = runMcpInstallInTransaction(config, agent, options);
-  return options.apply === true ? withAgentIntegrationLock(config, install) : install;
+  return Effect.gen(function* () {
+    const attach = yield* Effect.try({
+      try: () => resolveComposerAttach(options),
+      catch: cause =>
+        Schema.is(ComposerAttachError)(cause)
+          ? cause
+          : McpOperationError.make({message: 'Invalid organization attach options.'}),
+    });
+    if (attach && options.name === THREADNOTE_ORG_MCP_NAME) {
+      return yield* McpOperationError.make({
+        message:
+          'Organization composer attach cannot use --name threadnote-org; that name is reserved for the HTTP composer entry.',
+      });
+    }
+    if (attach?.callback && agent !== 'codex') {
+      return yield* McpOperationError.make({message: 'Organization callback options are supported only for Codex.'});
+    }
+    if (options.composerOAuthScopes?.length && agent !== 'cursor' && agent !== 'codex') {
+      return yield* McpOperationError.make({
+        message: 'Additional organization OAuth scopes are supported only for Cursor and Codex.',
+      });
+    }
+    if (attach && agent === 'codex') return yield* runCodexOrgMcpInstall(attach, options.apply === true);
+    const install = runMcpInstallInTransaction(config, agent, options);
+    return yield* options.apply === true ? withAgentIntegrationLock(config, install) : install;
+  });
 }
 
 const runMcpInstallInTransaction = Effect.fn('mcp.runInstallInTransaction')(function* (
@@ -561,7 +586,12 @@ const runCursorMcpInstall = Effect.fn('mcp.runCursorInstall')(function* (
     toolset: options.toolset,
   });
   const composerEntry = options.attach
-    ? buildComposerHttpMcpEntry(options.attach.url, options.attach.shareId, options.attach.clientId)
+    ? buildComposerHttpMcpEntry(
+        options.attach.url,
+        options.attach.shareId,
+        options.attach.clientId,
+        options.attach.additionalScopes,
+      )
     : undefined;
   const currentContent = yield* readFileIfExists(path);
   const current =

@@ -157,6 +157,7 @@
     "pxpipe-proxy": "0.13.2",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "smol-toml": "1.8.0",
     "three": "^0.185.1",
     "typescript-compiler": "npm:typescript@5.9.3",
     "unpdf": "1.8.1",
