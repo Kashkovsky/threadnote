@@ -13,6 +13,7 @@ const COMPOSER_NAME = 'Threadnote Composer';
 const COMPOSER_EMAIL = 'threadnote-composer@invalid';
 
 export interface GitCanonicalMemoryStoreOptions {
+  readonly expectedRemoteUrl?: string;
   readonly binding?: GitMemoryBinding;
   readonly worktreeLock?: GitWorktreeLock;
   readonly branch?: string;
@@ -105,6 +106,7 @@ export function isAbsoluteGitWorktree(path: string): boolean {
 }
 
 export class GitCanonicalMemoryStore {
+  readonly expectedRemoteUrl?: string;
   readonly binding?: GitMemoryBinding;
   readonly worktreeLock?: GitWorktreeLock;
   readonly branch: string;
@@ -114,6 +116,7 @@ export class GitCanonicalMemoryStore {
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(options: GitCanonicalMemoryStoreOptions) {
+    this.expectedRemoteUrl = options.expectedRemoteUrl;
     if (options.binding) this.binding = requireGitMemoryBinding(options.binding);
     const worktree = options.worktree.trim();
     if (!worktree || !isAbsoluteGitWorktree(worktree)) {
@@ -198,6 +201,7 @@ export class GitCanonicalMemoryStore {
     if (writable.exitCode !== 0) {
       throw remoteMemoryError('service_unavailable', 'THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE is not writable.');
     }
+    await this.assertExpectedRemote();
   }
 
   async assertLiveShare(): Promise<void> {
@@ -349,6 +353,7 @@ export class GitCanonicalMemoryStore {
   }
 
   private async refreshExclusive(): Promise<void> {
+    await this.assertExpectedRemote();
     await this.assertCleanBranch();
     const upstream = `refs/remotes/${this.remote}/${this.branch}`;
     const fetched = await this.git(['fetch', '--no-tags', this.remote, `+refs/heads/${this.branch}:${upstream}`], true);
@@ -368,6 +373,20 @@ export class GitCanonicalMemoryStore {
       });
     }
     await this.fastForward(requireGitCommit(hasUpstream.stdout));
+  }
+
+  private async assertExpectedRemote(): Promise<void> {
+    if (!this.expectedRemoteUrl) return;
+    for (const direction of [[], ['--push']]) {
+      const result = await this.git(['remote', 'get-url', '--all', ...direction, this.remote], true);
+      const endpoints = result.stdout.trim().split('\n');
+      if (result.exitCode !== 0 || endpoints.length !== 1 || endpoints[0] !== this.expectedRemoteUrl) {
+        throw remoteMemoryError(
+          'service_unavailable',
+          'Git fetch and push must use the exact configured repository URL.',
+        );
+      }
+    }
   }
 
   private async showAtCommit(commit: string, path: string): Promise<string> {
@@ -498,6 +517,7 @@ export interface LiveGitShareWorktreeOptions {
   readonly branch?: string;
   readonly cloneUrl: string;
   readonly remoteName?: string;
+  readonly requireExactRemote?: boolean;
   readonly worktree: string;
 }
 
@@ -507,16 +527,21 @@ export async function ensureLiveGitShareWorktree(options: LiveGitShareWorktreeOp
     throw remoteMemoryError('invalid_request', 'THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE must be an absolute path.');
   }
   const branch = requireGitRefName(options.branch?.trim() || 'main', 'THREADNOTE_REMOTE_MEMORY_GIT_BRANCH');
+  const remoteName = requireGitRefName(options.remoteName?.trim() || 'origin', 'THREADNOTE_REMOTE_MEMORY_GIT_REMOTE');
   const cloneUrl = options.cloneUrl.trim();
   if (!cloneUrl) {
     throw remoteMemoryError('invalid_request', 'The live team git remote is required.');
   }
   const exists = (await runProcess(['test', '-d', worktree], true)).exitCode === 0;
   if (!exists || (await isEmptyDirectory(worktree))) {
-    await cloneLiveShare(cloneUrl, worktree, branch);
+    await cloneLiveShare(cloneUrl, worktree, branch, remoteName);
   }
-  const remoteName = requireGitRefName(options.remoteName?.trim() || 'origin', 'THREADNOTE_REMOTE_MEMORY_GIT_REMOTE');
-  const store = new GitCanonicalMemoryStore({branch, remote: remoteName, worktree});
+  const store = new GitCanonicalMemoryStore({
+    branch,
+    remote: remoteName,
+    worktree,
+    ...(options.requireExactRemote ? {expectedRemoteUrl: cloneUrl} : {}),
+  });
   await store.assertLiveShare();
   await assertWorktreeRemoteMatches(worktree, remoteName, cloneUrl);
   return worktree;
@@ -561,13 +586,17 @@ async function assertWorktreeRemoteMatches(worktree: string, remoteName: string,
   }
 }
 
-async function cloneLiveShare(cloneUrl: string, worktree: string, branch: string): Promise<void> {
+async function cloneLiveShare(cloneUrl: string, worktree: string, branch: string, remoteName: string): Promise<void> {
   const parent = parentDirectory(worktree);
   const created = await runProcess(['mkdir', '-p', parent], true, 'mkdir');
   if (created.exitCode !== 0) {
     throw remoteMemoryError('service_unavailable', 'The composer git worktree parent could not be created.');
   }
-  const cloned = await runProcess(['git', 'clone', '--branch', branch, '--', cloneUrl, worktree], true, 'git clone');
+  const cloned = await runProcess(
+    ['git', 'clone', '--branch', branch, '--origin', remoteName, '--', cloneUrl, worktree],
+    true,
+    'git clone',
+  );
   if (cloned.exitCode !== 0) {
     throw remoteMemoryError('service_unavailable', 'Could not clone the live team git share.');
   }

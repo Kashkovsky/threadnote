@@ -43,12 +43,14 @@ describe('remote memory reference deployment', () => {
       Bun.file('package.json').json() as Promise<{readonly dependencies?: Readonly<Record<string, string>>}>,
     ]);
 
+    expect(dockerfile).toContain('COPY patches ./patches');
     expect(dockerfile).toContain('bun install --frozen-lockfile --production --ignore-scripts');
     expect(dockerfile).toContain('apk add --no-cache git');
     expect(dockerfile).toContain('CMD ["bun", "src/standalone.ts", "remote-memory-service"]');
     expect(packageJson.dependencies).toMatchObject({
       '@effect/platform-bun': '4.0.0-rc.112',
       effect: '4.0.0-rc.112',
+      'js-yaml': '^5.4.1',
     });
   });
 

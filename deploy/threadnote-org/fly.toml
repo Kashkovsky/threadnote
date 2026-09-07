@@ -1,0 +1,62 @@
+app = "threadnote-org"
+primary_region = "fra"
+kill_signal = "SIGTERM"
+kill_timeout = 60
+
+[build]
+  dockerfile = "deploy/threadnote-org/Dockerfile"
+  ignorefile = "deploy/threadnote-org/Dockerfile.dockerignore"
+
+[deploy]
+  strategy = "rolling"
+
+[env]
+  THREADNOTE_REMOTE_PUBLIC_URL = "https://threadnote-org.fly.dev"
+  THREADNOTE_REMOTE_ALLOWED_HOSTS = "threadnote-org.fly.dev"
+  THREADNOTE_REMOTE_ALLOWED_ORIGINS = "https://cursor.com,https://www.cursor.com,https://chatgpt.com"
+  THREADNOTE_REMOTE_HOST = "0.0.0.0"
+  THREADNOTE_REMOTE_PORT = "8787"
+  THREADNOTE_REMOTE_AUTO_MIGRATE = "false"
+  THREADNOTE_REMOTE_ENABLED = "false"
+  THREADNOTE_REMOTE_CANONICAL_STORE = "git"
+  THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE = "/data/memory-git"
+  THREADNOTE_REMOTE_MEMORY_GIT_CLONE_URL = "git@github.com:Kashkovsky/threadnote-share.git"
+  THREADNOTE_REMOTE_MEMORY_GIT_BRANCH = "main"
+  THREADNOTE_REMOTE_MEMORY_GIT_REMOTE = "origin"
+  THREADNOTE_REMOTE_MEMORY_GIT_PUSH = "true"
+  THREADNOTE_REMOTE_MEMORY_GIT_TENANT_ID = "threadnote-org"
+  THREADNOTE_REMOTE_MEMORY_GIT_SHARE_ID = "default"
+  THREADNOTE_REMOTE_OAUTH_ISSUER = "https://threadnote-org.eu.auth0.com/"
+  THREADNOTE_REMOTE_OAUTH_AUDIENCE = "https://threadnote-org.fly.dev/mcp"
+  THREADNOTE_REMOTE_OAUTH_JWKS_URL = "https://threadnote-org.eu.auth0.com/.well-known/jwks.json"
+
+[[mounts]]
+  source = "threadnote_org_git"
+  destination = "/data"
+  snapshot_retention = 14
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 20
+    hard_limit = 30
+
+  [[http_service.checks]]
+    grace_period = "60s"
+    interval = "15s"
+    method = "GET"
+    timeout = "5s"
+    path = "/readyz"
+    [http_service.checks.headers]
+      Host = "threadnote-org.fly.dev"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "512mb"

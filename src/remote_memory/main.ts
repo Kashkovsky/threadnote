@@ -5,7 +5,7 @@ import {createCursorTokenVerifier} from './cursor_oidc.js';
 import {migrateRemoteMemoryDatabase} from './migrations.js';
 import {createOAuthTokenVerifier} from './oauth.js';
 import {createRemoteMemorySql, PostgresRemoteControlPlane} from './postgres_control_plane.js';
-import {GitCanonicalMemoryStore} from './git_canonical_store.js';
+import {GitCanonicalMemoryStore, ensureLiveGitShareWorktree} from './git_canonical_store.js';
 import {PostgresRemoteMemoryRepository} from './postgres_repository.js';
 import {PostgresRemoteRateLimiter} from './rate_limit.js';
 import {RemoteMemoryIndexer} from './indexer.js';
@@ -47,10 +47,20 @@ export async function runRemoteMemoryService(
     if (config.autoMigrate) await migrateRemoteMemoryDatabase(sql, {executablePath: runtime.executablePath});
     else await assertRemoteMemoryRuntimePrivileges(sql);
     await assertRuntimeSchemaAccess(sql);
+    if (config.canonicalStore === 'git' && config.gitWorktree && config.gitCloneUrl) {
+      await ensureLiveGitShareWorktree({
+        branch: config.gitBranch,
+        cloneUrl: config.gitCloneUrl,
+        remoteName: config.gitRemote,
+        requireExactRemote: true,
+        worktree: config.gitWorktree,
+      });
+    }
     const gitStore =
       config.canonicalStore === 'git' && config.gitWorktree
         ? new GitCanonicalMemoryStore({
             binding: config.gitBinding,
+            expectedRemoteUrl: config.gitCloneUrl,
             branch: config.gitBranch,
             push: config.gitPush,
             remote: config.gitRemote,
@@ -58,6 +68,7 @@ export async function runRemoteMemoryService(
             worktreeLock: runtime.worktreeLock,
           })
         : undefined;
+    if (gitStore) await gitStore.refresh();
     const server = startRemoteMemoryServer({
       config,
       dependencies: {
