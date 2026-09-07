@@ -65,6 +65,11 @@ import {
   type GraphShareProfileV1,
 } from './profile.js';
 import {selectGraphShareResultsForFrozenMachine} from './receipts.js';
+import {
+  graphPublisherContributionEvidence,
+  type GraphPublisherContributionEvidence,
+  type GraphPublisherHydrationEvidence,
+} from './publication_evidence.js';
 import {resolveGraphShareCasRoot} from './trust.js';
 import type {RepositoryIdentity} from '../types.js';
 
@@ -86,6 +91,7 @@ const FORCE_FREEZE_THRESHOLDS: GraphShareFrontierThresholds = {
 
 export interface GraphPublisherAdvanceResult {
   readonly checkpointDigest: Sha256Digest;
+  readonly contributionEvidence?: GraphPublisherContributionEvidence;
   readonly descriptorDigest?: Sha256Digest;
   readonly envelopeDigest: Sha256Digest;
   readonly generation: number;
@@ -167,7 +173,7 @@ export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advanc
     return currentPointer(current, pointer, machine.phase);
   }
   const selected = selectGraphShareResultsForFrozenMachine(coordinator.receipts, machine);
-  const verified = [];
+  const verified: VerifiedGraphShareParseReceipt[] = [];
   for (const announcement of selected.selected) {
     const receipt = yield* verifyGraphShareParseReceipt({
       announcement,
@@ -182,11 +188,21 @@ export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advanc
     }
     verified.push(receipt.value);
   }
-  yield* hydratePublisherFacts(config, identity, verified).pipe(Effect.ignore);
+  const hydration: GraphPublisherHydrationEvidence = yield* hydratePublisherFacts(config, identity, verified).pipe(
+    Effect.match({
+      onFailure: () => ({status: 'failed' as const, hydratedResults: null}),
+      onSuccess: result => ({status: 'completed' as const, hydratedResults: result.hydrated}),
+    }),
+  );
   const published = yield* Effect.gen(function* () {
     const indexer = yield* CodeGraphIndexer;
     const store = yield* CodeGraphStore;
-    yield* indexer.index({cwd, ensureVectors: false, force: true, threadnoteHome: config.agentContextHome});
+    const indexed = yield* indexer.index({
+      cwd,
+      ensureVectors: false,
+      force: true,
+      threadnoteHome: config.agentContextHome,
+    });
     const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
     const ready = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
     if (
@@ -203,7 +219,16 @@ export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advanc
     yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
     machine = verifyGraphShareBatch(machine);
     yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
-    return yield* exportSignedGeneration(config, options, current, identity.repositoryId, profile);
+    const exported = yield* exportSignedGeneration(config, options, current, identity.repositoryId, profile);
+    return {
+      ...exported,
+      contributionEvidence: graphPublisherContributionEvidence({
+        hydration,
+        index: indexed,
+        selectedResults: selected.selected.length,
+        verifiedResultDigests: verified.map(item => item.announcement.resultManifestDigest),
+      }),
+    };
   }).pipe(
     Effect.tapError(() => {
       machine = failGraphShareBatch(machine);
