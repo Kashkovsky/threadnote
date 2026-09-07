@@ -104,6 +104,7 @@ interface RunInstallOptions extends InstallOptions {
 }
 
 interface RunRepairOptions extends RepairOptions {
+  readonly skipAgentIntegrations?: boolean;
   readonly skipReleaseLifecycle?: boolean;
 }
 
@@ -411,20 +412,22 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
   } else {
     yield* Console.log('Would validate and rebuild the derived lexical and vector recall indexes.');
   }
-  const inferredMcpClients = yield* inferConfiguredMcpClients(config);
-  yield* migrateLegacyAgentIntegrations(config, inferredMcpClients, dryRun);
-  const repairedIntegrationClients = yield* repairAgentIntegrations(config, dryRun);
-  const registry = yield* readAgentIntegrationRegistry(config);
-  const registeredClients = registry === undefined ? inferredMcpClients : registeredAgentClients(registry);
-  const repairableClients = repairableAgentClients(registry);
-  const requestedMcpClients = options.mcp ?? (repairableClients.length === 0 ? 'none' : repairableClients.join(','));
-  const mcpClients = yield* resolveMcpClients(requestedMcpClients, 'repair');
-  yield* repairRegisteredMcpClients(config, registry, mcpClients, dryRun);
-  if (repairedIntegrationClients.length === 0 && registeredClients.length === 0) {
-    yield* Console.log('No agent integrations are registered; skipping host-specific repair.');
-  }
-  if (yield* hasManagedClaudeHooks()) {
-    yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
+  if (options.skipAgentIntegrations !== true) {
+    const inferredMcpClients = yield* inferConfiguredMcpClients(config);
+    yield* migrateLegacyAgentIntegrations(config, inferredMcpClients, dryRun);
+    const repairedIntegrationClients = yield* repairAgentIntegrations(config, dryRun);
+    const registry = yield* readAgentIntegrationRegistry(config);
+    const registeredClients = registry === undefined ? inferredMcpClients : registeredAgentClients(registry);
+    const repairableClients = repairableAgentClients(registry);
+    const requestedMcpClients = options.mcp ?? (repairableClients.length === 0 ? 'none' : repairableClients.join(','));
+    const mcpClients = yield* resolveMcpClients(requestedMcpClients, 'repair');
+    yield* repairRegisteredMcpClients(config, registry, mcpClients, dryRun);
+    if (repairedIntegrationClients.length === 0 && registeredClients.length === 0) {
+      yield* Console.log('No agent integrations are registered; skipping host-specific repair.');
+    }
+    if (yield* hasManagedClaudeHooks()) {
+      yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
+    }
   }
   yield* repairCodeGraphIndexes(
     config.agentContextHome,
@@ -483,7 +486,8 @@ export const repairRegisteredMcpClients = Effect.fn('lifecycle.repairRegisteredM
 /**
  * Repairs version-derived state while the development installer owns the
  * installation lock. Unlike ordinary repair, this never activates or prunes a
- * release and fails if the installer's exact target is not active.
+ * release, changes no host integration, and fails if the installer's exact
+ * target is not active.
  */
 export const runDevelopmentInstallRepair = Effect.fn('lifecycle.developmentInstallRepair')(function* (
   config: RuntimeConfig,
@@ -499,6 +503,7 @@ export const runDevelopmentInstallRepair = Effect.fn('lifecycle.developmentInsta
   yield* requireExpectedActive;
   yield* runRepair(config, {
     mcp: 'none',
+    skipAgentIntegrations: true,
     postUpdate: false,
     skipReleaseLifecycle: true,
   });
