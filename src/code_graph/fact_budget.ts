@@ -141,6 +141,13 @@ export function budgetCachedCodeGraphFacts(
   if (cachedCodeGraphFactByteUpperBound(compacted) <= maximumBytes) return compacted;
   if (cachedCodeGraphFactBytes(compacted) <= maximumBytes) return compacted;
 
+  return selectCachedCodeGraphFactsWithinBudget(compacted, maximumBytes);
+}
+
+function selectCachedCodeGraphFactsWithinBudget(
+  compacted: CodeGraphFileFacts,
+  maximumBytes: number,
+): CodeGraphFileFacts {
   const symbolsById = new Map<string, CodeGraphSymbol>();
   for (const symbol of compacted.symbols) {
     if (symbolsById.has(symbol.id)) continue;
@@ -438,7 +445,13 @@ function measureBoundedCodeGraphFactWithJson(
   facts: CodeGraphFileFacts,
   maximumBytes: number,
 ): {readonly bytes: number; readonly facts: CodeGraphFileFacts; readonly json: string} {
-  const bounded = budgetCachedCodeGraphFacts(facts, maximumBytes);
+  const compacted = budgetCodeGraphReferenceCandidates(compactCachedFileRelationships(facts));
+  // This boundary needs JSON anyway: reuse its exact bytes instead of walking
+  // every property first to calculate a conservative serialization upper bound.
+  const compactedJson = JSON.stringify(compacted);
+  const compactedBytes = cachedFactEncoder.encode(compactedJson).byteLength;
+  if (compactedBytes <= maximumBytes) return {bytes: compactedBytes, facts: compacted, json: compactedJson};
+  const bounded = selectCachedCodeGraphFactsWithinBudget(compacted, maximumBytes);
   const json = JSON.stringify(bounded);
   return {bytes: cachedFactEncoder.encode(json).byteLength, facts: bounded, json};
 }
