@@ -367,7 +367,7 @@ function validArtifact(): MutableReadyQueryEvidence {
     runner: 'dedicated-preprovisioned-linux-x64',
     runtime: {
       compatible: true,
-      extractorSet: 'native-code-graph-13',
+      extractorSet: 'native-code-graph-14',
       persistentExtensionRevision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
       resultVersion: 1,
       schemaVersion: 3,
@@ -376,7 +376,7 @@ function validArtifact(): MutableReadyQueryEvidence {
       commit: READY_QUERY_REPOSITORY_COMMIT,
       dirty: false,
       edgeCount: 1,
-      extractorSet: 'native-code-graph-13',
+      extractorSet: 'native-code-graph-14',
       fileCount: READY_QUERY_MINIMUM_FILES,
       idSha256: SNAPSHOT_DIGEST,
       state: 'ready',

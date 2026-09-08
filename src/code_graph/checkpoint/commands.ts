@@ -50,7 +50,6 @@ import {checkpointTerminalText} from './terminal_text.js';
 
 const CHECKPOINT_IO_CHUNK_BYTES = 64 * 1_024;
 const CHECKPOINT_GIT_OUTPUT_BYTES_MAXIMUM = 16 * 1_024 * 1_024;
-const CHECKPOINT_GIT_TREE_FORMAT = '%(objectmode)%x09%(objecttype)%x09%(objectname)%x09%(objectsize)%x09%(path)';
 const CHECKPOINT_SNAPSHOT_DOMAIN = 'threadnote-code-graph-checkpoint-local-snapshot-v1\0';
 
 export class CodeGraphCheckpointCommandError extends Schema.TaggedError<CodeGraphCheckpointCommandError>()(
@@ -265,7 +264,7 @@ export const importCodeGraphCheckpointSnapshot = Effect.fn('codeGraph.checkpoint
   const validated = yield* withCheckpointInput(options.input, input =>
     Effect.gen(function* () {
       const inspection = yield* inspectCheckpointInput(input, options);
-      validateCheckpointReceiver(inspection.header, identity, registry);
+      yield* attemptCheckpoint(() => validateCheckpointReceiver(inspection.header, identity, registry));
       yield* requireCheckpointCommit(identity, inspection.header.source.commit);
       const attribution = checkpointAttributionRecordVerifier(inspection.header);
       yield* withCodeGraphCheckpointAuthorityVerification(inspection.header, accept =>
@@ -520,17 +519,7 @@ function verifyCheckpointFiles(
     for (const batch of codeGraphCheckpointGitPathBatches(files)) {
       const result = yield* runBinaryCommandEffect(
         'git',
-        [
-          '-C',
-          identity.repoRoot,
-          'ls-tree',
-          '-z',
-          '--full-tree',
-          `--format=${CHECKPOINT_GIT_TREE_FORMAT}`,
-          commit,
-          '--',
-          ...batch.map(file => file.path),
-        ],
+        ['-C', identity.repoRoot, 'ls-tree', '-l', '-z', '--full-tree', commit, '--', ...batch.map(file => file.path)],
         {
           env: {...system.environment(), GIT_LITERAL_PATHSPECS: '1', GIT_NO_LAZY_FETCH: '1'},
           maxOutputBytes: CHECKPOINT_GIT_OUTPUT_BYTES_MAXIMUM,
@@ -601,8 +590,7 @@ function validateCheckpointReceiver(
 ): void {
   if (
     header.repository.repositoryId !== identity.repositoryId ||
-    header.repository.objectFormat !== identity.objectFormat ||
-    header.repository.caseMode !== identity.caseMode
+    header.repository.objectFormat !== identity.objectFormat
   ) {
     throw CodeGraphCheckpointCommandError.make({
       message: 'Checkpoint repository identity does not match this checkout.',

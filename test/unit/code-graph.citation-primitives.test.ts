@@ -752,7 +752,7 @@ function completeInventoryReuseReceipt(workspace = mergeCodeGraphWorkspaces([]))
     policyExclusions: {
       bytes: 0,
       files: 0,
-      policyVersion: 1 as const,
+      policyVersion: 2 as const,
       reasons: CODE_GRAPH_INVENTORY_EXCLUSION_REASONS.map(reason => ({bytes: 0, files: 0, reason})),
     },
     skipped: 0,
