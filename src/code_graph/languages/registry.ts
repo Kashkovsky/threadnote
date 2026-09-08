@@ -1,5 +1,5 @@
 import {Context, Effect, Layer, Option} from 'effect';
-import {sha256HexSync} from '../../crypto/sha256.js';
+import {createCachedCodeGraphContractHash} from '../cached_contract_hash.js';
 import {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact_budget.js';
 import {BUILTIN_CODE_GRAPH_LANGUAGE_PACKS} from './catalog.generated.js';
 import {
@@ -23,6 +23,9 @@ import {
 } from '../rationale.js';
 
 export {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact_budget.js';
+
+const cacheIdentityHash = createCachedCodeGraphContractHash();
+const derivationIdentityHash = createCachedCodeGraphContractHash();
 
 export interface CodeGraphLanguagePackRegistryShape {
   readonly activeCacheIdentities: (paths: readonly string[]) => readonly string[];
@@ -172,7 +175,8 @@ export function packCacheIdentity(pack: CodeGraphLanguagePack): string {
     .map(asset => `${asset.relativePath}:${asset.sha256}:${asset.abi}:${asset.version}`)
     .sort()
     .join('\n');
-  return sha256HexSync(
+  return cacheIdentityHash(
+    pack,
     [
       'code-graph-language-pack-v3',
       CODE_GRAPH_PARSER_FACTS_VERSION,
@@ -191,7 +195,8 @@ export function packDerivationIdentity(pack: CodeGraphLanguagePack): string {
     .map(matcher => `${matcher.kind}:${matcher.value.toLowerCase()}:${matcher.language}:${matcher.role}`)
     .sort()
     .join('\n');
-  return sha256HexSync(
+  return derivationIdentityHash(
+    pack,
     [
       'code-graph-language-pack-derivation-v1',
       `postprocessors:${CODE_GRAPH_RATIONALE_EXTRACTOR_VERSION}`,
