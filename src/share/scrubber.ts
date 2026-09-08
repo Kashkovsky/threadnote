@@ -135,9 +135,24 @@ export function redactSensitiveText(content: string): string {
   return redacted;
 }
 
+const globalPatterns = new WeakMap<RegExp, {readonly source: string; readonly flags: string; readonly regex: RegExp}>();
+const MAXIMUM_CACHED_PATTERN_CODE_UNITS = 64 * 1_024;
+
 function globalize(regex: RegExp): RegExp {
-  const flags = regex.flags.includes('g') ? regex.flags : `${regex.flags}g`;
-  return new RegExp(regex.source, flags);
+  // Patterns are public and may be recompiled in place. Observe both inputs
+  // on every use, and keep the stateful matching clone private.
+  const flags = regex.flags;
+  const source = regex.source;
+  const cached = globalPatterns.get(regex);
+  if (cached?.source === source && cached.flags === flags) {
+    cached.regex.lastIndex = 0;
+    return cached.regex;
+  }
+  const globalRegex = new RegExp(source, flags.includes('g') ? flags : `${flags}g`);
+  if (source.length <= MAXIMUM_CACHED_PATTERN_CODE_UNITS)
+    globalPatterns.set(regex, {source, flags, regex: globalRegex});
+  else globalPatterns.delete(regex);
+  return globalRegex;
 }
 
 function matchesPattern(regex: RegExp, content: string): boolean {
