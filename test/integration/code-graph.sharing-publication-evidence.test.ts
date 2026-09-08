@@ -9,7 +9,7 @@ import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {runCodeGraphCheckpointExport} from '../../src/code_graph/checkpoint/commands.js';
-import {runGraphShareJoin} from '../../src/code_graph/sharing/client.js';
+import {runGraphShareJoin, runGraphShareLeave} from '../../src/code_graph/sharing/client.js';
 import {graphShareControlGetStatus} from '../../src/code_graph/sharing/control_client.js';
 import {parseSha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
@@ -22,7 +22,7 @@ import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
 import {readJsonFile, writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
 import {loadGraphShareCoordinatorState} from '../../src/code_graph/sharing/control_server.js';
-import {writeGraphShareCoordinatorUrl, writeGraphShareContributionMode} from '../../src/code_graph/sharing/trust.js';
+import {lookupGraphShareTrustReceipt, writeGraphShareTrustReceipt} from '../../src/code_graph/sharing/trust.js';
 import {announceGraphShareResult} from '../../src/code_graph/sharing/receipts.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher_cycle.js';
@@ -158,8 +158,14 @@ describe('publisher contribution evidence with an independent clean control', ()
               server => Effect.promise(() => server.stop(true)),
             );
             for (const targetHome of [home, controlHome]) {
-              yield* writeGraphShareCoordinatorUrl(targetHome, `http://127.0.0.1:${sentinel.port}`);
-              yield* writeGraphShareContributionMode(targetHome, 'passive');
+              yield* runGraphShareJoin(config(targetHome), {cas: targetHome === home ? cas : controlCas, cwd: repo});
+              const trust = yield* lookupGraphShareTrustReceipt(targetHome, identity.repositoryId);
+              expect(trust?.client).toBeDefined();
+              if (trust?.client === undefined) return yield* Effect.die('Missing graph-sharing fixture settings');
+              yield* writeGraphShareTrustReceipt(targetHome, {
+                ...trust,
+                client: {...trust.client, coordinatorUrl: `http://127.0.0.1:${sentinel.port}`},
+              });
             }
             const control = yield* advanceGraphPublisherFrontier(config(controlHome), {
               cas: controlCas,
@@ -303,7 +309,7 @@ describe('publisher contribution evidence with an independent clean control', ()
             });
             expect(actual.logicalDigest).toBe(clean.logicalDigest);
             expect(sharingRequests).toBe(0);
-            yield* writeGraphShareCoordinatorUrl(home, undefined);
+            yield* runGraphShareLeave(config(home), {cwd: repo});
             const forced = yield* indexer.index({cwd: repo, force: true, ensureVectors: false, threadnoteHome: home});
             expect(forced.reusedFiles).toBe(0);
             const unchanged = yield* advanceGraphPublisherFrontier(config(home), {cas, cwd: repo, forceFreeze: true});
