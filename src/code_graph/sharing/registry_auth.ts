@@ -7,6 +7,7 @@ export type GraphShareRegistryChallenge =
 export function parseGraphShareRegistryChallenge(
   value: string | undefined,
   target: GraphShareRegistryTarget,
+  access: 'read' | 'write' = 'read',
 ): GraphShareRegistryChallenge {
   if (
     value === undefined ||
@@ -50,8 +51,16 @@ export function parseGraphShareRegistryChallenge(
     throw graphSharingFailure('Registry token service is invalid.');
   }
   const scope = fields.get('scope');
-  if (scope !== undefined && scope !== target.pullScope) {
-    throw graphSharingFailure('Registry authentication requested a different scope.');
+  if (scope !== undefined) {
+    const prefix = `repository:${target.repository}:`;
+    const actions = scope.slice(prefix.length).split(',');
+    const allowed = access === 'write' ? ['pull', 'push'] : ['pull'];
+    if (
+      !scope.startsWith(prefix) ||
+      new Set(actions).size !== actions.length ||
+      actions.some(action => !allowed.includes(action))
+    )
+      throw graphSharingFailure('Registry authentication requested a different scope.');
   }
   return {kind: 'bearer', realm, ...(service === undefined ? {} : {service})};
 }
