@@ -549,6 +549,9 @@ function buildBoundedRecallMemoryLinkRawQueryWithContext(
   queryLimit: number,
 ): RecallMemoryLinkRawSelectionQuery | undefined {
   if (!Number.isSafeInteger(queryLimit) || queryLimit < 1 || seeds.length === 0) return undefined;
+  // The private cached source URI follows the same canonical ordering as the
+  // selector index. Sorting a joined document URI would visit an entire dense
+  // neighborhood before LIMIT; the equality join still verifies the cached URI.
   const selectorColumn = direction === 'outgoing' ? 'source_memory_id' : 'target_memory_id';
   const selectorIndex = direction === 'outgoing' ? 'memory_links_source' : 'memory_links_target';
   // SQLite requires the explicit partial-index predicate; equality to a
@@ -572,6 +575,7 @@ function buildBoundedRecallMemoryLinkRawQueryWithContext(
         ? AS requested_memory_id
       FROM memory_links AS memory_link INDEXED BY ${selectorIndex}
       INNER JOIN documents AS document ON document.id = memory_link.source_document_id
+        AND document.uri = memory_link.source_uri
       WHERE memory_link.${selectorColumn} = ?
         ${selectorIndexPredicate}
         AND ${context.scope.sql}
@@ -579,7 +583,7 @@ function buildBoundedRecallMemoryLinkRawQueryWithContext(
         AND ${context.sourcePredicate}
       ORDER BY
         memory_link.relation_type COLLATE BINARY,
-        document.uri COLLATE BINARY,
+        memory_link.source_uri COLLATE BINARY,
         memory_link.relation_origin COLLATE BINARY,
         memory_link.relation_ordinal,
         memory_link.target_memory_id COLLATE BINARY,

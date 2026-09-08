@@ -162,7 +162,7 @@ function readProjection(home: string): readonly Record<string, unknown>[] {
     return database
       .query<Record<string, unknown>, []>(
         `SELECT
-          source.uri AS source_uri,
+          link.source_uri,
           link.source_memory_id,
           link.target_memory_id,
           link.target_locator_digest,

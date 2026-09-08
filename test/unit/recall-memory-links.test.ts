@@ -29,7 +29,7 @@ interface MemoryLinkRow {
 }
 
 describe('recall memory links', () => {
-  effectIt.effect('projects every canonical origin into opaque schema-v12 selectors', () =>
+  effectIt.effect('projects canonical origins into schema-v13 selectors with private source ordering', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -104,6 +104,7 @@ describe('recall memory links', () => {
       const schema = yield* Effect.sync(() => inspectMemoryLinkSchema(home));
       expect(schema.columns).toEqual([
         'source_document_id',
+        'source_uri',
         'source_memory_id',
         'target_memory_id',
         'target_locator_digest',
@@ -114,9 +115,12 @@ describe('recall memory links', () => {
       expect(schema.sourceIndex).toEqual([
         'source_memory_id',
         'relation_type',
-        'source_document_id',
+        'source_uri',
         'relation_origin',
         'relation_ordinal',
+        'target_memory_id',
+        'target_locator_digest',
+        'source_document_id',
       ]);
       expect(schema.targetIndex[0]).toBe('target_memory_id');
       expect(schema.locatorIndex[0]).toBe('target_locator_digest');
@@ -268,6 +272,24 @@ describe('recall memory links', () => {
       yield* loadRecallIndexData(runtime, {includeInactive: false});
       expect(readMemoryLinks(home)).toEqual(expected);
 
+      mutateMemoryLinks(home, "UPDATE memory_links SET source_uri = 'threadnote://user/other/memories/source.md'");
+      const query = buildBoundedRecallMemoryLinkRawQuery(
+        'incoming',
+        [{memoryId: 'tn_integrity_target', requestedOrdinal: 0}],
+        {allowedUriScopes: [`threadnote://user/${user}/memories`]},
+        5,
+      )!;
+      const selected = yield* Effect.acquireUseRelease(
+        Effect.sync(
+          () => new Database(`${home}/indexes/lexical/${recallIndexDatabaseFilename(false)}`, {readonly: true}),
+        ),
+        database => Effect.sync(() => database.query(query.sql).all(...query.params)),
+        database => Effect.sync(() => database.close()),
+      );
+      expect(selected).toEqual([]);
+      yield* loadRecallIndexData(runtime, {includeInactive: false});
+      expect(readMemoryLinks(home)).toEqual(expected);
+
       mutateMemoryLinks(home, 'DELETE FROM memory_links');
       expect(readMemoryLinks(home)).toEqual([]);
       yield* loadRecallIndexData(runtime, {includeInactive: false});
@@ -349,7 +371,7 @@ function readMemoryLinks(home: string, includeInactive = false): readonly Memory
     return database
       .query<MemoryLinkRow, []>(
         `SELECT
-          source.uri AS source_uri,
+          link.source_uri,
           link.source_memory_id,
           link.target_memory_id,
           link.target_locator_digest,
