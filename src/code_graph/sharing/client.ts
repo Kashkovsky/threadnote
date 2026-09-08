@@ -26,6 +26,8 @@ import {assertGraphShareCommitChain, graphShareBlobExists, graphShareCommitIsAnc
 import {graphShareControlGetFrontier, graphShareControlGetTag, mirrorCoordinatorCasBlob} from './control_client.js';
 import {graphShareFrontierPointerFromOciDescriptor, parseGraphShareOciDescriptor} from './descriptor.js';
 import {graphShareFrontierDiscoveryTag} from './namespace.js';
+import {discoverGraphShareRegistryFrontier, makeGraphShareRegistryReader} from './registry_reader.js';
+import {ensureSharedGraphBlob as ensureSharedCasBlob, type GraphShareBlobSource} from './shared_blob.js';
 import {
   GRAPH_SHARE_CONTRIBUTION_MODES,
   effectiveGraphShareContributionMode,
@@ -153,6 +155,7 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
     enrollment.profile,
     'Enrollment profile pointer is invalid.',
   );
+  if (pointer.kind === 'oci') return yield* graphSharingUnavailable('Remote OCI profile enrollment is not supported.');
   if (options.coordinator !== undefined) {
     const coordinatorUrl = parseGraphShareCoordinatorUrl(options.coordinator);
     yield* mirrorCoordinatorCasBlob(casRoot, coordinatorUrl, pointer.digest);
@@ -371,6 +374,7 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     input.enrollment.profile,
     'Enrollment profile pointer is invalid.',
   );
+  if (pointer.kind === 'oci') return yield* graphSharingUnavailable('Remote OCI profile enrollment is not supported.');
   const client = yield* resolveGraphShareRepositoryClient(input.request.threadnoteHome, input.trust);
   const coordinatorHint = client.coordinatorUrl;
   const profile = yield* decodeJson(
@@ -390,7 +394,11 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
   if (profileDigest !== input.trust.profileDigest) {
     return {imported: false as const, reason: 'trust-pin-mismatch' as const};
   }
-  const coordinatorUrl = client.coordinatorUrl;
+  const registry = profile.registry.canonical.startsWith('oci://')
+    ? yield* makeGraphShareRegistryReader(profile.registry.canonical)
+    : undefined;
+  const blobSource = registry?.readBlob;
+  const coordinatorUrl = registry === undefined ? client.coordinatorUrl : undefined;
   const scope: GraphShareFrontierScope = {
     branch: profile.source.branches[0] ?? 'refs/heads/main',
     profileDigest,
@@ -428,14 +436,20 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
       });
     }
   }
-  if (coordinatorUrl !== undefined) {
+  if (registry !== undefined || coordinatorUrl !== undefined) {
     yield* Effect.gen(function* () {
-      const candidate = yield* refreshFrontierPointerFromCoordinator({
-        branch: scope.branch,
-        casRoot: input.casRoot,
-        coordinatorUrl,
-        repositoryId: scope.repositoryId,
-      });
+      const candidate = yield* registry !== undefined
+        ? discoverGraphShareRegistryFrontier(
+            input.casRoot,
+            registry,
+            graphShareFrontierDiscoveryTag(scope.repositoryId, scope.branch),
+          )
+        : refreshFrontierPointerFromCoordinator({
+            branch: scope.branch,
+            casRoot: input.casRoot,
+            coordinatorUrl: coordinatorUrl!,
+            repositoryId: scope.repositoryId,
+          });
       accepted = yield* acceptGraphShareFrontier({
         casRoot: input.casRoot,
         home: input.request.threadnoteHome,
@@ -448,14 +462,15 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     if (legacyFailure !== undefined) return yield* legacyFailure;
     return yield* graphSharingUnavailable('Shared frontier pointer is missing.');
   }
-  yield* ensureSharedCasBlob(input.casRoot, accepted.manifestDigest, coordinatorUrl);
-  yield* ensureSharedCasBlob(input.casRoot, accepted.envelopeDigest, coordinatorUrl);
+  yield* ensureSharedCasBlob(input.casRoot, accepted.manifestDigest, coordinatorUrl, blobSource);
+  yield* ensureSharedCasBlob(input.casRoot, accepted.envelopeDigest, coordinatorUrl, blobSource);
   const manifest = yield* readAuthenticatedGraphShareFrontier(input.casRoot, scope, accepted);
   const selected = yield* selectPublishedAncestorManifest(
     input.casRoot,
     input.request.identity,
     manifest,
     coordinatorUrl,
+    blobSource,
   );
   yield* assertGraphShareCommitChain(input.request.identity.repoRoot, [
     selected.checkpoint.sourceCommit,
@@ -493,6 +508,7 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
       artifactDigest: selected.checkpoint.manifestDigest,
       casRoot: input.casRoot,
       ...(coordinatorUrl === undefined ? {} : {coordinatorUrl}),
+      ...(blobSource === undefined ? {} : {blobSource}),
       ...(selected.checkpoint.metadataDigest === undefined ? {} : {metadataDigest: selected.checkpoint.metadataDigest}),
     });
     yield* sharingProgress(input.request.onProgress, 'applying-deltas');
@@ -524,6 +540,7 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     artifactDigest: selected.checkpoint.manifestDigest,
     casRoot: input.casRoot,
     ...(coordinatorUrl === undefined ? {} : {coordinatorUrl}),
+    ...(blobSource === undefined ? {} : {blobSource}),
     ...(selected.checkpoint.metadataDigest === undefined ? {} : {metadataDigest: selected.checkpoint.metadataDigest}),
   });
   const deltaPaths = [];
@@ -533,6 +550,7 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
         artifactDigest: delta.manifestDigest,
         casRoot: input.casRoot,
         ...(coordinatorUrl === undefined ? {} : {coordinatorUrl}),
+        ...(blobSource === undefined ? {} : {blobSource}),
         ...(delta.metadataDigest === undefined ? {} : {metadataDigest: delta.metadataDigest}),
       }),
     );
@@ -771,6 +789,7 @@ export const selectPublishedAncestorManifest = Effect.fn('codeGraph.sharing.sele
   identity: RepositoryIdentity,
   latest: GraphShareFrontierManifestV1,
   coordinatorUrl?: string,
+  blobSource?: GraphShareBlobSource,
 ) {
   let current = latest;
   for (let step = 0; step < GRAPH_SHARE_ANCESTOR_WALK_LIMIT; step += 1) {
@@ -781,7 +800,7 @@ export const selectPublishedAncestorManifest = Effect.fn('codeGraph.sharing.sele
       return yield* graphSharingUnavailable('No published ancestor frontier for this HEAD.');
     }
     const predecessor = yield* decodeJson(
-      yield* ensureSharedCasBlob(casRoot, current.previousManifestDigest, coordinatorUrl),
+      yield* ensureSharedCasBlob(casRoot, current.previousManifestDigest, coordinatorUrl, blobSource),
       parseGraphShareFrontierManifest,
       'Predecessor frontier manifest is invalid.',
     );
@@ -834,22 +853,6 @@ const refreshFrontierPointerFromOciTag = Effect.fn('codeGraph.sharing.refreshFro
   const pointer = graphShareFrontierPointerFromOciDescriptor(descriptor);
   yield* ensureSharedCasBlob(input.casRoot, pointer.metadataDigest, input.coordinatorUrl);
   return pointer;
-});
-
-const ensureSharedCasBlob = Effect.fn('codeGraph.sharing.ensureSharedCasBlob')(function* (
-  casRoot: string,
-  digest: string,
-  coordinatorUrl: string | undefined,
-) {
-  return yield* readVerifiedCasBlob(casRoot, digest).pipe(
-    Effect.catchIf(isUnavailableSharingFailure, () =>
-      coordinatorUrl === undefined
-        ? graphSharingUnavailable(`CAS object is missing: ${digest}`)
-        : mirrorCoordinatorCasBlob(casRoot, coordinatorUrl, digest).pipe(
-            Effect.andThen(readVerifiedCasBlob(casRoot, digest)),
-          ),
-    ),
-  );
 });
 
 function decodeValue<A, I>(parse: (value: I) => A, value: I, message: string) {

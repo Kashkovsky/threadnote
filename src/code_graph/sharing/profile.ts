@@ -2,6 +2,7 @@ import {Schema} from 'effect';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
 import {graphSharingFailure} from './errors.js';
 import {SHA256_DIGEST, SHA256_HEX, sha256Digest, type Sha256Digest} from './digest.js';
+import {isGraphShareRegistryReference} from './registry_reference.js';
 
 const STRICT = {errors: 'all', onExcessProperty: 'error'} as const;
 const ORGANIZATION = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
@@ -9,7 +10,6 @@ const GIT_REF = /^refs\/heads\/[A-Za-z0-9._/-]{1,255}$/u;
 const COORDINATOR_URL =
   /^(?:https:\/\/[a-z0-9.-]+|http:\/\/(?:127\.0\.0\.1|localhost))(?::\d{1,5})?(?:\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=-]*)?$/u;
 const CAS_REGISTRY = /^cas:\/\/local(?:\/(?:canonical|worker))?$/u;
-const OCI_REGISTRY = /^oci:\/\/[a-z0-9.-]+(?:\/[A-Za-z0-9._-]+)+$/u;
 const CAS_PROFILE = /^cas:\/\/sha256:[0-9a-f]{64}$/u;
 const OCI_PROFILE = /^oci:\/\/[a-z0-9.-]+(?:\/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}$/u;
 const CANONICAL_REMOTE = /^[a-z0-9.-]+\/[A-Za-z0-9._/-]+$/u;
@@ -31,7 +31,7 @@ export const GraphShareEnrollmentSchemaV1 = Schema.Struct({
 export type GraphShareEnrollmentV1 = typeof GraphShareEnrollmentSchemaV1.Type;
 
 const RegistryReference = Schema.String.check(
-  Schema.isPattern(new RegExp(`${CAS_REGISTRY.source}|${OCI_REGISTRY.source}`, 'u')),
+  Schema.makeFilter(value => CAS_REGISTRY.test(value) || isGraphShareRegistryReference(value)),
 );
 
 export const GraphShareProfileSchemaV1 = Schema.Struct({
