@@ -519,43 +519,54 @@ describe('code graph checkpoint import store', () => {
               Buffer.byteLength(content),
             );
 
-            const hydrated = yield* hydrateCodeGraphCheckpointReusableBaseReceipt(identity, header);
+            const admission = {environmentFingerprint: 'a'.repeat(64)};
+            const hydrated = yield* hydrateCodeGraphCheckpointReusableBaseReceipt(identity, header, admission);
 
             expect(hydrated?.inventory?.attributionFiles).toEqual([
               expect.objectContaining({blobId, content: compactContent, path: 'package.json', source: 'commit'}),
             ]);
-            expect(hydrated?.inventory?.environmentFingerprint).toMatch(/^[0-9a-f]{64}$/u);
+            expect(hydrated?.inventory?.environmentFingerprint).toBe(admission.environmentFingerprint);
 
             const mismatch = yield* Effect.exit(
-              hydrateCodeGraphCheckpointReusableBaseReceipt(identity, {
-                ...header,
-                reuse: {
-                  ...header.reuse!,
-                  inventory: {
-                    ...header.reuse!.inventory!,
-                    attributionFiles: [{...header.reuse!.inventory!.attributionFiles[0], contentHash: 'f'.repeat(64)}],
+              hydrateCodeGraphCheckpointReusableBaseReceipt(
+                identity,
+                {
+                  ...header,
+                  reuse: {
+                    ...header.reuse!,
+                    inventory: {
+                      ...header.reuse!.inventory!,
+                      attributionFiles: [
+                        {...header.reuse!.inventory!.attributionFiles[0], contentHash: 'f'.repeat(64)},
+                      ],
+                    },
                   },
                 },
-              }),
+                admission,
+              ),
             );
             expect(mismatch._tag).toBe('Failure');
 
             const sourceSizeMismatch = yield* Effect.exit(
-              hydrateCodeGraphCheckpointReusableBaseReceipt(identity, {
-                ...header,
-                reuse: {
-                  ...header.reuse!,
-                  inventory: {
-                    ...header.reuse!.inventory!,
-                    attributionFiles: [
-                      {
-                        ...header.reuse!.inventory!.attributionFiles[0],
-                        blobSize: header.reuse!.inventory!.attributionFiles[0].blobSize + 1,
-                      },
-                    ],
+              hydrateCodeGraphCheckpointReusableBaseReceipt(
+                identity,
+                {
+                  ...header,
+                  reuse: {
+                    ...header.reuse!,
+                    inventory: {
+                      ...header.reuse!.inventory!,
+                      attributionFiles: [
+                        {
+                          ...header.reuse!.inventory!.attributionFiles[0],
+                          blobSize: header.reuse!.inventory!.attributionFiles[0].blobSize + 1,
+                        },
+                      ],
+                    },
                   },
                 },
-              }),
+                admission,
+              ),
             );
             expect(sourceSizeMismatch._tag).toBe('Failure');
           }),

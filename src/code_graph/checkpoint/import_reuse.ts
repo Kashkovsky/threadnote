@@ -1,11 +1,10 @@
-import {Effect, FileSystem, Path, Schema} from 'effect';
+import {Effect, Schema} from 'effect';
 import {runBinaryCommandEffect} from '../../effect/command.js';
 import {SystemInfo} from '../../effect/system.js';
 import {codeGraphCommittedContentHash} from '../content_identity.js';
 import {codeGraphUtf8ByteLength} from '../disk_capacity.js';
 import {appearsBinary, decodeUtf8} from '../inventory_content.js';
 import {retainResolutionContext} from '../inventory_content.js';
-import {readCodeGraphInventoryReuseEnvironment} from '../inventory_reuse.js';
 import {parseGitCatFileBatch} from '../inventory.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../languages/registry.js';
 import {
@@ -74,7 +73,11 @@ function attributionBatches(
  */
 export const hydrateCodeGraphCheckpointReusableBaseReceipt = Effect.fn(
   'codeGraph.hydrateCheckpointReusableBaseReceipt',
-)(function* (identity: RepositoryIdentity, header: CodeGraphCheckpointHeaderV1) {
+)(function* (
+  identity: RepositoryIdentity,
+  header: CodeGraphCheckpointHeaderV1,
+  receiverAdmission: {readonly environmentFingerprint: string},
+) {
   const reuse = header.reuse;
   if (reuse === undefined) return undefined;
   if (
@@ -116,12 +119,7 @@ export const hydrateCodeGraphCheckpointReusableBaseReceipt = Effect.fn(
   ) {
     return yield* hydrationError('Checkpoint attribution context exceeds the local reuse boundary.');
   }
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const system = yield* SystemInfo;
-  const environment = yield* readCodeGraphInventoryReuseEnvironment(identity, fs, path).pipe(
-    Effect.mapError(cause => hydrationError('Checkpoint reuse environment could not be inspected.', cause)),
-  );
   const attributionFiles: CodeGraphAttributionContextFile[] = [];
   for (const batch of attributionBatches(portable.attributionFiles)) {
     const result = yield* runBinaryCommandEffect('git', ['-C', identity.repoRoot, 'cat-file', '--batch'], {
@@ -184,7 +182,7 @@ export const hydrateCodeGraphCheckpointReusableBaseReceipt = Effect.fn(
       attributionFiles,
       contract: portable.contract,
       diagnostics: portable.diagnostics ?? [],
-      environmentFingerprint: environment.fingerprint,
+      environmentFingerprint: receiverAdmission.environmentFingerprint,
       includeOpaqueCorpusAssets: portable.includeOpaqueCorpusAssets,
       policyExclusions: {
         ...portable.policyExclusions,
