@@ -9,7 +9,7 @@ import {
 import {GRAPH_SHARE_CHECKPOINT_MEDIA_TYPE, GRAPH_SHARE_DELTA_MEDIA_TYPE} from './artifacts.js';
 import {decodeJsonBytes} from './atomic.js';
 import {putCasBytes, putCasFile, readVerifiedCasBlob, verifyCasBlob} from './cas.js';
-import {mirrorCoordinatorCasBlob} from './control_client.js';
+import {ensureSharedGraphBlob as ensureSharedLayerBlob, type GraphShareBlobSource} from './shared_blob.js';
 import {parseSha256Digest, type Sha256Digest} from './digest.js';
 import {graphSharingFailure, graphSharingUnavailable, GraphSharingError} from './errors.js';
 import {GRAPH_SHARE_HTTP_CAS_MAX_BYTES} from './oci.js';
@@ -144,6 +144,7 @@ export const ensureGraphShareCheckpointArtifact = Effect.fn('codeGraph.sharing.e
     readonly casRoot: string;
     readonly coordinatorUrl?: string;
     readonly metadataDigest?: string;
+    readonly blobSource?: GraphShareBlobSource;
   }) {
     const artifactDigest = parseSha256Digest(input.artifactDigest);
     return yield* verifyCasBlob(input.casRoot, artifactDigest).pipe(
@@ -157,18 +158,24 @@ const materializeSharedCheckpoint = Effect.fn('codeGraph.sharing.materializeChec
     readonly casRoot: string;
     readonly coordinatorUrl?: string;
     readonly metadataDigest?: string;
+    readonly blobSource?: GraphShareBlobSource;
   },
   artifactDigest: Sha256Digest,
 ) {
   if (input.metadataDigest !== undefined) {
-    const metadataBytes = yield* ensureSharedLayerBlob(input.casRoot, input.metadataDigest, input.coordinatorUrl);
+    const metadataBytes = yield* ensureSharedLayerBlob(
+      input.casRoot,
+      input.metadataDigest,
+      input.coordinatorUrl,
+      input.blobSource,
+    );
     const metadata = yield* decodeMetadata(metadataBytes);
     if (metadata.artifactDigest !== artifactDigest) {
       return yield* graphSharingFailure('Checkpoint metadata does not cover the assembled artifact digest.');
     }
-    yield* ensureSharedLayerBlob(input.casRoot, metadata.prefixDigest, input.coordinatorUrl);
+    yield* ensureSharedLayerBlob(input.casRoot, metadata.prefixDigest, input.coordinatorUrl, input.blobSource);
     for (const chunk of metadata.chunks) {
-      yield* ensureSharedLayerBlob(input.casRoot, chunk.digest, input.coordinatorUrl);
+      yield* ensureSharedLayerBlob(input.casRoot, chunk.digest, input.coordinatorUrl, input.blobSource);
     }
     const crypto = yield* Crypto.Crypto;
     const fs = yield* FileSystem.FileSystem;
@@ -188,8 +195,8 @@ const materializeSharedCheckpoint = Effect.fn('codeGraph.sharing.materializeChec
       spoolPath => fs.remove(spoolPath, {force: true}).pipe(Effect.ignore),
     );
   }
-  if (input.coordinatorUrl !== undefined) {
-    yield* mirrorCoordinatorCasBlob(input.casRoot, input.coordinatorUrl, artifactDigest).pipe(
+  if (input.coordinatorUrl !== undefined || input.blobSource !== undefined) {
+    yield* ensureSharedLayerBlob(input.casRoot, artifactDigest, input.coordinatorUrl, input.blobSource).pipe(
       Effect.catchIf(
         error =>
           Schema.is(GraphSharingError)(error) &&
@@ -204,22 +211,6 @@ const materializeSharedCheckpoint = Effect.fn('codeGraph.sharing.materializeChec
     return yield* verifyCasBlob(input.casRoot, artifactDigest);
   }
   return yield* graphSharingUnavailable(`CAS object is missing: ${artifactDigest}`);
-});
-
-const ensureSharedLayerBlob = Effect.fn('codeGraph.sharing.ensureLayerBlob')(function* (
-  casRoot: string,
-  digest: string,
-  coordinatorUrl: string | undefined,
-) {
-  return yield* readVerifiedCasBlob(casRoot, digest).pipe(
-    Effect.catchIf(isUnavailableSharingFailure, () =>
-      coordinatorUrl === undefined
-        ? graphSharingUnavailable(`CAS object is missing: ${digest}`)
-        : mirrorCoordinatorCasBlob(casRoot, coordinatorUrl, digest).pipe(
-            Effect.andThen(readVerifiedCasBlob(casRoot, digest)),
-          ),
-    ),
-  );
 });
 
 const inspectCheckpointFile = Effect.fn('codeGraph.sharing.inspectCheckpointFile')(function* (artifactPath: string) {

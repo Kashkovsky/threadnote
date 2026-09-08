@@ -1,4 +1,4 @@
-import {Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path, Schema, Stream} from 'effect';
 import {graphSharingFailure} from './errors.js';
 
 export const writePrivateJsonFile = Effect.fn('codeGraph.sharing.writePrivateJsonFile')(function* (
@@ -45,6 +45,19 @@ export const readJsonFile = Effect.fn('codeGraph.sharing.readJsonFile')(function
     return yield* graphSharingFailure(`Refusing to read a graph-sharing symbolic link: ${target}`);
   }
   return yield* decodeJsonText(yield* fs.readFileString(target));
+});
+
+export const readBoundedPrivateBytes = Effect.fn('codeGraph.sharing.readBoundedPrivateBytes')(function* (
+  target: string,
+  maximum: number,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
+    return yield* graphSharingFailure('Graph-sharing metadata must not be a symbolic link.');
+  }
+  const bytes = Buffer.concat(yield* Stream.runCollect(fs.stream(target, {bytesToRead: maximum + 1})));
+  if (bytes.length > maximum) return yield* graphSharingFailure('Graph-sharing metadata exceeds its size limit.');
+  return bytes;
 });
 
 export const decodeJsonBytes = (bytes: Uint8Array) => decodeJsonText(new TextDecoder().decode(bytes));
