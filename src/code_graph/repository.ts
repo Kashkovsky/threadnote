@@ -424,29 +424,17 @@ const resolveExpectedRepositoryIdentity = Effect.fn('codeGraph.resolveExpectedRe
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
-  const branchOrWorktree = observeWorktree
-    ? runCommandEffect(
-        'git',
-        ['--no-optional-locks', '-C', cwd, 'status', '--porcelain=v2', '-z', '--branch', '--untracked-files=normal'],
-        {maxOutputBytes: REPOSITORY_STATUS_OBSERVATION_BYTES_MAXIMUM, timeoutMs: 10_000},
-      ).pipe(Effect.map(result => ({kind: 'worktree' as const, output: result.stdout})))
-    : observeRepositoryBranch(cwd).pipe(Effect.map(branch => ({branch, kind: 'branch' as const})));
-  const [metadataResult, ignoreCaseResult, remoteResult, observed] = yield* Effect.all(
-    [
-      runGit(cwd, [
-        'rev-parse',
-        '--path-format=absolute',
-        '--show-toplevel',
-        '--git-common-dir',
-        '--show-object-format',
-        'HEAD',
-      ]),
-      runGit(cwd, ['config', '--bool', 'core.ignorecase'], true),
-      runGit(cwd, ['remote', 'get-url', 'origin'], true),
-      branchOrWorktree,
-    ],
-    {concurrency: 4},
-  ).pipe(
+  // Bind every later observation to the checkout selected by this metadata read.
+  // Running remote/config against the caller in parallel can mix an ABA-retargeted
+  // caller's values with this checkout even when both checkouts share the same HEAD.
+  const metadataResult = yield* runGit(cwd, [
+    'rev-parse',
+    '--path-format=absolute',
+    '--show-toplevel',
+    '--git-common-dir',
+    '--show-object-format',
+    'HEAD',
+  ]).pipe(
     Effect.mapError(() => CodeGraphRepositoryError.make({message: 'Repository identity could not be revalidated.'})),
   );
   const metadata = metadataResult.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
@@ -469,11 +457,28 @@ const resolveExpectedRepositoryIdentity = Effect.fn('codeGraph.resolveExpectedRe
   if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
     return yield* CodeGraphRepositoryError.make({message: `Unsupported Git object format: ${objectFormat}`});
   }
-  const worktree =
-    observed.kind === 'worktree'
-      ? parseRepositoryIdentityWorktreeObservation(observed.output, objectFormat)
-      : undefined;
-  if (observed.kind === 'worktree' && (worktree === undefined || worktree.headCommit !== metadata[3])) {
+  const branchOrWorktree = observeWorktree
+    ? observeRepositoryReadFenceClosingWorktree(cwd, objectFormat).pipe(
+        Effect.map(worktree => ({kind: 'worktree' as const, worktree})),
+      )
+    : observeRepositoryBranch(repoRoot).pipe(Effect.map(branch => ({branch, kind: 'branch' as const})));
+  const [ignoreCaseResult, remoteResult, observed] = yield* Effect.all(
+    [
+      runGit(repoRoot, ['config', '--bool', 'core.ignorecase'], true),
+      runGit(repoRoot, ['remote', 'get-url', 'origin'], true),
+      branchOrWorktree,
+    ],
+    {concurrency: 3},
+  ).pipe(
+    Effect.mapError(() => CodeGraphRepositoryError.make({message: 'Repository identity could not be revalidated.'})),
+  );
+  const worktree = observed.kind === 'worktree' ? observed.worktree : undefined;
+  if (
+    worktree !== undefined &&
+    (worktree.headCommit !== metadata[3] ||
+      worktree.repoRoot !== repoRoot ||
+      worktree.gitCommonDirectory !== gitCommonDirectory)
+  ) {
     return yield* CodeGraphRepositoryError.make({
       message: 'Repository identity changed during the worktree observation.',
     });

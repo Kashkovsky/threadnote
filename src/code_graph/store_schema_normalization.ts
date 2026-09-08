@@ -1,4 +1,32 @@
+const normalizedDefinitions = new Map<string, string>();
+const MAXIMUM_CACHED_DEFINITIONS = 128;
+const MAXIMUM_CACHED_DEFINITION_CODE_UNITS = 16 * 1_024;
+const MAXIMUM_CACHED_CODE_UNITS = 256 * 1_024;
+let cachedCodeUnits = 0;
+
 export function normalizeSchemaDefinition(value: string): string {
+  const cached = normalizedDefinitions.get(value);
+  if (cached !== undefined) return cached;
+  const normalized = normalizeUncachedSchemaDefinition(value);
+  const codeUnits = value.length + normalized.length;
+  // Cache only this pure transformation. Callers still read every schema
+  // observation, and changed SQL must match its own exact string key.
+  if (codeUnits > MAXIMUM_CACHED_DEFINITION_CODE_UNITS) return normalized;
+  while (
+    normalizedDefinitions.size >= MAXIMUM_CACHED_DEFINITIONS ||
+    cachedCodeUnits + codeUnits > MAXIMUM_CACHED_CODE_UNITS
+  ) {
+    const oldest = normalizedDefinitions.keys().next();
+    if (oldest.done) break;
+    cachedCodeUnits -= oldest.value.length + normalizedDefinitions.get(oldest.value)!.length;
+    normalizedDefinitions.delete(oldest.value);
+  }
+  normalizedDefinitions.set(value, normalized);
+  cachedCodeUnits += codeUnits;
+  return normalized;
+}
+
+function normalizeUncachedSchemaDefinition(value: string): string {
   const quoted: string[] = [];
   let unquoted = '';
   for (let index = 0; index < value.length; index += 1) {

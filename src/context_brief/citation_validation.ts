@@ -399,15 +399,20 @@ const statusRepositoryFinalFence = (
         ),
       );
     }
-    const after = yield* repository.expected === undefined
+    // A locally discovered identity also supplies the expected routing IDs. Reobserve
+    // identity, policy, runtime and worktree state without recording its association twice.
+    // Keep legacy custom query services on their full status path.
+    const after = yield* repository.expected === undefined && typeof query.statusForPublishedIdentity !== 'function'
       ? query.status(config.agentContextHome, repository.cwd, {
           observeWorktree: true,
           requestMaintenance: false,
         })
-      : query.statusForPublishedIdentity(config.agentContextHome, repository.cwd, repository.expected, {
-          observeWorktree: true,
-          requestMaintenance: false,
-        });
+      : query.statusForPublishedIdentity(
+          config.agentContextHome,
+          repository.cwd,
+          repository.expected ?? repository.status.identity,
+          {observeWorktree: true, requestMaintenance: false},
+        );
     return sameExactSnapshot(repository.status, after);
   });
 
