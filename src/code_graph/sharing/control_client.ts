@@ -1,4 +1,4 @@
-import {Effect, Schema} from 'effect';
+import {Clock, Effect, Schema} from 'effect';
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest';
@@ -15,7 +15,13 @@ import {
   sha256HexFromDigest,
   type Sha256Digest,
 } from './digest.js';
-import {graphSharingFailure, graphSharingUnavailable, GraphSharingError} from './errors.js';
+import {
+  graphSharingFailure,
+  graphSharingUnavailable,
+  GraphSharingError,
+  graphSharingHttpFailure,
+  graphShareRetryAfterMilliseconds,
+} from './errors.js';
 import {GRAPH_SHARE_HTTP_CAS_MAX_BYTES, graphSharePayloadLooksLikeGitObject} from './oci.js';
 import {parseGraphShareCoordinatorUrl} from './profile.js';
 import type {GraphShareResultAnnouncementV1} from './receipts.js';
@@ -100,6 +106,19 @@ export const graphShareControlPostJson = Effect.fn('codeGraph.sharing.controlPos
     return yield* graphSharingFailure('Coordinator request exceeds the 64 KiB control limit.');
   }
   const response = yield* execute(request, url, 10_000);
+  if (
+    response.status === 401 ||
+    response.status === 403 ||
+    response.status === 408 ||
+    response.status === 425 ||
+    response.status === 429 ||
+    response.status >= 500
+  ) {
+    return yield* graphSharingHttpFailure(
+      response.status,
+      graphShareRetryAfterMilliseconds(response.headers['retry-after'], yield* Clock.currentTimeMillis),
+    );
+  }
   return {
     body: yield* decodeResponseJson(Schema.Json, response).pipe(Effect.orElseSucceed(() => undefined)),
     status: response.status,
@@ -145,7 +164,10 @@ export const graphShareControlPutCas = Effect.fn('codeGraph.sharing.controlPutCa
   const request = HttpClientRequest.put(url).pipe(HttpClientRequest.bodyUint8Array(bytes, 'application/octet-stream'));
   const response = yield* execute(request, url, 60_000);
   if (response.status < 200 || response.status >= 300) {
-    return yield* graphSharingFailure(`CAS PUT returned HTTP ${response.status}.`);
+    return yield* graphSharingHttpFailure(
+      response.status,
+      graphShareRetryAfterMilliseconds(response.headers['retry-after'], yield* Clock.currentTimeMillis),
+    );
   }
   return digest;
 });
@@ -175,7 +197,10 @@ export const graphShareControlPutTag = Effect.fn('codeGraph.sharing.controlPutTa
   );
   const response = yield* execute(request, url, 10_000);
   if (response.status !== 200 && response.status !== 201) {
-    return yield* graphSharingFailure(`Tag PUT returned HTTP ${response.status}.`);
+    return yield* graphSharingHttpFailure(
+      response.status,
+      graphShareRetryAfterMilliseconds(response.headers['retry-after'], yield* Clock.currentTimeMillis),
+    );
   }
   return digest;
 });

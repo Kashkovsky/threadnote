@@ -20,6 +20,7 @@ import {LocalModelRuntime} from '../../effect/ai/local-model-runtime.js';
 import {SystemInfo} from '../../effect/system.js';
 import {captureConsole} from '../../effect/console.js';
 import {monitorSharedRepositories} from '../../effect/share.js';
+import {monitorGraphShareContributions} from '../../code_graph/sharing/contribution_retry.js';
 import {runObsidianProjectionPublish} from '../../obsidian/projection.js';
 import {withProductionLogging} from '../../effect/production_log.js';
 import {withAnonymousTelemetry} from '../../effect/telemetry.js';
@@ -132,6 +133,9 @@ export const mcpServerEffect = withAnonymousTelemetry(
         }
         if (!memoryScope && toolset !== CURSOR_CLOUD_LOCAL_MCP_TOOLSET) {
           yield* Effect.forkScoped(monitorSharedRepositories(config));
+        }
+        if (mcpToolCapabilities(toolset).graphLocal) {
+          yield* Effect.forkScoped(monitorGraphShareContributions(config.agentContextHome));
         }
         yield* Console.error('Threadnote local MCP adapter running');
         return yield* server.run();

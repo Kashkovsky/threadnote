@@ -7,6 +7,8 @@ export class GraphSharingError extends Schema.TaggedError<GraphSharingError>()('
   cause: Schema.optionalKey(Schema.Defect()),
   kind: Schema.Literals(['unavailable', 'verification-failed']),
   message: Schema.String,
+  httpStatus: Schema.optionalKey(Schema.Int),
+  retryAfterMilliseconds: Schema.optionalKey(Schema.Finite),
 }) {}
 
 export function graphSharingFailure(
@@ -19,4 +21,26 @@ export function graphSharingFailure(
 
 export function graphSharingUnavailable(message: string): GraphSharingError {
   return GraphSharingError.make({kind: 'unavailable', message});
+}
+
+export function graphSharingHttpFailure(status: number, retryAfterMilliseconds?: number): GraphSharingError {
+  return GraphSharingError.make({
+    kind: status === 408 || status === 425 || status === 429 || status >= 500 ? 'unavailable' : 'verification-failed',
+    message: `Graph-sharing endpoint returned HTTP ${status}.`,
+    httpStatus: status,
+    ...(retryAfterMilliseconds === undefined ? {} : {retryAfterMilliseconds}),
+  });
+}
+
+export function graphShareRetryAfterMilliseconds(
+  value: string | undefined,
+  nowMilliseconds: number,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const seconds = /^\d+$/u.test(value.trim()) ? Number(value.trim()) : undefined;
+  if (seconds === undefined && !/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)/iu.test(value.trim())) return undefined;
+  const delay = seconds === undefined ? Date.parse(value) - nowMilliseconds : seconds * 1_000;
+  return Number.isFinite(delay) && delay >= 0
+    ? Math.min(delay, Number.MAX_SAFE_INTEGER - Math.max(0, nowMilliseconds))
+    : undefined;
 }
