@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Clock, Effect, FileSystem, Option, Path} from 'effect';
 import {withExclusiveFileLock} from '../../effect/file_lock.js';
 import {readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {SHA256_DIGEST} from './digest.js';
@@ -9,10 +9,14 @@ import type {GraphShareResultAnnouncementV1} from './receipts.js';
 
 export const GRAPH_SHARE_CONTRIBUTION_MODES = ['off', 'passive', 'idle', 'dedicated'] as const;
 export type GraphShareContributionMode = (typeof GRAPH_SHARE_CONTRIBUTION_MODES)[number];
+export const GRAPH_SHARE_QUEUE_MAXIMUM_ANNOUNCEMENTS = 512;
+export const GRAPH_SHARE_QUEUE_MAXIMUM_BYTES = 512 * 1_024;
+export const GRAPH_SHARE_QUEUE_MAXIMUM_AGE_MILLISECONDS = 7 * 24 * 60 * 60 * 1_000;
 
 export interface GraphShareContributionQueueV1 {
   readonly announcements: readonly GraphShareResultAnnouncementV1[];
   readonly mode: GraphShareContributionMode;
+  readonly queuedAtMilliseconds?: readonly number[];
   readonly schemaVersion: 1;
 }
 
@@ -35,6 +39,7 @@ export function enqueueGraphShareContribution(
   queue: GraphShareContributionQueueV1,
   announcement: GraphShareResultAnnouncementV1,
   accessMode: 'join' | 'read-only' | undefined,
+  nowMilliseconds?: number,
 ): {readonly conflict: boolean; readonly queued: boolean; readonly queue: GraphShareContributionQueueV1} {
   const mode = effectiveGraphShareContributionMode(accessMode, queue.mode);
   if (mode === 'off') return {conflict: false, queued: false, queue};
@@ -49,11 +54,49 @@ export function enqueueGraphShareContribution(
   const conflict = queue.announcements.some(
     item => item.actionKey === announcement.actionKey && item.semanticDigest !== announcement.semanticDigest,
   );
+  const timestamp = nowMilliseconds ?? queue.queuedAtMilliseconds?.at(-1);
   return {
     conflict,
     queued: true,
-    queue: {...queue, announcements: [...queue.announcements, announcement], mode},
+    queue: {
+      ...queue,
+      announcements: [...queue.announcements, announcement],
+      mode,
+      ...(timestamp === undefined
+        ? {}
+        : {
+            queuedAtMilliseconds: [
+              ...(queue.queuedAtMilliseconds ?? queue.announcements.map(() => timestamp)),
+              timestamp,
+            ],
+          }),
+    },
   };
+}
+
+export function pruneGraphShareContributionQueue(
+  queue: GraphShareContributionQueueV1,
+  nowMilliseconds: number,
+): GraphShareContributionQueueV1 {
+  const timestamps = queue.queuedAtMilliseconds ?? queue.announcements.map(() => nowMilliseconds);
+  let retained = queue.announcements
+    .map((announcement, index) => ({announcement, timestamp: Math.min(nowMilliseconds, timestamps[index])}))
+    .filter(item => item.timestamp >= nowMilliseconds - GRAPH_SHARE_QUEUE_MAXIMUM_AGE_MILLISECONDS)
+    .slice(-GRAPH_SHARE_QUEUE_MAXIMUM_ANNOUNCEMENTS);
+  const materialize = (): GraphShareContributionQueueV1 => ({
+    ...queue,
+    announcements: retained.map(item => item.announcement),
+    queuedAtMilliseconds: retained.map(item => item.timestamp),
+  });
+  let result = materialize();
+  while (
+    retained.length > 0 &&
+    new TextEncoder().encode(JSON.stringify(result)).byteLength > GRAPH_SHARE_QUEUE_MAXIMUM_BYTES
+  ) {
+    retained = retained.slice(1);
+    result = materialize();
+  }
+  return result;
 }
 
 export function drainGraphShareContribution(queue: GraphShareContributionQueueV1): {
@@ -61,7 +104,11 @@ export function drainGraphShareContribution(queue: GraphShareContributionQueueV1
   readonly sent: readonly GraphShareResultAnnouncementV1[];
 } {
   return {
-    remaining: {...queue, announcements: []},
+    remaining: {
+      ...queue,
+      announcements: [],
+      ...(queue.queuedAtMilliseconds === undefined ? {} : {queuedAtMilliseconds: []}),
+    },
     sent: queue.announcements,
   };
 }
@@ -73,10 +120,20 @@ export function parseGraphShareContributionQueue(value: unknown): GraphShareCont
   if (!isContributionMode(value.mode) || !Array.isArray(value.announcements)) {
     throw graphSharingFailure('Contribution queue is invalid.');
   }
+  if (
+    value.queuedAtMilliseconds !== undefined &&
+    (!Array.isArray(value.queuedAtMilliseconds) ||
+      value.queuedAtMilliseconds.length !== value.announcements.length ||
+      value.queuedAtMilliseconds.some(
+        timestamp => typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp) || timestamp < 0,
+      ))
+  )
+    throw graphSharingFailure('Contribution queue timestamps are invalid.');
   return {
     announcements: value.announcements.map(parseQueuedAnnouncement),
     mode: value.mode,
     schemaVersion: 1,
+    ...(value.queuedAtMilliseconds === undefined ? {} : {queuedAtMilliseconds: value.queuedAtMilliseconds as number[]}),
   };
 }
 
@@ -84,6 +141,18 @@ export const readGraphShareContributionQueue = Effect.fn('codeGraph.sharing.read
   threadnoteHome: string,
   repositoryId: string,
   mode: GraphShareContributionMode,
+) {
+  return pruneGraphShareContributionQueue(
+    yield* readContributionQueueDocument(threadnoteHome, repositoryId, mode),
+    yield* Clock.currentTimeMillis,
+  );
+});
+
+const readContributionQueueDocument = Effect.fn('codeGraph.sharing.readContributionQueueDocument')(function* (
+  threadnoteHome: string,
+  repositoryId: string,
+  mode: GraphShareContributionMode,
+  recoverOversized = false,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -93,8 +162,40 @@ export const readGraphShareContributionQueue = Effect.fn('codeGraph.sharing.read
     repositoryId,
   );
   if (!(yield* fs.exists(queuePath))) return emptyGraphShareContributionQueue(mode);
-  return parseGraphShareContributionQueue(yield* readJsonFile(queuePath));
+  const stat = yield* fs.stat(queuePath);
+  if (Number(stat.size) > 4 * 1_024 * 1_024) {
+    if (!recoverOversized) return yield* graphSharingFailure('Contribution queue exceeds the metadata read limit.');
+    // Callers enabling recovery hold the queue mutation lock. Preserve one legacy backlog without decoding it.
+    yield* fs.rename(queuePath, `${queuePath}.oversized`);
+    yield* fs.chmod(`${queuePath}.oversized`, 0o600);
+    const empty = emptyGraphShareContributionQueue(mode);
+    yield* writeGraphShareContributionQueue(threadnoteHome, repositoryId, empty);
+    return empty;
+  }
+  const queue = parseGraphShareContributionQueue(yield* readJsonFile(queuePath));
+  const now = yield* Clock.currentTimeMillis;
+  const modified = Option.isSome(stat.mtime) ? Math.min(now, stat.mtime.value.getTime()) : now;
+  return {
+    ...queue,
+    queuedAtMilliseconds: queue.queuedAtMilliseconds ?? queue.announcements.map(() => Math.max(0, modified)),
+  };
 });
+
+export const prunePersistedGraphShareContributionQueue = Effect.fn('codeGraph.sharing.pruneContributionQueue')(
+  function* (threadnoteHome: string, repositoryId: string, mode: GraphShareContributionMode) {
+    yield* withContributionQueueLock(
+      threadnoteHome,
+      repositoryId,
+      Effect.gen(function* () {
+        const current = yield* readContributionQueueDocument(threadnoteHome, repositoryId, mode, true);
+        const pruned = pruneGraphShareContributionQueue(current, yield* Clock.currentTimeMillis);
+        if (current.announcements.length > 0 && JSON.stringify(current) !== JSON.stringify(pruned)) {
+          yield* writeGraphShareContributionQueue(threadnoteHome, repositoryId, pruned);
+        }
+      }),
+    );
+  },
+);
 
 export const writeGraphShareContributionQueue = Effect.fn('codeGraph.sharing.writeContributionQueue')(function* (
   threadnoteHome: string,
@@ -121,8 +222,13 @@ export const enqueuePersistedGraphShareContribution = Effect.fn('codeGraph.shari
       threadnoteHome,
       repositoryId,
       Effect.gen(function* () {
-        const current = yield* readGraphShareContributionQueue(threadnoteHome, repositoryId, mode);
-        const next = enqueueGraphShareContribution({...current, mode}, announcement, accessMode);
+        const current = pruneGraphShareContributionQueue(
+          yield* readContributionQueueDocument(threadnoteHome, repositoryId, mode, true),
+          yield* Clock.currentTimeMillis,
+        );
+        const now = yield* Clock.currentTimeMillis;
+        const enqueued = enqueueGraphShareContribution({...current, mode}, announcement, accessMode, now);
+        const next = {...enqueued, queue: pruneGraphShareContributionQueue(enqueued.queue, now)};
         if (next.queued) yield* writeGraphShareContributionQueue(threadnoteHome, repositoryId, next.queue);
         return next;
       }),
@@ -141,7 +247,10 @@ export const acknowledgeGraphShareContributions = Effect.fn('codeGraph.sharing.a
     threadnoteHome,
     repositoryId,
     Effect.gen(function* () {
-      const current = yield* readGraphShareContributionQueue(threadnoteHome, repositoryId, mode);
+      const current = pruneGraphShareContributionQueue(
+        yield* readContributionQueueDocument(threadnoteHome, repositoryId, mode, true),
+        yield* Clock.currentTimeMillis,
+      );
       const remaining = removeAcknowledgedGraphShareContributions(current, sent);
       if (remaining.announcements.length !== current.announcements.length) {
         yield* writeGraphShareContributionQueue(threadnoteHome, repositoryId, remaining);
@@ -155,7 +264,16 @@ export function removeAcknowledgedGraphShareContributions(
   sent: readonly GraphShareResultAnnouncementV1[],
 ): GraphShareContributionQueueV1 {
   const acknowledged = new Set(sent.map(announcementIdentity));
-  return {...queue, announcements: queue.announcements.filter(item => !acknowledged.has(announcementIdentity(item)))};
+  const retained = queue.announcements
+    .map((item, index) => ({item, index}))
+    .filter(({item}) => !acknowledged.has(announcementIdentity(item)));
+  return {
+    ...queue,
+    announcements: retained.map(({item}) => item),
+    ...(queue.queuedAtMilliseconds === undefined
+      ? {}
+      : {queuedAtMilliseconds: retained.map(({index}) => queue.queuedAtMilliseconds![index])}),
+  };
 }
 
 function announcementIdentity(item: GraphShareResultAnnouncementV1): string {

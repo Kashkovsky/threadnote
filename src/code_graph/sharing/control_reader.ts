@@ -1,4 +1,4 @@
-import {Clock, Console, Effect, Path, Semaphore} from 'effect';
+import {Clock, Console, Effect, Path, Schema, Semaphore} from 'effect';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
 import {fromPromiseInterruptible} from '../../effect/errors.js';
@@ -16,13 +16,18 @@ import {
 import {decodeJsonBytes} from './atomic.js';
 import {casBlobPath} from './cas.js';
 import {
-  graphControlGrantAllowsRead,
+  graphControlGrantExpiry,
   makeGraphControlRateLimit,
   readGraphControlBytes,
   readGraphControlPolicy,
   type GraphControlPolicy,
   type GraphControlScope,
 } from './control_authorization.js';
+import {
+  enrollGraphControlWorker,
+  GraphControlEnrollmentError,
+  readGraphWorkerEnrollmentRequest,
+} from './control_enrollment.js';
 import {GRAPH_SHARE_CONTROL_MAX_BODY_BYTES} from './control_protocol.js';
 import {parseSha256Digest, sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
@@ -43,7 +48,7 @@ export interface GraphControlReaderOptions {
   readonly threadnoteHome: string;
 }
 
-type Operation = 'discovery' | 'frontier' | 'status' | 'unsupported';
+type Operation = 'discovery' | 'frontier' | 'status' | 'enroll' | 'unsupported';
 
 export const validateGraphControlPolicy = Effect.fn('codeGraph.sharing.validateControlPolicy')(function* (
   options: GraphControlReaderOptions,
@@ -87,13 +92,19 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
         ? 'discovery'
         : pathname === '/v1/status'
           ? 'status'
-          : /^\/v1\/frontiers\/[0-9a-f]{40}$/u.test(pathname)
-            ? 'frontier'
-            : 'unsupported';
+          : pathname === '/v1/enroll'
+            ? 'enroll'
+            : /^\/v1\/frontiers\/[0-9a-f]{40}$/u.test(pathname)
+              ? 'frontier'
+              : 'unsupported';
     let principalId: string | undefined;
     const handle = Effect.gen(function* () {
-      if (request.method !== 'GET' && request.method !== 'HEAD') return reply(403, {error: 'operation-unavailable'});
-      if (request.headers['transfer-encoding'] || Number(request.headers['content-length'] ?? 0) !== 0) {
+      if (operation === 'enroll' ? request.method !== 'POST' : request.method !== 'GET' && request.method !== 'HEAD')
+        return reply(403, {error: 'operation-unavailable'});
+      if (
+        operation !== 'enroll' &&
+        (request.headers['transfer-encoding'] || Number(request.headers['content-length'] ?? 0) !== 0)
+      ) {
         return reply(400, {error: 'invalid-request'});
       }
       if (operation === 'unsupported') return reply(404, {error: 'not-found'});
@@ -101,7 +112,7 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
         return reply(200, {
           organization: scope.organization,
           protocolVersions: ['v1'],
-          controlMode: 'authenticated-read-only',
+          controlMode: 'authenticated-metadata',
         });
       const principal = yield* fromPromiseInterruptible(
         () => verify(parseBearerAccessToken(request.headers.authorization)),
@@ -116,11 +127,40 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
           principal.value.expiresAt > at &&
           request.headers['x-threadnote-repository-id'] === scope.repositoryId &&
           request.headers['x-threadnote-profile-digest'] === scope.profileDigest &&
-          graphControlGrantAllowsRead(policy, scope, principal.value, at)
+          graphControlGrantExpiry(
+            policy,
+            scope,
+            principal.value,
+            operation === 'enroll' ? 'graph:contribute' : 'graph:read',
+            at,
+          ) !== undefined
         );
       });
       if (!(yield* authorized)) return reply(403, {error: 'forbidden'});
       if (!principalAdmission(principalId, yield* Clock.currentTimeMillis)) return reply(429, {error: 'rate-limited'});
+      if (operation === 'enroll') {
+        const declared = Number(request.headers['content-length'] ?? 0);
+        if (!Number.isSafeInteger(declared) || declared < 0 || declared > GRAPH_SHARE_CONTROL_MAX_BODY_BYTES)
+          return reply(413, {error: 'invalid-request'});
+        if (request.headers['content-type']?.split(';')[0]?.trim().toLowerCase() !== 'application/json')
+          return reply(400, {error: 'invalid-request'});
+        const decoded = yield* readGraphWorkerEnrollmentRequest(request.stream).pipe(Effect.option);
+        if (decoded._tag === 'None') return reply(400, {error: 'invalid-request'});
+        const enrolled = yield* enrollGraphControlWorker({
+          home: options.threadnoteHome,
+          initialPolicy: initial,
+          principal: principal.value,
+          readCurrentPolicy: currentPolicy,
+          request: decoded.value,
+        }).pipe(
+          Effect.map(result => reply(result.created ? 201 : 200, result.body)),
+          Effect.catchIf(
+            error => Schema.is(GraphControlEnrollmentError)(error),
+            error => Effect.succeed(reply(error.code === 'forbidden' ? 403 : 429, {error: error.code})),
+          ),
+        );
+        return enrolled;
+      }
       const frontier = yield* readGraphControlFrontier(options);
       if (!(yield* authorized)) return reply(403, {error: 'forbidden'});
       if (operation === 'frontier') {

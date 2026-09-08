@@ -1,4 +1,5 @@
-import {Effect, FileSystem, Path, Schema} from 'effect';
+import {Clock, Effect, FileSystem, Path, Random, Schema} from 'effect';
+import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file_lock.js';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
 import type {BoundedCodeGraphFact} from '../fact_budget.js';
 import type {CodeGraphStoreShape} from '../store_shape.js';
@@ -21,9 +22,11 @@ import {
   acknowledgeGraphShareContributions,
   effectiveGraphShareContributionMode,
   readGraphShareContributionQueue,
+  prunePersistedGraphShareContributionQueue,
 } from './contribution.js';
 import {sha256Digest, sha256HexFromDigest} from './digest.js';
-import {graphSharingFailure, GraphSharingError} from './errors.js';
+import {GRAPH_SHARE_HTTP_CAS_MAX_BYTES} from './oci.js';
+import {graphSharingFailure, graphSharingHttpFailure, GraphSharingError} from './errors.js';
 import {isGraphShareGitObjectId} from './git.js';
 import {graphShareActionDiscoveryTag} from './namespace.js';
 import {
@@ -33,6 +36,12 @@ import {
 } from './parse_result.js';
 import {lookupGraphShareTrustReceipt} from './trust.js';
 import {resolveGraphShareRepositoryClient} from './client_state.js';
+import {graphSharingContributionQueuePath, graphSharingLayout} from './layout.js';
+import {
+  graphShareContributionRetryDelay,
+  readContributionRetryState,
+  writeContributionRetryState,
+} from './contribution_retry_state.js';
 
 export const enqueueLocalGraphShareParseResults = Effect.fn('codeGraph.sharing.enqueueLocalParseResults')(
   function* (input: {
@@ -100,29 +109,116 @@ export const enqueueLocalGraphShareParseResults = Effect.fn('codeGraph.sharing.e
 );
 
 export const drainQueuedGraphShareContributions = Effect.fn('codeGraph.sharing.drainQueuedContributions')(
-  function* (input: {readonly identity: Pick<RepositoryIdentity, 'repositoryId'>; readonly threadnoteHome: string}) {
+  function* (input: {
+    readonly identity: Pick<RepositoryIdentity, 'repositoryId'>;
+    readonly threadnoteHome: string;
+    readonly propagateUnavailable?: boolean;
+  }) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = graphSharingLayout(path, input.threadnoteHome).root;
+    const lockPath = `${graphSharingContributionQueuePath(path, root, input.identity.repositoryId)}.delivery.lock`;
     const trust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.identity.repositoryId);
-    if (trust?.accessMode !== 'join') return {sent: 0};
-    const state = yield* resolveGraphShareRepositoryClient(input.threadnoteHome, trust);
-    const mode = effectiveGraphShareContributionMode(trust?.accessMode, state.contributionMode ?? 'off');
-    if (mode === 'off' || state.coordinatorUrl === undefined) return {sent: 0};
-    const queue = yield* readGraphShareContributionQueue(input.threadnoteHome, input.identity.repositoryId, mode);
-    if (queue.announcements.length === 0) return {sent: 0};
-    const casRoot = state.casRoot;
-    const sent: GraphShareResultAnnouncementV1[] = [];
-    for (const announcement of queue.announcements) {
-      const drained = yield* drainOneAnnouncement(casRoot, state.coordinatorUrl, announcement).pipe(
-        Effect.catchIf(
-          error => Schema.is(GraphSharingError)(error) && error.kind === 'unavailable',
-          () => Effect.succeed(false),
-        ),
-      );
-      if (drained) sent.push(announcement);
+    if (trust === undefined) return {sent: 0};
+    if (trust.accessMode === 'read-only') {
+      yield* prunePersistedGraphShareContributionQueue(input.threadnoteHome, input.identity.repositoryId, 'off');
+      return {sent: 0};
     }
-    yield* acknowledgeGraphShareContributions(input.threadnoteHome, input.identity.repositoryId, sent, mode);
-    return {sent: sent.length};
+    yield* fs.makeDirectory(path.dirname(lockPath), {recursive: true, mode: 0o700});
+    return yield* withExclusiveFileLock(
+      fs,
+      lockPath,
+      {
+        heartbeatIntervalMilliseconds: 10_000,
+        retryIntervalMilliseconds: 25,
+        staleAfterMilliseconds: 30_000,
+        waitTimeoutMilliseconds: 0,
+      },
+      drainContributionBatch(input).pipe(Effect.timeout(30_000)),
+    ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed({sent: 0})));
   },
 );
+
+const drainContributionBatch = Effect.fn('codeGraph.sharing.drainContributionBatch')(function* (input: {
+  readonly identity: Pick<RepositoryIdentity, 'repositoryId'>;
+  readonly threadnoteHome: string;
+  readonly propagateUnavailable?: boolean;
+}) {
+  const trust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.identity.repositoryId);
+  if (trust?.accessMode !== 'join') return {sent: 0};
+  const state = yield* resolveGraphShareRepositoryClient(input.threadnoteHome, trust);
+  const mode = effectiveGraphShareContributionMode(trust.accessMode, state.contributionMode);
+  yield* prunePersistedGraphShareContributionQueue(input.threadnoteHome, input.identity.repositoryId, mode);
+  if (mode === 'off' || state.coordinatorUrl === undefined) return {sent: 0};
+  const queue = yield* readGraphShareContributionQueue(input.threadnoteHome, input.identity.repositoryId, mode);
+  if (queue.announcements.length === 0) return {sent: 0};
+  const identity = sha256Digest(JSON.stringify({trust, state}));
+  const retry = yield* readContributionRetryState(input.threadnoteHome, input.identity.repositoryId);
+  const previous = retry?.identity === identity ? retry : undefined;
+  if (previous !== undefined && previous.nextAttempt > (yield* Clock.currentTimeMillis)) return {sent: 0};
+  const casRoot = state.casRoot;
+  const coordinatorUrl = state.coordinatorUrl;
+  const sent: GraphShareResultAnnouncementV1[] = [];
+  const discarded: GraphShareResultAnnouncementV1[] = [];
+  const stillAuthorized = Effect.gen(function* () {
+    const currentTrust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.identity.repositoryId);
+    if (currentTrust?.accessMode !== 'join' || currentTrust.profileDigest !== trust.profileDigest) return false;
+    const current = yield* resolveGraphShareRepositoryClient(input.threadnoteHome, currentTrust);
+    return (
+      current.contributionMode !== 'off' && current.coordinatorUrl === coordinatorUrl && current.casRoot === casRoot
+    );
+  });
+  return yield* Effect.gen(function* () {
+    for (const announcement of queue.announcements.slice(0, 8)) {
+      if (!(yield* stillAuthorized)) break;
+      const prepared = yield* prepareContributionArtifacts(casRoot, input.identity.repositoryId, announcement).pipe(
+        Effect.catchIf(
+          error => Schema.is(GraphSharingError)(error),
+          () => Effect.void,
+        ),
+      );
+      if (prepared === undefined) {
+        discarded.push(announcement);
+        continue;
+      }
+      const drained = yield* drainOneAnnouncement(prepared, coordinatorUrl, announcement, stillAuthorized);
+      if (drained) sent.push(announcement);
+      else break;
+    }
+    if (retry !== undefined)
+      yield* writeContributionRetryState(input.threadnoteHome, input.identity.repositoryId, undefined);
+    return {sent: sent.length};
+  }).pipe(
+    Effect.timeout(25_000),
+    Effect.catch(error =>
+      Effect.gen(function* () {
+        const failure = Schema.is(GraphSharingError)(error) ? error : undefined;
+        const failures = Math.min(7, (previous?.failures ?? 0) + 1);
+        const authorizationFailed = failure?.httpStatus === 401 || failure?.httpStatus === 403;
+        const delay = authorizationFailed
+          ? Math.max(3_600_000, failure?.retryAfterMilliseconds ?? 0)
+          : graphShareContributionRetryDelay(failures, yield* Random.next, failure?.retryAfterMilliseconds);
+        yield* writeContributionRetryState(input.threadnoteHome, input.identity.repositoryId, {
+          identity,
+          failures,
+          nextAttempt: Math.min(Number.MAX_SAFE_INTEGER, (yield* Clock.currentTimeMillis) + delay),
+        });
+        if (!input.propagateUnavailable && failure?.kind === 'unavailable') return {sent: sent.length};
+        return yield* Effect.fail(error);
+      }),
+    ),
+    Effect.ensuring(
+      Effect.suspend(() =>
+        acknowledgeGraphShareContributions(
+          input.threadnoteHome,
+          input.identity.repositoryId,
+          [...sent, ...discarded],
+          mode,
+        ),
+      ).pipe(Effect.orDie),
+    ),
+  );
+});
 
 export const hydrateSharedParseCache = Effect.fn('codeGraph.sharing.hydrateSharedParseCache')(function* (input: {
   readonly databasePath: string;
@@ -222,7 +318,7 @@ export interface VerifiedGraphShareParseReceipt {
   readonly parsed: GraphShareParseResultV1;
 }
 
-export const verifyGraphShareParseReceipt = Effect.fn('codeGraph.sharing.verifyParseReceipt')(function* (input: {
+const readVerifiedGraphShareParseReceipt = Effect.fn('codeGraph.sharing.readVerifiedParseReceipt')(function* (input: {
   readonly announcement: GraphShareResultAnnouncementV1;
   readonly casRoot: string;
   readonly graphAbi?: string;
@@ -232,7 +328,11 @@ export const verifyGraphShareParseReceipt = Effect.fn('codeGraph.sharing.verifyP
   if (sha256Digest(resultBytes) !== input.announcement.resultManifestDigest) {
     return yield* graphSharingFailure('Parse-result CAS digest does not match the receipt.');
   }
-  const parsed = parseGraphShareParseResult(yield* decodeJsonBytes(resultBytes));
+  const value = yield* decodeJsonBytes(resultBytes);
+  const parsed = yield* Effect.try({
+    try: () => parseGraphShareParseResult(value),
+    catch: () => graphSharingFailure('Parse-result artifact is invalid.'),
+  });
   if (
     !admitsSharedParseCacheHydrate({
       identityRepositoryId: input.repositoryId,
@@ -248,14 +348,29 @@ export const verifyGraphShareParseReceipt = Effect.fn('codeGraph.sharing.verifyP
   }
   const attestationBytes = yield* readVerifiedCasBlob(input.casRoot, input.announcement.attestationDigest);
   const attestation = yield* decodeJsonBytes(attestationBytes);
-  if (!isContributorSelfAttestation(attestation, input.announcement.resultManifestDigest)) {
+  if (
+    sha256Digest(attestationBytes) !== input.announcement.attestationDigest ||
+    !isContributorSelfAttestation(attestation, input.announcement.resultManifestDigest)
+  ) {
     return yield* graphSharingFailure('Parse-result attestation does not match the receipt.');
   }
   if (input.graphAbi !== undefined && !/^[0-9a-f]{64}$/u.test(input.graphAbi)) {
     return yield* graphSharingFailure('Publisher graph ABI is invalid.');
   }
-  return {announcement: input.announcement, parsed} satisfies VerifiedGraphShareParseReceipt;
+  return {announcement: input.announcement, parsed, resultBytes, attestationBytes};
 });
+
+export const verifyGraphShareParseReceipt = Effect.fn('codeGraph.sharing.verifyParseReceipt')(
+  (input: {
+    readonly announcement: GraphShareResultAnnouncementV1;
+    readonly casRoot: string;
+    readonly graphAbi?: string;
+    readonly repositoryId: string;
+  }) =>
+    readVerifiedGraphShareParseReceipt(input).pipe(
+      Effect.map(({announcement, parsed}): VerifiedGraphShareParseReceipt => ({announcement, parsed})),
+    ),
+);
 
 export const hydratePublisherParseCache = Effect.fn('codeGraph.sharing.hydratePublisherParseCache')(function* (input: {
   readonly databasePath: string;
@@ -330,29 +445,62 @@ export const mirrorCoordinatorCasBlobs = Effect.fn('codeGraph.sharing.mirrorCoor
   }
 });
 
-const drainOneAnnouncement = Effect.fn('codeGraph.sharing.drainOneAnnouncement')(function* (
+const prepareContributionArtifacts = Effect.fn('codeGraph.sharing.prepareContributionArtifacts')(function* (
   casRoot: string,
-  coordinatorUrl: string,
+  repositoryId: string,
   announcement: GraphShareResultAnnouncementV1,
 ) {
-  const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
-  const resultPath = path.join(casRoot, 'sha256', sha256HexFromDigest(announcement.resultManifestDigest));
-  const attestationPath = path.join(casRoot, 'sha256', sha256HexFromDigest(announcement.attestationDigest));
-  if (!(yield* fs.exists(resultPath)) || !(yield* fs.exists(attestationPath))) return false;
-  const resultBytes = yield* fs.readFile(resultPath);
-  const attestationBytes = yield* fs.readFile(attestationPath);
+  const path = yield* Path.Path;
+  for (const [digest, limit] of [
+    [announcement.resultManifestDigest, GRAPH_SHARE_HTTP_CAS_MAX_BYTES],
+    [announcement.attestationDigest, 65_536],
+  ] as const) {
+    const target = path.join(casRoot, 'sha256', sha256HexFromDigest(digest));
+    if (!(yield* fs.exists(target))) return undefined;
+    if (Number((yield* fs.stat(target)).size) > limit)
+      return yield* graphSharingFailure('Contribution artifact exceeds the upload read limit.');
+  }
+  return yield* readVerifiedGraphShareParseReceipt({
+    casRoot,
+    repositoryId,
+    announcement,
+  });
+});
+
+const drainOneAnnouncement = Effect.fn('codeGraph.sharing.drainOneAnnouncement')(function* (
+  prepared: {readonly resultBytes: Uint8Array; readonly attestationBytes: Uint8Array},
+  coordinatorUrl: string,
+  announcement: GraphShareResultAnnouncementV1,
+  stillAuthorized: Effect.Effect<boolean, unknown, FileSystem.FileSystem | Path.Path>,
+) {
+  const {resultBytes, attestationBytes} = prepared;
+  if (!(yield* stillAuthorized)) return false;
   yield* graphShareControlPutCas(coordinatorUrl, resultBytes);
+  if (!(yield* stillAuthorized)) return false;
   yield* graphShareControlPutCas(coordinatorUrl, attestationBytes);
+  if (!(yield* stillAuthorized)) return false;
   yield* graphShareControlPutTag(
     coordinatorUrl,
     graphShareActionDiscoveryTag(announcement.actionKey),
     announcement.resultManifestDigest,
-  ).pipe(Effect.ignore);
+  ).pipe(
+    Effect.catchIf(
+      error =>
+        Schema.is(GraphSharingError)(error) &&
+        error.kind === 'verification-failed' &&
+        error.httpStatus !== 401 &&
+        error.httpStatus !== 403,
+      () => Effect.void,
+    ),
+  );
+  if (!(yield* stillAuthorized)) return false;
   const announced = yield* graphShareControlAnnounceResult(
     coordinatorUrl,
     announcement,
     announcement.resultManifestDigest,
   );
-  return announced.status === 200 || announced.status === 201 || announced.status === 409;
+  if (announced.status !== 200 && announced.status !== 201 && announced.status !== 409)
+    return yield* graphSharingHttpFailure(announced.status);
+  return true;
 });

@@ -1,3 +1,4 @@
+import {graphShareContributionFixture} from '../helpers/graph-share-contribution.js';
 import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
@@ -106,13 +107,9 @@ describe('repository-scoped graph sharing settings', () => {
         const b = yield* fixture(root, 'b', `http://127.0.0.1:${servers[1].port}`);
         yield* runGraphShareJoin(config, {cwd: a.repo, cas: a.cas});
         yield* runGraphShareJoin(config, {cwd: b.repo, cas: b.cas});
-        const announcement = {
-          actionKey: 'c'.repeat(64),
-          batchId: 'd'.repeat(40),
-          semanticDigest: sha256Digest('semantic'),
-          resultManifestDigest: yield* putCasBytes(a.cas, new TextEncoder().encode('{"repository":"a"}')),
-          attestationDigest: yield* putCasBytes(a.cas, new TextEncoder().encode('{"attestation":"a"}')),
-        };
+        const {announcement, resultBytes, attestationBytes} = graphShareContributionFixture(a.repositoryId);
+        yield* putCasBytes(a.cas, resultBytes);
+        yield* putCasBytes(a.cas, attestationBytes);
         const enqueue = enqueuePersistedGraphShareContribution(
           config.agentContextHome,
           a.repositoryId,
