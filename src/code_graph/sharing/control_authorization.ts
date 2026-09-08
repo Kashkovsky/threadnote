@@ -9,7 +9,7 @@ const Policy = Schema.Struct({
   grants: Schema.Array(
     Schema.Struct({
       expiresAt: Schema.Int.check(Schema.isGreaterThan(0)),
-      scopes: Schema.Array(Schema.Literal('graph:read')).check(Schema.isMaxLength(1)),
+      scopes: Schema.Array(Schema.Literals(['graph:read', 'graph:contribute'])).check(Schema.isMaxLength(2)),
       subject: Text,
     }),
   ).check(Schema.isMaxLength(1024)),
@@ -77,18 +77,28 @@ export function graphControlGrantAllowsRead(
   principal: Pick<AccessTokenClaims, 'issuer' | 'subject' | 'scopes'>,
   nowSeconds: number,
 ): boolean {
-  return (
-    Number.isFinite(nowSeconds) &&
-    policy.organization === scope.organization &&
-    policy.repositoryId === scope.repositoryId &&
-    policy.profileDigest === scope.profileDigest &&
-    policy.issuer === principal.issuer &&
-    principal.scopes.has('graph:read') &&
-    policy.grants.some(
-      grant =>
-        grant.subject === principal.subject && grant.expiresAt > nowSeconds && grant.scopes.includes('graph:read'),
-    )
-  );
+  return graphControlGrantExpiry(policy, scope, principal, 'graph:read', nowSeconds) !== undefined;
+}
+
+export function graphControlGrantExpiry(
+  policy: GraphControlPolicy,
+  scope: GraphControlScope,
+  principal: Pick<AccessTokenClaims, 'issuer' | 'subject' | 'scopes'>,
+  capability: 'graph:read' | 'graph:contribute',
+  nowSeconds: number,
+): number | undefined {
+  if (
+    !Number.isFinite(nowSeconds) ||
+    policy.organization !== scope.organization ||
+    policy.repositoryId !== scope.repositoryId ||
+    policy.profileDigest !== scope.profileDigest ||
+    policy.issuer !== principal.issuer ||
+    !principal.scopes.has(capability)
+  )
+    return undefined;
+  return policy.grants.find(
+    grant => grant.subject === principal.subject && grant.expiresAt > nowSeconds && grant.scopes.includes(capability),
+  )?.expiresAt;
 }
 
 export function makeGraphControlRateLimit(options = {maximumPrincipals: 1024, requestsPerMinute: 120}) {

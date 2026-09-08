@@ -22,6 +22,7 @@ import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
 import {graphShareFrontierDiscoveryTag} from '../../src/code_graph/sharing/namespace.js';
 import {defaultGraphShareProfile, graphShareProfileDigest} from '../../src/code_graph/sharing/profile.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const ISSUER = 'https://identity.example.test/';
@@ -145,7 +146,13 @@ const fixture = Effect.fn(function* () {
   );
   if (server.address._tag !== 'TcpAddress') throw new Error('Expected TCP');
   const url = `http://127.0.0.1:${server.address.port}`;
-  const request = (pathname = '/v1/status', auth = validToken, headers: Record<string, string> = {}, method = 'GET') =>
+  const request = (
+    pathname = '/v1/status',
+    auth = validToken,
+    headers: Record<string, string> = {},
+    method = 'GET',
+    body?: unknown,
+  ) =>
     Effect.gen(function* () {
       const client = yield* HttpClient.HttpClient;
       const request = (
@@ -158,7 +165,13 @@ const fixture = Effect.fn(function* () {
           ...headers,
         }),
       );
-      const response = yield* client.execute(request);
+      const outbound =
+        body === undefined
+          ? request
+          : request.pipe(
+              HttpClientRequest.bodyUint8Array(new TextEncoder().encode(JSON.stringify(body)), 'application/json'),
+            );
+      const response = yield* client.execute(outbound);
       return {body: yield* response.json, headers: response.headers, status: response.status};
     });
   return {
@@ -201,7 +214,7 @@ describe('authenticated metadata-only graph reads', () => {
             manifestDigest: f.pointer.manifestDigest,
           });
           expect((yield* f.request('/.well-known/threadnote-graph', '')).body).toEqual({
-            controlMode: 'authenticated-read-only',
+            controlMode: 'authenticated-metadata',
             organization: 'acme',
             protocolVersions: ['v1'],
           });
@@ -226,8 +239,55 @@ describe('authenticated metadata-only graph reads', () => {
             expect(event).not.toContain('private-reader');
             expect(event).not.toContain(f.home);
           }
-        }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer))),
+        }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer, SystemInfo.layer))),
       ),
+  );
+
+  effectIt.effect('enrolls only the authenticated contributor and replays the same bounded identity', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        yield* writePrivateJsonFile(f.options.policyFile, {
+          ...f.policy,
+          grants: [{...f.policy.grants[0], scopes: ['graph:read', 'graph:contribute']}],
+        });
+        const token = yield* f.token({scope: 'graph:contribute'});
+        const body = {idempotencyKey: 'same-operation', repositoryId: REPOSITORY, profileDigest: f.profileDigest};
+        expect((yield* f.request('/v1/enroll', f.validToken, {}, 'POST', body)).status).toBe(403);
+        const first = yield* f.request('/v1/enroll', token, {}, 'POST', body);
+        expect(first.status).toBe(201);
+        expect(first.body).toMatchObject({
+          repositoryId: REPOSITORY,
+          profileDigest: f.profileDigest,
+          workerId: expect.stringMatching(/^gw_[0-9a-f]{32}$/u),
+          expiresAt: expect.any(Number),
+        });
+        expect(
+          (yield* f.request('/v1/enroll', token, {}, 'POST', {...body, profileDigest: sha256Digest('wrong-profile')}))
+            .status,
+        ).toBe(403);
+        expect(
+          (yield* f.request('/v1/enroll', token, {}, 'POST', {...body, idempotencyKey: 'x'.repeat(65_536)})).status,
+        ).toBe(413);
+        const replay = yield* f.request('/v1/enroll', token, {}, 'POST', body);
+        expect(replay.status).toBe(200);
+        expect(replay.body).toEqual(first.body);
+        for (const override of [
+          {workerId: 'selected'},
+          {role: 'publisher'},
+          {source: 'secret'},
+          {expiresAt: 9999999999},
+        ])
+          expect((yield* f.request('/v1/enroll', token, {}, 'POST', {...body, ...override})).status).toBe(400);
+        expect((yield* f.request('/v1/status', token)).status).toBe(403);
+        yield* writePrivateJsonFile(f.options.policyFile, {...f.policy, grants: []});
+        expect((yield* f.request('/v1/enroll', token, {}, 'POST', body)).status).toBe(403);
+        for (const text of f.audits) {
+          expect(text).not.toContain(token);
+          expect(text).not.toContain('same-operation');
+        }
+      }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer, SystemInfo.layer))),
+    ),
   );
 
   effectIt.effect('rejects invalid JWTs, wrong scope and memory administrator tokens with bounded errors', () =>
@@ -252,7 +312,7 @@ describe('authenticated metadata-only graph reads', () => {
           {'x-threadnote-profile-digest': sha256Digest('wrong')},
         ] as Record<string, string>[])
           expect((yield* f.request('/v1/status', f.validToken, headers)).status).toBe(403);
-      }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer))),
+      }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer, SystemInfo.layer))),
     ),
   );
 
@@ -272,7 +332,7 @@ describe('authenticated metadata-only graph reads', () => {
         expect((yield* f.request()).status).toBe(503);
         yield* f.fs.remove(f.options.policyFile);
         expect((yield* f.request()).status).toBe(503);
-      }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer))),
+      }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer, SystemInfo.layer))),
     ),
   );
 
@@ -290,7 +350,7 @@ describe('authenticated metadata-only graph reads', () => {
         }
         yield* f.publish(f.manifest);
         expect((yield* readGraphControlFrontier(f.options)).manifest).toEqual(f.manifest);
-      }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer))),
+      }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer, SystemInfo.layer))),
     ),
   );
 
@@ -301,7 +361,7 @@ describe('authenticated metadata-only graph reads', () => {
       const file = `${directory}/policy.json`;
       yield* fs.writeFileString(file, ' '.repeat(128 * 1024 + 1));
       expect((yield* readGraphControlPolicy(file).pipe(Effect.result))._tag).toBe('Failure');
-    }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer))),
+    }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer, SystemInfo.layer))),
   );
 
   effectIt.effect('returns bounded errors for corrupt or oversized artifacts and invalid signatures', () =>
@@ -324,7 +384,7 @@ describe('authenticated metadata-only graph reads', () => {
         yield* writePrivateJsonFile(f.pointerFile, {...f.pointer, envelopeDigest});
         expect((yield* f.request()).body).toEqual({error: 'unavailable'});
         expect(JSON.stringify(f.audits)).not.toContain(f.home);
-      }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer))),
+      }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer, SystemInfo.layer))),
     ),
   );
 });
