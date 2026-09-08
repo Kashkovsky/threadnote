@@ -234,7 +234,7 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
     const resolvedOrdinals = resolvedAnchors.map(anchor => anchor.anchorOrdinal);
     const identity = yield* resolveRepositoryIdentity(callerCwd).pipe(Effect.option);
     const attemptedUris: string[] = [];
-    let finalizationUnavailable = false;
+    let finalizationUnavailable = identity._tag === 'None';
     let refreshAfterContention = false;
     if (identity._tag === 'Some') {
       let remainingLimit = CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT;
