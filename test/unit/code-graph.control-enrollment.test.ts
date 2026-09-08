@@ -8,6 +8,7 @@ import {
   enrollGraphControlWorker,
   graphWorkerEnrollmentStatePath,
   readGraphWorkerEnrollmentRequest,
+  requireGraphControlWorker,
 } from '../../src/code_graph/sharing/control_enrollment.js';
 import {parseGraphControlPolicy} from '../../src/code_graph/sharing/control_authorization.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
@@ -50,6 +51,43 @@ const fixture = Effect.fn('test.graphEnrollmentFixture')(function* () {
 });
 
 describe('principal-owned graph worker enrollment', () => {
+  effectIt.effect('requires the owning principal and current unexpired grant for worker use', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const enrolled = yield* enrollGraphControlWorker(f.input);
+        const input = {...f.input, workerId: enrolled.body.workerId};
+        expect((yield* requireGraphControlWorker(input)).principalId).toBe(enrolled.body.principalId);
+        for (const changed of [
+          {...input, principal: {...f.principal, subject: 'private-b'}},
+          {...input, principal: {...f.principal, expiresAt: f.now - 1}},
+          {...input, readCurrentPolicy: Effect.succeed({...f.policy, grants: []})},
+          {...input, initialPolicy: {...f.policy, profileDigest: sha256Digest('other')}},
+          {...input, workerId: 'gw_' + 'f'.repeat(32)},
+        ])
+          expect(Result.isFailure(yield* requireGraphControlWorker(changed).pipe(Effect.result))).toBe(true);
+        expect((yield* requireGraphControlWorker(input)).expiresAt).toBeLessThanOrEqual(f.principal.expiresAt);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
+  effectIt.effect('rechecks revocation after reading enrollment state', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const enrolled = yield* enrollGraphControlWorker(f.input);
+        let reads = 0;
+        const result = yield* requireGraphControlWorker({
+          ...f.input,
+          workerId: enrolled.body.workerId,
+          readCurrentPolicy: Effect.sync(() => (++reads === 1 ? f.policy : {...f.policy, grants: []})),
+        }).pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        expect(reads).toBe(2);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
   effectIt.effect('stops reading an oversized streamed body before consuming its tail', () =>
     Effect.gen(function* () {
       let consumedTail = false;
@@ -100,6 +138,9 @@ describe('principal-owned graph worker enrollment', () => {
         expect(responses.filter(response => response.created)).toHaveLength(1);
         expect(new Set(responses.map(response => response.body.workerId)).size).toBe(1);
         expect(responses[0].body.expiresAt).toBeLessThanOrEqual(f.now + 600);
+        expect(responses[0].body.principalId).toBe(
+          sha256Digest(JSON.stringify([f.principal.issuer, f.principal.subject])),
+        );
         const body = yield* f.fs.readFileString(f.target);
         expect(JSON.parse(body).records).toHaveLength(1);
         expect(body).not.toContain('private-a');
