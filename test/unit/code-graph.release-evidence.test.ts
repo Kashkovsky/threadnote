@@ -1587,6 +1587,92 @@ describe('code graph release evidence', () => {
       {[confirmatoryWallName]: 295.779441},
       sandwichControl({[confirmatoryWallName]: 319.953012}),
     );
+    const registrationName = 'same-overlay-reference-registration-lock-and-database-setup';
+    const registrationRatchet = {
+      ...githubHostedRatchet,
+      measurements: {...githubHostedRatchet.measurements, [registrationName]: confirmatoryWallLimit(888)},
+    };
+    const registrationCandidate = sandwichCandidate({[registrationName]: 319.786313});
+    const registrationEvidence = sandwichEvidence(
+      {[registrationName]: 966.326097},
+      sandwichControl({[registrationName]: 269.651538}),
+    );
+    // PR #405: the screening registration observation missed static 888 ms,
+    // but all three observations met the independent 4,999 ms objective.
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(registrationEvidence.initialCandidateArtifact, registrationRatchet),
+    ).toThrow(/same-overlay-reference-registration-lock-and-database-setup p95/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(registrationCandidate, registrationRatchet, registrationEvidence),
+    ).not.toThrow();
+    for (const role of ['initialCandidateArtifact', 'artifact'] as const) {
+      const observation = registrationEvidence[role];
+      for (const [mutated, expectedFailure] of [
+        [{...observation, createdAt: registrationCandidate.createdAt}, /creation times/u],
+        [{...observation, metadata: {...observation.metadata, runnerIdentity: 'another-runner'}}, /runnerIdentity/u],
+        [{...observation, environment: {...observation.environment, fixtureHash: 'another-fixture'}}, /fixtureHash/u],
+        [
+          {
+            ...observation,
+            environment: {...observation.environment, commit: 'c'.repeat(40)},
+            metadata: {...observation.metadata, benchmarkMeasuredSourceCommit: 'c'.repeat(40)},
+          },
+          /candidate commit|control commit/u,
+        ],
+      ] as const) {
+        expect(() =>
+          enforceCodeGraphBenchmarkRatchet(registrationCandidate, registrationRatchet, {
+            ...registrationEvidence,
+            [role]: mutated,
+          }),
+        ).toThrow(expectedFailure);
+      }
+    }
+    const objectiveWallMetrics = [
+      ['cold-index', 3_599_999],
+      ['cold-registration-lock-and-database-setup', 4_999],
+      ['cold-reference-resolution-longest-transaction-n1', 14_999],
+      ['one-file-reindex-index', 29_999],
+      ['one-file-reindex-post-committed-scan-overlay-and-workspace', 4_999],
+      ['one-file-reindex-registration-lock-and-database-setup', 4_999],
+      ['one-file-reindex-reference-resolution-longest-transaction-n1', 14_999],
+      [registrationName, 4_999],
+      ['same-overlay-reference-reference-resolution-longest-transaction-n1', 14_999],
+    ] as const;
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...objectiveWallMetrics),
+        fc.integer({max: 90, min: 10}),
+        ([name, hardMaximum], percent) => {
+          const staticMaximum = Math.floor((hardMaximum * percent) / 100);
+          const objectiveRatchet = {
+            ...githubHostedRatchet,
+            measurements: {...githubHostedRatchet.measurements, [name]: confirmatoryWallLimit(staticMaximum)},
+          };
+          const enforce = (initial: number, control: number, repeat: number) =>
+            enforceCodeGraphBenchmarkRatchet(
+              sandwichCandidate({[name]: repeat}),
+              objectiveRatchet,
+              sandwichEvidence({[name]: initial}, sandwichControl({[name]: control})),
+            );
+          // The hard boundary remains inclusive even when static is much lower.
+          expect(() => enforce(hardMaximum, staticMaximum, staticMaximum)).not.toThrow();
+          for (const role of [0, 1, 2]) {
+            const observations = [staticMaximum, staticMaximum, staticMaximum];
+            observations[role] = hardMaximum + 1;
+            expect(() => enforce(observations[0], observations[1], observations[2])).toThrow(
+              new RegExp(`objective ${name} has not been attained`),
+            );
+          }
+          // Passing screening cannot grant objective metrics even a tiny tail.
+          expect(() => enforce(staticMaximum, staticMaximum, staticMaximum + 0.001)).toThrow(
+            new RegExp(`remeasured candidate ${name}`),
+          );
+          expect(() => enforce(staticMaximum + 1, staticMaximum, staticMaximum + 1)).toThrow(new RegExp(name));
+        },
+      ),
+      {numRuns: 40},
+    );
     expect(() =>
       enforceCodeGraphBenchmarkRatchet(
         sandwichCandidate({[confirmatoryWallName]: 492.101135}),
@@ -1868,6 +1954,7 @@ describe('code graph release evidence', () => {
       }),
     ).toThrow(/paired control environment\.fixtureHash/u);
     const invariantGuardNames = [
+      'cold-materialized-file-rows',
       'cold-process-peak-rss',
       'cold-registration-process-cpu-n1',
       'incremental-process-peak-rss',
@@ -1901,6 +1988,21 @@ describe('code graph release evidence', () => {
         expect(() =>
           enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, initialOnlyRegression),
         ).toThrow(new RegExp(`initial candidate ${name}`));
+        for (const role of ['initial', 'repeat'] as const) {
+          expect(() =>
+            enforceCodeGraphBenchmarkRatchet(
+              sandwichCandidate({
+                [registrationName]: 319.786313,
+                ...(role === 'repeat' ? {[name]: upperBound! + delta} : {}),
+              }),
+              registrationRatchet,
+              sandwichEvidence(
+                {[registrationName]: 966.326097, ...(role === 'initial' ? {[name]: upperBound! + delta} : {})},
+                registrationEvidence.artifact,
+              ),
+            ),
+          ).toThrow(new RegExp(`${role === 'initial' ? 'initial' : 'remeasured'} candidate ${name}`));
+        }
       }),
       {numRuns: 30},
     );
