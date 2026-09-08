@@ -9,6 +9,8 @@ export const CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SOURCE_VERSION = 'threadnote-4
 export const CONTEXT_BRIEF_CITATION_SCALE_ARTIFACT_SUITE = 'context-brief-citations-scale-v2' as const;
 export const CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES = 100 as const;
 export const CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS = 5 as const;
+const CANDIDATE_PACKAGE_VERSION =
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 export const CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE = 'absolute-monotonic-deadline-v1' as const;
 export const CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2 = {
   breachThresholdMilliseconds: 100,
@@ -218,6 +220,25 @@ export interface ContextBriefCitationScaleReleaseIdentityV1 {
   readonly runnerOperatingSystem: string;
   readonly runtime: string;
   readonly sourceVersion: string;
+}
+
+/** External review context, read from the exact candidate Git object rather than the artifact. */
+export interface ContextBriefCitationScaleCandidateBinding {
+  readonly commit: string;
+  readonly sourceVersion: string;
+}
+
+export function contextBriefCitationScaleCandidateBinding(
+  commit: string,
+  packageManifest: unknown,
+): ContextBriefCitationScaleCandidateBinding {
+  if (!/^[0-9a-f]{40}$/u.test(commit)) invalid('candidate binding requires an exact lowercase Git SHA-1');
+  const manifest = record(packageManifest, 'candidate package manifest');
+  const version = boundedString(manifest.version, 'candidate package version');
+  if (!CANDIDATE_PACKAGE_VERSION.test(version)) {
+    invalid('candidate package version must be an explicit version');
+  }
+  return {commit, sourceVersion: `threadnote-${version}`};
 }
 
 export type ContextBriefCitationScaleEvidenceClass = 'development-smoke' | 'release-scale';
@@ -457,6 +478,7 @@ export function contextBriefCitationScaleGate(failures: readonly string[]): Cont
 export function parseContextBriefCitationScaleArtifactV2(
   value: unknown,
   budgetInput: ContextBriefCitationScaleBudgetV1 | unknown,
+  candidate?: ContextBriefCitationScaleCandidateBinding,
 ): ContextBriefCitationScaleArtifactV2 {
   const budget = parseContextBriefCitationScaleBudgetV1(budgetInput);
   const artifact = record(value, 'scale artifact');
@@ -504,6 +526,7 @@ export function parseContextBriefCitationScaleArtifactV2(
   const claimedGate = parseArtifactGate(artifact.gate);
   const failures = rederiveArtifactFailures({
     budget,
+    candidate,
     environment,
     evidenceClass,
     execution,
@@ -1214,6 +1237,7 @@ function validateMemoryObserverSummary(
 
 function rederiveArtifactFailures(input: {
   readonly budget: ContextBriefCitationScaleBudgetV1;
+  readonly candidate?: ContextBriefCitationScaleCandidateBinding;
   readonly environment: ContextBriefCitationScaleEnvironmentV2;
   readonly evidenceClass: ContextBriefCitationScaleEvidenceClass;
   readonly execution: ContextBriefCitationScaleExecutionV2;
@@ -1256,7 +1280,7 @@ function rederiveArtifactFailures(input: {
       : 'benchmark execution artifact digest is missing or malformed',
   ];
   if (input.evidenceClass === 'release-scale') {
-    failures.push(...contextBriefCitationScaleReleaseIdentityFailures(input.environment));
+    failures.push(...contextBriefCitationScaleReleaseIdentityFailures(input.environment, input.candidate));
     if (
       input.memoryObserver.source !== 'darwin-ps' ||
       input.memoryObserver.rootIdentityValidation !== 'darwin-ps-lstart' ||
@@ -1280,8 +1304,24 @@ export function contextBriefCitationScaleRetainedRootRssGrowthBytes(baselines: r
 /** Fail closed when hosted release evidence is relabeled or detached from its exact candidate. */
 export function contextBriefCitationScaleReleaseIdentityFailures(
   identity: ContextBriefCitationScaleReleaseIdentityV1,
+  candidate?: ContextBriefCitationScaleCandidateBinding,
 ): readonly string[] {
+  // Omitting external review context preserves the immutable historical 4.6.0
+  // artifact contract. New releases must supply a candidate-bound expectation.
+  const expectedSourceVersion = candidate?.sourceVersion ?? CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SOURCE_VERSION;
   return [
+    candidate === undefined || /^[0-9a-f]{40}$/u.test(candidate.commit)
+      ? ''
+      : 'candidate binding commit is not exact lowercase Git SHA-1',
+    candidate === undefined ||
+    (typeof candidate.sourceVersion === 'string' &&
+      candidate.sourceVersion.startsWith('threadnote-') &&
+      CANDIDATE_PACKAGE_VERSION.test(candidate.sourceVersion.slice('threadnote-'.length)))
+      ? ''
+      : 'candidate binding source version must name an explicit package version',
+    candidate === undefined || identity.candidateCommit === candidate.commit
+      ? ''
+      : `claimed candidate ${identity.candidateCommit}; required reviewed candidate ${candidate.commit}`,
     /^[0-9a-f]{40}$/u.test(identity.candidateCommit) ? '' : 'release candidate commit is not exact lowercase Git SHA-1',
     identity.commit === identity.candidateCommit
       ? ''
@@ -1309,9 +1349,9 @@ export function contextBriefCitationScaleReleaseIdentityFailures(
     identity.runtime === CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNTIME
       ? ''
       : `runtime ${identity.runtime}; required ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNTIME}`,
-    identity.sourceVersion === CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SOURCE_VERSION
+    identity.sourceVersion === expectedSourceVersion
       ? ''
-      : `source version ${identity.sourceVersion}; required ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SOURCE_VERSION}`,
+      : `source version ${identity.sourceVersion}; required ${expectedSourceVersion}`,
   ].filter(Boolean);
 }
 
