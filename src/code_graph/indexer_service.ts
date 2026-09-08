@@ -126,6 +126,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
+          Effect.provideService(SystemInfo, system),
           Effect.asVoid,
         );
       const indexAttempt = (

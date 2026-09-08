@@ -1,4 +1,5 @@
 import {Effect, FileSystem, Path} from 'effect';
+import {withExclusiveFileLock} from '../../effect/file_lock.js';
 import {readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {SHA256_DIGEST} from './digest.js';
 import {graphSharingFailure} from './errors.js';
@@ -116,12 +117,79 @@ export const enqueuePersistedGraphShareContribution = Effect.fn('codeGraph.shari
     announcement: GraphShareResultAnnouncementV1,
     mode: GraphShareContributionMode,
   ) {
-    const current = yield* readGraphShareContributionQueue(threadnoteHome, repositoryId, mode);
-    const next = enqueueGraphShareContribution({...current, mode}, announcement, accessMode);
-    if (next.queued) yield* writeGraphShareContributionQueue(threadnoteHome, repositoryId, next.queue);
-    return next;
+    return yield* withContributionQueueLock(
+      threadnoteHome,
+      repositoryId,
+      Effect.gen(function* () {
+        const current = yield* readGraphShareContributionQueue(threadnoteHome, repositoryId, mode);
+        const next = enqueueGraphShareContribution({...current, mode}, announcement, accessMode);
+        if (next.queued) yield* writeGraphShareContributionQueue(threadnoteHome, repositoryId, next.queue);
+        return next;
+      }),
+    );
   },
 );
+
+export const acknowledgeGraphShareContributions = Effect.fn('codeGraph.sharing.acknowledgeContributions')(function* (
+  threadnoteHome: string,
+  repositoryId: string,
+  sent: readonly GraphShareResultAnnouncementV1[],
+  mode: GraphShareContributionMode,
+) {
+  if (sent.length === 0) return;
+  yield* withContributionQueueLock(
+    threadnoteHome,
+    repositoryId,
+    Effect.gen(function* () {
+      const current = yield* readGraphShareContributionQueue(threadnoteHome, repositoryId, mode);
+      const remaining = removeAcknowledgedGraphShareContributions(current, sent);
+      if (remaining.announcements.length !== current.announcements.length) {
+        yield* writeGraphShareContributionQueue(threadnoteHome, repositoryId, remaining);
+      }
+    }),
+  );
+});
+
+export function removeAcknowledgedGraphShareContributions(
+  queue: GraphShareContributionQueueV1,
+  sent: readonly GraphShareResultAnnouncementV1[],
+): GraphShareContributionQueueV1 {
+  const acknowledged = new Set(sent.map(announcementIdentity));
+  return {...queue, announcements: queue.announcements.filter(item => !acknowledged.has(announcementIdentity(item)))};
+}
+
+function announcementIdentity(item: GraphShareResultAnnouncementV1): string {
+  return JSON.stringify([
+    item.actionKey,
+    item.attestationDigest,
+    item.batchId,
+    item.resultManifestDigest,
+    item.semanticDigest,
+  ]);
+}
+
+function withContributionQueueLock<A, E, R>(
+  threadnoteHome: string,
+  repositoryId: string,
+  effect: Effect.Effect<A, E, R>,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const queuePath = graphSharingContributionQueuePath(
+      path,
+      graphSharingLayout(path, threadnoteHome).root,
+      repositoryId,
+    );
+    yield* fs.makeDirectory(path.dirname(queuePath), {recursive: true, mode: 0o700});
+    return yield* withExclusiveFileLock(
+      fs,
+      `${queuePath}.lock`,
+      {retryIntervalMilliseconds: 25, staleAfterMilliseconds: 30_000, waitTimeoutMilliseconds: 30_000},
+      effect,
+    );
+  });
+}
 
 function parseQueuedAnnouncement(value: unknown): GraphShareResultAnnouncementV1 {
   if (!isRecord(value)) throw graphSharingFailure('Contribution announcement is invalid.');

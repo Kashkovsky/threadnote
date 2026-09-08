@@ -18,9 +18,9 @@ import {
 import type {GraphShareResultAnnouncementV1} from './receipts.js';
 import {
   enqueuePersistedGraphShareContribution,
+  acknowledgeGraphShareContributions,
   effectiveGraphShareContributionMode,
   readGraphShareContributionQueue,
-  writeGraphShareContributionQueue,
 } from './contribution.js';
 import {sha256Digest, sha256HexFromDigest} from './digest.js';
 import {graphSharingFailure, GraphSharingError} from './errors.js';
@@ -31,7 +31,8 @@ import {
   parseGraphShareParseResult,
   type GraphShareParseResultV1,
 } from './parse_result.js';
-import {readGraphShareClientState, lookupGraphShareTrustReceipt, resolveGraphShareCasRoot} from './trust.js';
+import {lookupGraphShareTrustReceipt} from './trust.js';
+import {resolveGraphShareRepositoryClient} from './client_state.js';
 
 export const enqueueLocalGraphShareParseResults = Effect.fn('codeGraph.sharing.enqueueLocalParseResults')(
   function* (input: {
@@ -42,10 +43,11 @@ export const enqueueLocalGraphShareParseResults = Effect.fn('codeGraph.sharing.e
     readonly threadnoteHome: string;
   }) {
     const trust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.identity.repositoryId);
-    const state = yield* readGraphShareClientState(input.threadnoteHome);
+    if (trust?.accessMode !== 'join') return {queued: 0};
+    const state = yield* resolveGraphShareRepositoryClient(input.threadnoteHome, trust);
     const mode = effectiveGraphShareContributionMode(trust?.accessMode, state.contributionMode ?? 'off');
     if (mode === 'off') return {queued: 0};
-    const casRoot = yield* resolveGraphShareCasRoot(input.threadnoteHome);
+    const casRoot = state.casRoot;
     const factsByPath = new Map(input.facts.map(fact => [fact.facts.path, fact]));
     const batchId = input.identity.headCommit.slice(0, 40);
     if (!/^[0-9a-f]{40}$/u.test(batchId)) return {queued: 0};
@@ -100,14 +102,14 @@ export const enqueueLocalGraphShareParseResults = Effect.fn('codeGraph.sharing.e
 export const drainQueuedGraphShareContributions = Effect.fn('codeGraph.sharing.drainQueuedContributions')(
   function* (input: {readonly identity: Pick<RepositoryIdentity, 'repositoryId'>; readonly threadnoteHome: string}) {
     const trust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.identity.repositoryId);
-    const state = yield* readGraphShareClientState(input.threadnoteHome);
+    if (trust?.accessMode !== 'join') return {sent: 0};
+    const state = yield* resolveGraphShareRepositoryClient(input.threadnoteHome, trust);
     const mode = effectiveGraphShareContributionMode(trust?.accessMode, state.contributionMode ?? 'off');
     if (mode === 'off' || state.coordinatorUrl === undefined) return {sent: 0};
     const queue = yield* readGraphShareContributionQueue(input.threadnoteHome, input.identity.repositoryId, mode);
     if (queue.announcements.length === 0) return {sent: 0};
-    const casRoot = yield* resolveGraphShareCasRoot(input.threadnoteHome);
-    const remaining = [];
-    let sent = 0;
+    const casRoot = state.casRoot;
+    const sent: GraphShareResultAnnouncementV1[] = [];
     for (const announcement of queue.announcements) {
       const drained = yield* drainOneAnnouncement(casRoot, state.coordinatorUrl, announcement).pipe(
         Effect.catchIf(
@@ -115,14 +117,10 @@ export const drainQueuedGraphShareContributions = Effect.fn('codeGraph.sharing.d
           () => Effect.succeed(false),
         ),
       );
-      if (drained) sent += 1;
-      else remaining.push(announcement);
+      if (drained) sent.push(announcement);
     }
-    yield* writeGraphShareContributionQueue(input.threadnoteHome, input.identity.repositoryId, {
-      ...queue,
-      announcements: remaining,
-    });
-    return {sent};
+    yield* acknowledgeGraphShareContributions(input.threadnoteHome, input.identity.repositoryId, sent, mode);
+    return {sent: sent.length};
   },
 );
 
@@ -135,7 +133,9 @@ export const hydrateSharedParseCache = Effect.fn('codeGraph.sharing.hydrateShare
 }) {
   const fs = yield* FileSystem.FileSystem;
   if (!(yield* fs.exists(input.databasePath))) return {hydrated: 0};
-  const state = yield* readGraphShareClientState(input.threadnoteHome);
+  const trust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.identity.repositoryId);
+  if (trust === undefined) return {hydrated: 0};
+  const state = yield* resolveGraphShareRepositoryClient(input.threadnoteHome, trust);
   if (state.coordinatorUrl === undefined) return {hydrated: 0};
   const status = yield* graphShareControlGetStatus(state.coordinatorUrl).pipe(
     Effect.catchIf(
@@ -145,7 +145,7 @@ export const hydrateSharedParseCache = Effect.fn('codeGraph.sharing.hydrateShare
   );
   if (status === undefined || status.repositoryId !== input.identity.repositoryId) return {hydrated: 0};
   const quarantinedActionKeys = quarantinedGraphShareActionKeys(status.receipts);
-  const casRoot = yield* resolveGraphShareCasRoot(input.threadnoteHome);
+  const casRoot = state.casRoot;
   let hydrated = 0;
   for (const receipt of status.receipts.slice(0, 256)) {
     if (quarantinedActionKeys.has(receipt.actionKey)) continue;

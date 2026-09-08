@@ -60,13 +60,12 @@ import {
   removeGraphShareTrustReceipt,
   resolveGraphShareCasRoot,
   trustReceiptFromEnrollment,
-  writeGraphShareClientState,
-  writeGraphShareContributionMode,
-  writeGraphShareCoordinatorUrl,
+  writeGraphShareRepositoryContributionMode,
   writeGraphShareTrustReceipt,
   type GraphShareAccessMode,
   type GraphShareTrustReceiptV1,
 } from './trust.js';
+import {legacyGraphShareContributionMode, resolveGraphShareRepositoryClient} from './client_state.js';
 
 export interface GraphShareJoinOptions {
   readonly cas?: string;
@@ -132,14 +131,25 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
   const path = yield* Path.Path;
   const cwd = yield* commandCwd(options.cwd);
   const identity = yield* resolveRepositoryIdentity(cwd);
-  const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas);
-  if (options.cas !== undefined) yield* writeGraphShareClientState(config.agentContextHome, casRoot);
-  const enrollment = parseGraphShareEnrollment(yield* readJsonFile(graphShareEnrollmentPath(path, identity.repoRoot)));
-  assertEnrollmentMatchesIdentity(enrollment, identity.repositoryId);
-  const pointer = parseGraphShareProfilePointer(enrollment.profile);
+  const previous = yield* lookupGraphShareTrustReceipt(config.agentContextHome, identity.repositoryId);
+  const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas ?? previous?.client?.casRoot);
+  const enrollment = yield* decodeValue(
+    parseGraphShareEnrollment,
+    yield* readJsonFile(graphShareEnrollmentPath(path, identity.repoRoot)),
+    'Enrollment pointer is invalid.',
+  );
+  yield* decodeValue(
+    () => assertEnrollmentMatchesIdentity(enrollment, identity.repositoryId),
+    undefined,
+    'Enrollment repository identity is invalid.',
+  );
+  const pointer = yield* decodeValue(
+    parseGraphShareProfilePointer,
+    enrollment.profile,
+    'Enrollment profile pointer is invalid.',
+  );
   if (options.coordinator !== undefined) {
     const coordinatorUrl = parseGraphShareCoordinatorUrl(options.coordinator);
-    yield* writeGraphShareCoordinatorUrl(config.agentContextHome, coordinatorUrl);
     yield* mirrorCoordinatorCasBlob(casRoot, coordinatorUrl, pointer.digest);
   }
   const profile = yield* decodeJson(
@@ -148,21 +158,36 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
     'Organization graph profile is invalid.',
   );
   const profileDigest = graphShareProfileDigest(profile);
-  assertProfileMatchesEnrollment(profile, enrollment, profileDigest);
-  if (profile.coordinator?.url !== undefined) {
-    yield* writeGraphShareCoordinatorUrl(config.agentContextHome, profile.coordinator.url);
-  }
+  yield* decodeValue(
+    () => assertProfileMatchesEnrollment(profile, enrollment, profileDigest),
+    undefined,
+    'Profile does not match the enrollment pointer.',
+  );
+  const coordinatorUrl =
+    profile.coordinator?.url ??
+    options.coordinator ??
+    (previous?.profileDigest === profileDigest ? previous.client?.coordinatorUrl : undefined);
   const accessMode: GraphShareAccessMode = options.readOnly ? 'read-only' : 'join';
+  const contributionMode =
+    previous?.accessMode === 'join' && previous.profileDigest === profileDigest && previous.client === undefined
+      ? legacyGraphShareContributionMode(
+          accessMode,
+          (yield* readGraphShareClientState(config.agentContextHome)).contributionMode,
+          profile.contribution.defaultMode,
+        )
+      : effectiveGraphShareContributionMode(accessMode, profile.contribution.defaultMode);
   const receipt = yield* writeGraphShareTrustReceipt(
     config.agentContextHome,
-    trustReceiptFromEnrollment(enrollment, profile, profileDigest, accessMode),
+    {
+      ...trustReceiptFromEnrollment(enrollment, profile, profileDigest, accessMode),
+      client: {
+        casRoot,
+        contributionMode,
+        ...(coordinatorUrl === undefined ? {} : {coordinatorUrl: parseGraphShareCoordinatorUrl(coordinatorUrl)}),
+      },
+    },
+    {preserveContributionMode: true},
   );
-  if (accessMode === 'join') {
-    const state = yield* readGraphShareClientState(config.agentContextHome);
-    if (state.contributionMode === undefined) {
-      yield* writeGraphShareContributionMode(config.agentContextHome, profile.contribution.defaultMode);
-    }
-  }
   return {
     accessMode: receipt.accessMode,
     organization: receipt.organization,
@@ -211,7 +236,7 @@ export const runGraphShareStatus = Effect.fn('codeGraph.sharing.status')(functio
     : Option.none();
   const enrollmentValid = Option.isSome(enrollment) && enrollment.value.repositoryId === identity.repositoryId;
   const trust = yield* lookupGraphShareTrustReceipt(config.agentContextHome, identity.repositoryId);
-  const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas);
+  const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas ?? trust?.client?.casRoot);
   const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
   const pointerPath = graphSharingFrontierPointerPath(path, layout.frontiersRoot, identity.repositoryId);
   const frontier = enrolled && (yield* fs.exists(pointerPath)) ? yield* readJsonFile(pointerPath) : undefined;
@@ -265,7 +290,7 @@ export const maybeImportSharedGraphBase = Effect.fn('codeGraph.sharing.maybeImpo
   ) {
     return {imported: false as const, reason: 'trust-pin-mismatch' as const};
   }
-  const casRoot = yield* resolveGraphShareCasRoot(request.threadnoteHome);
+  const casRoot = yield* resolveGraphShareCasRoot(request.threadnoteHome, trust.client?.casRoot);
   yield* sharingProgress(request.onProgress, 'downloading-checkpoint');
   return yield* importVerifiedSharedCheckpoint({
     casRoot,
@@ -312,7 +337,8 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     input.enrollment.profile,
     'Enrollment profile pointer is invalid.',
   );
-  const coordinatorHint = (yield* readGraphShareClientState(input.request.threadnoteHome)).coordinatorUrl;
+  const client = yield* resolveGraphShareRepositoryClient(input.request.threadnoteHome, input.trust);
+  const coordinatorHint = client.coordinatorUrl;
   const profile = yield* decodeJson(
     yield* ensureSharedCasBlob(input.casRoot, pointer.digest, coordinatorHint),
     parseGraphShareProfile,
@@ -330,10 +356,8 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
   if (profileDigest !== input.trust.profileDigest) {
     return {imported: false as const, reason: 'trust-pin-mismatch' as const};
   }
-  const coordinatorUrl =
-    (yield* readGraphShareClientState(input.request.threadnoteHome)).coordinatorUrl ?? profile.coordinator?.url;
+  const coordinatorUrl = client.coordinatorUrl;
   if (coordinatorUrl !== undefined) {
-    yield* writeGraphShareCoordinatorUrl(input.request.threadnoteHome, coordinatorUrl);
     yield* refreshFrontierPointerFromCoordinator({
       branch: profile.source.branches[0] ?? 'refs/heads/main',
       casRoot: input.casRoot,
@@ -546,8 +570,9 @@ export const runGraphContributeStatus = Effect.fn('codeGraph.sharing.contributeS
   const cwd = yield* commandCwd(options.cwd);
   const identity = yield* resolveRepositoryIdentity(cwd);
   const trust = yield* lookupGraphShareTrustReceipt(config.agentContextHome, identity.repositoryId);
-  const state = yield* readGraphShareClientState(config.agentContextHome);
-  const requested = state.contributionMode ?? 'off';
+  const state =
+    trust === undefined ? undefined : yield* resolveGraphShareRepositoryClient(config.agentContextHome, trust);
+  const requested = state?.contributionMode ?? 'off';
   const mode = effectiveGraphShareContributionMode(trust?.accessMode, requested);
   const queue = yield* readGraphShareContributionQueue(config.agentContextHome, identity.repositoryId, mode);
   return {
@@ -568,8 +593,15 @@ export const runGraphContributeSet = Effect.fn('codeGraph.sharing.contributeSet'
   const identity = yield* resolveRepositoryIdentity(cwd);
   const trust = yield* lookupGraphShareTrustReceipt(config.agentContextHome, identity.repositoryId);
   const requested = yield* decodeContributionMode(options.mode);
-  const mode = effectiveGraphShareContributionMode(trust?.accessMode, requested);
-  yield* writeGraphShareContributionMode(config.agentContextHome, mode);
+  const mode =
+    trust === undefined
+      ? 'off'
+      : yield* writeGraphShareRepositoryContributionMode(
+          config.agentContextHome,
+          trust,
+          yield* resolveGraphShareRepositoryClient(config.agentContextHome, trust),
+          effectiveGraphShareContributionMode(trust.accessMode, requested),
+        );
   return {
     accessMode: trust?.accessMode,
     mode,
@@ -594,7 +626,8 @@ export const runGraphWorker = Effect.fn('codeGraph.sharing.worker')(function* (
       version: 1 as const,
     };
   }
-  const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas);
+  const client = yield* resolveGraphShareRepositoryClient(config.agentContextHome, trust);
+  const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas ?? client.casRoot);
   const advertised = yield* readAdvertisedGraphWorkerActions(config.agentContextHome, identity.repositoryId, casRoot);
   const presentBlobIds = new Set<string>();
   for (const action of advertised) {

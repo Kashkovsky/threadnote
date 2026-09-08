@@ -19,6 +19,7 @@ export type GraphShareAccessMode = (typeof GRAPH_SHARE_ACCESS_MODES)[number];
 
 export interface GraphShareTrustReceiptV1 {
   readonly accessMode: GraphShareAccessMode;
+  readonly client?: GraphShareRepositoryClientV1;
   readonly organization: string;
   readonly policyVersion: 1;
   readonly profileDigest: Sha256Digest;
@@ -37,6 +38,12 @@ export interface GraphShareClientStateV1 {
   readonly contributionMode?: 'dedicated' | 'idle' | 'off' | 'passive';
   readonly coordinatorUrl?: string;
   readonly schemaVersion: 1;
+}
+
+export interface GraphShareRepositoryClientV1 {
+  readonly casRoot: string;
+  readonly contributionMode: NonNullable<GraphShareClientStateV1['contributionMode']>;
+  readonly coordinatorUrl?: string;
 }
 
 export const readGraphShareTrustDocument = Effect.fn('codeGraph.sharing.readTrustDocument')(function* (
@@ -62,6 +69,7 @@ export const lookupGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.lookupT
 export const writeGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.writeTrustReceipt')(function* (
   threadnoteHome: string,
   receipt: GraphShareTrustReceiptV1,
+  options?: {readonly preserveContributionMode?: boolean},
 ) {
   return yield* withGraphShareTrustReceiptsLock(
     threadnoteHome,
@@ -69,17 +77,53 @@ export const writeGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.writeTru
       const path = yield* Path.Path;
       const layout = graphSharingLayout(path, threadnoteHome);
       const document = yield* readGraphShareTrustDocument(threadnoteHome);
-      const receipts = [...document.receipts.filter(item => item.repositoryId !== receipt.repositoryId), receipt].sort(
+      const previous = document.receipts.find(item => item.repositoryId === receipt.repositoryId);
+      const stored =
+        options?.preserveContributionMode &&
+        previous?.accessMode === 'join' &&
+        receipt.accessMode === 'join' &&
+        previous.profileDigest === receipt.profileDigest &&
+        previous.client !== undefined &&
+        receipt.client !== undefined
+          ? {...receipt, client: {...receipt.client, contributionMode: previous.client.contributionMode}}
+          : receipt;
+      const receipts = [...document.receipts.filter(item => item.repositoryId !== receipt.repositoryId), stored].sort(
         (left, right) => (left.repositoryId < right.repositoryId ? -1 : left.repositoryId > right.repositoryId ? 1 : 0),
       );
       yield* writePrivateJsonFile(layout.trustReceiptsPath, {
         receipts,
         schemaVersion: GRAPH_SHARE_TRUST_SCHEMA_VERSION,
       } satisfies GraphShareTrustDocumentV1);
-      return receipt;
+      return stored;
     }),
   );
 });
+
+export const writeGraphShareRepositoryContributionMode = Effect.fn('codeGraph.sharing.writeRepositoryContributionMode')(
+  function* (
+    threadnoteHome: string,
+    expected: GraphShareTrustReceiptV1,
+    client: GraphShareRepositoryClientV1,
+    requested: GraphShareRepositoryClientV1['contributionMode'],
+  ) {
+    return yield* withGraphShareTrustReceiptsLock(
+      threadnoteHome,
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const document = yield* readGraphShareTrustDocument(threadnoteHome);
+        const current = document.receipts.find(item => item.repositoryId === expected.repositoryId);
+        if (current === undefined || current.profileDigest !== expected.profileDigest) return 'off' as const;
+        const mode = current.accessMode === 'join' ? requested : 'off';
+        const updated = {...current, client: {...(current.client ?? client), contributionMode: mode}};
+        yield* writePrivateJsonFile(graphSharingLayout(path, threadnoteHome).trustReceiptsPath, {
+          ...document,
+          receipts: document.receipts.map(item => (item.repositoryId === current.repositoryId ? updated : item)),
+        });
+        return mode;
+      }),
+    );
+  },
+);
 
 export const removeGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.removeTrustReceipt')(function* (
   threadnoteHome: string,
@@ -133,20 +177,6 @@ export const writeGraphShareClientState = Effect.fn('codeGraph.sharing.writeClie
   yield* patchGraphShareClientState(threadnoteHome, {casRoot});
 });
 
-export const writeGraphShareContributionMode = Effect.fn('codeGraph.sharing.writeContributionMode')(function* (
-  threadnoteHome: string,
-  contributionMode: GraphShareClientStateV1['contributionMode'],
-) {
-  return yield* patchGraphShareClientState(threadnoteHome, {contributionMode});
-});
-
-export const writeGraphShareCoordinatorUrl = Effect.fn('codeGraph.sharing.writeCoordinatorUrl')(function* (
-  threadnoteHome: string,
-  coordinatorUrl: string | undefined,
-) {
-  return yield* patchGraphShareClientState(threadnoteHome, {coordinatorUrl});
-});
-
 export const patchGraphShareClientState = Effect.fn('codeGraph.sharing.patchClientState')(function* (
   threadnoteHome: string,
   patch: {
@@ -194,6 +224,7 @@ function withGraphShareTrustReceiptsLock<A, E, R>(threadnoteHome: string, effect
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const layout = graphSharingLayout(path, threadnoteHome);
+    yield* fs.makeDirectory(layout.root, {recursive: true, mode: 0o700});
     return yield* withExclusiveFileLock(fs, layout.trustReceiptsLockPath, GRAPH_SHARE_TRUST_LOCK_OPTIONS, effect);
   });
 }
@@ -226,12 +257,26 @@ function parseTrustReceipt(value: unknown): GraphShareTrustReceiptV1 {
   }
   return {
     accessMode: value.accessMode,
+    ...(value.client === undefined ? {} : {client: parseRepositoryClient(value.client)}),
     organization: requiredText(value.organization),
     policyVersion: 1,
     profileDigest: requiredDigest(value.profileDigest),
     publisherKeyFingerprint: requiredDigest(value.publisherKeyFingerprint),
     registryCanonical: requiredText(value.registryCanonical),
     repositoryId: requiredHex(value.repositoryId),
+  };
+}
+
+function parseRepositoryClient(value: unknown): GraphShareRepositoryClientV1 {
+  if (!isRecord(value)) throw graphSharingFailure('Repository graph-sharing settings are invalid.');
+  const parsed = parseClientState({...value, schemaVersion: 1});
+  if (parsed.casRoot === undefined || parsed.contributionMode === undefined) {
+    throw graphSharingFailure('Repository graph-sharing settings are incomplete.');
+  }
+  return {
+    casRoot: parsed.casRoot,
+    contributionMode: parsed.contributionMode,
+    ...(parsed.coordinatorUrl === undefined ? {} : {coordinatorUrl: parsed.coordinatorUrl}),
   };
 }
 
