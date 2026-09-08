@@ -14,6 +14,7 @@ import {
   CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
   CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
   contextBriefCitationScaleGate,
+  contextBriefCitationScaleCandidateBinding,
   contextBriefCitationRssSampleGapFailures,
   contextBriefCitationRssSampleGapSummary,
   contextBriefCitationScaleReleaseIdentityFailures,
@@ -828,6 +829,35 @@ describe('Context Brief citation scale benchmark', () => {
     );
   });
 
+  it('rederives retained release evidence against the independently reviewed commit and package version', () => {
+    const candidate = contextBriefCitationScaleCandidateBinding('a'.repeat(40), {version: '4.6.8'});
+    const artifact = releaseScaleArtifact(candidate.sourceVersion);
+    expect(parseContextBriefCitationScaleArtifactV2(artifact, budget, candidate)).toEqual(artifact);
+    expect(() => parseContextBriefCitationScaleArtifactV2(artifact, budget)).toThrow();
+    for (const mismatch of [
+      {...candidate, commit: 'b'.repeat(40)},
+      {...candidate, sourceVersion: 'threadnote-4.6.9'},
+      {...candidate, sourceVersion: 'threadnote-4.6.8-..'},
+    ]) {
+      expect(() => parseContextBriefCitationScaleArtifactV2(artifact, budget, mismatch)).toThrow();
+    }
+    const historical = releaseScaleArtifact('threadnote-4.6.0');
+    expect(parseContextBriefCitationScaleArtifactV2(historical, budget)).toEqual(historical);
+  });
+
+  it('keeps development smoke evidence non-release even with a valid candidate binding', () => {
+    const candidate = contextBriefCitationScaleCandidateBinding('a'.repeat(40), {version: '4.6.8'});
+    const smoke = scaleArtifact();
+    const artifact = {...smoke, environment: {...smoke.environment, sourceVersion: candidate.sourceVersion}};
+    const parsed = parseContextBriefCitationScaleArtifactV2(artifact, budget, candidate);
+    expect(parsed.evidenceClass).toBe('development-smoke');
+    expect(parsed.gate.passed).toBe(false);
+    expect(parsed.gate.failures).toContain('artifact is a development smoke, not release-scale evidence');
+    expect(() =>
+      parseContextBriefCitationScaleArtifactV2({...artifact, gate: {passed: true, failures: []}}, budget, candidate),
+    ).toThrow();
+  });
+
   it('runs first-use memory evidence before observer-free timing', () => {
     const memoryPhase = scaleEvaluationSource.indexOf('const rssEvidence = yield* Effect.acquireUseRelease');
     const timingPhase = scaleEvaluationSource.indexOf('const timingProfiles = new Map');
@@ -961,6 +991,44 @@ function scaleArtifact(): ContextBriefCitationScaleArtifactV2 {
     suite: CONTEXT_BRIEF_CITATION_SCALE_ARTIFACT_SUITE,
     version: 2,
     warmups: 0,
+  };
+}
+
+function releaseScaleArtifact(sourceVersion: string): ContextBriefCitationScaleArtifactV2 {
+  const base = scaleArtifact();
+  const profiles = budget.profiles.map(profile => {
+    const observations = Array.from({length: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES}, (_, ordinal) =>
+      scaleObservation(profile, {}, {}, {observationId: `context-rss-${profile.id}-${ordinal}`, ordinal}),
+    );
+    return evaluateContextBriefCitationScaleProfile(budget, profile.id, observations[0].memoryWorkload, observations)
+      .result;
+  });
+  const observationCount = profiles.length * CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES;
+  return {
+    ...base,
+    environment: {
+      ...base.environment,
+      candidateCommit: 'a'.repeat(40),
+      dirty: false,
+      githubActions: true,
+      runnerArchitecture: 'ARM64',
+      runnerClass: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNNER_CLASS,
+      runnerEnvironment: 'github-hosted',
+      runnerOperatingSystem: 'macOS',
+      sourceVersion,
+    },
+    evidenceClass: 'release-scale',
+    fixture: {...base.fixture, indexedMemoryCandidates: 100_000, requestedMemoryCandidates: 100_000},
+    gate: {passed: true, failures: []},
+    memoryObserver: {
+      ...base.memoryObserver,
+      observationCount,
+      sampleAttempts: observationCount * 3 + 1,
+      successfulSamples: observationCount * 3 + 1,
+    },
+    profiles,
+    samples: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+    warmups: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
   };
 }
 

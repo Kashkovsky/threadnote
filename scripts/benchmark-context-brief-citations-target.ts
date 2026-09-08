@@ -12,13 +12,15 @@ import {
 import {CodeGraphMaintenanceCoordinator} from '../src/code_graph/maintenance_coordinator.js';
 import {CodeGraphQueryService} from '../src/code_graph/query.js';
 import {CodeGraphStore} from '../src/code_graph/store.js';
-import {CommandExecutor} from '../src/effect/command.js';
+import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
 import {sha256FileHex} from '../src/effect/digest.js';
 import {SystemInfo} from '../src/effect/system.js';
+import {getThreadnoteVersion} from '../src/release/runtime_version.js';
 import {
   CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS,
   CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
   CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
+  contextBriefCitationScaleCandidateBinding,
   parseContextBriefCitationScaleArtifactV2,
   parseContextBriefCitationScaleBudgetV1,
   type ContextBriefCitationScaleProfileId,
@@ -94,6 +96,51 @@ export interface ContextBriefCitationScaleBenchmarkOptions {
   readonly warmups: number;
 }
 
+/** Bind the embedded build version to the reviewed package bytes before any scale fixture work. */
+export const readContextBriefCitationScaleCandidate = Effect.fn('contextBriefCitationScale.readCandidate')(function* (
+  candidateCommit: string,
+  observedSourceVersion: string,
+  cwd?: string,
+) {
+  if (!/^[0-9a-f]{40}$/u.test(candidateCommit)) {
+    return yield* ScriptError.make({message: 'Release-scale evidence requires an exact candidate Git SHA-1.'});
+  }
+  const options = {cwd, maxOutputBytes: 128 * 1024, timeoutMs: 10_000};
+  const head = yield* runCommandEffect('git', ['rev-parse', 'HEAD'], options);
+  if (head.stdout.trim() !== candidateCommit) {
+    return yield* ScriptError.make({message: 'Release-scale evidence requires the exact candidate checkout.'});
+  }
+  const status = yield* runCommandEffect(
+    'git',
+    [
+      '-c',
+      'core.fsmonitor=false',
+      '-c',
+      'core.untrackedCache=false',
+      'status',
+      '--porcelain=v1',
+      '--untracked-files=all',
+      '--ignore-submodules=none',
+      '--no-renames',
+    ],
+    options,
+  );
+  if (status.stdout.trim()) {
+    return yield* ScriptError.make({message: 'Release-scale evidence requires an exact clean candidate checkout.'});
+  }
+  const manifest = yield* runCommandEffect('git', ['show', `${candidateCommit}:package.json`], options);
+  const candidate = yield* Effect.try({
+    try: () => contextBriefCitationScaleCandidateBinding(candidateCommit, JSON.parse(manifest.stdout)),
+    catch: cause => ScriptError.make({message: 'Could not validate the candidate package version.', cause}),
+  });
+  if (observedSourceVersion !== candidate.sourceVersion) {
+    return yield* ScriptError.make({
+      message: `Built source version ${observedSourceVersion}; required candidate package version ${candidate.sourceVersion}.`,
+    });
+  }
+  return candidate;
+});
+
 const program = Effect.scoped(
   Effect.gen(function* () {
     const options = parseContextBriefCitationScaleBenchmarkArguments(yield* scriptArguments());
@@ -110,6 +157,12 @@ const program = Effect.scoped(
         message: `--fail-on-budget requires an exact candidate commit, the reviewed 100k corpus, all three profiles, exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES} samples, and exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS} warmups.`,
       });
     }
+    const candidate = options.failOnBudget
+      ? yield* readContextBriefCitationScaleCandidate(
+          options.candidateCommit!,
+          `threadnote-${yield* getThreadnoteVersion()}`,
+        )
+      : undefined;
     const evaluatedArtifact = yield* evaluateContextBriefCitationScale({
       budget,
       builtArtifactSha256: options.builtArtifactSha256,
@@ -117,11 +170,12 @@ const program = Effect.scoped(
       memoryCandidates: options.memoryCandidates,
       profileIds: options.profileIds,
       ...(options.candidateCommit === undefined ? {} : {releaseCandidateCommit: options.candidateCommit}),
+      ...(candidate === undefined ? {} : {releaseCandidateBinding: candidate}),
       samples: options.samples,
       startRssObserver: startContextBriefCitationRssObserver(options.builtArtifactSha256),
       warmups: options.warmups,
     });
-    const artifact = parseContextBriefCitationScaleArtifactV2(evaluatedArtifact, budget);
+    const artifact = parseContextBriefCitationScaleArtifactV2(evaluatedArtifact, budget, candidate);
     if (options.outputPath !== undefined) {
       yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
     }
