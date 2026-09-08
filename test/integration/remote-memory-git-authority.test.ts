@@ -7,6 +7,9 @@ import {GitCanonicalMemoryStore} from '../../src/remote_memory/git_canonical_sto
 import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres_control_plane.js';
 import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres_repository.js';
 import {RemoteMemoryIndexer} from '../../src/remote_memory/indexer.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
+import {richRemoteMemoryMetadata} from '../helpers/remote-memory-document.js';
+import {git} from '../helpers/git-share-worktree.js';
 
 const DATABASE = process.env.THREADNOTE_TEST_POSTGRES_URL;
 const postgresDescribe = DATABASE ? describe : describe.skip;
@@ -82,12 +85,12 @@ postgresDescribe('Git ingest system authority', () => {
     }
   });
 
-  it('rejects HTTP body replacement that would erase metadata from Git', async () => {
+  it('preserves rich Git metadata through CAS replacement, replay, and stale rejection', async () => {
     const f = await fixture();
     try {
       const path = 'durable/projects/restricted/rich.md';
-      const content =
-        'MEMORY\nkind: durable\nstatus: active\nproject: restricted\ntopic: rich\nkeywords: retained-keyword\n\nRetain the original body.';
+      const metadata = richRemoteMemoryMetadata();
+      const content = formatMemoryDocument('MEMORY', metadata, 'Retain the original body.');
       const committed = await f.store.commit({path, content, message: 'Rich Git memory'});
       await f.repository.ingestActiveGitShares('rich-ingest');
       const principal = await new PostgresRemoteControlPlane(f.database.sql).authorize(
@@ -97,29 +100,92 @@ postgresDescribe('Git ingest system authority', () => {
       if (!principal) throw new Error('Fixture principal missing');
       const uri = `threadnote://share/${f.input.shareId}/memories/durable/restricted/rich.md`;
       const original = await f.repository.read(principal, {version: 1, uri}, 'read-rich');
+      const input = {
+        version: 1 as const,
+        kind: 'durable' as const,
+        project: 'restricted',
+        topic: 'rich',
+        text: 'Changed body',
+        operationId: 'replace-rich',
+        baseRevision: original.receipt.revision,
+      };
+      const replaced = await f.repository.remember(principal, input, 'replace-rich');
+      const read = await f.repository.read(principal, {version: 1, uri}, 'read-replaced');
+      expect(read.receipt.revision).toBe(replaced.revision);
+      const parsed = parseMemoryDocument(uri, read.content);
+      expect(parsed?.body).toBe('Changed body');
+      expect(parsed?.metadata).toEqual({
+        ...metadata,
+        sourceAgentClient: 'remote',
+        timestamp: expect.any(String),
+        updatedAt: expect.any(String),
+      });
+      expect(parsed?.metadata.updatedAt).not.toBe(metadata.updatedAt);
+      const editedFields = /^(source_agent_client|timestamp|updated_at):/u;
+      const preservedLines = content
+        .split('\n\n', 1)[0]
+        .split('\n')
+        .filter(line => !editedFields.test(line));
+      expect(
+        read.content
+          .split('\n\n', 1)[0]
+          .split('\n')
+          .filter(line => !editedFields.test(line)),
+      ).toEqual(preservedLines);
+      expect(await git(['show', `HEAD:${path}`], f.git.remote)).toBe(read.content);
+      expect((await f.repository.remember(principal, input, 'replay-rich')).revision).toBe(replaced.revision);
       await expect(
-        f.repository.remember(
-          principal,
-          {
-            version: 1,
-            kind: 'durable',
-            project: 'restricted',
-            topic: 'rich',
-            text: 'Changed body',
-            operationId: 'replace-rich',
-            baseRevision: original.receipt.revision,
-          },
-          'replace-rich',
-        ),
-      ).rejects.toMatchObject({code: 'invalid_request', details: {reason: 'unsupported_remote_metadata'}});
-      expect((await f.store.listCanonicalPaths()).find(entry => entry.gitPath === path)?.gitCommit).toBe(
-        committed.gitCommit,
-      );
+        f.repository.remember(principal, {...input, operationId: 'stale-rich', text: 'Stale body'}, 'stale-rich'),
+      ).rejects.toMatchObject({code: 'conflict'});
+      expect((await f.repository.read(principal, {version: 1, uri}, 'read-after-stale')).content).toBe(read.content);
       expect(await f.store.read({commit: committed.gitCommit, path})).toBe(content);
     } finally {
       await f.dispose();
     }
   });
+
+  it.each(['x_extension: retained', 'code_citation: invalid', 'memory_id: tn_one\nmemory_id: tn_two'])(
+    'leaves Git and the revision unchanged when metadata cannot be preserved: %s',
+    async field => {
+      const f = await fixture();
+      try {
+        const path = 'durable/projects/restricted/unsupported.md';
+        const content = `MEMORY\nkind: durable\n${field}\n\nOriginal body`;
+        const committed = await f.store.commit({path, content, message: 'Unsupported metadata fixture'});
+        await f.repository.ingestActiveGitShares('unsupported-ingest');
+        const principal = await new PostgresRemoteControlPlane(f.database.sql).authorize(
+          {issuer: f.input.issuer, subject: f.input.subject, scopes: new Set(f.input.capabilities)},
+          f.input.shareId,
+        );
+        if (!principal) throw new Error('Fixture principal missing');
+        const uri = `threadnote://share/${f.input.shareId}/memories/durable/restricted/unsupported.md`;
+        const original = await f.repository.read(principal, {version: 1, uri}, 'read-unsupported');
+        await expect(
+          f.repository.remember(
+            principal,
+            {
+              version: 1,
+              kind: 'durable',
+              project: 'restricted',
+              topic: 'unsupported',
+              text: 'Changed body',
+              operationId: 'replace-unsupported',
+              baseRevision: original.receipt.revision,
+            },
+            'replace-unsupported',
+          ),
+        ).rejects.toMatchObject({code: 'invalid_request', details: {reason: 'unsupported_remote_metadata'}});
+        expect((await f.store.listCanonicalPaths()).find(entry => entry.gitPath === path)?.gitCommit).toBe(
+          committed.gitCommit,
+        );
+        const read = await f.repository.read(principal, {version: 1, uri}, 'read-after-rejection');
+        expect(read.content).toBe(original.content);
+        expect(read.receipt.revision).toBe(original.receipt.revision);
+      } finally {
+        await f.dispose();
+      }
+    },
+  );
 
   it('projects canonical Git independently of member order, scopes, and revocation', async () => {
     const f = await fixture();
