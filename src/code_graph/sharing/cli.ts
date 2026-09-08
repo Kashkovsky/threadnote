@@ -88,6 +88,10 @@ export function makeGraphSharingCommands(
   const graphPublisherServe = Command.make(
     'serve',
     {
+      authorizationPolicy: optionalString(
+        'authorization-policy',
+        'Policy file for authenticated frontier/status reads; disables artifact routes and contributor mutations',
+      ),
       cas: optionalString('cas', 'Digest-addressed CAS directory for signed frontier artifacts'),
       cwd: codeGraphCliBounds.cwd,
       json: codeGraphCliBounds.json,

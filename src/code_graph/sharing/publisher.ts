@@ -36,6 +36,7 @@ import {
 } from './profile.js';
 import {advanceGraphPublisherFrontier, ensureGraphSharePublishedOciDescriptor} from './publisher_cycle.js';
 import {resolveGraphShareCasRoot, writeGraphShareClientState} from './trust.js';
+import {validateGraphControlPolicy} from './control_reader.js';
 
 export interface GraphShareInitOptions {
   readonly cas?: string;
@@ -47,6 +48,7 @@ export interface GraphShareInitOptions {
 }
 
 export interface GraphPublisherBootstrapOptions {
+  readonly authorizationPolicy?: string;
   readonly cas?: string;
   readonly cwd?: string;
   readonly json?: boolean;
@@ -203,7 +205,6 @@ export const runGraphPublisherListen = Effect.fn('codeGraph.sharing.publisherLis
     }) => Effect.Effect<void, unknown, CliOutput>;
   },
 ) {
-  const published = yield* runGraphPublisherServe(config, options);
   const path = yield* Path.Path;
   const cwd = yield* commandCwd(options.cwd);
   const identity = yield* resolveRepositoryIdentity(cwd);
@@ -211,6 +212,18 @@ export const runGraphPublisherListen = Effect.fn('codeGraph.sharing.publisherLis
   const enrollment = parseGraphShareEnrollment(yield* readJsonFile(graphShareEnrollmentPath(path, identity.repoRoot)));
   const pointer = parseGraphShareProfilePointer(enrollment.profile);
   const profile = parseGraphShareProfile(yield* decodeJsonBytes(yield* readVerifiedCasBlob(casRoot, pointer.digest)));
+  const authorization =
+    options.authorizationPolicy === undefined
+      ? undefined
+      : {
+          enrollment,
+          policyFile: path.resolve(options.authorizationPolicy),
+          profile,
+        };
+  if (authorization !== undefined) {
+    yield* validateGraphControlPolicy({...authorization, casRoot, threadnoteHome: config.agentContextHome});
+  }
+  const published = yield* runGraphPublisherServe(config, options);
   const branch = profile.source.branches[0] ?? 'refs/heads/main';
   const descriptorDigest =
     published.descriptorDigest ??
@@ -236,6 +249,7 @@ export const runGraphPublisherListen = Effect.fn('codeGraph.sharing.publisherLis
     },
   );
   return yield* runGraphShareControlServer({
+    ...(authorization === undefined ? {} : {authorization}),
     casRoot,
     listen: parseGraphShareListenAddress(options.listen),
     onListening: info =>
