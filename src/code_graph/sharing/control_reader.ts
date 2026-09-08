@@ -30,9 +30,11 @@ import {
 } from './control_enrollment.js';
 import {GRAPH_SHARE_CONTROL_MAX_BODY_BYTES} from './control_protocol.js';
 import {parseSha256Digest, sha256Digest} from './digest.js';
-import {graphSharingFailure} from './errors.js';
+import {graphSharingFailure, graphSharingUnavailable} from './errors.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {graphShareFrontierDiscoveryTag} from './namespace.js';
+import {graphShareRegistryPublicationScope, graphSharePublicationPointer} from './registry_publication.js';
+import {graphSharePublicationAuthority, readGraphSharePublicationReceipt} from './registry_publication_state.js';
 import {
   assertProfileMatchesEnrollment,
   graphShareProfileDigest,
@@ -227,9 +229,20 @@ export const readGraphControlFrontier = Effect.fn('codeGraph.sharing.readControl
   const path = yield* Path.Path;
   const layout = graphSharingLayout(path, options.threadnoteHome, options.casRoot);
   const pointerFile = graphSharingFrontierPointerPath(path, layout.frontiersRoot, scope.repositoryId);
-  const pointer = parseGraphShareFrontierPointer(
-    yield* decodeJsonBytes(yield* readGraphControlBytes(pointerFile, GRAPH_SHARE_CONTROL_MAX_BODY_BYTES)),
-  );
+  const publication = options.profile.registry.canonical.startsWith('oci://')
+    ? yield* readGraphSharePublicationReceipt(
+        options.threadnoteHome,
+        graphSharePublicationAuthority(graphShareRegistryPublicationScope(options), options.profile.registry.canonical),
+      )
+    : undefined;
+  if (publication !== undefined && publication.acknowledged === undefined)
+    return yield* graphSharingUnavailable('Registry frontier publication is pending.');
+  const pointer =
+    publication?.acknowledged === undefined
+      ? parseGraphShareFrontierPointer(
+          yield* decodeJsonBytes(yield* readGraphControlBytes(pointerFile, GRAPH_SHARE_CONTROL_MAX_BODY_BYTES)),
+        )
+      : graphSharePublicationPointer(publication.acknowledged);
   const readBlob = (digest: string) =>
     Effect.gen(function* () {
       const bytes = yield* readGraphControlBytes(

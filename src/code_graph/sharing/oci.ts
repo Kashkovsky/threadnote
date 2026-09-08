@@ -2,6 +2,7 @@ import {SHA256_HEX} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 
 export const GRAPH_SHARE_HTTP_CAS_MAX_BYTES = 32 * 1_048_576;
+export const GRAPH_SHARE_REGISTRY_MANIFEST_MAX_BYTES = 4 * 1_048_576;
 export const GRAPH_SHARE_HTTP_CAS_PATH = /^\/v1\/cas\/sha256\/([0-9a-f]{64})$/u;
 export const GRAPH_SHARE_HTTP_TAG_PATH =
   /^\/v1\/tags\/(tn-(?:frontier-[0-9a-f]{40}|action-[0-9a-f]{64}|work-[0-9a-f]{40}))$/u;

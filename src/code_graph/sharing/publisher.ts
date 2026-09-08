@@ -20,7 +20,12 @@ import {putGraphShareCheckpointLayers} from './checkpoint_cas.js';
 import {putSignedGraphShareFrontierDocuments} from './descriptor.js';
 import {parseSha256Digest, type Sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
-import {parseGraphShareListenAddress, recordPublishedFrontier, runGraphShareControlServer} from './control_server.js';
+import {
+  parseGraphShareListenAddress,
+  recordPublishedFrontier,
+  runGraphShareControlServer,
+  withCoordinatorStateLock,
+} from './control_server.js';
 import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {
   assertEnrollmentMatchesIdentity,
@@ -37,6 +42,9 @@ import {
 import {advanceGraphPublisherFrontier, ensureGraphSharePublishedOciDescriptor} from './publisher_cycle.js';
 import {resolveGraphShareCasRoot, writeGraphShareClientState} from './trust.js';
 import {validateGraphControlPolicy} from './control_reader.js';
+import {completeGraphPublisherRegistryPublication} from './publisher_registry.js';
+import {graphShareRegistryPublicationScope, type GraphShareRegistryPublicationResult} from './registry_publication.js';
+import {readAuthenticatedGraphShareFrontier} from './frontier_acceptance.js';
 
 export interface GraphShareInitOptions {
   readonly cas?: string;
@@ -111,6 +119,15 @@ export const runGraphPublisherBootstrap = Effect.fn('codeGraph.sharing.publisher
   config: RuntimeConfig,
   options: GraphPublisherBootstrapOptions,
 ) {
+  const candidate = yield* bootstrapGraphPublisherCandidate(config, options);
+  const publication = yield* completeGraphPublisherRegistryPublication(config, options);
+  return {...candidate, publication};
+});
+
+const bootstrapGraphPublisherCandidate = Effect.fn('codeGraph.sharing.bootstrapPublisherCandidate')(function* (
+  config: RuntimeConfig,
+  options: GraphPublisherBootstrapOptions,
+) {
   const crypto = yield* Crypto.Crypto;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -130,6 +147,31 @@ export const runGraphPublisherBootstrap = Effect.fn('codeGraph.sharing.publisher
   if (profileDigest !== pointer.digest || profile.repositoryId !== enrollment.repositoryId) {
     return yield* graphSharingFailure('Published profile digest does not match enrollment.');
   }
+  const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
+  const pointerPath = graphSharingFrontierPointerPath(path, layout.frontiersRoot, identity.repositoryId);
+  const existing = Effect.gen(function* () {
+    const stored = parseGraphShareFrontierPointer(yield* readJsonFile(pointerPath));
+    const current = yield* readAuthenticatedGraphShareFrontier(
+      casRoot,
+      graphShareRegistryPublicationScope({enrollment, profile}),
+      stored,
+    );
+    if (current.checkpoint.metadataDigest === undefined)
+      return yield* graphSharingFailure('Publisher frontier is missing chunk metadata.');
+    const documents = yield* ensureGraphSharePublishedOciDescriptor(casRoot, stored, current.checkpoint.metadataDigest);
+    return {
+      checkpointDigest: current.checkpoint.manifestDigest,
+      descriptorDigest: documents.descriptorDigest,
+      envelopeDigest: stored.envelopeDigest,
+      generation: current.generation,
+      manifestDigest: stored.manifestDigest,
+      profileDigest,
+      sourceCommit: current.sourceCommit,
+      type: 'code-graph-publisher-bootstrap' as const,
+      version: 1 as const,
+    };
+  });
+  if (yield* fs.exists(pointerPath)) return yield* existing;
   const spool = path.join(casRoot, 'spool', `${yield* crypto.randomUUIDv4}.cgcp`);
   const exported = yield* runCodeGraphCheckpointExport(config, {cwd, output: spool, quiet: true});
   const checkpointDigest = yield* putCasFile(casRoot, spool);
@@ -151,23 +193,28 @@ export const runGraphPublisherBootstrap = Effect.fn('codeGraph.sharing.publisher
   );
   const metadataBytes = yield* readVerifiedCasBlob(casRoot, layers.metadataDigest);
   const documents = yield* putSignedGraphShareFrontierDocuments(casRoot, signed, metadataBytes);
-  const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
-  yield* writePrivateJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, identity.repositoryId), {
-    envelopeDigest: documents.envelopeDigest,
-    manifestDigest: documents.manifestDigest,
-    schemaVersion: 1,
-  });
-  return {
-    checkpointDigest,
-    descriptorDigest: documents.descriptorDigest,
-    envelopeDigest: documents.envelopeDigest,
-    generation: 1,
-    manifestDigest: documents.manifestDigest,
-    profileDigest,
-    sourceCommit: exported.sourceCommit,
-    type: 'code-graph-publisher-bootstrap' as const,
-    version: 1 as const,
-  };
+  return yield* withCoordinatorStateLock(
+    {threadnoteHome: config.agentContextHome},
+    Effect.gen(function* () {
+      if (yield* fs.exists(pointerPath)) return yield* existing;
+      yield* writePrivateJsonFile(pointerPath, {
+        envelopeDigest: documents.envelopeDigest,
+        manifestDigest: documents.manifestDigest,
+        schemaVersion: 1,
+      });
+      return {
+        checkpointDigest,
+        descriptorDigest: documents.descriptorDigest,
+        envelopeDigest: documents.envelopeDigest,
+        generation: 1,
+        manifestDigest: documents.manifestDigest,
+        profileDigest,
+        sourceCommit: exported.sourceCommit,
+        type: 'code-graph-publisher-bootstrap' as const,
+        version: 1 as const,
+      };
+    }),
+  );
 });
 
 export const runGraphPublisherServe = Effect.fn('codeGraph.sharing.publisherServe')(function* (
@@ -199,6 +246,7 @@ export const runGraphPublisherListen = Effect.fn('codeGraph.sharing.publisherLis
       readonly listening: true;
       readonly manifestDigest: string;
       readonly port: number;
+      readonly publication: GraphShareRegistryPublicationResult;
       readonly sourceCommit: string;
       readonly type: 'code-graph-publisher-serve';
       readonly version: 1;
@@ -231,23 +279,33 @@ export const runGraphPublisherListen = Effect.fn('codeGraph.sharing.publisherLis
       envelopeDigest: published.envelopeDigest,
       manifestDigest: published.manifestDigest,
     })).descriptorDigest;
-  yield* recordPublishedFrontier(
-    {
-      casRoot,
-      organization: profile.organization,
-      repositoryId: identity.repositoryId,
-      threadnoteHome: config.agentContextHome,
-    },
-    {
-      branch,
-      descriptorDigest,
-      envelopeDigest: published.envelopeDigest,
-      generation: published.generation,
-      manifestDigest: published.manifestDigest,
-      repositoryId: identity.repositoryId,
-      sourceCommit: published.sourceCommit,
-    },
-  );
+  if (published.publication.status !== 'pending')
+    yield* recordPublishedFrontier(
+      {
+        casRoot,
+        organization: profile.organization,
+        repositoryId: identity.repositoryId,
+        threadnoteHome: config.agentContextHome,
+      },
+      {
+        branch,
+        descriptorDigest:
+          published.publication.acknowledged === undefined
+            ? descriptorDigest
+            : parseSha256Digest(published.publication.acknowledged.descriptorDigest),
+        envelopeDigest:
+          published.publication.acknowledged === undefined
+            ? published.envelopeDigest
+            : parseSha256Digest(published.publication.acknowledged.envelopeDigest),
+        generation: published.publication.acknowledged?.generation ?? published.generation,
+        manifestDigest:
+          published.publication.acknowledged === undefined
+            ? published.manifestDigest
+            : parseSha256Digest(published.publication.acknowledged.manifestDigest),
+        repositoryId: identity.repositoryId,
+        sourceCommit: published.publication.acknowledged?.sourceCommit ?? published.sourceCommit,
+      },
+    );
   return yield* runGraphShareControlServer({
     ...(authorization === undefined ? {} : {authorization}),
     casRoot,
@@ -260,6 +318,7 @@ export const runGraphPublisherListen = Effect.fn('codeGraph.sharing.publisherLis
         listening: true,
         manifestDigest: published.manifestDigest,
         port: info.port,
+        publication: published.publication,
         sourceCommit: published.sourceCommit,
         type: 'code-graph-publisher-serve',
         version: 1,
@@ -273,13 +332,22 @@ export const runGraphPublisherListen = Effect.fn('codeGraph.sharing.publisherLis
       }).pipe(
         Effect.map(result => ({
           branch,
-          descriptorDigest: result.descriptorDigest,
-          envelopeDigest: result.envelopeDigest,
-          generation: result.generation,
-          manifestDigest: result.manifestDigest,
+          descriptorDigest:
+            result.publication.acknowledged === undefined
+              ? result.descriptorDigest
+              : parseSha256Digest(result.publication.acknowledged.descriptorDigest),
+          envelopeDigest:
+            result.publication.acknowledged === undefined
+              ? result.envelopeDigest
+              : parseSha256Digest(result.publication.acknowledged.envelopeDigest),
+          generation: result.publication.acknowledged?.generation ?? result.generation,
+          manifestDigest:
+            result.publication.acknowledged === undefined
+              ? result.manifestDigest
+              : parseSha256Digest(result.publication.acknowledged.manifestDigest),
           published: result.published,
           repositoryId: identity.repositoryId,
-          sourceCommit: result.sourceCommit,
+          sourceCommit: result.publication.acknowledged?.sourceCommit ?? result.sourceCommit,
         })),
       ),
     repositoryId: identity.repositoryId,
