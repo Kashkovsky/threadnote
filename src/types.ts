@@ -91,6 +91,8 @@ export interface InstallOptions {
 }
 
 export interface HooksInstallOptions {
+  readonly target?: 'desktop' | 'cloud';
+  readonly project?: string;
   readonly apply?: boolean;
   readonly dryRun?: boolean;
   readonly remove?: boolean;
