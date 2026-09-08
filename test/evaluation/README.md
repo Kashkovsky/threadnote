@@ -5,7 +5,7 @@ developer home, network access, local canonical data, and model-generated releva
 
 ## MemoryConnectionsBench v1 (A+B)
 
-`fixtures/memory-connections-bench-v1/fixture.json` freezes the typed-authoring and schema-v12 projection contract.
+`fixtures/memory-connections-bench-v1/fixture.json` freezes the typed-authoring and memory-link selector projection contract introduced in schema v12. The private recall cache now uses schema v13: source URIs are copied from indexed documents to order bounded neighborhoods directly in the source/target indexes. Selector values, canonical proof requirements, fixture inputs, and result ordering are unchanged.
 Its operation traces exercise all five planned knowledge abilities, strict relation normalization and rejection,
 legacy target add/change/delete, stable-identity target moves, source replacement/deletion, and logical clean-rebuild
 parity:

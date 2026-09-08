@@ -141,6 +141,7 @@ const executeProjectionTrace = Effect.fn('test.executeMemoryConnectionsProjectio
     if (!schemaChecked) {
       expect(memoryLinksColumns(home)).toEqual([
         'source_document_id',
+        'source_uri',
         'source_memory_id',
         'target_memory_id',
         'target_locator_digest',

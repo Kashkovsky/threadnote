@@ -194,7 +194,7 @@ interface RecallTermStatisticRow {
   readonly term: string;
 }
 
-const RECALL_INDEX_DATABASE_VERSION = 12;
+const RECALL_INDEX_DATABASE_VERSION = 13;
 const RECALL_INDEX_POINTER_VERSION = 1;
 const ACTIVE_DATABASE_FILENAME = `active-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
 const INACTIVE_DATABASE_FILENAME = `with-inactive-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
@@ -1083,6 +1083,7 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS memory_links (
       source_document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+      source_uri TEXT NOT NULL,
       source_memory_id TEXT NOT NULL,
       target_memory_id TEXT NOT NULL,
       target_locator_digest TEXT NOT NULL CHECK (
@@ -1144,10 +1145,10 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
     'CREATE INDEX IF NOT EXISTS code_links_selector_uri ON code_links(selector_kind, selector_digest, document_uri COLLATE BINARY, citation_ordinal, document_id)',
   );
   yield* sql.unsafe(
-    'CREATE INDEX IF NOT EXISTS memory_links_source ON memory_links(source_memory_id, relation_type, source_document_id, relation_origin, relation_ordinal)',
+    'CREATE INDEX IF NOT EXISTS memory_links_source ON memory_links(source_memory_id, relation_type, source_uri COLLATE BINARY, relation_origin, relation_ordinal, target_memory_id, target_locator_digest, source_document_id)',
   );
   yield* sql.unsafe(
-    "CREATE INDEX IF NOT EXISTS memory_links_target ON memory_links(target_memory_id, relation_type, source_document_id, relation_origin, relation_ordinal) WHERE target_memory_id <> ''",
+    "CREATE INDEX IF NOT EXISTS memory_links_target ON memory_links(target_memory_id, relation_type, source_uri COLLATE BINARY, relation_origin, relation_ordinal, target_locator_digest, source_document_id) WHERE target_memory_id <> ''",
   );
   yield* sql.unsafe(
     "CREATE INDEX IF NOT EXISTS memory_links_locator ON memory_links(target_locator_digest, relation_type, source_document_id, relation_origin, relation_ordinal) WHERE target_locator_digest <> ''",
@@ -1440,6 +1441,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
       yield* sql.unsafe(`
         INSERT INTO memory_links (
           source_document_id,
+          source_uri,
           source_memory_id,
           target_memory_id,
           target_locator_digest,
@@ -1449,6 +1451,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
         )
         SELECT
           document.id,
+          document.uri,
           memory_link.source_memory_id,
           memory_link.target_memory_id,
           memory_link.target_locator_digest,
