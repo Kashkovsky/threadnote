@@ -47,16 +47,19 @@ describe('snapshot admission cache', () => {
         expect(yield* codeGraphSnapshotAdmissionCurrent(layout, snapshot, first, packs)).toBe(true);
         expect(yield* codeGraphSnapshotAdmissionCurrent(layout, snapshot, second, packs)).toBe(false);
         if (!dirty) {
-          yield* recordCodeGraphSnapshotAdmission(
-            layout,
-            {...snapshot, dirty: true, id: `${snapshot.id}-dirty`},
-            first,
-            packs,
-            false,
-          );
+          const overlay = {...snapshot, dirty: true, id: `${snapshot.id}-dirty`};
+          yield* recordCodeGraphSnapshotAdmission(layout, overlay, first, packs, false);
           expect(yield* codeGraphSnapshotAdmissionCurrent(layout, snapshot, first, packs)).toBe(false);
           expect(yield* codeGraphSnapshotAdmissionCurrent(layout, snapshot, first, packs, true)).toBe(true);
           expect(yield* codeGraphSnapshotAdmissionCurrent(layout, snapshot, second, packs, true)).toBe(false);
+          yield* recordCodeGraphSnapshotAdmission(layout, snapshot, first, packs, false, {cleanOnly: true});
+          expect(yield* codeGraphSnapshotAdmissionCurrent(layout, overlay, first, packs)).toBe(true);
+          expect(yield* codeGraphSnapshotAdmissionCurrent(layout, snapshot, first, packs)).toBe(false);
+          const rejected = yield* recordCodeGraphSnapshotAdmission(layout, overlay, first, packs, false, {
+            cleanOnly: true,
+          }).pipe(Effect.flip);
+          expect(rejected).toMatchObject({_tag: 'CodeGraphAdmissionError'});
+          expect(yield* codeGraphSnapshotAdmissionCurrent(layout, overlay, first, packs)).toBe(true);
           yield* recordCodeGraphSnapshotAdmission(layout, snapshot, first, packs, false);
         }
         const replacement = {...snapshot, id: `${snapshot.id}-next`};

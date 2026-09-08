@@ -753,6 +753,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                               store,
                               threadnoteHome: options.threadnoteHome,
                             });
+                            if ((yield* observeCodeGraphAdmissionEnvironment(identity)) !== admissionEnvironment) {
+                              return yield* WorktreeChangedDuringIndex.make({});
+                            }
+                            yield* recordCodeGraphSnapshotAdmission(
+                              layout,
+                              committedBase.snapshot,
+                              admissionEnvironment,
+                              languagePacks,
+                              ensureVectors,
+                              {cleanOnly: true},
+                            );
                           }
                         }
                         if (preassessment.mode === 'fallback') {

@@ -111,10 +111,14 @@ export const recordCodeGraphSnapshotAdmission = Effect.fn('codeGraph.recordSnaps
   environmentFingerprint: string,
   languagePacks: CodeGraphLanguagePackRegistryShape,
   includeOpaqueCorpusAssets: boolean,
+  options?: {readonly cleanOnly?: boolean},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
+  if (options?.cleanOnly && snapshot.dirty) {
+    return yield* CodeGraphAdmissionError.make({message: 'Dirty snapshots cannot establish clean-base admission.'});
+  }
   if (!/^[0-9a-f]{64}$/u.test(layout.worktreeId)) {
     return yield* CodeGraphAdmissionError.make({message: 'Invalid graph admission worktree identity.'});
   }
@@ -135,7 +139,7 @@ export const recordCodeGraphSnapshotAdmission = Effect.fn('codeGraph.recordSnaps
   };
   // Retain the last verified clean base while its producer works on a dirty overlay.
   // Two bounded files per worktree avoid retaining proof for every historical snapshot.
-  for (const clean of snapshot.dirty ? [false] : [false, true]) {
+  for (const clean of options?.cleanOnly ? [true] : snapshot.dirty ? [false] : [false, true]) {
     const destination = receiptPath(path, layout, layout.worktreeId, clean);
     const temporary = `${destination}.${yield* crypto.randomUUIDv4}.tmp`;
     yield* Effect.gen(function* () {
