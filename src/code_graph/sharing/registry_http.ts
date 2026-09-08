@@ -84,7 +84,11 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
     url.searchParams.set('scope', target.pullScope);
     if (challenge.service !== undefined) url.searchParams.set('service', challenge.service);
     const response = yield* request(url.href, 32_768, 'application/json', credential?.authorization);
-    if (response.status !== 200) return yield* graphSharingHttpFailure(response.status);
+    if (response.status !== 200)
+      return yield* graphSharingHttpFailure(
+        response.status,
+        graphShareRetryAfterMilliseconds(response.headers['retry-after'], yield* Clock.currentTimeMillis),
+      );
     const token = yield* Schema.decodeEffect(Schema.fromJsonString(TokenResponse))(
       new TextDecoder().decode(response.bytes),
     ).pipe(Effect.mapError(() => graphSharingFailure('Registry token response is invalid.')));

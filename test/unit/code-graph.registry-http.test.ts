@@ -170,6 +170,25 @@ describe('registry authentication and bounded transport', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
+  effectIt.effect('preserves token endpoint retry hints without retrying immediately', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture({
+        handler: request =>
+          request.url.pathname === '/token'
+            ? new Response(null, {status: 429, headers: {'retry-after': '17'}})
+            : new Response(null, {
+                status: 401,
+                headers: {'www-authenticate': `Bearer realm="${target.origin}/token"`},
+              }),
+      });
+      const result = yield* Effect.result(f.read());
+      expect(result).toMatchObject({
+        failure: {httpStatus: 429, kind: 'unavailable', retryAfterMilliseconds: 17_000},
+      });
+      expect(f.requests).toHaveLength(2);
+    }).pipe(provideTestLayer(layer)),
+  );
+
   effectIt.effect('rejects foreign realms, scope widening and redirects before credential use', () =>
     Effect.gen(function* () {
       for (const challenge of [
