@@ -21,9 +21,12 @@ import {codeGraphUtf8ByteLength} from './disk_capacity.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphAttributionContextFile} from './store_models.js';
 import {isRepositoryFactAttributionContextPath} from './extractor_context.js';
+import {createCachedCodeGraphContractHash} from './cached_contract_hash.js';
 
 const ATTRIBUTION_CONTEXT_FILES_MAXIMUM = 10_000;
 const ATTRIBUTION_CONTEXT_BYTES_MAXIMUM = 16 * 1_048_576;
+const inventoryContractHash = createCachedCodeGraphContractHash();
+const opaqueInventoryContractHash = createCachedCodeGraphContractHash();
 
 export function codeGraphAttributionContextFilesForReceipt(
   files: readonly CodeGraphInventoryFile[],
@@ -132,7 +135,9 @@ export function codeGraphInventoryReuseContract(
       id: pack.id,
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
-  return sha256HexSync(
+  const hashContract = includeOpaqueCorpusAssets ? opaqueInventoryContractHash : inventoryContractHash;
+  return hashContract(
+    languagePacks,
     JSON.stringify({
       admissionPolicy: CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
       contractVersion: CODE_GRAPH_INVENTORY_REUSE_CONTRACT_VERSION,
