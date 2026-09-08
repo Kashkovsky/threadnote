@@ -31,7 +31,9 @@ import {sanitizeCodeGraphPresentationText as sanitizeText} from './presentation_
 import {resolveRepositoryIdentity} from './repository.js';
 import {
   attachCodeGraphStatusObservation,
+  codeGraphSnapshotMatchesWorktree as snapshotMatches,
   observationFromCodeGraphStatus,
+  observeCodeGraphQueryWorktree as observeWorktree,
   shouldAttachSharedReadySnapshot,
   skipCodeGraphQueryTelemetryStage,
   withCodeGraphQueryTelemetryStage,
@@ -43,6 +45,7 @@ import {
   type CodeGraphTraversalTimeBudgets,
 } from './query_contract.js';
 import {codeGraphSnapshotRuntimeCurrent} from './query_snapshot_runtime.js';
+import {adoptCodeGraphSnapshotAdmission, codeGraphSnapshotAdmissionCurrentForIdentity} from './admission_freshness.js';
 import {
   codeGraphEndpointMatches,
   exactCodeGraphImpactSelectorMatches,
@@ -200,7 +203,13 @@ export class CodeGraphQueryService extends Context.Service<
           const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
           const readySnapshot = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
           const runtimeCurrent = readySnapshot
-            ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, readySnapshot, languagePacks)
+            ? yield* codeGraphSnapshotRuntimeCurrent(
+                store,
+                layout.databasePath,
+                readySnapshot,
+                languagePacks,
+                options?.observeWorktree === false ? undefined : {layout, identity},
+              )
             : false;
           const telemetryPhase = options?.telemetryPhase ?? 'graph.query.status';
           const overlay =
@@ -243,6 +252,7 @@ export class CodeGraphQueryService extends Context.Service<
         Effect.gen(function* () {
           // statusForIdentity already attaches a non-writable observation; never re-attach
           // onto the same object (Object.defineProperty would throw).
+          const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
           const observation = observedStatus && observationFromCodeGraphStatus(observedStatus);
           const reusableStatus =
             observedStatus !== undefined &&
@@ -252,12 +262,21 @@ export class CodeGraphQueryService extends Context.Service<
               ? observedStatus
               : undefined;
           const status =
-            reusableStatus ??
-            (yield* statusForIdentity(threadnoteHome, identity, {
-              telemetry: interlock?.telemetry,
-              telemetryPhase: 'graph.query.snapshot',
-              telemetryWorktreeDisposition: 'fallback',
-            }));
+            reusableStatus &&
+            (reusableStatus.stale ||
+              (reusableStatus.readySnapshot &&
+                (yield* codeGraphSnapshotAdmissionCurrentForIdentity(
+                  layout,
+                  reusableStatus.readySnapshot,
+                  identity,
+                  languagePacks,
+                ))))
+              ? reusableStatus
+              : yield* statusForIdentity(threadnoteHome, identity, {
+                  telemetry: interlock?.telemetry,
+                  telemetryPhase: 'graph.query.snapshot',
+                  telemetryWorktreeDisposition: 'fallback',
+                });
           if (!status.stale && status.readySnapshot?.commit === identity.headCommit) return status;
           const overlay =
             observationFromCodeGraphStatus(status)?.overlay ??
@@ -269,14 +288,17 @@ export class CodeGraphQueryService extends Context.Service<
               'fallback',
             ));
           if (overlay.dirty) return status;
-          const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
           const candidate = yield* store.readySnapshotForCommit(
             layout.databasePath,
             identity.repositoryId,
             identity.headCommit,
           );
           const candidateRuntimeCurrent = candidate
-            ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, candidate, languagePacks)
+            ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, candidate, languagePacks, {
+                layout,
+                identity,
+                producingWorktree: true,
+              })
             : false;
           if (
             candidate === undefined ||
@@ -321,7 +343,11 @@ export class CodeGraphQueryService extends Context.Service<
                 identity.headCommit,
               );
               const lockedCandidateRuntimeCurrent = lockedCandidate
-                ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, lockedCandidate, languagePacks)
+                ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, lockedCandidate, languagePacks, {
+                    layout,
+                    identity,
+                    producingWorktree: true,
+                  })
                 : false;
               if (
                 lockedCandidate === undefined ||
@@ -402,7 +428,14 @@ export class CodeGraphQueryService extends Context.Service<
                   : lockedStatus;
               }
               const finalOverlay = published.overlay;
-              const stale = finalOverlay?.dirty !== false;
+              const stale =
+                finalOverlay?.dirty !== false ||
+                !(yield* adoptCodeGraphSnapshotAdmission(
+                  layout,
+                  lockedCandidate,
+                  promotionIdentity.value,
+                  languagePacks,
+                ));
               return attachCodeGraphStatusObservation(
                 {
                   ...lockedStatus,
@@ -500,7 +533,10 @@ export class CodeGraphQueryService extends Context.Service<
                     ? yield* store.readySnapshotById(layout.databasePath, statusObservation.borrowedSnapshotId)
                     : yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
               const runtimeCurrent = existing
-                ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, existing, languagePacks)
+                ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, existing, languagePacks, {
+                    layout,
+                    identity,
+                  })
                 : false;
               const strictFreshness =
                 options.strictFreshness ??
@@ -1219,15 +1255,6 @@ const deadlineReached = Effect.fn('codeGraph.deadlineReached')(function* (deadli
   return (yield* Clock.currentTimeMillis) >= deadline;
 });
 
-const observeWorktree = Effect.fn('codeGraph.observeWorktree')(function* (
-  identity: RepositoryIdentity,
-  interlock: CodeGraphQueryInterlock | undefined,
-) {
-  const observation = yield* worktreeOverlayState(identity);
-  yield* interlock?.afterObservation?.() ?? Effect.void;
-  return observation;
-});
-
 const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (input: {
   readonly baseSnapshotId?: string;
   readonly borrowedSnapshotId?: string;
@@ -1283,6 +1310,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
     input.layout.databasePath,
     snapshot,
     input.languagePacks,
+    overlay === undefined ? undefined : {layout: input.layout, identity},
   );
   yield* input.options.interlock?.afterSnapshotSelected?.() ?? Effect.void;
   const lease = yield* input.store.acquireSnapshotLease(input.layout.databasePath, snapshot.id, 2 * 60_000);
@@ -1419,15 +1447,19 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
         ).pipe(Effect.as({identity, overlay}));
     const finalIdentity = finalObservation.identity;
     const finalOverlay = finalObservation.overlay;
-    const freshness = !runtimeCurrent
-      ? 'stale'
-      : finalOverlay === undefined
-        ? snapshot.commit === finalIdentity.headCommit
-          ? 'deferred'
-          : 'stale'
-        : snapshotMatches(snapshot, finalIdentity.headCommit, finalOverlay)
-          ? 'current'
-          : 'stale';
+    const admissionCurrent =
+      !input.strictFreshness ||
+      (yield* codeGraphSnapshotAdmissionCurrentForIdentity(input.layout, snapshot, finalIdentity, input.languagePacks));
+    const freshness =
+      !runtimeCurrent || !admissionCurrent
+        ? 'stale'
+        : finalOverlay === undefined
+          ? snapshot.commit === finalIdentity.headCommit
+            ? 'deferred'
+            : 'stale'
+          : snapshotMatches(snapshot, finalIdentity.headCommit, finalOverlay)
+            ? 'current'
+            : 'stale';
     const source = yield* loadSharedGraphQuerySource({
       checkoutId: identity.checkoutId,
       localCommit: finalIdentity.headCommit,
@@ -1864,18 +1896,6 @@ function sameRepositoryIdentity(left: RepositoryIdentity, right: RepositoryIdent
     left.repositoryId === right.repositoryId &&
     left.headCommit === right.headCommit &&
     left.objectFormat === right.objectFormat
-  );
-}
-
-function snapshotMatches(
-  snapshot: {readonly commit: string; readonly dirty: boolean; readonly overlayFingerprint?: string},
-  headCommit: string,
-  overlay: {readonly dirty: boolean; readonly fingerprint?: string},
-): boolean {
-  return (
-    snapshot.commit === headCommit &&
-    snapshot.dirty === overlay.dirty &&
-    (!overlay.dirty || snapshot.overlayFingerprint === overlay.fingerprint)
   );
 }
 

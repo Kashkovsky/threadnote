@@ -216,12 +216,13 @@ export function codeGraphBuildRequestKey(
   languagePacks: CodeGraphLanguagePackRegistryShape,
   incrementalOverlay: boolean | undefined,
   ensureVectors: boolean,
+  environmentFingerprint: string,
 ): string {
   const parserIdentities = languagePacks.cacheIdentities.join('\n');
   const derivationIdentities = languagePacks.packs.map(packDerivationIdentity).sort(compareCodeUnits).join('\n');
   return sha256HexSync(
     [
-      'code-graph-build-request-v4',
+      'code-graph-build-request-v5',
       CODE_GRAPH_EXTRACTOR_SET_VERSION,
       `lexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}`,
       identity.repositoryId,
@@ -232,6 +233,7 @@ export function codeGraphBuildRequestKey(
       overlay.dirty && incrementalOverlay === false ? 'direct-full' : 'default',
       ensureVectors ? 'vectors:required' : 'vectors:structural-only',
       'ignore-policy:3',
+      environmentFingerprint,
       parserIdentities,
       derivationIdentities,
     ].join('\n'),

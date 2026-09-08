@@ -48,6 +48,7 @@ import {
 } from './schema.js';
 import {checkpointTerminalText} from './terminal_text.js';
 import {prepareCodeGraphCheckpointReceiverAdmission} from './receiver_admission.js';
+import {recordCodeGraphSnapshotAdmission} from '../admission_freshness.js';
 
 const CHECKPOINT_IO_CHUNK_BYTES = 64 * 1_024;
 const CHECKPOINT_GIT_OUTPUT_BYTES_MAXIMUM = 16 * 1_024 * 1_024;
@@ -422,6 +423,15 @@ export const importCodeGraphCheckpointSnapshot = Effect.fn('codeGraph.checkpoint
             }
             yield* validated.admission.verifyEnvironment;
             yield* store.promote(databasePath, finalIdentity, snapshot.id, {persistentCapacityProtector});
+            yield* validated.admission.verifyEnvironment;
+            yield* recordCodeGraphSnapshotAdmission(
+              layout,
+              snapshot,
+              validated.admission.environmentFingerprint,
+              registry,
+              validated.inspection.header.reuse?.inventory?.includeOpaqueCorpusAssets ??
+                validated.admission.files.includesOpaqueAssets,
+            );
             return {snapshotId: snapshot.id, state: 'activated' as const};
           }),
         );
