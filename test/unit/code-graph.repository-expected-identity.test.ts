@@ -1,6 +1,9 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Effect's symlink API lacks the junction type required for unprivileged Windows fixtures.
+import {symlinkSync} from 'node:fs';
 import {it as effectIt} from '@effect/vitest';
+import * as BunServices from '@effect/platform-bun/BunServices';
 import fc from 'fast-check';
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {
@@ -14,6 +17,8 @@ import {
 } from '../../src/code_graph/repository.js';
 import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 
 describe('code graph expected repository identity', () => {
   effectIt.layer(ApplicationLayer)(it => {
@@ -262,6 +267,131 @@ describe('code graph expected repository identity', () => {
     );
   });
 
+  effectIt.effect('binds expected identity observations to one checkout across same-HEAD caller retargets', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const command = yield* CommandExecutor;
+      const parent = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-expected-route-'});
+      const first = path.join(parent, 'first with spaces');
+      const clone = path.join(parent, 'clone');
+      const caller = path.join(parent, 'caller');
+      yield* fs.makeDirectory(first);
+      yield* git(first, ['init', '-q']);
+      yield* fs.writeFileString(path.join(first, 'tracked.ts'), 'original');
+      yield* git(first, ['add', '.']);
+      yield* git(first, [
+        '-c',
+        'commit.gpgsign=false',
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+      yield* git(first, ['remote', 'add', 'origin', 'https://example.invalid/original.git']);
+      yield* git(first, ['config', 'core.ignorecase', 'false']);
+      yield* git(parent, ['clone', '--quiet', first, clone]);
+      yield* git(clone, ['remote', 'set-url', 'origin', 'https://example.invalid/original.git']);
+      yield* git(clone, ['config', 'core.ignorecase', 'false']);
+      yield* directoryLink(first, caller);
+      const identity = yield* resolveRepositoryIdentity(caller);
+      const expected = {
+        checkoutId: identity.checkoutId,
+        repositoryId: identity.repositoryId,
+        worktreeId: identity.worktreeId,
+      };
+      const canonicalFirst = yield* fs.realPath(first);
+      for (const mode of ['unchanged', 'retarget', 'aba-remote', 'aba-config'] as const) {
+        let metadataCompleted = false;
+        const invocations: string[][] = [];
+        const recording = CommandExecutor.of({
+          ...command,
+          execute: (executable, args, options) =>
+            Effect.gen(function* () {
+              const metadata = args.includes('--show-toplevel');
+              const status = args.includes('status');
+              invocations.push([...args]);
+              if (!metadata) {
+                expect(metadataCompleted).toBe(true);
+                expect(args[args.indexOf('-C') + 1]).toBe(status ? caller : canonicalFirst);
+              }
+              if (status && (mode === 'aba-remote' || mode === 'aba-config')) {
+                yield* fs.remove(caller);
+                yield* directoryLink(first, caller);
+              }
+              const result = yield* command.execute(executable, args, options);
+              if (metadata) {
+                metadataCompleted = true;
+                if (mode !== 'unchanged') {
+                  yield* fs.remove(caller);
+                  yield* directoryLink(clone, caller);
+                  if (mode === 'retarget') yield* fs.writeFileString(path.join(first, 'tracked.ts'), 'dirty original');
+                  if (mode === 'aba-config')
+                    yield* command.execute('git', ['-C', first, 'config', 'core.ignorecase', 'true']);
+                  if (mode === 'aba-remote')
+                    yield* command.execute('git', [
+                      '-C',
+                      first,
+                      'remote',
+                      'set-url',
+                      'origin',
+                      'https://example.invalid/replaced.git',
+                    ]);
+                }
+              }
+              return result;
+            }).pipe(Effect.orDie),
+        });
+        const observation = resolveRepositoryIdentityForExpectationAndWorktree(caller, expected).pipe(
+          Effect.provideService(CommandExecutor, recording),
+        );
+        if (mode === 'unchanged') expect(yield* observation).toEqual({identity, worktreeChanged: false});
+        else if (mode === 'aba-config')
+          expect(yield* observation).toEqual({
+            identity: {...identity, caseMode: 'insensitive'},
+            worktreeChanged: false,
+          });
+        else expect(yield* observation.pipe(Effect.flip)).toBeInstanceOf(Error);
+        expect(invocations).toHaveLength(4);
+        expect(invocations[0]).toContain('--show-toplevel');
+        expect(invocations.filter(args => args.includes('status'))).toHaveLength(1);
+        yield* fs.remove(caller);
+        yield* directoryLink(first, caller);
+        yield* fs.writeFileString(path.join(first, 'tracked.ts'), 'original');
+        yield* git(first, ['remote', 'set-url', 'origin', 'https://example.invalid/original.git']);
+        yield* git(first, ['config', 'core.ignorecase', 'false']);
+      }
+      for (const corrupt of ['missing', 'duplicate', 'control', 'bidi', 'wrong-root', 'wrong-common'] as const) {
+        const recording = CommandExecutor.of({
+          ...command,
+          execute: (executable, args, options) =>
+            command.execute(executable, args, options).pipe(
+              Effect.map(result => {
+                if (!args.includes('status')) return result;
+                const prefix = '00:00:00.000000 trace.c:1 setup: ';
+                const stderr =
+                  corrupt === 'missing'
+                    ? ''
+                    : corrupt === 'duplicate'
+                      ? result.stderr + result.stderr
+                      : `${prefix}git_common_dir: ${corrupt === 'wrong-common' ? path.join(clone, '.git') : identity.gitCommonDirectory}\n${prefix}worktree: ${corrupt === 'wrong-root' ? clone : canonicalFirst + (corrupt === 'control' ? '\0' : corrupt === 'bidi' ? '\u202e' : '')}\n`;
+                return {...result, stderr};
+              }),
+            ),
+        });
+        expect(
+          yield* resolveRepositoryIdentityForExpectationAndWorktree(caller, expected).pipe(
+            Effect.provideService(CommandExecutor, recording),
+            Effect.flip,
+          ),
+        ).toBeInstanceOf(Error);
+      }
+    }).pipe(provideTestLayer(expectedIdentityPlatformLayer), TestClock.withLive),
+  );
+
   it('never classifies a porcelain-v2 change record as a clean worktree', () => {
     const head = 'a'.repeat(40);
     fc.assert(
@@ -283,6 +413,11 @@ describe('code graph expected repository identity', () => {
         `${prefix}git_common_dir: /repo/.git\n${prefix}worktree: /repo with spaces\n`,
       ),
     ).toEqual({gitCommonDirectory: '/repo/.git', worktree: '/repo with spaces'});
+    for (const root of ['/repo with spaces', 'C:\\work tree\\repo', '//server/share/repo']) {
+      expect(
+        parseRepositoryReadFenceSetupObservation(`${prefix}git_common_dir: ${root}/.git\n${prefix}worktree: ${root}\n`),
+      ).toEqual({gitCommonDirectory: `${root}/.git`, worktree: root});
+    }
     expect(parseRepositoryReadFenceSetupObservation(`${prefix}worktree: /repo\n`)).toBeUndefined();
     expect(
       parseRepositoryReadFenceSetupObservation(
@@ -320,3 +455,12 @@ describe('code graph expected repository identity', () => {
 const git = Effect.fn('codeGraphExpectedIdentityTest.git')((cwd: string, args: readonly string[]) =>
   runCommandEffect('git', ['-C', cwd, ...args], {maxOutputBytes: 1_048_576, timeoutMs: 30_000}),
 );
+
+const expectedIdentityPlatformLayer = Layer.mergeAll(
+  SystemInfo.layer,
+  CommandExecutor.layer.pipe(Layer.provide(SystemInfo.layer)),
+).pipe(Layer.provideMerge(BunServices.layer));
+
+function directoryLink(target: string, link: string) {
+  return Effect.sync(() => symlinkSync(target, link, 'junction'));
+}
