@@ -47,6 +47,7 @@ import {
   type CodeGraphCheckpointSha256,
 } from './schema.js';
 import {checkpointTerminalText} from './terminal_text.js';
+import {prepareCodeGraphCheckpointReceiverAdmission} from './receiver_admission.js';
 
 const CHECKPOINT_IO_CHUNK_BYTES = 64 * 1_024;
 const CHECKPOINT_GIT_OUTPUT_BYTES_MAXIMUM = 16 * 1_024 * 1_024;
@@ -266,23 +267,40 @@ export const importCodeGraphCheckpointSnapshot = Effect.fn('codeGraph.checkpoint
       const inspection = yield* inspectCheckpointInput(input, options);
       yield* attemptCheckpoint(() => validateCheckpointReceiver(inspection.header, identity, registry));
       yield* requireCheckpointCommit(identity, inspection.header.source.commit);
-      const attribution = checkpointAttributionRecordVerifier(inspection.header);
-      yield* withCodeGraphCheckpointAuthorityVerification(inspection.header, accept =>
-        decodeCheckpointInput(input, inspection, chunk =>
-          verifyCheckpointFiles(identity, inspection.header.source.commit, chunk).pipe(
-            Effect.andThen(attribution.accept(chunk)),
-            Effect.andThen(accept(chunk.records)),
+      const admission = yield* prepareCodeGraphCheckpointReceiverAdmission(identity, inspection.header, registry).pipe(
+        Effect.mapError(cause =>
+          checkpointCommandError(
+            'Checkpoint receiver admission could not be verified. Run `threadnote graph index` locally.',
+            cause,
           ),
         ),
       );
+      const attribution = checkpointAttributionRecordVerifier(inspection.header);
+      yield* withCodeGraphCheckpointAuthorityVerification(inspection.header, accept =>
+        decodeCheckpointInput(input, inspection, chunk =>
+          Effect.gen(function* () {
+            for (const record of chunk.records) {
+              if (record.kind === 'file') admission.files.accept(record);
+            }
+            yield* verifyCheckpointFiles(identity, inspection.header.source.commit, chunk);
+          }).pipe(Effect.andThen(attribution.accept(chunk)), Effect.andThen(accept(chunk.records))),
+        ),
+      );
       yield* attribution.finish;
-      return {input, inspection};
+      if (!admission.files.complete) {
+        return yield* checkpointFailure(
+          'Checkpoint file set does not match receiver admission. Run `threadnote graph index` locally.',
+        );
+      }
+      yield* admission.verifyEnvironment;
+      return {input, inspection, admission};
     }),
   );
   const receipt = checkpointImportReceipt(validated.inspection, options.expectedDigest !== undefined);
   const reusableBaseReceipt = yield* hydrateCodeGraphCheckpointReusableBaseReceipt(
     identity,
     validated.inspection.header,
+    validated.admission,
   );
   const snapshotId = checkpointSnapshotId(validated.inspection.header);
   const building = checkpointBuildingSnapshot(snapshotId, identity, validated.inspection.header);
@@ -308,6 +326,7 @@ export const importCodeGraphCheckpointSnapshot = Effect.fn('codeGraph.checkpoint
     () => Effect.void,
     'checkpoint-import',
     Effect.gen(function* () {
+      yield* validated.admission.verifyEnvironment;
       const reusable = yield* store.readySnapshotByLogicalDigest(
         layout.databasePath,
         identity.repositoryId,
@@ -401,6 +420,7 @@ export const importCodeGraphCheckpointSnapshot = Effect.fn('codeGraph.checkpoint
             ) {
               return {snapshotId: snapshot.id, state: 'stored' as const};
             }
+            yield* validated.admission.verifyEnvironment;
             yield* store.promote(databasePath, finalIdentity, snapshot.id, {persistentCapacityProtector});
             return {snapshotId: snapshot.id, state: 'activated' as const};
           }),

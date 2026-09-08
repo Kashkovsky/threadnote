@@ -1,6 +1,7 @@
 import {Effect, FileSystem, Path, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runCommandEffect} from '../effect/command.js';
+import {SystemInfo} from '../effect/system.js';
 import {readOptionalText} from './inventory_contained_file.js';
 import {CodeGraphInventoryError} from './inventory_error.js';
 import {
@@ -84,7 +85,16 @@ export const readCodeGraphInventoryReuseEnvironment = Effect.fn('codeGraph.readI
   const gitInfoExcludePath = path.isAbsolute(observedGitInfoExcludePath)
     ? observedGitInfoExcludePath
     : path.resolve(identity.repoRoot, observedGitInfoExcludePath);
-  const globalExcludePath = globalExcludeResult.stdout.trim();
+  const system = yield* SystemInfo;
+  const environment = system.environment();
+  const defaultGlobalExcludePath = path.join(
+    environment.XDG_CONFIG_HOME || path.join(environment.HOME || system.homeDirectory, '.config'),
+    'git',
+    'ignore',
+  );
+  // An explicitly empty config disables global excludes; only an absent key uses Git's default.
+  const globalExcludePath =
+    globalExcludeResult.exitCode === 1 ? defaultGlobalExcludePath : globalExcludeResult.stdout.trim();
   const [gitInfoExclude, globalExclude] = yield* Effect.all(
     [
       readOptionalText(fs, gitInfoExcludePath),
