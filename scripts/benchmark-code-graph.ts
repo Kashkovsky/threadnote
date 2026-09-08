@@ -7631,11 +7631,14 @@ function productionConfirmatoryWallP95Acceptance(
   initialStaticFailures: readonly string[],
   remeasuredStaticFailures: readonly string[],
 ): 'bounded-confirmatory-tail' | 'screening-cleared' | undefined {
-  if (PRODUCTION_RATCHET_MILLISECOND_TARGETS.has(name)) return undefined;
   // The screening observation exists to trigger this sequence. A passing
   // protected-base control followed by a passing confirmatory candidate is
-  // sufficient evidence that an initial wall-only spike was transient.
+  // sufficient to clear an initial wall-only static miss. The caller has
+  // already enforced every hard objective on all three observations; having
+  // an objective does not make a stricter static screening limit an objective.
   if (remeasuredStaticFailures.length === 0) return 'screening-cleared';
+  // Objective-bearing metrics never receive confirmatory tail tolerance.
+  if (PRODUCTION_RATCHET_MILLISECOND_TARGETS.has(name)) return undefined;
   if (initialStaticFailures.length !== 0 || limit.p95Maximum === undefined) return undefined;
   const tolerance = Math.min(
     limit.p95Maximum * PRODUCTION_RATCHET_CONFIRMATORY_WALL_TAIL_RELATIVE_TOLERANCE,
