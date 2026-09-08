@@ -3,7 +3,10 @@ import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {readMemoryRecordsByUri} from '../memory/index.js';
 import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from '../memory/code_citation_capture.js';
-import {finalizeDeferredCodeAnchorsForRoute} from '../memory/deferred_code_anchor.js';
+import {
+  finalizeDeferredCodeAnchorsForRoute,
+  type DeferredCodeAnchorRouteFinalizationReceiptV1,
+} from '../memory/deferred_code_anchor.js';
 import type {MemoryRecord} from '../memory/document.js';
 import {isMemoryId} from '../memory/identity_alias.js';
 import {uriSegment} from '../manifest.js';
@@ -28,6 +31,7 @@ import type {
 const MEMORY_EXCERPT_BYTES = 240;
 const MEMORY_RETRIEVAL_MULTIPLIER = 4;
 const CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT = 4;
+const CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_FINALIZE_PASSES = 2;
 const CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_WAIT_MILLISECONDS = 1_000;
 const CONTEXT_BRIEF_CODE_ANCHOR_READ_RETRIES = 2;
 const CONTEXT_BRIEF_CODE_ANCHOR_RETRY_MILLISECONDS = 25;
@@ -144,7 +148,14 @@ export const retrieveContextBriefMemoryEvidence = Effect.fn('contextBrief.retrie
 
 /** Resolve explicit local anchors against ready-current code and retrieve their private citation backlinks. */
 export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBrief.retrieveCodeLinkedMemoryEvidence')(
-  function* (config: RuntimeConfig, plan: ContextBriefPlanV1['codeAnchors']) {
+  function* (
+    config: RuntimeConfig,
+    plan: ContextBriefPlanV1['codeAnchors'],
+    options: {
+      /** @internal Privacy-safe receipts for diagnosing first-read recovery. */
+      readonly onFinalizationReceipt?: (receipt: DeferredCodeAnchorRouteFinalizationReceiptV1) => void;
+    } = {},
+  ) {
     const requested = plan.codeRefs.length;
     if (requested === 0) {
       return {
@@ -223,38 +234,62 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
     const resolvedOrdinals = resolvedAnchors.map(anchor => anchor.anchorOrdinal);
     const identity = yield* resolveRepositoryIdentity(callerCwd).pipe(Effect.option);
     const attemptedUris: string[] = [];
+    let finalizationUnavailable = false;
+    let refreshAfterContention = false;
     if (identity._tag === 'Some') {
-      yield* withCodeAnchorFinalizationAnonymousTelemetry(
-        'context-brief',
-        finalizeDeferredCodeAnchorsForRoute(
-          config,
-          {
-            callerCwd,
-            kind: 'repository',
-            repositoryId: identity.value.repositoryId,
-            worktreeId: identity.value.worktreeId,
-          },
-          {
-            limit: CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
-            onAttemptedUri: uri => {
-              attemptedUris.push(uri);
+      let remainingLimit = CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT;
+      for (let pass = 0; pass < CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_FINALIZE_PASSES; pass++) {
+        const previousAttemptCount = attemptedUris.length;
+        const receipt = yield* withCodeAnchorFinalizationAnonymousTelemetry(
+          'context-brief',
+          finalizeDeferredCodeAnchorsForRoute(
+            config,
+            {
+              callerCwd,
+              kind: 'repository',
+              repositoryId: identity.value.repositoryId,
+              worktreeId: identity.value.worktreeId,
             },
-            preferredCodeRefs: plan.codeRefs,
-            waitTimeoutMilliseconds: CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_WAIT_MILLISECONDS,
-          },
-        ),
-      ).pipe(
-        Effect.catchCause(() => Effect.void),
-        Effect.asVoid,
-      );
+            {
+              limit: remainingLimit,
+              onAttemptedUri: uri => {
+                attemptedUris.push(uri);
+              },
+              preferredCodeRefs: plan.codeRefs,
+              waitTimeoutMilliseconds: CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_WAIT_MILLISECONDS,
+            },
+          ),
+        ).pipe(
+          Effect.asSome,
+          Effect.catchCause(() => Effect.succeedNone),
+        );
+        finalizationUnavailable = receipt._tag === 'None' || receipt.value.state !== 'completed';
+        if (receipt._tag === 'None') break;
+        yield* Effect.sync(() => options.onFinalizationReceipt?.(receipt.value)).pipe(Effect.ignoreCause);
+        // Admission is counted even if the deadline interrupted the attempt
+        // before it produced a completed-item receipt.
+        remainingLimit -= Math.max(receipt.value.scannedCount, attemptedUris.length - previousAttemptCount);
+        // Another owner can commit without invoking our attempted-URI hook.
+        refreshAfterContention ||= receipt.value.state === 'contended';
+        // Retry a deadline before admission or a contended route once, with
+        // the same per-pass deadline and remaining admitted-memory budget.
+        if (
+          receipt.value.state !== 'contended' ||
+          receipt.value.pendingCount > 0 ||
+          receipt.value.failedCount > 0 ||
+          remainingLimit <= 0
+        )
+          break;
+      }
     }
-    const forceRecallRefresh =
+    const invalidationFailed =
       attemptedUris.length === 0
         ? false
         : yield* expireRecallIndexValidation(config.agentContextHome, false, attemptedUris).pipe(
             Effect.as(false),
             Effect.catchCause(() => Effect.succeed(true)),
           );
+    const forceRecallRefresh = refreshAfterContention || invalidationFailed;
     let truncatedSelectorCount = 0;
     const linked = yield* loadRecallCodeLinks(config, {
       allowedUriScopes: [contextBriefMemoryUriScope(config.user)],
@@ -310,7 +345,10 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
       candidates,
       consideredCandidates: linked.value.length,
       gaps: stableUnique([
-        ...contextBriefCodeLinkRecallGaps(complete, candidates.length, truncatedSelectorCount),
+        ...contextBriefCodeLinkRecallGaps(complete, candidates.length, truncatedSelectorCount).filter(
+          gap => !finalizationUnavailable || gap !== 'code-anchor-recall-no-active-memory',
+        ),
+        ...(finalizationUnavailable ? ['code-anchor-recall-unavailable'] : []),
         ...(captureUnavailable ? ['code-anchor-resolution-unavailable'] : []),
         ...(readCandidates.stableIdentityUnavailable ? ['stable-memory-identity-unavailable'] : []),
       ]),
