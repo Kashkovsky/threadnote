@@ -8,6 +8,7 @@ import {
   codeGraphAnalysisRefreshResult,
   codeGraphInspectionAllowsStaleReady,
   codeGraphInspectionObservesWorktree,
+  codeGraphInspectionObservation,
   codeGraphInspectionStartsRefresh,
   codeGraphMcpAnalysisBudget,
   codeGraphMcpAnalysisLimits,
@@ -24,6 +25,7 @@ import {
 import {analyzeCodeGraph} from '../../src/code_graph/analysis.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import type {CodeGraphRefreshStatus} from '../../src/code_graph/watcher.js';
+import type {CodeGraphStatusObservation} from '../../src/code_graph/query_contract.js';
 import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
 import {analysisEdge, analysisSnapshot, analysisSymbol, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
 import {
@@ -32,6 +34,51 @@ import {
 } from '../../src/telemetry/diagnostic.js';
 
 describe('MCP code graph indexing progress', () => {
+  it.prop(
+    'preserves selected evidence without letting fallback observations change an operation freshness contract',
+    {
+      operation: FC.constantFrom(
+        'query' as const,
+        'node' as const,
+        'neighbors' as const,
+        'explain' as const,
+        'path' as const,
+        'impact' as const,
+      ),
+      borrowedSnapshotId: FC.option(FC.string({maxLength: 40}), {nil: undefined}),
+      dirty: FC.boolean(),
+      observed: FC.boolean(),
+      fingerprint: FC.string({maxLength: 64}),
+    },
+    ({operation, borrowedSnapshotId, dirty, observed, fingerprint}) => {
+      const observation: CodeGraphStatusObservation = {
+        identity: {
+          caseMode: 'sensitive',
+          checkoutId: 'checkout',
+          displayName: 'fixture',
+          gitCommonDirectory: '/fixture/.git',
+          headCommit: 'head',
+          objectFormat: 'sha1',
+          repoRoot: '/fixture',
+          repositoryId: 'repository',
+          worktreeId: 'worktree',
+        },
+        ...(borrowedSnapshotId === undefined ? {} : {borrowedSnapshotId}),
+        ...(observed ? {overlay: {dirty, fingerprint}} : {}),
+      };
+      const before = JSON.stringify(observation);
+      const projected = codeGraphInspectionObservation(observation, operation);
+      expect(projected?.identity).toBe(observation.identity);
+      expect(projected?.borrowedSnapshotId).toBe(borrowedSnapshotId);
+      if (operation === 'path' || operation === 'impact') expect(projected).toBe(observation);
+      else expect(projected?.overlay).toBeUndefined();
+      expect(codeGraphInspectionObservation(projected, operation)).toEqual(projected);
+      expect(JSON.stringify(observation)).toBe(before);
+      expect(codeGraphInspectionObservation(undefined, operation)).toBeUndefined();
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it('allows stale ready evidence for non-strict operations only', () => {
     expect(
       Object.fromEntries(
