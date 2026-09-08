@@ -6,10 +6,17 @@ const MCP_BROKER_REPLAY_TIMEOUT_MILLISECONDS = 10_000;
 const MCP_BROKER_CHILD_STOP_WAIT_MILLISECONDS = 1_000;
 const MCP_BROKER_RUNTIME_EXIT_ERROR =
   'Threadnote MCP runtime exited before responding. The request outcome is unknown; inspect state before retrying a mutating operation.';
+const MCP_BROKER_NO_ACTIVE_RELEASE_ERROR =
+  'No valid active Threadnote release is installed. Run "threadnote install --no-start" with the downloaded executable, then reconnect this client. This request was not sent to a runtime.';
+const MCP_BROKER_STARTUP_ERROR =
+  'Threadnote could not start or select an MCP runtime. Check the Threadnote installation and reconnect this client. This request was not sent to a runtime.';
+
+type McpBrokerStartupFailure = 'no-active-release' | 'startup-failed';
 
 export class McpBrokerError extends Schema.TaggedError<McpBrokerError>()('McpBrokerError', {
   cause: Schema.optionalKey(Schema.Defect()),
   message: Schema.String,
+  reason: Schema.optionalKey(Schema.Literal('no-active-release')),
 }) {}
 
 interface McpBrokerChildInput {
@@ -144,12 +151,18 @@ class McpBroker {
         trackedRequest = true;
       }
       await this.#writeChildLine(current.child, line);
-    } catch {
+    } catch (cause) {
       const pending = [...this.#clientRequests.values()];
       this.#clientRequests.clear();
-      if (requestId !== undefined && !trackedRequest) pending.push(requestId);
       await this.#stopCurrentChild();
       for (const id of pending) await this.#queueRequestFailure(id);
+      if (requestId !== undefined && !trackedRequest) {
+        const reason =
+          Schema.is(McpBrokerError)(cause) && cause.reason === 'no-active-release'
+            ? 'no-active-release'
+            : 'startup-failed';
+        await this.#queueRequestFailure(requestId, reason);
+      }
     }
   }
 
@@ -169,7 +182,7 @@ class McpBroker {
     const active = await this.#dependencies.readActiveRelease();
     if (active === undefined) {
       if (this.#child !== undefined) return this.#child;
-      throw McpBrokerError.make({message: 'Threadnote has no valid active standalone release for the MCP broker.'});
+      throw McpBrokerError.make({message: MCP_BROKER_NO_ACTIVE_RELEASE_ERROR, reason: 'no-active-release'});
     }
     if (
       this.#child !== undefined &&
@@ -373,10 +386,21 @@ class McpBroker {
     await this.#queueOutput(JSON.stringify({jsonrpc: '2.0', method: 'notifications/resources/list_changed'}));
   }
 
-  #queueRequestFailure(id: string | number): Promise<void> {
+  #queueRequestFailure(id: string | number, startupFailure?: McpBrokerStartupFailure): Promise<void> {
     return this.#queueOutput(
       JSON.stringify({
-        error: {code: -32_603, message: MCP_BROKER_RUNTIME_EXIT_ERROR},
+        error: {
+          code: -32_603,
+          message:
+            startupFailure === undefined
+              ? MCP_BROKER_RUNTIME_EXIT_ERROR
+              : startupFailure === 'no-active-release'
+                ? MCP_BROKER_NO_ACTIVE_RELEASE_ERROR
+                : MCP_BROKER_STARTUP_ERROR,
+          ...(startupFailure === undefined
+            ? {}
+            : {data: {reason: startupFailure, requestDisposition: 'not-dispatched'}}),
+        },
         id,
         jsonrpc: '2.0',
       }),

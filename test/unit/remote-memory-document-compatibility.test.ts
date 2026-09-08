@@ -1,6 +1,9 @@
 import {describe, expect, it} from 'vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {assertRemoteBodyReplacementSupported} from '../../src/remote_memory/document_compatibility.js';
+import {formatMemoryDocument} from '../../src/memory/document.js';
+import {richRemoteMemoryMetadata} from '../helpers/remote-memory-document.js';
+import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
 
 describe('remote body replacement compatibility', () => {
   it('rejects unknown header fields without consuming or rewriting them', () => {
@@ -17,19 +20,47 @@ describe('remote body replacement compatibility', () => {
     );
   });
 
-  it('supports basic remote documents and rejects rich or malformed local ones', () => {
+  it('supports basic and rich documents without changing the source metadata', () => {
     expect(() =>
       assertRemoteBodyReplacementSupported('MEMORY\nkind: durable\n\nThe documentation mentions `<!-- MEMORY_FIELDS`.'),
     ).not.toThrow();
     expect(() =>
       assertRemoteBodyReplacementSupported('MEMORY\nkind: durable\nstatus: active\nmemory_id: tn_123\n\nBody'),
     ).not.toThrow();
+    const metadata = richRemoteMemoryMetadata();
+    const before = structuredClone(metadata);
+    const document = formatMemoryDocument('MEMORY', metadata, 'Original body');
+    for (const newline of ['\n', '\r\n', '\r']) {
+      expect(() => assertRemoteBodyReplacementSupported(document.replaceAll('\n', newline))).not.toThrow();
+    }
+    expect(metadata).toEqual(before);
+  });
+
+  it('accepts repeated list metadata including duplicate values', () => {
+    FC.assert(
+      FC.property(
+        FC.array(FC.stringMatching(/^[a-z][a-z0-9 -]{0,30}[a-z]$/u), {minLength: 1, maxLength: 20}),
+        keywords => {
+          const metadata = {...richRemoteMemoryMetadata(), keywords: [...keywords, ...keywords]};
+          const document = formatMemoryDocument('MEMORY', metadata, 'Original body');
+          expect(() => assertRemoteBodyReplacementSupported(document)).not.toThrow();
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
+  it('rejects metadata that tolerant parsing would discard or change', () => {
     for (const field of [
       'code_citation: invalid',
-      'relation: references threadnote://memory/tn_123',
-      'keywords: important',
-      'trust: approved',
-      'workspace_scope: src',
+      'relation: invalid threadnote://memory/tn_123',
+      'keywords:',
+      'trust: invented',
+      'status: invented',
+      'status: active\nstatus: active',
+      'memory_id: tn_first\nmemory_id: tn_second',
+      'workspace_scope:  src',
+      'schema_version: 999',
       'this header is malformed',
     ]) {
       expect(() => assertRemoteBodyReplacementSupported(`MEMORY\nkind: durable\n${field}\n\nBody`)).toThrow();
@@ -40,5 +71,17 @@ describe('remote body replacement compatibility', () => {
         'MEMORY\nkind: durable\n\nBody\n\n<!-- MEMORY_FIELDS\nreferences: legacy\n-->',
       ),
     ).toThrow();
+  });
+
+  it('rejects citations that cannot cross the sharing boundary', () => {
+    const metadata = richRemoteMemoryMetadata();
+    const {id: _id, ...citation} = metadata.codeCitations![0];
+    for (const unsafe of [
+      createMemoryCodeCitation({...citation, sourceDirty: true}),
+      createMemoryCodeCitation({...citation, repositoryIdentityKind: 'local'}),
+    ]) {
+      const document = formatMemoryDocument('MEMORY', {...metadata, codeCitations: [unsafe]}, 'Original body');
+      expect(() => assertRemoteBodyReplacementSupported(document)).toThrow('metadata');
+    }
   });
 });

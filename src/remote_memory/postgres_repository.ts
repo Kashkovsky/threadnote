@@ -1449,6 +1449,7 @@ function makeRemoteDocument(
   const prior = current && priorBody ? parseMemoryDocument(uri, priorBody) : undefined;
   if (current && priorBody) assertRemoteBodyReplacementSupported(priorBody);
   const metadata: MemoryMetadata = {
+    ...prior?.metadata,
     createdAt: prior?.metadata.createdAt ?? prior?.metadata.timestamp ?? timestamp,
     kind: input.kind,
     memoryId: prior?.metadata.memoryId ?? `tn_${randomUuidV4().replaceAll('-', '')}`,
