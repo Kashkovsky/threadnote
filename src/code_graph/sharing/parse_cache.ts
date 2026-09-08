@@ -18,9 +18,9 @@ import {
 import type {GraphShareResultAnnouncementV1} from './receipts.js';
 import {
   enqueuePersistedGraphShareContribution,
+  acknowledgeGraphShareContributions,
   effectiveGraphShareContributionMode,
   readGraphShareContributionQueue,
-  writeGraphShareContributionQueue,
 } from './contribution.js';
 import {sha256Digest, sha256HexFromDigest} from './digest.js';
 import {graphSharingFailure, GraphSharingError} from './errors.js';
@@ -106,8 +106,7 @@ export const drainQueuedGraphShareContributions = Effect.fn('codeGraph.sharing.d
     const queue = yield* readGraphShareContributionQueue(input.threadnoteHome, input.identity.repositoryId, mode);
     if (queue.announcements.length === 0) return {sent: 0};
     const casRoot = yield* resolveGraphShareCasRoot(input.threadnoteHome);
-    const remaining = [];
-    let sent = 0;
+    const sent: GraphShareResultAnnouncementV1[] = [];
     for (const announcement of queue.announcements) {
       const drained = yield* drainOneAnnouncement(casRoot, state.coordinatorUrl, announcement).pipe(
         Effect.catchIf(
@@ -115,14 +114,10 @@ export const drainQueuedGraphShareContributions = Effect.fn('codeGraph.sharing.d
           () => Effect.succeed(false),
         ),
       );
-      if (drained) sent += 1;
-      else remaining.push(announcement);
+      if (drained) sent.push(announcement);
     }
-    yield* writeGraphShareContributionQueue(input.threadnoteHome, input.identity.repositoryId, {
-      ...queue,
-      announcements: remaining,
-    });
-    return {sent};
+    yield* acknowledgeGraphShareContributions(input.threadnoteHome, input.identity.repositoryId, sent, mode);
+    return {sent: sent.length};
   },
 );
 
