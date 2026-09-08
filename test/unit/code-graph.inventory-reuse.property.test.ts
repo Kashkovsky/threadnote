@@ -63,7 +63,7 @@ describe('code graph inventory reuse receipts', () => {
         policyExclusions: {
           bytes: 0,
           files: 0,
-          policyVersion: 1,
+          policyVersion: 2,
           reasons: CODE_GRAPH_INVENTORY_EXCLUSION_REASONS.map(reason => ({bytes: 0, files: 0, reason})),
         },
         skipped,

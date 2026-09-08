@@ -77,20 +77,22 @@ describe('code graph checkpoint projection', () => {
   it('parses exact NUL-framed Git tree metadata for both object formats', () => {
     const sha1 = 'a'.repeat(40);
     const sha256 = 'b'.repeat(64);
-    expect(parseGitTreeEntries(new TextEncoder().encode(`100644\tblob\t${sha1}\t12\tsrc/a file.ts\0`), 'sha1')).toEqual(
-      new Map([['src/a file.ts', {blobId: sha1, mode: '100644', path: 'src/a file.ts', size: 12}]]),
-    );
-    expect(parseGitTreeEntries(new TextEncoder().encode(`100755\tblob\t${sha256}\t7\tbin/tool\0`), 'sha256')).toEqual(
-      new Map([['bin/tool', {blobId: sha256, mode: '100755', path: 'bin/tool', size: 7}]]),
-    );
+    expect(
+      parseGitTreeEntries(new TextEncoder().encode(`100644 blob ${sha1}      12\tsrc/a file.ts\0`), 'sha1'),
+    ).toEqual(new Map([['src/a file.ts', {blobId: sha1, mode: '100644', path: 'src/a file.ts', size: 12}]]));
+    expect(
+      parseGitTreeEntries(new TextEncoder().encode(`100755 blob ${sha256}       7\tbin/tool\0`), 'sha256'),
+    ).toEqual(new Map([['bin/tool', {blobId: sha256, mode: '100755', path: 'bin/tool', size: 7}]]));
   });
 
   it('rejects missing terminators, non-blobs, unsafe paths, and wrong object widths', () => {
     const cases = [
-      `100644\tblob\t${'a'.repeat(40)}\t1\tsrc/a.ts`,
-      `100644\ttree\t${'a'.repeat(40)}\t1\tsrc/a.ts\0`,
-      `100644\tblob\t${'a'.repeat(40)}\t1\t../escape.ts\0`,
-      `100644\tblob\t${'a'.repeat(64)}\t1\tsrc/a.ts\0`,
+      `100644 blob ${'a'.repeat(40)}       1\tsrc/a.ts`,
+      `100644 tree ${'a'.repeat(40)}       1\tsrc/a.ts\0`,
+      `100644 blob ${'a'.repeat(40)}       1\t../escape.ts\0`,
+      `100644 blob ${'a'.repeat(64)}       1\tsrc/a.ts\0`,
+      `100644 blob ${'a'.repeat(40)}     1e2\tsrc/a.ts\0`,
+      `100644 blob ${'a'.repeat(40)}      0x1\tsrc/a.ts\0`,
     ];
     for (const value of cases) {
       expect(() => parseGitTreeEntries(new TextEncoder().encode(value), 'sha1')).toThrow(
@@ -98,6 +100,31 @@ describe('code graph checkpoint projection', () => {
       );
     }
   });
+
+  it.prop(
+    'preserves raw Unicode, quote and space characters in native Git tree paths',
+    {
+      names: FC.uniqueArray(
+        FC.array(FC.constantFrom('a', 'Z', '文', 'é', ' ', '"', "'"), {minLength: 1, maxLength: 20}).map(
+          chars => `src/${chars.join('')}.ts`,
+        ),
+        {minLength: 1, maxLength: 20},
+      ),
+      size: FC.integer({min: 0, max: 1_000_000}),
+    },
+    ({names, size}) => {
+      const blobId = 'a'.repeat(40);
+      const bytes = new TextEncoder().encode(
+        names.map(name => `100644 blob ${blobId} ${String(size).padStart(7)}\t${name}\0`).join(''),
+      );
+      const before = bytes.slice();
+      const entries = parseGitTreeEntries(bytes, 'sha1');
+      expect([...entries]).toEqual(names.map(path => [path, {blobId, mode: '100644', path, size}]));
+      expect(parseGitTreeEntries(bytes, 'sha1')).toEqual(entries);
+      expect(bytes).toEqual(before);
+    },
+    {fastCheck: {numRuns: 50}},
+  );
 });
 
 function argvPathBytes(paths: readonly string[]): number {

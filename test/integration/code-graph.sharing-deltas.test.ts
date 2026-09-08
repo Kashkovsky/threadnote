@@ -42,6 +42,7 @@ describe('graph share TCG1 delta publication and apply', () => {
           );
           yield* fs.writeFileString(path.join(repository, 'src', 'index.ts'), 'export const shared = 1;\n');
           yield* git(repository, ['init', '-q', '--initial-branch=main']);
+          yield* git(repository, ['config', 'core.ignorecase', 'false']);
           yield* git(repository, ['remote', 'add', 'origin', 'https://github.com/acme/graph-share-deltas.git']);
           yield* git(repository, ['add', '.']);
           yield* git(repository, [
@@ -78,7 +79,15 @@ describe('graph share TCG1 delta publication and apply', () => {
             threadnoteHome: publisherHome,
           });
           const bootstrapped = yield* runGraphPublisherBootstrap(config(publisherHome), {cas, cwd: repository});
+          yield* git(repository, ['config', 'core.ignorecase', 'true']);
           yield* runGraphShareJoin(config(clientHome), {cas, cwd: repository});
+          expect(
+            yield* maybeImportSharedGraphBase({
+              cwd: repository,
+              identity: yield* resolveRepositoryIdentity(repository),
+              threadnoteHome: clientHome,
+            }),
+          ).toMatchObject({imported: true, checkpointDigest: bootstrapped.checkpointDigest});
           const firstImport = yield* indexer.index({
             cwd: repository,
             ensureVectors: false,
@@ -96,6 +105,7 @@ describe('graph share TCG1 delta publication and apply', () => {
             '-qm',
             'advance',
           ]);
+          yield* git(repository, ['config', 'core.ignorecase', 'false']);
           yield* indexer.index({
             cwd: repository,
             ensureVectors: false,
@@ -115,6 +125,7 @@ describe('graph share TCG1 delta publication and apply', () => {
           expect(frontier.deltas).toHaveLength(1);
           expect(frontier.deltas[0]?.targetCommit).toBe(identity.headCommit);
           expect(frontier.sourceCommit).toBe(identity.headCommit);
+          yield* git(repository, ['config', 'core.ignorecase', 'true']);
           const clientApplied = yield* indexer.index({
             cwd: repository,
             ensureVectors: false,

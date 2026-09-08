@@ -64,7 +64,6 @@ const FILE_FACT_PAGE_SIZE_MAXIMUM = 8;
 const LANGUAGE_PACK_PROVENANCE_MAXIMUM = 1_024;
 export const CODE_GRAPH_CHECKPOINT_GIT_PATHSPEC_BYTES_MAXIMUM = 64 * 1_024;
 const GIT_TREE_OUTPUT_BYTES_MAXIMUM = 256 * 1_024;
-const GIT_TREE_FORMAT = '%(objectmode)%x09%(objecttype)%x09%(objectname)%x09%(objectsize)%x09%(path)';
 
 export class CodeGraphCheckpointProjectionError extends Schema.TaggedError<CodeGraphCheckpointProjectionError>()(
   'CodeGraphCheckpointProjectionError',
@@ -733,17 +732,7 @@ function loadGitTreeEntries<T extends {readonly path: string}>(
     for (const batch of batches) {
       const result = yield* runBinaryCommandEffect(
         'git',
-        [
-          '-C',
-          identity.repoRoot,
-          'ls-tree',
-          '-z',
-          '--full-tree',
-          `--format=${GIT_TREE_FORMAT}`,
-          commit,
-          '--',
-          ...batch.map(file => file.path),
-        ],
+        ['-C', identity.repoRoot, 'ls-tree', '-l', '-z', '--full-tree', commit, '--', ...batch.map(file => file.path)],
         {
           env: {...system.environment(), GIT_LITERAL_PATHSPECS: '1'},
           maxOutputBytes: GIT_TREE_OUTPUT_BYTES_MAXIMUM,
@@ -804,18 +793,13 @@ export function parseGitTreeEntries(
   const entries = new Map<string, GitTreeEntry>();
   const objectIdPattern = objectFormat === 'sha1' ? /^[0-9a-f]{40}$/u : /^[0-9a-f]{64}$/u;
   for (const encoded of text.slice(0, -1).split('\0')) {
-    const fields = encoded.split('\t');
-    if (fields.length !== 5) throw CodeGraphCheckpointProjectionError.make({message: 'Git tree entry is malformed.'});
-    const [mode, type, blobId, encodedSize, path] = fields;
-    if (
-      mode === undefined ||
-      type === undefined ||
-      blobId === undefined ||
-      encodedSize === undefined ||
-      path === undefined
-    ) {
+    const separator = encoded.indexOf('\t');
+    const metadata = /^(\d{6}) ([a-z]+) ([0-9a-f]+) +(\d+)$/u.exec(encoded.slice(0, separator));
+    if (separator < 0 || metadata === null) {
       throw CodeGraphCheckpointProjectionError.make({message: 'Git tree entry is malformed.'});
     }
+    const [, mode, type, blobId, encodedSize] = metadata;
+    const path = encoded.slice(separator + 1);
     const size = Number(encodedSize);
     if (
       !/^\d{6}$/u.test(mode) ||

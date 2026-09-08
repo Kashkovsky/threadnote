@@ -1311,10 +1311,10 @@ function compileIgnorePattern(pattern: string): RegExp | undefined {
 
 function ignoredPaths(repoRoot: string, paths: readonly string[]) {
   if (paths.length === 0) return Effect.succeed(new Set<string>());
-  const input = new TextEncoder().encode(`${paths.join('\0')}\0`);
-  return runCommandEffect('git', ['-C', repoRoot, 'check-ignore', '--no-index', '-z', '--stdin'], {
+  const gitOptions = ['-C', repoRoot, '-c', 'core.ignorecase=false'];
+  return runCommandEffect('git', [...gitOptions, 'check-ignore', '--no-index', '-z', '--stdin'], {
     allowFailure: true,
-    input,
+    input: new TextEncoder().encode(`${paths.join('\0')}\0`),
     maxOutputBytes: 0,
     timeoutMs: 0,
   }).pipe(Effect.map(result => new Set(result.stdout.split('\0').filter(Boolean).map(normalizeRepositoryPath))));

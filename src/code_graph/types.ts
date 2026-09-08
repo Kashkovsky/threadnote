@@ -8,7 +8,7 @@ export {
   CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION as CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
 } from './store/schema_revision.js';
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
-export const CODE_GRAPH_EXTRACTOR_GENERATION = 13 as const;
+export const CODE_GRAPH_EXTRACTOR_GENERATION = 14 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
 
 export type CodeGraphSnapshotFileCitationSchemaState =

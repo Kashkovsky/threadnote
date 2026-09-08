@@ -5,7 +5,7 @@ import {isLowSignalStructuredPath, isRecognizedStructuredPath} from './languages
  * bumped alongside it so facts produced under an older admission policy cannot
  * be reused by a new snapshot.
  */
-export const CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION = 1 as const;
+export const CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION = 2 as const;
 
 /** Generic JSON at or above this boundary is low-value graph input. */
 export const CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES = 256 * 1_024;
