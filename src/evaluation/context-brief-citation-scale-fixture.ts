@@ -1,4 +1,9 @@
 import {Clock, Data, Effect, FileSystem, Path} from 'effect';
+import {
+  observeCodeGraphAdmissionEnvironment,
+  recordCodeGraphSnapshotAdmission,
+} from '../code_graph/admission_freshness.js';
+import {CodeGraphLanguagePackRegistry} from '../code_graph/languages/registry.js';
 import {extractorSetIdentityFromPackProvenance} from '../code_graph/indexer.js';
 import {codeGraphLayout} from '../code_graph/layout.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
@@ -84,7 +89,14 @@ export const prepareContextBriefCitationScaleFixture = Effect.fn('evaluation.pre
     const worksets: Array<{readonly name: string; readonly projects: readonly string[]}> = [];
     const readyGraphSetupStarted = yield* Clock.currentTimeNanos;
     for (const profile of options.budget.profiles) {
-      const repositories = yield* prepareRepositories(fs, path, home, root, profile, options.runCount);
+      const repositories = yield* prepareContextBriefCitationScaleRepositories(
+        fs,
+        path,
+        home,
+        root,
+        profile,
+        options.runCount,
+      );
       projects.push(...repositories.map(repositoryProject));
       if (profile.id === 'local-100k') {
         preparedProfiles.set(profile.id, {profile, repositories});
@@ -215,7 +227,7 @@ export const prepareContextBriefCitationScaleFixture = Effect.fn('evaluation.pre
   },
 );
 
-function prepareRepositories(
+export function prepareContextBriefCitationScaleRepositories(
   fs: FileSystem.FileSystem,
   path: Path.Path,
   home: string,
@@ -225,6 +237,7 @@ function prepareRepositories(
 ) {
   return Effect.gen(function* () {
     const store = yield* CodeGraphStore;
+    const languagePacks = yield* CodeGraphLanguagePackRegistry;
     return yield* Effect.forEach(
       Array.from({length: profile.worksetMembers}, (_, ordinal) => ordinal),
       ordinal =>
@@ -270,7 +283,8 @@ function prepareRepositories(
           );
           const identity = yield* resolveRepositoryIdentity(repositoryRoot);
           const snapshotId = `cgsn_${sha256HexSync(`scale-snapshot\0${name}`).slice(0, 40)}`;
-          const databasePath = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId).databasePath;
+          const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const databasePath = layout.databasePath;
           const files = sourcePaths.map(codeGraphInventoryFile);
           const snapshot = {
             commit: identity.headCommit,
@@ -286,8 +300,15 @@ function prepareRepositories(
             symbolCount: 0,
             worktreeId: identity.worktreeId,
           } satisfies CodeGraphSnapshot;
+          const admissionEnvironment = yield* observeCodeGraphAdmissionEnvironment(identity);
           yield* store.activate(databasePath, identity, snapshot, files, [], [], []);
           yield* store.promote(databasePath, identity, snapshot.id);
+          if ((yield* observeCodeGraphAdmissionEnvironment(identity)) !== admissionEnvironment) {
+            return yield* new ContextBriefCitationScaleFixtureError({
+              message: `Prebuilt scale graph admission policy changed during publication: ${name}.`,
+            });
+          }
+          yield* recordCodeGraphSnapshotAdmission(layout, snapshot, admissionEnvironment, languagePacks, false);
           const status = {
             databasePath,
             freshness: 'current',
