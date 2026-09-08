@@ -33,6 +33,7 @@ import {
 } from './oci.js';
 import {adoptPublishedFrontier} from './frontier.js';
 import {graphShareFrontierDiscoveryTag} from './namespace.js';
+import {makeGraphControlReader, type GraphControlReaderOptions} from './control_reader.js';
 
 export const GRAPH_SHARE_PUBLISHER_WATCH_INTERVAL = '5 seconds' as const;
 
@@ -68,6 +69,7 @@ export interface GraphSharePublishedFrontier {
 }
 
 export interface GraphShareControlServerOptions<E = never, R = never> {
+  readonly authorization?: Pick<GraphControlReaderOptions, 'enrollment' | 'policyFile' | 'profile'>;
   readonly casRoot: string;
   readonly listen: GraphShareListenAddress;
   readonly onListening?: (info: {readonly port: number; readonly url: string}) => Effect.Effect<void, E, R>;
@@ -94,13 +96,21 @@ export function parseGraphShareListenAddress(value: string): GraphShareListenAdd
 export const runGraphShareControlServer = Effect.fn('codeGraph.sharing.controlServer')(function* <E, R>(
   options: GraphShareControlServerOptions<E, R>,
 ) {
+  const authenticatedReader =
+    options.authorization === undefined
+      ? undefined
+      : yield* makeGraphControlReader({
+          ...options.authorization,
+          casRoot: options.casRoot,
+          threadnoteHome: options.threadnoteHome,
+        });
   return yield* Effect.scoped(
     Layer.build(BunHttpServer.layer({hostname: options.listen.hostname, port: options.listen.port})).pipe(
       Effect.flatMap(context =>
         Effect.gen(function* () {
           const server = yield* HttpServer.HttpServer;
           const stateRef = yield* Ref.make(yield* loadGraphShareCoordinatorState(options));
-          yield* server.serve(handleGraphShareHttp(options, stateRef));
+          yield* server.serve(authenticatedReader?.handle ?? handleGraphShareHttp(options, stateRef));
           const actualPort = server.address._tag === 'TcpAddress' ? server.address.port : options.listen.port;
           const url = `http://${options.listen.hostname}:${actualPort}`;
           yield* options.onListening?.({port: actualPort, url}) ?? Effect.void;

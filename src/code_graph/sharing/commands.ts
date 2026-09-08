@@ -1,6 +1,7 @@
 import {Console, Effect} from 'effect';
 import {writeFinalCliOutput} from '../../effect/cli_output.js';
 import type {RuntimeConfig} from '../../types.js';
+import {graphSharingFailure} from './errors.js';
 import {
   runGraphContributeSet,
   runGraphContributeStatus,
@@ -105,6 +106,9 @@ export const runGraphPublisherServeCommand = Effect.fn('codeGraph.sharing.publis
   config: RuntimeConfig,
   options: GraphPublisherBootstrapOptions,
 ) {
+  if (options.authorizationPolicy !== undefined && !options.listen?.trim()) {
+    return yield* graphSharingFailure('Graph control authorization requires --listen.');
+  }
   if (options.listen !== undefined && options.listen.trim().length > 0) {
     return yield* runGraphPublisherListen(config, {
       ...options,
