@@ -9,6 +9,104 @@ import {
 import type {StandaloneActiveRelease} from '../../src/process/standalone_lease.js';
 
 describe('MCP session broker', () => {
+  it('reports missing activation without dispatching any request or changing its id', async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.oneof(fc.integer(), fc.string({maxLength: 40})), async id => {
+        const clientInput = new AsyncByteQueue();
+        const clientOutput = new AsyncByteQueue();
+        let spawned = 0;
+        const running = runMcpBroker({
+          input: clientInput,
+          readActiveRelease: async () => undefined,
+          spawn: () => {
+            spawned += 1;
+            throw new Error('Unexpected spawn');
+          },
+          writeOutput: async line => clientOutput.pushLine(line),
+        });
+        clientInput.pushLine(
+          JSON.stringify({id, jsonrpc: '2.0', method: 'tools/call', params: {name: 'remember_context'}}),
+        );
+        const failure = JSON.parse(await clientOutput.nextLine());
+        clientInput.end();
+        await running;
+        expect(failure).toMatchObject({
+          id,
+          error: {code: -32_603, data: {reason: 'no-active-release', requestDisposition: 'not-dispatched'}},
+        });
+        expect(failure.error.message).toContain('threadnote install --no-start');
+        expect(failure.error.message).not.toContain('outcome is unknown');
+        expect(spawned).toBe(0);
+        expect(clientOutput.availableLines()).toBe(0);
+      }),
+      {numRuns: 50},
+    );
+  });
+
+  it('recovers on the same transport after activation without replaying rejected work', async () => {
+    const clientInput = new AsyncByteQueue();
+    const clientOutput = new AsyncByteQueue();
+    let active: StandaloneActiveRelease | undefined;
+    const child = new FakeMcpChild('activated');
+    const running = runMcpBroker({
+      input: clientInput,
+      readActiveRelease: async () => active,
+      spawn: () => child,
+      writeOutput: async line => clientOutput.pushLine(line),
+    });
+    clientInput.pushLine(JSON.stringify({id: 1, jsonrpc: '2.0', method: 'initialize', params: {}}));
+    expect(JSON.parse(await clientOutput.nextLine()).error.data.reason).toBe('no-active-release');
+    active = {releaseRoot: '/threadnote/versions/activated', version: 'activated'};
+    clientInput.pushLine(JSON.stringify({id: 2, jsonrpc: '2.0', method: 'initialize', params: {}}));
+    expect(JSON.parse(await clientOutput.nextLine())).toMatchObject({
+      id: 2,
+      result: {serverInfo: {version: 'activated'}},
+    });
+    active = undefined;
+    clientInput.pushLine(JSON.stringify({id: 3, jsonrpc: '2.0', method: 'tools/call', params: {name: 'health'}}));
+    expect(JSON.parse(await clientOutput.nextLine())).toMatchObject({id: 3, result: {version: 'activated'}});
+    expect(child.received.map(line => JSON.parse(line).id)).toEqual([2, 3]);
+    clientInput.end();
+    await running;
+  });
+
+  it('keeps an outstanding mutation uncertain when a later request fails before dispatch', async () => {
+    const clientInput = new AsyncByteQueue();
+    const clientOutput = new AsyncByteQueue();
+    const release = {releaseRoot: '/threadnote/versions/private-release', version: 'private-version'};
+    const child = new FakeMcpChild(release.version, {respondToTools: false});
+    let failRead = false;
+    const running = runMcpBroker({
+      input: clientInput,
+      readActiveRelease: async () => {
+        if (failRead) throw new Error('Private lookup failure /Users/private/token');
+        return release;
+      },
+      spawn: () => child,
+      writeOutput: async line => clientOutput.pushLine(line),
+    });
+    clientInput.pushLine(JSON.stringify({id: 1, jsonrpc: '2.0', method: 'initialize', params: {}}));
+    await clientOutput.nextLine();
+    clientInput.pushLine(
+      JSON.stringify({id: 2, jsonrpc: '2.0', method: 'tools/call', params: {name: 'remember_context'}}),
+    );
+    await child.receivedCount(2);
+    failRead = true;
+    clientInput.pushLine(JSON.stringify({id: 3, jsonrpc: '2.0', method: 'tools/list'}));
+    const mutation = JSON.parse(await clientOutput.nextLine());
+    const lookup = JSON.parse(await clientOutput.nextLine());
+    clientInput.end();
+    await running;
+    expect(mutation).toMatchObject({id: 2, error: {message: expect.stringContaining('outcome is unknown')}});
+    expect(mutation.error.data).toBeUndefined();
+    expect(lookup).toMatchObject({
+      id: 3,
+      error: {data: {reason: 'startup-failed', requestDisposition: 'not-dispatched'}},
+    });
+    expect(JSON.stringify(lookup)).not.toContain('private');
+    expect(child.received).toHaveLength(2);
+  });
+
   it('reports a closed spawn failure without allowing the observer to alter recovery', async () => {
     const clientInput = new AsyncByteQueue();
     const clientOutput = new AsyncByteQueue();
@@ -28,7 +126,12 @@ describe('MCP session broker', () => {
     });
 
     clientInput.pushLine(JSON.stringify({id: 1, jsonrpc: '2.0', method: 'initialize', params: {}}));
-    expect(JSON.parse(await clientOutput.nextLine())).toMatchObject({error: {code: -32_603}, id: 1});
+    const failure = JSON.parse(await clientOutput.nextLine());
+    expect(failure).toMatchObject({
+      error: {code: -32_603, data: {reason: 'startup-failed', requestDisposition: 'not-dispatched'}},
+      id: 1,
+    });
+    expect(JSON.stringify(failure)).not.toContain('private');
     clientInput.end();
     await running;
 
