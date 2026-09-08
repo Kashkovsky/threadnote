@@ -6,7 +6,8 @@ import {
   decodeStoredCodeGraphFact,
   encodeStoredCodeGraphFact,
 } from '../../src/code_graph/fact_storage.js';
-import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
+import {budgetCachedCodeGraphFacts, serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
+import {parseCodeGraphFileFacts} from '../../src/code_graph/fact_validation.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import type {CodeGraphFileFacts} from '../../src/code_graph/types.js';
 
@@ -34,6 +35,41 @@ const repositoryTextArbitrary = fc
   .map(codeUnits => String.fromCharCode(...codeUnits));
 
 describe('compact code graph fact storage', () => {
+  it('matches independent budgeting across exact UTF-8 boundaries without mutating or reordering facts', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.constantFrom('a', '"', '\\', '\0', '\n', 'é', '漢', '🙂', '\ud800'), {maxLength: 160}),
+        fc.integer({min: 128, max: 4_096}),
+        fc.boolean(),
+        (characters, ceiling, duplicates) => {
+          const base = richFacts();
+          const documentation = characters.join('');
+          const facts: CodeGraphFileFacts = {
+            ...base,
+            diagnostics: [documentation],
+            edges: duplicates ? [...base.edges, ...base.edges] : base.edges,
+            references: duplicates ? [...base.references!, ...base.references!] : base.references,
+            symbols: base.symbols.map(symbol => ({...symbol, documentation})),
+          };
+          const before = structuredClone(facts);
+          const parsed = parseCodeGraphFileFacts(facts);
+          const exact = factEncoder.encode(JSON.stringify(budgetCachedCodeGraphFacts(parsed))).byteLength;
+          for (const maximumBytes of [ceiling, exact - 1, exact, exact + 1]) {
+            const expected = budgetCachedCodeGraphFacts(parsed, maximumBytes);
+            const actual = serializeBoundedCodeGraphFact(facts, maximumBytes);
+            expect(actual.facts).toEqual(expected);
+            expect(actual.json).toBe(JSON.stringify(expected));
+            expect(actual.bytes).toBe(factEncoder.encode(actual.json).byteLength);
+            expect(actual.bytes).toBeLessThanOrEqual(maximumBytes);
+            expect(serializeBoundedCodeGraphFact(actual.facts, maximumBytes).json).toBe(actual.json);
+          }
+          expect(facts).toEqual(before);
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
   it('round-trips legacy and compact rows deterministically without mutating facts', () => {
     fc.assert(
       fc.property(factArbitrary, facts => {
