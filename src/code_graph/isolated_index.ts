@@ -1,4 +1,5 @@
 import {Clock, Effect, Path} from 'effect';
+import {observeCodeGraphAdmissionEnvironment} from './admission_freshness.js';
 import {codeGraphBuildRequestKey} from './indexer_build.js';
 import {codeGraphIndexEnsuresVectors, type CodeGraphIndexOptions} from './indexer_types.js';
 import {CodeGraphIndexOperationError, WorktreeChangedDuringIndex} from './indexer_shared.js';
@@ -85,10 +86,18 @@ export const runIsolatedCodeGraphIndexSnapshot = Effect.fn('codeGraph.isolatedIn
     });
   }
   const requestedOverlay = yield* worktreeBuildRequestState(identity, options.threadnoteHome);
+  const admissionEnvironment = yield* observeCodeGraphAdmissionEnvironment(identity);
   const ensureVectors = codeGraphIndexEnsuresVectors(options);
   const requestKey = options.force
     ? undefined
-    : codeGraphBuildRequestKey(identity, requestedOverlay, languagePacks, options.incrementalOverlay, ensureVectors);
+    : codeGraphBuildRequestKey(
+        identity,
+        requestedOverlay,
+        languagePacks,
+        options.incrementalOverlay,
+        ensureVectors,
+        admissionEnvironment,
+      );
   const startedAt = yield* Clock.currentTimeMillis;
   const result = yield* runIsolatedCodeGraphIndex({
     admissionClass: options.admissionClass,
@@ -102,6 +111,8 @@ export const runIsolatedCodeGraphIndexSnapshot = Effect.fn('codeGraph.isolatedIn
     threadnoteHome: options.threadnoteHome,
   });
   const completedIdentity = yield* resolveRepositoryIdentity(options.cwd);
+  const completedEnvironment = yield* observeCodeGraphAdmissionEnvironment(completedIdentity);
+  if (completedEnvironment !== admissionEnvironment) return yield* WorktreeChangedDuringIndex.make({});
   const completedRequestKey =
     requestKey === undefined ||
     !repositoryIdentityMatchesExpectation(completedIdentity, identity) ||
@@ -113,6 +124,7 @@ export const runIsolatedCodeGraphIndexSnapshot = Effect.fn('codeGraph.isolatedIn
           languagePacks,
           options.incrementalOverlay,
           ensureVectors,
+          completedEnvironment,
         );
   const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
   const recovered = yield* recoverIsolatedCodeGraphIndexSnapshot({

@@ -21,6 +21,7 @@ import {
   IsolatedCodeGraphImpactQueryTimedOut,
 } from '../../code_graph/isolated_impact_query.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '../../code_graph/types.js';
+import type {CodeGraphStatusObservation} from '../../code_graph/query_contract.js';
 import type {CodeGraphWorksetQueryResult} from '../../code_graph/workset_query.js';
 import {
   continueCodeGraphWorksetQueryV2,
@@ -529,7 +530,7 @@ export function registerCodeGraphTool(
                 query: queryText,
                 refresh: false,
                 requestMaintenance: false,
-                statusObservation: observationFromCodeGraphStatus(status),
+                statusObservation: codeGraphInspectionObservation(observationFromCodeGraphStatus(status), operation),
                 symbol,
                 telemetry: queryStageTelemetry,
                 threadnoteHome: config.agentContextHome,
@@ -1565,6 +1566,18 @@ export function codeGraphInspectionObservesWorktree(
   operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
 ): boolean {
   return !codeGraphInspectionAllowsStaleReady(operation);
+}
+
+/** Shared/cold discovery may observe an overlay; ordinary inspections still defer its freshness. */
+export function codeGraphInspectionObservation(
+  observation: CodeGraphStatusObservation | undefined,
+  operation: Parameters<typeof codeGraphInspectionObservesWorktree>[0],
+): CodeGraphStatusObservation | undefined {
+  if (observation === undefined || codeGraphInspectionObservesWorktree(operation)) return observation;
+  return {
+    identity: observation.identity,
+    ...(observation.borrowedSnapshotId === undefined ? {} : {borrowedSnapshotId: observation.borrowedSnapshotId}),
+  };
 }
 
 /**

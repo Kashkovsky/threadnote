@@ -6,7 +6,7 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {expect, it} from '@effect/vitest';
-import {Effect, Fiber, Layer, Ref} from 'effect';
+import {Effect, Fiber, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe} from 'vitest';
 import type {CodeGraphEmbeddingIndexShape} from '../../src/code_graph/embedding.js';
@@ -15,7 +15,11 @@ import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {CodeGraphIndexer, extractorSetIdentityFromPackProvenance} from '../../src/code_graph/indexer.js';
 import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
-import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
+import {codeGraphLayout, type CodeGraphLayout} from '../../src/code_graph/layout.js';
+import {
+  observeCodeGraphAdmissionEnvironment,
+  recordCodeGraphSnapshotAdmission,
+} from '../../src/code_graph/admission_freshness.js';
 import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
 import {
   CodeGraphQueryService,
@@ -283,6 +287,13 @@ describe('code graph query budgets', () => {
             worktreeId: identity.worktreeId,
           } satisfies CodeGraphSnapshot;
           yield* Ref.set(snapshotRef, snapshot);
+          yield* recordCodeGraphSnapshotAdmission(
+            codeGraphLayout(yield* Path.Path, fixtureRoot.home, identity.checkoutId, identity.worktreeId),
+            snapshot,
+            yield* observeCodeGraphAdmissionEnvironment(identity),
+            yield* CodeGraphLanguagePackRegistry,
+            false,
+          );
           const sessionResult = yield* query.withStatusSession!(
             fixtureRoot.home,
             fixtureRoot.repository,

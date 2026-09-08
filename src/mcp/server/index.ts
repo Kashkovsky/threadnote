@@ -764,6 +764,7 @@ export {
   codeGraphAnalysisRefreshResult,
   codeGraphInspectionAllowsStaleReady,
   codeGraphInspectionObservesWorktree,
+  codeGraphInspectionObservation,
   codeGraphInspectionStartsRefresh,
   codeGraphMcpAnalysisBudget,
   codeGraphMcpAnalysisLimits,

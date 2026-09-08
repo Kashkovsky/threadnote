@@ -52,8 +52,22 @@ const result = {
 describe('isolated index snapshot recovery', () => {
   it('never attaches a vector-required request to an active or completed structural-only build', () => {
     const languagePacks = {cacheIdentities: [], packs: []} as unknown as CodeGraphLanguagePackRegistryShape;
-    const structuralOnlyKey = codeGraphBuildRequestKey(identity, {dirty: false}, languagePacks, undefined, false);
-    const vectorRequiredKey = codeGraphBuildRequestKey(identity, {dirty: false}, languagePacks, undefined, true);
+    const structuralOnlyKey = codeGraphBuildRequestKey(
+      identity,
+      {dirty: false},
+      languagePacks,
+      undefined,
+      false,
+      'f'.repeat(64),
+    );
+    const vectorRequiredKey = codeGraphBuildRequestKey(
+      identity,
+      {dirty: false},
+      languagePacks,
+      undefined,
+      true,
+      'f'.repeat(64),
+    );
 
     expect(vectorRequiredKey).not.toBe(structuralOnlyKey);
     for (const liveness of ['active', 'completed'] as const) {

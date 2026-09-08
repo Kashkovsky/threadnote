@@ -53,6 +53,10 @@ export class CodeGraphCheckpointReceiverFileVerifier {
           [...this.#remaining.keys()].every(isOpaqueCorpusMediaPath)))
     );
   }
+
+  get includesOpaqueAssets(): boolean {
+    return this.#acceptedOpaque;
+  }
 }
 
 export const prepareCodeGraphCheckpointReceiverAdmission = Effect.fn('codeGraph.prepareCheckpointReceiverAdmission')(

@@ -1,6 +1,19 @@
 import {Effect} from 'effect';
 import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import type {CodeGraphStatus, RepositoryIdentity} from './types.js';
+import {worktreeOverlayState} from './inventory.js';
+
+export function codeGraphSnapshotMatchesWorktree(
+  snapshot: {readonly commit: string; readonly dirty: boolean; readonly overlayFingerprint?: string},
+  headCommit: string,
+  overlay: {readonly dirty: boolean; readonly fingerprint?: string},
+): boolean {
+  return (
+    snapshot.commit === headCommit &&
+    snapshot.dirty === overlay.dirty &&
+    (!overlay.dirty || snapshot.overlayFingerprint === overlay.fingerprint)
+  );
+}
 
 export interface CodeGraphStatusOptions {
   /** @internal Run after the owned identity resolution and before reading graph status. */
@@ -41,6 +54,15 @@ export interface CodeGraphQueryInterlock {
   /** @internal Deterministic barrier used to verify that leases cover the complete read session. */
   readonly beforeReadCompletion?: () => Effect.Effect<void>;
 }
+
+export const observeCodeGraphQueryWorktree = Effect.fn('codeGraph.observeWorktree')(function* (
+  identity: RepositoryIdentity,
+  interlock: CodeGraphQueryInterlock | undefined,
+) {
+  const observation = yield* worktreeOverlayState(identity);
+  yield* interlock?.afterObservation?.() ?? Effect.void;
+  return observation;
+});
 
 export interface CodeGraphTraversalTimeBudgets {
   readonly semanticMilliseconds?: number;

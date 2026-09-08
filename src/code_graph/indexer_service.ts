@@ -2,6 +2,7 @@ import {Clock, Context, Crypto, Effect, Exit, FileSystem, Layer, Option, Path, S
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
+import {observeCodeGraphAdmissionEnvironment, recordCodeGraphSnapshotAdmission} from './admission_freshness.js';
 import {makeCodeGraphBuildReporter} from './build_status.js';
 import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, withCodeGraphBuilderAdmission} from './builder_admission.js';
 import {isCodeGraphCapacityPause} from './disk_capacity.js';
@@ -136,6 +137,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
         Effect.scoped(
           Effect.gen(function* () {
             const initialIdentity = yield* resolveRepositoryIdentity(request.cwd);
+            const admissionEnvironment = yield* observeCodeGraphAdmissionEnvironment(initialIdentity);
             if (
               request.expectedIdentity &&
               !repositoryIdentityMatchesExpectation(initialIdentity, request.expectedIdentity)
@@ -176,6 +178,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   languagePacks,
                   request.incrementalOverlay,
                   ensureVectors,
+                  admissionEnvironment,
                 );
             const reporter = yield* withCodeGraphMaintenanceRegistration(
               request.threadnoteHome,
@@ -295,6 +298,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         },
                       );
                       yield* store.initialize(layout.databasePath);
+                      if ((yield* observeCodeGraphAdmissionEnvironment(identity)) !== admissionEnvironment) {
+                        return yield* WorktreeChangedDuringIndex.make({});
+                      }
                       let inventoryOverlayObservation: CodeGraphOverlayObservation;
                       {
                         const currentBuildRequest = yield* worktreeBuildRequestObservation(
@@ -747,6 +753,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                               store,
                               threadnoteHome: options.threadnoteHome,
                             });
+                            if ((yield* observeCodeGraphAdmissionEnvironment(identity)) !== admissionEnvironment) {
+                              return yield* WorktreeChangedDuringIndex.make({});
+                            }
+                            yield* recordCodeGraphSnapshotAdmission(
+                              layout,
+                              committedBase.snapshot,
+                              admissionEnvironment,
+                              languagePacks,
+                              ensureVectors,
+                              {cleanOnly: true},
+                            );
                           }
                         }
                         if (preassessment.mode === 'fallback') {
@@ -926,6 +943,20 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   .pipe(
                     Effect.onInterrupt(() =>
                       reporter.fail(CodeGraphIndexOperationError.make({message: CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY})),
+                    ),
+                    Effect.tap(summary =>
+                      Effect.gen(function* () {
+                        if ((yield* observeCodeGraphAdmissionEnvironment(initialIdentity)) !== admissionEnvironment) {
+                          return yield* WorktreeChangedDuringIndex.make({});
+                        }
+                        yield* recordCodeGraphSnapshotAdmission(
+                          layout,
+                          summary.snapshot,
+                          admissionEnvironment,
+                          languagePacks,
+                          ensureVectors,
+                        );
+                      }),
                     ),
                     Effect.tap(summary => reporter.complete(summary)),
                     Effect.tapError(cause => reporter.fail(cause)),

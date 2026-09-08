@@ -18,6 +18,7 @@ import {
   Schema,
 } from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from './indexer.js';
+import {observeCodeGraphAdmissionEnvironment} from './admission_freshness.js';
 import {worktreeBuildRequestState, worktreeOverlayState} from './inventory.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult, type CodeGraphStoreShape} from './store.js';
@@ -308,7 +309,19 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
               assertRuntimeSchemaCompatible: databasePath => store.assertRuntimeSchemaCompatible(databasePath),
               cwd: options.cwd,
               onProgress: options.onProgress,
-              requestKey: codeGraphBuildRequestKey(identity, requestedOverlay, languagePacks, undefined, false),
+              requestKey: codeGraphBuildRequestKey(
+                identity,
+                requestedOverlay,
+                languagePacks,
+                undefined,
+                false,
+                yield* observeCodeGraphAdmissionEnvironment(identity).pipe(
+                  Effect.provideService(CommandExecutor, commandExecutor),
+                  Effect.provideService(FileSystem.FileSystem, fs),
+                  Effect.provideService(Path.Path, path),
+                  Effect.provideService(SystemInfo, systemInfo),
+                ),
+              ),
               threadnoteHome: options.threadnoteHome,
             }).pipe(
               Effect.provideService(CommandExecutor, commandExecutor),

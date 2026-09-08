@@ -1,12 +1,11 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {execFileSync} from '../helpers/node-child-process.js';
-import {mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
-import {tmpdir} from '../helpers/node-os.js';
+import {writeFileSync} from '../helpers/node-fs.js';
 import {join} from '../helpers/node-path.js';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {it as effectIt} from '@effect/vitest';
-import {afterEach, describe, expect, it} from 'vitest';
+import {describe, expect} from 'vitest';
 import {CodeGraphDiskCapacityPressureError} from '../../src/code_graph/disk_capacity.js';
 import {extractorSetIdentityFromPackProvenance} from '../../src/code_graph/indexer.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
@@ -18,19 +17,17 @@ import type {CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/t
 import {CommandExecutor} from '../../src/effect/command.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {runEffect} from '../helpers/effect-runtime.js';
+import {
+  observeCodeGraphAdmissionEnvironment,
+  recordCodeGraphSnapshotAdmission,
+} from '../../src/code_graph/admission_freshness.js';
 
-const temporaryRoots: string[] = [];
 const fixturePackProvenance = BUILTIN_LANGUAGE_PACK_REGISTRY.activePackProvenance(['main.ts']);
-
-afterEach(() => {
-  for (const root of temporaryRoots.splice(0).reverse()) rmSync(root, {force: true, recursive: true});
-});
 
 describe('shared ready view attachment locking', () => {
   effectIt.effect('protects shared-ready promotion and retries the exact candidate after capacity returns', () =>
     Effect.gen(function* () {
-      const root = temporaryRepository();
+      const root = yield* temporaryRepository();
       const repositoryRoot = join(root, 'repository');
       const threadnoteHome = join(root, 'threadnote-home');
       const path = yield* Path.Path;
@@ -40,6 +37,13 @@ describe('shared ready view attachment locking', () => {
       const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
       const snapshot = readySnapshot(identity);
       yield* store.activate(layout.databasePath, identity, snapshot, [], [], [], fixturePackProvenance);
+      yield* recordCodeGraphSnapshotAdmission(
+        layout,
+        snapshot,
+        yield* observeCodeGraphAdmissionEnvironment(identity),
+        BUILTIN_LANGUAGE_PACK_REGISTRY,
+        false,
+      );
       yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
       const before = yield* graph.statusForIdentity(threadnoteHome, identity);
       let promotionProbes = 0;
@@ -68,198 +72,218 @@ describe('shared ready view attachment locking', () => {
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
-  it('defers without mutation when the target builder is active, then attaches after release', async () => {
-    const root = temporaryRepository();
-    const repositoryRoot = join(root, 'repository');
-    const threadnoteHome = join(root, 'threadnote-home');
+  effectIt.effect('defers without mutation when the target builder is active, then attaches after release', () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryRepository();
+      const repositoryRoot = join(root, 'repository');
+      const threadnoteHome = join(root, 'threadnote-home');
 
-    const observed = await runEffect(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const command = yield* CommandExecutor;
-        const graph = yield* CodeGraphQueryService;
-        const store = yield* CodeGraphStore;
-        const identity = yield* resolveRepositoryIdentity(repositoryRoot);
-        const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
-        const snapshot = readySnapshot(identity);
-        yield* store.activate(layout.databasePath, identity, snapshot, [], [], [], fixturePackProvenance);
-        yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
-        const before = yield* graph.statusForIdentity(threadnoteHome, identity);
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const command = yield* CommandExecutor;
+      const graph = yield* CodeGraphQueryService;
+      const store = yield* CodeGraphStore;
+      const identity = yield* resolveRepositoryIdentity(repositoryRoot);
+      const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+      const snapshot = readySnapshot(identity);
+      yield* store.activate(layout.databasePath, identity, snapshot, [], [], [], fixturePackProvenance);
+      yield* recordCodeGraphSnapshotAdmission(
+        layout,
+        snapshot,
+        yield* observeCodeGraphAdmissionEnvironment(identity),
+        BUILTIN_LANGUAGE_PACK_REGISTRY,
+        false,
+      );
+      yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
+      const before = yield* graph.statusForIdentity(threadnoteHome, identity);
 
-        const acquired = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const owner = yield* Effect.forkChild(
-          withExclusiveFileLock(
-            fs,
-            layout.lockPath,
-            {
-              onAcquired: () => Deferred.succeed(acquired, undefined).pipe(Effect.asVoid),
-              retryIntervalMilliseconds: 5,
-              staleAfterMilliseconds: 120_000,
-              waitTimeoutMilliseconds: 5_000,
-            },
-            Deferred.await(release),
-          ),
-        );
-        yield* Deferred.await(acquired);
-        const startedAt = performance.now();
-        const deferred = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before);
-        const elapsedMilliseconds = performance.now() - startedAt;
-        const pointerWhileBusy = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
-        yield* Deferred.succeed(release, undefined);
-        yield* Fiber.join(owner);
+      const acquired = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const owner = yield* Effect.forkChild(
+        withExclusiveFileLock(
+          fs,
+          layout.lockPath,
+          {
+            onAcquired: () => Deferred.succeed(acquired, undefined).pipe(Effect.asVoid),
+            retryIntervalMilliseconds: 5,
+            staleAfterMilliseconds: 120_000,
+            waitTimeoutMilliseconds: 5_000,
+          },
+          Deferred.await(release),
+        ),
+      );
+      yield* Deferred.await(acquired);
+      const startedAt = performance.now();
+      const deferred = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before);
+      const elapsedMilliseconds = performance.now() - startedAt;
+      const pointerWhileBusy = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(owner);
 
-        const counts = {branchObservation: 0, fullIdentity: 0, git: 0, publicationProof: 0, status: 0};
-        const mutableCommand = command as {
-          execute: typeof command.execute;
-          executeBytes?: NonNullable<typeof command.executeBytes>;
-        };
-        const execute = command.execute;
-        const executeBytes = command.executeBytes;
-        const observeInvocation = (executable: string, args: readonly string[]) => {
-          if (executable !== 'git') return;
-          counts.git += 1;
-          if (args.includes('symbolic-ref')) counts.branchObservation += 1;
-          if (args[2] === 'rev-parse' && args[3] === '--show-toplevel') counts.fullIdentity += 1;
-          if (args[2] === 'status') {
-            counts.status += 1;
-            if (args.includes('--porcelain=v2')) counts.publicationProof += 1;
-          }
-        };
-        const attached = yield* Effect.acquireUseRelease(
-          Effect.sync(() => {
-            mutableCommand.execute = (executable, args, options) => {
+      const counts = {branchObservation: 0, fullIdentity: 0, git: 0, publicationProof: 0, status: 0};
+      const mutableCommand = command as {
+        execute: typeof command.execute;
+        executeBytes?: NonNullable<typeof command.executeBytes>;
+      };
+      const execute = command.execute;
+      const executeBytes = command.executeBytes;
+      const observeInvocation = (executable: string, args: readonly string[]) => {
+        if (executable !== 'git') return;
+        counts.git += 1;
+        if (args.includes('symbolic-ref')) counts.branchObservation += 1;
+        if (args[2] === 'rev-parse' && args[3] === '--show-toplevel') counts.fullIdentity += 1;
+        if (args[2] === 'status') {
+          counts.status += 1;
+          if (args.includes('--porcelain=v2')) counts.publicationProof += 1;
+        }
+      };
+      const attached = yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          mutableCommand.execute = (executable, args, options) => {
+            observeInvocation(executable, args);
+            return execute(executable, args, options);
+          };
+          if (executeBytes) {
+            mutableCommand.executeBytes = (executable, args, options) => {
               observeInvocation(executable, args);
-              return execute(executable, args, options);
+              return executeBytes(executable, args, options);
             };
-            if (executeBytes) {
-              mutableCommand.executeBytes = (executable, args, options) => {
-                observeInvocation(executable, args);
-                return executeBytes(executable, args, options);
-              };
-            }
+          }
+        }),
+        () => graph.attachSharedReadySnapshot(threadnoteHome, identity, before),
+        () =>
+          Effect.sync(() => {
+            mutableCommand.execute = execute;
+            mutableCommand.executeBytes = executeBytes;
           }),
-          () => graph.attachSharedReadySnapshot(threadnoteHome, identity, before),
-          () =>
-            Effect.sync(() => {
-              mutableCommand.execute = execute;
-              mutableCommand.executeBytes = executeBytes;
-            }),
-        );
-        return {attached, before, counts, deferred, elapsedMilliseconds, pointerWhileBusy, snapshot};
-      }),
-    );
+      );
+      const observed = {attached, before, counts, deferred, elapsedMilliseconds, pointerWhileBusy, snapshot};
 
-    expect(observed.before.readySnapshot).toBeUndefined();
-    expect(observed.deferred.readySnapshot).toBeUndefined();
-    expect(observed.pointerWhileBusy).toBeUndefined();
-    expect(observed.elapsedMilliseconds).toBeLessThan(500);
-    expect(observed.attached.readySnapshot?.id).toBe(observed.snapshot.id);
-    expect(observed.attached.stale).toBe(false);
-    expect(observed.counts).toEqual({branchObservation: 1, fullIdentity: 1, git: 9, publicationProof: 1, status: 2});
-  });
+      expect(observed.before.readySnapshot).toBeUndefined();
+      expect(observed.deferred.readySnapshot).toBeUndefined();
+      expect(observed.pointerWhileBusy).toBeUndefined();
+      expect(observed.elapsedMilliseconds).toBeLessThan(500);
+      expect(observed.attached.readySnapshot?.id).toBe(observed.snapshot.id);
+      expect(observed.attached.stale).toBe(false);
+      expect(observed.counts).toEqual({branchObservation: 1, fullIdentity: 1, git: 15, publicationProof: 1, status: 2});
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
-  it('does not promote an optimistic candidate after HEAD moves before target-lock acquisition', async () => {
-    const root = temporaryRepository();
-    const repositoryRoot = join(root, 'repository');
-    const threadnoteHome = join(root, 'threadnote-home');
-    const nextCommit = createNextCommit(repositoryRoot);
-    git(repositoryRoot, ['reset', '--hard', 'HEAD~1']);
+  effectIt.effect('does not promote an optimistic candidate after HEAD moves before target-lock acquisition', () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryRepository();
+      const repositoryRoot = join(root, 'repository');
+      const threadnoteHome = join(root, 'threadnote-home');
+      const nextCommit = createNextCommit(repositoryRoot);
+      git(repositoryRoot, ['reset', '--hard', 'HEAD~1']);
 
-    const observed = await runEffect(
-      Effect.gen(function* () {
-        const path = yield* Path.Path;
-        const graph = yield* CodeGraphQueryService;
-        const store = yield* CodeGraphStore;
-        const identity = yield* resolveRepositoryIdentity(repositoryRoot);
-        const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
-        const snapshot = readySnapshot(identity);
-        yield* store.activate(layout.databasePath, identity, snapshot, [], [], [], fixturePackProvenance);
-        yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
-        const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, undefined, {
-          afterOptimisticCandidate: () => Effect.sync(() => git(repositoryRoot, ['reset', '--hard', nextCommit])),
-        });
-        const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
-        return {attached, identity, pointer};
-      }),
-    );
+      const path = yield* Path.Path;
+      const graph = yield* CodeGraphQueryService;
+      const store = yield* CodeGraphStore;
+      const identity = yield* resolveRepositoryIdentity(repositoryRoot);
+      const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+      const snapshot = readySnapshot(identity);
+      yield* store.activate(layout.databasePath, identity, snapshot, [], [], [], fixturePackProvenance);
+      yield* recordCodeGraphSnapshotAdmission(
+        layout,
+        snapshot,
+        yield* observeCodeGraphAdmissionEnvironment(identity),
+        BUILTIN_LANGUAGE_PACK_REGISTRY,
+        false,
+      );
+      yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
+      const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, undefined, {
+        afterOptimisticCandidate: () => Effect.sync(() => git(repositoryRoot, ['reset', '--hard', nextCommit])),
+      });
+      const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+      const observed = {attached, identity, pointer};
 
-    expect(observed.attached.identity.headCommit).toBe(nextCommit);
-    expect(observed.attached.identity.headCommit).not.toBe(observed.identity.headCommit);
-    expect(observed.attached.readySnapshot).toBeUndefined();
-    expect(observed.attached.stale).toBe(true);
-    expect(observed.pointer).toBeUndefined();
-  });
+      expect(observed.attached.identity.headCommit).toBe(nextCommit);
+      expect(observed.attached.identity.headCommit).not.toBe(observed.identity.headCommit);
+      expect(observed.attached.readySnapshot).toBeUndefined();
+      expect(observed.attached.stale).toBe(true);
+      expect(observed.pointer).toBeUndefined();
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
-  it('reports the new identity as stale when HEAD moves immediately after promotion', async () => {
-    const root = temporaryRepository();
-    const repositoryRoot = join(root, 'repository');
-    const threadnoteHome = join(root, 'threadnote-home');
-    let nextCommit: string | undefined;
+  effectIt.effect('reports the new identity as stale when HEAD moves immediately after promotion', () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryRepository();
+      const repositoryRoot = join(root, 'repository');
+      const threadnoteHome = join(root, 'threadnote-home');
+      let nextCommit: string | undefined;
 
-    const observed = await runEffect(
-      Effect.gen(function* () {
-        const path = yield* Path.Path;
-        const graph = yield* CodeGraphQueryService;
-        const store = yield* CodeGraphStore;
-        const identity = yield* resolveRepositoryIdentity(repositoryRoot);
-        const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
-        const snapshot = readySnapshot(identity);
-        yield* store.activate(layout.databasePath, identity, snapshot, [], [], [], fixturePackProvenance);
-        yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
-        const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, undefined, {
-          afterPromotion: () =>
-            Effect.sync(() => {
-              nextCommit = createNextCommit(repositoryRoot);
-            }),
-        });
-        const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
-        return {attached, pointer, snapshot};
-      }),
-    );
+      const path = yield* Path.Path;
+      const graph = yield* CodeGraphQueryService;
+      const store = yield* CodeGraphStore;
+      const identity = yield* resolveRepositoryIdentity(repositoryRoot);
+      const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+      const snapshot = readySnapshot(identity);
+      yield* store.activate(layout.databasePath, identity, snapshot, [], [], [], fixturePackProvenance);
+      yield* recordCodeGraphSnapshotAdmission(
+        layout,
+        snapshot,
+        yield* observeCodeGraphAdmissionEnvironment(identity),
+        BUILTIN_LANGUAGE_PACK_REGISTRY,
+        false,
+      );
+      yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
+      const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, undefined, {
+        afterPromotion: () =>
+          Effect.sync(() => {
+            nextCommit = createNextCommit(repositoryRoot);
+          }),
+      });
+      const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+      const observed = {attached, pointer, snapshot};
 
-    expect(nextCommit).toBeDefined();
-    expect(observed.attached.identity.headCommit).toBe(nextCommit);
-    expect(observed.attached.readySnapshot?.id).toBe(observed.snapshot.id);
-    expect(observed.attached.stale).toBe(true);
-    expect(observed.pointer?.id).toBe(observed.snapshot.id);
-  });
+      expect(nextCommit).toBeDefined();
+      expect(observed.attached.identity.headCommit).toBe(nextCommit);
+      expect(observed.attached.readySnapshot?.id).toBe(observed.snapshot.id);
+      expect(observed.attached.stale).toBe(true);
+      expect(observed.pointer?.id).toBe(observed.snapshot.id);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
-  it('reports stale when a tracked file changes immediately after promotion without moving HEAD', async () => {
-    const root = temporaryRepository();
-    const repositoryRoot = join(root, 'repository');
-    const threadnoteHome = join(root, 'threadnote-home');
+  effectIt.effect('reports stale when a tracked file changes immediately after promotion without moving HEAD', () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryRepository();
+      const repositoryRoot = join(root, 'repository');
+      const threadnoteHome = join(root, 'threadnote-home');
 
-    const observed = await runEffect(
-      Effect.gen(function* () {
-        const path = yield* Path.Path;
-        const graph = yield* CodeGraphQueryService;
-        const store = yield* CodeGraphStore;
-        const identity = yield* resolveRepositoryIdentity(repositoryRoot);
-        const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
-        const snapshot = readySnapshot(identity);
-        yield* store.activate(layout.databasePath, identity, snapshot, [], [], [], fixturePackProvenance);
-        yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
-        const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, undefined, {
-          afterPromotion: () =>
-            Effect.sync(() => writeFileSync(join(repositoryRoot, 'main.ts'), 'export const attached = "dirty";\n')),
-        });
-        const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
-        return {attached, identity, pointer, snapshot};
-      }),
-    );
+      const path = yield* Path.Path;
+      const graph = yield* CodeGraphQueryService;
+      const store = yield* CodeGraphStore;
+      const identity = yield* resolveRepositoryIdentity(repositoryRoot);
+      const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+      const snapshot = readySnapshot(identity);
+      yield* store.activate(layout.databasePath, identity, snapshot, [], [], [], fixturePackProvenance);
+      yield* recordCodeGraphSnapshotAdmission(
+        layout,
+        snapshot,
+        yield* observeCodeGraphAdmissionEnvironment(identity),
+        BUILTIN_LANGUAGE_PACK_REGISTRY,
+        false,
+      );
+      yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
+      const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, undefined, {
+        afterPromotion: () =>
+          Effect.sync(() => writeFileSync(join(repositoryRoot, 'main.ts'), 'export const attached = "dirty";\n')),
+      });
+      const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+      const observed = {attached, identity, pointer, snapshot};
 
-    expect(observed.attached.identity.headCommit).toBe(observed.identity.headCommit);
-    expect(observed.attached.readySnapshot?.id).toBe(observed.snapshot.id);
-    expect(observed.attached.stale).toBe(true);
-    expect(observed.pointer?.id).toBe(observed.snapshot.id);
-  });
+      expect(observed.attached.identity.headCommit).toBe(observed.identity.headCommit);
+      expect(observed.attached.readySnapshot?.id).toBe(observed.snapshot.id);
+      expect(observed.attached.stale).toBe(true);
+      expect(observed.pointer?.id).toBe(observed.snapshot.id);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 });
 
-function temporaryRepository(): string {
-  const root = mkdtempSync(join(tmpdir(), 'threadnote-view-attach-lock-'));
-  temporaryRoots.push(root);
+const temporaryRepository = Effect.fn('test.temporaryViewAttachRepository')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-view-attach-lock-'});
   const repositoryRoot = join(root, 'repository');
   execFileSync('git', ['init', repositoryRoot], {stdio: 'ignore'});
   execFileSync('git', ['-C', repositoryRoot, 'config', 'user.email', 'threadnote-test@example.invalid']);
@@ -268,7 +292,7 @@ function temporaryRepository(): string {
   git(repositoryRoot, ['add', 'main.ts']);
   git(repositoryRoot, ['commit', '-m', 'fixture']);
   return root;
-}
+});
 
 function createNextCommit(repositoryRoot: string): string {
   writeFileSync(join(repositoryRoot, 'main.ts'), 'export const attached = "new-head";\n');
