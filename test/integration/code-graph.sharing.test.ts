@@ -301,12 +301,23 @@ describe('code graph sharing Phases 0–2', () => {
         '--read-only',
         '--json',
       ]);
-      const clientStatePath = join(clientHome, 'graph-sharing', 'client-state.json');
-      const clientState = JSON.parse(await readFile(clientStatePath, 'utf8')) as {
-        readonly casRoot?: string;
+      const trustPath = join(clientHome, 'graph-sharing', 'trust-receipts.json');
+      const trust = JSON.parse(await readFile(trustPath, 'utf8')) as {
+        readonly receipts: readonly {readonly client: {readonly casRoot: string; readonly contributionMode: string}}[];
         readonly schemaVersion: 1;
       };
-      await writeFile(clientStatePath, `${JSON.stringify({...clientState, coordinatorUrl: 'http://127.0.0.1:1'})}\n`);
+      expect(trust.receipts).toHaveLength(1);
+      expect(trust.receipts[0].client.casRoot).toBe(cas);
+      await writeFile(
+        trustPath,
+        `${JSON.stringify({
+          ...trust,
+          receipts: trust.receipts.map(receipt => ({
+            ...receipt,
+            client: {...receipt.client, coordinatorUrl: 'http://127.0.0.1:1'},
+          })),
+        })}\n`,
+      );
       const indexed = JSON.parse(
         (await runCli(['graph', 'index', '--home', clientHome, '--cwd', repository, '--json'])).stdout,
       ) as {
