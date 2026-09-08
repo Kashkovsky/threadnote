@@ -1,3 +1,5 @@
+import {makeCursorHookCommand, makeInstallHooksCommand} from './hooks_cli.js';
+import {runCursorHook} from '../cursor_hook_runner.js';
 import {Console, Effect, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
 import {THREADNOTE_MCP_NAME} from '../constants.js';
@@ -1203,18 +1205,12 @@ const mcpInstall = Command.make(
   ({agent, ...options}) => withRuntimeEffect(config => runMcpInstall(config, agent, options)),
 ).pipe(Command.withDescription('Install the Threadnote MCP config, instructions, and skills for one supported agent'));
 
-const installHooks = Command.make(
-  'install-hooks',
-  {
-    agent: Argument.choice('agent', ['codex', 'claude', 'cursor', 'copilot']).pipe(
-      Argument.withDescription('codex, claude, cursor, or copilot'),
-    ),
-    apply: boolean('apply', 'Actually modify the selected agent config'),
-    dryRun: boolean('dry-run', 'Print the planned change without applying it'),
-    remove: boolean('remove', 'Remove threadnote-managed hook entries instead of adding them'),
-  },
-  ({agent, ...options}) => withRuntimeEffect(config => runHooksInstall(config, agent, options)),
-).pipe(Command.withDescription('Install deterministic agent lifecycle hooks'));
+const installHooks = makeInstallHooksCommand((agent, options) =>
+  withRuntimeEffect(config => runHooksInstall(config, agent, options)),
+);
+const cursorHook = makeCursorHookCommand((event, options) =>
+  withRuntimeEffect(config => runCursorHook(config, event, options)),
+);
 
 const preCompactHook = Command.make(
   'pre-compact-hook',
@@ -1938,6 +1934,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('mcp-install', mcpInstall, {productionLog: {mode: 'requires-apply'}}),
   registerTopLevelCommand('install-hooks', installHooks, {productionLog: {mode: 'requires-apply'}}),
   registerTopLevelCommand('pre-compact-hook', preCompactHook),
+  registerTopLevelCommand('cursor-hook', cursorHook),
   registerTopLevelCommand('session-start-hook', sessionStartHook),
   registerTopLevelCommand('remember', remember),
   registerTopLevelCommand('finalize-code-refs', finalizeCodeRefs),

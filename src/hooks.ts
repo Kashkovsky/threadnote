@@ -7,6 +7,7 @@ import {
   THREADNOTE_HOOK_MARKER,
   THREADNOTE_HOOK_MARKER_VALUE,
 } from './constants.js';
+import {runCursorHooksInstall} from './cursor_hooks.js';
 import {parseAgentClient} from './mcp/index.js';
 import {captureConsole} from './effect/console.js';
 import {SystemInfo} from './effect/system.js';
@@ -54,7 +55,7 @@ export function runHooksInstall(config: RuntimeConfig, agent: AgentClient, optio
         yield* printCodexHooksNotice(remove);
         return;
       case 'cursor':
-        yield* printNoHooksSupported('cursor', remove);
+        yield* runCursorHooksInstall(options);
         return;
       case 'copilot':
         yield* printNoHooksSupported('copilot', remove);
@@ -193,12 +194,18 @@ export const hasManagedClaudeHooks = Effect.fn('hooks.hasManagedClaudeHooks')(fu
   return false;
 });
 
-export function runPreCompactHook(config: RuntimeConfig, options: HookRunnerOptions = {}) {
+export function runPreCompactHook(
+  config: RuntimeConfig,
+  options: HookRunnerOptions & {readonly sourceAgentClient?: 'claude' | 'cursor'; readonly sessionId?: string} = {},
+) {
   // Hooks must never block compaction. Anything that throws here gets swallowed
   // and the process still exits 0 — the worst-case is a missed snapshot.
   return Effect.gen(function* () {
     const project = (yield* resolveRepoName()) ?? 'general';
-    const {sessionId, trace} = yield* captureTraceContext();
+    const sourceAgentClient = options.sourceAgentClient ?? 'claude';
+    // Cursor transcripts use a different format; keep its snapshot state-only.
+    const {sessionId, trace}: TraceContext =
+      sourceAgentClient === 'cursor' ? {sessionId: options.sessionId} : yield* captureTraceContext();
     yield* runHandoff(config, {
       blockers: '- none recorded',
       dryRun: options.dryRun === true,
@@ -206,8 +213,8 @@ export function runPreCompactHook(config: RuntimeConfig, options: HookRunnerOpti
         'Continue from this auto-snapshot. A manual `threadnote handoff` will produce a richer write-up if you have more context.',
       project,
       sessionId,
-      sourceAgentClient: 'claude',
-      task: 'Auto-snapshot captured at Claude PreCompact (deterministic safety net before context compaction).',
+      sourceAgentClient,
+      task: `Auto-snapshot captured at ${sourceAgentClient === 'cursor' ? 'Cursor preCompact' : 'Claude PreCompact'} (deterministic safety net before context compaction).`,
       tests: '- not recorded (auto-snapshot)',
       topic: HOOK_AUTO_PRECOMPACT_TOPIC,
       trace,
@@ -358,7 +365,7 @@ function scrubTrace(trace: string): string | undefined {
   return result.blocker ? undefined : result.cleaned;
 }
 
-const readHookPayload = Effect.fn('hooks.readPayload')(function* () {
+export const readHookPayload = Effect.fn('hooks.readPayload')(function* () {
   const system = yield* SystemInfo;
   if (system.stdinIsTTY) {
     return undefined;
@@ -376,7 +383,16 @@ const readHookPayload = Effect.fn('hooks.readPayload')(function* () {
     return undefined;
   }
   return {
-    sessionId: typeof parsed.session_id === 'string' ? parsed.session_id : undefined,
+    sessionId:
+      typeof parsed.session_id === 'string'
+        ? parsed.session_id
+        : typeof parsed.conversation_id === 'string'
+          ? parsed.conversation_id
+          : undefined,
+    workspaceRoots:
+      Array.isArray(parsed.workspace_roots) && parsed.workspace_roots.every(root => typeof root === 'string')
+        ? parsed.workspace_roots
+        : undefined,
     transcriptPath: typeof parsed.transcript_path === 'string' ? parsed.transcript_path : undefined,
   };
 });
