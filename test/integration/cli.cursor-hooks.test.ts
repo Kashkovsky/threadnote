@@ -20,7 +20,7 @@ it('runs the actual Cursor CLI protocol from a user-hook cwd, recalls the payloa
     // Prevent the hook's optional update banner from needing the network.
     await writeFile(
       join(home, '.update-state.json'),
-      JSON.stringify({version: 3, channel: 'stable', checkedAt: new Date().toISOString(), latestVersion: '0.0.0'}),
+      JSON.stringify({version: 3, channel: 'latest', checkedAt: new Date().toISOString(), latestVersion: '0.0.0'}),
     );
     const memoryRoot = join(home, 'data/local/user/local/memories/handoffs/active/cursor-hook-workspace');
     await mkdir(memoryRoot, {recursive: true});
