@@ -1,9 +1,14 @@
 import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
+import * as BunHttpServer from '@effect/platform-bun/BunHttpServer';
+import * as HttpServer from 'effect/unstable/http/HttpServer';
+import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
+import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {it} from 'vitest';
 import {Effect, FileSystem, Layer, Path, Schema} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
+import {TestClock} from 'effect/testing';
 import {readFile} from '../helpers/node-fs-promises.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {fileURLToPath} from '../helpers/node-url.js';
@@ -16,6 +21,7 @@ import {
   parseGraphShareFrontierManifest,
   signGraphShareFrontier,
   type GraphShareFrontierManifestV1,
+  type GraphShareFrontierPointerV1,
   type GraphShareSignatureEnvelopeV1,
 } from '../../src/code_graph/sharing/artifacts.js';
 import {putCasBytes, putCasFile} from '../../src/code_graph/sharing/cas.js';
@@ -27,7 +33,11 @@ import {
   selectPublishedAncestorManifest,
 } from '../../src/code_graph/sharing/client.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
-import {GraphSharingError} from '../../src/code_graph/sharing/errors.js';
+import {GraphSharingError, graphSharingFailure} from '../../src/code_graph/sharing/errors.js';
+import {
+  acceptGraphShareFrontier,
+  readAcceptedGraphShareFrontier,
+} from '../../src/code_graph/sharing/frontier_acceptance.js';
 import {
   graphSharingCasBlobPath,
   graphSharingLayout,
@@ -289,6 +299,47 @@ describe('graph share import and inspect source', () => {
     }).pipe(provideTestLayer(sharingLayer)),
   );
 
+  effectIt.effect('rejects a validly signed frontier for another branch before using prior provenance', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-branch-'});
+      const enrolled = yield* enrolledHome(home, {includeFrontier: true, skipCheckpoint: true});
+      yield* writeSharedGraphProvenance(home, CHECKOUT_ID, {
+        checkpointDigest: enrolled.checkpointDigest,
+        deltaCount: 0,
+        frontierCommit: enrolled.manifest.sourceCommit,
+        profileDigest: enrolled.profileDigest,
+        repositoryId: REPOSITORY_ID,
+        schemaVersion: 1,
+        snapshotId: enrolled.manifest.snapshotId,
+      });
+      const signed = yield* signGraphShareFrontier(enrolled.key, {
+        ...enrolled.manifest,
+        branch: 'refs/heads/unrelated',
+      });
+      const manifestDigest = yield* putCasBytes(
+        enrolled.casRoot,
+        new TextEncoder().encode(canonicalJson(signed.manifest)),
+      );
+      const envelopeDigest = yield* putCasBytes(
+        enrolled.casRoot,
+        new TextEncoder().encode(canonicalJson(signed.envelope)),
+      );
+      const pointer = path.join(
+        graphSharingLayout(path, home, enrolled.casRoot).frontiersRoot,
+        REPOSITORY_ID,
+        'latest.json',
+      );
+      yield* fs.writeFileString(pointer, JSON.stringify({envelopeDigest, manifestDigest, schemaVersion: 1}));
+      expect(yield* maybeImportSharedGraphBase(importRequest(enrolled.repo, home))).toEqual({
+        imported: false,
+        reason: 'quarantined',
+      });
+      expect((yield* readSharedGraphProvenance(home, CHECKOUT_ID))?.snapshotId).toBe(enrolled.manifest.snapshotId);
+    }).pipe(provideTestLayer(sharingLayer)),
+  );
+
   effectIt.effect('quarantines a mutated checkpoint blob and leaves prior provenance snapshot id unchanged', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -322,6 +373,172 @@ describe('graph share import and inspect source', () => {
         }),
       ).toBeUndefined();
     }).pipe(provideTestLayer(sharingLayer)),
+  );
+
+  effectIt.effect('seeds the legacy baseline before remote discovery and never publishes rejected candidates', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-frontier-upgrade-'});
+        const f = yield* enrolledHome(home, {includeFrontier: true, skipCheckpoint: true});
+        const store = (generation: number, branch = 'refs/heads/main') =>
+          Effect.gen(function* () {
+            const signed = yield* signGraphShareFrontier(f.key, {
+              ...f.manifest,
+              branch,
+              generation,
+              previousManifestDigest: f.manifestDigest,
+            });
+            return {
+              envelopeDigest: yield* putCasBytes(f.casRoot, new TextEncoder().encode(canonicalJson(signed.envelope))),
+              manifestDigest: yield* putCasBytes(f.casRoot, new TextEncoder().encode(canonicalJson(signed.manifest))),
+              schemaVersion: 1 as const,
+            };
+          });
+        const baseline = yield* store(10);
+        let remote: GraphShareFrontierPointerV1 = yield* store(5);
+        const pointerPath = path.join(
+          graphSharingLayout(path, home, f.casRoot).frontiersRoot,
+          REPOSITORY_ID,
+          'latest.json',
+        );
+        const legacy = JSON.stringify(baseline);
+        yield* fs.writeFileString(pointerPath, legacy);
+        const context = yield* Layer.build(BunHttpServer.layer({hostname: '127.0.0.1', port: 0}));
+        const server = yield* HttpServer.HttpServer.pipe(Effect.provide(context));
+        let remoteRequests = 0;
+        yield* server.serve(
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            remoteRequests += 1;
+            return request.url.startsWith('/v1/frontiers/')
+              ? HttpServerResponse.jsonUnsafe(remote)
+              : HttpServerResponse.empty({status: 404});
+          }),
+        );
+        if (server.address._tag !== 'TcpAddress') return yield* graphSharingFailure('Expected TCP fixture.');
+        yield* writeGraphShareTrustReceipt(home, {
+          ...trustReceiptFromEnrollment(f.enrollment, f.profile, f.profileDigest, 'read-only'),
+          client: {
+            casRoot: f.casRoot,
+            contributionMode: 'off',
+            coordinatorUrl: 'http://127.0.0.1:' + server.address.port,
+          },
+        });
+        yield* writeSharedGraphProvenance(home, CHECKOUT_ID, {
+          checkpointDigest: f.checkpointDigest,
+          deltaCount: 0,
+          frontierCommit: f.manifest.sourceCommit,
+          profileDigest: f.profileDigest,
+          repositoryId: REPOSITORY_ID,
+          schemaVersion: 1,
+          snapshotId: f.manifest.snapshotId,
+        });
+        const scope = {
+          branch: f.manifest.branch,
+          profileDigest: f.profileDigest,
+          repositoryId: REPOSITORY_ID,
+          publisherKeyFingerprint: f.key.fingerprint,
+        };
+        let failedCommit = false;
+        const failingOnce = {
+          ...fs,
+          rename: (from: string, to: string) => {
+            if (!failedCommit && to.startsWith(path.join(home, 'graph-sharing', 'accepted-frontiers'))) {
+              failedCommit = true;
+              return graphSharingFailure('Synthetic baseline persistence failure.');
+            }
+            return fs.rename(from, to);
+          },
+        };
+        expect(
+          yield* maybeImportSharedGraphBase(importRequest(f.repo, home)).pipe(
+            Effect.provideService(FileSystem.FileSystem, failingOnce),
+          ),
+        ).toEqual({imported: false, reason: 'quarantined'});
+        expect(failedCommit).toBe(true);
+        expect(remoteRequests).toBe(0);
+        expect(yield* readAcceptedGraphShareFrontier(home, scope)).toBeUndefined();
+        expect(yield* maybeImportSharedGraphBase(importRequest(f.repo, home))).toEqual({
+          imported: false,
+          reason: 'quarantined',
+        });
+        expect((yield* readAcceptedGraphShareFrontier(home, scope))?.generation).toBe(10);
+        expect(yield* fs.readFileString(pointerPath)).toBe(legacy);
+        yield* fs.remove(graphSharingCasBlobPath(path, f.casRoot, sha256HexFromDigest(baseline.manifestDigest)));
+        expect(yield* maybeImportSharedGraphBase(importRequest(f.repo, home))).toEqual({
+          imported: false,
+          reason: 'quarantined',
+        });
+        expect((yield* readAcceptedGraphShareFrontier(home, scope))?.generation).toBe(10);
+        remote = yield* store(11, 'refs/heads/other');
+        expect(yield* maybeImportSharedGraphBase(importRequest(f.repo, home))).toEqual({
+          imported: false,
+          reason: 'quarantined',
+        });
+        expect((yield* readAcceptedGraphShareFrontier(home, scope))?.generation).toBe(10);
+        remote = yield* store(12);
+        expect(yield* maybeImportSharedGraphBase(importRequest(f.repo, home))).toMatchObject({
+          imported: false,
+          reason: 'already-installed',
+          atGeneration: 12,
+        });
+        expect((yield* readAcceptedGraphShareFrontier(home, scope))?.generation).toBe(12);
+        expect(yield* fs.readFileString(pointerPath)).toBe(legacy);
+      }).pipe(provideTestLayer(sharingLayer)),
+    ),
+  );
+
+  effectIt.effect('reports accepted discovery ahead of legacy metadata and independently of last import', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-frontier-status-'});
+        const repo = path.join(home, 'repository');
+        yield* fs.makeDirectory(repo);
+        yield* git(repo, ['init', '-q', '--initial-branch=main']);
+        yield* git(repo, ['remote', 'add', 'origin', 'https://github.com/acme/graph-share.git']);
+        const identity = yield* resolveRepositoryIdentity(repo);
+        const f = yield* enrolledHome(home, {includeFrontier: true, repositoryId: identity.repositoryId});
+        const pointerPath = path.join(
+          graphSharingLayout(path, home, f.casRoot).frontiersRoot,
+          identity.repositoryId,
+          'latest.json',
+        );
+        const status = () => runGraphShareStatus(runtimeConfig(home), {cwd: repo, json: true});
+        const legacy = JSON.parse(yield* fs.readFileString(pointerPath));
+        expect((yield* status()).frontier).toEqual(legacy);
+        const signed = yield* signGraphShareFrontier(f.key, {
+          ...f.manifest,
+          generation: 12,
+          previousManifestDigest: f.manifestDigest,
+        });
+        const next = {
+          envelopeDigest: yield* putCasBytes(f.casRoot, new TextEncoder().encode(canonicalJson(signed.envelope))),
+          manifestDigest: yield* putCasBytes(f.casRoot, new TextEncoder().encode(canonicalJson(signed.manifest))),
+          schemaVersion: 1 as const,
+        };
+        yield* acceptGraphShareFrontier({
+          casRoot: f.casRoot,
+          home,
+          pointer: next,
+          scope: {
+            branch: f.manifest.branch,
+            profileDigest: f.profileDigest,
+            publisherKeyFingerprint: f.key.fingerprint,
+            repositoryId: identity.repositoryId,
+          },
+        });
+        yield* writeSharedGraphImportAttempt(home, identity.checkoutId, {imported: false, reason: 'unavailable'});
+        expect(yield* status()).toMatchObject({frontier: next, lastImport: {imported: false, reason: 'unavailable'}});
+        yield* fs.writeFileString(pointerPath, '{invalid legacy');
+        expect((yield* status()).frontier).toEqual(next);
+        yield* fs.remove(pointerPath);
+        expect((yield* status()).frontier).toEqual(next);
+      }).pipe(provideTestLayer(sharingLayer)),
+    ),
   );
 
   effectIt.effect('walks signed predecessor frontiers until HEAD is an ancestor', () =>
@@ -587,12 +804,18 @@ function identity(repo: string): RepositoryIdentity {
 
 const enrolledHome = Effect.fn('test.graphShare.enrolledHome')(function* (
   home: string,
-  options: {readonly includeFrontier: boolean; readonly skipCheckpoint?: boolean; readonly snapshotId?: string},
+  options: {
+    readonly includeFrontier: boolean;
+    readonly skipCheckpoint?: boolean;
+    readonly snapshotId?: string;
+    readonly repositoryId?: string;
+  },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repo = path.join(home, 'repository');
   const casRoot = path.join(home, 'cas');
+  const repositoryId = options.repositoryId ?? REPOSITORY_ID;
   yield* fs.makeDirectory(path.join(repo, '.threadnote'), {recursive: true});
   yield* writeGraphShareClientState(home, casRoot);
   const key = yield* generateGraphSharePublisherKey();
@@ -601,14 +824,14 @@ const enrolledHome = Effect.fn('test.graphShare.enrolledHome')(function* (
     canonicalRemote: 'github.com/acme/graph-share',
     organization: 'acme',
     publisherKeyFingerprint: key.fingerprint,
-    repositoryId: REPOSITORY_ID,
+    repositoryId,
   });
   const profileDigest = graphShareProfileDigest(profile);
   yield* putCasBytes(casRoot, new TextEncoder().encode(canonicalJson(profile)));
   const enrollment = parseGraphShareEnrollment({
     profile: casProfilePointer(profileDigest),
     publisherKeyFingerprint: key.fingerprint,
-    repositoryId: REPOSITORY_ID,
+    repositoryId,
     schemaVersion: 1,
   });
   yield* fs.writeFileString(path.join(repo, '.threadnote/graph-share.json'), `${JSON.stringify(enrollment)}\n`);
@@ -630,7 +853,7 @@ const enrolledHome = Effect.fn('test.graphShare.enrolledHome')(function* (
     previousManifestDigest: null,
     profileDigest,
     publisherFence: 1,
-    repositoryId: REPOSITORY_ID,
+    repositoryId,
     schemaVersion: 1,
     snapshotId,
     sourceCommit: 'a'.repeat(40),
@@ -640,9 +863,9 @@ const enrolledHome = Effect.fn('test.graphShare.enrolledHome')(function* (
   const envelopeDigest = yield* putCasBytes(casRoot, new TextEncoder().encode(canonicalJson(signed.envelope)));
   if (options.includeFrontier) {
     const layout = graphSharingLayout(path, home, casRoot);
-    yield* fs.makeDirectory(path.join(layout.frontiersRoot, REPOSITORY_ID), {recursive: true});
+    yield* fs.makeDirectory(path.join(layout.frontiersRoot, repositoryId), {recursive: true});
     yield* fs.writeFileString(
-      path.join(layout.frontiersRoot, REPOSITORY_ID, 'latest.json'),
+      path.join(layout.frontiersRoot, repositoryId, 'latest.json'),
       `${JSON.stringify({envelopeDigest, manifestDigest, schemaVersion: 1})}\n`,
     );
     if (!options.skipCheckpoint) yield* putCasBytes(casRoot, CHECKPOINT_BYTES);
@@ -653,6 +876,7 @@ const enrolledHome = Effect.fn('test.graphShare.enrolledHome')(function* (
     enrollment,
     envelope: signed.envelope,
     key,
+    manifest,
     manifestDigest,
     profile,
     profileDigest,
