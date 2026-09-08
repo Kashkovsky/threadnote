@@ -22,6 +22,7 @@ import {
   contextBriefCitationScaleReleaseIdentityFailures,
   evaluateContextBriefCitationScaleProfile,
   type ContextBriefCitationScaleBudgetV1,
+  type ContextBriefCitationScaleCandidateBinding,
   type ContextBriefCitationScaleCountersV1,
   type ContextBriefCitationScaleMeasuredObservationV2,
   type ContextBriefCitationScaleMemoryObservationV2,
@@ -42,6 +43,7 @@ export interface ContextBriefCitationScaleRunOptions {
   readonly memoryCandidates: number;
   readonly profileIds: readonly ContextBriefCitationScaleProfileId[];
   readonly releaseCandidateCommit?: string;
+  readonly releaseCandidateBinding?: ContextBriefCitationScaleCandidateBinding;
   readonly startRssObserver: Effect.Effect<
     ContextBriefCitationScaleRssObserver,
     Error,
@@ -312,10 +314,10 @@ export const evaluateContextBriefCitationScale = Effect.fn('evaluation.contextBr
   };
   if (options.invocationMode === 'release-scale') {
     failures.push(
-      ...contextBriefCitationScaleReleaseIdentityFailures({
-        ...environment,
-        candidateCommit: options.releaseCandidateCommit ?? '',
-      }),
+      ...contextBriefCitationScaleReleaseIdentityFailures(
+        {...environment, candidateCommit: options.releaseCandidateCommit ?? ''},
+        options.releaseCandidateBinding,
+      ),
     );
     if (
       rssEvidence.source !== 'darwin-ps' ||
