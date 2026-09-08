@@ -3142,9 +3142,9 @@ describe('Threadnote MCP toolsets', () => {
               }
             | undefined;
           expect(firstStructured).toMatchObject({
+            freshness: 'deferred',
             nodes: expect.arrayContaining([expect.objectContaining({name: repositoryFixture.before})]),
           });
-          expect(['current', 'deferred']).toContain(firstStructured?.freshness);
           expect(typeof firstStructured?.snapshot?.id).toBe('string');
 
           const branch = `${repositoryFixture.name}-linked`;
@@ -3164,7 +3164,7 @@ describe('Threadnote MCP toolsets', () => {
           expect(Date.now() - attachedStartedAt).toBeLessThan(5_000);
           expect(attached.isError).not.toBe(true);
           expect(attached.structuredContent).toMatchObject({
-            freshness: 'current',
+            freshness: 'deferred',
             nodes: expect.arrayContaining([expect.objectContaining({name: repositoryFixture.before})]),
             snapshot: {id: firstStructured?.snapshot?.id},
           });
