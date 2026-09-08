@@ -1,3 +1,4 @@
+import {hasManagedCursorHooks} from './cursor_hooks.js';
 import {Console, Effect, FileSystem, Path, Result, Schema} from 'effect';
 import {
   agentIntegrationDoctorChecks,
@@ -672,6 +673,9 @@ const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(
   yield* removeMcpSnippets(config, dryRun);
   if (yield* hasManagedClaudeHooks()) {
     yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true});
+  }
+  if (yield* hasManagedCursorHooks()) {
+    yield* runHooksInstall(config, 'cursor', {apply: !dryRun, dryRun, remove: true});
   }
   yield* removeCommandShim(dryRun);
   yield* removeAgentIntegrationsInTransaction(config, dryRun);
