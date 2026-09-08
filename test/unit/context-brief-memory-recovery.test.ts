@@ -1,8 +1,10 @@
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Result} from 'effect';
 import {TestClock} from 'effect/testing';
+import fc from 'fast-check';
 import {beforeEach, describe, expect, vi} from 'vitest';
 import type {MemoryCodeCitationV1} from '../../src/memory/code_citation.js';
+import type {DeferredCodeAnchorRouteFinalizationReceiptV1} from '../../src/memory/deferred_code_anchor.js';
 import type {MemoryRecord} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import type {ContextBriefPlanV1} from '../../src/context_brief/types.js';
@@ -70,14 +72,153 @@ describe('Context Brief code-linked memory recovery', () => {
     mocks.loadRecallMemoryIdentities.mockReturnValue(Effect.succeed([]));
     mocks.readMemoryRecordsByUri.mockReturnValue(Effect.succeed([]));
     mocks.resolveRepositoryIdentity.mockReturnValue(
-      Effect.fail(TestError.make({message: 'identity intentionally unavailable'})),
+      Effect.succeed({repositoryId: 'a'.repeat(64), worktreeId: 'b'.repeat(64)}),
     );
     mocks.expireRecallIndexValidation.mockReturnValue(Effect.void);
-    mocks.finalizeDeferredCodeAnchorsForRoute.mockReturnValue(Effect.void);
+    mocks.finalizeDeferredCodeAnchorsForRoute.mockReturnValue(Effect.succeed(finalizationReceipt('completed', 0)));
     mocks.withCodeAnchorFinalizationAnonymousTelemetry.mockImplementation(
       (_route: string, effect: Effect.Effect<unknown, unknown, unknown>) => effect,
     );
   });
+
+  effectIt.effect.prop(
+    'bounds contention recovery to two passes and four admissions while retaining unavailable evidence',
+    {
+      completedBeforeInterruption: fc.integer({min: 0, max: 4}),
+      interruptedAdmission: fc.boolean(),
+      stillContended: fc.boolean(),
+    },
+    ({completedBeforeInterruption, interruptedAdmission, stillContended}) =>
+      Effect.gen(function* () {
+        mocks.resolveRepositoryIdentity.mockReturnValue(
+          Effect.succeed({repositoryId: 'a'.repeat(64), worktreeId: 'b'.repeat(64)}),
+        );
+        const limits: number[] = [];
+        let totalAdmissions = 0;
+        const firstAdmissions = Math.min(4, completedBeforeInterruption + Number(interruptedAdmission));
+        mocks.finalizeDeferredCodeAnchorsForRoute.mockImplementation(
+          (
+            _config: RuntimeConfig,
+            _route: unknown,
+            options: {readonly limit: number; readonly onAttemptedUri: (uri: string) => void},
+          ) =>
+            Effect.sync(() => {
+              limits.push(options.limit);
+              const admissions = limits.length === 1 ? firstAdmissions : options.limit;
+              for (let index = 0; index < admissions; index++) {
+                options.onAttemptedUri(MEMORY_URI);
+                totalAdmissions++;
+              }
+              return limits.length === 1
+                ? finalizationReceipt('contended', completedBeforeInterruption)
+                : finalizationReceipt(stillContended ? 'contended' : 'completed', admissions - Number(stillContended));
+            }),
+        );
+        const receipts: DeferredCodeAnchorRouteFinalizationReceiptV1[] = [];
+        const result = yield* contextBriefRecoveryTestEffect(
+          retrieveContextBriefCodeLinkedMemoryEvidence(CONFIG, codeAnchorPlan(['src/first.ts']), {
+            onFinalizationReceipt: receipt => {
+              receipts.push(receipt);
+            },
+          }),
+        );
+        expect(limits).toEqual(firstAdmissions < 4 ? [4, 4 - firstAdmissions] : [4]);
+        expect(totalAdmissions).toBeLessThanOrEqual(4);
+        expect(receipts.reduce((count, receipt) => count + receipt.scannedCount, 0)).toBeLessThanOrEqual(4);
+        expect(result.codeAnchorCoverage).toMatchObject({requested: 1, resolved: 1});
+        expect(result.gaps.includes('code-anchor-recall-unavailable')).toBe(firstAdmissions === 4 || stillContended);
+        expect(mocks.loadRecallCodeLinks).toHaveBeenLastCalledWith(
+          CONFIG,
+          expect.objectContaining({
+            forceRefresh: true,
+          }),
+        );
+      }),
+    {fastCheck: {numRuns: 20}},
+  );
+
+  effectIt.effect('does not retry pending graph readiness or a failed finalization and preserves recall', () =>
+    Effect.gen(function* () {
+      mocks.resolveRepositoryIdentity.mockReturnValue(
+        Effect.succeed({repositoryId: 'a'.repeat(64), worktreeId: 'b'.repeat(64)}),
+      );
+      for (const field of ['pendingCount', 'failedCount'] as const) {
+        let passes = 0;
+        mocks.finalizeDeferredCodeAnchorsForRoute.mockImplementation(() =>
+          Effect.sync(() => {
+            passes++;
+            return {...finalizationReceipt('contended', 0), [field]: 1, scannedCount: 1};
+          }),
+        );
+        const result = yield* contextBriefRecoveryTestEffect(
+          retrieveContextBriefCodeLinkedMemoryEvidence(CONFIG, codeAnchorPlan(['src/first.ts'])),
+        );
+        expect(passes).toBe(1);
+        expect(result.gaps).toContain('code-anchor-recall-unavailable');
+        expect(mocks.loadRecallCodeLinks).toHaveBeenLastCalledWith(
+          CONFIG,
+          expect.objectContaining({forceRefresh: true}),
+        );
+      }
+      mocks.finalizeDeferredCodeAnchorsForRoute.mockReturnValue(Effect.die('finalizer unavailable'));
+      const failed = yield* contextBriefRecoveryTestEffect(
+        retrieveContextBriefCodeLinkedMemoryEvidence(CONFIG, codeAnchorPlan(['src/first.ts'])),
+      );
+      expect(failed.gaps).toContain('code-anchor-recall-unavailable');
+    }),
+  );
+
+  effectIt.effect(
+    'retains existing backlinks when deferred recovery fails and never presents unknown absence as empty',
+    () =>
+      Effect.gen(function* () {
+        mocks.resolveRepositoryIdentity.mockReturnValue(
+          Effect.succeed({repositoryId: 'a'.repeat(64), worktreeId: 'b'.repeat(64)}),
+        );
+        mocks.finalizeDeferredCodeAnchorsForRoute.mockReturnValue(Effect.succeed(finalizationReceipt('failed', 0)));
+        const citation = codeCitation('src/first.ts');
+        mocks.loadRecallCodeLinks.mockReturnValue(
+          Effect.succeed([{anchorOrdinal: 0, citationId: citation.id, matchKind: 'file-path', uri: MEMORY_URI}]),
+        );
+        mocks.readMemoryRecordsByUri.mockReturnValue(Effect.succeed([memoryRecord(citation)]));
+        const result = yield* contextBriefRecoveryTestEffect(
+          retrieveContextBriefCodeLinkedMemoryEvidence(CONFIG, codeAnchorPlan(['src/first.ts'])),
+        );
+        expect(result.candidates.map(candidate => candidate.uri)).toEqual([MEMORY_URI]);
+        expect(result.gaps).toContain('code-anchor-recall-unavailable');
+        expect(result.gaps).not.toContain('code-anchor-recall-no-active-memory');
+        mocks.loadRecallCodeLinks.mockReturnValue(Effect.succeed([]));
+        mocks.readMemoryRecordsByUri.mockReturnValue(Effect.succeed([]));
+        const empty = yield* contextBriefRecoveryTestEffect(
+          retrieveContextBriefCodeLinkedMemoryEvidence(CONFIG, codeAnchorPlan(['src/first.ts'])),
+        );
+        expect(empty.gaps).toEqual(['code-anchor-recall-unavailable']);
+      }),
+  );
+
+  effectIt.effect('reports unavailable recovery when repository identity cannot be observed after anchor capture', () =>
+    Effect.gen(function* () {
+      mocks.resolveRepositoryIdentity.mockReturnValue(Effect.fail(TestError.make({message: 'identity unavailable'})));
+      const citation = codeCitation('src/first.ts');
+      mocks.loadRecallCodeLinks.mockReturnValue(
+        Effect.succeed([{anchorOrdinal: 0, citationId: citation.id, matchKind: 'file-path', uri: MEMORY_URI}]),
+      );
+      mocks.readMemoryRecordsByUri.mockReturnValue(Effect.succeed([memoryRecord(citation)]));
+      const result = yield* contextBriefRecoveryTestEffect(
+        retrieveContextBriefCodeLinkedMemoryEvidence(CONFIG, codeAnchorPlan(['src/first.ts'])),
+      );
+      expect(result.codeAnchorCoverage).toMatchObject({requested: 1, resolved: 1, matchedMemories: 1});
+      expect(result.candidates.map(candidate => candidate.uri)).toEqual([MEMORY_URI]);
+      expect(result.gaps).toContain('code-anchor-recall-unavailable');
+      expect(mocks.finalizeDeferredCodeAnchorsForRoute).not.toHaveBeenCalled();
+      mocks.loadRecallCodeLinks.mockReturnValue(Effect.succeed([]));
+      mocks.readMemoryRecordsByUri.mockReturnValue(Effect.succeed([]));
+      const empty = yield* contextBriefRecoveryTestEffect(
+        retrieveContextBriefCodeLinkedMemoryEvidence(CONFIG, codeAnchorPlan(['src/first.ts'])),
+      );
+      expect(empty.gaps).toEqual(['code-anchor-recall-unavailable']);
+    }),
+  );
 
   effectIt.effect('preserves resolved anchor ordinals when canonical memory reads fail after capture', () =>
     Effect.gen(function* () {
@@ -303,4 +444,21 @@ function contextBriefRecoveryTestEffect<A, E>(effect: Effect.Effect<A, E, unknow
   // Every required boundary is replaced above with an Effect that requires no services.
   // oxlint-disable-next-line effecttsgo/unsafe-effect-type-assertion -- fully mocked focused unit boundary
   return effect as Effect.Effect<A, E>;
+}
+
+function finalizationReceipt(
+  state: DeferredCodeAnchorRouteFinalizationReceiptV1['state'],
+  finalizedCount: number,
+): DeferredCodeAnchorRouteFinalizationReceiptV1 {
+  return {
+    conflictCount: 0,
+    failedCount: 0,
+    finalizedCount,
+    matchedCount: state === 'contended' ? finalizedCount + 1 : finalizedCount,
+    pendingCount: 0,
+    scannedCount: finalizedCount,
+    state,
+    type: 'threadnote-deferred-code-anchor-route-finalization',
+    version: 1,
+  };
 }
