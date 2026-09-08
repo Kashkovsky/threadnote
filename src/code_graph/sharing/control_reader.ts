@@ -1,6 +1,7 @@
 import {Clock, Console, Effect, Path, Semaphore} from 'effect';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
+import {fromPromiseInterruptible} from '../../effect/errors.js';
 import {
   createRemoteAccessTokenVerifier,
   parseBearerAccessToken,
@@ -102,10 +103,10 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
           protocolVersions: ['v1'],
           controlMode: 'authenticated-read-only',
         });
-      const principal = yield* Effect.tryPromise({
-        try: () => verify(parseBearerAccessToken(request.headers.authorization)),
-        catch: () => graphSharingFailure('Graph control authentication failed.'),
-      }).pipe(Effect.option);
+      const principal = yield* fromPromiseInterruptible(
+        () => verify(parseBearerAccessToken(request.headers.authorization)),
+        () => graphSharingFailure('Graph control authentication failed.'),
+      ).pipe(Effect.option);
       if (principal._tag === 'None') return reply(401, {error: 'unauthorized'});
       principalId = sha256Digest(JSON.stringify([principal.value.issuer, principal.value.subject]));
       const authorized = Effect.gen(function* () {
