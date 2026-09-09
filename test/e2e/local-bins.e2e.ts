@@ -202,10 +202,8 @@ describe('built self-contained distribution', () => {
       String(coldGraphReadTimeoutMs),
     ]);
     expect(firstQuery).toContain('Scanning repository source from Git.');
-    expect(firstQuery).toMatch(
-      /Scanning · \d+\/\d+ eligible files · \d+ accepted · \d+ content skipped · \d+ excluded/,
-    );
-    expect(firstQuery).toMatch(/Materializing · \d+\/\d+ files · \d+ reused/);
+    expect(firstQuery).toMatch(/Scanning · \d+\/\d+ \(\d+%\) files/);
+    expect(firstQuery).toMatch(/Materializing · \d+\/\d+ \(\d+%\) files/);
     expect(firstQuery).toContain('Code graph: code-graph-repository');
     expect(firstQuery).toContain('withExclusiveFileLock');
 

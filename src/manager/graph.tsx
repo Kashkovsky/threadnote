@@ -19,6 +19,7 @@ export {
   graphDiagnosticsRequiresCatalogRefresh,
   graphDisplayEdges,
   graphLocalAssociationText,
+  graphMaintenanceRemainingMilliseconds,
   graphMaintenanceStatusLabel,
   mergeGraphCatalogStatus,
   graphNodeDetailRequestIsCurrent,

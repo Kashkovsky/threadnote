@@ -42,8 +42,8 @@ import {codeGraphAnonymousTelemetryComponent, emitCodeGraphBackgroundFailure} fr
 import {anonymousTelemetryDiagnosticFromError} from '../telemetry/diagnostic.js';
 
 export const CODE_GRAPH_MAINTENANCE_PENDING_DATABASE_LIMIT = 128;
-export const CODE_GRAPH_MAINTENANCE_AUTOMATIC_TAIL_MILLISECONDS = 250;
-export const CODE_GRAPH_MAINTENANCE_AUTOMATIC_TAIL_UNITS = 8;
+export const CODE_GRAPH_MAINTENANCE_AUTOMATIC_TAIL_MILLISECONDS = 2_000;
+export const CODE_GRAPH_MAINTENANCE_AUTOMATIC_TAIL_UNITS = 16;
 export const CODE_GRAPH_MAINTENANCE_LANES = ['residual', 'reconciliation', 'ordinary'] as const;
 
 export type CodeGraphMaintenanceLane = (typeof CODE_GRAPH_MAINTENANCE_LANES)[number];

@@ -1,10 +1,16 @@
 import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
-import {startProgress} from '../cli_ui.js';
+import {startProgress, withProgressLine} from '../cli_ui.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {SystemInfo} from '../effect/system.js';
 import {healAnchorsAfterGraphIndex, healAnchorsAfterWorksetPrepare} from '../memory/deferred_code_anchor_recovery.js';
 import type {RuntimeConfig} from '../types.js';
-import {CodeGraphIndexer, materializationStorageShortfalls} from './indexer.js';
+import {CodeGraphIndexer} from './indexer.js';
+import {
+  formatCodeGraphCompactProgressLine,
+  formatCodeGraphPurgeProgressLine,
+  formatCodeGraphRepairProgressLine,
+  makeCodeGraphHumanProgressReporter,
+} from './cli_progress.js';
 import {makeCodeGraphJsonProgressReporter} from './json_progress.js';
 import {codeGraphLayout} from './layout.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
@@ -14,7 +20,6 @@ import {
   purgeAllCodeGraphIndexes,
   purgeCodeGraphIndex,
   purgeObsoleteCodeGraphStores,
-  type CodeGraphMaintenanceProgress,
   type CodeGraphRepairCompletion,
   type ObsoleteCodeGraphStoreInventory,
 } from './maintenance.js';
@@ -22,11 +27,11 @@ import {CodeGraphQueryService, observationFromCodeGraphStatus, renderCodeGraphRe
 import {repositoryChangesSince, repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore} from './store.js';
 import type {
+  CodeGraphOverlayFallbackAssessment,
+  CodeGraphOverlayFallbackBoundary,
   CodeGraphProgress,
   CodeGraphQueryOptions,
   CodeGraphStatus,
-  CodeGraphOverlayFallbackBoundary,
-  CodeGraphOverlayFallbackAssessment,
   RepositoryIdentityExpectation,
 } from './types.js';
 import {CodeGraphWatcher} from './watcher.js';
@@ -70,6 +75,7 @@ import {
   type CodeGraphCliReadPlan,
 } from './cli_freshness.js';
 import {exportCodeGraph, type CodeGraphExportFormat, type CodeGraphExportLimit} from './export.js';
+import {materializationStorageShortfalls} from './indexer_materialization.js';
 import {readCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
 import {resolveCodeGraphStatusOptions, serializeCodeGraphStatusV5} from './status_projection.js';
@@ -212,15 +218,25 @@ export const runCodeGraphRepair = Effect.fn('codeGraph.command.repair')(function
     ? undefined
     : (options.checkoutId ?? (yield* resolveRepositoryIdentity(yield* commandCwd(options.cwd))).checkoutId);
   let completion: CodeGraphRepairCompletion | undefined;
-  const summary = yield* repairCodeGraphIndexes(
-    config.agentContextHome,
-    options.dryRun === true,
-    options.json
-      ? undefined
-      : progress => Console.log(codeGraphRepairProgressMessage(progress, options.dryRun === true)),
-    result => Effect.sync(() => void (completion = result)),
-    {migrateSchema: true, mode: options.deep ? 'deep' : 'quick', targetCheckoutId},
-  );
+  const summary = options.json
+    ? yield* repairCodeGraphIndexes(
+        config.agentContextHome,
+        options.dryRun === true,
+        undefined,
+        result => Effect.sync(() => void (completion = result)),
+        {migrateSchema: true, mode: options.deep ? 'deep' : 'quick', targetCheckoutId},
+      )
+    : yield* withProgressLine(
+        formatCodeGraphRepairProgressLine({current: 0, phase: 'checking', total: 1}, options.dryRun === true),
+        update =>
+          repairCodeGraphIndexes(
+            config.agentContextHome,
+            options.dryRun === true,
+            progress => update(formatCodeGraphRepairProgressLine(progress, options.dryRun === true)),
+            result => Effect.sync(() => void (completion = result)),
+            {migrateSchema: true, mode: options.deep ? 'deep' : 'quick', targetCheckoutId},
+          ),
+      );
   if (options.json) {
     yield* writeFinalCliOutput(
       JSON.stringify({
@@ -264,30 +280,6 @@ export const runCodeGraphDiagnostics = Effect.fn('codeGraph.command.diagnostics'
   });
   yield* writeFinalCliOutput(options.json ? JSON.stringify(report) : renderCodeGraphDiagnostics(report).trimEnd());
 });
-
-function codeGraphRepairProgressMessage(progress: CodeGraphMaintenanceProgress, dryRun: boolean): string {
-  const database = `native code graph database ${progress.current}/${progress.total}`;
-  switch (progress.phase) {
-    case 'checking':
-      return `Checking ${database}.`;
-    case 'migrating-schema':
-      return `${dryRun ? 'Would migrate' : 'Migrating'} the persistent schema for ${database}.`;
-    case 'cleaning-snapshots':
-      return `${dryRun ? 'Would clean' : 'Cleaning'} ${progress.snapshots ?? 0} incomplete snapshot(s) from ${database}.`;
-    case 'cleaning-vectors':
-      return `Checking temporary graph state for ${database}.`;
-    case 'discarding':
-      return `${dryRun ? 'Would discard' : 'Discarding'} unreadable derived ${database}.`;
-    case 'deferred':
-      if (progress.reason === 'active-build') {
-        return `Deferred ${database}: an active graph build owns the checkout.`;
-      }
-      if (progress.reason === 'schema-upgrade-on-use') {
-        return `Deferred ${database}: ready snapshots remain usable while background schema migration retries.`;
-      }
-      return `Deferred ${database}: rerun with --deep when a full derived-store check is convenient.`;
-  }
-}
 
 interface CodeGraphExportTemporaryIdentity {
   readonly birthtimeMilliseconds: number;
@@ -763,29 +755,25 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
     return;
   }
   yield* Console.log(`Indexing code graph: ${identity.displayName}`);
-  const summary = yield* Effect.acquireUseRelease(
-    startProgress('Scanning repository source from Git.'),
-    progress =>
-      indexer
-        .index({
-          cwd,
-          ...(ensureVectors === false ? {ensureVectors: false} : {}),
-          ...(options.expectedIdentity ? {expectedIdentity: options.expectedIdentity} : {}),
-          force: options.full,
-          onProgress: state => progress.update(progressMessage(state)).pipe(Effect.ignore),
-          threadnoteHome: config.agentContextHome,
-        })
-        .pipe(
-          Effect.tap(summary =>
-            progress
-              .update(
-                `Ready · ${summary.snapshot.fileCount} files · ${summary.snapshot.symbolCount} symbols · ` +
-                  `${summary.snapshot.edgeCount} edges`,
-              )
-              .pipe(Effect.ignore),
+  const formatProgress = yield* makeCodeGraphHumanProgressReporter();
+  const summary = yield* withProgressLine('Scanning repository source from Git.', update =>
+    indexer
+      .index({
+        cwd,
+        ...(ensureVectors === false ? {ensureVectors: false} : {}),
+        ...(options.expectedIdentity ? {expectedIdentity: options.expectedIdentity} : {}),
+        force: options.full,
+        onProgress: state => formatProgress(state).pipe(Effect.flatMap(update)),
+        threadnoteHome: config.agentContextHome,
+      })
+      .pipe(
+        Effect.tap(summary =>
+          update(
+            `Ready · ${summary.snapshot.fileCount} files · ${summary.snapshot.symbolCount} symbols · ` +
+              `${summary.snapshot.edgeCount} edges`,
           ),
         ),
-    progress => progress.stop.pipe(Effect.ignore),
+      ),
   );
   yield* healAnchorsAfterGraphIndex(config, cwd, summary.identity);
   yield* Console.log(
@@ -1121,13 +1109,12 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
       threadnoteHome: config.agentContextHome,
     });
   const reportProgress = effectiveOptions.json ? yield* makeCodeGraphJsonProgressReporter() : undefined;
+  const formatProgress = effectiveOptions.json ? undefined : yield* makeCodeGraphHumanProgressReporter();
   const read = effectiveOptions.json
     ? inspect(reportProgress)
     : readPlan.refresh
-      ? Effect.acquireUseRelease(
-          startProgress('Scanning repository source from Git.'),
-          progress => inspect(state => progress.update(progressMessage(state)).pipe(Effect.ignore)),
-          progress => progress.stop.pipe(Effect.ignore),
+      ? withProgressLine('Scanning repository source from Git.', update =>
+          inspect(state => formatProgress!(state).pipe(Effect.flatMap(update))),
         )
       : inspect();
   const readTimeoutMilliseconds = options.readTimeoutMilliseconds ?? CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS;
@@ -1273,16 +1260,25 @@ export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* 
     if (options.obsolete || options.all || options.dryRun) {
       return yield* CodeGraphCommandError.make({message: 'Use --snapshot-id without --all, --obsolete, or --dry-run.'});
     }
+    const snapshotId = options.snapshotId;
     let checkoutId = options.checkoutId;
     if (checkoutId === undefined) {
       const cwd = yield* commandCwd(options.cwd);
       checkoutId = (yield* resolveRepositoryIdentity(cwd)).checkoutId;
     }
-    const result = yield* purgeCodeGraphSnapshot(
-      config.agentContextHome,
-      {checkoutId, snapshotId: options.snapshotId},
-      {apply: options.apply === true, approvalDigest: options.approval},
-    );
+    const result = options.json
+      ? yield* purgeCodeGraphSnapshot(
+          config.agentContextHome,
+          {checkoutId, snapshotId},
+          {apply: options.apply === true, approvalDigest: options.approval},
+        )
+      : yield* withProgressLine(formatCodeGraphPurgeProgressLine({phase: 'acquiring-gates'}), () =>
+          purgeCodeGraphSnapshot(
+            config.agentContextHome,
+            {checkoutId, snapshotId},
+            {apply: options.apply === true, approvalDigest: options.approval},
+          ),
+        );
     yield* writeFinalCliOutput(
       options.json ? serializeCodeGraphSnapshotPurgeResult(result) : renderCodeGraphSnapshotPurgeResult(result),
     );
@@ -1299,9 +1295,15 @@ export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* 
       const cwd = yield* commandCwd(options.cwd);
       checkoutId = (yield* resolveRepositoryIdentity(cwd)).checkoutId;
     }
-    const summary = yield* purgeObsoleteCodeGraphStores(config.agentContextHome, checkoutId, {
-      dryRun: options.dryRun === true,
-    });
+    const targetCheckoutId = checkoutId;
+    const summary = yield* withProgressLine(
+      formatCodeGraphPurgeProgressLine({dryRun: options.dryRun === true, phase: 'acquiring-gates'}),
+      update =>
+        purgeObsoleteCodeGraphStores(config.agentContextHome, targetCheckoutId, {
+          dryRun: options.dryRun === true,
+          onProgress: progress => update(formatCodeGraphPurgeProgressLine(progress)),
+        }),
+    );
     const action = options.dryRun ? 'Would remove' : 'Removed';
     yield* Console.log(
       `${action} ${summary.fileCount} verified obsolete code graph file(s), ${summary.bytes} byte(s), ` +
@@ -1317,15 +1319,23 @@ export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* 
       yield* Console.log(`Would remove derived code graph indexes: ${root}`);
       return;
     }
-    const removed = yield* purgeAllCodeGraphIndexes(config.agentContextHome);
+    const removed = yield* withProgressLine(formatCodeGraphPurgeProgressLine({phase: 'acquiring-gates'}), update =>
+      purgeAllCodeGraphIndexes(config.agentContextHome, progress => update(formatCodeGraphPurgeProgressLine(progress))),
+    );
     yield* Console.log(`Removed derived code graph indexes: ${removed}`);
     return;
   }
   if (options.checkoutId !== undefined) {
-    const summary = yield* purgeCodeGraphIndex(config.agentContextHome, options.checkoutId, {
-      dryRun: options.dryRun === true,
-      waitTimeoutMilliseconds: options.waitTimeoutMilliseconds,
-    });
+    const checkoutId = options.checkoutId;
+    const summary = yield* withProgressLine(
+      formatCodeGraphPurgeProgressLine({dryRun: options.dryRun === true, phase: 'acquiring-gates'}),
+      update =>
+        purgeCodeGraphIndex(config.agentContextHome, checkoutId, {
+          dryRun: options.dryRun === true,
+          onProgress: progress => update(formatCodeGraphPurgeProgressLine(progress)),
+          waitTimeoutMilliseconds: options.waitTimeoutMilliseconds,
+        }),
+    );
     if (!summary.existed) {
       yield* Console.log(`No derived code graph index exists for checkout ${summary.checkoutId.slice(0, 12)}.`);
       return;
@@ -1342,7 +1352,9 @@ export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* 
     yield* Console.log(`Would remove derived code graph indexes: ${path.dirname(status.databasePath)}`);
     return;
   }
-  const repositoryRoot = yield* service.purge(config.agentContextHome, cwd);
+  const repositoryRoot = yield* withProgressLine(formatCodeGraphPurgeProgressLine({phase: 'acquiring-gates'}), update =>
+    service.purge(config.agentContextHome, cwd, progress => update(formatCodeGraphPurgeProgressLine(progress))),
+  );
   yield* Console.log(`Removed derived code graph indexes: ${repositoryRoot}`);
 });
 
@@ -1398,10 +1410,18 @@ export const runCodeGraphCompact = Effect.fn('codeGraph.command.compact')(functi
       message: 'Repository identity does not match the requested graph target.',
     });
   }
-  const summary = yield* compactCodeGraphStorage(config.agentContextHome, identity.checkoutId, {
-    dryRun: options.dryRun === true,
-    force: options.force,
-  });
+  const summary = options.json
+    ? yield* compactCodeGraphStorage(config.agentContextHome, identity.checkoutId, {
+        dryRun: options.dryRun === true,
+        force: options.force,
+      })
+    : yield* withProgressLine(formatCodeGraphCompactProgressLine('inspecting'), update =>
+        compactCodeGraphStorage(config.agentContextHome, identity.checkoutId, {
+          dryRun: options.dryRun === true,
+          force: options.force,
+          onProgress: phase => update(formatCodeGraphCompactProgressLine(phase)),
+        }),
+      );
   if (options.json) {
     yield* writeFinalCliOutput(JSON.stringify({type: 'code-graph-compaction', version: 1, ...summary}));
     return;
@@ -1688,150 +1708,20 @@ const ensureAnalysisSnapshot = Effect.fn('codeGraph.command.ensureAnalysisSnapsh
               threadnoteHome: config.agentContextHome,
             });
           })
-        : Effect.acquireUseRelease(
-            startProgress('Refreshing repository graph before analysis.'),
-            progress =>
+        : Effect.gen(function* () {
+            const formatProgress = yield* makeCodeGraphHumanProgressReporter();
+            yield* withProgressLine('Refreshing repository graph before analysis.', update =>
               indexer.index({
                 cwd,
                 ensureVectors: false,
-                onProgress: state => progress.update(progressMessage(state)).pipe(Effect.ignore),
+                onProgress: state => formatProgress(state).pipe(Effect.flatMap(update)),
                 threadnoteHome: config.agentContextHome,
               }),
-            progress => progress.stop.pipe(Effect.ignore),
-          ),
+            );
+          }),
     {operation, readTimeoutMilliseconds},
   );
 });
-
-function progressMessage(progress: CodeGraphProgress): string {
-  switch (progress.phase) {
-    case 'registering':
-      return 'Registering repository index';
-    case 'waiting':
-      switch (progress.reason) {
-        case 'database-writer':
-          return 'Waiting for the code graph database writer';
-        case 'home-builder-cap':
-          return 'Waiting for the home code graph builder cap';
-        case 'request-lock':
-          return 'Waiting for the matching code graph request';
-        case 'snapshot-build':
-          return 'Waiting for the matching code graph snapshot build';
-        case 'repository-lock':
-          return 'Waiting for another code graph build to finish';
-        default:
-          return 'Waiting for another code graph build to finish';
-      }
-    case 'scanning': {
-      const summary =
-        `Scanning · ${progress.completed}/${progress.total} eligible files · ${progress.accepted} accepted · ` +
-        `${progress.skipped} content skipped · ${progress.excluded} excluded`;
-      if (!progress.activity) return summary;
-      const activity = progress.activity;
-      const timing = [
-        activity.parseMilliseconds === undefined
-          ? undefined
-          : `parse ${formatMilliseconds(activity.parseMilliseconds)}`,
-        activity.persistMilliseconds === undefined
-          ? undefined
-          : `persist ${formatMilliseconds(activity.persistMilliseconds)}`,
-      ].filter((value): value is string => value !== undefined);
-      const activityLabel =
-        activity.stage === 'reading'
-          ? `reading Git batch from ${activity.path}`
-          : activity.stage === 'persisting'
-            ? `persisting batch from ${activity.path}`
-            : `${activity.stage} ${activity.path}`;
-      return (
-        `${summary} · ${activityLabel} · ${activity.language} · ${formatBytes(activity.bytes)} · ` +
-        `batch ${activity.batchCompleted}/${activity.batchTotal}` +
-        (activity.degraded ? ' · metadata fallback' : '') +
-        (timing.length > 0 ? ` · ${timing.join(' · ')}` : '')
-      );
-    }
-    case 'materializing':
-      return materializationProgressMessage(progress);
-    case 'reclaiming':
-      return (
-        `Reclaiming superseded graph storage · ${progress.completed}/${progress.total} snapshots · ` +
-        `${progress.pagesCompleted.toLocaleString()} pages · ${progress.rowsDeleted.toLocaleString()} rows`
-      );
-    case 'resolving':
-      if (progress.subphase === 'complete') {
-        return `Resolved · ${progress.symbols} symbols · ${progress.edges} relationships · ${progress.resolved} references linked`;
-      }
-      if (!progress.activity) return 'Resolving references · preparing pass totals';
-      return (
-        `Resolving references · pass ${progress.activity.pass} · ` +
-        `page ${progress.activity.pageCompleted}/${progress.activity.pageTotal} · ` +
-        `${progress.activity.referencesCompleted}/${progress.activity.referencesTotal} references · ` +
-        `${progress.activity.resolved} linked · ${progress.activity.referencesExamined} cumulative examined · ` +
-        `match ${formatMilliseconds(progress.activity.matchingMilliseconds)} · ` +
-        `transactions ${formatMilliseconds(progress.activity.transactionMilliseconds)} · ` +
-        `elapsed ${formatMilliseconds(progress.activity.elapsedMilliseconds)}`
-      );
-    case 'embedding':
-      return (
-        `Embedding · ${Math.min(progress.total, progress.embedded + progress.reused)}/${progress.total} complete · ` +
-        `${progress.reused} reused`
-      );
-    case 'sharing':
-      return {
-        'applying-deltas': 'Applying shared graph checkpoint',
-        'building-local-overlay': 'Building local overlay on the shared graph base',
-        'discovering-shared-base': 'Discovering shared graph base',
-        'downloading-checkpoint': 'Downloading shared graph checkpoint',
-      }[progress.subphase];
-    case 'activating': {
-      if (progress.activity) {
-        const activity = progress.activity;
-        const rows = activity.rows === undefined ? '' : ` · ${activity.rows.toLocaleString()} rows`;
-        const transaction =
-          activity.transactionMilliseconds === undefined
-            ? ''
-            : ` · transaction ${formatMilliseconds(activity.transactionMilliseconds)}`;
-        return (
-          `Activating · ${activity.stage.replaceAll('-', ' ')} ${activity.state} · ` +
-          `${formatMilliseconds(activity.stageElapsedMilliseconds)}${rows}${transaction}`
-        );
-      }
-      return `Activating (${progress.subphase ?? 'snapshot'}) · ${progress.snapshotId}`;
-    }
-  }
-}
-
-function materializationProgressMessage(
-  progress: Extract<CodeGraphProgress, {readonly phase: 'materializing'}>,
-): string {
-  const plan = [
-    progress.metrics?.mode === undefined ? undefined : `${progress.metrics.mode.replaceAll('-', ' ')} materialization`,
-    progress.metrics?.fallbackReason === undefined
-      ? undefined
-      : `incremental fallback: ${progress.metrics.fallbackReason.replaceAll('-', ' ')}`,
-    renderFallbackAssessment(progress.metrics?.fallbackAssessment),
-    renderFallbackBoundary(progress.metrics?.fallbackBoundary),
-  ]
-    .filter((value): value is string => value !== undefined)
-    .join(' · ');
-  const summary = `Materializing · ${progress.completed}/${progress.total} files · ${progress.reused} reused${
-    plan ? ` · ${plan}` : ''
-  }`;
-  const diskWarning = materializationDiskWarning(progress.metrics?.storage);
-  const activity = progress.activity;
-  if (!activity) return diskWarning ? `${summary} · ${diskWarning}` : summary;
-  const details = [
-    materializationStageLabel(activity.stage),
-    `batch ${activeBatchNumber(activity.batchCompleted, activity.batchTotal)}/${activity.batchTotal}`,
-    `${formatBytes(activity.sourceBytes)} source`,
-    activity.cachedFactBytes === undefined ? undefined : `${formatBytes(activity.cachedFactBytes)} cached facts`,
-    renderMaterializationRows(activity.rows),
-    activity.elapsedMilliseconds === undefined ? undefined : formatMilliseconds(activity.elapsedMilliseconds),
-    activity.transactionMilliseconds === undefined
-      ? undefined
-      : `transaction ${formatMilliseconds(activity.transactionMilliseconds)}`,
-  ].filter((value): value is string => value !== undefined);
-  return `${summary} · ${details.join(' · ')}${diskWarning ? ` · ${diskWarning}` : ''}`;
-}
 
 function renderFallbackAssessment(assessment: CodeGraphOverlayFallbackAssessment | undefined): string | undefined {
   if (assessment === undefined) return undefined;

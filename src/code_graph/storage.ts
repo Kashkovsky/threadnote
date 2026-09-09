@@ -9,7 +9,7 @@ import {
   codeGraphRepositoryLockActive,
   codeGraphWorktreeBuildActive,
   withCodeGraphDatabaseWriteLock,
-  withCodeGraphMaintenanceIntent,
+  withCodeGraphReportedMaintenanceIntent,
 } from './maintenance_gate.js';
 import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from './types.js';
 import {
@@ -328,6 +328,7 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
     readonly dryRun: boolean;
     readonly force?: boolean;
     readonly interlock?: CodeGraphCompactionInterlock;
+    readonly onProgress?: (phase: 'compacting' | 'inspecting' | 'waiting-builders') => Effect.Effect<void, unknown>;
   },
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -346,16 +347,25 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
       reason,
       reclaimedBytes: 0,
     }) satisfies CodeGraphCompactionSummary;
+  let reportMaintenance: (progress: {
+    readonly completed: number;
+    readonly phase: 'acquiring-gates' | 'retiring-and-cleaning' | 'verifying-graph' | 'waiting-builders';
+    readonly total: number;
+  }) => Effect.Effect<void> = () => Effect.void;
   const checkoutMaintenance = withExclusiveFileLock(
     fs,
     codeGraphRepositoryLockPath(path, threadnoteHome, checkoutId),
     STORAGE_LOCK_OPTIONS,
     Effect.gen(function* () {
+      yield* options.onProgress?.('waiting-builders') ?? Effect.void;
+      yield* reportMaintenance({completed: 1, phase: 'waiting-builders', total: 3});
       yield* awaitCodeGraphWorktreeBuilds(threadnoteHome, checkoutId, 0);
       return yield* withCodeGraphDatabaseWriteLock(
         threadnoteHome,
         checkoutId,
         Effect.gen(function* () {
+          yield* options.onProgress?.('inspecting') ?? Effect.void;
+          yield* reportMaintenance({completed: 2, phase: 'verifying-graph', total: 3});
           const before = yield* inspectCodeGraphStorage(threadnoteHome, checkoutId, {
             measureFragmentation: true,
             openWhileLocked: true,
@@ -399,6 +409,8 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
             } satisfies CodeGraphCompactionSummary;
           }
           yield* verifyCompactionDiskHeadroom(system, path.dirname(databasePath), before);
+          yield* options.onProgress?.('compacting') ?? Effect.void;
+          yield* reportMaintenance({completed: 3, phase: 'retiring-and-cleaning', total: 3});
           yield* vacuumDatabase(databasePath);
           const afterReceipt = yield* readCompactionReceipt(databasePath);
           if (!sameCompactionReceipt(receipt, afterReceipt)) {
@@ -436,7 +448,15 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
     fs,
     codeGraphMaintenanceLockPath(path, threadnoteHome),
     STORAGE_LOCK_OPTIONS,
-    withCodeGraphMaintenanceIntent(threadnoteHome, checkoutMaintenance),
+    withCodeGraphReportedMaintenanceIntent(
+      threadnoteHome,
+      {checkoutId, operation: 'graph-maintenance'},
+      {completed: 0, phase: 'acquiring-gates', total: 3},
+      reporter => {
+        reportMaintenance = reporter.progress;
+        return checkoutMaintenance;
+      },
+    ),
   ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed(deferred('active-maintenance'))));
   if (options.dryRun) return yield* maintain;
   const candidate = (opportunityBytes: number) => ({checkoutId, opportunityBytes});

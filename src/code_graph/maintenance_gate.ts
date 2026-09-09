@@ -62,11 +62,16 @@ export interface CodeGraphMaintenanceProgressReporter {
   readonly progress: (progress: CodeGraphMaintenanceProgress) => Effect.Effect<void>;
 }
 
-export interface CodeGraphReportedMaintenanceTarget {
-  readonly checkoutId: string;
-  readonly operation: 'selected-snapshot-purge';
-  readonly snapshotId: string;
-}
+export type CodeGraphReportedMaintenanceTarget =
+  | {
+      readonly checkoutId: string;
+      readonly operation: 'selected-snapshot-purge';
+      readonly snapshotId: string;
+    }
+  | {
+      readonly checkoutId?: string;
+      readonly operation: 'graph-maintenance';
+    };
 
 interface StoredCodeGraphMaintenanceStatus extends CodeGraphMaintenanceStatus {
   readonly ownerDigest: string;
@@ -374,17 +379,7 @@ const validateReportedMaintenance = Effect.fn('codeGraph.validateReportedMainten
   target: CodeGraphReportedMaintenanceTarget,
   progress: CodeGraphMaintenanceProgress,
 ) {
-  if (
-    !/^[0-9a-f]{64}$/u.test(target.checkoutId) ||
-    !/^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u.test(target.snapshotId) ||
-    target.operation !== 'selected-snapshot-purge' ||
-    !CODE_GRAPH_MAINTENANCE_PROGRESS_PHASES.includes(progress.phase) ||
-    !Number.isSafeInteger(progress.completed) ||
-    !Number.isSafeInteger(progress.total) ||
-    progress.completed < 0 ||
-    progress.total <= 0 ||
-    progress.completed > progress.total
-  ) {
+  if (!reportedMaintenanceTargetValid(target) || !reportedMaintenanceProgressValid(progress)) {
     return yield* CodeGraphMaintenanceGateError.make({message: 'Code graph maintenance progress is invalid.'});
   }
 });
@@ -403,13 +398,13 @@ const writeMaintenanceStatus = Effect.fn('codeGraph.writeMaintenanceStatus')(fun
   const ownerDigest = sha256HexSync(ownerToken);
   const now = DateTime.formatIso(yield* DateTime.now);
   const status = {
-    checkoutId: target.checkoutId,
+    ...(target.checkoutId === undefined ? {} : {checkoutId: target.checkoutId}),
     completed: progress.completed,
     operation: target.operation,
     ownerDigest,
     phase: progress.phase,
     schemaVersion: 1,
-    snapshotId: target.snapshotId,
+    ...(target.operation === 'selected-snapshot-purge' ? {snapshotId: target.snapshotId} : {}),
     startedAt: owner.startedAt ?? now,
     total: progress.total,
     updatedAt: now,
@@ -468,11 +463,6 @@ function parseMaintenanceStatus(value: string, expectedOwnerDigest: string): Cod
     if (
       schemaVersion !== 1 ||
       ownerDigest !== expectedOwnerDigest ||
-      operation !== 'selected-snapshot-purge' ||
-      typeof checkoutId !== 'string' ||
-      !/^[0-9a-f]{64}$/u.test(checkoutId) ||
-      typeof snapshotId !== 'string' ||
-      !/^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u.test(snapshotId) ||
       !isCodeGraphMaintenanceProgressPhase(phase) ||
       !isSafeInteger(completed) ||
       !isSafeInteger(total) ||
@@ -484,12 +474,35 @@ function parseMaintenanceStatus(value: string, expectedOwnerDigest: string): Cod
     ) {
       return undefined;
     }
+    if (operation === 'selected-snapshot-purge') {
+      if (
+        typeof checkoutId !== 'string' ||
+        !/^[0-9a-f]{64}$/u.test(checkoutId) ||
+        typeof snapshotId !== 'string' ||
+        !/^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u.test(snapshotId)
+      ) {
+        return undefined;
+      }
+      return {
+        checkoutId,
+        completed,
+        operation,
+        phase,
+        snapshotId,
+        startedAt,
+        total,
+        updatedAt,
+      };
+    }
+    if (operation !== 'graph-maintenance' || snapshotId !== undefined) return undefined;
+    if (checkoutId !== undefined && (typeof checkoutId !== 'string' || !/^[0-9a-f]{64}$/u.test(checkoutId))) {
+      return undefined;
+    }
     return {
-      checkoutId,
+      ...(typeof checkoutId === 'string' ? {checkoutId} : {}),
       completed,
       operation,
       phase,
-      snapshotId,
       startedAt,
       total,
       updatedAt,
@@ -562,6 +575,30 @@ export const CODE_GRAPH_GATE_LOCK_OPTIONS = {
   staleAfterMilliseconds: 120_000,
   waitTimeoutMilliseconds: 10 * 60_000,
 } as const;
+
+function reportedMaintenanceTargetValid(target: CodeGraphReportedMaintenanceTarget): boolean {
+  if (target.operation === 'selected-snapshot-purge') {
+    return (
+      /^[0-9a-f]{64}$/u.test(target.checkoutId) &&
+      /^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u.test(target.snapshotId)
+    );
+  }
+  return (
+    target.operation === 'graph-maintenance' &&
+    (target.checkoutId === undefined || /^[0-9a-f]{64}$/u.test(target.checkoutId))
+  );
+}
+
+function reportedMaintenanceProgressValid(progress: CodeGraphMaintenanceProgress): boolean {
+  return (
+    CODE_GRAPH_MAINTENANCE_PROGRESS_PHASES.includes(progress.phase) &&
+    Number.isSafeInteger(progress.completed) &&
+    Number.isSafeInteger(progress.total) &&
+    progress.completed >= 0 &&
+    progress.total > 0 &&
+    progress.completed <= progress.total
+  );
+}
 
 function isCodeGraphMaintenanceProgressPhase(value: unknown): value is CodeGraphMaintenanceProgressPhase {
   return (

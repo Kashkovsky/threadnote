@@ -1167,6 +1167,10 @@ function relevantWatchPath(path: Path.Path, cwd: string, eventPath: string): boo
   }
   const segments = relative.split(path.sep);
   return !segments.some(
-    segment => segment.startsWith('.') && segment !== '.gitignore' && segment !== '.threadnoteignore',
+    segment =>
+      segment.startsWith('.') &&
+      segment !== '.gitignore' &&
+      segment !== '.threadnoteignore' &&
+      segment !== '.threadnoteignore.local',
   );
 }

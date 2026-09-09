@@ -3,7 +3,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Console, Effect, Terminal} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {promptForSelection, startProgress} from '../../src/cli_ui.js';
+import {clipInteractiveProgressText, promptForSelection, startProgress} from '../../src/cli_ui.js';
 import {CliOutput, makeQueuedCliWriter, withCliOutputConsole} from '../../src/effect/cli_output.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -214,6 +214,69 @@ describe('CLI progress indicator', () => {
     }),
   );
 
+  effectIt.effect('clips interactive TTY progress to the terminal width and skips unchanged updates', () =>
+    Effect.gen(function* () {
+      const displays: string[] = [];
+      const system = yield* SystemInfo.pipe(provideTestLayer(ApplicationLayer));
+      const interactiveSystem = SystemInfo.of({
+        ...system,
+        environment: () => ({}),
+        stdoutIsTTY: true,
+      });
+      const terminal = Terminal.make({
+        columns: Effect.succeed(24),
+        display: text =>
+          Effect.sync(() => {
+            displays.push(text);
+          }),
+        readInput: Effect.never,
+        readLine: Effect.never,
+        rows: Effect.succeed(40),
+      });
+      const output = orderedCliOutput([]);
+      const longMessage = 'Scanning · 12/345 files · this path must not wrap onto another row';
+
+      yield* Effect.acquireUseRelease(
+        startProgress(longMessage),
+        progress =>
+          Effect.gen(function* () {
+            const afterStart = displays.length;
+            yield* progress.update(longMessage);
+            expect(displays.length).toBe(afterStart);
+            yield* progress.update(`${longMessage} · next`);
+          }),
+        progress => progress.stop,
+      ).pipe(
+        Effect.provideService(CliOutput, output),
+        Effect.provideService(SystemInfo, interactiveSystem),
+        Effect.provideService(Terminal.Terminal, terminal),
+      );
+
+      expect(displays.some(display => display.includes('\n'))).toBe(false);
+      expect(displays.some(display => display.includes('…'))).toBe(true);
+      expect(displays.every(display => !display.includes('must not wrap'))).toBe(true);
+    }),
+  );
+
+  it('clips rewritten progress text to one terminal row', () => {
+    expect(clipInteractiveProgressText('short', 80)).toBe('short');
+    expect(clipInteractiveProgressText('abcdefghijklmnopqrstuvwxyz', 20).endsWith('…')).toBe(true);
+    expect(Array.from(clipInteractiveProgressText('abcdefghijklmnopqrstuvwxyz', 20)).length).toBeLessThanOrEqual(16);
+    expect(Array.from(clipInteractiveProgressText('abcdefghijklmnopqrstuvwxyz', 10)).length).toBeLessThanOrEqual(6);
+    fc.assert(
+      fc.property(fc.integer({max: 200, min: 1}), fc.string({maxLength: 80}), (columns, text) => {
+        const clipped = clipInteractiveProgressText(text, columns);
+        const budget = Math.max(1, Math.floor(columns) - 4);
+        const source = Array.from(text);
+        const rendered = Array.from(clipped);
+        if (source.length <= budget) expect(clipped).toBe(text);
+        else expect(rendered.length).toBeLessThanOrEqual(budget);
+        expect(clipped.includes('\n') || clipped.includes('\r')).toBe(false);
+      }),
+      {numRuns: 40},
+    );
+  });
+
   effectIt.effect('flushes queued headings before an interactive terminal frame', () =>
     Effect.gen(function* () {
       const events: string[] = [];
@@ -308,6 +371,57 @@ describe('CLI progress indicator', () => {
         'Ready · 100 files',
       ]);
     }),
+  );
+
+  effectIt.effect('keeps captured result lines when progress is disabled', () =>
+    Effect.gen(function* () {
+      const system = yield* SystemInfo.pipe(provideTestLayer(ApplicationLayer));
+      const quietSystem = SystemInfo.of({
+        ...system,
+        environment: () => ({THREADNOTE_NO_PROGRESS: '1'}),
+        stdoutIsTTY: false,
+      });
+
+      const captured = yield* captureConsole(
+        Effect.acquireUseRelease(
+          startProgress('Would purge · acquiring locks'),
+          progress =>
+            Effect.gen(function* () {
+              yield* progress.update('Would purge · deleting files');
+              yield* Console.log('Would remove derived code graph index for checkout abcdef123456.');
+            }),
+          progress => progress.stop,
+        ),
+      ).pipe(Effect.provideService(SystemInfo, quietSystem), provideTestLayer(ApplicationLayer));
+
+      expect(captured.output).toBe('Would remove derived code graph index for checkout abcdef123456.');
+    }),
+  );
+
+  effectIt.effect.prop(
+    'disabled progress emits no console lines',
+    {
+      messages: fc.array(fc.string({maxLength: 40, minLength: 1}), {maxLength: 8, minLength: 1}),
+    },
+    ({messages}) =>
+      Effect.gen(function* () {
+        const system = yield* SystemInfo.pipe(provideTestLayer(ApplicationLayer));
+        const quietSystem = SystemInfo.of({
+          ...system,
+          environment: () => ({THREADNOTE_NO_PROGRESS: '1'}),
+          stdoutIsTTY: false,
+        });
+        const [initial = '', ...updates] = messages;
+        const captured = yield* captureConsole(
+          Effect.acquireUseRelease(
+            startProgress(initial),
+            progress => Effect.forEach(updates, message => progress.update(message), {discard: true}),
+            progress => progress.stop,
+          ),
+        ).pipe(Effect.provideService(SystemInfo, quietSystem), provideTestLayer(ApplicationLayer));
+        expect(captured.output).toBe('');
+      }),
+    {fastCheck: {numRuns: 40}},
   );
 });
 

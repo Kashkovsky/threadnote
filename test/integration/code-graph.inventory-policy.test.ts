@@ -212,6 +212,44 @@ describe('code graph inventory admission policy', () => {
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  effectIt.effect('unions committed and checkout-local Threadnote ignore files during inventory', () =>
+    Effect.gen(function* () {
+      const root = mkdtempSync(join(tmpdir(), 'threadnote-inventory-ignore-local-'));
+      roots.push(root);
+      git(root, ['init', '-q']);
+      mkdirSync(join(root, 'src'), {recursive: true});
+      writeFileSync(join(root, 'src', 'a.ts'), 'export const a = 1;\n');
+      writeFileSync(join(root, 'src', 'b.ts'), 'export const b = 1;\n');
+      writeFileSync(join(root, 'src', 'c.ts'), 'export const c = 1;\n');
+      writeFileSync(join(root, '.threadnoteignore'), 'src/a.ts\n');
+      writeFileSync(join(root, '.threadnoteignore.local'), 'src/b.ts\n');
+      git(root, ['add', '.threadnoteignore', 'src']);
+      git(root, [
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+
+      const identity = yield* resolveRepositoryIdentity(root);
+      const preview = yield* previewCodeGraphInventory(identity);
+      const ignored = preview.groups.find(
+        candidate => candidate.reason === 'threadnote-ignore' && candidate.language === 'typescript',
+      );
+      const admitted = preview.groups.find(
+        candidate => candidate.reason === 'admitted' && candidate.language === 'typescript',
+      );
+      expect(ignored).toMatchObject({disposition: 'skipped', files: 2});
+      expect(admitted).toMatchObject({disposition: 'eligible', files: 1});
+
+      const inventoried = yield* inventoryRepository(identity);
+      expect(inventoried.files.map(file => file.path)).toEqual(['src/c.ts']);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   it('bounds Git ignore checks and stable metadata inspection to relevant changed paths', async () => {
     const root = mkdtempSync(join(tmpdir(), 'threadnote-inventory-policy-changed-paths-'));
     roots.push(root);

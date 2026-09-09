@@ -6,7 +6,6 @@ import {codeGraphCommittedContentHash} from './content_identity.js';
 import {
   inspectContainedStableRegularFile,
   materializeContainedStableRegularFile,
-  readOptionalText,
   type StableContainedRegularFileMetadata,
 } from './inventory_contained_file.js';
 import {
@@ -38,6 +37,15 @@ import {
 import {compareCodeUnits} from './ordering.js';
 import {workspaceHasUninventoriedMonikerEvidence} from './workspace.js';
 import {
+  compileThreadnoteIgnore,
+  emptyThreadnoteIgnoreAdmissionPath,
+  isIgnoredByThreadnote,
+  isOverlayAdmissionControlPath,
+  readThreadnoteIgnoreSources,
+  type CompiledIgnoreRule,
+  type ThreadnoteIgnoreSources,
+} from './threadnote_ignore.js';
+import {
   codeGraphExtractionPlanMetrics,
   codeGraphSourceSizeBucket,
   CODE_GRAPH_SCANNING_STARTED_PROGRESS,
@@ -54,6 +62,14 @@ import {CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION} from './store_models.js';
 export {codeGraphInventoryExclusionReason} from './inventory_policy.js';
 export {readContainedStableRegularFile, type ContainedReadInterlock} from './inventory_contained_file.js';
 export {shouldOmitRepositoryContent} from './inventory_content.js';
+export {
+  compileThreadnoteIgnore,
+  isIgnoredByThreadnote,
+  isOverlayAdmissionControlPath,
+  THREADNOTE_IGNORE_FILE,
+  THREADNOTE_IGNORE_LOCAL_FILE,
+  type CompiledIgnoreRule,
+} from './threadnote_ignore.js';
 export type {
   CodeGraphInventoryPolicyExclusionReasonSummary,
   CodeGraphInventoryPolicyExclusionSummary,
@@ -64,11 +80,6 @@ export interface GitTreeEntry {
   readonly mode: string;
   readonly path: string;
   readonly size: number;
-}
-
-export interface CompiledIgnoreRule {
-  readonly ignored: boolean;
-  readonly pattern: RegExp;
 }
 
 export interface CodeGraphInventory {
@@ -168,6 +179,7 @@ export interface CodeGraphInventoryPreviewSummaryOptions {
   readonly includeOpaqueCorpusAssets?: boolean;
   readonly languagePacks?: CodeGraphLanguagePackRegistryShape;
   readonly threadnoteIgnore?: string;
+  readonly threadnoteIgnoreLocal?: string;
 }
 
 export interface CodeGraphInventoryPreviewOptions {
@@ -246,7 +258,7 @@ export function summarizeCodeGraphInventoryPreview(
   options: CodeGraphInventoryPreviewSummaryOptions = {},
 ): Pick<CodeGraphInventoryPreview, 'groups' | 'policyVersion' | 'totals'> {
   const languagePacks = options.languagePacks ?? BUILTIN_LANGUAGE_PACK_REGISTRY;
-  const ignoreRules = compileThreadnoteIgnore(options.threadnoteIgnore ?? '');
+  const ignoreRules = compileThreadnoteIgnore(options.threadnoteIgnore ?? '', options.threadnoteIgnoreLocal ?? '');
   const gitIgnoredPaths = options.gitIgnoredPaths ?? new Set<string>();
   const groups = new Map<string, CodeGraphInventoryPreviewGroup>();
   let eligibleBytes = 0;
@@ -345,8 +357,10 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
   const committedTreeEntries = new Map(allTreeEntries.map(entry => [entry.path, entry]));
   const policyAdmittedTreeEntries = allTreeEntries.filter(entry => !committedPolicyExclusions.has(entry.path));
   const declaredWorkspace = yield* discoverDeclaredSourceRoots(identity, policyAdmittedTreeEntries, languagePacks);
-  const threadnoteIgnore = reuseEnvironment.threadnoteIgnore;
-  const ignoreRules = compileThreadnoteIgnore(threadnoteIgnore);
+  const ignoreRules = compileThreadnoteIgnore(
+    reuseEnvironment.threadnoteIgnore,
+    reuseEnvironment.threadnoteIgnoreLocal,
+  );
   const acceptedByPolicy = policyAdmittedTreeEntries.filter(entry =>
     acceptsRepositoryPathWithRules(
       entry.path,
@@ -417,7 +431,10 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
       : yield* readDirtyOverlay(
           identity,
           path,
-          threadnoteIgnore,
+          {
+            committed: reuseEnvironment.threadnoteIgnore,
+            local: reuseEnvironment.threadnoteIgnoreLocal,
+          },
           ignoreRules,
           options.cachedCommittedFileKeys ?? new Set(),
           languagePacks,
@@ -580,8 +597,8 @@ export const inventoryRepositoryFromReusableCleanBase = Effect.fn('codeGraph.inv
     const overlay = yield* readDirtyOverlay(
       identity,
       path,
-      environment.threadnoteIgnore,
-      compileThreadnoteIgnore(environment.threadnoteIgnore),
+      {committed: environment.threadnoteIgnore, local: environment.threadnoteIgnoreLocal},
+      compileThreadnoteIgnore(environment.threadnoteIgnore, environment.threadnoteIgnoreLocal),
       options.cachedCommittedFileKeys ?? new Set(),
       languagePacks,
       projectRoots,
@@ -653,8 +670,8 @@ export const previewCodeGraphInventory = Effect.fn('codeGraph.previewInventory')
     entry => codeGraphInventoryExclusionReason(entry.path, entry.size) === undefined,
   );
   const declaredWorkspace = yield* discoverDeclaredSourceRoots(identity, policyAdmittedEntries, languagePacks);
-  const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
-  const ignoreRules = compileThreadnoteIgnore(threadnoteIgnore);
+  const ignoreSources = yield* readThreadnoteIgnoreSources(fs, path, identity.repoRoot);
+  const ignoreRules = compileThreadnoteIgnore(ignoreSources.committed, ignoreSources.local);
   const tree = yield* readInventoryPreviewTree(identity, path, committedEntries, options.includeOverlay !== false);
   const threadnoteIgnoredChangedPaths = new Set(
     [...tree.changes.changed].filter(relative => isIgnoredByThreadnote(relative, ignoreRules)),
@@ -701,7 +718,8 @@ export const previewCodeGraphInventory = Effect.fn('codeGraph.previewInventory')
     gitIgnoredPaths,
     languagePacks,
     includeOpaqueCorpusAssets: options.includeOpaqueCorpusAssets,
-    threadnoteIgnore,
+    threadnoteIgnore: ignoreSources.committed,
+    threadnoteIgnoreLocal: ignoreSources.local,
   });
   return {
     commit: identity.headCommit,
@@ -856,12 +874,12 @@ export const worktreeOverlayState = Effect.fn('codeGraph.worktreeOverlayState')(
     policyAdmittedTreeEntries,
     BUILTIN_LANGUAGE_PACK_REGISTRY,
   );
-  const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
-  const ignoreRules = compileThreadnoteIgnore(threadnoteIgnore);
+  const ignoreSources = yield* readThreadnoteIgnoreSources(fs, path, identity.repoRoot);
+  const ignoreRules = compileThreadnoteIgnore(ignoreSources.committed, ignoreSources.local);
   const overlay = yield* readDirtyOverlay(
     identity,
     path,
-    threadnoteIgnore,
+    ignoreSources,
     ignoreRules,
     new Set(),
     BUILTIN_LANGUAGE_PACK_REGISTRY,
@@ -918,7 +936,7 @@ export const worktreeBuildRequestObservation = Effect.fn('codeGraph.worktreeBuil
     } satisfies CodeGraphBuildRequestObservation;
   }
   const overlay = parsePorcelainV1Status(porcelain.stdout);
-  const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
+  const ignoreSources = yield* readThreadnoteIgnoreSources(fs, path, identity.repoRoot);
   const fileRows: string[] = [];
   const observedFiles: CodeGraphObservedOverlayFile[] = [];
   const skippedRows: string[] = [];
@@ -958,7 +976,8 @@ export const worktreeBuildRequestObservation = Effect.fn('codeGraph.worktreeBuil
         ? sha256HexSync(
             [
               'build-request-overlay-v2',
-              `I\0${sha256HexSync(threadnoteIgnore)}`,
+              `I\0${sha256HexSync(ignoreSources.committed)}`,
+              `L\0${sha256HexSync(ignoreSources.local)}`,
               ...[...overlay.deleted].sort(compareCodeUnits).map(relative => `D\0${relative}`),
               ...fileRows,
               ...skippedRows,
@@ -1174,10 +1193,11 @@ export function acceptsRepositoryPath(
   threadnoteIgnore = '',
   declaredProjectRoots: readonly string[] = [],
   declaredSourceRoots: readonly string[] = [],
+  threadnoteIgnoreLocal = '',
 ): boolean {
   return acceptsRepositoryPathWithRules(
     value,
-    compileThreadnoteIgnore(threadnoteIgnore),
+    compileThreadnoteIgnore(threadnoteIgnore, threadnoteIgnoreLocal),
     BUILTIN_LANGUAGE_PACK_REGISTRY,
     declaredProjectRoots,
     declaredSourceRoots,
@@ -1207,10 +1227,6 @@ function isPotentialOverlayCandidate(value: string, languagePacks: CodeGraphLang
 
 function isInventoryPolicyExtension(repositoryPath: string): boolean {
   return /\.(?:jsonc?|svg)$/i.test(repositoryPath);
-}
-
-export function isOverlayAdmissionControlPath(repositoryPath: string): boolean {
-  return repositoryPath === '.threadnoteignore' || /(?:^|\/)\.gitignore$/.test(repositoryPath);
 }
 
 function acceptsRepositoryPathWithRules(
@@ -1270,43 +1286,6 @@ function repositoryPathExclusionReason(
   if (isIgnoredByThreadnote(path, ignoreRules)) return 'threadnote-ignore';
   if (!includeOpaqueCorpusAssets && isOpaqueCorpusMediaPath(path)) return 'opaque-corpus-deferred';
   return Option.isSome(languagePacks.match(path)) ? undefined : 'unsupported-language';
-}
-
-export function compileThreadnoteIgnore(content: string): readonly CompiledIgnoreRule[] {
-  const rules: CompiledIgnoreRule[] = [];
-  for (const rawLine of content.split(/\r?\n/)) {
-    const trimmed = rawLine.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const negated = trimmed.startsWith('!');
-    const pattern = normalizeRepositoryPath(negated ? trimmed.slice(1) : trimmed);
-    if (!pattern) continue;
-    const compiled = compileIgnorePattern(pattern);
-    if (compiled) rules.push({ignored: !negated, pattern: compiled});
-  }
-  return rules;
-}
-
-function isIgnoredByThreadnote(path: string, rules: readonly CompiledIgnoreRule[]): boolean {
-  let ignored = false;
-  for (const rule of rules) {
-    if (rule.pattern.test(path)) ignored = rule.ignored;
-  }
-  return ignored;
-}
-
-function compileIgnorePattern(pattern: string): RegExp | undefined {
-  const directoryPattern = pattern.endsWith('/');
-  const normalized = pattern.replace(/^\/+|\/+$/g, '');
-  if (!normalized) return undefined;
-  const escaped = normalized
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replaceAll('**', '\u0000')
-    .replaceAll('*', '[^/]*')
-    .replaceAll('?', '[^/]')
-    .replaceAll('\u0000', '.*');
-  const prefix = normalized.includes('/') ? '^' : '(?:^|/)';
-  const suffix = directoryPattern ? '(?:/|$)' : '$';
-  return new RegExp(`${prefix}${escaped}${suffix}`, 'i');
 }
 
 function ignoredPaths(repoRoot: string, paths: readonly string[]) {
@@ -1580,7 +1559,7 @@ export function parseGitCatFileBatch(
 export const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   identity: RepositoryIdentity,
   path: Path.Path,
-  threadnoteIgnore: string,
+  ignoreSources: ThreadnoteIgnoreSources,
   ignoreRules: readonly CompiledIgnoreRule[],
   cachedFileKeys: ReadonlySet<string>,
   languagePacks: CodeGraphLanguagePackRegistryShape,
@@ -1710,7 +1689,7 @@ export const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function
     skipped += 1;
     if (
       (untracked.has(relative) || changes.added.has(relative)) &&
-      (!isOverlayAdmissionControlPath(relative) || (relative === '.threadnoteignore' && threadnoteIgnore.length === 0))
+      (!isOverlayAdmissionControlPath(relative) || emptyThreadnoteIgnoreAdmissionPath(relative, ignoreSources))
     ) {
       changed.delete(relative);
       return;
@@ -1906,7 +1885,8 @@ export const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function
     fingerprint: dirty
       ? sha256HexSync(
           [
-            `I\0${sha256HexSync(threadnoteIgnore)}`,
+            `I\0${sha256HexSync(ignoreSources.committed)}`,
+            `L\0${sha256HexSync(ignoreSources.local)}`,
             ...[...changes.deleted].sort().map(relative => `D\0${relative}`),
             ...files.map(file => `F\0${file.path}\0${file.contentHash}`).sort(),
             ...[...skippedPaths].sort().map(relative => `S\0${relative}`),

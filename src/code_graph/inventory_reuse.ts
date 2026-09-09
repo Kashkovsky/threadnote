@@ -3,6 +3,7 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {readOptionalText} from './inventory_contained_file.js';
+import {readThreadnoteIgnoreSources} from './threadnote_ignore.js';
 import {CodeGraphInventoryError} from './inventory_error.js';
 import {
   CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
@@ -83,7 +84,9 @@ export const readCodeGraphInventoryReuseEnvironment = Effect.fn('codeGraph.readI
   if (globalExcludeResult.exitCode !== 0 && globalExcludeResult.exitCode !== 1) {
     return yield* CodeGraphInventoryError.make({message: 'Global Git exclude policy is unavailable.'});
   }
-  const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
+  const ignoreSources = yield* readThreadnoteIgnoreSources(fs, path, identity.repoRoot);
+  const threadnoteIgnore = ignoreSources.committed;
+  const threadnoteIgnoreLocal = ignoreSources.local;
   const observedGitInfoExcludePath = gitInfoExcludeResult.stdout.trim();
   const gitInfoExcludePath = path.isAbsolute(observedGitInfoExcludePath)
     ? observedGitInfoExcludePath
@@ -115,11 +118,13 @@ export const readCodeGraphInventoryReuseEnvironment = Effect.fn('codeGraph.readI
       [
         'code-graph-inventory-environment-v1',
         `threadnote:${sha256HexSync(threadnoteIgnore)}`,
+        `threadnote-local:${sha256HexSync(threadnoteIgnoreLocal)}`,
         `git-info-exclude:${sha256HexSync(gitInfoExclude)}`,
         `global-exclude:${sha256HexSync(globalExclude)}`,
       ].join('\n'),
     ),
     threadnoteIgnore,
+    threadnoteIgnoreLocal,
   } as const;
 });
 

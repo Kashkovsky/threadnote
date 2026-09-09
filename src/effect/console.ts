@@ -1,5 +1,6 @@
 import {Console, Effect} from 'effect';
 import {CliOutput} from './cli_output.js';
+import {SystemInfo} from './system.js';
 
 function capturingConsole(parent: Console.Console, lines: string[]): Console.Console {
   const append = (...args: readonly unknown[]): void => {
@@ -41,6 +42,24 @@ export function captureConsole<A, E, R>(
       Effect.provideService(Console.Console, service),
       Effect.provideService(CliOutput, cliOutput),
       Effect.map(value => ({output: lines.join('\n'), value})),
+    );
+  });
+}
+
+/** Capture stdout while suppressing CLI progress indicators. */
+export function captureConsoleWithoutProgress<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<{readonly output: string; readonly value: A}, E, R | SystemInfo> {
+  return Effect.gen(function* () {
+    const system = yield* SystemInfo;
+    return yield* captureConsole(effect).pipe(
+      Effect.provideService(
+        SystemInfo,
+        SystemInfo.of({
+          ...system,
+          environment: () => ({...system.environment(), THREADNOTE_NO_PROGRESS: '1'}),
+        }),
+      ),
     );
   });
 }

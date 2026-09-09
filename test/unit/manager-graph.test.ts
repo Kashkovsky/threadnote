@@ -1,6 +1,7 @@
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {describe, expect, it} from 'vitest';
+import {CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS} from '../../src/code_graph/build_status_validation.js';
 import {
   cacheGraphNodeDetail,
   createGraphQueryRequestGate,
@@ -23,6 +24,7 @@ import {
   graphDisplayEdges,
   graphFocusLayoutTargets,
   graphFocusTarget,
+  graphMaintenanceRemainingMilliseconds,
   graphMaintenanceStatusLabel,
   graphNodeDetailRequestIsCurrent,
   graphNodeSizeValues,
@@ -667,6 +669,25 @@ describe('manager graph focus', () => {
     };
     expect(graphStatusPollDelay([], maintenance)).toBe(1_000);
     expect(graphMaintenanceStatusLabel(maintenance)).toBe('Selected snapshot purge · rechecking graph safety evidence');
+    expect(
+      graphMaintenanceStatusLabel({
+        completed: 2,
+        operation: 'graph-maintenance',
+        phase: 'verifying-graph',
+        startedAt: '2026-09-09T00:00:00.000Z',
+        total: 4,
+      }),
+    ).toBe('Graph maintenance · verifying graph store');
+    expect(
+      graphMaintenanceRemainingMilliseconds(
+        {
+          completed: 2,
+          startedAt: '2026-09-09T00:00:00.000Z',
+          total: 4,
+        },
+        Date.parse('2026-09-09T00:00:10.000Z'),
+      ),
+    ).toBe(10_000);
     const abandoned = {
       ...graphBuildStatus('running'),
       observation: {heartbeatAgeMilliseconds: 60_000, liveness: 'abandoned' as const},
@@ -680,6 +701,32 @@ describe('manager graph focus', () => {
     };
     expect(graphBuildIsActive(staleOwner)).toBe(true);
     expect(graphBuildShouldDisplay(staleOwner)).toBe(true);
+    const recentFailed = graphBuildStatus('failed');
+    expect(graphBuildShouldDisplay(recentFailed)).toBe(true);
+    expect(
+      graphBuildShouldDisplay({
+        ...recentFailed,
+        observation: {
+          heartbeatAgeMilliseconds: CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS,
+          liveness: 'failed',
+        },
+      }),
+    ).toBe(true);
+    expect(
+      graphBuildShouldDisplay({
+        ...recentFailed,
+        observation: {
+          heartbeatAgeMilliseconds: CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS + 1,
+          liveness: 'failed',
+        },
+      }),
+    ).toBe(false);
+    expect(
+      graphBuildShouldDisplay({
+        ...recentFailed,
+        observation: {heartbeatAgeMilliseconds: Number.POSITIVE_INFINITY, liveness: 'failed'},
+      }),
+    ).toBe(false);
   });
 
   it('shows live reclaiming status when the full graph catalog is not available yet', () => {
@@ -784,6 +831,14 @@ describe('manager graph focus', () => {
       {...graphBuildStatus('completed'), buildId: 'completed'},
       {...graphBuildStatus('running'), buildId: 'running'},
       {...graphBuildStatus('failed'), buildId: 'failed'},
+      {
+        ...graphBuildStatus('failed'),
+        buildId: 'expired-failed',
+        observation: {
+          heartbeatAgeMilliseconds: CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS + 1,
+          liveness: 'failed' as const,
+        },
+      },
     ];
     const waiters = Array.from({length: 5}, (_, index) => ({
       ...graphBuildStatus('queued'),
@@ -795,6 +850,7 @@ describe('manager graph focus', () => {
     expect(selected.total).toBe(7);
     expect(selected.hiddenCount).toBe(3);
     expect(selected.jobs.map(job => job.state)).not.toContain('completed');
+    expect(selected.jobs.map(job => job.buildId)).not.toContain('expired-failed');
     expect(selected.jobs[0]?.buildId).toBe('running');
 
     const neverResolves = () => new Promise<never>(() => undefined);

@@ -10,7 +10,7 @@ import {
   repairAgentIntegrations,
 } from './agent_integration/index.js';
 import {type AgentIntegrationRegistry, withAgentIntegrationLock} from './agent_integration/registry.js';
-import {startProgress} from './cli_ui.js';
+import {startProgress, withProgressLine} from './cli_ui.js';
 import {commandShimCheck, installCommandShim, removeCommandShim} from './command-shim.js';
 import {sha256FileHex} from './effect/digest.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
@@ -66,8 +66,10 @@ import {
 import {
   codeGraphDoctorCheck,
   type CodeGraphMaintenanceProgress,
+  type CodeGraphRepairCompletion,
   repairCodeGraphIndexes,
 } from './code_graph/maintenance.js';
+import {formatCodeGraphDoctorProgressLine, formatCodeGraphRepairProgressLine} from './code_graph/cli_progress.js';
 import {
   isThreadnoteStorageLayoutReceipt,
   threadnoteStorageLayout,
@@ -115,6 +117,7 @@ interface RunDoctorOptions extends DoctorOptions {
 
 interface CollectDoctorOptions extends RunDoctorOptions {
   readonly onCodeGraphProgress?: (progress: CodeGraphMaintenanceProgress) => Effect.Effect<void, unknown>;
+  readonly withCodeGraphProgressLine?: boolean;
 }
 
 export const runDoctor = Effect.fn('lifecycle.doctor')(function* (config: RuntimeConfig, options: RunDoctorOptions) {
@@ -124,7 +127,7 @@ export const runDoctor = Effect.fn('lifecycle.doctor')(function* (config: Runtim
     config,
     {
       ...options,
-      onCodeGraphProgress: progress => Console.log(codeGraphMaintenanceProgressMessage(progress)),
+      withCodeGraphProgressLine: true,
     },
     system.platform,
   );
@@ -200,7 +203,15 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* safeDoctorCheck('vector recall index', vectorRecallIndexCheck(config, lexicalStatus)),
     yield* safeDoctorCheck(
       'native code graph',
-      codeGraphDoctorCheck(config.agentContextHome, options.onCodeGraphProgress, options.codeGraphCheck),
+      options.withCodeGraphProgressLine === true && options.codeGraphCheck === undefined
+        ? withProgressLine(formatCodeGraphDoctorProgressLine({current: 0, phase: 'checking', total: 1}), update =>
+            codeGraphDoctorCheck(
+              config.agentContextHome,
+              progress => update(formatCodeGraphDoctorProgressLine(progress)),
+              options.codeGraphCheck,
+            ),
+          )
+        : codeGraphDoctorCheck(config.agentContextHome, options.onCodeGraphProgress, options.codeGraphCheck),
     ),
     yield* safeDoctorCheck('memory project consistency', memoryProjectConsistencyCheck(config)),
     yield* safeDoctorCheck('deferred code anchors', deferredCodeAnchorDoctorCheck(config)),
@@ -430,20 +441,26 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
       yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
     }
   }
-  yield* repairCodeGraphIndexes(
-    config.agentContextHome,
-    dryRun,
-    progress => Console.log(codeGraphMaintenanceProgressMessage(progress, dryRun)),
-    completion =>
-      Console.log(codeGraphRepairSummaryMessage(completion.summary, dryRun)).pipe(
-        Effect.andThen(runDoctor(config, {codeGraphCheck: completion.doctorCheck, dryRun, strict: false})),
+  let completion: CodeGraphRepairCompletion | undefined;
+  yield* withProgressLine(
+    formatCodeGraphRepairProgressLine({current: 0, phase: 'checking', total: 1}, dryRun),
+    update =>
+      repairCodeGraphIndexes(
+        config.agentContextHome,
+        dryRun,
+        progress => update(formatCodeGraphRepairProgressLine(progress, dryRun)),
+        result => Effect.sync(() => void (completion = result)),
+        {migrateSchema: true, mode: options.deep === true ? 'deep' : 'quick'},
       ),
-    {migrateSchema: true, mode: options.deep === true ? 'deep' : 'quick'},
   ).pipe(
     Effect.mapError(cause =>
       LifecycleOperationError.make({message: `Native code graph repair failed: ${errorMessage(cause)}`}),
     ),
   );
+  if (completion !== undefined) {
+    yield* Console.log(codeGraphRepairSummaryMessage(completion.summary, dryRun));
+    yield* runDoctor(config, {codeGraphCheck: completion.doctorCheck, dryRun, strict: false});
+  }
   if (options.postUpdate !== false) {
     yield* maybeRunPostUpdateAfterRepair(config, {dryRun});
   }
@@ -557,29 +574,6 @@ function recallProgressMessage(progress: RecallIndexProgress): string {
     return `Building lexical recall index: ${progress.completed}/${progress.total} changed document(s) indexed (${percentage}%; ${progress.scanned} canonical document(s) scanned).`;
   }
   return `Writing lexical recall postings: ${progress.completed}/${progress.total} changed document(s) (${percentage}%), ${progress.removed} stale document(s) removed.`;
-}
-
-function codeGraphMaintenanceProgressMessage(progress: CodeGraphMaintenanceProgress, dryRun = false): string {
-  const database = `native code graph database ${progress.current}/${progress.total}`;
-  switch (progress.phase) {
-    case 'checking':
-      return `Checking ${database}.`;
-    case 'cleaning-snapshots':
-      return `${dryRun ? 'Would clean' : 'Cleaning'} ${progress.snapshots ?? 0} incomplete snapshot(s) from ${database}.`;
-    case 'cleaning-vectors':
-      return `Checking temporary graph state for ${database}.`;
-    case 'deferred':
-      if (progress.reason === 'active-build') {
-        return `Deferred ${database}: an active graph build owns the checkout; update and repair will not wait for it.`;
-      }
-      return progress.reason === 'schema-upgrade-on-use'
-        ? `Deferred ${database}: ready snapshots remain usable while background schema migration retries.`
-        : `Deferred ${database}: run \`threadnote repair --deep\` when a full derived-store check is convenient.`;
-    case 'discarding':
-      return `${dryRun ? 'Would discard' : 'Discarding'} unreadable derived ${database}.`;
-    case 'migrating-schema':
-      return `${dryRun ? 'Would migrate' : 'Migrating'} the persistent schema for ${database}.`;
-  }
 }
 
 function codeGraphRepairSummaryMessage(

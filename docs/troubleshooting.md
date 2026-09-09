@@ -152,10 +152,10 @@ errors are reported as removal errors rather than being mislabeled as lock failu
 
 ## Seed is slow or skips files
 
-Threadnote applies `.threadnoteignore` while walking the filesystem, before entering ignored directories. The default
-rules exclude dependency and build caches such as `node_modules/` and `.nx/`. Broad patterns also skip every directory
-whose name starts with `.`, while an explicitly named manifest pattern such as `.github/**` or `.claude/**` still
-includes that directory.
+Threadnote applies the packaged `.threadnoteignore` while walking the filesystem, before entering ignored directories.
+The default rules exclude dependency and build caches such as `node_modules/` and `.nx/`. Broad patterns also skip every
+directory whose name starts with `.`, while an explicitly named manifest pattern such as `.github/**` or `.claude/**`
+still includes that directory.
 
 Each project is limited to 20,000 candidates, 250,000 visited non-ignored entries, and 4 MiB per file. Narrow the
 project's seed patterns or extend `.threadnoteignore` if a limit is reported. A failed project no longer prevents later
@@ -278,8 +278,11 @@ larger bounded sample. Human status and Manager continue to use the complete int
 
 `threadnote graph inventory` is a non-mutating, aggregate-only admission preview. It reports exact file and byte totals
 for eligible and skipped inputs, grouped by language, file role, language-pack classifier, and decision reason. The
-breakdown makes SVG, heavy/generated JSON, Git ignore, and `.threadnoteignore` decisions visible while separately
-showing admitted TypeScript, package manifests, Nx configuration, and TypeScript configuration. Add `--json` for the
+breakdown makes SVG, heavy/generated JSON, Git ignore, committed `.threadnoteignore`, and uncommitted
+`.threadnoteignore.local` decisions visible while separately
+showing admitted TypeScript, package manifests, Nx configuration, and TypeScript configuration. The two Threadnote ignore
+files use the same pattern syntax and are combined as a union, so a path ignored in either file is skipped. Keep
+`.threadnoteignore.local` uncommitted for machine-specific extra excludes in large monorepos. Add `--json` for the
 versioned path-free payload. Ordinary source blobs are not hydrated; Threadnote reads only the small resolution
 manifests needed to apply the same declared-source-root rules as indexing.
 
@@ -290,9 +293,8 @@ an exceeded scan/rewrite bound still triggers a correctness-preserving full mate
 projects, Threadnote performs one bounded candidate scan in the current file context so imports that become resolvable
 after a module is added are included in the incremental rewrite.
 
-Interactive indexing shows each Git read batch, then each extraction file and language with parse timing, followed by
-the persistence batches. Long pauses can therefore be attributed to input, parsing, or SQLite publication instead of
-appearing as an undifferentiated spinner. Generated roots such as `node_modules`, `dist`, `build`, `out`, hidden caches, and
+Interactive indexing rewrites one compact status line (TTY `\r`) with phase, counts, and an ETA when available. File
+paths and per-file parse/persist timings stay out of scrollback. Generated roots such as `node_modules`, `dist`, `build`, `out`, hidden caches, and
 `bazel-*` are pruned before reads. SVG and snapshot/golden/fixture or generated JSON/JSONC are excluded before blob
 reads and hashing. Generic JSON/JSONC at or above 256 KiB is also excluded, while recognized package, Nx, TypeScript,
 schema, and configuration inputs remain eligible below their separate 1 MiB safety cap.
