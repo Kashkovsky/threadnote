@@ -851,34 +851,53 @@ describe('bounded code graph maintenance', () => {
       yield* store.initialize(databasePath);
       yield* Effect.sync(() => makePreReconciliationIndexRevision7(databasePath));
 
-      const schemaBeforePreview = yield* Effect.sync(() => readReconciliationPreparationState(databasePath));
-      const filesBeforePreview = yield* Effect.promise(() => readDatabaseDurabilityEvidence(databasePath));
-      const repeated = yield* Effect.forEach(
-        [1, 2, 3, 4, 5],
-        () => store.prepareWorktreeReconciliationIndexes(databasePath, {preview: true}),
-        {concurrency: 1},
+      yield* Effect.acquireUseRelease(
+        Effect.sync(() => new Database(databasePath, {strict: true})),
+        keeper =>
+          Effect.gen(function* () {
+            // Keep committed WAL content present while preview connections close; a final writer close may
+            // otherwise remove an empty sidecar without changing the database or committing the preview.
+            yield* Effect.sync(() => {
+              keeper.run('PRAGMA wal_autocheckpoint = 0');
+              keeper
+                .query('INSERT INTO schema_metadata (key, value) VALUES (?, ?)')
+                .run('reconciliation_preview_fixture', 'committed-before-preview');
+              expect(keeper.inTransaction).toBe(false);
+            });
+            const schemaBeforePreview = yield* Effect.sync(() => readReconciliationPreparationState(databasePath));
+            const filesBeforePreview = yield* Effect.promise(() => readDatabaseDurabilityEvidence(databasePath));
+            expect('bytes' in filesBeforePreview.wal && filesBeforePreview.wal.bytes > 32).toBe(true);
+            const repeated = yield* Effect.forEach(
+              [1, 2, 3, 4, 5],
+              () => store.prepareWorktreeReconciliationIndexes(databasePath, {preview: true}),
+              {concurrency: 1},
+            );
+            expect(repeated).toEqual(repeated.map(() => ({state: 'migration-ready'})));
+            const typedFailure = yield* store
+              .prepareWorktreeReconciliationIndexes(databasePath, {
+                afterPreviewTransactionStarted: () => Effect.fail(TestError.make({message: 'stop preview'})),
+                preview: true,
+              })
+              .pipe(Effect.exit);
+            expect(Exit.isFailure(typedFailure)).toBe(true);
+            const previewStarted = yield* Deferred.make<void>();
+            const interruptedPreview = yield* Effect.forkChild(
+              store.prepareWorktreeReconciliationIndexes(databasePath, {
+                afterPreviewTransactionStarted: () =>
+                  Deferred.succeed(previewStarted, undefined).pipe(Effect.andThen(Effect.never)),
+                preview: true,
+              }),
+            );
+            yield* Deferred.await(previewStarted);
+            yield* Fiber.interrupt(interruptedPreview);
+            const filesAfterPreview = yield* Effect.promise(() => readDatabaseDurabilityEvidence(databasePath));
+            expect(filesAfterPreview).toEqual(filesBeforePreview);
+            expect(yield* Effect.sync(() => readReconciliationPreparationState(databasePath))).toEqual(
+              schemaBeforePreview,
+            );
+          }),
+        keeper => Effect.sync(() => keeper.close(true)),
       );
-      expect(repeated).toEqual(repeated.map(() => ({state: 'migration-ready'})));
-      const typedFailure = yield* store
-        .prepareWorktreeReconciliationIndexes(databasePath, {
-          afterPreviewTransactionStarted: () => Effect.fail(TestError.make({message: 'stop preview'})),
-          preview: true,
-        })
-        .pipe(Effect.exit);
-      expect(Exit.isFailure(typedFailure)).toBe(true);
-      const previewStarted = yield* Deferred.make<void>();
-      const interruptedPreview = yield* Effect.forkChild(
-        store.prepareWorktreeReconciliationIndexes(databasePath, {
-          afterPreviewTransactionStarted: () =>
-            Deferred.succeed(previewStarted, undefined).pipe(Effect.andThen(Effect.never)),
-          preview: true,
-        }),
-      );
-      yield* Deferred.await(previewStarted);
-      yield* Fiber.interrupt(interruptedPreview);
-      const filesAfterPreview = yield* Effect.promise(() => readDatabaseDurabilityEvidence(databasePath));
-      expect(filesAfterPreview).toEqual(filesBeforePreview);
-      expect(yield* Effect.sync(() => readReconciliationPreparationState(databasePath))).toEqual(schemaBeforePreview);
 
       const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
         migrateSchema: true,
