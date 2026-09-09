@@ -1,4 +1,5 @@
 import {Console, Context, Effect, Layer, Logger, Schema} from 'effect';
+import {SystemInfo} from './system.js';
 
 class CliOutputError extends Schema.TaggedError<CliOutputError>()('CliOutputError', {
   cause: Schema.optionalKey(Schema.Defect()),
@@ -100,28 +101,32 @@ const formatConsoleArguments = (arguments_: readonly unknown[]): string =>
   arguments_.map(value => (typeof value === 'string' ? value : String(value))).join(' ');
 
 export class CliOutput extends Context.Service<CliOutput, CliOutputShape>()('threadnote/effect/cli_output/CliOutput') {
-  static readonly layer = Layer.sync(CliOutput, () => {
-    const stdout = makeQueuedCliWriter(() => Bun.stdout.writer({highWaterMark: 64 * 1024}), {
-      isTty: process.stdout.isTTY === true,
-    });
-    const stderr = makeQueuedCliWriter(() => Bun.stderr.writer({highWaterMark: 64 * 1024}), {
-      isTty: process.stderr.isTTY === true,
-    });
-    return CliOutput.of({
-      drain: Effect.tryPromise({
-        try: () => Promise.all([stdout.drain(), stderr.drain()]).then(() => undefined),
-        catch: cause => CliOutputError.make({cause, message: 'Failed to drain Threadnote CLI output.'}),
-      }),
-      enqueueError: stderr.enqueue,
-      enqueueOutput: stdout.enqueue,
-      flush: Effect.tryPromise({
-        try: () => Promise.all([stdout.flush(), stderr.flush()]).then(() => undefined),
-        catch: cause => CliOutputError.make({cause, message: 'Failed to flush Threadnote CLI output.'}),
-      }),
-      writeError: makeFinalCliOutput(stderr.write),
-      writeFinal: makeFinalCliOutput(stdout.write),
-    });
-  });
+  static readonly layer = Layer.effect(
+    CliOutput,
+    Effect.gen(function* () {
+      const system = yield* SystemInfo;
+      const stdout = makeQueuedCliWriter(() => Bun.stdout.writer({highWaterMark: 64 * 1024}), {
+        isTty: system.stdoutIsTTY,
+      });
+      const stderr = makeQueuedCliWriter(() => Bun.stderr.writer({highWaterMark: 64 * 1024}), {
+        isTty: system.stderrIsTTY === true,
+      });
+      return CliOutput.of({
+        drain: Effect.tryPromise({
+          try: () => Promise.all([stdout.drain(), stderr.drain()]).then(() => undefined),
+          catch: cause => CliOutputError.make({cause, message: 'Failed to drain Threadnote CLI output.'}),
+        }),
+        enqueueError: stderr.enqueue,
+        enqueueOutput: stdout.enqueue,
+        flush: Effect.tryPromise({
+          try: () => Promise.all([stdout.flush(), stderr.flush()]).then(() => undefined),
+          catch: cause => CliOutputError.make({cause, message: 'Failed to flush Threadnote CLI output.'}),
+        }),
+        writeError: makeFinalCliOutput(stderr.write),
+        writeFinal: makeFinalCliOutput(stdout.write),
+      });
+    }),
+  );
 }
 
 /** Routes Effect Console output through the same awaited, backpressured sinks as final payloads. */
