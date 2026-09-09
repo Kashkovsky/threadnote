@@ -1,11 +1,14 @@
 import {Effect, FileSystem, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {type CommandExecutor, runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
+import {succeedUndefined} from '../effect/optional.js';
 import {platformPathFor, SystemInfo} from '../effect/system.js';
 import {CodeGraphRepositoryError, type RepositoryIdentity, type RepositoryIdentityExpectation} from './types.js';
 
 const IDENTITY_FORMAT_VERSION = 1;
 const GIT_DIRECTORY_OUTPUT_BYTES_MAXIMUM = 16 * 1_024;
+const GIT_TEXT_OUTPUT_BYTES_MAXIMUM = 2 * 1_048_576;
+const REPOSITORY_METADATA_BYTES_MAXIMUM = GIT_TEXT_OUTPUT_BYTES_MAXIMUM + GIT_DIRECTORY_OUTPUT_BYTES_MAXIMUM + 128;
 const REPOSITORY_STATUS_OBSERVATION_BYTES_MAXIMUM = 64 * 1_024;
 
 export const CODE_GRAPH_WORKTREE_REGISTRY_LIMITS = {
@@ -29,29 +32,64 @@ interface RegisteredRepositoryWorktree extends RepositoryWorktreeRegistryIdentit
 export const resolveRepositoryIdentityDetail = Effect.fn('codeGraph.resolveRepositoryIdentityDetail')(function* (
   cwd: string,
 ) {
+  const result = yield* runBinaryCommandEffect(
+    'git',
+    [
+      '-C',
+      cwd,
+      'rev-parse',
+      '--path-format=absolute',
+      '--show-toplevel',
+      '--git-common-dir',
+      '--git-dir',
+      '--show-object-format',
+      'HEAD',
+    ],
+    {maxOutputBytes: REPOSITORY_METADATA_BYTES_MAXIMUM, timeoutMs: 30_000},
+  ).pipe(
+    Effect.catchTag('CommandFailed', () => succeedUndefined),
+    Effect.mapError(cause => CodeGraphRepositoryError.make({message: `Not a Git repository: ${cause.message}`})),
+  );
+  // An unborn HEAD or an ambiguous frame must repeat complete discovery at the
+  // original caller. Never combine a partial batch with later fallback fields.
+  const metadata = result?.exitCode === 0 ? parseRepositoryIdentityMetadata(result.stdout) : undefined;
+  return yield* resolveRepositoryIdentityDetailFromObservation(cwd, metadata);
+});
+
+const resolveRepositoryIdentityDetailFromObservation = Effect.fn(
+  'codeGraph.resolveRepositoryIdentityDetailFromObservation',
+)(function* (cwd: string, metadata: RepositoryIdentityMetadata | undefined) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
-  const rootResult = yield* runGit(cwd, ['rev-parse', '--show-toplevel']).pipe(
-    Effect.mapError(cause => CodeGraphRepositoryError.make({message: `Not a Git repository: ${cause.message}`})),
-  );
+  const rootResult =
+    metadata === undefined
+      ? yield* runGit(cwd, ['rev-parse', '--show-toplevel']).pipe(
+          Effect.mapError(cause => CodeGraphRepositoryError.make({message: `Not a Git repository: ${cause.message}`})),
+        )
+      : {stdout: metadata.repoRoot};
   const repoRoot = yield* fs.realPath(rootResult.stdout.trim());
-  const [directoryResult, formatResult, commitResult, ignoreCaseResult, remoteResult, branch] = yield* Effect.all(
+  const [directories, formatResult, commitResult, ignoreCaseResult, remoteResult, branch] = yield* Effect.all(
     [
-      runBinaryCommandEffect(
-        'git',
-        ['-C', repoRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--git-dir'],
-        {maxOutputBytes: GIT_DIRECTORY_OUTPUT_BYTES_MAXIMUM, timeoutMs: 30_000},
-      ),
-      runGit(repoRoot, ['rev-parse', '--show-object-format']),
-      runGit(repoRoot, ['rev-parse', 'HEAD'], true),
+      metadata === undefined
+        ? runBinaryCommandEffect(
+            'git',
+            ['-C', repoRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--git-dir'],
+            {maxOutputBytes: GIT_DIRECTORY_OUTPUT_BYTES_MAXIMUM, timeoutMs: 30_000},
+          ).pipe(Effect.map(result => parseGitDirectoryOutput(result.stdout)))
+        : Effect.succeed(metadata),
+      metadata === undefined
+        ? runGit(repoRoot, ['rev-parse', '--show-object-format'])
+        : Effect.succeed({stdout: metadata.objectFormat}),
+      metadata === undefined
+        ? runGit(repoRoot, ['rev-parse', 'HEAD'], true)
+        : Effect.succeed({exitCode: 0, stdout: metadata.headCommit}),
       runGit(repoRoot, ['config', '--bool', 'core.ignorecase'], true),
       runGit(repoRoot, ['remote', 'get-url', 'origin'], true),
       observeRepositoryBranch(repoRoot),
     ],
     {concurrency: 6},
   );
-  const directories = parseGitDirectoryOutput(directoryResult.stdout);
   if (directories === undefined) {
     return yield* CodeGraphRepositoryError.make({message: 'Git repository directory metadata is invalid.'});
   }
@@ -85,6 +123,37 @@ export const resolveRepositoryIdentityDetail = Effect.fn('codeGraph.resolveRepos
   } satisfies RepositoryIdentity;
   return {gitDirectory: directories.gitDirectory, identity};
 });
+
+interface RepositoryIdentityMetadata {
+  readonly repoRoot: string;
+  readonly commonDirectory: string;
+  readonly gitDirectory: string;
+  readonly objectFormat: 'sha1' | 'sha256';
+  readonly headCommit: string;
+}
+
+/** @internal Successful bounded Git metadata only; undefined requests fresh legacy discovery. */
+export function parseRepositoryIdentityMetadata(output: Uint8Array): RepositoryIdentityMetadata | undefined {
+  if (output.byteLength === 0 || output.byteLength > REPOSITORY_METADATA_BYTES_MAXIMUM) return undefined;
+  try {
+    const decoded = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(output);
+    if (!decoded.endsWith('\n')) return undefined;
+    const records = decoded.slice(0, -1).split('\n');
+    if (records.length !== 5 || records.some(record => !record || record.includes('\0') || record.includes('\r'))) {
+      return undefined;
+    }
+    const [repoRoot, commonDirectory, gitDirectory, objectFormat, headCommit] = records;
+    // Full discovery trims the root output. Preserve that behavior by declining
+    // the fast path for roots whose edge whitespace would select a different path.
+    if (repoRoot !== repoRoot.trim() || byteLength(`${repoRoot}\n`) > GIT_TEXT_OUTPUT_BYTES_MAXIMUM) return undefined;
+    if (byteLength(`${commonDirectory}\n${gitDirectory}\n`) > GIT_DIRECTORY_OUTPUT_BYTES_MAXIMUM) return undefined;
+    if (objectFormat !== 'sha1' && objectFormat !== 'sha256') return undefined;
+    if (!(objectFormat === 'sha1' ? /^[0-9a-f]{40}$/u : /^[0-9a-f]{64}$/u).test(headCommit)) return undefined;
+    return {repoRoot, commonDirectory, gitDirectory, objectFormat, headCommit};
+  } catch {
+    return undefined;
+  }
+}
 
 export function normalizeRepositoryBranchName(value: string): string | undefined {
   const branch = value.trim();
@@ -680,7 +749,7 @@ export function repositoryIdentityMatchesExpectation(
 function runGit(cwd: string, args: readonly string[], allowFailure = false) {
   return runCommandEffect('git', ['-C', cwd, ...args], {
     allowFailure,
-    maxOutputBytes: 2 * 1_048_576,
+    maxOutputBytes: GIT_TEXT_OUTPUT_BYTES_MAXIMUM,
     timeoutMs: 30_000,
   });
 }

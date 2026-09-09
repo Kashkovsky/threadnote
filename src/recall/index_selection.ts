@@ -365,13 +365,17 @@ export function selectRecallQueryTermStatistics(
        )`,
       scope.params,
     );
+    // A URI range hint prevents rowid lookup from a matching term posting and
+    // can rescan the authorized range for each match. Keep authorization in
+    // WHERE while allowing that lookup; retain workspace-only access plans.
+    const frequencyIndexHint = uriScope.restricted ? '' : indexHint;
     const frequencies: Array<{readonly document_frequency: number; readonly term: string}> = [];
     for (let index = 0; index < terms.length; index += 300) {
       const batch = terms.slice(index, index + 300);
       frequencies.push(
         ...(yield* sql.unsafe<{readonly document_frequency: number; readonly term: string}>(
           `SELECT p.term, COUNT(DISTINCT d.logical_key) AS document_frequency
-           FROM documents AS d${indexHint}
+           FROM documents AS d${frequencyIndexHint}
            INNER JOIN postings AS p ON p.document_id = d.id
            WHERE p.term IN (${batch.map(() => '?').join(', ')})
              AND ${scope.sql}
