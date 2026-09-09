@@ -20,3 +20,7 @@ The retained archive digest is
 `sha256:1319ad4f10308a604470300c79e58113ed41793ea211cba22f94b1909b0751bc`. A replacement candidate must pass the
 100-sample policy prospectively on the normalized `github-hosted-windows-x64` runner class. Linux and macOS use the
 same 100-sample workflow observation but retain their tighter 1,000 ms scale ceiling.
+
+Two later 100-sample hosted failures still breached the 1,200 ms fuse with green median and CPU companions; v2
+raises that fuse and adds a one-file-index safety ceiling. See
+`windows-scale-10k-hosted-tail-calibration-v2.md`.

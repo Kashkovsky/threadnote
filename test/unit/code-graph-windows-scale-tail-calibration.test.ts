@@ -26,6 +26,7 @@ const GuardedHotQueryBudget = Schema.Struct({
   hotQueryProcessCpuP95MillisecondsMaximum: PositiveFinite,
   hotQuerySamplesMinimum: PositiveInteger,
   hotQueryWallP95ToleranceRatioMaximum: NonNegativeFinite,
+  oneFileIncrementalP95MillisecondsMaximum: PositiveFinite,
 });
 
 const ScalePerformanceBudget = Schema.Struct({
@@ -254,15 +255,16 @@ describe('hosted Windows 10k scheduler-tail calibration', () => {
           calibration.governedInputs.roundingQuantumMilliseconds,
       ) * calibration.governedInputs.roundingQuantumMilliseconds;
     expect(derived).toBe(calibration.derivation.prospectiveHotQueryP95MillisecondsMaximum);
-    expect(hostedBudget).toEqual({
-      hotQueryP50MillisecondsMaximum: calibration.governedInputs.companionHotQueryP50MillisecondsMaximum,
-      hotQueryP95MillisecondsMaximum: derived,
-      hotQueryProcessCpuP95MillisecondsMaximum:
-        calibration.governedInputs.companionHotQueryProcessCpuP95MillisecondsMaximum,
-      hotQuerySamplesMinimum: quantileCalibration.governedInputs.prospectiveSamples,
-      hotQueryWallP95ToleranceRatioMaximum: calibration.governedInputs.additionalToleranceRatio,
-    });
+    expect(derived).toBe(1_200);
     expect(calibration.governedInputs.additionalToleranceRatio).toBe(0);
+    expect(hostedBudget.hotQueryP50MillisecondsMaximum).toBe(
+      calibration.governedInputs.companionHotQueryP50MillisecondsMaximum,
+    );
+    expect(hostedBudget.hotQueryProcessCpuP95MillisecondsMaximum).toBe(
+      calibration.governedInputs.companionHotQueryProcessCpuP95MillisecondsMaximum,
+    );
+    expect(hostedBudget.hotQuerySamplesMinimum).toBe(quantileCalibration.governedInputs.prospectiveSamples);
+    expect(hostedBudget.hotQueryWallP95ToleranceRatioMaximum).toBe(calibration.governedInputs.additionalToleranceRatio);
   });
 
   it('binds the failure to hosted wall delay while the independent CPU guard stayed green', () => {
@@ -338,9 +340,9 @@ describe('hosted Windows 10k scheduler-tail calibration', () => {
     expect(governed.prospectiveSamples - (Math.floor(governed.prospectiveSamples * 0.95) + 1)).toBe(
       governed.productionP95ExcludedUpperOrderStatistics,
     );
+    expect(governed.hardWallP95MillisecondsMaximum).toBe(1_200);
     expect(hostedBudget).toMatchObject({
       hotQueryP50MillisecondsMaximum: governed.companionHotQueryP50MillisecondsMaximum,
-      hotQueryP95MillisecondsMaximum: governed.hardWallP95MillisecondsMaximum,
       hotQueryProcessCpuP95MillisecondsMaximum: governed.companionHotQueryProcessCpuP95MillisecondsMaximum,
       hotQuerySamplesMinimum: governed.prospectiveSamples,
       hotQueryWallP95ToleranceRatioMaximum: governed.additionalToleranceRatio,
