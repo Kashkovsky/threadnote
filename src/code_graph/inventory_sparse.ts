@@ -119,8 +119,8 @@ export const inventoryRepositoryFromReusableCleanBaseSlice = Effect.fn(
   const overlay = yield* readDirtyOverlay(
     identity,
     path,
-    environment.threadnoteIgnore,
-    compileThreadnoteIgnore(environment.threadnoteIgnore),
+    {committed: environment.threadnoteIgnore, local: environment.threadnoteIgnoreLocal},
+    compileThreadnoteIgnore(environment.threadnoteIgnore, environment.threadnoteIgnoreLocal),
     options.cachedCommittedFileKeys ?? new Set(),
     languagePacks,
     projectRoots,

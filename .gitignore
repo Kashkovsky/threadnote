@@ -1,4 +1,6 @@
 .DS_Store
+# Checkout-local extra graph excludes; keep uncommitted.
+.threadnoteignore.local
 node_modules/
 dist/
 site-dist/

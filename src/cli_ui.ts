@@ -170,6 +170,30 @@ export interface ProgressIndicator {
   readonly stop: Effect.Effect<void>;
 }
 
+const INTERACTIVE_PROGRESS_SPINNER_WIDTH = 4;
+
+/** Keep rewritten TTY progress on one visual row so long status text cannot wrap and flood the terminal. */
+export function clipInteractiveProgressText(text: string, columns: number): string {
+  const budget = Math.max(
+    16,
+    (Number.isFinite(columns) ? Math.floor(columns) : 80) - INTERACTIVE_PROGRESS_SPINNER_WIDTH,
+  );
+  const characters = Array.from(text);
+  if (characters.length <= budget) return text;
+  return `${characters.slice(0, Math.max(1, budget - 1)).join('')}…`;
+}
+
+export function withProgressLine<A, E, R>(
+  initial: string,
+  use: (update: (message: string) => Effect.Effect<void>) => Effect.Effect<A, E, R>,
+) {
+  return Effect.acquireUseRelease(
+    startProgress(initial),
+    progress => use(message => progress.update(message).pipe(Effect.ignore)),
+    progress => progress.stop.pipe(Effect.ignore),
+  );
+}
+
 interface LineProgressState {
   readonly family: string;
   readonly lastEmittedAtMilliseconds: number;
@@ -251,15 +275,27 @@ export const startProgress = Effect.fn('cliUi.startProgress')(function* (message
   const render = Effect.all([
     Ref.getAndUpdate(frameIndex, index => (index + 1) % frames.length),
     Ref.get(currentMessage),
+    terminal.columns.pipe(Effect.orElseSucceed(() => 80)),
   ]).pipe(
-    Effect.flatMap(([index, text]) =>
-      flush.pipe(Effect.andThen(terminal.display(`\r\u001b[2K${muted(frames[index])} ${text}`))),
+    Effect.flatMap(([index, text, columns]) =>
+      flush.pipe(
+        Effect.andThen(
+          terminal.display(
+            `\r\u001b[2K${muted(frames[index])} ${clipInteractiveProgressText(text, Number.isFinite(columns) ? columns : 80)}`,
+          ),
+        ),
+      ),
     ),
   );
   yield* render;
   const fiber = yield* render.pipe(Effect.repeat(Schedule.spaced(100)), Effect.forkDetach);
   return {
-    update: (nextMessage: string) => Ref.set(currentMessage, nextMessage).pipe(Effect.andThen(render)),
+    update: (nextMessage: string) =>
+      Ref.get(currentMessage).pipe(
+        Effect.flatMap(current =>
+          current === nextMessage ? Effect.void : Ref.set(currentMessage, nextMessage).pipe(Effect.andThen(render)),
+        ),
+      ),
     stop: Fiber.interrupt(fiber).pipe(Effect.andThen(flush), Effect.andThen(terminal.display('\r\u001b[2K'))),
   };
 });

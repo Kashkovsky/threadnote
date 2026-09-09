@@ -1,6 +1,5 @@
 import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path, Schema} from 'effect';
 import {CommandExecutor, runCommandEffect} from '../effect/command.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {
   codeGraphDirectPersistentCapacityProtector,
@@ -9,19 +8,11 @@ import {
 } from './indexer.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {worktreeOverlayState} from './inventory.js';
+import type {CodeGraphCliPurgeProgress} from './cli_progress.js';
 import {CodeGraphLanguagePackRegistry, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
-import {
-  codeGraphLayout,
-  codeGraphMaintenanceLockPath,
-  codeGraphRepositoryLockPath,
-  type CodeGraphLayout,
-} from './layout.js';
-import {
-  awaitCodeGraphWorktreeBuilds,
-  withCodeGraphDatabaseWriteLock,
-  withCodeGraphMaintenanceIntent,
-  withCodeGraphTargetWorktreeLock,
-} from './maintenance_gate.js';
+import {codeGraphLayout, type CodeGraphLayout} from './layout.js';
+import {withCodeGraphTargetWorktreeLock} from './maintenance_gate.js';
+import {purgeCodeGraphRepositoryRoot} from './maintenance.js';
 import {
   recordVerifiedCodeGraphLocalAssociation,
   resolveAndRecordCodeGraphLocalAssociation,
@@ -131,7 +122,11 @@ export class CodeGraphQueryService extends Context.Service<
       interlock?: CodeGraphSharedReadyAttachInterlock,
     ) => Effect.Effect<CodeGraphStatus, unknown>;
     readonly inspect: (options: CodeGraphInspectOptions) => Effect.Effect<CodeGraphQueryResult, unknown>;
-    readonly purge: (threadnoteHome: string, cwd: string) => Effect.Effect<string, unknown>;
+    readonly purge: (
+      home: string,
+      cwd: string,
+      onProgress?: (progress: CodeGraphCliPurgeProgress) => Effect.Effect<void, unknown>,
+    ) => Effect.Effect<string, unknown>;
     readonly status: (
       threadnoteHome: string,
       cwd: string,
@@ -660,43 +655,17 @@ export class CodeGraphQueryService extends Context.Service<
               return result;
             }),
           ),
-        purge: (threadnoteHome, cwd) =>
+        purge: (threadnoteHome, cwd, onProgress) =>
           withRepositoryServices(
             Effect.gen(function* () {
               const identity = yield* resolveRepositoryIdentity(cwd);
               const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
-              const lockOptions = {
-                retryIntervalMilliseconds: 100,
-                staleAfterMilliseconds: 120_000,
-                waitTimeoutMilliseconds: 10 * 60_000,
-              } as const;
-              yield* withExclusiveFileLock(
-                fs,
-                codeGraphMaintenanceLockPath(path, threadnoteHome),
-                lockOptions,
-                withCodeGraphMaintenanceIntent(
-                  threadnoteHome,
-                  withExclusiveFileLock(
-                    fs,
-                    codeGraphRepositoryLockPath(path, threadnoteHome, identity.checkoutId),
-                    lockOptions,
-                    awaitCodeGraphWorktreeBuilds(
-                      threadnoteHome,
-                      identity.checkoutId,
-                      lockOptions.waitTimeoutMilliseconds,
-                    ).pipe(
-                      Effect.andThen(
-                        withCodeGraphDatabaseWriteLock(
-                          threadnoteHome,
-                          identity.checkoutId,
-                          fs.remove(layout.repositoryRoot, {recursive: true, force: true}),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
+              return yield* purgeCodeGraphRepositoryRoot(
+                threadnoteHome,
+                identity.checkoutId,
+                layout.repositoryRoot,
+                onProgress,
               );
-              return layout.repositoryRoot;
             }),
           ),
         status: (threadnoteHome, cwd, options) =>

@@ -12,8 +12,11 @@ import {
   codeGraphRepositoryLockActive,
   codeGraphWorktreeBuildActive,
   withCodeGraphDatabaseWriteLock,
-  withCodeGraphMaintenanceIntent,
+  withCodeGraphReportedMaintenanceIntent,
+  type CodeGraphMaintenanceProgress as CodeGraphReportedMaintenanceProgress,
+  type CodeGraphMaintenanceProgressReporter,
 } from './maintenance_gate.js';
+import type {CodeGraphCliPurgeProgress} from './cli_progress.js';
 import {CodeGraphStore, type CodeGraphDatabaseHealth} from './store.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
 import {CODE_GRAPH_PERSISTENT_SCHEMA_CITATION_PREDECESSOR} from './store/schema_revision.js';
@@ -121,6 +124,7 @@ export interface CodeGraphMaintenanceProgress {
 }
 
 type CodeGraphProgressHandler = (progress: CodeGraphMaintenanceProgress) => Effect.Effect<void, unknown>;
+type CodeGraphPurgeProgressHandler = (progress: CodeGraphCliPurgeProgress) => Effect.Effect<void, unknown>;
 type CodeGraphRepairCompletionHandler<R> = (completion: CodeGraphRepairCompletion) => Effect.Effect<void, unknown, R>;
 type CodeGraphQuickCheck =
   {readonly health: CodeGraphDatabaseHealth; readonly state: 'checked'} | {readonly state: 'unreadable'};
@@ -303,317 +307,330 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
   if (options.targetCheckoutId !== undefined && !/^[0-9a-f]{64}$/.test(options.targetCheckoutId)) {
     return yield* CodeGraphMaintenanceError.make({message: 'Code graph checkout identity is invalid.'});
   }
-  const repair = Effect.gen(function* () {
-    const allDatabases = yield* codeGraphDatabasePaths(threadnoteHome);
-    const allRepositoryCheckoutIds = yield* codeGraphRepositoryCheckoutIds(threadnoteHome);
-    const repositoryCheckoutIds =
-      options.targetCheckoutId === undefined
-        ? allRepositoryCheckoutIds
-        : allRepositoryCheckoutIds.filter(checkoutId => checkoutId === options.targetCheckoutId);
-    const databases =
-      options.targetCheckoutId === undefined
-        ? allDatabases
-        : allDatabases.filter(database => path.basename(path.dirname(database)) === options.targetCheckoutId);
-    const obsoleteBefore =
-      options.targetCheckoutId === undefined
-        ? yield* inspectObsoleteCodeGraphStores(threadnoteHome)
-        : emptyObsoleteInventory();
-    const deep = options.mode !== 'quick';
-    let deferredDatabases = 0;
-    let databaseCount = databases.length;
-    let discarded = 0;
-    let migratedDatabases = 0;
-    let removedIncompleteSnapshots = 0;
-    let remainingIncompleteSnapshots = 0;
-    let removedTemporaryFiles = 0;
-    let readySnapshots = 0;
-    for (const [index, database] of databases.entries()) {
-      const progress = (input: Omit<CodeGraphMaintenanceProgress, 'current' | 'total'>) =>
-        onProgress?.({current: index + 1, total: databases.length, ...input}) ?? Effect.void;
-      yield* progress({phase: 'checking'});
-      const repositoryRoot = path.dirname(database);
-      const maintained = yield* withDatabaseLock(
-        fs,
-        path,
-        threadnoteHome,
-        database,
-        Effect.gen(function* () {
-          const decision = yield* Effect.scoped(
-            Effect.gen(function* () {
-              const checkoutId = path.basename(repositoryRoot);
-              const repositoryTarget = yield* openCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
-              if (repositoryTarget === undefined) {
-                return yield* CodeGraphMaintenanceError.make({
-                  message: 'Code graph checkout target changed before repair.',
-                });
-              }
-              return yield* store.withSession(
-                database,
-                Effect.gen(function* () {
-                  let diagnosed = yield* diagnoseCodeGraphDatabase(threadnoteHome, database, deep).pipe(Effect.option);
-                  let previewingSchemaMigration = false;
-                  let previewedMigrationPreservesIncompleteSnapshots = false;
-                  // A same-name alias index can belong to another table or carry
-                  // incompatible keys. The initializer must never bless that drift.
-                  // Quick repair preserves the derived store for an explicit deep
-                  // decision; deep repair can discard it identically in preview and
-                  // apply without claiming that schema migration succeeded.
-                  if (
-                    diagnosed._tag === 'Some' &&
-                    diagnosed.value.integrity === 'incompatible' &&
-                    (diagnosed.value.snapshotFileCitationBaseIndexes === 'incompatible' ||
-                      diagnosed.value.snapshotFileCitationSchema === 'incompatible' ||
-                      diagnosed.value.snapshotFileCitationSchema === 'column-only-with-authority' ||
-                      (diagnosed.value.snapshotFileCitationSchema === 'released-absent-with-authority' &&
-                        diagnosed.value.persistentExtensionSchemaRevision !==
-                          CODE_GRAPH_PERSISTENT_SCHEMA_CITATION_PREDECESSOR.value))
-                  ) {
-                    return deep ? ('discard' as const) : ('schema-upgrade-on-use' as const);
-                  }
-                  const schemaMigrationPreservesIncompleteSnapshots =
-                    diagnosed._tag === 'Some' &&
-                    codeGraphSchemaMigrationPreservesIncompleteSnapshots(
-                      diagnosed.value.persistentExtensionSchemaRevision,
-                      diagnosed.value.snapshotFileCitationSchema,
-                      diagnosed.value.snapshotFileCitationBaseIndexes,
+  const repair = (reporter?: CodeGraphMaintenanceProgressReporter) =>
+    Effect.gen(function* () {
+      const allDatabases = yield* codeGraphDatabasePaths(threadnoteHome);
+      const allRepositoryCheckoutIds = yield* codeGraphRepositoryCheckoutIds(threadnoteHome);
+      const repositoryCheckoutIds =
+        options.targetCheckoutId === undefined
+          ? allRepositoryCheckoutIds
+          : allRepositoryCheckoutIds.filter(checkoutId => checkoutId === options.targetCheckoutId);
+      const databases =
+        options.targetCheckoutId === undefined
+          ? allDatabases
+          : allDatabases.filter(database => path.basename(path.dirname(database)) === options.targetCheckoutId);
+      const obsoleteBefore =
+        options.targetCheckoutId === undefined
+          ? yield* inspectObsoleteCodeGraphStores(threadnoteHome)
+          : emptyObsoleteInventory();
+      const deep = options.mode !== 'quick';
+      let deferredDatabases = 0;
+      let databaseCount = databases.length;
+      let discarded = 0;
+      let migratedDatabases = 0;
+      let removedIncompleteSnapshots = 0;
+      let remainingIncompleteSnapshots = 0;
+      let removedTemporaryFiles = 0;
+      let readySnapshots = 0;
+      const reportedTotal = Math.max(1, databases.length);
+      yield* reporter?.progress({completed: 0, phase: 'acquiring-gates', total: reportedTotal}) ?? Effect.void;
+      for (const [index, database] of databases.entries()) {
+        const progress = (input: Omit<CodeGraphMaintenanceProgress, 'current' | 'total'>) =>
+          (reporter?.progress(repairReportedProgress(index + 1, reportedTotal, input.phase)) ?? Effect.void).pipe(
+            Effect.andThen(onProgress?.({current: index + 1, total: databases.length, ...input}) ?? Effect.void),
+          );
+        yield* progress({phase: 'checking'});
+        const repositoryRoot = path.dirname(database);
+        const maintained = yield* withDatabaseLock(
+          fs,
+          path,
+          threadnoteHome,
+          database,
+          Effect.gen(function* () {
+            const decision = yield* Effect.scoped(
+              Effect.gen(function* () {
+                const checkoutId = path.basename(repositoryRoot);
+                const repositoryTarget = yield* openCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
+                if (repositoryTarget === undefined) {
+                  return yield* CodeGraphMaintenanceError.make({
+                    message: 'Code graph checkout target changed before repair.',
+                  });
+                }
+                return yield* store.withSession(
+                  database,
+                  Effect.gen(function* () {
+                    let diagnosed = yield* diagnoseCodeGraphDatabase(threadnoteHome, database, deep).pipe(
+                      Effect.option,
                     );
-                  if (
-                    diagnosed._tag === 'Some' &&
-                    diagnosed.value?.schemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
-                    (diagnosed.value.integrity === 'incompatible' || diagnosed.value.integrity === 'migration-pending')
-                  ) {
-                    if (options.migrateSchema) {
-                      yield* progress({phase: 'migrating-schema'});
-                      if (dryRun) {
-                        if (
-                          diagnosed.value.integrity === 'migration-pending' ||
-                          schemaMigrationPreservesIncompleteSnapshots
-                        ) {
-                          const preparation = yield* store.prepareWorktreeReconciliationIndexes(database, {
-                            preview: true,
-                          });
-                          if (preparation.state === 'deferred') return 'schema-upgrade-on-use' as const;
-                          previewedMigrationPreservesIncompleteSnapshots =
-                            codeGraphSchemaMigrationPreservesIncompleteSnapshots(
-                              diagnosed.value.persistentExtensionSchemaRevision,
-                              diagnosed.value.snapshotFileCitationSchema,
-                              diagnosed.value.snapshotFileCitationBaseIndexes,
-                            );
-                        }
-                        migratedDatabases += 1;
-                        previewingSchemaMigration = true;
-                      } else {
-                        if (
-                          diagnosed.value.integrity === 'migration-pending' ||
-                          schemaMigrationPreservesIncompleteSnapshots
-                        ) {
-                          let preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
-                          for (
-                            let step = 1;
-                            preparation.state === 'prepared' &&
-                            step < CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT;
-                            step += 1
-                          ) {
-                            preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
-                          }
-                          if (preparation.state === 'deferred') return 'schema-upgrade-on-use' as const;
-                        }
-                        yield* store.initialize(database);
-                        diagnosed = yield* diagnoseCodeGraphDatabase(threadnoteHome, database, deep).pipe(
-                          Effect.option,
-                        );
-                        if (diagnosed._tag === 'Some' && diagnosed.value?.integrity === 'ok') {
-                          migratedDatabases += 1;
-                        } else {
-                          return 'schema-upgrade-on-use' as const;
-                        }
-                      }
-                    } else {
-                      // Same-version beta databases with a missing revision or an
-                      // incompatible extension-table contract are recoverable on the
-                      // next ordinary writer open.
-                      // Never discard their ready snapshots as if the canonical graph
-                      // rows were corrupt merely because this maintenance pass is
-                      // deliberately read-only while holding the checkout gate.
-                      return 'schema-upgrade-on-use' as const;
+                    let previewingSchemaMigration = false;
+                    let previewedMigrationPreservesIncompleteSnapshots = false;
+                    // A same-name alias index can belong to another table or carry
+                    // incompatible keys. The initializer must never bless that drift.
+                    // Quick repair preserves the derived store for an explicit deep
+                    // decision; deep repair can discard it identically in preview and
+                    // apply without claiming that schema migration succeeded.
+                    if (
+                      diagnosed._tag === 'Some' &&
+                      diagnosed.value.integrity === 'incompatible' &&
+                      (diagnosed.value.snapshotFileCitationBaseIndexes === 'incompatible' ||
+                        diagnosed.value.snapshotFileCitationSchema === 'incompatible' ||
+                        diagnosed.value.snapshotFileCitationSchema === 'column-only-with-authority' ||
+                        (diagnosed.value.snapshotFileCitationSchema === 'released-absent-with-authority' &&
+                          diagnosed.value.persistentExtensionSchemaRevision !==
+                            CODE_GRAPH_PERSISTENT_SCHEMA_CITATION_PREDECESSOR.value))
+                    ) {
+                      return deep ? ('discard' as const) : ('schema-upgrade-on-use' as const);
                     }
-                  }
-                  // A failed diagnostic is not evidence of corruption. In particular,
-                  // transient I/O, permissions, or an unreadable schema must never turn
-                  // an explicit deep check into recursive deletion of the graph store.
-                  if (diagnosed._tag === 'None') {
-                    return deep ? ('unreadable-database' as const) : ('deep-check-required' as const);
-                  }
-                  if (!previewingSchemaMigration && diagnosed.value.integrity !== 'ok') {
-                    return deep ? ('discard' as const) : ('deep-check-required' as const);
-                  }
-                  const incomplete = diagnosed.value.buildingSnapshots + diagnosed.value.failedSnapshots;
-                  let retainedIncompleteSnapshotIds: readonly string[] = [];
-                  readySnapshots += diagnosed.value.readySnapshots;
-                  if (!deep && incomplete > 0) return 'deep-check-required' as const;
-                  if (!deep) return 'maintained' as const;
-                  if (
-                    incomplete > 0 &&
-                    (!previewingSchemaMigration || previewedMigrationPreservesIncompleteSnapshots)
-                  ) {
-                    yield* progress({phase: 'cleaning-snapshots', snapshots: incomplete});
-                    const repaired = yield* store.repair(database, dryRun, {
-                      allowSchemaMigrationPreview: previewedMigrationPreservesIncompleteSnapshots,
-                    });
-                    const removed = repaired?.removedSnapshots ?? 0;
-                    retainedIncompleteSnapshotIds = repaired?.retainedIncompleteSnapshotIds ?? [];
-                    removedIncompleteSnapshots += removed;
-                    remainingIncompleteSnapshots += Math.max(0, incomplete - removed);
-                  }
-                  // Build-time cache GC can delete parser facts belonging to another
-                  // linked worktree before that worktree activates its snapshot. This
-                  // path has drained every worktree lock for the checkout, so
-                  // it is safe to collect cache facts shared by its linked worktrees.
-                  if (!dryRun) {
-                    yield* store.pruneRetiredSnapshots(database);
-                    yield* store.pruneCachedFacts(database, BUILTIN_LANGUAGE_PACK_REGISTRY.cacheIdentities);
-                  }
-                  yield* progress({phase: 'cleaning-vectors'});
-                  yield* options.interlock?.beforeSpoolCleanupVerification?.(repositoryTarget.path) ?? Effect.void;
-                  removedTemporaryFiles += yield* cleanTemporaryMaterializationSpoolFiles(
-                    fs,
-                    path,
-                    threadnoteHome,
-                    checkoutId,
-                    repositoryTarget,
-                    new Set(retainedIncompleteSnapshotIds),
-                    dryRun,
-                    options.interlock,
-                  );
-                  removedTemporaryFiles += yield* cleanTemporaryVectorFiles(
-                    fs,
-                    path,
-                    threadnoteHome,
-                    checkoutId,
-                    repositoryTarget,
-                    path.join(repositoryRoot, 'vectors'),
-                    dryRun,
-                    options.interlock,
-                  );
-                  return 'maintained' as const;
-                }),
-                {writerGateHeld: true},
+                    const schemaMigrationPreservesIncompleteSnapshots =
+                      diagnosed._tag === 'Some' &&
+                      codeGraphSchemaMigrationPreservesIncompleteSnapshots(
+                        diagnosed.value.persistentExtensionSchemaRevision,
+                        diagnosed.value.snapshotFileCitationSchema,
+                        diagnosed.value.snapshotFileCitationBaseIndexes,
+                      );
+                    if (
+                      diagnosed._tag === 'Some' &&
+                      diagnosed.value?.schemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
+                      (diagnosed.value.integrity === 'incompatible' ||
+                        diagnosed.value.integrity === 'migration-pending')
+                    ) {
+                      if (options.migrateSchema) {
+                        yield* progress({phase: 'migrating-schema'});
+                        if (dryRun) {
+                          if (
+                            diagnosed.value.integrity === 'migration-pending' ||
+                            schemaMigrationPreservesIncompleteSnapshots
+                          ) {
+                            const preparation = yield* store.prepareWorktreeReconciliationIndexes(database, {
+                              preview: true,
+                            });
+                            if (preparation.state === 'deferred') return 'schema-upgrade-on-use' as const;
+                            previewedMigrationPreservesIncompleteSnapshots =
+                              codeGraphSchemaMigrationPreservesIncompleteSnapshots(
+                                diagnosed.value.persistentExtensionSchemaRevision,
+                                diagnosed.value.snapshotFileCitationSchema,
+                                diagnosed.value.snapshotFileCitationBaseIndexes,
+                              );
+                          }
+                          migratedDatabases += 1;
+                          previewingSchemaMigration = true;
+                        } else {
+                          if (
+                            diagnosed.value.integrity === 'migration-pending' ||
+                            schemaMigrationPreservesIncompleteSnapshots
+                          ) {
+                            let preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
+                            for (
+                              let step = 1;
+                              preparation.state === 'prepared' &&
+                              step < CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT;
+                              step += 1
+                            ) {
+                              preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
+                            }
+                            if (preparation.state === 'deferred') return 'schema-upgrade-on-use' as const;
+                          }
+                          yield* store.initialize(database);
+                          diagnosed = yield* diagnoseCodeGraphDatabase(threadnoteHome, database, deep).pipe(
+                            Effect.option,
+                          );
+                          if (diagnosed._tag === 'Some' && diagnosed.value?.integrity === 'ok') {
+                            migratedDatabases += 1;
+                          } else {
+                            return 'schema-upgrade-on-use' as const;
+                          }
+                        }
+                      } else {
+                        // Same-version beta databases with a missing revision or an
+                        // incompatible extension-table contract are recoverable on the
+                        // next ordinary writer open.
+                        // Never discard their ready snapshots as if the canonical graph
+                        // rows were corrupt merely because this maintenance pass is
+                        // deliberately read-only while holding the checkout gate.
+                        return 'schema-upgrade-on-use' as const;
+                      }
+                    }
+                    // A failed diagnostic is not evidence of corruption. In particular,
+                    // transient I/O, permissions, or an unreadable schema must never turn
+                    // an explicit deep check into recursive deletion of the graph store.
+                    if (diagnosed._tag === 'None') {
+                      return deep ? ('unreadable-database' as const) : ('deep-check-required' as const);
+                    }
+                    if (!previewingSchemaMigration && diagnosed.value.integrity !== 'ok') {
+                      return deep ? ('discard' as const) : ('deep-check-required' as const);
+                    }
+                    const incomplete = diagnosed.value.buildingSnapshots + diagnosed.value.failedSnapshots;
+                    let retainedIncompleteSnapshotIds: readonly string[] = [];
+                    readySnapshots += diagnosed.value.readySnapshots;
+                    if (!deep && incomplete > 0) return 'deep-check-required' as const;
+                    if (!deep) return 'maintained' as const;
+                    if (
+                      incomplete > 0 &&
+                      (!previewingSchemaMigration || previewedMigrationPreservesIncompleteSnapshots)
+                    ) {
+                      yield* progress({phase: 'cleaning-snapshots', snapshots: incomplete});
+                      const repaired = yield* store.repair(database, dryRun, {
+                        allowSchemaMigrationPreview: previewedMigrationPreservesIncompleteSnapshots,
+                      });
+                      const removed = repaired?.removedSnapshots ?? 0;
+                      retainedIncompleteSnapshotIds = repaired?.retainedIncompleteSnapshotIds ?? [];
+                      removedIncompleteSnapshots += removed;
+                      remainingIncompleteSnapshots += Math.max(0, incomplete - removed);
+                    }
+                    // Build-time cache GC can delete parser facts belonging to another
+                    // linked worktree before that worktree activates its snapshot. This
+                    // path has drained every worktree lock for the checkout, so
+                    // it is safe to collect cache facts shared by its linked worktrees.
+                    if (!dryRun) {
+                      yield* store.pruneRetiredSnapshots(database);
+                      yield* store.pruneCachedFacts(database, BUILTIN_LANGUAGE_PACK_REGISTRY.cacheIdentities);
+                    }
+                    yield* progress({phase: 'cleaning-vectors'});
+                    yield* options.interlock?.beforeSpoolCleanupVerification?.(repositoryTarget.path) ?? Effect.void;
+                    removedTemporaryFiles += yield* cleanTemporaryMaterializationSpoolFiles(
+                      fs,
+                      path,
+                      threadnoteHome,
+                      checkoutId,
+                      repositoryTarget,
+                      new Set(retainedIncompleteSnapshotIds),
+                      dryRun,
+                      options.interlock,
+                    );
+                    removedTemporaryFiles += yield* cleanTemporaryVectorFiles(
+                      fs,
+                      path,
+                      threadnoteHome,
+                      checkoutId,
+                      repositoryTarget,
+                      path.join(repositoryRoot, 'vectors'),
+                      dryRun,
+                      options.interlock,
+                    );
+                    return 'maintained' as const;
+                  }),
+                  {writerGateHeld: true},
+                );
+              }),
+            );
+            if (decision !== 'discard') return decision;
+
+            // The session-scoped SqliteClient has finalized before this branch.
+            // Keep the repository and database writer gates held while closing
+            // the handle first, otherwise Windows rejects recursive deletion of
+            // the incompatible SQLite store with a sharing violation.
+            discarded += 1;
+            yield* progress({phase: 'discarding'});
+            if (!dryRun) yield* fs.remove(repositoryRoot, {force: true, recursive: true});
+            return 'maintained' as const;
+          }),
+          0,
+          options.interlock?.afterWorktreeDrain,
+        ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed('active-build' as const)));
+        if (maintained !== 'maintained') {
+          deferredDatabases += 1;
+          yield* progress({
+            phase: 'deferred',
+            reason: maintained,
+          });
+        }
+      }
+      const databaseCheckoutIds = new Set(databases.map(database => path.basename(path.dirname(database))));
+      const spoolOnlyCheckoutIds = deep
+        ? repositoryCheckoutIds.filter(checkoutId => !databaseCheckoutIds.has(checkoutId))
+        : [];
+      for (const checkoutId of spoolOnlyCheckoutIds) {
+        const repositoryRoot = codeGraphRepositoryRoot(path, threadnoteHome, checkoutId);
+        const database = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+        const cleaned = yield* withDatabaseLock(
+          fs,
+          path,
+          threadnoteHome,
+          database,
+          Effect.scoped(
+            Effect.gen(function* () {
+              // The root was database-less during inventory, but a builder may
+              // have completed before this checkout's gates were acquired. Do
+              // not apply the empty-retention model to its newly durable state.
+              if (yield* fs.exists(database)) return undefined;
+              const repositoryTarget = yield* openCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
+              if (repositoryTarget === undefined) return 0;
+              yield* options.interlock?.beforeSpoolCleanupVerification?.(repositoryTarget.path) ?? Effect.void;
+              return yield* cleanTemporaryMaterializationSpoolFiles(
+                fs,
+                path,
+                threadnoteHome,
+                checkoutId,
+                repositoryTarget,
+                new Set(),
+                dryRun,
+                options.interlock,
               );
             }),
-          );
-          if (decision !== 'discard') return decision;
-
-          // The session-scoped SqliteClient has finalized before this branch.
-          // Keep the repository and database writer gates held while closing
-          // the handle first, otherwise Windows rejects recursive deletion of
-          // the incompatible SQLite store with a sharing violation.
-          discarded += 1;
-          yield* progress({phase: 'discarding'});
-          if (!dryRun) yield* fs.remove(repositoryRoot, {force: true, recursive: true});
-          return 'maintained' as const;
-        }),
-        0,
-        options.interlock?.afterWorktreeDrain,
-      ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed('active-build' as const)));
-      if (maintained !== 'maintained') {
-        deferredDatabases += 1;
-        yield* progress({
-          phase: 'deferred',
-          reason: maintained,
-        });
+          ),
+          0,
+          options.interlock?.afterWorktreeDrain,
+        ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed(0)));
+        if (cleaned === undefined) {
+          databaseCount += 1;
+          deferredDatabases += 1;
+        } else {
+          removedTemporaryFiles += cleaned;
+        }
       }
-    }
-    const databaseCheckoutIds = new Set(databases.map(database => path.basename(path.dirname(database))));
-    const spoolOnlyCheckoutIds = deep
-      ? repositoryCheckoutIds.filter(checkoutId => !databaseCheckoutIds.has(checkoutId))
-      : [];
-    for (const checkoutId of spoolOnlyCheckoutIds) {
-      const repositoryRoot = codeGraphRepositoryRoot(path, threadnoteHome, checkoutId);
-      const database = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
-      const cleaned = yield* withDatabaseLock(
-        fs,
-        path,
-        threadnoteHome,
-        database,
-        Effect.scoped(
-          Effect.gen(function* () {
-            // The root was database-less during inventory, but a builder may
-            // have completed before this checkout's gates were acquired. Do
-            // not apply the empty-retention model to its newly durable state.
-            if (yield* fs.exists(database)) return undefined;
-            const repositoryTarget = yield* openCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
-            if (repositoryTarget === undefined) return 0;
-            yield* options.interlock?.beforeSpoolCleanupVerification?.(repositoryTarget.path) ?? Effect.void;
-            return yield* cleanTemporaryMaterializationSpoolFiles(
-              fs,
-              path,
-              threadnoteHome,
-              checkoutId,
-              repositoryTarget,
-              new Set(),
-              dryRun,
-              options.interlock,
+      const currentDatabases =
+        options.targetCheckoutId === undefined
+          ? yield* codeGraphDatabasePaths(threadnoteHome)
+          : (yield* codeGraphDatabasePaths(threadnoteHome)).filter(
+              database => path.basename(path.dirname(database)) === options.targetCheckoutId,
             );
-          }),
-        ),
-        0,
-        options.interlock?.afterWorktreeDrain,
-      ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed(0)));
-      if (cleaned === undefined) {
-        databaseCount += 1;
-        deferredDatabases += 1;
-      } else {
-        removedTemporaryFiles += cleaned;
-      }
-    }
-    const currentDatabases =
-      options.targetCheckoutId === undefined
-        ? yield* codeGraphDatabasePaths(threadnoteHome)
-        : (yield* codeGraphDatabasePaths(threadnoteHome)).filter(
-            database => path.basename(path.dirname(database)) === options.targetCheckoutId,
-          );
-    const obsolete =
-      options.targetCheckoutId !== undefined
-        ? emptyObsoleteInventory()
-        : dryRun
-          ? obsoleteBefore
-          : yield* inspectObsoleteCodeGraphStores(threadnoteHome);
-    const summary = {
-      databases: databaseCount,
-      deferredDatabases,
-      discarded,
-      migratedDatabases,
-      obsoleteStoreBytes: obsolete.bytes,
-      obsoleteStoreCheckouts: obsolete.checkouts.length,
-      obsoleteStoreFiles: obsolete.fileCount,
-      removedIncompleteSnapshots,
-      removedTemporaryFiles,
-      unsafeObsoleteEntries: obsolete.unsafeEntryCount,
-    } satisfies CodeGraphRepairSummary;
-    yield* onComplete?.({
-      doctorCheck: codeGraphDoctorResult(
-        currentDatabases.length,
-        readySnapshots,
-        dryRun ? removedIncompleteSnapshots + remainingIncompleteSnapshots : remainingIncompleteSnapshots,
-        dryRun ? discarded : 0,
+      const obsolete =
+        options.targetCheckoutId !== undefined
+          ? emptyObsoleteInventory()
+          : dryRun
+            ? obsoleteBefore
+            : yield* inspectObsoleteCodeGraphStores(threadnoteHome);
+      const summary = {
+        databases: databaseCount,
         deferredDatabases,
-        dryRun ? migratedDatabases : 0,
-        obsolete,
-      ),
-      summary,
-    }) ?? Effect.void;
-    return summary;
-  });
+        discarded,
+        migratedDatabases,
+        obsoleteStoreBytes: obsolete.bytes,
+        obsoleteStoreCheckouts: obsolete.checkouts.length,
+        obsoleteStoreFiles: obsolete.fileCount,
+        removedIncompleteSnapshots,
+        removedTemporaryFiles,
+        unsafeObsoleteEntries: obsolete.unsafeEntryCount,
+      } satisfies CodeGraphRepairSummary;
+      yield* onComplete?.({
+        doctorCheck: codeGraphDoctorResult(
+          currentDatabases.length,
+          readySnapshots,
+          dryRun ? removedIncompleteSnapshots + remainingIncompleteSnapshots : remainingIncompleteSnapshots,
+          dryRun ? discarded : 0,
+          deferredDatabases,
+          dryRun ? migratedDatabases : 0,
+          obsolete,
+        ),
+        summary,
+      }) ?? Effect.void;
+      return summary;
+    });
   if (options.targetCheckoutId !== undefined) {
     // The checkout gate plus the under-writer-gate builder recheck isolates this
     // repository without pausing builders for unrelated checkouts.
-    return yield* repair;
+    return yield* repair();
   }
   return yield* withExclusiveFileLock(
     fs,
     codeGraphMaintenanceLockPath(path, threadnoteHome),
     CODE_GRAPH_LOCK_OPTIONS,
-    withCodeGraphMaintenanceIntent(threadnoteHome, repair),
+    withCodeGraphReportedMaintenanceIntent(
+      threadnoteHome,
+      {operation: 'graph-maintenance'},
+      {completed: 0, phase: 'acquiring-gates', total: 1},
+      reporter => repair(reporter),
+    ),
   );
 });
 
@@ -690,6 +707,51 @@ function codeGraphRepositoryCheckoutIds(threadnoteHome: string) {
   });
 }
 
+function repairReportedProgress(
+  current: number,
+  total: number,
+  phase: CodeGraphMaintenanceProgress['phase'],
+): CodeGraphReportedMaintenanceProgress {
+  const safeTotal = Math.max(1, total);
+  return {
+    completed: Math.min(safeTotal, Math.max(0, current)),
+    phase:
+      phase === 'cleaning-snapshots' || phase === 'cleaning-vectors' || phase === 'discarding'
+        ? 'retiring-and-cleaning'
+        : 'verifying-graph',
+    total: safeTotal,
+  };
+}
+
+function publishPurgeProgress(
+  reporter: CodeGraphMaintenanceProgressReporter,
+  onProgress: CodeGraphPurgeProgressHandler | undefined,
+  dryRun: boolean,
+  input: {
+    readonly checkoutCurrent?: number;
+    readonly checkoutTotal?: number;
+    readonly completed: number;
+    readonly filesRemoved?: number;
+    readonly filesTotal?: number;
+    readonly gate: CodeGraphReportedMaintenanceProgress['phase'];
+    readonly phase: CodeGraphCliPurgeProgress['phase'];
+    readonly total: number;
+  },
+) {
+  return reporter.progress({completed: input.completed, phase: input.gate, total: input.total}).pipe(
+    Effect.andThen(
+      onProgress?.({
+        ...(input.checkoutCurrent === undefined ? {} : {checkoutCurrent: input.checkoutCurrent}),
+        ...(input.checkoutTotal === undefined ? {} : {checkoutTotal: input.checkoutTotal}),
+        dryRun,
+        ...(input.filesRemoved === undefined ? {} : {filesRemoved: input.filesRemoved}),
+        ...(input.filesTotal === undefined ? {} : {filesTotal: input.filesTotal}),
+        phase: input.phase,
+      }) ?? Effect.void,
+    ),
+  );
+}
+
 /**
  * Explicitly removes only older schema-version SQLite artifacts from one checkout.
  * Both maintenance and checkout locks are attempted once; an active build or repair
@@ -701,6 +763,7 @@ export const purgeObsoleteCodeGraphStores = Effect.fn('codeGraph.purgeObsoleteSt
   options: {
     readonly dryRun: boolean;
     readonly interlock?: ObsoleteCodeGraphStorePurgeInterlock;
+    readonly onProgress?: CodeGraphPurgeProgressHandler;
   },
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -712,43 +775,84 @@ export const purgeObsoleteCodeGraphStores = Effect.fn('codeGraph.purgeObsoleteSt
     fs,
     codeGraphMaintenanceLockPath(path, threadnoteHome),
     CODE_GRAPH_PURGE_LOCK_OPTIONS,
-    withCodeGraphMaintenanceIntent(
+    withCodeGraphReportedMaintenanceIntent(
       threadnoteHome,
-      withExclusiveFileLock(
-        fs,
-        codeGraphRepositoryLockPath(path, threadnoteHome, checkoutId),
-        CODE_GRAPH_PURGE_LOCK_OPTIONS,
-        Effect.gen(function* () {
-          yield* awaitCodeGraphWorktreeBuilds(threadnoteHome, checkoutId, 0);
-          return yield* withCodeGraphDatabaseWriteLock(
-            threadnoteHome,
-            checkoutId,
-            Effect.gen(function* () {
-              const initial = yield* inspectObsoleteCodeGraphStores(threadnoteHome, checkoutId);
-              yield* refuseUnsafeObsoleteInventory(initial);
-              yield* options.interlock?.beforeVerification?.(initial) ?? Effect.void;
-              const verified = yield* inspectObsoleteCodeGraphStores(threadnoteHome, checkoutId);
-              yield* refuseUnsafeObsoleteInventory(verified);
-              const checkout = verified.checkouts.find(entry => entry.checkoutId === checkoutId);
-              const files = checkout?.files ?? [];
-              if (!options.dryRun) {
-                for (const file of files) {
-                  yield* verifyObsoletePurgeTarget(fs, path, threadnoteHome, checkoutId, file);
+      {checkoutId, operation: 'graph-maintenance'},
+      {completed: 0, phase: 'acquiring-gates', total: 4},
+      reporter =>
+        withExclusiveFileLock(
+          fs,
+          codeGraphRepositoryLockPath(path, threadnoteHome, checkoutId),
+          CODE_GRAPH_PURGE_LOCK_OPTIONS,
+          Effect.gen(function* () {
+            yield* publishPurgeProgress(reporter, options.onProgress, options.dryRun, {
+              completed: 1,
+              gate: 'waiting-builders',
+              phase: 'waiting-builders',
+              total: 4,
+            });
+            yield* awaitCodeGraphWorktreeBuilds(threadnoteHome, checkoutId, 0);
+            return yield* withCodeGraphDatabaseWriteLock(
+              threadnoteHome,
+              checkoutId,
+              Effect.gen(function* () {
+                yield* publishPurgeProgress(reporter, options.onProgress, options.dryRun, {
+                  completed: 2,
+                  gate: 'verifying-graph',
+                  phase: 'verifying',
+                  total: 4,
+                });
+                const initial = yield* inspectObsoleteCodeGraphStores(threadnoteHome, checkoutId);
+                yield* refuseUnsafeObsoleteInventory(initial);
+                yield* options.interlock?.beforeVerification?.(initial) ?? Effect.void;
+                const verified = yield* inspectObsoleteCodeGraphStores(threadnoteHome, checkoutId);
+                yield* refuseUnsafeObsoleteInventory(verified);
+                const checkout = verified.checkouts.find(entry => entry.checkoutId === checkoutId);
+                const files = checkout?.files ?? [];
+                yield* publishPurgeProgress(reporter, options.onProgress, options.dryRun, {
+                  completed: 3,
+                  filesRemoved: 0,
+                  filesTotal: files.length,
+                  gate: 'retiring-and-cleaning',
+                  phase: 'removing-obsolete',
+                  total: 4,
+                });
+                if (!options.dryRun) {
+                  for (const file of files) {
+                    yield* verifyObsoletePurgeTarget(fs, path, threadnoteHome, checkoutId, file);
+                  }
+                  for (const [index, file] of files.entries()) {
+                    yield* fs.remove(file.path);
+                    yield* publishPurgeProgress(reporter, options.onProgress, options.dryRun, {
+                      completed: 4,
+                      filesRemoved: index + 1,
+                      filesTotal: files.length,
+                      gate: 'retiring-and-cleaning',
+                      phase: 'deleting',
+                      total: 4,
+                    });
+                  }
                 }
-                for (const file of files) yield* fs.remove(file.path);
-              }
-              return {
-                bytes: checkout?.bytes ?? 0,
-                checkoutId,
-                dryRun: options.dryRun,
-                fileCount: files.length,
-                versions: checkout?.versions ?? [],
-              } satisfies ObsoleteCodeGraphStorePurgeSummary;
-            }),
-            0,
-          );
-        }),
-      ),
+                yield* publishPurgeProgress(reporter, options.onProgress, options.dryRun, {
+                  completed: 4,
+                  filesRemoved: files.length,
+                  filesTotal: files.length,
+                  gate: 'retiring-and-cleaning',
+                  phase: 'deleting',
+                  total: 4,
+                });
+                return {
+                  bytes: checkout?.bytes ?? 0,
+                  checkoutId,
+                  dryRun: options.dryRun,
+                  fileCount: files.length,
+                  versions: checkout?.versions ?? [],
+                } satisfies ObsoleteCodeGraphStorePurgeSummary;
+              }),
+              0,
+            );
+          }),
+        ),
     ),
   );
 });
@@ -765,6 +869,7 @@ export const purgeCodeGraphIndex = Effect.fn('codeGraph.purgeIndex')(function* (
   options: {
     readonly dryRun: boolean;
     readonly interlock?: CodeGraphIndexPurgeInterlock;
+    readonly onProgress?: CodeGraphPurgeProgressHandler;
     readonly waitTimeoutMilliseconds?: number;
   },
 ) {
@@ -780,70 +885,163 @@ export const purgeCodeGraphIndex = Effect.fn('codeGraph.purgeIndex')(function* (
     fs,
     codeGraphMaintenanceLockPath(path, threadnoteHome),
     lockOptions,
-    withCodeGraphMaintenanceIntent(
+    withCodeGraphReportedMaintenanceIntent(
       threadnoteHome,
-      withExclusiveFileLock(
-        fs,
-        codeGraphRepositoryLockPath(path, threadnoteHome, checkoutId),
-        lockOptions,
-        Effect.gen(function* () {
-          yield* awaitCodeGraphWorktreeBuilds(threadnoteHome, checkoutId, waitTimeoutMilliseconds);
-          return yield* withCodeGraphDatabaseWriteLock(
-            threadnoteHome,
-            checkoutId,
-            Effect.gen(function* () {
-              const purgeTarget = yield* Effect.scoped(
-                Effect.gen(function* () {
-                  // Keep the original directory open until it has been moved into quarantine.
-                  // POSIX may recycle a deleted directory's inode immediately; the live handle
-                  // prevents that replacement from comparing equal to the planned target.
-                  const initial = yield* openCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
-                  yield* options.interlock?.beforeVerification?.() ?? Effect.void;
-                  const verified = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
-                  if (!sameCodeGraphIndexPurgeTarget(initial, verified)) {
-                    return yield* CodeGraphMaintenanceError.make({
-                      message: 'Code graph checkout target changed before purge.',
+      {checkoutId, operation: 'graph-maintenance'},
+      {completed: 0, phase: 'acquiring-gates', total: 5},
+      reporter =>
+        withExclusiveFileLock(
+          fs,
+          codeGraphRepositoryLockPath(path, threadnoteHome, checkoutId),
+          lockOptions,
+          Effect.gen(function* () {
+            yield* publishPurgeProgress(reporter, options.onProgress, options.dryRun, {
+              completed: 1,
+              gate: 'waiting-builders',
+              phase: 'waiting-builders',
+              total: 5,
+            });
+            yield* awaitCodeGraphWorktreeBuilds(threadnoteHome, checkoutId, waitTimeoutMilliseconds);
+            return yield* withCodeGraphDatabaseWriteLock(
+              threadnoteHome,
+              checkoutId,
+              Effect.gen(function* () {
+                const purgeTarget = yield* Effect.scoped(
+                  Effect.gen(function* () {
+                    // Keep the original directory open until it has been moved into quarantine.
+                    // POSIX may recycle a deleted directory's inode immediately; the live handle
+                    // prevents that replacement from comparing equal to the planned target.
+                    yield* publishPurgeProgress(reporter, options.onProgress, options.dryRun, {
+                      completed: 2,
+                      gate: 'verifying-graph',
+                      phase: 'verifying',
+                      total: 5,
                     });
-                  }
-                  if (verified === undefined || options.dryRun) {
-                    return {existed: verified !== undefined, quarantine: undefined};
-                  }
+                    const initial = yield* openCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
+                    yield* options.interlock?.beforeVerification?.() ?? Effect.void;
+                    const verified = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
+                    if (!sameCodeGraphIndexPurgeTarget(initial, verified)) {
+                      return yield* CodeGraphMaintenanceError.make({
+                        message: 'Code graph checkout target changed before purge.',
+                      });
+                    }
+                    if (verified === undefined || options.dryRun) {
+                      return {existed: verified !== undefined, quarantine: undefined};
+                    }
 
-                  yield* options.interlock?.beforeRemoval?.() ?? Effect.void;
-                  const quarantine = path.join(
-                    path.dirname(verified.path),
-                    `.${checkoutId}.${yield* crypto.randomUUIDv4}.purging`,
-                  );
-                  yield* fs.rename(verified.path, quarantine);
-                  const moved = yield* inspectQuarantinedCodeGraphIndexPurgeTarget(fs, quarantine);
-                  if (!sameCodeGraphIndexPurgeTarget(verified, moved)) {
-                    yield* restoreQuarantinedCodeGraphIndexPurgeTarget(fs, quarantine, verified.path);
-                    return yield* CodeGraphMaintenanceError.make({
-                      message: 'Code graph checkout target changed before purge.',
+                    yield* publishPurgeProgress(reporter, options.onProgress, options.dryRun, {
+                      completed: 3,
+                      gate: 'retiring-and-cleaning',
+                      phase: 'quarantining',
+                      total: 5,
                     });
-                  }
-                  return {existed: true, quarantine};
-                }),
-              );
-              if (purgeTarget.quarantine !== undefined) {
-                // Close the directory handle before recursive deletion for Windows parity.
-                yield* fs.remove(purgeTarget.quarantine, {force: true, recursive: true});
-              }
-              return {
-                checkoutId,
-                dryRun: options.dryRun,
-                existed: purgeTarget.existed,
-              } satisfies CodeGraphIndexPurgeSummary;
-            }),
-            waitTimeoutMilliseconds,
-          );
-        }),
-      ),
+                    yield* options.interlock?.beforeRemoval?.() ?? Effect.void;
+                    const quarantine = path.join(
+                      path.dirname(verified.path),
+                      `.${checkoutId}.${yield* crypto.randomUUIDv4}.purging`,
+                    );
+                    yield* fs.rename(verified.path, quarantine);
+                    const moved = yield* inspectQuarantinedCodeGraphIndexPurgeTarget(fs, quarantine);
+                    if (!sameCodeGraphIndexPurgeTarget(verified, moved)) {
+                      yield* restoreQuarantinedCodeGraphIndexPurgeTarget(fs, quarantine, verified.path);
+                      return yield* CodeGraphMaintenanceError.make({
+                        message: 'Code graph checkout target changed before purge.',
+                      });
+                    }
+                    return {existed: true, quarantine};
+                  }),
+                );
+                if (purgeTarget.quarantine !== undefined) {
+                  yield* publishPurgeProgress(reporter, options.onProgress, options.dryRun, {
+                    completed: 4,
+                    gate: 'retiring-and-cleaning',
+                    phase: 'deleting',
+                    total: 5,
+                  });
+                  // Close the directory handle before recursive deletion for Windows parity.
+                  yield* fs.remove(purgeTarget.quarantine, {force: true, recursive: true});
+                }
+                yield* publishPurgeProgress(reporter, options.onProgress, options.dryRun, {
+                  completed: 5,
+                  gate: 'retiring-and-cleaning',
+                  phase: 'deleting',
+                  total: 5,
+                });
+                return {
+                  checkoutId,
+                  dryRun: options.dryRun,
+                  existed: purgeTarget.existed,
+                } satisfies CodeGraphIndexPurgeSummary;
+              }),
+              waitTimeoutMilliseconds,
+            );
+          }),
+        ),
     ),
   );
 });
 
-export const purgeAllCodeGraphIndexes = Effect.fn('codeGraph.purgeAllIndexes')(function* (threadnoteHome: string) {
+export const purgeCodeGraphRepositoryRoot = Effect.fn('codeGraph.purgeRepositoryRoot')(function* (
+  threadnoteHome: string,
+  checkoutId: string,
+  repositoryRoot: string,
+  onProgress?: CodeGraphPurgeProgressHandler,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* withExclusiveFileLock(
+    fs,
+    codeGraphMaintenanceLockPath(path, threadnoteHome),
+    CODE_GRAPH_LOCK_OPTIONS,
+    withCodeGraphReportedMaintenanceIntent(
+      threadnoteHome,
+      {checkoutId, operation: 'graph-maintenance'},
+      {completed: 0, phase: 'acquiring-gates', total: 3},
+      reporter =>
+        withExclusiveFileLock(
+          fs,
+          codeGraphRepositoryLockPath(path, threadnoteHome, checkoutId),
+          CODE_GRAPH_LOCK_OPTIONS,
+          Effect.gen(function* () {
+            yield* publishPurgeProgress(reporter, onProgress, false, {
+              completed: 1,
+              gate: 'waiting-builders',
+              phase: 'waiting-builders',
+              total: 3,
+            });
+            yield* awaitCodeGraphWorktreeBuilds(
+              threadnoteHome,
+              checkoutId,
+              CODE_GRAPH_LOCK_OPTIONS.waitTimeoutMilliseconds,
+            );
+            yield* publishPurgeProgress(reporter, onProgress, false, {
+              completed: 2,
+              gate: 'retiring-and-cleaning',
+              phase: 'deleting',
+              total: 3,
+            });
+            yield* withCodeGraphDatabaseWriteLock(
+              threadnoteHome,
+              checkoutId,
+              fs.remove(repositoryRoot, {recursive: true, force: true}),
+            );
+            yield* publishPurgeProgress(reporter, onProgress, false, {
+              completed: 3,
+              gate: 'retiring-and-cleaning',
+              phase: 'deleting',
+              total: 3,
+            });
+          }),
+        ),
+    ),
+  );
+  return repositoryRoot;
+});
+
+export const purgeAllCodeGraphIndexes = Effect.fn('codeGraph.purgeAllIndexes')(function* (
+  threadnoteHome: string,
+  onProgress?: CodeGraphPurgeProgressHandler,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repositories = codeGraphRepositoriesRoot(path, threadnoteHome);
@@ -851,43 +1049,74 @@ export const purgeAllCodeGraphIndexes = Effect.fn('codeGraph.purgeAllIndexes')(f
     fs,
     codeGraphMaintenanceLockPath(path, threadnoteHome),
     CODE_GRAPH_LOCK_OPTIONS,
-    withCodeGraphMaintenanceIntent(
+    withCodeGraphReportedMaintenanceIntent(
       threadnoteHome,
-      Effect.gen(function* () {
-        if (!(yield* fs.exists(repositories))) return path.dirname(repositories);
-        if ((yield* fs.readLink(repositories).pipe(Effect.option))._tag === 'Some') {
-          yield* fs.remove(repositories, {force: true});
-          return path.dirname(repositories);
-        }
-        const repositoryIds = (yield* fs.readDirectory(repositories))
-          .filter(name => /^[0-9a-f]{64}$/.test(name))
-          .sort();
-        for (const repositoryId of repositoryIds) {
-          const repositoryRoot = path.join(repositories, repositoryId);
-          if ((yield* fs.readLink(repositoryRoot).pipe(Effect.option))._tag === 'Some') continue;
-          yield* withExclusiveFileLock(
-            fs,
-            codeGraphRepositoryLockPath(path, threadnoteHome, repositoryId),
-            CODE_GRAPH_LOCK_OPTIONS,
-            awaitCodeGraphWorktreeBuilds(
-              threadnoteHome,
-              repositoryId,
-              CODE_GRAPH_LOCK_OPTIONS.waitTimeoutMilliseconds,
-            ).pipe(
-              Effect.andThen(
-                withCodeGraphDatabaseWriteLock(
-                  threadnoteHome,
-                  repositoryId,
-                  fs.remove(repositoryRoot, {force: true, recursive: true}),
+      {operation: 'graph-maintenance'},
+      {completed: 0, phase: 'acquiring-gates', total: 1},
+      reporter =>
+        Effect.gen(function* () {
+          if (!(yield* fs.exists(repositories))) return path.dirname(repositories);
+          if ((yield* fs.readLink(repositories).pipe(Effect.option))._tag === 'Some') {
+            yield* fs.remove(repositories, {force: true});
+            return path.dirname(repositories);
+          }
+          const repositoryIds = (yield* fs.readDirectory(repositories))
+            .filter(name => /^[0-9a-f]{64}$/.test(name))
+            .sort();
+          const total = Math.max(1, repositoryIds.length);
+          yield* reporter.progress({completed: 0, phase: 'waiting-builders', total});
+          for (const [index, repositoryId] of repositoryIds.entries()) {
+            const repositoryRoot = path.join(repositories, repositoryId);
+            if ((yield* fs.readLink(repositoryRoot).pipe(Effect.option))._tag === 'Some') continue;
+            yield* publishPurgeProgress(reporter, onProgress, false, {
+              checkoutCurrent: index + 1,
+              checkoutTotal: repositoryIds.length,
+              completed: index,
+              gate: 'waiting-builders',
+              phase: 'waiting-builders',
+              total,
+            });
+            yield* withExclusiveFileLock(
+              fs,
+              codeGraphRepositoryLockPath(path, threadnoteHome, repositoryId),
+              CODE_GRAPH_LOCK_OPTIONS,
+              awaitCodeGraphWorktreeBuilds(
+                threadnoteHome,
+                repositoryId,
+                CODE_GRAPH_LOCK_OPTIONS.waitTimeoutMilliseconds,
+              ).pipe(
+                Effect.andThen(
+                  Effect.gen(function* () {
+                    yield* publishPurgeProgress(reporter, onProgress, false, {
+                      checkoutCurrent: index + 1,
+                      checkoutTotal: repositoryIds.length,
+                      completed: index,
+                      gate: 'retiring-and-cleaning',
+                      phase: 'deleting',
+                      total,
+                    });
+                    yield* withCodeGraphDatabaseWriteLock(
+                      threadnoteHome,
+                      repositoryId,
+                      fs.remove(repositoryRoot, {force: true, recursive: true}),
+                    );
+                  }),
                 ),
               ),
-            ),
-          );
-        }
-        const graphRoot = path.dirname(repositories);
-        yield* fs.remove(graphRoot, {force: true, recursive: true});
-        return graphRoot;
-      }),
+            );
+          }
+          const graphRoot = path.dirname(repositories);
+          yield* publishPurgeProgress(reporter, onProgress, false, {
+            checkoutCurrent: repositoryIds.length,
+            checkoutTotal: repositoryIds.length,
+            completed: total,
+            gate: 'retiring-and-cleaning',
+            phase: 'deleting',
+            total,
+          });
+          yield* fs.remove(graphRoot, {force: true, recursive: true});
+          return graphRoot;
+        }),
     ),
   );
 });

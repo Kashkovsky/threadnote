@@ -22,7 +22,7 @@ import {lastStatementChangeCount} from './store_activation_core.js';
 
 const CODE_GRAPH_ROUTINE_EXPIRED_LEASE_PAGE_SIZE = 100;
 
-const CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE = 100;
+export const CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE = 1_000;
 
 /** Fresh facts are written before the durable building snapshot owns its inventory. */
 const CODE_GRAPH_ROUTINE_CACHE_MINIMUM_AGE_MILLISECONDS = 24 * 60 * 60_000;
@@ -643,7 +643,6 @@ const recordSnapshotExtractorGeneration = Effect.fn('codeGraph.recordSnapshotExt
 });
 
 export {
-  CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE,
   BoundedSnapshotLeaseRow,
   boundedSnapshotLeaseProjection,
   recordSnapshotExtractorGeneration,

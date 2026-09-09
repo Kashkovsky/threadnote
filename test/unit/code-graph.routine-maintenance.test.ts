@@ -13,6 +13,7 @@ import {
   type CodeGraphRoutineMaintenanceTick,
 } from '../../src/code_graph/maintenance_coordinator.js';
 import {
+  CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE,
   codeGraphRoutineFileBlobCleanupPageStatement,
   codeGraphRoutineMaterializedShardCleanupPageStatement,
   CodeGraphStore,
@@ -197,7 +198,11 @@ describe('routine code graph maintenance', () => {
 
   it('reclaims parser blobs before materialized shards in bounded pages and preserves live cache rows', async () => {
     const fixture = await routineFixture('threadnote-routine-cache-page-');
-    seedRoutineCacheRows(fixture.databasePath, 101, 101);
+    seedRoutineCacheRows(
+      fixture.databasePath,
+      CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE + 1,
+      CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE + 1,
+    );
 
     const results = await runEffect(
       Effect.gen(function* () {
@@ -207,9 +212,17 @@ describe('routine code graph maintenance', () => {
       }),
     );
 
-    expect(results[0]).toMatchObject({cleanup: 'file-blob-cache', remaining: true, rowsDeleted: 100});
+    expect(results[0]).toMatchObject({
+      cleanup: 'file-blob-cache',
+      remaining: true,
+      rowsDeleted: CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE,
+    });
     expect(results[1]).toMatchObject({cleanup: 'file-blob-cache', remaining: true, rowsDeleted: 1});
-    expect(results[2]).toMatchObject({cleanup: 'materialized-shard-cache', remaining: true, rowsDeleted: 100});
+    expect(results[2]).toMatchObject({
+      cleanup: 'materialized-shard-cache',
+      remaining: true,
+      rowsDeleted: CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE,
+    });
     expect(results[3]).toMatchObject({cleanup: 'materialized-shard-cache', remaining: false, rowsDeleted: 1});
     expect(results[4]).toMatchObject({cleanup: 'none', remaining: true, rowsDeleted: 0});
     expect(results[5]).toEqual(noWorkResult);
@@ -268,8 +281,8 @@ describe('routine code graph maintenance', () => {
     fc.assert(
       fc.property(
         fc.record({
-          fileBlobs: fc.integer({max: 205, min: 0}),
-          materializedShards: fc.integer({max: 205, min: 0}),
+          fileBlobs: fc.integer({max: CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE + 50, min: 0}),
+          materializedShards: fc.integer({max: CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE + 50, min: 0}),
           reverseInsertion: fc.boolean(),
         }),
         ({fileBlobs, materializedShards, reverseInsertion}) => {
@@ -302,12 +315,18 @@ describe('routine code graph maintenance', () => {
               materializedCursor = candidates.at(-1)!;
             }
 
-            expect(examinedPages.every(rows => rows > 0 && rows <= 100)).toBe(true);
-            expect(pages.every(page => page.rows > 0 && page.rows <= 100)).toBe(true);
+            expect(examinedPages.every(rows => rows > 0 && rows <= CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE)).toBe(true);
+            expect(pages.every(page => page.rows > 0 && page.rows <= CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE)).toBe(true);
             expect(pages.reduce((total, page) => total + page.rows, 0)).toBe(fileBlobs + materializedShards);
             expect(pages.map(page => page.cleanup)).toEqual([
-              ...Array.from({length: Math.ceil(fileBlobs / 100)}, () => 'file-blob-cache' as const),
-              ...Array.from({length: Math.ceil(materializedShards / 100)}, () => 'materialized-shard-cache' as const),
+              ...Array.from(
+                {length: Math.ceil(fileBlobs / CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE)},
+                () => 'file-blob-cache' as const,
+              ),
+              ...Array.from(
+                {length: Math.ceil(materializedShards / CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE)},
+                () => 'materialized-shard-cache' as const,
+              ),
             ]);
             expect(readRoutineCacheDatabaseCounts(database)).toEqual({fileBlobs: 1, materializedShards: 1});
           } finally {
@@ -1817,7 +1836,7 @@ function readRoutineFileBlobCacheCandidates(
       cursor?.contentHash ?? null,
       cursor?.extractorSet ?? null,
       cursor?.path ?? null,
-      100,
+      CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE,
     );
   return rows.map(row => ({contentHash: row.content_hash, extractorSet: row.extractor_set, path: row.path_hint}));
 }
@@ -1831,7 +1850,7 @@ function readRoutineMaterializedShardCacheCandidates(database: Database, cursor:
        ORDER BY id
        LIMIT ?`,
     )
-    .all(cursor ?? null, cursor ?? null, 100)
+    .all(cursor ?? null, cursor ?? null, CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE)
     .map(row => row.id);
 }
 

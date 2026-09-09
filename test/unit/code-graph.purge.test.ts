@@ -1,10 +1,13 @@
 import {readFile, readlink, rename, rm as nodeRm, symlink} from '../helpers/node-fs-promises.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {codeGraphRepositoryLockPath} from '../../src/code_graph/layout.js';
 import {purgeCodeGraphIndex} from '../../src/code_graph/maintenance.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -49,6 +52,33 @@ describe('targeted code graph purge', () => {
       existed: false,
     });
   });
+
+  effectIt.effect('reports purge safety phases without removing sibling checkouts', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp('threadnote-targeted-graph-purge-progress-'));
+      homes.push(home);
+      const checkoutId = 'd'.repeat(64);
+      const siblingCheckoutId = 'e'.repeat(64);
+      const repositoryRoot = join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+      const siblingRoot = join(home, 'indexes', 'code-graph', 'repositories', siblingCheckoutId);
+      yield* Effect.promise(() => mkdir(join(repositoryRoot, 'vectors'), {recursive: true}));
+      yield* Effect.promise(() => mkdir(siblingRoot, {recursive: true}));
+      yield* Effect.promise(() => writeFile(join(repositoryRoot, 'graph-v3.sqlite'), 'disposable graph\n'));
+      yield* Effect.promise(() => writeFile(join(siblingRoot, 'graph-v3.sqlite'), 'sibling must survive\n'));
+      const phases: string[] = [];
+      const summary = yield* purgeCodeGraphIndex(home, checkoutId, {
+        dryRun: false,
+        onProgress: progress => Effect.sync(() => void phases.push(progress.phase)),
+      });
+
+      expect(summary).toEqual({checkoutId, dryRun: false, existed: true});
+      expect(phases).toEqual(['waiting-builders', 'verifying', 'quarantining', 'deleting', 'deleting']);
+      expect(yield* Effect.promise(() => Bun.file(join(repositoryRoot, 'graph-v3.sqlite')).exists())).toBe(false);
+      expect(yield* Effect.promise(() => readFile(join(siblingRoot, 'graph-v3.sqlite'), 'utf8'))).toContain(
+        'must survive',
+      );
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   it('rejects invalid checkout identities before inspecting storage', async () => {
     const home = await mkdtemp('threadnote-targeted-graph-purge-invalid-');

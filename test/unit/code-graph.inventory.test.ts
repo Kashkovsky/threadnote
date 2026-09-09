@@ -167,6 +167,10 @@ describe('native code graph inventory policy', () => {
 
   it('does not reject eligible source paths based on individual file size', () => {
     expect(acceptsRepositoryPath('src/generated-but-tracked.ts')).toBe(true);
+    expect(acceptsRepositoryPath('src/a.ts', 'src/a.ts')).toBe(false);
+    expect(acceptsRepositoryPath('src/b.ts', '', [], [], 'src/b.ts')).toBe(false);
+    expect(acceptsRepositoryPath('src/c.ts', 'src/a.ts', [], [], 'src/b.ts')).toBe(true);
+    expect(acceptsRepositoryPath('src/a.ts', 'src/a.ts', [], [], '!src/a.ts')).toBe(false);
     expect(shouldOmitRepositoryContent('src/generated-but-tracked.ts', Number.MAX_SAFE_INTEGER)).toBe(false);
     expect(shouldOmitRepositoryContent('recordings/architecture.mp4', CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT + 1)).toBe(
       true,
@@ -281,5 +285,30 @@ describe('native code graph inventory policy', () => {
     });
     expect(JSON.stringify(preview)).not.toContain('src/active.ts');
     expect(JSON.stringify(preview)).not.toContain('package.json');
+  });
+
+  it('unions committed and local Threadnote ignore files in inventory preview', () => {
+    const entries = [
+      {path: 'src/a.ts', size: 10},
+      {path: 'src/b.ts', size: 20},
+      {path: 'src/c.ts', size: 30},
+    ];
+    const groupFiles = (
+      options: {readonly threadnoteIgnore?: string; readonly threadnoteIgnoreLocal?: string},
+      reason: string,
+    ) => summarizeCodeGraphInventoryPreview(entries, options).groups.find(group => group.reason === reason)?.files ?? 0;
+
+    expect(groupFiles({threadnoteIgnore: 'src/a.ts\n'}, 'threadnote-ignore')).toBe(1);
+    expect(groupFiles({threadnoteIgnoreLocal: 'src/b.ts\n'}, 'threadnote-ignore')).toBe(1);
+    expect(groupFiles({threadnoteIgnore: 'src/a.ts\n', threadnoteIgnoreLocal: 'src/b.ts\n'}, 'threadnote-ignore')).toBe(
+      2,
+    );
+    expect(groupFiles({}, 'threadnote-ignore')).toBe(0);
+    expect(
+      summarizeCodeGraphInventoryPreview(entries, {
+        threadnoteIgnore: 'src/a.ts\n',
+        threadnoteIgnoreLocal: 'src/b.ts\n',
+      }).groups.find(group => group.reason === 'admitted' && group.language === 'typescript'),
+    ).toMatchObject({files: 1});
   });
 });

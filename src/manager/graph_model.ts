@@ -661,15 +661,40 @@ export type GraphStorageSummary = ManagerGraphStorageSummary;
 export function graphMaintenanceStatusLabel(status: CodeGraphMaintenanceStatus): string {
   const operation = status.operation === 'selected-snapshot-purge' ? 'Selected snapshot purge' : 'Graph maintenance';
   const phases: Record<CodeGraphMaintenanceStatus['phase'], string> = {
-    'acquiring-gates': 'acquiring safety gates',
-    'retiring-and-cleaning': 'retiring snapshot and advancing cleanup',
+    'acquiring-gates': status.operation === 'selected-snapshot-purge' ? 'acquiring safety gates' : 'acquiring locks',
+    'retiring-and-cleaning':
+      status.operation === 'selected-snapshot-purge'
+        ? 'retiring snapshot and advancing cleanup'
+        : 'cleaning derived state',
     'status-unavailable': 'working; detailed status unavailable',
-    'verifying-graph': 'rechecking graph safety evidence',
-    'verifying-vectors': 'rechecking vector safety evidence',
+    'verifying-graph':
+      status.operation === 'selected-snapshot-purge' ? 'rechecking graph safety evidence' : 'verifying graph store',
+    'verifying-vectors':
+      status.operation === 'selected-snapshot-purge' ? 'rechecking vector safety evidence' : 'verifying related files',
     'waiting-builders': 'waiting for graph builders',
     working: 'working',
   };
   return `${operation} · ${phases[status.phase]}`;
+}
+
+export function graphMaintenanceRemainingMilliseconds(
+  status: Pick<CodeGraphMaintenanceStatus, 'completed' | 'startedAt' | 'total'>,
+  nowMilliseconds: number,
+): number | undefined {
+  if (
+    status.completed === undefined ||
+    status.total === undefined ||
+    status.startedAt === undefined ||
+    status.total <= 0 ||
+    status.completed <= 0 ||
+    status.completed > status.total
+  ) {
+    return undefined;
+  }
+  if (status.completed === status.total) return 0;
+  const elapsed = nowMilliseconds - Date.parse(status.startedAt);
+  if (!Number.isFinite(elapsed) || elapsed < 0) return undefined;
+  return Math.round((elapsed / status.completed) * (status.total - status.completed));
 }
 
 export function graphCompletedBuildResultIdentity(build: GraphBuildStatus): string | undefined {

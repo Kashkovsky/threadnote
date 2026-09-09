@@ -24,6 +24,7 @@ import {
   graphDisplayEdges,
   graphFocusLayoutTargets,
   graphFocusTarget,
+  graphMaintenanceRemainingMilliseconds,
   graphMaintenanceStatusLabel,
   graphNodeDetailRequestIsCurrent,
   graphNodeSizeValues,
@@ -668,6 +669,25 @@ describe('manager graph focus', () => {
     };
     expect(graphStatusPollDelay([], maintenance)).toBe(1_000);
     expect(graphMaintenanceStatusLabel(maintenance)).toBe('Selected snapshot purge · rechecking graph safety evidence');
+    expect(
+      graphMaintenanceStatusLabel({
+        completed: 2,
+        operation: 'graph-maintenance',
+        phase: 'verifying-graph',
+        startedAt: '2026-09-09T00:00:00.000Z',
+        total: 4,
+      }),
+    ).toBe('Graph maintenance · verifying graph store');
+    expect(
+      graphMaintenanceRemainingMilliseconds(
+        {
+          completed: 2,
+          startedAt: '2026-09-09T00:00:00.000Z',
+          total: 4,
+        },
+        Date.parse('2026-09-09T00:00:10.000Z'),
+      ),
+    ).toBe(10_000);
     const abandoned = {
       ...graphBuildStatus('running'),
       observation: {heartbeatAgeMilliseconds: 60_000, liveness: 'abandoned' as const},

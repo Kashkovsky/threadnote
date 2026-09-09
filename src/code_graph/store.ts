@@ -94,6 +94,7 @@ export {
   codeGraphExactSnapshotRetirementStatement,
 } from './store_cleanup_core.js';
 export {
+  CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE,
   codeGraphRoutineFileBlobCleanupPageStatement,
   codeGraphRoutineMaterializedShardCleanupPageStatement,
 } from './store_maintenance_core.js';

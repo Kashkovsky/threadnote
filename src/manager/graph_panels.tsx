@@ -16,6 +16,7 @@ import {
   graphBuildConcurrencyState,
   graphBuildTarget,
   graphLocalAssociationText,
+  graphMaintenanceRemainingMilliseconds,
   graphMaintenanceStatusLabel,
   graphRelationshipCountLabel,
   graphRelationshipSampleLabel,
@@ -1020,10 +1021,12 @@ export function GraphMaintenanceProgress(props: {
   const elapsed = status.startedAt === undefined ? undefined : Math.max(0, Date.now() - Date.parse(status.startedAt));
   const lastUpdate =
     status.updatedAt === undefined ? undefined : Math.max(0, Date.now() - Date.parse(status.updatedAt));
+  const remaining = graphMaintenanceRemainingMilliseconds(status, Date.now());
   const percentage =
     status.completed !== undefined && status.total !== undefined && status.total > 0
       ? Math.max(0, Math.min(100, (status.completed / status.total) * 100))
       : undefined;
+  const unit = status.operation === 'selected-snapshot-purge' ? 'safety phases' : 'phases';
   return (
     <div className="graph-build-status graph-maintenance-status" aria-live="polite">
       <article className="graph-build-card is-running is-active">
@@ -1051,7 +1054,8 @@ export function GraphMaintenanceProgress(props: {
         <p>
           {status.completed === undefined || status.total === undefined
             ? 'Waiting for the next maintenance phase update'
-            : `${status.completed.toLocaleString()} / ${status.total.toLocaleString()} safety phases`}
+            : `${status.completed.toLocaleString()} / ${status.total.toLocaleString()} ${unit}`}
+          {remaining === undefined ? '' : ` · ETA ${formatBuildDuration(remaining)}`}
           {lastUpdate === undefined ? '' : ` · last update ${formatBuildDuration(lastUpdate)} ago`}
         </p>
       </article>

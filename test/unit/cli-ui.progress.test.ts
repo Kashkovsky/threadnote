@@ -3,7 +3,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Console, Effect, Terminal} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {promptForSelection, startProgress} from '../../src/cli_ui.js';
+import {clipInteractiveProgressText, promptForSelection, startProgress} from '../../src/cli_ui.js';
 import {CliOutput, makeQueuedCliWriter, withCliOutputConsole} from '../../src/effect/cli_output.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -213,6 +213,56 @@ describe('CLI progress indicator', () => {
       expect(displays.at(-1)).toBe('\r\u001b[2K');
     }),
   );
+
+  effectIt.effect('clips interactive TTY progress to the terminal width and skips unchanged updates', () =>
+    Effect.gen(function* () {
+      const displays: string[] = [];
+      const system = yield* SystemInfo.pipe(provideTestLayer(ApplicationLayer));
+      const interactiveSystem = SystemInfo.of({
+        ...system,
+        environment: () => ({}),
+        stdoutIsTTY: true,
+      });
+      const terminal = Terminal.make({
+        columns: Effect.succeed(24),
+        display: text =>
+          Effect.sync(() => {
+            displays.push(text);
+          }),
+        readInput: Effect.never,
+        readLine: Effect.never,
+        rows: Effect.succeed(40),
+      });
+      const output = orderedCliOutput([]);
+      const longMessage = 'Scanning · 12/345 files · this path must not wrap onto another row';
+
+      yield* Effect.acquireUseRelease(
+        startProgress(longMessage),
+        progress =>
+          Effect.gen(function* () {
+            const afterStart = displays.length;
+            yield* progress.update(longMessage);
+            expect(displays.length).toBe(afterStart);
+            yield* progress.update(`${longMessage} · next`);
+          }),
+        progress => progress.stop,
+      ).pipe(
+        Effect.provideService(CliOutput, output),
+        Effect.provideService(SystemInfo, interactiveSystem),
+        Effect.provideService(Terminal.Terminal, terminal),
+      );
+
+      expect(displays.some(display => display.includes('\n'))).toBe(false);
+      expect(displays.some(display => display.includes('…'))).toBe(true);
+      expect(displays.every(display => !display.includes('must not wrap'))).toBe(true);
+    }),
+  );
+
+  it('clips rewritten progress text to one terminal row', () => {
+    expect(clipInteractiveProgressText('short', 80)).toBe('short');
+    expect(clipInteractiveProgressText('abcdefghijklmnopqrstuvwxyz', 20).endsWith('…')).toBe(true);
+    expect(Array.from(clipInteractiveProgressText('abcdefghijklmnopqrstuvwxyz', 20)).length).toBeLessThanOrEqual(16);
+  });
 
   effectIt.effect('flushes queued headings before an interactive terminal frame', () =>
     Effect.gen(function* () {
