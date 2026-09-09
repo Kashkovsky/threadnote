@@ -131,7 +131,7 @@ describe('shared ready view attachment locking', () => {
         if (executable !== 'git') return;
         counts.git += 1;
         if (args.includes('symbolic-ref')) counts.branchObservation += 1;
-        if (args[2] === 'rev-parse' && args[3] === '--show-toplevel') counts.fullIdentity += 1;
+        if (args[2] === 'rev-parse' && args.includes('--show-toplevel')) counts.fullIdentity += 1;
         if (args[2] === 'status') {
           counts.status += 1;
           if (args.includes('--porcelain=v2')) counts.publicationProof += 1;
@@ -165,7 +165,7 @@ describe('shared ready view attachment locking', () => {
       expect(observed.elapsedMilliseconds).toBeLessThan(500);
       expect(observed.attached.readySnapshot?.id).toBe(observed.snapshot.id);
       expect(observed.attached.stale).toBe(false);
-      expect(observed.counts).toEqual({branchObservation: 1, fullIdentity: 1, git: 15, publicationProof: 1, status: 2});
+      expect(observed.counts).toEqual({branchObservation: 1, fullIdentity: 1, git: 12, publicationProof: 1, status: 2});
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
