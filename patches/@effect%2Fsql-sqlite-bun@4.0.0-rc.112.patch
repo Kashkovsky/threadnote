@@ -1,8 +1,88 @@
 diff --git a/dist/SqliteClient.js b/dist/SqliteClient.js
-index bef1706779e0af97ab4f409d17e8b9e056beea64..27d84a5abd4dd2681286c37010e39c2a40ce6d78 100644
+index bef1706779e0af97ab4f409d17e8b9e056beea64..30f23f675233655e9af2f16d80fa432f66b460bb 100644
 --- a/dist/SqliteClient.js
 +++ b/dist/SqliteClient.js
-@@ -145,7 +145,7 @@ export const make = options => Effect.gen(function* () {
+@@ -68,22 +68,64 @@ export const make = options => Effect.gen(function* () {
+       readwrite: readonly ? false : options.readwrite ?? true,
+       create: readonly ? false : options.create ?? true
+     });
+-    yield* Effect.addFinalizer(() => Effect.sync(() => db.close()));
++    const cachedStatements = new Map();
++    yield* Effect.addFinalizer(() => Effect.sync(() => {
++      let failed = false;
++      let failure;
++      for (const statement of cachedStatements.values()) {
++        try {
++          statement.finalize();
++        } catch (cause) {
++          if (!failed) {
++            failed = true;
++            failure = cause;
++          }
++        }
++      }
++      cachedStatements.clear();
++      try {
++        db.close();
++      } catch (cause) {
++        if (!failed) {
++          failed = true;
++          failure = cause;
++        }
++      }
++      if (failed) throw failure;
++    }));
+     const busyTimeout = Math.min(MAX_BUSY_TIMEOUT, Math.max(0, Math.round(Duration.toMillis(options.busyTimeout ?? Duration.seconds(5)))));
+     db.run(`PRAGMA busy_timeout = ${busyTimeout};`);
+     if (options.disableWAL !== true && !readonly) {
+       db.run("PRAGMA journal_mode = WAL;");
+     }
+-    const prepare = (sql, useSafeIntegers) => {
++    const runStatement = (sql, useSafeIntegers, params, values) => {
+       const statement = db.query(sql);
+-      // @ts-ignore bun-types missing safeIntegers method, fixed in https://github.com/oven-sh/bun/pull/26627
+-      statement.safeIntegers(useSafeIntegers);
+-      return statement;
++      // Keep Bun's first-20 exact-query reuse and own every other statement
++      // only for its synchronous execution. No native cache internals are read.
++      const cached = cachedStatements.has(sql) || cachedStatements.size < 20;
++      if (cached) cachedStatements.set(sql, statement);
++      let completed = false;
++      try {
++        // @ts-ignore bun-types missing safeIntegers method, fixed in https://github.com/oven-sh/bun/pull/26627
++        statement.safeIntegers(useSafeIntegers);
++        const rows = values ? statement.values(...params) : statement.all(...params);
++        completed = true;
++        return rows ?? [];
++      } finally {
++        if (!cached) {
++          try {
++            statement.finalize();
++          } catch (cause) {
++            // Preserve an execution/setup failure; otherwise surface cleanup failure.
++            if (completed) throw cause;
++          }
++        }
++      }
+     };
+     const run = (sql, params = []) => Effect.withFiber(fiber => {
+       const useSafeIntegers = Context.get(fiber.context, Client.SafeIntegers);
+       try {
+-        return Effect.succeed(prepare(sql, useSafeIntegers).all(...params) ?? []);
++        return Effect.succeed(runStatement(sql, useSafeIntegers, params, false));
+       } catch (cause) {
+         return Effect.fail(new SqlError({
+           reason: classifyError(cause, "Failed to execute statement", "execute")
+@@ -93,7 +135,7 @@ export const make = options => Effect.gen(function* () {
+     const runValues = (sql, params = []) => Effect.withFiber(fiber => {
+       const useSafeIntegers = Context.get(fiber.context, Client.SafeIntegers);
+       try {
+-        return Effect.succeed(prepare(sql, useSafeIntegers).values(...params) ?? []);
++        return Effect.succeed(runStatement(sql, useSafeIntegers, params, true));
+       } catch (cause) {
+         return Effect.fail(new SqlError({
+           reason: classifyError(cause, "Failed to execute statement", "executeValues")
+@@ -145,7 +187,7 @@ export const make = options => Effect.gen(function* () {
      acquirer,
      compiler,
      transactionAcquirer,
@@ -12,10 +92,100 @@ index bef1706779e0af97ab4f409d17e8b9e056beea64..27d84a5abd4dd2681286c37010e39c2a
      transformRows
    }), {
 diff --git a/src/SqliteClient.ts b/src/SqliteClient.ts
-index e54047a1122db25933d1f31d0a41c7cf09287c49..5bf79cf872b64539aa57402f20a528f0e249b5fb 100644
+index e54047a1122db25933d1f31d0a41c7cf09287c49..e89fd2daa379c9f63c6e70f672f5c7f6837e708d 100644
 --- a/src/SqliteClient.ts
 +++ b/src/SqliteClient.ts
-@@ -235,7 +235,7 @@ export const make = (
+@@ -134,7 +134,31 @@ export const make = (
+         readwrite: readonly ? false : options.readwrite ?? true,
+         create: readonly ? false : options.create ?? true
+       } as any)
+-      yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
++      const cachedStatements = new Map<string, ReturnType<Database["query"]>>()
++      yield* Effect.addFinalizer(() => Effect.sync(() => {
++        let failed = false
++        let failure: unknown
++        for (const statement of cachedStatements.values()) {
++          try {
++            statement.finalize()
++          } catch (cause) {
++            if (!failed) {
++              failed = true
++              failure = cause
++            }
++          }
++        }
++        cachedStatements.clear()
++        try {
++          db.close()
++        } catch (cause) {
++          if (!failed) {
++            failed = true
++            failure = cause
++          }
++        }
++        if (failed) throw failure
++      }))
+       const busyTimeout = Math.min(
+         MAX_BUSY_TIMEOUT,
+         Math.max(0, Math.round(Duration.toMillis(options.busyTimeout ?? Duration.seconds(5))))
+@@ -145,11 +169,34 @@ export const make = (
+         db.run("PRAGMA journal_mode = WAL;")
+       }
+ 
+-      const prepare = (sql: string, useSafeIntegers: boolean) => {
++      const runStatement = (
++        sql: string,
++        useSafeIntegers: boolean,
++        params: ReadonlyArray<unknown>,
++        values: boolean
++      ): Array<any> => {
+         const statement = db.query(sql)
+-        // @ts-ignore bun-types missing safeIntegers method, fixed in https://github.com/oven-sh/bun/pull/26627
+-        statement.safeIntegers(useSafeIntegers)
+-        return statement
++        // Keep Bun's first-20 exact-query reuse and own every other statement
++        // only for its synchronous execution. No native cache internals are read.
++        const cached = cachedStatements.has(sql) || cachedStatements.size < 20
++        if (cached) cachedStatements.set(sql, statement)
++        let completed = false
++        try {
++          // @ts-ignore bun-types missing safeIntegers method, fixed in https://github.com/oven-sh/bun/pull/26627
++          statement.safeIntegers(useSafeIntegers)
++          const rows = values ? statement.values(...(params as any)) : statement.all(...(params as any))
++          completed = true
++          return (rows ?? []) as Array<any>
++        } finally {
++          if (!cached) {
++            try {
++              statement.finalize()
++            } catch (cause) {
++              // Preserve an execution/setup failure; otherwise surface cleanup failure.
++              if (completed) throw cause
++            }
++          }
++        }
+       }
+ 
+       const run = (
+@@ -159,7 +206,7 @@ export const make = (
+         Effect.withFiber<Array<any>, SqlError>((fiber) => {
+           const useSafeIntegers = Context.get(fiber.context, Client.SafeIntegers)
+           try {
+-            return Effect.succeed((prepare(sql, useSafeIntegers).all(...(params as any)) ?? []) as Array<any>)
++            return Effect.succeed(runStatement(sql, useSafeIntegers, params, false))
+           } catch (cause) {
+             return Effect.fail(new SqlError({ reason: classifyError(cause, "Failed to execute statement", "execute") }))
+           }
+@@ -172,7 +219,7 @@ export const make = (
+         Effect.withFiber<Array<any>, SqlError>((fiber) => {
+           const useSafeIntegers = Context.get(fiber.context, Client.SafeIntegers)
+           try {
+-            return Effect.succeed((prepare(sql, useSafeIntegers).values(...(params as any)) ?? []) as Array<any>)
++            return Effect.succeed(runStatement(sql, useSafeIntegers, params, true))
+           } catch (cause) {
+             return Effect.fail(
+               new SqlError({ reason: classifyError(cause, "Failed to execute statement", "executeValues") })
+@@ -235,7 +282,7 @@ export const make = (
          acquirer,
          compiler,
          transactionAcquirer,
