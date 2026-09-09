@@ -4,6 +4,7 @@ import type {CodeGraphLocalDiagnosticsReport} from '../code_graph/diagnostics.js
 import type {CodeGraphLocalAssociation} from '../code_graph/local_provenance.js';
 import type {CodeGraphMaintenanceStatus} from '../code_graph/maintenance_gate.js';
 import type {ManagerGraphStorageSummary} from '../code_graph/manager_status.js';
+import {codeGraphFailedBuildStatusCurrent} from '../code_graph/build_status_validation.js';
 import {compareCodeUnits} from '../code_graph/ordering.js';
 import {
   MANAGER_GRAPH_DEFAULT_EDGE_LIMIT,
@@ -446,7 +447,10 @@ export function graphBuildIsActive(build: GraphBuildStatus): boolean {
 }
 
 export function graphBuildShouldDisplay(build: GraphBuildStatus): boolean {
-  return build.state === 'failed' || graphBuildIsActive(build);
+  return (
+    graphBuildIsActive(build) ||
+    (build.state === 'failed' && codeGraphFailedBuildStatusCurrent(build.observation.heartbeatAgeMilliseconds))
+  );
 }
 
 /** Keep status banners anchored to a worktree instead of moving as progress timestamps change. */

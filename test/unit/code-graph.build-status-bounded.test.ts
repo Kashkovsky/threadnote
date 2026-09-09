@@ -3,18 +3,24 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
+import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {
   CODE_GRAPH_BUILD_HISTORY_DIRECTORY_ENTRY_LIMIT,
   CODE_GRAPH_BUILD_HISTORY_STATUS_LIMIT,
   type CodeGraphBuildState,
   type CodeGraphBuildStatus,
+  type ObservedCodeGraphBuildStatus,
   codeGraphBuildHistoryInventory,
   maintainCodeGraphBuildHistoryUnit,
   makeCodeGraphBuildReporter,
   pruneCodeGraphBuildHistoryUnit,
   readAllCodeGraphBuildStatuses,
 } from '../../src/code_graph/build_status.js';
+import {
+  CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS,
+  codeGraphFailedBuildStatusRemovable,
+} from '../../src/code_graph/build_status_validation.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
@@ -88,6 +94,55 @@ describe('bounded code graph build-status maintenance', () => {
           });
           expect(yield* fs.exists(path.join(directory, `${status.buildId}.json`))).toBe(false);
           expect(yield* fs.exists(path.join(directory, `${status.buildId}.manager-context`))).toBe(false);
+        }),
+      ),
+    );
+
+    it.effect('removes one expired failed receipt without requiring a successor reporter', () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-build-history-expired-failed-'});
+          const identity = fixtureIdentity(home);
+          const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const directory = path.join(layout.repositoryRoot, 'build-status', identity.worktreeId);
+          yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
+          const status = fixtureStatus(identity, 'a'.repeat(32), 0, 'failed');
+          yield* writeStatusPair(fs, path, directory, status);
+          yield* TestClock.setTime(
+            Date.parse(status.timestamps.completedAt!) + CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS + 1,
+          );
+
+          expect(yield* maintainCodeGraphBuildHistoryUnit(layout, identity.worktreeId)).toEqual({
+            cursorToken: 'bh1:r',
+            state: 'progress',
+          });
+          expect(yield* fs.exists(path.join(directory, `${status.buildId}.json`))).toBe(false);
+          expect(yield* fs.exists(path.join(directory, `${status.buildId}.manager-context`))).toBe(false);
+        }),
+      ),
+    );
+
+    it.effect('preserves a failed receipt until its retention window elapses', () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-build-history-recent-failed-'});
+          const identity = fixtureIdentity(home);
+          const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const directory = path.join(layout.repositoryRoot, 'build-status', identity.worktreeId);
+          yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
+          const status = fixtureStatus(identity, 'a'.repeat(32), 0, 'failed');
+          yield* writeStatusPair(fs, path, directory, status);
+          yield* TestClock.setTime(
+            Date.parse(status.timestamps.completedAt!) + CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS,
+          );
+
+          expect(yield* maintainCodeGraphBuildHistoryUnit(layout, identity.worktreeId)).toEqual({state: 'complete'});
+          expect(yield* fs.exists(path.join(directory, `${status.buildId}.json`))).toBe(true);
+          expect(yield* fs.exists(path.join(directory, `${status.buildId}.manager-context`))).toBe(true);
         }),
       ),
     );
@@ -535,6 +590,26 @@ describe('bounded code graph build-status maintenance', () => {
     );
 
     it.effect.prop(
+      'failed receipts are removable exactly after a finite age exceeds retention and are not protected',
+      {
+        age: FC.integer({max: CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS * 2, min: 0}),
+        pin: FC.boolean(),
+      },
+      ({age, pin}) =>
+        Effect.sync(() => {
+          const status = observedFailedStatus(age);
+          expect(codeGraphFailedBuildStatusRemovable(status, pin ? status.buildId : undefined)).toBe(
+            !pin && age > CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS,
+          );
+          expect(codeGraphFailedBuildStatusRemovable({...status, state: 'completed'}, undefined)).toBe(false);
+          expect(codeGraphFailedBuildStatusRemovable(observedFailedStatus(Number.POSITIVE_INFINITY), undefined)).toBe(
+            false,
+          );
+        }),
+      {fastCheck: {numRuns: 50}},
+    );
+
+    it.effect.prop(
       'admits only a capped status inventory and fails closed on raw overflow',
       {
         extraEntries: FC.integer({max: 3, min: 0}),
@@ -652,5 +727,12 @@ function fixtureIdentity(home: string): RepositoryIdentity {
     repoRoot: `${home}/repository`,
     repositoryId: 'b'.repeat(64),
     worktreeId: 'c'.repeat(64),
+  };
+}
+
+function observedFailedStatus(heartbeatAgeMilliseconds: number): ObservedCodeGraphBuildStatus {
+  return {
+    ...fixtureStatus(fixtureIdentity('/tmp'), 'a'.repeat(32), 0, 'failed'),
+    observation: {heartbeatAgeMilliseconds, liveness: 'failed'},
   };
 }

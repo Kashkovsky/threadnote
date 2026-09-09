@@ -1,6 +1,7 @@
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {describe, expect, it} from 'vitest';
+import {CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS} from '../../src/code_graph/build_status_validation.js';
 import {
   cacheGraphNodeDetail,
   createGraphQueryRequestGate,
@@ -680,6 +681,32 @@ describe('manager graph focus', () => {
     };
     expect(graphBuildIsActive(staleOwner)).toBe(true);
     expect(graphBuildShouldDisplay(staleOwner)).toBe(true);
+    const recentFailed = graphBuildStatus('failed');
+    expect(graphBuildShouldDisplay(recentFailed)).toBe(true);
+    expect(
+      graphBuildShouldDisplay({
+        ...recentFailed,
+        observation: {
+          heartbeatAgeMilliseconds: CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS,
+          liveness: 'failed',
+        },
+      }),
+    ).toBe(true);
+    expect(
+      graphBuildShouldDisplay({
+        ...recentFailed,
+        observation: {
+          heartbeatAgeMilliseconds: CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS + 1,
+          liveness: 'failed',
+        },
+      }),
+    ).toBe(false);
+    expect(
+      graphBuildShouldDisplay({
+        ...recentFailed,
+        observation: {heartbeatAgeMilliseconds: Number.POSITIVE_INFINITY, liveness: 'failed'},
+      }),
+    ).toBe(false);
   });
 
   it('shows live reclaiming status when the full graph catalog is not available yet', () => {
@@ -784,6 +811,14 @@ describe('manager graph focus', () => {
       {...graphBuildStatus('completed'), buildId: 'completed'},
       {...graphBuildStatus('running'), buildId: 'running'},
       {...graphBuildStatus('failed'), buildId: 'failed'},
+      {
+        ...graphBuildStatus('failed'),
+        buildId: 'expired-failed',
+        observation: {
+          heartbeatAgeMilliseconds: CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS + 1,
+          liveness: 'failed' as const,
+        },
+      },
     ];
     const waiters = Array.from({length: 5}, (_, index) => ({
       ...graphBuildStatus('queued'),
@@ -795,6 +830,7 @@ describe('manager graph focus', () => {
     expect(selected.total).toBe(7);
     expect(selected.hiddenCount).toBe(3);
     expect(selected.jobs.map(job => job.state)).not.toContain('completed');
+    expect(selected.jobs.map(job => job.buildId)).not.toContain('expired-failed');
     expect(selected.jobs[0]?.buildId).toBe('running');
 
     const neverResolves = () => new Promise<never>(() => undefined);

@@ -9,6 +9,7 @@ import {
   CODE_GRAPH_BUILD_HASH_ID as HASH_ID,
   CODE_GRAPH_BUILD_ID as BUILD_ID,
   CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
+  codeGraphFailedBuildStatusRemovable,
   isBuildStatusRecord as isRecord,
   isBuildStatusText as isText,
 } from './build_status_validation.js';
@@ -575,9 +576,9 @@ export function codeGraphBuildHistoryInventory(page: {
 }
 
 /**
- * Inspect one bounded history page and remove at most one exact terminal or
- * abandoned status/context pair. Progress cursors let ordinary maintenance
- * advance when a page contains no safe candidate.
+ * Inspect one bounded history page and remove at most one exact terminal,
+ * expired-failed, or abandoned status/context pair. Progress cursors let
+ * ordinary maintenance advance when a page contains no safe candidate.
  */
 export const pruneCodeGraphBuildHistoryUnit = Effect.fn('codeGraph.buildStatus.pruneHistoryUnit')(function* (
   layout: CodeGraphLayout,
@@ -619,7 +620,8 @@ export const pruneCodeGraphBuildHistoryUnit = Effect.fn('codeGraph.buildStatus.p
 
 /**
  * Run one cursor-backed history page without requiring a successor reporter.
- * Ordinary maintenance uses this to converge abandoned nonterminal sidecars.
+ * Ordinary maintenance uses this to converge abandoned nonterminal sidecars
+ * and expired failed receipts.
  */
 export const maintainCodeGraphBuildHistoryUnit = Effect.fn('codeGraph.buildStatus.maintainHistoryUnit')(function* (
   layout: CodeGraphLayout,
@@ -1369,6 +1371,9 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
               protectedBuildId,
             ),
           );
+  const expiredFailed = [...ranked]
+    .reverse()
+    .find(observed => codeGraphFailedBuildStatusRemovable(observed.status, protectedBuildId));
   const terminal =
     statusNames.length <= STATUS_HISTORY_PER_WORKTREE
       ? undefined
@@ -1380,7 +1385,7 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
               observed.status.buildId !== protectedBuildId &&
               (observed.status.state === 'completed' || observed.status.state === 'failed'),
           );
-  const selected = abandoned ?? terminal;
+  const selected = abandoned ?? expiredFailed ?? terminal;
   if (selected === undefined) {
     const hasMore = remainingNames.length > pageNames.length;
     const lastBuildId = pageNames.at(-1)?.slice(0, -'.json'.length);

@@ -3,6 +3,40 @@ export const CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION = 1 as const;
 export const CODE_GRAPH_BUILD_HASH_ID = /^[0-9a-f]{64}$/;
 export const CODE_GRAPH_BUILD_ID = /^[0-9a-f-]{16,64}$/;
 export const CODE_GRAPH_BUILD_COMMIT_ID = /^[0-9a-f]{7,64}$/;
+/** Failed receipts stay visible until this age, then Manager and history prune retire them. */
+export const CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS = 60 * 60 * 1_000;
+
+/** Keep a failed Manager card only while its observed heartbeat age is finite and within retention. */
+export function codeGraphFailedBuildStatusCurrent(heartbeatAgeMilliseconds: number): boolean {
+  return (
+    Number.isFinite(heartbeatAgeMilliseconds) &&
+    heartbeatAgeMilliseconds <= CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS
+  );
+}
+
+/** History prune may delete a failed receipt only after a finite observed age exceeds retention. */
+export function codeGraphFailedBuildStatusExpired(heartbeatAgeMilliseconds: number): boolean {
+  return (
+    Number.isFinite(heartbeatAgeMilliseconds) &&
+    heartbeatAgeMilliseconds > CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS
+  );
+}
+
+/** @internal Pure retention boundary for expired failed receipts. Age is history policy, not live-owner authority. */
+export function codeGraphFailedBuildStatusRemovable(
+  status: {
+    readonly buildId: string;
+    readonly observation: {readonly heartbeatAgeMilliseconds: number};
+    readonly state: string;
+  },
+  protectedBuildId?: string,
+): boolean {
+  return (
+    status.state === 'failed' &&
+    status.buildId !== protectedBuildId &&
+    codeGraphFailedBuildStatusExpired(status.observation.heartbeatAgeMilliseconds)
+  );
+}
 
 export function isBuildStatusRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
