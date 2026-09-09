@@ -432,7 +432,7 @@ describe('code graph query budgets', () => {
             expect(yield* Ref.get(storeReads)).toEqual({
               leasesAcquired: 1,
               leasesReleased: 1,
-              provenance: 2,
+              provenance: refresh === true ? 2 : 1,
               readyById: 0,
               readyByWorktree: 2,
             });
