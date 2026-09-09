@@ -372,6 +372,57 @@ describe('CLI progress indicator', () => {
       ]);
     }),
   );
+
+  effectIt.effect('keeps captured result lines when progress is disabled', () =>
+    Effect.gen(function* () {
+      const system = yield* SystemInfo.pipe(provideTestLayer(ApplicationLayer));
+      const quietSystem = SystemInfo.of({
+        ...system,
+        environment: () => ({THREADNOTE_NO_PROGRESS: '1'}),
+        stdoutIsTTY: false,
+      });
+
+      const captured = yield* captureConsole(
+        Effect.acquireUseRelease(
+          startProgress('Would purge · acquiring locks'),
+          progress =>
+            Effect.gen(function* () {
+              yield* progress.update('Would purge · deleting files');
+              yield* Console.log('Would remove derived code graph index for checkout abcdef123456.');
+            }),
+          progress => progress.stop,
+        ),
+      ).pipe(Effect.provideService(SystemInfo, quietSystem), provideTestLayer(ApplicationLayer));
+
+      expect(captured.output).toBe('Would remove derived code graph index for checkout abcdef123456.');
+    }),
+  );
+
+  effectIt.effect.prop(
+    'disabled progress emits no console lines',
+    {
+      messages: fc.array(fc.string({maxLength: 40, minLength: 1}), {maxLength: 8, minLength: 1}),
+    },
+    ({messages}) =>
+      Effect.gen(function* () {
+        const system = yield* SystemInfo.pipe(provideTestLayer(ApplicationLayer));
+        const quietSystem = SystemInfo.of({
+          ...system,
+          environment: () => ({THREADNOTE_NO_PROGRESS: '1'}),
+          stdoutIsTTY: false,
+        });
+        const [initial = '', ...updates] = messages;
+        const captured = yield* captureConsole(
+          Effect.acquireUseRelease(
+            startProgress(initial),
+            progress => Effect.forEach(updates, message => progress.update(message), {discard: true}),
+            progress => progress.stop,
+          ),
+        ).pipe(Effect.provideService(SystemInfo, quietSystem), provideTestLayer(ApplicationLayer));
+        expect(captured.output).toBe('');
+      }),
+    {fastCheck: {numRuns: 40}},
+  );
 });
 
 function orderedCliOutput(events: string[]) {

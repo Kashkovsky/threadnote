@@ -205,6 +205,12 @@ const LINE_PROGRESS_INTERVAL_MILLISECONDS = 1_000;
 export const startProgress = Effect.fn('cliUi.startProgress')(function* (message: string) {
   const system = yield* SystemInfo;
   const environment = system.environment();
+  if (environment.THREADNOTE_NO_PROGRESS !== undefined) {
+    return {
+      stop: Effect.void,
+      update: (_nextMessage: string) => Effect.void,
+    };
+  }
   if (!system.stdoutIsTTY || environment.CI !== undefined || environment.THREADNOTE_NO_SPINNER !== undefined) {
     yield* Console.log(message);
     const state = yield* Ref.make<LineProgressState>({

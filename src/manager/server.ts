@@ -27,7 +27,7 @@ import {
   runNativeAiConsolidation,
 } from '../effect/ai/consolidator.js';
 import {runCommandEffect} from '../effect/command.js';
-import {captureConsole} from '../effect/console.js';
+import {captureConsoleWithoutProgress} from '../effect/console.js';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {ResourceStore} from '../effect/resource-store.js';
 import type {ApplicationServices} from '../effect/runtime.js';
@@ -1581,7 +1581,7 @@ const runCaptured = Effect.fn('manager.runCaptured')(function* (
   action: () => ManagerOperation<void>,
   _runEffect?: ManagerEffectPromise,
 ) {
-  const captured = yield* captureConsole(action());
+  const captured = yield* captureConsoleWithoutProgress(action());
   return {output: captured.output};
 });
 
