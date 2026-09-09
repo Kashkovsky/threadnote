@@ -148,11 +148,19 @@ describe('Context Brief deferred code-anchor recovery', () => {
                 }),
             });
             const receipts: DeferredCodeAnchorRouteFinalizationReceiptV1[] = [];
-            const firstFiber = yield* retrieveContextBriefCodeLinkedMemoryEvidence(config, plan.codeAnchors, {
+            const firstRetrieve = retrieveContextBriefCodeLinkedMemoryEvidence(config, plan.codeAnchors, {
               onFinalizationReceipt: receipt => {
                 receipts.push(receipt);
               },
-            }).pipe(Effect.provideService(ResourceStore, contendedStore), Effect.forkScoped);
+            }).pipe(Effect.provideService(ResourceStore, contendedStore));
+            // The interrupt case must keep TestClock so the 750ms route-pass
+            // deadline can fire against the never-completing first read.
+            // The ordinary path uses live time: lock retries and capture
+            // spacing otherwise sleep on the frozen test clock and hang the
+            // 60s Vitest budget under CI contention.
+            const firstFiber = yield* (
+              interruptFirstAdmission ? firstRetrieve : firstRetrieve.pipe(TestClock.withLive)
+            ).pipe(Effect.forkScoped);
             if (interruptFirstAdmission) {
               yield* Deferred.await(entered);
               yield* TestClock.adjust('750 millis');
@@ -190,7 +198,9 @@ describe('Context Brief deferred code-anchor recovery', () => {
               visibility: metadata.visibility,
             });
 
-            const second = yield* retrieveContextBriefCodeLinkedMemoryEvidence(config, plan.codeAnchors);
+            const second = yield* retrieveContextBriefCodeLinkedMemoryEvidence(config, plan.codeAnchors).pipe(
+              TestClock.withLive,
+            );
             expect(second.candidates.map(candidate => candidate.uri)).toEqual([memoryUri]);
             expect(
               (yield* fs.readDirectory(pendingRoot, {recursive: true})).filter(name =>
