@@ -39,4 +39,6 @@ maps them to `github-hosted-windows-x64` and a hashed runner identity. The overr
 runtime platform to be `win32` and its architecture to be `x64`, so a mislabeled non-Windows artifact retains the
 1-second ceiling. The first 25-sample prospective run exposed insufficient p95 order-statistic resolution; its retained
 evidence and the unchanged-threshold 100-sample successor policy are documented in
-`windows-scale-10k-hosted-quantile-calibration-v1.md`.
+`windows-scale-10k-hosted-quantile-calibration-v1.md`. Two later 100-sample hosted failures on
+`d828252e711e4cad1fef6961879ba382a41bdbed` recalibrated the wall fuse; see
+`windows-scale-10k-hosted-tail-calibration-v2.md`.
