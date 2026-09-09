@@ -19,10 +19,15 @@ import {
 import {homedir, tmpdir} from '../helpers/node-os.js';
 import {basename, dirname, join, sep} from '../helpers/node-path.js';
 import {afterEach} from 'vitest';
-import {describe, expect, it} from '@effect/vitest';
-import {Effect, FileSystem, Option, PlatformError} from 'effect';
+import {describe, expect, it, it as effectIt} from '@effect/vitest';
+import * as BunServices from '@effect/platform-bun/BunServices';
+import {Effect, FileSystem, Layer, Option, Path, PlatformError} from 'effect';
+import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
-import {CommandExecutor} from '../../src/effect/command.js';
+import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {
   parseCodeGraphLocalProvenanceRecordJson,
   privacySafeCodeGraphLocalAssociation,
@@ -326,70 +331,67 @@ describe('code graph private local provenance', () => {
     expect(readdirSync(dirname(fixture.sidecar)).filter(name => name.endsWith('.tmp'))).toEqual([]);
   });
 
-  it('uses one complete Git resolution per concurrent cadence-hit status observation', async () => {
-    const fixture = await provenanceFixture();
-    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
-    let gitInvocationCount = 0;
-    let branchObservationCount = 0;
-    let interlockCount = 0;
+  effectIt.effect('uses one complete Git resolution per concurrent cadence-hit status observation', () =>
+    Effect.gen(function* () {
+      const fixture = yield* effectProvenanceFixture();
+      yield* recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity);
+      let gitInvocationCount = 0;
+      let branchObservationCount = 0;
+      let interlockCount = 0;
 
-    const statuses = await runEffect(
-      Effect.gen(function* () {
-        const command = yield* CommandExecutor;
-        const query = yield* CodeGraphQueryService;
-        const executeBytes = command.executeBytes;
-        if (executeBytes === undefined)
-          return yield* TestError.make({message: 'binary command adapter is unavailable'});
-        const mutableCommand = command as {
-          execute: typeof command.execute;
-          executeBytes: typeof executeBytes;
-        };
-        const execute = command.execute;
-        return yield* Effect.acquireUseRelease(
-          Effect.sync(() => {
-            mutableCommand.execute = (executable, args, options) => {
-              if (executable === 'git') {
-                gitInvocationCount += 1;
-                if (args.includes('symbolic-ref')) branchObservationCount += 1;
-              }
-              return execute(executable, args, options);
-            };
-            mutableCommand.executeBytes = (executable, args, options) => {
-              if (executable === 'git') {
-                gitInvocationCount += 1;
-                if (args.includes('symbolic-ref')) branchObservationCount += 1;
-              }
-              return executeBytes(executable, args, options);
-            };
-          }),
-          () =>
-            Effect.all(
-              Array.from({length: 16}, () =>
-                query.status(fixture.home, fixture.root, {
-                  afterIdentityObserved: () =>
-                    Effect.sync(() => {
-                      interlockCount += 1;
-                    }),
-                  observeWorktree: false,
-                }),
-              ),
-              {concurrency: 'unbounded'},
+      const command = yield* CommandExecutor;
+      const query = yield* CodeGraphQueryService;
+      const executeBytes = command.executeBytes;
+      if (executeBytes === undefined) return yield* TestError.make({message: 'binary command adapter is unavailable'});
+      const mutableCommand = command as {
+        execute: typeof command.execute;
+        executeBytes: typeof executeBytes;
+      };
+      const execute = command.execute;
+      const statuses = yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          mutableCommand.execute = (executable, args, options) => {
+            if (executable === 'git') {
+              gitInvocationCount += 1;
+              if (args.includes('symbolic-ref')) branchObservationCount += 1;
+            }
+            return execute(executable, args, options);
+          };
+          mutableCommand.executeBytes = (executable, args, options) => {
+            if (executable === 'git') {
+              gitInvocationCount += 1;
+              if (args.includes('symbolic-ref')) branchObservationCount += 1;
+            }
+            return executeBytes(executable, args, options);
+          };
+        }),
+        () =>
+          Effect.all(
+            Array.from({length: 16}, () =>
+              query.status(fixture.home, fixture.root, {
+                afterIdentityObserved: () =>
+                  Effect.sync(() => {
+                    interlockCount += 1;
+                  }),
+                observeWorktree: false,
+              }),
             ),
-          () =>
-            Effect.sync(() => {
-              mutableCommand.execute = execute;
-              mutableCommand.executeBytes = executeBytes;
-            }),
-        );
-      }),
-    );
+            {concurrency: 'unbounded'},
+          ),
+        () =>
+          Effect.sync(() => {
+            mutableCommand.execute = execute;
+            mutableCommand.executeBytes = executeBytes;
+          }),
+      );
 
-    expect(statuses).toHaveLength(16);
-    expect(statuses.every(status => status.identity.repositoryId === fixture.identity.repositoryId)).toBe(true);
-    expect(interlockCount).toBe(16);
-    expect(branchObservationCount).toBe(16);
-    expect(gitInvocationCount).toBe(16 * 7);
-  });
+      expect(statuses).toHaveLength(16);
+      expect(statuses.every(status => status.identity.repositoryId === fixture.identity.repositoryId)).toBe(true);
+      expect(interlockCount).toBe(16);
+      expect(branchObservationCount).toBe(16);
+      expect(gitInvocationCount).toBe(16 * 4);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
   it('distinguishes a legacy checkout, an absent exact record, and a moved worktree', async () => {
     const fixture = await provenanceFixture();
@@ -523,52 +525,58 @@ describe('code graph private local provenance', () => {
     expect(gitInvocationCount).toBe(0);
   });
 
-  it('refreshes an expired display observation once and reuses the newly published cadence', async () => {
-    const fixture = await provenanceFixture();
-    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
-    const expiredObservedAt = '2020-01-01T00:00:00.000Z';
-    writeFileSync(
-      fixture.sidecar,
-      `${JSON.stringify({...readRecord(fixture.sidecar), observedAt: expiredObservedAt})}\n`,
-      {mode: 0o600},
-    );
-    let identityResolutionCount = 0;
+  effectIt.effect('refreshes an expired display observation once and reuses the newly published cadence', () =>
+    Effect.gen(function* () {
+      const fixture = yield* effectProvenanceFixture();
+      const fs = yield* FileSystem.FileSystem;
+      yield* recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity);
+      const expiredObservedAt = '2020-01-01T00:00:00.000Z';
+      const record = JSON.parse(yield* fs.readFileString(fixture.sidecar)) as CodeGraphLocalProvenanceRecord;
+      yield* fs.writeFileString(fixture.sidecar, `${JSON.stringify({...record, observedAt: expiredObservedAt})}\n`, {
+        mode: 0o600,
+      });
+      let identityResolutionCount = 0;
 
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const command = yield* CommandExecutor;
-        const mutableCommand = command as {execute: typeof command.execute};
-        const execute = command.execute;
-        return yield* Effect.acquireUseRelease(
-          Effect.sync(() => {
-            mutableCommand.execute = (executable, args, options) => {
-              if (executable === 'git' && args[2] === 'rev-parse' && args[3] === '--show-toplevel') {
-                identityResolutionCount += 1;
-              }
-              return execute(executable, args, options);
-            };
+      const command = yield* CommandExecutor;
+      const executeBytes = command.executeBytes;
+      if (executeBytes === undefined) return yield* TestError.make({message: 'binary command adapter is unavailable'});
+      const mutableCommand = command as {execute: typeof command.execute; executeBytes: typeof executeBytes};
+      const execute = command.execute;
+      const result = yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          mutableCommand.execute = (executable, args, options) => {
+            if (executable === 'git' && args.includes('rev-parse') && args.includes('--show-toplevel')) {
+              identityResolutionCount += 1;
+            }
+            return execute(executable, args, options);
+          };
+          mutableCommand.executeBytes = (executable, args, options) => {
+            if (executable === 'git' && args.includes('rev-parse') && args.includes('--show-toplevel'))
+              identityResolutionCount += 1;
+            return executeBytes(executable, args, options);
+          };
+        }),
+        () =>
+          Effect.gen(function* () {
+            const first = yield* readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity);
+            const afterFirstResolutionCount = identityResolutionCount;
+            const second = yield* readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity);
+            return {afterFirstResolutionCount, first, second};
           }),
-          () =>
-            Effect.gen(function* () {
-              const first = yield* readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity);
-              const afterFirstResolutionCount = identityResolutionCount;
-              const second = yield* readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity);
-              return {afterFirstResolutionCount, first, second};
-            }),
-          () =>
-            Effect.sync(() => {
-              mutableCommand.execute = execute;
-            }),
-        );
-      }),
-    );
+        () =>
+          Effect.sync(() => {
+            mutableCommand.execute = execute;
+            mutableCommand.executeBytes = executeBytes;
+          }),
+      );
 
-    expect(result.first).toMatchObject({available: true, path: fixture.root, state: 'verified'});
-    expect(result.second).toMatchObject({available: true, path: fixture.root, state: 'verified'});
-    expect('observedAt' in result.first ? result.first.observedAt : undefined).not.toBe(expiredObservedAt);
-    expect(result.afterFirstResolutionCount).toBe(2);
-    expect(identityResolutionCount).toBe(2);
-  });
+      expect(result.first).toMatchObject({available: true, path: fixture.root, state: 'verified'});
+      expect(result.second).toMatchObject({available: true, path: fixture.root, state: 'verified'});
+      expect('observedAt' in result.first ? result.first.observedAt : undefined).not.toBe(expiredObservedAt);
+      expect(result.afterFirstResolutionCount).toBe(2);
+      expect(identityResolutionCount).toBe(2);
+    }).pipe(provideTestLayer(provenancePlatformLayer), TestClock.withLive),
+  );
 
   it('rejects permissive, malformed, non-absolute, and mismatched records without displaying their paths', async () => {
     const fixture = await provenanceFixture();
@@ -820,6 +828,56 @@ describe('code graph private local provenance', () => {
     },
     {fastCheck: {numRuns: 200}},
   );
+});
+
+const provenancePlatformLayer = Layer.mergeAll(
+  SystemInfo.layer,
+  CommandExecutor.layer.pipe(Layer.provide(SystemInfo.layer)),
+).pipe(Layer.provideMerge(BunServices.layer));
+
+const effectProvenanceFixture = Effect.fn('localProvenanceTest.effectFixture')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const temporary = yield* Effect.acquireRelease(
+    fs.makeTempDirectory({prefix: 'threadnote-provenance-effect-'}),
+    directory => fs.remove(directory, {recursive: true, force: true}).pipe(Effect.orDie),
+  );
+  const home = path.join(temporary, 'home');
+  const repository = path.join(temporary, 'repository');
+  yield* fs.makeDirectory(home);
+  yield* fs.makeDirectory(repository);
+  yield* runCommandEffect('git', ['-C', repository, 'init', '-q', '-b', 'main']);
+  yield* runCommandEffect('git', [
+    '-C',
+    repository,
+    '-c',
+    'commit.gpgsign=false',
+    '-c',
+    'user.name=Threadnote Test',
+    '-c',
+    'user.email=test@threadnote.local',
+    'commit',
+    '--allow-empty',
+    '-qm',
+    'fixture',
+  ]);
+  const root = yield* fs.realPath(repository);
+  const identity = yield* resolveRepositoryIdentity(root);
+  return {
+    home,
+    identity,
+    root,
+    sidecar: path.join(
+      home,
+      'indexes',
+      'code-graph',
+      'repositories',
+      identity.checkoutId,
+      'local-context',
+      'worktrees',
+      `${identity.worktreeId}.json`,
+    ),
+  };
 });
 
 async function provenanceFixture(parent?: string): Promise<{
