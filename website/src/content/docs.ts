@@ -12,6 +12,7 @@ import {
 } from './docsMemoryCitationReference.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
 import {optionalImageProjectionCliCommand, optionalImageProjectionDocsArticle} from './docsImageProjection.js';
+import {localAiDocsArticle} from './docsLocalAi.js';
 import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
 import type {CliCommandReference, DocsSection, McpToolReference} from './docsTypes.js';
 export type {
@@ -793,33 +794,7 @@ threadnote recall --query "checkout retry contract" --threshold 0.3 --caller-cwd
           },
         ],
       },
-      {
-        id: 'local-ai',
-        title: 'Local AI',
-        summary: 'A core BGE embedding model runs locally through a supervised node-llama-cpp worker.',
-        body: [
-          {
-            type: 'paragraph',
-            text: 'Install and repair automatically extract, verify, select, and preserve the pinned 36.7 MB BGE Small embedding model bundled in the standalone executable. Model manifests pin revision, filename, byte size, SHA-256, license, runtime compatibility, and memory class before atomic promotion.',
-          },
-          {
-            type: 'paragraph',
-            text: 'The parent CLI, MCP, or Manager process lazily starts one supervised local-model child from the same standalone executable. The worker keeps model sessions warm and isolates native-addon crashes from the long-lived parent. Threadnote requests prebuilt node-llama-cpp binaries only and never silently compiles llama.cpp.',
-          },
-          {
-            type: 'code',
-            language: 'sh',
-            code: `threadnote models list
-threadnote models runtime
-threadnote models verify bge-small-en-v1.5-q8
-threadnote index status`,
-          },
-          {
-            type: 'note',
-            text: 'Embedding is core functionality. Reranking and structured generation are optional roles and are not silently selected; the measured Jina reranker failed the frozen no-answer gate.',
-          },
-        ],
-      },
+      localAiDocsArticle,
       {
         id: 'memory-vs-code',
         title: 'Memory vs current code',

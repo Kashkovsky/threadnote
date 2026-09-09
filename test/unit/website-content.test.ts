@@ -1118,6 +1118,22 @@ The body remains ordinary **Markdown**.
     expect(searchDocs(index, 'context brief')[0]?.article.id).toBe('worksets');
     expect(searchDocs(index, 'share memory team')[0]?.article.id).toBe('publish-memory');
     expect(searchDocs(index, 'architecture analysis')[0]?.article.id).toBe('graph-analysis');
+    expect(searchDocs(index, 'memory enrichment generation model')[0]?.article.id).toBe('local-ai');
+  });
+
+  it('documents how to enable optional memory enrichment on the Local AI page', () => {
+    const localAi = docsSections.flatMap(section => section.articles).find(article => article.id === 'local-ai');
+    const content = JSON.stringify(localAi);
+
+    expect(localAi).toBeDefined();
+    expect(content).toContain('Memory enrichment');
+    expect(content).toContain('A download alone does not enable enrichment.');
+    expect(content).toContain('threadnote models install <model-id>');
+    expect(content).toContain('threadnote models select generation <model-id>');
+    expect(content).toContain('threadnote enrich-memories --apply');
+    expect(content).toContain('threadnote enrich-memories --apply --install-local-ai');
+    expect(content).toContain('new remember and MCP store writes try enrichment automatically');
+    expect(content).not.toContain('gemma-4-e4b-it-q4');
   });
 
   it('documents the complete bounded cross-repository graph-query workflow', () => {
