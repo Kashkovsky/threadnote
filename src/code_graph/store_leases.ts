@@ -572,7 +572,6 @@ const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(functio
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
         return yield* CodeGraphStoreError.of('Code graph snapshot lease authority schema is invalid.');
       }
-      const retirementAuthorityCurrent = yield* codeGraphWorktreeReconciliationSchemaCompatible(sql);
       const now = yield* Clock.currentTimeMillis;
       const releasedRows = yield* sql.unsafe<BoundedSnapshotLeaseRow>(
         `SELECT ${boundedSnapshotLeaseProjection('lease')}
@@ -602,7 +601,10 @@ const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(functio
           return yield* CodeGraphStoreError.of('Code graph snapshot lease manifest is invalid.');
         }
         if (successor === undefined) {
-          if (retirementAuthorityCurrent) releasedCandidates.push(row.snapshotId);
+          // Ordinary readers and baton transfers do not retire this snapshot.
+          // Observe full retirement authority only when its result is needed,
+          // inside the same transaction and before admitting any retirement.
+          if (yield* codeGraphWorktreeReconciliationSchemaCompatible(sql)) releasedCandidates.push(row.snapshotId);
         } else {
           yield* sql`
             UPDATE snapshot_leases
