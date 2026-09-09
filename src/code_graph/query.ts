@@ -532,12 +532,16 @@ export class CodeGraphQueryService extends Context.Service<
                   : statusObservation?.borrowedSnapshotId
                     ? yield* store.readySnapshotById(layout.databasePath, statusObservation.borrowedSnapshotId)
                     : yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
-              const runtimeCurrent = existing
-                ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, existing, languagePacks, {
-                    layout,
-                    identity,
-                  })
-                : false;
+              const freshnessRequired =
+                options.refresh === true || options.operation === 'impact' || options.operation === 'path';
+              // This probe only decides refresh; inspectReadyGraph always validates the selected snapshot.
+              const runtimeCurrent =
+                existing && freshnessRequired
+                  ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, existing, languagePacks, {
+                      layout,
+                      identity,
+                    })
+                  : false;
               const strictFreshness =
                 options.strictFreshness ??
                 (options.refresh === true || options.operation === 'impact' || options.operation === 'path');
@@ -565,8 +569,6 @@ export class CodeGraphQueryService extends Context.Service<
                 !runtimeCurrent ||
                 existing.commit !== identity.headCommit ||
                 (overlay !== undefined && !snapshotMatches(existing, identity.headCommit, overlay));
-              const freshnessRequired =
-                options.refresh === true || options.operation === 'impact' || options.operation === 'path';
               let rebuilt = false;
               if (options.refresh !== false && (!existing || (stale && freshnessRequired))) {
                 yield* indexer.index({
