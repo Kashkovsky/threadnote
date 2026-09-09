@@ -3,6 +3,7 @@ import {Effect} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  formatCodeGraphDoctorProgressLine,
   formatCodeGraphIndexProgressLine,
   formatCodeGraphPurgeProgressLine,
   formatCodeGraphRepairProgressLine,
@@ -20,9 +21,12 @@ describe('code graph compact CLI progress', () => {
     expect(line).toContain('Scanning ·');
   });
 
-  it('formats repair and purge as single compact lines', () => {
+  it('formats repair, doctor, and purge as single compact lines', () => {
     expect(formatCodeGraphRepairProgressLine({current: 2, phase: 'checking', total: 5})).toBe(
       'Repairing · checking 2/5 databases',
+    );
+    expect(formatCodeGraphDoctorProgressLine({current: 2, phase: 'checking', total: 5})).toBe(
+      'Checking · checking 2/5 databases',
     );
     expect(formatCodeGraphPurgeProgressLine({phase: 'quarantining', dryRun: true})).toBe(
       'Would purge · quarantining files',

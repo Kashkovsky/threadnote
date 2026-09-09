@@ -5839,7 +5839,8 @@ describe('native code graph lifecycle', () => {
       }),
     );
 
-    expect(output.doctor).toMatch(/Repairing · checking \d+\/\d+ databases/);
+    expect(output.doctor).toMatch(/Checking · checking \d+\/\d+ databases/);
+    expect(output.doctor).not.toMatch(/Repairing · checking \d+\/\d+ databases/);
     expect(output.doctor).not.toMatch(/Checking native code graph database \d+\/2\./);
     expect(output.doctor).toContain(
       'FAIL native code graph: 2 database(s); 1 ready snapshot(s); 1 incomplete snapshot(s); ' +
@@ -5855,6 +5856,9 @@ describe('native code graph lifecycle', () => {
     expect(output.repair).toContain(
       'WARN native code graph: 2 database(s); 1 ready snapshot(s); 0 incomplete snapshot(s); ' +
         '2 database maintenance check(s) deferred',
+    );
+    expect(output.repair.indexOf('Running Threadnote doctor checks.')).toBeGreaterThan(
+      output.repair.search(/Would repair \d+ native code graph database/),
     );
   });
 

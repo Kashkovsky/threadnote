@@ -66,9 +66,10 @@ import {
 import {
   codeGraphDoctorCheck,
   type CodeGraphMaintenanceProgress,
+  type CodeGraphRepairCompletion,
   repairCodeGraphIndexes,
 } from './code_graph/maintenance.js';
-import {formatCodeGraphRepairProgressLine} from './code_graph/cli_progress.js';
+import {formatCodeGraphDoctorProgressLine, formatCodeGraphRepairProgressLine} from './code_graph/cli_progress.js';
 import {
   isThreadnoteStorageLayoutReceipt,
   threadnoteStorageLayout,
@@ -116,22 +117,19 @@ interface RunDoctorOptions extends DoctorOptions {
 
 interface CollectDoctorOptions extends RunDoctorOptions {
   readonly onCodeGraphProgress?: (progress: CodeGraphMaintenanceProgress) => Effect.Effect<void, unknown>;
+  readonly withCodeGraphProgressLine?: boolean;
 }
 
 export const runDoctor = Effect.fn('lifecycle.doctor')(function* (config: RuntimeConfig, options: RunDoctorOptions) {
   const system = yield* SystemInfo;
   yield* Console.log('Running Threadnote doctor checks.');
-  const checks = yield* withProgressLine(
-    formatCodeGraphRepairProgressLine({current: 0, phase: 'checking', total: 1}),
-    update =>
-      collectDoctorChecks(
-        config,
-        {
-          ...options,
-          onCodeGraphProgress: progress => update(formatCodeGraphRepairProgressLine(progress)),
-        },
-        system.platform,
-      ),
+  const checks = yield* collectDoctorChecks(
+    config,
+    {
+      ...options,
+      withCodeGraphProgressLine: true,
+    },
+    system.platform,
   );
   for (const check of checks) {
     yield* Console.log(`${formatStatus(check.status)} ${check.name}: ${check.detail}`);
@@ -205,7 +203,15 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* safeDoctorCheck('vector recall index', vectorRecallIndexCheck(config, lexicalStatus)),
     yield* safeDoctorCheck(
       'native code graph',
-      codeGraphDoctorCheck(config.agentContextHome, options.onCodeGraphProgress, options.codeGraphCheck),
+      options.withCodeGraphProgressLine === true && options.codeGraphCheck === undefined
+        ? withProgressLine(formatCodeGraphDoctorProgressLine({current: 0, phase: 'checking', total: 1}), update =>
+            codeGraphDoctorCheck(
+              config.agentContextHome,
+              progress => update(formatCodeGraphDoctorProgressLine(progress)),
+              options.codeGraphCheck,
+            ),
+          )
+        : codeGraphDoctorCheck(config.agentContextHome, options.onCodeGraphProgress, options.codeGraphCheck),
     ),
     yield* safeDoctorCheck('memory project consistency', memoryProjectConsistencyCheck(config)),
     yield* safeDoctorCheck('deferred code anchors', deferredCodeAnchorDoctorCheck(config)),
@@ -435,6 +441,7 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
       yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
     }
   }
+  let completion: CodeGraphRepairCompletion | undefined;
   yield* withProgressLine(
     formatCodeGraphRepairProgressLine({current: 0, phase: 'checking', total: 1}, dryRun),
     update =>
@@ -442,10 +449,7 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
         config.agentContextHome,
         dryRun,
         progress => update(formatCodeGraphRepairProgressLine(progress, dryRun)),
-        completion =>
-          Console.log(codeGraphRepairSummaryMessage(completion.summary, dryRun)).pipe(
-            Effect.andThen(runDoctor(config, {codeGraphCheck: completion.doctorCheck, dryRun, strict: false})),
-          ),
+        result => Effect.sync(() => void (completion = result)),
         {migrateSchema: true, mode: options.deep === true ? 'deep' : 'quick'},
       ),
   ).pipe(
@@ -453,6 +457,10 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
       LifecycleOperationError.make({message: `Native code graph repair failed: ${errorMessage(cause)}`}),
     ),
   );
+  if (completion !== undefined) {
+    yield* Console.log(codeGraphRepairSummaryMessage(completion.summary, dryRun));
+    yield* runDoctor(config, {codeGraphCheck: completion.doctorCheck, dryRun, strict: false});
+  }
   if (options.postUpdate !== false) {
     yield* maybeRunPostUpdateAfterRepair(config, {dryRun});
   }

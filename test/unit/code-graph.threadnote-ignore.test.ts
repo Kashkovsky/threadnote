@@ -36,15 +36,15 @@ describe('threadnote ignore union', () => {
   effectIt.effect.prop(
     'union ignore matches committed or local independently',
     {
-      committed: fc.constantFrom('', 'src/a.ts', 'tmp/', 'vendor/**'),
-      local: fc.constantFrom('', 'src/b.ts', 'tmp/', 'scratch.ts'),
+      committed: fc.constantFrom('', 'src/a.ts', 'tmp/', 'vendor/**', '!src/c.ts'),
+      local: fc.constantFrom('', 'src/b.ts', 'tmp/', 'scratch.ts', '!src/a.ts'),
       path: fc.constantFrom('src/a.ts', 'src/b.ts', 'src/c.ts', 'tmp/x.ts', 'vendor/lib.ts', 'scratch.ts'),
     },
     ({committed, local, path}) =>
       Effect.sync(() => {
         expect(isIgnoredByThreadnote(path, compileThreadnoteIgnore(committed, local))).toBe(
-          isIgnoredByThreadnote(path, compileThreadnoteIgnore(committed)) ||
-            isIgnoredByThreadnote(path, compileThreadnoteIgnore(local)),
+          isIgnoredByThreadnote(path, compileThreadnoteIgnore(committed, '')) ||
+            isIgnoredByThreadnote(path, compileThreadnoteIgnore('', local)),
         );
       }),
     {fastCheck: {numRuns: 40}},

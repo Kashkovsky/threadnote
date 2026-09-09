@@ -262,6 +262,19 @@ describe('CLI progress indicator', () => {
     expect(clipInteractiveProgressText('short', 80)).toBe('short');
     expect(clipInteractiveProgressText('abcdefghijklmnopqrstuvwxyz', 20).endsWith('…')).toBe(true);
     expect(Array.from(clipInteractiveProgressText('abcdefghijklmnopqrstuvwxyz', 20)).length).toBeLessThanOrEqual(16);
+    expect(Array.from(clipInteractiveProgressText('abcdefghijklmnopqrstuvwxyz', 10)).length).toBeLessThanOrEqual(6);
+    fc.assert(
+      fc.property(fc.integer({max: 200, min: 1}), fc.string({maxLength: 80}), (columns, text) => {
+        const clipped = clipInteractiveProgressText(text, columns);
+        const budget = Math.max(1, Math.floor(columns) - 4);
+        const source = Array.from(text);
+        const rendered = Array.from(clipped);
+        if (source.length <= budget) expect(clipped).toBe(text);
+        else expect(rendered.length).toBeLessThanOrEqual(budget);
+        expect(clipped.includes('\n') || clipped.includes('\r')).toBe(false);
+      }),
+      {numRuns: 40},
+    );
   });
 
   effectIt.effect('flushes queued headings before an interactive terminal frame', () =>

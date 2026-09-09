@@ -53,6 +53,18 @@ export function formatCodeGraphIndexProgressLine(progress: CodeGraphProgress, re
   }
 }
 
+export function formatCodeGraphDoctorProgressLine(progress: CodeGraphRepairProgressLine): string {
+  const database = `${progress.current}/${progress.total} databases`;
+  switch (progress.phase) {
+    case 'checking':
+      return `Checking · checking ${database}`;
+    case 'deferred':
+      return `Checking · deferred ${database}`;
+    default:
+      return `Checking · ${progress.phase.replaceAll('-', ' ')} · ${database}`;
+  }
+}
+
 export function formatCodeGraphRepairProgressLine(progress: CodeGraphRepairProgressLine, dryRun = false): string {
   const prefix = dryRun ? 'Would repair' : 'Repairing';
   const database = `${progress.current}/${progress.total} databases`;

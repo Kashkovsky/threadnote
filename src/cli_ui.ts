@@ -174,13 +174,12 @@ const INTERACTIVE_PROGRESS_SPINNER_WIDTH = 4;
 
 /** Keep rewritten TTY progress on one visual row so long status text cannot wrap and flood the terminal. */
 export function clipInteractiveProgressText(text: string, columns: number): string {
-  const budget = Math.max(
-    16,
-    (Number.isFinite(columns) ? Math.floor(columns) : 80) - INTERACTIVE_PROGRESS_SPINNER_WIDTH,
-  );
+  const width = Number.isFinite(columns) && columns > 0 ? Math.floor(columns) : 80;
+  const budget = Math.max(1, width - INTERACTIVE_PROGRESS_SPINNER_WIDTH);
   const characters = Array.from(text);
   if (characters.length <= budget) return text;
-  return `${characters.slice(0, Math.max(1, budget - 1)).join('')}…`;
+  if (budget <= 1) return '…';
+  return `${characters.slice(0, budget - 1).join('')}…`;
 }
 
 export function withProgressLine<A, E, R>(

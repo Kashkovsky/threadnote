@@ -1071,7 +1071,7 @@ export const purgeAllCodeGraphIndexes = Effect.fn('codeGraph.purgeAllIndexes')(f
             yield* publishPurgeProgress(reporter, onProgress, false, {
               checkoutCurrent: index + 1,
               checkoutTotal: repositoryIds.length,
-              completed: index,
+              completed: index + 1,
               gate: 'waiting-builders',
               phase: 'waiting-builders',
               total,
@@ -1090,7 +1090,7 @@ export const purgeAllCodeGraphIndexes = Effect.fn('codeGraph.purgeAllIndexes')(f
                     yield* publishPurgeProgress(reporter, onProgress, false, {
                       checkoutCurrent: index + 1,
                       checkoutTotal: repositoryIds.length,
-                      completed: index,
+                      completed: index + 1,
                       gate: 'retiring-and-cleaning',
                       phase: 'deleting',
                       total,
