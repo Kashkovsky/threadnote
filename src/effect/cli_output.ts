@@ -29,11 +29,17 @@ interface CliOutputSink {
   readonly write: (chunk: string) => number | Promise<number>;
 }
 
-const isBrokenPipeError = (cause: unknown): boolean =>
-  typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'EPIPE';
+const CONSUMER_GONE_ON_PIPE_CODES = new Set(['EBADF', 'ENOTTY']);
+
+const isConsumerGoneError = (cause: unknown, isTty: boolean): boolean => {
+  if (typeof cause !== 'object' || cause === null || !('code' in cause)) return false;
+  const code = String(cause.code);
+  return code === 'EPIPE' || (!isTty && CONSUMER_GONE_ON_PIPE_CODES.has(code));
+};
 
 /** @internal Exported so pipe-backpressure ordering can be regression-tested without a real subprocess. */
-export function makeQueuedCliWriter(open: () => CliOutputSink) {
+export function makeQueuedCliWriter(open: () => CliOutputSink, options: {readonly isTty?: boolean} = {}) {
+  const isTty = options.isTty === true;
   let sink: CliOutputSink | undefined;
   let tail = Promise.resolve();
   let failure: unknown;
@@ -50,9 +56,11 @@ export function makeQueuedCliWriter(open: () => CliOutputSink) {
         await sink.write(`${output}\n`);
         await sink.flush();
       } catch (cause) {
-        // A downstream Unix consumer such as `head` closing after its requested
-        // prefix is normal pipeline control flow, not a failed CLI operation.
-        if (!isBrokenPipeError(cause)) throw cause;
+        // `head` closing after its requested prefix is EPIPE. Detached
+        // auto-update children writing to ignored/invalid non-TTY stdio can
+        // also surface EBADF/ENOTTY. Interactive TTYs stay fail-closed for
+        // those codes so machine-readable writeFinal cannot silently drop.
+        if (!isConsumerGoneError(cause, isTty)) throw cause;
         consumerClosed = true;
       }
     });
@@ -75,7 +83,7 @@ export function makeQueuedCliWriter(open: () => CliOutputSink) {
         try {
           await sink.end();
         } catch (cause) {
-          if (!isBrokenPipeError(cause)) throw cause;
+          if (!isConsumerGoneError(cause, isTty)) throw cause;
           consumerClosed = true;
         }
       }
@@ -93,8 +101,12 @@ const formatConsoleArguments = (arguments_: readonly unknown[]): string =>
 
 export class CliOutput extends Context.Service<CliOutput, CliOutputShape>()('threadnote/effect/cli_output/CliOutput') {
   static readonly layer = Layer.sync(CliOutput, () => {
-    const stdout = makeQueuedCliWriter(() => Bun.stdout.writer({highWaterMark: 64 * 1024}));
-    const stderr = makeQueuedCliWriter(() => Bun.stderr.writer({highWaterMark: 64 * 1024}));
+    const stdout = makeQueuedCliWriter(() => Bun.stdout.writer({highWaterMark: 64 * 1024}), {
+      isTty: process.stdout.isTTY === true,
+    });
+    const stderr = makeQueuedCliWriter(() => Bun.stderr.writer({highWaterMark: 64 * 1024}), {
+      isTty: process.stderr.isTTY === true,
+    });
     return CliOutput.of({
       drain: Effect.tryPromise({
         try: () => Promise.all([stdout.drain(), stderr.drain()]).then(() => undefined),

@@ -31,6 +31,7 @@ import {
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from '../memory/index.js';
 import {isLegacyHomeMigrationPending, isThreadnoteHomeMigrationPending} from '../migration/home.js';
 import {whatsNewLinesForVersionRange} from './notes.js';
+import {redactSensitiveText} from '../share/scrubber.js';
 import {sendSystemNotification} from '../system_notification.js';
 import {readTelemetryConsentRenewal} from '../telemetry/config.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions} from '../types.js';
@@ -66,6 +67,7 @@ const POST_UPDATE_LOCK_OPTIONS = {
   staleAfterMilliseconds: 60_000,
   waitTimeoutMilliseconds: 10 * 60_000,
 } as const;
+export const STREAMING_SUBCOMMAND_FAILURE_DETAIL_LIMIT = 2_000;
 
 interface UpdateInfo {
   readonly channel: UpdateChannel;
@@ -305,13 +307,23 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     latestVersion,
     ...(options.yes === true ? ['--yes'] : []),
   ];
-  if (options.postUpdate !== false) {
-    // The child announces only when it finds evidence-backed work. Keeping the
-    // wrapper quiet prevents fresh installs from looking as if a migration was
-    // offered when the post-update command intentionally produced no output.
-    yield* runStreamingSubcommand(dryRun, threadnoteCommand, postUpdateArgs, false);
-  } else {
+  // The child announces only when it finds evidence-backed work. Keeping the
+  // wrapper quiet prevents fresh installs from looking as if a migration was
+  // offered when the post-update command intentionally produced no output.
+  const postUpdateResult =
+    options.postUpdate === false
+      ? undefined
+      : yield* Effect.result(runStreamingSubcommand(dryRun, threadnoteCommand, postUpdateArgs, false));
+  if (options.postUpdate === false) {
     yield* Console.log('Skipping post-update migration prompts because --no-post-update was provided.');
+  } else if (postUpdateResult !== undefined && Result.isFailure(postUpdateResult) && shouldRepair) {
+    // Promotion already succeeded. Keep going so MCP/hooks still get repaired
+    // even when the new binary's post-update child exits non-zero.
+    yield* Console.error(
+      warning(
+        `Post-update did not finish. Continuing with local setup repair. ${errorMessage(postUpdateResult.failure)}`,
+      ),
+    );
   }
   if (shouldRepair) {
     yield* Console.log('');
@@ -322,12 +334,15 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
       'Skipping local integration repair because --no-repair was provided. MCP host configurations were not refreshed.',
     );
   }
+  yield* withStandaloneInstallationLock(pruneStandaloneReleases(releaseRoot, dryRun), dryRun);
+  if (postUpdateResult !== undefined && Result.isFailure(postUpdateResult)) {
+    return yield* postUpdateResult.failure;
+  }
   yield* Console.log(
     shouldRepair
       ? 'Update complete. Brokered MCP sessions will use the new version on their next request. Legacy direct-server sessions migrated by repair require one host restart.'
       : 'Update complete. Brokered MCP sessions will use the new version on their next request. Hosts still using the legacy direct server command must run `threadnote repair` and restart once.',
   );
-  yield* withStandaloneInstallationLock(pruneStandaloneReleases(releaseRoot, dryRun), dryRun);
   yield* printWhatsNewIfAvailable(info);
 });
 
@@ -682,9 +697,10 @@ export function maybeRunPostUpdateAfterRepair(config: RuntimeConfig, options: {r
 }
 
 /**
- * Run a subprocess with its stdout/stderr inherited so the user sees output
- * live, instead of buffering through the regular command runner. Dry-run
- * defers to `maybeRun` so it only prints the command it would run.
+ * Run a subprocess with live stdout/stderr. Interactive TTYs inherit stdio;
+ * non-TTY callers (including the detached auto-update worker) pipe and capture
+ * output so a non-zero exit still has a diagnosable message. Dry-run defers to
+ * `maybeRun` so it only prints the command it would run.
  */
 function runStreamingSubcommand(
   dryRun: boolean,
@@ -693,20 +709,43 @@ function runStreamingSubcommand(
   announce: boolean = true,
 ) {
   if (dryRun) {
-    return maybeRunEffect(true, executable, args).pipe(Effect.asVoid);
+    return maybeRunEffect(true, executable, args).pipe(
+      Effect.asVoid,
+      Effect.mapError(cause => applicationError('run interactive subcommand', cause)),
+    );
   }
   return Effect.gen(function* () {
     if (announce) yield* Console.log(`Running: ${formatShellCommand(executable, args)}`);
+    const system = yield* SystemInfo;
     const result = yield* runStreamingCommandEffect(executable, args, {
-      inheritOutput: true,
+      inheritOutput: system.stdoutIsTTY,
+      inheritStdin: system.stdinIsTTY,
     });
     if (result.exitCode !== 0) {
       return yield* applicationError(
         'run interactive subcommand',
-        UpdateOperationError.make({message: `${formatShellCommand(executable, args)} exited with ${result.exitCode}.`}),
+        UpdateOperationError.make({message: streamingSubcommandFailureMessage(executable, args, result)}),
       );
     }
   });
+}
+
+/** @internal Exported so failure-text redaction and truncation can be property-tested. */
+export function streamingSubcommandFailureMessage(
+  executable: string,
+  args: readonly string[],
+  result: {readonly exitCode: number; readonly stderr: string; readonly stdout: string},
+): string {
+  const command = formatShellCommand(executable, args);
+  const preferred = redactSensitiveText(result.stderr.trim() || result.stdout.trim());
+  if (preferred.length === 0) {
+    return `${command} exited with ${result.exitCode}.`;
+  }
+  const truncated =
+    preferred.length > STREAMING_SUBCOMMAND_FAILURE_DETAIL_LIMIT
+      ? `…${preferred.slice(-STREAMING_SUBCOMMAND_FAILURE_DETAIL_LIMIT)}`
+      : preferred;
+  return `${command} exited with ${result.exitCode}. ${truncated}`;
 }
 
 function getUpdateInfo(
