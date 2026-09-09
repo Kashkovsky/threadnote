@@ -44,7 +44,18 @@ export interface DetachedCommandOptions {
 
 export interface StreamingCommandOptions {
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * Inherit child stdout/stderr from this process. Only safe on a live TTY;
+   * detached auto-update workers inherit ignored stdio and must pipe so
+   * failures can be captured.
+   */
   readonly inheritOutput?: boolean;
+  /**
+   * Inherit child stdin. Independent of `inheritOutput` so `threadnote update | tee`
+   * can still answer prompts while piping logs. Detached workers leave this
+   * unset so stdin is ignored.
+   */
+  readonly inheritStdin?: boolean;
   readonly maxOutputChars?: number;
 }
 
@@ -390,33 +401,45 @@ const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')(fu
           ),
         catch: spawnFailed,
       });
+      const inheritOutput = options.inheritOutput === true;
+      const inheritStdin = options.inheritStdin === true || inheritOutput;
       const handle = yield* ChildProcess.make(invocation.executable, [...invocation.args], {
         env: commandEnvironment(executable, options.env, environment),
         forceKillAfter: 1000,
         shell: invocation.shell,
-        stdin: 'inherit',
-        stderr: options.inheritOutput === true ? 'inherit' : 'pipe',
-        stdout: options.inheritOutput === true ? 'inherit' : 'pipe',
+        stdin: inheritStdin ? 'inherit' : 'ignore',
+        stderr: inheritOutput ? 'inherit' : 'pipe',
+        stdout: inheritOutput ? 'inherit' : 'pipe',
       }).pipe(Effect.mapError(spawnFailed));
-      if (options.inheritOutput === true) {
-        return {exitCode: Number(yield* handle.exitCode), stderr: '', stdout: ''};
+      if (inheritOutput) {
+        return {
+          exitCode: Number(yield* handle.exitCode.pipe(Effect.mapError(spawnFailed))),
+          stderr: '',
+          stdout: '',
+        };
       }
       const stdio = yield* Stdio.Stdio;
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
-          collectStreamingOutput(handle.stdout, stdio.stdout({endOnDone: false}), maxOutputChars),
-          collectStreamingOutput(handle.stderr, stdio.stderr({endOnDone: false}), maxOutputChars),
-          handle.exitCode.pipe(Effect.map(Number)),
+          collectStreamingOutput(handle.stdout, stdio.stdout({endOnDone: false}), maxOutputChars).pipe(
+            Effect.orElseSucceed(() => ''),
+          ),
+          collectStreamingOutput(handle.stderr, stdio.stderr({endOnDone: false}), maxOutputChars).pipe(
+            Effect.orElseSucceed(() => ''),
+          ),
+          handle.exitCode.pipe(
+            Effect.map(Number),
+            Effect.orElseSucceed(() => 1),
+          ),
         ],
         {concurrency: 'unbounded'},
       );
       return {exitCode, stderr, stdout};
     }),
   ).pipe(
-    Effect.catch(cause => {
-      const message = causeMessage(cause);
-      return Effect.succeed({exitCode: 1, stderr: `${message}\n`, stdout: ''});
-    }),
+    Effect.catchIf(Schema.is(CommandSpawnFailed), cause =>
+      Effect.succeed({exitCode: 1, stderr: `${cause.message}\n`, stdout: ''}),
+    ),
   );
 });
 
@@ -502,7 +525,13 @@ function collectStreamingOutput(
     Stream.runFoldEffect(
       () => '',
       (current, chunk) =>
-        Stream.run(Stream.make(chunk), sink).pipe(Effect.as(appendOutputTail(current, chunk, maxOutputChars))),
+        // Parent stdout/stderr may be ignored (detached auto-update). Keep
+        // draining the child so a full pipe cannot deadlock, and keep the
+        // capture even when the parent tee write fails.
+        Stream.run(Stream.make(chunk), sink).pipe(
+          Effect.ignore,
+          Effect.as(appendOutputTail(current, chunk, maxOutputChars)),
+        ),
     ),
   );
 }

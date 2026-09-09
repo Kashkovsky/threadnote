@@ -323,6 +323,7 @@ export interface SystemInfoShape {
   readonly setEnvironmentVariable: (name: string, value: string) => void;
   readonly stdinIsTTY: boolean;
   readonly stdoutIsTTY: boolean;
+  readonly stderrIsTTY?: boolean;
   readonly tempDirectory: string;
   readonly userId?: number;
   readonly userName: string;
@@ -509,6 +510,7 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
         },
         stdinIsTTY: process.stdin.isTTY === true,
         stdoutIsTTY: process.stdout.isTTY === true,
+        stderrIsTTY: process.stderr.isTTY === true,
         tempDirectory:
           Option.getOrUndefined(tmpdir) ??
           Option.getOrUndefined(temp) ??

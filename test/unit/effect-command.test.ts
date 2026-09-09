@@ -1,3 +1,4 @@
+import {it as effectIt} from '@effect/vitest';
 import {TestError} from '../helpers/test-error.js';
 import {mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
@@ -10,6 +11,7 @@ import {
   runDetachedCommandEffect,
   runStreamingCommandEffect,
 } from '../../src/effect/command.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   TELEMETRY_AGENT_SESSION_ENVIRONMENT_VARIABLE,
   TELEMETRY_CHILD_ENVIRONMENT_VARIABLE,
@@ -17,6 +19,7 @@ import {
   TELEMETRY_PROVIDER_ENVIRONMENT_VARIABLE,
   TELEMETRY_PROVIDER_SESSION_TOKEN_ENVIRONMENT_VARIABLE,
 } from '../../src/telemetry/session.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
 
 describe('Effect CommandExecutor', () => {
@@ -137,6 +140,38 @@ describe('Effect CommandExecutor', () => {
 
     expect(result).toEqual({exitCode: 0, stderr: '', stdout: ''});
   });
+
+  effectIt.effect('captures stderr from non-inherited streaming failures', () =>
+    runStreamingCommandEffect(process.execPath, ['-e', 'process.stderr.write("post-update boom"); process.exit(1)'], {
+      inheritOutput: false,
+    }).pipe(
+      Effect.tap(result =>
+        Effect.sync(() => {
+          expect(result.exitCode).toBe(1);
+          expect(result.stderr).toContain('post-update boom');
+        }),
+      ),
+      provideTestLayer(ApplicationLayer),
+    ),
+  );
+
+  effectIt.effect('closes stdin for non-inherited streaming commands', () =>
+    runStreamingCommandEffect(
+      process.execPath,
+      [
+        '-e',
+        'process.stdin.resume(); process.stdin.on("data", () => process.exit(2)); process.stdin.on("end", () => process.exit(0)); setTimeout(() => process.exit(3), 2000)',
+      ],
+      {inheritOutput: false},
+    ).pipe(
+      Effect.tap(result =>
+        Effect.sync(() => {
+          expect(result.exitCode).toBe(0);
+        }),
+      ),
+      provideTestLayer(ApplicationLayer),
+    ),
+  );
 
   it('waits for a complete detached-child receipt instead of treating file creation as completion', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'threadnote-detached-receipt-'));

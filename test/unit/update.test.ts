@@ -57,6 +57,8 @@ import {
   runPostUpdate,
   runUpdate,
   shouldPreferActiveInstalledVersion,
+  streamingSubcommandFailureMessage,
+  STREAMING_SUBCOMMAND_FAILURE_DETAIL_LIMIT,
   verifyOfficialPlatformSignature,
 } from '../../src/release/index.js';
 import * as utils from '../../src/utils.js';
@@ -1299,6 +1301,86 @@ describe('standalone updater', () => {
     }),
   );
 
+  effectIt.effect('repairs the promoted release even when post-update exits non-zero', () =>
+    Effect.gen(function* () {
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('4.0.0-beta.7'));
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-update-post-update-fail-'});
+          const installRoot = path.join(temporaryRoot, 'install');
+          const binRoot = path.join(temporaryRoot, 'bin');
+          const config = runtimeConfig(path.join(temporaryRoot, 'home'));
+          const artifactName = releaseArtifactName(baseSystem);
+          const archivePath = path.join(temporaryRoot, artifactName);
+          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+          yield* writeReleaseArchive(archivePath, artifactName, executableName, RELEASE_VERSION);
+          const checksum = yield* sha256FileHex(archivePath);
+          const release = releaseResponse(RELEASE_VERSION, false, artifactName);
+          const http = updateHttpService(fs, archivePath, checksum, artifactName, [release]);
+          const streaming: Array<{
+            readonly args: readonly string[];
+            readonly inheritOutput: boolean | undefined;
+            readonly inheritStdin: boolean | undefined;
+          }> = [];
+          const commandExecutor = CommandExecutor.of({
+            execute: (executable, args) =>
+              Effect.sync(() => ({
+                exitCode: 0,
+                stderr: '',
+                stdout: executable === 'file' && args.at(-1)?.endsWith('.so') ? 'Mach-O 64-bit bundle\n' : '',
+              })),
+            executeStreaming: (_executable, args, options) =>
+              Effect.sync(() => {
+                streaming.push({
+                  args: [...args],
+                  inheritOutput: options?.inheritOutput,
+                  inheritStdin: options?.inheritStdin,
+                });
+                if (args[0] === 'post-update') {
+                  return {exitCode: 1, stderr: 'detached inherit failed\n', stdout: ''};
+                }
+                return {exitCode: 0, stderr: '', stdout: ''};
+              }),
+          });
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              LOCALAPPDATA: path.join(temporaryRoot, 'local-app-data'),
+              THREADNOTE_BIN_DIR: binRoot,
+              THREADNOTE_INSTALL_ROOT: installRoot,
+            }),
+            homeDirectory: path.join(temporaryRoot, 'user-home'),
+            stdinIsTTY: false,
+            stdoutIsTTY: false,
+          });
+
+          const captured = yield* captureConsole(
+            runUpdate(config, {stable: true, yes: true}).pipe(
+              Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(HttpService, http),
+              Effect.provideService(SystemInfo, testSystem),
+              Effect.flip,
+            ),
+          );
+          return {captured, streaming};
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(result.streaming.map(entry => entry.args[0])).toEqual(['post-update', 'repair']);
+      expect(result.streaming.every(entry => entry.inheritOutput === false)).toBe(true);
+      expect(result.streaming.every(entry => entry.inheritStdin === false)).toBe(true);
+      expect(result.captured.output).toContain('Post-update did not finish. Continuing with local setup repair.');
+      expect(result.captured.output).toContain('Repairing local Threadnote setup after standalone update.');
+      expect(result.captured.output).not.toContain('Update complete.');
+      expect(String(result.captured.value)).toContain('exited with 1');
+      expect(String(result.captured.value)).toContain('detached inherit failed');
+    }),
+  );
+
   effectIt.effect('refuses to execute an in-place Threadnote 3 to 4 transition', () =>
     Effect.gen(function* () {
       vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('3.0.5'));
@@ -2068,6 +2150,56 @@ describe('post-update validation', () => {
         state: '{"handledMigrationIds": [',
       });
     }),
+  );
+});
+
+describe('streaming subcommand failure messages', () => {
+  it('redacts secrets in captured child output', () => {
+    const message = streamingSubcommandFailureMessage('threadnote', ['post-update'], {
+      exitCode: 1,
+      stderr: 'Authorization: Bearer super-secret-token-value-abcdef',
+      stdout: '',
+    });
+    expect(message).toContain('exited with 1.');
+    expect(message).not.toContain('super-secret-token-value-abcdef');
+    expect(message).toContain('[REDACTED]');
+  });
+
+  effectIt.effect.prop(
+    'keeps the exit code and a tail of preferred child output',
+    {
+      extra: fc.integer({max: 400, min: 0}),
+      exitCode: fc.integer({max: 255, min: 1}),
+      stream: fc.constantFrom('stderr' as const, 'stdout' as const),
+    },
+    ({extra, exitCode, stream}) =>
+      Effect.sync(() => {
+        const overflow = extra > 0;
+        const body = overflow
+          ? `UNIQUEHEAD${'m'.repeat(STREAMING_SUBCOMMAND_FAILURE_DETAIL_LIMIT + extra)}UNIQUETAIL`
+          : 'ok-detail';
+        const stderr = stream === 'stderr' ? body : '';
+        const stdout = stream === 'stdout' ? body : 'ignored-stdout-noise';
+        const message = streamingSubcommandFailureMessage('/tmp/threadnote', ['post-update', '--yes'], {
+          exitCode,
+          stderr,
+          stdout,
+        });
+        expect(message).toContain(`exited with ${exitCode}.`);
+        const preferred = stderr.trim() || stdout.trim();
+        if (overflow) {
+          expect(message).toContain('…');
+          expect(message).toContain('UNIQUETAIL');
+          expect(message).not.toContain('UNIQUEHEAD');
+        } else {
+          expect(message).toContain(preferred);
+          expect(message).not.toContain('…');
+        }
+        if (stream === 'stderr') {
+          expect(message).not.toContain('ignored-stdout-noise');
+        }
+      }),
+    {fastCheck: {numRuns: 64}},
   );
 });
 

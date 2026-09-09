@@ -101,24 +101,78 @@ describe('CLI progress indicator', () => {
     },
   );
 
-  it('preserves arbitrary non-EPIPE sink failures', async () => {
+  it.each(
+    (['EBADF', 'ENOTTY'] as const).flatMap(code =>
+      (['write', 'flush', 'end'] as const).map(failureStage => ({code, failureStage})),
+    ),
+  )('silently stops writing after $code on a non-TTY sink during $failureStage', async ({code, failureStage}) => {
+    const events: string[] = [];
+    const invalidFd = Object.assign(new Error('invalid fd'), {code});
+    const sinkOperation = (operation: 'end' | 'flush' | 'write') => {
+      events.push(operation);
+      if (failureStage === operation) throw invalidFd;
+      return 0;
+    };
+    const writer = makeQueuedCliWriter(
+      () => ({
+        end: () => sinkOperation('end'),
+        flush: () => sinkOperation('flush'),
+        write: () => sinkOperation('write'),
+      }),
+      {isTty: false},
+    );
+
+    await writer.write('requested-prefix');
+    await writer.drain();
+    await writer.write('unrequested-suffix');
+    await writer.drain();
+
+    expect(events).toEqual(
+      failureStage === 'write' ? ['write'] : failureStage === 'flush' ? ['write', 'flush'] : ['write', 'flush', 'end'],
+    );
+  });
+
+  it('keeps EBADF fail-closed on a TTY sink', async () => {
+    const failure = Object.assign(new Error('bad fd'), {code: 'EBADF'});
+    const writer = makeQueuedCliWriter(
+      () => ({
+        end: () => 0,
+        flush: () => 0,
+        write: () => {
+          throw failure;
+        },
+      }),
+      {isTty: true},
+    );
+
+    await expect(writer.write('complete-json')).rejects.toBe(failure);
+    await expect(writer.flush()).rejects.toBe(failure);
+  });
+
+  it('preserves non-consumer-gone sink failures for TTY and pipe writers', async () => {
     await fc.assert(
-      fc.asyncProperty(
-        fc.string().filter(code => code !== 'EPIPE'),
-        async code => {
-          const failure = Object.assign(new Error('sink failure'), {code});
-          const writer = makeQueuedCliWriter(() => ({
+      fc.asyncProperty(fc.boolean(), fc.string(), async (isTty, code) => {
+        const consumerGone = code === 'EPIPE' || (!isTty && (code === 'EBADF' || code === 'ENOTTY'));
+        const failure = Object.assign(new Error('sink failure'), {code});
+        const writer = makeQueuedCliWriter(
+          () => ({
             end: () => 0,
             flush: () => 0,
             write: () => {
               throw failure;
             },
-          }));
+          }),
+          {isTty},
+        );
 
+        if (consumerGone) {
+          await expect(writer.write('complete-json')).resolves.toBeUndefined();
+          await expect(writer.flush()).resolves.toBeUndefined();
+        } else {
           await expect(writer.write('complete-json')).rejects.toBe(failure);
           await expect(writer.flush()).rejects.toBe(failure);
-        },
-      ),
+        }
+      }),
       {numRuns: 64},
     );
   });

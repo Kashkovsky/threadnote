@@ -32,6 +32,7 @@ import {anonymousTelemetryLayer} from './telemetry.js';
 
 const systemLayer = SystemInfo.layer;
 const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
+const cliOutputLayer = CliOutput.layer.pipe(Layer.provide(systemLayer));
 export const StandaloneBrokerLayer = Layer.mergeAll(
   systemLayer,
   BunServices.layer,
@@ -80,7 +81,7 @@ const codeGraphQueryLayer = CodeGraphQueryService.layer.pipe(Layer.provideMerge(
 const codeGraphWatcherLayer = CodeGraphWatcher.layer.pipe(Layer.provideMerge(codeGraphIndexerLayer));
 
 const ApplicationServicesLayer = Layer.mergeAll(
-  CliOutput.layer,
+  cliOutputLayer,
   codeGraphQueryLayer,
   codeGraphAnalysisLayer,
   codeGraphWatcherLayer,
