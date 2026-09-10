@@ -634,6 +634,66 @@ describe('recall runtime orchestration', () => {
       expect(prepared.operationalWarnings).toEqual([expect.objectContaining({code: 'lexical_index_unavailable'})]);
     }),
   );
+  effectIt.effect('distinguishes empty record hydration from a loaded set that omits a memory URI', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-empty-records-')));
+      homes.push(home);
+      const presentUri = 'threadnote://user/tester/memories/durable/projects/threadnote/present-ranked.md';
+      const ghostUri = 'threadnote://user/tester/memories/durable/projects/threadnote/ghost-ranked.md';
+      const presentRecord = {
+        body: 'Present ranked memory body remains available.',
+        content:
+          'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: present-ranked\n\nPresent ranked memory body remains available.',
+        headerTitle: 'MEMORY' as const,
+        metadata: {
+          kind: 'durable' as const,
+          project: 'threadnote',
+          sourceAgentClient: 'test',
+          status: 'active' as const,
+          timestamp: '2026-07-23T00:00:00.000Z',
+          topic: 'present-ranked',
+        },
+        uri: presentUri,
+      };
+      const memoryHit = (uri: string) => ({
+        category: 'memories' as const,
+        contextType: 'memory' as const,
+        score: 1,
+        snippet: 'Present ranked memory body remains available.',
+        uri,
+      });
+      const config = {
+        account: 'local',
+        agentContextHome: home,
+        user: 'tester',
+      };
+      const emptyHydration = yield* prepareRecallSections(config, {
+        allowExactRescue: false,
+        exactMatches: [],
+        feedbackQuery: 'Present ranked memory body',
+        includeInactive: false,
+        limit: 5,
+        passes: [[memoryHit(presentUri)]],
+        query: 'Present ranked memory body',
+        readRecords: () => Effect.succeed([]),
+        semanticResult: Option.none(),
+      }).pipe(provideTestLayer(ApplicationLayer));
+      const loadedMissing = yield* prepareRecallSections(config, {
+        allowExactRescue: false,
+        exactMatches: [],
+        feedbackQuery: 'Present ranked memory body',
+        includeInactive: false,
+        limit: 5,
+        passes: [[memoryHit(ghostUri)]],
+        query: 'Present ranked memory body',
+        readRecords: () => Effect.succeed([presentRecord]),
+        semanticResult: Option.none(),
+      }).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(emptyHydration.ranked.map(ranked => ranked.uri)).toContain(presentUri);
+      expect(loadedMissing.ranked.map(ranked => ranked.uri)).not.toContain(ghostUri);
+    }),
+  );
   effectIt.effect('surfaces one CLI warning when exact and ranked lexical recovery both fail', () =>
     Effect.gen(function* () {
       const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-cli-index-warning-')));

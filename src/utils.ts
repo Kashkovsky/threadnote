@@ -1658,7 +1658,9 @@ function hybridRankRecallHits(
       validTo: record?.metadata.validTo ?? indexed?.validTo,
     } satisfies RecallCandidate;
   });
-  const liveRecordsProvided = context.records !== undefined;
+  // Empty `records` is an unchecked load (stubs, or hydration that returned
+  // nothing). Only a non-empty loaded set can prove a memory URI was absent.
+  const liveRecordsProvided = (context.records?.length ?? 0) > 0;
   const hasLiveMemoryRecord = (uri: string, equivalentUris?: readonly string[]) =>
     !liveRecordsProvided ||
     !uri.includes('/memories/') ||

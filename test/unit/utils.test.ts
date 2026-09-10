@@ -1091,7 +1091,36 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     expect(sections.ranked.map(hit => hit.uri)).toContain(resourceUri);
   });
 
-  it('ranks only live memory URIs when records are provided', () => {
+  it('keeps indexed memory URIs when records is an empty array rather than a loaded set', () => {
+    const liveUri = 'threadnote://user/me/memories/durable/projects/threadnote/live-ranked-gate.md';
+    const ghostUri = 'threadnote://user/me/memories/durable/projects/threadnote/ghost-ranked-gate.md';
+    const indexedCandidates = [
+      {
+        fields: {identifiers: ['ranked-live-gate'], project: 'threadnote', title: 'Live', topic: 'live-ranked-gate'},
+        text: 'ranked-live-gate live memory body',
+        uri: liveUri,
+      },
+      {
+        fields: {identifiers: ['ranked-live-gate'], project: 'threadnote', title: 'Ghost', topic: 'ghost-ranked-gate'},
+        text: 'ranked-live-gate ghost memory body',
+        uri: ghostUri,
+      },
+    ];
+    const ranking = {indexedCandidates, query: 'ranked-live-gate'};
+    const unchecked = buildRecallSections([], [], 12, ranking);
+    const emptyHydration = buildRecallSections([], [], 12, {...ranking, records: []});
+    const loadedMissing = buildRecallSections([], [], 12, {
+      ...ranking,
+      records: [rankingMemoryRecord(liveUri, 'ranked-live-gate live memory body')],
+    });
+
+    expect(emptyHydration.ranked.map(hit => hit.uri)).toEqual(unchecked.ranked.map(hit => hit.uri));
+    expect(emptyHydration.ranked.map(hit => hit.uri)).toEqual(expect.arrayContaining([liveUri, ghostUri]));
+    expect(loadedMissing.ranked.map(hit => hit.uri)).toContain(liveUri);
+    expect(loadedMissing.ranked.map(hit => hit.uri)).not.toContain(ghostUri);
+  });
+
+  it('ranks only live memory URIs when a non-empty record set is provided', () => {
     fc.assert(
       fc.property(fc.array(fc.boolean(), {minLength: 1, maxLength: 5}), flags => {
         const candidates = flags.map((_live, index) => ({
@@ -1112,8 +1141,18 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
           query: 'ranked-live-gate',
           records,
         });
-        const liveUris = new Set(records.map(record => record.uri));
         const rankedMemories = sections.ranked.map(hit => hit.uri).filter(uri => uri.includes('/memories/'));
+        if (records.length === 0) {
+          const unchecked = buildRecallSections([], [], 12, {
+            indexedCandidates: candidates,
+            query: 'ranked-live-gate',
+          });
+          expect(rankedMemories).toEqual(
+            unchecked.ranked.map(hit => hit.uri).filter(uri => uri.includes('/memories/')),
+          );
+          return;
+        }
+        const liveUris = new Set(records.map(record => record.uri));
         expect(rankedMemories.every(uri => liveUris.has(uri))).toBe(true);
       }),
     );
