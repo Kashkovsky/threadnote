@@ -1,0 +1,231 @@
+import {it as effectIt} from '@effect/vitest';
+import {Effect, FileSystem, Layer, Path} from 'effect';
+import {TestClock} from 'effect/testing';
+import {describe, expect} from 'vitest';
+import {CodeGraphWatcher} from '../../src/code_graph/watcher.js';
+import {runCommandEffect} from '../../src/effect/command.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {
+  stageDeferredCodeAnchorIntent,
+  type DeferredCodeAnchorWriteRequest,
+} from '../../src/memory/deferred_code_anchor.js';
+import {
+  DeferredCodeAnchorRefreshScheduler,
+  deferredCodeAnchorRefreshSchedulerLayer,
+  listDeferredCodeAnchorWorkspaceRefreshTargets,
+  refreshPendingDeferredCodeAnchorWorkspaces,
+  scheduleDeferredCodeAnchorWorkspaceRefresh,
+} from '../../src/memory/deferred_code_anchor_refresh.js';
+import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
+import type {RuntimeConfig} from '../../src/types.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+
+const PRESENT_URI = 'threadnote://user/tester/memories/durable/projects/threadnote/present.md';
+const MISSING_URI = 'threadnote://user/tester/memories/durable/projects/threadnote/missing.md';
+
+describe('deferred code-anchor workspace refresh', () => {
+  effectIt.effect('lists still-present matching worktrees and skips a deleted checkout', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeRefreshFixture();
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Present workspace.'),
+          memoryMetadata: {...fixture.metadata, memoryId: 'tn_present', topic: 'present'},
+          memoryUri: PRESENT_URI,
+          request: deferredRequest(fixture.present),
+        });
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(
+            {...fixture.metadata, memoryId: 'tn_missing', topic: 'missing'},
+            'Deleted workspace.',
+          ),
+          memoryMetadata: {...fixture.metadata, memoryId: 'tn_missing', topic: 'missing'},
+          memoryUri: MISSING_URI,
+          request: deferredRequest(fixture.missing),
+        });
+        yield* fixture.fs.remove(fixture.missing, {recursive: true});
+
+        const targets = yield* listDeferredCodeAnchorWorkspaceRefreshTargets(fixture.config);
+        expect(targets).toEqual([
+          expect.objectContaining({
+            cwd: fixture.present,
+          }),
+        ]);
+        expect(targets.some(target => target.cwd === fixture.missing)).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('schedules only still-present matching worktrees', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeRefreshFixture();
+        const scheduled: {readonly cwd: string; readonly key: string; readonly threadnoteHome: string}[] = [];
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Present workspace.'),
+          memoryMetadata: {...fixture.metadata, memoryId: 'tn_present', topic: 'present'},
+          memoryUri: PRESENT_URI,
+          request: deferredRequest(fixture.present),
+        });
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(
+            {...fixture.metadata, memoryId: 'tn_missing', topic: 'missing'},
+            'Deleted workspace.',
+          ),
+          memoryMetadata: {...fixture.metadata, memoryId: 'tn_missing', topic: 'missing'},
+          memoryUri: MISSING_URI,
+          request: deferredRequest(fixture.missing),
+        });
+        yield* fixture.fs.remove(fixture.missing, {recursive: true});
+
+        yield* refreshPendingDeferredCodeAnchorWorkspaces(fixture.config).pipe(
+          Effect.provideService(
+            DeferredCodeAnchorRefreshScheduler,
+            DeferredCodeAnchorRefreshScheduler.of({
+              schedule: options => Effect.sync(() => scheduled.push(options)),
+            }),
+          ),
+        );
+
+        expect(scheduled).toEqual([
+          {
+            cwd: fixture.present,
+            key: (yield* listDeferredCodeAnchorWorkspaceRefreshTargets(fixture.config))[0]?.worktreeId,
+            threadnoteHome: fixture.config.agentContextHome,
+          },
+        ]);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('schedules still-present worktrees as background builder admission', () =>
+    Effect.gen(function* () {
+      const scheduled: Array<{readonly admissionClass?: string; readonly cwd: string}> = [];
+      yield* scheduleDeferredCodeAnchorWorkspaceRefresh(
+        {agentContextHome: '/threadnote-home'},
+        {cwd: '/repo', worktreeId: 'a'.repeat(64)},
+      ).pipe(
+        provideTestLayer(
+          deferredCodeAnchorRefreshSchedulerLayer.pipe(
+            Layer.provide(
+              Layer.succeed(
+                CodeGraphWatcher,
+                CodeGraphWatcher.of({
+                  ensure: () => Effect.void,
+                  metrics: Effect.succeed({
+                    activeRefreshKeys: 0,
+                    activeWatches: 0,
+                    executingRefreshes: 0,
+                    executingRefreshHighWater: 0,
+                    idleSweepFibers: 0,
+                    maximumWatchers: 0,
+                    pendingTrailingRefreshes: 0,
+                    retainedStatuses: 0,
+                  }),
+                  refresh: options =>
+                    Effect.sync(() => {
+                      scheduled.push({admissionClass: options.admissionClass, cwd: options.cwd});
+                      return true;
+                    }),
+                  status: () => Effect.succeedNone,
+                  watch: () => Effect.void,
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(scheduled).toEqual([{admissionClass: 'background', cwd: '/repo'}]);
+    }),
+  );
+
+  effectIt.effect('does not schedule when the refresh scheduler is absent', () =>
+    Effect.gen(function* () {
+      const scheduled: string[] = [];
+      yield* scheduleDeferredCodeAnchorWorkspaceRefresh(
+        {agentContextHome: '/threadnote-home'},
+        {cwd: '/repo', worktreeId: 'a'.repeat(64)},
+      );
+      expect(scheduled).toEqual([]);
+    }),
+  );
+});
+
+const makeRefreshFixture = Effect.fn('deferredCodeAnchorRefreshTest.makeFixture')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-deferred-anchor-refresh-'});
+  const present = path.join(home, 'present');
+  const missing = path.join(home, 'missing');
+  yield* Effect.forEach([present, missing], cwd => initializeGitCheckout(cwd), {concurrency: 1});
+  const manifestPath = path.join(home, 'seed-manifest.yaml');
+  yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
+  const config: RuntimeConfig = {
+    account: 'local',
+    agentContextHome: home,
+    agentId: 'threadnote',
+    manifestPath,
+    user: 'tester',
+  };
+  const metadata: MemoryMetadata = {
+    kind: 'durable',
+    memoryId: 'tn_present',
+    project: 'threadnote',
+    schemaVersion: MEMORY_SCHEMA_VERSION,
+    sourceAgentClient: 'test',
+    status: 'active',
+    timestamp: '2026-09-10T00:00:00.000Z',
+    topic: 'present',
+    visibility: 'personal',
+  };
+  return {config, fs, metadata, missing, path, present};
+});
+
+const initializeGitCheckout = Effect.fn('deferredCodeAnchorRefreshTest.initGit')(function* (cwd: string) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.makeDirectory(cwd);
+  yield* runCommandEffect('git', ['init', '--quiet'], {cwd});
+  yield* runCommandEffect(
+    'git',
+    [
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '--allow-empty',
+      '--quiet',
+      '--message',
+      'fixture',
+    ],
+    {cwd},
+  );
+});
+
+function deferredRequest(callerCwd: string): DeferredCodeAnchorWriteRequest {
+  return {
+    callerCwd,
+    codeRefs: ['src/index.ts'],
+    recovery: {
+      code: 'ready-graph-unavailable',
+      indexingStarted: false,
+      observedGraph: {freshness: 'stale', readySnapshot: 'absent', stale: true},
+      preparation: {
+        action: 'index-current-graph',
+        arguments: [],
+        command: 'threadnote graph index --no-vectors',
+        target: 'callerCwd',
+      },
+      recovery: 'prepare-current-graph',
+      retryCondition: 'after-current-graph-ready',
+      retryable: true,
+      type: 'memory-code-citation-capture-recovery',
+      version: 1,
+    },
+  };
+}
+
+function memoryContent(metadata: MemoryMetadata, body: string): string {
+  return formatMemoryDocument('MEMORY', metadata, body);
+}

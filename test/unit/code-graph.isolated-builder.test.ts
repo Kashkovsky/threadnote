@@ -189,6 +189,16 @@ describe('isolated code-graph builder spawn plan', () => {
     expect(() => assertIsolatedBuilderPlan(plan)).not.toThrow();
   });
 
+  it('forwards background builder admission to isolated graph-index children', () => {
+    const plan = codeGraphIsolatedBuilderSpawnPlan(systemInfoStub({}), {
+      admissionClass: 'background',
+      cwd: '/repo/worktree',
+      threadnoteHome: '/home/.threadnote',
+    });
+    expect(plan.environment.THREADNOTE_CODE_GRAPH_BUILDER_ADMISSION_CLASS).toBe('background');
+    expect(() => assertIsolatedBuilderPlan(plan)).not.toThrow();
+  });
+
   it('forwards a Manager full rebuild without disabling vectors', () => {
     const plan = codeGraphIsolatedBuilderSpawnPlan(systemInfoStub({}), {
       cwd: '/repo/worktree',

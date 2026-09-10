@@ -780,6 +780,11 @@ describe('deferred code-anchor outbox', () => {
           {cwd: fixture.repository},
         ).pipe(TestClock.withLive);
         const store = yield* ResourceStore;
+        const indexer = yield* CodeGraphIndexer;
+        // Publish first so wrap-heal cannot consume the later-staged intent.
+        yield* indexer
+          .index({cwd: fixture.repository, ensureVectors: false, threadnoteHome: fixture.config.agentContextHome})
+          .pipe(TestClock.withLive);
         const content = memoryContent(fixture.metadata, 'Committed before the foreground deadline.');
         yield* stageDeferredCodeAnchorIntent(fixture.config, {
           memoryContent: content,
@@ -788,10 +793,6 @@ describe('deferred code-anchor outbox', () => {
           request: deferredRequest(fixture.repository, ['src/deadline.ts']),
         });
         yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
-        const indexer = yield* CodeGraphIndexer;
-        yield* indexer
-          .index({cwd: fixture.repository, ensureVectors: false, threadnoteHome: fixture.config.agentContextHome})
-          .pipe(TestClock.withLive);
         const [intentPath] = yield* fixtureIntentPaths(fixture);
         const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath)) as {
           repositoryId: string;

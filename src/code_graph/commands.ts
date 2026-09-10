@@ -2,7 +2,7 @@ import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Schema} from '
 import {startProgress, withProgressLine} from '../cli_ui.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {SystemInfo} from '../effect/system.js';
-import {healAnchorsAfterGraphIndex, healAnchorsAfterWorksetPrepare} from '../memory/deferred_code_anchor_recovery.js';
+import {healAnchorsAfterWorksetPrepare} from '../memory/deferred_code_anchor_recovery.js';
 import type {RuntimeConfig} from '../types.js';
 import {CodeGraphIndexer} from './indexer.js';
 import {
@@ -750,7 +750,6 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
       onProgress: reportProgress,
       threadnoteHome: config.agentContextHome,
     });
-    yield* healAnchorsAfterGraphIndex(config, cwd, summary.identity);
     yield* writeFinalCliOutput(JSON.stringify({type: 'code-graph-index', version: 1, ...summary}));
     return;
   }
@@ -775,7 +774,6 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
         ),
       ),
   );
-  yield* healAnchorsAfterGraphIndex(config, cwd, summary.identity);
   yield* Console.log(
     `Code graph ready for ${summary.identity.displayName}: ${summary.snapshot.fileCount} file(s), ` +
       `${summary.snapshot.symbolCount} symbol(s), ${summary.snapshot.edgeCount} relationship(s); ` +

@@ -11,6 +11,7 @@ import {
   type DeferredCodeAnchorIntentV1,
   type DeferredMemoryObservation,
 } from '../../src/memory/deferred_code_anchor.js';
+import {selectDeferredCodeAnchorWorkspaceRefreshTargets} from '../../src/memory/deferred_code_anchor_refresh.js';
 
 const URI = 'threadnote://user/test/memories/durable/projects/threadnote/deferred.md';
 
@@ -128,10 +129,100 @@ describe('deferred code-anchor state model', () => {
         );
       }),
   );
+
+  effectIt.effect.prop(
+    'refresh targets stay on still-present matching worktrees and never rebind a sibling checkout',
+    {
+      duplicateWorktree: fc.boolean(),
+      intents: fc.uniqueArray(
+        fc.record({
+          cwdIndex: fc.integer({min: 0, max: 2}),
+          identity: fc.constantFrom('match', 'missing', 'mismatch'),
+          workset: fc.boolean(),
+        }),
+        {maxLength: 3, selector: item => item.cwdIndex},
+      ),
+      siblingPresent: fc.boolean(),
+    },
+    input =>
+      Effect.sync(() => {
+        const cwds = ['/repo-a', '/repo-b', '/repo-missing'] as const;
+        const intents = input.intents.map((item, index) =>
+          deferredIntent({
+            callerCwd: cwds[item.cwdIndex],
+            memoryUri: `${URI}-${index}`,
+            preparation: item.workset ? 'workset' : 'caller',
+            repositoryId: '1'.repeat(64),
+            worktreeId: `${item.cwdIndex + 2}`.repeat(64),
+          }),
+        );
+        const match = intents.find((_, index) => {
+          const item = input.intents[index];
+          return item !== undefined && !item.workset && item.identity === 'match';
+        });
+        if (input.duplicateWorktree && match !== undefined) {
+          intents.push(
+            deferredIntent({
+              callerCwd: match.callerCwd,
+              memoryUri: `${URI}-duplicate`,
+              repositoryId: match.repositoryId,
+              worktreeId: match.worktreeId,
+            }),
+          );
+        }
+        const identityByCwd = new Map<string, {repositoryId: string; worktreeId: string} | undefined>();
+        for (const [index, item] of input.intents.entries()) {
+          const intent = intents[index];
+          if (intent === undefined) continue;
+          if (item.identity === 'missing') {
+            identityByCwd.set(intent.callerCwd, undefined);
+            continue;
+          }
+          identityByCwd.set(
+            intent.callerCwd,
+            item.identity === 'mismatch'
+              ? {repositoryId: intent.repositoryId, worktreeId: '9'.repeat(64)}
+              : {repositoryId: intent.repositoryId, worktreeId: intent.worktreeId},
+          );
+        }
+        if (input.siblingPresent) {
+          identityByCwd.set('/repo-sibling', {repositoryId: '1'.repeat(64), worktreeId: '5'.repeat(64)});
+        }
+        const targets = selectDeferredCodeAnchorWorkspaceRefreshTargets(intents, identityByCwd);
+        const expectedCwds = new Set(
+          intents
+            .filter((intent, index) => {
+              const item = input.intents[index];
+              return item !== undefined && !item.workset && item.identity === 'match';
+            })
+            .map(intent => intent.callerCwd),
+        );
+        expect(new Set(targets.map(target => target.cwd))).toEqual(expectedCwds);
+        expect(new Set(targets.map(target => target.worktreeId)).size).toBe(targets.length);
+        expect(targets.some(target => target.cwd === '/repo-sibling')).toBe(false);
+        expect(targets.some(target => target.cwd === '/repo-missing' && !expectedCwds.has('/repo-missing'))).toBe(
+          false,
+        );
+        for (const target of targets) {
+          const intent = intents.find(candidate => candidate.callerCwd === target.cwd);
+          expect(intent).toBeDefined();
+          expect(intent?.recovery.preparation.target).toBe('callerCwd');
+          expect(target.repositoryId).toBe(intent?.repositoryId);
+          expect(target.worktreeId).toBe(intent?.worktreeId);
+        }
+      }),
+  );
 });
 
 function deferredIntent(
-  options: {readonly codeRefs?: readonly string[]; readonly preparation?: 'caller' | 'workset'} = {},
+  options: {
+    readonly callerCwd?: string;
+    readonly codeRefs?: readonly string[];
+    readonly memoryUri?: string;
+    readonly preparation?: 'caller' | 'workset';
+    readonly repositoryId?: string;
+    readonly worktreeId?: string;
+  } = {},
 ): DeferredCodeAnchorIntentV1 {
   const preparation =
     options.preparation === 'workset'
@@ -149,13 +240,13 @@ function deferredIntent(
         };
   return {
     authorization: 'explicit-code-refs',
-    callerCwd: '/repo',
+    callerCwd: options.callerCwd ?? '/repo',
     codeRefs: options.codeRefs ?? ['src/index.ts'],
     createdAt: '2026-08-29T00:00:00.000Z',
     expectedMemoryHash: 'expected-hash',
     intentId: 'tnca_test',
     memoryId: 'tn_memory',
-    memoryUri: URI,
+    memoryUri: options.memoryUri ?? URI,
     recovery: {
       code: 'exact-current-evidence-unavailable',
       indexingStarted: false,
@@ -167,11 +258,11 @@ function deferredIntent(
       type: 'memory-code-citation-capture-recovery',
       version: 1,
     },
-    repositoryId: '1'.repeat(64),
+    repositoryId: options.repositoryId ?? '1'.repeat(64),
     type: 'threadnote-deferred-code-anchor-intent',
     version: 1,
     visibility: 'private-local',
-    worktreeId: '2'.repeat(64),
+    worktreeId: options.worktreeId ?? '2'.repeat(64),
   };
 }
 

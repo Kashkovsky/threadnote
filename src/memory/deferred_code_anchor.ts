@@ -17,6 +17,7 @@ import {
 import {MEMORY_SCHEMA_VERSION, type MemoryCodeCitationV1} from './code_citation.js';
 import {discardMemoryRelocation} from './relocation.js';
 import {deferredCodeAnchorCaptureFailureItem} from './deferred_code_anchor_failure.js';
+import {scheduleDeferredCodeAnchorWorkspaceRefresh} from './deferred_code_anchor_scheduler.js';
 import {
   deferredCodeAnchorFinalizationVerified,
   memoryContentHash,
@@ -285,6 +286,12 @@ export const stageDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.stage')
     worktreeId: status.identity.worktreeId,
   };
   yield* writeDeferredCodeAnchorIntent(config, intent);
+  if (intent.recovery.preparation.target !== 'workset') {
+    yield* scheduleDeferredCodeAnchorWorkspaceRefresh(config, {
+      cwd: intent.callerCwd,
+      worktreeId: intent.worktreeId,
+    }).pipe(Effect.ignoreCause);
+  }
   return intent;
 });
 
@@ -705,7 +712,19 @@ const finalizeDeferredCodeAnchor = Effect.fn('memoryCodeAnchor.finalizeOne')(fun
   }).pipe(Effect.result);
   if (Result.isFailure(captured)) {
     const classified = deferredCodeAnchorCaptureFailureItem(captured.failure, entry.intent.memoryUri);
-    if (classified !== undefined) return classified;
+    if (classified !== undefined) {
+      if (
+        classified.state === 'pending' &&
+        classified.retryable === true &&
+        entry.intent.recovery.preparation.target !== 'workset'
+      ) {
+        yield* scheduleDeferredCodeAnchorWorkspaceRefresh(config, {
+          cwd: entry.intent.callerCwd,
+          worktreeId: entry.intent.worktreeId,
+        }).pipe(Effect.ignoreCause);
+      }
+      return classified;
+    }
     return {
       code: 'citation-capture-failed',
       memoryUri: entry.intent.memoryUri,
@@ -787,7 +806,7 @@ const writeDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.writeIntent')(
   yield* persistShardedDeferredCodeAnchorIntent(config, intent, `${JSON.stringify(intent, undefined, 2)}\n`);
 });
 
-const listDeferredCodeAnchorIntents = Effect.fn('memoryCodeAnchor.listIntents')(function* (
+export const listDeferredCodeAnchorIntents = Effect.fn('memoryCodeAnchor.listIntents')(function* (
   config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>,
 ) {
   const fs = yield* FileSystem.FileSystem;

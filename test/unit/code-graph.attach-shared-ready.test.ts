@@ -212,4 +212,15 @@ describe('codeGraphWatcherRefreshIndexRequest', () => {
       threadnoteHome: '/home',
     });
   });
+
+  it('forwards a caller-supplied builder admission class', () => {
+    expect(
+      codeGraphWatcherRefreshIndexRequest({
+        admissionClass: 'background',
+        cwd: '/repo',
+        key: 'worktree',
+        threadnoteHome: '/home',
+      }),
+    ).toMatchObject({admissionClass: 'background', ensureVectors: false});
+  });
 });
