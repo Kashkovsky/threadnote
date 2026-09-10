@@ -3,7 +3,11 @@ import {Effect} from 'effect';
 import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
 import {succeedUndefined} from '../../src/effect/optional.js';
-import {observeProcessInstanceIdentity, processInstanceIdentityMatches} from '../../src/process/process_identity.js';
+import {
+  observeCanonicalProcessInstanceIdentity,
+  observeProcessInstanceIdentity,
+  processInstanceIdentityMatches,
+} from '../../src/process/process_identity.js';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
@@ -46,10 +50,17 @@ describe('process instance identity', () => {
     fc.assert(
       fc.property(darwinCLocaleStart, start => {
         expect(processInstanceIdentityMatches(`darwin:${start}`, `darwin-v2:${start}`)).toBe(true);
+        expect(processInstanceIdentityMatches(`darwin-v2:${start}`, `darwin:${start}`)).toBe(true);
         expect(processInstanceIdentityMatches(`darwin-v2:${start}`, `darwin-v2:${start}`)).toBe(true);
       }),
       {numRuns: 200},
     );
+  });
+
+  it('keeps a canonical Darwin row when observation falls back to a locale-sensitive string', () => {
+    expect(
+      processInstanceIdentityMatches('darwin-v2:Thu Sep 10 16:19:47 2026', 'darwin:Thu 10 Sep 18:19:47 2026'),
+    ).toBe(true);
   });
 });
 
@@ -89,6 +100,20 @@ describe('observeProcessInstanceIdentity', () => {
         1,
       );
       expect(observed).toBe('darwin:fallback');
+    }),
+  );
+});
+
+describe('observeCanonicalProcessInstanceIdentity', () => {
+  effectIt.effect('does not fall back to a locale-sensitive identity for keep decisions', () =>
+    Effect.gen(function* () {
+      const observed = yield* observeCanonicalProcessInstanceIdentity(
+        {
+          canonicalProcessStartIdentity: () => succeedUndefined,
+        },
+        1,
+      );
+      expect(observed).toBeUndefined();
     }),
   );
 });

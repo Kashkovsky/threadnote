@@ -584,7 +584,10 @@ function writeCurrentRegistration(): Effect.Effect<void, unknown> {
         setBestEffortProcessTitle(role);
         const currentOperation = current?.operation ?? active.baseOperation;
         const stateKey = `${role}\0${currentOperation ?? ''}`;
-        if (active.queuedStateKey === stateKey) return;
+        if (active.queuedStateKey === stateKey) {
+          const exists = yield* active.fileSystem.exists(active.file).pipe(Effect.orElseSucceed(() => false));
+          if (exists) return;
+        }
         const value: ProcessRegistrationFile = {
           baseRole: active.baseRole,
           ...(currentOperation === undefined ? {} : {currentOperation}),

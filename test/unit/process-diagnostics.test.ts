@@ -259,6 +259,64 @@ describe('process diagnostics', () => {
       }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
   );
 
+  it.effect('keeps a live MCP registration when canonical observation is unread and locale observation disagrees', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const nativeSystem = yield* SystemInfo;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-canonical-unread-keep-'});
+      const processId = 1_234_512;
+      const registrationPath = join(home, 'runtime', 'processes', `${processId}.json`);
+      const stored = testRegistration(
+        processId,
+        'mcp',
+        'darwin-v2:Thu Sep 10 16:19:47 2026',
+        'canonical-unread-keep-token',
+      );
+      yield* fileSystem.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
+      yield* fileSystem.writeFileString(registrationPath, `${JSON.stringify(stored)}\n`);
+      const testSystem = SystemInfo.of({
+        ...nativeSystem,
+        isProcessRunning: id => id === processId,
+        canonicalProcessStartIdentity: () => succeedUndefined,
+        processStartIdentity: () => Effect.succeed('darwin:Thu 10 Sep 18:19:47 2026'),
+      });
+      const listed = yield* readThreadnoteProcessDiagnostics({agentContextHome: home}).pipe(
+        Effect.provideService(SystemInfo, testSystem),
+      );
+      expect(listed.processes).toEqual([expect.objectContaining({processId, role: 'mcp'})]);
+      expect(yield* fileSystem.exists(registrationPath)).toBe(true);
+      expect(JSON.parse(yield* fileSystem.readFileString(registrationPath))).toMatchObject({
+        processId,
+        processStartIdentity: 'darwin:Thu 10 Sep 18:19:47 2026',
+      });
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
+  );
+
+  it.effect('restores a live registration file after inventory garbage-collected it', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-restore-registration-'});
+      const config = {agentContextHome: home};
+      yield* withThreadnoteProcessRegistration(
+        home,
+        'mcp',
+        Effect.gen(function* () {
+          const registrationPath = join(home, 'runtime', 'processes', `${process.pid}.json`);
+          expect(yield* fileSystem.exists(registrationPath)).toBe(true);
+          yield* fileSystem.remove(registrationPath);
+          expect(yield* fileSystem.exists(registrationPath)).toBe(false);
+          yield* withThreadnoteProcessActivity('mcp', 'mcp-server', Effect.void, {
+            idleTransitionDelayMilliseconds: 60_000,
+          });
+          expect(yield* fileSystem.exists(registrationPath)).toBe(true);
+          const listed = yield* readThreadnoteProcessDiagnostics(config);
+          expect(listed.processes).toEqual([expect.objectContaining({processId: process.pid, role: 'mcp'})]);
+        }),
+        'mcp-server',
+      );
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
+  );
+
   it.effect('removes a registration when the canonical process instance has been replaced', () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
