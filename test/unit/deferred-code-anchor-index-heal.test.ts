@@ -106,119 +106,119 @@ describe('in-process graph-index deferred-anchor recovery', () => {
     });
   });
 
-  effectIt.effect('finalizes a matching intent after ApplicationLayer in-process index', () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-wrap-heal-'});
-        const repository = path.join(root, 'repository');
-        const home = path.join(root, 'home');
-        const manifestPath = path.join(home, 'seed-manifest.yaml');
-        yield* fs.makeDirectory(path.join(repository, 'src'), {recursive: true});
-        yield* fs.makeDirectory(home, {recursive: true});
-        yield* fs.writeFileString(path.join(repository, 'src', 'heal.ts'), 'export const wrapHeal = "ready";\n');
-        yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
-        yield* runCommandEffect('git', ['init', '--quiet'], {cwd: repository}).pipe(TestClock.withLive);
-        yield* runCommandEffect('git', ['add', '.'], {cwd: repository}).pipe(TestClock.withLive);
-        yield* runCommandEffect(
-          'git',
-          [
-            '-c',
-            'user.name=Threadnote Test',
-            '-c',
-            'user.email=test@threadnote.local',
-            'commit',
-            '--quiet',
-            '--message',
-            'fixture',
-          ],
-          {cwd: repository},
-        ).pipe(TestClock.withLive);
+  effectIt.effect(
+    'finalizes a matching intent after ApplicationLayer in-process index',
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-wrap-heal-'});
+          const repository = path.join(root, 'repository');
+          const home = path.join(root, 'home');
+          const manifestPath = path.join(home, 'seed-manifest.yaml');
+          yield* fs.makeDirectory(path.join(repository, 'src'), {recursive: true});
+          yield* fs.makeDirectory(home, {recursive: true});
+          yield* fs.writeFileString(path.join(repository, 'src', 'heal.ts'), 'export const wrapHeal = "ready";\n');
+          yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
+          yield* runCommandEffect('git', ['init', '--quiet'], {cwd: repository}).pipe(TestClock.withLive);
+          yield* runCommandEffect('git', ['add', '.'], {cwd: repository}).pipe(TestClock.withLive);
+          yield* runCommandEffect(
+            'git',
+            [
+              '-c',
+              'user.name=Threadnote Test',
+              '-c',
+              'user.email=test@threadnote.local',
+              'commit',
+              '--quiet',
+              '--message',
+              'fixture',
+            ],
+            {cwd: repository},
+          ).pipe(TestClock.withLive);
 
-        const config: RuntimeConfig = {
-          account: 'local',
-          agentContextHome: home,
-          agentId: 'threadnote',
-          manifestPath,
-          user: 'tester',
-        };
-        const metadata: MemoryMetadata = {
-          kind: 'durable',
-          memoryId: 'tn_wrap_heal',
-          project: 'threadnote',
-          schemaVersion: MEMORY_SCHEMA_VERSION,
-          sourceAgentClient: 'test',
-          status: 'active',
-          timestamp: '2026-09-10T00:00:00.000Z',
-          topic: 'wrap-heal',
-          visibility: 'personal',
-        };
-        const body = 'Wrap heal must cite after in-process index.';
-        const content = formatMemoryDocument('MEMORY', metadata, body);
-        const store = yield* ResourceStore;
-        const location = {account: config.account, home, user: config.user} as const;
-        yield* store.write(location, WRAP_HEAL_URI, content, {mode: 'create'});
-        yield* stageDeferredCodeAnchorIntent(config, {
-          memoryContent: content,
-          memoryMetadata: metadata,
-          memoryUri: WRAP_HEAL_URI,
-          request: {
-            callerCwd: repository,
-            codeRefs: ['src/heal.ts'],
-            recovery: {
-              code: 'ready-graph-unavailable',
-              indexingStarted: false,
-              observedGraph: {freshness: 'stale', readySnapshot: 'absent', stale: true},
-              preparation: {
-                action: 'index-current-graph',
-                arguments: [],
-                command: 'threadnote graph index --no-vectors',
-                target: 'callerCwd',
+          const config: RuntimeConfig = {
+            account: 'local',
+            agentContextHome: home,
+            agentId: 'threadnote',
+            manifestPath,
+            user: 'tester',
+          };
+          const metadata: MemoryMetadata = {
+            kind: 'durable',
+            memoryId: 'tn_wrap_heal',
+            project: 'threadnote',
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'test',
+            status: 'active',
+            timestamp: '2026-09-10T00:00:00.000Z',
+            topic: 'wrap-heal',
+            visibility: 'personal',
+          };
+          const body = 'Wrap heal must cite after in-process index.';
+          const content = formatMemoryDocument('MEMORY', metadata, body);
+          const store = yield* ResourceStore;
+          const location = {account: config.account, home, user: config.user} as const;
+          yield* store.write(location, WRAP_HEAL_URI, content, {mode: 'create'});
+          yield* stageDeferredCodeAnchorIntent(config, {
+            memoryContent: content,
+            memoryMetadata: metadata,
+            memoryUri: WRAP_HEAL_URI,
+            request: {
+              callerCwd: repository,
+              codeRefs: ['src/heal.ts'],
+              recovery: {
+                code: 'ready-graph-unavailable',
+                indexingStarted: false,
+                observedGraph: {freshness: 'stale', readySnapshot: 'absent', stale: true},
+                preparation: {
+                  action: 'index-current-graph',
+                  arguments: [],
+                  command: 'threadnote graph index --no-vectors',
+                  target: 'callerCwd',
+                },
+                recovery: 'prepare-current-graph',
+                retryCondition: 'after-current-graph-ready',
+                retryable: true,
+                type: 'memory-code-citation-capture-recovery',
+                version: 1,
               },
-              recovery: 'prepare-current-graph',
-              retryCondition: 'after-current-graph-ready',
-              retryable: true,
-              type: 'memory-code-citation-capture-recovery',
-              version: 1,
             },
-          },
-        });
-        const pendingRoot = path.join(
-          home,
-          'data',
-          'local',
-          'user',
-          'tester',
-          'private',
-          'deferred-code-anchors',
-          'v1',
-        );
-        expect(
-          (yield* fs.readDirectory(pendingRoot, {recursive: true})).filter(name =>
-            isDeferredCodeAnchorIntentFilename(path.basename(name)),
-          ),
-        ).toHaveLength(1);
+          });
+          const pendingRoot = path.join(
+            home,
+            'data',
+            'local',
+            'user',
+            'tester',
+            'private',
+            'deferred-code-anchors',
+            'v1',
+          );
+          expect(
+            (yield* fs.readDirectory(pendingRoot, {recursive: true})).filter(name =>
+              isDeferredCodeAnchorIntentFilename(path.basename(name)),
+            ),
+          ).toHaveLength(1);
 
-        const indexer = yield* CodeGraphIndexer;
-        yield* indexer
-          .index({cwd: repository, ensureVectors: false, threadnoteHome: home})
-          .pipe(TestClock.withLive);
+          const indexer = yield* CodeGraphIndexer;
+          yield* indexer.index({cwd: repository, ensureVectors: false, threadnoteHome: home}).pipe(TestClock.withLive);
 
-        expect(
-          (yield* fs.readDirectory(pendingRoot, {recursive: true})).filter(name =>
-            isDeferredCodeAnchorIntentFilename(path.basename(name)),
-          ),
-        ).toEqual([]);
-        const finalized = parseMemoryDocument(WRAP_HEAL_URI, yield* store.read(location, WRAP_HEAL_URI));
-        expect(finalized?.body).toBe(body);
-        expect(finalized?.metadata).toMatchObject({
-          codeCitations: [{path: 'src/heal.ts'}],
-          memoryId: metadata.memoryId,
-          status: metadata.status,
-        });
-      }),
-    ).pipe(withTesterUser, provideTestLayer(ApplicationLayer)),
+          expect(
+            (yield* fs.readDirectory(pendingRoot, {recursive: true})).filter(name =>
+              isDeferredCodeAnchorIntentFilename(path.basename(name)),
+            ),
+          ).toEqual([]);
+          const finalized = parseMemoryDocument(WRAP_HEAL_URI, yield* store.read(location, WRAP_HEAL_URI));
+          expect(finalized?.body).toBe(body);
+          expect(finalized?.metadata).toMatchObject({
+            codeCitations: [{path: 'src/heal.ts'}],
+            memoryId: metadata.memoryId,
+            status: metadata.status,
+          });
+        }),
+      ).pipe(withTesterUser, provideTestLayer(ApplicationLayer)),
     60_000,
   );
 });

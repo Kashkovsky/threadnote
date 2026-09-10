@@ -251,9 +251,7 @@ describe('Effect architecture boundaries', () => {
       readFile(join(sourceRoot, 'code_graph', 'commands.ts'), 'utf8'),
     ]);
     expect(runtime).toContain('withDeferredCodeAnchorIndexHeal');
-    expect(runtime).toContain(
-      'healAfterPublishedGraphIndex(options.threadnoteHome, options.cwd, summary.identity)',
-    );
+    expect(runtime).toContain('healAfterPublishedGraphIndex(options.threadnoteHome, options.cwd, summary.identity)');
     expect(commands).not.toContain('healAnchorsAfterGraphIndex');
     expect(commands).toContain('healAnchorsAfterWorksetPrepare');
   });
