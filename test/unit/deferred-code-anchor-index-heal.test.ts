@@ -15,7 +15,10 @@ import {
   isDeferredCodeAnchorIntentFilename,
   stageDeferredCodeAnchorIntent,
 } from '../../src/memory/deferred_code_anchor.js';
-import {withDeferredCodeAnchorIndexHeal} from '../../src/memory/deferred_code_anchor_index_heal.js';
+import {
+  healAfterPublishedGraphIndex,
+  withDeferredCodeAnchorIndexHeal,
+} from '../../src/memory/deferred_code_anchor_index_heal.js';
 import {
   DeferredCodeAnchorRefreshScheduler,
   refreshPendingDeferredCodeAnchorWorkspaces,
@@ -111,6 +114,38 @@ describe('in-process graph-index deferred-anchor recovery', () => {
       expect(healed).toEqual([]);
     });
   });
+
+  effectIt.effect('skips published-graph heal when the Threadnote home has no data tree', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-heal-absent-data-'});
+        yield* healAfterPublishedGraphIndex(home, home, {
+          repositoryId: 'a'.repeat(64),
+          worktreeId: 'b'.repeat(64),
+        });
+        expect(yield* fs.exists(path.join(home, 'data'))).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('skips published-graph heal when data is not a directory', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-heal-data-file-'});
+        const dataPath = path.join(home, 'data');
+        yield* fs.writeFileString(dataPath, 'not-a-tree\n');
+        yield* healAfterPublishedGraphIndex(home, home, {
+          repositoryId: 'a'.repeat(64),
+          worktreeId: 'b'.repeat(64),
+        });
+        expect(yield* fs.readFileString(dataPath)).toBe('not-a-tree\n');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   effectIt.effect(
     'finalizes a matching intent after ApplicationLayer in-process index',
