@@ -1658,6 +1658,11 @@ function hybridRankRecallHits(
       validTo: record?.metadata.validTo ?? indexed?.validTo,
     } satisfies RecallCandidate;
   });
+  const liveRecordsProvided = context.records !== undefined;
+  const hasLiveMemoryRecord = (uri: string, equivalentUris?: readonly string[]) =>
+    !liveRecordsProvided ||
+    !uri.includes('/memories/') ||
+    [uri, ...(equivalentUris ?? [])].some(candidateUri => recordsByUri.has(stripAnchor(candidateUri)));
   const hitUris = new Set(hitCandidates.map(candidate => candidate.uri));
   const candidates = [
     ...hitCandidates,
@@ -1668,7 +1673,7 @@ function hybridRankRecallHits(
         feedback: context.feedbackByUri?.get(stripAnchor(candidate.uri)),
         uri: stripAnchor(candidate.uri),
       })),
-  ];
+  ].filter(candidate => hasLiveMemoryRecord(candidate.uri, candidate.equivalentUris));
   for (const candidate of candidates) {
     if (!byUri.has(candidate.uri)) {
       const category = categoryForUri(candidate.uri);

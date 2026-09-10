@@ -107,6 +107,7 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
   input: {
     readonly callerCwd: string;
     readonly expectedCallerIdentity?: ExpectedMemoryCodeCitationCallerIdentity;
+    readonly omitUnresolved?: boolean;
     readonly refs?: readonly string[];
   },
 ) {
@@ -152,7 +153,13 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
   const capturedGroups = yield* Effect.forEach(
     [...groups.entries()],
     ([cwd, group]) =>
-      captureRepositoryGroup(config, cwd, group, cwd === input.callerCwd ? input.expectedCallerIdentity : undefined),
+      captureRepositoryGroup(
+        config,
+        cwd,
+        group,
+        cwd === input.callerCwd ? input.expectedCallerIdentity : undefined,
+        input.omitUnresolved === true,
+      ),
     {concurrency: 4},
   );
   if (input.expectedCallerIdentity) {
@@ -227,6 +234,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
   cwd: string,
   targets: readonly CaptureTarget[],
   expectedCallerIdentity?: ExpectedMemoryCodeCitationCallerIdentity,
+  omitUnresolved = false,
 ) {
   const query = yield* CodeGraphQueryService;
   const store = yield* CodeGraphStore;
@@ -353,6 +361,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
             if (target.target.kind === 'file') {
               const file = fileByPath.get(target.target.path);
               if (!file) {
+                if (omitUnresolved) return undefined;
                 return yield* MemoryCodeCitationCaptureError.of(
                   `Code citation path is not present in the exact current graph: ${target.target.path}. Use a graph-indexed repository-relative path.`,
                   undefined,
@@ -363,6 +372,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
             }
             const symbol = symbolById.get(target.target.nodeId);
             if (!symbol) {
+              if (omitUnresolved) return undefined;
               return yield* MemoryCodeCitationCaptureError.of(
                 `Code graph symbol is absent from the exact current graph: ${target.target.nodeId}.`,
                 undefined,
@@ -375,6 +385,9 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
             return yield* captureSymbolCitation(before, snapshot, symbol, target.index, readSource);
           }).pipe(Effect.mapError(error => captureError(target.ref, error))),
         {concurrency: 4},
+      );
+      const capturedTargets = results.filter(
+        (result): result is NonNullable<(typeof results)[number]> => result !== undefined,
       );
 
       const after = yield* query
@@ -389,7 +402,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
         );
       }
       if (expectedCallerIdentity) yield* requireExpectedCallerIdentity(after, expectedCallerIdentity);
-      return results;
+      return capturedTargets;
     }),
   );
 });

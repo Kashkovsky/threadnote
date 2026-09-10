@@ -1,5 +1,6 @@
 import {Crypto, DateTime, Effect, Exit, FileSystem, Option, Path, Schema} from 'effect';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
+import {observeProcessInstanceIdentity, processInstanceIdentityMatches} from './process_identity.js';
 import {compareVersions} from '../release/version_compare.js';
 
 class StandaloneProcessLeaseError extends Schema.TaggedError<StandaloneProcessLeaseError>()(
@@ -105,7 +106,7 @@ export function withStandaloneProcessLease<A, E, R>(
       if (!release) return yield* effect;
       const crypto = yield* Crypto.Crypto;
       const token = yield* crypto.randomUUIDv4;
-      const processStartIdentity = yield* system.processStartIdentity(system.processId);
+      const processStartIdentity = yield* observeProcessInstanceIdentity(system, system.processId);
       const leaseDirectory = path.join(root, 'leases', release.version);
       const leasePath = path.join(leaseDirectory, `${system.processId}.json`);
       yield* fs.makeDirectory(leaseDirectory, {recursive: true, mode: 0o700});
@@ -357,22 +358,29 @@ const liveStandaloneProcessLeases = Effect.fn('installations.liveProcessLeases')
         continue;
       }
       const processIsRunning = system.isProcessRunning(processId);
-      const currentProcessIdentity =
-        processIsRunning && Option.isSome(lease.value.processStartIdentity)
-          ? yield* system.processStartIdentity(processId)
-          : undefined;
-      const identityMatches =
-        Option.isNone(lease.value.processStartIdentity) ||
-        currentProcessIdentity === undefined ||
-        currentProcessIdentity === lease.value.processStartIdentity.value;
+      const currentProcessIdentity = processIsRunning
+        ? yield* observeProcessInstanceIdentity(system, processId)
+        : undefined;
+      const storedProcessIdentity = Option.getOrUndefined(lease.value.processStartIdentity);
+      const identityMatches = processInstanceIdentityMatches(storedProcessIdentity, currentProcessIdentity);
       if (processIsRunning && identityMatches) {
+        const processStartIdentity =
+          currentProcessIdentity !== undefined &&
+          storedProcessIdentity !== undefined &&
+          storedProcessIdentity !== currentProcessIdentity
+            ? Option.some(currentProcessIdentity)
+            : lease.value.processStartIdentity;
+        if (Option.isSome(processStartIdentity) && processStartIdentity.value !== storedProcessIdentity) {
+          yield* rewriteLeaseProcessStartIdentity(fs, leasePath, processStartIdentity.value).pipe(Effect.ignore);
+        }
         live.push({
           identityVerified:
-            Option.isSome(lease.value.processStartIdentity) &&
-            currentProcessIdentity === lease.value.processStartIdentity.value,
+            Option.isSome(processStartIdentity) &&
+            currentProcessIdentity !== undefined &&
+            processStartIdentity.value === currentProcessIdentity,
           parentProcessId: lease.value.parentProcessId,
           processId,
-          processStartIdentity: lease.value.processStartIdentity,
+          processStartIdentity,
           retirementPolicy: lease.value.retirementPolicy,
           startedAt: lease.value.startedAt,
           version,
@@ -431,7 +439,7 @@ function signalLeaseIfStillOwned(
 ): Effect.Effect<boolean> {
   return Effect.gen(function* () {
     if (!system.isProcessRunning(lease.processId) || Option.isNone(lease.processStartIdentity)) return false;
-    const identity = yield* system.processStartIdentity(lease.processId);
+    const identity = yield* observeProcessInstanceIdentity(system, lease.processId);
     if (identity !== lease.processStartIdentity.value) return false;
     return yield* Effect.try({
       try: () => {
@@ -477,6 +485,23 @@ function removeOwnedLease(fs: FileSystem.FileSystem, leasePath: string, token: s
   return Effect.gen(function* () {
     if ((yield* readLeaseToken(fs, leasePath)) === token) yield* fs.remove(leasePath, {force: true});
   }).pipe(Effect.ignore);
+}
+
+function rewriteLeaseProcessStartIdentity(fs: FileSystem.FileSystem, leasePath: string, processStartIdentity: string) {
+  return fs.readFileString(leasePath).pipe(
+    Effect.flatMap(content => {
+      let value: unknown;
+      try {
+        value = JSON.parse(content) as unknown;
+      } catch {
+        return Effect.void;
+      }
+      if (typeof value !== 'object' || value === null) return Effect.void;
+      return fs.writeFileString(leasePath, `${JSON.stringify({...value, processStartIdentity}, undefined, 2)}\n`, {
+        mode: 0o600,
+      });
+    }),
+  );
 }
 
 function readLeaseToken(fs: FileSystem.FileSystem, leasePath: string) {

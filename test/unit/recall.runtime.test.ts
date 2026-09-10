@@ -608,7 +608,24 @@ describe('recall runtime orchestration', () => {
             ],
           ],
           query: 'file fallback anchor',
-          readRecords: () => Effect.succeed([]),
+          readRecords: () =>
+            Effect.succeed([
+              {
+                body: 'File fallback anchor remains available.',
+                content:
+                  'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: file-fallback\n\nFile fallback anchor remains available.',
+                headerTitle: 'MEMORY',
+                metadata: {
+                  kind: 'durable',
+                  project: 'threadnote',
+                  sourceAgentClient: 'test',
+                  status: 'active',
+                  timestamp: '2026-07-23T00:00:00.000Z',
+                  topic: 'file-fallback',
+                },
+                uri: fallbackUri,
+              },
+            ]),
           semanticResult: Option.none(),
         },
       ).pipe(provideTestLayer(ApplicationLayer));

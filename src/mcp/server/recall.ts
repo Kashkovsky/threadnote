@@ -74,6 +74,7 @@ import {
   type CursorCloudMemoryScope,
 } from '../../cursor/cloud.js';
 import {memoryIdFromIdentityAlias} from '../../memory/identity_alias.js';
+import {memoryReadRecoveryForRequestedUri, memoryReadRecoveryText} from '../../memory/read_recovery.js';
 import {RECALL_RANKER_VERSION} from '../../recall/rank.js';
 import {
   parseRecallMemoryConnectionInput,
@@ -1279,6 +1280,12 @@ export function registerReadTool(
         ].filter((part): part is string => part !== undefined);
         const resources = memoryReadResourcesFromNativeResult(result, requestedUris);
         if (!resources) return argumentError(`${name} could not project the canonical read response.`);
+        const missing = canonicalReadMissing(result);
+        const missingWarnings = missing.map(uri => `Missing memory: ${uri}`);
+        const missingRecoveries = missing.flatMap(uri => {
+          const recovery = memoryReadRecoveryForRequestedUri(uri);
+          return recovery === undefined ? [] : [memoryReadRecoveryText(recovery)];
+        });
         const canonicalRead = canonicalReadMetadata(result);
         const relocatedOutsideScope = memoryScope
           ? canonicalRead?.resources.find(resource => !cursorCloudUriWithinScope(memoryScope, resource.canonicalUri))
@@ -1291,7 +1298,7 @@ export function registerReadTool(
             mode,
             section,
             toolName: name,
-            warnings: syncMessages,
+            warnings: [...syncMessages, ...missingWarnings],
           }),
         );
         if (Result.isFailure(projected)) {
@@ -1322,6 +1329,7 @@ export function registerReadTool(
           content: [
             {type: 'text' as const, text: read.content},
             ...(read.receipt === undefined ? [] : [{type: 'text' as const, text: read.receipt}]),
+            ...missingRecoveries.map(text => ({type: 'text' as const, text})),
           ],
           structuredContent: read.structuredContent,
         };
@@ -1330,18 +1338,32 @@ export function registerReadTool(
   );
 }
 
-function memoryReadResourcesFromNativeResult(
+export function memoryReadResourcesFromNativeResult(
   result: CallToolResult,
   uris: readonly string[],
 ): MemoryReadResource[] | undefined {
   const canonicalRead = canonicalReadMetadata(result);
+  const mappings = canonicalRead?.resources;
+  if (mappings) {
+    return projectCanonicalReadResources(result, mappings);
+  }
+  if (result.content.length !== uris.length) return undefined;
+  return projectCanonicalReadResources(
+    result,
+    uris.map((uri, index) => ({canonicalUri: uri, contentIndex: index, requestedUri: uri})),
+  );
+}
+
+function projectCanonicalReadResources(
+  result: CallToolResult,
+  mappings: readonly {readonly canonicalUri: string; readonly contentIndex: number; readonly requestedUri: string}[],
+): MemoryReadResource[] | undefined {
   const resources: MemoryReadResource[] = [];
-  for (const [index, uri] of uris.entries()) {
-    const mapping = canonicalRead?.resources[index];
-    const content = result.content[mapping?.contentIndex ?? index];
+  for (const mapping of mappings) {
+    const content = result.content[mapping.contentIndex];
     if (content?.type !== 'text') return undefined;
-    const requestedUri = mapping?.requestedUri ?? uri;
-    const canonicalUri = mapping?.canonicalUri ?? uri;
+    const requestedUri = mapping.requestedUri;
+    const canonicalUri = mapping.canonicalUri;
     if (memoryIdFromIdentityAlias(requestedUri) !== undefined) {
       resources.push({requestedUri, text: content.text, uri: requestedUri});
       continue;
@@ -1353,6 +1375,12 @@ function memoryReadResourcesFromNativeResult(
     });
   }
   return resources;
+}
+
+function canonicalReadMissing(result: CallToolResult): readonly string[] {
+  const value = result._meta?.['threadnote.io/canonical-read'];
+  if (!Predicate.isObject(value) || !Array.isArray(value.missing)) return [];
+  return value.missing.filter((uri): uri is string => typeof uri === 'string');
 }
 
 function canonicalReadMetadata(result: CallToolResult):

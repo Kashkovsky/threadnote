@@ -10,10 +10,16 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {
+  deferredCodeAnchorDoctorCheck,
+  hasDeferredCodeAnchorIntent,
   isDeferredCodeAnchorIntentFilename,
   stageDeferredCodeAnchorIntent,
 } from '../../src/memory/deferred_code_anchor.js';
 import {withDeferredCodeAnchorIndexHeal} from '../../src/memory/deferred_code_anchor_index_heal.js';
+import {
+  DeferredCodeAnchorRefreshScheduler,
+  refreshPendingDeferredCodeAnchorWorkspaces,
+} from '../../src/memory/deferred_code_anchor_refresh.js';
 import {formatMemoryDocument, parseMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -217,6 +223,123 @@ describe('in-process graph-index deferred-anchor recovery', () => {
             memoryId: metadata.memoryId,
             status: metadata.status,
           });
+        }),
+      ).pipe(withTesterUser, provideTestLayer(ApplicationLayer)),
+    60_000,
+  );
+
+  effectIt.effect(
+    'does not rebind a deleted worktree intent onto a sibling checkout during wrap-heal',
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-wrap-heal-sibling-'});
+          const repository = path.join(root, 'repository');
+          const sibling = path.join(root, 'sibling');
+          const home = path.join(root, 'home');
+          const manifestPath = path.join(home, 'seed-manifest.yaml');
+          yield* fs.makeDirectory(path.join(repository, 'src'), {recursive: true});
+          yield* fs.makeDirectory(home, {recursive: true});
+          yield* fs.writeFileString(path.join(repository, 'src', 'heal.ts'), 'export const wrapHeal = "ready";\n');
+          yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
+          yield* runCommandEffect('git', ['init', '--quiet'], {cwd: repository}).pipe(TestClock.withLive);
+          yield* runCommandEffect('git', ['add', '.'], {cwd: repository}).pipe(TestClock.withLive);
+          yield* runCommandEffect(
+            'git',
+            [
+              '-c',
+              'user.name=Threadnote Test',
+              '-c',
+              'user.email=test@threadnote.local',
+              'commit',
+              '--quiet',
+              '--message',
+              'fixture',
+            ],
+            {cwd: repository},
+          ).pipe(TestClock.withLive);
+          yield* runCommandEffect('git', ['worktree', 'add', '--quiet', sibling, 'HEAD'], {cwd: repository}).pipe(
+            TestClock.withLive,
+          );
+
+          const config: RuntimeConfig = {
+            account: 'local',
+            agentContextHome: home,
+            agentId: 'threadnote',
+            manifestPath,
+            user: 'tester',
+          };
+          const metadata: MemoryMetadata = {
+            kind: 'durable',
+            memoryId: 'tn_wrap_heal_sibling',
+            project: 'threadnote',
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'test',
+            status: 'active',
+            timestamp: '2026-09-10T00:00:00.000Z',
+            topic: 'wrap-heal-sibling',
+            visibility: 'personal',
+          };
+          const body = 'Deleted sibling worktree must stay uncited.';
+          const content = formatMemoryDocument('MEMORY', metadata, body);
+          const store = yield* ResourceStore;
+          const location = {account: config.account, home, user: config.user} as const;
+          yield* store.write(location, WRAP_HEAL_URI, content, {mode: 'create'});
+          yield* stageDeferredCodeAnchorIntent(config, {
+            memoryContent: content,
+            memoryMetadata: metadata,
+            memoryUri: WRAP_HEAL_URI,
+            request: {
+              callerCwd: sibling,
+              codeRefs: ['src/heal.ts'],
+              recovery: {
+                code: 'ready-graph-unavailable',
+                indexingStarted: false,
+                observedGraph: {freshness: 'stale', readySnapshot: 'absent', stale: true},
+                preparation: {
+                  action: 'index-current-graph',
+                  arguments: [],
+                  command: 'threadnote graph index --no-vectors',
+                  target: 'callerCwd',
+                },
+                recovery: 'prepare-current-graph',
+                retryCondition: 'after-current-graph-ready',
+                retryable: true,
+                type: 'memory-code-citation-capture-recovery',
+                version: 1,
+              },
+            },
+          });
+          yield* fs.remove(sibling, {recursive: true});
+
+          const indexer = yield* CodeGraphIndexer;
+          yield* indexer.index({cwd: repository, ensureVectors: false, threadnoteHome: home}).pipe(TestClock.withLive);
+
+          expect(yield* hasDeferredCodeAnchorIntent(config, WRAP_HEAL_URI)).toBe(true);
+          expect(parseMemoryDocument(WRAP_HEAL_URI, yield* store.read(location, WRAP_HEAL_URI))).toMatchObject({
+            body,
+            metadata: {memoryId: metadata.memoryId, status: metadata.status},
+          });
+          expect(
+            parseMemoryDocument(WRAP_HEAL_URI, yield* store.read(location, WRAP_HEAL_URI))?.metadata.codeCitations
+              ?.length ?? 0,
+          ).toBe(0);
+
+          yield* refreshPendingDeferredCodeAnchorWorkspaces(config).pipe(
+            Effect.provideService(
+              DeferredCodeAnchorRefreshScheduler,
+              DeferredCodeAnchorRefreshScheduler.of({schedule: () => Effect.void}),
+            ),
+          );
+
+          expect(yield* hasDeferredCodeAnchorIntent(config, WRAP_HEAL_URI)).toBe(false);
+          expect(
+            parseMemoryDocument(WRAP_HEAL_URI, yield* store.read(location, WRAP_HEAL_URI))?.metadata.codeCitations
+              ?.length ?? 0,
+          ).toBe(0);
+          expect(yield* deferredCodeAnchorDoctorCheck(config)).toMatchObject({status: 'ok'});
         }),
       ).pipe(withTesterUser, provideTestLayer(ApplicationLayer)),
     60_000,

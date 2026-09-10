@@ -909,6 +909,71 @@ describe('native memory workflow', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  it.effect('does not advertise a deleted memory that still has a stale lexical row', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-stale-lexical-'});
+        const manifestPath = path.join(home, 'seed-manifest.yaml');
+        yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath,
+          user: 'tester',
+        };
+        const memoryRoot = path.join(
+          home,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+        );
+        const ghostUri = 'threadnote://user/tester/memories/durable/projects/threadnote/stale-lexical-ghost.md';
+        const sentinel = 'STALE-LEXICAL-GHOST-847291056';
+        yield* fs.makeDirectory(memoryRoot, {recursive: true});
+        yield* fs.writeFileString(
+          path.join(memoryRoot, 'stale-lexical-ghost.md'),
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            'topic: stale-lexical-ghost',
+            'source_agent_client: test',
+            'timestamp: 2026-07-30T00:00:00.000Z',
+            '',
+            '# Stale lexical ghost',
+            '',
+            sentinel,
+          ].join('\n'),
+        );
+        yield* loadRecallIndex(config, {
+          forceRefresh: true,
+          includeInactive: false,
+          query: sentinel,
+        });
+        yield* fs.remove(path.join(memoryRoot, 'stale-lexical-ghost.md'));
+
+        const recalled = yield* captureConsole(
+          runRecall(config, {
+            inferScope: false,
+            query: sentinel,
+            threshold: '0.1',
+          }),
+        );
+
+        expect(recalled.output).not.toContain(ghostUri);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it.effect('round-trips the default pack root into the current user memories namespace', () =>
     Effect.scoped(
       Effect.gen(function* () {

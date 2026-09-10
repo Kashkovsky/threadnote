@@ -1,9 +1,16 @@
 import {Effect, Layer} from 'effect';
-import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {CodeGraphWatcher} from '../code_graph/watcher.js';
-import {succeedUndefined} from '../effect/optional.js';
 import type {RuntimeConfig} from '../types.js';
-import {listDeferredCodeAnchorIntents, type DeferredCodeAnchorIntentV1} from './deferred_code_anchor.js';
+import {
+  finalizeDeferredCodeAnchors,
+  listDeferredCodeAnchorIntents,
+  MAX_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
+  type DeferredCodeAnchorIntentV1,
+} from './deferred_code_anchor.js';
+import {
+  observeDeferredCodeAnchorCallerCheckout,
+  type DeferredCodeAnchorCallerCheckoutObservation,
+} from './deferred_code_anchor_checkout.js';
 import {
   DeferredCodeAnchorRefreshScheduler,
   scheduleDeferredCodeAnchorWorkspaceRefresh,
@@ -22,17 +29,18 @@ export interface DeferredCodeAnchorWorkspaceRefreshTarget {
 
 export function selectDeferredCodeAnchorWorkspaceRefreshTargets(
   intents: readonly DeferredCodeAnchorIntentV1[],
-  identityByCwd: ReadonlyMap<string, {readonly repositoryId: string; readonly worktreeId: string} | undefined>,
+  observationByCwd: ReadonlyMap<string, DeferredCodeAnchorCallerCheckoutObservation>,
 ): readonly DeferredCodeAnchorWorkspaceRefreshTarget[] {
   const seen = new Set<string>();
   const targets: DeferredCodeAnchorWorkspaceRefreshTarget[] = [];
   for (const intent of intents) {
     if (intent.recovery.preparation.target === 'workset') continue;
-    const identity = identityByCwd.get(intent.callerCwd);
+    const observation = observationByCwd.get(intent.callerCwd);
     if (
-      identity === undefined ||
-      identity.repositoryId !== intent.repositoryId ||
-      identity.worktreeId !== intent.worktreeId
+      observation === undefined ||
+      observation.state !== 'present' ||
+      observation.repositoryId !== intent.repositoryId ||
+      observation.worktreeId !== intent.worktreeId
     ) {
       continue;
     }
@@ -47,22 +55,32 @@ export function selectDeferredCodeAnchorWorkspaceRefreshTargets(
   return targets;
 }
 
+export function selectDeferredCodeAnchorMissingCheckoutIntents(
+  intents: readonly DeferredCodeAnchorIntentV1[],
+  observationByCwd: ReadonlyMap<string, DeferredCodeAnchorCallerCheckoutObservation>,
+): readonly DeferredCodeAnchorIntentV1[] {
+  return intents.filter(intent => observationByCwd.get(intent.callerCwd)?.state === 'missing');
+}
+
+const observeDeferredCodeAnchorCallerCheckouts = Effect.fn('memoryCodeAnchor.observeCallerCheckouts')(function* (
+  intents: readonly DeferredCodeAnchorIntentV1[],
+) {
+  const observationByCwd = new Map<string, DeferredCodeAnchorCallerCheckoutObservation>();
+  for (const cwd of new Set(intents.map(intent => intent.callerCwd))) {
+    observationByCwd.set(cwd, yield* observeDeferredCodeAnchorCallerCheckout(cwd));
+  }
+  return observationByCwd;
+});
+
 export const listDeferredCodeAnchorWorkspaceRefreshTargets = Effect.fn('memoryCodeAnchor.listWorkspaceRefreshTargets')(
   function* (config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>) {
     const intents = (yield* listDeferredCodeAnchorIntents(config)).flatMap(entry =>
       entry.kind === 'valid' ? [entry.intent] : [],
     );
-    const identityByCwd = new Map<string, {readonly repositoryId: string; readonly worktreeId: string} | undefined>();
-    for (const cwd of new Set(intents.map(intent => intent.callerCwd))) {
-      identityByCwd.set(
-        cwd,
-        yield* resolveRepositoryIdentity(cwd).pipe(
-          Effect.map(identity => ({repositoryId: identity.repositoryId, worktreeId: identity.worktreeId})),
-          Effect.catch(() => succeedUndefined),
-        ),
-      );
-    }
-    return selectDeferredCodeAnchorWorkspaceRefreshTargets(intents, identityByCwd);
+    return selectDeferredCodeAnchorWorkspaceRefreshTargets(
+      intents,
+      yield* observeDeferredCodeAnchorCallerCheckouts(intents),
+    );
   },
 );
 
@@ -86,9 +104,23 @@ export const deferredCodeAnchorRefreshSchedulerLayer = Layer.effect(
 
 export const refreshPendingDeferredCodeAnchorWorkspaces = Effect.fn('memoryCodeAnchor.refreshPendingWorkspaces')(
   function* (config: RuntimeConfig) {
-    const targets = yield* listDeferredCodeAnchorWorkspaceRefreshTargets(config);
+    const intents = (yield* listDeferredCodeAnchorIntents(config)).flatMap(entry =>
+      entry.kind === 'valid' ? [entry.intent] : [],
+    );
+    const observationByCwd = yield* observeDeferredCodeAnchorCallerCheckouts(intents);
+    const missingUris = [
+      ...new Set(
+        selectDeferredCodeAnchorMissingCheckoutIntents(intents, observationByCwd).map(intent => intent.memoryUri),
+      ),
+    ];
+    if (missingUris.length > 0) {
+      yield* finalizeDeferredCodeAnchors(config, {
+        limit: Math.min(missingUris.length, MAX_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT),
+        uris: missingUris,
+      }).pipe(Effect.ignoreCause);
+    }
     yield* Effect.forEach(
-      targets,
+      selectDeferredCodeAnchorWorkspaceRefreshTargets(intents, observationByCwd),
       target => scheduleDeferredCodeAnchorWorkspaceRefresh(config, target).pipe(Effect.ignoreCause),
       {concurrency: 1},
     );

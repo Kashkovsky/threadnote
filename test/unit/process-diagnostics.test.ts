@@ -229,6 +229,65 @@ describe('process diagnostics', () => {
     }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
   );
 
+  it.effect(
+    'keeps a live MCP registration when the observer locale no longer matches the stored Darwin start string',
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const nativeSystem = yield* SystemInfo;
+        const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-locale-keep-'});
+        const processId = 1_234_510;
+        const registrationPath = join(home, 'runtime', 'processes', `${processId}.json`);
+        const stored = testRegistration(processId, 'mcp', 'darwin:Thu Sep 10 16:44:09 2026', 'locale-keep-token-value');
+        yield* fileSystem.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
+        yield* fileSystem.writeFileString(registrationPath, `${JSON.stringify(stored)}\n`);
+        const testSystem = SystemInfo.of({
+          ...nativeSystem,
+          isProcessRunning: id => id === processId,
+          canonicalProcessStartIdentity: () => Effect.succeed('darwin-v2:Thu Sep 10 14:44:09 2026'),
+          processStartIdentity: () => Effect.succeed('darwin:Thu 10 Sep 16:44:09 2026'),
+        });
+        const listed = yield* readThreadnoteProcessDiagnostics({agentContextHome: home}).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(listed.processes).toEqual([expect.objectContaining({processId, role: 'mcp'})]);
+        expect(yield* fileSystem.exists(registrationPath)).toBe(true);
+        expect(JSON.parse(yield* fileSystem.readFileString(registrationPath))).toMatchObject({
+          processId,
+          processStartIdentity: 'darwin-v2:Thu Sep 10 14:44:09 2026',
+        });
+      }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
+  );
+
+  it.effect('removes a registration when the canonical process instance has been replaced', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const nativeSystem = yield* SystemInfo;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-canonical-stale-'});
+      const processId = 1_234_511;
+      const registrationPath = join(home, 'runtime', 'processes', `${processId}.json`);
+      const stored = testRegistration(
+        processId,
+        'mcp',
+        'darwin-v2:Thu Sep 10 14:44:09 2026',
+        'canonical-stale-token-value',
+      );
+      yield* fileSystem.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
+      yield* fileSystem.writeFileString(registrationPath, `${JSON.stringify(stored)}\n`);
+      const testSystem = SystemInfo.of({
+        ...nativeSystem,
+        isProcessRunning: id => id === processId,
+        canonicalProcessStartIdentity: () => Effect.succeed('darwin-v2:Thu Sep 10 15:00:00 2026'),
+        processStartIdentity: () => Effect.succeed('darwin:Thu Sep 10 16:44:09 2026'),
+      });
+      const listed = yield* readThreadnoteProcessDiagnostics({agentContextHome: home}).pipe(
+        Effect.provideService(SystemInfo, testSystem),
+      );
+      expect(listed.processes).toEqual([]);
+      expect(yield* fileSystem.exists(registrationPath)).toBe(false);
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
+  );
+
   it.effect('reports termination after the exact registered process exits on SIGTERM', () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

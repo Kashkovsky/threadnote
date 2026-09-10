@@ -4,9 +4,12 @@ import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {CodeGraphWatcher} from '../../src/code_graph/watcher.js';
 import {runCommandEffect} from '../../src/effect/command.js';
+import {ResourceStore} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {
+  deferredCodeAnchorDoctorCheck,
+  hasDeferredCodeAnchorIntent,
   stageDeferredCodeAnchorIntent,
   type DeferredCodeAnchorWriteRequest,
 } from '../../src/memory/deferred_code_anchor.js';
@@ -17,7 +20,7 @@ import {
   refreshPendingDeferredCodeAnchorWorkspaces,
   scheduleDeferredCodeAnchorWorkspaceRefresh,
 } from '../../src/memory/deferred_code_anchor_refresh.js';
-import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
+import {formatMemoryDocument, parseMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
@@ -53,6 +56,58 @@ describe('deferred code-anchor workspace refresh', () => {
           }),
         ]);
         expect(targets.some(target => target.cwd === fixture.missing)).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('discards missing-cwd intents during workspace refresh without citing another checkout', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeRefreshFixture();
+        const presentContent = memoryContent(fixture.metadata, 'Present workspace.');
+        const missingMetadata = {...fixture.metadata, memoryId: 'tn_missing', topic: 'missing'};
+        const missingContent = memoryContent(missingMetadata, 'Deleted workspace.');
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: presentContent,
+          memoryMetadata: fixture.metadata,
+          memoryUri: PRESENT_URI,
+          request: deferredRequest(fixture.present),
+        });
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: missingContent,
+          memoryMetadata: missingMetadata,
+          memoryUri: MISSING_URI,
+          request: deferredRequest(fixture.missing),
+        });
+        const store = yield* ResourceStore;
+        const location = {
+          account: fixture.config.account,
+          home: fixture.config.agentContextHome,
+          user: fixture.config.user,
+        } as const;
+        yield* store.write(location, PRESENT_URI, presentContent, {mode: 'create'});
+        yield* store.write(location, MISSING_URI, missingContent, {mode: 'create'});
+        yield* fixture.fs.remove(fixture.missing, {recursive: true});
+
+        yield* refreshPendingDeferredCodeAnchorWorkspaces(fixture.config).pipe(
+          Effect.provideService(
+            DeferredCodeAnchorRefreshScheduler,
+            DeferredCodeAnchorRefreshScheduler.of({
+              schedule: () => Effect.void,
+            }),
+          ),
+        );
+
+        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, PRESENT_URI)).toBe(true);
+        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, MISSING_URI)).toBe(false);
+        expect(
+          parseMemoryDocument(MISSING_URI, yield* store.read(location, MISSING_URI))?.metadata.codeCitations?.length ??
+            0,
+        ).toBe(0);
+        expect(yield* deferredCodeAnchorDoctorCheck(fixture.config)).toMatchObject({
+          detail: '1 private code-anchor intent(s) are pending finalization',
+          status: 'warn',
+        });
       }),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );

@@ -468,6 +468,9 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
           }),
         ),
       );
+  const unreadIndexedMemoryUris = unreadIndexedMemoryRecordUris(indexedCandidates, records);
+  const extraRecords = unreadIndexedMemoryUris.length > 0 ? yield* input.readRecords(unreadIndexedMemoryUris) : [];
+  const liveRecords = extraRecords.length > 0 ? [...records, ...extraRecords] : records;
   const expansionCandidates = mergeRecallExpansionCandidates(
     recallIndexCandidateSets,
     rankingUris,
@@ -487,7 +490,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
     project: input.project,
     query: input.query,
     queryVariants,
-    records,
+    records: liveRecords,
     protectedUris: memoryConnections?.candidates.map(candidate => candidate.uri),
     seedUris: input.seedUris,
     workspaceBranch: input.workspaceBranch,
@@ -892,6 +895,23 @@ function applyCachedRerankerScores(
 
 function rerankerCacheKey(candidate: RecallCandidate): string {
   return `${candidate.uri}\u0000${candidate.text}`;
+}
+
+function unreadIndexedMemoryRecordUris(
+  indexedCandidates: readonly RecallCandidate[],
+  records: readonly MemoryRecord[],
+): readonly string[] {
+  const live = new Set(records.map(record => record.uri.replace(/#.*$/, '')));
+  const unread = new Set<string>();
+  for (const candidate of indexedCandidates) {
+    for (const uri of [candidate.uri, ...(candidate.equivalentUris ?? [])]) {
+      const documentUri = uri.replace(/#.*$/, '');
+      if (documentUri.includes('/memories/') && !live.has(documentUri)) {
+        unread.add(documentUri);
+      }
+    }
+  }
+  return [...unread];
 }
 
 export function buildRecallSelectionCandidates(

@@ -11,7 +11,10 @@ import {
   type DeferredCodeAnchorIntentV1,
   type DeferredMemoryObservation,
 } from '../../src/memory/deferred_code_anchor.js';
-import {selectDeferredCodeAnchorWorkspaceRefreshTargets} from '../../src/memory/deferred_code_anchor_refresh.js';
+import {
+  selectDeferredCodeAnchorMissingCheckoutIntents,
+  selectDeferredCodeAnchorWorkspaceRefreshTargets,
+} from '../../src/memory/deferred_code_anchor_refresh.js';
 
 const URI = 'threadnote://user/test/memories/durable/projects/threadnote/deferred.md';
 
@@ -170,25 +173,35 @@ describe('deferred code-anchor state model', () => {
             }),
           );
         }
-        const identityByCwd = new Map<string, {repositoryId: string; worktreeId: string} | undefined>();
+        const identityByCwd = new Map<
+          string,
+          | {readonly state: 'missing'}
+          | {readonly state: 'unobserved'}
+          | {readonly state: 'present'; readonly repositoryId: string; readonly worktreeId: string}
+        >();
         for (const [index, item] of input.intents.entries()) {
           const intent = intents[index];
           if (intent === undefined) continue;
           if (item.identity === 'missing') {
-            identityByCwd.set(intent.callerCwd, undefined);
+            identityByCwd.set(intent.callerCwd, {state: 'missing'});
             continue;
           }
           identityByCwd.set(
             intent.callerCwd,
             item.identity === 'mismatch'
-              ? {repositoryId: intent.repositoryId, worktreeId: '9'.repeat(64)}
-              : {repositoryId: intent.repositoryId, worktreeId: intent.worktreeId},
+              ? {state: 'present', repositoryId: intent.repositoryId, worktreeId: '9'.repeat(64)}
+              : {state: 'present', repositoryId: intent.repositoryId, worktreeId: intent.worktreeId},
           );
         }
         if (input.siblingPresent) {
-          identityByCwd.set('/repo-sibling', {repositoryId: '1'.repeat(64), worktreeId: '5'.repeat(64)});
+          identityByCwd.set('/repo-sibling', {
+            state: 'present',
+            repositoryId: '1'.repeat(64),
+            worktreeId: '5'.repeat(64),
+          });
         }
         const targets = selectDeferredCodeAnchorWorkspaceRefreshTargets(intents, identityByCwd);
+        const discarded = selectDeferredCodeAnchorMissingCheckoutIntents(intents, identityByCwd);
         const expectedCwds = new Set(
           intents
             .filter((intent, index) => {
@@ -203,6 +216,26 @@ describe('deferred code-anchor state model', () => {
         expect(targets.some(target => target.cwd === '/repo-missing' && !expectedCwds.has('/repo-missing'))).toBe(
           false,
         );
+        expect(discarded.map(intent => intent.memoryUri).sort()).toEqual(
+          intents
+            .filter(intent => identityByCwd.get(intent.callerCwd)?.state === 'missing')
+            .map(intent => intent.memoryUri)
+            .sort(),
+        );
+        expect(
+          discarded.some(intent => {
+            const observation = identityByCwd.get(intent.callerCwd);
+            return observation?.state === 'present';
+          }),
+        ).toBe(false);
+        for (const discardedIntent of discarded) {
+          expect(targets.some(target => target.cwd === discardedIntent.callerCwd)).toBe(false);
+          expect(
+            targets.some(
+              target => target.worktreeId === discardedIntent.worktreeId && target.cwd !== discardedIntent.callerCwd,
+            ),
+          ).toBe(false);
+        }
         for (const target of targets) {
           const intent = intents.find(candidate => candidate.callerCwd === target.cwd);
           expect(intent).toBeDefined();

@@ -2,7 +2,9 @@ import {chmod, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
+import fc from 'fast-check';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
+import type {MemoryRecord} from '../../src/memory/document.js';
 import {
   applyExactMatchBoost,
   buildRecallSections,
@@ -42,6 +44,23 @@ import {
   uniqueUsefulWorkspaceTerms,
 } from '../../src/utils.js';
 import {runEffect} from '../helpers/effect-runtime.js';
+
+function rankingMemoryRecord(uri: string, body: string): MemoryRecord {
+  return {
+    body,
+    content: `MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: topic\n\n${body}`,
+    headerTitle: 'MEMORY',
+    metadata: {
+      kind: 'durable',
+      project: 'threadnote',
+      sourceAgentClient: 'test',
+      status: 'active',
+      timestamp: '2026-07-23T00:00:00.000Z',
+      topic: 'topic',
+    },
+    uri,
+  };
+}
 
 const collectExactMatches = (
   terms: readonly string[],
@@ -1034,6 +1053,70 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     });
 
     expect(sections.ranked.map(hit => hit.uri)).toEqual([selectedUri]);
+  });
+
+  it('does not rank an indexed memory URI that is absent from provided records', () => {
+    const liveUri = 'threadnote://user/me/memories/durable/projects/threadnote/live-ranked-gate.md';
+    const ghostUri = 'threadnote://user/me/memories/durable/projects/threadnote/ghost-ranked-gate.md';
+    const resourceUri = 'threadnote://resources/repos/threadnote/ranked-live-gate.md';
+    const sections = buildRecallSections([], [], 12, {
+      indexedCandidates: [
+        {
+          fields: {identifiers: ['ranked-live-gate'], project: 'threadnote', title: 'Live', topic: 'live-ranked-gate'},
+          text: 'ranked-live-gate live memory body',
+          uri: liveUri,
+        },
+        {
+          fields: {
+            identifiers: ['ranked-live-gate'],
+            project: 'threadnote',
+            title: 'Ghost',
+            topic: 'ghost-ranked-gate',
+          },
+          text: 'ranked-live-gate ghost memory body',
+          uri: ghostUri,
+        },
+        {
+          fields: {identifiers: ['ranked-live-gate'], project: 'threadnote', title: 'Resource', topic: 'resource-gate'},
+          text: 'ranked-live-gate resource body',
+          uri: resourceUri,
+        },
+      ],
+      query: 'ranked-live-gate',
+      records: [rankingMemoryRecord(liveUri, 'ranked-live-gate live memory body')],
+    });
+
+    expect(sections.ranked.map(hit => hit.uri)).toContain(liveUri);
+    expect(sections.ranked.map(hit => hit.uri)).not.toContain(ghostUri);
+    expect(sections.ranked.map(hit => hit.uri)).toContain(resourceUri);
+  });
+
+  it('ranks only live memory URIs when records are provided', () => {
+    fc.assert(
+      fc.property(fc.array(fc.boolean(), {minLength: 1, maxLength: 5}), flags => {
+        const candidates = flags.map((_live, index) => ({
+          fields: {
+            identifiers: [`ranked-live-gate-${index}`],
+            project: 'threadnote',
+            title: `Candidate ${index}`,
+            topic: `candidate-${index}`,
+          },
+          text: `ranked-live-gate candidate ${index}`,
+          uri: `threadnote://user/me/memories/durable/projects/threadnote/ranked-gate-${index}.md`,
+        }));
+        const records = flags.flatMap((live, index) =>
+          live ? [rankingMemoryRecord(candidates[index].uri, candidates[index].text)] : [],
+        );
+        const sections = buildRecallSections([], [], 12, {
+          indexedCandidates: candidates,
+          query: 'ranked-live-gate',
+          records,
+        });
+        const liveUris = new Set(records.map(record => record.uri));
+        const rankedMemories = sections.ranked.map(hit => hit.uri).filter(uri => uri.includes('/memories/'));
+        expect(rankedMemories.every(uri => liveUris.has(uri))).toBe(true);
+      }),
+    );
   });
 
   it('bounds full hybrid ranking of lexical index matches before graph and BM25 work', () => {

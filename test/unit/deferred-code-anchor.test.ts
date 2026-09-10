@@ -2,11 +2,12 @@ import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
+import {codeGraphCommittedFileContentHash} from '../../src/code_graph/content_identity.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
-import type {CodeGraphStatus} from '../../src/code_graph/types.js';
+import type {CodeGraphInventoryFile, CodeGraphStatus} from '../../src/code_graph/types.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {sha256Hex} from '../../src/effect/digest.js';
 import {ResourceIoFailed, ResourceStore} from '../../src/effect/resource-store.js';
@@ -1152,6 +1153,224 @@ describe('deferred code-anchor outbox', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  effectIt.effect('discards a missing caller checkout without rebinding or citing the memory', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        const content = memoryContent(fixture.metadata, 'Pending deleted worktree revision.');
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: content,
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/deleted-worktree.ts']),
+        });
+        const store = yield* ResourceStore;
+        yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
+        const [intentPath] = yield* fixtureIntentPaths(fixture);
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath)) as {
+          repositoryId: string;
+          worktreeId: string;
+        };
+        yield* fixture.fs.remove(fixture.repository, {recursive: true});
+
+        expect(
+          yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, {
+            callerCwd: fixture.repository,
+            kind: 'repository',
+            repositoryId: intent.repositoryId,
+            worktreeId: 'c'.repeat(64),
+          }),
+        ).toMatchObject({matchedCount: 0, scannedCount: 0, state: 'completed'});
+        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI)).toBe(true);
+        expect(yield* deferredCodeAnchorDoctorCheck(fixture.config)).toMatchObject({status: 'warn'});
+
+        const receipt = yield* finalizeDeferredCodeAnchors(fixture.config);
+        expect(receipt).toMatchObject({
+          conflictCount: 1,
+          failedCount: 0,
+          pendingCount: 0,
+          items: [
+            {
+              memoryUri: MEMORY_URI,
+              reason: 'caller-checkout-missing',
+              state: 'conflict',
+            },
+          ],
+        });
+        expect(JSON.stringify(receipt)).not.toContain('src/deleted-worktree.ts');
+        expect(JSON.stringify(receipt)).not.toContain(fixture.repository);
+        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI)).toBe(false);
+        const deleted = parseMemoryDocument(
+          MEMORY_URI,
+          yield* store.read(resourceStoreLocation(fixture.config), MEMORY_URI),
+        );
+        expect(deleted).toMatchObject({
+          body: 'Pending deleted worktree revision.',
+          metadata: {memoryId: fixture.metadata.memoryId, status: 'active'},
+        });
+        expect(deleted?.metadata.codeCitations?.length ?? 0).toBe(0);
+        expect(yield* deferredCodeAnchorDoctorCheck(fixture.config)).toMatchObject({
+          detail: 'no pending private code-anchor intents',
+          status: 'ok',
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('discards a present checkout whose repository identity changed, not as a deleted cwd', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        const content = memoryContent(fixture.metadata, 'Pending identity-mismatch revision.');
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: content,
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/identity-changed.ts']),
+        });
+        const store = yield* ResourceStore;
+        yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
+        const originalQuery = yield* CodeGraphQueryService;
+        const observed = yield* originalQuery.status(fixture.config.agentContextHome, fixture.repository, {
+          observeWorktree: true,
+          requestMaintenance: false,
+        });
+        const mismatchedQuery = CodeGraphQueryService.of({
+          ...originalQuery,
+          status: () =>
+            Effect.succeed({
+              ...observed,
+              identity: {...observed.identity, worktreeId: 'f'.repeat(64)},
+            }),
+        });
+
+        const receipt = yield* finalizeDeferredCodeAnchors(fixture.config).pipe(
+          Effect.provideService(CodeGraphQueryService, mismatchedQuery),
+        );
+        expect(receipt).toMatchObject({
+          conflictCount: 1,
+          failedCount: 0,
+          pendingCount: 0,
+          items: [
+            {
+              memoryUri: MEMORY_URI,
+              reason: 'caller-repository-identity-changed',
+              state: 'conflict',
+            },
+          ],
+        });
+        expect(receipt.items[0]?.reason).not.toBe('caller-checkout-missing');
+        expect(yield* fixture.fs.exists(fixture.repository)).toBe(true);
+        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI)).toBe(false);
+        expect(
+          parseMemoryDocument(MEMORY_URI, yield* store.read(resourceStoreLocation(fixture.config), MEMORY_URI))
+            ?.metadata.codeCitations?.length ?? 0,
+        ).toBe(0);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('keeps a retryable exact-current-graph gap pending instead of discarding it', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        const content = memoryContent(fixture.metadata, 'Pending graph-readiness revision.');
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: content,
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/pending-index.ts']),
+        });
+        const store = yield* ResourceStore;
+        yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
+        const originalQuery = yield* CodeGraphQueryService;
+        const observed = yield* originalQuery.status(fixture.config.agentContextHome, fixture.repository, {
+          observeWorktree: true,
+          requestMaintenance: false,
+        });
+        const unreadinessQuery = CodeGraphQueryService.of({
+          ...originalQuery,
+          status: () =>
+            Effect.succeed({
+              ...observed,
+              freshness: 'stale' as const,
+              readySnapshot: undefined,
+              stale: true,
+            }),
+        });
+
+        const receipt = yield* finalizeDeferredCodeAnchors(fixture.config).pipe(
+          Effect.provideService(CodeGraphQueryService, unreadinessQuery),
+        );
+        expect(receipt).toMatchObject({
+          conflictCount: 0,
+          pendingCount: 1,
+          items: [
+            {
+              memoryUri: MEMORY_URI,
+              recoveryAction: 'prepare-current-graph',
+              retryable: true,
+              state: 'pending',
+            },
+          ],
+        });
+        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI)).toBe(true);
+        expect(yield* deferredCodeAnchorDoctorCheck(fixture.config)).toMatchObject({status: 'warn'});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('finalizes the still-present exact-current subset and discards the unresolved remainder', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        const presentPath = 'src/present.ts';
+        const missingPath = 'src/deleted-feature.ts';
+        const source = 'export const present = true;\n';
+        yield* fixture.fs.makeDirectory(fixture.path.join(fixture.repository, 'src'), {recursive: true});
+        yield* fixture.fs.writeFileString(fixture.path.join(fixture.repository, presentPath), source);
+        const content = memoryContent(fixture.metadata, 'Pending subset revision.');
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: content,
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, [presentPath, missingPath]),
+        });
+        const store = yield* ResourceStore;
+        yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
+        const graph = yield* exactCurrentCitationGraph(fixture, [
+          inventoryFile(presentPath, source, fixture.path.join(fixture.repository, presentPath)),
+        ]);
+
+        const receipt = yield* finalizeDeferredCodeAnchors(fixture.config).pipe(
+          Effect.provideService(CodeGraphQueryService, graph.query),
+          Effect.provideService(CodeGraphStore, graph.store),
+        );
+        expect(receipt).toMatchObject({
+          conflictCount: 0,
+          failedCount: 0,
+          finalizedCount: 1,
+          pendingCount: 0,
+          items: [{citationCount: 1, memoryUri: MEMORY_URI, state: 'finalized'}],
+        });
+        expect(JSON.stringify(receipt)).not.toContain(missingPath);
+        expect(JSON.stringify(receipt)).not.toContain(fixture.repository);
+        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI)).toBe(false);
+        expect(
+          parseMemoryDocument(MEMORY_URI, yield* store.read(resourceStoreLocation(fixture.config), MEMORY_URI)),
+        ).toMatchObject({
+          body: 'Pending subset revision.',
+          metadata: {
+            codeCitations: [expect.objectContaining({path: presentPath, target: {kind: 'file'}})],
+            memoryId: fixture.metadata.memoryId,
+            status: 'active',
+          },
+        });
+        expect(yield* deferredCodeAnchorDoctorCheck(fixture.config)).toMatchObject({status: 'ok'});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   effectIt.effect('classifies exact-graph locator misses with privacy-safe correction guidance', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1166,73 +1385,34 @@ describe('deferred code-anchor outbox', () => {
         });
         const store = yield* ResourceStore;
         yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
-
-        const originalQuery = yield* CodeGraphQueryService;
-        const observed = yield* originalQuery.status(fixture.config.agentContextHome, fixture.repository, {
-          observeWorktree: true,
-          requestMaintenance: false,
-        });
-        const exactStatus: CodeGraphStatus = {
-          ...observed,
-          freshness: 'current',
-          readySnapshot: {
-            commit: observed.identity.headCommit,
-            completedAt: '2026-08-30T00:00:00.000Z',
-            dirty: false,
-            edgeCount: 0,
-            extractorSet: 'fixture-extractor-set',
-            fileCount: 0,
-            graphContentId: `cgc_${'a'.repeat(40)}`,
-            id: `cgsn_${'b'.repeat(40)}`,
-            repositoryId: observed.identity.repositoryId,
-            state: 'ready',
-            symbolCount: 0,
-            worktreeId: observed.identity.worktreeId,
-          },
-          stale: false,
-        };
-        const exactQuery = CodeGraphQueryService.of({
-          ...originalQuery,
-          status: () => Effect.succeed(exactStatus),
-        });
-        const emptyGraphStore = CodeGraphStore.of({
-          acquireSnapshotLease: () => Effect.succeed('fixture-lease'),
-          effectiveSnapshotCitationEvidence: (
-            _databasePath: string,
-            _snapshotId: string,
-            request: {readonly paths?: readonly string[]},
-          ) =>
-            Effect.succeed({
-              fileInventoryCoverage: 'complete',
-              filesByContentHashes: [],
-              filesByPaths: (request.paths ?? []).map(path => ({path})),
-              symbolsByIds: [],
-              symbolsBySemanticLocators: [],
-            }),
-          releaseSnapshotLease: () => Effect.void,
-        } as unknown as CodeGraphStoreShape);
+        const graph = yield* exactCurrentCitationGraph(fixture, []);
 
         const receipt = yield* finalizeDeferredCodeAnchors(fixture.config).pipe(
-          Effect.provideService(CodeGraphQueryService, exactQuery),
-          Effect.provideService(CodeGraphStore, emptyGraphStore),
+          Effect.provideService(CodeGraphQueryService, graph.query),
+          Effect.provideService(CodeGraphStore, graph.store),
         );
 
         expect(receipt).toMatchObject({
-          failedCount: 1,
+          conflictCount: 1,
+          failedCount: 0,
+          pendingCount: 0,
           items: [
             {
-              code: 'code-reference-unresolved',
               memoryUri: MEMORY_URI,
-              recoveryAction: 'replace-memory-code-refs',
-              retryable: false,
-              state: 'failed',
+              reason: 'code-references-absent',
+              state: 'conflict',
             },
           ],
         });
-        expect(receipt.items[0]?.reason).toContain('corrected graph-indexed codeRefs');
+        expect(receipt.items[0]).not.toHaveProperty('recoveryAction');
         expect(JSON.stringify(receipt)).not.toContain(privateLocator);
         expect(JSON.stringify(receipt)).not.toContain(fixture.repository);
-        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI)).toBe(true);
+        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI)).toBe(false);
+        expect(
+          parseMemoryDocument(MEMORY_URI, yield* store.read(resourceStoreLocation(fixture.config), MEMORY_URI))
+            ?.metadata.codeCitations?.length ?? 0,
+        ).toBe(0);
+        expect(yield* deferredCodeAnchorDoctorCheck(fixture.config)).toMatchObject({status: 'ok'});
       }),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
@@ -1681,3 +1861,72 @@ function resourceStoreLocation(config: Pick<RuntimeConfig, 'account' | 'agentCon
 function memoryContent(metadata: MemoryMetadata, body: string): string {
   return formatMemoryDocument('MEMORY', metadata, body);
 }
+
+function inventoryFile(repositoryPath: string, source: string, absolutePath: string): CodeGraphInventoryFile {
+  const bytes = new TextEncoder().encode(source);
+  return {
+    blobId: absolutePath,
+    contentHash: codeGraphCommittedFileContentHash('sha1', bytes),
+    language: 'typescript',
+    mode: '100644',
+    path: repositoryPath,
+    size: bytes.byteLength,
+    source: 'commit',
+  };
+}
+
+const exactCurrentCitationGraph = Effect.fn('deferredCodeAnchorTest.exactCurrentGraph')(function* (
+  fixture: {
+    readonly config: RuntimeConfig;
+    readonly repository: string;
+  },
+  files: readonly CodeGraphInventoryFile[],
+) {
+  const originalQuery = yield* CodeGraphQueryService;
+  const observed = yield* originalQuery.status(fixture.config.agentContextHome, fixture.repository, {
+    observeWorktree: true,
+    requestMaintenance: false,
+  });
+  const filesByPath = new Map(files.map(file => [file.path, file]));
+  const exactStatus: CodeGraphStatus = {
+    ...observed,
+    freshness: 'current',
+    readySnapshot: {
+      commit: observed.identity.headCommit,
+      completedAt: '2026-08-30T00:00:00.000Z',
+      dirty: false,
+      edgeCount: 0,
+      extractorSet: 'fixture-extractor-set',
+      fileCount: files.length,
+      graphContentId: `cgc_${'a'.repeat(40)}`,
+      id: `cgsn_${'b'.repeat(40)}`,
+      repositoryId: observed.identity.repositoryId,
+      state: 'ready',
+      symbolCount: 0,
+      worktreeId: observed.identity.worktreeId,
+    },
+    stale: false,
+  };
+  return {
+    query: CodeGraphQueryService.of({
+      ...originalQuery,
+      status: () => Effect.succeed(exactStatus),
+    }),
+    store: CodeGraphStore.of({
+      acquireSnapshotLease: () => Effect.succeed('fixture-lease'),
+      effectiveSnapshotCitationEvidence: (
+        _databasePath: string,
+        _snapshotId: string,
+        request: {readonly paths?: readonly string[]},
+      ) =>
+        Effect.succeed({
+          fileInventoryCoverage: 'complete',
+          filesByContentHashes: [],
+          filesByPaths: (request.paths ?? []).map(path => ({file: filesByPath.get(path), path})),
+          symbolsByIds: [],
+          symbolsBySemanticLocators: [],
+        }),
+      releaseSnapshotLease: () => Effect.void,
+    } as unknown as CodeGraphStoreShape),
+  };
+});
