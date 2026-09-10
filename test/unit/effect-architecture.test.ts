@@ -245,6 +245,23 @@ describe('Effect architecture boundaries', () => {
     expect(importedModuleSpecifiers('context_paging.ts', paging)).toEqual([]);
   });
 
+  it('heals deferred code anchors after in-process graph publication', async () => {
+    const [runtime, commands] = await Promise.all([
+      readFile(join(sourceRoot, 'effect', 'runtime.ts'), 'utf8'),
+      readFile(join(sourceRoot, 'code_graph', 'commands.ts'), 'utf8'),
+    ]);
+    expect(runtime).toContain('withDeferredCodeAnchorIndexHeal');
+    expect(runtime).toContain('healAfterPublishedGraphIndex(options.threadnoteHome, options.cwd, summary.identity)');
+    expect(commands).not.toContain('healAnchorsAfterGraphIndex');
+    expect(commands).toContain('healAnchorsAfterWorksetPrepare');
+  });
+
+  it('wakes pending deferred-anchor worktrees only when MCP can read memory and index locally', async () => {
+    const mcp = await readFile(join(sourceRoot, 'mcp', 'server', 'index.ts'), 'utf8');
+    expect(mcp).toContain('refreshPendingDeferredCodeAnchorWorkspaces');
+    expect(mcp).toContain('memoryRead && mcpToolCapabilities(toolset).graphLocal');
+  });
+
   it('keeps standalone worker dispatch independent from application entry modules', async () => {
     const standalone = await readFile(join(sourceRoot, 'standalone.ts'), 'utf8');
     const workerProtocol = await readFile(join(sourceRoot, 'worker_protocol.ts'), 'utf8');

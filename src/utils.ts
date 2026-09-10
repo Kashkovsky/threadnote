@@ -1509,6 +1509,8 @@ export function recallIndexPreselectionLimit(resultLimit: number): number {
 }
 
 interface HybridRecallOptions extends RecallRankContext {
+  /** Memory URIs extra hydration requested and did not return, even when `records` is empty. */
+  readonly absentMemoryUris?: readonly string[];
   readonly allowedUriScopes?: readonly string[];
   readonly candidateUris?: readonly string[];
   readonly feedbackByUri?: ReadonlyMap<string, number>;
@@ -1658,6 +1660,21 @@ function hybridRankRecallHits(
       validTo: record?.metadata.validTo ?? indexed?.validTo,
     } satisfies RecallCandidate;
   });
+  // Empty `records` is an unchecked load (stubs, or hydration that returned
+  // nothing). Only a non-empty loaded set can prove a memory URI was absent,
+  // unless extra hydration already requested that URI and missed.
+  const absentMemoryUris = new Set((context.absentMemoryUris ?? []).map(uri => stripAnchor(uri)));
+  const liveRecordsProvided = (context.records?.length ?? 0) > 0;
+  const hasLiveMemoryRecord = (uri: string, equivalentUris?: readonly string[]) => {
+    const candidateUris = [uri, ...(equivalentUris ?? [])];
+    if (candidateUris.some(candidateUri => recordsByUri.has(stripAnchor(candidateUri)))) {
+      return true;
+    }
+    if (candidateUris.some(candidateUri => absentMemoryUris.has(stripAnchor(candidateUri)))) {
+      return false;
+    }
+    return !liveRecordsProvided || !uri.includes('/memories/');
+  };
   const hitUris = new Set(hitCandidates.map(candidate => candidate.uri));
   const candidates = [
     ...hitCandidates,
@@ -1668,7 +1685,7 @@ function hybridRankRecallHits(
         feedback: context.feedbackByUri?.get(stripAnchor(candidate.uri)),
         uri: stripAnchor(candidate.uri),
       })),
-  ];
+  ].filter(candidate => hasLiveMemoryRecord(candidate.uri, candidate.equivalentUris));
   for (const candidate of candidates) {
     if (!byUri.has(candidate.uri)) {
       const category = categoryForUri(candidate.uri);

@@ -567,6 +567,53 @@ describe('standalone release lifecycle', () => {
     }),
   );
 
+  effectIt.effect(
+    'upgrades a pre-canonical Darwin lease identity so strict terminate can signal the same process',
+    () =>
+      Effect.gen(function* () {
+        const result = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const baseSystem = yield* SystemInfo;
+            const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-process-lease-upgrade-'});
+            const installRoot = path.join(temporaryRoot, 'install');
+            const processId = 43_001;
+            const stored = 'darwin:Thu Sep 10 16:44:09 2026';
+            const observed = 'darwin-v2:Thu Sep 10 14:44:09 2026';
+            yield* writeProcessLease(fs, path, installRoot, '4.0.0', processId, stored);
+            const leasePath = path.join(installRoot, 'leases', '4.0.0', `${processId}.json`);
+            const running = new Set([processId]);
+            const signals: Array<readonly [number, NodeJS.Signals]> = [];
+            const testSystem = SystemInfo.of({
+              ...baseSystem,
+              canonicalProcessStartIdentity: () => Effect.succeed(observed),
+              environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: installRoot}),
+              isProcessRunning: candidate => running.has(candidate),
+              processId: 99_999,
+              processStartIdentity: () => Effect.succeed('darwin:Thu 10 Sep 16:44:09 2026'),
+              signalProcess: (candidate, signal) => {
+                signals.push([candidate, signal]);
+                running.delete(candidate);
+              },
+            });
+
+            const termination = yield* terminateSupersededStandaloneProcesses('4.0.1', {
+              gracefulWaitMilliseconds: 0,
+            }).pipe(Effect.provideService(SystemInfo, testSystem));
+            const rewritten = JSON.parse(yield* fs.readFileString(leasePath)) as {processStartIdentity?: string};
+            return {rewrittenIdentity: rewritten.processStartIdentity, signals, termination};
+          }),
+        ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
+
+        expect(result.signals).toEqual([[43_001, 'SIGTERM']]);
+        expect(result.termination.signaled.map(lease => lease.processId)).toEqual([43_001]);
+        expect(result.termination.remaining).toEqual([]);
+        expect(result.termination.skippedUnverified).toEqual([]);
+        expect(result.rewrittenIdentity).toBe('darwin-v2:Thu Sep 10 14:44:09 2026');
+      }),
+  );
+
   effectIt.effect('reports but never signals superseded leases without verifiable process identity', () =>
     Effect.gen(function* () {
       const result = yield* Effect.scoped(

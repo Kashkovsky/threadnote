@@ -21,6 +21,11 @@ import {CodeGraphLanguagePackRegistry} from '../code_graph/languages/registry.js
 import {TreeSitterRuntime} from '../code_graph/tree_sitter/runtime.js';
 import {CodeGraphAnalysis} from '../code_graph/analysis.js';
 import {CodeGraphParserPool} from '../code_graph/parser_worker.js';
+import {
+  healAfterPublishedGraphIndex,
+  withDeferredCodeAnchorIndexHeal,
+} from '../memory/deferred_code_anchor_index_heal.js';
+import {deferredCodeAnchorRefreshSchedulerLayer} from '../memory/deferred_code_anchor_refresh.js';
 import {resolveTelemetryConfiguration} from '../telemetry/config.js';
 import {
   resolveAgentSession,
@@ -61,19 +66,29 @@ const codeGraphLanguagePackLayer = CodeGraphLanguagePackRegistry.layer;
 const codeGraphEmbeddingLayer = CodeGraphEmbeddingIndex.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(localModelCatalogLayer, localModelRuntimeLayer, localModelStoreLayer)),
 );
-const codeGraphIndexerLayer = CodeGraphIndexer.layer.pipe(
-  Layer.provideMerge(
-    Layer.mergeAll(
-      codeGraphStoreLayer,
-      codeGraphMaintenanceCoordinatorLayer,
-      codeGraphEmbeddingLayer,
-      codeGraphLanguagePackLayer,
-      codeGraphParserPoolLayer,
-      commandLayer,
-      systemLayer,
-      treeSitterRuntimeLayer,
-    ),
-  ),
+const codeGraphIndexerDependencies = Layer.mergeAll(
+  codeGraphStoreLayer,
+  codeGraphMaintenanceCoordinatorLayer,
+  codeGraphEmbeddingLayer,
+  codeGraphLanguagePackLayer,
+  codeGraphParserPoolLayer,
+  commandLayer,
+  systemLayer,
+  treeSitterRuntimeLayer,
+);
+const codeGraphIndexerLayer = Layer.effect(
+  CodeGraphIndexer,
+  Effect.gen(function* () {
+    const inner = yield* CodeGraphIndexer;
+    return CodeGraphIndexer.of(
+      withDeferredCodeAnchorIndexHeal(inner, (options, summary) =>
+        healAfterPublishedGraphIndex(options.threadnoteHome, options.cwd, summary.identity),
+      ),
+    );
+  }),
+).pipe(
+  Layer.provide(CodeGraphIndexer.layer.pipe(Layer.provideMerge(codeGraphIndexerDependencies))),
+  Layer.provideMerge(codeGraphIndexerDependencies),
 );
 const codeGraphQueryLayer = CodeGraphQueryService.layer.pipe(Layer.provideMerge(codeGraphIndexerLayer));
 // MCP hosts detect themselves inside CodeGraphWatcher and spawn CLI `graph index`
@@ -104,7 +119,7 @@ export const ApplicationLayer = ApplicationServicesLayer.pipe(
  */
 export function applicationLayerForHome(home: string, entrypoint: 'cli' | 'mcp') {
   return telemetryLayerForHome(home, entrypoint === 'cli' ? 'invocation' : 'broker').pipe(
-    Layer.provideMerge(ApplicationLayer),
+    Layer.provideMerge(deferredCodeAnchorRefreshSchedulerLayer.pipe(Layer.provideMerge(ApplicationLayer))),
   );
 }
 

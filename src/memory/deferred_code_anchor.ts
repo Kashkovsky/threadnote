@@ -1,6 +1,6 @@
 import {DateTime, Effect, FileSystem, Option, Path, Predicate, Result} from 'effect';
-import {succeedUndefined} from '../effect/optional.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
+import {succeedUndefined} from '../effect/optional.js';
 import {sha256Hex} from '../effect/digest.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
@@ -16,7 +16,9 @@ import {
 } from './code_citation_capture.js';
 import {MEMORY_SCHEMA_VERSION, type MemoryCodeCitationV1} from './code_citation.js';
 import {discardMemoryRelocation} from './relocation.js';
+import {classifyDeferredCodeAnchorCallerCheckoutAdmission} from './deferred_code_anchor_checkout.js';
 import {deferredCodeAnchorCaptureFailureItem} from './deferred_code_anchor_failure.js';
+import {scheduleDeferredCodeAnchorWorkspaceRefresh} from './deferred_code_anchor_scheduler.js';
 import {
   deferredCodeAnchorFinalizationVerified,
   memoryContentHash,
@@ -285,6 +287,12 @@ export const stageDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.stage')
     worktreeId: status.identity.worktreeId,
   };
   yield* writeDeferredCodeAnchorIntent(config, intent);
+  if (intent.recovery.preparation.target !== 'workset') {
+    yield* scheduleDeferredCodeAnchorWorkspaceRefresh(config, {
+      cwd: intent.callerCwd,
+      worktreeId: intent.worktreeId,
+    }).pipe(Effect.ignoreCause);
+  }
   return intent;
 });
 
@@ -653,7 +661,6 @@ const finalizeDeferredCodeAnchor = Effect.fn('memoryCodeAnchor.finalizeOne')(fun
   entry: StoredDeferredCodeAnchorIntent,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const query = yield* CodeGraphQueryService;
   const admission = yield* withMemoryUriLocks(
     fs,
     config.agentContextHome,
@@ -672,19 +679,13 @@ const finalizeDeferredCodeAnchor = Effect.fn('memoryCodeAnchor.finalizeOne')(fun
           state: 'rejected' as const,
         };
       }
-      const status = yield* query.status(config.agentContextHome, entry.intent.callerCwd, {
-        observeWorktree: true,
-        requestMaintenance: false,
-      });
-      if (
-        status.identity.repositoryId !== entry.intent.repositoryId ||
-        status.identity.worktreeId !== entry.intent.worktreeId
-      ) {
+      const checkout = yield* classifyDeferredCodeAnchorCallerCheckoutAdmission(config.agentContextHome, entry.intent);
+      if (checkout.state === 'conflict') {
         yield* discardStoredDeferredCodeAnchorIntent(config, entry);
         return {
           item: {
             memoryUri: entry.intent.memoryUri,
-            reason: 'caller-repository-identity-changed',
+            reason: checkout.reason,
             state: 'conflict',
           } satisfies DeferredCodeAnchorFinalizeItemV1,
           state: 'rejected' as const,
@@ -701,11 +702,24 @@ const finalizeDeferredCodeAnchor = Effect.fn('memoryCodeAnchor.finalizeOne')(fun
       repositoryId: entry.intent.repositoryId,
       worktreeId: entry.intent.worktreeId,
     },
+    omitUnresolved: true,
     refs: entry.intent.codeRefs,
   }).pipe(Effect.result);
   if (Result.isFailure(captured)) {
     const classified = deferredCodeAnchorCaptureFailureItem(captured.failure, entry.intent.memoryUri);
-    if (classified !== undefined) return classified;
+    if (classified !== undefined) {
+      if (
+        classified.state === 'pending' &&
+        classified.retryable === true &&
+        entry.intent.recovery.preparation.target !== 'workset'
+      ) {
+        yield* scheduleDeferredCodeAnchorWorkspaceRefresh(config, {
+          cwd: entry.intent.callerCwd,
+          worktreeId: entry.intent.worktreeId,
+        }).pipe(Effect.ignoreCause);
+      }
+      return classified;
+    }
     return {
       code: 'citation-capture-failed',
       memoryUri: entry.intent.memoryUri,
@@ -726,6 +740,14 @@ const finalizeDeferredCodeAnchor = Effect.fn('memoryCodeAnchor.finalizeOne')(fun
         return {
           memoryUri: entry.intent.memoryUri,
           reason: currentEligibility.reason,
+          state: 'conflict',
+        } satisfies DeferredCodeAnchorFinalizeItemV1;
+      }
+      if (citations.length === 0) {
+        yield* discardStoredDeferredCodeAnchorIntent(config, entry);
+        return {
+          memoryUri: entry.intent.memoryUri,
+          reason: 'code-references-absent',
           state: 'conflict',
         } satisfies DeferredCodeAnchorFinalizeItemV1;
       }
@@ -787,7 +809,7 @@ const writeDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.writeIntent')(
   yield* persistShardedDeferredCodeAnchorIntent(config, intent, `${JSON.stringify(intent, undefined, 2)}\n`);
 });
 
-const listDeferredCodeAnchorIntents = Effect.fn('memoryCodeAnchor.listIntents')(function* (
+export const listDeferredCodeAnchorIntents = Effect.fn('memoryCodeAnchor.listIntents')(function* (
   config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>,
 ) {
   const fs = yield* FileSystem.FileSystem;

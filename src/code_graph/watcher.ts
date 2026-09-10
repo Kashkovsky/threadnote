@@ -774,9 +774,10 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
     refresh: options =>
       Effect.gen(function* () {
         yield* touchWatch(options.key);
-        return yield* scheduleRefresh({...options, admissionClass: 'current-required'}, false).pipe(
-          Effect.map(decision => decision.start),
-        );
+        return yield* scheduleRefresh(
+          {...options, admissionClass: options.admissionClass ?? 'current-required'},
+          false,
+        ).pipe(Effect.map(decision => decision.start));
       }),
     status: key =>
       Effect.gen(function* () {
@@ -1057,12 +1058,14 @@ const indexRepository = (indexer: CodeGraphIndexerShape, options: CodeGraphWatch
 
 /** Watcher-driven refresh never owns embedding; explicit `graph index` still does. */
 export function codeGraphWatcherRefreshIndexRequest(options: CodeGraphWatchOptions): {
+  readonly admissionClass?: CodeGraphBuilderAdmissionClass;
   readonly cwd: string;
   readonly ensureVectors: false;
   readonly onProgress: CodeGraphWatchOptions['onProgress'];
   readonly threadnoteHome: string;
 } {
   return {
+    ...(options.admissionClass === undefined ? {} : {admissionClass: options.admissionClass}),
     cwd: options.cwd,
     ensureVectors: false,
     onProgress: options.onProgress,

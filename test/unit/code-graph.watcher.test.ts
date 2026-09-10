@@ -175,6 +175,34 @@ describe('CodeGraphWatcher', () => {
     }),
   );
 
+  effectIt.effect(
+    'keeps caller-supplied background admission on refresh and defaults inspect refresh to current-required',
+    () =>
+      Effect.gen(function* () {
+        const classes = yield* Ref.make<Array<CodeGraphWatchOptions['admissionClass']>>([]);
+        const watcher = yield* makeCodeGraphWatcher(
+          () => Effect.void,
+          refreshOptions => Ref.update(classes, current => [...current, refreshOptions.admissionClass]),
+        );
+
+        yield* watcher.refresh({...options, admissionClass: 'background', key: 'background'});
+        let observed = yield* Ref.get(classes);
+        for (let attempt = 0; attempt < 32 && observed.length < 1; attempt += 1) {
+          yield* Effect.yieldNow;
+          observed = yield* Ref.get(classes);
+        }
+        expect(observed).toEqual(['background']);
+
+        yield* watcher.refresh({...options, key: 'inspect'});
+        for (let attempt = 0; attempt < 32 && observed.length < 2; attempt += 1) {
+          yield* Effect.yieldNow;
+          observed = yield* Ref.get(classes);
+        }
+
+        expect(observed).toEqual(['background', 'current-required']);
+      }).pipe(Effect.scoped),
+  );
+
   effectIt.effect('starts a replacement watcher after the previous run terminates', () =>
     Effect.gen(function* () {
       const starts = yield* Effect.scoped(

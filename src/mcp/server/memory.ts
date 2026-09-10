@@ -1296,18 +1296,31 @@ export function runNativeReadTool(
       /** Compatibility field retained for canonical-read v1 consumers. */
       readonly uri: string;
     }> = [];
+    const missing: string[] = [];
+    let firstFailure: unknown;
     for (const input of resolvedInputs) {
-      const uri = input.canonicalUri;
-      const resolved =
-        options.followRelocations !== false && isMemoryRelocationUri(config, uri)
-          ? yield* readMemoryWithRelocations(config, uri)
-          : {
-              canonicalUri: parseResourceId(uri).canonicalUri,
-              content: yield* store.read(resourceStoreLocation(config), uri),
-              relocationDepth: 0,
-              requestedUri: parseResourceId(uri).canonicalUri,
-            };
-      yield* verifyResolvedMemoryIdentity(input, resolved.canonicalUri, resolved.content);
+      const outcome = yield* Effect.result(
+        Effect.gen(function* () {
+          const uri = input.canonicalUri;
+          const resolved =
+            options.followRelocations !== false && isMemoryRelocationUri(config, uri)
+              ? yield* readMemoryWithRelocations(config, uri)
+              : {
+                  canonicalUri: parseResourceId(uri).canonicalUri,
+                  content: yield* store.read(resourceStoreLocation(config), uri),
+                  relocationDepth: 0,
+                  requestedUri: parseResourceId(uri).canonicalUri,
+                };
+          yield* verifyResolvedMemoryIdentity(input, resolved.canonicalUri, resolved.content);
+          return resolved;
+        }),
+      );
+      if (Result.isFailure(outcome)) {
+        firstFailure ??= outcome.failure;
+        missing.push(input.requestedUri);
+        continue;
+      }
+      const resolved = outcome.success;
       resources.push({
         canonicalUri: resolved.canonicalUri,
         contentIndex: content.length,
@@ -1317,9 +1330,17 @@ export function runNativeReadTool(
       });
       content.push({text: resolved.content, type: 'text'});
     }
+    if (content.length === 0) {
+      return memoryReadErrorResult(config, firstFailure);
+    }
     const result: CallToolResult = {
       _meta: {
-        'threadnote.io/canonical-read': {resources, type: 'threadnote-canonical-read', version: 1},
+        'threadnote.io/canonical-read': {
+          resources,
+          type: 'threadnote-canonical-read',
+          version: 1,
+          ...(missing.length > 0 ? {missing} : {}),
+        },
       },
       content,
     };

@@ -79,6 +79,15 @@ describe('Context Brief deferred code-anchor recovery', () => {
             };
             const body = 'The deferred backlink must appear in the first post-ready Context Brief.';
             const content = formatMemoryDocument('MEMORY', metadata, body);
+            const store = yield* ResourceStore;
+            const location = {account: config.account, home, user: config.user} as const;
+            const indexer = yield* CodeGraphIndexer;
+            // Index before staging so wrap-heal cannot consume the intent; this
+            // example is the missed-wakeup path after a ready graph already exists.
+            yield* indexer
+              .index({cwd: repository, ensureVectors: false, threadnoteHome: home})
+              .pipe(TestClock.withLive);
+            yield* store.write(location, memoryUri, content, {mode: 'create'});
             yield* stageDeferredCodeAnchorIntent(config, {
               memoryContent: content,
               memoryMetadata: metadata,
@@ -104,15 +113,6 @@ describe('Context Brief deferred code-anchor recovery', () => {
                 },
               },
             });
-            const store = yield* ResourceStore;
-            const location = {account: config.account, home, user: config.user} as const;
-            yield* store.write(location, memoryUri, content, {mode: 'create'});
-            // The service-level indexer deliberately bypasses the CLI graph-index
-            // opportunity, leaving the consumer-side missed-wakeup fallback to prove.
-            const indexer = yield* CodeGraphIndexer;
-            yield* indexer
-              .index({cwd: repository, ensureVectors: false, threadnoteHome: home})
-              .pipe(TestClock.withLive);
             const pendingRoot = path.join(
               home,
               'data',

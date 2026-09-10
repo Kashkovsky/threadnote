@@ -17,7 +17,7 @@ vi.mock('../../src/models/inference.js', () => ({
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
-import {runRecall} from '../../src/memory/index.js';
+import {readMemoryRecordsByUri, runRecall} from '../../src/memory/index.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
@@ -608,13 +608,155 @@ describe('recall runtime orchestration', () => {
             ],
           ],
           query: 'file fallback anchor',
-          readRecords: () => Effect.succeed([]),
+          readRecords: () =>
+            Effect.succeed([
+              {
+                body: 'File fallback anchor remains available.',
+                content:
+                  'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: file-fallback\n\nFile fallback anchor remains available.',
+                headerTitle: 'MEMORY',
+                metadata: {
+                  kind: 'durable',
+                  project: 'threadnote',
+                  sourceAgentClient: 'test',
+                  status: 'active',
+                  timestamp: '2026-07-23T00:00:00.000Z',
+                  topic: 'file-fallback',
+                },
+                uri: fallbackUri,
+              },
+            ]),
           semanticResult: Option.none(),
         },
       ).pipe(provideTestLayer(ApplicationLayer));
 
       expect(prepared.ranked.map(hit => hit.uri)).toContain(fallbackUri);
       expect(prepared.operationalWarnings).toEqual([expect.objectContaining({code: 'lexical_index_unavailable'})]);
+    }),
+  );
+  effectIt.effect('distinguishes empty record hydration from a loaded set that omits a memory URI', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-empty-records-')));
+      homes.push(home);
+      const presentUri = 'threadnote://user/tester/memories/durable/projects/threadnote/present-ranked.md';
+      const ghostUri = 'threadnote://user/tester/memories/durable/projects/threadnote/ghost-ranked.md';
+      const presentRecord = {
+        body: 'Present ranked memory body remains available.',
+        content:
+          'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: present-ranked\n\nPresent ranked memory body remains available.',
+        headerTitle: 'MEMORY' as const,
+        metadata: {
+          kind: 'durable' as const,
+          project: 'threadnote',
+          sourceAgentClient: 'test',
+          status: 'active' as const,
+          timestamp: '2026-07-23T00:00:00.000Z',
+          topic: 'present-ranked',
+        },
+        uri: presentUri,
+      };
+      const memoryHit = (uri: string) => ({
+        category: 'memories' as const,
+        contextType: 'memory' as const,
+        score: 1,
+        snippet: 'Present ranked memory body remains available.',
+        uri,
+      });
+      const config = {
+        account: 'local',
+        agentContextHome: home,
+        user: 'tester',
+      };
+      const emptyHydration = yield* prepareRecallSections(config, {
+        allowExactRescue: false,
+        exactMatches: [],
+        feedbackQuery: 'Present ranked memory body',
+        includeInactive: false,
+        limit: 5,
+        passes: [[memoryHit(presentUri)]],
+        query: 'Present ranked memory body',
+        readRecords: () => Effect.succeed([]),
+        semanticResult: Option.none(),
+      }).pipe(provideTestLayer(ApplicationLayer));
+      const loadedMissing = yield* prepareRecallSections(config, {
+        allowExactRescue: false,
+        exactMatches: [],
+        feedbackQuery: 'Present ranked memory body',
+        includeInactive: false,
+        limit: 5,
+        passes: [[memoryHit(ghostUri)]],
+        query: 'Present ranked memory body',
+        readRecords: () => Effect.succeed([presentRecord]),
+        semanticResult: Option.none(),
+      }).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(emptyHydration.ranked.map(ranked => ranked.uri)).toContain(presentUri);
+      expect(loadedMissing.ranked.map(ranked => ranked.uri)).not.toContain(ghostUri);
+    }),
+  );
+  effectIt.effect('drops an indexed memory when extra record hydration misses an empty store', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-stale-lexical-')));
+      homes.push(home);
+      const ghostUri = 'threadnote://user/tester/memories/durable/projects/threadnote/stale-lexical-ghost.md';
+      const sentinel = 'STALE-LEXICAL-GHOST-847291056';
+      const memoryRoot = join(home, 'data', 'local', 'user', 'tester', 'memories', 'durable', 'projects', 'threadnote');
+      const ghostPath = join(memoryRoot, 'stale-lexical-ghost.md');
+      yield* Effect.promise(() => mkdir(memoryRoot, {recursive: true}));
+      yield* Effect.promise(() =>
+        writeFile(
+          ghostPath,
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            'topic: stale-lexical-ghost',
+            'source_agent_client: test',
+            'timestamp: 2026-07-30T00:00:00.000Z',
+            '',
+            '# Stale lexical ghost',
+            '',
+            sentinel,
+          ].join('\n'),
+        ),
+      );
+      const config: RuntimeConfig = {
+        account: 'local',
+        agentContextHome: home,
+        agentId: 'threadnote',
+        manifestPath: join(home, 'seed-manifest.yaml'),
+        user: 'tester',
+      };
+      yield* loadRecallIndex(config, {
+        forceRefresh: true,
+        includeInactive: false,
+        query: sentinel,
+      }).pipe(provideTestLayer(ApplicationLayer));
+      yield* Effect.promise(() => rm(ghostPath, {force: true}));
+      const prepared = yield* prepareRecallSections(config, {
+        allowExactRescue: false,
+        exactMatches: [],
+        feedbackQuery: sentinel,
+        includeInactive: false,
+        limit: 5,
+        passes: [
+          [
+            {
+              category: 'memories',
+              contextType: 'memory',
+              score: 1,
+              snippet: sentinel,
+              uri: ghostUri,
+            },
+          ],
+        ],
+        query: sentinel,
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+        semanticResult: Option.none(),
+      }).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(prepared.ranked.map(ranked => ranked.uri)).not.toContain(ghostUri);
     }),
   );
   effectIt.effect('surfaces one CLI warning when exact and ranked lexical recovery both fail', () =>

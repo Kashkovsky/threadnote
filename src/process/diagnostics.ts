@@ -5,6 +5,7 @@ import {SystemInfo} from '../effect/system.js';
 import {readLiveStandaloneProcessLeases} from './standalone_lease.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {orderThreadnoteProcessesByAttention} from './attention.js';
+import {observeProcessInstanceIdentity, processInstanceIdentityMatches} from './process_identity.js';
 import {withoutTelemetrySessionEnvironment} from '../telemetry/session.js';
 
 const PROCESS_DIAGNOSTICS_SCHEMA_VERSION = 1;
@@ -255,15 +256,22 @@ const readThreadnoteProcessSnapshot = Effect.fn('processDiagnostics.readSnapshot
     }
     const value = candidate.value.value;
     const running = system.isProcessRunning(value.processId);
-    const identity =
-      running && value.processStartIdentity ? yield* system.processStartIdentity(value.processId) : undefined;
-    const identityMatches =
-      value.processStartIdentity === undefined || identity === undefined || identity === value.processStartIdentity;
+    const identity = running ? yield* observeProcessInstanceIdentity(system, value.processId) : undefined;
+    const identityMatches = processInstanceIdentityMatches(value.processStartIdentity, identity);
     if (!running || !identityMatches) {
       yield* removeRegistrationFile(fs, candidate.file);
       continue;
     }
-    live.push(value);
+    const kept =
+      identity !== undefined && value.processStartIdentity !== undefined && value.processStartIdentity !== identity
+        ? {...value, processStartIdentity: identity}
+        : value;
+    if (kept !== value) {
+      yield* fs
+        .writeFileString(candidate.file, `${JSON.stringify(kept, undefined, 2)}\n`, {mode: 0o600})
+        .pipe(Effect.ignore);
+    }
+    live.push(kept);
   }
 
   // Standalone releases before the runtime registry still retain a private,
@@ -523,7 +531,7 @@ function registerThreadnoteProcess(home: string, baseRole: RegisteredThreadnoteP
       fileSystem: fs,
       parentProcessId: process.ppid,
       processId: system.processId,
-      processStartIdentity: yield* system.processStartIdentity(system.processId),
+      processStartIdentity: yield* observeProcessInstanceIdentity(system, system.processId),
       originalTitle: process.title,
       path,
       startedAt: DateTime.formatIso(yield* DateTime.now),
@@ -576,7 +584,10 @@ function writeCurrentRegistration(): Effect.Effect<void, unknown> {
         setBestEffortProcessTitle(role);
         const currentOperation = current?.operation ?? active.baseOperation;
         const stateKey = `${role}\0${currentOperation ?? ''}`;
-        if (active.queuedStateKey === stateKey) return;
+        if (active.queuedStateKey === stateKey) {
+          const exists = yield* active.fileSystem.exists(active.file).pipe(Effect.orElseSucceed(() => false));
+          if (exists) return;
+        }
         const value: ProcessRegistrationFile = {
           baseRole: active.baseRole,
           ...(currentOperation === undefined ? {} : {currentOperation}),
@@ -717,7 +728,8 @@ function isProcessReference(value: string): boolean {
 function registrationMatchesRunningProcess(system: SystemInfo['Service'], value: ProcessRegistrationFile) {
   return Effect.gen(function* () {
     if (!system.isProcessRunning(value.processId) || value.processStartIdentity === undefined) return false;
-    return (yield* system.processStartIdentity(value.processId)) === value.processStartIdentity;
+    const identity = yield* observeProcessInstanceIdentity(system, value.processId);
+    return identity === value.processStartIdentity;
   });
 }
 
@@ -768,7 +780,7 @@ function signalVerifiedProcess(
         'The selected process instance changed. Refresh the process list and try again.',
       );
     }
-    const identity = yield* system.processStartIdentity(registration.processId);
+    const identity = yield* observeProcessInstanceIdentity(system, registration.processId);
     if (identity !== registration.processStartIdentity) {
       return yield* ThreadnoteProcessTerminationError.of(
         'process-stale',
@@ -822,9 +834,9 @@ function processInstanceIsRunning(system: SystemInfo['Service'], registration: P
   if (!system.isProcessRunning(registration.processId) || registration.processStartIdentity === undefined) {
     return Effect.succeed(false);
   }
-  return system
-    .processStartIdentity(registration.processId)
-    .pipe(Effect.map(identity => identity === registration.processStartIdentity));
+  return observeProcessInstanceIdentity(system, registration.processId).pipe(
+    Effect.map(identity => identity === registration.processStartIdentity),
+  );
 }
 
 function boundedTerminationWait(value: number | undefined, fallback: number): number {
