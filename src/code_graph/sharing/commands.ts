@@ -2,6 +2,7 @@ import {Console, Effect} from 'effect';
 import {writeFinalCliOutput} from '../../effect/cli_output.js';
 import type {RuntimeConfig} from '../../types.js';
 import {graphSharingFailure} from './errors.js';
+import {graphPublisherPublicationMessage, readGraphPublisherRegistryStatus} from './publisher_registry.js';
 import {
   runGraphContributeSet,
   runGraphContributeStatus,
@@ -98,7 +99,7 @@ export const runGraphPublisherBootstrapCommand = Effect.fn('codeGraph.sharing.pu
     yield* writeFinalCliOutput(JSON.stringify(result));
     return result;
   }
-  yield* Console.log(`Published generation-one frontier ${result.manifestDigest} for ${result.sourceCommit}`);
+  yield* Console.log(graphPublisherPublicationMessage(result));
   return result;
 });
 
@@ -121,9 +122,7 @@ export const runGraphPublisherServeCommand = Effect.fn('codeGraph.sharing.publis
     yield* writeFinalCliOutput(JSON.stringify(result));
     return result;
   }
-  yield* Console.log(
-    `Published generation ${'generation' in result ? result.generation : 1} frontier ${result.manifestDigest} for ${result.sourceCommit}`,
-  );
+  yield* Console.log(graphPublisherPublicationMessage(result));
   return result;
 });
 
@@ -166,4 +165,19 @@ export const runGraphWorkerCommand = Effect.fn('codeGraph.sharing.workerCommand'
   return result;
 });
 
-export const runGraphPublisherStatusCommand = runGraphShareStatusCommand;
+export const runGraphPublisherStatusCommand = Effect.fn('codeGraph.sharing.publisherStatusCommand')(function* (
+  config: RuntimeConfig,
+  options: GraphShareStatusOptions,
+) {
+  const result = yield* readGraphPublisherRegistryStatus(config, options);
+  if (options.json) yield* writeFinalCliOutput(JSON.stringify(result));
+  else
+    yield* Console.log(
+      !result.enrolled
+        ? 'Repository is not enrolled for graph publication.'
+        : result.localCandidate === undefined || result.publication === undefined
+          ? 'No local signed frontier has been prepared.'
+          : graphPublisherPublicationMessage({...result.localCandidate, publication: result.publication}),
+    );
+  return result;
+});

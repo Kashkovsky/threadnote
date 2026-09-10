@@ -70,6 +70,7 @@ import {
 } from './publication_evidence.js';
 import {resolveGraphShareCasRoot} from './trust.js';
 import {makeGraphShareSourceVerification} from './source_verification.js';
+import {completeGraphPublisherRegistryPublication} from './publisher_registry.js';
 
 export interface GraphPublisherCycleOptions {
   readonly cas?: string;
@@ -103,6 +104,22 @@ export interface GraphPublisherAdvanceResult {
 }
 
 export const advanceGraphPublisherFrontier = Effect.fn('codeGraph.sharing.advancePublisherFrontier')(function* (
+  config: RuntimeConfig,
+  options: GraphPublisherCycleOptions,
+) {
+  const candidate = yield* advanceGraphPublisherCandidate(config, options);
+  const publication = yield* completeGraphPublisherRegistryPublication(config, options);
+  return {
+    ...candidate,
+    publication,
+    published:
+      publication.status === 'local'
+        ? candidate.published
+        : publication.status === 'acknowledged' && (publication.changed || candidate.published),
+  };
+});
+
+const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePublisherCandidate')(function* (
   config: RuntimeConfig,
   options: GraphPublisherCycleOptions,
 ) {

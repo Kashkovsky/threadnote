@@ -1,6 +1,6 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Layer, Path} from 'effect';
+import {Effect, Fiber, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -9,6 +9,7 @@ import {SystemInfo} from '../../src/effect/system.js';
 import {makeGraphShareRegistryHttp} from '../../src/code_graph/sharing/registry_http.js';
 import {parseGraphShareRegistryTarget} from '../../src/code_graph/sharing/registry_reference.js';
 import {makeGraphShareRegistryReader} from '../../src/code_graph/sharing/registry_reader.js';
+import {makeGraphShareRegistryWriter} from '../../src/code_graph/sharing/registry_writer.js';
 import {graphShareOciDescriptorFromLayers} from '../../src/code_graph/sharing/descriptor.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
@@ -18,13 +19,21 @@ const target = parseGraphShareRegistryTarget('oci://registry.example.test/acme/c
 const pathname = '/v2/acme/canonical/blobs/sha256:' + 'a'.repeat(64);
 const secret = 'synthetic-helper-output';
 const basic = 'Basic ' + Buffer.from('synthetic-reader:' + secret).toString('base64');
-type Request = {readonly url: URL; readonly headers: Headers; readonly signal: AbortSignal | null | undefined};
+type Request = {
+  readonly url: URL;
+  readonly headers: Headers;
+  readonly method: string;
+  readonly body: RequestInit['body'];
+  readonly signal: AbortSignal | null | undefined;
+};
 
 const fixture = Effect.fn('test.registry.fixture')(function* (options: {
+  readonly access?: 'read' | 'write';
+  readonly writer?: boolean;
   readonly helper?: boolean;
   readonly helperDenied?: boolean;
   readonly helperResponse?: (call: number) => unknown;
-  readonly handler: (request: Request) => Response;
+  readonly handler: (request: Request) => Response | Promise<Response>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -46,7 +55,13 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
   let helperCalls = 0;
   const fetch = Object.assign(
     async (url: string | URL | Request, init?: RequestInit) => {
-      const request = {url: new URL(String(url)), headers: new Headers(init?.headers), signal: init?.signal};
+      const request = {
+        url: new URL(String(url)),
+        headers: new Headers(init?.headers),
+        method: init?.method ?? 'GET',
+        body: init?.body,
+        signal: init?.signal,
+      };
       expect(init?.redirect).toBe('manual');
       expect(init?.credentials).toBe('omit');
       requests.push(request);
@@ -54,9 +69,14 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
     },
     {preconnect: () => undefined},
   ) as typeof globalThis.fetch;
-  const reader = yield* Effect.all({
-    http: makeGraphShareRegistryHttp(target),
-    registry: makeGraphShareRegistryReader('oci://registry.example.test/acme/canonical'),
+  const reader = yield* Effect.gen(function* () {
+    return {
+      http: yield* makeGraphShareRegistryHttp(target, options.access),
+      registry: yield* makeGraphShareRegistryReader('oci://registry.example.test/acme/canonical'),
+      writer: options.writer
+        ? yield* makeGraphShareRegistryWriter('oci://registry.example.test/acme/canonical')
+        : undefined,
+    };
   }).pipe(
     Effect.provideService(SystemInfo, {...system, environment: () => ({DOCKER_CONFIG: directory})}),
     Effect.provideService(CommandExecutor, {
@@ -82,13 +102,235 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
   );
   return {
     read: (maximum = 1024) => reader.http(pathname, maximum, 'application/octet-stream'),
+    request: reader.http,
     registry: reader.registry,
+    writer: reader.writer,
     requests,
     helperCalls: () => helperCalls,
   };
 });
 
 describe('registry authentication and bounded transport', () => {
+  effectIt.effect('shares one credential exchange per concurrent challenge or token renewal', () =>
+    Effect.gen(function* () {
+      let issued = 0;
+      const f = yield* fixture({
+        access: 'write',
+        helper: true,
+        handler: request => {
+          if (request.url.pathname === '/token') {
+            issued++;
+            return Response.json({token: 'parallel-' + issued, expires_in: 1});
+          }
+          return request.headers.get('authorization') === 'Bearer parallel-' + issued && issued > 0
+            ? new Response(null, {status: 202})
+            : new Response(null, {
+                status: 401,
+                headers: {'www-authenticate': `Bearer realm="${target.origin}/token",scope="${target.pullScope}"`},
+              });
+        },
+      });
+      const wave = Effect.forEach(
+        Array.from({length: 8}),
+        () =>
+          f.request('/v2/acme/canonical/blobs/uploads/', 0, 'application/json', {
+            method: 'POST',
+            acceptedStatuses: [202],
+          }),
+        {concurrency: 8},
+      );
+      yield* wave;
+      expect(issued).toBe(1);
+      expect(f.helperCalls()).toBe(1);
+      yield* TestClock.adjust(1001);
+      yield* wave;
+      expect(issued).toBe(2);
+      expect(f.helperCalls()).toBe(2);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('requires exact manifest acknowledgements and confines failed upload locations', () =>
+    Effect.gen(function* () {
+      const bytes = new TextEncoder().encode('{}');
+      const digest = sha256Digest(bytes);
+      const f = yield* fixture({
+        writer: true,
+        helper: true,
+        handler: request => {
+          expect(request.method).toBe('PUT');
+          expect(request.headers.get('content-type')).toBe('application/vnd.oci.image.manifest.v1+json');
+          return new Response(null, {status: 201, headers: {'docker-content-digest': digest}});
+        },
+      });
+      expect(yield* f.writer!.putManifest(digest, bytes)).toBe(digest);
+      expect((yield* Effect.result(f.writer!.putManifest('sha256:' + 'a'.repeat(64), bytes)))._tag).toBe('Failure');
+      expect((yield* Effect.result(f.writer!.putManifest('../foreign', bytes)))._tag).toBe('Failure');
+      expect(f.requests).toHaveLength(1);
+      const mismatch = yield* fixture({
+        writer: true,
+        helper: true,
+        handler: () => new Response(null, {status: 201, headers: {'docker-content-digest': sha256Digest('other')}}),
+      });
+      expect((yield* Effect.result(mismatch.writer!.putManifest('tn-frontier-test', bytes)))._tag).toBe('Failure');
+      for (const location of [
+        'https://foreign.example.test/upload',
+        '/v2/acme/worker/blobs/uploads/session',
+        '/v2/acme/canonical/blobs/uploads/session?digest=existing',
+      ]) {
+        const invalid = yield* fixture({
+          writer: true,
+          helper: true,
+          handler: request =>
+            request.method === 'HEAD'
+              ? new Response(null, {status: 404})
+              : new Response(null, {status: 202, headers: {location}}),
+        });
+        expect((yield* Effect.result(invalid.writer!.putBlob(digest, bytes)))._tag).toBe('Failure');
+        expect(invalid.requests.map(request => request.method)).toEqual(['HEAD', 'POST']);
+      }
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('aborts a stalled upload and cancels only its owned session when its deadline expires', () =>
+    Effect.gen(function* () {
+      const bytes = new TextEncoder().encode('{}');
+      const f = yield* fixture({
+        writer: true,
+        helper: true,
+        handler: request => {
+          if (request.method === 'HEAD') return new Response(null, {status: 404});
+          if (request.method === 'POST')
+            return new Response(null, {status: 202, headers: {location: '/v2/acme/canonical/blobs/uploads/owned'}});
+          if (request.method === 'DELETE') return new Response(null, {status: 204});
+          return new Promise<Response>(() => {});
+        },
+      });
+      const fiber = yield* Effect.forkChild(Effect.result(f.writer!.putBlob(sha256Digest(bytes), bytes)));
+      yield* TestClock.adjust(60_001);
+      expect((yield* Fiber.join(fiber))._tag).toBe('Failure');
+      expect(f.requests.map(request => request.method)).toEqual(['HEAD', 'POST', 'PUT', 'DELETE']);
+      expect(f.requests.find(request => request.method === 'PUT')?.signal?.aborted).toBe(true);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('uploads exact blob bytes through the returned session and deduplicates retries', () =>
+    Effect.gen(function* () {
+      const bytes = new TextEncoder().encode('{"synthetic":"graph-blob"}');
+      const digest = sha256Digest(bytes);
+      const upload = '/v2/acme/canonical/blobs/uploads/session-1?_state=a%2fb%3D+x';
+      let present = false;
+      const f = yield* fixture({
+        writer: true,
+        helper: true,
+        handler: request => {
+          if (request.headers.get('authorization') !== basic)
+            return new Response(null, {status: 401, headers: {'www-authenticate': 'Basic realm="synthetic"'}});
+          if (request.method === 'HEAD')
+            return new Response(
+              null,
+              present
+                ? {status: 200, headers: {'docker-content-digest': digest, 'content-length': String(bytes.length)}}
+                : {status: 404},
+            );
+          if (request.method === 'POST') return new Response(null, {status: 202, headers: {location: upload}});
+          expect(request.method).toBe('PUT');
+          expect(request.url.href).toBe(target.origin + upload + '&digest=' + digest);
+          expect(request.body).toEqual(bytes);
+          present = true;
+          return new Response(null, {status: 201, headers: {'docker-content-digest': digest}});
+        },
+      });
+      expect(yield* f.writer!.putBlob(digest, bytes)).toMatchObject({digest, existed: false});
+      expect(yield* f.writer!.putBlob(digest, bytes)).toMatchObject({digest, existed: true});
+      expect(f.requests.filter(request => request.method === 'PUT')).toHaveLength(1);
+      expect(f.requests.filter(request => request.method === 'POST')).toHaveLength(1);
+      expect(f.helperCalls()).toBe(1);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('denies invalid upload bytes before networking and cleans up only its failed owned session', () =>
+    Effect.gen(function* () {
+      const bytes = new TextEncoder().encode('{}');
+      const digest = sha256Digest(bytes);
+      const upload = '/v2/acme/canonical/blobs/uploads/owned?_state=opaque';
+      const f = yield* fixture({
+        writer: true,
+        helper: true,
+        handler: request => {
+          if (request.method === 'HEAD') return new Response(null, {status: 404});
+          if (request.method === 'POST') return new Response(null, {status: 202, headers: {location: upload}});
+          if (request.method === 'DELETE') {
+            expect(request.url.href).toBe(target.origin + upload);
+            return new Response(null, {status: 204});
+          }
+          return new Response(null, {status: 503, headers: {'retry-after': '11'}});
+        },
+      });
+      expect(yield* Effect.result(f.writer!.putBlob('sha256:' + 'a'.repeat(64), bytes))).toMatchObject({
+        failure: {kind: 'verification-failed'},
+      });
+      expect(f.requests).toHaveLength(0);
+      expect(yield* Effect.result(f.writer!.putBlob(digest, bytes))).toMatchObject({
+        failure: {httpStatus: 503, retryAfterMilliseconds: 11_000},
+      });
+      expect(f.requests.map(request => request.method)).toEqual(['HEAD', 'POST', 'PUT', 'DELETE']);
+    }).pipe(provideTestLayer(layer)),
+  );
+  effectIt.effect('requires an explicitly selected credential before constructing a writer', () =>
+    Effect.gen(function* () {
+      const requests: Request[] = [];
+      const result = yield* Effect.result(
+        fixture({
+          access: 'write',
+          handler: request => {
+            requests.push(request);
+            return new Response(null);
+          },
+        }),
+      );
+      expect(result).toMatchObject({failure: {kind: 'verification-failed'}});
+      expect(requests).toHaveLength(0);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('keeps a writer token request at its fixed pull/push capability after a narrower challenge', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture({
+        access: 'write',
+        helper: true,
+        handler: request => {
+          if (request.url.pathname === '/token') {
+            expect(request.url.searchParams.get('scope')).toBe('repository:acme/canonical:pull,push');
+            expect(request.headers.get('authorization')).toBe(basic);
+            return Response.json({token: 'synthetic-writer', expires_in: 60});
+          }
+          expect(request.method).toBe('POST');
+          return request.headers.get('authorization') === 'Bearer synthetic-writer'
+            ? new Response(null, {status: 202, headers: {location: '/v2/acme/canonical/blobs/uploads/synthetic'}})
+            : new Response(null, {
+                status: 401,
+                headers: {'www-authenticate': `Bearer realm="${target.origin}/token",scope="${target.pullScope}"`},
+              });
+        },
+      });
+      const result = yield* f.request('/v2/acme/canonical/blobs/uploads/', 0, 'application/json', {
+        method: 'POST',
+        acceptedStatuses: [202],
+      });
+      expect(result.status).toBe(202);
+      expect(f.helperCalls()).toBe(1);
+      expect(f.requests).toHaveLength(3);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('a read capability refuses mutations before any network request', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture({handler: () => new Response(null)});
+      const result = yield* Effect.result(f.request(pathname, 0, 'application/json', {method: 'PUT'}));
+      expect(result).toMatchObject({failure: {kind: 'verification-failed'}});
+      expect(f.requests).toHaveLength(0);
+    }).pipe(provideTestLayer(layer)),
+  );
   effectIt.effect('uses anonymous reads without falling back to plaintext Docker auths', () =>
     Effect.gen(function* () {
       const f = yield* fixture({

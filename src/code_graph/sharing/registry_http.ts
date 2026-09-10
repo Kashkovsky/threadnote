@@ -1,4 +1,4 @@
-import {Clock, Effect, Redacted, Schema, Stream} from 'effect';
+import {Clock, Effect, Redacted, Schema, Semaphore, Stream} from 'effect';
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest';
@@ -12,6 +12,7 @@ import {
 import {parseGraphShareRegistryChallenge, type GraphShareRegistryChallenge} from './registry_auth.js';
 import {makeGraphShareRegistryCredentialLoader} from './registry_credentials.js';
 import type {GraphShareRegistryTarget} from './registry_reference.js';
+import {GRAPH_SHARE_HTTP_CAS_MAX_BYTES} from './oci.js';
 
 const TokenText = Schema.String.check(
   Schema.isMinLength(1),
@@ -24,17 +25,42 @@ const TokenResponse = Schema.Struct({
   token: Schema.optionalKey(TokenText),
 });
 
+export interface GraphShareRegistryRequestOptions {
+  readonly method?: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE';
+  readonly body?: Uint8Array;
+  readonly contentType?: string;
+  readonly acceptedStatuses?: readonly (200 | 201 | 202 | 204 | 404)[];
+}
+
 /** One reader owns one trusted origin, repository and selected credential provider. */
 export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryHttp')(function* (
   target: GraphShareRegistryTarget,
+  access: 'read' | 'write' = 'read',
 ) {
   const client = HttpClient.withScope(yield* HttpClient.HttpClient);
   const fetch = yield* FetchHttpClient.Fetch;
   const credentials = yield* makeGraphShareRegistryCredentialLoader(target);
-  const request = (url: string, maximum: number, accept: string, authorization?: Redacted.Redacted<string>) =>
+  let initialCredential = access === 'write' ? yield* credentials() : undefined;
+  if (access === 'write' && initialCredential === undefined)
+    return yield* graphSharingFailure('Registry writes require a configured credential helper.');
+  const request = (
+    url: string,
+    maximum: number,
+    accept: string,
+    authorization?: Redacted.Redacted<string>,
+    options: GraphShareRegistryRequestOptions = {},
+  ) =>
     Effect.scoped(
       Effect.gen(function* () {
-        let request = HttpClientRequest.get(url).pipe(HttpClientRequest.setHeader('accept', accept));
+        let request = HttpClientRequest.make(options.method ?? 'GET')(url).pipe(
+          HttpClientRequest.setHeader('accept', accept),
+        );
+        if (options.body !== undefined)
+          request = HttpClientRequest.bodyUint8Array(
+            request,
+            options.body,
+            options.contentType ?? 'application/octet-stream',
+          );
         if (authorization !== undefined)
           request = HttpClientRequest.setHeader(request, 'authorization', Redacted.value(authorization));
         const response = yield* client
@@ -45,7 +71,7 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
           );
         const chunks: Uint8Array[] = [];
         let size = 0;
-        if (response.status === 200) {
+        if (response.status === 200 && options.method !== 'HEAD') {
           const length = response.headers['content-length'];
           if (length !== undefined && (!/^\d+$/u.test(length) || Number(length) > maximum)) {
             return yield* graphSharingFailure('Registry response exceeds its size limit.');
@@ -70,9 +96,11 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
   let challenge: GraphShareRegistryChallenge | undefined;
   let authorization: Redacted.Redacted<string> | undefined;
   let expiresAt = 0;
+  const authentication = yield* Semaphore.make(1);
   const authorize = Effect.gen(function* () {
     if (challenge === undefined) return;
-    const credential = yield* credentials();
+    const credential = initialCredential ?? (yield* credentials());
+    initialCredential = undefined;
     if (challenge.kind === 'basic') {
       if (credential === undefined)
         return yield* graphSharingFailure('Registry requires a configured credential helper.');
@@ -81,7 +109,7 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
       return;
     }
     const url = new URL(challenge.realm);
-    url.searchParams.set('scope', target.pullScope);
+    url.searchParams.set('scope', access === 'write' ? `repository:${target.repository}:pull,push` : target.pullScope);
     if (challenge.service !== undefined) url.searchParams.set('service', challenge.service);
     const response = yield* request(url.href, 32_768, 'application/json', credential?.authorization);
     if (response.status !== 200)
@@ -103,19 +131,29 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
     expiresAt = (yield* Clock.currentTimeMillis) + Math.min(token.expires_in ?? 60, 300) * 1000;
   });
 
-  return (pathname: string, maximum: number, accept: string) =>
+  return (pathname: string, maximum: number, accept: string, options: GraphShareRegistryRequestOptions = {}) =>
     Effect.gen(function* () {
-      const prefix = `/v2/${target.repository}/`;
+      const method = options.method ?? 'GET';
       if (
-        !pathname.startsWith(prefix) ||
-        !/^(?:manifests|blobs)\/[A-Za-z0-9_.:-]+$/u.test(pathname.slice(prefix.length))
+        !isRegistryRequestPath(target, pathname, method, access) ||
+        !Number.isSafeInteger(maximum) ||
+        maximum < 0 ||
+        maximum > GRAPH_SHARE_HTTP_CAS_MAX_BYTES ||
+        (options.body !== undefined &&
+          ((method !== 'POST' && method !== 'PUT') || options.body.byteLength > GRAPH_SHARE_HTTP_CAS_MAX_BYTES))
       ) {
-        return yield* graphSharingFailure('Registry read path is outside the trusted repository.');
+        return yield* graphSharingFailure('Registry request is outside its trusted capability.');
       }
-      if (challenge !== undefined && expiresAt <= (yield* Clock.currentTimeMillis)) yield* authorize;
+      const acceptedStatuses: readonly number[] = options.acceptedStatuses ?? [200];
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        const response = yield* request(target.origin + pathname, maximum, accept, authorization);
-        if (response.status === 200) return response;
+        const usedAuthorization = yield* authentication.withPermit(
+          Effect.gen(function* () {
+            if (challenge !== undefined && expiresAt <= (yield* Clock.currentTimeMillis)) yield* authorize;
+            return authorization;
+          }),
+        );
+        const response = yield* request(target.origin + pathname, maximum, accept, usedAuthorization, options);
+        if (acceptedStatuses.includes(response.status)) return response;
         if (response.status !== 401 || attempt === 2) {
           if (response.status === 404) return yield* graphSharingUnavailable('Registry artifact is missing.');
           return yield* graphSharingHttpFailure(
@@ -124,15 +162,47 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
           );
         }
         const next = yield* Effect.try({
-          try: () => parseGraphShareRegistryChallenge(response.headers['www-authenticate'], target),
+          try: () => parseGraphShareRegistryChallenge(response.headers['www-authenticate'], target, access),
           catch: () => graphSharingFailure('Registry authentication challenge is not trusted.'),
         });
-        if (challenge !== undefined && JSON.stringify(next) !== JSON.stringify(challenge)) {
-          return yield* graphSharingFailure('Registry authentication authority changed.');
-        }
-        challenge = next;
-        yield* authorize;
+        yield* authentication.withPermit(
+          Effect.gen(function* () {
+            if (challenge !== undefined && JSON.stringify(next) !== JSON.stringify(challenge))
+              return yield* graphSharingFailure('Registry authentication authority changed.');
+            challenge = next;
+            if (
+              authorization === usedAuthorization ||
+              authorization === undefined ||
+              expiresAt <= (yield* Clock.currentTimeMillis)
+            )
+              yield* authorize;
+          }),
+        );
       }
       return yield* graphSharingFailure('Registry authentication retry limit reached.');
     });
 });
+
+function isRegistryRequestPath(
+  target: GraphShareRegistryTarget,
+  value: string,
+  method: NonNullable<GraphShareRegistryRequestOptions['method']>,
+  access: 'read' | 'write',
+): boolean {
+  const prefix = `/v2/${target.repository}/`;
+  if (!value.startsWith(prefix) || value.length > 8512) return false;
+  let url: URL;
+  try {
+    url = new URL(target.origin + value);
+  } catch {
+    return false;
+  }
+  if (url.href !== target.origin + value || url.hash !== '') return false;
+  const suffix = url.pathname.slice(prefix.length);
+  if (method === 'GET' || method === 'HEAD')
+    return url.search === '' && /^(?:manifests|blobs)\/[A-Za-z0-9_.:-]+$/u.test(suffix);
+  if (access !== 'write') return false;
+  if (method === 'POST') return suffix === 'blobs/uploads/' && url.search === '';
+  if (method === 'PUT' && /^manifests\/[A-Za-z0-9_.:-]+$/u.test(suffix)) return url.search === '';
+  return (method === 'PUT' || method === 'DELETE') && /^blobs\/uploads\/[A-Za-z0-9_-]{1,256}$/u.test(suffix);
+}
