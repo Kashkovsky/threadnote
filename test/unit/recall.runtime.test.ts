@@ -17,7 +17,7 @@ vi.mock('../../src/models/inference.js', () => ({
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
-import {runRecall} from '../../src/memory/index.js';
+import {readMemoryRecordsByUri, runRecall} from '../../src/memory/index.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
@@ -692,6 +692,71 @@ describe('recall runtime orchestration', () => {
 
       expect(emptyHydration.ranked.map(ranked => ranked.uri)).toContain(presentUri);
       expect(loadedMissing.ranked.map(ranked => ranked.uri)).not.toContain(ghostUri);
+    }),
+  );
+  effectIt.effect('drops an indexed memory when extra record hydration misses an empty store', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-stale-lexical-')));
+      homes.push(home);
+      const ghostUri = 'threadnote://user/tester/memories/durable/projects/threadnote/stale-lexical-ghost.md';
+      const sentinel = 'STALE-LEXICAL-GHOST-847291056';
+      const memoryRoot = join(home, 'data', 'local', 'user', 'tester', 'memories', 'durable', 'projects', 'threadnote');
+      const ghostPath = join(memoryRoot, 'stale-lexical-ghost.md');
+      yield* Effect.promise(() => mkdir(memoryRoot, {recursive: true}));
+      yield* Effect.promise(() =>
+        writeFile(
+          ghostPath,
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            'topic: stale-lexical-ghost',
+            'source_agent_client: test',
+            'timestamp: 2026-07-30T00:00:00.000Z',
+            '',
+            '# Stale lexical ghost',
+            '',
+            sentinel,
+          ].join('\n'),
+        ),
+      );
+      const config: RuntimeConfig = {
+        account: 'local',
+        agentContextHome: home,
+        agentId: 'threadnote',
+        manifestPath: join(home, 'seed-manifest.yaml'),
+        user: 'tester',
+      };
+      yield* loadRecallIndex(config, {
+        forceRefresh: true,
+        includeInactive: false,
+        query: sentinel,
+      }).pipe(provideTestLayer(ApplicationLayer));
+      yield* Effect.promise(() => rm(ghostPath, {force: true}));
+      const prepared = yield* prepareRecallSections(config, {
+        allowExactRescue: false,
+        exactMatches: [],
+        feedbackQuery: sentinel,
+        includeInactive: false,
+        limit: 5,
+        passes: [
+          [
+            {
+              category: 'memories',
+              contextType: 'memory',
+              score: 1,
+              snippet: sentinel,
+              uri: ghostUri,
+            },
+          ],
+        ],
+        query: sentinel,
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+        semanticResult: Option.none(),
+      }).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(prepared.ranked.map(ranked => ranked.uri)).not.toContain(ghostUri);
     }),
   );
   effectIt.effect('surfaces one CLI warning when exact and ranked lexical recovery both fail', () =>

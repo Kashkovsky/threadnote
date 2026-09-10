@@ -470,6 +470,8 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
       );
   const unreadIndexedMemoryUris = unreadIndexedMemoryRecordUris(indexedCandidates, records);
   const extraRecords = unreadIndexedMemoryUris.length > 0 ? yield* input.readRecords(unreadIndexedMemoryUris) : [];
+  const extraRecordUris = new Set(extraRecords.map(record => record.uri.replace(/#.*$/, '')));
+  const absentMemoryUris = unreadIndexedMemoryUris.filter(uri => !extraRecordUris.has(uri.replace(/#.*$/, '')));
   const liveRecords = extraRecords.length > 0 ? [...records, ...extraRecords] : records;
   const expansionCandidates = mergeRecallExpansionCandidates(
     recallIndexCandidateSets,
@@ -477,6 +479,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
     topicalRecallIndexCandidateSets.length,
   ).filter(candidate => recallRuntimeCandidateIsEligible(candidate, input.eligibility));
   const sections = buildRecallSections(input.passes, input.exactMatches, input.limit, {
+    absentMemoryUris,
     allowExactRescue: input.allowExactRescue,
     allowedUriScopes: input.allowedUriScopes,
     candidateUris: input.candidateUris,

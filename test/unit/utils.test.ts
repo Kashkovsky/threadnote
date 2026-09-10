@@ -1120,6 +1120,58 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     expect(loadedMissing.ranked.map(hit => hit.uri)).not.toContain(ghostUri);
   });
 
+  it('drops extra-hydration misses even when records is an empty array', () => {
+    const liveUri = 'threadnote://user/me/memories/durable/projects/threadnote/live-ranked-gate.md';
+    const ghostUri = 'threadnote://user/me/memories/durable/projects/threadnote/ghost-ranked-gate.md';
+    const indexedCandidates = [
+      {
+        fields: {identifiers: ['ranked-live-gate'], project: 'threadnote', title: 'Live', topic: 'live-ranked-gate'},
+        text: 'ranked-live-gate live memory body',
+        uri: liveUri,
+      },
+      {
+        fields: {identifiers: ['ranked-live-gate'], project: 'threadnote', title: 'Ghost', topic: 'ghost-ranked-gate'},
+        text: 'ranked-live-gate ghost memory body',
+        uri: ghostUri,
+      },
+    ];
+    const sections = buildRecallSections([], [], 12, {
+      absentMemoryUris: [ghostUri],
+      indexedCandidates,
+      query: 'ranked-live-gate',
+      records: [],
+    });
+
+    expect(sections.ranked.map(hit => hit.uri)).toContain(liveUri);
+    expect(sections.ranked.map(hit => hit.uri)).not.toContain(ghostUri);
+  });
+
+  it('never ranks extra-hydration misses even when records is empty', () => {
+    fc.assert(
+      fc.property(fc.array(fc.boolean(), {minLength: 1, maxLength: 5}), flags => {
+        const candidates = flags.map((_live, index) => ({
+          fields: {
+            identifiers: [`ranked-live-gate-${index}`],
+            project: 'threadnote',
+            title: `Candidate ${index}`,
+            topic: `candidate-${index}`,
+          },
+          text: `ranked-live-gate candidate ${index}`,
+          uri: `threadnote://user/me/memories/durable/projects/threadnote/ranked-gate-${index}.md`,
+        }));
+        const absentMemoryUris = flags.flatMap((live, index) => (live ? [] : [candidates[index].uri]));
+        const sections = buildRecallSections([], [], 12, {
+          absentMemoryUris,
+          indexedCandidates: candidates,
+          query: 'ranked-live-gate',
+          records: [],
+        });
+        const rankedMemories = sections.ranked.map(hit => hit.uri).filter(uri => uri.includes('/memories/'));
+        expect(rankedMemories.every(uri => !absentMemoryUris.includes(uri))).toBe(true);
+      }),
+    );
+  });
+
   it('ranks only live memory URIs when a non-empty record set is provided', () => {
     fc.assert(
       fc.property(fc.array(fc.boolean(), {minLength: 1, maxLength: 5}), flags => {
