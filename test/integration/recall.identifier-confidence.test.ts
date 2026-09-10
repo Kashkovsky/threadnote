@@ -3,6 +3,7 @@ import {DateTime, Effect, FileSystem, Option, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {ResourceStore, type ResourceStoreMutation} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {readMemoryRecordsByUri} from '../../src/memory/index.js';
 import {loadRecallIndex} from '../../src/recall/index.js';
 import {prepareRecallSections} from '../../src/recall/runtime.js';
 import type {RuntimeConfig} from '../../src/types.js';
@@ -82,7 +83,7 @@ effectIt.effect('recalls an exact camelCase identifier extracted from the canoni
         passes: [],
         project: 'threadnote',
         query: `Where is ${TARGET_IDENTIFIER} behavior defined?`,
-        readRecords: () => Effect.succeed([]),
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
         semanticResult: Option.none(),
       });
 

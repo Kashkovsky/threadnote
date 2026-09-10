@@ -4,8 +4,21 @@ import {Effect, FileSystem, Option, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {readMemoryRecordsByUri} from '../../src/memory/index.js';
 import {loadRecallIndexData} from '../../src/recall/index.js';
 import {prepareRecallSections} from '../../src/recall/runtime.js';
+import type {RuntimeConfig} from '../../src/types.js';
+
+function liveRecordReader(home: string, user = 'me') {
+  const config: RuntimeConfig = {
+    account: 'local',
+    agentContextHome: home,
+    agentId: 'threadnote',
+    manifestPath: `${home}/seed-manifest.yaml`,
+    user,
+  };
+  return (uris: readonly string[]) => readMemoryRecordsByUri(config, uris);
+}
 
 function memoryContent(
   topic: string,
@@ -105,7 +118,7 @@ effectIt.effect(
         passes: [],
         project: 'monorepo',
         query,
-        readRecords: () => Effect.succeed([]),
+        readRecords: liveRecordReader(home),
         semanticResult: Option.none(),
         workspaceScope: 'apps/search',
       });
@@ -207,7 +220,7 @@ effectIt.effect(
         passes: [],
         project: 'monorepo',
         query,
-        readRecords: () => Effect.succeed([]),
+        readRecords: liveRecordReader(home),
         semanticResult: Option.some({
           corpusGeneration: Option.some(globalTopical.generation),
           scores: Option.some(new Map([[targetUri, 0.9]])),
@@ -305,7 +318,7 @@ effectIt.effect(
         project: 'monorepo',
         query: originalQuery,
         queryVariants: [query],
-        readRecords: () => Effect.succeed([]),
+        readRecords: liveRecordReader(home),
         semanticResult: Option.none(),
         workspaceScope: 'apps/search',
       });
@@ -390,7 +403,7 @@ effectIt.effect(
         passes: [],
         project: 'monorepo',
         query,
-        readRecords: () => Effect.succeed([]),
+        readRecords: liveRecordReader(home),
         semanticResult: Option.none(),
         workspaceBranch: 'feature/search-recall',
       });
