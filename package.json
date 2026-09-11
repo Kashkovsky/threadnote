@@ -124,7 +124,7 @@
     "@types/react-dom": "^19.2.5",
     "@types/three": "^0.185.1",
     "@vitejs/plugin-react": "6.1.0",
-    "@vitest/coverage-istanbul": "4.1.11",
+    "@vitest/coverage-istanbul": "5.0.0",
     "@vscode/tree-sitter-wasm": "0.3.1",
     "fast-check": "4.9.0",
     "happy-dom": "20.11.6",
@@ -142,7 +142,7 @@
     "tree-sitter-systemverilog": "0.4.0",
     "typescript": "7.0.2",
     "vite": "8.2.2",
-    "vitest": "4.1.11"
+    "vitest": "5.0.0"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.0-rc.112",
