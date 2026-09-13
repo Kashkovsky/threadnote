@@ -249,11 +249,9 @@ const sourceDisposition = Effect.fn('codeGraph.sharing.workerSourceDisposition')
   if (head.exitCode !== 0 || !GRAPH_SHARE_GIT_OBJECT_ID.test(currentHead))
     return yield* graphSharingUnavailable('Publisher source checkout is unavailable.');
   if (sourceCommit !== currentHead) {
-    if (
-      (yield* graphShareCommitIsAncestor(input.repoRoot, sourceCommit, currentHead)) ||
-      (yield* graphShareCommitIsAncestor(input.repoRoot, sourceCommit, published))
-    )
-      return 'stale-source' as const;
+    // An intermediate commit behind HEAD is not safely retired until a signed
+    // canonical frontier has actually included that source.
+    if (yield* graphShareCommitIsAncestor(input.repoRoot, sourceCommit, published)) return 'stale-source' as const;
     return 'source-unavailable' as const;
   }
   if (!(yield* graphShareCommitIsAncestor(input.repoRoot, published, sourceCommit)))

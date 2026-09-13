@@ -297,6 +297,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
     candidateCommit,
     enroll,
     fs,
+    git,
     key,
     manifest,
     options,
@@ -315,6 +316,33 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
 });
 
 describe('authenticated signed worker admission route', () => {
+  effectIt.effect('keeps an intermediate source pending until canonical publication reaches it', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const worker = yield* f.enroll;
+        const path = yield* Path.Path;
+        yield* f.fs.writeFileString(path.join(f.options.repoRoot, 'source.txt'), 'newer head\n');
+        yield* f.git(['add', '.']);
+        yield* f.git([
+          '-c',
+          'user.name=Threadnote Test',
+          '-c',
+          'user.email=test@threadnote.local',
+          'commit',
+          '-qm',
+          'newer head',
+        ]);
+        const intermediate = yield* f.candidate(worker);
+        expect(yield* f.request('/v1/results', f.validToken, intermediate.announcement)).toEqual({
+          body: {error: 'source-unavailable'},
+          status: 425,
+        });
+        expect(yield* f.fs.exists(f.statePath)).toBe(false);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
   effectIt.effect('rejects the durably published source even when an older receipt remains', () =>
     TestClock.withLive(
       Effect.gen(function* () {
