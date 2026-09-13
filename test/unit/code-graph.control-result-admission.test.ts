@@ -2,7 +2,7 @@ import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import * as BunHttpServer from '@effect/platform-bun/BunHttpServer';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Clock, Console, Context, Effect, FileSystem, Layer, Path} from 'effect';
+import {Clock, Console, Context, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import * as HttpClient from 'effect/unstable/http/HttpClient';
@@ -20,7 +20,11 @@ import {writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
 import {putCasBytes} from '../../src/code_graph/sharing/cas.js';
 import {readGraphControlPolicy} from '../../src/code_graph/sharing/control_authorization.js';
 import {makeGraphControlReader} from '../../src/code_graph/sharing/control_reader.js';
-import {graphWorkerAdmissionStatePath} from '../../src/code_graph/sharing/control_result_admission.js';
+import {withCoordinatorStateLock} from '../../src/code_graph/sharing/coordinator_lock.js';
+import {
+  admitGraphControlWorkerResult,
+  graphWorkerAdmissionStatePath,
+} from '../../src/code_graph/sharing/control_result_admission.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
 import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
@@ -30,6 +34,7 @@ import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/work
 import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
 import {createAccessTokenVerifier} from '../../src/oauth/access_token.js';
 import {SystemInfo} from '../../src/effect/system.js';
+import {CommandExecutor} from '../../src/effect/command.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const issuer = 'https://identity.example.test/';
@@ -97,7 +102,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
   const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
   const policy = {
     audience,
-    grants: [{expiresAt: now + 3600, scopes: ['graph:contribute'], subject: 'worker-principal'}],
+    grants: [{expiresAt: now + 3600, scopes: ['graph:contribute', 'graph:read'], subject: 'worker-principal'}],
     issuer,
     jwksUrl: `${issuer}.well-known/jwks.json`,
     organization: 'acme',
@@ -119,10 +124,12 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
   const validToken = yield* token();
   const registryBytes = new Map<string, Uint8Array>();
   const registryPaths: string[] = [];
+  const registryHook: {current?: (address: string) => Promise<void>} = {};
   const fetch = Object.assign(
     async (url: string | URL | Request, init?: RequestInit) => {
       const address = String(url);
       registryPaths.push(address);
+      await registryHook.current?.(address);
       expect(address.startsWith(registry + '/')).toBe(true);
       expect(init?.redirect).toBe('manual');
       expect(init?.credentials).toBe('omit');
@@ -159,10 +166,18 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
   );
   if (server.address._tag !== 'TcpAddress') throw new Error('Expected TCP');
   const url = `http://127.0.0.1:${server.address.port}`;
-  const request = (pathname: string, auth = validToken, body?: unknown, headers: Record<string, string> = {}) =>
+  const request = (
+    pathname: string,
+    auth = validToken,
+    body?: unknown,
+    headers: Record<string, string> = {},
+    method: 'GET' | 'POST' = 'POST',
+  ) =>
     Effect.gen(function* () {
       const client = yield* HttpClient.HttpClient;
-      const outbound = HttpClientRequest.post(url + pathname).pipe(
+      const outbound = (
+        method === 'GET' ? HttpClientRequest.get(url + pathname) : HttpClientRequest.post(url + pathname)
+      ).pipe(
         HttpClientRequest.setHeaders({
           authorization: `Bearer ${auth}`,
           'x-threadnote-repository-id': repositoryId,
@@ -247,6 +262,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
     policy,
     profileDigest,
     registryBytes,
+    registryHook,
     registryPaths,
     request,
     signer,
@@ -384,6 +400,119 @@ describe('authenticated signed worker admission route', () => {
           (yield* f.request('/v1/results', f.validToken, announcement, {'content-type': 'text/plain'})).status,
         ).toBe(400);
         expect(f.registryPaths).toEqual([]);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
+  effectIt.effect('rejects a canonical-overlapping worker registry before any OCI read', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const worker = yield* f.enroll;
+        const {announcement} = yield* f.candidate(worker);
+        const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+        const policy = yield* readGraphControlPolicy(f.options.policyFile);
+        const profile = {
+          ...f.options.profile,
+          registry: {...f.options.profile.registry, canonical: f.options.profile.registry.worker},
+        };
+        const executor = Context.get(yield* Layer.build(CommandExecutor.layer), CommandExecutor);
+        for (const boundPolicy of [policy, {...policy, profileDigest: graphShareProfileDigest(profile)}]) {
+          const outcome = yield* admitGraphControlWorkerResult({
+            announcement,
+            commandExecutor: executor,
+            graphAbi,
+            home: f.options.threadnoteHome,
+            initialPolicy: boundPolicy,
+            principal: {
+              expiresAt: now + 600,
+              issuer,
+              scopes: new Set(['graph:contribute']),
+              subject: 'worker-principal',
+            },
+            profile,
+            readCurrentPolicy: Effect.succeed(boundPolicy),
+          }).pipe(Effect.flip);
+          expect(outcome).toMatchObject({kind: 'verification-failed'});
+        }
+        expect(f.registryPaths).toEqual([]);
+        expect(yield* f.fs.exists(f.statePath)).toBe(false);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
+  effectIt.effect('keeps metadata responsive while two registry reads exceed ten seconds', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const worker = yield* f.enroll;
+        const {announcement} = yield* f.candidate(worker);
+        let signalStarted: (() => void) | undefined;
+        let releaseRegistry: (() => void) | undefined;
+        const bothStarted = new Promise<void>(resolve => {
+          signalStarted = resolve;
+        });
+        const released = new Promise<void>(resolve => {
+          releaseRegistry = resolve;
+        });
+        let waiting = 0;
+        f.registryHook.current = async address => {
+          if (!address.includes('/manifests/')) return;
+          waiting += 1;
+          if (waiting === 2) signalStarted?.();
+          await released;
+        };
+        yield* Effect.gen(function* () {
+          const first = yield* Effect.forkChild(f.request('/v1/results', f.validToken, announcement));
+          const second = yield* Effect.forkChild(f.request('/v1/results', f.validToken, announcement));
+          yield* Effect.promise(() => bothStarted);
+          expect((yield* f.request('/v1/results', f.validToken, announcement)).status).toBe(503);
+          const readToken = yield* f.token('graph:read');
+          expect((yield* f.request('/v1/status', readToken, undefined, {}, 'GET')).status).toBe(200);
+          yield* Effect.sleep('11 seconds');
+          releaseRegistry?.();
+          const responses = yield* Effect.all([Fiber.join(first), Fiber.join(second)]);
+          expect(responses.map(response => response.status).sort()).toEqual([200, 201]);
+        }).pipe(Effect.ensuring(Effect.sync(() => releaseRegistry?.())));
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
+  effectIt.effect('holds receipt commit behind the coordinator pointer lock', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const worker = yield* f.enroll;
+        const {announcement} = yield* f.candidate(worker);
+        const locked = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let signalFetched: (() => void) | undefined;
+        const fetched = new Promise<void>(resolve => {
+          signalFetched = resolve;
+        });
+        let blobs = 0;
+        f.registryHook.current = async address => {
+          if (!address.includes('/blobs/')) return;
+          blobs += 1;
+          if (blobs === 3) signalFetched?.();
+        };
+        const lockOwner = yield* withCoordinatorStateLock(
+          {threadnoteHome: f.options.threadnoteHome},
+          Effect.gen(function* () {
+            yield* Deferred.succeed(locked, undefined);
+            yield* Deferred.await(release);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(locked);
+        yield* Effect.gen(function* () {
+          const submission = yield* Effect.forkChild(f.request('/v1/results', f.validToken, announcement));
+          yield* Effect.promise(() => fetched);
+          yield* Effect.sleep('100 millis');
+          expect(yield* f.fs.exists(f.statePath)).toBe(false);
+          yield* Deferred.succeed(release, undefined);
+          expect((yield* Fiber.join(submission)).status).toBe(201);
+          yield* Fiber.join(lockOwner);
+        }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
       }).pipe(provideTestLayer(layer)),
     ),
   );

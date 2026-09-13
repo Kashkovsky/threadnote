@@ -31,8 +31,7 @@ import {
 } from './control_enrollment.js';
 import {GRAPH_SHARE_CONTROL_MAX_BODY_BYTES} from './control_protocol.js';
 import {parseSha256Digest, sha256Digest} from './digest.js';
-import {graphSharingFailure, graphSharingUnavailable} from './errors.js';
-import {GraphSharingError} from './errors.js';
+import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {graphShareFrontierDiscoveryTag} from './namespace.js';
 import {graphShareRegistryPublicationScope, graphSharePublicationPointer} from './registry_publication.js';
@@ -84,6 +83,7 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
       ? Context.get(yield* Layer.build(CommandExecutor.layer), CommandExecutor)
       : undefined;
   const permits = yield* Semaphore.make(8);
+  const resultPermits = yield* Semaphore.make(2);
   const globalAdmission = makeGraphControlRateLimit({maximumPrincipals: 1, requestsPerMinute: 1200});
   const principalAdmission = makeGraphControlRateLimit();
   const currentPolicy = readGraphControlPolicy(options.policyFile).pipe(
@@ -241,11 +241,11 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
         repositoryId: scope.repositoryId,
       });
     }).pipe(
-      Effect.timeout('10 seconds'),
+      Effect.timeout(operation === 'results' ? '5 minutes' : '10 seconds'),
       Effect.catchDefect(() => Effect.succeed(reply(503, {error: 'unavailable'}))),
       Effect.orElseSucceed(() => reply(503, {error: 'unavailable'})),
     );
-    const response = yield* permits.withPermitsIfAvailable(1)(handle);
+    const response = yield* (operation === 'results' ? resultPermits : permits).withPermitsIfAvailable(1)(handle);
     const selected = response._tag === 'Some' ? response.value : reply(503, {error: 'busy'});
     yield* Console.log(
       JSON.stringify({
