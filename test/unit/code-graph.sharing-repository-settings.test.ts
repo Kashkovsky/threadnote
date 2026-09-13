@@ -181,6 +181,24 @@ describe('repository-scoped graph sharing settings', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
+  effectIt.effect('keeps an idle profile preference while reporting passive delivery', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-idle-profile-'});
+      const config = runtimeConfig(root);
+      const repository = yield* fixture(root, 'idle', undefined, 'idle');
+      yield* runGraphShareJoin(config, {cwd: repository.repo, cas: repository.cas});
+      expect(yield* runGraphContributeStatus(config, {cwd: repository.repo})).toMatchObject({
+        mode: 'passive',
+        requestedMode: 'idle',
+      });
+      expect(
+        (yield* lookupGraphShareTrustReceipt(config.agentContextHome, repository.repositoryId))?.client
+          ?.contributionMode,
+      ).toBe('idle');
+    }).pipe(provideTestLayer(layer)),
+  );
+
   effectIt.effect('keeps joined repositories transport and contribution choices independent', () =>
     TestClock.withLive(
       Effect.gen(function* () {
@@ -194,7 +212,26 @@ describe('repository-scoped graph sharing settings', () => {
         yield* runGraphShareJoin(config, {cwd: b.repo, cas: b.cas});
         expect((yield* runGraphContributeStatus(config, {cwd: b.repo})).mode).toBe('passive');
         expect((yield* runGraphContributeSet(config, {cwd: b.repo, mode: 'dedicated'})).mode).toBe('passive');
-        expect((yield* runGraphContributeStatus(config, {cwd: b.repo})).mode).toBe('passive');
+        expect(yield* runGraphContributeStatus(config, {cwd: b.repo})).toMatchObject({
+          mode: 'passive',
+          requestedMode: 'dedicated',
+        });
+        expect(
+          (yield* lookupGraphShareTrustReceipt(config.agentContextHome, b.repositoryId))?.client?.contributionMode,
+        ).toBe('dedicated');
+        expect(yield* runGraphContributeSet(config, {cwd: b.repo, mode: 'idle'})).toMatchObject({
+          mode: 'passive',
+          requestedMode: 'idle',
+        });
+        expect(yield* runGraphContributeStatus(config, {cwd: b.repo})).toMatchObject({
+          mode: 'passive',
+          requestedMode: 'idle',
+        });
+        yield* runGraphShareJoin(config, {cwd: b.repo, cas: b.cas});
+        expect(yield* runGraphContributeStatus(config, {cwd: b.repo})).toMatchObject({
+          mode: 'passive',
+          requestedMode: 'idle',
+        });
         expect((yield* runGraphContributeStatus(config, {cwd: a.repo})).mode).toBe('off');
         expect(yield* readGraphShareClientState(config.agentContextHome)).toEqual({schemaVersion: 1});
         for (const item of [a, b]) {
@@ -247,7 +284,12 @@ function runtimeConfig(root: string) {
   };
 }
 
-const fixture = Effect.fn('test.sharing.repositoryFixture')(function* (root: string, name: string, endpoint?: string) {
+const fixture = Effect.fn('test.sharing.repositoryFixture')(function* (
+  root: string,
+  name: string,
+  endpoint?: string,
+  defaultMode: 'idle' | 'passive' = 'passive',
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repo = path.join(root, name);
@@ -277,15 +319,16 @@ const fixture = Effect.fn('test.sharing.repositoryFixture')(function* (root: str
     publisherKeyFingerprint: `sha256:${'a'.repeat(64)}`,
     repositoryId: identity.repositoryId,
   });
-  const digest = yield* putCasBytes(cas, new TextEncoder().encode(canonicalJson(profile)));
+  const configuredProfile = {...profile, contribution: {...profile.contribution, defaultMode}};
+  const digest = yield* putCasBytes(cas, new TextEncoder().encode(canonicalJson(configuredProfile)));
   yield* fs.writeFileString(
     path.join(repo, '.threadnote/graph-share.json'),
     JSON.stringify({
       profile: casProfilePointer(digest),
-      publisherKeyFingerprint: profile.trust.publisherKeys[0],
+      publisherKeyFingerprint: configuredProfile.trust.publisherKeys[0],
       repositoryId: identity.repositoryId,
       schemaVersion: 1,
     }),
   );
-  return {cas, coordinator, digest, profile, repo, repositoryId: identity.repositoryId};
+  return {cas, coordinator, digest, profile: configuredProfile, repo, repositoryId: identity.repositoryId};
 });
