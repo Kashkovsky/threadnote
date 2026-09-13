@@ -83,7 +83,7 @@ export function makeGraphSharingCommands(
       json: codeGraphCliBounds.json,
     },
     options => withRuntimeEffect(config => runGraphPublisherBootstrapCommand(config, options)),
-  ).pipe(Command.withDescription('Export, sign, and publish generation-one frontier for the current clean commit'));
+  ).pipe(Command.withDescription('Prepare an initial signed frontier or retry publication of the existing generation'));
 
   const graphPublisherServe = Command.make(
     'serve',
@@ -115,7 +115,7 @@ export function makeGraphSharingCommands(
       json: codeGraphCliBounds.json,
     },
     options => withRuntimeEffect(config => runGraphPublisherStatusCommand(config, options)),
-  ).pipe(Command.withDescription('Report publisher enrollment and the last signed frontier pointer'));
+  ).pipe(Command.withDescription('Report local signed candidates and confirmed or pending registry publication'));
 
   const graphPublisher = Command.make('publisher').pipe(
     Command.withDescription('Publish signed shared graph checkpoints for enrolled repositories'),
