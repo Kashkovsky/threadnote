@@ -201,7 +201,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
       Effect.provideService(Console.Console, {...inherited, log: () => undefined}),
     ),
   );
-  if (server.address._tag !== 'TcpAddress') throw new Error('Expected TCP');
+  if (server.address._tag === 'UnixPathAddress') throw new Error('Expected TCP');
   const url = `http://127.0.0.1:${server.address.port}`;
   const request = (
     pathname: string,

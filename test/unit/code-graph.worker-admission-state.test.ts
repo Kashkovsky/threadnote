@@ -1,7 +1,7 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it, it as effectIt} from '@effect/vitest';
 import {Clock, Effect, FileSystem, Layer} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {
   admitGraphWorkerAnnouncement,

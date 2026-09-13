@@ -1,7 +1,7 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Clock, Effect, FileSystem, Layer, Ref} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {SystemInfo} from '../../src/effect/system.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
@@ -17,6 +17,7 @@ import {
 } from '../../src/code_graph/sharing/worker_registry_upload.js';
 import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 
 const layer = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
 
@@ -205,7 +206,8 @@ describe('worker OCI closure upload', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'never submits a manifest when authority is revoked before a write boundary',
     {revokeAfterBlobs: FC.integer({min: 0, max: 3})},
     ({revokeAfterBlobs}) =>

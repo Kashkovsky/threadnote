@@ -1,7 +1,7 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Cause, Effect, FileSystem, Layer, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {it} from 'vitest';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -32,6 +32,7 @@ import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
 import type {CodeGraphInventoryFile, CodeGraphSnapshot} from '../../src/code_graph/types.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 
 const layer = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
 const packs = BUILTIN_LANGUAGE_PACK_REGISTRY.activePackProvenance(['src/index.ts', 'src/main.py']);
@@ -535,7 +536,8 @@ describe('producer-bound signed candidate evidence', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'overlapping journal batches preserve first-seen order without duplicates',
     {
       first: FC.array(FC.integer({min: 0, max: 80}), {maxLength: 45}),

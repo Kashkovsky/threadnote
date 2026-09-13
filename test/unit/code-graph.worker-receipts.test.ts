@@ -1,6 +1,6 @@
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
@@ -9,6 +9,7 @@ import {
 } from '../../src/code_graph/sharing/worker_admission_state.js';
 import type {GraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
 import {selectGraphWorkerReceiptsForSource} from '../../src/code_graph/sharing/worker_receipts.js';
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 
 const repositoryId = 'a'.repeat(64);
 const profileDigest = sha256Digest('profile');
@@ -64,7 +65,8 @@ function admitted(items: readonly GraphWorkerResultAnnouncement[]) {
 const source = {actionKeys: [] as string[], profileDigest, repositoryId, sourceCommit};
 
 describe('signed worker receipt selection', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'is independent of admission order and retains deterministic same-semantic alternatives',
     {ranks: FC.tuple(FC.integer(), FC.integer(), FC.integer())},
     ({ranks}) =>
