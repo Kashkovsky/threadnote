@@ -548,6 +548,28 @@ describe('Code Memory Link Codex app-server transport', () => {
       ).toEqual([observedReceipt]);
       expect(observedProjection.contextBriefProtocolAdhered).toBe(false);
       expect(observedTrial.taskPassed).toBe(false);
+      const staticallyPassedTrial = createCodeMemoryLinkAgentAbTrialV1({
+        candidate,
+        invocationNonce,
+        postRuntime: runtime,
+        preRuntime: runtime,
+        previousReceiptDigest: null,
+        trial: {
+          ...trialSummary,
+          firstUsefulMemoryUse: observedProjection.firstUsefulMemoryUse,
+          providerUsageHash: observedProjection.providerUsageHash,
+          taskPassed: true,
+        },
+        trialId: trial.trialId,
+      });
+      expect(() =>
+        assertCodeMemoryLinkAgentEvidenceLedgerV1({
+          assignment,
+          evidence: [observedReceipt],
+          manifest,
+          trials: [staticallyPassedTrial],
+        }),
+      ).toThrow(/does not independently reproduce its trial outcome/u);
     }
 
     const mismatchedManifest = {

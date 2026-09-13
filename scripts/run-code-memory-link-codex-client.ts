@@ -413,7 +413,7 @@ export async function runCodeMemoryLinkCodexExecutionTask(
       runOrder: harness.runOrder,
       taskId: harness.taskId,
       taskKind: harness.taskKind,
-      taskPassed: judge.judgment.taskPassed,
+      taskPassed: projection.taskPassed,
       tokenAccounting: 'provider-reported',
       totalTaskUsage: projection.totalTaskUsage,
       version: 1,
