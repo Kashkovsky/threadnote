@@ -1,7 +1,13 @@
 import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {startProgress, withProgressLine} from '../cli_ui.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
-import {SystemInfo} from '../effect/system.js';
+import {
+  runtimeFileDescriptorStatSync,
+  runtimePathStatSync,
+  runtimePlatform,
+  SystemInfo,
+  type RuntimeNativeFileStat,
+} from '../effect/system.js';
 import {healAnchorsAfterWorksetPrepare} from '../memory/deferred_code_anchor_recovery.js';
 import type {RuntimeConfig} from '../types.js';
 import {CodeGraphIndexer} from './indexer.js';
@@ -289,23 +295,6 @@ interface CodeGraphExportTemporaryIdentity {
   readonly modifiedAtMilliseconds: number;
   readonly size: bigint;
 }
-
-interface NativeExportStat {
-  readonly birthtime: Date;
-  readonly dev: bigint;
-  readonly ino: bigint;
-  readonly mode: bigint;
-  readonly mtime: Date;
-  readonly size: bigint;
-  isFile(): boolean;
-}
-
-const nativeExportFileSystem = process.getBuiltinModule('fs') as
-  | {
-      fstatSync(fd: number, options: {readonly bigint: true}): NativeExportStat;
-      statSync(path: string, options: {readonly bigint: true}): NativeExportStat;
-    }
-  | undefined;
 
 export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function* (
   config: RuntimeConfig,
@@ -1676,10 +1665,8 @@ function exportTemporaryIdentity(info: FileSystem.File.Info): Option.Option<Code
       });
 }
 
-function nativeExportTemporaryIdentity(
-  stat: NativeExportStat | undefined,
-): Option.Option<CodeGraphExportTemporaryIdentity> {
-  if (stat === undefined || !stat.isFile() || stat.ino <= 0n) return Option.none();
+function nativeExportTemporaryIdentity(stat: RuntimeNativeFileStat): Option.Option<CodeGraphExportTemporaryIdentity> {
+  if (!stat.isFile() || stat.ino <= 0n) return Option.none();
   const birthtimeMilliseconds = stat.birthtime.getTime();
   const modifiedAtMilliseconds = stat.mtime.getTime();
   const mode = Number(stat.mode);
@@ -1702,14 +1689,14 @@ function nativeExportTemporaryIdentity(
 
 function exportTemporaryIdentityFromFile(file: FileSystem.File) {
   return Effect.gen(function* () {
-    if (process.platform !== 'win32') return exportTemporaryIdentity(yield* file.stat);
+    if (runtimePlatform !== 'win32') return exportTemporaryIdentity(yield* file.stat);
     // Effect's File.Info stores inode numbers as safe JS numbers. Windows file
     // IDs can exceed that range, so compare the open descriptor's native ID.
     const fd = 'fd' in file ? file.fd : undefined;
     if (typeof fd !== 'number' || !Number.isSafeInteger(fd)) return Option.none();
     return yield* Effect.sync(() => {
       try {
-        return nativeExportTemporaryIdentity(nativeExportFileSystem?.fstatSync(fd, {bigint: true}));
+        return nativeExportTemporaryIdentity(runtimeFileDescriptorStatSync(fd));
       } catch {
         return Option.none();
       }
@@ -1719,13 +1706,13 @@ function exportTemporaryIdentityFromFile(file: FileSystem.File) {
 
 function exportTemporaryIdentityAtPath(fs: FileSystem.FileSystem, path: string) {
   return Effect.gen(function* () {
-    if (process.platform !== 'win32') {
+    if (runtimePlatform !== 'win32') {
       const info = yield* fs.stat(path).pipe(Effect.option);
       return Option.flatMap(info, exportTemporaryIdentity);
     }
     return yield* Effect.sync(() => {
       try {
-        return nativeExportTemporaryIdentity(nativeExportFileSystem?.statSync(path, {bigint: true}));
+        return nativeExportTemporaryIdentity(runtimePathStatSync(path));
       } catch {
         return Option.none();
       }

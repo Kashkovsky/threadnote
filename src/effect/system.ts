@@ -59,6 +59,8 @@ interface NativeFileSystemModuleShape {
     readonly O_RDONLY: number;
   };
   readonly promises: NativeFileSystemPromisesShape;
+  readonly fstatSync: (fd: number, options: {readonly bigint: true}) => RuntimeNativeFileStat;
+  readonly statSync: (path: string, options: {readonly bigint: true}) => RuntimeNativeFileStat;
 }
 
 interface NativePathModuleShape {
@@ -82,6 +84,16 @@ export interface RuntimeBigIntStats {
   readonly isDirectory: () => boolean;
   readonly isFile: () => boolean;
   readonly isSymbolicLink: () => boolean;
+}
+
+export interface RuntimeNativeFileStat {
+  readonly birthtime: Date;
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly mode: bigint;
+  readonly mtime: Date;
+  readonly size: bigint;
+  isFile(): boolean;
 }
 
 interface RuntimeDirectoryEntry {
@@ -131,6 +143,14 @@ export const runtimeOperatingSystemRelease = nativeOperatingSystemModule.release
 const nativeFileSystemModule = process.getBuiltinModule('fs') as NativeFileSystemModuleShape;
 const nativeFileSystemPromises = nativeFileSystemModule.promises;
 const nativePathModule = process.getBuiltinModule('path') as NativePathModuleShape;
+
+export function runtimeFileDescriptorStatSync(fd: number): RuntimeNativeFileStat {
+  return nativeFileSystemModule.fstatSync(fd, {bigint: true});
+}
+
+export function runtimePathStatSync(path: string): RuntimeNativeFileStat {
+  return nativeFileSystemModule.statSync(path, {bigint: true});
+}
 
 export type ProcessResourceUsageRuntime = 'bun' | 'node';
 
