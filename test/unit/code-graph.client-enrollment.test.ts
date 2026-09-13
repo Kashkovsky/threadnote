@@ -230,4 +230,25 @@ describe('automatic graph client enrollment', () => {
       );
     }).pipe(provideTestLayer(layer)),
   );
+
+  effectIt.effect('renews a signed-result worker before the five-minute admission deadline', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const first = yield* enrollGraphControlClient({
+        home: f.home,
+        scope,
+        client: f.client,
+        minimumValiditySeconds: 330,
+      });
+      yield* TestClock.adjust(3_300_000);
+      const renewed = yield* enrollGraphControlClient({
+        home: f.home,
+        scope,
+        client: f.client,
+        minimumValiditySeconds: 330,
+      });
+      expect(renewed.workerId).not.toBe(first.workerId);
+      expect(f.calls()).toBe(2);
+    }).pipe(provideTestLayer(layer)),
+  );
 });

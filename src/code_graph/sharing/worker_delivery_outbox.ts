@@ -216,6 +216,28 @@ export const readGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.readWo
   return replay;
 });
 
+/** List bounded metadata without loading every potentially large result blob on each retry tick. */
+export const listGraphWorkerDeliveryOutboxOperations = Effect.fn('codeGraph.sharing.listWorkerDeliveryOutbox')(
+  function* (threadnoteHome: string, scope: GraphWorkerDeliveryScope) {
+    if (!validScope(scope)) return yield* invalid();
+    return (yield* readOutbox(threadnoteHome, scope)).operations;
+  },
+);
+
+export const readGraphWorkerDeliveryOutboxOperation = Effect.fn('codeGraph.sharing.readWorkerDeliveryOperation')(
+  function* (threadnoteHome: string, scope: GraphWorkerDeliveryScope, operationId: string) {
+    if (!validScope(scope) || !SHA256_DIGEST.test(operationId)) return yield* invalid();
+    const operation = (yield* readOutbox(threadnoteHome, scope)).operations.find(
+      item => item.operationId === operationId,
+    );
+    if (operation === undefined) return undefined;
+    return {
+      operation,
+      artifact: yield* readOperationArtifact(threadnoteHome, scope, operation),
+    } satisfies GraphWorkerDeliveryReplay;
+  },
+);
+
 /** Call only after an exact accepted/duplicate/quarantined server response. */
 export const markGraphWorkerDeliveryAdmitted = Effect.fn('codeGraph.sharing.markWorkerDeliveryAdmitted')(
   function* (input: {

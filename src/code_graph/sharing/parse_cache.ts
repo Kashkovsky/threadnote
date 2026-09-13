@@ -38,6 +38,7 @@ import {lookupGraphShareTrustReceipt} from './trust.js';
 import {resolveGraphShareRepositoryClient} from './client_state.js';
 import {graphSharingContributionQueuePath, graphSharingLayout} from './layout.js';
 import {persistGraphSharePendingSignedCandidates, type GraphSharePendingSignedCandidate} from './signed_candidate.js';
+import {usesSignedGraphWorkerDelivery} from './worker_delivery.js';
 import {
   graphShareContributionRetryDelay,
   readContributionRetryState,
@@ -161,6 +162,7 @@ export const drainQueuedGraphShareContributions = Effect.fn('codeGraph.sharing.d
     const lockPath = `${graphSharingContributionQueuePath(path, root, input.identity.repositoryId)}.delivery.lock`;
     const trust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.identity.repositoryId);
     if (trust === undefined) return {sent: 0};
+    if (usesSignedGraphWorkerDelivery(trust)) return {sent: 0};
     if (trust.accessMode === 'read-only') {
       yield* prunePersistedGraphShareContributionQueue(input.threadnoteHome, input.identity.repositoryId, 'off');
       return {sent: 0};
