@@ -93,6 +93,23 @@ describe('Code Memory Link retrieval-primary agent study', () => {
       {numRuns: 20},
     );
   });
+
+  it('keeps the fully observed net contrast inside every prefix bound', () => {
+    const cells = fullCells().map((cell, index) => ({
+      ...cell,
+      goldCallBeforeAction: cell.taskKind === 'hidden-constraint' && cell.arm !== 'no-memory' && index % 11 === 0,
+    }));
+    const fullContrast = summarize(cells).contrast!;
+    const fullNet = fullContrast.wins - fullContrast.losses;
+    fc.assert(
+      fc.property(fc.subarray(cells), observed => {
+        const {contrastBounds} = summarize(observed);
+        expect(contrastBounds.minimumNetWins).toBeLessThanOrEqual(fullNet);
+        expect(contrastBounds.maximumNetWins).toBeGreaterThanOrEqual(fullNet);
+      }),
+      {numRuns: 20},
+    );
+  });
 });
 
 function fullCells(): CodeMemoryLinkAgentStudyCellV1[] {

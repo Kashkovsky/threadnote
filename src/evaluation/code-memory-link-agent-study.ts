@@ -36,6 +36,7 @@ export interface CodeMemoryLinkAgentStudyContrastV1 {
 
 export interface CodeMemoryLinkAgentStudyResultV1 {
   readonly assessable: boolean;
+  readonly assessmentBlockers: readonly string[];
   readonly assignmentHash: string;
   readonly candidate: {readonly buildIdentityHash: string; readonly commit: string};
   readonly completedCells: number;
@@ -88,9 +89,6 @@ export function evaluateCodeMemoryLinkAgentStudyV1(input: {
   }
   const allowedInsufficiency = 'external evidence hash is not in the code-reviewed release allowlist';
   const otherInsufficiencies = releaseEvaluation.gate.insufficiencies.filter(item => item !== allowedInsufficiency);
-  if (otherInsufficiencies.length > 0) {
-    throw new Error(`Code Memory Link study evidence is not replayable: ${otherInsufficiencies.join('; ')}`);
-  }
   const taskById = new Map(manifest.tasks.map(task => [task.taskId, task]));
   const cells: CodeMemoryLinkAgentStudyCellV1[] = trials.map((trial, index) => {
     const raw = receipts[index].rawEvidence;
@@ -116,7 +114,7 @@ export function evaluateCodeMemoryLinkAgentStudyV1(input: {
       validCallGold: trial.taskKind === 'hidden-constraint' && !!call?.goldCitationMatched,
     };
   });
-  return summarizeCodeMemoryLinkAgentStudyV1({
+  const summary = summarizeCodeMemoryLinkAgentStudyV1({
     assignmentHash: assignment.assignmentHash,
     candidate: manifest.candidate,
     cells,
@@ -133,6 +131,13 @@ export function evaluateCodeMemoryLinkAgentStudyV1(input: {
         .map(task => ({clientId: client.clientId, taskId: task.taskId})),
     ),
   });
+  const assessable = summary.assessable && otherInsufficiencies.length === 0;
+  return {
+    ...summary,
+    assessable,
+    assessmentBlockers: otherInsufficiencies,
+    studyDecision: assessable ? summary.studyDecision : 'not-assessable',
+  };
 }
 
 export function summarizeCodeMemoryLinkAgentStudyV1(input: {
@@ -240,6 +245,7 @@ export function summarizeCodeMemoryLinkAgentStudyV1(input: {
     clientNonregression;
   return {
     assessable: complete,
+    assessmentBlockers: [],
     assignmentHash: input.assignmentHash,
     candidate: input.candidate,
     completedCells: input.cells.length,

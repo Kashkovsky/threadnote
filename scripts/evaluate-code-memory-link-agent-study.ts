@@ -3,10 +3,7 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Console, Effect, FileSystem} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
-import {
-  assertCodeMemoryLinkAgentAbRuntimeIdentity,
-  parseCodeMemoryLinkAgentAbTrialsJsonl,
-} from '../src/evaluation/code-memory-link-agent-ab.js';
+import {parseCodeMemoryLinkAgentAbTrialsJsonl} from '../src/evaluation/code-memory-link-agent-ab.js';
 import {
   parseCodeMemoryLinkAgentAttemptsJsonl,
   resolveCodeMemoryLinkAgentLedgerLayout,
@@ -14,7 +11,6 @@ import {
 } from '../src/evaluation/code-memory-link-agent-attempts.js';
 import {parseCodeMemoryLinkAgentEvidenceJsonl} from '../src/evaluation/code-memory-link-agent-evidence.js';
 import {evaluateCodeMemoryLinkAgentStudyV1} from '../src/evaluation/code-memory-link-agent-study.js';
-import {verifyManagedDevelopmentRuntimeForSource} from './development-runtime.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {readJsonFile, scriptArguments} from './effect/script.js';
 
@@ -51,11 +47,9 @@ const program = Effect.gen(function* () {
     }),
   );
   const result = evaluateCodeMemoryLinkAgentStudyV1({assignment, attempts, evidence, manifest, trials});
-  const runtime = yield* verifyManagedDevelopmentRuntimeForSource(options.candidateCommit);
-  yield* Effect.try({
-    try: () => assertCodeMemoryLinkAgentAbRuntimeIdentity({...result.candidate, dirty: false}, runtime),
-    catch: cause => ScriptError.make({message: 'Agent study candidate does not match the installed runtime.', cause}),
-  });
+  if (result.candidate.commit !== options.candidateCommit) {
+    return yield* ScriptError.make({message: 'Agent study candidate commit differs from the requested subject.'});
+  }
   yield* Console.log(JSON.stringify(result, undefined, 2));
   if (!result.assessable) return yield* ScriptError.make({message: 'Agent study evidence is not complete.'});
 });
