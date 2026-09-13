@@ -127,7 +127,6 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
         const prior = yield* readAdmissionState(target, input.initialPolicy);
         const receipt = prior.receipts.find(item => item.announcement.body.idempotencyKey === body.idempotencyKey);
         if (receipt === undefined) return undefined;
-        if ((yield* publishedSourceCommit(input)) === receipt.sourceCommit) return {status: 'stale-source' as const};
         const currentWorker = yield* requireWorker();
         const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
         if (
@@ -136,6 +135,7 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
           currentWorker.expiresAt <= now
         )
           return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
+        if ((yield* publishedSourceCommit(input)) === receipt.sourceCommit) return {status: 'stale-source' as const};
         return admitGraphWorkerAnnouncement(prior, {
           announcement: signed,
           authority: {...authority, graphAbi: receipt.graphAbi, expiresAt: currentWorker.expiresAt},
