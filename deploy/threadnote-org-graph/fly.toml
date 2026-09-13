@@ -1,0 +1,61 @@
+app = "threadnote-org-graph-e2e"
+primary_region = "fra"
+kill_signal = "SIGTERM"
+kill_timeout = 60
+
+[build]
+  dockerfile = "Dockerfile"
+  ignorefile = "Dockerfile.dockerignore"
+
+[deploy]
+  strategy = "rolling"
+  max_unavailable = 1
+  wait_timeout = "10m"
+
+[env]
+  THREADNOTE_GRAPH_CONTROL_ORIGIN = "https://threadnote-org-graph-e2e.fly.dev"
+  THREADNOTE_GRAPH_REGISTRY_ORIGIN = "https://threadnote-org-registry-e2e.fly.dev"
+  THREADNOTE_GRAPH_CANONICAL_REPOSITORY = "threadnote-org-e2e/canonical"
+  THREADNOTE_GRAPH_WORKER_REPOSITORY = "threadnote-org-e2e/worker"
+  THREADNOTE_GRAPH_GIT_REMOTE_URL = "git@github.com:Kashkovsky/threadnote-org-e2e.git"
+  THREADNOTE_GRAPH_GIT_REMOTE_IDENTITY = "github.com/Kashkovsky/threadnote-org-e2e"
+  THREADNOTE_GRAPH_GIT_BRANCH = "main"
+  THREADNOTE_GRAPH_ORGANIZATION = "threadnote-org"
+  THREADNOTE_GRAPH_OAUTH_ISSUER = "https://threadnote-org.eu.auth0.com/"
+  THREADNOTE_GRAPH_OAUTH_AUDIENCE = "https://threadnote-org-graph-e2e.fly.dev"
+  THREADNOTE_AUTH0_REGISTRY_M2M_ISSUER = "https://threadnote-org.eu.auth0.com/"
+  THREADNOTE_AUTH0_REGISTRY_M2M_ORIGIN = "https://threadnote-org-registry-e2e.fly.dev"
+  THREADNOTE_AUTH0_REGISTRY_M2M_AUDIENCE = "https://threadnote-org-registry-e2e.fly.dev"
+
+[[mounts]]
+  source = "threadnote_org_graph"
+  destination = "/data"
+  snapshot_retention = 14
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 10
+    hard_limit = 20
+
+  [[http_service.checks]]
+    grace_period = "120s"
+    interval = "15s"
+    method = "GET"
+    timeout = "5s"
+    path = "/readyz"
+    [http_service.checks.headers]
+      Host = "threadnote-org-graph-e2e.fly.dev"
+      X-Forwarded-Proto = "https"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  cpu_kind = "shared"
+  cpus = 2
+  memory = "1024mb"
