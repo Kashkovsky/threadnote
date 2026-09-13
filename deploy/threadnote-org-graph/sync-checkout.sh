@@ -31,6 +31,12 @@ sync_once() {
       return 1
     }
   fi
+  if [[ -f /opt/threadnote/graph-publisher-preflight.js ]]; then
+    bun /opt/threadnote/graph-publisher-preflight.js >/dev/null || {
+      echo 'Publisher authority changed after source synchronization.' >&2
+      return 1
+    }
+  fi
 }
 
 if [[ "${1:-}" == '--once' ]]; then
