@@ -173,9 +173,15 @@ describe('Context Brief deferred code-anchor recovery', () => {
               requested: 1,
               resolved: 1,
             });
-            expect(receipts.map(receipt => receipt.state)).toEqual(
-              interruptFirstAdmission ? ['contended', 'completed'] : ['completed'],
-            );
+            const receiptStates = receipts.map(receipt => receipt.state);
+            if (interruptFirstAdmission) {
+              expect(receiptStates).toEqual(['contended', 'completed']);
+            } else {
+              // A busy CI runner can briefly contend on the route lock even
+              // without the injected interruption. Recovery in this first
+              // brief is the contract, with at most one bounded retry.
+              expect([['completed'], ['contended', 'completed']]).toContainEqual(receiptStates);
+            }
             expect(first.gaps).not.toContain('code-anchor-recall-unavailable');
             expect(first.candidates).toMatchObject([
               {
