@@ -14,12 +14,14 @@ const EnrollmentRequest = Schema.Struct({
   idempotencyKey: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
   profileDigest: Digest,
   repositoryId: Schema.String.check(Schema.isPattern(SHA256_HEX)),
+  signingPublicKey: Schema.optionalKey(Schema.String.check(Schema.isPattern(SHA256_HEX))),
 });
 const Worker = Schema.Struct({
   expiresAt: PositiveTime,
   operationId: Digest,
   principalId: Digest,
   workerId: Schema.String.check(Schema.isPattern(/^gw_[0-9a-f]{32}$/u)),
+  signingPublicKey: Schema.optionalKey(Schema.String.check(Schema.isPattern(SHA256_HEX))),
 });
 const Document = Schema.Struct({
   authority: Digest,
@@ -131,6 +133,8 @@ export const enrollGraphControlWorker = Effect.fn('codeGraph.sharing.enrollContr
       const previous = retained.find(record => record.operationId === operationId);
       if (previous !== undefined && previous.principalId !== principalId)
         return yield* graphSharingFailure('Graph worker enrollment ownership is invalid.');
+      if (previous !== undefined && previous.signingPublicKey !== input.request.signingPublicKey)
+        return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
       if (
         previous === undefined &&
         (retained.length >= 1024 || retained.filter(record => record.principalId === principalId).length >= 32)
@@ -141,6 +145,7 @@ export const enrollGraphControlWorker = Effect.fn('codeGraph.sharing.enrollContr
         expiresAt: Math.min(expiresAt, now + 3600),
         operationId,
         principalId,
+        ...(input.request.signingPublicKey === undefined ? {} : {signingPublicKey: input.request.signingPublicKey}),
         workerId: `gw_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll('-', '')}`,
       };
       // Recheck after state I/O and immediately before a durable write or replay acknowledgement.
@@ -172,6 +177,7 @@ export const enrollGraphControlWorker = Effect.fn('codeGraph.sharing.enrollContr
           repositoryId: input.initialPolicy.repositoryId,
           schemaVersion: 1 as const,
           workerId: committed.workerId,
+          ...(committed.signingPublicKey === undefined ? {} : {signingPublicKey: committed.signingPublicKey}),
         },
       };
     }),
@@ -206,6 +212,7 @@ export const requireGraphControlWorker = Effect.fn('codeGraph.sharing.requireCon
     expiresAt: Math.min(worker.expiresAt, current.expiresAt, input.principal.expiresAt),
     principalId,
     workerId: worker.workerId,
+    ...(worker.signingPublicKey === undefined ? {} : {signingPublicKey: worker.signingPublicKey}),
   };
 });
 

@@ -22,7 +22,34 @@ export const makeGraphShareRegistryReader = Effect.fn('codeGraph.sharing.registr
     catch: () => graphSharingFailure('OCI registry reference is invalid.'),
   });
   const request = yield* makeGraphShareRegistryHttp(target);
+  const manifestResponse = (reference: string, maximum: number) =>
+    Effect.gen(function* () {
+      const response = yield* request(
+        `/v2/${target.repository}/manifests/${reference}`,
+        maximum,
+        GRAPH_SHARE_OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+      );
+      const digest = sha256Digest(response.bytes);
+      if (
+        response.headers['content-type']?.split(';')[0]?.trim() !== GRAPH_SHARE_OCI_IMAGE_MANIFEST_MEDIA_TYPE ||
+        (response.headers['docker-content-digest'] !== undefined &&
+          response.headers['docker-content-digest'] !== digest)
+      )
+        return yield* graphSharingFailure('Registry manifest verification failed.');
+      return {bytes: response.bytes, digest};
+    });
   return {
+    readWorkerManifest: (digest: string) =>
+      Effect.gen(function* () {
+        const expected = yield* Effect.try({
+          try: () => parseSha256Digest(digest),
+          catch: () => graphSharingFailure('Worker manifest digest is invalid.'),
+        });
+        const response = yield* manifestResponse(expected, 8192);
+        if (response.digest !== expected)
+          return yield* graphSharingFailure('Worker manifest digest does not match its bytes.');
+        return response.bytes;
+      }),
     readBlob: (digest: string, expectedSize?: number) =>
       Effect.gen(function* () {
         const expected = yield* Effect.try({
@@ -57,19 +84,7 @@ export const makeGraphShareRegistryReader = Effect.fn('codeGraph.sharing.registr
           try: () => assertGraphShareDiscoveryTag(tag),
           catch: () => graphSharingFailure('Registry discovery tag is invalid.'),
         });
-        const response = yield* request(
-          `/v2/${target.repository}/manifests/${tag}`,
-          1_048_576,
-          GRAPH_SHARE_OCI_IMAGE_MANIFEST_MEDIA_TYPE,
-        );
-        const digest = sha256Digest(response.bytes);
-        if (
-          response.headers['content-type']?.split(';')[0]?.trim() !== GRAPH_SHARE_OCI_IMAGE_MANIFEST_MEDIA_TYPE ||
-          (response.headers['docker-content-digest'] !== undefined &&
-            response.headers['docker-content-digest'] !== digest)
-        ) {
-          return yield* graphSharingFailure('Registry manifest verification failed.');
-        }
+        const response = yield* manifestResponse(tag, 1_048_576);
         const json = yield* decodeJsonBytes(response.bytes).pipe(
           Effect.mapError(() => graphSharingFailure('Registry manifest is invalid.')),
         );
@@ -77,7 +92,7 @@ export const makeGraphShareRegistryReader = Effect.fn('codeGraph.sharing.registr
           try: () => parseGraphShareOciDescriptor(json),
           catch: () => graphSharingFailure('Registry manifest is unsupported.'),
         });
-        return {bytes: response.bytes, descriptor, digest};
+        return {bytes: response.bytes, descriptor, digest: response.digest};
       }),
   };
 });

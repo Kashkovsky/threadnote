@@ -2,7 +2,10 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Clock, Deferred, Effect, Fiber, FileSystem, Layer, Redacted} from 'effect';
 import {TestClock} from 'effect/testing';
-import {enrollGraphControlClient} from '../../src/code_graph/sharing/client_enrollment.js';
+import {
+  enrollGraphControlClient,
+  prepareGraphControlWorkerIdentity,
+} from '../../src/code_graph/sharing/client_enrollment.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingUnavailable} from '../../src/code_graph/sharing/errors.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -23,6 +26,7 @@ const fixture = Effect.fn('test.clientEnrollment.fixture')(function* () {
   let calls = 0;
   let lostAcknowledgement = false;
   const operations = new Map<string, {expiresAt: number; workerId: string}>();
+  const requests: {idempotencyKey: string; signingPublicKey?: string}[] = [];
   const credential = () => ({
     authorization: Redacted.make('Bearer synthetic-private-token'),
     expiresAt: 9_999_999_999,
@@ -35,9 +39,15 @@ const fixture = Effect.fn('test.clientEnrollment.fixture')(function* () {
       Effect.gen(function* () {
         calls++;
         expect(pathname).toBe('/v1/enroll');
-        const request = body as {idempotencyKey: string; repositoryId: string; profileDigest: string};
+        const request = body as {
+          idempotencyKey: string;
+          repositoryId: string;
+          profileDigest: string;
+          signingPublicKey?: string;
+        };
         expect(request.repositoryId).toBe(scope.repositoryId);
         expect(request.profileDigest).toBe(scope.profileDigest);
+        requests.push({idempotencyKey: request.idempotencyKey, signingPublicKey: request.signingPublicKey});
         const operation = principal + ':' + request.idempotencyKey;
         let worker = operations.get(operation);
         if (worker === undefined) {
@@ -57,6 +67,7 @@ const fixture = Effect.fn('test.clientEnrollment.fixture')(function* () {
           credential: current,
           body: {
             ...worker,
+            ...(request.signingPublicKey === undefined ? {} : {signingPublicKey: request.signingPublicKey}),
             principalId: current.principalId,
             profileDigest: scope.profileDigest,
             repositoryId: scope.repositoryId,
@@ -69,6 +80,7 @@ const fixture = Effect.fn('test.clientEnrollment.fixture')(function* () {
     home,
     client,
     operations,
+    requests,
     calls: () => calls,
     switchPrincipal: () => {
       principal = 'second';
@@ -81,6 +93,60 @@ const fixture = Effect.fn('test.clientEnrollment.fixture')(function* () {
 });
 
 describe('automatic graph client enrollment', () => {
+  effectIt.effect(
+    'automatically persists a signing identity through lost acknowledgements and rotates it for a different principal',
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        let authorized = true;
+        const prepare = () =>
+          prepareGraphControlWorkerIdentity({
+            home: f.home,
+            scope,
+            client: f.client,
+            isAuthorized: Effect.sync(() => authorized),
+          });
+        f.loseAcknowledgement();
+        expect((yield* Effect.result(prepare()))._tag).toBe('Failure');
+        const first = yield* prepare();
+        expect(first.worker.signingPublicKey).toBe(first.signer.publicKey);
+        expect((yield* prepare()).worker).toEqual(first.worker);
+        expect(f.calls()).toBe(2);
+        expect(f.operations.size).toBe(1);
+        expect(f.requests).toHaveLength(2);
+        expect(f.requests[0]).toEqual(f.requests[1]);
+        expect(f.requests[0].signingPublicKey).toBe(first.signer.publicKey);
+        expect(yield* first.stillAuthorized).toBe(true);
+        f.switchPrincipal();
+        expect(yield* first.stillAuthorized).toBe(false);
+        const other = yield* prepare();
+        expect(other.signer.publicKey).not.toBe(first.signer.publicKey);
+        expect(other.worker.principalId).not.toBe(first.worker.principalId);
+        authorized = false;
+        expect(yield* other.stillAuthorized).toBe(false);
+        expect((yield* Effect.result(prepare()))._tag).toBe('Failure');
+        expect(f.calls()).toBe(3);
+      }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('enrolls and replays a signing identity separately from unsigned or rotated-key enrollment', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const unsigned = yield* f.enroll();
+      const enroll = (signingPublicKey: string) =>
+        enrollGraphControlClient({home: f.home, scope, client: f.client, signingPublicKey});
+      const first = yield* enroll('a'.repeat(64));
+      expect(first.signingPublicKey).toBe('a'.repeat(64));
+      expect(first.workerId).not.toBe(unsigned.workerId);
+      expect((yield* enroll('a'.repeat(64))).workerId).toBe(first.workerId);
+      expect(f.calls()).toBe(2);
+      const second = yield* enroll('b'.repeat(64));
+      expect(second.workerId).not.toBe(first.workerId);
+      expect(second.signingPublicKey).toBe('b'.repeat(64));
+      expect(f.calls()).toBe(3);
+    }).pipe(provideTestLayer(layer)),
+  );
+
   effectIt.effect('does not return a cached worker after authorization is revoked during credential loading', () =>
     Effect.gen(function* () {
       const f = yield* fixture();

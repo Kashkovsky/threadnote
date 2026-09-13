@@ -52,6 +52,45 @@ const fixture = Effect.fn('test.graphEnrollmentFixture')(function* () {
 });
 
 describe('principal-owned graph worker enrollment', () => {
+  effectIt.effect('binds a signing key to one enrollment operation and refuses key substitution on replay', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const request = {...f.request, signingPublicKey: 'a'.repeat(64)};
+      const first = yield* enrollGraphControlWorker({...f.input, request});
+      expect(first.body.signingPublicKey).toBe(request.signingPublicKey);
+      expect((yield* requireGraphControlWorker({...f.input, workerId: first.body.workerId})).signingPublicKey).toBe(
+        request.signingPublicKey,
+      );
+      expect((yield* enrollGraphControlWorker({...f.input, request})).body).toEqual(first.body);
+      const before = yield* f.fs.readFile(f.target);
+      expect(
+        Result.isFailure(
+          yield* enrollGraphControlWorker({...f.input, request: {...request, signingPublicKey: 'b'.repeat(64)}}).pipe(
+            Effect.result,
+          ),
+        ),
+      ).toBe(true);
+      expect(yield* f.fs.readFile(f.target)).toEqual(before);
+      expect(Result.isFailure(yield* enrollGraphControlWorker(f.input).pipe(Effect.result))).toBe(true);
+      expect(yield* f.fs.readFile(f.target)).toEqual(before);
+      expect((yield* requireGraphControlWorker({...f.input, workerId: first.body.workerId})).signingPublicKey).toBe(
+        request.signingPublicKey,
+      );
+      const decoded = yield* readGraphWorkerEnrollmentRequest(
+        Stream.make(new TextEncoder().encode(JSON.stringify(request))),
+      );
+      expect(decoded).toEqual(request);
+      const invalid = {...request, signingPublicKey: 'not-a-key'};
+      expect(
+        Result.isFailure(
+          yield* readGraphWorkerEnrollmentRequest(Stream.make(new TextEncoder().encode(JSON.stringify(invalid)))).pipe(
+            Effect.result,
+          ),
+        ),
+      ).toBe(true);
+    }).pipe(provideTestLayer(layer)),
+  );
+
   effectIt.effect('requires the owning principal and current unexpired grant for worker use', () =>
     TestClock.withLive(
       Effect.gen(function* () {
