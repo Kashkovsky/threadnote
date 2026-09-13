@@ -235,4 +235,24 @@ describe('authenticated graph control transport', () => {
       expect(f.httpCalls()).toBe(1);
     }).pipe(provideTestLayer(layer)),
   );
+
+  effectIt.effect('bounds the whole result request across a 401 credential retry', () =>
+    Effect.gen(function* () {
+      const secondCredential = yield* Deferred.make<void>();
+      let loads = 0;
+      const f = yield* fixture(() => new Response(null, {status: 401}), {
+        beforeCredential: Effect.gen(function* () {
+          if (++loads === 2) {
+            yield* Deferred.succeed(secondCredential, undefined);
+            yield* Effect.sleep('600 seconds');
+          }
+        }),
+      });
+      const request = yield* f.client.request('POST', '/v1/results', {}).pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(secondCredential);
+      yield* TestClock.adjust('311 seconds');
+      expect((yield* Fiber.join(request))._tag).toBe('Failure');
+      expect(f.httpCalls()).toBe(1);
+    }).pipe(provideTestLayer(layer)),
+  );
 });

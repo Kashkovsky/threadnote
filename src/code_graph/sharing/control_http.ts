@@ -25,8 +25,8 @@ export const makeAuthenticatedGraphControlClient = Effect.fn('codeGraph.sharing.
     pathname: string,
     body?: unknown,
     isAuthorized?: Effect.Effect<boolean, E, R>,
-  ) =>
-    Effect.gen(function* () {
+  ) => {
+    const run = Effect.gen(function* () {
       const allowed =
         method === 'POST'
           ? capability === 'graph:contribute' &&
@@ -109,5 +109,15 @@ export const makeAuthenticatedGraphControlClient = Effect.fn('codeGraph.sharing.
       }
       return yield* graphSharingFailure('Graph control authentication retry limit reached.');
     });
+    // A 401 replay must share the same result deadline, including credential refresh.
+    return pathname === '/v1/results'
+      ? run.pipe(
+          Effect.timeout(310_000),
+          Effect.mapError(error =>
+            Schema.is(GraphSharingError)(error) ? error : graphSharingUnavailable('Graph control request failed.'),
+          ),
+        )
+      : run;
+  };
   return {request, credentials};
 });
