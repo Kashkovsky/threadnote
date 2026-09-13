@@ -94,6 +94,7 @@ render_expected_launcher() {
     cli) launcher_mode_argument="" ;;
     mcp) launcher_mode_argument=" mcp-broker" ;;
     credential-auth0-m2m) launcher_mode_argument=" __credential-auth0-m2m" ;;
+    credential-registry-auth0-m2m) launcher_mode_argument=" __credential-registry-auth0-m2m" ;;
     *) die "Unknown launcher mode: $launcher_mode" ;;
   esac
   printf '%s\n' \
@@ -670,6 +671,7 @@ launcher_directory="$(printf '%s\n' "$launcher_directory" | normalize_relative_p
 launcher_path="$launcher_directory/threadnote"
 mcp_launcher_path="$launcher_directory/threadnote-mcp-server"
 auth0_m2m_credential_launcher_path="$launcher_directory/threadnote-credential-auth0-m2m"
+auth0_m2m_registry_credential_launcher_path="$launcher_directory/docker-credential-threadnote-auth0-m2m"
 release_root_physical="$(cd "$release_root" && pwd -P)"
 verify_managed_launcher \
   "$launcher_path" \
@@ -686,6 +688,11 @@ verify_managed_launcher \
   credential-auth0-m2m \
   "$release_root_physical/threadnote" \
   "$temporary_root/expected-threadnote-auth0-m2m-credential-launcher"
+verify_managed_launcher \
+  "$auth0_m2m_registry_credential_launcher_path" \
+  credential-registry-auth0-m2m \
+  "$release_root_physical/threadnote" \
+  "$temporary_root/expected-threadnote-auth0-m2m-registry-credential-launcher"
 if [ "$launcher_directory_is_default" = true ]; then
   configure_default_command_path
 fi

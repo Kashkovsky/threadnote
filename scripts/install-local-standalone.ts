@@ -412,7 +412,7 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
         });
       }
       const managedFileSnapshots: LocalFileSnapshot[] = [];
-      for (const mode of ['cli', 'mcp', 'credential-auth0-m2m'] as const) {
+      for (const mode of ['cli', 'mcp', 'credential-auth0-m2m', 'credential-registry-auth0-m2m'] as const) {
         for (const kind of managedCommandLauncherKinds(system.platform)) {
           managedFileSnapshots.push(
             yield* captureFileSnapshot(fs, yield* commandLauncherPath(mode, kind), `${mode} ${kind} launcher`, 0o755),
@@ -853,7 +853,7 @@ const verifyLaunchers = Effect.fn('developmentInstall.verifyLaunchers')(function
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
   let cliLauncher = '';
-  for (const mode of ['cli', 'mcp', 'credential-auth0-m2m'] as const) {
+  for (const mode of ['cli', 'mcp', 'credential-auth0-m2m', 'credential-registry-auth0-m2m'] as const) {
     for (const kind of managedCommandLauncherKinds(system.platform)) {
       const [launcher, expected] = yield* Effect.all([
         commandLauncherPath(mode, kind),

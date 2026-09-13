@@ -38,10 +38,19 @@ interface Auth0M2MGraphCredentialConfig {
   readonly subject: string;
 }
 
-interface CredentialDependencies {
+export interface Auth0M2MTokenDependencies {
   readonly fetch: (url: URL, init: RequestInit) => Promise<Response>;
   readonly key: JWTVerifyGetKey;
   readonly now: () => number;
+}
+
+export interface Auth0M2MTokenAuthority {
+  readonly audience: string;
+  readonly clientId: string;
+  readonly clientSecret: string;
+  readonly issuer: string;
+  readonly scope: string;
+  readonly subject: string;
 }
 
 /** No diagnostic or error from this boundary may contain the secret, token, or Auth0 response. */
@@ -141,7 +150,7 @@ export function parseAuth0M2MGraphCredentialConfig(environment: NodeJS.ProcessEn
 export async function getAuth0M2MGraphCredential(
   rawRequest: unknown,
   environment: NodeJS.ProcessEnv,
-  dependencies?: Partial<CredentialDependencies>,
+  dependencies?: Partial<Auth0M2MTokenDependencies>,
 ): Promise<{
   readonly accessToken: string;
   readonly audience: string;
@@ -163,6 +172,22 @@ export async function getAuth0M2MGraphCredential(
   )
     throw credentialFailure();
 
+  const token = await requestVerifiedAuth0M2MToken({...config, scope: request.scopes[0]}, dependencies);
+  return {
+    accessToken: token.accessToken,
+    audience: config.audience,
+    expiresAt: token.expiresAt,
+    issuer: config.issuer,
+    schemaVersion: 1,
+    subject: config.subject,
+  };
+}
+
+/** Shared verifier for distinct control and registry M2M clients; callers own exact local binding checks. */
+export async function requestVerifiedAuth0M2MToken(
+  config: Auth0M2MTokenAuthority,
+  dependencies?: Partial<Auth0M2MTokenDependencies>,
+): Promise<{readonly accessToken: string; readonly expiresAt: number}> {
   const fetch_ = dependencies?.fetch ?? fetch;
   const now = dependencies?.now ?? Date.now;
   const key =
@@ -181,7 +206,7 @@ export async function getAuth0M2MGraphCredential(
         client_id: config.clientId,
         client_secret: config.clientSecret,
         grant_type: 'client_credentials',
-        scope: request.scopes[0],
+        scope: config.scope,
       }),
       redirect: 'error',
       signal: AbortSignal.timeout(5000),
@@ -202,14 +227,10 @@ export async function getAuth0M2MGraphCredential(
       requiredClaims: ['sub', 'iat', 'exp'],
     });
     const receivedAt = Math.floor(now() / 1000);
-    validateClaims(payload, config, request.scopes[0], startedAt, receivedAt, body.expires_in);
+    validateClaims(payload, config, startedAt, receivedAt, body.expires_in);
     return {
       accessToken: body.access_token,
-      audience: config.audience,
       expiresAt: payload.exp!,
-      issuer: config.issuer,
-      schemaVersion: 1,
-      subject: config.subject,
     };
   } catch {
     throw credentialFailure();
@@ -238,8 +259,7 @@ function parseTokenResponse(value: string): {access_token: string; expires_in: n
 
 function validateClaims(
   payload: JWTPayload,
-  config: Auth0M2MGraphCredentialConfig,
-  scope: string,
+  config: Auth0M2MTokenAuthority,
   startedAt: number,
   receivedAt: number,
   expiresIn: number,
@@ -266,7 +286,7 @@ function validateClaims(
     expiresAt! - issuedAt! > MAX_TOKEN_LIFETIME_SECONDS ||
     expiresAt! <= issuedAt! ||
     Math.abs(expiresAt! - startedAt - expiresIn) > CLOCK_TOLERANCE_SECONDS + (receivedAt - startedAt) ||
-    payload.scope !== scope ||
+    payload.scope !== config.scope ||
     (payload.gty !== undefined && payload.gty !== 'client-credentials')
   )
     throw credentialFailure();

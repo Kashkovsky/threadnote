@@ -19,6 +19,8 @@ const HelperResponse = Schema.Struct({
 export interface GraphShareRegistryCredential {
   readonly username: Redacted.Redacted<string>;
   readonly authorization: Redacted.Redacted<string>;
+  /** When set, the Basic credential may only be sent to this exact bearer-token realm. */
+  readonly allowedBearerRealm?: string;
 }
 
 /** Called only after the registry target is covered by the caller's profile trust. */
@@ -51,7 +53,7 @@ export const makeGraphShareRegistryCredentialLoader = Effect.fn('codeGraph.shari
             allowFailure: true,
             input: new TextEncoder().encode(`${target.registry}\n`),
             maxOutputBytes: 16_384,
-            timeoutMs: 5_000,
+            timeoutMs: selected === 'threadnote-auth0-m2m' ? 10_000 : 5_000,
           })
           .pipe(Effect.mapError(() => graphSharingFailure('Registry credential helper is unavailable.')));
         if (result.exitCode !== 0) return yield* graphSharingFailure('Registry credential helper denied access.');
@@ -77,6 +79,7 @@ export const makeGraphShareRegistryCredentialLoader = Effect.fn('codeGraph.shari
           authorization: Redacted.make(
             `Basic ${Buffer.from(`${credential.Username}:${credential.Secret}`).toString('base64')}`,
           ),
+          ...(selected === 'threadnote-auth0-m2m' ? {allowedBearerRealm: `${target.origin}/zot/auth/token`} : {}),
         } satisfies GraphShareRegistryCredential;
       });
   },

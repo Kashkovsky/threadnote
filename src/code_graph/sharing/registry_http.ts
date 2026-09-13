@@ -117,6 +117,11 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
     const credential = initialCredential ?? (yield* credentials());
     yield* guard;
     initialCredential = undefined;
+    if (
+      credential?.allowedBearerRealm !== undefined &&
+      (challenge.kind !== 'bearer' || challenge.realm !== credential.allowedBearerRealm)
+    )
+      return yield* graphSharingFailure('Registry authentication realm is not trusted for this credential.');
     if (challenge.kind === 'basic') {
       if (credential === undefined)
         return yield* graphSharingFailure('Registry requires a configured credential helper.');
