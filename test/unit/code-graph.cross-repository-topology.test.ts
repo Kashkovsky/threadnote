@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import type {CodeGraphCrossRepositoryBridgeV1} from '../../src/code_graph/cross_repository/resolver.js';
@@ -133,7 +134,8 @@ describe('cross-repository topology projection', () => {
     ).toThrow('generation repository snapshot');
   });
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'is invariant under complete bridge and repository permutations',
     {
       bridgeOrder: FC.shuffledSubarray([0, 1, 2], {maxLength: 3, minLength: 3}),
@@ -160,7 +162,8 @@ describe('cross-repository topology projection', () => {
     {fastCheck: {numRuns: 60}},
   );
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'truncates deterministically for bounded node, edge, and evidence budgets',
     {
       maxEdges: FC.integer({max: 3, min: 0}),
@@ -197,7 +200,8 @@ describe('cross-repository topology projection', () => {
     {fastCheck: {numRuns: 80}},
   );
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'conserves every bridge in repository aggregates and every package bridge in component aggregates',
     {
       packageCount: FC.integer({max: 12, min: 1}),

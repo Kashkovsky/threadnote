@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import fc from 'fast-check';
 import {Clock, Effect} from 'effect';
@@ -253,7 +254,8 @@ describe('code graph Workset Search V2 core', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'preserves the ranked prefix when the logical evidence budget increases',
     {budgets: fc.tuple(fc.integer({min: 1, max: 48}), fc.integer({min: 1, max: 48}))},
     ({budgets: [leftBudget, rightBudget]}) =>
@@ -360,7 +362,8 @@ describe('code graph Workset Search V2 core', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'is invariant to bounded asynchronous repository completion order',
     {completionOrder: fc.shuffledSubarray([0, 1, 2, 3], {minLength: 4, maxLength: 4})},
     ({completionOrder}) =>

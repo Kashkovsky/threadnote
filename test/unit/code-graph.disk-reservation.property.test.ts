@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
@@ -55,7 +56,8 @@ describe('code graph disk reservation ledger', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'rejects path-bearing, control-bearing, and non-runtime process identities',
     {
       processStartIdentity: fc.oneof(
@@ -91,7 +93,8 @@ describe('code graph disk reservation ledger', () => {
     {fastCheck: {numRuns: 300}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'canonically round trips bounded receipts without path-bearing fields',
     {
       bytes: fc.integer({max: 2 ** 42, min: 0}),
@@ -149,7 +152,8 @@ describe('code graph disk reservation ledger', () => {
     {fastCheck: {numRuns: 300}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'aggregates every receipt permutation deterministically with safe saturation',
     {
       entries: fc.array(
@@ -186,7 +190,8 @@ describe('code graph disk reservation ledger', () => {
     {fastCheck: {numRuns: 300}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'projects shared filesystem demand once and hashes only platform plus device identity',
     {
       freelist: fc.integer({max: 2 ** 40, min: 0}),

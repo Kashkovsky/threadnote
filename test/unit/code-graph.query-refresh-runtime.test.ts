@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Context, Effect, FileSystem, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {describe, expect} from 'vitest';
 import {
   observeCodeGraphAdmissionEnvironment,
@@ -197,7 +198,8 @@ describe('query runtime probe policy', () => {
       }).pipe(provideTestLayer(dependencies), TestClock.withLive),
     );
 
-    effectIt.effect.prop(
+    fcEffectProp(
+      effectIt,
       `preserves cold-build, refresh, and stale-result policy for ${operation} across runtime validity`,
       {
         refresh: FC.constantFrom(undefined, false, true),

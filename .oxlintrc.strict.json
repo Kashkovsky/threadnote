@@ -101,6 +101,7 @@
     "effecttsgo/schema-number": "error",
     "effecttsgo/schema-opaque-instance-member": "error",
     "effecttsgo/schema-struct-with-tag": "error",
+    "effecttsgo/schema-sync": "off",
     "effecttsgo/schema-sync-in-effect": "error",
     "effecttsgo/schema-union-of-literals": "error",
     "effecttsgo/scope-in-layer-effect": "error",

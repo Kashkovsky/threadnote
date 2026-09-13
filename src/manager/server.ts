@@ -378,7 +378,10 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
               Ref.set(automaticCompactionStatus, status),
             ),
           );
-          const actualPort = server.address._tag === 'TcpAddress' ? server.address.port : (options.uiPort ?? 0);
+          const actualPort =
+            server.address._tag === 'InetAddressV4' || server.address._tag === 'InetAddressV6'
+              ? server.address.port
+              : (options.uiPort ?? 0);
           const url = `http://127.0.0.1:${actualPort}/?token=${encodeURIComponent(token)}`;
           yield* Console.log(`Threadnote manager: ${url}`);
           yield* Console.log('Press Ctrl-C to stop the manager.');

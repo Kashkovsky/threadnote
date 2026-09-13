@@ -1,9 +1,10 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   type CodeGraphVectorRetirementCapacityProtector,
   deleteCodeGraphVectorPointerWithRetirement,
@@ -18,7 +19,8 @@ const capacityOptions = {capacityProtector: identityCapacityProtector} as const;
 
 describe('code graph vector retirement schema properties', () => {
   effectIt.layer(VectorRetirementPropertyLayer)(layerIt => {
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'matches a bounded page model and keeps rejected old-writer deletes non-mutating',
       {
         oldDelete: FC.constantFrom(

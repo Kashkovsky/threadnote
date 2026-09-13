@@ -1,7 +1,8 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {describe, expect} from 'vitest';
 import type {RecallEligibilityPolicy} from '../../src/recall/eligibility.js';
@@ -186,7 +187,8 @@ describe('scoped recall posting joins', () => {
     }).pipe(withDatabase),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'matches independent scoped logical statistics and JavaScript ranking before every per-term limit',
     {
       rows: FC.array(generatedDocument, {minLength: 1, maxLength: 36}),

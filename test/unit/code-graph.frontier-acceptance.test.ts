@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path, Result} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {SystemInfo} from '../../src/effect/system.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {
@@ -238,7 +239,8 @@ describe('authenticated frontier acceptance', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'accepted generation and fence never decrease and denied transitions leave state unchanged',
     {
       candidates: FC.array(FC.tuple(FC.integer({min: 1, max: 8}), FC.integer({min: 1, max: 4})), {

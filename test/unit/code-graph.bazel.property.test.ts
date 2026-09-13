@@ -1,6 +1,7 @@
+import {fcEffectProp, fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, Option} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {extractBazelFacts} from '../../src/code_graph/languages/bazel/extractor.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
@@ -29,7 +30,8 @@ const permutedFiles = FC.array(FC.integer({max: 10_000, min: -10_000}), {
 );
 
 describe('Bazel workspace properties', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'keeps nested workspace ownership and target dependencies deterministic across inventory permutations',
     {permuted: permutedFiles},
     ({permuted}) =>
@@ -48,7 +50,8 @@ describe('Bazel workspace properties', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'recognizes canonical Bazel labels without accepting arbitrary source strings as graph dependencies',
     {
       packagePath: FC.constantFrom('', 'apps/web', 'libs/core/deep'),
@@ -72,7 +75,8 @@ describe('Bazel workspace properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'extracts equivalent Starlark structure from .axl and .bzl when typed annotations are stripped',
     {
       name: FC.stringMatching(/^[A-Za-z_][A-Za-z0-9_]{0,12}$/),

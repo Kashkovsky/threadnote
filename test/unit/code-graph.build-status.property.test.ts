@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS,
   type CodeGraphBuildState,
@@ -65,7 +66,8 @@ const resolutionTransactionCase = FC.record({
 });
 
 describe('code graph build-status properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'classifies terminal, exited, reused, stale, and active owners in fail-closed precedence order',
     {observation: observationCase},
     ({observation}) => {
@@ -94,7 +96,8 @@ describe('code graph build-status properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'admits abandoned nonterminal cleanup only without an exact protected build or matching lock owner',
     {
       liveness: FC.constantFrom(
@@ -145,7 +148,8 @@ describe('code graph build-status properties', () => {
     ).toBeUndefined();
   });
 
-  it.prop(
+  fcProp(
+    it,
     'round-trips bounded cache-admission observations and rejects invalid counters',
     {
       elapsedMilliseconds: FC.integer({max: 10_000_000, min: 0}),
@@ -172,7 +176,8 @@ describe('code graph build-status properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'never throws while validating arbitrary JSON values and only returns bounded schema-v1 records',
     {value: FC.jsonValue()},
     ({value}) => {
@@ -191,7 +196,8 @@ describe('code graph build-status properties', () => {
     {fastCheck: {numRuns: 500}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'round-trips bounded materialization activity and keeps TEMP database high-water internally consistent',
     {sample: materializationCase},
     ({sample}) => {
@@ -326,7 +332,8 @@ describe('code graph build-status properties', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'round-trips bounded resolution transaction stages and rejects negative timings',
     {sample: resolutionTransactionCase},
     ({sample}) => {
@@ -374,7 +381,8 @@ describe('code graph build-status properties', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'round-trips bounded activation progress and rejects negative transaction timings',
     {sample: activationCase},
     ({sample}) => {

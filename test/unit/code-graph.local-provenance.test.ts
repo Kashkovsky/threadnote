@@ -1,3 +1,4 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {execFileSync} from '../helpers/node-child-process.js';
 import {
@@ -23,7 +24,7 @@ import {describe, expect, it, it as effectIt} from '@effect/vitest';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect, FileSystem, Layer, Option, Path, PlatformError} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -681,7 +682,7 @@ describe('code graph private local provenance', () => {
                           if (Number(count) > 0 || grew) return Effect.succeed(count);
                           grew = true;
                           buffer.fill('x'.charCodeAt(0));
-                          return Effect.succeed(FileSystem.Size(buffer.byteLength));
+                          return Effect.succeed(buffer.byteLength);
                         }),
                       );
                     })
@@ -793,7 +794,8 @@ describe('code graph private local provenance', () => {
     }
   });
 
-  it.prop(
+  fcProp(
+    it,
     'round-trips bounded records and strips every local path from privacy-safe projections',
     {
       segment: FC.array(FC.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789'), {maxLength: 32, minLength: 1}).map(

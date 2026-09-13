@@ -1,9 +1,11 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {nextPersistentActivationBatchRows} from '../../src/code_graph/store.js';
 
 describe('code graph activation batching properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'keeps adaptive pages bounded and moves only in the direction implied by observed duration',
     {
       current: FC.integer({max: 100_000, min: 250}),

@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, Exit} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
@@ -57,7 +58,8 @@ function fixture(path: string, diagnostics: readonly string[] = []) {
 }
 
 describe('source-verified original contribution assembly', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'is order-independent and duplicate-idempotent without mutating source facts',
     {
       values: FC.array(FC.string({maxLength: 24}), {minLength: 1, maxLength: 12}),

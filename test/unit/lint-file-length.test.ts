@@ -1,9 +1,10 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {mkdir, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   FILE_LENGTH_OXLINT_CONFIG,
   PRODUCTION_FILE_LINE_LIMIT,
@@ -46,7 +47,8 @@ describe('production file length lint', () => {
     }
   });
 
-  it.prop(
+  fcProp(
+    it,
     'selects every production path deterministically regardless iteration order',
     {indexes: FC.uniqueArray(FC.integer({max: 30, min: 0}), {maxLength: 30})},
     ({indexes}) => {

@@ -1,10 +1,11 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {Database} from 'bun:sqlite';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Clock, Effect, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   cleanupCodeGraphVectorPointers,
   prepareCodeGraphVectorRetirement,
@@ -61,7 +62,8 @@ describe('code graph vector pointer maintenance', () => {
       ),
     );
 
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'matches the worktree plus expected-snapshot join model and is idempotent across model order',
       {
         matches: FC.array(FC.boolean(), {maxLength: 8, minLength: 1}),

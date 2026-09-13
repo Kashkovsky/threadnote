@@ -1,10 +1,11 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {execFile} from '../helpers/node-child-process.js';
 import {readFile, readdir, rm} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
 import {promisify} from '../helpers/node-util.js';
 import {expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {afterEach, describe} from 'vitest';
 import {
   CODE_GRAPH_WORKSET_FIXTURE_ARCHETYPES,
@@ -110,7 +111,8 @@ describe('deterministic code graph workset fixtures', () => {
     }
   });
 
-  it.prop(
+  fcProp(
+    it,
     'keeps identity and members stable when state override insertion order changes',
     {offset: FC.integer({max: 5, min: 0}), reverse: FC.boolean()},
     ({offset, reverse}) => {

@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   createMonorepoShareRecallStressFixture,
   MONOREPO_SHARE_RECALL_STRESS_MODES,
@@ -112,7 +113,8 @@ describe('recall monorepo/share stress fixture', () => {
     expect(challenger.summary.topMemoryIds[0]).toBe('tn_stress_p002_m0000');
   });
 
-  it.prop(
+  fcProp(
+    it,
     'keeps alias shape deterministic while preserving current targets and recovering sibling targets',
     {
       logicalMemoriesPerPackage: FC.integer({max: 16, min: 1}),

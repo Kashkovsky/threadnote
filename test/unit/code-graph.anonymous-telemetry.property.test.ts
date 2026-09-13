@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {succeedUndefined} from '../../src/effect/optional.js';
 import fc from 'fast-check';
@@ -146,7 +147,8 @@ describe('code graph anonymous telemetry', () => {
     );
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'emits quantity counters as closed power-of-two labels, never raw counts',
     {
       counters: fc.record({

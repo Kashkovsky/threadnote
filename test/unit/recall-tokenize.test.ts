@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {identifiers, indexTerms} from '../../src/recall/index_lexical.js';
 
 describe('recall tokenization', () => {
@@ -7,7 +8,8 @@ describe('recall tokenization', () => {
     expect(indexTerms('Пам’ять про Київ-2026')).toEqual(["пам'ять", 'пам', 'ять', 'про', 'київ-2026', 'київ', '2026']);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'is invariant under canonical Unicode composition',
     {
       parts: FC.array(FC.constantFrom('Київ', 'пам’ять', 'надійний', 'європейський-2026'), {

@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunPath from '@effect/platform-bun/BunPath';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Path} from 'effect';
@@ -14,7 +15,8 @@ const pathSegment = fc
   .string({minLength: 1, maxLength: 24, unit: fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789-_')})
   .filter(value => value !== '..');
 
-effectIt.effect.prop(
+fcEffectProp(
+  effectIt,
   'recognizes only canonical descendants at a complete path boundary (property)',
   {segment: pathSegment},
   ({segment}) =>

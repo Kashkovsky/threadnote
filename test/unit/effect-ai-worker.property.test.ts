@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Effect, Layer} from 'effect';
 import {
   isolatedLocalModelRuntimeLayer,
@@ -36,7 +37,8 @@ const echoRuntime: LocalModelRuntimeShape = {
 };
 
 describe('isolated local model worker protocol properties', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'preserves ordered requests across arbitrary UTF-8 byte boundaries and JSONL framing',
     {
       finalNewline: FC.boolean(),
@@ -94,7 +96,8 @@ describe('isolated local model worker protocol properties', () => {
     {fastCheck: {numRuns: 60}},
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'reports malformed lines without desynchronizing the next valid request',
     {
       finalNewline: FC.boolean(),
@@ -211,7 +214,8 @@ describe('isolated local model worker protocol properties', () => {
     }),
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'discards a malformed, mismatched, or oversized worker and retries once with a framed response',
     {
       blankLines: FC.integer({max: 3, min: 0}),

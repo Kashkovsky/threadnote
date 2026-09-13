@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Exit, FileSystem, Path} from 'effect';
 import fc from 'fast-check';
@@ -165,7 +166,8 @@ describe('private memory relocation receipts', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'accepts only an absent or matching destination identity through a receipt',
     {
       destinationMemoryId: fc.oneof(
@@ -208,7 +210,8 @@ describe('private memory relocation receipts', () => {
     {fastCheck: {numRuns: 24}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'resolves every acyclic chain up to the production depth bound',
     {depth: fc.integer({max: MAX_MEMORY_RELOCATION_DEPTH, min: 1})},
     ({depth}) =>

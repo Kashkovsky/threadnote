@@ -1,5 +1,6 @@
+import {fcEffectProp, fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Effect} from 'effect';
 import type {CodeGraphEmbeddingIndexShape} from '../../src/code_graph/embedding.js';
 import {
@@ -141,7 +142,8 @@ const emptyEmbedding = {
 } as unknown as CodeGraphEmbeddingIndexShape;
 
 describe('native code graph parser properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'matches the independent low-meaning admission model across size and path case',
     {
       kind: FC.constantFrom(
@@ -178,7 +180,8 @@ describe('native code graph parser properties', () => {
     {fastCheck: {numRuns: 300}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'round-trips ordinary Git tree records without interpreting repository filenames',
     {
       entries: FC.array(gitTreeEntryArbitrary, {maxLength: 24}),
@@ -196,7 +199,8 @@ describe('native code graph parser properties', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'round-trips byte-exact Git cat-file batches',
     {
       blobs: FC.array(FC.uint8Array({maxLength: 96}), {maxLength: 16}),
@@ -217,7 +221,8 @@ describe('native code graph parser properties', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'conserves files and bytes while inventory aggregation remains order-independent',
     {
       entries: FC.array(inventoryPreviewEntryArbitrary, {maxLength: 80}),
@@ -239,7 +244,8 @@ describe('native code graph parser properties', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'matches a reference model for arbitrary add, modify, delete, copy, and rename records',
     {
       changes: FC.array(nameStatusChangeArbitrary, {maxLength: 40}),
@@ -255,7 +261,8 @@ describe('native code graph parser properties', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'matches a reference model for porcelain-v1 add, modify, delete, copy, rename, and untracked records',
     {
       changes: FC.array(porcelainStatusChangeArbitrary, {maxLength: 40}),
@@ -305,7 +312,8 @@ function inventoryPolicyPath(
 }
 
 describe('native code graph traversal properties', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'keeps exact impact selectors independent of fuzzy candidate order and score',
     {
       lowercaseQuery: FC.boolean(),
@@ -363,7 +371,8 @@ describe('native code graph traversal properties', () => {
     {fastCheck: {numRuns: 80}},
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'matches breadth-first reachability and terminates on generated cyclic graphs',
     {
       graph: graphCaseArbitrary,
@@ -402,7 +411,8 @@ describe('native code graph traversal properties', () => {
     {fastCheck: {numRuns: 80}},
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'keeps exact-ID neighbor traversal within direction, depth, node, and edge bounds',
     {
       graph: boundedNeighborCaseArbitrary,

@@ -1,12 +1,14 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   codeGraphMaterializationSpoolApplyPlan,
   CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES,
 } from '../../src/code_graph/materialization_spool_apply_surfaces.js';
 import {CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES} from '../../src/code_graph/materialization_spool_surfaces.js';
 
-it.prop(
+fcProp(
+  it,
   'maps physical row counts to every resumable main surface without mutation',
   {
     lexicalTermCount: FC.integer({max: 1_000_000, min: 0}),

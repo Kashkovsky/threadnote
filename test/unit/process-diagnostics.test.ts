@@ -1,3 +1,4 @@
+import {fcEffectProp, fcProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {succeedUndefined} from '../../src/effect/optional.js';
 import {mkdtemp, readFile, rm} from '../helpers/node-fs-promises.js';
@@ -6,7 +7,7 @@ import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {afterEach, beforeEach, describe} from 'vitest';
 import {SystemInfo} from '../../src/effect/system.js';
 import {CODE_GRAPH_COMPACTION_WORKER_ARGUMENT} from '../../src/worker_protocol.js';
@@ -509,7 +510,8 @@ describe('process diagnostics', () => {
     );
   });
 
-  it.prop(
+  fcProp(
+    it,
     'keeps every operation value under its header for arbitrary preceding column widths',
     {
       processes: FC.array(
@@ -918,7 +920,8 @@ describe('process diagnostics', () => {
     }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'writes one registry transition per adjacent model-operation run',
     {
       operations: FC.array(FC.constantFrom('diagnostics', 'embed-many', 'generate', 'rerank'), {

@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -161,7 +162,8 @@ describe('code graph checkpoint import store', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'accepts exactly lowercase sha256 receipt identities (property)',
     {
       artifactSize: fc.integer({min: 0, max: 10_000_000}),
@@ -426,7 +428,8 @@ describe('code graph checkpoint import store', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'reuses valid cached facts under recursive object-key permutations (property)',
     {facts: semanticFactArbitrary},
     ({facts}) =>

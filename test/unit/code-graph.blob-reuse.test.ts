@@ -1,6 +1,7 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {createHash} from '../helpers/node-crypto.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Option} from 'effect';
 import {codeGraphBlobExtractionReuseClass, codeGraphBlobReuseCacheKey} from '../../src/code_graph/blob_reuse.js';
 import {
@@ -58,7 +59,8 @@ describe('code graph Git blob extraction reuse', () => {
     expect(relocateStructuredSchemaFacts(target, donorFacts)).toEqual(freshTargetFacts);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'is equivalent to a fresh target-path extraction for bounded JSON values',
     {value: FC.jsonValue()},
     ({value}) => {

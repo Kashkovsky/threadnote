@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import fc from 'fast-check';
 import {it as effectIt} from '@effect/vitest';
 import {Cause, Effect, Exit} from 'effect';
@@ -1482,7 +1483,8 @@ describe('Context Brief compiler', () => {
     ).toBe('unknown');
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'is deterministic under evidence completion order',
     {
       graphOrder: fc.shuffledSubarray([0, 1, 2], {minLength: 3, maxLength: 3}),
@@ -1615,7 +1617,8 @@ describe('Context Brief compiler', () => {
     expect(logical.coverage.memory.codeAnchors?.matchedMemories).toBe(0);
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'round-trips escaped Unicode evidence deterministically through the model-facing channel',
     {
       escaped: fc
@@ -1661,7 +1664,8 @@ describe('Context Brief compiler', () => {
     {fastCheck: {numRuns: 30}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps exact combined response bytes within every accepted budget',
     {budget: fc.integer({min: 800, max: 1_500})},
     ({budget}) =>
@@ -1676,7 +1680,8 @@ describe('Context Brief compiler', () => {
     {fastCheck: {numRuns: 40}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps the first exact graph selector whenever bounded projection requires a rerun',
     {
       budget: fc.integer({min: 800, max: 1_500}),
@@ -1699,7 +1704,8 @@ describe('Context Brief compiler', () => {
     {fastCheck: {numRuns: 30}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'never projects a singleton from a multi-memory direct code anchor',
     {
       budget: fc.integer({min: 800, max: 1_500}),
@@ -1728,7 +1734,8 @@ describe('Context Brief compiler', () => {
     {fastCheck: {numRuns: 30}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps overlap-connected direct memory cohorts atomic across both response channels',
     {
       budget: fc.integer({min: 800, max: 1_500}),
@@ -1766,7 +1773,8 @@ describe('Context Brief compiler', () => {
     {fastCheck: {numRuns: 60}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps same-anchor relationship projection inside the maximum response envelope',
     {
       includeActiveHandoff: fc.boolean(),
@@ -1797,7 +1805,8 @@ describe('Context Brief compiler', () => {
     {fastCheck: {numRuns: 20}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'extends ambiguity and optional evidence lane prefixes as the budget grows',
     {
       delta: fc.integer({min: 0, max: 500}),
@@ -1823,7 +1832,8 @@ describe('Context Brief compiler', () => {
     {fastCheck: {numRuns: 120}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps relationship-mode projection bounded while admitting only a highest-ranked contract prefix',
     {
       budget: fc.integer({min: 800, max: 1_500}),
@@ -1860,7 +1870,8 @@ describe('Context Brief compiler', () => {
     {fastCheck: {numRuns: 30}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'extends each relationship evidence lane monotonically as the accepted budget grows',
     {
       delta: fc.integer({min: 0, max: 700}),
@@ -1899,7 +1910,8 @@ describe('Context Brief compiler', () => {
     {fastCheck: {numRuns: 30}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps the minimum envelope bounded across task, workset, and reachable gap pressure',
     {
       gapCount: fc.integer({min: 0, max: 24}),
@@ -1935,7 +1947,8 @@ describe('Context Brief compiler', () => {
     {fastCheck: {numRuns: 30}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'extends a deterministic evidence prefix as the budget grows',
     {
       delta: fc.integer({min: 0, max: 300}),

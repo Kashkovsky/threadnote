@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {SystemInfo} from '../../src/effect/system.js';
 import {expireRecallIndexValidation, loadRecallIndexData, recallIndexDatabaseFilename} from '../../src/recall/index.js';
 import {canonicalResourceUri} from '../../src/storage/resource-id.js';
@@ -118,7 +119,8 @@ describe('recall refresh source paging', () => {
       30_000,
     );
 
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'matches an independent Unicode corpus model across paged additions, replacements, and deletions',
       {
         initial: corpusArbitrary,

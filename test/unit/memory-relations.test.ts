@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import fc from 'fast-check';
@@ -221,7 +222,8 @@ describe('memory relation authoring', () => {
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'round-trips shared related_to targets with or without a stable memory_id',
     {
       hasMemoryId: fc.boolean(),

@@ -1,7 +1,8 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {it} from 'vitest';
 import {Effect, FileSystem, Layer} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {codeGraphCheckpointFileFactCacheIdentity} from '../../src/code_graph/checkpoint/file_fact_identity.js';
 import {
@@ -250,7 +251,8 @@ describe('graph share TCG1 deltas', () => {
     ).toBe(true);
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'checkpoint plus ordered deltas equals an independent clean encode of the target',
     {
       basePaths: FC.uniqueArray(FC.constantFrom('src/a.ts', 'src/b.ts', 'src/c.ts'), {maxLength: 3, minLength: 1}),
@@ -288,7 +290,8 @@ describe('graph share TCG1 deltas', () => {
     {fastCheck: {numRuns: 20}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'compaction preserves logicalGraphDigest and rejects a non-descendant frontier chain',
     {
       generation: FC.integer({min: 2, max: 8}),

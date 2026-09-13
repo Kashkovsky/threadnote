@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {createHash} from '../helpers/node-crypto.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Effect, Layer, Option} from 'effect';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {TreeSitterRuntime} from '../../src/code_graph/tree_sitter/runtime.js';
@@ -132,7 +133,8 @@ describe('Tree-sitter symbol identity properties', () => {
     );
 
     for (const fixture of fixtures) {
-      layerIt.effect.prop(
+      fcEffectProp(
+        layerIt,
         `${fixture.language} local declaration IDs remain unique and layout-stable`,
         {
           arities: overloadAritiesArbitrary,
@@ -154,7 +156,8 @@ describe('Tree-sitter symbol identity properties', () => {
         },
       );
 
-      layerIt.effect.prop(
+      fcEffectProp(
+        layerIt,
         `${fixture.language} call references preserve arity and collision-free identities`,
         {arities: overloadAritiesArbitrary},
         ({arities}) =>

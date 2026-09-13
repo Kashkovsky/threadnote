@@ -1,9 +1,10 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -179,7 +180,8 @@ describe('code graph removed-view vector cleanup', () => {
       ),
     );
 
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'fails closed for every bounded cursor outside the vp1 grammar',
       {suffix: FC.string({maxLength: 64})},
       ({suffix}) =>

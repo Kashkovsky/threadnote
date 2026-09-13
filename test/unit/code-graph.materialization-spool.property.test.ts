@@ -1,6 +1,7 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   CODE_GRAPH_MATERIALIZATION_APPLY_PAGE_ROWS,
   beginCodeGraphMaterializationSpoolSort,
@@ -20,7 +21,8 @@ import {codeGraphSqliteAll, codeGraphSqliteGet, codeGraphSqliteRun} from '../../
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 
 describe('code graph materialization spool', () => {
-  it.prop(
+  fcProp(
+    it,
     'releases successful and failed prepared statements before strong close',
     {values: FC.array(FC.integer(), {maxLength: 64})},
     ({values}) => {
@@ -50,7 +52,8 @@ describe('code graph materialization spool', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'covers every ordered row once with median-block bounded cursors',
     {
       pageRows: FC.integer({max: CODE_GRAPH_MATERIALIZATION_APPLY_PAGE_ROWS, min: 1}),
@@ -209,7 +212,8 @@ describe('code graph materialization spool', () => {
     }
   });
 
-  it.prop(
+  fcProp(
+    it,
     'records a contiguous exact append prefix and seals it once',
     {batchIds: FC.uniqueArray(FC.stringMatching(/^[0-9a-f]{64}$/u), {maxLength: 24})},
     ({batchIds}) => {
@@ -371,7 +375,8 @@ describe('code graph materialization spool', () => {
     }
   });
 
-  it.prop(
+  fcProp(
+    it,
     'sorts a registered surface plan in a contiguous atomic prefix',
     {surfaceCount: FC.integer({max: 16, min: 1})},
     ({surfaceCount}) => {

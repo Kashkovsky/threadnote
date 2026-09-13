@@ -1,6 +1,7 @@
+import {fcEffectProp, fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact_budget.js';
 import type {ProjectResolutionLookupKey} from '../../src/code_graph/incremental_closure.js';
 import {
@@ -33,7 +34,8 @@ import type {
 } from '../../src/code_graph/types.js';
 
 describe('resolution-candidate closure', () => {
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'partitions every file exactly once independent of inventory order',
     {
       ids: FC.uniqueArray(FC.integer({max: 10_000, min: 0}), {maxLength: 80}),
@@ -84,7 +86,8 @@ describe('resolution-candidate closure', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'returns the same complete closure for every bounded page partition',
     {
       ids: FC.uniqueArray(FC.integer({max: 1_000, min: 0}), {maxLength: 40, minLength: 1}),
@@ -176,7 +179,8 @@ describe('resolution-candidate closure', () => {
     }),
   );
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'computes a deterministic reverse fixed point independent of edge permutation and is idempotent',
     {
       edgeCodes: FC.array(FC.integer({max: 10_000, min: 0}), {maxLength: 80}),
@@ -219,7 +223,8 @@ describe('resolution-candidate closure', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'matches an independent fixed-point model for multi-alias multi-candidate hyperedges',
     {
       hyperedges: FC.array(
@@ -250,7 +255,8 @@ describe('resolution-candidate closure', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'bounds parsed provenance by the unique alias-target product independent of duplicate order',
     {
       aliasIds: FC.uniqueArray(FC.integer({max: 31, min: 0}), {maxLength: 8, minLength: 1}),
@@ -326,7 +332,8 @@ describe('resolution-candidate closure', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'selects a file exactly when any candidate tier contains an affected key',
     {
       seed: FC.integer({max: 16, min: 0}),
@@ -353,7 +360,8 @@ describe('resolution-candidate closure', () => {
     {fastCheck: {numRuns: 120}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'matches an independent two-pass oracle across domains, symbols, and added reexports',
     {
       additionalRows: FC.array(

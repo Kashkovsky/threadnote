@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
@@ -104,7 +105,8 @@ describe('code graph ready snapshot retention', () => {
     }
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'retains a displaced clean snapshot across lease acquisition order',
     {acquireBeforePromotion: fc.boolean()},
     ({acquireBeforePromotion}) =>
@@ -653,7 +655,8 @@ describe('code graph ready snapshot retention', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'matches active lease overlap and release order without spending unrelated retired backlog',
     {
       leaseCount: fc.integer({max: 4, min: 1}),

@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {execFileSync} from '../helpers/node-child-process.js';
 import {
@@ -117,7 +118,8 @@ describe('automatic orphan provenance cleanup', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'removes only when every generated authority predicate remains exact and no active view exists',
     {
       activeView: fc.boolean(),
@@ -254,7 +256,8 @@ describe('automatic orphan provenance cleanup', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'recovers every bounded noncanonical cursor without changing candidate membership',
     {
       // Keep 24 independently generated cursor values while amortizing schema setup

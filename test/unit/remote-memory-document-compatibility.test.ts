@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {assertRemoteBodyReplacementSupported} from '../../src/remote_memory/document_compatibility.js';
 import {formatMemoryDocument} from '../../src/memory/document.js';
 import {richRemoteMemoryMetadata} from '../helpers/remote-memory-document.js';

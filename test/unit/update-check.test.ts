@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
@@ -5,7 +6,7 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {DateTime, Effect} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {afterEach, describe, expect, vi} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {checkForThreadnoteUpdate} from '../../src/release/check.js';
@@ -52,7 +53,8 @@ describe('Effect update check', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'refetches when cache age reaches the 24-hour TTL (property)',
     {ageMs: FC.integer({min: 0, max: 48 * 60 * 60 * 1000})},
     ({ageMs}) =>

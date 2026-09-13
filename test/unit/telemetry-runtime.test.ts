@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {succeedUndefined} from '../../src/effect/optional.js';
 import fc from 'fast-check';
@@ -442,7 +443,8 @@ describe('anonymous telemetry runtime', () => {
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'drops arbitrary automatic-update result values and their repair flag from telemetry',
     {
       result: fc

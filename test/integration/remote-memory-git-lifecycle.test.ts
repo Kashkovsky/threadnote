@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import type {TransactionSql} from 'postgres';
 import {ingestGitShare} from '../../src/remote_memory/git_ingest.js';
@@ -26,7 +26,7 @@ import {RemoteMemoryIndexer} from '../../src/remote_memory/indexer.js';
 import type {AuthorizedRemotePrincipal} from '../../src/remote_memory/authorization.js';
 
 const databaseUrl = process.env.THREADNOTE_TEST_POSTGRES_URL;
-const postgresDescribe = databaseUrl ? describe.sequential : describe.skip;
+const postgresDescribe = databaseUrl ? describe : describe.skip;
 const tenantId = 'lifecycle-tenant';
 const shareId = 'lifecycle-share';
 const project = 'threadnote';

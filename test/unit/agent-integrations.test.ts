@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -332,7 +333,8 @@ describe('agent integrations', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'installing and removing a block round-trips bounded surrounding user content',
     {
       prefix: fc.stringMatching(/^[A-Za-z0-9._-]{1,24}$/u),
@@ -368,7 +370,8 @@ describe('agent integrations', () => {
     {fastCheck: {numRuns: 12}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'doctor reports exactly the registered host subset',
     {selected: fc.uniqueArray(fc.constantFrom<AgentClient>(...agents), {maxLength: agents.length})},
     ({selected}) =>

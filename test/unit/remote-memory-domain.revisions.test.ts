@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   openNewRemoteHandoffLifecycle,
   REMOTE_HANDOFF_LIFECYCLE_OPERATIONS,
@@ -106,7 +107,8 @@ describe('remote memory revision, policy, and lifecycle contracts', () => {
     ).toEqual({kind: 'idempotency_conflict', operationId: 'operation-1', shareGeneration: 9, version: 1});
   });
 
-  it.prop(
+  fcProp(
+    it,
     'allows at most one distinct sequential winner from a shared base revision',
     {
       baseRevision: FC.uuid(),
@@ -136,7 +138,8 @@ describe('remote memory revision, policy, and lifecycle contracts', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'allocates one generation only for commits and leaves rejected generations unchanged',
     {generation: FC.integer({max: 1_000_000, min: 0}), revision: FC.uuid()},
     ({generation, revision}) => {
@@ -155,7 +158,8 @@ describe('remote memory revision, policy, and lifecycle contracts', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'uses distinct logical lock keys for independent topics',
     {firstTopic: FC.uuid(), secondTopic: FC.uuid()},
     ({firstTopic, secondTopic}) => {
@@ -186,7 +190,8 @@ describe('remote memory revision, policy, and lifecycle contracts', () => {
     });
   });
 
-  it.prop(
+  fcProp(
+    it,
     'removing capabilities cannot add an allowed operation',
     {mask: FC.integer({max: 15, min: 0})},
     ({mask}) => {
@@ -200,7 +205,8 @@ describe('remote memory revision, policy, and lifecycle contracts', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'never leaves an archived handoff without opening a new logical handoff',
     {operations: FC.array(FC.constantFrom(...REMOTE_HANDOFF_LIFECYCLE_OPERATIONS), {maxLength: 20})},
     ({operations}) => {

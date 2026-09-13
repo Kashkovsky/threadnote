@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
@@ -64,7 +65,8 @@ const resolutionCaseArbitrary: fc.Arbitrary<ResolutionCase> = fc
 
 describe('persistent reference lookup summaries', () => {
   effectIt.layer(ResolutionSummaryTestLayer)(layerIt => {
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'are equivalent to raw candidate-union resolution across tiers, exports, duplicates, and overrides',
       {testCase: resolutionCaseArbitrary},
       ({testCase}) =>

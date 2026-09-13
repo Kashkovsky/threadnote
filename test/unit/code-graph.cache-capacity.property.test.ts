@@ -1,3 +1,4 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import fc from 'fast-check';
 import {
@@ -8,7 +9,8 @@ import {
 } from '../../src/code_graph/cache_capacity.js';
 
 describe('code graph persistent cache capacity planning', () => {
-  it.prop(
+  fcProp(
+    it,
     'counts exact SQLite UTF-8 payload bytes for cache rows',
     {
       values: fc.array(fc.integer({max: 0xffff, min: 0}), {maxLength: 80}),
@@ -63,7 +65,8 @@ describe('code graph persistent cache capacity planning', () => {
     {fastCheck: {numRuns: 300}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'canonically partitions cache mutations by both row and payload ceilings',
     {
       rows: fc.array(fc.integer({max: 512 * 1_024, min: 1}), {maxLength: 1_500}).map(payloads =>

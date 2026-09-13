@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Option, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {
   CodeGraphEdge,
@@ -26,7 +27,8 @@ const edgeSpec = FC.record({
 });
 
 describe('persisted code graph analysis summaries', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'matches a clean rebuild after randomized overlay replacement/deletion independent of input order',
     {
       baseEdges: FC.array(edgeSpec, {maxLength: 35}),

@@ -1,10 +1,11 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {graphShareContributionFixture} from '../helpers/graph-share-contribution.js';
 import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path, Result} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
@@ -38,7 +39,8 @@ const layer = CommandExecutor.layer.pipe(
 );
 
 describe('repository-scoped graph sharing settings', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'updates only the selected repository under arbitrary contribution-mode changes',
     {
       changes: FC.array(FC.tuple(FC.boolean(), FC.constantFrom('off', 'passive', 'idle', 'dedicated')), {

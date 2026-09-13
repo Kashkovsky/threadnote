@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {createHash} from '../helpers/node-crypto.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Effect, Layer, Option} from 'effect';
 import {hasSameCodeGraphResolutionSurface} from '../../src/code_graph/indexer.js';
 import {createRepositoryFactResolver, createResolutionAttributor} from '../../src/code_graph/extractor.js';
@@ -108,7 +109,8 @@ describe('polyglot code graph extractor properties', () => {
   it.layer(ExtractorTestLayer)(layerIt => {
     describe('malformed-source safety', () => {
       for (const fuzzCase of fuzzCases) {
-        layerIt.effect.prop(
+        fcEffectProp(
+          layerIt,
           `${fuzzCase.language} is deterministic, bounded, and structurally valid`,
           {source: sourceArbitrary},
           ({source}) =>
@@ -137,7 +139,8 @@ describe('polyglot code graph extractor properties', () => {
       );
     });
 
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'assigns unique stable identities to TypeScript overloads and sibling-block declarations',
       {arities: overloadAritiesArbitrary, revision: FC.integer({max: 10_000, min: 0})},
       ({arities, revision}) => {
@@ -164,7 +167,8 @@ describe('polyglot code graph extractor properties', () => {
       {fastCheck: {numRuns: 100}, timeout: 15_000},
     );
 
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'retains TypeScript declaration merges while resolving references to one canonical group member',
       {declarationCount: FC.integer({max: 8, min: 2}), padding: FC.integer({max: 12, min: 0})},
       ({declarationCount, padding}) => {
@@ -203,7 +207,8 @@ describe('polyglot code graph extractor properties', () => {
       {fastCheck: {numRuns: 80}, timeout: 15_000},
     );
 
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'keeps structured object paths and repeated protobuf members unambiguous',
       {
         format: FC.constantFrom('json' as const, 'jsonc' as const, 'yaml' as const),
@@ -279,7 +284,8 @@ describe('polyglot code graph extractor properties', () => {
       {fastCheck: {numRuns: 80}, timeout: 15_000},
     );
 
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'keeps bounded text-structural symbol identities stable across harmless leading layout',
       {padding: FC.integer({max: 20, min: 0}), sample: textStructuralCaseArbitrary},
       ({padding, sample}) => {

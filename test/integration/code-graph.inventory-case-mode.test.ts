@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -9,7 +10,8 @@ import {StandaloneBrokerLayer} from '../../src/effect/runtime.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 describe('portable Git ignore matching', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'keeps committed inventory and preview invariant under the local Git case setting',
     {suffix: fc.array(fc.constantFrom(...'abcdef'), {maxLength: 6}).map(chars => chars.join(''))},
     ({suffix}) =>

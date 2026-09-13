@@ -1,7 +1,8 @@
+import {fcEffectProp, fcProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Effect, Exit, Fiber} from 'effect';
 import {describe} from 'vitest';
 import {LlamaCppEngine} from '../../src/effect/ai/llama-cpp-engine.js';
@@ -168,7 +169,8 @@ describe('native embedding context pool', () => {
     });
   });
 
-  it.prop(
+  fcProp(
+    it,
     'uses every available CPU core without exceeding the configured context cap',
     {
       cpuMathCores: FC.integer({max: 128, min: 1}),
@@ -530,7 +532,8 @@ describe('native embedding context pool', () => {
     );
   });
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'preserves the serial input mapping under arbitrary bounded completion priorities',
     {
       poolSize: FC.constantFrom<EmbeddingContextPoolSize>(1, 2, 4, 8),

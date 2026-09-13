@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   initialMaterializationStorageTelemetry,
   observeMaterializationStorage,
@@ -24,7 +25,8 @@ const storageFiles = FC.record({
     }) satisfies MaterializationStorageFiles,
 );
 
-it.prop(
+fcProp(
+  it,
   'keeps every physical storage high-water monotone while current bytes follow the latest observation',
   {
     includeSidecar: FC.boolean(),

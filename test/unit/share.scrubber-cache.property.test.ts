@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {applyScrubber, redactSensitiveText, SCRUBBER_PATTERNS} from '../../src/share/scrubber.js';
 
 const text = FC.array(FC.constantFrom('a', 'b', 'c', 'A', 'B', 'C', '0', '1', ' ', '\n', 'é', '😀'), {
@@ -18,7 +19,8 @@ function uncachedCustomRedaction(content: string, regex: RegExp, placeholder: st
 }
 
 describe('private scrubber matching clones', () => {
-  it.prop(
+  fcProp(
+    it,
     'matches fresh native regexes across same-owner mutation, repetition and restoration',
     {
       steps: FC.array(FC.record({flags, lastIndex: FC.integer({max: 100, min: 0}), source, text}), {

@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {mkdir, mkdtemp, rm, utimes, writeFile} from '../helpers/node-fs-promises.js';
@@ -5,7 +6,7 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
 import {Cause, DateTime, Effect, Exit, Fiber, Layer, Option, Semaphore} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 const inference = vi.hoisted(() => ({
@@ -254,7 +255,8 @@ describe('recall runtime orchestration', () => {
     expect(sections.ranked[0]?.uri).toBe(latest.uri);
     expect(sections.ranked.findIndex(hit => hit.uri === staleTopical[0].uri)).toBeGreaterThan(0);
   });
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps protected and cross-scope reserves independent throughout the bounded admission window',
     {
       crossCount: FC.integer({max: 12, min: 0}),
@@ -339,7 +341,8 @@ describe('recall runtime orchestration', () => {
       expect(invocations).toBe(1);
     }),
   );
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'returns semantic work exactly when an arbitrary delay finishes inside the total budget',
     {
       delayMilliseconds: FC.oneof(

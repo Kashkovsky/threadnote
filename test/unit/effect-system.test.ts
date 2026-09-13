@@ -1,3 +1,4 @@
+import {fcEffectProp, fcProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
@@ -17,7 +18,7 @@ import {join, posix as posixPath, win32 as windowsPath} from '../helpers/node-pa
 import {succeedUndefined} from '../../src/effect/optional.js';
 import {Clock, Deferred, Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {describe, expect, it, vi} from 'vitest';
 import {
   effectiveLinuxMemoryBytes,
@@ -72,7 +73,8 @@ describe('SystemInfo structural path adapter', () => {
     expect(processResourceUsageMaxRssBytes(544_440, platform, runtime)).toBe(expected);
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'enforces group and other privacy bits only on platforms with POSIX modes',
     {
       mode: FC.integer({max: 0o777, min: 0}),
@@ -113,7 +115,8 @@ describe('SystemInfo structural path adapter', () => {
     });
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'matches the platform path contract across drives, UNC roots, separators, dots, and trailing separators',
     {
       child: FC.stringMatching(/^[A-Za-z0-9._-]{0,12}$/),
@@ -233,7 +236,8 @@ describe('SystemInfo disk capacity parsing', () => {
     expect(parseWindowsAvailableDiskBytes('not-a-size')).toBeUndefined();
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'converts native Windows free bytes monotonically and saturates at the safe-integer limit',
     {
       higher: FC.bigInt({max: 18_446_744_073_709_551_615n, min: 0n}),
@@ -451,7 +455,8 @@ describe('SystemInfo disk capacity parsing', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'converts native statfs values to a conservative safe integer monotonically',
     {
       availableBlocks: FC.integer({max: Number.MAX_SAFE_INTEGER, min: 0}),
@@ -959,7 +964,8 @@ function isProcessRunning(processId: number): boolean {
 }
 
 describe('Linux cgroup effective memory', () => {
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'resolves every normalized cgroup ancestor exactly once from current group to mount root',
     {
       segments: FC.array(FC.stringMatching(/^[a-z][a-z0-9:_-]{0,12}$/), {maxLength: 8, minLength: 1}),
@@ -1109,7 +1115,8 @@ describe('SystemInfo process identity', () => {
     }
   });
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'emits only bounded path-free canonical process-start identities',
     {
       output: FC.string({maxLength: 96}),
@@ -1132,7 +1139,8 @@ describe('SystemInfo process identity', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps the native Windows identity fast path and falls back only when it is unavailable',
     {
       nativeAvailable: FC.boolean(),

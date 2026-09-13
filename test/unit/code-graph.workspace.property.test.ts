@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import type {
   CodeGraphWorkspace,
   CodeGraphWorkspaceDependency,
@@ -135,7 +136,8 @@ describe('code graph workspace properties', () => {
     expect(workspaceHasUninventoriedMonikerEvidence(workspace, new Set(['package.json']))).toBe(true);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'discovers identical nested and integrated workspace models regardless of inventory order',
     {permuted: permutedFiles},
     ({permuted}) => {
@@ -156,7 +158,8 @@ describe('code graph workspace properties', () => {
     expect(workspace.workspaces).toContainEqual(expect.objectContaining({name: 'threadnote-root', root: ''}));
   });
 
-  it.prop(
+  fcProp(
+    it,
     'never derives an empty repository-root workspace name from a non-empty declared project name',
     {name: shortText},
     ({name}) => {
@@ -297,7 +300,8 @@ describe('code graph workspace properties', () => {
     expect(core.workspaceId).not.toBe(privateTools.workspaceId);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'reports ambiguous local dependency aliases independently of inventory order instead of silently dropping them',
     {priorities: FC.array(FC.integer(), {maxLength: 7, minLength: 7})},
     ({priorities}) => {
@@ -335,7 +339,8 @@ describe('code graph workspace properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'persists stable typed Nx projects, targets, pnpm packages, and tsconfig references regardless of inventory order',
     {priorities: FC.array(FC.integer(), {maxLength: 13, minLength: 13})},
     ({priorities}) => {
@@ -435,7 +440,8 @@ describe('code graph workspace properties', () => {
     expect(workspace.diagnostics).not.toContainEqual(expect.stringContaining('not reconciled'));
   });
 
-  it.prop(
+  fcProp(
+    it,
     'merges duplicate detector projects commutatively, associatively, and idempotently',
     {fragments: FC.array(workspaceFragmentArbitrary, {maxLength: 8, minLength: 2})},
     ({fragments}) => {

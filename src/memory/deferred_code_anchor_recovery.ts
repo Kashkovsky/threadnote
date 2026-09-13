@@ -50,6 +50,7 @@ const healAnchorsForRoute = Effect.fn('memoryCodeAnchor.healForRoute')(function*
           attemptedUris.push(uri);
         },
         passTimeoutMilliseconds: AUTOMATIC_DEFERRED_CODE_ANCHOR_PASS_TIMEOUT_MILLISECONDS,
+        waitTimeoutMilliseconds: trigger === 'graph-index' ? 2_000 : 0,
       });
       if (attemptedUris.length > 0) {
         yield* refreshRecallDerivedIndexesFromSelection(config, attemptedUris);

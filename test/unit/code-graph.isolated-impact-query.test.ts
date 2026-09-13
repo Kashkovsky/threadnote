@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {succeedUndefined} from '../../src/effect/optional.js';
 import {Effect, Fiber} from 'effect';
@@ -164,7 +165,8 @@ describe('isolated code graph impact query', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'round-trips SHA-1/SHA-256 bases and every bounded path set without changing order or content (property)',
     {
       baseCommit: fc.oneof(gitObjectId(40), gitObjectId(64)),

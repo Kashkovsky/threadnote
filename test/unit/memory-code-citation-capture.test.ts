@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -296,7 +297,8 @@ describe('memory code citation capture and validation', () => {
     }).pipe(provideTestLayer(StandaloneBrokerLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'returns bounded manual recovery for every non-exact graph admission state',
     {
       status: fc

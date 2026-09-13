@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {succeedUndefined} from '../../src/effect/optional.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -541,7 +542,8 @@ describe('isolated builder exit contracts', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'never accepts a foreign, prior, or different-build result while polling (property)',
     {
       sequence: fc.array(fc.constantFrom('absent', 'foreign', 'prior', 'different-build', 'owned-pending'), {

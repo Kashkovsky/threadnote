@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {it as effectIt} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -178,7 +179,8 @@ describe('cross-repository graph traversal', () => {
     );
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'continues arbitrary local pagination after the bridge lane reaches its terminal page',
     {pageCount: FC.integer({max: 6, min: 2})},
     ({pageCount}) =>

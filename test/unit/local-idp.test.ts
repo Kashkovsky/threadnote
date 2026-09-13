@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {createOAuthTokenVerifier, createLocalOAuthTokenVerifier} from '../../src/remote_memory/oauth.js';
 import {
   COMPOSER_OAUTH_CLIENT_ID,

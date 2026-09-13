@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -208,7 +209,8 @@ describe('standalone release selection', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'selects the newest stable-or-prerelease version for every bounded beta-channel pair',
     {
       betaMinor: fc.integer({max: 50, min: 0}),
@@ -2165,7 +2167,8 @@ describe('streaming subcommand failure messages', () => {
     expect(message).toContain('[REDACTED]');
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps the exit code and a tail of preferred child output',
     {
       extra: fc.integer({max: 400, min: 0}),

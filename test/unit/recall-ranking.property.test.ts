@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   deduplicateLogicalRecallCandidates,
   rankRecallCandidates,
@@ -231,7 +232,8 @@ const workspaceHierarchyCaseArbitrary = FC.uniqueArray(
 });
 
 describe('recall ranking properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'generated hygiene source sets do not change logical memory identity',
     {
       body: FC.string({maxLength: 80}),
@@ -253,7 +255,8 @@ describe('recall ranking properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'keeps workspace hierarchy ordering stable across valid paths and candidate permutations',
     {hierarchyCase: workspaceHierarchyCaseArbitrary},
     ({hierarchyCase}) => {
@@ -272,7 +275,8 @@ describe('recall ranking properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'keeps explicit-recency ranking monotone in timestamps and stable across candidate permutations',
     {
       newerAgeDays: FC.integer({max: 90, min: 0}),
@@ -301,7 +305,8 @@ describe('recall ranking properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'logical-memory alias deduplication is permutation-invariant and idempotent',
     {
       teams: FC.uniqueArray(FC.stringMatching(/^[a-z]{1,8}$/), {maxLength: 12, minLength: 1}),
@@ -339,7 +344,8 @@ describe('recall ranking properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'requires a structured identifier declaration before components contribute exact evidence',
     {identifierCase: structuredIdentifierCaseArbitrary},
     ({identifierCase}) => {
@@ -367,7 +373,8 @@ describe('recall ranking properties', () => {
     {fastCheck: {numRuns: 75}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'never lets an untrusted candidate outrank an otherwise identical trusted candidate',
     {demotionCase: trustDemotionCaseArbitrary},
     ({demotionCase}) => {
@@ -408,7 +415,8 @@ describe('recall ranking properties', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'keeps finite bounded ranking output stable across candidate permutations',
     {rankingCase: recallRankingCaseArbitrary},
     ({rankingCase}) => {
@@ -436,7 +444,8 @@ describe('recall ranking properties', () => {
     {fastCheck: {numRuns: 125}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'uses locale-independent URI ordering as the final tie-break for otherwise equal candidates',
     {
       labels: FC.uniqueArray(FC.constantFrom(...URI_LABELS), {
@@ -465,7 +474,8 @@ describe('recall ranking properties', () => {
     {fastCheck: {numRuns: 75}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'matches a document-level merge oracle and is idempotent across pass permutations',
     {mergeCase: recallMergeCaseArbitrary},
     ({mergeCase}) => {
@@ -483,7 +493,8 @@ describe('recall ranking properties', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'orders equal-score merged documents by locale-independent URI across input permutations',
     {
       category: FC.constantFrom(...RECALL_CATEGORY_ORDER),
@@ -509,7 +520,8 @@ describe('recall ranking properties', () => {
     {fastCheck: {numRuns: 75}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'chooses a deterministic payload for equal-score chunks of one document',
     {
       category: FC.constantFrom(...RECALL_CATEGORY_ORDER),

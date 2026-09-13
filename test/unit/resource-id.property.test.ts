@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   canonicalResourceUri,
   InvalidResourceId,
@@ -101,7 +102,8 @@ describe('ResourceId properties', () => {
     expect(() => canonicalResourceUri('resources', ['safe'], 'a\0')).toThrow(InvalidResourceId);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'round-trips every generated canonical identifier and removes anchors idempotently',
     {
       anchor: optionalAnchorArbitrary,
@@ -129,7 +131,8 @@ describe('ResourceId properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'accepts exactly a canonical root and its descendants while rejecting sibling roots',
     {
       childSegments: FC.array(portableSegmentArbitrary, {maxLength: 5}),
@@ -150,7 +153,8 @@ describe('ResourceId properties', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'canonicalizes fully percent-encoded legacy aliases exactly once',
     {
       anchor: optionalAnchorArbitrary,
@@ -172,7 +176,8 @@ describe('ResourceId properties', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'rejects generated unsafe URI mutations',
     {
       mutation: invalidUriMutationArbitrary,
@@ -189,7 +194,8 @@ describe('ResourceId properties', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'never emits a canonical URI from an invalid segment mutation',
     {
       mutation: invalidSegmentMutationArbitrary,
@@ -203,7 +209,8 @@ describe('ResourceId properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'never emits a canonical URI with a control character in its anchor',
     {
       anchor: anchorArbitrary,

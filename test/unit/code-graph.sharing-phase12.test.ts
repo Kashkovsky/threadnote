@@ -1,7 +1,8 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from 'vitest';
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   applyLogicalDelta,
   compactLogicalGraph,
@@ -34,7 +35,8 @@ import {
 import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
 
 describe('graph share deltas, coordinator, contribution, and workers', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps checkpoint plus ordered deltas equal to an independent clean model',
     {
       upserts: FC.array(FC.tuple(FC.string({maxLength: 8, minLength: 1}), FC.string({maxLength: 8, minLength: 0})), {

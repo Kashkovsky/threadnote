@@ -426,11 +426,11 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
         statfs: nativeStatfs,
         ...(windowsAvailableDiskBytes === undefined ? {} : {windows: windowsAvailableDiskBytes}),
       };
-      const tmpdir = yield* Config.option(Config.string('TMPDIR')).pipe(Effect.orElseSucceed(() => Option.none()));
-      const temp = yield* Config.option(Config.string('TEMP')).pipe(Effect.orElseSucceed(() => Option.none()));
-      const tmp = yield* Config.option(Config.string('TMP')).pipe(Effect.orElseSucceed(() => Option.none()));
-      const user = yield* Config.option(Config.string('USER')).pipe(Effect.orElseSucceed(() => Option.none()));
-      const username = yield* Config.option(Config.string('USERNAME')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const tmpdir = yield* Config.option(Config.String('TMPDIR')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const temp = yield* Config.option(Config.String('TEMP')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const tmp = yield* Config.option(Config.String('TMP')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const user = yield* Config.option(Config.String('USER')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const username = yield* Config.option(Config.String('USERNAME')).pipe(Effect.orElseSucceed(() => Option.none()));
       return SystemInfo.of({
         architecture: runtimeArchitecture,
         availableDiskBytes: path => availableDiskBytes(path, runtimePlatform, process.env, diskCapacityProbeAdapters),

@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   formatRemoteMemoryUri,
   formatRemoteShareRootUri,
@@ -55,7 +56,8 @@ describe('remote memory addresses', () => {
     );
   });
 
-  it.prop(
+  fcProp(
+    it,
     'round-trips arbitrary portable Unicode share, project, and topic segments',
     {
       kind: FC.constantFrom('durable' as const, 'handoff' as const),

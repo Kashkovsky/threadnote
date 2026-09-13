@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
@@ -293,7 +294,8 @@ describe('production log writer', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'preserves Windows lifecycle pairs across bounded transient exclusive-create failures',
     {
       failures: fc.integer({min: 1, max: 4}),
@@ -340,7 +342,8 @@ describe('production log writer', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'preserves correlated Windows lifecycle entries across the extended bounded contention window',
     {releaseAfterMilliseconds: fc.integer({min: 5_025, max: 9_500})},
     ({releaseAfterMilliseconds}) =>

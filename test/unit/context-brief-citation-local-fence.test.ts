@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- Effect's symlink API lacks the junction type required for unprivileged Windows fixtures.
 import {symlinkSync} from 'node:fs';
 import * as BunServices from '@effect/platform-bun/BunServices';
@@ -249,7 +250,8 @@ describe('Context Brief local citation closing observation', () => {
   for (const mutation of mutations) {
     effectIt.effect(`rejects a between-observation ${mutation} change`, () => scenario(mutation));
   }
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'rejects independently changed remote identities',
     {suffix: fc.nat(100_000)},
     ({suffix}) => scenario('remote', suffix),

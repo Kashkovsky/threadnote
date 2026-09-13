@@ -1,7 +1,8 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {describe, expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {formatMemoryDocument, MEMORY_RELATION_TYPES, type MemoryMetadata} from '../../src/memory/document.js';
@@ -38,7 +39,8 @@ const operation = FC.oneof(
 );
 
 describe('recall memory link properties', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'matches an independent model across incremental source and target operations and a clean rebuild',
     {operations: FC.array(operation, {maxLength: 8, minLength: 1})},
     ({operations}) =>

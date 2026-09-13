@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {DateTime, Effect, FileSystem, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {describe, expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
@@ -21,7 +22,8 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 const NOW = new Date('2026-08-31T12:00:00.000Z');
 
 describe('recall memory connection properties', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'normalizes raw and URI-form stable identities to one deterministic premise',
     {
       suffix: FC.array(FC.constantFrom(...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-'), {
@@ -40,7 +42,8 @@ describe('recall memory connection properties', () => {
     {fastCheck: {numRuns: 64}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'never lets timestamps make inactive, unresolved, conflicted, or superseded evidence current',
     {
       activeSupersederCount: FC.integer({max: 3, min: 0}),
@@ -64,7 +67,8 @@ describe('recall memory connection properties', () => {
     {fastCheck: {numRuns: 64}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps direct candidates deterministic and protected from unrelated topical additions',
     {
       directOrdinal: FC.integer({max: 99, min: 0}),
@@ -91,7 +95,8 @@ describe('recall memory connection properties', () => {
     {fastCheck: {numRuns: 32}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'returns the same bounded direct neighborhood after incremental and clean indexing',
     {
       neighborIds: FC.uniqueArray(FC.integer({max: 20, min: 0}), {maxLength: 12, minLength: 1}),
@@ -143,7 +148,8 @@ describe('recall memory connection properties', () => {
     {fastCheck: {numRuns: 8}, timeout: 30_000},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'deduplicates every ordering of relocation-witnessed explicit premise aliases',
     {
       order: FC.uniqueArray(FC.integer({max: 2, min: 0}), {maxLength: 3, minLength: 3}),

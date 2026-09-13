@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, Ref} from 'effect';
@@ -602,7 +603,8 @@ describe('code graph maintenance lanes', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'matches an independent rotating-cycle model for interleaved homes',
     {homes: fc.array(fc.constantFrom('/home/A', '/home/B', '/home/C'), {maxLength: 60, minLength: 1})},
     ({homes}) =>

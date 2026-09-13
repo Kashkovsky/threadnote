@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {afterEach, describe as vitestDescribe, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
@@ -63,7 +64,8 @@ afterEach(() => {
 });
 
 describe('organization composer attach', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'scope union preserves required scopes and is idempotent and permutation invariant',
     {
       extras: FC.array(FC.stringMatching(/^[A-Za-z][A-Za-z0-9_:.-]{0,30}$/u), {maxLength: 10}),
@@ -111,7 +113,8 @@ describe('organization composer attach', () => {
       isComposerHttpEntry({...refresh, auth: {...refresh.auth, scopes: [...refresh.auth.scopes, 'offline_access']}}),
     ).toBe(false);
   });
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps stdio core Git share and binds composer share only in the HTTP header',
     {clientId: SHARE_ID, host: HOST, shareId: SHARE_ID},
     ({clientId, host, shareId}) =>

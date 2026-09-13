@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {execFileSync} from '../helpers/node-child-process.js';
@@ -7,7 +8,7 @@ import {dirname, join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Effect, Option, Path} from 'effect';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
@@ -82,7 +83,8 @@ const unpublishedSurfaceChangeScenarioArbitrary = surfaceChangeScenarioArbitrary
 );
 
 describe('code graph incremental-overlay differential properties', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'matches a full rebuild after randomized body-only edits change multi-file references',
     {scenario: scenarioArbitrary},
     ({scenario}) =>
@@ -242,7 +244,8 @@ describe('code graph incremental-overlay differential properties', () => {
     },
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'keeps randomized unpublished TypeScript declarations equivalent to a forced dirty rebuild',
     {scenario: unpublishedSurfaceChangeScenarioArbitrary},
     ({scenario}) =>
@@ -295,7 +298,8 @@ describe('code graph incremental-overlay differential properties', () => {
     },
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'matches a full rebuild after randomized compatible changes are committed cleanly',
     {scenario: scenarioArbitrary},
     ({scenario}) =>
@@ -387,7 +391,8 @@ describe('code graph incremental-overlay differential properties', () => {
     },
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'fails closed to full materialization for randomized clean resolution-surface changes',
     {scenario: cleanSurfaceChangeScenarioArbitrary},
     ({scenario}) =>

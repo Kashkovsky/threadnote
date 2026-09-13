@@ -1,9 +1,10 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, FileSystem, Layer, Path, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -118,7 +119,8 @@ describe('graph share live coordinator and digest CAS', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'graph-sharing JSON bytes round-trip I-JSON objects independently of JSON.parse',
     {
       generation: FC.integer({max: 10_000, min: 0}),

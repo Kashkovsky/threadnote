@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path, Schema} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {codeGraphCheckpointFileFactCacheIdentity} from '../../src/code_graph/checkpoint/file_fact_identity.js';
@@ -46,7 +47,8 @@ const pathArbitrary = FC.uniqueArray(
 );
 
 describe('graph share checkpoint CAS layers', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'prefix plus ordered TCG1 frames concatenate to the artifact digest and stay under the HTTP CAS cap',
     {paths: pathArbitrary},
     ({paths}) =>

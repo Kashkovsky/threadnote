@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   parseRemoteReadInputV1,
   parseRemoteRecallInputV1,
@@ -87,7 +88,8 @@ describe('remote memory versioned schemas', () => {
     );
   });
 
-  it.prop(
+  fcProp(
+    it,
     'never accepts model-visible content or identity fields added to a receipt',
     {
       field: FC.constantFrom('email', 'jwt', 'memoryText', 'query', 'refreshToken', 'source', 'absolutePath'),

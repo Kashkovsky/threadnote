@@ -565,7 +565,7 @@ const modelsSelect = Command.make(
   {
     dryRun: boolean('dry-run', 'Show the role selection without changing it'),
     modelId: argument('model-id', 'Installed model ID'),
-    role: Argument.choice('role', ['embedding', 'reranker', 'generation']).pipe(
+    role: Argument.Literals('role', ['embedding', 'reranker', 'generation']).pipe(
       Argument.withDescription('embedding, reranker, or generation'),
     ),
   },
@@ -1192,7 +1192,7 @@ const seedSkills = Command.make(
 const mcpInstall = Command.make(
   'mcp-install',
   {
-    agent: Argument.choice('agent', ['codex', 'claude', 'cursor', 'copilot']).pipe(
+    agent: Argument.Literals('agent', ['codex', 'claude', 'cursor', 'copilot']).pipe(
       Argument.withDescription('codex, claude, cursor, or copilot'),
     ),
     apply: boolean('apply', 'Actually modify the selected agent config'),

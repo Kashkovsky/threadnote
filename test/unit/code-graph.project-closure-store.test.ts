@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {mkdtempSync, rmSync} from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
@@ -5,7 +6,7 @@ import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';
 import {persistedIncrementalSurfaceMatches} from '../../src/code_graph/store_incremental_surface.js';
@@ -231,7 +232,8 @@ describe('project-closure persisted store', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'matches exactly when arbitrary changed-path re-export sets are equal',
     {
       base: FC.uniqueArray(FC.integer({max: 12, min: 0}), {maxLength: 6}),

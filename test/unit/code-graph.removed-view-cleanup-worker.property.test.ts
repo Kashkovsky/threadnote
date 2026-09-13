@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {DateTime, Effect} from 'effect';
 import fc from 'fast-check';
@@ -39,7 +40,8 @@ const blockedCodeArbitrary = fc.constantFrom<CodeGraphRemovedViewCleanupBlockedC
 );
 
 describe('removed view cleanup worker properties', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'maps one authorized page into the independent monotone phase model',
     {
       action: actionArbitrary,
@@ -79,7 +81,8 @@ describe('removed view cleanup worker properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'never invokes a phase or update after stale authorization',
     {phase: phaseArbitrary, revision: fc.integer({max: 10_000, min: 1})},
     ({phase, revision}) =>

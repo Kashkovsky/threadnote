@@ -1,8 +1,9 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {TestError} from '../helpers/test-error.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   codeGraphAnalysisMcpResponse,
   codeGraphAnalysisRefreshResult,
@@ -34,7 +35,8 @@ import {
 } from '../../src/telemetry/diagnostic.js';
 
 describe('MCP code graph indexing progress', () => {
-  it.prop(
+  fcProp(
+    it,
     'preserves selected evidence without letting fallback observations change an operation freshness contract',
     {
       operation: FC.constantFrom(
@@ -90,7 +92,8 @@ describe('MCP code graph indexing progress', () => {
     ).toEqual({explain: true, impact: false, neighbors: true, node: true, path: false, query: true});
   });
 
-  it.prop(
+  fcProp(
+    it,
     'observes the worktree only for current-required inspections',
     {
       operation: FC.constantFrom(
@@ -109,7 +112,8 @@ describe('MCP code graph indexing progress', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'starts refresh only for stale cold or current-required inspections',
     {
       operation: FC.constantFrom(
@@ -131,7 +135,8 @@ describe('MCP code graph indexing progress', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'serves a borrowed stale snapshot only for ordinary inspections',
     {
       operation: FC.constantFrom(
@@ -198,7 +203,8 @@ describe('MCP code graph indexing progress', () => {
     );
   });
 
-  it.prop(
+  fcProp(
+    it,
     'keeps the exact ready snapshot selected until a verified promotion changes the observed pointer',
     {
       allowStale: FC.boolean(),
@@ -498,7 +504,8 @@ describe('MCP code graph indexing progress', () => {
     expect(response.structuredContent.source).toEqual(source);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'honors explicit local graph response budgets across result cardinalities',
     {
       budgetTokens: FC.integer({max: 1_500, min: 300}),
@@ -797,7 +804,8 @@ describe('MCP code graph indexing progress', () => {
       }),
   );
 
-  it.prop(
+  fcProp(
+    it,
     'never exceeds MCP context budgets across result cardinalities',
     {
       displayNameLength: FC.integer({max: 32_000, min: 0}),

@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {createCachedCodeGraphFactsAttributor} from '../../src/code_graph/indexer.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
@@ -19,7 +20,8 @@ const batchReuseCase = FC.record({
 });
 
 describe('code graph repository-attribution properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'matches one-shot attribution across arbitrary cache-batch boundaries and multi-package references',
     {scenario: attributionCase},
     ({scenario}) => {
@@ -50,7 +52,8 @@ describe('code graph repository-attribution properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'matches canonical batch attribution when only complete final-shard batches are reused',
     {scenario: batchReuseCase},
     ({scenario}) => {

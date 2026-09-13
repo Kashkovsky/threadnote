@@ -1,7 +1,8 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {codeGraphMaintenanceIntentPath} from '../../src/code_graph/layout.js';
 import {codeGraphMaintenanceIntentActive} from '../../src/code_graph/maintenance_gate.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -10,7 +11,8 @@ import {SystemInfo} from '../../src/effect/system.js';
 const replacementToken = FC.stringMatching(/^[A-Za-z0-9_-]{1,80}$/).map(value => `replacement:${value}`);
 
 describe('code graph maintenance-gate properties', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'never removes a marker that replaced the stale owner while process identity was inspected',
     {replacementToken},
     ({replacementToken}) =>

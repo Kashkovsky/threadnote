@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BUN_VERSION: 1.3.14
+  BUN_VERSION: 1.4.2
 
 jobs:
   verify:
@@ -379,9 +379,8 @@ jobs:
         if: matrix.architecture == 'x64'
         shell: pwsh
         env:
-          BUN_BASELINE_TARBALL_SHA512: b888cb502d52f435a0202ceea0c6daeefbab0499c1aee1384b90b19ef99991da96557473c75460bbadfa1e81fe934a9e6900858778de1b7250d72e9f447bf4b3
+          BUN_BASELINE_TARBALL_SHA512: 96af362ea563497031f603547226c275f41db6b7a587ce85c50aa586939d895e1265000ff071d4c568677db8f1d9fab3fa3ce097006f8e6944b3bc45c8e34167
         run: |
-          # Bun 1.3.14 cannot extract this backend itself on Windows (oven-sh/bun#28327).
           # Preserve Threadnote's baseline CPU contract by placing the exact official
           # package payload in the cache path Bun checks before attempting a download.
           $packageName = 'bun-windows-x64-baseline'

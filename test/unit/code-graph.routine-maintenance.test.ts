@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
@@ -1365,7 +1366,8 @@ describe('routine code graph maintenance', () => {
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'single-flights every bounded number of concurrent callers for one database',
     {callers: fc.integer({max: 16, min: 2})},
     ({callers}) =>

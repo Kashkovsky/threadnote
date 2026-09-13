@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {analyzeCodeGraph, type CodeGraphAnalysisResult} from '../../src/code_graph/analysis.js';
 import type {CodeGraphEdge} from '../../src/code_graph/types.js';
 import {analysisEdge, analysisSnapshot, analysisSymbol, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
@@ -33,7 +34,8 @@ const boundedAnalysisCase = FC.record({
 });
 
 describe('code graph analysis properties', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'keeps partitions, identifiers, labels, and ranking stable across input order and page size',
     {fixture: analysisCase},
     ({fixture}) => {
@@ -99,7 +101,8 @@ describe('code graph analysis properties', () => {
     {fastCheck: {numRuns: 80}},
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'keeps bounded induced topology deterministic and excludes relationships to omitted nodes',
     {fixture: boundedAnalysisCase},
     ({fixture}) => {

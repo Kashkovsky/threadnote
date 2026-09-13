@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Option, Path, Ref} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {EmbeddingFailed} from '../../src/effect/ai/errors.js';
@@ -212,7 +213,8 @@ describe('MCP recall background vector refresh', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'returns promptly and single-flights every bounded number of concurrent refreshes for one canonical home',
     {callers: FC.integer({max: 24, min: 2})},
     ({callers}) =>

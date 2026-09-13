@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {formatMemoryDocument} from '../../src/memory/document.js';
 import {classifyGitIngestDocument} from '../../src/remote_memory/git_ingest_document.js';
 

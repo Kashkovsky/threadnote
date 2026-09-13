@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   assessRecallVectorPerformance,
   INCREMENTAL_BUILD_TO_INITIAL_RATIO_MAXIMUM,
@@ -64,7 +65,8 @@ describe('recall vector performance budget', () => {
     expect(budget.semanticQueryWithinBudget).toBe(false);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'preserves a ratio-bounded result under common runner slowdown while the initial watchdog holds',
     {
       initialBuildMilliseconds: FC.integer({max: 3_000, min: 1_500}),
@@ -89,7 +91,8 @@ describe('recall vector performance budget', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'rejects incremental work above both the linear floor and same-runner ratio',
     {
       initialBuildMilliseconds: FC.integer({max: 15_000, min: 5_000}),
@@ -108,7 +111,8 @@ describe('recall vector performance budget', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'accepts reassociated equality without admitting a one-nanosecond ratio overrun',
     {
       initialBuildMilliseconds: FC.integer({max: 3_000, min: 2_501}),

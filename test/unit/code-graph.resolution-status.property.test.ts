@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {type CodeGraphBuildStatus, parseCodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
 
 const resolutionCase = FC.record({
@@ -16,7 +17,8 @@ const resolutionCase = FC.record({
 });
 
 describe('code graph reference-resolution status properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'round-trips bounded cumulative progress and rejects completed counts beyond the pass total',
     {sample: resolutionCase},
     ({sample}) => {

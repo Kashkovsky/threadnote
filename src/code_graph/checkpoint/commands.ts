@@ -516,7 +516,7 @@ function decodeCheckpointInput<E, R>(
           },
         }),
     );
-    yield* input.file.seek(0, 'start');
+    yield* input.file.seek(0n, 'start');
     yield* readCheckpointPart(input.file, plan.prefixBytes).pipe(
       Effect.flatMap(bytes => attemptCheckpoint(() => decoder.push(bytes))),
     );
@@ -769,7 +769,7 @@ function consumeCheckpointInput(
   accept: (bytes: Uint8Array) => Effect.Effect<void, CodeGraphCheckpointCommandError>,
 ) {
   return Effect.gen(function* () {
-    yield* input.file.seek(0, 'start');
+    yield* input.file.seek(0n, 'start');
     let remaining = input.size;
     while (remaining > 0) {
       const bytes = yield* readCheckpointPart(input.file, Math.min(remaining, CHECKPOINT_IO_CHUNK_BYTES));
@@ -851,7 +851,7 @@ function publishPreparedCheckpoint(
         const file = yield* fs.open(temporary, {flag: 'wx', mode: 0o600});
         const writer = yield* attemptCheckpoint(() => new CodeGraphCheckpointArtifactWriterV1(prepared));
         yield* file.writeAll(writer.prefix);
-        yield* spool.file.seek(0, 'start');
+        yield* spool.file.seek(0n, 'start');
         let offset = 0;
         for (const descriptor of prepared.header.chunks) {
           const frameBytes = CODE_GRAPH_CHECKPOINT_CHUNK_FRAME_HEADER_BYTES + descriptor.compressedBytes;

@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {expect, it} from '@effect/vitest';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Cause, Effect, Exit, Fiber, Layer} from 'effect';
 import {describe} from 'vitest';
 import {MCP_RESOURCE_READ_MAX_BYTES, readThreadnoteMcpResource} from '../../src/effect/ai/mcp_resource.js';
@@ -44,7 +45,8 @@ describe('MCP protocol resource reads', () => {
     }).pipe(provideTestLayer(ResourceTestLayer)),
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'enforces the UTF-8 byte bound after every read even when metadata was stale',
     {
       character: FC.constantFrom('a', 'é', '😀'),

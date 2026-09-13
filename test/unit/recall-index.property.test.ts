@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Effect} from 'effect';
 import {
   clearRecallIndexMemoryCache,
@@ -38,7 +39,8 @@ const corpusOperation = FC.oneof(
 );
 
 describe('SQLite recall index properties', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'matches a simple corpus model across arbitrary put, remove, reopen, and clean-rebuild sequences',
     {
       operations: FC.array(corpusOperation, {maxLength: 7, minLength: 1}),

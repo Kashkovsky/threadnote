@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {escapeGraphMarkup, escapeHtmlText, normalizeCodeGraphText} from '../../src/code_graph/export.js';
 
 const sourceTextArbitrary = FC.array(
@@ -31,7 +32,8 @@ const sourceTextArbitrary = FC.array(
 ).map(characters => characters.join(''));
 
 describe('code graph export markup properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'normalizes arbitrary repository text to bounded XML 1.0 characters without splitting surrogates',
     {maximum: FC.integer({max: 128, min: 1}), value: sourceTextArbitrary},
     ({maximum, value}) => {
@@ -44,7 +46,8 @@ describe('code graph export markup properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'escapes XML and HTML metacharacters while preserving normalized text',
     {value: sourceTextArbitrary},
     ({value}) => {

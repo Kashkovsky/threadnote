@@ -1,7 +1,8 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {SystemInfo} from '../../src/effect/system.js';
 import {expireRecallIndexValidation, loadRecallIndexData} from '../../src/recall/index.js';
@@ -14,7 +15,8 @@ import {
 const RecallIndexTestLayer = Layer.merge(BunServices.layer, SystemInfo.layer);
 
 describe('recall index foreground freshness', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'requires refresh exactly for force, initialization, integrity, or generation changes',
     {
       canonicalGeneration: FC.string({maxLength: 48}),
@@ -60,7 +62,8 @@ describe('recall index foreground freshness', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'allows canonical incremental refresh only for an exact end-to-end transition',
     {
       markerCurrent: FC.string({maxLength: 48}),
@@ -82,7 +85,8 @@ describe('recall index foreground freshness', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'merges consecutive mutation transitions while preserving their earliest indexed base',
     {
       generations: FC.uniqueArray(FC.string({maxLength: 32}), {maxLength: 12, minLength: 2}),
@@ -126,7 +130,8 @@ describe('recall index foreground freshness', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'fails continuity closed when an intervening generation was not linked',
     {generation: FC.string({maxLength: 32})},
     ({generation}) =>

@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import fc from 'fast-check';
@@ -19,7 +20,8 @@ import {
 const URI = 'threadnote://user/test/memories/durable/projects/threadnote/deferred.md';
 
 describe('deferred code-anchor state model', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'finalization is eligible only for the unchanged active personal uncited memory revision',
     {
       citationCount: fc.integer({min: 0, max: 4}),
@@ -88,7 +90,8 @@ describe('deferred code-anchor state model', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'repository routes admit the exact repository/worktree identity regardless of preparation hint',
     {
       callerPreparation: fc.boolean(),
@@ -110,7 +113,8 @@ describe('deferred code-anchor state model', () => {
       }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'workset routes admit the exact prepared workset or a qualified cross-repository reference',
     {
       hasQualifiedRef: fc.boolean(),
@@ -133,7 +137,8 @@ describe('deferred code-anchor state model', () => {
       }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'refresh targets stay on still-present matching worktrees and never rebind a sibling checkout',
     {
       duplicateWorktree: fc.boolean(),

@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM,
   codeGraphMaterializedShardCacheBatchPlan,
@@ -7,7 +8,8 @@ import {
 } from '../../src/code_graph/materialized_shard_cache_admission.js';
 
 describe('materialized shard cache write admission', () => {
-  it.prop(
+  fcProp(
+    it,
     'is an exact monotonic boundary over valid raw-fact byte counts',
     {rawFactBytes: FC.integer({max: Number.MAX_SAFE_INTEGER, min: 0})},
     ({rawFactBytes}) => {
@@ -18,7 +20,8 @@ describe('materialized shard cache write admission', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'persists only fallback batches below the boundary and never marks deferred associations complete',
     {
       admission: FC.constantFrom('defer' as const, 'persist' as const),

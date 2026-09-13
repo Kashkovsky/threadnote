@@ -25,7 +25,7 @@ import {
 } from '../helpers/remote-memory-postgres.js';
 
 const TEST_DATABASE_URL = process.env.THREADNOTE_TEST_POSTGRES_URL;
-const postgresDescribe = TEST_DATABASE_URL ? describe.sequential : describe.skip;
+const postgresDescribe = TEST_DATABASE_URL ? describe : describe.skip;
 const ISSUER = 'https://identity.integration.test';
 const PROJECT = 'threadnote';
 const TENANT_A = 'tenant-alpha';

@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
 import {Clock, Effect} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {describe, expect, vi} from 'vitest';
 import {releaseSnapshotLease} from '../../src/code_graph/store_leases.js';
@@ -127,7 +128,8 @@ describe('snapshot lease retirement authority', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'preserves the baton across generated insertion and expiry order with sorted releases',
     {
       active: FC.boolean(),

@@ -1,9 +1,10 @@
+import {fcEffectProp, fcProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {symlink, writeFile as writeFileBytes} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it, it as effectIt} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Deferred, Effect, Fiber, FileSystem, Layer, Option, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -59,7 +60,8 @@ describe('ResourceId', () => {
     expect(() => parseResourceId(value)).toThrow(InvalidResourceId);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'round-trips portable generated segments',
     {
       segment: FC.string({maxLength: 30, minLength: 1}).filter(
@@ -98,7 +100,8 @@ describe('native ResourceStore', () => {
     expect(message).not.toContain('token');
   });
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'converges when concurrent first-use callers observe the same missing owned root',
     {callerCount: FC.integer({max: 8, min: 2}), distinctAccounts: FC.boolean()},
     ({callerCount, distinctAccounts}) =>

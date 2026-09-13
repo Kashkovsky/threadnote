@@ -11,9 +11,9 @@ const valueFlag = <A>(name: string, flag: Flag.Flag<A>, kind: 'other' | 'string'
 };
 
 const stringFlag = (name: string): Flag.Flag<string> =>
-  valueFlag(name, Flag.string(name), 'string').pipe(Flag.map(decodeCliStringFlagValue));
+  valueFlag(name, Flag.String(name), 'string').pipe(Flag.map(decodeCliStringFlagValue));
 
-export const integerFlag = (name: string): Flag.Flag<number> => valueFlag(name, Flag.integer(name), 'other');
+export const integerFlag = (name: string): Flag.Flag<number> => valueFlag(name, Flag.Int(name), 'other');
 
 export const withValueAlias = <A>(flag: Flag.Flag<A>, alias: string, kind: 'other' | 'string'): Flag.Flag<A> => {
   registerCliValueFlag(alias.length === 1 ? `-${alias}` : `--${alias}`, kind);
@@ -34,12 +34,12 @@ export const defaultString = (name: string, description: string, value: string):
 
 export const boolean = (name: string, description: string): Flag.Flag<boolean> => {
   registerCliBooleanFlag(`--${name}`);
-  return describeFlag(Flag.boolean(name), description).pipe(Flag.withDefault(false));
+  return describeFlag(Flag.Boolean(name), description).pipe(Flag.withDefault(false));
 };
 
 export const negatedBoolean = (name: string, description: string): Flag.Flag<boolean> => {
   registerCliBooleanFlag(`--no-${name}`);
-  return describeFlag(Flag.boolean(`no-${name}`), description).pipe(
+  return describeFlag(Flag.Boolean(`no-${name}`), description).pipe(
     Flag.withDefault(false),
     Flag.map(value => !value),
   );
@@ -50,13 +50,13 @@ export const optionalChoice = <const Choices extends readonly string[]>(
   choices: Choices,
   description: string,
 ): Flag.Flag<Choices[number] | undefined> =>
-  optional(describeFlag(valueFlag(name, Flag.choice(name, choices), 'other'), description));
+  optional(describeFlag(valueFlag(name, Flag.Literals(name, choices), 'other'), description));
 
 export const requiredChoice = <const Choices extends readonly string[]>(
   name: string,
   choices: Choices,
   description: string,
-): Flag.Flag<Choices[number]> => describeFlag(valueFlag(name, Flag.choice(name, choices), 'other'), description);
+): Flag.Flag<Choices[number]> => describeFlag(valueFlag(name, Flag.Literals(name, choices), 'other'), description);
 
 export const defaultChoice = <const Choices extends readonly string[], const Value extends Choices[number]>(
   name: string,
@@ -64,13 +64,13 @@ export const defaultChoice = <const Choices extends readonly string[], const Val
   description: string,
   value: Value,
 ): Flag.Flag<Choices[number]> =>
-  describeFlag(valueFlag(name, Flag.choice(name, choices), 'other'), description).pipe(Flag.withDefault(value));
+  describeFlag(valueFlag(name, Flag.Literals(name, choices), 'other'), description).pipe(Flag.withDefault(value));
 
 export const repeatedString = (name: string, description: string, maximum = 1000): Flag.Flag<ReadonlyArray<string>> =>
   describeFlag(stringFlag(name), description).pipe(Flag.atMost(maximum));
 
 export const argument = (name: string, description: string): Argument.Argument<string> =>
-  Argument.string(name).pipe(Argument.withDescription(description));
+  Argument.String(name).pipe(Argument.withDescription(description));
 
 export const optionalArgument = (name: string, description: string, fallback: string): Argument.Argument<string> =>
   argument(name, description).pipe(Argument.withDefault(fallback));

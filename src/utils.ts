@@ -1,5 +1,5 @@
 import * as BunSocket from '@effect/platform-bun/BunSocket';
-import {Console, Deferred, Effect, FileSystem, Option, Path, Stdio, Stream, Schema} from 'effect';
+import {Console, Effect, FileSystem, Option, Path, Stdio, Stream, Schema} from 'effect';
 import {failure, success, warning} from './cli_ui.js';
 import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect, type CommandOptions} from './effect/command.js';
 import {getStatusEffect, getTextEffect} from './effect/http.js';
@@ -398,19 +398,12 @@ export const readHttpStatus = Effect.fn('utils.readHttpStatus')((url: string, ti
 
 export const isTcpPortOpen = Effect.fn('utils.isTcpPortOpen')((host: string, port: number, timeoutMs: number) =>
   Effect.scoped(
-    Effect.gen(function* () {
-      const connected = yield* Deferred.make<boolean>();
-      const socket = yield* BunSocket.makeNet({host, port});
-      yield* socket
-        .run(() => undefined, {onOpen: Deferred.succeed(connected, true)})
-        .pipe(
-          Effect.catch(() => Deferred.succeed(connected, false)),
-          Effect.forkScoped,
-        );
-      return yield* Deferred.await(connected).pipe(
-        Effect.timeoutOrElse({duration: timeoutMs, orElse: () => Effect.succeed(false)}),
-      );
-    }),
+    BunSocket.makeNet({host, port}).pipe(
+      Effect.flatMap(socket => socket.reader),
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+      Effect.timeoutOrElse({duration: timeoutMs, orElse: () => Effect.succeed(false)}),
+    ),
   ),
 );
 

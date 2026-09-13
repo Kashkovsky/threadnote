@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {parseBearerAccessToken} from '../../src/oauth/access_token.js';
 import {
   graphControlGrantAllowsRead,

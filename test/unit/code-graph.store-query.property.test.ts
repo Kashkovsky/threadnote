@@ -1,8 +1,9 @@
+import {fcEffectProp, fcProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   codeGraphAdjacencyQueryStatement,
   codeGraphCachedCommittedFileKeysStatement,
@@ -175,7 +176,8 @@ describe('code graph indexed query properties', () => {
     }
   });
 
-  it.prop(
+  fcProp(
+    it,
     'admits exactly current-generation rows whose stored fact path matches their authority path',
     {
       rows: FC.array(
@@ -231,7 +233,8 @@ describe('code graph indexed query properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'never scores a test or documentation symbol path above an implementation path',
     {
       directories: FC.array(symbolPathDirectory, {maxLength: 3}),
@@ -256,7 +259,8 @@ describe('code graph indexed query properties', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'boosts side-effect owners only in implementation paths and only for behavior-focused queries',
     {
       action: FC.constantFrom('clearAllTabs', 'dismissDrawer', 'purgeCache', 'resetSession', 'wipeCredentials'),
@@ -307,7 +311,8 @@ describe('code graph indexed query properties', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'matches effective-overlay adjacency for incoming, outgoing, and deduplicated both-direction reads',
     {
       allowedProvenances: FC.uniqueArray(FC.constantFrom(...allProvenances), {maxLength: 5, minLength: 1}),
@@ -603,7 +608,8 @@ describe('code graph indexed query properties', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'preserves canonical rows and exact ranking across mixed lexical formats, overrides, and deletions',
     {
       base: FC.array(lexicalPostingSpec, {maxLength: 30}),
@@ -784,7 +790,8 @@ describe('code graph indexed query properties', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'distinguishes canonical absolute Bazel labels from repository paths',
     {
       packageSegments: FC.array(bazelLabelSegment, {maxLength: 5}),

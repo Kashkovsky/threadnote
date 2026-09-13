@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {augmentRationaleFacts, captureRationaleInputs} from '../../src/code_graph/rationale.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../src/code_graph/types.js';
 
@@ -11,7 +12,8 @@ const rationaleText = FC.array(
   .filter(value => value.length > 0);
 
 describe('code graph rationale cache properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'keeps source-backed and JSON-cache-backed derivation equivalent after source release',
     {
       documentation: rationaleText,

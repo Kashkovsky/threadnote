@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {execFileSync} from '../helpers/node-child-process.js';
@@ -7,7 +8,7 @@ import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Effect, Path} from 'effect';
 import {CodeGraphIndexer, graphContentIdentity} from '../../src/code_graph/indexer.js';
 import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
@@ -1110,7 +1111,8 @@ describe('project-closure incremental indexing', () => {
     {timeout: 120_000},
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'matches forced-full graph, query, catalog, health, counts, and delta paths across randomized project chains',
     {
       projectCount: FC.integer({max: 8, min: 5}),

@@ -1,7 +1,8 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   codeGraphAnalysisEdgeAggregatePageStatement,
   codeGraphAnalysisSymbolAggregatePageStatement,
@@ -27,7 +28,8 @@ const aggregateSpec = FC.record({
 });
 
 describe('code graph analysis aggregate store', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'matches full effective-overlay counts across randomized keyset page boundaries',
     {
       base: FC.array(aggregateSpec, {maxLength: 60}),

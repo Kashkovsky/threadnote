@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {describe} from 'vitest';
 import {codeGraphWorksetMcpResponse} from '../../src/mcp/server/index.js';
 import {
@@ -10,7 +11,8 @@ import {
 import type {CodeGraphQueryResult} from '../../src/code_graph/types.js';
 
 describe('bounded code graph workset queries', () => {
-  it.prop(
+  fcProp(
+    it,
     'allocates every admitted repository a deterministic fair prefix budget',
     {
       repositories: FC.integer({max: 8, min: 1}),

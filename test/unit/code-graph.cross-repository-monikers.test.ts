@@ -1,7 +1,8 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Option, Effect, Schema} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
@@ -257,15 +258,17 @@ describe('cross-repository declarations and monikers', () => {
     expect(() =>
       parseCodeGraphMonikerV1({...moniker, evidence: {...moniker.evidence, path: 'packages\\app\\package.json'}}),
     ).toThrow(/not canonical/u);
-    expect(() =>
-      Schema.decodeUnknownSync(
-        CodeGraphMonikerSchemaV1,
-        CODE_GRAPH_MONIKER_STRICT_PARSE_OPTIONS,
-      )({
-        ...moniker,
-        sourceBody: 'must never be accepted',
-      }),
-    ).toThrow();
+    expect(
+      Option.isNone(
+        Schema.decodeUnknownOption(
+          CodeGraphMonikerSchemaV1,
+          CODE_GRAPH_MONIKER_STRICT_PARSE_OPTIONS,
+        )({
+          ...moniker,
+          sourceBody: 'must never be accepted',
+        }),
+      ),
+    ).toBe(true);
   });
 
   it('materializes equivalent compact declaration rows for clean and incremental snapshots', async () => {
@@ -564,7 +567,8 @@ describe('cross-repository declarations and monikers', () => {
     },
   );
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'canonicalization is deterministic, ordered, deduplicating, and JSON round-trippable',
     {
       values: FC.array(
@@ -612,7 +616,8 @@ describe('cross-repository declarations and monikers', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'conflicting package constraints remain permutation-invariant occurrences',
     {
       versions: FC.uniqueArray(FC.integer({max: 100, min: 1}), {maxLength: 20, minLength: 2}),

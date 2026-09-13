@@ -1,8 +1,9 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   codeGraphEffectiveFilesByContentHashesQueryStatement,
   codeGraphEffectiveFilesByPathsQueryStatement,
@@ -57,7 +58,8 @@ const inheritedLocator = {
 } as const satisfies CodeGraphSymbolSemanticLocatorV1;
 
 describe('code graph citation query primitives', () => {
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'queries eager hashes and only missing-path relocation fallbacks in first-seen order',
     {
       eagerContentHashes: FC.array(
@@ -96,7 +98,8 @@ describe('code graph citation query primitives', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'matches current Git-blob envelopes and legacy raw hashes to the same source bytes',
     {
       bytes: FC.uint8Array({maxLength: 1_024}),
@@ -551,7 +554,8 @@ describe('versioned code graph source-span hashing', () => {
     );
   });
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'produces identical fragments for LF and CRLF spellings of the same logical source',
     {
       lines: FC.array(

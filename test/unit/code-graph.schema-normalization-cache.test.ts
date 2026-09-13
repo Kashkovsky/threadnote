@@ -1,7 +1,8 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, Result} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {inspectCodeGraphQueryIndexes} from '../../src/code_graph/store_query_indexes.js';
 import {normalizeSchemaDefinition} from '../../src/code_graph/store_schema_normalization.js';
@@ -20,7 +21,8 @@ const definition = FC.record({
 });
 
 describe('bounded pure schema normalization', () => {
-  it.prop(
+  fcProp(
+    it,
     'preserves the SQL grammar model and quoted bytes across changed inputs and repetition',
     {definitions: FC.array(definition, {maxLength: 30, minLength: 1})},
     ({definitions}) => {
@@ -38,7 +40,8 @@ describe('bounded pure schema normalization', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'retains byte parity with the independent uncached vector-schema normalizer',
     {
       inputs: FC.array(
