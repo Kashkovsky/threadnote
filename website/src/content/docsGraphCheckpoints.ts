@@ -21,14 +21,6 @@ export const graphCliCommand: CliCommandReference = {
     'threadnote graph checkpoint export --output threadnote-graph.cgcp',
     'threadnote graph checkpoint verify --input threadnote-graph.cgcp --expected-digest sha256:…',
     'threadnote graph checkpoint import --input threadnote-graph.cgcp --expected-digest sha256:…',
-    'threadnote graph share init --write-config --organization acme',
-    'threadnote graph share join --read-only',
-    'threadnote graph share join --coordinator http://127.0.0.1:18765',
-    'threadnote graph publisher bootstrap',
-    'threadnote graph publisher serve',
-    'threadnote graph publisher serve --listen 127.0.0.1:18765',
-    'threadnote graph contribute status',
-    'threadnote graph worker --json',
     'threadnote graph index',
   ],
 };
@@ -43,8 +35,6 @@ export const graphCheckpointsDocsArticle: DocsArticle = {
     'offline graph transfer',
     'checkpoint verify',
     'checkpoint import',
-    'graph share',
-    'shared checkpoint',
   ],
   body: [
     {
@@ -83,10 +73,6 @@ threadnote graph checkpoint import \\
     {
       type: 'paragraph',
       text: 'Import never fetches Git objects or runs repository code. The same repository and source commit must already exist locally. Threadnote verifies the runtime ABI and every exact-commit file before staging any graph rows, then publishes the ready snapshot and immutable receipt transactionally. Repeated imports reuse the same logical snapshot.',
-    },
-    {
-      type: 'paragraph',
-      text: 'Organization graph sharing reuses this checkpoint contract. A checked-in `.threadnote/graph-share.json` pointer names a digest-pinned profile and publisher key fingerprint. `threadnote graph share join --read-only` records local trust only. The next `threadnote graph index` imports a verified shared ancestor and builds only the local overlay; committed-base ensure reuses or rematerializes a clean snapshot for the requested commit. `graph share status` reports `lastImport` without replacing last-good provenance when a transfer misses. `graph publisher serve` observes canonical HEAD, freezes a descendant batch, verifies receipts, hydrates the publisher parse cache, then exports a signed TCG1 checkpoint or a TCG1 delta when the affected-closure proof is complete. Empty deltas remain legal compaction. Failed verification and unrelated HEAD keep the last signed frontier. `graph publisher serve --listen 127.0.0.1:port` walks `/v1/status.phase` through frozen→assembling→verifying→published and serves the loopback coordinator and digest CAS so additional homes can join without sharing a filesystem CAS directory. After signing, the publisher also stores an OCI image-manifest document in CAS (`application/vnd.oci.image.manifest.v1+json`) whose layers are the frontier body, attestation envelope, and checkpoint metadata; the `tn-frontier-*` discovery tag points at that document digest while `latest.json` still names the frontier and envelope digests. HTTP digest CAS remains 32 MiB per blob: publishers still store the assembled `.cgcp`, but HTTP transfers independently digest-addressed cgcp prefix and TCG1 frames from checkpoint metadata (`application/vnd.threadnote.graph.checkpoint.v1+json` or `application/vnd.threadnote.code-graph-checkpoint.v1`), and clients assemble on disk before import. Clients select the newest published ancestor. After a contributing join, local parse batches enqueue parse-result artifacts (never source text) and upload them once the coordinator is reachable. Worker CAS is separate from the canonical frontier, and the coordinator API never accepts source or graph records. MCP then reports `source.kind: shared-base-plus-local-overlay` with the profile digest, frontier commit, and local commit. Missing enrollment keeps ordinary local indexing. Invalid signatures stay fail-closed for the candidate and preserve the last ready local graph. Recall does not start this work.',
     },
     {
       type: 'note',
