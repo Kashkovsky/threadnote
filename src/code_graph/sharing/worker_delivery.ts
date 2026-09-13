@@ -48,6 +48,7 @@ const ADMISSION_ACK = Schema.Struct({
 });
 const STRICT = {onExcessProperty: 'error'} as const;
 const SIGNED_DELIVERY_DEADLINE_MILLISECONDS = 360_000;
+const WORKER_MINIMUM_VALIDITY_SECONDS = 390;
 
 /** Legacy worker metadata is deliberately never submitted to an OCI-backed org. */
 export function usesSignedGraphWorkerDelivery(trust: GraphShareTrustReceiptV1): boolean {
@@ -125,7 +126,7 @@ const drainSignedBatch = Effect.fn('codeGraph.sharing.drainSignedBatch')(functio
     scope: controlScope,
     client,
     isAuthorized: currentTrust,
-    minimumValiditySeconds: 330,
+    minimumValiditySeconds: WORKER_MINIMUM_VALIDITY_SECONDS,
   });
   const guard = Effect.gen(function* () {
     return (yield* currentTrust) && (yield* enrollment.stillAuthorized);
@@ -161,7 +162,7 @@ const drainSignedBatch = Effect.fn('codeGraph.sharing.drainSignedBatch')(functio
         item =>
           item.operation.state === 'prepared' &&
           item.scope.workerId === scope.workerId &&
-          item.operation.authority.expiresAt > now + 310,
+          item.operation.authority.expiresAt > now + SIGNED_DELIVERY_DEADLINE_MILLISECONDS / 1000,
       );
     if (replay !== undefined) {
       if (replay.operation.state === 'admitted') {

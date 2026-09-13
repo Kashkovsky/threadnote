@@ -238,14 +238,14 @@ describe('automatic graph client enrollment', () => {
         home: f.home,
         scope,
         client: f.client,
-        minimumValiditySeconds: 330,
+        minimumValiditySeconds: 390,
       });
       yield* TestClock.adjust(3_300_000);
       const renewed = yield* enrollGraphControlClient({
         home: f.home,
         scope,
         client: f.client,
-        minimumValiditySeconds: 330,
+        minimumValiditySeconds: 390,
       });
       expect(renewed.workerId).not.toBe(first.workerId);
       expect(f.calls()).toBe(2);
