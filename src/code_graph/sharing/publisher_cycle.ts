@@ -46,6 +46,7 @@ import type {GraphShareCoordinatorStateV1} from './control_protocol.js';
 import {parseSha256Digest, type Sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 import {
+  adoptPublishedFrontier,
   assembleGraphShareBatch,
   failGraphShareBatch,
   freezeGraphShareBatch,
@@ -81,6 +82,8 @@ import {
 import {resolveGraphShareCasRoot} from './trust.js';
 import {makeGraphShareSourceVerification, type GraphShareSourceVerifiedReceipt} from './source_verification.js';
 import {completeGraphPublisherRegistryPublication} from './publisher_registry.js';
+import {readAuthenticatedGraphShareFrontier} from './frontier_acceptance.js';
+import {graphShareRegistryPublicationScope} from './registry_publication.js';
 import {graphWorkerRegistryForProfile} from './worker_registry_upload.js';
 import {makeGraphShareRegistryReader} from './registry_reader.js';
 import {selectGraphWorkerReceiptsForSource} from './worker_receipts.js';
@@ -151,13 +154,19 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
   const profile = parseGraphShareProfile(
     yield* decodeJsonBytes(yield* readVerifiedCasBlob(casRoot, profilePointer.digest)),
   );
+  const signedProfile = profile.registry.worker.startsWith('oci://');
   const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
   const pointerPath = graphSharingFrontierPointerPath(path, layout.frontiersRoot, identity.repositoryId);
   const pointer = parseGraphShareFrontierPointer(yield* readJsonFile(pointerPath));
-  const current = parseGraphShareFrontierManifest(
-    yield* decodeJsonBytes(yield* readVerifiedCasBlob(casRoot, pointer.manifestDigest)),
-  );
-  const signedProfile = profile.registry.worker.startsWith('oci://');
+  const current = signedProfile
+    ? yield* readAuthenticatedGraphShareFrontier(
+        casRoot,
+        graphShareRegistryPublicationScope({enrollment, profile}),
+        pointer,
+      )
+    : parseGraphShareFrontierManifest(
+        yield* decodeJsonBytes(yield* readVerifiedCasBlob(casRoot, pointer.manifestDigest)),
+      );
   const policyFile = options.authorizationPolicy === undefined ? undefined : path.resolve(options.authorizationPolicy);
   if (signedProfile && policyFile === undefined)
     return yield* graphSharingFailure('OCI worker publication requires a control authorization policy.');
@@ -189,20 +198,8 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
           publishedFrontier: current.sourceCommit,
         }
       : coordinator.machine;
-  const publishedCommit = machine.publishedFrontier ?? current.sourceCommit;
-  const descendant = yield* graphShareCommitIsAncestor(identity.repoRoot, publishedCommit, identity.headCommit);
-  machine = observeCanonicalHead(machine, {
-    commit: identity.headCommit,
-    isDescendantOfPublished: descendant || identity.headCommit === publishedCommit,
-    nowSeconds,
-  });
-  yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
-  if (identity.headCommit === publishedCommit) {
-    if (
-      initialPolicy !== undefined &&
-      current.sourceCommit === identity.headCommit &&
-      current.profileDigest === profilePointer.digest
-    )
+  if (identity.headCommit === current.sourceCommit) {
+    if (initialPolicy !== undefined)
       yield* withCoordinatorStateLock(
         coordinatorOptions,
         Effect.gen(function* () {
@@ -226,8 +223,30 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
           );
         }),
       );
+    machine = adoptPublishedFrontier(machine, {
+      generation: current.generation,
+      manifestDigest: pointer.manifestDigest,
+      sourceCommit: current.sourceCommit,
+    });
+    yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
     return currentPointer(current, pointer, machine.phase);
   }
+  if (signedProfile && machine.generation < current.generation) {
+    machine = adoptPublishedFrontier(machine, {
+      generation: current.generation,
+      manifestDigest: pointer.manifestDigest,
+      sourceCommit: current.sourceCommit,
+    });
+    yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
+  }
+  const publishedCommit = machine.publishedFrontier ?? current.sourceCommit;
+  const descendant = yield* graphShareCommitIsAncestor(identity.repoRoot, publishedCommit, identity.headCommit);
+  machine = observeCanonicalHead(machine, {
+    commit: identity.headCommit,
+    isDescendantOfPublished: descendant || identity.headCommit === publishedCommit,
+    nowSeconds,
+  });
+  yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
   if (!descendant) {
     return currentPointer(current, pointer, machine.phase);
   }

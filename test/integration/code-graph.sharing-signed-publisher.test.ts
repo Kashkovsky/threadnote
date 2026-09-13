@@ -153,6 +153,7 @@ describe('signed worker publisher', () => {
           expect(result.sourceCommit).toBe(nextIdentity.headCommit);
           expect((yield* readGraphWorkerAdmissionStore(home, policy)).receipts).toHaveLength(0);
           yield* writePrivateJsonFile(admissionPath, admissions);
+          yield* writePrivateJsonFile(graphSharingLayout(path, home).coordinatorStatePath, coordinator);
           const reconciled = yield* advanceGraphPublisherFrontier(config(home), {
             authorizationPolicy: policyFile,
             cas,
@@ -162,6 +163,9 @@ describe('signed worker publisher', () => {
           expect(reconciled.published).toBe(false);
           expect(reconciled.manifestDigest).toBe(result.manifestDigest);
           expect((yield* readGraphWorkerAdmissionStore(home, policy)).receipts).toHaveLength(0);
+          const latestCoordinator = yield* loadGraphShareCoordinatorState(coordinatorOptions);
+          expect(latestCoordinator.machine.generation).toBe(result.generation);
+          expect(latestCoordinator.machine.publishedFrontier).toBe(nextIdentity.headCommit);
         }).pipe(provideTestLayer(ApplicationLayer)),
       ),
     180_000,
