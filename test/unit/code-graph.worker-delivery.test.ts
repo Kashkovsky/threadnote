@@ -20,10 +20,12 @@ import {
 } from '../../src/code_graph/sharing/signed_candidate.js';
 import {
   graphWorkerDeliveryScope,
+  listGraphWorkerDeliveryPrincipalScopes,
   listGraphWorkerDeliveryOutboxOperations,
   markGraphWorkerDeliveryAdmitted,
   prepareGraphWorkerDeliveryOutbox,
   readGraphWorkerDeliveryOutboxOperation,
+  retireSupersededGraphWorkerDeliveryOutbox,
 } from '../../src/code_graph/sharing/worker_delivery_outbox.js';
 import {
   finishAdmittedGraphWorkerResult,
@@ -32,6 +34,10 @@ import {
 import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
 import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker_result.js';
 import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
+import {
+  advanceGraphWorkerCandidateScan,
+  nextGraphWorkerCandidateScan,
+} from '../../src/code_graph/sharing/worker_candidate_scan.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
@@ -137,7 +143,7 @@ const fixture = Effect.fn('test.workerDelivery.fixture')(function* () {
     threadnoteHome: home,
   });
   const scope = graphWorkerDeliveryScope(authority, candidate.organization);
-  return {artifact, candidate, candidatePageId, home, prepared, repositoryId, scope};
+  return {artifact, authority, candidate, candidatePageId, home, prepared, repositoryId, resultBytes, scope, signer};
 });
 
 describe('automatic signed graph worker delivery', () => {
@@ -193,6 +199,19 @@ describe('automatic signed graph worker delivery', () => {
         const f = yield* fixture();
         const switched = {...f.scope, principalId: sha256Digest('second principal')};
         expect(yield* listGraphWorkerDeliveryOutboxOperations(f.home, switched)).toEqual([]);
+        expect(yield* listGraphWorkerDeliveryPrincipalScopes(f.home, switched)).toEqual([switched]);
+        expect(
+          (yield* Effect.result(
+            retireSupersededGraphWorkerDeliveryOutbox({
+              admittedOperationId: f.prepared.operation.operationId,
+              admittedScope: switched,
+              candidateAbsent: true,
+              candidateIdentity: f.prepared.operation.candidateIdentity,
+              oldScope: f.scope,
+              threadnoteHome: f.home,
+            }),
+          ))._tag,
+        ).toBe('Failure');
         let uploaded = false;
         const denied = yield* submitPreparedGraphWorkerResult(
           {repositoryId: f.repositoryId, threadnoteHome: f.home},
@@ -273,6 +292,125 @@ describe('automatic signed graph worker delivery', () => {
           other,
         ]);
         expect(yield* listGraphWorkerDeliveryOutboxOperations(f.home, f.scope)).toEqual([]);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
+  effectIt.effect('finishes a prior admitted worker after enrollment rotates its worker ID', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const newer = {...f.scope, workerId: 'gw_' + '9'.repeat(32)};
+        expect((yield* listGraphWorkerDeliveryPrincipalScopes(f.home, newer)).map(scope => scope.workerId)).toContain(
+          f.scope.workerId,
+        );
+        const admitted = yield* markGraphWorkerDeliveryAdmitted({
+          scope: f.scope,
+          candidateIdentity: f.prepared.operation.candidateIdentity,
+          candidatePageId: f.candidatePageId,
+          operationId: f.prepared.operation.operationId,
+          response: {idempotencyKey: f.prepared.operation.operationId, status: 'accepted'},
+          threadnoteHome: f.home,
+        });
+        yield* finishAdmittedGraphWorkerResult(
+          {repositoryId: f.repositoryId, threadnoteHome: f.home},
+          f.scope,
+          admitted,
+        );
+        expect(yield* listGraphShareSignedCandidatePageIds(f.home, f.repositoryId)).toEqual([]);
+        expect(yield* listGraphWorkerDeliveryOutboxOperations(f.home, f.scope)).toEqual([]);
+        expect(yield* listGraphWorkerDeliveryPrincipalScopes(f.home, newer)).toEqual([newer]);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
+  effectIt.effect('retires an old prepared generation only after a newer same-candidate admission', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const authority = {...f.authority, workerId: 'gw_' + '9'.repeat(32)};
+        const newer = yield* createGraphWorkerResultArtifact({
+          metadata: {
+            batchId: f.candidate.batchId,
+            graphAbi: authority.graphAbi,
+            identityClass: 'oauth-principal',
+            issuedAt: Math.floor((yield* Clock.currentTimeMillis) / 1000),
+            partialCoverage: false,
+            platform: f.candidate.platform,
+            principalId: authority.principalId,
+            profileDigest: authority.profileDigest,
+            releaseIdentity: f.candidate.releaseIdentity,
+            repositoryId: authority.repositoryId,
+            resourceLimits: [],
+            sourceCommit: f.candidate.sourceCommit,
+            workerId: authority.workerId,
+          },
+          resultBytes: f.resultBytes,
+          signer: f.signer,
+        });
+        const announcement = yield* signGraphWorkerResultAnnouncement({
+          artifact: newer,
+          expected: authority,
+          signer: f.signer,
+        });
+        const prepared = yield* prepareGraphWorkerDeliveryOutbox({
+          announcement,
+          artifact: newer,
+          authority,
+          candidate: f.candidate,
+          candidatePageId: f.candidatePageId,
+          repositoryId: f.repositoryId,
+          threadnoteHome: f.home,
+        });
+        const newScope = graphWorkerDeliveryScope(authority, f.candidate.organization);
+        expect((yield* listGraphWorkerDeliveryOutboxOperations(f.home, f.scope))[0].state).toBe('prepared');
+        const admitted = yield* markGraphWorkerDeliveryAdmitted({
+          scope: newScope,
+          candidateIdentity: prepared.operation.candidateIdentity,
+          candidatePageId: f.candidatePageId,
+          operationId: prepared.operation.operationId,
+          response: {idempotencyKey: prepared.operation.operationId, status: 'accepted'},
+          threadnoteHome: f.home,
+        });
+        yield* finishAdmittedGraphWorkerResult(
+          {repositoryId: f.repositoryId, threadnoteHome: f.home},
+          newScope,
+          admitted,
+        );
+        expect(yield* listGraphWorkerDeliveryOutboxOperations(f.home, f.scope)).toEqual([]);
+        expect(yield* listGraphWorkerDeliveryOutboxOperations(f.home, newScope)).toEqual([]);
+        expect(yield* listGraphWorkerDeliveryPrincipalScopes(f.home, newScope)).toEqual([newScope]);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
+  effectIt.effect('advances past failed candidates without dropping them and eventually reaches the tail', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        yield* acknowledgeGraphShareSignedCandidatePage(
+          f.home,
+          f.repositoryId,
+          f.candidatePageId,
+          new Set([graphShareSignedCandidateIdentity(f.candidate)]),
+        );
+        const candidates = Array.from({length: 10}, (_, index) => ({
+          ...f.candidate,
+          snapshotId: `cgsn_${index.toString(16).padStart(40, '0')}`,
+        }));
+        yield* persistGraphShareSignedCandidates(f.home, f.repositoryId, candidates);
+        const first = yield* nextGraphWorkerCandidateScan(f.home, f.repositoryId);
+        expect(first.map(item => item.candidate.snapshotId)).toEqual(
+          candidates.slice(0, 8).map(item => item.snapshotId),
+        );
+        yield* advanceGraphWorkerCandidateScan(f.home, f.repositoryId, first.at(-1)!);
+        const next = yield* nextGraphWorkerCandidateScan(f.home, f.repositoryId);
+        expect(next[0].candidate.snapshotId).toBe(candidates[8].snapshotId);
+        expect(next[1].candidate.snapshotId).toBe(candidates[9].snapshotId);
+        expect(yield* listGraphShareSignedCandidatePageIds(f.home, f.repositoryId)).toHaveLength(1);
+        expect(
+          (yield* readGraphShareSignedCandidatePage(f.home, f.repositoryId, first[0].pageId))?.candidates,
+        ).toHaveLength(10);
       }).pipe(provideTestLayer(layer)),
     ),
   );

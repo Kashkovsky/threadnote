@@ -19,6 +19,8 @@ export const GRAPH_WORKER_OUTBOX_MAX_OPERATIONS = 128;
 export const GRAPH_WORKER_OUTBOX_MAX_METADATA_BYTES = 1_048_576;
 export const GRAPH_WORKER_OUTBOX_MAX_BLOBS = 384;
 export const GRAPH_WORKER_OUTBOX_MAX_BLOB_BYTES = 128 * 1_048_576;
+const MAX_PRINCIPAL_SCOPES = 128;
+const MAX_PRINCIPAL_INDEX_BYTES = 65_536;
 const MAX_RESULT_BYTES = 32 * 1_048_576;
 const PAGE_ID = /^[0-9a-f]{64}$/u;
 const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
@@ -164,6 +166,7 @@ export const prepareGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.pre
       input.threadnoteHome,
       scope,
       Effect.gen(function* () {
+        yield* registerPrincipalScope(input.threadnoteHome, scope);
         const current = yield* readOutbox(input.threadnoteHome, scope);
         yield* recoverOutboxStorage(input.threadnoteHome, scope, current);
         const existing = current.operations.find(item => item.operationId === operation.operationId);
@@ -235,6 +238,29 @@ export const readGraphWorkerDeliveryOutboxOperation = Effect.fn('codeGraph.shari
       operation,
       artifact: yield* readOperationArtifact(threadnoteHome, scope, operation),
     } satisfies GraphWorkerDeliveryReplay;
+  },
+);
+
+/** Only the exact current principal and signing identity can locate prior worker generations. */
+export const listGraphWorkerDeliveryPrincipalScopes = Effect.fn('codeGraph.sharing.listWorkerPrincipalScopes')(
+  function* (threadnoteHome: string, current: GraphWorkerDeliveryScope) {
+    if (!validScope(current)) return yield* invalid();
+    const index = yield* readPrincipalIndex(threadnoteHome, current);
+    const active: GraphWorkerDeliveryScope[] = [];
+    for (const scope of index.scopes) {
+      const hasWork = yield* withOutboxLock(
+        threadnoteHome,
+        scope,
+        Effect.gen(function* () {
+          if ((yield* readOutbox(threadnoteHome, scope)).operations.length > 0) return true;
+          // A crash after registering a scope but before writing an operation is harmless.
+          yield* unregisterPrincipalScope(threadnoteHome, scope);
+          return false;
+        }),
+      );
+      if (hasWork) active.push(scope);
+    }
+    return active.some(scope => scope.workerId === current.workerId) ? active : [...active, current];
   },
 );
 
@@ -312,7 +338,53 @@ export const retireGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.reti
         };
         yield* writeOutbox(input.threadnoteHome, input.scope, next);
         yield* recoverOutboxStorage(input.threadnoteHome, input.scope, next);
+        if (next.operations.length === 0) yield* unregisterPrincipalScope(input.threadnoteHome, input.scope);
         return true;
+      }),
+    );
+  },
+);
+
+/** A committed same-candidate admission permits retirement of older, now unusable worker generations. */
+export const retireSupersededGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.retireSupersededWorkerOutbox')(
+  function* (input: {
+    readonly admittedOperationId: string;
+    readonly admittedScope: GraphWorkerDeliveryScope;
+    readonly candidateAbsent: true;
+    readonly candidateIdentity: string;
+    readonly oldScope: GraphWorkerDeliveryScope;
+    readonly threadnoteHome: string;
+  }) {
+    if (
+      !validScope(input.admittedScope) ||
+      !validScope(input.oldScope) ||
+      input.candidateAbsent !== true ||
+      canonicalJson(principalIdentity(input.admittedScope)) !== canonicalJson(principalIdentity(input.oldScope))
+    )
+      return yield* invalid();
+    const admitted = (yield* readOutbox(input.threadnoteHome, input.admittedScope)).operations.find(
+      item => item.operationId === input.admittedOperationId,
+    );
+    if (admitted?.state !== 'admitted' || admitted.candidateIdentity !== input.candidateIdentity)
+      return yield* invalid();
+    return yield* withOutboxLock(
+      input.threadnoteHome,
+      input.oldScope,
+      Effect.gen(function* () {
+        const current = yield* readOutbox(input.threadnoteHome, input.oldScope);
+        const next = {
+          schemaVersion: 1 as const,
+          operations: current.operations.filter(
+            item =>
+              item.operationId === input.admittedOperationId || item.candidateIdentity !== input.candidateIdentity,
+          ),
+        };
+        const retired = current.operations.length - next.operations.length;
+        if (retired === 0) return 0;
+        yield* writeOutbox(input.threadnoteHome, input.oldScope, next);
+        yield* recoverOutboxStorage(input.threadnoteHome, input.oldScope, next);
+        if (next.operations.length === 0) yield* unregisterPrincipalScope(input.threadnoteHome, input.oldScope);
+        return retired;
       }),
     );
   },
@@ -536,6 +608,89 @@ function outboxPaths(path: Path.Path, home: string, scope: GraphWorkerDeliverySc
   const scopeId = sha256HexFromDigest(sha256Digest(canonicalJson(scope)));
   const root = path.join(graphSharingLayout(path, home).root, 'worker-delivery', scope.repositoryId, scopeId);
   return {root, metadata: path.join(root, 'outbox.json'), blobs: path.join(root, 'sha256')};
+}
+
+function principalIdentity(scope: GraphWorkerDeliveryScope) {
+  const {workerId: _workerId, ...principal} = scope;
+  return principal;
+}
+
+function principalIndexPath(path: Path.Path, home: string, scope: GraphWorkerDeliveryScope): string {
+  const digest = sha256HexFromDigest(sha256Digest(canonicalJson(principalIdentity(scope))));
+  return path.join(
+    graphSharingLayout(path, home).root,
+    'worker-delivery',
+    scope.repositoryId,
+    'principals',
+    `${digest}.json`,
+  );
+}
+
+function readPrincipalIndex(home: string, scope: GraphWorkerDeliveryScope) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const target = principalIndexPath(path, home, scope);
+    yield* secureDirectory(path.dirname(target), home);
+    if (!(yield* fs.exists(target))) return {schemaVersion: 1 as const, scopes: [] as GraphWorkerDeliveryScope[]};
+    const bytes = yield* readBoundedPrivateBytes(target, MAX_PRINCIPAL_INDEX_BYTES);
+    const value = yield* Effect.try({
+      try: () => JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes)) as unknown,
+      catch: () => invalid(),
+    });
+    if (
+      !isRecord(value) ||
+      Object.keys(value).sort().join(',') !== 'schemaVersion,scopes' ||
+      value.schemaVersion !== 1 ||
+      !Array.isArray(value.scopes) ||
+      value.scopes.length > MAX_PRINCIPAL_SCOPES ||
+      value.scopes.some(
+        item => !validScope(item) || canonicalJson(principalIdentity(item)) !== canonicalJson(principalIdentity(scope)),
+      ) ||
+      new Set((value.scopes as GraphWorkerDeliveryScope[]).map(item => item.workerId)).size !== value.scopes.length
+    )
+      return yield* invalid();
+    return {schemaVersion: 1 as const, scopes: value.scopes as GraphWorkerDeliveryScope[]};
+  });
+}
+
+function mutatePrincipalIndex(home: string, scope: GraphWorkerDeliveryScope, add: boolean) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const target = principalIndexPath(path, home, scope);
+    yield* secureDirectory(path.dirname(target), home);
+    yield* withExclusiveFileLock(
+      fs,
+      `${target}.lock`,
+      LOCK,
+      Effect.gen(function* () {
+        const current = yield* readPrincipalIndex(home, scope);
+        const scopes = current.scopes.filter(item => item.workerId !== scope.workerId);
+        if (add) scopes.push(scope);
+        if (scopes.length > MAX_PRINCIPAL_SCOPES)
+          return yield* graphSharingFailure('Graph worker principal scope index is full.');
+        if (
+          scopes.length === current.scopes.length &&
+          (add
+            ? current.scopes.some(item => item.workerId === scope.workerId)
+            : !current.scopes.some(item => item.workerId === scope.workerId))
+        )
+          return;
+        yield* writePrivateJsonFile(target, {schemaVersion: 1, scopes});
+        yield* syncWritableFile(fs, target);
+        yield* syncDirectoryStrict(fs, path.dirname(target));
+      }),
+    );
+  });
+}
+
+function registerPrincipalScope(home: string, scope: GraphWorkerDeliveryScope) {
+  return mutatePrincipalIndex(home, scope, true);
+}
+
+function unregisterPrincipalScope(home: string, scope: GraphWorkerDeliveryScope) {
+  return mutatePrincipalIndex(home, scope, false);
 }
 
 function blobPath(path: Path.Path, home: string, scope: GraphWorkerDeliveryScope, digest: string) {

@@ -27,17 +27,20 @@ import {lookupGraphShareTrustReceipt, type GraphShareTrustReceiptV1} from './tru
 import {prepareGraphControlWorkerIdentity} from './client_enrollment.js';
 import {
   graphWorkerDeliveryScope,
+  listGraphWorkerDeliveryPrincipalScopes,
   listGraphWorkerDeliveryOutboxOperations,
   markGraphWorkerDeliveryAdmitted,
   prepareGraphWorkerDeliveryOutbox,
   readGraphWorkerDeliveryOutboxOperation,
   retireGraphWorkerDeliveryOutbox,
+  retireSupersededGraphWorkerDeliveryOutbox,
   type GraphWorkerDeliveryOutboxOperationV1,
   type GraphWorkerDeliveryScope,
 } from './worker_delivery_outbox.js';
 import {signGraphWorkerResultAnnouncement} from './worker_announcement.js';
 import {graphWorkerRegistryForProfile, uploadGraphWorkerArtifactToRegistry} from './worker_registry_upload.js';
 import {createGraphWorkerResultArtifact, type GraphWorkerResultAuthority} from './worker_result.js';
+import {advanceGraphWorkerCandidateScan, nextGraphWorkerCandidateScan} from './worker_candidate_scan.js';
 
 const ADMISSION_ACK = Schema.Struct({
   idempotencyKey: Schema.String.check(Schema.isPattern(SHA256_DIGEST)),
@@ -145,36 +148,60 @@ const drainSignedBatch = Effect.fn('codeGraph.sharing.drainSignedBatch')(functio
   const previous = retry?.identity === retryIdentity ? retry : undefined;
   if (previous !== undefined && previous.nextAttempt > (yield* Clock.currentTimeMillis)) return {sent: 0};
   return yield* Effect.gen(function* () {
-    const operations = yield* listGraphWorkerDeliveryOutboxOperations(input.threadnoteHome, scope);
+    const scopes = yield* listGraphWorkerDeliveryPrincipalScopes(input.threadnoteHome, scope);
+    const operations = (yield* Effect.forEach(scopes, previousScope =>
+      listGraphWorkerDeliveryOutboxOperations(input.threadnoteHome, previousScope).pipe(
+        Effect.map(items => items.map(operation => ({operation, scope: previousScope}))),
+      ),
+    )).flat();
     const now = (yield* Clock.currentTimeMillis) / 1000;
-    const operation =
-      operations.find(item => item.state === 'admitted') ??
-      operations.find(item => item.state === 'prepared' && item.authority.expiresAt > now + 310);
-    if (operation !== undefined) {
-      if (operation.state === 'admitted') {
-        yield* finishAdmittedGraphWorkerResult(input, scope, operation);
+    const replay =
+      operations.find(item => item.operation.state === 'admitted') ??
+      operations.find(
+        item =>
+          item.operation.state === 'prepared' &&
+          item.scope.workerId === scope.workerId &&
+          item.operation.authority.expiresAt > now + 310,
+      );
+    if (replay !== undefined) {
+      if (replay.operation.state === 'admitted') {
+        yield* finishAdmittedGraphWorkerResult(input, replay.scope, replay.operation);
       } else {
-        const replay = yield* readGraphWorkerDeliveryOutboxOperation(
+        const stored = yield* readGraphWorkerDeliveryOutboxOperation(
           input.threadnoteHome,
-          scope,
-          operation.operationId,
+          replay.scope,
+          replay.operation.operationId,
         );
-        if (replay === undefined) return yield* graphSharingFailure('Prepared graph worker operation disappeared.');
-        yield* dispatchPrepared(input, scope, replay.operation, replay.artifact, profile, client, guard);
+        if (stored === undefined) return yield* graphSharingFailure('Prepared graph worker operation disappeared.');
+        yield* dispatchPrepared(input, replay.scope, stored.operation, stored.artifact, profile, client, guard);
       }
       yield* writeContributionRetryState(input.threadnoteHome, input.repositoryId, undefined, 'signed');
       return {sent: 1};
     }
-    for (const pageId of yield* listGraphShareSignedCandidatePageIds(input.threadnoteHome, input.repositoryId)) {
-      const page = yield* readGraphShareSignedCandidatePage(input.threadnoteHome, input.repositoryId, pageId);
-      const candidate = page?.candidates[0];
-      if (candidate === undefined) continue;
+    let firstPreparationFailure: unknown;
+    for (const position of yield* nextGraphWorkerCandidateScan(input.threadnoteHome, input.repositoryId)) {
       if (!(yield* guard)) return {sent: 0};
-      const prepared = yield* prepareCandidate(input, trust, state.casRoot, candidate, pageId, enrollment);
-      yield* dispatchPrepared(input, scope, prepared.operation, prepared.artifact, profile, client, guard);
+      const prepared = yield* prepareCandidate(
+        input,
+        trust,
+        state.casRoot,
+        position.candidate,
+        position.pageId,
+        enrollment,
+      ).pipe(
+        Effect.map(value => ({ok: true as const, value})),
+        Effect.catch(error => Effect.succeed({ok: false as const, error})),
+      );
+      if (!prepared.ok) {
+        firstPreparationFailure ??= prepared.error;
+        yield* advanceGraphWorkerCandidateScan(input.threadnoteHome, input.repositoryId, position);
+        continue;
+      }
+      yield* dispatchPrepared(input, scope, prepared.value.operation, prepared.value.artifact, profile, client, guard);
       yield* writeContributionRetryState(input.threadnoteHome, input.repositoryId, undefined, 'signed');
       return {sent: 1};
     }
+    if (firstPreparationFailure !== undefined) return yield* Effect.fail(firstPreparationFailure);
     if (retry !== undefined)
       yield* writeContributionRetryState(input.threadnoteHome, input.repositoryId, undefined, 'signed');
     return {sent: 0};
@@ -432,6 +459,16 @@ export const finishAdmittedGraphWorkerResult = Effect.fn('codeGraph.sharing.fini
     ],
     'passive',
   );
+  for (const previousScope of yield* listGraphWorkerDeliveryPrincipalScopes(input.threadnoteHome, scope)) {
+    yield* retireSupersededGraphWorkerDeliveryOutbox({
+      admittedOperationId: operation.operationId,
+      admittedScope: scope,
+      candidateAbsent: true,
+      candidateIdentity: operation.candidateIdentity,
+      oldScope: previousScope,
+      threadnoteHome: input.threadnoteHome,
+    });
+  }
   yield* retireGraphWorkerDeliveryOutbox({
     scope,
     candidateAbsent: true,
