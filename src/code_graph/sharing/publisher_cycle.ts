@@ -37,7 +37,7 @@ import {readGraphControlPolicy, type GraphControlPolicy} from './control_authori
 import {GraphControlEnrollmentError, requireGraphControlPublisherWorker} from './control_enrollment.js';
 import {
   readGraphWorkerAdmissionStore,
-  retireGraphWorkerAdmissionsForPublishedSourceLocked,
+  retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked,
 } from './control_result_admission.js';
 import {
   loadGraphShareCoordinatorState,
@@ -218,10 +218,9 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
             latestPointer.envelopeDigest !== pointer.envelopeDigest
           )
             return yield* graphSharingFailure('Published worker source or profile changed before admission cleanup.');
-          yield* retireGraphWorkerAdmissionsForPublishedSourceLocked(
-            config.agentContextHome,
+          yield* retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked(
+            {casRoot, enrollment, home: config.agentContextHome, profile, repoRoot: identity.repoRoot},
             initialPolicy,
-            identity.headCommit,
           );
         }),
       );
@@ -792,10 +791,17 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
         schemaVersion: 1,
       });
       if (expected.signedAdmissions !== undefined)
-        yield* retireGraphWorkerAdmissionsForPublishedSourceLocked(
-          config.agentContextHome,
+        yield* retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked(
+          {
+            casRoot,
+            enrollment: parseGraphShareEnrollment(
+              yield* readJsonFile(graphShareEnrollmentPath(path, identity.repoRoot)),
+            ),
+            home: config.agentContextHome,
+            profile,
+            repoRoot: identity.repoRoot,
+          },
           expected.signedAdmissions.initialPolicy,
-          expected.sourceCommit,
         );
       return {
         checkpointDigest,

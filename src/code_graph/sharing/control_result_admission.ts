@@ -25,6 +25,7 @@ import {
   GRAPH_WORKER_ADMISSION_MAX_STATE_BYTES,
   parseGraphWorkerAdmissionBytes,
   retireGraphWorkerAdmissionsForPublishedSource,
+  retireGraphWorkerAdmissionsForPublishedSources,
 } from './worker_admission_state.js';
 import {
   readGraphWorkerResultArtifact,
@@ -350,6 +351,55 @@ export const retireGraphWorkerAdmissionsForPublishedSourceLocked = Effect.fn(
       const current = yield* readAdmissionState(target, policy);
       const next = yield* Effect.try({
         try: () => retireGraphWorkerAdmissionsForPublishedSource(current, sourceCommit),
+        catch: () => graphSharingFailure('Published worker receipt source is invalid.'),
+      });
+      if (next !== current) yield* writePrivateJsonFile(target, next);
+      return {retired: current.receipts.length - next.receipts.length};
+    }),
+  );
+});
+
+/** Caller holds the coordinator lock. The signed pointer, not the mutable HEAD, determines safe retirement. */
+export const retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked = Effect.fn(
+  'codeGraph.sharing.retireWorkerAdmissionsCoveredByPublishedSourceLocked',
+)(function* (
+  input: {
+    readonly casRoot: string;
+    readonly enrollment: GraphShareEnrollmentV1;
+    readonly home: string;
+    readonly profile: GraphShareProfileV1;
+    readonly repoRoot: string;
+  },
+  policy: GraphControlPolicy,
+) {
+  const published = yield* publishedSourceCommit(input);
+  const target = yield* graphWorkerAdmissionStatePath(input.home, policy);
+  const snapshot = yield* readAdmissionState(target, policy);
+  const covered = new Set([published]);
+  const sources = [...new Set(snapshot.receipts.map(receipt => receipt.sourceCommit))].filter(
+    source => source !== published,
+  );
+  const ancestors = yield* Effect.forEach(
+    sources,
+    source => graphShareCommitIsAncestor(input.repoRoot, source, published),
+    {concurrency: 8},
+  );
+  for (const [index, source] of sources.entries()) if (ancestors[index]) covered.add(source);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* fs.makeDirectory(path.dirname(target), {recursive: true, mode: 0o700});
+  return yield* withExclusiveFileLock(
+    fs,
+    `${target}.lock`,
+    LOCK_OPTIONS,
+    Effect.gen(function* () {
+      const current = yield* readAdmissionState(target, policy);
+      // Admission also holds the coordinator lock, so the read used for ancestry
+      // cannot gain a new source before this mutation lock is acquired.
+      if (canonicalJson(current) !== canonicalJson(snapshot))
+        return yield* graphSharingUnavailable('Graph worker admissions changed during published-source retirement.');
+      const next = yield* Effect.try({
+        try: () => retireGraphWorkerAdmissionsForPublishedSources(current, covered),
         catch: () => graphSharingFailure('Published worker receipt source is invalid.'),
       });
       if (next !== current) yield* writePrivateJsonFile(target, next);

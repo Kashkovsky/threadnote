@@ -185,8 +185,17 @@ export function retireGraphWorkerAdmissionsForPublishedSource(
   store: GraphWorkerAdmissionStoreV2,
   sourceCommit: string,
 ): GraphWorkerAdmissionStoreV2 {
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(sourceCommit)) throw new Error('Published source commit is invalid.');
-  const receipts = store.receipts.filter(receipt => receipt.sourceCommit !== sourceCommit);
+  return retireGraphWorkerAdmissionsForPublishedSources(store, new Set([sourceCommit]));
+}
+
+/** The caller must prove every source is covered by an authenticated published frontier. */
+export function retireGraphWorkerAdmissionsForPublishedSources(
+  store: GraphWorkerAdmissionStoreV2,
+  sourceCommits: ReadonlySet<string>,
+): GraphWorkerAdmissionStoreV2 {
+  if ([...sourceCommits].some(source => !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(source)))
+    throw new Error('Published source commit is invalid.');
+  const receipts = store.receipts.filter(receipt => !sourceCommits.has(receipt.sourceCommit));
   if (receipts.length === store.receipts.length) return store;
   return {
     quarantine: quarantineFor(receipts),

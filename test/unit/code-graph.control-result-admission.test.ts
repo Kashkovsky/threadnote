@@ -25,6 +25,7 @@ import {
   admitGraphControlWorkerResult,
   graphWorkerAdmissionStatePath,
   readGraphWorkerAdmissionStore,
+  retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked,
   retireGraphWorkerAdmissionsForPublishedSourceLocked,
 } from '../../src/code_graph/sharing/control_result_admission.js';
 import {emptyGraphWorkerAdmissionStore} from '../../src/code_graph/sharing/worker_admission_state.js';
@@ -295,6 +296,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
   return {
     candidate,
     candidateCommit,
+    commandExecutor: executor,
     enroll,
     fs,
     git,
@@ -434,6 +436,77 @@ describe('authenticated signed worker admission route', () => {
             f.candidateCommit,
           )).retired,
         ).toBe(0);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
+  effectIt.effect('retires only authenticated published ancestors and preserves a newer unpublished source', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const worker = yield* f.enroll;
+        const path = yield* Path.Path;
+        const commit = (name: string) =>
+          Effect.gen(function* () {
+            yield* f.fs.writeFileString(path.join(f.options.repoRoot, 'source.txt'), `${name}\n`);
+            yield* f.git(['add', '.']);
+            yield* f.git([
+              '-c',
+              'user.name=Threadnote Test',
+              '-c',
+              'user.email=test@threadnote.local',
+              'commit',
+              '-qm',
+              name,
+            ]);
+            return (yield* f.git(['rev-parse', 'HEAD'])).stdout.trim();
+          });
+        const intermediate = yield* f.candidate(worker);
+        expect((yield* f.request('/v1/results', f.validToken, intermediate.announcement)).status).toBe(201);
+        const publishedNext = yield* commit('published next');
+        const next = yield* f.candidate(worker, [], publishedNext);
+        expect((yield* f.request('/v1/results', f.validToken, next.announcement)).status).toBe(201);
+        const unpublished = yield* commit('unpublished newer');
+        const later = yield* f.candidate(worker, [], unpublished);
+        expect((yield* f.request('/v1/results', f.validToken, later.announcement)).status).toBe(201);
+        const policy = yield* readGraphControlPolicy(f.options.policyFile);
+        const cleanup = withCoordinatorStateLock(
+          {threadnoteHome: f.options.threadnoteHome},
+          retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked(
+            {
+              casRoot: f.options.casRoot,
+              enrollment: f.options.enrollment,
+              home: f.options.threadnoteHome,
+              profile: f.options.profile,
+              repoRoot: f.options.repoRoot,
+            },
+            policy,
+          ),
+        ).pipe(Effect.provideService(CommandExecutor, f.commandExecutor));
+        expect((yield* cleanup).retired).toBe(0);
+        const manifest = {
+          ...f.manifest,
+          checkpoint: {...f.manifest.checkpoint, sourceCommit: publishedNext},
+          generation: 2,
+          previousManifestDigest: sha256Digest(encode(f.manifest)),
+          sourceCommit: publishedNext,
+        };
+        const signed = yield* signGraphShareFrontier(f.key, manifest);
+        const manifestDigest = yield* putCasBytes(f.options.casRoot, encode(signed.manifest));
+        const envelopeDigest = yield* putCasBytes(f.options.casRoot, encode(signed.envelope));
+        yield* writePrivateJsonFile(
+          graphSharingFrontierPointerPath(
+            path,
+            graphSharingLayout(path, f.options.threadnoteHome, f.options.casRoot).frontiersRoot,
+            repositoryId,
+          ),
+          {envelopeDigest, manifestDigest, schemaVersion: 1},
+        );
+        expect((yield* cleanup).retired).toBe(2);
+        expect(
+          (yield* readGraphWorkerAdmissionStore(f.options.threadnoteHome, policy)).receipts.map(r => r.sourceCommit),
+        ).toEqual([unpublished]);
+        expect((yield* cleanup).retired).toBe(0);
       }).pipe(provideTestLayer(layer)),
     ),
   );

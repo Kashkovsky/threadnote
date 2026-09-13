@@ -11,6 +11,7 @@ import {
   parseGraphWorkerAdmissionBytes,
   parseGraphWorkerAdmissionStore,
   retireGraphWorkerAdmissionsForPublishedSource,
+  retireGraphWorkerAdmissionsForPublishedSources,
 } from '../../src/code_graph/sharing/worker_admission_state.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {verifyGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
@@ -148,6 +149,31 @@ describe('signed worker admission state', () => {
     expect(retired.quarantine).toHaveLength(0);
     expect(retireGraphWorkerAdmissionsForPublishedSource(retired, firstCommit)).toBe(retired);
     expect(parseGraphWorkerAdmissionStore(retired)).toEqual(retired);
+  });
+
+  it('retires exactly the supplied published-source set without mutating admission state', () => {
+    FC.assert(
+      FC.property(
+        FC.uniqueArray(FC.integer({min: 1, max: 100_000}), {minLength: 1, maxLength: 8}),
+        FC.array(FC.boolean(), {minLength: 8, maxLength: 8}),
+        (seeds, selected) => {
+          const commits = seeds.map(seed => seed.toString(16).padStart(40, '0'));
+          let store = emptyGraphWorkerAdmissionStore();
+          for (const [index, seed] of seeds.entries())
+            store = admit(store, announcement(seed, seed, authority.repositoryId, commits[index])).store;
+          const original = canonicalJson(store);
+          const covered = new Set(commits.filter((_, index) => selected[index]));
+          const retired = retireGraphWorkerAdmissionsForPublishedSources(store, covered);
+          expect(retired.receipts.map(receipt => receipt.sourceCommit)).toEqual(
+            store.receipts.filter(receipt => !covered.has(receipt.sourceCommit)).map(receipt => receipt.sourceCommit),
+          );
+          expect(retireGraphWorkerAdmissionsForPublishedSources(retired, covered)).toBe(retired);
+          expect(canonicalJson(store)).toBe(original);
+          expect(parseGraphWorkerAdmissionStore(retired)).toEqual(retired);
+        },
+      ),
+      {numRuns: 60},
+    );
   });
 
   it('rejects expired or mismatched authority before acknowledging a replay', () => {
