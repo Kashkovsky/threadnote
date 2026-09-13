@@ -1,0 +1,5 @@
+**
+!deploy
+!deploy/threadnote-org-registry
+!deploy/threadnote-org-registry/render-config.ts
+!deploy/threadnote-org-registry/entrypoint.sh

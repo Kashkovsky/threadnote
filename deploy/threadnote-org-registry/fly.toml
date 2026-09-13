@@ -1,0 +1,41 @@
+app = "threadnote-org-registry-e2e"
+primary_region = "fra"
+kill_signal = "SIGTERM"
+kill_timeout = 60
+
+[build]
+  dockerfile = "Dockerfile"
+  ignorefile = "Dockerfile.dockerignore"
+
+[env]
+  ZOT_PUBLIC_ORIGIN = "https://threadnote-org-registry-e2e.fly.dev"
+  ZOT_OIDC_ISSUER = "https://threadnote-org.eu.auth0.com/"
+  ZOT_OIDC_AUDIENCE = "https://threadnote-org-registry-e2e.fly.dev"
+  ZOT_CANONICAL_REPOSITORY = "threadnote-org-e2e/canonical"
+  ZOT_WORKER_REPOSITORY = "threadnote-org-e2e/worker"
+
+[[mounts]]
+  source = "threadnote_org_registry"
+  destination = "/data"
+  snapshot_retention = 14
+
+[http_service]
+  internal_port = 5000
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[checks]
+  [checks.zot_tcp]
+    grace_period = "30s"
+    interval = "15s"
+    port = 5000
+    timeout = "5s"
+    type = "tcp"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "512mb"
