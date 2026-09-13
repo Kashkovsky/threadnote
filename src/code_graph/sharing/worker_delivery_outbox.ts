@@ -1,4 +1,5 @@
 import {Clock, Effect, FileSystem, Option, Path} from 'effect';
+import {syncWritableFile} from '../../effect/file_durability.js';
 import {withExclusiveFileLock} from '../../effect/file_lock.js';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
 import {readBoundedPrivateBytes, writePrivateBytesFile, writePrivateJsonFile} from './atomic.js';
@@ -13,7 +14,7 @@ import {
   type GraphWorkerResultAuthority,
 } from './worker_result.js';
 
-/** Quotas are for this private repository outbox, including orphan blobs left by a crashed preparation. */
+/** Quotas apply to one exact contributor authority scope. Revoked scopes remain private and inert. */
 export const GRAPH_WORKER_OUTBOX_MAX_OPERATIONS = 128;
 export const GRAPH_WORKER_OUTBOX_MAX_METADATA_BYTES = 1_048_576;
 export const GRAPH_WORKER_OUTBOX_MAX_BLOBS = 384;
@@ -23,7 +24,29 @@ const PAGE_ID = /^[0-9a-f]{64}$/u;
 const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const ORG = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const LOCK = {retryIntervalMilliseconds: 25, staleAfterMilliseconds: 30_000, waitTimeoutMilliseconds: 30_000};
+const TEMPORARY = /^(?:outbox\.json|[0-9a-f]{64})\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u;
+const MAX_RECOVERY_ENTRIES = 4_096;
 const EMPTY: GraphWorkerDeliveryOutboxV1 = {operations: [], schemaVersion: 1};
+
+/** The caller constructs this only from current trust, profile and worker enrollment. */
+export interface GraphWorkerDeliveryScope {
+  readonly organization: string;
+  readonly principalId: string;
+  readonly profileDigest: string;
+  readonly repositoryId: string;
+  readonly signingPublicKey: string;
+  readonly workerId: string;
+}
+
+export function graphWorkerDeliveryScope(
+  authority: GraphWorkerResultAuthority,
+  organization: string,
+): GraphWorkerDeliveryScope {
+  return {
+    organization, principalId: authority.principalId, profileDigest: authority.profileDigest,
+    repositoryId: authority.repositoryId, signingPublicKey: authority.signingPublicKey, workerId: authority.workerId,
+  };
+}
 
 export interface GraphWorkerDeliveryOutboxOperationV1 {
   readonly admissionStatus?: 'accepted' | 'duplicate' | 'quarantined';
@@ -132,12 +155,24 @@ export const prepareGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.pre
       state: 'prepared',
     };
     if (!validOperation(operation)) return yield* invalid();
-    return yield* withOutboxLock(input.threadnoteHome, input.repositoryId, Effect.gen(function* () {
-      const current = yield* readOutbox(input.threadnoteHome, input.repositoryId);
+    const scope = graphWorkerDeliveryScope(authority, candidate.organization);
+    return yield* withOutboxLock(input.threadnoteHome, scope, Effect.gen(function* () {
+      const current = yield* readOutbox(input.threadnoteHome, scope);
+      yield* recoverOutboxStorage(input.threadnoteHome, scope, current);
       const existing = current.operations.find(item => item.operationId === operation.operationId);
       if (existing !== undefined) {
         if (immutableIdentity(existing) !== immutableIdentity(operation)) return yield* invalid();
-        yield* readOperationArtifact(input.threadnoteHome, input.repositoryId, existing);
+        // If a power loss retained metadata but lost a referenced blob, the still-queued
+        // original candidate can restore only the same cryptographically verified bytes.
+        const required = [
+          {bytes: artifact.resultBytes, digest: operation.resultDigest},
+          {bytes: artifact.attestationBytes, digest: operation.attestationDigest},
+          {bytes: artifact.manifestBytes, digest: operation.manifestDigest},
+        ];
+        yield* verifyOutboxCapacity(input.threadnoteHome, scope, required);
+        for (const blob of required) yield* persistBlob(input.threadnoteHome, scope, blob.digest, blob.bytes);
+        yield* readOperationArtifact(input.threadnoteHome, scope, existing);
+        yield* syncExistingOutbox(input.threadnoteHome, scope);
         return {operation: existing, prepared: false, sourcePageId: input.candidatePageId};
       }
       if (current.operations.length >= GRAPH_WORKER_OUTBOX_MAX_OPERATIONS)
@@ -147,9 +182,9 @@ export const prepareGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.pre
         {bytes: artifact.attestationBytes, digest: operation.attestationDigest},
         {bytes: artifact.manifestBytes, digest: operation.manifestDigest},
       ];
-      yield* verifyOutboxCapacity(input.threadnoteHome, input.repositoryId, required);
-      for (const blob of required) yield* persistBlob(input.threadnoteHome, input.repositoryId, blob.digest, blob.bytes);
-      yield* writeOutbox(input.threadnoteHome, input.repositoryId, {
+      yield* verifyOutboxCapacity(input.threadnoteHome, scope, required);
+      for (const blob of required) yield* persistBlob(input.threadnoteHome, scope, blob.digest, blob.bytes);
+      yield* writeOutbox(input.threadnoteHome, scope, {
         operations: [...current.operations, operation], schemaVersion: 1,
       });
       return {operation, prepared: true, sourcePageId: input.candidatePageId};
@@ -159,12 +194,12 @@ export const prepareGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.pre
 
 /** Every replay verifies all stored content digests before exposing any network bytes. */
 export const readGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.readWorkerDeliveryOutbox')(
-  function* (threadnoteHome: string, repositoryId: string) {
-    if (!SHA256_HEX.test(repositoryId)) return yield* invalid();
-    const current = yield* readOutbox(threadnoteHome, repositoryId);
+  function* (threadnoteHome: string, scope: GraphWorkerDeliveryScope) {
+    if (!validScope(scope)) return yield* invalid();
+    const current = yield* readOutbox(threadnoteHome, scope);
     const replay: GraphWorkerDeliveryReplay[] = [];
     for (const operation of current.operations) {
-      const artifact = yield* readOperationArtifact(threadnoteHome, repositoryId, operation);
+      const artifact = yield* readOperationArtifact(threadnoteHome, scope, operation);
       replay.push({operation, artifact});
     }
     return replay;
@@ -174,16 +209,16 @@ export const readGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.readWo
 /** Call only after an exact accepted/duplicate/quarantined server response. */
 export const markGraphWorkerDeliveryAdmitted = Effect.fn('codeGraph.sharing.markWorkerDeliveryAdmitted')(
   function* (input: {
+    readonly scope: GraphWorkerDeliveryScope;
     readonly candidateIdentity: string;
     readonly candidatePageId: string;
     readonly operationId: string;
-    readonly repositoryId: string;
     readonly response: {readonly idempotencyKey: string; readonly status: 'accepted' | 'duplicate' | 'quarantined'};
     readonly threadnoteHome: string;
   }) {
-    if (!SHA256_HEX.test(input.repositoryId) || !PAGE_ID.test(input.candidatePageId)) return yield* invalid();
-    return yield* withOutboxLock(input.threadnoteHome, input.repositoryId, Effect.gen(function* () {
-      const current = yield* readOutbox(input.threadnoteHome, input.repositoryId);
+    if (!validScope(input.scope) || !PAGE_ID.test(input.candidatePageId)) return yield* invalid();
+    return yield* withOutboxLock(input.threadnoteHome, input.scope, Effect.gen(function* () {
+      const current = yield* readOutbox(input.threadnoteHome, input.scope);
       const operation = current.operations.find(item => item.operationId === input.operationId);
       if (
         operation === undefined ||
@@ -192,13 +227,13 @@ export const markGraphWorkerDeliveryAdmitted = Effect.fn('codeGraph.sharing.mark
         input.response.idempotencyKey !== input.operationId ||
         (input.response.status !== 'accepted' && input.response.status !== 'duplicate' && input.response.status !== 'quarantined')
       ) return yield* invalid();
-      yield* readOperationArtifact(input.threadnoteHome, input.repositoryId, operation);
+      yield* readOperationArtifact(input.threadnoteHome, input.scope, operation);
       if (operation.state === 'admitted') {
         // A lost local response to our own metadata rename is safe to replay.
         return operation;
       }
       const admitted = {...operation, admissionStatus: input.response.status, state: 'admitted' as const};
-      yield* writeOutbox(input.threadnoteHome, input.repositoryId, {
+      yield* writeOutbox(input.threadnoteHome, input.scope, {
         operations: current.operations.map(item => item.operationId === input.operationId ? admitted : item),
         schemaVersion: 1,
       });
@@ -210,17 +245,17 @@ export const markGraphWorkerDeliveryAdmitted = Effect.fn('codeGraph.sharing.mark
 /** `candidateAbsent` must come from the exact page's durable ACK result under its lock. */
 export const retireGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.retireWorkerDeliveryOutbox')(
   function* (input: {
+    readonly scope: GraphWorkerDeliveryScope;
     readonly candidateAbsent: true;
     readonly candidateIdentity: string;
     readonly candidatePageId: string;
     readonly operationId: string;
-    readonly repositoryId: string;
     readonly threadnoteHome: string;
   }) {
-    if (!SHA256_HEX.test(input.repositoryId) || !PAGE_ID.test(input.candidatePageId) || input.candidateAbsent !== true)
+    if (!validScope(input.scope) || !PAGE_ID.test(input.candidatePageId) || input.candidateAbsent !== true)
       return yield* invalid();
-    return yield* withOutboxLock(input.threadnoteHome, input.repositoryId, Effect.gen(function* () {
-      const current = yield* readOutbox(input.threadnoteHome, input.repositoryId);
+    return yield* withOutboxLock(input.threadnoteHome, input.scope, Effect.gen(function* () {
+      const current = yield* readOutbox(input.threadnoteHome, input.scope);
       const operation = current.operations.find(item => item.operationId === input.operationId);
       if (operation === undefined) return false;
       if (
@@ -229,8 +264,8 @@ export const retireGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.reti
         operation.candidatePageId !== input.candidatePageId
       ) return yield* invalid();
       const next = {operations: current.operations.filter(item => item.operationId !== input.operationId), schemaVersion: 1 as const};
-      yield* writeOutbox(input.threadnoteHome, input.repositoryId, next);
-      yield* collectUnreferencedBlobs(input.threadnoteHome, input.repositoryId, next);
+      yield* writeOutbox(input.threadnoteHome, input.scope, next);
+      yield* recoverOutboxStorage(input.threadnoteHome, input.scope, next);
       return true;
     }));
   },
@@ -342,13 +377,36 @@ function copyArtifact(input: Artifact): Artifact {
     manifestDigest: input.manifestDigest, resultBytes: new Uint8Array(input.resultBytes)};
 }
 
-function outboxPaths(path: Path.Path, home: string, repositoryId: string) {
-  const root = path.join(graphSharingLayout(path, home).root, 'worker-delivery', repositoryId);
+function validScope(scope: GraphWorkerDeliveryScope): boolean {
+  return isRecord(scope) && Object.keys(scope).sort().join(',') ===
+      'organization,principalId,profileDigest,repositoryId,signingPublicKey,workerId' &&
+    typeof scope.organization === 'string' && ORG.test(scope.organization) &&
+    typeof scope.principalId === 'string' && SHA256_DIGEST.test(scope.principalId) &&
+    typeof scope.profileDigest === 'string' && SHA256_DIGEST.test(scope.profileDigest) &&
+    typeof scope.repositoryId === 'string' && SHA256_HEX.test(scope.repositoryId) &&
+    typeof scope.signingPublicKey === 'string' && SHA256_HEX.test(scope.signingPublicKey) &&
+    typeof scope.workerId === 'string' && /^gw_[0-9a-f]{32}$/u.test(scope.workerId);
+}
+
+function scopeMatches(operation: GraphWorkerDeliveryOutboxOperationV1, scope: GraphWorkerDeliveryScope): boolean {
+  return canonicalJson(graphWorkerDeliveryScope(operation.authority, operation.organization)) === canonicalJson(scope);
+}
+
+function outboxPaths(path: Path.Path, home: string, scope: GraphWorkerDeliveryScope) {
+  const scopeId = sha256HexFromDigest(sha256Digest(canonicalJson(scope)));
+  const root = path.join(graphSharingLayout(path, home).root, 'worker-delivery', scope.repositoryId, scopeId);
   return {root, metadata: path.join(root, 'outbox.json'), blobs: path.join(root, 'sha256')};
 }
 
-function blobPath(path: Path.Path, home: string, repositoryId: string, digest: string) {
-  return path.join(outboxPaths(path, home, repositoryId).blobs, sha256HexFromDigest(digest));
+function blobPath(path: Path.Path, home: string, scope: GraphWorkerDeliveryScope, digest: string) {
+  return path.join(outboxPaths(path, home, scope).blobs, sha256HexFromDigest(digest));
+}
+
+function syncDirectoryStrict(fs: FileSystem.FileSystem, directory: string) {
+  return Effect.scoped(Effect.gen(function* () {
+    const handle = yield* fs.open(directory, {flag: 'r'});
+    yield* handle.sync;
+  }));
 }
 
 function secureDirectory(directory: string, home: string) {
@@ -364,7 +422,10 @@ function secureDirectory(directory: string, home: string) {
     }
     for (const part of parts.reverse()) {
       if (Option.isSome(yield* fs.readLink(part).pipe(Effect.option))) return yield* invalid();
-      if (!(yield* fs.exists(part))) yield* fs.makeDirectory(part, {mode: 0o700});
+      if (!(yield* fs.exists(part))) {
+        yield* fs.makeDirectory(part, {mode: 0o700});
+        yield* syncDirectoryStrict(fs, path.dirname(part));
+      }
       const stat = yield* fs.stat(part);
       if (stat.type !== 'Directory') return yield* invalid();
       if (part !== path.resolve(home)) yield* fs.chmod(part, 0o700);
@@ -372,45 +433,60 @@ function secureDirectory(directory: string, home: string) {
   });
 }
 
-function withOutboxLock<A, E, R>(home: string, repositoryId: string, effect: Effect.Effect<A, E, R>) {
+function withOutboxLock<A, E, R>(home: string, scope: GraphWorkerDeliveryScope, effect: Effect.Effect<A, E, R>) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const paths = outboxPaths(path, home, repositoryId);
+    const paths = outboxPaths(path, home, scope);
     yield* secureDirectory(paths.root, home);
     return yield* withExclusiveFileLock(fs, `${paths.metadata}.lock`, LOCK, effect);
   });
 }
 
-function readOutbox(home: string, repositoryId: string) {
+function readOutbox(home: string, scope: GraphWorkerDeliveryScope) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const target = outboxPaths(path, home, repositoryId).metadata;
+    const target = outboxPaths(path, home, scope).metadata;
     yield* secureDirectory(path.dirname(target), home);
     if (!(yield* fs.exists(target))) return EMPTY;
     const bytes = yield* readBoundedPrivateBytes(target, GRAPH_WORKER_OUTBOX_MAX_METADATA_BYTES);
-    return yield* Effect.try({
+    const parsed = yield* Effect.try({
       try: () => parseOutbox(JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes))),
       catch: () => graphSharingFailure('Graph worker delivery outbox metadata is invalid.'),
     });
+    if (parsed.operations.some(operation => !scopeMatches(operation, scope))) return yield* invalid();
+    return parsed;
   });
 }
 
-function writeOutbox(home: string, repositoryId: string, value: GraphWorkerDeliveryOutboxV1) {
+function writeOutbox(home: string, scope: GraphWorkerDeliveryScope, value: GraphWorkerDeliveryOutboxV1) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     if (!parseOutbox(value) || new TextEncoder().encode(JSON.stringify(value)).byteLength + 1 > GRAPH_WORKER_OUTBOX_MAX_METADATA_BYTES)
       return yield* graphSharingFailure('Graph worker delivery outbox metadata quota is full.');
-    yield* writePrivateJsonFile(outboxPaths(path, home, repositoryId).metadata, value);
+    if (value.operations.some(operation => !scopeMatches(operation, scope))) return yield* invalid();
+    const target = outboxPaths(path, home, scope).metadata;
+    yield* writePrivateJsonFile(target, value);
+    yield* syncExistingOutbox(home, scope);
   });
 }
 
-function readBlob(home: string, repositoryId: string, digest: string, maximum: number) {
+function syncExistingOutbox(home: string, scope: GraphWorkerDeliveryScope) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const target = blobPath(path, home, repositoryId, digest);
+    const target = outboxPaths(path, home, scope).metadata;
+    yield* syncWritableFile(fs, target);
+    yield* syncDirectoryStrict(fs, path.dirname(target));
+  });
+}
+
+function readBlob(home: string, scope: GraphWorkerDeliveryScope, digest: string, maximum: number) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const target = blobPath(path, home, scope, digest);
     yield* secureDirectory(path.dirname(target), home);
     if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) return yield* invalid();
     const stat = yield* fs.stat(target);
@@ -421,12 +497,12 @@ function readBlob(home: string, repositoryId: string, digest: string, maximum: n
   });
 }
 
-function readOperationArtifact(home: string, repositoryId: string, operation: GraphWorkerDeliveryOutboxOperationV1) {
+function readOperationArtifact(home: string, scope: GraphWorkerDeliveryScope, operation: GraphWorkerDeliveryOutboxOperationV1) {
   return Effect.gen(function* () {
     const [resultBytes, attestationBytes, manifestBytes] = yield* Effect.all([
-      readBlob(home, repositoryId, operation.resultDigest, operation.resultSize),
-      readBlob(home, repositoryId, operation.attestationDigest, operation.attestationSize),
-      readBlob(home, repositoryId, operation.manifestDigest, operation.manifestSize),
+      readBlob(home, scope, operation.resultDigest, operation.resultSize),
+      readBlob(home, scope, operation.attestationDigest, operation.attestationSize),
+      readBlob(home, scope, operation.manifestDigest, operation.manifestSize),
     ]);
     if (resultBytes.byteLength !== operation.resultSize || attestationBytes.byteLength !== operation.attestationSize ||
         manifestBytes.byteLength !== operation.manifestSize) return yield* invalid();
@@ -434,28 +510,32 @@ function readOperationArtifact(home: string, repositoryId: string, operation: Gr
   });
 }
 
-function persistBlob(home: string, repositoryId: string, digest: string, bytes: Uint8Array) {
+function persistBlob(home: string, scope: GraphWorkerDeliveryScope, digest: string, bytes: Uint8Array) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const target = blobPath(path, home, repositoryId, digest);
+    const target = blobPath(path, home, scope, digest);
     if (sha256Digest(bytes) !== digest) return yield* invalid();
     yield* secureDirectory(path.dirname(target), home);
     if (yield* fs.exists(target)) {
-      const existing = yield* readBlob(home, repositoryId, digest, bytes.byteLength);
+      const existing = yield* readBlob(home, scope, digest, bytes.byteLength);
       if (existing.byteLength !== bytes.byteLength) return yield* invalid();
+      yield* syncWritableFile(fs, target);
+      yield* syncDirectoryStrict(fs, path.dirname(target));
       return;
     }
     yield* writePrivateBytesFile(target, bytes);
-    yield* readBlob(home, repositoryId, digest, bytes.byteLength);
+    yield* syncWritableFile(fs, target);
+    yield* syncDirectoryStrict(fs, path.dirname(target));
+    yield* readBlob(home, scope, digest, bytes.byteLength);
   });
 }
 
-function inspectBlobDirectory(home: string, repositoryId: string) {
+function inspectBlobDirectory(home: string, scope: GraphWorkerDeliveryScope) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const directory = outboxPaths(path, home, repositoryId).blobs;
+    const directory = outboxPaths(path, home, scope).blobs;
     yield* secureDirectory(directory, home);
     const names = yield* fs.readDirectory(directory);
     if (names.length > GRAPH_WORKER_OUTBOX_MAX_BLOBS) return yield* graphSharingFailure('Graph worker delivery outbox blob quota is full.');
@@ -472,9 +552,9 @@ function inspectBlobDirectory(home: string, repositoryId: string) {
   });
 }
 
-function verifyOutboxCapacity(home: string, repositoryId: string, required: readonly {digest: string; bytes: Uint8Array}[]) {
+function verifyOutboxCapacity(home: string, scope: GraphWorkerDeliveryScope, required: readonly {digest: string; bytes: Uint8Array}[]) {
   return Effect.gen(function* () {
-    const existing = yield* inspectBlobDirectory(home, repositoryId);
+    const existing = yield* inspectBlobDirectory(home, scope);
     const names = new Set(existing.map(blob => blob.name));
     let size = existing.reduce((sum, blob) => sum + blob.size, 0);
     for (const blob of required) {
@@ -488,18 +568,42 @@ function verifyOutboxCapacity(home: string, repositoryId: string, required: read
   });
 }
 
-function collectUnreferencedBlobs(home: string, repositoryId: string, current: GraphWorkerDeliveryOutboxV1) {
+/** Run only under the scope's mutation lock. Never remove a referenced blob or metadata. */
+function recoverOutboxStorage(home: string, scope: GraphWorkerDeliveryScope, current: GraphWorkerDeliveryOutboxV1) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const directory = outboxPaths(path, home, repositoryId).blobs;
+    const paths = outboxPaths(path, home, scope);
+    const directory = paths.blobs;
+    yield* secureDirectory(directory, home);
     const referenced = new Set(current.operations.flatMap(item => [item.resultDigest, item.attestationDigest, item.manifestDigest]).map(sha256HexFromDigest));
-    for (const blob of yield* inspectBlobDirectory(home, repositoryId)) {
-      if (referenced.has(blob.name)) continue;
-      const target = path.join(directory, blob.name);
-      yield* readBlob(home, repositoryId, `sha256:${blob.name}`, blob.size);
+    const rootNames = yield* fs.readDirectory(paths.root);
+    const blobNames = yield* fs.readDirectory(directory);
+    let rootChanged = false;
+    let blobsChanged = false;
+    for (const name of rootNames.slice(0, MAX_RECOVERY_ENTRIES)) {
+      if (!TEMPORARY.test(name) || !name.startsWith('outbox.json.')) continue;
+      const target = path.join(paths.root, name);
+      if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) return yield* invalid();
+      const stat = yield* fs.stat(target);
+      if (stat.type !== 'File') return yield* invalid();
       yield* fs.remove(target);
+      rootChanged = true;
     }
+    for (const name of blobNames.slice(0, MAX_RECOVERY_ENTRIES)) {
+      if (referenced.has(name)) continue;
+      if (!SHA256_HEX.test(name) && !TEMPORARY.test(name)) return yield* invalid();
+      const target = path.join(directory, name);
+      if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) return yield* invalid();
+      const stat = yield* fs.stat(target);
+      if (stat.type !== 'File') return yield* invalid();
+      // These files have no durable operation referring to them. An interrupted
+      // preparation may be safely reconstructed from its still-queued candidate.
+      yield* fs.remove(target);
+      blobsChanged = true;
+    }
+    if (rootChanged) yield* syncDirectoryStrict(fs, paths.root);
+    if (blobsChanged) yield* syncDirectoryStrict(fs, directory);
   });
 }
 

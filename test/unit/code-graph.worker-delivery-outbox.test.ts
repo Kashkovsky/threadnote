@@ -7,6 +7,7 @@ import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
 import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
 import {
+  graphWorkerDeliveryScope,
   markGraphWorkerDeliveryAdmitted,
   prepareGraphWorkerDeliveryOutbox,
   readGraphWorkerDeliveryOutbox,
@@ -20,8 +21,12 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const layer = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
 const encode = (value: unknown) => new TextEncoder().encode(canonicalJson(value));
+const scopeFor = (input: {authority: Parameters<typeof graphWorkerDeliveryScope>[0]; candidate: {organization: string}}) =>
+  graphWorkerDeliveryScope(input.authority, input.candidate.organization);
+const scopeRoot = (home: string, scope: ReturnType<typeof scopeFor>) =>
+  `${home}/graph-sharing/worker-delivery/${scope.repositoryId}/${sha256HexFromDigest(sha256Digest(canonicalJson(scope)))}`;
 
-const fixture = Effect.fn('test.workerOutbox.fixture')(function* (diagnostic = '', existingHome?: string) {
+const fixture = Effect.fn('test.workerOutbox.fixture')(function* (diagnostic = '', existingHome?: string, principal = 'principal') {
   const fs = yield* FileSystem.FileSystem;
   const home = existingHome ?? (yield* fs.makeTempDirectoryScoped({prefix: 'graph-worker-outbox-'}));
   const signer = yield* makeGraphWorkerSigner(home, sha256Digest('outbox fixture'));
@@ -35,8 +40,8 @@ const fixture = Effect.fn('test.workerOutbox.fixture')(function* (diagnostic = '
     facts: {path: action.normalizedPath, diagnostics: diagnostic ? [diagnostic] : [], edges: [], symbols: []},
   });
   const authority = {
-    expiresAt: now + 3600, graphAbi: 'e'.repeat(64), principalId: sha256Digest('principal'),
-    profileDigest: sha256Digest('profile'), repositoryId: action.repositoryId,
+    expiresAt: now + 3600, graphAbi: 'e'.repeat(64), principalId: sha256Digest(principal),
+    profileDigest: sha256Digest(`profile:${principal}`), repositoryId: action.repositoryId,
     signingPublicKey: signer.publicKey, workerId: 'gw_' + 'f'.repeat(32),
   };
   const sourceCommit = '1'.repeat(40);
@@ -72,7 +77,7 @@ describe('private signed worker delivery outbox', () => {
       const {input} = yield* fixture();
       const first = yield* prepareGraphWorkerDeliveryOutbox(input);
       expect(first.prepared).toBe(true);
-      const replay = yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, input.repositoryId);
+      const replay = yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input));
       expect(replay).toHaveLength(1);
       expect(replay[0].artifact).toEqual(input.artifact);
       expect((yield* prepareGraphWorkerDeliveryOutbox(input)).prepared).toBe(false);
@@ -80,18 +85,18 @@ describe('private signed worker delivery outbox', () => {
       expect(anotherPage.prepared).toBe(false);
       expect(anotherPage.sourcePageId).toBe('8'.repeat(64));
       const response = {idempotencyKey: first.operation.operationId, status: 'accepted' as const};
-      const ackInput = {candidateIdentity: first.operation.candidateIdentity,
+      const ackInput = {scope: scopeFor(input), candidateIdentity: first.operation.candidateIdentity,
         candidatePageId: first.operation.candidatePageId, operationId: first.operation.operationId,
-        repositoryId: input.repositoryId, response, threadnoteHome: input.threadnoteHome};
+        response, threadnoteHome: input.threadnoteHome};
       expect((yield* Effect.result(retireGraphWorkerDeliveryOutbox({...ackInput, candidateAbsent: true})))._tag).toBe('Failure');
       expect((yield* Effect.result(markGraphWorkerDeliveryAdmitted({...ackInput,
         response: {...response, idempotencyKey: sha256Digest('wrong')}})))._tag).toBe('Failure');
       expect((yield* markGraphWorkerDeliveryAdmitted(ackInput)).state).toBe('admitted');
       expect((yield* markGraphWorkerDeliveryAdmitted(ackInput)).state).toBe('admitted');
-      expect((yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, input.repositoryId))[0].operation.state).toBe('admitted');
+      expect((yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input)))[0].operation.state).toBe('admitted');
       expect(yield* retireGraphWorkerDeliveryOutbox({...ackInput, candidateAbsent: true})).toBe(true);
       expect(yield* retireGraphWorkerDeliveryOutbox({...ackInput, candidateAbsent: true})).toBe(false);
-      expect(yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, input.repositoryId)).toEqual([]);
+      expect(yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input))).toEqual([]);
     }).pipe(provideTestLayer(layer)),
   );
 
@@ -101,30 +106,64 @@ describe('private signed worker delivery outbox', () => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const prepared = yield* prepareGraphWorkerDeliveryOutbox(input);
-      const blob = path.join(input.threadnoteHome, 'graph-sharing', 'worker-delivery', input.repositoryId,
+      const blob = path.join(scopeRoot(input.threadnoteHome, scopeFor(input)),
         'sha256', sha256HexFromDigest(prepared.operation.resultDigest));
       yield* fs.writeFile(blob, new Uint8Array([1, 2, 3]));
-      expect((yield* Effect.result(readGraphWorkerDeliveryOutbox(input.threadnoteHome, input.repositoryId)))._tag).toBe('Failure');
+      expect((yield* Effect.result(readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input))))._tag).toBe('Failure');
       yield* fs.remove(blob);
       yield* fs.symlink(input.threadnoteHome, blob);
-      expect((yield* Effect.result(readGraphWorkerDeliveryOutbox(input.threadnoteHome, input.repositoryId)))._tag).toBe('Failure');
+      expect((yield* Effect.result(readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input))))._tag).toBe('Failure');
     }).pipe(provideTestLayer(layer)),
   );
 
-  effectIt.effect('enforces aggregate stored blob quota without evicting a queued operation', () =>
+  effectIt.effect('cleans crash orphans and atomic temporary files before capacity checks', () =>
     Effect.gen(function* () {
       const {input} = yield* fixture();
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const first = yield* prepareGraphWorkerDeliveryOutbox(input);
       const second = yield* fixture('another result', input.threadnoteHome);
-      const directory = path.join(input.threadnoteHome, 'graph-sharing', 'worker-delivery', input.repositoryId, 'sha256');
+      const directory = path.join(scopeRoot(input.threadnoteHome, scopeFor(input)), 'sha256');
       const payload = new Uint8Array(32 * 1_048_576);
       for (const char of ['4', '5', '6', '7']) yield* fs.writeFile(path.join(directory, char.repeat(64)), payload);
-      expect((yield* Effect.result(prepareGraphWorkerDeliveryOutbox(second.input)))._tag).toBe('Failure');
-      expect((yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, input.repositoryId))[0].operation.operationId)
+      const temporary = path.join(directory, `${'9'.repeat(64)}.12345678-1234-1234-1234-123456789abc.tmp`);
+      yield* fs.writeFile(temporary, payload);
+      const metadataTemporary = path.join(scopeRoot(input.threadnoteHome, scopeFor(input)),
+        'outbox.json.12345678-1234-1234-1234-123456789abc.tmp');
+      yield* fs.writeFileString(metadataTemporary, '{"interrupted":true}');
+      expect((yield* prepareGraphWorkerDeliveryOutbox(second.input)).prepared).toBe(true);
+      expect(yield* fs.readDirectory(directory)).toHaveLength(4 + 2);
+      expect((yield* fs.exists(temporary))).toBe(false);
+      expect((yield* fs.exists(metadataTemporary))).toBe(false);
+      expect((yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input)))[0].operation.operationId)
         .toBe(first.operation.operationId);
     }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('partitions replay and operation capacity by exact principal/profile scope', () =>
+    Effect.gen(function* () {
+      const old = yield* fixture();
+      const current = yield* fixture('current', old.home, 'new-principal');
+      yield* prepareGraphWorkerDeliveryOutbox(old.input);
+      expect(yield* readGraphWorkerDeliveryOutbox(old.home, scopeFor(current.input))).toEqual([]);
+      expect((yield* prepareGraphWorkerDeliveryOutbox(current.input)).prepared).toBe(true);
+      expect(yield* readGraphWorkerDeliveryOutbox(old.home, scopeFor(old.input))).toHaveLength(1);
+      expect(yield* readGraphWorkerDeliveryOutbox(old.home, scopeFor(current.input))).toHaveLength(1);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('refuses a 129th operation without evicting any of the 128 prepared entries', () =>
+    Effect.gen(function* () {
+      const first = yield* fixture();
+      for (let index = 0; index < 128; index++) {
+        const next = index === 0 ? first : yield* fixture(`quota-${index}`, first.home);
+        expect((yield* prepareGraphWorkerDeliveryOutbox(next.input)).prepared).toBe(true);
+      }
+      const extra = yield* fixture('quota-overflow', first.home);
+      expect((yield* Effect.result(prepareGraphWorkerDeliveryOutbox(extra.input)))._tag).toBe('Failure');
+      expect(yield* readGraphWorkerDeliveryOutbox(first.home, scopeFor(first.input))).toHaveLength(128);
+    }).pipe(provideTestLayer(layer)),
+    60_000,
   );
 
   effectIt.effect('refuses metadata that changes signed scope or adds unknown announcement fields', () =>
@@ -133,16 +172,16 @@ describe('private signed worker delivery outbox', () => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       yield* prepareGraphWorkerDeliveryOutbox(input);
-      const metadata = path.join(input.threadnoteHome, 'graph-sharing', 'worker-delivery', input.repositoryId, 'outbox.json');
+      const metadata = path.join(scopeRoot(input.threadnoteHome, scopeFor(input)), 'outbox.json');
       const original = yield* fs.readFileString(metadata);
       const document = JSON.parse(original);
       document.operations[0].announcement.body.unknown = true;
       yield* fs.writeFileString(metadata, JSON.stringify(document));
-      expect((yield* Effect.result(readGraphWorkerDeliveryOutbox(input.threadnoteHome, input.repositoryId)))._tag).toBe('Failure');
+      expect((yield* Effect.result(readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input))))._tag).toBe('Failure');
       document.operations[0].announcement.body.unknown = undefined;
       document.operations[0].organization = 'another-org';
       yield* fs.writeFileString(metadata, JSON.stringify(document));
-      expect((yield* Effect.result(readGraphWorkerDeliveryOutbox(input.threadnoteHome, input.repositoryId)))._tag).toBe('Failure');
+      expect((yield* Effect.result(readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input))))._tag).toBe('Failure');
     }).pipe(provideTestLayer(layer)),
   );
 
@@ -151,13 +190,60 @@ describe('private signed worker delivery outbox', () => {
       const {input} = yield* fixture();
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const directory = path.join(input.threadnoteHome, 'graph-sharing', 'worker-delivery', input.repositoryId, 'sha256');
+      const directory = path.join(scopeRoot(input.threadnoteHome, scopeFor(input)), 'sha256');
       yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
       const target = path.join(directory, sha256HexFromDigest(sha256Digest(input.artifact.resultBytes)));
       yield* fs.writeFile(target, input.artifact.resultBytes, {mode: 0o600});
       expect(yield* prepareGraphWorkerDeliveryOutbox(input)).toMatchObject({prepared: true});
-      expect((yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, input.repositoryId))[0].artifact.resultBytes)
+      expect((yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input)))[0].artifact.resultBytes)
         .toEqual(new Uint8Array(input.artifact.resultBytes));
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('repairs a power-loss-missing referenced blob from the same still-queued signed candidate', () =>
+    Effect.gen(function* () {
+      const {input} = yield* fixture();
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const prepared = yield* prepareGraphWorkerDeliveryOutbox(input);
+      const target = path.join(scopeRoot(input.threadnoteHome, scopeFor(input)), 'sha256',
+        sha256HexFromDigest(prepared.operation.resultDigest));
+      yield* fs.remove(target);
+      expect((yield* Effect.result(readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input))))._tag)
+        .toBe('Failure');
+      expect((yield* prepareGraphWorkerDeliveryOutbox(input)).prepared).toBe(false);
+      expect((yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input)))[0].artifact.resultBytes)
+        .toEqual(new Uint8Array(input.artifact.resultBytes));
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('does not report prepared when metadata directory sync fails, then durably resumes', () =>
+    Effect.gen(function* () {
+      const {input} = yield* fixture();
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = scopeRoot(input.threadnoteHome, scopeFor(input));
+      const metadata = path.join(root, 'outbox.json');
+      let interrupted = false;
+      const failingFs: FileSystem.FileSystem = {
+        ...fs,
+        open: (target, options) => fs.open(target, options).pipe(Effect.map(handle => ({
+          ...handle,
+          sync: Effect.gen(function* () {
+            yield* handle.sync;
+            if (target === root && !interrupted && (yield* fs.exists(metadata))) {
+              interrupted = true;
+              return yield* Effect.die(new Error('injected parent sync failure'));
+            }
+          }),
+        }))),
+      };
+      expect((yield* Effect.exit(prepareGraphWorkerDeliveryOutbox(input).pipe(
+        Effect.provideService(FileSystem.FileSystem, failingFs),
+      )))._tag).toBe('Failure');
+      expect(interrupted).toBe(true);
+      expect((yield* prepareGraphWorkerDeliveryOutbox(input)).prepared).toBe(false);
+      expect(yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input))).toHaveLength(1);
     }).pipe(provideTestLayer(layer)),
   );
 
@@ -170,7 +256,7 @@ describe('private signed worker delivery outbox', () => {
       const first = yield* prepareGraphWorkerDeliveryOutbox(input);
       input.artifact.resultBytes.fill(0);
       input.candidate.casRoot = '/mutated';
-      const replay = yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, input.repositoryId);
+      const replay = yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input));
       expect(replay[0].artifact.resultBytes).toEqual(expected);
       expect(replay[0].operation.candidate.casRoot).toBe('/private/cas');
       expect(replay[0].operation.operationId).toBe(first.operation.operationId);
