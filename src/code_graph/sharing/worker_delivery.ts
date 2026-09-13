@@ -53,9 +53,19 @@ export function usesSignedGraphWorkerDelivery(trust: GraphShareTrustReceiptV1): 
 
 /** One bounded background round, independent of the foreground/legacy 30-second lease. */
 export const drainQueuedGraphShareSignedContributions = Effect.fn('codeGraph.sharing.drainSignedContributions')(
-  function* (input: {readonly repositoryId: string; readonly threadnoteHome: string}) {
+  function* (input: {
+    readonly cleanupOutbox?: boolean;
+    readonly repositoryId: string;
+    readonly threadnoteHome: string;
+  }) {
     const trust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.repositoryId);
     if (trust?.accessMode !== 'join' || !usesSignedGraphWorkerDelivery(trust)) return {sent: 0};
+    // The page index is cheap; avoid invoking credential helpers on every idle monitor tick.
+    if (
+      input.cleanupOutbox === false &&
+      (yield* listGraphShareSignedCandidatePageIds(input.threadnoteHome, input.repositoryId)).length === 0
+    )
+      return {sent: 0};
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const lockPath = `${signedCandidateQueuePath(path, input.threadnoteHome, input.repositoryId)}.delivery.lock`;

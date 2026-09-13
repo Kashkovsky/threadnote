@@ -44,8 +44,10 @@ export const monitorGraphShareContributions = Effect.fn('codeGraph.sharing.monit
 export const monitorGraphShareSignedContributions = Effect.fn('codeGraph.sharing.monitorSignedContributions')(
   function* (threadnoteHome: string) {
     let cursor = 0;
+    let tick = 0;
     for (;;) {
       yield* Effect.sleep(GRAPH_SHARE_RETRY_TICK_MILLISECONDS);
+      const cleanupOutbox = tick++ % 60 === 0;
       const document = yield* readGraphShareTrustDocument(threadnoteHome).pipe(
         Effect.orElseSucceed(() => undefined),
         Effect.catchDefect(() => Effect.void),
@@ -60,7 +62,11 @@ export const monitorGraphShareSignedContributions = Effect.fn('codeGraph.sharing
         selected,
         receipt =>
           (usesSignedGraphWorkerDelivery(receipt)
-            ? drainQueuedGraphShareSignedContributions({repositoryId: receipt.repositoryId, threadnoteHome})
+            ? drainQueuedGraphShareSignedContributions({
+                cleanupOutbox,
+                repositoryId: receipt.repositoryId,
+                threadnoteHome,
+              })
             : Effect.succeed({sent: 0})
           ).pipe(
             Effect.ignore,
