@@ -14,7 +14,10 @@ import {
 } from './worker_result.js';
 
 type Artifact = Effect.Success<ReturnType<typeof createGraphWorkerResultArtifact>>;
-type Writer = Pick<Effect.Success<ReturnType<typeof makeGraphShareRegistryWriter>>, 'putBlob' | 'putManifest'>;
+type Writer<E, R> = Pick<
+  Effect.Success<ReturnType<typeof makeGraphShareRegistryWriter<E, R>>>,
+  'putBlob' | 'putManifest'
+>;
 
 export const uploadGraphWorkerArtifactClosure = Effect.fn('codeGraph.sharing.uploadWorkerArtifactClosure')(function* <
   E,
@@ -23,7 +26,7 @@ export const uploadGraphWorkerArtifactClosure = Effect.fn('codeGraph.sharing.upl
   readonly artifact: Artifact;
   readonly authority: GraphWorkerResultAuthority;
   readonly isAuthorized: Effect.Effect<boolean, E, R>;
-  readonly writer: Writer;
+  readonly writer: Writer<E, R>;
 }) {
   const artifact = {
     attestationBytes: new Uint8Array(input.artifact.attestationBytes),
@@ -61,9 +64,9 @@ export const uploadGraphWorkerArtifactToRegistry = Effect.fn('codeGraph.sharing.
       try: () => graphWorkerRegistryForProfile(input.profile, authority),
       catch: cause => graphSharingFailure('Graph worker registry is outside its enrolled scope.', cause),
     });
-    const writer = yield* makeGraphShareRegistryWriter(workerRegistry);
+    const writer = yield* makeGraphShareRegistryWriter(workerRegistry, input.isAuthorized);
     const sent = yield* uploadGraphWorkerArtifactClosure({...input, authority, writer});
-    const reader = yield* makeGraphShareRegistryReader(workerRegistry);
+    const reader = yield* makeGraphShareRegistryReader(workerRegistry, input.isAuthorized);
     yield* readGraphWorkerResultArtifact(reader, sent.manifestDigest, authority);
     if (!(yield* input.isAuthorized))
       return yield* graphSharingFailure('Graph worker delivery is no longer authorized.');

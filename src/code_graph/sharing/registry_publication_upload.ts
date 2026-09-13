@@ -3,7 +3,10 @@ import {GRAPH_SHARE_OCI_EMPTY_CONFIG_BYTES, GRAPH_SHARE_OCI_EMPTY_CONFIG_DIGEST}
 import type {GraphShareRegistryPublication} from './registry_closure.js';
 import type {makeGraphShareRegistryWriter} from './registry_writer.js';
 
-type Writer = Pick<Effect.Success<ReturnType<typeof makeGraphShareRegistryWriter>>, 'putBlob' | 'putManifest'>;
+type Writer = Pick<
+  Effect.Success<ReturnType<typeof makeGraphShareRegistryWriter<never, never>>>,
+  'putBlob' | 'putManifest'
+>;
 
 export const uploadGraphShareRegistryArtifacts = Effect.fn('codeGraph.sharing.uploadRegistryArtifacts')(function* <
   E,

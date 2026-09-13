@@ -33,14 +33,26 @@ export interface GraphShareRegistryRequestOptions {
 }
 
 /** One reader owns one trusted origin, repository and selected credential provider. */
-export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryHttp')(function* (
+export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryHttp')(function* <E = never, R = never>(
   target: GraphShareRegistryTarget,
   access: 'read' | 'write' = 'read',
+  isAuthorized?: Effect.Effect<boolean, E, R>,
 ) {
   const client = HttpClient.withScope(yield* HttpClient.HttpClient);
   const fetch = yield* FetchHttpClient.Fetch;
   const credentials = yield* makeGraphShareRegistryCredentialLoader(target);
+  const guard = Effect.gen(function* () {
+    if (
+      isAuthorized !== undefined &&
+      !(yield* isAuthorized.pipe(
+        Effect.mapError(() => graphSharingUnavailable('Registry authorization check failed.')),
+      ))
+    )
+      return yield* graphSharingFailure('Registry request is no longer authorized.');
+  });
+  yield* guard;
   let initialCredential = access === 'write' ? yield* credentials() : undefined;
+  yield* guard;
   if (access === 'write' && initialCredential === undefined)
     return yield* graphSharingFailure('Registry writes require a configured credential helper.');
   const request = (
@@ -63,6 +75,7 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
           );
         if (authorization !== undefined)
           request = HttpClientRequest.setHeader(request, 'authorization', Redacted.value(authorization));
+        yield* guard;
         const response = yield* client
           .execute(request)
           .pipe(
@@ -84,6 +97,7 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
             }),
           );
         }
+        yield* guard;
         return {bytes: Buffer.concat(chunks, size), headers: response.headers, status: response.status};
       }),
     ).pipe(
@@ -98,8 +112,10 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
   let expiresAt = 0;
   const authentication = yield* Semaphore.make(1);
   const authorize = Effect.gen(function* () {
+    yield* guard;
     if (challenge === undefined) return;
     const credential = initialCredential ?? (yield* credentials());
+    yield* guard;
     initialCredential = undefined;
     if (challenge.kind === 'basic') {
       if (credential === undefined)
@@ -112,6 +128,7 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
     url.searchParams.set('scope', access === 'write' ? `repository:${target.repository}:pull,push` : target.pullScope);
     if (challenge.service !== undefined) url.searchParams.set('service', challenge.service);
     const response = yield* request(url.href, 32_768, 'application/json', credential?.authorization);
+    yield* guard;
     if (response.status !== 200)
       return yield* graphSharingHttpFailure(
         response.status,
@@ -146,12 +163,14 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
       }
       const acceptedStatuses: readonly number[] = options.acceptedStatuses ?? [200];
       for (let attempt = 0; attempt < 3; attempt += 1) {
+        yield* guard;
         const usedAuthorization = yield* authentication.withPermit(
           Effect.gen(function* () {
             if (challenge !== undefined && expiresAt <= (yield* Clock.currentTimeMillis)) yield* authorize;
             return authorization;
           }),
         );
+        yield* guard;
         const response = yield* request(target.origin + pathname, maximum, accept, usedAuthorization, options);
         if (acceptedStatuses.includes(response.status)) return response;
         if (response.status !== 401 || attempt === 2) {

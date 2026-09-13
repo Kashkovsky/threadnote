@@ -1,6 +1,6 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Effect, Fiber, FileSystem, Layer, Path} from 'effect';
+import {Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -33,6 +33,9 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
   readonly helper?: boolean;
   readonly helperDenied?: boolean;
   readonly helperResponse?: (call: number) => unknown;
+  readonly helperStarted?: Deferred.Deferred<void>;
+  readonly helperGate?: Deferred.Deferred<void>;
+  readonly isAuthorized?: Effect.Effect<boolean, unknown>;
   readonly handler: (request: Request) => Response | Promise<Response>;
 }) {
   const fs = yield* FileSystem.FileSystem;
@@ -71,23 +74,25 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
   ) as typeof globalThis.fetch;
   const reader = yield* Effect.gen(function* () {
     return {
-      http: yield* makeGraphShareRegistryHttp(target, options.access),
-      registry: yield* makeGraphShareRegistryReader('oci://registry.example.test/acme/canonical'),
+      http: yield* makeGraphShareRegistryHttp(target, options.access, options.isAuthorized),
+      registry: yield* makeGraphShareRegistryReader('oci://registry.example.test/acme/canonical', options.isAuthorized),
       writer: options.writer
-        ? yield* makeGraphShareRegistryWriter('oci://registry.example.test/acme/canonical')
+        ? yield* makeGraphShareRegistryWriter('oci://registry.example.test/acme/canonical', options.isAuthorized)
         : undefined,
     };
   }).pipe(
     Effect.provideService(SystemInfo, {...system, environment: () => ({DOCKER_CONFIG: directory})}),
     Effect.provideService(CommandExecutor, {
       execute: (executable, args, input) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           helperCalls++;
           expect(executable).toBe('docker-credential-fixture');
           expect(args).toEqual(['get']);
           expect(new TextDecoder().decode(input?.input)).toBe(target.registry + '\n');
           expect(input?.maxOutputBytes).toBe(16384);
           expect(input?.timeoutMs).toBe(5000);
+          if (options.helperStarted) yield* Deferred.succeed(options.helperStarted, undefined);
+          if (options.helperGate) yield* Deferred.await(options.helperGate);
           return {
             exitCode: options.helperDenied ? 1 : 0,
             stderr: secret,
@@ -111,6 +116,91 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
 });
 
 describe('registry authentication and bounded transport', () => {
+  effectIt.effect('refuses a write when authorization is revoked during the eager credential helper', () =>
+    Effect.gen(function* () {
+      const authorized = yield* Ref.make(true);
+      const helperStarted = yield* Deferred.make<void>();
+      const helperGate = yield* Deferred.make<void>();
+      let dispatches = 0;
+      const construction = yield* Effect.forkChild(
+        Effect.result(
+          fixture({
+            access: 'write',
+            helper: true,
+            helperStarted,
+            helperGate,
+            isAuthorized: Ref.get(authorized),
+            handler: () => {
+              dispatches++;
+              return new Response(null, {status: 201});
+            },
+          }),
+        ),
+      );
+      yield* Deferred.await(helperStarted);
+      yield* Ref.set(authorized, false);
+      yield* Deferred.succeed(helperGate, undefined);
+      expect(yield* Fiber.join(construction)).toMatchObject({failure: {kind: 'verification-failed'}});
+      expect(dispatches).toBe(0);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('redacts authorization-check failures before credentials or network are used', () =>
+    Effect.gen(function* () {
+      let dispatches = 0;
+      const result = yield* Effect.result(
+        fixture({
+          access: 'write',
+          helper: true,
+          isAuthorized: Effect.fail({_tag: 'FixtureAuthorizationError', detail: secret}),
+          handler: () => {
+            dispatches++;
+            return new Response(null, {status: 201});
+          },
+        }),
+      );
+      expect(result).toMatchObject({failure: {kind: 'unavailable'}});
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(dispatches).toBe(0);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('refuses the retried write when the principal changes during bearer token exchange', () =>
+    Effect.gen(function* () {
+      const principal = yield* Ref.make('principal-a');
+      const tokenStarted = Promise.withResolvers<void>();
+      const tokenResponse = Promise.withResolvers<Response>();
+      const f = yield* fixture({
+        access: 'write',
+        helper: true,
+        isAuthorized: Ref.get(principal).pipe(Effect.map(current => current === 'principal-a')),
+        handler: request => {
+          if (request.url.pathname === '/token') {
+            tokenStarted.resolve();
+            return tokenResponse.promise;
+          }
+          return new Response(null, {
+            status: 401,
+            headers: {'www-authenticate': `Bearer realm="${target.origin}/token",scope="${target.pullScope}"`},
+          });
+        },
+      });
+      const write = yield* Effect.forkChild(
+        Effect.result(
+          f.request('/v2/acme/canonical/blobs/uploads/', 0, 'application/json', {
+            method: 'POST',
+            acceptedStatuses: [202],
+          }),
+        ),
+      );
+      yield* Effect.promise(() => tokenStarted.promise);
+      yield* Ref.set(principal, 'principal-b');
+      tokenResponse.resolve(Response.json({token: 'synthetic-token'}));
+      expect(yield* Fiber.join(write)).toMatchObject({failure: {kind: 'verification-failed'}});
+      expect(f.requests.map(request => request.url.pathname)).toEqual(['/v2/acme/canonical/blobs/uploads/', '/token']);
+    }).pipe(provideTestLayer(layer)),
+  );
+
   effectIt.effect('shares one credential exchange per concurrent challenge or token renewal', () =>
     Effect.gen(function* () {
       let issued = 0;
