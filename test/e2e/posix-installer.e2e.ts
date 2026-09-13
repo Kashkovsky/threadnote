@@ -413,6 +413,11 @@ esac
         },
       });
       expect(launcherVersion.stdout).toContain(packageManifest.version);
+      const publisherLauncher = await readFile(
+        join(binRoot, 'docker-credential-threadnote-auth0-publisher-m2m'),
+        'utf8',
+      );
+      expect(publisherLauncher).toContain('exec "$THREADNOTE_ENTRY" __credential-registry-auth0-publisher-m2m "$@"');
       const profiledVersion = await execute(
         'sh',
         [

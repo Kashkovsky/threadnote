@@ -208,6 +208,11 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
         },
       });
       expect(launcherVersion.stdout).toContain(packageManifest.version);
+      const publisherLauncher = await readFile(
+        join(binRoot, 'docker-credential-threadnote-auth0-publisher-m2m.cmd'),
+        'utf8',
+      );
+      expect(publisherLauncher).toContain('__credential-registry-auth0-publisher-m2m %*');
       const posixLauncher = join(binRoot, 'threadnote');
       const posixMcpLauncher = join(binRoot, 'threadnote-mcp-server');
       const posixLauncherContent = await readFile(posixLauncher, 'utf8');

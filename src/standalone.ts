@@ -2,7 +2,7 @@ import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, Layer, Runtime} from 'effect';
 import {withCliOutputConsole} from './effect/cli_output.js';
-import {fromPromiseInterruptibleAwaiting} from './effect/errors.js';
+import {fromPromise, fromPromiseInterruptibleAwaiting} from './effect/errors.js';
 import {
   CODE_GRAPH_COMPACTION_WORKER_ARGUMENT,
   CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT,
@@ -25,7 +25,19 @@ const isWindowsDiskCapacityWorker = arguments_[0] === WINDOWS_DISK_CAPACITY_WORK
 const isMcpBroker = arguments_[0] === 'mcp-broker';
 const isRemoteMemoryOperator = arguments_[0] === 'remote-memory-operator';
 const isRemoteMemoryService = arguments_[0] === 'remote-memory-service';
+const isAuth0M2MGraphCredentialHelper = arguments_[0] === '__credential-auth0-m2m';
+const isAuth0M2MRegistryCredentialHelper = arguments_[0] === '__credential-registry-auth0-m2m';
+const isAuth0M2MPublisherRegistryCredentialHelper = arguments_[0] === '__credential-registry-auth0-publisher-m2m';
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
+const auth0M2MHelperIO = {
+  stdin: process.stdin,
+  writeStderr: (text: string) => {
+    process.stderr.write(text);
+  },
+  writeStdout: (text: string) => {
+    process.stdout.write(text);
+  },
+};
 const runSignalTransparentMain = Runtime.makeRunMain(({fiber, teardown}) => {
   fiber.addObserver(exit => {
     teardown(exit, code => {
@@ -54,15 +66,21 @@ if (
 } else {
   const program: Effect.Effect<void, unknown, never> = isRemoteMemoryService
     ? await remoteMemoryServiceProgram()
-    : isRemoteMemoryOperator
-      ? await remoteMemoryOperatorProgram(arguments_.slice(1))
-      : isLocalModelWorker
-        ? await localModelWorkerProgram(arguments_)
-        : isCodeGraphParserWorker
-          ? await codeGraphParserWorkerProgram(arguments_)
-          : isGitWorktreeRegistrationWorker
-            ? await gitWorktreeRegistrationWorkerProgram()
-            : await applicationProgram(arguments_, isMcpServer, isMcpBroker);
+    : isAuth0M2MGraphCredentialHelper
+      ? await auth0M2MGraphCredentialHelperProgram(arguments_.slice(1))
+      : isAuth0M2MRegistryCredentialHelper
+        ? await auth0M2MRegistryCredentialHelperProgram(arguments_.slice(1))
+        : isAuth0M2MPublisherRegistryCredentialHelper
+          ? await auth0M2MPublisherRegistryCredentialHelperProgram(arguments_.slice(1))
+          : isRemoteMemoryOperator
+            ? await remoteMemoryOperatorProgram(arguments_.slice(1))
+            : isLocalModelWorker
+              ? await localModelWorkerProgram(arguments_)
+              : isCodeGraphParserWorker
+                ? await codeGraphParserWorkerProgram(arguments_)
+                : isGitWorktreeRegistrationWorker
+                  ? await gitWorktreeRegistrationWorkerProgram()
+                  : await applicationProgram(arguments_, isMcpServer, isMcpBroker);
 
   BunRuntime.runMain(program, {
     disableErrorReporting:
@@ -71,6 +89,45 @@ if (
       isGitWorktreeRegistrationWorker ||
       (!isMcpServer && !isMcpBroker),
   });
+}
+
+async function auth0M2MGraphCredentialHelperProgram(arguments_: readonly string[]) {
+  const helper = await import('./code_graph/sharing/auth0_m2m_graph_credential.js');
+  return fromPromise('run Auth0 graph credential helper', () =>
+    helper.runAuth0M2MGraphCredentialHelper(arguments_, process.env, auth0M2MHelperIO),
+  ).pipe(
+    Effect.tap(code =>
+      Effect.sync(() => {
+        process.exitCode = code;
+      }),
+    ),
+  );
+}
+
+async function auth0M2MRegistryCredentialHelperProgram(arguments_: readonly string[]) {
+  const helper = await import('./code_graph/sharing/auth0_m2m_registry_credential.js');
+  return fromPromise('run Auth0 registry credential helper', () =>
+    helper.runAuth0M2MRegistryCredentialHelper(arguments_, process.env, auth0M2MHelperIO),
+  ).pipe(
+    Effect.tap(code =>
+      Effect.sync(() => {
+        process.exitCode = code;
+      }),
+    ),
+  );
+}
+
+async function auth0M2MPublisherRegistryCredentialHelperProgram(arguments_: readonly string[]) {
+  const helper = await import('./code_graph/sharing/auth0_m2m_registry_credential.js');
+  return fromPromise('run Auth0 publisher registry credential helper', () =>
+    helper.runAuth0M2MPublisherRegistryCredentialHelper(arguments_, process.env, auth0M2MHelperIO),
+  ).pipe(
+    Effect.tap(code =>
+      Effect.sync(() => {
+        process.exitCode = code;
+      }),
+    ),
+  );
 }
 
 async function windowsDiskCapacityWorkerProgram() {
