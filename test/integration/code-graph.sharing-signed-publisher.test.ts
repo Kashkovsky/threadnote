@@ -477,6 +477,31 @@ describe('signed worker publisher', () => {
           const latestCoordinator = yield* loadGraphShareCoordinatorState(coordinatorOptions);
           expect(latestCoordinator.machine.generation).toBe(result.generation);
           expect(latestCoordinator.machine.publishedFrontier).toBe(nextIdentity.headCommit);
+
+          // Crash after the durable B pointer write but before admission cleanup, then
+          // resume with HEAD at C. B is covered; C must remain available to publish.
+          yield* fs.writeFileString(path.join(repository, 'src', 'later.ts'), 'export const later = 3;\n');
+          yield* git(repository, ['add', 'src/later.ts']);
+          yield* commit(repository, 'later');
+          const laterIdentity = yield* resolveRepositoryIdentity(repository);
+          const laterAdmission = admitGraphWorkerAnnouncement(admissions, {
+            announcement: signedAnnouncement(4, '3'.repeat(64), laterIdentity.headCommit, worker),
+            authority: worker,
+            nowSeconds,
+            sourceCommit: laterIdentity.headCommit,
+          }).store;
+          yield* writePrivateJsonFile(admissionPath, laterAdmission);
+          yield* writePrivateJsonFile(graphSharingLayout(path, home).coordinatorStatePath, coordinator);
+          const afterRestart = yield* advanceGraphPublisherFrontier(config(home), {
+            authorizationPolicy: policyFile,
+            cas,
+            cwd: repository,
+          });
+          expect(afterRestart.published).toBe(false);
+          expect(afterRestart.manifestDigest).toBe(result.manifestDigest);
+          expect(
+            (yield* readGraphWorkerAdmissionStore(home, policy)).receipts.map(receipt => receipt.sourceCommit),
+          ).toEqual([laterIdentity.headCommit]);
         }).pipe(provideTestLayer(ApplicationLayer)),
       ),
     180_000,

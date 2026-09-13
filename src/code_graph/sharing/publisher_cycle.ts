@@ -200,30 +200,45 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
           publishedFrontier: current.sourceCommit,
         }
       : coordinator.machine;
+  if (initialPolicy !== undefined)
+    yield* withCoordinatorStateLock(
+      coordinatorOptions,
+      Effect.gen(function* () {
+        const latestIdentity = yield* resolveRepositoryIdentity(cwd);
+        const latestEnrollment = parseGraphShareEnrollment(
+          yield* readJsonFile(graphShareEnrollmentPath(path, latestIdentity.repoRoot)),
+        );
+        assertEnrollmentMatchesIdentity(latestEnrollment, latestIdentity.repositoryId);
+        const latestPointer = parseGraphShareFrontierPointer(yield* readJsonFile(pointerPath));
+        if (
+          latestIdentity.repositoryId !== identity.repositoryId ||
+          latestIdentity.repoRoot !== identity.repoRoot ||
+          latestIdentity.headCommit !== identity.headCommit ||
+          parseGraphShareProfilePointer(latestEnrollment.profile).digest !== current.profileDigest ||
+          latestPointer.manifestDigest !== pointer.manifestDigest ||
+          latestPointer.envelopeDigest !== pointer.envelopeDigest
+        )
+          return yield* graphSharingFailure('Published worker source or profile changed before admission cleanup.');
+        const authenticated = yield* readAuthenticatedGraphShareFrontier(
+          casRoot,
+          graphShareRegistryPublicationScope({enrollment: latestEnrollment, profile}),
+          latestPointer,
+        );
+        if (authenticated.sourceCommit !== current.sourceCommit)
+          return yield* graphSharingFailure('Published worker source changed before admission cleanup.');
+        yield* retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked(
+          {
+            casRoot,
+            enrollment: latestEnrollment,
+            home: config.agentContextHome,
+            profile,
+            repoRoot: latestIdentity.repoRoot,
+          },
+          initialPolicy,
+        );
+      }),
+    );
   if (identity.headCommit === current.sourceCommit) {
-    if (initialPolicy !== undefined)
-      yield* withCoordinatorStateLock(
-        coordinatorOptions,
-        Effect.gen(function* () {
-          const latestIdentity = yield* resolveRepositoryIdentity(cwd);
-          const latestEnrollment = parseGraphShareEnrollment(
-            yield* readJsonFile(graphShareEnrollmentPath(path, latestIdentity.repoRoot)),
-          );
-          const latestPointer = parseGraphShareFrontierPointer(yield* readJsonFile(pointerPath));
-          if (
-            latestIdentity.repositoryId !== identity.repositoryId ||
-            latestIdentity.headCommit !== current.sourceCommit ||
-            parseGraphShareProfilePointer(latestEnrollment.profile).digest !== current.profileDigest ||
-            latestPointer.manifestDigest !== pointer.manifestDigest ||
-            latestPointer.envelopeDigest !== pointer.envelopeDigest
-          )
-            return yield* graphSharingFailure('Published worker source or profile changed before admission cleanup.');
-          yield* retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked(
-            {casRoot, enrollment, home: config.agentContextHome, profile, repoRoot: identity.repoRoot},
-            initialPolicy,
-          );
-        }),
-      );
     machine = adoptPublishedFrontier(machine, {
       generation: current.generation,
       manifestDigest: pointer.manifestDigest,
