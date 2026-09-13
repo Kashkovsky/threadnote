@@ -59,7 +59,7 @@ const source = {actionKeys: [] as string[], profileDigest, repositoryId, sourceC
 
 describe('signed worker receipt selection', () => {
   effectIt.effect.prop(
-    'is independent of admission order and selects one deterministic same-semantic receipt per action',
+    'is independent of admission order and retains deterministic same-semantic alternatives',
     {ranks: FC.tuple(FC.integer(), FC.integer(), FC.integer())},
     ({ranks}) =>
       Effect.sync(() => {
@@ -71,10 +71,12 @@ describe('signed worker receipt selection', () => {
         const left = selectGraphWorkerReceiptsForSource(admitted(items), source);
         const right = selectGraphWorkerReceiptsForSource(admitted(permuted), source);
         expect(right).toEqual(left);
-        expect(left.selected).toHaveLength(2);
+        expect(left.candidateGroups).toHaveLength(2);
         expect(
-          left.selected.find(row => row.announcement.body.actionKey === actionKey)?.announcement.body.idempotencyKey,
-        ).toBe([items[0].body.idempotencyKey, items[1].body.idempotencyKey].sort()[0]);
+          left.candidateGroups
+            .find(row => row.actionKey === actionKey)
+            ?.alternatives.map(item => item.announcement.body.idempotencyKey),
+        ).toEqual([items[0].body.idempotencyKey, items[1].body.idempotencyKey].sort());
       }),
     {fastCheck: {numRuns: 30}},
   );
@@ -88,7 +90,7 @@ describe('signed worker receipt selection', () => {
       ]);
       const selected = selectGraphWorkerReceiptsForSource(store, source);
       expect(selected.quarantined).toEqual([actionKey]);
-      expect(selected.selected).toEqual([]);
+      expect(selected.candidateGroups).toEqual([]);
       expect(selected.skippedLate).toHaveLength(1);
     }),
   );

@@ -1,7 +1,7 @@
 import {compareCodeUnits} from '../ordering.js';
 import type {GraphWorkerAdmissionReceiptV1, GraphWorkerAdmissionStoreV1} from './worker_admission_state.js';
 
-/** Pick one deterministic signed receipt per action for the exact publication source. */
+/** Keep ordered same-action alternatives until full source and OCI authority are verified. */
 export function selectGraphWorkerReceiptsForSource(
   store: GraphWorkerAdmissionStoreV1,
   source: {
@@ -12,14 +12,17 @@ export function selectGraphWorkerReceiptsForSource(
   },
 ): {
   readonly quarantined: readonly string[];
-  readonly selected: readonly GraphWorkerAdmissionReceiptV1[];
+  readonly candidateGroups: readonly {
+    readonly actionKey: string;
+    readonly alternatives: readonly GraphWorkerAdmissionReceiptV1[];
+  }[];
   readonly skippedLate: readonly GraphWorkerAdmissionReceiptV1[];
 } {
   const requested = source.actionKeys.length === 0 ? undefined : new Set(source.actionKeys);
   const quarantined = new Set(
     store.quarantine.filter(item => item.repositoryId === source.repositoryId).map(item => item.actionKey),
   );
-  const byAction = new Map<string, GraphWorkerAdmissionReceiptV1>();
+  const byAction = new Map<string, GraphWorkerAdmissionReceiptV1[]>();
   const skippedLate: GraphWorkerAdmissionReceiptV1[] = [];
   for (const receipt of store.receipts) {
     const body = receipt.announcement.body;
@@ -30,15 +33,20 @@ export function selectGraphWorkerReceiptsForSource(
       skippedLate.push(receipt);
       continue;
     }
-    const previous = byAction.get(body.actionKey);
-    if (previous === undefined || compareCodeUnits(body.idempotencyKey, previous.announcement.body.idempotencyKey) < 0)
-      byAction.set(body.actionKey, receipt);
+    const alternatives = byAction.get(body.actionKey) ?? [];
+    alternatives.push(receipt);
+    byAction.set(body.actionKey, alternatives);
   }
   return {
     quarantined: [...quarantined].sort(compareCodeUnits),
-    selected: [...byAction.values()].sort((a, b) =>
-      compareCodeUnits(a.announcement.body.actionKey, b.announcement.body.actionKey),
-    ),
+    candidateGroups: [...byAction.entries()]
+      .sort(([left], [right]) => compareCodeUnits(left, right))
+      .map(([actionKey, alternatives]) => ({
+        actionKey,
+        alternatives: alternatives.sort((a, b) =>
+          compareCodeUnits(a.announcement.body.idempotencyKey, b.announcement.body.idempotencyKey),
+        ),
+      })),
     skippedLate: skippedLate.sort((a, b) =>
       compareCodeUnits(a.announcement.body.idempotencyKey, b.announcement.body.idempotencyKey),
     ),
