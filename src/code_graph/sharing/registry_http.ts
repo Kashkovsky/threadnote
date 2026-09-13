@@ -40,7 +40,6 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
 ) {
   const client = HttpClient.withScope(yield* HttpClient.HttpClient);
   const fetch = yield* FetchHttpClient.Fetch;
-  const credentials = yield* makeGraphShareRegistryCredentialLoader(target);
   const guard = Effect.gen(function* () {
     if (
       isAuthorized !== undefined &&
@@ -51,6 +50,7 @@ export const makeGraphShareRegistryHttp = Effect.fn('codeGraph.sharing.registryH
       return yield* graphSharingFailure('Registry request is no longer authorized.');
   });
   yield* guard;
+  const credentials = yield* makeGraphShareRegistryCredentialLoader(target);
   let initialCredential = access === 'write' ? yield* credentials() : undefined;
   yield* guard;
   if (access === 'write' && initialCredential === undefined)

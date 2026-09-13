@@ -173,6 +173,38 @@ describe('worker OCI closure upload', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
+  effectIt.effect('redacts a failed authorization check before submitting any blob', () =>
+    Effect.gen(function* () {
+      const {artifact, authority} = yield* fixture();
+      let calls = 0;
+      const writer = {
+        putBlob: () =>
+          Effect.sync(() => {
+            calls++;
+            return {digest: sha256Digest('unused'), existed: false};
+          }),
+        putManifest: () =>
+          Effect.sync(() => {
+            calls++;
+            return sha256Digest('unused');
+          }),
+      };
+      const result = yield* Effect.result(
+        uploadGraphWorkerArtifactClosure({
+          artifact,
+          authority,
+          isAuthorized: Effect.fail({detail: 'synthetic-private-detail'}),
+          writer,
+        }),
+      );
+      expect(result).toMatchObject({
+        failure: {kind: 'unavailable', message: 'Graph worker authorization check failed.'},
+      });
+      expect(JSON.stringify(result)).not.toContain('synthetic-private-detail');
+      expect(calls).toBe(0);
+    }).pipe(provideTestLayer(layer)),
+  );
+
   effectIt.effect.prop(
     'never submits a manifest when authority is revoked before a write boundary',
     {revokeAfterBlobs: FC.integer({min: 0, max: 3})},
