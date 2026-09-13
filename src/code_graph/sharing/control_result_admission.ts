@@ -19,6 +19,7 @@ import {
   emptyGraphWorkerAdmissionStore,
   GRAPH_WORKER_ADMISSION_MAX_STATE_BYTES,
   parseGraphWorkerAdmissionBytes,
+  retireGraphWorkerAdmissionsForPublishedSource,
 } from './worker_admission_state.js';
 import {
   readGraphWorkerResultArtifact,
@@ -255,4 +256,28 @@ export const readGraphWorkerAdmissionStore = Effect.fn('codeGraph.sharing.readWo
   policy: GraphControlPolicy,
 ) {
   return yield* readAdmissionState(yield* graphWorkerAdmissionStatePath(home, policy), policy);
+});
+
+/** Called after durable pointer promotion, while the caller holds the coordinator lock. */
+export const retireGraphWorkerAdmissionsForPublishedSourceLocked = Effect.fn(
+  'codeGraph.sharing.retireWorkerAdmissionsForPublishedSourceLocked',
+)(function* (home: string, policy: GraphControlPolicy, sourceCommit: string) {
+  const target = yield* graphWorkerAdmissionStatePath(home, policy);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* fs.makeDirectory(path.dirname(target), {recursive: true, mode: 0o700});
+  return yield* withExclusiveFileLock(
+    fs,
+    `${target}.lock`,
+    LOCK_OPTIONS,
+    Effect.gen(function* () {
+      const current = yield* readAdmissionState(target, policy);
+      const next = yield* Effect.try({
+        try: () => retireGraphWorkerAdmissionsForPublishedSource(current, sourceCommit),
+        catch: () => graphSharingFailure('Published worker receipt source is invalid.'),
+      });
+      if (next !== current) yield* writePrivateJsonFile(target, next);
+      return {retired: current.receipts.length - next.receipts.length};
+    }),
+  );
 });

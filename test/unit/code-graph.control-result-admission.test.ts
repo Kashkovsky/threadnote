@@ -24,6 +24,8 @@ import {withCoordinatorStateLock} from '../../src/code_graph/sharing/coordinator
 import {
   admitGraphControlWorkerResult,
   graphWorkerAdmissionStatePath,
+  readGraphWorkerAdmissionStore,
+  retireGraphWorkerAdmissionsForPublishedSourceLocked,
 } from '../../src/code_graph/sharing/control_result_admission.js';
 import {emptyGraphWorkerAdmissionStore} from '../../src/code_graph/sharing/worker_admission_state.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
@@ -276,6 +278,29 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
 });
 
 describe('authenticated signed worker admission route', () => {
+  effectIt.effect('reads bounded scoped admissions and retires the exact published source under coordinator lock', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const worker = yield* f.enroll;
+        const {announcement} = yield* f.candidate(worker);
+        expect((yield* f.request('/v1/results', f.validToken, announcement)).status).toBe(201);
+        const policy = yield* readGraphControlPolicy(f.options.policyFile);
+        expect((yield* readGraphWorkerAdmissionStore(f.options.threadnoteHome, policy)).receipts).toHaveLength(1);
+        const retired = yield* withCoordinatorStateLock(
+          {threadnoteHome: f.options.threadnoteHome},
+          retireGraphWorkerAdmissionsForPublishedSourceLocked(f.options.threadnoteHome, policy, 'b'.repeat(40)),
+        );
+        expect(retired.retired).toBe(1);
+        expect((yield* readGraphWorkerAdmissionStore(f.options.threadnoteHome, policy)).receipts).toHaveLength(0);
+        expect(
+          (yield* retireGraphWorkerAdmissionsForPublishedSourceLocked(f.options.threadnoteHome, policy, 'b'.repeat(40)))
+            .retired,
+        ).toBe(0);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
   effectIt.effect('is closed by default even for an enrolled contributor', () =>
     TestClock.withLive(
       Effect.gen(function* () {
