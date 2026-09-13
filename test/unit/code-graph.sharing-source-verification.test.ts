@@ -126,6 +126,32 @@ describe('source-verified original contribution assembly', () => {
     );
   }
 
+  it.effect(
+    'matches a signed SHA-256 source commit without treating its 40-character batch prefix as the full commit',
+    () =>
+      Effect.gen(function* () {
+        const fullCommit = `${sourceCommit}${'f'.repeat(24)}`;
+        const row = fixture('src/sha256.ts');
+        const signed = {...row.item, sourceCommit: fullCommit};
+        const proof = makeGraphShareSourceVerification({repositoryId, sourceCommit: fullCommit, verified: [signed]});
+        yield* proof.hooks.observeParserBatch(row.group);
+        yield* proof.hooks.materializeFacts({facts: new Map([[row.file.path, row.facts]]), files: [row.file]});
+        expect((yield* proof.complete()).consumedActions).toBe(1);
+
+        for (const tampered of [
+          {...signed, sourceCommit: `${sourceCommit}${'e'.repeat(24)}`},
+          {...signed, announcement: {...signed.announcement, batchId: 'e'.repeat(40)}},
+        ]) {
+          const rejected = makeGraphShareSourceVerification({
+            repositoryId,
+            sourceCommit: fullCommit,
+            verified: [tampered],
+          });
+          expect(Exit.isFailure(yield* Effect.exit(rejected.hooks.observeParserBatch(row.group)))).toBe(true);
+        }
+      }),
+  );
+
   it.effect('rejects stale, poisoned, or unobserved cache inputs and incomplete attempts', () =>
     Effect.gen(function* () {
       const row = fixture('src/a.ts');

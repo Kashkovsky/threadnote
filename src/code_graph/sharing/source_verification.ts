@@ -15,23 +15,33 @@ export interface GraphShareSourceUseEvidence {
   readonly sourceVerifiedFiles: number;
 }
 
+/** Signed worker receipts carry the full producing commit; legacy receipts carry only batchId. */
+export type GraphShareSourceVerifiedReceipt = VerifiedGraphShareParseReceipt & {
+  readonly sourceCommit?: string;
+};
+
 /** Attempt-local proof. Raw cache contents alone never establish source provenance. */
 export function makeGraphShareSourceVerification(input: {
   readonly repositoryId: string;
   readonly sourceCommit: string;
-  readonly verified: readonly VerifiedGraphShareParseReceipt[];
+  readonly verified: readonly GraphShareSourceVerifiedReceipt[];
 }): {
   readonly hooks: CodeGraphSourceVerification;
   readonly complete: () => Effect.Effect<GraphShareSourceUseEvidence, unknown>;
 } {
-  const selected = new Map<string, VerifiedGraphShareParseReceipt>();
+  const selected = new Map<string, GraphShareSourceVerifiedReceipt>();
   const fresh = new Map<string, {readonly context: string; readonly digest: Sha256Digest}>();
   const consumed = new Map<string, Sha256Digest>();
   let initialized = false;
   const initialize = () => {
     if (initialized) return;
     for (const item of input.verified) {
-      if (item.announcement.batchId !== input.sourceCommit || item.parsed.repositoryId !== input.repositoryId) {
+      const producingCommit = item.sourceCommit ?? item.announcement.batchId;
+      if (
+        producingCommit !== input.sourceCommit ||
+        item.announcement.batchId !== producingCommit.slice(0, 40) ||
+        item.parsed.repositoryId !== input.repositoryId
+      ) {
         throw graphSharingFailure('Contribution does not belong to the exact publication source target.');
       }
       const previous = selected.get(item.parsed.normalizedPath);
