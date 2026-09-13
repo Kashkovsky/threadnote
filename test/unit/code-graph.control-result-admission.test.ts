@@ -299,11 +299,14 @@ describe('authenticated signed worker admission route', () => {
           status: 201,
         });
         expect(f.registryPaths).toContain(`${registry}/manifests/${artifact.manifestDigest}`);
+        const downloads = f.registryPaths.length;
+        f.registryBytes.clear();
         const replay = yield* f.request('/v1/results', f.validToken, announcement);
         expect(replay).toEqual({
           body: {idempotencyKey: announcement.body.idempotencyKey, status: 'duplicate'},
           status: 200,
         });
+        expect(f.registryPaths).toHaveLength(downloads);
         const state = JSON.parse(yield* f.fs.readFileString(f.statePath));
         expect(state.receipts).toHaveLength(1);
         expect(JSON.stringify(state)).not.toContain('diagnostics');

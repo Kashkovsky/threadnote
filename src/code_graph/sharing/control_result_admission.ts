@@ -105,6 +105,29 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
   };
   const body = yield* verifyGraphWorkerResultAnnouncement(announcement, authority);
   const signed = {...announcement, body};
+  const path = yield* Path.Path;
+  const target = yield* graphWorkerAdmissionStatePath(input.home, input.initialPolicy);
+  const fs = yield* FileSystem.FileSystem;
+  // A lost HTTP acknowledgement may arrive after the verified OCI read committed. Recheck live
+  // worker authority, then answer an exact durable replay without repeating the remote download.
+  const prior = yield* readAdmissionState(target, input.initialPolicy);
+  if (prior.receipts.some(item => item.announcement.body.idempotencyKey === body.idempotencyKey)) {
+    const currentWorker = yield* requireWorker();
+    const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+    if (
+      currentWorker.signingPublicKey !== authority.signingPublicKey ||
+      currentWorker.principalId !== authority.principalId ||
+      currentWorker.expiresAt <= now
+    )
+      return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
+    const replay = admitGraphWorkerAnnouncement(prior, {
+      announcement: signed,
+      authority: {...authority, expiresAt: currentWorker.expiresAt},
+      nowSeconds: now,
+    });
+    if (replay.status === 'duplicate' || replay.status === 'operation-conflict') return replay;
+    return yield* graphSharingUnavailable('Graph worker admission replay is invalid.');
+  }
   const result = yield* Effect.gen(function* () {
     const reader = yield* makeGraphShareRegistryReader(workerRegistry).pipe(
       Effect.mapError(() => graphSharingUnavailable('Worker registry is unavailable.')),
@@ -124,11 +147,7 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
     body.workerId !== claims.workerId
   )
     return yield* graphSharingFailure('Graph worker result announcement does not match its signed artifact.');
-  // The producing sourceCommit is verified within worker_result when that attestation field lands.
-  // Admission does not reconstruct it from batchId or from the current frontier.
-  const path = yield* Path.Path;
-  const target = yield* graphWorkerAdmissionStatePath(input.home, input.initialPolicy);
-  const fs = yield* FileSystem.FileSystem;
+  // The artifact verifier checks the signed full sourceCommit and its batch prefix.
   yield* fs.makeDirectory(path.dirname(target), {recursive: true, mode: 0o700});
   return yield* withCoordinatorStateLock(
     {threadnoteHome: input.home},
