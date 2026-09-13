@@ -24,7 +24,7 @@ import {
   encodeGraphShareDeltaPack,
   putGraphShareDeltaArtifact,
 } from './delta_pack.js';
-import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from './atomic.js';
+import {decodeJsonBytes, readJsonFile, writeDurablePrivateJsonFile, writePrivateJsonFile} from './atomic.js';
 import {putCasFile, readVerifiedCasBlob} from './cas.js';
 import {putGraphShareCheckpointLayers} from './checkpoint_cas.js';
 import {putGraphShareOciDescriptor, putSignedGraphShareFrontierDocuments} from './descriptor.js';
@@ -493,7 +493,7 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
       const documents = yield* putSignedGraphShareFrontierDocuments(casRoot, signed, metadataBytes);
       const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
       yield* verifyTarget;
-      yield* writePrivateJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, repositoryId), {
+      yield* writeDurablePrivateJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, repositoryId), {
         envelopeDigest: documents.envelopeDigest,
         manifestDigest: documents.manifestDigest,
         schemaVersion: 1,

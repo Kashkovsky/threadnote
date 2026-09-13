@@ -14,7 +14,7 @@ import {
   type GraphShareFrontierManifestV1,
   type GraphSharePublisherKeyV1,
 } from './artifacts.js';
-import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from './atomic.js';
+import {decodeJsonBytes, readJsonFile, writeDurablePrivateJsonFile, writePrivateJsonFile} from './atomic.js';
 import {putCasBytes, putCasFile, readVerifiedCasBlob} from './cas.js';
 import {putGraphShareCheckpointLayers} from './checkpoint_cas.js';
 import {putSignedGraphShareFrontierDocuments} from './descriptor.js';
@@ -197,7 +197,7 @@ const bootstrapGraphPublisherCandidate = Effect.fn('codeGraph.sharing.bootstrapP
     {threadnoteHome: config.agentContextHome},
     Effect.gen(function* () {
       if (yield* fs.exists(pointerPath)) return yield* existing;
-      yield* writePrivateJsonFile(pointerPath, {
+      yield* writeDurablePrivateJsonFile(pointerPath, {
         envelopeDigest: documents.envelopeDigest,
         manifestDigest: documents.manifestDigest,
         schemaVersion: 1,
