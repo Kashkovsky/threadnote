@@ -83,5 +83,5 @@ export const graphRegistryFixture = Effect.fn('test.graphRegistry.fixture')(func
             : executor.execute(executable, args, options),
       }),
     );
-  return {blobs, manifests, workerBlobs, workerManifests, requests, state, provide};
+  return {blobs, docker, fetch, manifests, workerBlobs, workerManifests, requests, state, provide};
 });
