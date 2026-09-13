@@ -142,7 +142,7 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
         const disposition = yield* sourceDisposition(input, receipt.sourceCommit).pipe(
           Effect.provideService(CommandExecutor, input.commandExecutor),
         );
-        if (disposition !== undefined) return {status: disposition};
+        if (disposition !== undefined) return {status: disposition, idempotencyKey: body.idempotencyKey};
         return admitGraphWorkerAnnouncement(prior, {
           announcement: signed,
           authority: {...authority, graphAbi: receipt.graphAbi, expiresAt: currentWorker.expiresAt},
@@ -201,7 +201,7 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
         const disposition = yield* sourceDisposition(input, claims.sourceCommit).pipe(
           Effect.provideService(CommandExecutor, input.commandExecutor),
         );
-        if (disposition !== undefined) return {status: disposition};
+        if (disposition !== undefined) return {status: disposition, idempotencyKey: body.idempotencyKey};
         const outcome = admitGraphWorkerAnnouncement(current, {
           announcement: signed,
           authority: {

@@ -305,6 +305,60 @@ describe('automatic signed graph worker delivery', () => {
     ),
   );
 
+  effectIt.effect('settles only an exact echoed stale source and replays a durable interrupted settlement', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const request = {repositoryId: f.repositoryId, threadnoteHome: f.home};
+        for (const response of [
+          {status: 409, body: {error: 'operation-conflict', idempotencyKey: f.prepared.operation.operationId}},
+          {status: 409, body: {error: 'stale-source', idempotencyKey: sha256Digest('other')}},
+        ]) {
+          expect(
+            (yield* Effect.result(
+              submitPreparedGraphWorkerResult(request, f.scope, f.prepared.operation, {
+                isAuthorized: Effect.succeed(true),
+                upload: Effect.void,
+                announce: Effect.succeed(response),
+              }),
+            ))._tag,
+          ).toBe('Failure');
+          expect((yield* listGraphWorkerDeliveryOutboxOperations(f.home, f.scope))[0].state).toBe('prepared');
+        }
+        const superseded = yield* markGraphWorkerDeliveryAdmitted({
+          scope: f.scope,
+          candidateIdentity: f.prepared.operation.candidateIdentity,
+          candidatePageId: f.candidatePageId,
+          operationId: f.prepared.operation.operationId,
+          response: {idempotencyKey: f.prepared.operation.operationId, status: 'stale-source'},
+          threadnoteHome: f.home,
+        });
+        expect(superseded.state).toBe('superseded');
+        yield* finishAdmittedGraphWorkerResult(request, f.scope, superseded);
+        expect(yield* listGraphShareSignedCandidatePageIds(f.home, f.repositoryId)).toEqual([]);
+        expect((yield* readGraphShareContributionQueue(f.home, f.repositoryId, 'passive')).announcements).toEqual([]);
+        expect(yield* listGraphWorkerDeliveryOutboxOperations(f.home, f.scope)).toEqual([]);
+
+        const next = yield* fixture();
+        yield* submitPreparedGraphWorkerResult(
+          {repositoryId: next.repositoryId, threadnoteHome: next.home},
+          next.scope,
+          next.prepared.operation,
+          {
+            isAuthorized: Effect.succeed(true),
+            upload: Effect.void,
+            announce: Effect.succeed({
+              status: 409,
+              body: {error: 'stale-source', idempotencyKey: next.prepared.operation.operationId},
+            }),
+          },
+        );
+        expect(yield* listGraphShareSignedCandidatePageIds(next.home, next.repositoryId)).toEqual([]);
+        expect(yield* listGraphWorkerDeliveryOutboxOperations(next.home, next.scope)).toEqual([]);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
   effectIt.effect('finds an exact candidate moved to a new page before retiring an admitted operation', () =>
     TestClock.withLive(
       Effect.gen(function* () {

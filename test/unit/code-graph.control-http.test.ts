@@ -212,6 +212,27 @@ describe('authenticated graph control transport', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
+  effectIt.effect('returns only a bounded exact stale-source result response', () =>
+    Effect.gen(function* () {
+      const idempotencyKey = sha256Digest('stale operation');
+      const stale = yield* fixture(() => Response.json({error: 'stale-source', idempotencyKey}, {status: 409}));
+      const response = yield* stale.client.request('POST', '/v1/results', {});
+      expect(response.status).toBe(409);
+      expect(response.body).toEqual({
+        error: 'stale-source',
+        idempotencyKey,
+      });
+      const conflict = yield* fixture(() =>
+        Response.json({error: 'operation-conflict', idempotencyKey}, {status: 409}),
+      );
+      expect((yield* Effect.result(conflict.client.request('POST', '/v1/results', {})))._tag).toBe('Failure');
+      const extra = yield* fixture(() =>
+        Response.json({error: 'stale-source', idempotencyKey, unexpected: true}, {status: 409}),
+      );
+      expect((yield* Effect.result(extra.client.request('POST', '/v1/results', {})))._tag).toBe('Failure');
+    }).pipe(provideTestLayer(layer)),
+  );
+
   effectIt.effect('keeps a valid result admission alive beyond the prior 30-second deadline', () =>
     Effect.gen(function* () {
       let entered!: () => void;

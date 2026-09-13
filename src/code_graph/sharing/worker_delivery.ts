@@ -47,6 +47,10 @@ const ADMISSION_ACK = Schema.Struct({
   idempotencyKey: Schema.String.check(Schema.isPattern(SHA256_DIGEST)),
   status: Schema.Literals(['accepted', 'duplicate', 'quarantined']),
 });
+const STALE_SOURCE_ACK = Schema.Struct({
+  error: Schema.Literal('stale-source'),
+  idempotencyKey: Schema.String.check(Schema.isPattern(SHA256_DIGEST)),
+});
 const STRICT = {onExcessProperty: 'error'} as const;
 const SIGNED_DELIVERY_DEADLINE_MILLISECONDS = 360_000;
 const WORKER_MINIMUM_VALIDITY_SECONDS = 390;
@@ -159,7 +163,7 @@ const drainSignedBatch = Effect.fn('codeGraph.sharing.drainSignedBatch')(functio
       ),
     )).flat();
     const replay =
-      operations.find(item => item.operation.state === 'admitted') ??
+      operations.find(item => item.operation.state === 'admitted' || item.operation.state === 'superseded') ??
       operations.find(
         item =>
           item.operation.state === 'prepared' &&
@@ -167,7 +171,7 @@ const drainSignedBatch = Effect.fn('codeGraph.sharing.drainSignedBatch')(functio
           item.operation.authority.expiresAt > now + SIGNED_DELIVERY_DEADLINE_MILLISECONDS / 1000,
       );
     if (replay !== undefined) {
-      if (replay.operation.state === 'admitted') {
+      if (replay.operation.state !== 'prepared') {
         yield* finishAdmittedGraphWorkerResult(input, replay.scope, replay.operation);
       } else {
         const stored = yield* readGraphWorkerDeliveryOutboxOperation(
@@ -408,6 +412,25 @@ export const submitPreparedGraphWorkerResult = Effect.fn('codeGraph.sharing.subm
   if (!(yield* transport.isAuthorized))
     return yield* graphSharingFailure('Graph worker delivery is no longer authorized.');
   const response = yield* transport.announce;
+  if (response.status === 409) {
+    const stale = yield* Schema.decodeUnknownEffect(
+      STALE_SOURCE_ACK,
+      STRICT,
+    )(response.body).pipe(
+      Effect.mapError(() => graphSharingFailure('Graph worker stale-source acknowledgement is invalid.')),
+    );
+    if (stale.idempotencyKey !== operation.operationId)
+      return yield* graphSharingFailure('Graph worker stale-source acknowledgement is outside its operation.');
+    const superseded = yield* markGraphWorkerDeliveryAdmitted({
+      scope,
+      candidateIdentity: operation.candidateIdentity,
+      candidatePageId: operation.candidatePageId,
+      operationId: operation.operationId,
+      response: {idempotencyKey: stale.idempotencyKey, status: 'stale-source'},
+      threadnoteHome: input.threadnoteHome,
+    });
+    return yield* finishAdmittedGraphWorkerResult(input, scope, superseded);
+  }
   const ack = yield* Schema.decodeUnknownEffect(
     ADMISSION_ACK,
     STRICT,
@@ -438,7 +461,8 @@ export const finishAdmittedGraphWorkerResult = Effect.fn('codeGraph.sharing.fini
   scope: GraphWorkerDeliveryScope,
   operation: GraphWorkerDeliveryOutboxOperationV1,
 ) {
-  if (operation.state !== 'admitted') return yield* graphSharingFailure('Graph worker result is not admitted.');
+  if (operation.state !== 'admitted' && operation.state !== 'superseded')
+    return yield* graphSharingFailure('Graph worker result is not settled.');
   const accepted = new Set([operation.candidateIdentity]);
   let ack = yield* acknowledgeGraphShareSignedCandidatePage(
     input.threadnoteHome,
@@ -461,7 +485,9 @@ export const finishAdmittedGraphWorkerResult = Effect.fn('codeGraph.sharing.fini
       accepted,
     );
   }
-  if (!ack.absent) return yield* graphSharingUnavailable('Admitted graph worker candidate could not be acknowledged.');
+  if (!ack.absent) return yield* graphSharingUnavailable('Settled graph worker candidate could not be acknowledged.');
+  // Both outcomes settle the exact candidate. This only removes its local legacy queue entry;
+  // a stale result has no server receipt and is never counted as a consumed worker result.
   const selfAttestation = sha256Digest(
     canonicalJson({
       kind: 'contributor-self',

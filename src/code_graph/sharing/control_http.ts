@@ -4,6 +4,7 @@ import * as HttpClient from 'effect/unstable/http/HttpClient';
 import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest';
 import {makeGraphControlCredentialLoader, type GraphControlClientScope} from './control_credentials.js';
 import {GRAPH_SHARE_CONTROL_MAX_BODY_BYTES} from './control_protocol.js';
+import {SHA256_DIGEST} from './digest.js';
 import {
   GraphSharingError,
   graphSharingFailure,
@@ -66,7 +67,11 @@ export const makeAuthenticatedGraphControlClient = Effect.fn('codeGraph.sharing.
                 Effect.provideService(FetchHttpClient.RequestInit, {redirect: 'manual', credentials: 'omit'}),
                 Effect.provideService(FetchHttpClient.Fetch, fetch),
               );
-            if (inbound.status !== 200 && inbound.status !== 201)
+            if (
+              inbound.status !== 200 &&
+              inbound.status !== 201 &&
+              !(pathname === '/v1/results' && inbound.status === 409)
+            )
               return {status: inbound.status, headers: inbound.headers, body: undefined};
             const length = inbound.headers['content-length'];
             if (length !== undefined && (!/^\d+$/u.test(length) || Number(length) > GRAPH_SHARE_CONTROL_MAX_BODY_BYTES))
@@ -88,6 +93,15 @@ export const makeAuthenticatedGraphControlClient = Effect.fn('codeGraph.sharing.
             const parsed = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.JsonObject))(text).pipe(
               Effect.mapError(() => graphSharingFailure('Graph control response is invalid.')),
             );
+            if (inbound.status === 409) {
+              if (
+                Object.keys(parsed).sort().join(',') !== 'error,idempotencyKey' ||
+                parsed.error !== 'stale-source' ||
+                typeof parsed.idempotencyKey !== 'string' ||
+                !SHA256_DIGEST.test(parsed.idempotencyKey)
+              )
+                return {status: inbound.status, headers: inbound.headers, body: undefined};
+            }
             return {status: inbound.status, headers: inbound.headers, body: parsed};
           }),
         ).pipe(

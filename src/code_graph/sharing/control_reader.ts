@@ -216,7 +216,8 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
         if (admitted.status === 'invalid-authority') return reply(403, {error: 'forbidden'});
         if (admitted.status === 'invalid-request') return reply(400, {error: 'invalid-request'});
         if (admitted.status === 'operation-conflict') return reply(409, {error: 'operation-conflict'});
-        if (admitted.status === 'stale-source') return reply(409, {error: 'stale-source'});
+        if (admitted.status === 'stale-source')
+          return reply(409, {error: 'stale-source', idempotencyKey: admitted.idempotencyKey});
         if (admitted.status === 'source-unavailable') return reply(425, {error: 'source-unavailable'});
         if (admitted.status === 'capacity-exceeded') return reply(429, {error: 'capacity-exceeded'});
         if (!('receipt' in admitted)) return reply(503, {error: 'unavailable'});

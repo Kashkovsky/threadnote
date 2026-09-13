@@ -350,7 +350,7 @@ describe('authenticated signed worker admission route', () => {
         const worker = yield* f.enroll;
         const stale = yield* f.candidate(worker, [], f.publishedCommit);
         expect(yield* f.request('/v1/results', f.validToken, stale.announcement)).toEqual({
-          body: {error: 'stale-source'},
+          body: {error: 'stale-source', idempotencyKey: stale.announcement.body.idempotencyKey},
           status: 409,
         });
         expect(yield* f.fs.exists(f.statePath)).toBe(false);
@@ -384,7 +384,7 @@ describe('authenticated signed worker admission route', () => {
           )).sourceCommit,
         ).toBe(f.candidateCommit);
         expect(yield* f.request('/v1/results', f.validToken, stale.announcement)).toEqual({
-          body: {error: 'stale-source'},
+          body: {error: 'stale-source', idempotencyKey: stale.announcement.body.idempotencyKey},
           status: 409,
         });
         const unknown = yield* f.candidate(worker, [], 'd'.repeat(40));
@@ -394,7 +394,7 @@ describe('authenticated signed worker admission route', () => {
         });
         const downloads = f.registryPaths.length;
         expect(yield* f.request('/v1/results', f.validToken, first.announcement)).toEqual({
-          body: {error: 'stale-source'},
+          body: {error: 'stale-source', idempotencyKey: first.announcement.body.idempotencyKey},
           status: 409,
         });
         expect(f.registryPaths).toHaveLength(downloads);
@@ -404,7 +404,7 @@ describe('authenticated signed worker admission route', () => {
           retireGraphWorkerAdmissionsForPublishedSourceLocked(f.options.threadnoteHome, policy, f.candidateCommit),
         );
         expect(yield* f.request('/v1/results', f.validToken, first.announcement)).toEqual({
-          body: {error: 'stale-source'},
+          body: {error: 'stale-source', idempotencyKey: first.announcement.body.idempotencyKey},
           status: 409,
         });
         expect(f.registryPaths.length).toBeGreaterThan(downloads);

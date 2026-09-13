@@ -45,6 +45,7 @@ import {validateGraphControlPolicy} from './control_reader.js';
 import {completeGraphPublisherRegistryPublication} from './publisher_registry.js';
 import {graphShareRegistryPublicationScope, type GraphShareRegistryPublicationResult} from './registry_publication.js';
 import {readAuthenticatedGraphShareFrontier} from './frontier_acceptance.js';
+import {graphWorkerRegistryForProfile} from './worker_registry_upload.js';
 
 export interface GraphShareInitOptions {
   readonly cas?: string;
@@ -260,11 +261,23 @@ export const runGraphPublisherListen = Effect.fn('codeGraph.sharing.publisherLis
   const enrollment = parseGraphShareEnrollment(yield* readJsonFile(graphShareEnrollmentPath(path, identity.repoRoot)));
   const pointer = parseGraphShareProfilePointer(enrollment.profile);
   const profile = parseGraphShareProfile(yield* decodeJsonBytes(yield* readVerifiedCasBlob(casRoot, pointer.digest)));
+  const enableWorkerResults =
+    profile.registry.canonical.startsWith('oci://') && profile.registry.worker.startsWith('oci://');
+  if (enableWorkerResults)
+    yield* Effect.try({
+      try: () =>
+        graphWorkerRegistryForProfile(profile, {
+          profileDigest: graphShareProfileDigest(profile),
+          repositoryId: identity.repositoryId,
+        }),
+      catch: () => graphSharingFailure('Signed graph worker registry overlaps or exceeds its trusted namespace.'),
+    });
   const authorization =
     options.authorizationPolicy === undefined
       ? undefined
       : {
           enrollment,
+          enableWorkerResults,
           policyFile: path.resolve(options.authorizationPolicy),
           profile,
           repoRoot: identity.repoRoot,

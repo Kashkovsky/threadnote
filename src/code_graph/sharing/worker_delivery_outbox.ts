@@ -61,7 +61,7 @@ export function graphWorkerDeliveryScope(
 }
 
 export interface GraphWorkerDeliveryOutboxOperationV1 {
-  readonly admissionStatus?: 'accepted' | 'duplicate' | 'quarantined';
+  readonly admissionStatus?: 'accepted' | 'duplicate' | 'quarantined' | 'stale-source';
   readonly announcement: GraphWorkerResultAnnouncement;
   readonly attestationDigest: string;
   readonly attestationSize: number;
@@ -77,7 +77,7 @@ export interface GraphWorkerDeliveryOutboxOperationV1 {
   readonly resultDigest: string;
   readonly resultSize: number;
   readonly sourceCommit: string;
-  readonly state: 'prepared' | 'admitted';
+  readonly state: 'prepared' | 'admitted' | 'superseded';
 }
 
 export interface GraphWorkerDeliveryOutboxV1 {
@@ -270,14 +270,17 @@ export const listGraphWorkerDeliveryPrincipalScopes = Effect.fn('codeGraph.shari
   },
 );
 
-/** Call only after an exact accepted/duplicate/quarantined server response. */
+/** Call only after an exact echoed admission or authenticated canonical stale-source response. */
 export const markGraphWorkerDeliveryAdmitted = Effect.fn('codeGraph.sharing.markWorkerDeliveryAdmitted')(
   function* (input: {
     readonly scope: GraphWorkerDeliveryScope;
     readonly candidateIdentity: string;
     readonly candidatePageId: string;
     readonly operationId: string;
-    readonly response: {readonly idempotencyKey: string; readonly status: 'accepted' | 'duplicate' | 'quarantined'};
+    readonly response: {
+      readonly idempotencyKey: string;
+      readonly status: 'accepted' | 'duplicate' | 'quarantined' | 'stale-source';
+    };
     readonly threadnoteHome: string;
   }) {
     if (!validScope(input.scope) || !PAGE_ID.test(input.candidatePageId)) return yield* invalid();
@@ -292,17 +295,20 @@ export const markGraphWorkerDeliveryAdmitted = Effect.fn('codeGraph.sharing.mark
           operation.candidateIdentity !== input.candidateIdentity ||
           operation.candidatePageId !== input.candidatePageId ||
           input.response.idempotencyKey !== input.operationId ||
-          (input.response.status !== 'accepted' &&
-            input.response.status !== 'duplicate' &&
-            input.response.status !== 'quarantined')
+          !['accepted', 'duplicate', 'quarantined', 'stale-source'].includes(input.response.status)
         )
           return yield* invalid();
         yield* readOperationArtifact(input.threadnoteHome, input.scope, operation);
-        if (operation.state === 'admitted') {
+        if (operation.state !== 'prepared') {
           // A lost local response to our own metadata rename is safe to replay.
+          if (operation.admissionStatus !== input.response.status) return yield* invalid();
           return operation;
         }
-        const admitted = {...operation, admissionStatus: input.response.status, state: 'admitted' as const};
+        const admitted = {
+          ...operation,
+          admissionStatus: input.response.status,
+          state: input.response.status === 'stale-source' ? ('superseded' as const) : ('admitted' as const),
+        };
         yield* writeOutbox(input.threadnoteHome, input.scope, {
           operations: current.operations.map(item => (item.operationId === input.operationId ? admitted : item)),
           schemaVersion: 1,
@@ -333,7 +339,7 @@ export const retireGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.reti
         const operation = current.operations.find(item => item.operationId === input.operationId);
         if (operation === undefined) return false;
         if (
-          operation.state !== 'admitted' ||
+          (operation.state !== 'admitted' && operation.state !== 'superseded') ||
           operation.candidateIdentity !== input.candidateIdentity ||
           operation.candidatePageId !== input.candidatePageId
         )
@@ -351,7 +357,7 @@ export const retireGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.reti
   },
 );
 
-/** A committed same-candidate admission permits retirement of older, now unusable worker generations. */
+/** A settled same-candidate result permits retirement of older, now unusable worker generations. */
 export const retireSupersededGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.retireSupersededWorkerOutbox')(
   function* (input: {
     readonly admittedOperationId: string;
@@ -371,7 +377,10 @@ export const retireSupersededGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sh
     const admitted = (yield* readOutbox(input.threadnoteHome, input.admittedScope)).operations.find(
       item => item.operationId === input.admittedOperationId,
     );
-    if (admitted?.state !== 'admitted' || admitted.candidateIdentity !== input.candidateIdentity)
+    if (
+      (admitted?.state !== 'admitted' && admitted?.state !== 'superseded') ||
+      admitted.candidateIdentity !== input.candidateIdentity
+    )
       return yield* invalid();
     return yield* withOutboxLock(
       input.threadnoteHome,
@@ -528,10 +537,12 @@ function validOperation(value: unknown): value is GraphWorkerDeliveryOutboxOpera
       typeof value.preparedAtMilliseconds === 'number' &&
       Number.isSafeInteger(value.preparedAtMilliseconds) &&
       value.preparedAtMilliseconds >= 0 &&
-      (value.state === 'prepared' || value.state === 'admitted') &&
+      (value.state === 'prepared' || value.state === 'admitted' || value.state === 'superseded') &&
       (value.state === 'prepared'
         ? value.admissionStatus === undefined
-        : ['accepted', 'duplicate', 'quarantined'].includes(String(value.admissionStatus))) &&
+        : value.state === 'superseded'
+          ? value.admissionStatus === 'stale-source'
+          : ['accepted', 'duplicate', 'quarantined'].includes(String(value.admissionStatus))) &&
       announcement.publicKey === authority.signingPublicKey &&
       announcement.body.repositoryId === authority.repositoryId &&
       announcement.body.profileDigest === authority.profileDigest &&

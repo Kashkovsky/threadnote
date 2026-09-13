@@ -64,7 +64,10 @@ export interface GraphSharePublishedFrontier {
 }
 
 export interface GraphShareControlServerOptions<E = never, R = never> {
-  readonly authorization?: Pick<GraphControlReaderOptions, 'enrollment' | 'policyFile' | 'profile' | 'repoRoot'>;
+  readonly authorization?: Pick<
+    GraphControlReaderOptions,
+    'enrollment' | 'policyFile' | 'profile' | 'repoRoot' | 'enableWorkerResults'
+  >;
   readonly casRoot: string;
   readonly listen: GraphShareListenAddress;
   readonly onListening?: (info: {readonly port: number; readonly url: string}) => Effect.Effect<void, E, R>;
