@@ -1,4 +1,5 @@
 import {
+  assertCodeMemoryLinkAgentAbTrialLedgerPrefixV1,
   evaluateCodeMemoryLinkAgentAb,
   parseCodeMemoryLinkAgentAbAssignmentV1,
   parseCodeMemoryLinkAgentAbManifestV1,
@@ -79,6 +80,7 @@ export function evaluateCodeMemoryLinkAgentStudyV1(input: {
   const assignment = parseCodeMemoryLinkAgentAbAssignmentV1(input.assignment);
   const manifest = parseCodeMemoryLinkAgentAbManifestV1(input.manifest);
   const trials = input.trials.map(parseCodeMemoryLinkAgentAbTrialV1);
+  assertCodeMemoryLinkAgentAbTrialLedgerPrefixV1({assignment, manifest, trials});
   const receipts = input.evidence.map(parseCodeMemoryLinkAgentEvidenceReceiptV1);
   const releaseEvaluation = evaluateCodeMemoryLinkAgentAb({...input, assignment, manifest, trials, evidence: receipts});
   if (trials.some(trial => trial.evidenceKind !== 'external-agent')) {
