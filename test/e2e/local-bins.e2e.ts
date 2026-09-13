@@ -170,6 +170,7 @@ describe('built self-contained distribution', () => {
         USERPROFILE: userHome,
       },
       timeout: realModelTimeoutMs,
+      windowsVerbatimArguments: process.platform === 'win32',
     });
     expect(`${shimRecall.stdout}${shimRecall.stderr}`).toContain('native-e2e.md');
     const refreshedVectorRevision = await activeVectorRevision();

@@ -198,6 +198,7 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
       expect(version.stdout).toContain(packageManifest.version);
       const launcherInvocation = windowsCommandLauncherInvocation(join(binRoot, 'threadnote.cmd'), ['--version']);
       const launcherVersion = await execute(launcherInvocation.executable, [...launcherInvocation.args], {
+        windowsVerbatimArguments: true,
         env: {
           ...process.env,
           HOME: userHome,
