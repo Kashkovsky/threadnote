@@ -212,7 +212,7 @@ describe('authenticated graph control transport', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
-  effectIt.effect('allows result admission longer than the metadata deadline', () =>
+  effectIt.effect('keeps a valid result admission alive beyond the prior 30-second deadline', () =>
     Effect.gen(function* () {
       let entered!: () => void;
       let resolve!: (response: Response) => void;
@@ -228,7 +228,7 @@ describe('authenticated graph control transport', () => {
       });
       const request = yield* f.client.request('POST', '/v1/results', {}).pipe(Effect.result, Effect.forkScoped);
       yield* Effect.promise(() => started);
-      yield* TestClock.adjust('11 seconds');
+      yield* TestClock.adjust('31 seconds');
       expect(request.pollUnsafe()).toBeUndefined();
       resolve(Response.json({idempotencyKey: sha256Digest('operation'), status: 'accepted'}, {status: 201}));
       expect((yield* Fiber.join(request))._tag).toBe('Success');

@@ -91,7 +91,8 @@ export const makeAuthenticatedGraphControlClient = Effect.fn('codeGraph.sharing.
             return {status: inbound.status, headers: inbound.headers, body: parsed};
           }),
         ).pipe(
-          Effect.timeout(pathname === '/v1/results' ? 30_000 : 10_000),
+          // The admission server may spend five minutes validating a bounded OCI closure.
+          Effect.timeout(pathname === '/v1/results' ? 310_000 : 10_000),
           Effect.mapError(error =>
             Schema.is(GraphSharingError)(error) ? error : graphSharingUnavailable('Graph control request failed.'),
           ),
