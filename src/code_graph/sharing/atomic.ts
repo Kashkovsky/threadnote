@@ -1,4 +1,5 @@
 import {Crypto, Effect, FileSystem, Option, Path, Schema, Stream} from 'effect';
+import {SystemInfo} from '../../effect/system.js';
 import {graphSharingFailure} from './errors.js';
 
 export const writePrivateJsonFile = Effect.fn('codeGraph.sharing.writePrivateJsonFile')(function* (
@@ -33,7 +34,7 @@ export const writeDurablePrivateJsonFile = Effect.fn('codeGraph.sharing.writeDur
       Effect.mapError(cause => graphSharingFailure('Could not durably persist the graph frontier pointer.', cause)),
     );
   yield* sync(destination);
-  if (process.platform !== 'win32') yield* sync(path.dirname(destination));
+  if ((yield* SystemInfo).platform !== 'win32') yield* sync(path.dirname(destination));
 });
 
 export const writePrivateBytesFile = Effect.fn('codeGraph.sharing.writePrivateBytesFile')(function* (

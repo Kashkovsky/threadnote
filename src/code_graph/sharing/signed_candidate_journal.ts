@@ -1,6 +1,7 @@
 import {Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {SystemInfo} from '../../effect/system.js';
 import {readBoundedPrivateBytes, writePrivateJsonFile} from './atomic.js';
 import {graphSharingFailure, GraphSharingError} from './errors.js';
 
@@ -336,7 +337,7 @@ const writeSegmentLocked = Effect.fn('codeGraph.sharing.writeCandidateSegment')(
     const bytes = yield* readBoundedPrivateBytes(target, SIGNED_CANDIDATE_PAGE_MAXIMUM_BYTES);
     if (sha256HexSync(bytes) === page.descriptor.id) {
       yield* syncPath(target);
-      if (process.platform !== 'win32') yield* syncPath(path.dirname(target));
+      if ((yield* SystemInfo).platform !== 'win32') yield* syncPath(path.dirname(target));
       return;
     }
   }
@@ -350,7 +351,7 @@ const writeDurableJson = Effect.fn('codeGraph.sharing.writeDurableCandidateJson'
   const path = yield* Path.Path;
   yield* writePrivateJsonFile(target, value);
   yield* syncPath(target);
-  if (process.platform !== 'win32') yield* syncPath(path.dirname(target));
+  if ((yield* SystemInfo).platform !== 'win32') yield* syncPath(path.dirname(target));
 });
 
 const removeOrphansLocked = Effect.fn('codeGraph.sharing.removeCandidateOrphans')(function* (
