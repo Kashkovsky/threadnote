@@ -52,7 +52,9 @@ export const graphRegistryFixture = Effect.fn('test.graphRegistry.fixture')(func
         return new Response(null, {status: 201, headers: {'docker-content-digest': digest}});
       }
       const manifest = suffix.startsWith('manifests/');
-      const bytes = (manifest ? manifestStore : blobStore).get(suffix.slice(manifest ? 'manifests/'.length : 'blobs/'.length));
+      const bytes = (manifest ? manifestStore : blobStore).get(
+        suffix.slice(manifest ? 'manifests/'.length : 'blobs/'.length),
+      );
       if (bytes === undefined) return new Response(null, {status: 404});
       return new Response(method === 'HEAD' ? null : Uint8Array.from(bytes), {
         headers: {

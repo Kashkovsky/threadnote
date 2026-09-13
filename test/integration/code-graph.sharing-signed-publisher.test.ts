@@ -254,7 +254,10 @@ describe('signed worker publisher', () => {
                   ? Promise.resolve(new Response(JSON.stringify({keys: [jwk]}), {status: 200}))
                   : nativeFetch(input, init)) as typeof globalThis.fetch;
             }),
-            () => Effect.sync(() => { globalThis.fetch = nativeFetch; }),
+            () =>
+              Effect.sync(() => {
+                globalThis.fetch = nativeFetch;
+              }),
           );
           const token = yield* Effect.promise(() =>
             new SignJWT({scope: 'graph:contribute'})
@@ -269,37 +272,40 @@ describe('signed worker publisher', () => {
           const ready = yield* Deferred.make<string>();
           const holdWatch = yield* Deferred.make<void>();
           const listener = yield* Effect.forkScoped(
-            registry.provide(runGraphPublisherListen(config(home), {
-              authorizationPolicy: policyFile,
-              cas,
-              cwd: repository,
-              listen: '127.0.0.1:0',
-              // The server is live before onReady completes; hold its watch until admissions are settled.
-              onReady: output => Deferred.succeed(ready, output.coordinatorUrl).pipe(
-                Effect.andThen(Deferred.await(holdWatch)),
-              ),
-            })),
+            registry.provide(
+              runGraphPublisherListen(config(home), {
+                authorizationPolicy: policyFile,
+                cas,
+                cwd: repository,
+                listen: '127.0.0.1:0',
+                // The server is live before onReady completes; hold its watch until admissions are settled.
+                onReady: output =>
+                  Deferred.succeed(ready, output.coordinatorUrl).pipe(Effect.andThen(Deferred.await(holdWatch))),
+              }),
+            ),
           );
           const coordinatorUrl = yield* Deferred.await(ready);
           yield* git(repository, ['fetch', '-q', contributor, 'main']);
           yield* git(repository, ['merge', '-q', '--ff-only', 'FETCH_HEAD']);
-          const post = (body: unknown, bearer = token) => Effect.gen(function* () {
-            const client = yield* HttpClient.HttpClient;
-            const request = HttpClientRequest.post(`${coordinatorUrl}/v1/results`).pipe(
-              HttpClientRequest.setHeaders({
-                authorization: `Bearer ${bearer}`,
-                'x-threadnote-profile-digest': profileDigest,
-                'x-threadnote-repository-id': identity.repositoryId,
-              }),
-              request => HttpClientRequest.bodyUint8Array(
-                request,
-                new TextEncoder().encode(JSON.stringify(body)),
-                'application/json',
-              ),
-            );
-            const response = yield* client.execute(request);
-            return {body: yield* response.json, status: response.status};
-          });
+          const post = (body: unknown, bearer = token) =>
+            Effect.gen(function* () {
+              const client = yield* HttpClient.HttpClient;
+              const request = HttpClientRequest.post(`${coordinatorUrl}/v1/results`).pipe(
+                HttpClientRequest.setHeaders({
+                  authorization: `Bearer ${bearer}`,
+                  'x-threadnote-profile-digest': profileDigest,
+                  'x-threadnote-repository-id': identity.repositoryId,
+                }),
+                request =>
+                  HttpClientRequest.bodyUint8Array(
+                    request,
+                    new TextEncoder().encode(JSON.stringify(body)),
+                    'application/json',
+                  ),
+              );
+              const response = yield* client.execute(request);
+              return {body: yield* response.json, status: response.status};
+            });
           expect(yield* post(announcement, 'invalid')).toEqual({body: {error: 'unauthorized'}, status: 401});
           expect(yield* post(announcement)).toEqual({
             body: {idempotencyKey: announcement.body.idempotencyKey, status: 'accepted'},
@@ -311,12 +317,14 @@ describe('signed worker publisher', () => {
           });
           expect((yield* readGraphWorkerAdmissionStore(home, policy)).receipts).toHaveLength(2);
           yield* Fiber.interrupt(listener);
-          const result = yield* registry.provide(advanceGraphPublisherFrontier(config(home), {
-            authorizationPolicy: policyFile,
-            cas,
-            cwd: repository,
-            forceFreeze: true,
-          }));
+          const result = yield* registry.provide(
+            advanceGraphPublisherFrontier(config(home), {
+              authorizationPolicy: policyFile,
+              cas,
+              cwd: repository,
+              forceFreeze: true,
+            }),
+          );
           expect(result.published).toBe(true);
           expect(result.sourceCommit).toBe(nextIdentity.headCommit);
           expect(result.contributionEvidence).toMatchObject({
@@ -324,9 +332,12 @@ describe('signed worker publisher', () => {
             verifiedResults: 1,
             sourceUse: {consumedActions: 1, consumedResultManifestDigests: [artifact.manifestDigest]},
           });
-          expect(registry.requests.some(request =>
-            request.method === 'GET' && request.pathname === `/v2/acme/worker/manifests/${artifact.manifestDigest}`,
-          )).toBe(true);
+          expect(
+            registry.requests.some(
+              request =>
+                request.method === 'GET' && request.pathname === `/v2/acme/worker/manifests/${artifact.manifestDigest}`,
+            ),
+          ).toBe(true);
           expect(registry.manifests.size).toBeGreaterThan(0);
           expect((yield* readGraphWorkerAdmissionStore(home, policy)).receipts).toHaveLength(0);
           const clientRepo = path.join(root, 'client');
