@@ -48,7 +48,7 @@ import {SystemInfo} from '../../src/effect/system.js';
 
 describe('signed worker publisher', () => {
   effectIt.effect(
-    'consumes a current enrolled worker result from OCI and retires its exact-source admission',
+    'consumes an enrolled source result, skips a signed off-tree result, and retires both admissions',
     () =>
       TestClock.withLive(
         Effect.gen(function* () {
@@ -197,9 +197,53 @@ describe('signed worker publisher', () => {
             sourceCommit: nextIdentity.headCommit,
           });
           expect(admitted.status).toBe('accepted');
+          const absentAction = {
+            contentHash: 'f'.repeat(64),
+            extractorSet: parsed.extractorSet,
+            languageAndRole: 'typescript:source',
+            normalizedPath: 'src/absent.ts',
+            repositoryId: identity.repositoryId,
+          };
+          const absentParsed = graphShareParseResultArtifact({
+            ...absentAction,
+            actionKey: graphShareParseActionKey(absentAction),
+            facts: {path: absentAction.normalizedPath, diagnostics: [], edges: [], symbols: []},
+            gitBlobId: 'f'.repeat(40),
+          });
+          const absentArtifact = yield* createGraphWorkerResultArtifact({
+            metadata: {
+              batchId: nextIdentity.headCommit.slice(0, 40),
+              graphAbi: targetAbi,
+              identityClass: 'oauth-principal',
+              issuedAt: nowSeconds,
+              partialCoverage: false,
+              platform: {architecture: 'x64', os: 'linux'},
+              principalId: authority.principalId,
+              profileDigest,
+              releaseIdentity: '4.6.11-local.gsynthetic',
+              repositoryId: identity.repositoryId,
+              resourceLimits: [],
+              sourceCommit: nextIdentity.headCommit,
+              workerId: authority.workerId,
+            },
+            resultBytes: new TextEncoder().encode(canonicalJson(absentParsed)),
+            signer,
+          });
+          const absentAnnouncement = yield* signGraphWorkerResultAnnouncement({
+            artifact: absentArtifact,
+            expected: authority,
+            signer,
+          });
+          const withAbsent = admitGraphWorkerAnnouncement(admitted.store, {
+            announcement: absentAnnouncement,
+            authority,
+            nowSeconds,
+            sourceCommit: nextIdentity.headCommit,
+          });
+          expect(withAbsent.status).toBe('accepted');
           const admissionPath = yield* graphWorkerAdmissionStatePath(home, policy);
           yield* fs.makeDirectory(path.dirname(admissionPath), {recursive: true});
-          yield* writePrivateJsonFile(admissionPath, admitted.store);
+          yield* writePrivateJsonFile(admissionPath, withAbsent.store);
           const registry = 'https://registry.example/v2/acme/work';
           const registryBytes = new Map<string, Uint8Array>([
             [`${registry}/manifests/${artifact.manifestDigest}`, artifact.manifestBytes],
@@ -207,6 +251,14 @@ describe('signed worker publisher', () => {
               bytes => [`${registry}/blobs/${sha256Digest(bytes)}`, bytes] as const,
             ),
           ]);
+          const expectedReads = [...registryBytes.keys()];
+          registryBytes.set(`${registry}/manifests/${absentArtifact.manifestDigest}`, absentArtifact.manifestBytes);
+          for (const bytes of [
+            new TextEncoder().encode('{}'),
+            absentArtifact.resultBytes,
+            absentArtifact.attestationBytes,
+          ])
+            registryBytes.set(`${registry}/blobs/${sha256Digest(bytes)}`, bytes);
           const reads: string[] = [];
           const fetch = Object.assign(
             async (url: string | URL | Request, init?: RequestInit) => {
@@ -244,7 +296,7 @@ describe('signed worker publisher', () => {
             verifiedResults: 1,
             sourceUse: {consumedActions: 1, consumedResultManifestDigests: [artifact.manifestDigest]},
           });
-          expect(reads).toEqual([...registryBytes.keys()]);
+          expect(reads).toEqual(expectedReads);
           expect((yield* readGraphWorkerAdmissionStore(home, policy)).receipts).toHaveLength(0);
         }).pipe(provideTestLayer(ApplicationLayer)),
       ),
