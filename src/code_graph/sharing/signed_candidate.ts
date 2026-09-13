@@ -7,8 +7,8 @@ import {codeGraphCommittedContentHash} from '../content_identity.js';
 import type {CodeGraphStoreShape} from '../store_shape.js';
 import type {CodeGraphInventoryFile, CodeGraphSnapshot} from '../types.js';
 import {graphShareParseActionKey} from './action.js';
-import {readJsonFile, writePrivateJsonFile} from './atomic.js';
-import {readVerifiedCasBlob} from './cas.js';
+import {readBoundedPrivateBytes, writePrivateJsonFile} from './atomic.js';
+import {readVerifiedCasBlobBounded} from './cas.js';
 import {
   GRAPH_SHARE_QUEUE_MAXIMUM_AGE_MILLISECONDS,
   GRAPH_SHARE_QUEUE_MAXIMUM_ANNOUNCEMENTS,
@@ -238,7 +238,7 @@ const verifyPendingCasResult = Effect.fn('codeGraph.sharing.verifyPendingCasResu
   candidate: GraphSharePendingSignedCandidate,
   repositoryId: string,
 ) {
-  const bytes = yield* readVerifiedCasBlob(candidate.casRoot, candidate.resultDigest);
+  const bytes = yield* readVerifiedCasBlobBounded(candidate.casRoot, candidate.resultDigest, candidate.resultSize);
   if (bytes.byteLength !== candidate.resultSize || bytes.byteLength > GRAPH_SHARE_HTTP_CAS_MAX_BYTES)
     return yield* graphSharingFailure('Pending signed result CAS size is invalid.');
   const result = yield* Effect.try({
@@ -463,9 +463,11 @@ function readPrivateQueue<T>(
     const path = yield* Path.Path;
     const target = locate(path, home, repositoryId);
     if (!(yield* fs.exists(target))) return empty;
-    if (Number((yield* fs.stat(target)).size) > MAX_METADATA_READ_BYTES)
-      return yield* graphSharingFailure('Signed candidate metadata exceeds its read limit.');
-    return parse(yield* readJsonFile(target));
+    const bytes = yield* readBoundedPrivateBytes(target, MAX_METADATA_READ_BYTES);
+    return yield* Effect.try({
+      try: () => parse(JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes))),
+      catch: () => graphSharingFailure('Signed candidate metadata is invalid.'),
+    });
   });
 }
 

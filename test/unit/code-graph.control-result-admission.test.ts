@@ -232,6 +232,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
       const artifact = yield* createGraphWorkerResultArtifact({
         metadata: {
           batchId,
+          sourceCommit: batchId,
           graphAbi,
           identityClass: 'oauth-principal',
           issuedAt: Math.floor((yield* Clock.currentTimeMillis) / 1000),
