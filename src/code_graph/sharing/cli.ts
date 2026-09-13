@@ -154,11 +154,7 @@ export function makeGraphSharingCommands(
       json: codeGraphCliBounds.json,
     },
     options => withRuntimeEffect(config => runGraphWorkerCommand(config, options)),
-  ).pipe(
-    Command.withDescription(
-      'Report advertised actions available in the authorized Git checkout without executing them',
-    ),
-  );
+  ).pipe(Command.withDescription('Report which advertised Git blobs exist locally without executing actions'));
 
   return {graphContribute, graphPublisher, graphShare, graphWorker};
 }

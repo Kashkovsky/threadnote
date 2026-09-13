@@ -181,21 +181,23 @@ describe('repository-scoped graph sharing settings', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
-  effectIt.effect('keeps an idle profile preference while reporting passive delivery', () =>
+  effectIt.effect('starts unsupported profile contribution modes as passive until explicitly selected', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-idle-profile-'});
       const config = runtimeConfig(root);
-      const repository = yield* fixture(root, 'idle', undefined, 'idle');
-      yield* runGraphShareJoin(config, {cwd: repository.repo, cas: repository.cas});
-      expect(yield* runGraphContributeStatus(config, {cwd: repository.repo})).toMatchObject({
-        mode: 'passive',
-        requestedMode: 'idle',
-      });
-      expect(
-        (yield* lookupGraphShareTrustReceipt(config.agentContextHome, repository.repositoryId))?.client
-          ?.contributionMode,
-      ).toBe('idle');
+      for (const mode of ['idle', 'dedicated'] as const) {
+        const repository = yield* fixture(root, mode, undefined, mode);
+        yield* runGraphShareJoin(config, {cwd: repository.repo, cas: repository.cas});
+        expect(yield* runGraphContributeStatus(config, {cwd: repository.repo})).toMatchObject({
+          mode: 'passive',
+          requestedMode: 'passive',
+        });
+        expect(
+          (yield* lookupGraphShareTrustReceipt(config.agentContextHome, repository.repositoryId))?.client
+            ?.contributionMode,
+        ).toBe('passive');
+      }
     }).pipe(provideTestLayer(layer)),
   );
 
@@ -288,7 +290,7 @@ const fixture = Effect.fn('test.sharing.repositoryFixture')(function* (
   root: string,
   name: string,
   endpoint?: string,
-  defaultMode: 'idle' | 'passive' = 'passive',
+  defaultMode: 'dedicated' | 'idle' | 'passive' = 'passive',
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

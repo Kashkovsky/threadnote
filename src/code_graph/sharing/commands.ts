@@ -166,7 +166,7 @@ export const runGraphWorkerCommand = Effect.fn('codeGraph.sharing.workerCommand'
     return result;
   }
   yield* Console.log(
-    `Graph worker diagnostic: eligible ${result.eligible}; skipped missing blobs ${result.skippedMissingBlob}`,
+    `Advertised Git blobs present ${result.eligible}; missing ${result.skippedMissingBlob}; no work executed`,
   );
   return result;
 });

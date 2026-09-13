@@ -183,9 +183,7 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
           (yield* readGraphShareClientState(config.agentContextHome)).contributionMode,
           profile.contribution.defaultMode,
         )
-      : accessMode === 'join'
-        ? profile.contribution.defaultMode
-        : 'off';
+      : effectiveGraphShareContributionMode(accessMode, profile.contribution.defaultMode);
   const receipt = yield* writeGraphShareTrustReceipt(
     config.agentContextHome,
     {
