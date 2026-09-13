@@ -13,6 +13,7 @@ import {
 import {SHA256_DIGEST, SHA256_HEX} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 import {graphSharingLayout} from './layout.js';
+import {GRAPH_SHARE_HTTP_CAS_MAX_BYTES} from './oci.js';
 
 const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const BATCH = /^[0-9a-f]{40}$/u;
@@ -208,6 +209,7 @@ function validPending(value: unknown): value is GraphSharePendingSignedCandidate
     typeof value.resultSize === 'number' &&
     Number.isSafeInteger(value.resultSize) &&
     value.resultSize > 0 &&
+    value.resultSize <= GRAPH_SHARE_HTTP_CAS_MAX_BYTES &&
     typeof value.semanticDigest === 'string' &&
     SHA256_DIGEST.test(value.semanticDigest) &&
     typeof value.sourceCommit === 'string' &&
