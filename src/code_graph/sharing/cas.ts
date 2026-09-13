@@ -1,6 +1,6 @@
 import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {sha256FileHex} from '../../effect/digest.js';
-import {writePrivateBytesFile} from './atomic.js';
+import {readBoundedPrivateBytes, writePrivateBytesFile} from './atomic.js';
 import {parseSha256Digest, sha256Digest, sha256HexFromDigest} from './digest.js';
 import {graphSharingFailure, graphSharingUnavailable} from './errors.js';
 import {graphSharingCasBlobPath} from './layout.js';
@@ -76,6 +76,20 @@ export const readVerifiedCasBlob = Effect.fn('codeGraph.sharing.readVerifiedCasB
   const fs = yield* FileSystem.FileSystem;
   const target = yield* verifyCasBlob(casRoot, digest);
   return yield* fs.readFile(target);
+});
+
+/** Read untrusted local CAS bytes with a fixed memory ceiling before digest verification. */
+export const readVerifiedCasBlobBounded = Effect.fn('codeGraph.sharing.readVerifiedCasBlobBounded')(function* (
+  casRoot: string,
+  digest: string,
+  maximum: number,
+) {
+  if (!Number.isSafeInteger(maximum) || maximum < 0) return yield* graphSharingFailure('CAS read limit is invalid.');
+  const expected = parseSha256Digest(digest, 'CAS digest');
+  const target = yield* casBlobPath(casRoot, expected);
+  const bytes = yield* readBoundedPrivateBytes(target, maximum);
+  if (sha256Digest(bytes) !== expected) return yield* graphSharingFailure('CAS object digest mismatch.');
+  return bytes;
 });
 
 export const casBlobPath = Effect.fn('codeGraph.sharing.casBlobPath')(function* (casRoot: string, digest: string) {
