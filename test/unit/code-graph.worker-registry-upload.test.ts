@@ -60,6 +60,7 @@ const fixture = Effect.fn('test.workerRegistryUpload.fixture')(function* () {
       releaseIdentity: '4.6.11-local.gfixture',
       repositoryId: authority.repositoryId,
       resourceLimits: [],
+      sourceCommit: '1'.repeat(40),
       workerId: authority.workerId,
     },
     resultBytes: new TextEncoder().encode(canonicalJson(result)),

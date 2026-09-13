@@ -37,6 +37,7 @@ const Claims = Schema.Struct({
   resultDigest: Digest,
   resultSize: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(GRAPH_SHARE_HTTP_CAS_MAX_BYTES)),
   semanticDigest: Digest,
+  sourceCommit: Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u)),
   workerId: Schema.String.check(Schema.isPattern(/^gw_[0-9a-f]{32}$/u)),
 });
 const Attestation = Schema.Struct({
@@ -98,7 +99,8 @@ export const createGraphWorkerResultArtifact = Effect.fn('codeGraph.sharing.crea
     resultSize: resultBytes.byteLength,
     semanticDigest: parsed.semanticDigest,
   }).pipe(Effect.mapError(failure));
-  if (claims.repositoryId !== parsed.repositoryId) return yield* failure();
+  if (claims.repositoryId !== parsed.repositoryId || claims.batchId !== claims.sourceCommit.slice(0, 40))
+    return yield* failure();
   const attestationBytes = encode({
     algorithm: 'ed25519',
     claims,
@@ -172,7 +174,8 @@ export const verifyGraphWorkerResultIntegrity = Effect.fn('codeGraph.sharing.ver
       claims.graphAbi !== expected.graphAbi ||
       attestation.publicKey !== expected.signingPublicKey ||
       claims.resultDigest !== result.digest ||
-      claims.resultSize !== result.size
+      claims.resultSize !== result.size ||
+      claims.batchId !== claims.sourceCommit.slice(0, 40)
     )
       return yield* failure();
     yield* verifyGraphWorkerSignature(expected.signingPublicKey, 'attestation', encode(claims), attestation.signature);

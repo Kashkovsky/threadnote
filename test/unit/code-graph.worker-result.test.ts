@@ -62,6 +62,7 @@ const fixture = Effect.fn('test.workerResult.fixture')(function* (diagnostics: s
     workerId: authority.workerId,
     profileDigest: authority.profileDigest,
     repositoryId: authority.repositoryId,
+    sourceCommit: 'f'.repeat(40),
   };
   const resultBytes = encode(parsed);
   const artifact = yield* createGraphWorkerResultArtifact({metadata, resultBytes, signer});
@@ -203,6 +204,7 @@ describe('signed OCI worker parse-result artifacts', () => {
         const verified = yield* verifyGraphWorkerResultIntegrity({...f.artifact, expected: f.authority});
         expect(verified.parsed).toEqual(f.parsed);
         expect(verified.attestation.claims.batchId).toBe(f.metadata.batchId);
+        expect(verified.attestation.claims.sourceCommit).toBe(f.metadata.sourceCommit);
         const manifest = JSON.parse(new TextDecoder().decode(f.artifact.manifestBytes));
         expect(manifest.layers).toHaveLength(2);
         expect(manifest.layers.map((entry: {digest: string}) => entry.digest)).toEqual([
@@ -242,6 +244,53 @@ describe('signed OCI worker parse-result artifacts', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
+  effectIt.effect('attests the full SHA-256 source commit while preserving its 40-character batch identity', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const sourceCommit = f.metadata.batchId + 'a'.repeat(24);
+      const artifact = yield* createGraphWorkerResultArtifact({
+        metadata: {...f.metadata, sourceCommit},
+        resultBytes: f.resultBytes,
+        signer: f.signer,
+      });
+      const verified = yield* verifyGraphWorkerResultIntegrity({...artifact, expected: f.authority});
+      expect(verified.attestation.claims.sourceCommit).toBe(sourceCommit);
+      expect(verified.attestation.claims.batchId).toBe(f.metadata.batchId);
+      const attestation = JSON.parse(new TextDecoder().decode(artifact.attestationBytes));
+      const alteredAttestationBytes = encode({
+        ...attestation,
+        claims: {...attestation.claims, sourceCommit: f.metadata.batchId + 'b'.repeat(24)},
+      });
+      const manifest = JSON.parse(new TextDecoder().decode(artifact.manifestBytes));
+      manifest.layers[1] = {
+        ...manifest.layers[1],
+        digest: sha256Digest(alteredAttestationBytes),
+        size: alteredAttestationBytes.byteLength,
+      };
+      const alteredManifestBytes = encode(manifest);
+      expect(
+        (yield* Effect.result(
+          verifyGraphWorkerResultIntegrity({
+            ...artifact,
+            attestationBytes: alteredAttestationBytes,
+            manifestBytes: alteredManifestBytes,
+            manifestDigest: sha256Digest(alteredManifestBytes),
+            expected: f.authority,
+          }),
+        ))._tag,
+      ).toBe('Failure');
+      expect(
+        (yield* Effect.result(
+          createGraphWorkerResultArtifact({
+            metadata: {...f.metadata, sourceCommit: '0'.repeat(64)},
+            resultBytes: f.resultBytes,
+            signer: f.signer,
+          }),
+        ))._tag,
+      ).toBe('Failure');
+    }).pipe(provideTestLayer(layer)),
+  );
+
   effectIt.effect(
     'rejects a valid contributor signature over substituted facts, unsupported fields or future issuance',
     () =>
@@ -252,6 +301,7 @@ describe('signed OCI worker parse-result artifacts', () => {
           {semanticDigest: sha256Digest('other')},
           {actionKey: '0'.repeat(64)},
           {issuedAt: f.metadata.issuedAt + 121},
+          {sourceCommit: '0'.repeat(40)},
           {unknown: 'not-supported'},
         ]) {
           const claims = {...attestation.claims, ...override};
