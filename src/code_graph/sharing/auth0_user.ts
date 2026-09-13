@@ -244,7 +244,7 @@ export const getGraphAuth0UserCredential = Effect.fn('codeGraph.sharing.getAuth0
         .pipe(Effect.mapError(() => graphSharingUnavailable('Graph Auth0 refresh is unavailable.')));
       if (response.status !== 200)
         return yield* graphSharingUnavailable('Graph Auth0 session expired; run login again.');
-      const next = yield* verifiedCredential(config, response.body, backend, current.subject);
+      const next = yield* verifiedCredential(config, response.body, backend, current);
       if (!next.scopes.includes(scope))
         return yield* graphSharingFailure('Refreshed Auth0 token lacks the requested graph scope.');
       yield* backend
@@ -397,22 +397,20 @@ const verifiedCredential = Effect.fn('codeGraph.sharing.verifyAuth0Credential')(
   config: Auth0Config,
   raw: unknown,
   backend: Auth0UserBackend,
-  expectedSubject?: string,
+  previous?: StoredCredential,
 ) {
-  if (
-    !isRecord(raw) ||
-    raw.token_type !== 'Bearer' ||
-    !boundedText(raw.access_token, 16_384) ||
-    !boundedText(raw.refresh_token, 16_384)
-  )
-    return yield* graphSharingFailure('Auth0 did not return a rotating graph credential.');
+  if (!isRecord(raw) || raw.token_type !== 'Bearer' || !boundedText(raw.access_token, 16_384))
+    return yield* graphSharingFailure('Auth0 did not return a usable graph credential.');
+  const refreshToken = raw.refresh_token === undefined ? previous?.refreshToken : raw.refresh_token;
+  if (!boundedText(refreshToken, 16_384))
+    return yield* graphSharingFailure('Auth0 did not return a usable graph credential.');
   const claims = yield* backend
     .verify(config, raw.access_token)
     .pipe(Effect.mapError(() => graphSharingFailure('Auth0 graph access token could not be verified.')));
   if (
     claims.issuer !== config.issuer ||
     claims.subject.length > 512 ||
-    (expectedSubject !== undefined && claims.subject !== expectedSubject) ||
+    (previous !== undefined && claims.subject !== previous.subject) ||
     !SCOPES.every(scope => claims.scopes.has(scope))
   )
     return yield* graphSharingFailure('Auth0 graph token lacks the configured identity or scopes.');
@@ -424,7 +422,7 @@ const verifiedCredential = Effect.fn('codeGraph.sharing.verifyAuth0Credential')(
     clientId: config.clientId,
     expiresAt: claims.expiresAt,
     issuer: config.issuer,
-    refreshToken: raw.refresh_token,
+    refreshToken,
     schemaVersion: 1 as const,
     scopes: [...claims.scopes],
     subject: claims.subject,

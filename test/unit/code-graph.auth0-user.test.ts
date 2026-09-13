@@ -70,6 +70,8 @@ const fixture = Effect.fn('test.auth0User.fixture')(function* () {
   let reads = 0;
   let failFinalWrite = false;
   let nextSubject = 'auth0|one';
+  let rotating = true;
+  let expectedRefreshToken = 'old-refresh-token';
   const backend: Auth0UserBackend = {
     read: () =>
       Effect.sync(() => {
@@ -87,13 +89,15 @@ const fixture = Effect.fn('test.auth0User.fixture')(function* () {
       Effect.sync(() => {
         expect(endpoint).toBe('token');
         expect(form.grant_type).toBe('refresh_token');
-        expect(form.refresh_token).toBe('old-refresh-token');
+        expect(form.refresh_token).toBe(expectedRefreshToken);
         refreshes++;
+        const replacement = refreshes === 1 ? 'next-refresh-token' : `next-refresh-token-${refreshes}`;
+        if (rotating) expectedRefreshToken = replacement;
         return {
           status: 200,
           body: {
             access_token: 'next.token',
-            refresh_token: 'next-refresh-token',
+            ...(rotating ? {refresh_token: replacement} : {}),
             token_type: 'Bearer',
           },
         };
@@ -108,6 +112,9 @@ const fixture = Effect.fn('test.auth0User.fixture')(function* () {
   };
   return {
     backend,
+    expireSaved: () => {
+      saved = JSON.stringify({...JSON.parse(saved), expiresAt: now + 5});
+    },
     home,
     get: () => getGraphAuth0UserCredential(home, request, backend),
     reads: () => reads,
@@ -115,6 +122,9 @@ const fixture = Effect.fn('test.auth0User.fixture')(function* () {
     saved: () => JSON.parse(saved) as Record<string, unknown>,
     setFailFinalWrite: () => {
       failFinalWrite = true;
+    },
+    setNonRotating: () => {
+      rotating = false;
     },
     setSubject: (value: string) => {
       nextSubject = value;
@@ -140,6 +150,50 @@ describe('Auth0 user graph credentials', () => {
         expect(f.saved().refreshToken).toBe('next-refresh-token');
       }).pipe(provideTestLayer(layer), TestClock.withLive),
     {fastCheck: {numRuns: 12}},
+  );
+
+  effectIt.effect('uses each newly rotated refresh token for the next exchange', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.get();
+      expect(f.saved().refreshToken).toBe('next-refresh-token');
+      f.expireSaved();
+      yield* f.get();
+      expect(f.refreshes()).toBe(2);
+      expect(f.saved().refreshToken).toBe('next-refresh-token-2');
+    }).pipe(provideTestLayer(layer), TestClock.withLive),
+  );
+
+  effectIt.effect('retains an existing non-rotating refresh token across exchanges', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      f.setNonRotating();
+      yield* f.get();
+      expect(f.saved().refreshToken).toBe('old-refresh-token');
+      f.expireSaved();
+      yield* f.get();
+      expect(f.refreshes()).toBe(2);
+      expect(f.saved().refreshToken).toBe('old-refresh-token');
+    }).pipe(provideTestLayer(layer), TestClock.withLive),
+  );
+
+  effectIt.effect('rejects an explicitly empty refresh token instead of treating it as omitted', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const backend: Auth0UserBackend = {
+        ...f.backend,
+        post: (config, endpoint, form) =>
+          f.backend.post(config, endpoint, form).pipe(
+            Effect.map(response => ({
+              ...response,
+              body: {access_token: 'next.token', refresh_token: '', token_type: 'Bearer'},
+            })),
+          ),
+      };
+      expect((yield* Effect.result(getGraphAuth0UserCredential(f.home, request, backend)))._tag).toBe('Failure');
+      expect(f.saved().state).toBe('refreshing');
+      expect(f.refreshes()).toBe(1);
+    }).pipe(provideTestLayer(layer), TestClock.withLive),
   );
 
   effectIt.effect('marks refresh uncertain before exchange and never replays after Keychain persistence failure', () =>
@@ -222,6 +276,32 @@ describe('Auth0 user graph credentials', () => {
       expect((yield* loginGraphAuth0User(f.home, backend)).authenticated).toBe(true);
       expect(tokenCalls).toBe(2);
       expect(f.saved().refreshToken).toBe('next-refresh-token');
+    }).pipe(provideTestLayer(layer), TestClock.withLive),
+  );
+
+  effectIt.effect('requires a refresh token on initial Device Flow login', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const backend: Auth0UserBackend = {
+        ...f.backend,
+        post: (_config, endpoint) =>
+          Effect.succeed(
+            endpoint === 'device'
+              ? {
+                  status: 200,
+                  body: {
+                    device_code: 'opaque-device-code',
+                    user_code: 'ABCD-EFGH',
+                    verification_uri: 'https://example.eu.auth0.com/activate',
+                    expires_in: 30,
+                    interval: 1,
+                  },
+                }
+              : {status: 200, body: {access_token: 'next.token', token_type: 'Bearer'}},
+          ),
+      };
+      expect((yield* Effect.result(loginGraphAuth0User(f.home, backend)))._tag).toBe('Failure');
+      expect(f.writes()).toBe(0);
     }).pipe(provideTestLayer(layer), TestClock.withLive),
   );
 
