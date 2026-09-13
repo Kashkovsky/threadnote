@@ -929,7 +929,8 @@ const graphCheckpoint = Command.make('checkpoint').pipe(
 const withScopedRuntime = withRuntimeEffect as <E, R>(
   effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
 ) => Effect.Effect<void, E, R>;
-const {graphContribute, graphPublisher, graphShare, graphWorker} = makeGraphSharingCommands(withScopedRuntime);
+const {graphAuth, graphContribute, graphPublisher, graphShare, graphWorker} =
+  makeGraphSharingCommands(withScopedRuntime);
 
 const graphPurge = Command.make(
   'purge',
@@ -998,6 +999,7 @@ const graphCommand = Command.make('graph').pipe(
     graphExport,
     graphCheckpoint,
     graphShare,
+    graphAuth,
     graphPublisher,
     graphContribute,
     graphWorker,

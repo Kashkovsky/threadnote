@@ -101,6 +101,36 @@ const build = Effect.gen(function* () {
   });
 
   const nativeRuntimeRoot = path.join(outputRoot, 'runtime');
+  if (target.includes('darwin')) {
+    yield* fs.makeDirectory(nativeRuntimeRoot, {recursive: true});
+    const keychainLibrary = path.join(nativeRuntimeRoot, 'graph-keychain.dylib');
+    const compilation = yield* Effect.sync(() =>
+      Bun.spawnSync({
+        cmd: [
+          '/usr/bin/xcrun',
+          'clang',
+          '-fobjc-arc',
+          '-O2',
+          '-dynamiclib',
+          '-fvisibility=hidden',
+          '-framework',
+          'Foundation',
+          '-framework',
+          'LocalAuthentication',
+          '-framework',
+          'Security',
+          path.join(root, 'scripts', 'native', 'graph-keychain.m'),
+          '-o',
+          keychainLibrary,
+        ],
+        stderr: 'pipe',
+        stdout: 'pipe',
+      }),
+    );
+    if (compilation.exitCode !== 0)
+      return yield* ScriptError.make({message: 'Could not compile the macOS graph Keychain library.'});
+    yield* fs.chmod(keychainLibrary, 0o755);
+  }
   const nativePackage = nativePackageForTarget(target);
   const nativePackageRoot = path.join(root, 'node_modules', ...nativePackage.split('/'));
   if (!(yield* fs.exists(nativePackageRoot))) {

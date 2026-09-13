@@ -236,6 +236,17 @@ const checkSelfContained = Effect.gen(function* () {
         failures.push(`standalone build output is missing: ${normalizePath(path.relative(root, required))}`);
       }
     }
+    if (process.platform === 'darwin') {
+      const keychainLibrary = path.join(root, 'dist', 'runtime', 'graph-keychain.dylib');
+      if (!(yield* fs.exists(keychainLibrary))) {
+        failures.push('standalone build output is missing: dist/runtime/graph-keychain.dylib');
+      } else {
+        const info = yield* fs.stat(keychainLibrary);
+        if (info.type !== 'File' || (info.mode & 0o111) === 0) {
+          failures.push('standalone build output must contain a loadable library: dist/runtime/graph-keychain.dylib');
+        }
+      }
+    }
     if (
       (yield* fs.exists(canonicalLogo)) &&
       (yield* fs.exists(packagedLogo)) &&

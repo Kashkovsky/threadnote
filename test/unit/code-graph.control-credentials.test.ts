@@ -91,6 +91,49 @@ describe('graph control credential discovery', () => {
     }).pipe(provideTestLayer(BunServices.layer)),
   );
 
+  effectIt.effect('spawns the built-in Auth0 helper from the exact Threadnote executable with refresh headroom', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'graph-auth0-helper-binding-'});
+      const directory = path.join(home, 'graph-sharing');
+      yield* fs.makeDirectory(directory);
+      yield* fs.writeFileString(
+        path.join(directory, 'control-credentials.json'),
+        JSON.stringify({
+          bindings: [{...binding, helper: 'auth0'}],
+          schemaVersion: 1,
+        }),
+      );
+      const loader = yield* makeGraphControlCredentialLoader(home, scope, 'graph:contribute').pipe(
+        Effect.provideService(CommandExecutor, {
+          execute: (executable, args, options) =>
+            Effect.gen(function* () {
+              expect(executable).toBe(process.execPath);
+              expect(args.at(-2)).toBe('__graph-auth0-helper');
+              expect(args.at(-1)).toBe('get');
+              expect(options?.timeoutMs).toBe(25_000);
+              expect(options?.env?.THREADNOTE_HOME).toBe(home);
+              return {
+                exitCode: 0,
+                stderr: '',
+                stdout: JSON.stringify({
+                  accessToken: 'synthetic.token',
+                  audience: binding.audience,
+                  expiresAt: Math.floor((yield* Clock.currentTimeMillis) / 1000) + 300,
+                  issuer: binding.issuer,
+                  schemaVersion: 1,
+                  subject: 'auth0|synthetic',
+                }),
+              };
+            }),
+          executeStreaming: () => Effect.succeed({exitCode: 1, stdout: '', stderr: ''}),
+        }),
+      );
+      expect((yield* loader.load).expiresAt).toBeGreaterThan(0);
+    }).pipe(provideTestLayer(BunServices.layer)),
+  );
+
   fcEffectProp(
     effectIt,
     'never returns expired credentials after arbitrary idle gaps',

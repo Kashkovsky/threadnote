@@ -2,6 +2,7 @@ import {Console, Effect} from 'effect';
 import {writeFinalCliOutput} from '../../effect/cli_output.js';
 import type {RuntimeConfig} from '../../types.js';
 import {graphSharingFailure} from './errors.js';
+import {configureGraphAuth0User, loginGraphAuth0User, logoutGraphAuth0User} from './auth0_user.js';
 import {graphPublisherPublicationMessage, readGraphPublisherRegistryStatus} from './publisher_registry.js';
 import {
   runGraphContributeSet,
@@ -186,4 +187,54 @@ export const runGraphPublisherStatusCommand = Effect.fn('codeGraph.sharing.publi
           : graphPublisherPublicationMessage({...result.localCandidate, publication: result.publication}),
     );
   return result;
+});
+
+export const runGraphAuth0ConfigureCommand = Effect.fn('codeGraph.sharing.auth0ConfigureCommand')(function* (
+  config: RuntimeConfig,
+  options: {
+    readonly audience: string;
+    readonly clientId: string;
+    readonly coordinatorUrl: string;
+    readonly issuer: string;
+    readonly organization: string;
+    readonly json: boolean;
+  },
+) {
+  const result = yield* configureGraphAuth0User(config, {
+    audience: options.audience,
+    clientId: options.clientId,
+    coordinatorUrl: options.coordinatorUrl,
+    issuer: options.issuer,
+    organization: options.organization,
+  });
+  if (options.json) yield* writeFinalCliOutput(JSON.stringify(result));
+  else yield* Console.log('Configured the public Auth0 graph client. Run `threadnote graph auth login` once.');
+});
+
+export const runGraphAuth0LoginCommand = Effect.fn('codeGraph.sharing.auth0LoginCommand')(function* (
+  config: RuntimeConfig,
+  options: {readonly coordinatorUrl?: string; readonly organization?: string},
+) {
+  if ((options.coordinatorUrl === undefined) !== (options.organization === undefined))
+    return yield* graphSharingFailure('Specify both --coordinator and --organization.');
+  const selector =
+    options.coordinatorUrl === undefined || options.organization === undefined
+      ? undefined
+      : {coordinatorUrl: options.coordinatorUrl, organization: options.organization};
+  yield* loginGraphAuth0User(config.agentContextHome, undefined, selector);
+  yield* Console.log('Graph Auth0 login complete. Background graph contributions can refresh silently.');
+});
+
+export const runGraphAuth0LogoutCommand = Effect.fn('codeGraph.sharing.auth0LogoutCommand')(function* (
+  config: RuntimeConfig,
+  options: {readonly coordinatorUrl?: string; readonly organization?: string},
+) {
+  if ((options.coordinatorUrl === undefined) !== (options.organization === undefined))
+    return yield* graphSharingFailure('Specify both --coordinator and --organization.');
+  const selector =
+    options.coordinatorUrl === undefined || options.organization === undefined
+      ? undefined
+      : {coordinatorUrl: options.coordinatorUrl, organization: options.organization};
+  yield* logoutGraphAuth0User(config.agentContextHome, undefined, selector);
+  yield* Console.log('Removed the local Graph Auth0 session. Run `threadnote graph auth login` to reconnect.');
 });

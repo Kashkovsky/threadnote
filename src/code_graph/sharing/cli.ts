@@ -6,6 +6,9 @@ import type {RuntimeConfig} from '../../types.js';
 import {
   runGraphContributeSetCommand,
   runGraphContributeStatusCommand,
+  runGraphAuth0ConfigureCommand,
+  runGraphAuth0LoginCommand,
+  runGraphAuth0LogoutCommand,
   runGraphPublisherBootstrapCommand,
   runGraphPublisherServeCommand,
   runGraphPublisherStatusCommand,
@@ -15,6 +18,7 @@ import {
   runGraphShareStatusCommand,
   runGraphWorkerCommand,
 } from './commands.js';
+import {requiredString} from '../../effect/cli_flags.js';
 
 export function makeGraphSharingCommands(
   withRuntimeEffect: <E, R>(effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>) => Effect.Effect<void, E, R>,
@@ -156,5 +160,39 @@ export function makeGraphSharingCommands(
     options => withRuntimeEffect(config => runGraphWorkerCommand(config, options)),
   ).pipe(Command.withDescription('Report which advertised Git blobs exist locally without executing actions'));
 
-  return {graphContribute, graphPublisher, graphShare, graphWorker};
+  const graphAuth0Configure = Command.make(
+    'configure',
+    {
+      audience: requiredString('audience', 'Stable graph API audience registered with Auth0'),
+      clientId: requiredString('client-id', 'Public Auth0 Native application client ID'),
+      coordinatorUrl: requiredString('coordinator', 'Exact HTTPS graph coordinator URL'),
+      issuer: requiredString('issuer', 'Exact Auth0 tenant issuer URL'),
+      organization: requiredString('organization', 'Graph organization identity'),
+      json: codeGraphCliBounds.json,
+    },
+    options => withRuntimeEffect(config => runGraphAuth0ConfigureCommand(config, options)),
+  ).pipe(Command.withDescription('Bind an Auth0 public Native client to this organization graph'));
+
+  const graphAuthSelection = {
+    coordinatorUrl: optionalString('coordinator', 'Select one configured graph coordinator when multiple are present'),
+    organization: optionalString('organization', 'Select one configured graph organization when multiple are present'),
+  };
+  const graphAuth0Login = Command.make('login', graphAuthSelection, options =>
+    withRuntimeEffect(config => runGraphAuth0LoginCommand(config, options)),
+  ).pipe(
+    Command.withDescription(
+      'Authorize graph use once with Auth0 Device Flow and save rotating credentials in macOS Keychain',
+    ),
+  );
+
+  const graphAuth0Logout = Command.make('logout', graphAuthSelection, options =>
+    withRuntimeEffect(config => runGraphAuth0LogoutCommand(config, options)),
+  ).pipe(Command.withDescription('Remove the saved local Auth0 graph session from macOS Keychain'));
+
+  const graphAuth = Command.make('auth').pipe(
+    Command.withDescription('Set up user-delegated Auth0 credentials for organization graphs'),
+    Command.withSubcommands([graphAuth0Configure, graphAuth0Login, graphAuth0Logout]),
+  );
+
+  return {graphAuth, graphContribute, graphPublisher, graphShare, graphWorker};
 }
