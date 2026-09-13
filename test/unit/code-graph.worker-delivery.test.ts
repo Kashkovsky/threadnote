@@ -1,15 +1,17 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Clock, Effect, FileSystem, Layer} from 'effect';
+import {Clock, Effect, FileSystem, Layer, Path} from 'effect';
 import * as TestClock from 'effect/testing/TestClock';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
+import {putCasBytes} from '../../src/code_graph/sharing/cas.js';
 import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
 import {
   enqueuePersistedGraphShareContribution,
   readGraphShareContributionQueue,
 } from '../../src/code_graph/sharing/contribution.js';
-import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
+import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingUnavailable} from '../../src/code_graph/sharing/errors.js';
+import {graphSharingCasBlobPath} from '../../src/code_graph/sharing/layout.js';
 import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
 import {
   acknowledgeGraphShareSignedCandidatePage,
@@ -25,10 +27,12 @@ import {
   markGraphWorkerDeliveryAdmitted,
   prepareGraphWorkerDeliveryOutbox,
   readGraphWorkerDeliveryOutboxOperation,
+  retireExpiredPreparedGraphWorkerDeliveryOutbox,
   retireSupersededGraphWorkerDeliveryOutbox,
 } from '../../src/code_graph/sharing/worker_delivery_outbox.js';
 import {
   finishAdmittedGraphWorkerResult,
+  reclaimExpiredGraphWorkerGenerations,
   submitPreparedGraphWorkerResult,
 } from '../../src/code_graph/sharing/worker_delivery.js';
 import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
@@ -66,6 +70,7 @@ const fixture = Effect.fn('test.workerDelivery.fixture')(function* () {
   });
   const resultBytes = encode(result);
   const resultDigest = sha256Digest(resultBytes);
+  yield* putCasBytes(`${home}/cas`, resultBytes);
   const profileDigest = sha256Digest('profile');
   const authority = {
     expiresAt: now + 3600,
@@ -144,6 +149,42 @@ const fixture = Effect.fn('test.workerDelivery.fixture')(function* () {
   });
   const scope = graphWorkerDeliveryScope(authority, candidate.organization);
   return {artifact, authority, candidate, candidatePageId, home, prepared, repositoryId, resultBytes, scope, signer};
+});
+
+type Fixture = Effect.Success<ReturnType<typeof fixture>>;
+
+const prepareGeneration = Effect.fn('test.workerDelivery.prepareGeneration')(function* (f: Fixture, workerId: string) {
+  const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+  const authority = {...f.authority, expiresAt: now + 3600, workerId};
+  const artifact = yield* createGraphWorkerResultArtifact({
+    metadata: {
+      batchId: f.candidate.batchId,
+      graphAbi: authority.graphAbi,
+      identityClass: 'oauth-principal',
+      issuedAt: now,
+      partialCoverage: false,
+      platform: f.candidate.platform,
+      principalId: authority.principalId,
+      profileDigest: authority.profileDigest,
+      releaseIdentity: f.candidate.releaseIdentity,
+      repositoryId: authority.repositoryId,
+      resourceLimits: [],
+      sourceCommit: f.candidate.sourceCommit,
+      workerId,
+    },
+    resultBytes: f.resultBytes,
+    signer: f.signer,
+  });
+  const announcement = yield* signGraphWorkerResultAnnouncement({artifact, expected: authority, signer: f.signer});
+  return yield* prepareGraphWorkerDeliveryOutbox({
+    announcement,
+    artifact,
+    authority,
+    candidate: f.candidate,
+    candidatePageId: f.candidatePageId,
+    repositoryId: f.repositoryId,
+    threadnoteHome: f.home,
+  });
 });
 
 describe('automatic signed graph worker delivery', () => {
@@ -382,6 +423,86 @@ describe('automatic signed graph worker delivery', () => {
         expect(yield* listGraphWorkerDeliveryPrincipalScopes(f.home, newScope)).toEqual([newScope]);
       }).pipe(provideTestLayer(layer)),
     ),
+  );
+
+  effectIt.effect(
+    'reclaims an expired prepared generation only while its exact candidate and CAS result remain durable',
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(1_750_000_000_000);
+        const f = yield* fixture();
+        yield* TestClock.adjust(3_601_000);
+        const old = yield* listGraphWorkerDeliveryOutboxOperations(f.home, f.scope);
+        expect(old).toHaveLength(1);
+        expect(
+          yield* retireExpiredPreparedGraphWorkerDeliveryOutbox({
+            operationId: old[0].operationId,
+            scope: f.scope,
+            threadnoteHome: f.home,
+          }),
+        ).toBe(true);
+        expect(yield* listGraphWorkerDeliveryOutboxOperations(f.home, f.scope)).toEqual([]);
+        expect(yield* listGraphShareSignedCandidatePageIds(f.home, f.repositoryId)).toEqual([f.candidatePageId]);
+        const next = yield* prepareGeneration(f, `gw_${'9'.repeat(32)}`);
+        expect(next.prepared).toBe(true);
+      }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('retains expired prepared evidence when its source candidate or CAS result is missing', () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(1_750_000_000_000);
+      const missingCandidate = yield* fixture();
+      const missingResult = yield* fixture();
+      yield* acknowledgeGraphShareSignedCandidatePage(
+        missingCandidate.home,
+        missingCandidate.repositoryId,
+        missingCandidate.candidatePageId,
+        new Set([graphShareSignedCandidateIdentity(missingCandidate.candidate)]),
+      );
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      yield* fs.remove(
+        graphSharingCasBlobPath(
+          path,
+          missingResult.candidate.casRoot,
+          sha256HexFromDigest(missingResult.candidate.resultDigest),
+        ),
+      );
+      yield* TestClock.adjust(3_601_000);
+      for (const f of [missingCandidate, missingResult]) {
+        expect(
+          yield* retireExpiredPreparedGraphWorkerDeliveryOutbox({
+            operationId: f.prepared.operation.operationId,
+            scope: f.scope,
+            threadnoteHome: f.home,
+          }),
+        ).toBe(false);
+        expect(yield* listGraphWorkerDeliveryOutboxOperations(f.home, f.scope)).toHaveLength(1);
+      }
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect(
+    'frees a full worker-generation index after renewal without dropping the queued source',
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(1_750_000_000_000);
+        const f = yield* fixture();
+        for (let index = 1; index < 128; index++) {
+          const workerId = `gw_${index.toString(16).padStart(32, '0')}`;
+          yield* prepareGeneration(f, workerId);
+        }
+        const current = {...f.scope, workerId: `gw_${'9'.repeat(32)}`};
+        expect((yield* listGraphWorkerDeliveryPrincipalScopes(f.home, current)).length).toBe(129);
+        yield* TestClock.adjust(3_601_000);
+        yield* reclaimExpiredGraphWorkerGenerations(f.home, current);
+        expect((yield* listGraphWorkerDeliveryPrincipalScopes(f.home, current)).length).toBe(128);
+        expect(yield* listGraphShareSignedCandidatePageIds(f.home, f.repositoryId)).toEqual([f.candidatePageId]);
+        const prepared = yield* prepareGeneration(f, current.workerId);
+        expect(prepared.prepared).toBe(true);
+        expect(yield* listGraphWorkerDeliveryOutboxOperations(f.home, current)).toHaveLength(1);
+      }).pipe(provideTestLayer(layer)),
+    120_000,
   );
 
   effectIt.effect('advances past failed candidates without dropping them and eventually reaches the tail', () =>

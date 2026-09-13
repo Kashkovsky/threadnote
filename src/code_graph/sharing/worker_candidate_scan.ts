@@ -1,4 +1,5 @@
 import {Effect, FileSystem, Path} from 'effect';
+import {syncWritableFile} from '../../effect/file_durability.js';
 import {readBoundedPrivateBytes, writePrivateJsonFile} from './atomic.js';
 import {graphSharingFailure} from './errors.js';
 import {
@@ -79,6 +80,16 @@ export const advanceGraphWorkerCandidateScan = Effect.fn('codeGraph.sharing.adva
     pageId: position.pageId,
     schemaVersion: 1,
   } satisfies Cursor);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const target = yield* cursorPath(home, repositoryId);
+  yield* syncWritableFile(fs, target);
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const parent = yield* fs.open(path.dirname(target), {flag: 'r'});
+      yield* parent.sync;
+    }),
+  );
 });
 
 const readCursor = Effect.fn('codeGraph.sharing.readWorkerCandidateScan')(function* (

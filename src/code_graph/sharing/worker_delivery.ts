@@ -33,6 +33,7 @@ import {
   prepareGraphWorkerDeliveryOutbox,
   readGraphWorkerDeliveryOutboxOperation,
   retireGraphWorkerDeliveryOutbox,
+  retireExpiredPreparedGraphWorkerDeliveryOutbox,
   retireSupersededGraphWorkerDeliveryOutbox,
   type GraphWorkerDeliveryOutboxOperationV1,
   type GraphWorkerDeliveryScope,
@@ -149,13 +150,14 @@ const drainSignedBatch = Effect.fn('codeGraph.sharing.drainSignedBatch')(functio
   const previous = retry?.identity === retryIdentity ? retry : undefined;
   if (previous !== undefined && previous.nextAttempt > (yield* Clock.currentTimeMillis)) return {sent: 0};
   return yield* Effect.gen(function* () {
+    yield* reclaimExpiredGraphWorkerGenerations(input.threadnoteHome, scope);
+    const now = (yield* Clock.currentTimeMillis) / 1000;
     const scopes = yield* listGraphWorkerDeliveryPrincipalScopes(input.threadnoteHome, scope);
     const operations = (yield* Effect.forEach(scopes, previousScope =>
       listGraphWorkerDeliveryOutboxOperations(input.threadnoteHome, previousScope).pipe(
         Effect.map(items => items.map(operation => ({operation, scope: previousScope}))),
       ),
     )).flat();
-    const now = (yield* Clock.currentTimeMillis) / 1000;
     const replay =
       operations.find(item => item.operation.state === 'admitted') ??
       operations.find(
@@ -232,6 +234,27 @@ const drainSignedBatch = Effect.fn('codeGraph.sharing.drainSignedBatch')(functio
     ),
   );
 });
+
+/** Keep a worker-rotation outage from exhausting the bounded principal index. */
+export const reclaimExpiredGraphWorkerGenerations = Effect.fn('codeGraph.sharing.reclaimExpiredWorkerGenerations')(
+  function* (threadnoteHome: string, current: GraphWorkerDeliveryScope) {
+    const now = (yield* Clock.currentTimeMillis) / 1000;
+    for (const prior of yield* listGraphWorkerDeliveryPrincipalScopes(threadnoteHome, current)) {
+      const old = yield* listGraphWorkerDeliveryOutboxOperations(threadnoteHome, prior);
+      for (const operation of old) {
+        if (operation.state !== 'prepared' || operation.authority.expiresAt > now) continue;
+        yield* retireExpiredPreparedGraphWorkerDeliveryOutbox({
+          operationId: operation.operationId,
+          scope: prior,
+          threadnoteHome,
+        });
+      }
+      // Free one index slot before preparing the current generation. Admitted operations
+      // remain indexed so their exact journal ACK can finish after worker renewal.
+      if (old.length > 0 && (yield* listGraphWorkerDeliveryOutboxOperations(threadnoteHome, prior)).length === 0) break;
+    }
+  },
+);
 
 const readCurrentWorkerProfile = Effect.fn('codeGraph.sharing.readWorkerProfile')(function* (
   trust: GraphShareTrustReceiptV1,

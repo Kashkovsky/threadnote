@@ -2,11 +2,17 @@ import {Clock, Effect, FileSystem, Option, Path} from 'effect';
 import {syncWritableFile} from '../../effect/file_durability.js';
 import {withExclusiveFileLock} from '../../effect/file_lock.js';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
+import {readVerifiedCasBlobBounded} from './cas.js';
 import {readBoundedPrivateBytes, writePrivateBytesFile, writePrivateJsonFile} from './atomic.js';
 import {sha256Digest, SHA256_DIGEST, SHA256_HEX, sha256HexFromDigest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 import {graphSharingLayout} from './layout.js';
-import {parseGraphShareSignedCandidateQueue, type GraphShareSignedCandidateV2} from './signed_candidate.js';
+import {
+  listGraphShareSignedCandidatePageIds,
+  parseGraphShareSignedCandidateQueue,
+  readGraphShareSignedCandidatePage,
+  type GraphShareSignedCandidateV2,
+} from './signed_candidate.js';
 import {verifyGraphWorkerResultAnnouncement, type GraphWorkerResultAnnouncement} from './worker_announcement.js';
 import {
   verifyGraphWorkerResultIntegrity,
@@ -389,6 +395,61 @@ export const retireSupersededGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sh
     );
   },
 );
+
+/** An expired unsent signature is replaced only when its complete source candidate remains recoverable. */
+export const retireExpiredPreparedGraphWorkerDeliveryOutbox = Effect.fn(
+  'codeGraph.sharing.retireExpiredPreparedWorkerOutbox',
+)(function* (input: {
+  readonly operationId: string;
+  readonly scope: GraphWorkerDeliveryScope;
+  readonly threadnoteHome: string;
+}) {
+  if (!validScope(input.scope) || !SHA256_DIGEST.test(input.operationId)) return yield* invalid();
+  return yield* withOutboxLock(
+    input.threadnoteHome,
+    input.scope,
+    Effect.gen(function* () {
+      const current = yield* readOutbox(input.threadnoteHome, input.scope);
+      const operation = current.operations.find(item => item.operationId === input.operationId);
+      if (operation?.state !== 'prepared' || operation.authority.expiresAt > (yield* Clock.currentTimeMillis) / 1000)
+        return false;
+      const original = yield* readGraphShareSignedCandidatePage(
+        input.threadnoteHome,
+        input.scope.repositoryId,
+        operation.candidatePageId,
+      );
+      let candidateDurable =
+        original?.candidates.some(candidate => canonicalJson(candidate) === canonicalJson(operation.candidate)) ??
+        false;
+      if (!candidateDurable)
+        for (const pageId of yield* listGraphShareSignedCandidatePageIds(
+          input.threadnoteHome,
+          input.scope.repositoryId,
+        )) {
+          const page = yield* readGraphShareSignedCandidatePage(input.threadnoteHome, input.scope.repositoryId, pageId);
+          if (page?.candidates.some(candidate => canonicalJson(candidate) === canonicalJson(operation.candidate))) {
+            candidateDurable = true;
+            break;
+          }
+        }
+      if (!candidateDurable) return false;
+      const cas = yield* readVerifiedCasBlobBounded(
+        operation.candidate.casRoot,
+        operation.resultDigest,
+        operation.resultSize,
+      ).pipe(Effect.option);
+      if (Option.isNone(cas) || cas.value.byteLength !== operation.resultSize) return false;
+      const next = {
+        schemaVersion: 1 as const,
+        operations: current.operations.filter(item => item.operationId !== input.operationId),
+      };
+      yield* writeOutbox(input.threadnoteHome, input.scope, next);
+      yield* recoverOutboxStorage(input.threadnoteHome, input.scope, next);
+      if (next.operations.length === 0) yield* unregisterPrincipalScope(input.threadnoteHome, input.scope);
+      return true;
+    }),
+  );
+});
 
 function parseCandidate(value: unknown): GraphShareSignedCandidateV2 {
   const parsed = parseGraphShareSignedCandidateQueue({candidates: [value], schemaVersion: 2});
