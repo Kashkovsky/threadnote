@@ -72,4 +72,27 @@ describe('trusted registry targets', () => {
     ])
       expect(() => parseGraphShareRegistryChallenge(value, target)).toThrow();
   });
+
+  it('allows only the selected writer repository capability and its challenge subsets', () => {
+    const target = parseGraphShareRegistryTarget('oci://registry.example.test/acme/canonical');
+    const challenge = (scope: string) => `Bearer realm="${target.origin}/token",scope="${scope}"`;
+    for (const actions of ['pull', 'push', 'pull,push', 'push,pull']) {
+      expect(
+        parseGraphShareRegistryChallenge(challenge(`repository:acme/canonical:${actions}`), target, 'write'),
+      ).toEqual({
+        kind: 'bearer',
+        realm: `${target.origin}/token`,
+      });
+    }
+    for (const scope of [
+      'repository:acme/worker:pull,push',
+      'repository:acme/canonical:pull,push,delete',
+      'repository:acme/canonical:pull,pull',
+      'repository:acme/canonical:',
+      'registry:catalog:*',
+    ]) {
+      expect(() => parseGraphShareRegistryChallenge(challenge(scope), target, 'write')).toThrow();
+    }
+    expect(() => parseGraphShareRegistryChallenge(challenge('repository:acme/canonical:push'), target)).toThrow();
+  });
 });
