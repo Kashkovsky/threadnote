@@ -4,22 +4,31 @@ import {SystemInfo} from '../../effect/system.js';
 import {getGraphAuth0UserCredential} from './auth0_user.js';
 import {graphSharingFailure} from './errors.js';
 
+export interface GraphAuth0UserHelperIO {
+  readonly stdin: AsyncIterable<Uint8Array | string>;
+  readonly writeStderr: (text: string) => void;
+  readonly writeStdout: (text: string) => void;
+}
+
 export const runGraphAuth0UserHelper = Effect.fn('codeGraph.sharing.auth0UserHelper')(function* (
   arguments_: readonly string[],
+  io: GraphAuth0UserHelperIO,
 ) {
   const system = yield* SystemInfo;
   const path = yield* Path.Path;
   const home = system.environment().THREADNOTE_HOME;
+  const unavailable = () => {
+    io.writeStderr('Graph Auth0 credential helper is unavailable.\n');
+    return 1;
+  };
   if (arguments_.length !== 1 || arguments_[0] !== 'get' || !home || !path.isAbsolute(home)) {
-    process.stderr.write('Graph Auth0 credential helper is unavailable.\n');
-    process.exitCode = 1;
-    return;
+    return unavailable();
   }
   const result = yield* fromPromiseInterruptibleAwaiting(
     async () => {
       const chunks: Buffer[] = [];
       let size = 0;
-      for await (const chunk of process.stdin) {
+      for await (const chunk of io.stdin) {
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         size += bytes.length;
         if (size > 8_192) throw graphSharingFailure('Graph Auth0 helper request is too large.');
@@ -30,13 +39,9 @@ export const runGraphAuth0UserHelper = Effect.fn('codeGraph.sharing.auth0UserHel
     () => graphSharingFailure('Graph Auth0 helper request is invalid.'),
   ).pipe(
     Effect.flatMap(input => getGraphAuth0UserCredential(home, input)),
-    Effect.catch(() =>
-      Effect.sync(() => {
-        process.stderr.write('Graph Auth0 credential helper is unavailable.\n');
-        process.exitCode = 1;
-        return undefined;
-      }),
-    ),
+    Effect.option,
   );
-  if (result !== undefined) process.stdout.write(`${JSON.stringify(result)}\n`);
+  if (result._tag === 'None') return unavailable();
+  io.writeStdout(`${JSON.stringify(result.value)}\n`);
+  return 0;
 });

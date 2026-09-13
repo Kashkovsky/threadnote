@@ -140,16 +140,19 @@ async function graphAuth0HelperProgram(arguments_: readonly string[]) {
     import('./effect/command.js'),
     import('./effect/system.js'),
   ]);
-  return helper
-    .runGraphAuth0UserHelper(arguments_)
-    .pipe(
-      Effect.provide(
-        Layer.merge(
-          system.SystemInfo.layer,
-          command.CommandExecutor.layer.pipe(Layer.provide(system.SystemInfo.layer)),
-        ).pipe(Layer.provideMerge(BunServices.layer)),
-      ),
-    );
+  return helper.runGraphAuth0UserHelper(arguments_, auth0M2MHelperIO).pipe(
+    Effect.tap(code =>
+      Effect.sync(() => {
+        process.exitCode = code;
+      }),
+    ),
+    Effect.provide(
+      Layer.merge(
+        system.SystemInfo.layer,
+        command.CommandExecutor.layer.pipe(Layer.provide(system.SystemInfo.layer)),
+      ).pipe(Layer.provideMerge(BunServices.layer)),
+    ),
+  );
 }
 
 async function windowsDiskCapacityWorkerProgram() {
