@@ -222,7 +222,12 @@ describe('MCP recall background vector refresh', () => {
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-recall-refresh-'});
+          // The refresh runs on a detached fiber. Keep this fixture's cleanup
+          // idempotent if its home disappears before the property scope closes.
+          const home = yield* Effect.acquireRelease(
+            fs.makeTempDirectory({prefix: 'threadnote-mcp-recall-refresh-'}),
+            directory => fs.remove(directory, {force: true, recursive: true}).pipe(Effect.orDie),
+          );
           const config = {account: 'local', agentContextHome: home, user: 'tester'};
           const resource = path.join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'refresh.md');
           const uri = 'threadnote://resources/repos/threadnote/refresh.md';
@@ -290,6 +295,7 @@ describe('MCP recall background vector refresh', () => {
             expect((yield* recallIndexStatus(config)).ready).toBe(true);
             const available = yield* loadMcpRecallSemanticScoresResult(config, 'changed semantic content', 5);
             expect(available.status).toBe('available');
+            expect(yield* fs.exists(home)).toBe(true);
           }).pipe(
             Effect.provideService(LocalModelRuntime, runtime),
             Effect.provideService(LocalModelStore, store),
