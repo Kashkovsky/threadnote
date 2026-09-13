@@ -15,17 +15,23 @@ export function graphShareContributionRetryDelay(failures: number, jitter: numbe
   return Math.max(retryAfterMilliseconds, Math.round(backoff * (1 + Math.max(0, Math.min(1, jitter)) * 0.2)));
 }
 
-const retryPath = Effect.fn('codeGraph.sharing.contributionRetryPath')(function* (home: string, repositoryId: string) {
+const retryPath = Effect.fn('codeGraph.sharing.contributionRetryPath')(function* (
+  home: string,
+  repositoryId: string,
+  channel: 'legacy' | 'signed',
+) {
   const path = yield* Path.Path;
-  return `${graphSharingContributionQueuePath(path, graphSharingLayout(path, home).root, repositoryId)}.retry.json`;
+  const queuePath = graphSharingContributionQueuePath(path, graphSharingLayout(path, home).root, repositoryId);
+  return `${queuePath}${channel === 'signed' ? '.signed' : ''}.retry.json`;
 });
 
 export const readContributionRetryState = Effect.fn('codeGraph.sharing.readContributionRetryState')(function* (
   home: string,
   repositoryId: string,
+  channel: 'legacy' | 'signed' = 'legacy',
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const target = yield* retryPath(home, repositoryId);
+  const target = yield* retryPath(home, repositoryId, channel);
   if (!(yield* fs.exists(target))) return undefined;
   if (Number((yield* fs.stat(target)).size) > 4_096)
     return yield* graphSharingFailure('Contribution retry state exceeds the read limit.');
@@ -53,8 +59,9 @@ export const writeContributionRetryState = Effect.fn('codeGraph.sharing.writeCon
   home: string,
   repositoryId: string,
   state: ContributionRetryState | undefined,
+  channel: 'legacy' | 'signed' = 'legacy',
 ) {
-  const target = yield* retryPath(home, repositoryId);
+  const target = yield* retryPath(home, repositoryId, channel);
   if (state === undefined) yield* (yield* FileSystem.FileSystem).remove(target, {force: true});
   else yield* writePrivateJsonFile(target, state);
 });

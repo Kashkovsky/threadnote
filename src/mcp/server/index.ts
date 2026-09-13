@@ -20,7 +20,10 @@ import {LocalModelRuntime} from '../../effect/ai/local-model-runtime.js';
 import {SystemInfo} from '../../effect/system.js';
 import {captureConsole} from '../../effect/console.js';
 import {monitorSharedRepositories} from '../../effect/share.js';
-import {monitorGraphShareContributions} from '../../code_graph/sharing/contribution_retry.js';
+import {
+  monitorGraphShareContributions,
+  monitorGraphShareSignedContributions,
+} from '../../code_graph/sharing/contribution_retry.js';
 import {refreshPendingDeferredCodeAnchorWorkspaces} from '../../memory/deferred_code_anchor_refresh.js';
 import {runObsidianProjectionPublish} from '../../obsidian/projection.js';
 import {withProductionLogging} from '../../effect/production_log.js';
@@ -137,6 +140,7 @@ export const mcpServerEffect = withAnonymousTelemetry(
         }
         if (mcpToolCapabilities(toolset).graphLocal) {
           yield* Effect.forkScoped(monitorGraphShareContributions(config.agentContextHome));
+          yield* Effect.forkScoped(monitorGraphShareSignedContributions(config.agentContextHome));
         }
         if (mcpToolCapabilities(toolset).memoryRead && mcpToolCapabilities(toolset).graphLocal) {
           yield* Effect.forkScoped(refreshPendingDeferredCodeAnchorWorkspaces(config));

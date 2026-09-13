@@ -2,6 +2,7 @@ import {Clock, Context, Crypto, Effect, Exit, FileSystem, Layer, Option, Path, S
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
+import {getThreadnoteVersion} from '../release/runtime_version.js';
 import {observeCodeGraphAdmissionEnvironment, recordCodeGraphSnapshotAdmission} from './admission_freshness.js';
 import {makeCodeGraphBuildReporter} from './build_status.js';
 import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, withCodeGraphBuilderAdmission} from './builder_admission.js';
@@ -80,6 +81,7 @@ import {
   hydrateSharedParseCache,
 } from './sharing/parse_cache.js';
 import {graphShareEnrollmentPath} from './sharing/layout.js';
+import {finalizeGraphShareSignedCandidates} from './sharing/signed_candidate.js';
 import {CodeGraphStore} from './store.js';
 import {TreeSitterRuntime} from './tree_sitter/runtime.js';
 import type {CodeGraphIndexSummary, CodeGraphInventoryFile, CodeGraphProgress, CodeGraphSnapshot} from './types.js';
@@ -107,6 +109,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       const crypto = yield* Crypto.Crypto;
       const system = yield* SystemInfo;
       const http = yield* HttpClient.HttpClient;
+      const releaseIdentity = yield* getThreadnoteVersion();
       const enqueueSharedParserBatch = (
         identity: {readonly headCommit: string; readonly repositoryId: string},
         threadnoteHome: string,
@@ -115,12 +118,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           readonly facts: readonly BoundedCodeGraphFact[];
           readonly files: readonly CodeGraphInventoryFile[];
         },
+        producer: {
+          readonly platform: {readonly os: string; readonly architecture: string};
+          readonly releaseIdentity: string;
+        },
       ) =>
         enqueueLocalGraphShareParseResults({
           extractorSet: group.cacheIdentity,
           facts: group.facts,
           files: group.files,
           identity,
+          producer,
           threadnoteHome,
         }).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
@@ -138,6 +146,13 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
         Effect.scoped(
           Effect.gen(function* () {
             const initialIdentity = yield* resolveRepositoryIdentity(request.cwd);
+            const producer = {
+              platform: {
+                architecture: system.architecture === 'aarch64' ? 'arm64' : system.architecture,
+                os: system.platform,
+              },
+              releaseIdentity,
+            };
             const admissionEnvironment = yield* observeCodeGraphAdmissionEnvironment(initialIdentity);
             if (
               request.expectedIdentity &&
@@ -366,10 +381,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       const cacheCoalescer = cacheContentBatch({
                         databasePath: layout.databasePath,
                         languagePacks,
-                        onSourceParserBatch: options.sourceVerification?.observeParserBatch,
-                        onCachedParserBatch: options.sourceOnly
-                          ? undefined
-                          : group => enqueueSharedParserBatch(identity, options.threadnoteHome, group),
+                        onSourceParserBatch: group =>
+                          Effect.gen(function* () {
+                            yield* options.sourceVerification?.observeParserBatch(group) ?? Effect.void;
+                            if (!options.sourceOnly)
+                              yield* enqueueSharedParserBatch(identity, options.threadnoteHome, group, producer);
+                          }),
                         onProgress: options.onProgress,
                         parserPool,
                         persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
@@ -995,6 +1012,15 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 }).pipe(Effect.ignore),
               ),
             );
+            if (!options.sourceOnly && !summary.snapshot.dirty)
+              yield* finalizeGraphShareSignedCandidates({
+                databasePath: layout.databasePath,
+                repositoryId: summary.identity.repositoryId,
+                skippedFiles: summary.skippedFiles,
+                snapshot: summary.snapshot,
+                store,
+                threadnoteHome: request.threadnoteHome,
+              });
             if (!options.sourceOnly)
               yield* drainQueuedGraphShareContributions({
                 identity: initialIdentity,
@@ -1043,6 +1069,13 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
         Effect.scoped(
           Effect.gen(function* () {
             const initialIdentity = yield* resolveRepositoryIdentity(request.cwd);
+            const producer = {
+              platform: {
+                architecture: system.architecture === 'aarch64' ? 'arm64' : system.architecture,
+                os: system.platform,
+              },
+              releaseIdentity,
+            };
             if (
               request.expectedIdentity &&
               !repositoryIdentityMatchesExpectation(initialIdentity, request.expectedIdentity)
@@ -1172,9 +1205,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       const cacheCoalescer = cacheContentBatch({
                         databasePath: layout.databasePath,
                         languagePacks,
-                        onCachedParserBatch: options.sourceOnly
+                        onSourceParserBatch: options.sourceOnly
                           ? undefined
-                          : group => enqueueSharedParserBatch(identity, options.threadnoteHome, group),
+                          : group => enqueueSharedParserBatch(identity, options.threadnoteHome, group, producer),
                         onProgress: options.onProgress,
                         parserPool,
                         persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
@@ -1261,6 +1294,15 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 }).pipe(Effect.ignore),
               ),
             );
+            if (!options.sourceOnly)
+              yield* finalizeGraphShareSignedCandidates({
+                databasePath: layout.databasePath,
+                repositoryId: lease.summary.identity.repositoryId,
+                skippedFiles: lease.summary.skippedFiles,
+                snapshot: lease.summary.snapshot,
+                store,
+                threadnoteHome: request.threadnoteHome,
+              });
             if (!options.sourceOnly)
               yield* drainQueuedGraphShareContributions({
                 identity: initialIdentity,

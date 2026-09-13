@@ -657,6 +657,7 @@ export const runGraphContributeStatus = Effect.fn('codeGraph.sharing.contributeS
   return {
     accessMode: trust?.accessMode,
     mode,
+    requestedMode: requested,
     queued: queue.announcements.length,
     repositoryId: identity.repositoryId,
     type: 'code-graph-contribute-status' as const,
@@ -672,18 +673,19 @@ export const runGraphContributeSet = Effect.fn('codeGraph.sharing.contributeSet'
   const identity = yield* resolveRepositoryIdentity(cwd);
   const trust = yield* lookupGraphShareTrustReceipt(config.agentContextHome, identity.repositoryId);
   const requested = yield* decodeContributionMode(options.mode);
-  const mode =
+  const requestedMode =
     trust === undefined
       ? 'off'
       : yield* writeGraphShareRepositoryContributionMode(
           config.agentContextHome,
           trust,
           yield* resolveGraphShareRepositoryClient(config.agentContextHome, trust),
-          effectiveGraphShareContributionMode(trust.accessMode, requested),
+          requested,
         );
   return {
     accessMode: trust?.accessMode,
-    mode,
+    mode: effectiveGraphShareContributionMode(trust?.accessMode, requestedMode),
+    requestedMode,
     repositoryId: identity.repositoryId,
     type: 'code-graph-contribute-set' as const,
     version: 1 as const,

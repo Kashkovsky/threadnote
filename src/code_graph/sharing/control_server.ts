@@ -22,7 +22,7 @@ import {
   type Sha256Digest,
 } from './digest.js';
 import {graphSharingFailure, GraphSharingError} from './errors.js';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {withCoordinatorStateLock} from './coordinator_lock.js';
 import {graphSharingCasBlobPath, graphSharingLayout, graphSharingTagPath} from './layout.js';
 import {
   GRAPH_SHARE_HTTP_CAS_MAX_BYTES,
@@ -37,12 +37,7 @@ import {makeGraphControlReader, type GraphControlReaderOptions} from './control_
 
 export const GRAPH_SHARE_PUBLISHER_WATCH_INTERVAL = '5 seconds' as const;
 
-const GRAPH_SHARE_COORDINATOR_LOCK_OPTIONS = {
-  heartbeatIntervalMilliseconds: 10_000,
-  retryIntervalMilliseconds: 25,
-  staleAfterMilliseconds: 30_000,
-  waitTimeoutMilliseconds: 30_000,
-} as const;
+export {withCoordinatorStateLock} from './coordinator_lock.js';
 
 const STRICT = {errors: 'all', onExcessProperty: 'error'} as const;
 const GraphShareHttpTagBody = Schema.Struct({
@@ -69,7 +64,10 @@ export interface GraphSharePublishedFrontier {
 }
 
 export interface GraphShareControlServerOptions<E = never, R = never> {
-  readonly authorization?: Pick<GraphControlReaderOptions, 'enrollment' | 'policyFile' | 'profile'>;
+  readonly authorization?: Pick<
+    GraphControlReaderOptions,
+    'enrollment' | 'policyFile' | 'profile' | 'repoRoot' | 'enableWorkerResults'
+  >;
   readonly casRoot: string;
   readonly listen: GraphShareListenAddress;
   readonly onListening?: (info: {readonly port: number; readonly url: string}) => Effect.Effect<void, E, R>;
@@ -411,24 +409,6 @@ const commitCoordinatorDispatch = (
       return dispatched;
     }),
   );
-
-/** @internal Serializes final publication checks with receipt/quarantine mutations. */
-export function withCoordinatorStateLock<A, E, R>(
-  options: Pick<GraphShareControlServerOptions, 'threadnoteHome'>,
-  effect: Effect.Effect<A, E, R>,
-) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const layout = graphSharingLayout(path, options.threadnoteHome);
-    return yield* withExclusiveFileLock(
-      fs,
-      layout.coordinatorStateLockPath,
-      GRAPH_SHARE_COORDINATOR_LOCK_OPTIONS,
-      effect,
-    );
-  });
-}
 
 function frontierBranchHash(repositoryId: string, branch: string): string {
   return graphShareFrontierDiscoveryTag(repositoryId, branch).slice('tn-frontier-'.length);

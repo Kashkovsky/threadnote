@@ -31,7 +31,7 @@ export function effectiveGraphShareContributionMode(
   requested: GraphShareContributionMode,
 ): GraphShareContributionMode {
   if (accessMode !== 'join') return 'off';
-  if (requested === 'dedicated') return 'passive';
+  if (requested === 'idle' || requested === 'dedicated') return 'passive';
   return requested;
 }
 

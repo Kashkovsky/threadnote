@@ -135,7 +135,9 @@ export const runGraphContributeStatusCommand = Effect.fn('codeGraph.sharing.cont
     yield* writeFinalCliOutput(JSON.stringify(result));
     return result;
   }
-  yield* Console.log(`Graph contribution mode ${result.mode}`);
+  yield* Console.log(
+    `Graph contribution mode ${result.mode}${result.requestedMode === result.mode ? '' : ` (requested ${result.requestedMode})`}`,
+  );
   return result;
 });
 
@@ -148,7 +150,9 @@ export const runGraphContributeSetCommand = Effect.fn('codeGraph.sharing.contrib
     yield* writeFinalCliOutput(JSON.stringify(result));
     return result;
   }
-  yield* Console.log(`Set graph contribution mode ${result.mode}`);
+  yield* Console.log(
+    `Set graph contribution mode ${result.mode}${result.requestedMode === result.mode ? '' : ` (requested ${result.requestedMode})`}`,
+  );
   return result;
 });
 
@@ -161,7 +165,9 @@ export const runGraphWorkerCommand = Effect.fn('codeGraph.sharing.workerCommand'
     yield* writeFinalCliOutput(JSON.stringify(result));
     return result;
   }
-  yield* Console.log(`Graph worker eligible ${result.eligible}; skipped missing blobs ${result.skippedMissingBlob}`);
+  yield* Console.log(
+    `Advertised Git blobs present ${result.eligible}; missing ${result.skippedMissingBlob}; no work executed`,
+  );
   return result;
 });
 

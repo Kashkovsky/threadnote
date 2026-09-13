@@ -10,6 +10,7 @@ import {
   graphWorkerEnrollmentStatePath,
   readGraphWorkerEnrollmentRequest,
   requireGraphControlWorker,
+  requireGraphControlPublisherWorker,
 } from '../../src/code_graph/sharing/control_enrollment.js';
 import {parseGraphControlPolicy} from '../../src/code_graph/sharing/control_authorization.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
@@ -52,6 +53,47 @@ const fixture = Effect.fn('test.graphEnrollmentFixture')(function* () {
 });
 
 describe('principal-owned graph worker enrollment', () => {
+  effectIt.effect('publisher rechecks current grant and enrollment key without a stored bearer token', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const signingPublicKey = 'a'.repeat(64);
+        const enrolled = yield* enrollGraphControlWorker({
+          ...f.input,
+          request: {...f.request, signingPublicKey},
+        });
+        const input = {
+          home: f.home,
+          initialPolicy: f.policy,
+          principalId: enrolled.body.principalId,
+          readCurrentPolicy: Effect.succeed(f.policy),
+          signingPublicKey,
+          workerId: enrolled.body.workerId,
+        };
+        const authority = yield* requireGraphControlPublisherWorker(input);
+        expect(authority.expiresAt).toBeLessThanOrEqual(enrolled.body.expiresAt);
+        expect(authority.profileDigest).toBe(f.policy.profileDigest);
+        for (const changed of [
+          {...input, principalId: sha256Digest('other principal')},
+          {...input, signingPublicKey: 'b'.repeat(64)},
+          {...input, readCurrentPolicy: Effect.succeed({...f.policy, grants: []})},
+          {...input, initialPolicy: {...f.policy, profileDigest: sha256Digest('other profile')}},
+        ])
+          expect(Result.isFailure(yield* requireGraphControlPublisherWorker(changed).pipe(Effect.result))).toBe(true);
+        let reads = 0;
+        expect(
+          Result.isFailure(
+            yield* requireGraphControlPublisherWorker({
+              ...input,
+              readCurrentPolicy: Effect.sync(() => (++reads === 1 ? f.policy : {...f.policy, grants: []})),
+            }).pipe(Effect.result),
+          ),
+        ).toBe(true);
+        expect(reads).toBe(2);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
   effectIt.effect('binds a signing key to one enrollment operation and refuses key substitution on replay', () =>
     Effect.gen(function* () {
       const f = yield* fixture();

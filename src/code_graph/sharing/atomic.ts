@@ -1,4 +1,5 @@
 import {Crypto, Effect, FileSystem, Option, Path, Schema, Stream} from 'effect';
+import {SystemInfo} from '../../effect/system.js';
 import {graphSharingFailure} from './errors.js';
 
 export const writePrivateJsonFile = Effect.fn('codeGraph.sharing.writePrivateJsonFile')(function* (
@@ -18,6 +19,22 @@ export const writePrivateJsonFile = Effect.fn('codeGraph.sharing.writePrivateJso
   yield* fs
     .rename(temporary, destination)
     .pipe(Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
+});
+
+/** Data and directory entry must survive before a dependent receipt can be retired. */
+export const writeDurablePrivateJsonFile = Effect.fn('codeGraph.sharing.writeDurablePrivateJsonFile')(function* (
+  destination: string,
+  value: unknown,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* writePrivateJsonFile(destination, value);
+  const sync = (target: string) =>
+    Effect.scoped(fs.open(target, {flag: 'r'}).pipe(Effect.flatMap(file => file.sync))).pipe(
+      Effect.mapError(cause => graphSharingFailure('Could not durably persist the graph frontier pointer.', cause)),
+    );
+  yield* sync(destination);
+  if ((yield* SystemInfo).platform !== 'win32') yield* sync(path.dirname(destination));
 });
 
 export const writePrivateBytesFile = Effect.fn('codeGraph.sharing.writePrivateBytesFile')(function* (

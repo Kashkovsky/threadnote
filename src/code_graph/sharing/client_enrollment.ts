@@ -52,6 +52,7 @@ export const prepareGraphControlWorkerIdentity = Effect.fn('codeGraph.sharing.pr
   readonly scope: GraphControlClientScope;
   readonly client: EnrollmentClient<E, R>;
   readonly isAuthorized?: Effect.Effect<boolean, E, R>;
+  readonly minimumValiditySeconds?: number;
 }) {
   if (input.isAuthorized !== undefined && !(yield* input.isAuthorized))
     return yield* graphSharingFailure('Graph worker enrollment is no longer authorized.');
@@ -79,7 +80,11 @@ export const enrollGraphControlClient = Effect.fn('codeGraph.sharing.enrollContr
   readonly client: EnrollmentClient<E, R>;
   readonly isAuthorized?: Effect.Effect<boolean, E, R>;
   readonly signingPublicKey?: string;
+  readonly minimumValiditySeconds?: number;
 }) {
+  const minimumValiditySeconds = input.minimumValiditySeconds ?? 15;
+  if (!Number.isSafeInteger(minimumValiditySeconds) || minimumValiditySeconds < 15 || minimumValiditySeconds > 3600)
+    return yield* graphSharingFailure('Graph worker minimum validity is invalid.');
   if (input.signingPublicKey !== undefined && !SHA256_HEX.test(input.signingPublicKey))
     return yield* graphSharingFailure('Graph worker signing public key is invalid.');
   const fs = yield* FileSystem.FileSystem;
@@ -120,7 +125,7 @@ export const enrollGraphControlClient = Effect.fn('codeGraph.sharing.enrollContr
       if (state?.identity === identity && state.worker !== undefined) {
         if (!matchesWorker(state.worker, input.scope, credential.principalId, input.signingPublicKey))
           return yield* graphSharingFailure('Graph client enrollment state has a different authority.');
-        if (state.worker.expiresAt > now + 15) {
+        if (state.worker.expiresAt > now + minimumValiditySeconds) {
           if (input.isAuthorized !== undefined && !(yield* input.isAuthorized))
             return yield* graphSharingFailure('Graph worker enrollment is no longer authorized.');
           return state.worker;
@@ -154,7 +159,7 @@ export const enrollGraphControlClient = Effect.fn('codeGraph.sharing.enrollContr
         (response.status !== 200 && response.status !== 201) ||
         response.credential.identity !== credential.identity ||
         !matchesWorker(worker, input.scope, credential.principalId, input.signingPublicKey) ||
-        worker.expiresAt <= atCommit + 15 ||
+        worker.expiresAt <= atCommit + minimumValiditySeconds ||
         worker.expiresAt > atCommit + 3660 ||
         (input.isAuthorized !== undefined && !(yield* input.isAuthorized))
       )

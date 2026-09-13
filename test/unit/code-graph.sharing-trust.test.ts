@@ -3,7 +3,14 @@ import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path, Result} from 'effect';
 import {TestClock} from 'effect/testing';
 import {provideTestLayer} from '../helpers/effect-layer.js';
-import {putCasBytes, putCasFile, readVerifiedCasBlob, verifyCasBlob} from '../../src/code_graph/sharing/cas.js';
+import {
+  casBlobPath,
+  putCasBytes,
+  putCasFile,
+  readVerifiedCasBlob,
+  readVerifiedCasBlobBounded,
+  verifyCasBlob,
+} from '../../src/code_graph/sharing/cas.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingCasBlobPath} from '../../src/code_graph/sharing/layout.js';
 import {
@@ -82,6 +89,23 @@ describe('graph share trust and CAS', () => {
       yield* fs.writeFile(yield* verifyCasBlob(casRoot, digest), new TextEncoder().encode('mutated-checkpoint'));
       const result = yield* verifyCasBlob(casRoot, digest).pipe(Effect.result);
       expect(Result.isFailure(result)).toBe(true);
+    }).pipe(provideTestLayer(sharingLayer)),
+  );
+
+  effectIt.effect('bounds signed-result CAS reads before accepting bytes or a digest', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-cas-bounded-'});
+      const casRoot = path.join(home, 'cas');
+      const bytes = new TextEncoder().encode('signed-result');
+      const digest = yield* putCasBytes(casRoot, bytes);
+      expect(Array.from(yield* readVerifiedCasBlobBounded(casRoot, digest, bytes.byteLength))).toEqual([...bytes]);
+      expect(
+        Result.isFailure(yield* Effect.result(readVerifiedCasBlobBounded(casRoot, digest, bytes.byteLength - 1))),
+      ).toBe(true);
+      yield* fs.writeFile(yield* casBlobPath(casRoot, digest), new TextEncoder().encode('forged-result'));
+      expect(Result.isFailure(yield* Effect.result(readVerifiedCasBlobBounded(casRoot, digest, 32)))).toBe(true);
     }).pipe(provideTestLayer(sharingLayer)),
   );
 

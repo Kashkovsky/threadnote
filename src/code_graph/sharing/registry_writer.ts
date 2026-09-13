@@ -11,14 +11,15 @@ import {makeGraphShareRegistryHttp} from './registry_http.js';
 import {parseGraphShareRegistryTarget} from './registry_reference.js';
 import {parseGraphShareRegistryUploadLocation} from './registry_upload.js';
 
-export const makeGraphShareRegistryWriter = Effect.fn('codeGraph.sharing.registryWriter')(function* (
-  reference: string,
-) {
+export const makeGraphShareRegistryWriter = Effect.fn('codeGraph.sharing.registryWriter')(function* <
+  E = never,
+  R = never,
+>(reference: string, isAuthorized?: Effect.Effect<boolean, E, R>) {
   const target = yield* Effect.try({
     try: () => parseGraphShareRegistryTarget(reference),
     catch: () => graphSharingFailure('OCI registry reference is invalid.'),
   });
-  const request = yield* makeGraphShareRegistryHttp(target, 'write');
+  const request = yield* makeGraphShareRegistryHttp(target, 'write', isAuthorized);
   const prefix = `/v2/${target.repository}/`;
   const manifestPath = (reference: string) =>
     Effect.gen(function* () {

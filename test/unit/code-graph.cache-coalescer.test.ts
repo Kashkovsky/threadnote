@@ -1,6 +1,8 @@
+import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, Option, Schema} from 'effect';
+import {Cause, Deferred, Effect, Fiber, FileSystem, Layer, Option, Path, Schema} from 'effect';
 import {describe, expect} from 'vitest';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
   CODE_GRAPH_CACHE_TRANSACTION_LIMITS,
   codeGraphFileBlobCapacityBytes,
@@ -11,10 +13,17 @@ import {cacheContentBatch, type CodeGraphCacheExtractedRow} from '../../src/code
 import type {CodeGraphContentBatchContext} from '../../src/code_graph/inventory.js';
 import type {CodeGraphLanguagePackRegistryShape} from '../../src/code_graph/languages/registry.js';
 import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schemas/extractor.js';
+import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
+import {
+  pendingCandidateQueuePath,
+  persistGraphSharePendingSignedCandidates,
+} from '../../src/code_graph/sharing/signed_candidate.js';
 import type {CodeGraphParserPoolShape, CodeGraphParserResult} from '../../src/code_graph/parser_worker.js';
 import type {CodeGraphDirectPersistentCapacityProtector, CodeGraphStoreShape} from '../../src/code_graph/store.js';
 import type {TreeSitterRuntimeShape} from '../../src/code_graph/tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
+import {SystemInfo} from '../../src/effect/system.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 
 class InjectedProgressError extends Schema.TaggedError<InjectedProgressError>()('InjectedProgressError', {
   cause: Schema.optionalKey(Schema.Defect()),
@@ -28,8 +37,67 @@ interface CacheCall {
 }
 
 const unprotectedCacheWrite: CodeGraphDirectPersistentCapacityProtector = (_boundary, transaction) => transaction;
+const journalTestLayer = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
 
 describe('code graph parser cache coalescer', () => {
+  effectIt.effect(
+    'does not commit parser facts when the pending journal quota refuses admission',
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'graph-cache-journal-quota-'});
+        const repositoryId = 'b'.repeat(64);
+        const manifestPath = pendingCandidateQueuePath(path, home, repositoryId);
+        yield* fs.makeDirectory(path.dirname(manifestPath), {recursive: true});
+        const commit = 'c'.repeat(40);
+        const candidate = {
+          actionKey: 'a'.repeat(64),
+          batchId: commit,
+          casRoot: '/private/cas',
+          extractorSet: 'd'.repeat(64),
+          organization: 'acme',
+          platform: {architecture: 'arm64' as const, os: 'darwin' as const},
+          profileDigest: sha256Digest('profile'),
+          queuedAtMilliseconds: 1,
+          releaseIdentity: 'fixture',
+          resultDigest: sha256Digest('result'),
+          resultSize: 1,
+          semanticDigest: sha256Digest('semantic'),
+          sourceCommit: commit,
+        };
+        yield* fs.makeDirectory(`${manifestPath}.d`, {recursive: true});
+        const segments = [];
+        for (let index = 0; index < 2_048; index++) {
+          const bytes = `${JSON.stringify({candidates: [{...candidate, actionKey: index.toString(16).padStart(64, '0')}], schemaVersion: 1})}\n`;
+          const id = sha256HexSync(bytes);
+          yield* fs.writeFileString(path.join(`${manifestPath}.d`, `${id}.json`), bytes);
+          segments.push({count: 1, id, size: new TextEncoder().encode(bytes).byteLength});
+        }
+        yield* fs.writeFileString(manifestPath, JSON.stringify({schemaVersion: 2, segments}));
+        const harness = coalescerHarness({
+          capacity: 1,
+          onSource: () =>
+            persistGraphSharePendingSignedCandidates({
+              candidates: [candidate],
+              repositoryId,
+              threadnoteHome: home,
+            }).pipe(Effect.asVoid, provideTestLayer(journalTestLayer)),
+        });
+        const source = cacheFile(1, 'src/alpha');
+        const attempt = yield* Effect.exit(
+          Effect.gen(function* () {
+            yield* harness.acceptExtracted([extractedRow(source)], cacheContext(1));
+            yield* harness.flush;
+          }),
+        );
+        expect(attempt._tag).toBe('Failure');
+        if (attempt._tag === 'Failure') expect(Cause.pretty(attempt.cause)).toContain('quota');
+        expect(harness.calls).toEqual([]);
+      }).pipe(provideTestLayer(journalTestLayer)),
+    30_000,
+  );
+
   effectIt.effect(
     'coalesces 73,000 tiny rows across 128-file callbacks into 143 bounded receipts',
     () =>
@@ -434,6 +502,7 @@ function coalescerHarness(options: {
     file: CodeGraphInventoryFile,
   ) => CodeGraphParserResult | Effect.Effect<CodeGraphParserResult, never>;
   readonly onCache?: (call: CacheCall) => Effect.Effect<void, never>;
+  readonly onSource?: Parameters<typeof cacheContentBatch>[0]['onSourceParserBatch'];
   readonly onProgress?: Parameters<typeof cacheContentBatch>[0]['onProgress'];
 }) {
   const calls: CacheCall[] = [];
@@ -475,6 +544,7 @@ function coalescerHarness(options: {
         }),
     } as CodeGraphLanguagePackRegistryShape,
     onProgress: options.onProgress,
+    onSourceParserBatch: options.onSource,
     parserPool,
     persistentCapacityProtector: unprotectedCacheWrite,
     store,

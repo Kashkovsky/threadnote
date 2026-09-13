@@ -24,7 +24,7 @@ import {
   readGraphShareContributionQueue,
   prunePersistedGraphShareContributionQueue,
 } from './contribution.js';
-import {sha256Digest, sha256HexFromDigest} from './digest.js';
+import {sha256Digest, sha256HexFromDigest, type Sha256Digest} from './digest.js';
 import {GRAPH_SHARE_HTTP_CAS_MAX_BYTES} from './oci.js';
 import {graphSharingFailure, graphSharingHttpFailure, GraphSharingError} from './errors.js';
 import {isGraphShareGitObjectId} from './git.js';
@@ -37,6 +37,8 @@ import {
 import {lookupGraphShareTrustReceipt} from './trust.js';
 import {resolveGraphShareRepositoryClient} from './client_state.js';
 import {graphSharingContributionQueuePath, graphSharingLayout} from './layout.js';
+import {persistGraphSharePendingSignedCandidates, type GraphSharePendingSignedCandidate} from './signed_candidate.js';
+import {usesSignedGraphWorkerDelivery} from './worker_delivery.js';
 import {
   graphShareContributionRetryDelay,
   readContributionRetryState,
@@ -49,6 +51,10 @@ export const enqueueLocalGraphShareParseResults = Effect.fn('codeGraph.sharing.e
     readonly facts: readonly BoundedCodeGraphFact[];
     readonly files: readonly CodeGraphInventoryFile[];
     readonly identity: Pick<RepositoryIdentity, 'headCommit' | 'repositoryId'>;
+    readonly producer: {
+      readonly platform: {readonly os: string; readonly architecture: string};
+      readonly releaseIdentity: string;
+    };
     readonly threadnoteHome: string;
   }) {
     const trust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.identity.repositoryId);
@@ -60,7 +66,11 @@ export const enqueueLocalGraphShareParseResults = Effect.fn('codeGraph.sharing.e
     const factsByPath = new Map(input.facts.map(fact => [fact.facts.path, fact]));
     const batchId = input.identity.headCommit.slice(0, 40);
     if (!/^[0-9a-f]{40}$/u.test(batchId)) return {queued: 0};
-    let queued = 0;
+    const prepared: Array<{
+      readonly artifact: GraphShareParseResultV1;
+      readonly candidate?: GraphSharePendingSignedCandidate;
+      readonly resultManifestDigest: Sha256Digest;
+    }> = [];
     for (const file of input.files) {
       if (file.source !== 'commit' || !isGraphShareGitObjectId(file.blobId) || file.contentHash.length !== 64) continue;
       const fact = factsByPath.get(file.path);
@@ -83,26 +93,58 @@ export const enqueueLocalGraphShareParseResults = Effect.fn('codeGraph.sharing.e
       });
       const resultBytes = new TextEncoder().encode(canonicalJson(artifact));
       const resultManifestDigest = yield* putCasBytes(casRoot, resultBytes);
-      const attestationDigest = yield* putCasBytes(
-        casRoot,
-        new TextEncoder().encode(
-          canonicalJson({kind: 'contributor-self', payloadDigest: resultManifestDigest, schemaVersion: 1}),
-        ),
-      );
-      const enqueued = yield* enqueuePersistedGraphShareContribution(
-        input.threadnoteHome,
-        input.identity.repositoryId,
-        trust?.accessMode,
-        {
-          actionKey: artifact.actionKey,
-          attestationDigest,
-          batchId,
-          resultManifestDigest,
-          semanticDigest: artifact.semanticDigest,
-        },
-        mode,
-      );
-      if (enqueued.queued) queued += 1;
+      const candidate: GraphSharePendingSignedCandidate | undefined =
+        /^(?:darwin|linux|win32)$/u.test(input.producer.platform.os) &&
+        /^(?:arm64|x64)$/u.test(input.producer.platform.architecture) &&
+        input.producer.releaseIdentity !== 'unknown'
+          ? {
+              actionKey: artifact.actionKey,
+              batchId,
+              casRoot,
+              extractorSet: input.extractorSet,
+              organization: trust.organization,
+              platform: input.producer.platform as GraphSharePendingSignedCandidate['platform'],
+              profileDigest: trust.profileDigest,
+              queuedAtMilliseconds: yield* Clock.currentTimeMillis,
+              releaseIdentity: input.producer.releaseIdentity,
+              resultDigest: resultManifestDigest,
+              resultSize: resultBytes.byteLength,
+              semanticDigest: artifact.semanticDigest,
+              sourceCommit: input.identity.headCommit,
+            }
+          : undefined;
+      prepared.push({artifact, resultManifestDigest, ...(candidate === undefined ? {} : {candidate})});
+    }
+    // The private producer journal must be durable before cacheFacts can make these results reusable.
+    yield* persistGraphSharePendingSignedCandidates({
+      candidates: prepared.flatMap(item => (item.candidate === undefined ? [] : [item.candidate])),
+      repositoryId: input.identity.repositoryId,
+      threadnoteHome: input.threadnoteHome,
+    });
+    let queued = 0;
+    for (const {artifact, resultManifestDigest} of prepared) {
+      const enqueued = yield* Effect.gen(function* () {
+        const attestationDigest = yield* putCasBytes(
+          casRoot,
+          new TextEncoder().encode(
+            canonicalJson({kind: 'contributor-self', payloadDigest: resultManifestDigest, schemaVersion: 1}),
+          ),
+        );
+        return yield* enqueuePersistedGraphShareContribution(
+          input.threadnoteHome,
+          input.identity.repositoryId,
+          trust.accessMode,
+          {
+            actionKey: artifact.actionKey,
+            attestationDigest,
+            batchId,
+            resultManifestDigest,
+            semanticDigest: artifact.semanticDigest,
+          },
+          mode,
+        );
+      }).pipe(Effect.option);
+      if (enqueued._tag === 'Some' && enqueued.value.queued) queued += 1;
     }
     return {queued};
   },
@@ -120,6 +162,7 @@ export const drainQueuedGraphShareContributions = Effect.fn('codeGraph.sharing.d
     const lockPath = `${graphSharingContributionQueuePath(path, root, input.identity.repositoryId)}.delivery.lock`;
     const trust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.identity.repositoryId);
     if (trust === undefined) return {sent: 0};
+    if (usesSignedGraphWorkerDelivery(trust)) return {sent: 0};
     if (trust.accessMode === 'read-only') {
       yield* prunePersistedGraphShareContributionQueue(input.threadnoteHome, input.identity.repositoryId, 'off');
       return {sent: 0};

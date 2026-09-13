@@ -37,6 +37,7 @@ const Claims = Schema.Struct({
   resultDigest: Digest,
   resultSize: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(GRAPH_SHARE_HTTP_CAS_MAX_BYTES)),
   semanticDigest: Digest,
+  sourceCommit: Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u)),
   workerId: Schema.String.check(Schema.isPattern(/^gw_[0-9a-f]{32}$/u)),
 });
 const Attestation = Schema.Struct({
@@ -80,6 +81,10 @@ export interface GraphWorkerResultAuthority {
   readonly workerId: string;
 }
 
+export type GraphWorkerResultVerificationAuthority = Omit<GraphWorkerResultAuthority, 'graphAbi'> & {
+  readonly graphAbi?: string;
+};
+
 export const createGraphWorkerResultArtifact = Effect.fn('codeGraph.sharing.createWorkerResult')(function* (input: {
   readonly metadata: GraphWorkerResultMetadata;
   readonly resultBytes: Uint8Array;
@@ -98,7 +103,8 @@ export const createGraphWorkerResultArtifact = Effect.fn('codeGraph.sharing.crea
     resultSize: resultBytes.byteLength,
     semanticDigest: parsed.semanticDigest,
   }).pipe(Effect.mapError(failure));
-  if (claims.repositoryId !== parsed.repositoryId) return yield* failure();
+  if (claims.repositoryId !== parsed.repositoryId || claims.batchId !== claims.sourceCommit.slice(0, 40))
+    return yield* failure();
   const attestationBytes = encode({
     algorithm: 'ed25519',
     claims,
@@ -126,7 +132,7 @@ export const createGraphWorkerResultArtifact = Effect.fn('codeGraph.sharing.crea
 export const verifyGraphWorkerResultIntegrity = Effect.fn('codeGraph.sharing.verifyWorkerResultIntegrity')(
   function* (input: {
     readonly attestationBytes: Uint8Array;
-    readonly expected: GraphWorkerResultAuthority;
+    readonly expected: GraphWorkerResultVerificationAuthority;
     readonly manifestBytes: Uint8Array;
     readonly manifestDigest: string;
     readonly resultBytes: Uint8Array;
@@ -169,10 +175,11 @@ export const verifyGraphWorkerResultIntegrity = Effect.fn('codeGraph.sharing.ver
       claims.profileDigest !== expected.profileDigest ||
       claims.repositoryId !== expected.repositoryId ||
       claims.workerId !== expected.workerId ||
-      claims.graphAbi !== expected.graphAbi ||
+      (expected.graphAbi !== undefined && claims.graphAbi !== expected.graphAbi) ||
       attestation.publicKey !== expected.signingPublicKey ||
       claims.resultDigest !== result.digest ||
-      claims.resultSize !== result.size
+      claims.resultSize !== result.size ||
+      claims.batchId !== claims.sourceCommit.slice(0, 40)
     )
       return yield* failure();
     yield* verifyGraphWorkerSignature(expected.signingPublicKey, 'attestation', encode(claims), attestation.signature);
@@ -213,7 +220,7 @@ export const readGraphWorkerResultArtifact = Effect.fn('codeGraph.sharing.readWo
     readonly readBlob: (digest: string, size?: number) => Effect.Effect<Uint8Array, E, R>;
   },
   manifestDigest: string,
-  expected: GraphWorkerResultAuthority,
+  expected: GraphWorkerResultVerificationAuthority,
 ) {
   const authority = {...expected};
   const manifestBytes = yield* reader.readWorkerManifest(manifestDigest);

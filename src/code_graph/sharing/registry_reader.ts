@@ -14,14 +14,15 @@ import {
 import {makeGraphShareRegistryHttp} from './registry_http.js';
 import {parseGraphShareRegistryTarget} from './registry_reference.js';
 
-export const makeGraphShareRegistryReader = Effect.fn('codeGraph.sharing.registryReader')(function* (
-  reference: string,
-) {
+export const makeGraphShareRegistryReader = Effect.fn('codeGraph.sharing.registryReader')(function* <
+  E = never,
+  R = never,
+>(reference: string, isAuthorized?: Effect.Effect<boolean, E, R>) {
   const target = yield* Effect.try({
     try: () => parseGraphShareRegistryTarget(reference),
     catch: () => graphSharingFailure('OCI registry reference is invalid.'),
   });
-  const request = yield* makeGraphShareRegistryHttp(target);
+  const request = yield* makeGraphShareRegistryHttp(target, 'read', isAuthorized);
   const manifestResponse = (reference: string, maximum: number) =>
     Effect.gen(function* () {
       const response = yield* request(
@@ -97,7 +98,7 @@ export const makeGraphShareRegistryReader = Effect.fn('codeGraph.sharing.registr
   };
 });
 
-export type GraphShareRegistryReader = Effect.Success<ReturnType<typeof makeGraphShareRegistryReader>>;
+export type GraphShareRegistryReader = Effect.Success<ReturnType<typeof makeGraphShareRegistryReader<never, never>>>;
 
 export const discoverGraphShareRegistryFrontier = Effect.fn('codeGraph.sharing.discoverRegistryFrontier')(function* (
   casRoot: string,

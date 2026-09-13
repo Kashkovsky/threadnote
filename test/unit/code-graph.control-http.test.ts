@@ -1,6 +1,7 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Clock, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -19,7 +20,7 @@ const issuer = 'https://login.example.test/';
 const audience = 'https://graph.example.test';
 const layer = Layer.mergeAll(SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer)), FetchHttpClient.layer);
 const fixture = Effect.fn('test.controlHttp.fixture')(function* (
-  handler: (url: string, init: RequestInit) => Response,
+  handler: (url: string, init: RequestInit) => Response | Promise<Response>,
   options: {coordinatorUrl?: string; beforeCredential?: Effect.Effect<void>} = {},
 ) {
   const requestScope = {...scope, coordinatorUrl: options.coordinatorUrl ?? scope.coordinatorUrl};
@@ -208,6 +209,71 @@ describe('authenticated graph control transport', () => {
       expect(JSON.stringify(result)).toContain('120000');
       expect(JSON.stringify(result)).not.toContain('synthetic-private-response');
       expect(denied.httpCalls()).toBe(1);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('returns only a bounded exact stale-source result response', () =>
+    Effect.gen(function* () {
+      const idempotencyKey = sha256Digest('stale operation');
+      const stale = yield* fixture(() => Response.json({error: 'stale-source', idempotencyKey}, {status: 409}));
+      const response = yield* stale.client.request('POST', '/v1/results', {});
+      expect(response.status).toBe(409);
+      expect(response.body).toEqual({
+        error: 'stale-source',
+        idempotencyKey,
+      });
+      const conflict = yield* fixture(() =>
+        Response.json({error: 'operation-conflict', idempotencyKey}, {status: 409}),
+      );
+      expect((yield* Effect.result(conflict.client.request('POST', '/v1/results', {})))._tag).toBe('Failure');
+      const extra = yield* fixture(() =>
+        Response.json({error: 'stale-source', idempotencyKey, unexpected: true}, {status: 409}),
+      );
+      expect((yield* Effect.result(extra.client.request('POST', '/v1/results', {})))._tag).toBe('Failure');
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('keeps a valid result admission alive beyond the prior 30-second deadline', () =>
+    Effect.gen(function* () {
+      let entered!: () => void;
+      let resolve!: (response: Response) => void;
+      const started = new Promise<void>(ready => {
+        entered = ready;
+      });
+      const pending = new Promise<Response>(ready => {
+        resolve = ready;
+      });
+      const f = yield* fixture(() => {
+        entered();
+        return pending;
+      });
+      const request = yield* f.client.request('POST', '/v1/results', {}).pipe(Effect.result, Effect.forkScoped);
+      yield* Effect.promise(() => started);
+      yield* TestClock.adjust('31 seconds');
+      expect(request.pollUnsafe()).toBeUndefined();
+      resolve(Response.json({idempotencyKey: sha256Digest('operation'), status: 'accepted'}, {status: 201}));
+      expect((yield* Fiber.join(request))._tag).toBe('Success');
+      expect(f.httpCalls()).toBe(1);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('bounds the whole result request across a 401 credential retry', () =>
+    Effect.gen(function* () {
+      const secondCredential = yield* Deferred.make<void>();
+      let loads = 0;
+      const f = yield* fixture(() => new Response(null, {status: 401}), {
+        beforeCredential: Effect.gen(function* () {
+          if (++loads === 2) {
+            yield* Deferred.succeed(secondCredential, undefined);
+            yield* Effect.sleep('600 seconds');
+          }
+        }),
+      });
+      const request = yield* f.client.request('POST', '/v1/results', {}).pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(secondCredential);
+      yield* TestClock.adjust('311 seconds');
+      expect((yield* Fiber.join(request))._tag).toBe('Failure');
+      expect(f.httpCalls()).toBe(1);
     }).pipe(provideTestLayer(layer)),
   );
 });

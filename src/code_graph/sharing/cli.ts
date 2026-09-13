@@ -139,7 +139,7 @@ export function makeGraphSharingCommands(
       mode: requiredChoice('mode', ['off', 'passive', 'idle', 'dedicated'], 'Contribution mode'),
     },
     options => withRuntimeEffect(config => runGraphContributeSetCommand(config, options)),
-  ).pipe(Command.withDescription('Set local graph contribution below the organization maximum'));
+  ).pipe(Command.withDescription('Set local contribution preference; idle and dedicated currently deliver passively'));
 
   const graphContribute = Command.make('contribute').pipe(
     Command.withDescription('Control opportunistic graph-sharing contribution from this checkout'),
@@ -154,11 +154,7 @@ export function makeGraphSharingCommands(
       json: codeGraphCliBounds.json,
     },
     options => withRuntimeEffect(config => runGraphWorkerCommand(config, options)),
-  ).pipe(
-    Command.withDescription(
-      'Run a dedicated graph worker against the authorized Git checkout; never fetch source from graph CAS',
-    ),
-  );
+  ).pipe(Command.withDescription('Report which advertised Git blobs exist locally without executing actions'));
 
   return {graphContribute, graphPublisher, graphShare, graphWorker};
 }

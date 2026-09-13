@@ -1,12 +1,17 @@
-import {Clock, Crypto, Effect, FileSystem, Path, Ref} from 'effect';
+import {Clock, Context, Crypto, Effect, FileSystem, Layer, Path, Ref, Schema} from 'effect';
+import {canonicalJson} from '../checkpoint/canonical_json.js';
+import {CommandExecutor} from '../../effect/command.js';
+import {SystemInfo} from '../../effect/system.js';
+import type {RuntimeConfig} from '../../types.js';
 import {runCodeGraphCheckpointExport} from '../checkpoint/commands.js';
+import {codeGraphCheckpointAbiInputV1} from '../checkpoint/compatibility.js';
+import {codeGraphCheckpointAbiDigestV1} from '../checkpoint/pack.js';
 import type {CodeGraphCheckpointHeaderV1, CodeGraphCheckpointRecordV1} from '../checkpoint/schema.js';
 import {CodeGraphIndexer} from '../indexer.js';
 import {codeGraphLayout} from '../layout.js';
 import {resolveRepositoryIdentity} from '../repository.js';
 import {CodeGraphStore} from '../store.js';
-import {SystemInfo} from '../../effect/system.js';
-import type {RuntimeConfig} from '../../types.js';
+import {graphShareLanguageAndRole, graphShareParseActionKey} from './action.js';
 import {
   generateGraphSharePublisherKey,
   parseGraphSharePublisherKey,
@@ -24,19 +29,26 @@ import {
   encodeGraphShareDeltaPack,
   putGraphShareDeltaArtifact,
 } from './delta_pack.js';
-import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from './atomic.js';
+import {decodeJsonBytes, readJsonFile, writeDurablePrivateJsonFile, writePrivateJsonFile} from './atomic.js';
 import {putCasFile, readVerifiedCasBlob} from './cas.js';
 import {putGraphShareCheckpointLayers} from './checkpoint_cas.js';
 import {putGraphShareOciDescriptor, putSignedGraphShareFrontierDocuments} from './descriptor.js';
+import {readGraphControlPolicy, type GraphControlPolicy} from './control_authorization.js';
+import {GraphControlEnrollmentError, requireGraphControlPublisherWorker} from './control_enrollment.js';
+import {
+  readGraphWorkerAdmissionStore,
+  retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked,
+} from './control_result_admission.js';
 import {
   loadGraphShareCoordinatorState,
   updateGraphShareCoordinatorMachine,
   withCoordinatorStateLock,
 } from './control_server.js';
 import type {GraphShareCoordinatorStateV1} from './control_protocol.js';
-import {parseSha256Digest, type Sha256Digest} from './digest.js';
+import {parseSha256Digest, sha256Digest, type Sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 import {
+  adoptPublishedFrontier,
   assembleGraphShareBatch,
   failGraphShareBatch,
   freezeGraphShareBatch,
@@ -54,9 +66,10 @@ import {
   graphShareCommitUnixSeconds,
 } from './git.js';
 import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
-import {verifyGraphShareParseReceipt, type VerifiedGraphShareParseReceipt} from './parse_cache.js';
+import {verifyGraphShareParseReceipt} from './parse_cache.js';
 import {
   assertEnrollmentMatchesIdentity,
+  graphShareProfileDigest,
   parseGraphShareEnrollment,
   parseGraphShareProfile,
   parseGraphShareProfilePointer,
@@ -69,10 +82,18 @@ import {
   type GraphPublisherHydrationEvidence,
 } from './publication_evidence.js';
 import {resolveGraphShareCasRoot} from './trust.js';
-import {makeGraphShareSourceVerification} from './source_verification.js';
+import {makeGraphShareSourceVerification, type GraphShareSourceVerifiedReceipt} from './source_verification.js';
 import {completeGraphPublisherRegistryPublication} from './publisher_registry.js';
+import {readAuthenticatedGraphShareFrontier} from './frontier_acceptance.js';
+import {graphShareRegistryPublicationScope} from './registry_publication.js';
+import {graphWorkerRegistryForProfile} from './worker_registry_upload.js';
+import {makeGraphShareRegistryReader} from './registry_reader.js';
+import {selectGraphWorkerReceiptsForSource} from './worker_receipts.js';
+import {verifyPublisherWorkerReceipt} from './worker_publisher_receipt.js';
+import type {GraphWorkerAdmissionReceiptV2} from './worker_admission_state.js';
 
 export interface GraphPublisherCycleOptions {
+  readonly authorizationPolicy?: string;
   readonly cas?: string;
   readonly cwd?: string;
   readonly forceFreeze?: boolean;
@@ -135,12 +156,33 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
   const profile = parseGraphShareProfile(
     yield* decodeJsonBytes(yield* readVerifiedCasBlob(casRoot, profilePointer.digest)),
   );
+  const signedProfile = profile.registry.worker.startsWith('oci://');
   const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
   const pointerPath = graphSharingFrontierPointerPath(path, layout.frontiersRoot, identity.repositoryId);
   const pointer = parseGraphShareFrontierPointer(yield* readJsonFile(pointerPath));
-  const current = parseGraphShareFrontierManifest(
-    yield* decodeJsonBytes(yield* readVerifiedCasBlob(casRoot, pointer.manifestDigest)),
-  );
+  const current = signedProfile
+    ? yield* readAuthenticatedGraphShareFrontier(
+        casRoot,
+        graphShareRegistryPublicationScope({enrollment, profile}),
+        pointer,
+      )
+    : parseGraphShareFrontierManifest(
+        yield* decodeJsonBytes(yield* readVerifiedCasBlob(casRoot, pointer.manifestDigest)),
+      );
+  const policyFile = options.authorizationPolicy === undefined ? undefined : path.resolve(options.authorizationPolicy);
+  if (signedProfile && policyFile === undefined)
+    return yield* graphSharingFailure('OCI worker publication requires a control authorization policy.');
+  const initialPolicy = signedProfile
+    ? yield* readGraphControlPolicy(policyFile!).pipe(
+        Effect.filterOrFail(
+          policy =>
+            policy.organization === profile.organization &&
+            policy.repositoryId === identity.repositoryId &&
+            policy.profileDigest === graphShareProfileDigest(profile),
+          () => graphSharingFailure('Publisher control policy does not match the enrolled profile.'),
+        ),
+      )
+    : undefined;
   const coordinatorOptions = {
     organization: profile.organization,
     repositoryId: identity.repositoryId,
@@ -158,6 +200,61 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
           publishedFrontier: current.sourceCommit,
         }
       : coordinator.machine;
+  if (initialPolicy !== undefined)
+    yield* withCoordinatorStateLock(
+      coordinatorOptions,
+      Effect.gen(function* () {
+        const latestIdentity = yield* resolveRepositoryIdentity(cwd);
+        const latestEnrollment = parseGraphShareEnrollment(
+          yield* readJsonFile(graphShareEnrollmentPath(path, latestIdentity.repoRoot)),
+        );
+        assertEnrollmentMatchesIdentity(latestEnrollment, latestIdentity.repositoryId);
+        const latestPointer = parseGraphShareFrontierPointer(yield* readJsonFile(pointerPath));
+        if (
+          latestIdentity.repositoryId !== identity.repositoryId ||
+          latestIdentity.repoRoot !== identity.repoRoot ||
+          latestIdentity.headCommit !== identity.headCommit ||
+          parseGraphShareProfilePointer(latestEnrollment.profile).digest !== current.profileDigest ||
+          latestPointer.manifestDigest !== pointer.manifestDigest ||
+          latestPointer.envelopeDigest !== pointer.envelopeDigest
+        )
+          return yield* graphSharingFailure('Published worker source or profile changed before admission cleanup.');
+        const authenticated = yield* readAuthenticatedGraphShareFrontier(
+          casRoot,
+          graphShareRegistryPublicationScope({enrollment: latestEnrollment, profile}),
+          latestPointer,
+        );
+        if (authenticated.sourceCommit !== current.sourceCommit)
+          return yield* graphSharingFailure('Published worker source changed before admission cleanup.');
+        yield* retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked(
+          {
+            casRoot,
+            enrollment: latestEnrollment,
+            home: config.agentContextHome,
+            profile,
+            repoRoot: latestIdentity.repoRoot,
+          },
+          initialPolicy,
+        );
+      }),
+    );
+  if (identity.headCommit === current.sourceCommit) {
+    machine = adoptPublishedFrontier(machine, {
+      generation: current.generation,
+      manifestDigest: pointer.manifestDigest,
+      sourceCommit: current.sourceCommit,
+    });
+    yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
+    return currentPointer(current, pointer, machine.phase);
+  }
+  if (signedProfile && machine.generation < current.generation) {
+    machine = adoptPublishedFrontier(machine, {
+      generation: current.generation,
+      manifestDigest: pointer.manifestDigest,
+      sourceCommit: current.sourceCommit,
+    });
+    yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
+  }
   const publishedCommit = machine.publishedFrontier ?? current.sourceCommit;
   const descendant = yield* graphShareCommitIsAncestor(identity.repoRoot, publishedCommit, identity.headCommit);
   machine = observeCanonicalHead(machine, {
@@ -166,16 +263,22 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
     nowSeconds,
   });
   yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
-  if (identity.headCommit === publishedCommit) {
-    return currentPointer(current, pointer, machine.phase);
-  }
   if (!descendant) {
     return currentPointer(current, pointer, machine.phase);
   }
   const stats = yield* graphShareCommitDiffStats(identity.repoRoot, publishedCommit, identity.headCommit);
-  const actionKeys = coordinator.receipts.receipts
-    .filter(receipt => receipt.batchId === identity.headCommit || receipt.batchId === machine.frozenBatchId)
-    .map(receipt => receipt.actionKey);
+  const admissions =
+    initialPolicy === undefined
+      ? undefined
+      : yield* readGraphWorkerAdmissionStore(config.agentContextHome, initialPolicy);
+  const actionKeys =
+    admissions === undefined
+      ? coordinator.receipts.receipts
+          .filter(receipt => receipt.batchId === identity.headCommit || receipt.batchId === machine.frozenBatchId)
+          .map(receipt => receipt.actionKey)
+      : admissions.receipts
+          .filter(receipt => receipt.sourceCommit === identity.headCommit)
+          .map(receipt => receipt.announcement.body.actionKey);
   machine = freezeGraphShareBatch(machine, {
     actionKeys,
     changedBytes: options.forceFreeze === true ? 1 : stats.changedBytes,
@@ -187,12 +290,13 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
   if (machine.phase !== 'frozen') {
     return currentPointer(current, pointer, machine.phase);
   }
-  const selected = selectGraphShareResultsForFrozenMachine(coordinator.receipts, machine);
+  const selected =
+    admissions === undefined ? selectGraphShareResultsForFrozenMachine(coordinator.receipts, machine) : undefined;
   if (profilePointer.digest !== current.profileDigest) {
     return yield* graphSharingFailure('Publisher enrollment profile differs from the current canonical frontier.');
   }
-  const verified: VerifiedGraphShareParseReceipt[] = [];
-  for (const announcement of selected.selected) {
+  const verified: GraphShareSourceVerifiedReceipt[] = [];
+  for (const announcement of selected?.selected ?? []) {
     const receipt = yield* verifyGraphShareParseReceipt({
       announcement,
       casRoot,
@@ -205,6 +309,143 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
       return currentPointer(current, pointer, machine.phase);
     }
     verified.push(receipt.value);
+  }
+  const selectedSigned: GraphWorkerAdmissionReceiptV2[] = [];
+  if (
+    admissions?.receipts.some(receipt => receipt.sourceCommit === identity.headCommit) &&
+    initialPolicy !== undefined
+  ) {
+    const indexer = yield* CodeGraphIndexer;
+    const store = yield* CodeGraphStore;
+    const eligible = new Map<
+      string,
+      {
+        readonly contentHash: string;
+        readonly extractorSet: string;
+        readonly factsDigest: string;
+        readonly gitBlobId: string;
+        readonly languageAndRole: string;
+        readonly normalizedPath: string;
+      }
+    >();
+    const fresh = yield* indexer.index({
+      cwd,
+      ensureVectors: false,
+      force: true,
+      includeOverlay: false,
+      sourceOnly: true,
+      sourceVerification: {
+        observeParserBatch: group =>
+          Effect.try({
+            try: () => {
+              const facts = new Map(group.facts.map(item => [item.facts.path, item.facts]));
+              for (const file of group.files) {
+                const parsed = facts.get(file.path);
+                if (file.source !== 'commit' || parsed === undefined)
+                  throw new Error('First-pass parser evidence is not committed source.');
+                const languageAndRole = graphShareLanguageAndRole(file.language, 'source');
+                eligible.set(
+                  graphShareParseActionKey({
+                    contentHash: file.contentHash,
+                    extractorSet: group.cacheIdentity,
+                    languageAndRole,
+                    normalizedPath: file.path,
+                    repositoryId: identity.repositoryId,
+                  }),
+                  {
+                    contentHash: file.contentHash,
+                    extractorSet: group.cacheIdentity,
+                    factsDigest: sha256Digest(canonicalJson(parsed)),
+                    gitBlobId: file.blobId,
+                    languageAndRole,
+                    normalizedPath: file.path,
+                  },
+                );
+              }
+            },
+            catch: () => graphSharingFailure('First-pass parser source evidence is invalid.'),
+          }),
+        materializeFacts: batch => Effect.succeed(batch.facts),
+      },
+      threadnoteHome: config.agentContextHome,
+    });
+    const signedSelection =
+      eligible.size === 0
+        ? undefined
+        : selectGraphWorkerReceiptsForSource(admissions, {
+            actionKeys: [...eligible.keys()],
+            profileDigest: profilePointer.digest,
+            repositoryId: identity.repositoryId,
+            sourceCommit: identity.headCommit,
+          });
+    const graphLayout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
+    const ready = yield* store.readySnapshot(graphLayout.databasePath, identity.worktreeId);
+    if (
+      ready === undefined ||
+      ready.dirty ||
+      ready.baseSnapshotId !== undefined ||
+      ready.commit !== identity.headCommit ||
+      ready.id !== fresh.snapshot.id
+    )
+      return yield* graphSharingFailure('Signed worker ABI requires a fresh exact-source snapshot.');
+    const provenance = yield* store.snapshotPackProvenance(graphLayout.databasePath, ready.id);
+    if (provenance === undefined)
+      return yield* graphSharingFailure('Signed worker ABI requires complete language-pack provenance.');
+    const targetAbi = codeGraphCheckpointAbiDigestV1(codeGraphCheckpointAbiInputV1(provenance)).digest;
+    const workerRegistry = yield* Effect.try({
+      try: () =>
+        graphWorkerRegistryForProfile(profile, {
+          profileDigest: profilePointer.digest,
+          repositoryId: identity.repositoryId,
+        }),
+      catch: () => graphSharingFailure('Publisher worker registry is outside its enrolled scope.'),
+    });
+    const commandExecutor = Context.get(yield* Layer.build(CommandExecutor.layer), CommandExecutor);
+    const reader = yield* makeGraphShareRegistryReader(workerRegistry).pipe(
+      Effect.provideService(CommandExecutor, commandExecutor),
+    );
+    for (const group of signedSelection?.candidateGroups ?? []) {
+      for (const receipt of group.alternatives) {
+        if (receipt.graphAbi !== targetAbi) continue;
+        const body = receipt.announcement.body;
+        const worker = yield* requireGraphControlPublisherWorker({
+          home: config.agentContextHome,
+          initialPolicy,
+          principalId: body.principalId,
+          readCurrentPolicy: readGraphControlPolicy(policyFile!),
+          signingPublicKey: receipt.announcement.publicKey,
+          workerId: body.workerId,
+        }).pipe(
+          Effect.catchIf(
+            error => Schema.is(GraphControlEnrollmentError)(error),
+            () => Effect.void,
+          ),
+        );
+        if (worker === undefined) continue;
+        const candidate = yield* verifyPublisherWorkerReceipt({
+          authority: worker,
+          expectedGraphAbi: targetAbi,
+          reader,
+          receipt,
+          sourceCommit: identity.headCommit,
+        }).pipe(Effect.provideService(CommandExecutor, commandExecutor), Effect.option);
+        if (candidate._tag === 'None') continue;
+        const expected = eligible.get(candidate.value.parsed.actionKey);
+        if (
+          expected === undefined ||
+          candidate.value.parsed.normalizedPath !== expected.normalizedPath ||
+          candidate.value.parsed.gitBlobId !== expected.gitBlobId ||
+          candidate.value.parsed.contentHash !== expected.contentHash ||
+          candidate.value.parsed.extractorSet !== expected.extractorSet ||
+          candidate.value.parsed.languageAndRole !== expected.languageAndRole ||
+          sha256Digest(canonicalJson(candidate.value.parsed.facts)) !== expected.factsDigest
+        )
+          continue;
+        verified.push(candidate.value);
+        selectedSigned.push(receipt);
+        break;
+      }
+    }
   }
   const hydration: GraphPublisherHydrationEvidence = {status: 'skipped-source-verification', hydratedResults: 0};
   const verification = makeGraphShareSourceVerification({
@@ -240,6 +481,17 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
       return yield* graphSharingFailure('The ready graph changed after source-verified assembly.');
     }
     const sourceUse = yield* verification.complete();
+    if (selectedSigned.length > 0) {
+      const provenance = yield* store.snapshotPackProvenance(layout.databasePath, ready.id);
+      if (
+        provenance === undefined ||
+        selectedSigned.some(
+          receipt =>
+            receipt.graphAbi !== codeGraphCheckpointAbiDigestV1(codeGraphCheckpointAbiInputV1(provenance)).digest,
+        )
+      )
+        return yield* graphSharingFailure('Signed worker ABI differs from the source-verified target snapshot.');
+    }
     machine = assembleGraphShareBatch(machine);
     yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
     machine = verifyGraphShareBatch(machine);
@@ -248,13 +500,23 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
       snapshotId: ready.id,
       sourceCommit: identity.headCommit,
       verified,
+      ...(initialPolicy === undefined
+        ? {}
+        : {
+            signedAdmissions: {
+              initialPolicy,
+              policyFile: policyFile!,
+              receipts: selectedSigned,
+              sourceSnapshot: admissions!.receipts.filter(receipt => receipt.sourceCommit === identity.headCommit),
+            },
+          }),
     });
     return {
       ...exported,
       contributionEvidence: graphPublisherContributionEvidence({
         hydration,
         index: indexed,
-        selectedResults: selected.selected.length,
+        selectedResults: selected?.selected.length ?? selectedSigned.length,
         sourceUse,
         verifiedResultDigests: verified.map(item => item.announcement.resultManifestDigest),
       }),
@@ -337,7 +599,13 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
   expected: {
     readonly snapshotId: string;
     readonly sourceCommit: string;
-    readonly verified: readonly VerifiedGraphShareParseReceipt[];
+    readonly verified: readonly GraphShareSourceVerifiedReceipt[];
+    readonly signedAdmissions?: {
+      readonly initialPolicy: GraphControlPolicy;
+      readonly policyFile: string;
+      readonly receipts: readonly GraphWorkerAdmissionReceiptV2[];
+      readonly sourceSnapshot: readonly GraphWorkerAdmissionReceiptV2[];
+    };
   },
 ) {
   const crypto = yield* Crypto.Crypto;
@@ -423,26 +691,65 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
         ) {
           return yield* graphSharingFailure('Publication source, profile, or predecessor changed during verification.');
         }
-        const state =
-          options.stateRef === undefined
-            ? yield* loadGraphShareCoordinatorState(coordinatorOptions)
-            : yield* Ref.get(options.stateRef);
-        const quarantine = new Set(state.receipts.quarantine.map(item => item.actionKey));
-        if (
-          expected.verified.some(
-            item =>
-              quarantine.has(item.announcement.actionKey) ||
-              !state.receipts.receipts.some(
-                receipt =>
-                  receipt.actionKey === item.announcement.actionKey &&
-                  receipt.resultManifestDigest === item.announcement.resultManifestDigest &&
-                  receipt.batchId === item.announcement.batchId,
-              ),
-          )
-        ) {
-          return yield* graphSharingFailure(
-            'A selected contribution changed or entered quarantine before publication.',
+        if (expected.signedAdmissions !== undefined) {
+          const admissions = yield* readGraphWorkerAdmissionStore(
+            config.agentContextHome,
+            expected.signedAdmissions.initialPolicy,
           );
+          if (
+            canonicalJson(admissions.receipts.filter(receipt => receipt.sourceCommit === expected.sourceCommit)) !==
+            canonicalJson(expected.signedAdmissions.sourceSnapshot)
+          )
+            return yield* graphSharingFailure('Signed contributions changed during publication; retry the batch.');
+          const quarantine = new Set(
+            admissions.quarantine.filter(item => item.repositoryId === repositoryId).map(item => item.actionKey),
+          );
+          for (const receipt of expected.signedAdmissions.receipts) {
+            const body = receipt.announcement.body;
+            if (
+              quarantine.has(body.actionKey) ||
+              !admissions.receipts.some(
+                current =>
+                  current.announcement.body.idempotencyKey === body.idempotencyKey &&
+                  current.announcementDigest === receipt.announcementDigest &&
+                  current.announcement.body.resultManifestDigest === body.resultManifestDigest &&
+                  current.sourceCommit === expected.sourceCommit,
+              )
+            )
+              return yield* graphSharingFailure(
+                'A signed contribution changed or entered quarantine before publication.',
+              );
+            yield* requireGraphControlPublisherWorker({
+              home: config.agentContextHome,
+              initialPolicy: expected.signedAdmissions.initialPolicy,
+              principalId: body.principalId,
+              readCurrentPolicy: readGraphControlPolicy(expected.signedAdmissions.policyFile),
+              signingPublicKey: receipt.announcement.publicKey,
+              workerId: body.workerId,
+            });
+          }
+        } else {
+          const state =
+            options.stateRef === undefined
+              ? yield* loadGraphShareCoordinatorState(coordinatorOptions)
+              : yield* Ref.get(options.stateRef);
+          const quarantine = new Set(state.receipts.quarantine.map(item => item.actionKey));
+          if (
+            expected.verified.some(
+              item =>
+                quarantine.has(item.announcement.actionKey) ||
+                !state.receipts.receipts.some(
+                  receipt =>
+                    receipt.actionKey === item.announcement.actionKey &&
+                    receipt.resultManifestDigest === item.announcement.resultManifestDigest &&
+                    receipt.batchId === item.announcement.batchId,
+                ),
+            )
+          ) {
+            return yield* graphSharingFailure(
+              'A selected contribution changed or entered quarantine before publication.',
+            );
+          }
         }
       });
       yield* verifyTarget;
@@ -493,11 +800,24 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
       const documents = yield* putSignedGraphShareFrontierDocuments(casRoot, signed, metadataBytes);
       const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
       yield* verifyTarget;
-      yield* writePrivateJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, repositoryId), {
+      yield* writeDurablePrivateJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, repositoryId), {
         envelopeDigest: documents.envelopeDigest,
         manifestDigest: documents.manifestDigest,
         schemaVersion: 1,
       });
+      if (expected.signedAdmissions !== undefined)
+        yield* retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked(
+          {
+            casRoot,
+            enrollment: parseGraphShareEnrollment(
+              yield* readJsonFile(graphShareEnrollmentPath(path, identity.repoRoot)),
+            ),
+            home: config.agentContextHome,
+            profile,
+            repoRoot: identity.repoRoot,
+          },
+          expected.signedAdmissions.initialPolicy,
+        );
       return {
         checkpointDigest,
         descriptorDigest: documents.descriptorDigest,
