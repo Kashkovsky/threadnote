@@ -216,6 +216,59 @@ export const requireGraphControlWorker = Effect.fn('codeGraph.sharing.requireCon
   };
 });
 
+/** Publisher-side live authority check; the coordinator never stores a contributor bearer token. */
+export const requireGraphControlPublisherWorker = Effect.fn('codeGraph.sharing.requirePublisherWorker')(function* <
+  E,
+  R,
+>(input: {
+  readonly home: string;
+  readonly initialPolicy: GraphControlPolicy;
+  readonly principalId: string;
+  readonly readCurrentPolicy: Effect.Effect<GraphControlPolicy, E, R>;
+  readonly signingPublicKey: string;
+  readonly workerId: string;
+}) {
+  const authority = authorityDigest(input.initialPolicy);
+  const grant = Effect.gen(function* () {
+    const policy = yield* input.readCurrentPolicy;
+    const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+    const matching = policy.grants.find(
+      item => sha256Digest(JSON.stringify([policy.issuer, item.subject])) === input.principalId,
+    );
+    if (authorityDigest(policy) !== authority || matching === undefined)
+      return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
+    const expiresAt = graphControlGrantExpiry(
+      policy,
+      input.initialPolicy,
+      {issuer: policy.issuer, subject: matching.subject, scopes: new Set(['graph:contribute'])},
+      'graph:contribute',
+      now,
+    );
+    if (expiresAt === undefined) return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
+    return {expiresAt, now};
+  });
+  yield* grant;
+  const target = yield* graphWorkerEnrollmentStatePath(input.home, input.initialPolicy);
+  const document = yield* readEnrollmentDocument(target, authority);
+  const worker = document.records.find(record => record.workerId === input.workerId);
+  const current = yield* grant;
+  if (
+    worker === undefined ||
+    worker.principalId !== input.principalId ||
+    worker.signingPublicKey !== input.signingPublicKey ||
+    worker.expiresAt <= current.now
+  )
+    return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
+  return {
+    expiresAt: Math.min(worker.expiresAt, current.expiresAt),
+    principalId: input.principalId,
+    profileDigest: input.initialPolicy.profileDigest,
+    repositoryId: input.initialPolicy.repositoryId,
+    signingPublicKey: input.signingPublicKey,
+    workerId: input.workerId,
+  };
+});
+
 const readEnrollmentDocument = Effect.fn('codeGraph.sharing.readEnrollmentDocument')(function* (
   target: string,
   authority: string,
