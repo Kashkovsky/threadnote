@@ -39,7 +39,7 @@ import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/work
 import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
 import {createAccessTokenVerifier} from '../../src/oauth/access_token.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {CommandExecutor} from '../../src/effect/command.js';
+import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const issuer = 'https://identity.example.test/';
@@ -54,6 +54,36 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const home = yield* fs.makeTempDirectoryScoped({prefix: 'graph-control-result-'});
+  const repoRoot = path.join(home, 'source');
+  yield* fs.makeDirectory(repoRoot, {recursive: true});
+  const executor = Context.get(yield* Layer.build(CommandExecutor.layer), CommandExecutor);
+  const git = (args: string[]) =>
+    runCommandEffect('git', ['-C', repoRoot, ...args]).pipe(Effect.provideService(CommandExecutor, executor));
+  yield* git(['init', '-q']);
+  yield* fs.writeFileString(path.join(repoRoot, 'source.txt'), 'baseline\n');
+  yield* git(['add', '.']);
+  yield* git([
+    '-c',
+    'user.name=Threadnote Test',
+    '-c',
+    'user.email=test@threadnote.local',
+    'commit',
+    '-qm',
+    'baseline',
+  ]);
+  const publishedCommit = (yield* git(['rev-parse', 'HEAD'])).stdout.trim();
+  yield* fs.writeFileString(path.join(repoRoot, 'source.txt'), 'candidate\n');
+  yield* git(['add', '.']);
+  yield* git([
+    '-c',
+    'user.name=Threadnote Test',
+    '-c',
+    'user.email=test@threadnote.local',
+    'commit',
+    '-qm',
+    'candidate',
+  ]);
+  const candidateCommit = (yield* git(['rev-parse', 'HEAD'])).stdout.trim();
   const key = yield* generateGraphSharePublisherKey();
   const baseline = defaultGraphShareProfile({
     branch: 'main',
@@ -74,6 +104,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
     },
     policyFile: path.join(home, 'policy.json'),
     profile,
+    repoRoot,
     threadnoteHome: home,
     enableWorkerResults: enabled,
   };
@@ -82,7 +113,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
     checkpoint: {
       manifestDigest: sha256Digest('checkpoint'),
       snapshotId: `cgsn_${'a'.repeat(40)}`,
-      sourceCommit: 'a'.repeat(40),
+      sourceCommit: publishedCommit,
     },
     deltas: [],
     generation: 1,
@@ -95,7 +126,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
     repositoryId,
     schemaVersion: 1 as const,
     snapshotId: `cgsn_${'a'.repeat(40)}`,
-    sourceCommit: 'a'.repeat(40),
+    sourceCommit: publishedCommit,
   };
   const signed = yield* signGraphShareFrontier(key, manifest);
   const manifestDigest = yield* putCasBytes(options.casRoot, encode(signed.manifest));
@@ -209,7 +240,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
   const candidate = (
     worker: {expiresAt: number; principalId: string; workerId: string},
     diagnostics: string[] = [],
-    batchId = 'b'.repeat(40),
+    batchId = candidateCommit,
     producerGraphAbi = graphAbi,
   ) =>
     Effect.gen(function* () {
@@ -263,6 +294,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
   const statePath = yield* graphWorkerAdmissionStatePath(home, yield* readGraphControlPolicy(options.policyFile));
   return {
     candidate,
+    candidateCommit,
     enroll,
     fs,
     key,
@@ -270,6 +302,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
     options,
     policy,
     profileDigest,
+    publishedCommit,
     registryBytes,
     registryHook,
     registryPaths,
@@ -287,7 +320,7 @@ describe('authenticated signed worker admission route', () => {
       Effect.gen(function* () {
         const f = yield* fixture();
         const worker = yield* f.enroll;
-        const stale = yield* f.candidate(worker, [], 'a'.repeat(40));
+        const stale = yield* f.candidate(worker, [], f.publishedCommit);
         expect(yield* f.request('/v1/results', f.validToken, stale.announcement)).toEqual({
           body: {error: 'stale-source'},
           status: 409,
@@ -298,10 +331,10 @@ describe('authenticated signed worker admission route', () => {
         expect((yield* f.request('/v1/results', f.validToken, first.announcement)).status).toBe(201);
         const nextManifest = {
           ...f.manifest,
-          checkpoint: {...f.manifest.checkpoint, sourceCommit: 'b'.repeat(40)},
+          checkpoint: {...f.manifest.checkpoint, sourceCommit: f.candidateCommit},
           generation: 2,
           previousManifestDigest: sha256Digest(encode(f.manifest)),
-          sourceCommit: 'b'.repeat(40),
+          sourceCommit: f.candidateCommit,
         };
         const signed = yield* signGraphShareFrontier(f.key, nextManifest);
         const manifestDigest = yield* putCasBytes(f.options.casRoot, encode(signed.manifest));
@@ -321,7 +354,16 @@ describe('authenticated signed worker admission route', () => {
             graphShareRegistryPublicationScope(f.options),
             {envelopeDigest, manifestDigest, schemaVersion: 1},
           )).sourceCommit,
-        ).toBe('b'.repeat(40));
+        ).toBe(f.candidateCommit);
+        expect(yield* f.request('/v1/results', f.validToken, stale.announcement)).toEqual({
+          body: {error: 'stale-source'},
+          status: 409,
+        });
+        const unknown = yield* f.candidate(worker, [], 'd'.repeat(40));
+        expect(yield* f.request('/v1/results', f.validToken, unknown.announcement)).toEqual({
+          body: {error: 'source-unavailable'},
+          status: 425,
+        });
         const downloads = f.registryPaths.length;
         expect(yield* f.request('/v1/results', f.validToken, first.announcement)).toEqual({
           body: {error: 'stale-source'},
@@ -331,7 +373,7 @@ describe('authenticated signed worker admission route', () => {
         const policy = yield* readGraphControlPolicy(f.options.policyFile);
         yield* withCoordinatorStateLock(
           {threadnoteHome: f.options.threadnoteHome},
-          retireGraphWorkerAdmissionsForPublishedSourceLocked(f.options.threadnoteHome, policy, 'b'.repeat(40)),
+          retireGraphWorkerAdmissionsForPublishedSourceLocked(f.options.threadnoteHome, policy, f.candidateCommit),
         );
         expect(yield* f.request('/v1/results', f.validToken, first.announcement)).toEqual({
           body: {error: 'stale-source'},
@@ -353,13 +395,16 @@ describe('authenticated signed worker admission route', () => {
         expect((yield* readGraphWorkerAdmissionStore(f.options.threadnoteHome, policy)).receipts).toHaveLength(1);
         const retired = yield* withCoordinatorStateLock(
           {threadnoteHome: f.options.threadnoteHome},
-          retireGraphWorkerAdmissionsForPublishedSourceLocked(f.options.threadnoteHome, policy, 'b'.repeat(40)),
+          retireGraphWorkerAdmissionsForPublishedSourceLocked(f.options.threadnoteHome, policy, f.candidateCommit),
         );
         expect(retired.retired).toBe(1);
         expect((yield* readGraphWorkerAdmissionStore(f.options.threadnoteHome, policy)).receipts).toHaveLength(0);
         expect(
-          (yield* retireGraphWorkerAdmissionsForPublishedSourceLocked(f.options.threadnoteHome, policy, 'b'.repeat(40)))
-            .retired,
+          (yield* retireGraphWorkerAdmissionsForPublishedSourceLocked(
+            f.options.threadnoteHome,
+            policy,
+            f.candidateCommit,
+          )).retired,
         ).toBe(0);
       }).pipe(provideTestLayer(layer)),
     ),
@@ -414,7 +459,7 @@ describe('authenticated signed worker admission route', () => {
         const f = yield* fixture();
         const worker = yield* f.enroll;
         const producerGraphAbi = 'd'.repeat(64);
-        const {announcement} = yield* f.candidate(worker, [], 'b'.repeat(40), producerGraphAbi);
+        const {announcement} = yield* f.candidate(worker, [], f.candidateCommit, producerGraphAbi);
         expect((yield* f.request('/v1/results', f.validToken, announcement)).status).toBe(201);
         const state = JSON.parse(yield* f.fs.readFileString(f.statePath));
         expect(state.receipts[0].graphAbi).toBe(producerGraphAbi);
@@ -465,6 +510,7 @@ describe('authenticated signed worker admission route', () => {
             subject: 'worker-principal',
           },
           profile: f.options.profile,
+          repoRoot: f.options.repoRoot,
           readCurrentPolicy,
         }).pipe(Effect.forkChild);
         yield* Deferred.await(paused);
@@ -547,7 +593,7 @@ describe('authenticated signed worker admission route', () => {
         yield* writePrivateJsonFile(f.options.policyFile, {...f.policy, grants: []});
         expect((yield* f.request('/v1/results', f.validToken, first.announcement)).status).toBe(403);
         yield* writePrivateJsonFile(f.options.policyFile, f.policy);
-        const conflicting = yield* f.candidate(worker, ['different'], 'c'.repeat(40));
+        const conflicting = yield* f.candidate(worker, ['different'], f.candidateCommit);
         const admitted = yield* f.request('/v1/results', f.validToken, conflicting.announcement);
         expect(admitted.body).toMatchObject({status: 'quarantined'});
         const state = JSON.parse(yield* f.fs.readFileString(f.statePath));
@@ -603,6 +649,7 @@ describe('authenticated signed worker admission route', () => {
               subject: 'worker-principal',
             },
             profile,
+            repoRoot: f.options.repoRoot,
             readCurrentPolicy: Effect.succeed(boundPolicy),
           }).pipe(Effect.flip);
           expect(outcome).toMatchObject({kind: 'verification-failed'});

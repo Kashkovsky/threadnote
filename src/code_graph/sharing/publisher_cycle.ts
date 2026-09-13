@@ -11,6 +11,7 @@ import {CodeGraphIndexer} from '../indexer.js';
 import {codeGraphLayout} from '../layout.js';
 import {resolveRepositoryIdentity} from '../repository.js';
 import {CodeGraphStore} from '../store.js';
+import {graphShareLanguageAndRole, graphShareParseActionKey} from './action.js';
 import {
   generateGraphSharePublisherKey,
   parseGraphSharePublisherKey,
@@ -44,7 +45,7 @@ import {
   withCoordinatorStateLock,
 } from './control_server.js';
 import type {GraphShareCoordinatorStateV1} from './control_protocol.js';
-import {parseSha256Digest, type Sha256Digest} from './digest.js';
+import {parseSha256Digest, sha256Digest, type Sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 import {
   adoptPublishedFrontier,
@@ -277,17 +278,6 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
   }
   const selected =
     admissions === undefined ? selectGraphShareResultsForFrozenMachine(coordinator.receipts, machine) : undefined;
-  const signedSelection =
-    admissions === undefined
-      ? undefined
-      : selectGraphWorkerReceiptsForSource(admissions, {
-          // The machine may have frozen before a later admission arrived. Every accepted
-          // exact-source action must be considered before this source is retired.
-          actionKeys: [],
-          profileDigest: profilePointer.digest,
-          repositoryId: identity.repositoryId,
-          sourceCommit: identity.headCommit,
-        });
   if (profilePointer.digest !== current.profileDigest) {
     return yield* graphSharingFailure('Publisher enrollment profile differs from the current canonical frontier.');
   }
@@ -307,17 +297,73 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
     verified.push(receipt.value);
   }
   const selectedSigned: GraphWorkerAdmissionReceiptV2[] = [];
-  if (signedSelection !== undefined && signedSelection.candidateGroups.length > 0 && initialPolicy !== undefined) {
+  if (
+    admissions?.receipts.some(receipt => receipt.sourceCommit === identity.headCommit) &&
+    initialPolicy !== undefined
+  ) {
     const indexer = yield* CodeGraphIndexer;
     const store = yield* CodeGraphStore;
+    const eligible = new Map<
+      string,
+      {
+        readonly contentHash: string;
+        readonly extractorSet: string;
+        readonly factsDigest: string;
+        readonly gitBlobId: string;
+        readonly languageAndRole: string;
+        readonly normalizedPath: string;
+      }
+    >();
     const fresh = yield* indexer.index({
       cwd,
       ensureVectors: false,
       force: true,
       includeOverlay: false,
       sourceOnly: true,
+      sourceVerification: {
+        observeParserBatch: group =>
+          Effect.try({
+            try: () => {
+              const facts = new Map(group.facts.map(item => [item.facts.path, item.facts]));
+              for (const file of group.files) {
+                const parsed = facts.get(file.path);
+                if (file.source !== 'commit' || parsed === undefined)
+                  throw new Error('First-pass parser evidence is not committed source.');
+                const languageAndRole = graphShareLanguageAndRole(file.language, 'source');
+                eligible.set(
+                  graphShareParseActionKey({
+                    contentHash: file.contentHash,
+                    extractorSet: group.cacheIdentity,
+                    languageAndRole,
+                    normalizedPath: file.path,
+                    repositoryId: identity.repositoryId,
+                  }),
+                  {
+                    contentHash: file.contentHash,
+                    extractorSet: group.cacheIdentity,
+                    factsDigest: sha256Digest(canonicalJson(parsed)),
+                    gitBlobId: file.blobId,
+                    languageAndRole,
+                    normalizedPath: file.path,
+                  },
+                );
+              }
+            },
+            catch: () => graphSharingFailure('First-pass parser source evidence is invalid.'),
+          }),
+        materializeFacts: batch => Effect.succeed(batch.facts),
+      },
       threadnoteHome: config.agentContextHome,
     });
+    const signedSelection =
+      eligible.size === 0
+        ? undefined
+        : selectGraphWorkerReceiptsForSource(admissions, {
+            actionKeys: [...eligible.keys()],
+            profileDigest: profilePointer.digest,
+            repositoryId: identity.repositoryId,
+            sourceCommit: identity.headCommit,
+          });
     const graphLayout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
     const ready = yield* store.readySnapshot(graphLayout.databasePath, identity.worktreeId);
     if (
@@ -344,9 +390,7 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
     const reader = yield* makeGraphShareRegistryReader(workerRegistry).pipe(
       Effect.provideService(CommandExecutor, commandExecutor),
     );
-    for (const group of signedSelection.candidateGroups) {
-      let activeWorker = false;
-      let chosen = false;
+    for (const group of signedSelection?.candidateGroups ?? []) {
       for (const receipt of group.alternatives) {
         if (receipt.graphAbi !== targetAbi) continue;
         const body = receipt.announcement.body;
@@ -364,7 +408,6 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
           ),
         );
         if (worker === undefined) continue;
-        activeWorker = true;
         const candidate = yield* verifyPublisherWorkerReceipt({
           authority: worker,
           expectedGraphAbi: targetAbi,
@@ -373,15 +416,21 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
           sourceCommit: identity.headCommit,
         }).pipe(Effect.provideService(CommandExecutor, commandExecutor), Effect.option);
         if (candidate._tag === 'None') continue;
+        const expected = eligible.get(candidate.value.parsed.actionKey);
+        if (
+          expected === undefined ||
+          candidate.value.parsed.normalizedPath !== expected.normalizedPath ||
+          candidate.value.parsed.gitBlobId !== expected.gitBlobId ||
+          candidate.value.parsed.contentHash !== expected.contentHash ||
+          candidate.value.parsed.extractorSet !== expected.extractorSet ||
+          candidate.value.parsed.languageAndRole !== expected.languageAndRole ||
+          sha256Digest(canonicalJson(candidate.value.parsed.facts)) !== expected.factsDigest
+        )
+          continue;
         verified.push(candidate.value);
         selectedSigned.push(receipt);
-        chosen = true;
         break;
       }
-      if (activeWorker && !chosen)
-        return yield* graphSharingFailure(
-          'No authorized signed result for one action passed source and OCI verification.',
-        );
     }
   }
   const hydration: GraphPublisherHydrationEvidence = {status: 'skipped-source-verification', hydratedResults: 0};

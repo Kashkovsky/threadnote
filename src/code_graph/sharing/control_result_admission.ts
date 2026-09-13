@@ -1,6 +1,7 @@
 import {Clock, Context, Effect, FileSystem, Path, Schema, Stream} from 'effect';
 import {withExclusiveFileLock} from '../../effect/file_lock.js';
-import {CommandExecutor} from '../../effect/command.js';
+import {CommandExecutor, runCommandEffect} from '../../effect/command.js';
+import {SystemInfo} from '../../effect/system.js';
 import type {AccessTokenClaims} from '../../oauth/access_token.js';
 import {parseGraphShareFrontierPointer} from './artifacts.js';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
@@ -13,6 +14,7 @@ import {sha256Digest, sha256HexFromDigest} from './digest.js';
 import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {readAuthenticatedGraphShareFrontier} from './frontier_acceptance.js';
+import {graphShareCommitIsAncestor, GRAPH_SHARE_GIT_OBJECT_ID} from './git.js';
 import type {GraphShareEnrollmentV1, GraphShareProfileV1} from './profile.js';
 import {graphShareRegistryPublicationScope} from './registry_publication.js';
 import {makeGraphShareRegistryReader} from './registry_reader.js';
@@ -75,6 +77,7 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
   readonly initialPolicy: GraphControlPolicy;
   readonly principal: AccessTokenClaims;
   readonly profile: GraphShareProfileV1;
+  readonly repoRoot: string;
   readonly readCurrentPolicy: Effect.Effect<GraphControlPolicy, E, R>;
 }) {
   const workerRegistry = yield* Effect.try({
@@ -135,7 +138,10 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
           currentWorker.expiresAt <= now
         )
           return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
-        if ((yield* publishedSourceCommit(input)) === receipt.sourceCommit) return {status: 'stale-source' as const};
+        const disposition = yield* sourceDisposition(input, receipt.sourceCommit).pipe(
+          Effect.provideService(CommandExecutor, input.commandExecutor),
+        );
+        if (disposition !== undefined) return {status: disposition};
         return admitGraphWorkerAnnouncement(prior, {
           announcement: signed,
           authority: {...authority, graphAbi: receipt.graphAbi, expiresAt: currentWorker.expiresAt},
@@ -146,7 +152,12 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
     ),
   );
   if (replay !== undefined) {
-    if (replay.status === 'duplicate' || replay.status === 'operation-conflict' || replay.status === 'stale-source')
+    if (
+      replay.status === 'duplicate' ||
+      replay.status === 'operation-conflict' ||
+      replay.status === 'stale-source' ||
+      replay.status === 'source-unavailable'
+    )
       return replay;
     return yield* graphSharingUnavailable('Graph worker admission replay is invalid.');
   }
@@ -178,7 +189,6 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
       LOCK_OPTIONS,
       Effect.gen(function* () {
         const current = yield* readAdmissionState(target, input.initialPolicy);
-        if ((yield* publishedSourceCommit(input)) === claims.sourceCommit) return {status: 'stale-source' as const};
         const currentWorker = yield* requireWorker();
         const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
         if (
@@ -187,6 +197,10 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
           currentWorker.expiresAt <= now
         )
           return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
+        const disposition = yield* sourceDisposition(input, claims.sourceCommit).pipe(
+          Effect.provideService(CommandExecutor, input.commandExecutor),
+        );
+        if (disposition !== undefined) return {status: disposition};
         const outcome = admitGraphWorkerAnnouncement(current, {
           announcement: signed,
           authority: {
@@ -209,6 +223,42 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
       }),
     ),
   );
+});
+
+/** Only the exact unpublished HEAD of the publisher's trusted checkout can enter admission state. */
+const sourceDisposition = Effect.fn('codeGraph.sharing.workerSourceDisposition')(function* (
+  input: {
+    readonly casRoot: string;
+    readonly enrollment: GraphShareEnrollmentV1;
+    readonly home: string;
+    readonly profile: GraphShareProfileV1;
+    readonly repoRoot: string;
+  },
+  sourceCommit: string,
+) {
+  const published = yield* publishedSourceCommit(input);
+  if (sourceCommit === published) return 'stale-source' as const;
+  const system = yield* SystemInfo;
+  const head = yield* runCommandEffect('git', ['-C', input.repoRoot, 'rev-parse', 'HEAD'], {
+    allowFailure: true,
+    env: {...system.environment(), GIT_NO_LAZY_FETCH: '1', GIT_OPTIONAL_LOCKS: '0'},
+    maxOutputBytes: 128,
+    timeoutMs: 10_000,
+  }).pipe(Effect.mapError(() => graphSharingUnavailable('Publisher source checkout is unavailable.')));
+  const currentHead = head.stdout.trim();
+  if (head.exitCode !== 0 || !GRAPH_SHARE_GIT_OBJECT_ID.test(currentHead))
+    return yield* graphSharingUnavailable('Publisher source checkout is unavailable.');
+  if (sourceCommit !== currentHead) {
+    if (
+      (yield* graphShareCommitIsAncestor(input.repoRoot, sourceCommit, currentHead)) ||
+      (yield* graphShareCommitIsAncestor(input.repoRoot, sourceCommit, published))
+    )
+      return 'stale-source' as const;
+    return 'source-unavailable' as const;
+  }
+  if (!(yield* graphShareCommitIsAncestor(input.repoRoot, published, sourceCommit)))
+    return 'source-unavailable' as const;
+  return undefined;
 });
 
 /** Read the authenticated local pointer under the coordinator lock, which serializes its promotion. */

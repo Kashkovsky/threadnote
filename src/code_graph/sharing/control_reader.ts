@@ -49,6 +49,7 @@ export interface GraphControlReaderOptions {
   readonly enrollment: GraphShareEnrollmentV1;
   readonly policyFile: string;
   readonly profile: GraphShareProfileV1;
+  readonly repoRoot?: string;
   readonly threadnoteHome: string;
   /** Internal gate. The route stays closed until source-verifying publication and sender delivery are complete. */
   readonly enableWorkerResults?: boolean;
@@ -75,6 +76,8 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
   options: GraphControlReaderOptions,
   verifyToken?: (token: string) => Promise<AccessTokenClaims>,
 ) {
+  if (options.enableWorkerResults === true && options.repoRoot === undefined)
+    return yield* graphSharingFailure('Signed worker admission requires a trusted source checkout.');
   const scope = graphControlReaderScope(options);
   const initial = yield* validateGraphControlPolicy(options);
   const verify = verifyToken ?? createRemoteAccessTokenVerifier({...initial, jwksUrl: new URL(initial.jwksUrl)});
@@ -198,6 +201,7 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
           initialPolicy: initial,
           principal: principal.value,
           profile: options.profile,
+          repoRoot: options.repoRoot!,
           readCurrentPolicy: currentPolicy,
         }).pipe(
           Effect.catchIf(
@@ -213,6 +217,7 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
         if (admitted.status === 'invalid-request') return reply(400, {error: 'invalid-request'});
         if (admitted.status === 'operation-conflict') return reply(409, {error: 'operation-conflict'});
         if (admitted.status === 'stale-source') return reply(409, {error: 'stale-source'});
+        if (admitted.status === 'source-unavailable') return reply(425, {error: 'source-unavailable'});
         if (admitted.status === 'capacity-exceeded') return reply(429, {error: 'capacity-exceeded'});
         if (!('receipt' in admitted)) return reply(503, {error: 'unavailable'});
         return reply(admitted.status === 'accepted' ? 201 : 200, {

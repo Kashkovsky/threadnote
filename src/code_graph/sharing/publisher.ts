@@ -267,6 +267,7 @@ export const runGraphPublisherListen = Effect.fn('codeGraph.sharing.publisherLis
           enrollment,
           policyFile: path.resolve(options.authorizationPolicy),
           profile,
+          repoRoot: identity.repoRoot,
         };
   if (authorization !== undefined) {
     yield* validateGraphControlPolicy({...authorization, casRoot, threadnoteHome: config.agentContextHome});
