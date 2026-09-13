@@ -21,6 +21,22 @@ describe('MCP-owned signed graph contribution', () => {
     const requests: string[] = [];
     const registryBlobs = new Map<string, Uint8Array>();
     const registryManifests = new Map<string, Uint8Array>();
+    let releaseResult!: () => void;
+    const resultGate = new Promise<void>(resolve => {
+      releaseResult = resolve;
+    });
+    let pendingResult: unknown;
+    let evidenceVerified = false;
+    let enrolledWorker:
+      | {
+          expiresAt: number;
+          principalId: string;
+          profileDigest: string;
+          repositoryId: string;
+          signingPublicKey: string;
+          workerId: string;
+        }
+      | undefined;
     let delivered = false;
     const coordinator = Bun.serve({
       hostname: '127.0.0.1',
@@ -34,22 +50,22 @@ describe('MCP-owned signed graph contribution', () => {
             repositoryId: string;
             signingPublicKey: string;
           };
-          return Response.json(
-            {
-              expiresAt: Math.floor(Date.now() / 1000) + 3600,
-              principalId: sha256Digest(JSON.stringify(['https://identity.example.test/', 'signed-mcp-fixture'])),
-              profileDigest: body.profileDigest,
-              repositoryId: body.repositoryId,
-              schemaVersion: 1,
-              signingPublicKey: body.signingPublicKey,
-              workerId: `gw_${'1'.repeat(32)}`,
-            },
-            {status: 201},
-          );
+          enrolledWorker = {
+            expiresAt: Math.floor(Date.now() / 1000) + 3600,
+            principalId: sha256Digest(JSON.stringify(['https://identity.example.test/', 'signed-mcp-fixture'])),
+            profileDigest: body.profileDigest,
+            repositoryId: body.repositoryId,
+            signingPublicKey: body.signingPublicKey,
+            workerId: `gw_${'1'.repeat(32)}`,
+          };
+          return Response.json({...enrolledWorker, schemaVersion: 1}, {status: 201});
         }
         if (url.pathname === '/v1/results') {
-          const body = (await request.json()) as {body: {idempotencyKey: string}};
+          pendingResult = await request.json();
+          await resultGate;
+          if (!evidenceVerified) return Response.json({error: 'invalid synthetic evidence'}, {status: 400});
           delivered = true;
+          const body = pendingResult as {body: {idempotencyKey: string}};
           return Response.json({idempotencyKey: body.body.idempotencyKey, status: 'accepted'}, {status: 201});
         }
         if (url.pathname.startsWith('/v2/acme/worker/')) {
@@ -83,14 +99,16 @@ describe('MCP-owned signed graph contribution', () => {
             },
           });
         }
-        return Response.json({
-          generation: 1,
-          organization: 'acme',
-          phase: 'idle',
-          publishedFrontier: null,
-          repositoryId,
-          receipts: [],
-        });
+        if (request.method === 'GET' && url.pathname === '/v1/status')
+          return Response.json({
+            generation: 1,
+            organization: 'acme',
+            phase: 'idle',
+            publishedFrontier: null,
+            repositoryId,
+            receipts: [],
+          });
+        return new Response(null, {status: 404});
       },
     });
     let client: Client | undefined;
@@ -248,7 +266,8 @@ globalThis.fetch = Object.assign(async (input, init) => {
       expect(result.isError).not.toBe(true);
 
       const candidatePath = join(home, 'graph-sharing', 'signed-candidates', `${repositoryId}.json`);
-      const candidates = await waitForCandidates(candidatePath);
+      await waitFor(() => pendingResult !== undefined, 20_000);
+      const candidates = await readJournalCandidates(candidatePath);
       const packageVersion = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')).version;
       expect(candidates).toHaveLength(1);
       expect(candidates[0]).toMatchObject({
@@ -262,13 +281,89 @@ globalThis.fetch = Object.assign(async (input, init) => {
       });
       expect(candidates[0].graphAbi).toMatch(/^[0-9a-f]{64}$/u);
       expect(candidates[0].snapshotId).toMatch(/^cgsn_[0-9a-f]{40}/u);
+      expect(enrolledWorker).toBeDefined();
+      const announcement = pendingResult as {
+        algorithm: string;
+        body: Record<string, string>;
+        publicKey: string;
+        signature: string;
+      };
+      const {idempotencyKey, ...announcementFields} = announcement.body;
+      expect(announcement.algorithm).toBe('ed25519');
+      expect(announcement.publicKey).toBe(enrolledWorker!.signingPublicKey);
+      expect(idempotencyKey).toBe(
+        sha256Digest('threadnote.graph.worker.result-operation.v1\0' + canonicalJson(announcementFields)),
+      );
+      expect(
+        await verifySignature(announcement.publicKey, 'announcement', announcement.body, announcement.signature),
+      ).toBe(true);
+      expect(announcement.body).toMatchObject({
+        actionKey: candidates[0].actionKey,
+        batchId: sourceCommit.trim().slice(0, 40),
+        principalId: enrolledWorker!.principalId,
+        profileDigest,
+        repositoryId,
+        semanticDigest: candidates[0].semanticDigest,
+        workerId: enrolledWorker!.workerId,
+      });
+      const manifestBytes = registryManifests.get(announcement.body.resultManifestDigest);
+      expect(manifestBytes).toBeDefined();
+      expect(sha256Digest(manifestBytes!)).toBe(announcement.body.resultManifestDigest);
+      const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as {
+        config: {digest: string; size: number};
+        layers: Array<{digest: string; size: number}>;
+      };
+      expect(manifest.layers).toHaveLength(2);
+      expect(manifest.layers[0].digest).toBe(candidates[0].resultDigest);
+      expect(manifest.layers[1].digest).toBe(announcement.body.attestationDigest);
+      for (const entry of [manifest.config, ...manifest.layers]) {
+        const bytes = registryBlobs.get(entry.digest);
+        expect(bytes).toBeDefined();
+        expect(bytes!.byteLength).toBe(entry.size);
+        expect(sha256Digest(bytes!)).toBe(entry.digest);
+      }
+      const resultBytes = registryBlobs.get(manifest.layers[0].digest)!;
+      const resultArtifact = JSON.parse(new TextDecoder().decode(resultBytes)) as Record<string, unknown>;
+      expect(resultArtifact).toMatchObject({
+        actionKey: candidates[0].actionKey,
+        repositoryId,
+        semanticDigest: candidates[0].semanticDigest,
+      });
+      const attestationBytes = registryBlobs.get(manifest.layers[1].digest)!;
+      const attestation = JSON.parse(new TextDecoder().decode(attestationBytes)) as {
+        algorithm: string;
+        claims: Record<string, unknown>;
+        publicKey: string;
+        signature: string;
+      };
+      expect(attestation.algorithm).toBe('ed25519');
+      expect(attestation.publicKey).toBe(enrolledWorker!.signingPublicKey);
+      expect(attestation.claims).toMatchObject({
+        actionKey: candidates[0].actionKey,
+        graphAbi: candidates[0].graphAbi,
+        principalId: enrolledWorker!.principalId,
+        profileDigest,
+        resultDigest: candidates[0].resultDigest,
+        resultSize: resultBytes.byteLength,
+        repositoryId,
+        semanticDigest: candidates[0].semanticDigest,
+        sourceCommit: sourceCommit.trim(),
+        workerId: enrolledWorker!.workerId,
+      });
+      expect(
+        await verifySignature(attestation.publicKey, 'attestation', attestation.claims, attestation.signature),
+      ).toBe(true);
+      evidenceVerified = true;
+      releaseResult();
       await waitFor(() => delivered, 20_000);
       expect(requests).toContain('POST /v1/enroll');
       expect(requests).toContain('POST /v1/results');
-      expect(registryBlobs.size).toBeGreaterThan(0);
-      expect(registryManifests.size).toBeGreaterThan(0);
-      await waitFor(async () => (await readJournalCandidates(candidatePath)).length === 0, 5_000);
+      await waitFor(async () => {
+        const manifest = JSON.parse(await readFile(candidatePath, 'utf8'));
+        return manifest.segments.length === 0;
+      }, 5_000);
     } finally {
+      releaseResult();
       await client?.close();
       await coordinator.stop(true);
       await rm(root, {recursive: true, force: true});
@@ -276,18 +371,8 @@ globalThis.fetch = Object.assign(async (input, init) => {
   }, 60_000);
 });
 
-async function waitForCandidates(path: string): Promise<Array<Record<string, unknown>>> {
-  for (let attempt = 0; attempt < 80; attempt++) {
-    const candidates = await readJournalCandidates(path);
-    if (candidates.length > 0) return candidates;
-    await new Promise(resolve => setTimeout(resolve, 250));
-  }
-  throw new Error('Timed out waiting for an automatically queued signed graph candidate.');
-}
-
 async function readJournalCandidates(path: string): Promise<Array<Record<string, unknown>>> {
-  const manifestText = await readFile(path, 'utf8').catch(() => undefined);
-  if (manifestText === undefined) return [];
+  const manifestText = await readFile(path, 'utf8');
   const manifest = JSON.parse(manifestText);
   const pages = await Promise.all(
     manifest.segments.map((segment: {id: string}) => readFile(join(`${path}.d`, `${segment.id}.json`), 'utf8')),
@@ -302,4 +387,18 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, milliseconds
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   throw new Error('Timed out waiting for passive signed graph delivery.');
+}
+
+async function verifySignature(
+  publicKey: string,
+  domain: 'announcement' | 'attestation',
+  body: unknown,
+  signature: string,
+) {
+  const key = await crypto.subtle.importKey('raw', Buffer.from(publicKey, 'hex'), {name: 'Ed25519'}, false, ['verify']);
+  const bytes = Buffer.concat([
+    Buffer.from(`threadnote.graph.worker.${domain}.v1\0`),
+    Buffer.from(canonicalJson(body)),
+  ]);
+  return crypto.subtle.verify('Ed25519', key, Buffer.from(signature, 'hex'), bytes);
 }
