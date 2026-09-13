@@ -191,7 +191,9 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
         yield* readGraphControlFrontier(options);
         const admitted = yield* admitGraphControlWorkerResult({
           announcement: decoded.value,
+          casRoot: options.casRoot,
           commandExecutor,
+          enrollment: options.enrollment,
           home: options.threadnoteHome,
           initialPolicy: initial,
           principal: principal.value,
@@ -210,6 +212,7 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
         if (admitted.status === 'invalid-authority') return reply(403, {error: 'forbidden'});
         if (admitted.status === 'invalid-request') return reply(400, {error: 'invalid-request'});
         if (admitted.status === 'operation-conflict') return reply(409, {error: 'operation-conflict'});
+        if (admitted.status === 'stale-source') return reply(409, {error: 'stale-source'});
         if (admitted.status === 'capacity-exceeded') return reply(429, {error: 'capacity-exceeded'});
         if (!('receipt' in admitted)) return reply(503, {error: 'unavailable'});
         return reply(admitted.status === 'accepted' ? 201 : 200, {

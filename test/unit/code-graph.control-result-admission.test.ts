@@ -30,6 +30,8 @@ import {
 import {emptyGraphWorkerAdmissionStore} from '../../src/code_graph/sharing/worker_admission_state.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
+import {readAuthenticatedGraphShareFrontier} from '../../src/code_graph/sharing/frontier_acceptance.js';
+import {graphShareRegistryPublicationScope} from '../../src/code_graph/sharing/registry_publication.js';
 import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
 import {defaultGraphShareProfile, graphShareProfileDigest} from '../../src/code_graph/sharing/profile.js';
 import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
@@ -80,7 +82,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
     checkpoint: {
       manifestDigest: sha256Digest('checkpoint'),
       snapshotId: `cgsn_${'a'.repeat(40)}`,
-      sourceCommit: 'b'.repeat(40),
+      sourceCommit: 'a'.repeat(40),
     },
     deltas: [],
     generation: 1,
@@ -93,7 +95,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
     repositoryId,
     schemaVersion: 1 as const,
     snapshotId: `cgsn_${'a'.repeat(40)}`,
-    sourceCommit: 'b'.repeat(40),
+    sourceCommit: 'a'.repeat(40),
   };
   const signed = yield* signGraphShareFrontier(key, manifest);
   const manifestDigest = yield* putCasBytes(options.casRoot, encode(signed.manifest));
@@ -263,6 +265,8 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
     candidate,
     enroll,
     fs,
+    key,
+    manifest,
     options,
     policy,
     profileDigest,
@@ -278,6 +282,66 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
 });
 
 describe('authenticated signed worker admission route', () => {
+  effectIt.effect('rejects the durably published source even when an older receipt remains', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const worker = yield* f.enroll;
+        const stale = yield* f.candidate(worker, [], 'a'.repeat(40));
+        expect(yield* f.request('/v1/results', f.validToken, stale.announcement)).toEqual({
+          body: {error: 'stale-source'},
+          status: 409,
+        });
+        expect(yield* f.fs.exists(f.statePath)).toBe(false);
+
+        const first = yield* f.candidate(worker);
+        expect((yield* f.request('/v1/results', f.validToken, first.announcement)).status).toBe(201);
+        const nextManifest = {
+          ...f.manifest,
+          checkpoint: {...f.manifest.checkpoint, sourceCommit: 'b'.repeat(40)},
+          generation: 2,
+          previousManifestDigest: sha256Digest(encode(f.manifest)),
+          sourceCommit: 'b'.repeat(40),
+        };
+        const signed = yield* signGraphShareFrontier(f.key, nextManifest);
+        const manifestDigest = yield* putCasBytes(f.options.casRoot, encode(signed.manifest));
+        const envelopeDigest = yield* putCasBytes(f.options.casRoot, encode(signed.envelope));
+        const path = yield* Path.Path;
+        yield* writePrivateJsonFile(
+          graphSharingFrontierPointerPath(
+            path,
+            graphSharingLayout(path, f.options.threadnoteHome, f.options.casRoot).frontiersRoot,
+            repositoryId,
+          ),
+          {envelopeDigest, manifestDigest, schemaVersion: 1},
+        );
+        expect(
+          (yield* readAuthenticatedGraphShareFrontier(
+            f.options.casRoot,
+            graphShareRegistryPublicationScope(f.options),
+            {envelopeDigest, manifestDigest, schemaVersion: 1},
+          )).sourceCommit,
+        ).toBe('b'.repeat(40));
+        const downloads = f.registryPaths.length;
+        expect(yield* f.request('/v1/results', f.validToken, first.announcement)).toEqual({
+          body: {error: 'stale-source'},
+          status: 409,
+        });
+        expect(f.registryPaths).toHaveLength(downloads);
+        const policy = yield* readGraphControlPolicy(f.options.policyFile);
+        yield* withCoordinatorStateLock(
+          {threadnoteHome: f.options.threadnoteHome},
+          retireGraphWorkerAdmissionsForPublishedSourceLocked(f.options.threadnoteHome, policy, 'b'.repeat(40)),
+        );
+        expect(yield* f.request('/v1/results', f.validToken, first.announcement)).toEqual({
+          body: {error: 'stale-source'},
+          status: 409,
+        });
+        expect(f.registryPaths.length).toBeGreaterThan(downloads);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
   effectIt.effect('reads bounded scoped admissions and retires the exact published source under coordinator lock', () =>
     TestClock.withLive(
       Effect.gen(function* () {
@@ -389,7 +453,9 @@ describe('authenticated signed worker admission route', () => {
         );
         const replay = yield* admitGraphControlWorkerResult({
           announcement,
+          casRoot: f.options.casRoot,
           commandExecutor: executor,
+          enrollment: f.options.enrollment,
           home: f.options.threadnoteHome,
           initialPolicy: policy,
           principal: {
@@ -525,7 +591,9 @@ describe('authenticated signed worker admission route', () => {
         for (const boundPolicy of [policy, {...policy, profileDigest: graphShareProfileDigest(profile)}]) {
           const outcome = yield* admitGraphControlWorkerResult({
             announcement,
+            casRoot: f.options.casRoot,
             commandExecutor: executor,
+            enrollment: f.options.enrollment,
             home: f.options.threadnoteHome,
             initialPolicy: boundPolicy,
             principal: {

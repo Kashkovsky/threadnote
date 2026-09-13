@@ -1,4 +1,5 @@
 import {Clock, Context, Crypto, Effect, FileSystem, Layer, Path, Ref, Schema} from 'effect';
+import {canonicalJson} from '../checkpoint/canonical_json.js';
 import {CommandExecutor} from '../../effect/command.js';
 import {SystemInfo} from '../../effect/system.js';
 import type {RuntimeConfig} from '../../types.js';
@@ -280,7 +281,9 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
     admissions === undefined
       ? undefined
       : selectGraphWorkerReceiptsForSource(admissions, {
-          actionKeys: machine.frozenActionKeys,
+          // The machine may have frozen before a later admission arrived. Every accepted
+          // exact-source action must be considered before this source is retired.
+          actionKeys: [],
           profileDigest: profilePointer.digest,
           repositoryId: identity.repositoryId,
           sourceCommit: identity.headCommit,
@@ -436,7 +439,14 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
       verified,
       ...(initialPolicy === undefined
         ? {}
-        : {signedAdmissions: {initialPolicy, policyFile: policyFile!, receipts: selectedSigned}}),
+        : {
+            signedAdmissions: {
+              initialPolicy,
+              policyFile: policyFile!,
+              receipts: selectedSigned,
+              sourceSnapshot: admissions!.receipts.filter(receipt => receipt.sourceCommit === identity.headCommit),
+            },
+          }),
     });
     return {
       ...exported,
@@ -531,6 +541,7 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
       readonly initialPolicy: GraphControlPolicy;
       readonly policyFile: string;
       readonly receipts: readonly GraphWorkerAdmissionReceiptV2[];
+      readonly sourceSnapshot: readonly GraphWorkerAdmissionReceiptV2[];
     };
   },
 ) {
@@ -622,6 +633,11 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
             config.agentContextHome,
             expected.signedAdmissions.initialPolicy,
           );
+          if (
+            canonicalJson(admissions.receipts.filter(receipt => receipt.sourceCommit === expected.sourceCommit)) !==
+            canonicalJson(expected.signedAdmissions.sourceSnapshot)
+          )
+            return yield* graphSharingFailure('Signed contributions changed during publication; retry the batch.');
           const quarantine = new Set(
             admissions.quarantine.filter(item => item.repositoryId === repositoryId).map(item => item.actionKey),
           );

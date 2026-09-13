@@ -2,16 +2,19 @@ import {Clock, Context, Effect, FileSystem, Path, Schema, Stream} from 'effect';
 import {withExclusiveFileLock} from '../../effect/file_lock.js';
 import {CommandExecutor} from '../../effect/command.js';
 import type {AccessTokenClaims} from '../../oauth/access_token.js';
+import {parseGraphShareFrontierPointer} from './artifacts.js';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
-import {readBoundedPrivateBytes, writePrivateJsonFile} from './atomic.js';
+import {readBoundedPrivateBytes, readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {withCoordinatorStateLock} from './coordinator_lock.js';
 import {type GraphControlPolicy} from './control_authorization.js';
 import {GraphControlEnrollmentError, requireGraphControlWorker} from './control_enrollment.js';
 import {GRAPH_SHARE_CONTROL_MAX_BODY_BYTES} from './control_protocol.js';
 import {sha256Digest, sha256HexFromDigest} from './digest.js';
 import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
-import {graphSharingLayout} from './layout.js';
-import type {GraphShareProfileV1} from './profile.js';
+import {graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
+import {readAuthenticatedGraphShareFrontier} from './frontier_acceptance.js';
+import type {GraphShareEnrollmentV1, GraphShareProfileV1} from './profile.js';
+import {graphShareRegistryPublicationScope} from './registry_publication.js';
 import {makeGraphShareRegistryReader} from './registry_reader.js';
 import {verifyGraphWorkerResultAnnouncement, type GraphWorkerResultAnnouncement} from './worker_announcement.js';
 import {
@@ -65,7 +68,9 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
   R,
 >(input: {
   readonly announcement: unknown;
+  readonly casRoot: string;
   readonly commandExecutor: Context.Service.Shape<typeof CommandExecutor>;
+  readonly enrollment: GraphShareEnrollmentV1;
   readonly home: string;
   readonly initialPolicy: GraphControlPolicy;
   readonly principal: AccessTokenClaims;
@@ -122,6 +127,7 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
         const prior = yield* readAdmissionState(target, input.initialPolicy);
         const receipt = prior.receipts.find(item => item.announcement.body.idempotencyKey === body.idempotencyKey);
         if (receipt === undefined) return undefined;
+        if ((yield* publishedSourceCommit(input)) === receipt.sourceCommit) return {status: 'stale-source' as const};
         const currentWorker = yield* requireWorker();
         const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
         if (
@@ -140,7 +146,8 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
     ),
   );
   if (replay !== undefined) {
-    if (replay.status === 'duplicate' || replay.status === 'operation-conflict') return replay;
+    if (replay.status === 'duplicate' || replay.status === 'operation-conflict' || replay.status === 'stale-source')
+      return replay;
     return yield* graphSharingUnavailable('Graph worker admission replay is invalid.');
   }
   const result = yield* Effect.gen(function* () {
@@ -171,6 +178,7 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
       LOCK_OPTIONS,
       Effect.gen(function* () {
         const current = yield* readAdmissionState(target, input.initialPolicy);
+        if ((yield* publishedSourceCommit(input)) === claims.sourceCommit) return {status: 'stale-source' as const};
         const currentWorker = yield* requireWorker();
         const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
         if (
@@ -201,6 +209,25 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
       }),
     ),
   );
+});
+
+/** Read the authenticated local pointer under the coordinator lock, which serializes its promotion. */
+const publishedSourceCommit = Effect.fn('codeGraph.sharing.publishedWorkerSourceCommit')(function* (input: {
+  readonly casRoot: string;
+  readonly enrollment: GraphShareEnrollmentV1;
+  readonly home: string;
+  readonly profile: GraphShareProfileV1;
+}) {
+  const path = yield* Path.Path;
+  const layout = graphSharingLayout(path, input.home, input.casRoot);
+  const pointer = parseGraphShareFrontierPointer(
+    yield* readJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, input.enrollment.repositoryId)),
+  );
+  const scope = yield* Effect.try({
+    try: () => graphShareRegistryPublicationScope(input),
+    catch: () => graphSharingFailure('Worker result enrollment is invalid.'),
+  });
+  return (yield* readAuthenticatedGraphShareFrontier(input.casRoot, scope, pointer)).sourceCommit;
 });
 
 export const graphWorkerAdmissionStatePath = Effect.fn('codeGraph.sharing.workerAdmissionStatePath')(function* (
