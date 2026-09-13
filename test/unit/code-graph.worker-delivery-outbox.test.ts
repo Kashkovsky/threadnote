@@ -8,6 +8,7 @@ import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/di
 import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
 import {
   graphWorkerDeliveryScope,
+  listGraphWorkerDeliveryPrincipalScopes,
   markGraphWorkerDeliveryAdmitted,
   prepareGraphWorkerDeliveryOutbox,
   readGraphWorkerDeliveryOutbox,
@@ -202,6 +203,25 @@ describe('private signed worker delivery outbox', () => {
       expect(
         (yield* readGraphWorkerDeliveryOutbox(input.threadnoteHome, scopeFor(input)))[0].operation.operationId,
       ).toBe(first.operation.operationId);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('recovers orphan blobs before unregistering a scope after an interrupted retirement', () =>
+    Effect.gen(function* () {
+      const {input} = yield* fixture();
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const oldScope = scopeFor(input);
+      const currentScope = {...oldScope, workerId: `gw_${'9'.repeat(32)}`};
+      yield* prepareGraphWorkerDeliveryOutbox(input);
+      const root = scopeRoot(input.threadnoteHome, oldScope);
+      const blobs = path.join(root, 'sha256');
+      expect((yield* fs.readDirectory(blobs)).length).toBeGreaterThan(0);
+
+      // Simulate power loss after the empty outbox rename but before blob cleanup.
+      yield* fs.writeFileString(path.join(root, 'outbox.json'), canonicalJson({operations: [], schemaVersion: 1}));
+      expect(yield* listGraphWorkerDeliveryPrincipalScopes(input.threadnoteHome, currentScope)).toEqual([currentScope]);
+      expect(yield* fs.readDirectory(blobs)).toEqual([]);
     }).pipe(provideTestLayer(layer)),
   );
 

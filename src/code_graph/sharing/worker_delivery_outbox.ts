@@ -258,8 +258,11 @@ export const listGraphWorkerDeliveryPrincipalScopes = Effect.fn('codeGraph.shari
         threadnoteHome,
         scope,
         Effect.gen(function* () {
-          if ((yield* readOutbox(threadnoteHome, scope)).operations.length > 0) return true;
-          // A crash after registering a scope but before writing an operation is harmless.
+          const current = yield* readOutbox(threadnoteHome, scope);
+          if (current.operations.length > 0) return true;
+          // A crash can leave blobs after committing an empty outbox but before cleanup.
+          // Recover under the scope lock before removing its last discoverable index entry.
+          yield* recoverOutboxStorage(threadnoteHome, scope, current);
           yield* unregisterPrincipalScope(threadnoteHome, scope);
           return false;
         }),
