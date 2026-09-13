@@ -4,13 +4,13 @@ import {graphShareContributionFixture} from '../helpers/graph-share-contribution
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {describe, expect, it} from 'vitest';
-import {mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {mkdir, mkdtemp, readFile, rm, unlink, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
 
 describe('MCP-owned passive graph contribution retries', () => {
-  it.each(['persisted queue', 'ordinary graph query'] as const)(
+  it.each(['persisted queue', 'ordinary graph query', 'dirty graph then clean restart'] as const)(
     'recovers automatically after an outage from %s',
     async source => {
       const root = await mkdtemp(join(tmpdir(), 'threadnote-mcp-contribution-retry-'));
@@ -61,7 +61,7 @@ describe('MCP-owned passive graph contribution retries', () => {
         await mkdir(join(home, 'graph-sharing', 'contribution'), {recursive: true});
         await mkdir(join(cas, 'sha256'), {recursive: true});
         await writeFile(join(home, 'seed-manifest.yaml'), 'version: 1\nprojects: []\n');
-        if (source === 'ordinary graph query') {
+        if (source !== 'persisted queue') {
           await mkdir(join(repository, 'src'), {recursive: true});
           await writeFile(
             join(repository, 'src', 'index.ts'),
@@ -88,6 +88,25 @@ describe('MCP-owned passive graph contribution retries', () => {
             '-qm',
             'fixture',
           ]);
+          if (source === 'dirty graph then clean restart') {
+            await writeFile(
+              join(repository, 'src', 'index.ts'),
+              'export function automaticContributionTarget() { return 43; }\n',
+            );
+            await command('git', ['-C', repository, 'add', '.']);
+            await command('git', [
+              '-C',
+              repository,
+              '-c',
+              'user.name=Fixture',
+              '-c',
+              'user.email=fixture@example.invalid',
+              'commit',
+              '-qm',
+              'second fixture',
+            ]);
+            await writeFile(join(repository, 'untracked.txt'), 'dirty first attempt\n');
+          }
         }
         const {announcement, resultBytes, attestationBytes} = graphShareContributionFixture(repositoryId);
         const {resultManifestDigest, attestationDigest} = announcement;
@@ -121,47 +140,69 @@ describe('MCP-owned passive graph contribution retries', () => {
               announcements: [announcement],
             }),
           );
-        const transport = new StdioClientTransport({
-          command: process.execPath,
-          args: [join(process.cwd(), 'src/standalone.ts'), 'mcp-server'],
-          cwd: process.cwd(),
-          stderr: 'pipe',
-          env: {
-            ...process.env,
-            THREADNOTE_HOME: home,
-            THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
-            THREADNOTE_ACCOUNT: 'local',
-            THREADNOTE_USER: 'tester',
-            THREADNOTE_TELEMETRY: '0',
-            THREADNOTE_MCP_TOOLSET: 'cursor-cloud-local',
-          },
-        });
-        client = new Client({name: 'contribution-retry-fixture', version: '1'});
-        await client.connect(transport);
-        if (source === 'ordinary graph query') {
-          const result = await client.callTool({
+        const startClient = async () => {
+          const transport = new StdioClientTransport({
+            command: process.execPath,
+            args: [join(process.cwd(), 'src/standalone.ts'), 'mcp-server'],
+            cwd: process.cwd(),
+            stderr: 'pipe',
+            env: {
+              ...process.env,
+              THREADNOTE_HOME: home,
+              THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
+              THREADNOTE_ACCOUNT: 'local',
+              THREADNOTE_USER: 'tester',
+              THREADNOTE_TELEMETRY: '0',
+              THREADNOTE_MCP_TOOLSET: 'cursor-cloud-local',
+            },
+          });
+          client = new Client({name: 'contribution-retry-fixture', version: '1'});
+          await client.connect(transport);
+        };
+        const inspect = async (operation: 'query' | 'impact' = 'query') => {
+          const result = await client!.callTool({
             name: 'inspect_code_graph',
             arguments: {
               callerCwd: repository,
-              operation: 'query',
-              query: 'automaticContributionTarget',
+              operation,
+              ...(operation === 'query' ? {query: 'automaticContributionTarget'} : {base: 'HEAD~1'}),
               budgetTokens: 800,
             },
           });
           expect(result.isError).not.toBe(true);
+        };
+        await startClient();
+        if (source !== 'persisted queue') {
+          await inspect();
         }
         await within(firstRefusal, 20_000);
         expect(refusedRequests).toBe(1);
         expect(JSON.parse(await readFile(queuePath, 'utf8')).announcements.length).toBeGreaterThan(0);
-        if (source === 'ordinary graph query') {
+        if (source !== 'persisted queue') {
+          const pendingPath = join(home, 'graph-sharing', 'signed-pending', `${repositoryId}.json`);
+          let pendingCandidates = JSON.parse(await readFile(pendingPath, 'utf8')).candidates;
+          if (source === 'dirty graph then clean restart') {
+            expect(pendingCandidates.length).toBeGreaterThan(0);
+            await unlink(join(repository, 'untracked.txt'));
+            await client?.close();
+            await startClient();
+            await inspect('impact');
+            for (let attempt = 0; attempt < 80; attempt++) {
+              pendingCandidates = JSON.parse(await readFile(pendingPath, 'utf8')).candidates;
+              if (pendingCandidates.length === 0) break;
+              await new Promise(resolve => setTimeout(resolve, 250));
+            }
+          }
+          expect(pendingCandidates).toHaveLength(0);
           const candidatePath = join(home, 'graph-sharing', 'signed-candidates', `${repositoryId}.json`);
           const candidates = JSON.parse(await readFile(candidatePath, 'utf8')).candidates;
           const {stdout: sourceCommit} = await command('git', ['-C', repository, 'rev-parse', 'HEAD']);
+          const packageVersion = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')).version;
           expect(candidates).toHaveLength(1);
           expect(candidates[0]).toMatchObject({
             casRoot: cas,
             partialCoverage: false,
-            releaseIdentity: '4.6.11',
+            releaseIdentity: packageVersion,
             resourceLimits: [],
             sourceCommit: sourceCommit.trim(),
           });
@@ -176,7 +217,7 @@ describe('MCP-owned passive graph contribution retries', () => {
         await rm(root, {recursive: true, force: true});
       }
     },
-    45_000,
+    60_000,
   );
 });
 
