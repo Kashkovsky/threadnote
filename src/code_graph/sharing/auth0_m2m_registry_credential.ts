@@ -1,4 +1,8 @@
-import {requestVerifiedAuth0M2MToken, type Auth0M2MTokenDependencies} from './auth0_m2m_graph_credential.js';
+import {
+  requestVerifiedAuth0M2MToken,
+  type Auth0M2MHelperIO,
+  type Auth0M2MTokenDependencies,
+} from './auth0_m2m_graph_credential.js';
 
 const MAX_INPUT_BYTES = 512;
 const SERVER = /^[a-z0-9.-]+(?::[1-9][0-9]{0,4})?$/u;
@@ -115,12 +119,13 @@ function validSubject(value: string): boolean {
 export async function runAuth0M2MRegistryCredentialHelper(
   arguments_: readonly string[],
   environment: NodeJS.ProcessEnv,
+  io: Auth0M2MHelperIO,
 ): Promise<number> {
   try {
     if (arguments_.length !== 1 || arguments_[0] !== 'get') throw credentialFailure();
     let length = 0;
     const chunks: Uint8Array[] = [];
-    for await (const chunk of process.stdin) {
+    for await (const chunk of io.stdin) {
       const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : new Uint8Array(chunk);
       length += bytes.length;
       if (length > MAX_INPUT_BYTES) throw credentialFailure();
@@ -134,10 +139,10 @@ export async function runAuth0M2MRegistryCredentialHelper(
     }
     const value = new TextDecoder('utf-8', {fatal: true}).decode(input);
     if (!value.endsWith('\n') || value.indexOf('\n') !== value.length - 1) throw credentialFailure();
-    process.stdout.write(`${JSON.stringify(await getAuth0M2MRegistryCredential(value.slice(0, -1), environment))}\n`);
+    io.writeStdout(`${JSON.stringify(await getAuth0M2MRegistryCredential(value.slice(0, -1), environment))}\n`);
     return 0;
   } catch {
-    process.stderr.write('Auth0 registry credential unavailable.\n');
+    io.writeStderr('Auth0 registry credential unavailable.\n');
     return 1;
   }
 }

@@ -53,6 +53,12 @@ export interface Auth0M2MTokenAuthority {
   readonly subject: string;
 }
 
+export interface Auth0M2MHelperIO {
+  readonly stdin: AsyncIterable<Uint8Array | string>;
+  readonly writeStderr: (text: string) => void;
+  readonly writeStdout: (text: string) => void;
+}
+
 /** No diagnostic or error from this boundary may contain the secret, token, or Auth0 response. */
 function credentialFailure(): Error {
   return new Error('Auth0 graph credential unavailable.');
@@ -362,12 +368,13 @@ function canonicalAuth0Issuer(value: string): boolean {
 export async function runAuth0M2MGraphCredentialHelper(
   arguments_: readonly string[],
   environment: NodeJS.ProcessEnv,
+  io: Auth0M2MHelperIO,
 ): Promise<number> {
   try {
     if (arguments_.length !== 1 || arguments_[0] !== 'get') throw credentialFailure();
     let length = 0;
     const chunks: Uint8Array[] = [];
-    for await (const chunk of process.stdin) {
+    for await (const chunk of io.stdin) {
       const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : new Uint8Array(chunk);
       length += bytes.length;
       if (length > MAX_INPUT_BYTES) throw credentialFailure();
@@ -380,10 +387,10 @@ export async function runAuth0M2MGraphCredentialHelper(
       offset += chunk.length;
     }
     const request = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(input)) as unknown;
-    process.stdout.write(`${JSON.stringify(await getAuth0M2MGraphCredential(request, environment))}\n`);
+    io.writeStdout(`${JSON.stringify(await getAuth0M2MGraphCredential(request, environment))}\n`);
     return 0;
   } catch {
-    process.stderr.write('Auth0 graph credential unavailable.\n');
+    io.writeStderr('Auth0 graph credential unavailable.\n');
     return 1;
   }
 }
