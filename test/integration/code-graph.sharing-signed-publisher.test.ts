@@ -1,10 +1,13 @@
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Clock, Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
+import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {codeGraphCheckpointAbiInputV1} from '../../src/code_graph/checkpoint/compatibility.js';
 import {codeGraphCheckpointAbiDigestV1} from '../../src/code_graph/checkpoint/pack.js';
+import {graphShareLanguageAndRole, graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
+import {GRAPH_SHARE_OCI_IMAGE_MANIFEST_MEDIA_TYPE} from '../../src/code_graph/sharing/artifacts.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
@@ -12,6 +15,7 @@ import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {putCasBytes, readVerifiedCasBlob} from '../../src/code_graph/sharing/cas.js';
 import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
 import {loadGraphShareCoordinatorState} from '../../src/code_graph/sharing/control_server.js';
+import {enrollGraphControlWorker} from '../../src/code_graph/sharing/control_enrollment.js';
 import {
   graphWorkerAdmissionStatePath,
   readGraphWorkerAdmissionStore,
@@ -26,15 +30,227 @@ import {
 } from '../../src/code_graph/sharing/profile.js';
 import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher_cycle.js';
 import {runGraphPublisherBootstrap, runGraphShareInit} from '../../src/code_graph/sharing/publisher.js';
+import {
+  graphShareParseResultArtifact,
+  type GraphShareParseResultV1,
+} from '../../src/code_graph/sharing/parse_result.js';
 import {announceGraphShareResult} from '../../src/code_graph/sharing/receipts.js';
+import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
+import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker_result.js';
+import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
 import {
   admitGraphWorkerAnnouncement,
   emptyGraphWorkerAdmissionStore,
 } from '../../src/code_graph/sharing/worker_admission_state.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
 
 describe('signed worker publisher', () => {
+  effectIt.effect(
+    'consumes a current enrolled worker result from OCI and retires its exact-source admission',
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const system = yield* SystemInfo;
+          const indexer = yield* CodeGraphIndexer;
+          const store = yield* CodeGraphStore;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-signed-publisher-valid-'});
+          const repository = path.join(root, 'repository');
+          const cas = path.join(root, 'cas');
+          const home = path.join(root, 'home');
+          const policyFile = path.join(root, 'policy.json');
+          yield* fs.makeDirectory(path.join(repository, 'src'), {recursive: true});
+          yield* fs.writeFileString(
+            path.join(repository, 'package.json'),
+            '{"name":"signed-publisher-test","private":true,"type":"module"}\n',
+          );
+          yield* fs.writeFileString(path.join(repository, 'src', 'index.ts'), 'export const original = 1;\n');
+          yield* git(repository, ['init', '-q', '--initial-branch=main']);
+          yield* git(repository, ['remote', 'add', 'origin', 'https://github.com/acme/signed-publisher-test.git']);
+          yield* git(repository, ['add', '.']);
+          yield* commit(repository, 'base');
+          yield* runGraphShareInit(config(home), {cas, cwd: repository, organization: 'acme', writeConfig: true});
+          const enrollmentPath = graphShareEnrollmentPath(path, repository);
+          const enrollment = parseGraphShareEnrollment(yield* readJsonFile(enrollmentPath));
+          const original = parseGraphShareProfile(
+            yield* decodeJsonBytes(
+              yield* readVerifiedCasBlob(cas, parseGraphShareProfilePointer(enrollment.profile).digest),
+            ),
+          );
+          const profile = parseGraphShareProfile({
+            ...original,
+            registry: {...original.registry, worker: 'oci://registry.example/acme/work'},
+          });
+          const profileDigest = yield* putCasBytes(cas, new TextEncoder().encode(canonicalJson(profile)));
+          yield* writePrivateJsonFile(enrollmentPath, {...enrollment, profile: casProfilePointer(profileDigest)});
+          yield* git(repository, ['add', '.threadnote/graph-share.json']);
+          yield* commit(repository, 'enroll');
+          const identity = yield* resolveRepositoryIdentity(repository);
+          const nowSeconds = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+          const policy = {
+            audience: 'https://graph.example',
+            grants: [{expiresAt: nowSeconds + 3600, scopes: ['graph:contribute' as const], subject: 'test-worker'}],
+            issuer: 'https://auth.example',
+            jwksUrl: 'https://auth.example/.well-known/jwks.json',
+            organization: 'acme',
+            profileDigest,
+            repositoryId: identity.repositoryId,
+            schemaVersion: 1 as const,
+          };
+          yield* writePrivateJsonFile(policyFile, policy);
+          const signer = yield* makeGraphWorkerSigner(home, sha256Digest('test credential identity'));
+          const worker = yield* enrollGraphControlWorker({
+            home,
+            initialPolicy: policy,
+            principal: {
+              expiresAt: nowSeconds + 3600,
+              issuer: policy.issuer,
+              scopes: new Set(['graph:contribute']),
+              subject: 'test-worker',
+            },
+            readCurrentPolicy: Effect.succeed(policy),
+            request: {
+              idempotencyKey: 'signed-publisher-valid',
+              profileDigest,
+              repositoryId: identity.repositoryId,
+              signingPublicKey: signer.publicKey,
+            },
+          });
+          yield* indexer.index({cwd: repository, ensureVectors: false, force: true, threadnoteHome: home});
+          yield* runGraphPublisherBootstrap(config(home), {cas, cwd: repository});
+          yield* fs.writeFileString(path.join(repository, 'src', 'next.ts'), 'export const next = 2;\n');
+          yield* git(repository, ['add', 'src/next.ts']);
+          yield* commit(repository, 'advance');
+          const nextIdentity = yield* resolveRepositoryIdentity(repository);
+          let parsed: GraphShareParseResultV1 | undefined;
+          const source = yield* indexer.index({
+            cwd: repository,
+            ensureVectors: false,
+            force: true,
+            includeOverlay: false,
+            sourceOnly: true,
+            sourceVerification: {
+              observeParserBatch: group =>
+                Effect.sync(() => {
+                  const file = group.files.find(item => item.path === 'src/next.ts');
+                  const facts = group.facts.find(item => item.facts.path === file?.path);
+                  if (file === undefined || facts === undefined) return;
+                  const action = {
+                    contentHash: file.contentHash,
+                    extractorSet: group.cacheIdentity,
+                    languageAndRole: graphShareLanguageAndRole(file.language, 'source'),
+                    normalizedPath: file.path,
+                    repositoryId: identity.repositoryId,
+                  };
+                  parsed = graphShareParseResultArtifact({
+                    ...action,
+                    actionKey: graphShareParseActionKey(action),
+                    facts: facts.facts,
+                    gitBlobId: file.blobId,
+                  });
+                }),
+              materializeFacts: batch => Effect.succeed(batch.facts),
+            },
+            threadnoteHome: home,
+          });
+          if (parsed === undefined) return yield* Effect.die('Fresh source parser result was not captured');
+          const graphLayout = codeGraphLayout(path, home, nextIdentity.checkoutId, nextIdentity.worktreeId);
+          const packs = yield* store.snapshotPackProvenance(graphLayout.databasePath, source.snapshot.id);
+          if (packs === undefined) return yield* Effect.die('Fresh source pack provenance is unavailable');
+          const targetAbi = codeGraphCheckpointAbiDigestV1(codeGraphCheckpointAbiInputV1(packs)).digest;
+          const authority = {
+            expiresAt: worker.body.expiresAt,
+            graphAbi: targetAbi,
+            principalId: worker.body.principalId,
+            profileDigest,
+            repositoryId: identity.repositoryId,
+            signingPublicKey: signer.publicKey,
+            workerId: worker.body.workerId,
+          };
+          const artifact = yield* createGraphWorkerResultArtifact({
+            metadata: {
+              batchId: nextIdentity.headCommit.slice(0, 40),
+              graphAbi: targetAbi,
+              identityClass: 'oauth-principal',
+              issuedAt: nowSeconds,
+              partialCoverage: false,
+              platform: {architecture: 'x64', os: 'linux'},
+              principalId: authority.principalId,
+              profileDigest,
+              releaseIdentity: '4.6.11-local.gsynthetic',
+              repositoryId: identity.repositoryId,
+              resourceLimits: [],
+              sourceCommit: nextIdentity.headCommit,
+              workerId: authority.workerId,
+            },
+            resultBytes: new TextEncoder().encode(canonicalJson(parsed)),
+            signer,
+          });
+          const announcement = yield* signGraphWorkerResultAnnouncement({artifact, expected: authority, signer});
+          const admitted = admitGraphWorkerAnnouncement(emptyGraphWorkerAdmissionStore(), {
+            announcement,
+            authority,
+            nowSeconds,
+            sourceCommit: nextIdentity.headCommit,
+          });
+          expect(admitted.status).toBe('accepted');
+          const admissionPath = yield* graphWorkerAdmissionStatePath(home, policy);
+          yield* fs.makeDirectory(path.dirname(admissionPath), {recursive: true});
+          yield* writePrivateJsonFile(admissionPath, admitted.store);
+          const registry = 'https://registry.example/v2/acme/work';
+          const registryBytes = new Map<string, Uint8Array>([
+            [`${registry}/manifests/${artifact.manifestDigest}`, artifact.manifestBytes],
+            ...[new TextEncoder().encode('{}'), artifact.resultBytes, artifact.attestationBytes].map(
+              bytes => [`${registry}/blobs/${sha256Digest(bytes)}`, bytes] as const,
+            ),
+          ]);
+          const reads: string[] = [];
+          const fetch = Object.assign(
+            async (url: string | URL | Request, init?: RequestInit) => {
+              const address = String(url);
+              reads.push(address);
+              expect(address.startsWith(`${registry}/`)).toBe(true);
+              expect(init?.redirect).toBe('manual');
+              const bytes = registryBytes.get(address);
+              return bytes === undefined
+                ? new Response(null, {status: 404})
+                : new Response(new TextDecoder().decode(bytes), {
+                    headers: {
+                      'content-type': address.includes('/manifests/')
+                        ? GRAPH_SHARE_OCI_IMAGE_MANIFEST_MEDIA_TYPE
+                        : 'application/octet-stream',
+                      'docker-content-digest': sha256Digest(bytes),
+                    },
+                  });
+            },
+            {preconnect: () => undefined},
+          ) as typeof globalThis.fetch;
+          const result = yield* advanceGraphPublisherFrontier(config(home), {
+            authorizationPolicy: policyFile,
+            cas,
+            cwd: repository,
+            forceFreeze: true,
+          }).pipe(
+            Effect.provideService(FetchHttpClient.Fetch, fetch),
+            Effect.provideService(SystemInfo, {...system, environment: () => ({DOCKER_CONFIG: root})}),
+          );
+          expect(result.published).toBe(true);
+          expect(result.sourceCommit).toBe(nextIdentity.headCommit);
+          expect(result.contributionEvidence).toMatchObject({
+            selectedResults: 1,
+            verifiedResults: 1,
+            sourceUse: {consumedActions: 1, consumedResultManifestDigests: [artifact.manifestDigest]},
+          });
+          expect(reads).toEqual([...registryBytes.keys()]);
+          expect((yield* readGraphWorkerAdmissionStore(home, policy)).receipts).toHaveLength(0);
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    180_000,
+  );
+
   effectIt.effect(
     'ignores legacy, quarantined, and revoked receipts for an OCI-worker profile',
     () =>
