@@ -14,12 +14,14 @@ const EnrollmentRequest = Schema.Struct({
   idempotencyKey: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
   profileDigest: Digest,
   repositoryId: Schema.String.check(Schema.isPattern(SHA256_HEX)),
+  signingPublicKey: Schema.optionalKey(Schema.String.check(Schema.isPattern(SHA256_HEX))),
 });
 const Worker = Schema.Struct({
   expiresAt: PositiveTime,
   operationId: Digest,
   principalId: Digest,
   workerId: Schema.String.check(Schema.isPattern(/^gw_[0-9a-f]{32}$/u)),
+  signingPublicKey: Schema.optionalKey(Schema.String.check(Schema.isPattern(SHA256_HEX))),
 });
 const Document = Schema.Struct({
   authority: Digest,
@@ -126,28 +128,13 @@ export const enrollGraphControlWorker = Effect.fn('codeGraph.sharing.enrollContr
       ) {
         return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
       }
-      let document: EnrollmentDocument = {authority, records: [], schemaVersion: 1};
-      if (yield* fs.exists(target)) {
-        const bytes = yield* readGraphControlBytes(target, 1_048_576);
-        const text = yield* Effect.try({
-          try: () => new TextDecoder('utf-8', {fatal: true}).decode(bytes),
-          catch: () => graphSharingFailure('Graph worker enrollment state is invalid.'),
-        });
-        document = yield* Schema.decodeEffect(Schema.fromJsonString(Document), {onExcessProperty: 'error'})(text).pipe(
-          Effect.mapError(() => graphSharingFailure('Graph worker enrollment state is invalid.')),
-        );
-        if (
-          document.authority !== authority ||
-          new Set(document.records.map(record => record.operationId)).size !== document.records.length ||
-          new Set(document.records.map(record => record.workerId)).size !== document.records.length
-        ) {
-          return yield* graphSharingFailure('Graph worker enrollment state does not match its authority.');
-        }
-      }
+      const document = yield* readEnrollmentDocument(target, authority);
       const retained = document.records.filter(record => record.expiresAt > now);
       const previous = retained.find(record => record.operationId === operationId);
       if (previous !== undefined && previous.principalId !== principalId)
         return yield* graphSharingFailure('Graph worker enrollment ownership is invalid.');
+      if (previous !== undefined && previous.signingPublicKey !== input.request.signingPublicKey)
+        return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
       if (
         previous === undefined &&
         (retained.length >= 1024 || retained.filter(record => record.principalId === principalId).length >= 32)
@@ -158,6 +145,7 @@ export const enrollGraphControlWorker = Effect.fn('codeGraph.sharing.enrollContr
         expiresAt: Math.min(expiresAt, now + 3600),
         operationId,
         principalId,
+        ...(input.request.signingPublicKey === undefined ? {} : {signingPublicKey: input.request.signingPublicKey}),
         workerId: `gw_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll('-', '')}`,
       };
       // Recheck after state I/O and immediately before a durable write or replay acknowledgement.
@@ -184,12 +172,69 @@ export const enrollGraphControlWorker = Effect.fn('codeGraph.sharing.enrollContr
         created: previous === undefined,
         body: {
           expiresAt: committed.expiresAt,
+          principalId,
           profileDigest: input.initialPolicy.profileDigest,
           repositoryId: input.initialPolicy.repositoryId,
           schemaVersion: 1 as const,
           workerId: committed.workerId,
+          ...(committed.signingPublicKey === undefined ? {} : {signingPublicKey: committed.signingPublicKey}),
         },
       };
     }),
   );
+});
+
+export const requireGraphControlWorker = Effect.fn('codeGraph.sharing.requireControlWorker')(function* <E, R>(input: {
+  readonly home: string;
+  readonly initialPolicy: GraphControlPolicy;
+  readonly principal: AccessTokenClaims;
+  readonly readCurrentPolicy: Effect.Effect<GraphControlPolicy, E, R>;
+  readonly workerId: string;
+}) {
+  const authority = authorityDigest(input.initialPolicy);
+  const principalId = sha256Digest(JSON.stringify([input.principal.issuer, input.principal.subject]));
+  const grant = Effect.gen(function* () {
+    const policy = yield* input.readCurrentPolicy;
+    const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+    const expiresAt = graphControlGrantExpiry(policy, input.initialPolicy, input.principal, 'graph:contribute', now);
+    if (authorityDigest(policy) !== authority || expiresAt === undefined || input.principal.expiresAt <= now)
+      return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
+    return {now, expiresAt};
+  });
+  yield* grant;
+  const target = yield* graphWorkerEnrollmentStatePath(input.home, input.initialPolicy);
+  const document = yield* readEnrollmentDocument(target, authority);
+  const worker = document.records.find(record => record.workerId === input.workerId);
+  const current = yield* grant;
+  if (worker === undefined || worker.principalId !== principalId || worker.expiresAt <= current.now)
+    return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
+  return {
+    expiresAt: Math.min(worker.expiresAt, current.expiresAt, input.principal.expiresAt),
+    principalId,
+    workerId: worker.workerId,
+    ...(worker.signingPublicKey === undefined ? {} : {signingPublicKey: worker.signingPublicKey}),
+  };
+});
+
+const readEnrollmentDocument = Effect.fn('codeGraph.sharing.readEnrollmentDocument')(function* (
+  target: string,
+  authority: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* fs.exists(target))) return {authority, records: [], schemaVersion: 1} satisfies EnrollmentDocument;
+  const bytes = yield* readGraphControlBytes(target, 1_048_576);
+  const text = yield* Effect.try({
+    try: () => new TextDecoder('utf-8', {fatal: true}).decode(bytes),
+    catch: () => graphSharingFailure('Graph worker enrollment state is invalid.'),
+  });
+  const document = yield* Schema.decodeEffect(Schema.fromJsonString(Document), {onExcessProperty: 'error'})(text).pipe(
+    Effect.mapError(() => graphSharingFailure('Graph worker enrollment state is invalid.')),
+  );
+  if (
+    document.authority !== authority ||
+    new Set(document.records.map(record => record.operationId)).size !== document.records.length ||
+    new Set(document.records.map(record => record.workerId)).size !== document.records.length
+  )
+    return yield* graphSharingFailure('Graph worker enrollment state does not match its authority.');
+  return document;
 });
