@@ -57,7 +57,8 @@ import {serveWindowsDiskCapacityWorker, windowsAvailableDiskBytesFromNative} fro
 
 describe('SystemInfo structural path adapter', () => {
   it.each([
-    {expected: 544_440, platform: 'darwin', runtime: 'bun'},
+    {bunVersion: '1.3.14', expected: 544_440, platform: 'darwin', runtime: 'bun'},
+    {bunVersion: '1.4.2', expected: 557_506_560, platform: 'darwin', runtime: 'bun'},
     {expected: 557_506_560, platform: 'freebsd', runtime: 'bun'},
     {expected: 557_506_560, platform: 'linux', runtime: 'bun'},
     {expected: 557_506_560, platform: 'win32', runtime: 'bun'},
@@ -69,8 +70,9 @@ describe('SystemInfo structural path adapter', () => {
     readonly expected: number;
     readonly platform: NodeJS.Platform;
     readonly runtime: 'bun' | 'node';
-  }>)('normalizes $runtime process maxRSS on $platform to bytes', ({expected, platform, runtime}) => {
-    expect(processResourceUsageMaxRssBytes(544_440, platform, runtime)).toBe(expected);
+    readonly bunVersion?: string;
+  }>)('normalizes $runtime process maxRSS on $platform to bytes', ({bunVersion, expected, platform, runtime}) => {
+    expect(processResourceUsageMaxRssBytes(544_440, platform, runtime, bunVersion)).toBe(expected);
   });
 
   fcEffectProp(

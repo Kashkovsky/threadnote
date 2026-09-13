@@ -1,4 +1,4 @@
-import {fcEffectProp} from '../helpers/fast-check-property.js';
+import {fcProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {succeedUndefined} from '../../src/effect/optional.js';
 import {Effect, Fiber} from 'effect';
@@ -165,7 +165,7 @@ describe('isolated code graph impact query', () => {
     }),
   );
 
-  fcEffectProp(
+  fcProp(
     effectIt,
     'round-trips SHA-1/SHA-256 bases and every bounded path set without changing order or content (property)',
     {
@@ -178,22 +178,21 @@ describe('isolated code graph impact query', () => {
         },
       ),
     },
-    ({baseCommit, query, seeds}) =>
-      Effect.sync(() => {
-        fc.pre(query !== '' || seeds.length > 0);
-        const request = {
-          baseCommit,
-          cwd: '/workspace/repository',
-          edgeLimit: 40,
-          nodeLimit: 20,
-          protocol: 1,
-          query,
-          seedQueries: seeds,
-          seedQueryCount: seeds.length,
-          threadnoteHome: '/threadnote-home',
-        };
-        expect(decodeImpactQueryRequest(JSON.stringify(request))).toEqual(request);
-      }),
+    ({baseCommit, query, seeds}) => {
+      fc.pre(query !== '' || seeds.length > 0);
+      const request = {
+        baseCommit,
+        cwd: '/workspace/repository',
+        edgeLimit: 40,
+        nodeLimit: 20,
+        protocol: 1,
+        query,
+        seedQueries: seeds,
+        seedQueryCount: seeds.length,
+        threadnoteHome: '/threadnote-home',
+      };
+      expect(decodeImpactQueryRequest(JSON.stringify(request))).toEqual(request);
+    },
     {fastCheck: {numRuns: 80}},
   );
 

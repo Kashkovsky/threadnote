@@ -166,6 +166,7 @@ describe('built self-contained distribution', () => {
           THREADNOTE_USER: 'e2e-user',
           USERPROFILE: userHome,
         },
+        shell: process.platform === 'win32',
         timeout: realModelTimeoutMs,
       },
     );

@@ -136,16 +136,19 @@ export type ProcessResourceUsageRuntime = 'bun' | 'node';
 
 /**
  * Node exposes process.resourceUsage().maxRSS in KiB on every platform. The
- * release-pinned Bun 1.3.14 exposes bytes on Darwin and KiB on its other
- * supported platforms. Revalidate this adapter whenever the pinned Bun
- * version moves.
+ * release-pinned Bun 1.4.2 exposes KiB on every supported platform. Bun 1.3.x
+ * exposed bytes on Darwin, so retain that conversion for older development
+ * runtimes.
  */
 export function processResourceUsageMaxRssBytes(
   maxRss: number,
   platform: NodeJS.Platform,
   runtime: ProcessResourceUsageRuntime,
+  bunVersion?: string,
 ): number {
-  return runtime === 'bun' && platform === 'darwin' ? maxRss : maxRss * 1_024;
+  return runtime === 'bun' && platform === 'darwin' && (bunVersion ?? Bun.version).startsWith('1.3.')
+    ? maxRss
+    : maxRss * 1_024;
 }
 
 export function platformPathFor(platform: NodeJS.Platform): PlatformPathShape {

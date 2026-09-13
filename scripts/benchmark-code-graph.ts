@@ -1735,7 +1735,7 @@ const benchmarkCodeGraph = Effect.scoped(
         ...(runtimeProvenance ? benchmarkRuntimeProvenanceMetadata(runtimeProvenance) : {}),
         rssMeasurement:
           'boundary RSS plus process-lifetime resourceUsage.maxRSS normalized to bytes; ' +
-          'Bun 1.3.14 Darwin is bytes, while Bun Linux/Windows and Node KiB are multiplied by 1024; ' +
+          'Bun 1.4.2 and Node report KiB and are multiplied by 1024; legacy Bun 1.3 Darwin reports bytes; ' +
           'peak is cumulative, not phase-isolated',
         statusSamples,
         sqliteDurableStorageMeasurement:

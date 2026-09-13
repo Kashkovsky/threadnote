@@ -26,6 +26,7 @@ const EFFECT_APPLICATION_BOUNDARY_RULES = [
   'effecttsgo/missing-pipeable-signature',
   'effecttsgo/prefer-schema-over-json',
   'effecttsgo/process-env',
+  'effecttsgo/schema-sync',
   'effecttsgo/strict-boolean-expressions',
 ] as const;
 
