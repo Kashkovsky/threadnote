@@ -34,6 +34,7 @@ import {
 import {graphWorkerRegistryForProfile} from './worker_registry_upload.js';
 
 const LOCK_OPTIONS = {
+  heartbeatIntervalMilliseconds: 10_000,
   retryIntervalMilliseconds: 25,
   staleAfterMilliseconds: 30_000,
   waitTimeoutMilliseconds: 2_000,
