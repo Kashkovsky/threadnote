@@ -2,6 +2,7 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Cause, Deferred, Effect, Fiber, FileSystem, Layer, Option, Path, Schema} from 'effect';
 import {describe, expect} from 'vitest';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
   CODE_GRAPH_CACHE_TRANSACTION_LIMITS,
   codeGraphFileBlobCapacityBytes,
@@ -39,61 +40,62 @@ const unprotectedCacheWrite: CodeGraphDirectPersistentCapacityProtector = (_boun
 const journalTestLayer = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
 
 describe('code graph parser cache coalescer', () => {
-  effectIt.effect('does not commit parser facts when the pending journal quota refuses admission', () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const home = yield* fs.makeTempDirectoryScoped({prefix: 'graph-cache-journal-quota-'});
-      const repositoryId = 'b'.repeat(64);
-      const manifestPath = pendingCandidateQueuePath(path, home, repositoryId);
-      yield* fs.makeDirectory(path.dirname(manifestPath), {recursive: true});
-      yield* fs.writeFileString(
-        manifestPath,
-        JSON.stringify({
-          schemaVersion: 2,
-          segments: Array.from({length: 2_048}, (_, index) => ({
-            count: 1,
-            id: index.toString(16).padStart(64, '0'),
-            size: 1,
-          })),
-        }),
-      );
-      const commit = 'c'.repeat(40);
-      const candidate = {
-        actionKey: 'a'.repeat(64),
-        batchId: commit,
-        casRoot: '/private/cas',
-        extractorSet: 'd'.repeat(64),
-        organization: 'acme',
-        platform: {architecture: 'arm64' as const, os: 'darwin' as const},
-        profileDigest: sha256Digest('profile'),
-        queuedAtMilliseconds: 1,
-        releaseIdentity: 'fixture',
-        resultDigest: sha256Digest('result'),
-        resultSize: 1,
-        semanticDigest: sha256Digest('semantic'),
-        sourceCommit: commit,
-      };
-      const harness = coalescerHarness({
-        capacity: 1,
-        onSource: () =>
-          persistGraphSharePendingSignedCandidates({
-            candidates: [candidate],
-            repositoryId,
-            threadnoteHome: home,
-          }).pipe(Effect.asVoid, provideTestLayer(journalTestLayer)),
-      });
-      const source = cacheFile(1, 'src/alpha');
-      const attempt = yield* Effect.exit(
-        Effect.gen(function* () {
-          yield* harness.acceptExtracted([extractedRow(source)], cacheContext(1));
-          yield* harness.flush;
-        }),
-      );
-      expect(attempt._tag).toBe('Failure');
-      if (attempt._tag === 'Failure') expect(Cause.pretty(attempt.cause)).toContain('quota');
-      expect(harness.calls).toEqual([]);
-    }).pipe(provideTestLayer(journalTestLayer)),
+  effectIt.effect(
+    'does not commit parser facts when the pending journal quota refuses admission',
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'graph-cache-journal-quota-'});
+        const repositoryId = 'b'.repeat(64);
+        const manifestPath = pendingCandidateQueuePath(path, home, repositoryId);
+        yield* fs.makeDirectory(path.dirname(manifestPath), {recursive: true});
+        const commit = 'c'.repeat(40);
+        const candidate = {
+          actionKey: 'a'.repeat(64),
+          batchId: commit,
+          casRoot: '/private/cas',
+          extractorSet: 'd'.repeat(64),
+          organization: 'acme',
+          platform: {architecture: 'arm64' as const, os: 'darwin' as const},
+          profileDigest: sha256Digest('profile'),
+          queuedAtMilliseconds: 1,
+          releaseIdentity: 'fixture',
+          resultDigest: sha256Digest('result'),
+          resultSize: 1,
+          semanticDigest: sha256Digest('semantic'),
+          sourceCommit: commit,
+        };
+        yield* fs.makeDirectory(`${manifestPath}.d`, {recursive: true});
+        const segments = [];
+        for (let index = 0; index < 2_048; index++) {
+          const bytes = `${JSON.stringify({candidates: [{...candidate, actionKey: index.toString(16).padStart(64, '0')}], schemaVersion: 1})}\n`;
+          const id = sha256HexSync(bytes);
+          yield* fs.writeFileString(path.join(`${manifestPath}.d`, `${id}.json`), bytes);
+          segments.push({count: 1, id, size: new TextEncoder().encode(bytes).byteLength});
+        }
+        yield* fs.writeFileString(manifestPath, JSON.stringify({schemaVersion: 2, segments}));
+        const harness = coalescerHarness({
+          capacity: 1,
+          onSource: () =>
+            persistGraphSharePendingSignedCandidates({
+              candidates: [candidate],
+              repositoryId,
+              threadnoteHome: home,
+            }).pipe(Effect.asVoid, provideTestLayer(journalTestLayer)),
+        });
+        const source = cacheFile(1, 'src/alpha');
+        const attempt = yield* Effect.exit(
+          Effect.gen(function* () {
+            yield* harness.acceptExtracted([extractedRow(source)], cacheContext(1));
+            yield* harness.flush;
+          }),
+        );
+        expect(attempt._tag).toBe('Failure');
+        if (attempt._tag === 'Failure') expect(Cause.pretty(attempt.cause)).toContain('quota');
+        expect(harness.calls).toEqual([]);
+      }).pipe(provideTestLayer(journalTestLayer)),
+    30_000,
   );
 
   effectIt.effect(

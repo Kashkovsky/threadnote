@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path, Schema} from 'effect';
+import {Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {withExclusiveFileLock} from '../../effect/file_lock.js';
 import {readBoundedPrivateBytes, writePrivateJsonFile} from './atomic.js';
@@ -60,13 +60,17 @@ export const appendSignedCandidateJournal = Effect.fn('codeGraph.sharing.appendS
     Effect.gen(function* () {
       const current = yield* loadManifestLocked(input.manifestPath, input.spec);
       yield* removeOrphansLocked(input.manifestPath, current);
-      const seen = new Set<string>();
-      const additions = input.additions.filter(candidate => {
-        const id = input.spec.identity(candidate);
-        if (seen.has(id)) return false;
-        seen.add(id);
-        return true;
-      });
+      const unseen = new Map<string, T>();
+      for (const candidate of input.additions) {
+        const identity = input.spec.identity(candidate);
+        if (!unseen.has(identity)) unseen.set(identity, candidate);
+      }
+      for (const descriptor of current.segments) {
+        if (unseen.size === 0) break;
+        const page = yield* readSegmentLocked(input.manifestPath, descriptor, input.spec);
+        for (const candidate of page.candidates) unseen.delete(input.spec.identity(candidate));
+      }
+      const additions = [...unseen.values()];
       const pages = yield* attemptMetadata(() => splitPages(additions, input.spec.pageVersion));
       const known = new Set(current.segments.map(segment => segment.id));
       const newPages = pages.filter(page => !known.has(page.descriptor.id));
@@ -131,12 +135,16 @@ export const acknowledgeSignedCandidateJournalPage = Effect.fn('codeGraph.sharin
       Effect.gen(function* () {
         const manifest = yield* loadManifestLocked(input.manifestPath, input.spec);
         const index = manifest.segments.findIndex(segment => segment.id === input.id);
-        if (index < 0) return {acknowledged: 0, absent: true};
+        if (index < 0)
+          return {
+            acknowledged: 0,
+            absent: !(yield* hasIdentityLocked(input.manifestPath, manifest, input.spec, input.acceptedIdentities)),
+          };
         const oldPage = yield* readSegmentLocked(input.manifestPath, manifest.segments[index], input.spec);
         const retained = oldPage.candidates.filter(
           candidate => !input.acceptedIdentities.has(input.spec.identity(candidate)),
         );
-        if (retained.length === oldPage.candidates.length) return {acknowledged: 0, absent: true};
+        if (retained.length === oldPage.candidates.length) return {acknowledged: 0, absent: false};
         const replacement = retained.length === 0 ? undefined : makePage(retained, input.spec.pageVersion);
         const segments = [...manifest.segments];
         const replacementExists =
@@ -163,10 +171,35 @@ function withJournalLock<A, E, R>(manifestPath: string, body: Effect.Effect<A, E
       fs,
       `${manifestPath}.lock`,
       {retryIntervalMilliseconds: 25, staleAfterMilliseconds: 30_000, waitTimeoutMilliseconds: 30_000},
-      body,
+      assertSegmentDirectory(manifestPath).pipe(Effect.andThen(body)),
     );
   });
 }
+
+const assertSegmentDirectory = Effect.fn('codeGraph.sharing.assertCandidateSegmentDirectory')(function* (
+  manifestPath: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  if (Option.isSome(yield* fs.readLink(`${manifestPath}.d`).pipe(Effect.option)))
+    return yield* graphSharingFailure('Signed candidate segment directory must not be a symbolic link.');
+});
+
+const hasIdentityLocked = Effect.fn('codeGraph.sharing.hasCandidateIdentity')(function* <
+  T,
+  V extends number,
+  M extends number,
+>(
+  manifestPath: string,
+  manifest: JournalManifest<M>,
+  spec: SignedCandidateJournalSpec<T, V, M>,
+  identities: ReadonlySet<string>,
+) {
+  for (const descriptor of manifest.segments) {
+    const page = yield* readSegmentLocked(manifestPath, descriptor, spec);
+    if (page.candidates.some(candidate => identities.has(spec.identity(candidate)))) return true;
+  }
+  return false;
+});
 
 const loadManifestLocked = Effect.fn('codeGraph.sharing.loadCandidateManifest')(function* <
   T,
@@ -275,6 +308,7 @@ const readSegmentLocked = Effect.fn('codeGraph.sharing.readCandidateSegment')(fu
   V extends number,
   M extends number,
 >(manifestPath: string, descriptor: SegmentDescriptor, spec: SignedCandidateJournalSpec<T, V, M>) {
+  yield* assertSegmentDirectory(manifestPath);
   const path = yield* Path.Path;
   const target = path.join(`${manifestPath}.d`, `${descriptor.id}.json`);
   const bytes = yield* readBoundedPrivateBytes(target, SIGNED_CANDIDATE_PAGE_MAXIMUM_BYTES);
@@ -294,6 +328,7 @@ const writeSegmentLocked = Effect.fn('codeGraph.sharing.writeCandidateSegment')(
   manifestPath: string,
   page: ReturnType<typeof makePage<T, V>>,
 ) {
+  yield* assertSegmentDirectory(manifestPath);
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const target = path.join(`${manifestPath}.d`, `${page.descriptor.id}.json`);
@@ -322,6 +357,7 @@ const removeOrphansLocked = Effect.fn('codeGraph.sharing.removeCandidateOrphans'
   manifestPath: string,
   manifest: JournalManifest<number>,
 ) {
+  yield* assertSegmentDirectory(manifestPath);
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const directory = `${manifestPath}.d`;

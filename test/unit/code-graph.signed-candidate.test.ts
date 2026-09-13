@@ -1,6 +1,6 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Layer, Path} from 'effect';
+import {Cause, Effect, FileSystem, Layer, Path} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {it} from 'vitest';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
@@ -439,17 +439,129 @@ describe('producer-bound signed candidate evidence', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
+  effectIt.effect('deduplicates overlapping batches and rereads a rewritten page for the second acknowledgement', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const a = {...f.pending, actionKey: '1'.repeat(64)};
+      const b = {...f.pending, actionKey: '2'.repeat(64)};
+      const c = {...f.pending, actionKey: '3'.repeat(64)};
+      expect(
+        (yield* persistGraphSharePendingSignedCandidates({
+          candidates: [a, b],
+          repositoryId,
+          threadnoteHome: f.home,
+        })).queued,
+      ).toBe(2);
+      expect(
+        (yield* persistGraphSharePendingSignedCandidates({
+          candidates: [a, c],
+          repositoryId,
+          threadnoteHome: f.home,
+        })).queued,
+      ).toBe(1);
+      const final = (candidate: GraphSharePendingSignedCandidate): GraphShareSignedCandidateV2 => ({
+        ...candidate,
+        graphAbi: candidateFixture.graphAbi,
+        partialCoverage: false,
+        resourceLimits: [],
+        snapshotId: snapshot.id,
+      });
+      expect((yield* persistGraphShareSignedCandidates(f.home, repositoryId, [final(a), final(b)])).queued).toBe(2);
+      expect((yield* persistGraphShareSignedCandidates(f.home, repositoryId, [final(a), final(c)])).queued).toBe(1);
+      const ids = yield* listGraphShareSignedCandidatePageIds(f.home, repositoryId);
+      const first = (yield* readGraphShareSignedCandidatePage(f.home, repositoryId, ids[0]))!;
+      expect(first.candidates.map(candidate => candidate.actionKey)).toEqual([a.actionKey, b.actionKey]);
+      const second = (yield* readGraphShareSignedCandidatePage(f.home, repositoryId, ids[1]))!;
+      expect(second.candidates.map(candidate => candidate.actionKey)).toEqual([c.actionKey]);
+      expect(
+        (yield* acknowledgeGraphShareSignedCandidatePage(
+          f.home,
+          repositoryId,
+          first.id,
+          new Set([graphShareSignedCandidateIdentity(final(a))]),
+        )).acknowledged,
+      ).toBe(1);
+      const stale = yield* acknowledgeGraphShareSignedCandidatePage(
+        f.home,
+        repositoryId,
+        first.id,
+        new Set([graphShareSignedCandidateIdentity(final(b))]),
+      );
+      expect(stale).toEqual({acknowledged: 0, absent: false});
+      const currentIds = yield* listGraphShareSignedCandidatePageIds(f.home, repositoryId);
+      const replacement = (yield* readGraphShareSignedCandidatePage(f.home, repositoryId, currentIds[0]))!;
+      expect(replacement.candidates.map(candidate => candidate.actionKey)).toEqual([b.actionKey]);
+      expect(
+        (yield* acknowledgeGraphShareSignedCandidatePage(
+          f.home,
+          repositoryId,
+          replacement.id,
+          new Set([graphShareSignedCandidateIdentity(final(b))]),
+        )).acknowledged,
+      ).toBe(1);
+      expect(
+        (yield* acknowledgeGraphShareSignedCandidatePage(
+          f.home,
+          repositoryId,
+          first.id,
+          new Set([graphShareSignedCandidateIdentity(final(b))]),
+        )).absent,
+      ).toBe(true);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('rejects a symlinked segment directory before touching its target', () =>
+    Effect.gen(function* () {
+      if ((yield* SystemInfo).platform === 'win32') return;
+      const f = yield* fixture();
+      const pendingPath = pendingCandidateQueuePath(f.path, f.home, repositoryId);
+      const outside = f.path.join(f.home, 'outside');
+      yield* f.fs.makeDirectory(outside);
+      const marker = f.path.join(outside, 'marker.txt');
+      yield* f.fs.writeFileString(marker, 'unchanged');
+      yield* f.fs.makeDirectory(f.path.dirname(pendingPath), {recursive: true});
+      yield* f.fs.symlink(outside, `${pendingPath}.d`);
+      const attempt = yield* Effect.exit(
+        persistGraphSharePendingSignedCandidates({
+          candidates: [f.pending],
+          repositoryId,
+          threadnoteHome: f.home,
+        }),
+      );
+      expect(attempt._tag).toBe('Failure');
+      if (attempt._tag === 'Failure') expect(Cause.pretty(attempt.cause)).toContain('symbolic link');
+      expect(yield* f.fs.readFileString(marker)).toBe('unchanged');
+      expect(yield* f.fs.exists(pendingPath)).toBe(false);
+    }).pipe(provideTestLayer(layer)),
+  );
+
   effectIt.effect.prop(
-    'journal append is idempotent and preserves distinct arrival order',
-    {ordinals: FC.array(FC.integer({min: 0, max: 80}), {maxLength: 90})},
-    ({ordinals}) =>
+    'overlapping journal batches preserve first-seen order without duplicates',
+    {
+      first: FC.array(FC.integer({min: 0, max: 80}), {maxLength: 45}),
+      second: FC.array(FC.integer({min: 0, max: 80}), {maxLength: 45}),
+    },
+    ({first, second}) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const home = yield* fs.makeTempDirectoryScoped({prefix: 'graph-signed-journal-property-'});
-        const additions = ordinals.map(index => ({...pendingFixture, actionKey: index.toString(16).padStart(64, '0')}));
+        const additions = [...first, ...second].map(index => ({
+          ...pendingFixture,
+          actionKey: index.toString(16).padStart(64, '0'),
+        }));
         const before = JSON.stringify(additions);
-        yield* persistGraphSharePendingSignedCandidates({candidates: additions, repositoryId, threadnoteHome: home});
+        yield* persistGraphSharePendingSignedCandidates({
+          candidates: additions.slice(0, first.length),
+          repositoryId,
+          threadnoteHome: home,
+        });
+        const secondAdmission = yield* persistGraphSharePendingSignedCandidates({
+          candidates: additions.slice(first.length),
+          repositoryId,
+          threadnoteHome: home,
+        });
+        expect(secondAdmission.queued).toBe(new Set([...first, ...second]).size - new Set(first).size);
         expect(
           (yield* persistGraphSharePendingSignedCandidates({
             candidates: additions,
@@ -459,7 +571,7 @@ describe('producer-bound signed candidate evidence', () => {
         ).toBe(0);
         expect(JSON.stringify(additions)).toBe(before);
         const pendingPath = pendingCandidateQueuePath(path, home, repositoryId);
-        if (ordinals.length === 0) {
+        if (additions.length === 0) {
           expect(yield* fs.exists(pendingPath)).toBe(false);
           return;
         }
