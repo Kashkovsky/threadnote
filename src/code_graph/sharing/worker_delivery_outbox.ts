@@ -43,8 +43,12 @@ export function graphWorkerDeliveryScope(
   organization: string,
 ): GraphWorkerDeliveryScope {
   return {
-    organization, principalId: authority.principalId, profileDigest: authority.profileDigest,
-    repositoryId: authority.repositoryId, signingPublicKey: authority.signingPublicKey, workerId: authority.workerId,
+    organization,
+    principalId: authority.principalId,
+    profileDigest: authority.profileDigest,
+    repositoryId: authority.repositoryId,
+    signingPublicKey: authority.signingPublicKey,
+    workerId: authority.workerId,
   };
 }
 
@@ -156,14 +160,30 @@ export const prepareGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.pre
     };
     if (!validOperation(operation)) return yield* invalid();
     const scope = graphWorkerDeliveryScope(authority, candidate.organization);
-    return yield* withOutboxLock(input.threadnoteHome, scope, Effect.gen(function* () {
-      const current = yield* readOutbox(input.threadnoteHome, scope);
-      yield* recoverOutboxStorage(input.threadnoteHome, scope, current);
-      const existing = current.operations.find(item => item.operationId === operation.operationId);
-      if (existing !== undefined) {
-        if (immutableIdentity(existing) !== immutableIdentity(operation)) return yield* invalid();
-        // If a power loss retained metadata but lost a referenced blob, the still-queued
-        // original candidate can restore only the same cryptographically verified bytes.
+    return yield* withOutboxLock(
+      input.threadnoteHome,
+      scope,
+      Effect.gen(function* () {
+        const current = yield* readOutbox(input.threadnoteHome, scope);
+        yield* recoverOutboxStorage(input.threadnoteHome, scope, current);
+        const existing = current.operations.find(item => item.operationId === operation.operationId);
+        if (existing !== undefined) {
+          if (immutableIdentity(existing) !== immutableIdentity(operation)) return yield* invalid();
+          // If a power loss retained metadata but lost a referenced blob, the still-queued
+          // original candidate can restore only the same cryptographically verified bytes.
+          const required = [
+            {bytes: artifact.resultBytes, digest: operation.resultDigest},
+            {bytes: artifact.attestationBytes, digest: operation.attestationDigest},
+            {bytes: artifact.manifestBytes, digest: operation.manifestDigest},
+          ];
+          yield* verifyOutboxCapacity(input.threadnoteHome, scope, required);
+          for (const blob of required) yield* persistBlob(input.threadnoteHome, scope, blob.digest, blob.bytes);
+          yield* readOperationArtifact(input.threadnoteHome, scope, existing);
+          yield* syncExistingOutbox(input.threadnoteHome, scope);
+          return {operation: existing, prepared: false, sourcePageId: input.candidatePageId};
+        }
+        if (current.operations.length >= GRAPH_WORKER_OUTBOX_MAX_OPERATIONS)
+          return yield* graphSharingFailure('Graph worker delivery outbox operation quota is full.');
         const required = [
           {bytes: artifact.resultBytes, digest: operation.resultDigest},
           {bytes: artifact.attestationBytes, digest: operation.attestationDigest},
@@ -171,40 +191,30 @@ export const prepareGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.pre
         ];
         yield* verifyOutboxCapacity(input.threadnoteHome, scope, required);
         for (const blob of required) yield* persistBlob(input.threadnoteHome, scope, blob.digest, blob.bytes);
-        yield* readOperationArtifact(input.threadnoteHome, scope, existing);
-        yield* syncExistingOutbox(input.threadnoteHome, scope);
-        return {operation: existing, prepared: false, sourcePageId: input.candidatePageId};
-      }
-      if (current.operations.length >= GRAPH_WORKER_OUTBOX_MAX_OPERATIONS)
-        return yield* graphSharingFailure('Graph worker delivery outbox operation quota is full.');
-      const required = [
-        {bytes: artifact.resultBytes, digest: operation.resultDigest},
-        {bytes: artifact.attestationBytes, digest: operation.attestationDigest},
-        {bytes: artifact.manifestBytes, digest: operation.manifestDigest},
-      ];
-      yield* verifyOutboxCapacity(input.threadnoteHome, scope, required);
-      for (const blob of required) yield* persistBlob(input.threadnoteHome, scope, blob.digest, blob.bytes);
-      yield* writeOutbox(input.threadnoteHome, scope, {
-        operations: [...current.operations, operation], schemaVersion: 1,
-      });
-      return {operation, prepared: true, sourcePageId: input.candidatePageId};
-    }));
+        yield* writeOutbox(input.threadnoteHome, scope, {
+          operations: [...current.operations, operation],
+          schemaVersion: 1,
+        });
+        return {operation, prepared: true, sourcePageId: input.candidatePageId};
+      }),
+    );
   },
 );
 
 /** Every replay verifies all stored content digests before exposing any network bytes. */
-export const readGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.readWorkerDeliveryOutbox')(
-  function* (threadnoteHome: string, scope: GraphWorkerDeliveryScope) {
-    if (!validScope(scope)) return yield* invalid();
-    const current = yield* readOutbox(threadnoteHome, scope);
-    const replay: GraphWorkerDeliveryReplay[] = [];
-    for (const operation of current.operations) {
-      const artifact = yield* readOperationArtifact(threadnoteHome, scope, operation);
-      replay.push({operation, artifact});
-    }
-    return replay;
-  },
-);
+export const readGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.readWorkerDeliveryOutbox')(function* (
+  threadnoteHome: string,
+  scope: GraphWorkerDeliveryScope,
+) {
+  if (!validScope(scope)) return yield* invalid();
+  const current = yield* readOutbox(threadnoteHome, scope);
+  const replay: GraphWorkerDeliveryReplay[] = [];
+  for (const operation of current.operations) {
+    const artifact = yield* readOperationArtifact(threadnoteHome, scope, operation);
+    replay.push({operation, artifact});
+  }
+  return replay;
+});
 
 /** Call only after an exact accepted/duplicate/quarantined server response. */
 export const markGraphWorkerDeliveryAdmitted = Effect.fn('codeGraph.sharing.markWorkerDeliveryAdmitted')(
@@ -217,28 +227,35 @@ export const markGraphWorkerDeliveryAdmitted = Effect.fn('codeGraph.sharing.mark
     readonly threadnoteHome: string;
   }) {
     if (!validScope(input.scope) || !PAGE_ID.test(input.candidatePageId)) return yield* invalid();
-    return yield* withOutboxLock(input.threadnoteHome, input.scope, Effect.gen(function* () {
-      const current = yield* readOutbox(input.threadnoteHome, input.scope);
-      const operation = current.operations.find(item => item.operationId === input.operationId);
-      if (
-        operation === undefined ||
-        operation.candidateIdentity !== input.candidateIdentity ||
-        operation.candidatePageId !== input.candidatePageId ||
-        input.response.idempotencyKey !== input.operationId ||
-        (input.response.status !== 'accepted' && input.response.status !== 'duplicate' && input.response.status !== 'quarantined')
-      ) return yield* invalid();
-      yield* readOperationArtifact(input.threadnoteHome, input.scope, operation);
-      if (operation.state === 'admitted') {
-        // A lost local response to our own metadata rename is safe to replay.
-        return operation;
-      }
-      const admitted = {...operation, admissionStatus: input.response.status, state: 'admitted' as const};
-      yield* writeOutbox(input.threadnoteHome, input.scope, {
-        operations: current.operations.map(item => item.operationId === input.operationId ? admitted : item),
-        schemaVersion: 1,
-      });
-      return admitted;
-    }));
+    return yield* withOutboxLock(
+      input.threadnoteHome,
+      input.scope,
+      Effect.gen(function* () {
+        const current = yield* readOutbox(input.threadnoteHome, input.scope);
+        const operation = current.operations.find(item => item.operationId === input.operationId);
+        if (
+          operation === undefined ||
+          operation.candidateIdentity !== input.candidateIdentity ||
+          operation.candidatePageId !== input.candidatePageId ||
+          input.response.idempotencyKey !== input.operationId ||
+          (input.response.status !== 'accepted' &&
+            input.response.status !== 'duplicate' &&
+            input.response.status !== 'quarantined')
+        )
+          return yield* invalid();
+        yield* readOperationArtifact(input.threadnoteHome, input.scope, operation);
+        if (operation.state === 'admitted') {
+          // A lost local response to our own metadata rename is safe to replay.
+          return operation;
+        }
+        const admitted = {...operation, admissionStatus: input.response.status, state: 'admitted' as const};
+        yield* writeOutbox(input.threadnoteHome, input.scope, {
+          operations: current.operations.map(item => (item.operationId === input.operationId ? admitted : item)),
+          schemaVersion: 1,
+        });
+        return admitted;
+      }),
+    );
   },
 );
 
@@ -254,20 +271,28 @@ export const retireGraphWorkerDeliveryOutbox = Effect.fn('codeGraph.sharing.reti
   }) {
     if (!validScope(input.scope) || !PAGE_ID.test(input.candidatePageId) || input.candidateAbsent !== true)
       return yield* invalid();
-    return yield* withOutboxLock(input.threadnoteHome, input.scope, Effect.gen(function* () {
-      const current = yield* readOutbox(input.threadnoteHome, input.scope);
-      const operation = current.operations.find(item => item.operationId === input.operationId);
-      if (operation === undefined) return false;
-      if (
-        operation.state !== 'admitted' ||
-        operation.candidateIdentity !== input.candidateIdentity ||
-        operation.candidatePageId !== input.candidatePageId
-      ) return yield* invalid();
-      const next = {operations: current.operations.filter(item => item.operationId !== input.operationId), schemaVersion: 1 as const};
-      yield* writeOutbox(input.threadnoteHome, input.scope, next);
-      yield* recoverOutboxStorage(input.threadnoteHome, input.scope, next);
-      return true;
-    }));
+    return yield* withOutboxLock(
+      input.threadnoteHome,
+      input.scope,
+      Effect.gen(function* () {
+        const current = yield* readOutbox(input.threadnoteHome, input.scope);
+        const operation = current.operations.find(item => item.operationId === input.operationId);
+        if (operation === undefined) return false;
+        if (
+          operation.state !== 'admitted' ||
+          operation.candidateIdentity !== input.candidateIdentity ||
+          operation.candidatePageId !== input.candidatePageId
+        )
+          return yield* invalid();
+        const next = {
+          operations: current.operations.filter(item => item.operationId !== input.operationId),
+          schemaVersion: 1 as const,
+        };
+        yield* writeOutbox(input.threadnoteHome, input.scope, next);
+        yield* recoverOutboxStorage(input.threadnoteHome, input.scope, next);
+        return true;
+      }),
+    );
   },
 );
 
@@ -278,80 +303,154 @@ function parseCandidate(value: unknown): GraphShareSignedCandidateV2 {
 
 function exactCandidateIdentity(value: GraphShareSignedCandidateV2): string {
   const pendingIdentity = JSON.stringify([
-    value.actionKey, value.resultDigest, value.sourceCommit, value.semanticDigest, value.casRoot,
-    value.profileDigest, value.organization, value.releaseIdentity,
+    value.actionKey,
+    value.resultDigest,
+    value.sourceCommit,
+    value.semanticDigest,
+    value.casRoot,
+    value.profileDigest,
+    value.organization,
+    value.releaseIdentity,
   ]);
   return JSON.stringify([pendingIdentity, value.graphAbi, value.partialCoverage, value.snapshotId]);
 }
 
 function immutableIdentity(value: GraphWorkerDeliveryOutboxOperationV1): string {
-  const {state: _state, admissionStatus: _admissionStatus, preparedAtMilliseconds: _at,
-    candidatePageId: _sourcePage, ...immutable} = value;
+  const {
+    state: _state,
+    admissionStatus: _admissionStatus,
+    preparedAtMilliseconds: _at,
+    candidatePageId: _sourcePage,
+    ...immutable
+  } = value;
   return canonicalJson(immutable);
 }
 
 function validOperation(value: unknown): value is GraphWorkerDeliveryOutboxOperationV1 {
   if (!isRecord(value)) return false;
-  const allowed = 'admissionStatus,announcement,attestationDigest,attestationSize,authority,candidate,candidateIdentity,candidatePageId,manifestDigest,manifestSize,operationId,organization,preparedAtMilliseconds,resultDigest,resultSize,sourceCommit,state';
-  if (Object.keys(value).sort().join(',') !== allowed && Object.keys(value).sort().join(',') !== allowed.replace('admissionStatus,', '')) return false;
+  const allowed =
+    'admissionStatus,announcement,attestationDigest,attestationSize,authority,candidate,candidateIdentity,candidatePageId,manifestDigest,manifestSize,operationId,organization,preparedAtMilliseconds,resultDigest,resultSize,sourceCommit,state';
+  if (
+    Object.keys(value).sort().join(',') !== allowed &&
+    Object.keys(value).sort().join(',') !== allowed.replace('admissionStatus,', '')
+  )
+    return false;
   try {
     const candidate = parseCandidate(value.candidate);
     const announcement = value.announcement;
     const authority = value.authority;
     return (
-      validAnnouncement(announcement) && isRecord(authority) &&
-      Object.keys(authority).sort().join(',') === 'expiresAt,graphAbi,principalId,profileDigest,repositoryId,signingPublicKey,workerId' &&
-      typeof value.candidateIdentity === 'string' && value.candidateIdentity === exactCandidateIdentity(candidate) &&
-      typeof value.candidatePageId === 'string' && PAGE_ID.test(value.candidatePageId) &&
-      typeof value.organization === 'string' && ORG.test(value.organization) && value.organization === candidate.organization &&
-      typeof value.sourceCommit === 'string' && COMMIT.test(value.sourceCommit) && value.sourceCommit === candidate.sourceCommit &&
-      typeof value.operationId === 'string' && SHA256_DIGEST.test(value.operationId) && value.operationId === announcement.body.idempotencyKey &&
-      typeof value.resultDigest === 'string' && SHA256_DIGEST.test(value.resultDigest) && value.resultDigest === candidate.resultDigest &&
-      typeof value.attestationDigest === 'string' && SHA256_DIGEST.test(value.attestationDigest) && value.attestationDigest === announcement.body.attestationDigest &&
-      typeof value.manifestDigest === 'string' && SHA256_DIGEST.test(value.manifestDigest) && value.manifestDigest === announcement.body.resultManifestDigest &&
-      validSize(value.resultSize, MAX_RESULT_BYTES) && value.resultSize === candidate.resultSize &&
-      validSize(value.attestationSize, 65_536) && validSize(value.manifestSize, 8_192) &&
-      typeof value.preparedAtMilliseconds === 'number' && Number.isSafeInteger(value.preparedAtMilliseconds) && value.preparedAtMilliseconds >= 0 &&
+      validAnnouncement(announcement) &&
+      isRecord(authority) &&
+      Object.keys(authority).sort().join(',') ===
+        'expiresAt,graphAbi,principalId,profileDigest,repositoryId,signingPublicKey,workerId' &&
+      typeof value.candidateIdentity === 'string' &&
+      value.candidateIdentity === exactCandidateIdentity(candidate) &&
+      typeof value.candidatePageId === 'string' &&
+      PAGE_ID.test(value.candidatePageId) &&
+      typeof value.organization === 'string' &&
+      ORG.test(value.organization) &&
+      value.organization === candidate.organization &&
+      typeof value.sourceCommit === 'string' &&
+      COMMIT.test(value.sourceCommit) &&
+      value.sourceCommit === candidate.sourceCommit &&
+      typeof value.operationId === 'string' &&
+      SHA256_DIGEST.test(value.operationId) &&
+      value.operationId === announcement.body.idempotencyKey &&
+      typeof value.resultDigest === 'string' &&
+      SHA256_DIGEST.test(value.resultDigest) &&
+      value.resultDigest === candidate.resultDigest &&
+      typeof value.attestationDigest === 'string' &&
+      SHA256_DIGEST.test(value.attestationDigest) &&
+      value.attestationDigest === announcement.body.attestationDigest &&
+      typeof value.manifestDigest === 'string' &&
+      SHA256_DIGEST.test(value.manifestDigest) &&
+      value.manifestDigest === announcement.body.resultManifestDigest &&
+      validSize(value.resultSize, MAX_RESULT_BYTES) &&
+      value.resultSize === candidate.resultSize &&
+      validSize(value.attestationSize, 65_536) &&
+      validSize(value.manifestSize, 8_192) &&
+      typeof value.preparedAtMilliseconds === 'number' &&
+      Number.isSafeInteger(value.preparedAtMilliseconds) &&
+      value.preparedAtMilliseconds >= 0 &&
       (value.state === 'prepared' || value.state === 'admitted') &&
-      (value.state === 'prepared' ? value.admissionStatus === undefined : ['accepted', 'duplicate', 'quarantined'].includes(String(value.admissionStatus))) &&
-      announcement.publicKey === authority.signingPublicKey && announcement.body.repositoryId === authority.repositoryId &&
-      announcement.body.profileDigest === authority.profileDigest && announcement.body.principalId === authority.principalId &&
-      announcement.body.workerId === authority.workerId && candidate.graphAbi === authority.graphAbi &&
-      announcement.body.actionKey === candidate.actionKey && announcement.body.semanticDigest === candidate.semanticDigest &&
-      announcement.body.batchId === candidate.batchId && announcement.body.profileDigest === candidate.profileDigest &&
-      typeof authority.expiresAt === 'number' && Number.isSafeInteger(authority.expiresAt) && authority.expiresAt > 0 &&
-      typeof authority.signingPublicKey === 'string' && SHA256_HEX.test(authority.signingPublicKey) &&
-      typeof authority.graphAbi === 'string' && SHA256_HEX.test(authority.graphAbi) &&
-      typeof authority.principalId === 'string' && SHA256_DIGEST.test(authority.principalId) &&
-      typeof authority.profileDigest === 'string' && SHA256_DIGEST.test(authority.profileDigest) &&
-      typeof authority.repositoryId === 'string' && SHA256_HEX.test(authority.repositoryId) &&
-      typeof authority.workerId === 'string' && /^gw_[0-9a-f]{32}$/u.test(authority.workerId)
+      (value.state === 'prepared'
+        ? value.admissionStatus === undefined
+        : ['accepted', 'duplicate', 'quarantined'].includes(String(value.admissionStatus))) &&
+      announcement.publicKey === authority.signingPublicKey &&
+      announcement.body.repositoryId === authority.repositoryId &&
+      announcement.body.profileDigest === authority.profileDigest &&
+      announcement.body.principalId === authority.principalId &&
+      announcement.body.workerId === authority.workerId &&
+      candidate.graphAbi === authority.graphAbi &&
+      announcement.body.actionKey === candidate.actionKey &&
+      announcement.body.semanticDigest === candidate.semanticDigest &&
+      announcement.body.batchId === candidate.batchId &&
+      announcement.body.profileDigest === candidate.profileDigest &&
+      typeof authority.expiresAt === 'number' &&
+      Number.isSafeInteger(authority.expiresAt) &&
+      authority.expiresAt > 0 &&
+      typeof authority.signingPublicKey === 'string' &&
+      SHA256_HEX.test(authority.signingPublicKey) &&
+      typeof authority.graphAbi === 'string' &&
+      SHA256_HEX.test(authority.graphAbi) &&
+      typeof authority.principalId === 'string' &&
+      SHA256_DIGEST.test(authority.principalId) &&
+      typeof authority.profileDigest === 'string' &&
+      SHA256_DIGEST.test(authority.profileDigest) &&
+      typeof authority.repositoryId === 'string' &&
+      SHA256_HEX.test(authority.repositoryId) &&
+      typeof authority.workerId === 'string' &&
+      /^gw_[0-9a-f]{32}$/u.test(authority.workerId)
     );
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 function validAnnouncement(value: unknown): value is GraphWorkerResultAnnouncement {
-  if (!isRecord(value) || Object.keys(value).sort().join(',') !== 'algorithm,body,publicKey,schemaVersion,signature' ||
-      value.algorithm !== 'ed25519' || value.schemaVersion !== 1 ||
-      typeof value.publicKey !== 'string' || !SHA256_HEX.test(value.publicKey) ||
-      typeof value.signature !== 'string' || !/^[0-9a-f]{128}$/u.test(value.signature) || !isRecord(value.body))
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !== 'algorithm,body,publicKey,schemaVersion,signature' ||
+    value.algorithm !== 'ed25519' ||
+    value.schemaVersion !== 1 ||
+    typeof value.publicKey !== 'string' ||
+    !SHA256_HEX.test(value.publicKey) ||
+    typeof value.signature !== 'string' ||
+    !/^[0-9a-f]{128}$/u.test(value.signature) ||
+    !isRecord(value.body)
+  )
     return false;
   const body = value.body;
-  if (Object.keys(body).sort().join(',') !==
-      'actionKey,attestationDigest,batchId,idempotencyKey,principalId,profileDigest,repositoryId,resultManifestDigest,semanticDigest,workerId')
+  if (
+    Object.keys(body).sort().join(',') !==
+    'actionKey,attestationDigest,batchId,idempotencyKey,principalId,profileDigest,repositoryId,resultManifestDigest,semanticDigest,workerId'
+  )
     return false;
   const {idempotencyKey, ...fields} = body;
-  return typeof body.actionKey === 'string' && SHA256_HEX.test(body.actionKey) &&
-    typeof body.attestationDigest === 'string' && SHA256_DIGEST.test(body.attestationDigest) &&
-    typeof body.batchId === 'string' && /^[0-9a-f]{40}$/u.test(body.batchId) &&
-    typeof body.principalId === 'string' && SHA256_DIGEST.test(body.principalId) &&
-    typeof body.profileDigest === 'string' && SHA256_DIGEST.test(body.profileDigest) &&
-    typeof body.repositoryId === 'string' && SHA256_HEX.test(body.repositoryId) &&
-    typeof body.resultManifestDigest === 'string' && SHA256_DIGEST.test(body.resultManifestDigest) &&
-    typeof body.semanticDigest === 'string' && SHA256_DIGEST.test(body.semanticDigest) &&
-    typeof body.workerId === 'string' && /^gw_[0-9a-f]{32}$/u.test(body.workerId) &&
-    typeof idempotencyKey === 'string' && SHA256_DIGEST.test(idempotencyKey) &&
-    idempotencyKey === sha256Digest('threadnote.graph.worker.result-operation.v1\0' + canonicalJson(fields));
+  return (
+    typeof body.actionKey === 'string' &&
+    SHA256_HEX.test(body.actionKey) &&
+    typeof body.attestationDigest === 'string' &&
+    SHA256_DIGEST.test(body.attestationDigest) &&
+    typeof body.batchId === 'string' &&
+    /^[0-9a-f]{40}$/u.test(body.batchId) &&
+    typeof body.principalId === 'string' &&
+    SHA256_DIGEST.test(body.principalId) &&
+    typeof body.profileDigest === 'string' &&
+    SHA256_DIGEST.test(body.profileDigest) &&
+    typeof body.repositoryId === 'string' &&
+    SHA256_HEX.test(body.repositoryId) &&
+    typeof body.resultManifestDigest === 'string' &&
+    SHA256_DIGEST.test(body.resultManifestDigest) &&
+    typeof body.semanticDigest === 'string' &&
+    SHA256_DIGEST.test(body.semanticDigest) &&
+    typeof body.workerId === 'string' &&
+    /^gw_[0-9a-f]{32}$/u.test(body.workerId) &&
+    typeof idempotencyKey === 'string' &&
+    SHA256_DIGEST.test(idempotencyKey) &&
+    idempotencyKey === sha256Digest('threadnote.graph.worker.result-operation.v1\0' + canonicalJson(fields))
+  );
 }
 
 function validSize(value: unknown, maximum: number): value is number {
@@ -359,12 +458,18 @@ function validSize(value: unknown, maximum: number): value is number {
 }
 
 function parseOutbox(value: unknown): GraphWorkerDeliveryOutboxV1 {
-  if (!isRecord(value) || Object.keys(value).sort().join(',') !== 'operations,schemaVersion' ||
-      value.schemaVersion !== 1 || !Array.isArray(value.operations) ||
-      value.operations.length > GRAPH_WORKER_OUTBOX_MAX_OPERATIONS || value.operations.some(item => !validOperation(item)))
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !== 'operations,schemaVersion' ||
+    value.schemaVersion !== 1 ||
+    !Array.isArray(value.operations) ||
+    value.operations.length > GRAPH_WORKER_OUTBOX_MAX_OPERATIONS ||
+    value.operations.some(item => !validOperation(item))
+  )
     throw graphSharingFailure('Graph worker delivery outbox metadata is invalid.');
   const operations = value.operations as GraphWorkerDeliveryOutboxOperationV1[];
-  if (new Set(operations.map(item => item.operationId)).size !== operations.length) throw graphSharingFailure('Graph worker delivery outbox contains duplicate operations.');
+  if (new Set(operations.map(item => item.operationId)).size !== operations.length)
+    throw graphSharingFailure('Graph worker delivery outbox contains duplicate operations.');
   return {operations, schemaVersion: 1};
 }
 
@@ -373,19 +478,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function copyArtifact(input: Artifact): Artifact {
-  return {attestationBytes: new Uint8Array(input.attestationBytes), manifestBytes: new Uint8Array(input.manifestBytes),
-    manifestDigest: input.manifestDigest, resultBytes: new Uint8Array(input.resultBytes)};
+  return {
+    attestationBytes: new Uint8Array(input.attestationBytes),
+    manifestBytes: new Uint8Array(input.manifestBytes),
+    manifestDigest: input.manifestDigest,
+    resultBytes: new Uint8Array(input.resultBytes),
+  };
 }
 
 function validScope(scope: GraphWorkerDeliveryScope): boolean {
-  return isRecord(scope) && Object.keys(scope).sort().join(',') ===
+  return (
+    isRecord(scope) &&
+    Object.keys(scope).sort().join(',') ===
       'organization,principalId,profileDigest,repositoryId,signingPublicKey,workerId' &&
-    typeof scope.organization === 'string' && ORG.test(scope.organization) &&
-    typeof scope.principalId === 'string' && SHA256_DIGEST.test(scope.principalId) &&
-    typeof scope.profileDigest === 'string' && SHA256_DIGEST.test(scope.profileDigest) &&
-    typeof scope.repositoryId === 'string' && SHA256_HEX.test(scope.repositoryId) &&
-    typeof scope.signingPublicKey === 'string' && SHA256_HEX.test(scope.signingPublicKey) &&
-    typeof scope.workerId === 'string' && /^gw_[0-9a-f]{32}$/u.test(scope.workerId);
+    typeof scope.organization === 'string' &&
+    ORG.test(scope.organization) &&
+    typeof scope.principalId === 'string' &&
+    SHA256_DIGEST.test(scope.principalId) &&
+    typeof scope.profileDigest === 'string' &&
+    SHA256_DIGEST.test(scope.profileDigest) &&
+    typeof scope.repositoryId === 'string' &&
+    SHA256_HEX.test(scope.repositoryId) &&
+    typeof scope.signingPublicKey === 'string' &&
+    SHA256_HEX.test(scope.signingPublicKey) &&
+    typeof scope.workerId === 'string' &&
+    /^gw_[0-9a-f]{32}$/u.test(scope.workerId)
+  );
 }
 
 function scopeMatches(operation: GraphWorkerDeliveryOutboxOperationV1, scope: GraphWorkerDeliveryScope): boolean {
@@ -403,10 +521,12 @@ function blobPath(path: Path.Path, home: string, scope: GraphWorkerDeliveryScope
 }
 
 function syncDirectoryStrict(fs: FileSystem.FileSystem, directory: string) {
-  return Effect.scoped(Effect.gen(function* () {
-    const handle = yield* fs.open(directory, {flag: 'r'});
-    yield* handle.sync;
-  }));
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* fs.open(directory, {flag: 'r'});
+      yield* handle.sync;
+    }),
+  );
 }
 
 function secureDirectory(directory: string, home: string) {
@@ -463,7 +583,10 @@ function readOutbox(home: string, scope: GraphWorkerDeliveryScope) {
 function writeOutbox(home: string, scope: GraphWorkerDeliveryScope, value: GraphWorkerDeliveryOutboxV1) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
-    if (!parseOutbox(value) || new TextEncoder().encode(JSON.stringify(value)).byteLength + 1 > GRAPH_WORKER_OUTBOX_MAX_METADATA_BYTES)
+    if (
+      !parseOutbox(value) ||
+      new TextEncoder().encode(JSON.stringify(value)).byteLength + 1 > GRAPH_WORKER_OUTBOX_MAX_METADATA_BYTES
+    )
       return yield* graphSharingFailure('Graph worker delivery outbox metadata quota is full.');
     if (value.operations.some(operation => !scopeMatches(operation, scope))) return yield* invalid();
     const target = outboxPaths(path, home, scope).metadata;
@@ -497,15 +620,23 @@ function readBlob(home: string, scope: GraphWorkerDeliveryScope, digest: string,
   });
 }
 
-function readOperationArtifact(home: string, scope: GraphWorkerDeliveryScope, operation: GraphWorkerDeliveryOutboxOperationV1) {
+function readOperationArtifact(
+  home: string,
+  scope: GraphWorkerDeliveryScope,
+  operation: GraphWorkerDeliveryOutboxOperationV1,
+) {
   return Effect.gen(function* () {
     const [resultBytes, attestationBytes, manifestBytes] = yield* Effect.all([
       readBlob(home, scope, operation.resultDigest, operation.resultSize),
       readBlob(home, scope, operation.attestationDigest, operation.attestationSize),
       readBlob(home, scope, operation.manifestDigest, operation.manifestSize),
     ]);
-    if (resultBytes.byteLength !== operation.resultSize || attestationBytes.byteLength !== operation.attestationSize ||
-        manifestBytes.byteLength !== operation.manifestSize) return yield* invalid();
+    if (
+      resultBytes.byteLength !== operation.resultSize ||
+      attestationBytes.byteLength !== operation.attestationSize ||
+      manifestBytes.byteLength !== operation.manifestSize
+    )
+      return yield* invalid();
     return {resultBytes, attestationBytes, manifestBytes, manifestDigest: operation.manifestDigest};
   });
 }
@@ -538,7 +669,8 @@ function inspectBlobDirectory(home: string, scope: GraphWorkerDeliveryScope) {
     const directory = outboxPaths(path, home, scope).blobs;
     yield* secureDirectory(directory, home);
     const names = yield* fs.readDirectory(directory);
-    if (names.length > GRAPH_WORKER_OUTBOX_MAX_BLOBS) return yield* graphSharingFailure('Graph worker delivery outbox blob quota is full.');
+    if (names.length > GRAPH_WORKER_OUTBOX_MAX_BLOBS)
+      return yield* graphSharingFailure('Graph worker delivery outbox blob quota is full.');
     const blobs: Array<{name: string; size: number}> = [];
     for (const name of names) {
       if (!SHA256_HEX.test(name)) return yield* invalid();
@@ -552,7 +684,11 @@ function inspectBlobDirectory(home: string, scope: GraphWorkerDeliveryScope) {
   });
 }
 
-function verifyOutboxCapacity(home: string, scope: GraphWorkerDeliveryScope, required: readonly {digest: string; bytes: Uint8Array}[]) {
+function verifyOutboxCapacity(
+  home: string,
+  scope: GraphWorkerDeliveryScope,
+  required: readonly {digest: string; bytes: Uint8Array}[],
+) {
   return Effect.gen(function* () {
     const existing = yield* inspectBlobDirectory(home, scope);
     const names = new Set(existing.map(blob => blob.name));
@@ -576,7 +712,11 @@ function recoverOutboxStorage(home: string, scope: GraphWorkerDeliveryScope, cur
     const paths = outboxPaths(path, home, scope);
     const directory = paths.blobs;
     yield* secureDirectory(directory, home);
-    const referenced = new Set(current.operations.flatMap(item => [item.resultDigest, item.attestationDigest, item.manifestDigest]).map(sha256HexFromDigest));
+    const referenced = new Set(
+      current.operations
+        .flatMap(item => [item.resultDigest, item.attestationDigest, item.manifestDigest])
+        .map(sha256HexFromDigest),
+    );
     const rootNames = yield* fs.readDirectory(paths.root);
     const blobNames = yield* fs.readDirectory(directory);
     let rootChanged = false;
@@ -607,4 +747,6 @@ function recoverOutboxStorage(home: string, scope: GraphWorkerDeliveryScope, cur
   });
 }
 
-function invalid() { return graphSharingFailure('Graph worker delivery outbox authority or data is invalid.'); }
+function invalid() {
+  return graphSharingFailure('Graph worker delivery outbox authority or data is invalid.');
+}
