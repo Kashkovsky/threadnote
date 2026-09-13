@@ -91,7 +91,7 @@ export const makeAuthenticatedGraphControlClient = Effect.fn('codeGraph.sharing.
             return {status: inbound.status, headers: inbound.headers, body: parsed};
           }),
         ).pipe(
-          Effect.timeout(10_000),
+          Effect.timeout(pathname === '/v1/results' ? 30_000 : 10_000),
           Effect.mapError(error =>
             Schema.is(GraphSharingError)(error) ? error : graphSharingUnavailable('Graph control request failed.'),
           ),

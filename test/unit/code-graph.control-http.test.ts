@@ -1,6 +1,7 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Clock, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -19,7 +20,7 @@ const issuer = 'https://login.example.test/';
 const audience = 'https://graph.example.test';
 const layer = Layer.mergeAll(SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer)), FetchHttpClient.layer);
 const fixture = Effect.fn('test.controlHttp.fixture')(function* (
-  handler: (url: string, init: RequestInit) => Response,
+  handler: (url: string, init: RequestInit) => Response | Promise<Response>,
   options: {coordinatorUrl?: string; beforeCredential?: Effect.Effect<void>} = {},
 ) {
   const requestScope = {...scope, coordinatorUrl: options.coordinatorUrl ?? scope.coordinatorUrl};
@@ -208,6 +209,30 @@ describe('authenticated graph control transport', () => {
       expect(JSON.stringify(result)).toContain('120000');
       expect(JSON.stringify(result)).not.toContain('synthetic-private-response');
       expect(denied.httpCalls()).toBe(1);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('allows result admission longer than the metadata deadline', () =>
+    Effect.gen(function* () {
+      let entered!: () => void;
+      let resolve!: (response: Response) => void;
+      const started = new Promise<void>(ready => {
+        entered = ready;
+      });
+      const pending = new Promise<Response>(ready => {
+        resolve = ready;
+      });
+      const f = yield* fixture(() => {
+        entered();
+        return pending;
+      });
+      const request = yield* f.client.request('POST', '/v1/results', {}).pipe(Effect.result, Effect.forkScoped);
+      yield* Effect.promise(() => started);
+      yield* TestClock.adjust('11 seconds');
+      expect(request.pollUnsafe()).toBeUndefined();
+      resolve(Response.json({idempotencyKey: sha256Digest('operation'), status: 'accepted'}, {status: 201}));
+      expect((yield* Fiber.join(request))._tag).toBe('Success');
+      expect(f.httpCalls()).toBe(1);
     }).pipe(provideTestLayer(layer)),
   );
 });
