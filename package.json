@@ -1,6 +1,6 @@
 {
   "name": "threadnote",
-  "version": "4.6.11",
+  "version": "4.6.12",
   "type": "module",
   "description": "Shared local context and handoffs for development agents",
   "license": "AGPL-3.0-or-later",
@@ -168,9 +168,10 @@
   "overrides": {
     "@effect/platform-node-shared": "4.0.0-rc.112",
     "@hono/node-server": "^2.0.12",
-    "fast-uri": "3.1.5",
-    "hono": "4.12.34",
-    "ip-address": "10.4.0"
+    "fast-uri": "3.1.6",
+    "hono": "4.13.5",
+    "ip-address": "10.4.0",
+    "qs": "6.16.0"
   },
   "patchedDependencies": {
     "@effect/sql-sqlite-bun@4.0.0-rc.112": "patches/@effect%2Fsql-sqlite-bun@4.0.0-rc.112.patch"
