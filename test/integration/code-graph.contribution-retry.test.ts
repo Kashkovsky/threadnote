@@ -153,6 +153,20 @@ describe('MCP-owned passive graph contribution retries', () => {
         await within(firstRefusal, 20_000);
         expect(refusedRequests).toBe(1);
         expect(JSON.parse(await readFile(queuePath, 'utf8')).announcements.length).toBeGreaterThan(0);
+        if (source === 'ordinary graph query') {
+          const candidatePath = join(home, 'graph-sharing', 'signed-candidates', `${repositoryId}.json`);
+          const candidates = JSON.parse(await readFile(candidatePath, 'utf8')).candidates;
+          const {stdout: sourceCommit} = await command('git', ['-C', repository, 'rev-parse', 'HEAD']);
+          expect(candidates).toHaveLength(1);
+          expect(candidates[0]).toMatchObject({
+            casRoot: cas,
+            partialCoverage: false,
+            releaseIdentity: '4.6.11',
+            resourceLimits: [],
+            sourceCommit: sourceCommit.trim(),
+          });
+          expect(candidates[0].graphAbi).toMatch(/^[0-9a-f]{64}$/u);
+        }
         healthy = true;
         await within(firstDelivery, 20_000);
         expect(deliveredRequests).toBeGreaterThan(0);

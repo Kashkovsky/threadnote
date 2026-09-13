@@ -37,6 +37,7 @@ import {
 import {lookupGraphShareTrustReceipt} from './trust.js';
 import {resolveGraphShareRepositoryClient} from './client_state.js';
 import {graphSharingContributionQueuePath, graphSharingLayout} from './layout.js';
+import type {GraphSharePendingSignedCandidate} from './signed_candidate.js';
 import {
   graphShareContributionRetryDelay,
   readContributionRetryState,
@@ -49,6 +50,7 @@ export const enqueueLocalGraphShareParseResults = Effect.fn('codeGraph.sharing.e
     readonly facts: readonly BoundedCodeGraphFact[];
     readonly files: readonly CodeGraphInventoryFile[];
     readonly identity: Pick<RepositoryIdentity, 'headCommit' | 'repositoryId'>;
+    readonly onQueuedCandidate?: (candidate: GraphSharePendingSignedCandidate) => void;
     readonly threadnoteHome: string;
   }) {
     const trust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.identity.repositoryId);
@@ -102,7 +104,19 @@ export const enqueueLocalGraphShareParseResults = Effect.fn('codeGraph.sharing.e
         },
         mode,
       );
-      if (enqueued.queued) queued += 1;
+      if (enqueued.queued) {
+        queued += 1;
+        input.onQueuedCandidate?.({
+          actionKey: artifact.actionKey,
+          batchId,
+          casRoot,
+          extractorSet: input.extractorSet,
+          resultDigest: resultManifestDigest,
+          resultSize: resultBytes.byteLength,
+          semanticDigest: artifact.semanticDigest,
+          sourceCommit: input.identity.headCommit,
+        });
+      }
     }
     return {queued};
   },

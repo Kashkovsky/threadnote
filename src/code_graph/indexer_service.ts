@@ -2,6 +2,7 @@ import {Clock, Context, Crypto, Effect, Exit, FileSystem, Layer, Option, Path, S
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
+import {getThreadnoteVersion} from '../release/runtime_version.js';
 import {observeCodeGraphAdmissionEnvironment, recordCodeGraphSnapshotAdmission} from './admission_freshness.js';
 import {makeCodeGraphBuildReporter} from './build_status.js';
 import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, withCodeGraphBuilderAdmission} from './builder_admission.js';
@@ -80,6 +81,10 @@ import {
   hydrateSharedParseCache,
 } from './sharing/parse_cache.js';
 import {graphShareEnrollmentPath} from './sharing/layout.js';
+import {
+  finalizeGraphShareSignedCandidates,
+  makeGraphShareSignedCandidateCollector,
+} from './sharing/signed_candidate.js';
 import {CodeGraphStore} from './store.js';
 import {TreeSitterRuntime} from './tree_sitter/runtime.js';
 import type {CodeGraphIndexSummary, CodeGraphInventoryFile, CodeGraphProgress, CodeGraphSnapshot} from './types.js';
@@ -115,12 +120,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           readonly facts: readonly BoundedCodeGraphFact[];
           readonly files: readonly CodeGraphInventoryFile[];
         },
+        onQueuedCandidate?: Parameters<typeof enqueueLocalGraphShareParseResults>[0]['onQueuedCandidate'],
       ) =>
         enqueueLocalGraphShareParseResults({
           extractorSet: group.cacheIdentity,
           facts: group.facts,
           files: group.files,
           identity,
+          onQueuedCandidate,
           threadnoteHome,
         }).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
@@ -138,6 +145,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
         Effect.scoped(
           Effect.gen(function* () {
             const initialIdentity = yield* resolveRepositoryIdentity(request.cwd);
+            const signedCandidates = makeGraphShareSignedCandidateCollector();
             const admissionEnvironment = yield* observeCodeGraphAdmissionEnvironment(initialIdentity);
             if (
               request.expectedIdentity &&
@@ -369,7 +377,13 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         onSourceParserBatch: options.sourceVerification?.observeParserBatch,
                         onCachedParserBatch: options.sourceOnly
                           ? undefined
-                          : group => enqueueSharedParserBatch(identity, options.threadnoteHome, group),
+                          : group =>
+                              enqueueSharedParserBatch(
+                                identity,
+                                options.threadnoteHome,
+                                group,
+                                signedCandidates.capture,
+                              ),
                         onProgress: options.onProgress,
                         parserPool,
                         persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
@@ -995,6 +1009,21 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 }).pipe(Effect.ignore),
               ),
             );
+            if (!options.sourceOnly && !summary.snapshot.dirty)
+              yield* finalizeGraphShareSignedCandidates({
+                candidates: signedCandidates.snapshot(),
+                databasePath: layout.databasePath,
+                platform: {
+                  architecture: system.architecture === 'aarch64' ? 'arm64' : system.architecture,
+                  os: system.platform,
+                },
+                releaseIdentity: yield* getThreadnoteVersion(),
+                repositoryId: summary.identity.repositoryId,
+                skippedFiles: summary.skippedFiles,
+                snapshot: summary.snapshot,
+                store,
+                threadnoteHome: request.threadnoteHome,
+              }).pipe(Effect.ignore);
             if (!options.sourceOnly)
               yield* drainQueuedGraphShareContributions({
                 identity: initialIdentity,
@@ -1043,6 +1072,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
         Effect.scoped(
           Effect.gen(function* () {
             const initialIdentity = yield* resolveRepositoryIdentity(request.cwd);
+            const signedCandidates = makeGraphShareSignedCandidateCollector();
             if (
               request.expectedIdentity &&
               !repositoryIdentityMatchesExpectation(initialIdentity, request.expectedIdentity)
@@ -1174,7 +1204,13 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         languagePacks,
                         onCachedParserBatch: options.sourceOnly
                           ? undefined
-                          : group => enqueueSharedParserBatch(identity, options.threadnoteHome, group),
+                          : group =>
+                              enqueueSharedParserBatch(
+                                identity,
+                                options.threadnoteHome,
+                                group,
+                                signedCandidates.capture,
+                              ),
                         onProgress: options.onProgress,
                         parserPool,
                         persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
@@ -1261,6 +1297,21 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 }).pipe(Effect.ignore),
               ),
             );
+            if (!options.sourceOnly)
+              yield* finalizeGraphShareSignedCandidates({
+                candidates: signedCandidates.snapshot(),
+                databasePath: layout.databasePath,
+                platform: {
+                  architecture: system.architecture === 'aarch64' ? 'arm64' : system.architecture,
+                  os: system.platform,
+                },
+                releaseIdentity: yield* getThreadnoteVersion(),
+                repositoryId: lease.summary.identity.repositoryId,
+                skippedFiles: lease.summary.skippedFiles,
+                snapshot: lease.summary.snapshot,
+                store,
+                threadnoteHome: request.threadnoteHome,
+              }).pipe(Effect.ignore);
             if (!options.sourceOnly)
               yield* drainQueuedGraphShareContributions({
                 identity: initialIdentity,
