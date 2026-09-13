@@ -27,6 +27,7 @@ const fixture = Effect.fn('test.controlCredentials.fixture')(function* (
   options: {
     readonly configured?: boolean;
     readonly denied?: boolean;
+    readonly helper?: string;
     readonly response?: (now: number, calls: number) => unknown;
   } = {},
 ) {
@@ -37,16 +38,19 @@ const fixture = Effect.fn('test.controlCredentials.fixture')(function* (
   const config = path.join(directory, 'control-credentials.json');
   yield* fs.makeDirectory(directory);
   if (options.configured !== false)
-    yield* fs.writeFileString(config, JSON.stringify({bindings: [binding], schemaVersion: 1}));
+    yield* fs.writeFileString(
+      config,
+      JSON.stringify({bindings: [{...binding, helper: options.helper ?? binding.helper}], schemaVersion: 1}),
+    );
   let calls = 0;
   const loader = yield* makeGraphControlCredentialLoader(home, scope, 'graph:contribute').pipe(
     Effect.provideService(CommandExecutor, {
       execute: (executable, args, options_) =>
         Effect.gen(function* () {
           calls++;
-          expect(executable).toBe('threadnote-credential-fixture');
+          expect(executable).toBe(`threadnote-credential-${options.helper ?? 'fixture'}`);
           expect(args).toEqual(['get']);
-          expect(options_?.timeoutMs).toBe(5000);
+          expect(options_?.timeoutMs).toBe(options.helper === 'auth0-m2m' ? 10000 : 5000);
           expect(options_?.maxOutputBytes).toBe(32768);
           expect(JSON.parse(new TextDecoder().decode(options_?.input))).toEqual({
             ...scope,
@@ -79,6 +83,14 @@ const fixture = Effect.fn('test.controlCredentials.fixture')(function* (
 });
 
 describe('graph control credential discovery', () => {
+  effectIt.effect('allows the packaged Auth0 helper a bounded token and cold-JWKS acquisition window', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture({helper: 'auth0-m2m'});
+      expect((yield* f.loader.load).expiresAt).toBeGreaterThan((yield* Clock.currentTimeMillis) / 1000);
+      expect(f.calls()).toBe(1);
+    }).pipe(provideTestLayer(BunServices.layer)),
+  );
+
   fcEffectProp(
     effectIt,
     'never returns expired credentials after arbitrary idle gaps',

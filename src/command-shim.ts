@@ -7,7 +7,9 @@ import {expandPath, readFileIfExists, removePath, shellQuote, toolRoot} from './
 
 const THREADNOTE_COMMAND = 'threadnote';
 const THREADNOTE_MCP_COMMAND = 'threadnote-mcp-server';
-type LauncherMode = 'cli' | 'mcp';
+const THREADNOTE_AUTH0_CREDENTIAL_COMMAND = 'threadnote-credential-auth0-m2m';
+type LauncherMode = 'cli' | 'mcp' | 'credential-auth0-m2m';
+const LAUNCHER_MODES: readonly LauncherMode[] = ['cli', 'mcp', 'credential-auth0-m2m'];
 
 export type CommandLauncherKind = 'cmd' | 'posix';
 
@@ -28,7 +30,7 @@ export const commandLauncherPath = Effect.fn('commandShim.launcherPath')(
 export const commandShimCheck = Effect.fn('commandShim.check')(function* () {
   const system = yield* SystemInfo;
   const paths: string[] = [];
-  for (const mode of ['cli', 'mcp'] as const) {
+  for (const mode of LAUNCHER_MODES) {
     for (const kind of managedCommandLauncherKinds(system.platform)) {
       const shimPath = yield* managedCommandShimPath(mode, kind);
       const content = yield* readFileIfExists(shimPath);
@@ -60,7 +62,7 @@ export const commandShimCheck = Effect.fn('commandShim.check')(function* () {
 });
 
 export const installCommandShim = Effect.fn('commandShim.install')(function* (dryRun: boolean, releaseRoot?: string) {
-  for (const mode of ['cli', 'mcp'] as const) {
+  for (const mode of LAUNCHER_MODES) {
     yield* installLauncher(mode, dryRun, releaseRoot);
   }
   yield* ensureDefaultWindowsBinDirectoryOnUserPath(dryRun);
@@ -143,7 +145,7 @@ const installLauncherFile = Effect.fn('commandShim.installLauncherFile')(functio
 
 export const removeCommandShim = Effect.fn('commandShim.remove')(function* (dryRun: boolean) {
   const system = yield* SystemInfo;
-  for (const mode of ['cli', 'mcp'] as const) {
+  for (const mode of LAUNCHER_MODES) {
     for (const kind of managedCommandLauncherKinds(system.platform)) {
       const shimPath = yield* managedCommandShimPath(mode, kind);
       const content = yield* readFileIfExists(shimPath);
@@ -170,7 +172,8 @@ export const renderCommandShim = Effect.fn('commandShim.render')(function* (
   const root = releaseRoot ?? (yield* toolRoot());
   const executable = path.join(root, system.platform === 'win32' ? 'threadnote.exe' : 'threadnote');
   const resolvedKind = kind ?? primaryCommandLauncherKind(system.platform);
-  const modeArguments = mode === 'mcp' ? ['mcp-broker'] : [];
+  const modeArguments =
+    mode === 'mcp' ? ['mcp-broker'] : mode === 'credential-auth0-m2m' ? ['__credential-auth0-m2m'] : [];
   if (resolvedKind === 'cmd') {
     const command = [cmdQuote(executable), ...modeArguments, '%*'].join(' ');
     return [
@@ -226,7 +229,12 @@ const managedCommandShimPath = Effect.fn('commandShim.path')(function* (
     : system.platform === 'win32' && localAppData
       ? path.join(localAppData, 'Threadnote', 'bin')
       : yield* expandPath('~/.local/bin');
-  const command = mode === 'mcp' ? THREADNOTE_MCP_COMMAND : THREADNOTE_COMMAND;
+  const command =
+    mode === 'mcp'
+      ? THREADNOTE_MCP_COMMAND
+      : mode === 'credential-auth0-m2m'
+        ? THREADNOTE_AUTH0_CREDENTIAL_COMMAND
+        : THREADNOTE_COMMAND;
   const resolvedKind = kind ?? primaryCommandLauncherKind(system.platform);
   return path.join(binDirectory, resolvedKind === 'cmd' ? `${command}.cmd` : command);
 });

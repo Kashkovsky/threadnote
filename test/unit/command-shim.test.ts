@@ -42,12 +42,17 @@ describe('Windows Git Bash command launchers', () => {
         expect(yield* commandLauncherPath('mcp').pipe(Effect.provideService(SystemInfo, testSystem))).toMatch(
           /threadnote-mcp-server\.cmd$/,
         );
+        expect(
+          yield* commandLauncherPath('credential-auth0-m2m').pipe(Effect.provideService(SystemInfo, testSystem)),
+        ).toMatch(/threadnote-credential-auth0-m2m\.cmd$/);
 
         const files = {
           cliCmd: yield* readLauncher(testSystem, 'cli', 'cmd'),
           cliPosix: yield* readLauncher(testSystem, 'cli', 'posix'),
           mcpCmd: yield* readLauncher(testSystem, 'mcp', 'cmd'),
           mcpPosix: yield* readLauncher(testSystem, 'mcp', 'posix'),
+          auth0Cmd: yield* readLauncher(testSystem, 'credential-auth0-m2m', 'cmd'),
+          auth0Posix: yield* readLauncher(testSystem, 'credential-auth0-m2m', 'posix'),
         };
         expect(installed.output).toContain(`Wrote command launcher: ${files.cliCmd.path}`);
         expect(installed.output).toContain(`Wrote command launcher: ${files.cliPosix.path}`);
@@ -64,6 +69,8 @@ describe('Windows Git Bash command launchers', () => {
         expect(files.cliPosix.content).toContain('export THREADNOTE_CALLER_CWD');
         expect(files.cliPosix.content).toContain('exec "$THREADNOTE_ENTRY" "$@"');
         expect(files.mcpPosix.content).toContain('exec "$THREADNOTE_ENTRY" mcp-broker "$@"');
+        expect(files.auth0Posix.content).toContain('exec "$THREADNOTE_ENTRY" __credential-auth0-m2m "$@"');
+        expect(files.auth0Cmd.content).toContain('__credential-auth0-m2m %*');
         expect(files.cliCmd.content.startsWith('@echo off\r\n')).toBe(true);
         expect(files.cliCmd.content).toContain('%*');
 
@@ -166,7 +173,13 @@ describe('Windows Git Bash command launchers', () => {
         const mcpPosix = yield* commandLauncherPath('mcp', 'posix').pipe(Effect.provideService(SystemInfo, testSystem));
         const check = yield* commandShimCheck().pipe(Effect.provideService(SystemInfo, testSystem));
         expect(check.status).toBe('ok');
-        expect(check.detail).toBe(`${cliCmd}; ${cliPosix}; ${mcpCmd}; ${mcpPosix}`);
+        const auth0Cmd = yield* commandLauncherPath('credential-auth0-m2m', 'cmd').pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        const auth0Posix = yield* commandLauncherPath('credential-auth0-m2m', 'posix').pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(check.detail).toBe(`${cliCmd}; ${cliPosix}; ${mcpCmd}; ${mcpPosix}; ${auth0Cmd}; ${auth0Posix}`);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -244,7 +257,7 @@ describe('Windows Git Bash command launchers', () => {
         const {releaseRoot, testSystem} = yield* windowsShimFixture(root);
         yield* installCommandShim(false, releaseRoot).pipe(Effect.provideService(SystemInfo, testSystem));
         yield* removeCommandShim(false).pipe(Effect.provideService(SystemInfo, testSystem));
-        for (const mode of ['cli', 'mcp'] as const) {
+        for (const mode of ['cli', 'mcp', 'credential-auth0-m2m'] as const) {
           for (const kind of managedCommandLauncherKinds('win32')) {
             const launcher = yield* commandLauncherPath(mode, kind).pipe(Effect.provideService(SystemInfo, testSystem));
             expect(yield* fs.exists(launcher)).toBe(false);
@@ -258,7 +271,7 @@ describe('Windows Git Bash command launchers', () => {
     effectIt,
     'Windows POSIX shims are LF shebang scripts that exec the same release exe as the cmd launcher',
     {
-      mode: fc.constantFrom('cli' as const, 'mcp' as const),
+      mode: fc.constantFrom('cli' as const, 'mcp' as const, 'credential-auth0-m2m' as const),
       variant: fc.constantFrom('plain' as const, 'spaced' as const),
       version: fc.stringMatching(/^[0-9]+\.[0-9]+\.[0-9]+$/),
     },
@@ -293,6 +306,9 @@ describe('Windows Git Bash command launchers', () => {
         if (mode === 'mcp') {
           expect(posix).toContain('mcp-broker');
           expect(cmd).toContain('mcp-broker');
+        } else if (mode === 'credential-auth0-m2m') {
+          expect(posix).toContain('__credential-auth0-m2m');
+          expect(cmd).toContain('__credential-auth0-m2m');
         } else {
           expect(posix).not.toContain('mcp-broker');
           expect(cmd).not.toContain('mcp-broker');
@@ -317,12 +333,16 @@ const windowsShimFixture = Effect.fn('test.windowsShimFixture')(function* (root:
   return {binDirectory, releaseRoot, testSystem};
 });
 
-const renderFor = (testSystem: SystemInfoShape, releaseRoot: string, mode: 'cli' | 'mcp', kind: 'cmd' | 'posix') =>
-  renderCommandShim(releaseRoot, mode, kind).pipe(Effect.provideService(SystemInfo, testSystem));
+const renderFor = (
+  testSystem: SystemInfoShape,
+  releaseRoot: string,
+  mode: 'cli' | 'mcp' | 'credential-auth0-m2m',
+  kind: 'cmd' | 'posix',
+) => renderCommandShim(releaseRoot, mode, kind).pipe(Effect.provideService(SystemInfo, testSystem));
 
 const readLauncher = Effect.fn('test.readLauncher')(function* (
   testSystem: SystemInfoShape,
-  mode: 'cli' | 'mcp',
+  mode: 'cli' | 'mcp' | 'credential-auth0-m2m',
   kind: 'cmd' | 'posix',
 ) {
   const fs = yield* FileSystem.FileSystem;
