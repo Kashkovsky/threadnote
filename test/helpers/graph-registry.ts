@@ -16,6 +16,8 @@ export const graphRegistryFixture = Effect.fn('test.graphRegistry.fixture')(func
   );
   const blobs = new Map<string, Uint8Array>();
   const manifests = new Map<string, Uint8Array>();
+  const workerBlobs = new Map<string, Uint8Array>();
+  const workerManifests = new Map<string, Uint8Array>();
   const requests: {method: string; pathname: string}[] = [];
   const state = {outage: false, loseTagAcknowledgement: false};
   const fetch = Object.assign(
@@ -25,8 +27,11 @@ export const graphRegistryFixture = Effect.fn('test.graphRegistry.fixture')(func
       const method = init?.method ?? 'GET';
       requests.push({method, pathname: url.pathname});
       if (state.outage) return new Response(null, {status: 503, headers: {'retry-after': '17'}});
-      const prefix = '/v2/acme/canonical/';
+      const worker = url.pathname.startsWith('/v2/acme/worker/');
+      const prefix = worker ? '/v2/acme/worker/' : '/v2/acme/canonical/';
       if (!url.pathname.startsWith(prefix)) throw new Error('Unexpected registry namespace');
+      const blobStore = worker ? workerBlobs : blobs;
+      const manifestStore = worker ? workerManifests : manifests;
       const suffix = url.pathname.slice(prefix.length);
       if (method === 'POST' && suffix === 'blobs/uploads/')
         return new Response(null, {status: 202, headers: {location: prefix + 'blobs/uploads/fixture?_state=opaque'}});
@@ -36,18 +41,18 @@ export const graphRegistryFixture = Effect.fn('test.graphRegistry.fixture')(func
         const digest = sha256Digest(bytes);
         if (suffix.startsWith('blobs/uploads/')) {
           if (url.searchParams.get('digest') !== digest) throw new Error('Invalid upload digest');
-          blobs.set(digest, bytes);
+          blobStore.set(digest, bytes);
         } else if (suffix.startsWith('manifests/')) {
           const ref = suffix.slice('manifests/'.length);
-          manifests.set(ref, bytes);
-          manifests.set(digest, bytes);
+          manifestStore.set(ref, bytes);
+          manifestStore.set(digest, bytes);
           if (ref.startsWith('tn-frontier-') && state.loseTagAcknowledgement)
             return new Response(null, {status: 503, headers: {'retry-after': '17'}});
         } else throw new Error('Unexpected mutation');
         return new Response(null, {status: 201, headers: {'docker-content-digest': digest}});
       }
       const manifest = suffix.startsWith('manifests/');
-      const bytes = (manifest ? manifests : blobs).get(suffix.slice(manifest ? 'manifests/'.length : 'blobs/'.length));
+      const bytes = (manifest ? manifestStore : blobStore).get(suffix.slice(manifest ? 'manifests/'.length : 'blobs/'.length));
       if (bytes === undefined) return new Response(null, {status: 404});
       return new Response(method === 'HEAD' ? null : Uint8Array.from(bytes), {
         headers: {
@@ -78,5 +83,5 @@ export const graphRegistryFixture = Effect.fn('test.graphRegistry.fixture')(func
             : executor.execute(executable, args, options),
       }),
     );
-  return {blobs, manifests, requests, state, provide};
+  return {blobs, manifests, workerBlobs, workerManifests, requests, state, provide};
 });

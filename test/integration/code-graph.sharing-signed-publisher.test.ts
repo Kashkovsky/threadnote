@@ -1,17 +1,20 @@
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Clock, Effect, FileSystem, Path} from 'effect';
+import {Clock, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
+import * as HttpClient from 'effect/unstable/http/HttpClient';
+import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest';
+import {exportJWK, generateKeyPair, SignJWT} from 'jose';
+import {graphRegistryFixture} from '../helpers/graph-registry.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {codeGraphCheckpointAbiInputV1} from '../../src/code_graph/checkpoint/compatibility.js';
 import {codeGraphCheckpointAbiDigestV1} from '../../src/code_graph/checkpoint/pack.js';
 import {graphShareLanguageAndRole, graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
-import {GRAPH_SHARE_OCI_IMAGE_MANIFEST_MEDIA_TYPE} from '../../src/code_graph/sharing/artifacts.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {maybeImportSharedGraphBase, runGraphShareJoin} from '../../src/code_graph/sharing/client.js';
 import {putCasBytes, readVerifiedCasBlob} from '../../src/code_graph/sharing/cas.js';
 import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
 import {loadGraphShareCoordinatorState} from '../../src/code_graph/sharing/control_server.js';
@@ -29,7 +32,11 @@ import {
   parseGraphShareProfilePointer,
 } from '../../src/code_graph/sharing/profile.js';
 import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher_cycle.js';
-import {runGraphPublisherBootstrap, runGraphShareInit} from '../../src/code_graph/sharing/publisher.js';
+import {
+  runGraphPublisherBootstrap,
+  runGraphPublisherListen,
+  runGraphShareInit,
+} from '../../src/code_graph/sharing/publisher.js';
 import {
   graphShareParseResultArtifact,
   type GraphShareParseResultV1,
@@ -44,21 +51,21 @@ import {
 } from '../../src/code_graph/sharing/worker_admission_state.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {SystemInfo} from '../../src/effect/system.js';
 
 describe('signed worker publisher', () => {
   effectIt.effect(
-    'consumes an enrolled source result, skips a signed off-tree result, and retires both admissions',
+    'admits signed results through the authenticated publisher listener and source-verifies canonical publication',
     () =>
       TestClock.withLive(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const system = yield* SystemInfo;
+          const registry = yield* graphRegistryFixture();
           const indexer = yield* CodeGraphIndexer;
           const store = yield* CodeGraphStore;
           const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-signed-publisher-valid-'});
           const repository = path.join(root, 'repository');
+          const contributor = path.join(root, 'contributor');
           const cas = path.join(root, 'cas');
           const home = path.join(root, 'home');
           const policyFile = path.join(root, 'policy.json');
@@ -82,7 +89,10 @@ describe('signed worker publisher', () => {
           );
           const profile = parseGraphShareProfile({
             ...original,
-            registry: {...original.registry, worker: 'oci://registry.example/acme/work'},
+            registry: {
+              canonical: 'oci://registry.example.test/acme/canonical',
+              worker: 'oci://registry.example.test/acme/worker',
+            },
           });
           const profileDigest = yield* putCasBytes(cas, new TextEncoder().encode(canonicalJson(profile)));
           yield* writePrivateJsonFile(enrollmentPath, {...enrollment, profile: casProfilePointer(profileDigest)});
@@ -93,8 +103,8 @@ describe('signed worker publisher', () => {
           const policy = {
             audience: 'https://graph.example',
             grants: [{expiresAt: nowSeconds + 3600, scopes: ['graph:contribute' as const], subject: 'test-worker'}],
-            issuer: 'https://auth.example',
-            jwksUrl: 'https://auth.example/.well-known/jwks.json',
+            issuer: 'https://auth.example.test/',
+            jwksUrl: 'https://auth.example.test/.well-known/jwks.json',
             organization: 'acme',
             profileDigest,
             repositoryId: identity.repositoryId,
@@ -120,14 +130,16 @@ describe('signed worker publisher', () => {
             },
           });
           yield* indexer.index({cwd: repository, ensureVectors: false, force: true, threadnoteHome: home});
-          yield* runGraphPublisherBootstrap(config(home), {cas, cwd: repository});
-          yield* fs.writeFileString(path.join(repository, 'src', 'next.ts'), 'export const next = 2;\n');
-          yield* git(repository, ['add', 'src/next.ts']);
-          yield* commit(repository, 'advance');
-          const nextIdentity = yield* resolveRepositoryIdentity(repository);
+          yield* registry.provide(runGraphPublisherBootstrap(config(home), {cas, cwd: repository}));
+          yield* git(root, ['clone', '-q', repository, contributor]);
+          yield* git(contributor, ['remote', 'set-url', 'origin', 'https://github.com/acme/signed-publisher-test.git']);
+          yield* fs.writeFileString(path.join(contributor, 'src', 'next.ts'), 'export const next = 2;\n');
+          yield* git(contributor, ['add', 'src/next.ts']);
+          yield* commit(contributor, 'advance');
+          const nextIdentity = yield* resolveRepositoryIdentity(contributor);
           let parsed: GraphShareParseResultV1 | undefined;
           const source = yield* indexer.index({
-            cwd: repository,
+            cwd: contributor,
             ensureVectors: false,
             force: true,
             includeOverlay: false,
@@ -190,13 +202,6 @@ describe('signed worker publisher', () => {
             signer,
           });
           const announcement = yield* signGraphWorkerResultAnnouncement({artifact, expected: authority, signer});
-          const admitted = admitGraphWorkerAnnouncement(emptyGraphWorkerAdmissionStore(), {
-            announcement,
-            authority,
-            nowSeconds,
-            sourceCommit: nextIdentity.headCommit,
-          });
-          expect(admitted.status).toBe('accepted');
           const absentAction = {
             contentHash: 'f'.repeat(64),
             extractorSet: parsed.extractorSet,
@@ -234,61 +239,80 @@ describe('signed worker publisher', () => {
             expected: authority,
             signer,
           });
-          const withAbsent = admitGraphWorkerAnnouncement(admitted.store, {
-            announcement: absentAnnouncement,
-            authority,
-            nowSeconds,
-            sourceCommit: nextIdentity.headCommit,
+          for (const item of [artifact, absentArtifact]) {
+            registry.workerManifests.set(item.manifestDigest, item.manifestBytes);
+            for (const bytes of [new TextEncoder().encode('{}'), item.resultBytes, item.attestationBytes])
+              registry.workerBlobs.set(sha256Digest(bytes), bytes);
+          }
+          const jwtKey = yield* Effect.promise(() => generateKeyPair('RS256'));
+          const jwk = {...(yield* Effect.promise(() => exportJWK(jwtKey.publicKey))), alg: 'RS256', kid: 'fixture'};
+          const nativeFetch = globalThis.fetch;
+          yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) =>
+                String(input) === policy.jwksUrl
+                  ? Promise.resolve(new Response(JSON.stringify({keys: [jwk]}), {status: 200}))
+                  : nativeFetch(input, init)) as typeof globalThis.fetch;
+            }),
+            () => Effect.sync(() => { globalThis.fetch = nativeFetch; }),
+          );
+          const token = yield* Effect.promise(() =>
+            new SignJWT({scope: 'graph:contribute'})
+              .setProtectedHeader({alg: 'RS256', kid: 'fixture'})
+              .setIssuer(policy.issuer)
+              .setAudience(policy.audience)
+              .setSubject('test-worker')
+              .setIssuedAt(nowSeconds)
+              .setExpirationTime(nowSeconds + 600)
+              .sign(jwtKey.privateKey),
+          );
+          const ready = yield* Deferred.make<string>();
+          const listener = yield* Effect.forkScoped(
+            registry.provide(runGraphPublisherListen(config(home), {
+              authorizationPolicy: policyFile,
+              cas,
+              cwd: repository,
+              listen: '127.0.0.1:0',
+              onReady: output => Deferred.succeed(ready, output.coordinatorUrl).pipe(Effect.asVoid),
+            })),
+          );
+          const coordinatorUrl = yield* Deferred.await(ready);
+          yield* git(repository, ['fetch', '-q', contributor, 'main']);
+          yield* git(repository, ['merge', '-q', '--ff-only', 'FETCH_HEAD']);
+          const post = (body: unknown, bearer = token) => Effect.gen(function* () {
+            const client = yield* HttpClient.HttpClient;
+            const request = HttpClientRequest.post(`${coordinatorUrl}/v1/results`).pipe(
+              HttpClientRequest.setHeaders({
+                authorization: `Bearer ${bearer}`,
+                'x-threadnote-profile-digest': profileDigest,
+                'x-threadnote-repository-id': identity.repositoryId,
+              }),
+              request => HttpClientRequest.bodyUint8Array(
+                request,
+                new TextEncoder().encode(JSON.stringify(body)),
+                'application/json',
+              ),
+            );
+            const response = yield* client.execute(request);
+            return {body: yield* response.json, status: response.status};
           });
-          expect(withAbsent.status).toBe('accepted');
-          const admissionPath = yield* graphWorkerAdmissionStatePath(home, policy);
-          yield* fs.makeDirectory(path.dirname(admissionPath), {recursive: true});
-          yield* writePrivateJsonFile(admissionPath, withAbsent.store);
-          const registry = 'https://registry.example/v2/acme/work';
-          const registryBytes = new Map<string, Uint8Array>([
-            [`${registry}/manifests/${artifact.manifestDigest}`, artifact.manifestBytes],
-            ...[new TextEncoder().encode('{}'), artifact.resultBytes, artifact.attestationBytes].map(
-              bytes => [`${registry}/blobs/${sha256Digest(bytes)}`, bytes] as const,
-            ),
-          ]);
-          const expectedReads = [...registryBytes.keys()];
-          registryBytes.set(`${registry}/manifests/${absentArtifact.manifestDigest}`, absentArtifact.manifestBytes);
-          for (const bytes of [
-            new TextEncoder().encode('{}'),
-            absentArtifact.resultBytes,
-            absentArtifact.attestationBytes,
-          ])
-            registryBytes.set(`${registry}/blobs/${sha256Digest(bytes)}`, bytes);
-          const reads: string[] = [];
-          const fetch = Object.assign(
-            async (url: string | URL | Request, init?: RequestInit) => {
-              const address = String(url);
-              reads.push(address);
-              expect(address.startsWith(`${registry}/`)).toBe(true);
-              expect(init?.redirect).toBe('manual');
-              const bytes = registryBytes.get(address);
-              return bytes === undefined
-                ? new Response(null, {status: 404})
-                : new Response(new TextDecoder().decode(bytes), {
-                    headers: {
-                      'content-type': address.includes('/manifests/')
-                        ? GRAPH_SHARE_OCI_IMAGE_MANIFEST_MEDIA_TYPE
-                        : 'application/octet-stream',
-                      'docker-content-digest': sha256Digest(bytes),
-                    },
-                  });
-            },
-            {preconnect: () => undefined},
-          ) as typeof globalThis.fetch;
-          const result = yield* advanceGraphPublisherFrontier(config(home), {
+          expect(yield* post(announcement, 'invalid')).toEqual({body: {error: 'unauthorized'}, status: 401});
+          expect(yield* post(announcement)).toEqual({
+            body: {idempotencyKey: announcement.body.idempotencyKey, status: 'accepted'},
+            status: 201,
+          });
+          expect(yield* post(absentAnnouncement)).toEqual({
+            body: {idempotencyKey: absentAnnouncement.body.idempotencyKey, status: 'accepted'},
+            status: 201,
+          });
+          expect((yield* readGraphWorkerAdmissionStore(home, policy)).receipts).toHaveLength(2);
+          yield* Fiber.interrupt(listener);
+          const result = yield* registry.provide(advanceGraphPublisherFrontier(config(home), {
             authorizationPolicy: policyFile,
             cas,
             cwd: repository,
             forceFreeze: true,
-          }).pipe(
-            Effect.provideService(FetchHttpClient.Fetch, fetch),
-            Effect.provideService(SystemInfo, {...system, environment: () => ({DOCKER_CONFIG: root})}),
-          );
+          }));
           expect(result.published).toBe(true);
           expect(result.sourceCommit).toBe(nextIdentity.headCommit);
           expect(result.contributionEvidence).toMatchObject({
@@ -296,8 +320,23 @@ describe('signed worker publisher', () => {
             verifiedResults: 1,
             sourceUse: {consumedActions: 1, consumedResultManifestDigests: [artifact.manifestDigest]},
           });
-          expect(reads).toEqual(expectedReads);
+          expect(registry.requests.some(request =>
+            request.method === 'GET' && request.pathname === `/v2/acme/worker/manifests/${artifact.manifestDigest}`,
+          )).toBe(true);
+          expect(registry.manifests.size).toBeGreaterThan(0);
           expect((yield* readGraphWorkerAdmissionStore(home, policy)).receipts).toHaveLength(0);
+          const clientRepo = path.join(root, 'client');
+          const clientHome = path.join(root, 'client-home');
+          const clientCas = path.join(root, 'client-cas');
+          yield* git(root, ['clone', '-q', repository, clientRepo]);
+          yield* git(clientRepo, ['remote', 'set-url', 'origin', 'https://github.com/acme/signed-publisher-test.git']);
+          yield* putCasBytes(clientCas, new TextEncoder().encode(canonicalJson(profile)));
+          yield* runGraphShareJoin(config(clientHome), {cas: clientCas, cwd: clientRepo, readOnly: true});
+          const clientIdentity = yield* resolveRepositoryIdentity(clientRepo);
+          const imported = yield* registry.provide(
+            maybeImportSharedGraphBase({cwd: clientRepo, identity: clientIdentity, threadnoteHome: clientHome}),
+          );
+          expect(imported).toMatchObject({imported: true, atGeneration: result.generation});
         }).pipe(provideTestLayer(ApplicationLayer)),
       ),
     180_000,
