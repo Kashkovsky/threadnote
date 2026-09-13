@@ -1,0 +1,202 @@
+import {Clock, Context, Effect, FileSystem, Path, Schema, Stream} from 'effect';
+import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {CommandExecutor} from '../../effect/command.js';
+import type {AccessTokenClaims} from '../../oauth/access_token.js';
+import {canonicalJson} from '../checkpoint/canonical_json.js';
+import {readBoundedPrivateBytes, writePrivateJsonFile} from './atomic.js';
+import {type GraphControlPolicy} from './control_authorization.js';
+import {GraphControlEnrollmentError, requireGraphControlWorker} from './control_enrollment.js';
+import {GRAPH_SHARE_CONTROL_MAX_BODY_BYTES} from './control_protocol.js';
+import {sha256Digest, sha256HexFromDigest} from './digest.js';
+import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
+import {graphSharingLayout} from './layout.js';
+import type {GraphShareProfileV1} from './profile.js';
+import {makeGraphShareRegistryReader} from './registry_reader.js';
+import {verifyGraphWorkerResultAnnouncement, type GraphWorkerResultAnnouncement} from './worker_announcement.js';
+import {
+  admitGraphWorkerAnnouncement,
+  emptyGraphWorkerAdmissionStore,
+  GRAPH_WORKER_ADMISSION_MAX_STATE_BYTES,
+  parseGraphWorkerAdmissionBytes,
+} from './worker_admission_state.js';
+import {readGraphWorkerResultArtifact, type GraphWorkerResultAuthority} from './worker_result.js';
+
+const LOCK_OPTIONS = {
+  retryIntervalMilliseconds: 25,
+  staleAfterMilliseconds: 30_000,
+  waitTimeoutMilliseconds: 2_000,
+} as const;
+
+export const readGraphControlWorkerResultRequest = Effect.fn('codeGraph.sharing.readWorkerResultRequest')(function* <
+  E,
+  R,
+>(stream: Stream.Stream<Uint8Array, E, R>) {
+  const collected = yield* Stream.runFoldEffect(
+    stream,
+    () => ({bytes: new Uint8Array(GRAPH_SHARE_CONTROL_MAX_BODY_BYTES), length: 0}),
+    (collected, chunk) =>
+      Effect.gen(function* () {
+        if (collected.length + chunk.byteLength > collected.bytes.byteLength)
+          return yield* graphSharingFailure('Graph worker result request exceeds the body limit.');
+        collected.bytes.set(chunk, collected.length);
+        collected.length += chunk.byteLength;
+        return collected;
+      }),
+  );
+  return yield* Effect.try({
+    try: () =>
+      JSON.parse(
+        new TextDecoder('utf-8', {fatal: true}).decode(collected.bytes.subarray(0, collected.length)),
+      ) as unknown,
+    catch: () => graphSharingFailure('Graph worker result request is invalid.'),
+  });
+});
+
+/** Admit only signed, original worker bytes. Publishing still requires source recomputation. */
+export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitControlWorkerResult')(function* <
+  E,
+  R,
+>(input: {
+  readonly announcement: unknown;
+  readonly commandExecutor: Context.Service.Shape<typeof CommandExecutor>;
+  readonly graphAbi: string;
+  readonly home: string;
+  readonly initialPolicy: GraphControlPolicy;
+  readonly principal: AccessTokenClaims;
+  readonly profile: GraphShareProfileV1;
+  readonly readCurrentPolicy: Effect.Effect<GraphControlPolicy, E, R>;
+}) {
+  if (!input.profile.registry.worker.startsWith('oci://'))
+    return yield* graphSharingUnavailable('An OCI worker registry is required for signed result admission.');
+  const announcement = structuredClone(input.announcement) as GraphWorkerResultAnnouncement;
+  const workerId = announcement?.body?.workerId;
+  if (typeof workerId !== 'string' || !/^gw_[0-9a-f]{32}$/u.test(workerId))
+    return yield* graphSharingFailure('Graph worker result request is invalid.');
+  const requireWorker = () =>
+    requireGraphControlWorker({
+      home: input.home,
+      initialPolicy: input.initialPolicy,
+      principal: input.principal,
+      readCurrentPolicy: input.readCurrentPolicy,
+      workerId,
+    }).pipe(
+      Effect.mapError(error =>
+        Schema.is(GraphSharingError)(error) ? graphSharingUnavailable('Graph worker authority is unavailable.') : error,
+      ),
+    );
+  const worker = yield* requireWorker();
+  if (worker.signingPublicKey === undefined) return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
+  const authority: GraphWorkerResultAuthority = {
+    expiresAt: worker.expiresAt,
+    graphAbi: input.graphAbi,
+    principalId: worker.principalId,
+    profileDigest: input.initialPolicy.profileDigest,
+    repositoryId: input.initialPolicy.repositoryId,
+    signingPublicKey: worker.signingPublicKey,
+    workerId: worker.workerId,
+  };
+  const body = yield* verifyGraphWorkerResultAnnouncement(announcement, authority);
+  const signed = {...announcement, body};
+  const result = yield* Effect.gen(function* () {
+    const reader = yield* makeGraphShareRegistryReader(input.profile.registry.worker).pipe(
+      Effect.mapError(() => graphSharingUnavailable('Worker registry is unavailable.')),
+    );
+    return yield* readGraphWorkerResultArtifact(reader, body.resultManifestDigest, authority);
+  }).pipe(Effect.provideService(CommandExecutor, input.commandExecutor));
+  const claims = result.attestation.claims;
+  if (
+    body.actionKey !== claims.actionKey ||
+    body.attestationDigest !== result.attestationDigest ||
+    body.batchId !== claims.batchId ||
+    body.principalId !== claims.principalId ||
+    body.profileDigest !== claims.profileDigest ||
+    body.repositoryId !== claims.repositoryId ||
+    body.resultManifestDigest !== result.manifestDigest ||
+    body.semanticDigest !== claims.semanticDigest ||
+    body.workerId !== claims.workerId
+  )
+    return yield* graphSharingFailure('Graph worker result announcement does not match its signed artifact.');
+  // The producing sourceCommit is verified within worker_result when that attestation field lands.
+  // Admission does not reconstruct it from batchId or from the current frontier.
+  const path = yield* Path.Path;
+  const target = yield* graphWorkerAdmissionStatePath(input.home, input.initialPolicy);
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.makeDirectory(path.dirname(target), {recursive: true, mode: 0o700});
+  return yield* withExclusiveFileLock(
+    fs,
+    `${target}.lock`,
+    LOCK_OPTIONS,
+    Effect.gen(function* () {
+      const current = yield* readAdmissionState(target, input.initialPolicy);
+      const currentWorker = yield* requireWorker();
+      const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+      if (
+        currentWorker.signingPublicKey !== authority.signingPublicKey ||
+        currentWorker.principalId !== authority.principalId ||
+        currentWorker.expiresAt <= now
+      )
+        return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
+      const outcome = admitGraphWorkerAnnouncement(current, {
+        announcement: signed,
+        authority: {...authority, expiresAt: currentWorker.expiresAt},
+        nowSeconds: now,
+      });
+      if (outcome.status === 'accepted' || outcome.status === 'quarantined') {
+        const bytes = new TextEncoder().encode(JSON.stringify(outcome.store));
+        if (bytes.byteLength > GRAPH_WORKER_ADMISSION_MAX_STATE_BYTES)
+          return yield* graphSharingUnavailable('Graph worker admission state is at capacity.');
+        yield* writePrivateJsonFile(target, outcome.store).pipe(
+          Effect.mapError(() => graphSharingUnavailable('Graph worker admission state could not be committed.')),
+        );
+      }
+      return outcome;
+    }),
+  );
+});
+
+export const graphWorkerAdmissionStatePath = Effect.fn('codeGraph.sharing.workerAdmissionStatePath')(function* (
+  home: string,
+  policy: GraphControlPolicy,
+) {
+  const path = yield* Path.Path;
+  const authority = sha256Digest(
+    canonicalJson([
+      policy.issuer,
+      policy.audience,
+      policy.jwksUrl,
+      policy.organization,
+      policy.repositoryId,
+      policy.profileDigest,
+    ]),
+  );
+  return path.join(
+    graphSharingLayout(path, home).root,
+    'control',
+    'admissions',
+    `${sha256HexFromDigest(authority)}.json`,
+  );
+});
+
+const readAdmissionState = Effect.fn('codeGraph.sharing.readWorkerAdmissionState')(function* (
+  target: string,
+  policy: GraphControlPolicy,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* fs.exists(target))) return emptyGraphWorkerAdmissionStore();
+  const bytes = yield* readBoundedPrivateBytes(target, GRAPH_WORKER_ADMISSION_MAX_STATE_BYTES).pipe(
+    Effect.mapError(() => graphSharingUnavailable('Graph worker admission state is unavailable.')),
+  );
+  const parsed = yield* Effect.try({
+    try: () => parseGraphWorkerAdmissionBytes(bytes),
+    catch: () => graphSharingUnavailable('Graph worker admission state is invalid.'),
+  });
+  if (
+    parsed.receipts.some(
+      receipt =>
+        receipt.announcement.body.repositoryId !== policy.repositoryId ||
+        receipt.announcement.body.profileDigest !== policy.profileDigest,
+    )
+  )
+    return yield* graphSharingUnavailable('Graph worker admission state does not match its scope.');
+  return parsed;
+});
