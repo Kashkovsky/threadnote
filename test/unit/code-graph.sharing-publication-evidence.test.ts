@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphPublisherContributionEvidence} from '../../src/code_graph/sharing/publication_evidence.js';
 

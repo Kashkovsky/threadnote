@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   codeGraphAttributionContextFilesForReceipt,
   decodeCodeGraphInventoryReuseReceipt,
@@ -36,7 +37,8 @@ describe('code graph inventory reuse receipts', () => {
     ).toEqual(['package.json', 'packages/app/tsconfig.json']);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'round-trips bounded admission evidence without changing its normalized workspace',
     {
       diagnostics: FC.array(FC.string({maxLength: 80}), {maxLength: 8}),
@@ -76,7 +78,8 @@ describe('code graph inventory reuse receipts', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'rejects arbitrary non-receipt payloads instead of trusting persisted JSON',
     {payload: FC.string({maxLength: 2_000}).filter(payload => !payload.trimStart().startsWith('{'))},
     ({payload}) => {

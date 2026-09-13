@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -16,7 +17,8 @@ const runtime: RuntimeConfig = {
   user: 'test-user',
 };
 
-it.effect.prop(
+fcEffectProp(
+  it,
   'preserves semantically current JSON host configs across formatting, key order, and unrelated fields',
   {
     extraEnvironmentValue: FC.string({maxLength: 24}),

@@ -14,7 +14,7 @@ import {
 } from '../helpers/remote-memory-postgres.js';
 
 const databaseUrl = process.env.THREADNOTE_TEST_POSTGRES_URL;
-const postgresDescribe = databaseUrl ? describe.sequential : describe.skip;
+const postgresDescribe = databaseUrl ? describe : describe.skip;
 const binding = {tenantId: 'tenant-owner', shareId: 'share-owner'};
 const scopes = [
   binding,

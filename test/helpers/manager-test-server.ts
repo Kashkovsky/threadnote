@@ -28,7 +28,7 @@ export async function startManagerTestServer(config: RuntimeConfig, token: strin
         const worksetScope = yield* Scope.Scope;
         yield* server.serve(createManagerServer({config, jobs: new Map(), token, worksetScope}));
         const serverAddress = server.address;
-        if (serverAddress._tag !== 'TcpAddress') {
+        if (serverAddress._tag === 'UnixPathAddress') {
           return yield* TestError.make({message: 'manager test server did not bind to TCP'});
         }
         yield* Effect.sync(() => resolveAddress?.(`http://127.0.0.1:${serverAddress.port}`));

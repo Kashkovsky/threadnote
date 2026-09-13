@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   remoteMemoryDatabaseTimeoutMilliseconds,
   remainingRemoteMemoryRequestMilliseconds,
@@ -7,7 +8,8 @@ import {
 } from '../../src/remote_memory/request_execution.js';
 
 describe('remote memory request execution budget', () => {
-  it.prop(
+  fcProp(
+    it,
     'derives a positive PostgreSQL timeout bounded by both configuration and remaining request time',
     {
       configuredMaximum: FC.integer({max: 120_000, min: 1}),

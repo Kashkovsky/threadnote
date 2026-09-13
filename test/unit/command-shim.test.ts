@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Effect, FileSystem, Path} from 'effect';
@@ -253,7 +254,8 @@ describe('Windows Git Bash command launchers', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'Windows POSIX shims are LF shebang scripts that exec the same release exe as the cmd launcher',
     {
       mode: fc.constantFrom('cli' as const, 'mcp' as const),

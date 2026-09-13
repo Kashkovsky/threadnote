@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
@@ -74,7 +75,8 @@ describe('graph share publisher freeze verification', () => {
     }).pipe(provideTestLayer(sharingLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'hydrated parse semantic digest equals an independent local re-parse',
     {
       pathChars: FC.array(FC.constantFrom(...'abcdefghijklmnopqrstuvwxyz'), {maxLength: 8, minLength: 1}),

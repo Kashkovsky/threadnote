@@ -1,10 +1,11 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {createHash} from '../helpers/node-crypto.js';
 import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Effect, Layer, Result} from 'effect';
 import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
@@ -92,7 +93,8 @@ const modelStoreLayer = Layer.succeed(
 );
 
 describe('SQLite vector index properties', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'preserves the pointer model across sequential generation advances and fenced ensures',
     {
       scenario: generationRequestScenario,
@@ -133,7 +135,8 @@ describe('SQLite vector index properties', () => {
     {fastCheck: {numRuns: 16}, timeout: 60_000},
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'matches a corpus model across arbitrary incremental updates and clean rebuilds',
     {
       operations: vectorCorpusScenario,

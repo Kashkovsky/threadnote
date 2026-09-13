@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {parseRecallCrossScopeSqliteBenchmarkArguments} from '../../scripts/benchmark-recall-cross-scope-sqlite.js';
 import {parseRecallEligibilityBenchmarkArguments} from '../../scripts/benchmark-recall-eligibility-production.js';
 import {
@@ -90,7 +91,8 @@ describe('recall benchmark pass rotation', () => {
     ).toEqual(passes);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'preserves every pass exactly once under arbitrary bounded rotations',
     {
       sample: FC.integer({max: 1_000, min: 0}),

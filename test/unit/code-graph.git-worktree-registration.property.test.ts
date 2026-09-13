@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join, relative} from '../helpers/node-path.js';
@@ -50,7 +51,8 @@ describe('code graph common-gitdir authority properties', () => {
     );
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps batch target states index-addressed across target and registry permutations',
     {
       entries: fc.uniqueArray(fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9._-]{0,15}$/), {
@@ -96,7 +98,8 @@ describe('code graph common-gitdir authority properties', () => {
     },
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'classifies a recycled admin name by its exact backlink target for either Git line ending',
     {
       lineEnding: fc.constantFrom('\n', '\r\n'),

@@ -1,7 +1,7 @@
 import {it as effectIt} from '@effect/vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {BunCrypto, BunFileSystem, BunPath} from '@effect/platform-bun';
-import {DateTime, Effect, FileSystem, Layer, Option, Path} from 'effect';
+import {ByteSize, DateTime, Effect, FileSystem, Layer, Option, Path} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
   appendCandidateAudit,
@@ -216,7 +216,7 @@ describe('candidate-memory formation', () => {
             mtime: Option.none(),
             nlink: Option.none(),
             rdev: Option.none(),
-            size: FileSystem.Size(0),
+            size: ByteSize.zero,
             type: path === memoryPath ? 'File' : 'Directory',
             uid: Option.none(),
           } satisfies FileSystem.File.Info),

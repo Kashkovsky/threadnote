@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import fc from 'fast-check';
 import {
   addMaterializationReplayMetrics,
@@ -47,7 +48,8 @@ const materializationRows = FC.record({
 });
 
 describe('code graph indexer properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'keeps physical replay components bounded, order-independent, and equal to their combined counter',
     {
       observations: FC.array(
@@ -98,7 +100,8 @@ describe('code graph indexer properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'admits both active and degraded parser cache generations deterministically',
     {
       activeIdentities: FC.uniqueArray(FC.string({maxLength: 80, minLength: 1}), {maxLength: 8}),
@@ -454,7 +457,8 @@ describe('code graph indexer properties', () => {
     ).toEqual({lookupKeys: 111_666, symbols: 1_000});
   });
 
-  it.prop(
+  fcProp(
+    it,
     'combines every materialization row counter associatively without dropping a category',
     {first: materializationRows, second: materializationRows, third: materializationRows},
     ({first, second, third}) => {
@@ -470,7 +474,8 @@ describe('code graph indexer properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'keeps every disk-estimate component finite, safe, and internally bounded',
     {cachedFactBytes: FC.option(byteCount, {nil: undefined}), sourceBytes: byteCount},
     ({cachedFactBytes, sourceBytes}) => {
@@ -492,7 +497,8 @@ describe('code graph indexer properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'never decreases a component when the selected estimate basis grows',
     {left: byteCount, right: byteCount},
     ({left, right}) => {
@@ -515,7 +521,8 @@ describe('code graph indexer properties', () => {
     expect(attributed).toEqual({...cached, estimateBasis: 'final-fact-bytes'});
   });
 
-  it.prop(
+  fcProp(
+    it,
     'plans direct snapshots without charging their durable WAL to the TEMP filesystem',
     {durableAvailableBytes: byteCount, factBytes: byteCount, temporaryAvailableBytes: byteCount},
     ({durableAvailableBytes, factBytes, temporaryAvailableBytes}) => {
@@ -536,7 +543,8 @@ describe('code graph indexer properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'assesses independently mounted TEMP and durable storage against their own headroom',
     {
       durableAvailableBytes: byteCount,
@@ -561,7 +569,8 @@ describe('code graph indexer properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'coalesces shared TEMP and durable storage into one conservative filesystem check',
     {durableAvailableBytes: byteCount, factBytes: byteCount, temporaryAvailableBytes: byteCount},
     ({durableAvailableBytes, factBytes, temporaryAvailableBytes}) => {
@@ -579,7 +588,8 @@ describe('code graph indexer properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'compacts parser-cache relationships idempotently without changing attribution winner semantics',
     {ids: FC.array(FC.integer({max: 30, min: 0}), {maxLength: 300})},
     ({ids}) => {
@@ -609,7 +619,8 @@ describe('code graph indexer properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'deduplicates repeated relationship primary keys stably and idempotently before strict staging',
     {ids: FC.array(FC.integer({max: 30, min: 0}), {maxLength: 300})},
     ({ids}) => {

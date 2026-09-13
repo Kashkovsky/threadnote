@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {Database} from 'bun:sqlite';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {CodeGraphStore, type CodeGraphViewObservationResult} from '../../src/code_graph/store.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
@@ -24,7 +25,8 @@ const ObservationTestLayer = CodeGraphStore.layer.pipe(
 
 describe('code graph view-removal observation properties', () => {
   effectIt.layer(ObservationTestLayer)(layerIt => {
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'matches the independent pointer/tombstone model without changing or completing a partial database',
       {fixture: observationCase},
       ({fixture}) =>

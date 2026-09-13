@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {execFileSync} from '../helpers/node-child-process.js';
 import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
@@ -5,7 +6,7 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Effect, Path} from 'effect';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
@@ -284,7 +285,8 @@ const commandArbitraries: readonly FC.Arbitrary<FC.AsyncCommand<SnapshotModel, S
 const commandSequenceArbitrary = FC.commands([...commandArbitraries], {maxCommands: 14});
 
 describe('SQLite code graph snapshot repair properties', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'matches a snapshot-state model across arbitrary interrupted builds, failures, observations, and repairs',
     {commands: commandSequenceArbitrary},
     ({commands}) =>

@@ -1,6 +1,6 @@
 import type {Sql} from 'postgres';
 import {describe, expect, it} from 'vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {dirname, join} from '../helpers/node-path.js';
 import {migrateRemoteMemoryDatabase, standaloneMigrationFilePath} from '../../src/remote_memory/migrations.js';
 

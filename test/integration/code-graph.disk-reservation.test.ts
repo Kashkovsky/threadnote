@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
@@ -468,7 +469,8 @@ describe('code graph disk reservation ledger', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'matches an independent claim-release state machine for every bounded action sequence',
     {actions: fc.array(fc.constantFrom('claim' as const, 'release' as const), {maxLength: 24})},
     ({actions}) =>

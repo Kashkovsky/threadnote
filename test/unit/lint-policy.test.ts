@@ -1,6 +1,7 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import {antipattern, correctness, effectNative, style} from '@effect/tsgo/oxlint-presets';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   isEffectRuntimeMember,
   isNodeBuiltinSpecifier,
@@ -25,6 +26,7 @@ const EFFECT_APPLICATION_BOUNDARY_RULES = [
   'effecttsgo/missing-pipeable-signature',
   'effecttsgo/prefer-schema-over-json',
   'effecttsgo/process-env',
+  'effecttsgo/schema-sync',
   'effecttsgo/strict-boolean-expressions',
 ] as const;
 
@@ -60,7 +62,8 @@ describe('lint policy', () => {
     expect(strictConfig.rules?.['effecttsgo/process-env-in-effect']).toBe('error');
   });
 
-  it.prop(
+  fcProp(
+    it,
     'documents only official Effect rules as application boundaries',
     {rule: FC.constantFrom(...EFFECT_APPLICATION_BOUNDARY_RULES)},
     ({rule}) => {
@@ -107,7 +110,7 @@ describe('lint policy', () => {
     expect([...(changed.get('src/example.ts') ?? [])]).toEqual([5, 6]);
   });
 
-  it.prop('recognizes every explicit node: import as Node-specific', {specifier: FC.string()}, ({specifier}) => {
+  fcProp(it, 'recognizes every explicit node: import as Node-specific', {specifier: FC.string()}, ({specifier}) => {
     expect(isNodeBuiltinSpecifier(`node:${specifier}`)).toBe(true);
   });
 

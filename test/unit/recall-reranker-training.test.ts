@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   compareRecallRerankerStringsV1,
   createRecallRerankerDatasetV1,
@@ -154,7 +155,8 @@ describe('recall reranker training dataset v1', () => {
     expect(() => prepareReviewedRecallRerankerDatasetV1(unapproved, groupContent)).toThrow(/not approved for training/);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'uses an order-independent canonical group hash',
     {weights: FC.array(FC.integer(), {maxLength: 18, minLength: 18})},
     ({weights}) => {
@@ -169,7 +171,8 @@ describe('recall reranker training dataset v1', () => {
     {fastCheck: {numRuns: 50}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'never accepts a positive candidate in a no-answer group',
     {candidateIndex: FC.integer({max: 3, min: 0})},
     ({candidateIndex}) => {

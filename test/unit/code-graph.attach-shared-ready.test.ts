@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {shouldReuseReadySnapshotForCleanCommit} from '../../src/code_graph/indexer.js';
 import {shouldAttachSharedReadySnapshot} from '../../src/code_graph/query.js';
 import {codeGraphWatcherRefreshIndexRequest} from '../../src/code_graph/watcher.js';
@@ -82,7 +83,8 @@ describe('shouldAttachSharedReadySnapshot', () => {
     ).toBe(true);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'attaches only for clean overlays with a distinct HEAD-matching clean candidate',
     {
       candidateCommit: FC.constantFrom(commit, otherCommit),
@@ -163,7 +165,8 @@ describe('shouldReuseReadySnapshotForCleanCommit', () => {
     ).toBe(false);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'reuses only clean HEAD snapshots with an explicit matching graphContentId',
     {
       candidateCommit: FC.constantFrom(commit, otherCommit),

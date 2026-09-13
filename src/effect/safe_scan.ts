@@ -47,7 +47,7 @@ export function forEachFileWithinBoundary<A, E, R>(
           }
           const header = new Uint8Array(4);
           new DataView(header.buffer).setUint32(0, bytes.length);
-          yield* directoryQueue.seek(writeOffset, 'start');
+          yield* directoryQueue.seek(BigInt(writeOffset), 'start');
           yield* directoryQueue.writeAll(header);
           yield* directoryQueue.writeAll(bytes);
           writeOffset += header.length + bytes.length;
@@ -55,7 +55,7 @@ export function forEachFileWithinBoundary<A, E, R>(
       const dequeueDirectory = () =>
         Effect.gen(function* () {
           if (readOffset >= writeOffset) return undefined;
-          yield* directoryQueue.seek(readOffset, 'start');
+          yield* directoryQueue.seek(BigInt(readOffset), 'start');
           const header = yield* readFileBytesExactly(directoryQueue, 4);
           const length = new DataView(header.buffer, header.byteOffset, header.byteLength).getUint32(0);
           if (length === 0 || length > SAFE_SCAN_DIRECTORY_RECORD_BYTES_MAXIMUM) {

@@ -1,6 +1,7 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Option} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   makeCodeGraphEtaTracker,
   observeCodeGraphEta,
@@ -8,7 +9,8 @@ import {
 } from '../../src/code_graph/progress_eta.js';
 
 describe('code graph progress ETA properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'preserves estimate and confidence parity when measured work is scaled',
     {
       intervalMilliseconds: FC.integer({max: 5_000, min: 10}),
@@ -30,7 +32,8 @@ describe('code graph progress ETA properties', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'resets calibration for any phase or measurement-basis transition',
     {
       completed: FC.integer({max: 1_000_000, min: 1}),

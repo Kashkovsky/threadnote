@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {
@@ -134,7 +135,8 @@ describe('graph share OCI descriptor documents', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'descriptor canonical JSON is idempotent and every layer stays at or under 32 MiB',
     {
       envelope: FC.uint8Array({maxLength: 64, minLength: 1}),

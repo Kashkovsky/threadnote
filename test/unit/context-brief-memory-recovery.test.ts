@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Result} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -81,7 +82,8 @@ describe('Context Brief code-linked memory recovery', () => {
     );
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'bounds contention recovery to two passes and four admissions while retaining unavailable evidence',
     {
       completedBeforeInterruption: fc.integer({min: 0, max: 4}),

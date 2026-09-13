@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {execFileSync, spawn} from '../helpers/node-child-process.js';
@@ -765,7 +766,8 @@ describe('automatic missing-worktree reconciliation', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'atomically replaces every bounded semantic-invalid cursor with the claimed page boundary',
     {malformedCursor: boundedMalformedReconciliationCursor},
     ({malformedCursor}) =>
@@ -793,7 +795,8 @@ describe('automatic missing-worktree reconciliation', () => {
     {fastCheck: {numRuns: 24}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'recovers bounded semantic legacy overflow without consuming either metadata reservation',
     {
       cleanupCursorRecorded: fc.boolean(),
@@ -1562,7 +1565,8 @@ describe('automatic missing-worktree reconciliation', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'mutates through the real reconciler iff every generated authority predicate is exact',
     {
       anchorMatches: fc.boolean(),

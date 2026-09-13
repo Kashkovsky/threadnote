@@ -1,7 +1,8 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Option} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
   budgetCachedCodeGraphFacts,
@@ -367,7 +368,8 @@ describe('cached code graph fact persistence budget', () => {
     }
   });
 
-  it.prop(
+  fcProp(
+    it,
     'keeps arbitrary Unicode-heavy facts deterministic, atomic, closed, and within their UTF-8 byte ceiling',
     factCase,
     ({diagnostics, edgeSpecs, maximumBytes, symbolDocuments}) => {
@@ -429,7 +431,8 @@ describe('cached code graph fact persistence budget', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'packs final attributed facts into deterministic non-empty transactions under the exact byte cap',
     {
       maximumBytes: FC.integer({max: 8_000, min: 512}),

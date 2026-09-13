@@ -1,13 +1,15 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   boundedSnapshotProjectPrefixes,
   codeGraphSnapshotProjectClosureStatement,
 } from '../../src/code_graph/store_project_closure.js';
 
 describe('bounded snapshot project prefixes', () => {
-  it.prop(
+  fcProp(
+    it,
     'is permutation-invariant and preserves exactly the same descendant coverage',
     {
       reverse: FC.boolean(),

@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
@@ -163,7 +164,8 @@ describe('vector recall eligibility', () => {
     );
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps vector mapping identity stable across candidate permutations',
     {
       order: fc.shuffledSubarray([0, 1, 2, 3], {maxLength: 4, minLength: 4}),

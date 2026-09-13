@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {it as effectIt} from '@effect/vitest';
@@ -1106,7 +1107,8 @@ describe('Manager Worksets manifest transactions', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'keeps reorder-equivalent membership updates byte-stable',
     {order: fc.shuffledSubarray(['api', 'billing', 'worker'], {minLength: 3, maxLength: 3})},
     ({order}) =>
@@ -1129,7 +1131,8 @@ describe('Manager Worksets manifest transactions', () => {
     {fastCheck: {numRuns: 12}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'renames every matching Workset reference and makes the repeated project update byte-stable',
     {
       references: fc.array(fc.boolean(), {maxLength: 16, minLength: 1}),

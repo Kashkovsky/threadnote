@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {
@@ -555,7 +556,8 @@ describe('bounded code graph build-status maintenance', () => {
       ),
     );
 
-    it.effect.prop(
+    fcEffectProp(
+      it,
       'never removes more than one matched status/context pair for any bounded terminal backlog',
       {historySize: FC.integer({max: 20, min: 9})},
       ({historySize}) =>
@@ -589,7 +591,8 @@ describe('bounded code graph build-status maintenance', () => {
       {fastCheck: {numRuns: 16}},
     );
 
-    it.effect.prop(
+    fcEffectProp(
+      it,
       'failed receipts are removable exactly after a finite age exceeds retention and are not protected',
       {
         age: FC.integer({max: CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS * 2, min: 0}),
@@ -609,7 +612,8 @@ describe('bounded code graph build-status maintenance', () => {
       {fastCheck: {numRuns: 50}},
     );
 
-    it.effect.prop(
+    fcEffectProp(
+      it,
       'admits only a capped status inventory and fails closed on raw overflow',
       {
         extraEntries: FC.integer({max: 3, min: 0}),

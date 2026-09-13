@@ -10,7 +10,7 @@ export function makeInstallHooksCommand<E, R>(
   return Command.make(
     'install-hooks',
     {
-      agent: Argument.choice('agent', ['codex', 'claude', 'cursor', 'copilot']).pipe(
+      agent: Argument.Literals('agent', ['codex', 'claude', 'cursor', 'copilot']).pipe(
         Argument.withDescription('codex, claude, cursor, or copilot'),
       ),
       apply: boolean('apply', 'Actually modify the selected agent config'),
@@ -29,7 +29,7 @@ export function makeCursorHookCommand<E, R>(
   return Command.make(
     'cursor-hook',
     {
-      event: Argument.choice('event', ['sessionStart', 'preCompact']),
+      event: Argument.Literals('event', ['sessionStart', 'preCompact']),
       dryRun: boolean('dry-run', 'Preview the hook action without storing memory'),
     },
     ({event, ...options}) => handler(event, options),

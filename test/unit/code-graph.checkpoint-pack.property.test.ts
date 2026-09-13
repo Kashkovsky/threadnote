@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {canonicalJson, CanonicalJsonError} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {codeGraphCheckpointFileFactCacheIdentity} from '../../src/code_graph/checkpoint/file_fact_identity.js';
 import {
@@ -70,7 +71,8 @@ describe('code graph checkpoint canonical JSON', () => {
     expect(() => canonicalJson(symbolic)).toThrow(CanonicalJsonError);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'gives recursively reordered file facts one identity and separates semantic changes',
     {
       diagnostics: FC.array(FC.string({maxLength: 20}), {maxLength: 4}),
@@ -95,7 +97,8 @@ describe('code graph checkpoint canonical JSON', () => {
 });
 
 describe('code graph checkpoint pack', () => {
-  it.prop(
+  fcProp(
+    it,
     'is byte-deterministic across arbitrary input permutations and fully round-trips Unicode paths',
     {paths: pathArbitrary},
     ({paths}) => {
@@ -117,7 +120,8 @@ describe('code graph checkpoint pack', () => {
     {fastCheck: {numRuns: 50}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'accepts every input segmentation in both full verification and non-inflating inspection',
     {
       paths: pathArbitrary,

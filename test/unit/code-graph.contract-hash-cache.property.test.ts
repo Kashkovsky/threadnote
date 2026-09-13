@@ -1,4 +1,3 @@
-import {createHash} from 'node:crypto';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {createCachedCodeGraphContractHash} from '../../src/code_graph/cached_contract_hash.js';
@@ -10,7 +9,7 @@ import {
 } from '../../src/code_graph/languages/registry.js';
 import type {CodeGraphLanguagePack} from '../../src/code_graph/languages/types.js';
 
-const nativeHash = (input: string) => createHash('sha256').update(input).digest('hex');
+const nativeHash = (input: string) => new Bun.CryptoHasher('sha256').update(input).digest('hex');
 const fixturePack = BUILTIN_LANGUAGE_PACK_REGISTRY.packs[0];
 const mutableFixturePack = BUILTIN_LANGUAGE_PACK_REGISTRY.packs.find(pack => pack.assets.length > 0)!;
 

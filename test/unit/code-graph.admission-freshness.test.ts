@@ -1,7 +1,8 @@
+import {fcEffectProp, fcProp} from '../helpers/fast-check-property.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   codeGraphSnapshotAdmissionCurrent,
   recordCodeGraphSnapshotAdmission,
@@ -13,7 +14,8 @@ import type {CodeGraphSnapshot} from '../../src/code_graph/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 describe('snapshot admission cache', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'binds current evidence to exactly one snapshot and environment per worktree',
     {
       dirty: FC.boolean(),
@@ -79,7 +81,8 @@ describe('snapshot admission cache', () => {
     {fastCheck: {numRuns: 20}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'deduplicates only build requests with the same policy environment',
     {
       suffix: FC.integer({min: 0, max: 1_000_000}),

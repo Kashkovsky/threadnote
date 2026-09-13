@@ -1,6 +1,7 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {readFileSync} from '../helpers/node-fs.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {JSON_SCHEMA, load} from 'js-yaml';
 import {
   assessDashboardThreeWay,
@@ -353,7 +354,8 @@ describe('direct Grafana dashboard provisioning', () => {
     expect(evaluateUnexpectedFullBuildPercentage(1, 2)).toBe(50);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'keeps the guarded unexpected-full percentage finite for every subset count',
     {
       denominator: FC.integer({max: 1_000_000, min: 0}),
@@ -370,7 +372,8 @@ describe('direct Grafana dashboard provisioning', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'renders identically regardless of source object-key order',
     {choices: FC.array(FC.integer(), {maxLength: 80, minLength: 1})},
     ({choices}) => {
@@ -419,7 +422,8 @@ describe('direct Grafana dashboard provisioning', () => {
     );
   });
 
-  it.prop(
+  fcProp(
+    it,
     'normalizes panel 13 from the exact shared Tempo target datasource across reviewed datasource migrations',
     {datasourceUid: FC.string({maxLength: 32, minLength: 1})},
     ({datasourceUid}) => {
@@ -437,7 +441,8 @@ describe('direct Grafana dashboard provisioning', () => {
     {fastCheck: {numRuns: 40}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'preserves arbitrary nonempty panel plugin versions as semantic drift',
     {pluginVersion: FC.string({maxLength: 32, minLength: 1})},
     ({pluginVersion}) => {
@@ -449,7 +454,8 @@ describe('direct Grafana dashboard provisioning', () => {
     {fastCheck: {numRuns: 40}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'updates only from a trusted historical state and otherwise fails closed',
     {states: FC.uniqueArray(FC.string(), {maxLength: 3, minLength: 3})},
     ({states: [current, historical, drift]}) => {
@@ -768,7 +774,8 @@ describe('direct Grafana dashboard provisioning', () => {
     }
   });
 
-  it.prop(
+  fcProp(
+    it,
     'treats the exact Grafana folder-read scopes as an order-independent set',
     {actor: FC.constantFrom('reader' as const, 'writer' as const), reverse: FC.boolean()},
     ({actor, reverse}) => {

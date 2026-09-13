@@ -1,6 +1,6 @@
 import {testGitWorktreeLock} from '../helpers/git-worktree-lock.js';
 import {describe, expect, it} from 'vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {mkdir, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';

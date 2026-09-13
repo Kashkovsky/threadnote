@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import fc from 'fast-check';
@@ -33,7 +34,8 @@ describe('code graph compact CLI progress', () => {
     );
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'index lines stay one row and omit scanning paths',
     {
       path: fc.uuid().map(id => `src/${id}/file.ts`),
@@ -49,7 +51,8 @@ describe('code graph compact CLI progress', () => {
     {fastCheck: {numRuns: 40}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'maintenance remaining estimate is monotone as completed increases',
     {
       elapsed: fc.integer({max: 60_000, min: 1}),

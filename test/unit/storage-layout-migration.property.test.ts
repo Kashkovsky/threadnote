@@ -1,5 +1,6 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Effect, FileSystem, Path} from 'effect';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
@@ -50,7 +51,8 @@ const conflictingTreeArbitrary = FC.record({
 
 describe('Threadnote storage layout migration properties', () => {
   it.layer(ApplicationLayer)(layerIt => {
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'ignores generated empty beta scaffolds and detects the first material file',
       {scaffolds: emptyScaffoldsArbitrary},
       ({scaffolds}) =>
@@ -76,7 +78,8 @@ describe('Threadnote storage layout migration properties', () => {
       {fastCheck: {numRuns: 20}, timeout: 30_000},
     );
 
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'dry-runs without writes, merges byte-exact trees, and applies idempotently',
       {tree: mergeableTreeArbitrary},
       ({tree}) =>
@@ -122,7 +125,8 @@ describe('Threadnote storage layout migration properties', () => {
       {fastCheck: {numRuns: 10}, timeout: 30_000},
     );
 
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'leaves both trees and receipts untouched when generated files conflict',
       {tree: conflictingTreeArbitrary},
       ({tree}) =>

@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {graphShareContributionRetryDelay} from '../../src/code_graph/sharing/contribution_retry_state.js';
 import {graphShareRetryAfterMilliseconds} from '../../src/code_graph/sharing/errors.js';
 

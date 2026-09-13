@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {mkdtempSync, rmSync} from '../helpers/node-fs.js';
@@ -45,7 +46,8 @@ const commandArbitrary = fc.constantFrom<StateMachineCommand>(
 );
 
 describe('removed code graph view cleanup state-machine properties', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'accepts only modeled full-entry CAS transitions and keeps epoch evidence immutable',
     {commands: fc.array(commandArbitrary, {maxLength: 24})},
     ({commands}) =>

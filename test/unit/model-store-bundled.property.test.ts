@@ -1,5 +1,5 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {createHash} from 'node:crypto';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Layer, Path, Result} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -35,7 +35,8 @@ describe('bundled model installation', () => {
   });
 
   effectIt.layer(modelStoreTestLayer())(layerIt => {
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'atomically promotes exactly the verified bundled bytes and rejects same-size mutations',
       {bytes: fc.uint8Array({maxLength: 128, minLength: 1})},
       ({bytes}) =>
@@ -186,7 +187,7 @@ function fixtureManifest(bytes: Uint8Array): LocalModelManifest {
     revision: 'a'.repeat(40),
     role: 'embedding',
     runtime: {nodeLlamaCpp: '3.19.1'},
-    sha256: createHash('sha256').update(bytes).digest('hex'),
+    sha256: new Bun.CryptoHasher('sha256').update(bytes).digest('hex'),
     size: bytes.length,
     task: 'retrieval',
     version: 1,

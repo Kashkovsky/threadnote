@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {Database} from 'bun:sqlite';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {describe, expect} from 'vitest';
 import {SystemInfo} from '../../src/effect/system.js';
 import {formatMemoryDocument, MEMORY_RELATION_TYPES} from '../../src/memory/document.js';
@@ -80,7 +81,8 @@ describe('bounded memory-link selector order', () => {
     30_000,
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'matches an independent filtered and ordered model before each per-seed limit',
     {
       sources: FC.array(source, {minLength: 1, maxLength: 20}),

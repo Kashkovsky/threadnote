@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   CODE_GRAPH_CHECKPOINT_GIT_PATHSPEC_BYTES_MAXIMUM,
   CodeGraphCheckpointProjectionError,
@@ -18,7 +19,8 @@ const safePathSegment = FC.string({
 const safePath = FC.array(safePathSegment, {maxLength: 8, minLength: 1}).map(segments => segments.join('/'));
 
 describe('code graph checkpoint projection', () => {
-  it.prop(
+  fcProp(
+    it,
     'partitions Git pathspecs without loss, reordering, empty pages, or byte-budget overruns',
     {paths: FC.uniqueArray(safePath, {maxLength: 500})},
     ({paths}) => {
@@ -46,7 +48,8 @@ describe('code graph checkpoint projection', () => {
     expect(batches.flat()).toEqual(files);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'accounts for every skipped file while preserving unknown non-policy bytes explicitly',
     {
       eligibleFiles: FC.integer({max: 1_000_000, min: 0}),
@@ -101,7 +104,8 @@ describe('code graph checkpoint projection', () => {
     }
   });
 
-  it.prop(
+  fcProp(
+    it,
     'preserves raw Unicode, quote and space characters in native Git tree paths',
     {
       names: FC.uniqueArray(

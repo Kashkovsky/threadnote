@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {Cause, Effect, Exit, Fiber, Layer} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe} from 'vitest';
@@ -245,7 +246,8 @@ describe('Effect AI recall expansion', () => {
     }),
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'returns a candidate selection exactly when arbitrary work finishes inside the budget',
     {
       delayMilliseconds: FC.oneof(

@@ -307,7 +307,13 @@ export class EffectMcpServerRegistry {
           const inputSchema =
             Object.keys(registration.definition.inputSchema).length === 0
               ? {additionalProperties: false, properties: {}, type: 'object'}
-              : flattenJsonSchemaConstraints(Schema.toJsonSchemaDocument(input).schema);
+              : {
+                  ...(flattenJsonSchemaConstraints(Schema.toJsonSchemaDocument(input).schema) as Record<
+                    string,
+                    unknown
+                  >),
+                  additionalProperties: false,
+                };
           yield* server.addTool({
             annotations: Context.empty(),
             tool: McpSchema.Tool.make({

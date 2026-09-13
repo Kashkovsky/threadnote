@@ -1,3 +1,4 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import fc from 'fast-check';
 import {describe, expect, it} from '@effect/vitest';
 import {
@@ -104,7 +105,8 @@ describe('code graph disk capacity properties', () => {
     ]);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'keeps every cache demand component monotone in payload bytes and row count through saturation',
     {
       bytes: capacityMagnitude,
@@ -143,7 +145,8 @@ describe('code graph disk capacity properties', () => {
     {fastCheck: {numRuns: 400}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'models exact WAL header/frame bytes and saturates safely',
     {pageFrames: capacityMagnitude, pageSize: capacityMagnitude},
     ({pageFrames, pageSize}) => {

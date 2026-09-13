@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path, Result} from 'effect';
@@ -38,7 +39,8 @@ const fixtureLayer = Layer.mergeAll(
 );
 
 describe('Context Brief prebuilt scale fixture admission', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'publishes current evidence, requires its receipt, and binds it to the observed policy',
     {suffix: fc.nat(100_000)},
     ({suffix}) =>

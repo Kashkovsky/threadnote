@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import * as BunHttpServer from '@effect/platform-bun/BunHttpServer';
 import * as HttpServer from 'effect/unstable/http/HttpServer';
@@ -7,7 +8,7 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {it} from 'vitest';
 import {Effect, FileSystem, Layer, Path, Schema} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {readFile} from '../helpers/node-fs-promises.js';
 import {dirname, join} from '../helpers/node-path.js';
@@ -417,7 +418,7 @@ describe('graph share import and inspect source', () => {
               : HttpServerResponse.empty({status: 404});
           }),
         );
-        if (server.address._tag !== 'TcpAddress') return yield* graphSharingFailure('Expected TCP fixture.');
+        if (server.address._tag === 'UnixPathAddress') return yield* graphSharingFailure('Expected TCP fixture.');
         yield* writeGraphShareTrustReceipt(home, {
           ...trustReceiptFromEnrollment(f.enrollment, f.profile, f.profileDigest, 'read-only'),
           client: {
@@ -727,7 +728,8 @@ describe('graph share import and inspect source', () => {
     }).pipe(provideTestLayer(sharingLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'already-installed import stays idempotent and keeps provenance snapshot identity',
     {
       suffix: FC.array(FC.constantFrom(...'abcdef0123456789'), {maxLength: 8, minLength: 4}),

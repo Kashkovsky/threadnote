@@ -1,8 +1,9 @@
+import {fcEffectProp, fcProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {Effect, FileSystem, Fiber, Layer} from 'effect';
 import {cachedCodeGraphFactBytes, CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact_budget.js';
@@ -46,7 +47,8 @@ describe('code graph parser worker pool', () => {
     ).toBe(expected);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'keeps automatic parser capacity bounded and monotonic with effective memory',
     {
       hardwareConcurrency: FC.integer({max: 64, min: 1}),
@@ -66,7 +68,8 @@ describe('code graph parser worker pool', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'classifies parser allocation and RSS at inclusive resource boundaries',
     {
       allocationIncrease: FC.integer({max: 2_048, min: 0}),
@@ -136,7 +139,8 @@ describe('code graph parser worker pool', () => {
     expect(cachedCodeGraphFactBytes(byteHeavy.facts)).toBeLessThanOrEqual(maximumFactBytes);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'enforces an inclusive emitted-symbol boundary',
     {
       maximumSymbols: FC.integer({max: 16, min: 1}),
@@ -274,7 +278,8 @@ describe('code graph parser worker pool', () => {
     }).pipe(provideTestLayer(parserLayer({capacity: 1, maxSourceBytes: 16, spawnWorker: spawn})), Effect.scoped);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'classifies source bytes from UTF-8 content and declared size without undercounting either',
     {
       content: FC.string({maxLength: 128}),
@@ -398,7 +403,8 @@ describe('code graph parser worker pool', () => {
     }).pipe(provideTestLayer(parserLayer({capacity: 1})), Effect.scoped),
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'returns the same ordered facts with one worker and a parallel pool',
     {
       names: FC.uniqueArray(FC.stringMatching(/^[a-z]{1,8}$/), {maxLength: 16, minLength: 1}),

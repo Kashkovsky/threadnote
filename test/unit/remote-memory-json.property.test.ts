@@ -1,10 +1,12 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Predicate} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {isJsonObject, isJsonValue, requireJsonValue} from '../../src/remote_memory/json.js';
 
 describe('remote memory JSON schema boundary', () => {
-  it.prop(
+  fcProp(
+    it,
     'accepts every JSON.parse round-trip and treats objects as JSON objects',
     {value: FC.jsonValue()},
     ({value}) => {

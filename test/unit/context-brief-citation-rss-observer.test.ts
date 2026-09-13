@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import fc from 'fast-check';
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
@@ -272,7 +273,8 @@ describe('Context Brief citation RSS observer protocol', () => {
     expect(JSON.stringify(oneObservationArtifact())).not.toContain('/tmp/private');
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'advances absolute monotonic deadlines without adding a fixed interval after slow samples',
     {
       elapsedIntervals: fc.integer({max: 10_000, min: 0}),

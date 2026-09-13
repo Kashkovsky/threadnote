@@ -19,6 +19,7 @@ import {Database} from 'bun:sqlite';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
+import {windowsCommandLauncherInvocation} from '../helpers/windows-command-launcher.js';
 import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models/builtin.js';
 import {recallIndexDatabaseFilename} from '../../src/recall/index.js';
 import {vectorIndexDatabaseFilename} from '../../src/search/vector-index.js';
@@ -153,22 +154,24 @@ describe('built self-contained distribution', () => {
   it('stores memory, refreshes the vector generation, and recalls through built launchers', async () => {
     const recall = await runCli(['recall', '--query', 'QZ9 native recall background service']);
     expect(recall).toContain('native-e2e.md');
-    const shimRecall = await execute(
-      installedLauncher(),
-      ['--home', home, 'recall', '--query', 'QZ9 native recall background service'],
-      {
-        cwd: root,
-        env: {
-          ...process.env,
-          HOME: userHome,
-          NVM_DIR: '',
-          NVM_HOME: '',
-          THREADNOTE_USER: 'e2e-user',
-          USERPROFILE: userHome,
-        },
-        timeout: realModelTimeoutMs,
+    const shimArgs = ['--home', home, 'recall', '--query', 'QZ9 native recall background service'];
+    const shimInvocation =
+      process.platform === 'win32'
+        ? windowsCommandLauncherInvocation(installedLauncher(), shimArgs)
+        : {executable: installedLauncher(), args: shimArgs};
+    const shimRecall = await execute(shimInvocation.executable, [...shimInvocation.args], {
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: userHome,
+        NVM_DIR: '',
+        NVM_HOME: '',
+        THREADNOTE_USER: 'e2e-user',
+        USERPROFILE: userHome,
       },
-    );
+      timeout: realModelTimeoutMs,
+      windowsVerbatimArguments: process.platform === 'win32',
+    });
     expect(`${shimRecall.stdout}${shimRecall.stderr}`).toContain('native-e2e.md');
     const refreshedVectorRevision = await activeVectorRevision();
     expect(refreshedVectorRevision).not.toBe(initialVectorRevision);

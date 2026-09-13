@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -473,7 +474,8 @@ describe('Code Memory Link release governance verifier', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'rejects every descriptor scale hash that differs from its content-addressed path (property)',
     {scaleArtifactHash: arbitraryMismatchedScaleHash},
     ({scaleArtifactHash}) =>
@@ -550,7 +552,8 @@ describe('Code Memory Link release governance verifier', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'rejects every additional valid hash beyond the reviewed final delta (property)',
     {extraHash: arbitraryHash},
     ({extraHash}) =>

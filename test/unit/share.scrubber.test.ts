@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {MEMORY_RELATION_TYPES} from '../../src/memory/document.js';
 import {
   applyScrubber,
@@ -243,7 +244,8 @@ describe('stripPersonalProvenance', () => {
     expect(shared).toContain('Shared body.');
   });
 
-  it.prop(
+  fcProp(
+    it,
     'shared publication keeps identity-alias relations and drops local projection URIs',
     {
       rows: FC.uniqueArray(

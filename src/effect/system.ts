@@ -59,6 +59,8 @@ interface NativeFileSystemModuleShape {
     readonly O_RDONLY: number;
   };
   readonly promises: NativeFileSystemPromisesShape;
+  readonly fstatSync: (fd: number, options: {readonly bigint: true}) => RuntimeNativeFileStat;
+  readonly statSync: (path: string, options: {readonly bigint: true}) => RuntimeNativeFileStat;
 }
 
 interface NativePathModuleShape {
@@ -82,6 +84,16 @@ export interface RuntimeBigIntStats {
   readonly isDirectory: () => boolean;
   readonly isFile: () => boolean;
   readonly isSymbolicLink: () => boolean;
+}
+
+export interface RuntimeNativeFileStat {
+  readonly birthtime: Date;
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly mode: bigint;
+  readonly mtime: Date;
+  readonly size: bigint;
+  isFile(): boolean;
 }
 
 interface RuntimeDirectoryEntry {
@@ -132,20 +144,31 @@ const nativeFileSystemModule = process.getBuiltinModule('fs') as NativeFileSyste
 const nativeFileSystemPromises = nativeFileSystemModule.promises;
 const nativePathModule = process.getBuiltinModule('path') as NativePathModuleShape;
 
+export function runtimeFileDescriptorStatSync(fd: number): RuntimeNativeFileStat {
+  return nativeFileSystemModule.fstatSync(fd, {bigint: true});
+}
+
+export function runtimePathStatSync(path: string): RuntimeNativeFileStat {
+  return nativeFileSystemModule.statSync(path, {bigint: true});
+}
+
 export type ProcessResourceUsageRuntime = 'bun' | 'node';
 
 /**
  * Node exposes process.resourceUsage().maxRSS in KiB on every platform. The
- * release-pinned Bun 1.3.14 exposes bytes on Darwin and KiB on its other
- * supported platforms. Revalidate this adapter whenever the pinned Bun
- * version moves.
+ * release-pinned Bun 1.4.2 exposes KiB on every supported platform. Bun 1.3.x
+ * exposed bytes on Darwin, so retain that conversion for older development
+ * runtimes.
  */
 export function processResourceUsageMaxRssBytes(
   maxRss: number,
   platform: NodeJS.Platform,
   runtime: ProcessResourceUsageRuntime,
+  bunVersion?: string,
 ): number {
-  return runtime === 'bun' && platform === 'darwin' ? maxRss : maxRss * 1_024;
+  return runtime === 'bun' && platform === 'darwin' && (bunVersion ?? Bun.version).startsWith('1.3.')
+    ? maxRss
+    : maxRss * 1_024;
 }
 
 export function platformPathFor(platform: NodeJS.Platform): PlatformPathShape {
@@ -426,11 +449,11 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
         statfs: nativeStatfs,
         ...(windowsAvailableDiskBytes === undefined ? {} : {windows: windowsAvailableDiskBytes}),
       };
-      const tmpdir = yield* Config.option(Config.string('TMPDIR')).pipe(Effect.orElseSucceed(() => Option.none()));
-      const temp = yield* Config.option(Config.string('TEMP')).pipe(Effect.orElseSucceed(() => Option.none()));
-      const tmp = yield* Config.option(Config.string('TMP')).pipe(Effect.orElseSucceed(() => Option.none()));
-      const user = yield* Config.option(Config.string('USER')).pipe(Effect.orElseSucceed(() => Option.none()));
-      const username = yield* Config.option(Config.string('USERNAME')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const tmpdir = yield* Config.option(Config.String('TMPDIR')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const temp = yield* Config.option(Config.String('TEMP')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const tmp = yield* Config.option(Config.String('TMP')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const user = yield* Config.option(Config.String('USER')).pipe(Effect.orElseSucceed(() => Option.none()));
+      const username = yield* Config.option(Config.String('USERNAME')).pipe(Effect.orElseSucceed(() => Option.none()));
       return SystemInfo.of({
         architecture: runtimeArchitecture,
         availableDiskBytes: path => availableDiskBytes(path, runtimePlatform, process.env, diskCapacityProbeAdapters),

@@ -942,7 +942,7 @@ describe('Effect MCP tool progress', () => {
     initializedClients.add(11);
     const queued = [{progressToken: 'client-11-token'}];
 
-    // The Effect 4.0.0-rc.112 queue reads recipients only when it drains. The
+    // The Effect 4 queue reads recipients only when it drains. The
     // stdio registry therefore has to reject a foreign add after enqueue, not
     // merely check the set before the notification is offered.
     initializedClients.add(22);

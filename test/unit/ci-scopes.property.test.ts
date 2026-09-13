@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {ciScopeKeys, classifyCiScopes, type CiScopeKey} from '../ci/ci-scopes.js';
 
 const pathSegment = FC.stringMatching(/^[a-z][a-z0-9_-]{0,20}$/u);
@@ -23,7 +24,8 @@ function enabledScopes(paths: readonly string[]): readonly CiScopeKey[] {
 }
 
 describe('CI changed-path scope properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'is invariant to path order and duplicates',
     {paths: FC.array(knownPath, {maxLength: 40, minLength: 1})},
     ({paths}) => {
@@ -37,7 +39,8 @@ describe('CI changed-path scope properties', () => {
     {fastCheck: {numRuns: 300}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'never disables a scope when another changed path is added',
     {paths: FC.array(knownPath, {maxLength: 30, minLength: 1}), extra: knownPath},
     ({paths, extra}) => {
@@ -51,7 +54,8 @@ describe('CI changed-path scope properties', () => {
     {fastCheck: {numRuns: 300}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'isolates pure website changes from runtime, release, Windows, and quality work',
     {paths: FC.array(websitePath, {maxLength: 30, minLength: 1})},
     ({paths}) => {
@@ -60,7 +64,8 @@ describe('CI changed-path scope properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'keeps pure documentation changes on the formatting-only lane',
     {paths: FC.array(documentationPath, {maxLength: 30, minLength: 1})},
     ({paths}) => {
@@ -69,7 +74,8 @@ describe('CI changed-path scope properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'fails safe for paths outside the classified repository surface',
     {segment: pathSegment},
     ({segment}) => {

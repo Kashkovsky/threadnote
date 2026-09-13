@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it, it as effectIt} from '@effect/vitest';
 import {Effect, Result} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {
   generateGraphSharePublisherKey,
@@ -95,7 +96,8 @@ describe('graph share frontier signatures', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'signed frontiers round-trip canonical JSON and fail closed on payload tamper',
     {
       sourceCommit: FC.array(FC.constantFrom(...HEX), {maxLength: 40, minLength: 40}).map(characters =>

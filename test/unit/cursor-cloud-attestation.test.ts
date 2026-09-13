@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Clock, DateTime, Effect} from 'effect';
 import fc from 'fast-check';
@@ -158,7 +159,8 @@ describe('Cursor Cloud workload attestation', () => {
     }).pipe(provideTestLayer(SystemInfo.layer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'never reflects arbitrary minted token bytes in success receipts or completion failures',
     {fails: fc.boolean(), token: fc.stringMatching(/^[A-F0-9]{32}$/)},
     ({fails, token}) => {

@@ -94,6 +94,7 @@ export class CodeMemoryLinkAppServerClient {
     );
     this.#process.stderr.setEncoding('utf8');
     this.#process.stderr.on('data', chunk => this.#appendStderr(String(chunk)));
+    this.#process.stdin.on('error', cause => this.#abort(new Error('Codex app-server stdin failed.', {cause})));
     this.#readline = createInterface({input: this.#process.stdout});
     this.#readline.on('line', line => this.#acceptLine(line));
     this.#process.on('error', cause =>

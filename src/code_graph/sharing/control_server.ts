@@ -111,7 +111,10 @@ export const runGraphShareControlServer = Effect.fn('codeGraph.sharing.controlSe
           const server = yield* HttpServer.HttpServer;
           const stateRef = yield* Ref.make(yield* loadGraphShareCoordinatorState(options));
           yield* server.serve(authenticatedReader?.handle ?? handleGraphShareHttp(options, stateRef));
-          const actualPort = server.address._tag === 'TcpAddress' ? server.address.port : options.listen.port;
+          const actualPort =
+            server.address._tag === 'InetAddressV4' || server.address._tag === 'InetAddressV6'
+              ? server.address.port
+              : options.listen.port;
           const url = `http://${options.listen.hostname}:${actualPort}`;
           yield* options.onListening?.({port: actualPort, url}) ?? Effect.void;
           if (options.republish !== undefined) {

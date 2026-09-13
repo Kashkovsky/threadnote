@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   assessProjectClosureSeeds,
   assessProjectFileSetClosureSeeds,
@@ -118,7 +119,8 @@ describe('project incremental closure', () => {
     ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
   });
 
-  it.prop(
+  fcProp(
+    it,
     'admits added, removed, and renamed exports only when every lookup key belongs to one declared project',
     {
       reverseKeys: FC.boolean(),
@@ -229,7 +231,8 @@ describe('project incremental closure', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'candidate-scans only the canonical global lookup surface of existing Markdown headings',
     {
       reverseKeys: FC.boolean(),
@@ -290,7 +293,8 @@ describe('project incremental closure', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'selects file-set closure seeds deterministically from added and deleted project paths',
     {
       currentMask: FC.integer({max: 65_535, min: 0}),
@@ -325,7 +329,8 @@ describe('project incremental closure', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'partitions local-only modifications from changed cross-file resolution surfaces deterministically',
     {
       changedMask: FC.integer({max: 65_535, min: 0}),
@@ -380,7 +385,8 @@ describe('project incremental closure', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'ignores ambiguous ownership in resolution domains outside the changed file and seeded closure',
     {
       reverse: FC.boolean(),
@@ -435,7 +441,8 @@ describe('project incremental closure', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'classifies an unowned resolver domain deterministically without exposing changed paths',
     {
       pathCount: FC.integer({max: 16, min: 1}),
@@ -701,7 +708,8 @@ describe('project incremental closure', () => {
     }
   });
 
-  it.prop(
+  fcProp(
+    it,
     'keeps file-set seeds and closure unchanged when declared evidence is added or reordered for existing targets',
     {
       evidenceCopies: FC.integer({max: 5, min: 1}),
@@ -758,7 +766,8 @@ describe('project incremental closure', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'is deterministic, order-independent, idempotent, seed-containing, monotone, and equal to an independent reverse model',
     {
       adjacency: FC.array(FC.integer({max: 63, min: 0}), {maxLength: 6, minLength: 1}),

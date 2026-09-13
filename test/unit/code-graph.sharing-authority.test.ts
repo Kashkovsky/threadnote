@@ -1,9 +1,10 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -39,7 +40,8 @@ const startCoordinator = Effect.gen(function* () {
 });
 
 describe('graph contributor authority', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'contributor requests cannot create or replace publisher discovery tags',
     {suffix: hex40, body: FC.string({maxLength: 128})},
     ({suffix, body}) =>

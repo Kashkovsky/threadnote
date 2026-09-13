@@ -1,9 +1,10 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Crypto, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
   CODE_GRAPH_VECTOR_RETIREMENT_ORDINARY_UNIT_CAPACITY_CALIBRATION,
@@ -91,7 +92,8 @@ describe('code graph ordinary vector retirement maintenance', () => {
       }),
     );
 
-    layerIt.effect.prop(
+    fcEffectProp(
+      layerIt,
       'adds exact cursor bytes and four rows deterministically for every bounded DB shape',
       {
         databaseBytes: FC.integer({max: 32 * 1_024 * 1_024, min: 0}),

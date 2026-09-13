@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {createSourceLineIndex, sourcePositionAt} from '../../src/code_graph/languages/source_line_index.js';
 
 const sourceArbitrary = FC.array(
@@ -8,7 +9,8 @@ const sourceArbitrary = FC.array(
 ).map(parts => parts.join(''));
 
 describe('code graph source line index properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'matches the linear UTF-16 position reference for every newline form',
     {source: sourceArbitrary},
     ({source}) => {

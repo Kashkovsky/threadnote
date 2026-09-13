@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {extractorSetIdentityFromPackProvenance} from '../../src/code_graph/indexer.js';
 import {
   BUILTIN_LANGUAGE_PACK_REGISTRY,
@@ -14,7 +15,8 @@ import type {CodeGraphLanguagePackProvenance} from '../../src/code_graph/store.j
 const packIds = ['typescript', 'bazel', 'python', 'java'] as const;
 
 describe('code graph language-pack provenance', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'selects exactly cache-identity changes independent of receipt ordering',
     {
       changed: FC.uniqueArray(FC.constantFrom(...packIds), {maxLength: packIds.length}),
@@ -60,7 +62,8 @@ describe('code graph language-pack provenance', () => {
     }),
   );
 
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'recognizes current snapshot contracts independent of active-pack ordering and rejects provenance drift',
     {
       activeIds: FC.uniqueArray(FC.constantFrom(...packIds), {minLength: 1}),

@@ -1,10 +1,11 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {existsSync} from '../helpers/node-fs.js';
 import {mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {afterEach, beforeEach, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {runShareUnpublish as runShareUnpublishEffect} from '../../src/effect/share.js';
@@ -123,7 +124,8 @@ describe('runShareUnpublish preflight and resume', () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
 
-  it.prop(
+  fcProp(
+    it,
     'classifies every destination from exact content identity',
     {expected: FC.string(), suffix: FC.string({minLength: 1})},
     ({expected, suffix}) => {

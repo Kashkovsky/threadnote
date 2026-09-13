@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   normalizeVector,
   searchExactVectors,
@@ -89,7 +90,8 @@ const vectorSearchCaseArbitrary = FC.integer({max: 8, min: 1}).chain(dimensions 
 );
 
 describe('exact vector search properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'normalization produces a finite unit vector and is invariant under positive scaling',
     {
       scale: FC.constantFrom(0.25, 0.5, 2, 4, 8),
@@ -113,7 +115,8 @@ describe('exact vector search properties', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'matches a full-sort oracle and is independent of record permutation',
     {searchCase: vectorSearchCaseArbitrary},
     ({searchCase}) => {
@@ -138,7 +141,8 @@ describe('exact vector search properties', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'orders exact score ties by locale-independent ID regardless of input order',
     {
       ids: FC.uniqueArray(FC.constantFrom(...VECTOR_ID_LABELS), {

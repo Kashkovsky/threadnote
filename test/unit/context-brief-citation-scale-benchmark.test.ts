@@ -1,7 +1,8 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as yaml from 'js-yaml';
 import fc from 'fast-check';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, Schema} from 'effect';
+import {Effect, Option, Schema} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {benchmarkMeasurement} from '../../src/evaluation/benchmark.js';
 import {
@@ -44,123 +45,131 @@ const budget = parseContextBriefCitationScaleBudgetV1(
     await Bun.file('test/evaluation/baselines/context-brief-citations-v1/scale-budgets.json').text(),
   ) as unknown,
 );
-const sampleGapCalibration = Schema.decodeSync(
-  Schema.fromJsonString(
-    Schema.Struct({
-      breachThresholdMilliseconds: PositiveInteger,
-      calibrationMargin: Schema.Finite,
-      expected: Schema.Struct({
-        breachCount: NonNegativeInteger,
-        derivedHardMaximumMilliseconds: PositiveInteger,
-        maximumConsecutiveBreachesWithinRun: NonNegativeInteger,
-        maximumMilliseconds: NonNegativeInteger,
-        observationCount: PositiveInteger,
-        p50Milliseconds: NonNegativeInteger,
-        p95Milliseconds: NonNegativeInteger,
-        p99Milliseconds: NonNegativeInteger,
-      }),
-      roundUpIncrementMilliseconds: PositiveInteger,
-      runs: Schema.Array(
-        Schema.Struct({
-          artifactId: PositiveInteger,
-          candidateCommit: GitCommit,
-          createdAt: IsoInstant,
-          maximumSampleGapsMilliseconds: Schema.Array(NonNegativeInteger),
-          rawArtifactSha256: Sha256,
-          workflowAttempt: PositiveInteger,
-          workflowRun: PositiveInteger,
+const sampleGapCalibration = Option.getOrThrow(
+  Schema.decodeOption(
+    Schema.fromJsonString(
+      Schema.Struct({
+        breachThresholdMilliseconds: PositiveInteger,
+        calibrationMargin: Schema.Finite,
+        expected: Schema.Struct({
+          breachCount: NonNegativeInteger,
+          derivedHardMaximumMilliseconds: PositiveInteger,
+          maximumConsecutiveBreachesWithinRun: NonNegativeInteger,
+          maximumMilliseconds: NonNegativeInteger,
+          observationCount: PositiveInteger,
+          p50Milliseconds: NonNegativeInteger,
+          p95Milliseconds: NonNegativeInteger,
+          p99Milliseconds: NonNegativeInteger,
         }),
-      ),
-      version: Schema.Literal(1),
-    }),
-  ),
-)(await Bun.file('test/evaluation/baselines/context-brief-citations-v1/sample-gap-calibration-v2.json').text());
-const validationQuantileCalibration = Schema.decodeSync(
-  Schema.fromJsonString(
-    Schema.Struct({
-      benchmarkBundleSha256: Sha256,
-      expected: Schema.Struct({
-        firstFailingTailValuesAtProspectiveSamples: PositiveInteger,
-        latestFourObservationCount: PositiveInteger,
-        latestFourP95Milliseconds: Schema.Finite,
-        maximumExcludedTailValuesAtProspectiveSamples: NonNegativeInteger,
-        maximumMilliseconds: Schema.Finite,
-        observationCount: PositiveInteger,
-        p50Milliseconds: Schema.Finite,
-        p95Milliseconds: Schema.Finite,
-        thresholdBreaches: NonNegativeInteger,
+        roundUpIncrementMilliseconds: PositiveInteger,
+        runs: Schema.Array(
+          Schema.Struct({
+            artifactId: PositiveInteger,
+            candidateCommit: GitCommit,
+            createdAt: IsoInstant,
+            maximumSampleGapsMilliseconds: Schema.Array(NonNegativeInteger),
+            rawArtifactSha256: Sha256,
+            workflowAttempt: PositiveInteger,
+            workflowRun: PositiveInteger,
+          }),
+        ),
+        version: Schema.Literal(1),
       }),
-      fixtureSha256: Sha256,
-      historicalSamplesPerRun: Schema.Literal(25),
-      percentileEstimator: Schema.Literal('sorted[floor(sampleCount * 0.95)]'),
-      profile: Schema.Literal('workset-128'),
-      prospectiveSamples: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES),
-      prospectiveWarmups: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS),
-      runs: Schema.Array(
-        Schema.Struct({
-          archiveSha256: Sha256,
-          artifactId: PositiveInteger,
-          benchmarkBundleSha256: Sha256,
-          commit: GitCommit,
-          createdAt: IsoInstant,
-          fixtureSha256: Sha256,
-          jobId: PositiveInteger,
-          rawJsonSha256: Sha256,
-          validationMilliseconds: Schema.Array(Schema.Finite),
-          workflowRun: PositiveInteger,
-        }),
-      ),
-      type: Schema.Literal('threadnote-context-brief-validation-quantile-calibration'),
-      validationP95MaximumMilliseconds: PositiveInteger,
-      version: Schema.Literal(1),
-    }),
-  ),
-)(
-  await Bun.file('test/evaluation/baselines/context-brief-citations-v1/validation-quantile-calibration-v1.json').text(),
+    ),
+  )(await Bun.file('test/evaluation/baselines/context-brief-citations-v1/sample-gap-calibration-v2.json').text()),
 );
-const rssObserverCapacityCalibration = Schema.decodeSync(
-  Schema.fromJsonString(
-    Schema.Struct({
-      correction: Schema.Struct({
-        capacityDerivedFromReleaseContract: Schema.Literal(true),
-        childStderrPropagated: Schema.Literal(true),
-        maximumObservations: Schema.Literal(300),
-        maximumProtocolSequence: Schema.Literal(601),
-        parentDetectsChildExitBeforeTimeout: Schema.Literal(true),
-        preflightRejectsOversizedSchedules: Schema.Literal(true),
-      }),
-      failure: Schema.Struct({
-        firstRejectedObservation: Schema.Literal(257),
-        lastAcknowledgedSequence: Schema.Literal(512),
-        parentAcknowledgementTimeoutMilliseconds: Schema.Literal(30_000),
-        previousMaximumObservations: Schema.Literal(256),
-        reportedMessage: Schema.Literal('Timed out waiting for the RSS observer acknowledgement.'),
-        requestSequence: Schema.Literal(513),
-      }),
-      prospectiveRun: Schema.Struct({
-        artifactProduced: Schema.Literal(false),
-        builtArtifactSha256: Sha256,
-        commit: GitCommit,
-        invocation: Schema.Struct({
-          profiles: Schema.Literal(3),
-          samplesPerProfile: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES),
-          totalObservedSamples: Schema.Literal(300),
-          warmupsPerProfile: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS),
+const validationQuantileCalibration = Option.getOrThrow(
+  Schema.decodeOption(
+    Schema.fromJsonString(
+      Schema.Struct({
+        benchmarkBundleSha256: Sha256,
+        expected: Schema.Struct({
+          firstFailingTailValuesAtProspectiveSamples: PositiveInteger,
+          latestFourObservationCount: PositiveInteger,
+          latestFourP95Milliseconds: Schema.Finite,
+          maximumExcludedTailValuesAtProspectiveSamples: NonNegativeInteger,
+          maximumMilliseconds: Schema.Finite,
+          observationCount: PositiveInteger,
+          p50Milliseconds: Schema.Finite,
+          p95Milliseconds: Schema.Finite,
+          thresholdBreaches: NonNegativeInteger,
         }),
-        jobId: PositiveInteger,
-        jobLogSha256: Sha256,
-        sourceTree: GitCommit,
-        workflowAttempt: Schema.Literal(1),
-        workflowRun: PositiveInteger,
+        fixtureSha256: Sha256,
+        historicalSamplesPerRun: Schema.Literal(25),
+        percentileEstimator: Schema.Literal('sorted[floor(sampleCount * 0.95)]'),
+        profile: Schema.Literal('workset-128'),
+        prospectiveSamples: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES),
+        prospectiveWarmups: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS),
+        runs: Schema.Array(
+          Schema.Struct({
+            archiveSha256: Sha256,
+            artifactId: PositiveInteger,
+            benchmarkBundleSha256: Sha256,
+            commit: GitCommit,
+            createdAt: IsoInstant,
+            fixtureSha256: Sha256,
+            jobId: PositiveInteger,
+            rawJsonSha256: Sha256,
+            validationMilliseconds: Schema.Array(Schema.Finite),
+            workflowRun: PositiveInteger,
+          }),
+        ),
+        type: Schema.Literal('threadnote-context-brief-validation-quantile-calibration'),
+        validationP95MaximumMilliseconds: PositiveInteger,
+        version: Schema.Literal(1),
       }),
-      type: Schema.Literal('threadnote-context-brief-rss-observer-capacity-calibration'),
-      version: Schema.Literal(1),
-    }),
+    ),
+  )(
+    await Bun.file(
+      'test/evaluation/baselines/context-brief-citations-v1/validation-quantile-calibration-v1.json',
+    ).text(),
   ),
-)(
-  await Bun.file(
-    'test/evaluation/baselines/context-brief-citations-v1/rss-observer-capacity-calibration-v1.json',
-  ).text(),
+);
+const rssObserverCapacityCalibration = Option.getOrThrow(
+  Schema.decodeOption(
+    Schema.fromJsonString(
+      Schema.Struct({
+        correction: Schema.Struct({
+          capacityDerivedFromReleaseContract: Schema.Literal(true),
+          childStderrPropagated: Schema.Literal(true),
+          maximumObservations: Schema.Literal(300),
+          maximumProtocolSequence: Schema.Literal(601),
+          parentDetectsChildExitBeforeTimeout: Schema.Literal(true),
+          preflightRejectsOversizedSchedules: Schema.Literal(true),
+        }),
+        failure: Schema.Struct({
+          firstRejectedObservation: Schema.Literal(257),
+          lastAcknowledgedSequence: Schema.Literal(512),
+          parentAcknowledgementTimeoutMilliseconds: Schema.Literal(30_000),
+          previousMaximumObservations: Schema.Literal(256),
+          reportedMessage: Schema.Literal('Timed out waiting for the RSS observer acknowledgement.'),
+          requestSequence: Schema.Literal(513),
+        }),
+        prospectiveRun: Schema.Struct({
+          artifactProduced: Schema.Literal(false),
+          builtArtifactSha256: Sha256,
+          commit: GitCommit,
+          invocation: Schema.Struct({
+            profiles: Schema.Literal(3),
+            samplesPerProfile: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES),
+            totalObservedSamples: Schema.Literal(300),
+            warmupsPerProfile: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS),
+          }),
+          jobId: PositiveInteger,
+          jobLogSha256: Sha256,
+          sourceTree: GitCommit,
+          workflowAttempt: Schema.Literal(1),
+          workflowRun: PositiveInteger,
+        }),
+        type: Schema.Literal('threadnote-context-brief-rss-observer-capacity-calibration'),
+        version: Schema.Literal(1),
+      }),
+    ),
+  )(
+    await Bun.file(
+      'test/evaluation/baselines/context-brief-citations-v1/rss-observer-capacity-calibration-v1.json',
+    ).text(),
+  ),
 );
 const benchmarkWorkflow = await Bun.file('.github/workflows/benchmarks.yml').text();
 const releaseGuide = await Bun.file('docs/releasing.md').text();
@@ -461,7 +470,8 @@ describe('Context Brief citation scale benchmark', () => {
     expect(validationQuantileCalibration.expected.firstFailingTailValuesAtProspectiveSamples).toBe(5);
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'derives and gates sample-gap rate, consecutive runs, and hard maximum from observation order',
     {gaps: fc.array(fc.integer({max: 500, min: 0}), {maxLength: 75, minLength: 1})},
     ({gaps}) =>

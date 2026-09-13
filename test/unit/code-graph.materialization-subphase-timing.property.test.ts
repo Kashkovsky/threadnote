@@ -1,10 +1,12 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import * as FC from 'fast-check';
 import {expect} from 'vitest';
 import {MaterializationSubphaseTiming} from '../../src/code_graph/materialization_subphase_timing.js';
 
-effectIt.effect.prop(
+fcEffectProp(
+  effectIt,
   'attributes nested serialization separately from adjacent fact preparation',
   {
     attribution: FC.integer({max: 10_000, min: 0}),

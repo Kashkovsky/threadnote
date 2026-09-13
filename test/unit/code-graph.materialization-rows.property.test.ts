@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {codeGraphPackageMoniker} from '../../src/code_graph/cross_repository/monikers.js';
 import {
   codeGraphMaterializationMonikerRows,
@@ -38,7 +39,8 @@ const referenceArbitrary = FC.record({
   resolutionDomain: FC.stringMatching(/^[a-z]{1,8}$/u),
 });
 
-it.prop(
+fcProp(
+  it,
   'materializes lookup rows deterministically independent of unique symbol order',
   {symbols: FC.uniqueArray(symbolArbitrary, {maxLength: 24, selector: symbol => symbol.id})},
   ({symbols}) => {
@@ -64,7 +66,8 @@ it.prop(
   {fastCheck: {numRuns: 100}},
 );
 
-it.prop(
+fcProp(
+  it,
   'materializes prepared symbol terms independent of unique symbol order',
   {symbols: FC.uniqueArray(symbolArbitrary, {maxLength: 24, selector: symbol => symbol.id})},
   ({symbols}) => {
@@ -122,7 +125,8 @@ it('encodes optional symbol columns and JSON at the SQLite boundary', () => {
   });
 });
 
-it.prop(
+fcProp(
+  it,
   'materializes direct edge rows independent of unique edge order',
   {edges: FC.uniqueArray(edgeArbitrary, {maxLength: 24, selector: edge => edge.id})},
   ({edges}) => {
@@ -142,7 +146,8 @@ it.prop(
   {fastCheck: {numRuns: 100}},
 );
 
-it.prop(
+fcProp(
+  it,
   'materializes unresolved references independent of unique input order',
   {references: FC.uniqueArray(referenceArbitrary, {maxLength: 24, selector: reference => reference.edgeId})},
   ({references}) => {

@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {mkdtempSync, rmSync} from '../helpers/node-fs.js';
 import {createHash} from '../helpers/node-crypto.js';
@@ -26,7 +27,8 @@ const eventArbitrary = fc.record({
 });
 
 describe('code graph view removal state-machine properties', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'matches the pointer/tombstone model and never mutates unrelated shared views',
     {events: fc.array(eventArbitrary, {maxLength: 20})},
     ({events}) =>

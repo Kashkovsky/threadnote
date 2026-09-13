@@ -526,7 +526,7 @@ describe('Threadnote MCP toolsets', () => {
             citationPolicy: {enum: ['require-current', 'defer'], type: 'string'},
             relations: {
               items: {
-                additionalProperties: false,
+                additionalProperties: true,
                 properties: {
                   type: {enum: MEMORY_RELATION_TYPES, type: 'string'},
                   uri: {type: 'string'},

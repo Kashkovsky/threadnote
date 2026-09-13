@@ -1,7 +1,8 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {Database} from 'bun:sqlite';
 import {expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -26,7 +27,8 @@ effectIt.effect('keeps an exact variable match in a full page of boosted mutatio
   ).pipe(provideTestLayer(ApplicationLayer)),
 );
 
-effectIt.effect.prop(
+fcEffectProp(
+  effectIt,
   'keeps exact identity in bounded result pages above the lexical candidate floor',
   {
     distractorCount: FC.integer({max: 140, min: 101}),

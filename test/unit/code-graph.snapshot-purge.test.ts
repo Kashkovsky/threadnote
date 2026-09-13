@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
@@ -335,7 +336,8 @@ describe('code graph selected snapshot purge', () => {
     );
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'canonical approval is insertion-order independent and safety-field sensitive',
     {
       activeViews: fc.uniqueArray(hexString(64), {maxLength: 8}),

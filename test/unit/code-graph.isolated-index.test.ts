@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {succeedUndefined} from '../../src/effect/optional.js';
 import {Effect} from 'effect';
@@ -115,7 +116,8 @@ describe('isolated index snapshot recovery', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'rejects every post-child target, commit, or request-key drift before loading a publishable snapshot (property)',
     {drift: fc.constantFrom('checkout', 'repository', 'worktree', 'head', 'receipt-request', 'current-request')},
     ({drift}) =>
@@ -147,7 +149,8 @@ describe('isolated index snapshot recovery', () => {
     {fastCheck: {numRuns: 36}},
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'rejects every authoritative snapshot mutation after exactly one ready-row load (property)',
     {drift: fc.constantFrom('snapshot', 'repository', 'commit', 'dirty', 'files', 'symbols', 'edges', 'worktree')},
     ({drift}) =>

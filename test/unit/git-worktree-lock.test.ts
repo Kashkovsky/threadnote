@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {publicRemoteMemoryError} from '../../src/remote_memory/errors.js';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Exit, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {describe, expect} from 'vitest';
 import {makeGitWorktreeLock, type GitWorktreeLock} from '../../src/effect/git_worktree_lock.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -44,7 +45,8 @@ describe('scoped Git worktree lock', () => {
     ).pipe(provideTestLayer(gitLockTestLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'serializes successful and failed operations in submission order without leaking the token',
     [FC.array(FC.boolean(), {minLength: 1, maxLength: 12})],
     ([failures]) =>

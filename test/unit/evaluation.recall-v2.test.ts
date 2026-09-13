@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   benchmarkMeasurement,
   parseBenchmarkArtifactV1,
@@ -211,7 +212,8 @@ describe('recall evaluation contract v2', () => {
     ).toThrow(/Duplicate recall evaluation query ID/);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'expands deterministic distractors without changing reviewed queries',
     {
       documentCount: FC.integer({max: 2_000, min: 200}),

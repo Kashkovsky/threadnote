@@ -1,8 +1,9 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Clock, Effect, FileSystem, Layer, Result, Stream} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {SystemInfo} from '../../src/effect/system.js';
 import {
   enrollGraphControlWorker,
@@ -67,7 +68,8 @@ describe('principal-owned graph worker enrollment', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'decodes the same bounded request across arbitrary stream chunk boundaries',
     {sizes: FC.array(FC.integer({min: 1, max: 40}), {maxLength: 30})},
     ({sizes}) =>
@@ -109,7 +111,8 @@ describe('principal-owned graph worker enrollment', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'replay identity remains isolated by principal and operation key',
     {operations: FC.array(FC.tuple(FC.boolean(), FC.integer({min: 0, max: 5})), {minLength: 1, maxLength: 12})},
     ({operations}) =>

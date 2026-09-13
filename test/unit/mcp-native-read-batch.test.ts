@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {describe, expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
@@ -90,7 +91,8 @@ describe('MCP native batch read_context', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'succeeds for each present URI and errors only when none are present',
     {
       flags: FC.array(FC.boolean(), {maxLength: 4, minLength: 1}),

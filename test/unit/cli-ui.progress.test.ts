@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Console, Effect, Terminal} from 'effect';
@@ -398,7 +399,8 @@ describe('CLI progress indicator', () => {
     }),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'disabled progress emits no console lines',
     {
       messages: fc.array(fc.string({maxLength: 40, minLength: 1}), {maxLength: 8, minLength: 1}),

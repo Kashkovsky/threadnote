@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {parseGraphShareRegistryTarget} from '../../src/code_graph/sharing/registry_reference.js';
 import {parseGraphShareRegistryChallenge} from '../../src/code_graph/sharing/registry_auth.js';
 

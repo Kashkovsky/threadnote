@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
@@ -198,7 +199,8 @@ describe('cross-repository bridge resolver', () => {
     expect(codeGraphNpmVersionsAreCompatible(constraint, version)).toBe(compatible);
   });
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'keeps omitted zero-major caret components compatible across their complete npm interval',
     {minor: FC.integer({max: 100, min: 0}), patch: FC.integer({max: 100, min: 0})},
     ({minor, patch}) => {
@@ -210,7 +212,8 @@ describe('cross-repository bridge resolver', () => {
     {fastCheck: {numRuns: 60}},
   );
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'is invariant under repository and moniker ordering',
     {
       reverseMonikers: FC.boolean(),
@@ -229,7 +232,8 @@ describe('cross-repository bridge resolver', () => {
     {fastCheck: {numRuns: 60}},
   );
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'binds bridge identity to either endpoint snapshot',
     {seed: FC.integer({max: 10_000, min: 1})},
     ({seed}) => {
@@ -256,7 +260,8 @@ describe('cross-repository bridge resolver', () => {
     {fastCheck: {numRuns: 60}},
   );
 
-  effectIt.prop(
+  fcProp(
+    effectIt,
     'never bridges a same-name package when no compatible import/export pair exists',
     {
       consumerMajor: FC.integer({max: 20, min: 1}),

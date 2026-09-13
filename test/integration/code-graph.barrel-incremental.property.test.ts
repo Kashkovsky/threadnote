@@ -1,7 +1,8 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {compareCodeUnits} from '../../src/code_graph/ordering.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
@@ -24,7 +25,8 @@ const barrelScenarioArbitrary = FC.record({
 }));
 
 describe('code graph incremental barrel differential properties', () => {
-  it.effect.prop(
+  fcEffectProp(
+    it,
     'matches a full rebuild through randomized transitive and cyclic named barrels',
     {scenario: barrelScenarioArbitrary},
     ({scenario}) =>

@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Exit, FileSystem, Path} from 'effect';
 import fc from 'fast-check';
@@ -476,7 +477,8 @@ describe('Manager UTF-8 context paging', () => {
     );
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'is deterministic, byte-bounded, and round-trips complete Unicode code points',
     {
       content: fc.string({

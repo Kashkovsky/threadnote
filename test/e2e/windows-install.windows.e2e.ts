@@ -7,6 +7,7 @@ import {promisify} from '../helpers/node-util.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {expect, it} from 'vitest';
+import {windowsCommandLauncherInvocation} from '../helpers/windows-command-launcher.js';
 
 const execute = promisify(execFile);
 const windowsIt = process.platform === 'win32' ? it : it.skip;
@@ -195,7 +196,9 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
       await expect(stat(installedExecutable)).resolves.toMatchObject({size: expect.any(Number)});
       const version = await execute(installedExecutable, ['--version']);
       expect(version.stdout).toContain(packageManifest.version);
-      const launcherVersion = await execute(join(binRoot, 'threadnote.cmd'), ['--version'], {
+      const launcherInvocation = windowsCommandLauncherInvocation(join(binRoot, 'threadnote.cmd'), ['--version']);
+      const launcherVersion = await execute(launcherInvocation.executable, [...launcherInvocation.args], {
+        windowsVerbatimArguments: true,
         env: {
           ...process.env,
           HOME: userHome,

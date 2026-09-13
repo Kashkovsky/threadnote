@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {createResolutionAttributor} from '../../src/code_graph/extractor.js';
 import {hasSameCodeGraphResolutionSurface} from '../../src/code_graph/indexer.js';
 import {sameEffectiveCodeGraphInventory} from '../../src/code_graph/indexer_shared.js';
@@ -155,7 +156,8 @@ const pathLocalTypeScriptSymbolArbitrary = FC.record({
 });
 
 describe('code graph incremental-overlay properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'treats commit provenance as irrelevant only while the effective inventory stays exact',
     {files: effectiveInventoryArbitrary},
     ({files}) => {
@@ -184,7 +186,8 @@ describe('code graph incremental-overlay properties', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'treats only span, reference order, and set-order churn as an unchanged static re-export surface',
     {reference: staticReexportReferenceArbitrary},
     ({reference}) => {
@@ -223,7 +226,8 @@ describe('code graph incremental-overlay properties', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'fails closed for every changed or unsupported re-export resolver surface',
     {reference: staticReexportReferenceArbitrary},
     ({reference}) => {
@@ -332,7 +336,8 @@ describe('code graph incremental-overlay properties', () => {
     expect(hasSameCodeGraphResolutionSurface([rationale], [shifted])).toBe(true);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'keeps arbitrary rationale position changes resolution-local',
     {fromLine: FC.integer({max: 100_000, min: 1}), toLine: FC.integer({max: 100_000, min: 1})},
     ({fromLine, toLine}) => {
@@ -409,7 +414,8 @@ describe('code graph incremental-overlay properties', () => {
     expect(attributed.symbols.find(symbol => symbol.id === 'explicit')?.lookupKeys).toContain(explicitGlobal);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'accepts non-resolution metadata changes but rejects every published declaration and lookup surface mutation',
     {symbol: publishedSymbolArbitrary},
     ({symbol}) => {
@@ -441,7 +447,8 @@ describe('code graph incremental-overlay properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'ignores additions, removals, and renames of unexported own-path TypeScript symbols but not new exports',
     {local: pathLocalTypeScriptSymbolArbitrary, published: publishedSymbolArbitrary},
     ({local, published}) => {
@@ -456,7 +463,8 @@ describe('code graph incremental-overlay properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'publishes every global and non-own lookup key while retaining empty unexported surfaces as local',
     {local: pathLocalTypeScriptSymbolArbitrary, published: publishedSymbolArbitrary},
     ({local, published}) => {
@@ -502,7 +510,8 @@ describe('code graph incremental-overlay properties', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'is independent of published symbol materialization order while still requiring the exact published set',
     {symbols: FC.array(publishedSymbolArbitrary, {maxLength: 12, minLength: 1})},
     ({symbols}) => {
@@ -513,7 +522,8 @@ describe('code graph incremental-overlay properties', () => {
     {fastCheck: {numRuns: 150}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'fails closed when either resolution surface contains duplicate symbol IDs',
     {local: pathLocalTypeScriptSymbolArbitrary, symbol: publishedSymbolArbitrary},
     ({local, symbol}) => {

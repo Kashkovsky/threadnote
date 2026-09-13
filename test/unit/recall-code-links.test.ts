@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
@@ -553,7 +554,8 @@ describe('recall code links', () => {
     );
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'matches an independent bounded citation-winner and round-robin reference model (property)',
     {
       documents: fc.array(fc.uniqueArray(fc.integer({max: 2, min: 0}), {maxLength: 3, minLength: 1}), {

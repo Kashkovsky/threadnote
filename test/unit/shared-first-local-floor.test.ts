@@ -1,6 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -52,7 +53,8 @@ describe('shared-first local personal floor', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'personal stdio toolsets keep local graph and Git-publishable memory',
     {toolset: FC.constantFrom(...PERSONAL_STDIO_TOOLSETS)},
     ({toolset}) =>

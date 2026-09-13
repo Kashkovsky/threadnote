@@ -1,7 +1,13 @@
 import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {startProgress, withProgressLine} from '../cli_ui.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
-import {SystemInfo} from '../effect/system.js';
+import {
+  runtimeFileDescriptorStatSync,
+  runtimePathStatSync,
+  runtimePlatform,
+  SystemInfo,
+  type RuntimeNativeFileStat,
+} from '../effect/system.js';
 import {healAnchorsAfterWorksetPrepare} from '../memory/deferred_code_anchor_recovery.js';
 import type {RuntimeConfig} from '../types.js';
 import {CodeGraphIndexer} from './indexer.js';
@@ -283,8 +289,8 @@ export const runCodeGraphDiagnostics = Effect.fn('codeGraph.command.diagnostics'
 
 interface CodeGraphExportTemporaryIdentity {
   readonly birthtimeMilliseconds: number;
-  readonly dev: number;
-  readonly ino: number;
+  readonly dev: string;
+  readonly ino: string;
   readonly mode: number;
   readonly modifiedAtMilliseconds: number;
   readonly size: bigint;
@@ -1500,7 +1506,7 @@ export const runCodeGraphExport = Effect.fn('codeGraph.command.export')(function
         });
         yield* file.sync;
         // Capture the final stable metadata only after every byte and its metadata have reached the file.
-        const publicationIdentity = yield* requireExportTemporaryIdentity(yield* file.stat);
+        const publicationIdentity = yield* requireExportTemporaryIdentity(file);
         yield* verifyOwnedExportTemporary(fs, temporary, publicationIdentity);
         yield* options.interlock?.beforePublish?.(temporary) ?? Effect.void;
         yield* verifyOwnedExportTemporary(fs, temporary, publicationIdentity);
@@ -1572,7 +1578,7 @@ function verifyOwnedExportTemporary(
     if (Option.isSome(yield* fs.readLink(temporary).pipe(Effect.option))) {
       return yield* CodeGraphCommandError.make({message: 'Export temporary path was replaced by a symbolic link.'});
     }
-    const current = exportTemporaryIdentity(yield* fs.stat(temporary));
+    const current = yield* exportTemporaryIdentityAtPath(fs, temporary);
     if (Option.isNone(current) || !sameExportFile(expected, current.value)) {
       return yield* CodeGraphCommandError.make({
         message: 'Export temporary path no longer identifies the private output file.',
@@ -1591,8 +1597,7 @@ function verifyPublishedExportOutput(
       yield* fs.remove(output, {force: true});
       return yield* CodeGraphCommandError.make({message: 'Export publication did not link the private output file.'});
     }
-    const current = yield* fs.stat(output).pipe(Effect.option);
-    const identity = Option.flatMap(current, exportTemporaryIdentity);
+    const identity = yield* exportTemporaryIdentityAtPath(fs, output);
     if (
       Option.isSome(identity) &&
       sameExportFile(expected, identity.value) &&
@@ -1616,8 +1621,7 @@ function removeOwnedExportTemporary(
 ): Effect.Effect<void, never> {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(temporary).pipe(Effect.option))) return;
-    const current = yield* fs.stat(temporary).pipe(Effect.option);
-    const currentIdentity = Option.flatMap(current, exportTemporaryIdentity);
+    const currentIdentity = yield* exportTemporaryIdentityAtPath(fs, temporary);
     if (Option.isSome(currentIdentity) && sameExportFile(expected, currentIdentity.value)) {
       yield* fs.remove(temporary, {force: true});
     }
@@ -1630,16 +1634,18 @@ function removeOpenedExportTemporary(
   file: FileSystem.File,
 ): Effect.Effect<void, never> {
   return Effect.gen(function* () {
-    const identity = exportTemporaryIdentity(yield* file.stat);
+    const identity = yield* exportTemporaryIdentityFromFile(file);
     if (Option.isSome(identity)) yield* removeOwnedExportTemporary(fs, temporary, identity.value);
   }).pipe(Effect.ignore);
 }
 
-function requireExportTemporaryIdentity(info: FileSystem.File.Info) {
-  return Effect.fromOption(exportTemporaryIdentity(info), () =>
-    CodeGraphCommandError.make({
-      message: 'Export temporary file has insufficient identity metadata for safe publication.',
-    }),
+function requireExportTemporaryIdentity(file: FileSystem.File) {
+  return Effect.flatMap(exportTemporaryIdentityFromFile(file), identity =>
+    Effect.fromOption(identity, () =>
+      CodeGraphCommandError.make({
+        message: 'Export temporary file has insufficient identity metadata for safe publication.',
+      }),
+    ),
   );
 }
 
@@ -1651,12 +1657,67 @@ function exportTemporaryIdentity(info: FileSystem.File.Info): Option.Option<Code
     ? Option.none()
     : Option.some({
         birthtimeMilliseconds: birthtime.getTime(),
-        dev: info.dev,
-        ino,
+        dev: String(info.dev),
+        ino: String(ino),
         mode: info.mode,
         modifiedAtMilliseconds: modifiedAt.getTime(),
         size: info.size,
       });
+}
+
+function nativeExportTemporaryIdentity(stat: RuntimeNativeFileStat): Option.Option<CodeGraphExportTemporaryIdentity> {
+  if (!stat.isFile() || stat.ino <= 0n) return Option.none();
+  const birthtimeMilliseconds = stat.birthtime.getTime();
+  const modifiedAtMilliseconds = stat.mtime.getTime();
+  const mode = Number(stat.mode);
+  if (
+    !Number.isFinite(birthtimeMilliseconds) ||
+    !Number.isFinite(modifiedAtMilliseconds) ||
+    !Number.isSafeInteger(mode)
+  ) {
+    return Option.none();
+  }
+  return Option.some({
+    birthtimeMilliseconds,
+    dev: String(stat.dev),
+    ino: String(stat.ino),
+    mode,
+    modifiedAtMilliseconds,
+    size: stat.size,
+  });
+}
+
+function exportTemporaryIdentityFromFile(file: FileSystem.File) {
+  return Effect.gen(function* () {
+    if (runtimePlatform !== 'win32') return exportTemporaryIdentity(yield* file.stat);
+    // Effect's File.Info stores inode numbers as safe JS numbers. Windows file
+    // IDs can exceed that range, so compare the open descriptor's native ID.
+    const fd = 'fd' in file ? file.fd : undefined;
+    if (typeof fd !== 'number' || !Number.isSafeInteger(fd)) return Option.none();
+    return yield* Effect.sync(() => {
+      try {
+        return nativeExportTemporaryIdentity(runtimeFileDescriptorStatSync(fd));
+      } catch {
+        return Option.none();
+      }
+    });
+  });
+}
+
+function exportTemporaryIdentityAtPath(fs: FileSystem.FileSystem, path: string) {
+  return Effect.gen(function* () {
+    if (runtimePlatform !== 'win32') {
+      const info = yield* fs.stat(path).pipe(Effect.option);
+      return Option.flatMap(info, exportTemporaryIdentity);
+    }
+    return yield* Effect.sync(() => {
+      try {
+        return nativeExportTemporaryIdentity(runtimePathStatSync(path));
+      } catch {
+        return Option.none();
+      }
+    });
+  });
 }
 
 function sameExportFile(

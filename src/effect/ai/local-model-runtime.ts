@@ -75,7 +75,7 @@ export function localModelRuntimeLayer<R>(engineLayer?: Layer.Layer<LlamaCppEngi
       const engineContext: Effect.Effect<Context.Context<LlamaCppEngine>, NativeRuntimeError> = yield* Effect.cached(
         Layer.buildWithScope(engineLayer, scope).pipe(Effect.provide(engineRequirements)),
       );
-      const embeddingModels = new Map<string, Effect.Effect<EmbeddingModel.Service, LocalEmbeddingError>>();
+      const embeddingModels = new Map<string, Effect.Effect<EmbeddingModel.EmbeddingModel, LocalEmbeddingError>>();
       const rerankers = new Map<
         string,
         Effect.Effect<RerankerShape, InferenceInterrupted | RerankingFailed | ModelSessionError>
@@ -95,7 +95,7 @@ function embedManyNative(
   request: LocalEmbeddingRequest,
   scope: Scope.Scope,
   engineContext: Effect.Effect<Context.Context<LlamaCppEngine>, NativeRuntimeError>,
-  models: Map<string, Effect.Effect<EmbeddingModel.Service, LocalEmbeddingError>>,
+  models: Map<string, Effect.Effect<EmbeddingModel.EmbeddingModel, LocalEmbeddingError>>,
 ) {
   const dimensions = request.manifest.dimensions;
   if (!dimensions) {

@@ -1,3 +1,4 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import fc from 'fast-check';
@@ -33,7 +34,8 @@ describe('threadnote ignore union', () => {
     expect(isOverlayAdmissionControlPath('.gitignore')).toBe(true);
   });
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'union ignore matches committed or local independently',
     {
       committed: fc.constantFrom('', 'src/a.ts', 'tmp/', 'vendor/**', '!src/c.ts'),

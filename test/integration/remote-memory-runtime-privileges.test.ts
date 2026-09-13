@@ -1,6 +1,6 @@
 import postgres from 'postgres';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   createRemoteMemoryPostgresFixture,
   type RemoteMemoryPostgresFixture,
@@ -9,7 +9,7 @@ import {assertRemoteMemoryRuntimePrivileges} from '../../src/remote_memory/runti
 import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator_postgres.js';
 
 const databaseUrl = process.env.THREADNOTE_TEST_POSTGRES_URL;
-const postgresDescribe = databaseUrl ? describe.sequential : describe.skip;
+const postgresDescribe = databaseUrl ? describe : describe.skip;
 const excessGrants = [
   'UPDATE (status) ON remote_memory.shares',
   'SELECT ON remote_memory.audit_events',

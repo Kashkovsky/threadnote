@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {compareCodeUnits, compareNaturalCodeUnits} from '../../src/code_graph/ordering.js';
 
 const unicodeEdgeCases = ['Z', 'é', '\u0000', '\ud800', '\udfff', '\ud800A', 'A\udfff', '😀', '\uffff'] as const;
@@ -16,7 +17,8 @@ const arbitraryNaturalString = FC.tuple(
 ).map(([prefix, number, suffix]) => `${prefix}${number}${suffix}`);
 
 describe('code graph deterministic ordering properties', () => {
-  it.prop(
+  fcProp(
+    it,
     'matches ECMAScript relational order for Unicode and surrogate strings',
     {left: arbitraryCodeUnitString, right: arbitraryCodeUnitString},
     ({left, right}) => {
@@ -28,7 +30,8 @@ describe('code graph deterministic ordering properties', () => {
     {fastCheck: {numRuns: 500}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'produces the same total sort as the UTF-16 reference regardless of input order',
     {values: FC.array(arbitraryCodeUnitString, {maxLength: 48})},
     ({values}) => {
@@ -46,7 +49,8 @@ describe('code graph deterministic ordering properties', () => {
     expect(compareCodeUnits('\ud800', '\udfff')).toBeLessThan(0);
   });
 
-  it.prop(
+  fcProp(
+    it,
     'keeps natural ordering total and antisymmetric for Unicode strings with numeric runs',
     {left: arbitraryNaturalString, right: arbitraryNaturalString},
     ({left, right}) => {
@@ -57,7 +61,8 @@ describe('code graph deterministic ordering properties', () => {
     {fastCheck: {numRuns: 300}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'keeps natural ordering transitive across Unicode strings and numeric runs',
     {first: arbitraryNaturalString, second: arbitraryNaturalString, third: arbitraryNaturalString},
     ({first, second, third}) => {
@@ -73,7 +78,8 @@ describe('code graph deterministic ordering properties', () => {
     {fastCheck: {numRuns: 500}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'orders archive-style ASCII digit runs by numeric magnitude',
     {
       left: FC.integer({max: 1_000_000, min: 0}),

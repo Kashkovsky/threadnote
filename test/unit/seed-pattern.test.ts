@@ -1,5 +1,6 @@
+import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {
   InvalidProjectSeedPattern,
   validateProjectSeedPattern,
@@ -9,7 +10,8 @@ import {
 const segment = FC.stringMatching(/^[a-z][a-z0-9._-]{0,20}$/u).filter(value => value !== '..');
 
 describe('project seed pattern safety', () => {
-  it.prop(
+  fcProp(
+    it,
     'preserves bounded repository-relative patterns byte for byte',
     {
       glob: FC.constantFrom('', '/*', '/**/*.md'),
@@ -22,7 +24,8 @@ describe('project seed pattern safety', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.prop(
+  fcProp(
+    it,
     'rejects every generated parent traversal segment',
     {
       prefix: FC.array(segment, {maxLength: 5}),
