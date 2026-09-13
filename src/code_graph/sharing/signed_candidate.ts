@@ -1,5 +1,4 @@
-import {Clock, Effect, FileSystem, Path} from 'effect';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {Effect, Path} from 'effect';
 import {codeGraphCheckpointAbiInputV1} from '../checkpoint/compatibility.js';
 import {codeGraphCheckpointAbiDigestV1} from '../checkpoint/pack.js';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
@@ -7,13 +6,7 @@ import {codeGraphCommittedContentHash} from '../content_identity.js';
 import type {CodeGraphStoreShape} from '../store_shape.js';
 import type {CodeGraphInventoryFile, CodeGraphSnapshot} from '../types.js';
 import {graphShareParseActionKey} from './action.js';
-import {readBoundedPrivateBytes, writePrivateJsonFile} from './atomic.js';
 import {readVerifiedCasBlobBounded} from './cas.js';
-import {
-  GRAPH_SHARE_QUEUE_MAXIMUM_AGE_MILLISECONDS,
-  GRAPH_SHARE_QUEUE_MAXIMUM_ANNOUNCEMENTS,
-  GRAPH_SHARE_QUEUE_MAXIMUM_BYTES,
-} from './contribution.js';
 import {SHA256_DIGEST, SHA256_HEX} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 import {graphSharingLayout} from './layout.js';
@@ -21,13 +14,20 @@ import {GRAPH_SHARE_HTTP_CAS_MAX_BYTES} from './oci.js';
 import {parseGraphShareParseResult, type GraphShareParseResultV1} from './parse_result.js';
 import {lookupGraphShareTrustReceipt} from './trust.js';
 import {resolveGraphShareRepositoryClient} from './client_state.js';
+import {
+  acknowledgeSignedCandidateJournalPage,
+  appendSignedCandidateJournal,
+  listSignedCandidateJournalSegments,
+  readSignedCandidateJournalPage,
+  SIGNED_CANDIDATE_PAGE_MAXIMUM_ITEMS,
+  type SignedCandidateJournalSpec,
+} from './signed_candidate_journal.js';
 
 const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const BATCH = /^[0-9a-f]{40}$/u;
 const SNAPSHOT = /^cgsn_[0-9a-f]{40}(?:-[a-z0-9]+)*$/u;
 const RELEASE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/u;
 const ORGANIZATION = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
-const MAX_METADATA_READ_BYTES = 4 * 1_024 * 1_024;
 const SNAPSHOT_PATH_BATCH = 200;
 
 /** Written before the corresponding raw parser facts become reusable in SQLite. */
@@ -65,6 +65,24 @@ export interface GraphShareSignedCandidateQueueV2 {
   readonly schemaVersion: 2;
 }
 
+const pendingJournalSpec: SignedCandidateJournalSpec<GraphSharePendingSignedCandidate, 1, 2> = {
+  identity: pendingIdentity,
+  manifestVersion: 2,
+  pageVersion: 1,
+  parseLegacy: parseGraphSharePendingSignedCandidateQueue,
+  parsePage: parseGraphSharePendingSignedCandidateQueue,
+  validCandidate: validPending,
+};
+
+const signedJournalSpec: SignedCandidateJournalSpec<GraphShareSignedCandidateV2, 2, 3> = {
+  identity: graphShareSignedCandidateIdentity,
+  manifestVersion: 3,
+  pageVersion: 2,
+  parseLegacy: parseGraphShareSignedCandidateQueue,
+  parsePage: parseGraphShareSignedCandidateQueue,
+  validCandidate: validCandidate,
+};
+
 /** The caller must run this before cacheFacts, and must propagate a persistence failure. */
 export const persistGraphSharePendingSignedCandidates = Effect.fn('codeGraph.sharing.persistPendingSignedCandidates')(
   function* (input: {
@@ -75,24 +93,12 @@ export const persistGraphSharePendingSignedCandidates = Effect.fn('codeGraph.sha
     if (input.candidates.length === 0) return {queued: 0};
     if (!SHA256_HEX.test(input.repositoryId) || input.candidates.some(candidate => !validPending(candidate)))
       return yield* graphSharingFailure('Pending signed candidate evidence is invalid.');
-    const now = yield* Clock.currentTimeMillis;
-    return yield* mutatePrivateQueue(
-      pendingCandidateQueuePath,
-      input.threadnoteHome,
-      input.repositoryId,
-      (current: GraphSharePendingSignedCandidateQueueV1) => {
-        const next = appendGraphSharePendingSignedCandidates(current, input.candidates, now);
-        const previousIds = new Set(
-          pruneGraphSharePendingSignedCandidateQueue(current, now).candidates.map(pendingIdentity),
-        );
-        return {
-          next,
-          result: {queued: next.candidates.filter(candidate => !previousIds.has(pendingIdentity(candidate))).length},
-        };
-      },
-      parseGraphSharePendingSignedCandidateQueue,
-      {candidates: [], schemaVersion: 1},
-    );
+    const path = yield* Path.Path;
+    return yield* appendSignedCandidateJournal({
+      additions: input.candidates,
+      manifestPath: pendingCandidateQueuePath(path, input.threadnoteHome, input.repositoryId),
+      spec: pendingJournalSpec,
+    });
   },
 );
 
@@ -116,121 +122,115 @@ export const finalizeGraphShareSignedCandidates = Effect.fn('codeGraph.sharing.f
       input.skippedFiles < 0
     )
       return {examined: 0, queued: 0, verified: 0};
-    const pending = yield* readPrivateQueue(
-      pendingCandidateQueuePath,
-      input.threadnoteHome,
-      input.repositoryId,
-      parseGraphSharePendingSignedCandidateQueue,
-      {candidates: [], schemaVersion: 1},
-    );
-    if (pending.candidates.length === 0) return {examined: 0, queued: 0, verified: 0};
+    const path = yield* Path.Path;
+    const pendingPath = pendingCandidateQueuePath(path, input.threadnoteHome, input.repositoryId);
+    const pageIds = yield* listSignedCandidateJournalSegments({manifestPath: pendingPath, spec: pendingJournalSpec});
+    if (pageIds.length === 0) return {examined: 0, queued: 0, verified: 0};
     const provenance = yield* input.store.snapshotPackProvenance(input.databasePath, snapshot.id);
-    if (provenance === undefined) return {examined: pending.candidates.length, queued: 0, verified: 0};
+    if (provenance === undefined) return {examined: 0, queued: 0, verified: 0};
     const trust = yield* lookupGraphShareTrustReceipt(input.threadnoteHome, input.repositoryId);
-    if (trust?.accessMode !== 'join') return {examined: pending.candidates.length, queued: 0, verified: 0};
+    if (trust?.accessMode !== 'join') return {examined: 0, queued: 0, verified: 0};
     const state = yield* resolveGraphShareRepositoryClient(input.threadnoteHome, trust);
-    if (state.contributionMode === 'off') return {examined: pending.candidates.length, queued: 0, verified: 0};
+    if (state.contributionMode === 'off') return {examined: 0, queued: 0, verified: 0};
     const graphAbi = codeGraphCheckpointAbiDigestV1(codeGraphCheckpointAbiInputV1(provenance)).digest;
     const cacheIdentities = new Set(provenance.map(pack => pack.cacheIdentity));
-    const relevant = pending.candidates.filter(
-      candidate =>
-        candidate.sourceCommit === snapshot.commit &&
-        candidate.batchId === candidate.sourceCommit.slice(0, 40) &&
-        candidate.profileDigest === trust.profileDigest &&
-        candidate.organization === trust.organization &&
-        candidate.casRoot === state.casRoot &&
-        cacheIdentities.has(candidate.extractorSet),
-    );
-    if (relevant.length === 0) return {examined: pending.candidates.length, queued: 0, verified: 0};
-    // Parse results, not pending metadata, supply paths. First verify CAS, then batch exact snapshot observations.
-    const parsed: Array<{
-      readonly candidate: GraphSharePendingSignedCandidate;
-      readonly result: GraphShareParseResultV1;
-    }> = [];
-    for (const candidate of relevant) {
-      const result = yield* verifyPendingCasResult(candidate, input.repositoryId).pipe(
-        Effect.orElseSucceed(() => undefined),
+    let examined = 0;
+    let queued = 0;
+    let verifiedCount = 0;
+    for (const id of pageIds) {
+      const page = yield* readSignedCandidateJournalPage({id, manifestPath: pendingPath, spec: pendingJournalSpec});
+      if (page === undefined) continue;
+      examined += page.candidates.length;
+      const relevant = page.candidates.filter(
+        candidate =>
+          candidate.sourceCommit === snapshot.commit &&
+          candidate.batchId === candidate.sourceCommit.slice(0, 40) &&
+          candidate.profileDigest === trust.profileDigest &&
+          candidate.organization === trust.organization &&
+          candidate.casRoot === state.casRoot &&
+          cacheIdentities.has(candidate.extractorSet),
       );
-      if (result !== undefined) parsed.push({candidate, result});
-    }
-    if (parsed.length === 0) return {examined: pending.candidates.length, queued: 0, verified: 0};
-    const uniquePaths = [...new Set(parsed.map(item => item.result.normalizedPath))];
-    const snapshotFiles = new Map<string, CodeGraphInventoryFile>();
-    for (let offset = 0; offset < uniquePaths.length; offset += SNAPSHOT_PATH_BATCH) {
-      const observed = yield* input.store.effectiveSnapshotFilesByPaths(
-        input.databasePath,
-        snapshot.id,
-        uniquePaths.slice(offset, offset + SNAPSHOT_PATH_BATCH),
-      );
-      for (const item of observed) if (item.file !== undefined) snapshotFiles.set(item.path, item.file);
-    }
-    const verified: GraphShareSignedCandidateV2[] = [];
-    for (const {candidate, result} of parsed) {
-      const file = snapshotFiles.get(result.normalizedPath);
-      const objectFormat =
-        result.gitBlobId.length === 40 ? 'sha1' : result.gitBlobId.length === 64 ? 'sha256' : undefined;
-      if (
-        !file ||
-        file.source !== 'commit' ||
-        objectFormat === undefined ||
-        file.contentHash !== result.contentHash ||
-        file.contentHash !== codeGraphCommittedContentHash(objectFormat, result.gitBlobId)
-      )
-        continue;
-      const cached = yield* input.store
-        .loadCachedFacts(input.databasePath, [file], candidate.extractorSet)
-        .pipe(Effect.orElseSucceed(() => undefined));
-      const cachedFacts = cached?.facts.get(file.path);
-      if (cachedFacts === undefined || canonicalJson(cachedFacts) !== canonicalJson(result.facts)) continue;
-      verified.push({
-        ...candidate,
-        graphAbi,
-        partialCoverage: input.skippedFiles > 0,
-        resourceLimits: [],
-        snapshotId: snapshot.id,
+      if (relevant.length === 0) continue;
+      // Parse results, not pending metadata, supply paths. First verify CAS, then batch exact snapshot observations.
+      const parsed: Array<{
+        readonly candidate: GraphSharePendingSignedCandidate;
+        readonly result: GraphShareParseResultV1;
+      }> = [];
+      for (const candidate of relevant) {
+        const result = yield* verifyPendingCasResult(candidate, input.repositoryId).pipe(
+          Effect.orElseSucceed(() => undefined),
+        );
+        if (result !== undefined) parsed.push({candidate, result});
+      }
+      if (parsed.length === 0) continue;
+      const uniquePaths = [...new Set(parsed.map(item => item.result.normalizedPath))];
+      const snapshotFiles = new Map<string, CodeGraphInventoryFile>();
+      for (let offset = 0; offset < uniquePaths.length; offset += SNAPSHOT_PATH_BATCH) {
+        const observed = yield* input.store.effectiveSnapshotFilesByPaths(
+          input.databasePath,
+          snapshot.id,
+          uniquePaths.slice(offset, offset + SNAPSHOT_PATH_BATCH),
+        );
+        for (const item of observed) if (item.file !== undefined) snapshotFiles.set(item.path, item.file);
+      }
+      const eligible: Array<{
+        candidate: GraphSharePendingSignedCandidate;
+        file: CodeGraphInventoryFile;
+        result: GraphShareParseResultV1;
+      }> = [];
+      const filesByExtractor = new Map<string, Map<string, CodeGraphInventoryFile>>();
+      for (const {candidate, result} of parsed) {
+        const file = snapshotFiles.get(result.normalizedPath);
+        const objectFormat =
+          result.gitBlobId.length === 40 ? 'sha1' : result.gitBlobId.length === 64 ? 'sha256' : undefined;
+        if (
+          !file ||
+          file.source !== 'commit' ||
+          objectFormat === undefined ||
+          file.contentHash !== result.contentHash ||
+          file.contentHash !== codeGraphCommittedContentHash(objectFormat, result.gitBlobId)
+        )
+          continue;
+        eligible.push({candidate, file, result});
+        const group = filesByExtractor.get(candidate.extractorSet) ?? new Map<string, CodeGraphInventoryFile>();
+        group.set(file.path, file);
+        filesByExtractor.set(candidate.extractorSet, group);
+      }
+      const cachedFactsByKey = new Map<string, unknown>();
+      for (const [extractorSet, files] of filesByExtractor) {
+        const grouped = [...files.values()];
+        for (let offset = 0; offset < grouped.length; offset += SNAPSHOT_PATH_BATCH) {
+          const cached = yield* input.store
+            .loadCachedFacts(input.databasePath, grouped.slice(offset, offset + SNAPSHOT_PATH_BATCH), extractorSet)
+            .pipe(Effect.orElseSucceed(() => undefined));
+          for (const [filePath, facts] of cached?.facts ?? [])
+            cachedFactsByKey.set(`${extractorSet}\0${filePath}`, facts);
+        }
+      }
+      const verified: GraphShareSignedCandidateV2[] = [];
+      for (const {candidate, file, result} of eligible) {
+        const cachedFacts = cachedFactsByKey.get(`${candidate.extractorSet}\0${file.path}`);
+        if (cachedFacts === undefined || canonicalJson(cachedFacts) !== canonicalJson(result.facts)) continue;
+        verified.push({
+          ...candidate,
+          graphAbi,
+          partialCoverage: input.skippedFiles > 0,
+          resourceLimits: [],
+          snapshotId: snapshot.id,
+        });
+      }
+      if (verified.length === 0) continue;
+      const added = yield* persistGraphShareSignedCandidates(input.threadnoteHome, input.repositoryId, verified);
+      queued += added.queued;
+      verifiedCount += verified.length;
+      yield* acknowledgeSignedCandidateJournalPage({
+        acceptedIdentities: new Set(verified.map(pendingIdentity)),
+        id,
+        manifestPath: pendingPath,
+        spec: pendingJournalSpec,
       });
     }
-    if (verified.length === 0) return {examined: pending.candidates.length, queued: 0, verified: 0};
-    const now = yield* Clock.currentTimeMillis;
-    const retained = yield* mutatePrivateQueue(
-      signedCandidateQueuePath,
-      input.threadnoteHome,
-      input.repositoryId,
-      (current: GraphShareSignedCandidateQueueV2) => {
-        const next = appendGraphShareSignedCandidates(current, verified, now);
-        const previousIds = new Set(
-          pruneGraphShareSignedCandidateQueue(current, now).candidates.map(candidateIdentity),
-        );
-        return {
-          next,
-          result: {
-            queued: next.candidates.filter(candidate => !previousIds.has(candidateIdentity(candidate))).length,
-            retained: new Set(next.candidates.map(candidateIdentity)),
-          },
-        };
-      },
-      parseGraphShareSignedCandidateQueue,
-      {candidates: [], schemaVersion: 2},
-    );
-    const acknowledged = new Set(
-      verified.filter(candidate => retained.retained.has(candidateIdentity(candidate))).map(pendingIdentity),
-    );
-    if (acknowledged.size > 0)
-      yield* mutatePrivateQueue(
-        pendingCandidateQueuePath,
-        input.threadnoteHome,
-        input.repositoryId,
-        (current: GraphSharePendingSignedCandidateQueueV1) => ({
-          next: {
-            candidates: current.candidates.filter(candidate => !acknowledged.has(pendingIdentity(candidate))),
-            schemaVersion: 1 as const,
-          },
-          result: undefined,
-        }),
-        parseGraphSharePendingSignedCandidateQueue,
-        {candidates: [], schemaVersion: 1},
-      );
-    return {examined: pending.candidates.length, queued: retained.queued, verified: verified.length};
+    return {examined, queued, verified: verifiedCount};
   },
 );
 
@@ -271,77 +271,65 @@ export function signedCandidateQueuePath(path: Path.Path, home: string, reposito
   return path.join(graphSharingLayout(path, home).root, 'signed-candidates', `${repositoryId}.json`);
 }
 
-export function appendGraphSharePendingSignedCandidates(
-  queue: GraphSharePendingSignedCandidateQueueV1,
-  additions: readonly GraphSharePendingSignedCandidate[],
-  now: number,
-): GraphSharePendingSignedCandidateQueueV1 {
-  const retained = pruneGraphSharePendingSignedCandidateQueue(queue, now).candidates;
-  const seen = new Set(retained.map(pendingIdentity));
-  const candidates = [...retained];
-  for (const candidate of additions) {
-    if (!validPending(candidate) || seen.has(pendingIdentity(candidate))) continue;
-    seen.add(pendingIdentity(candidate));
-    candidates.push({...candidate, platform: {...candidate.platform}});
-  }
-  return pruneGraphSharePendingSignedCandidateQueue({candidates, schemaVersion: 1}, now);
-}
+export const listGraphShareSignedCandidatePageIds = Effect.fn('codeGraph.sharing.listSignedCandidatePages')(function* (
+  threadnoteHome: string,
+  repositoryId: string,
+) {
+  if (!SHA256_HEX.test(repositoryId)) return yield* graphSharingFailure('Repository ID is invalid.');
+  const path = yield* Path.Path;
+  return yield* listSignedCandidateJournalSegments({
+    manifestPath: signedCandidateQueuePath(path, threadnoteHome, repositoryId),
+    spec: signedJournalSpec,
+  });
+});
 
-export function appendGraphShareSignedCandidates(
-  queue: GraphShareSignedCandidateQueueV2,
-  additions: readonly GraphShareSignedCandidateV2[],
-  now: number,
-): GraphShareSignedCandidateQueueV2 {
-  const retained = pruneGraphShareSignedCandidateQueue(queue, now).candidates;
-  const seen = new Set(retained.map(candidateIdentity));
-  const candidates = [...retained];
-  for (const candidate of additions) {
-    if (!validCandidate(candidate) || seen.has(candidateIdentity(candidate))) continue;
-    seen.add(candidateIdentity(candidate));
-    candidates.push({...candidate, platform: {...candidate.platform}, resourceLimits: []});
-  }
-  return pruneGraphShareSignedCandidateQueue({candidates, schemaVersion: 2}, now);
-}
+export const readGraphShareSignedCandidatePage = Effect.fn('codeGraph.sharing.readSignedCandidatePage')(function* (
+  threadnoteHome: string,
+  repositoryId: string,
+  id: string,
+) {
+  if (!SHA256_HEX.test(repositoryId)) return yield* graphSharingFailure('Repository ID is invalid.');
+  const path = yield* Path.Path;
+  return yield* readSignedCandidateJournalPage({
+    id,
+    manifestPath: signedCandidateQueuePath(path, threadnoteHome, repositoryId),
+    spec: signedJournalSpec,
+  });
+});
 
-export function pruneGraphSharePendingSignedCandidateQueue(
-  queue: GraphSharePendingSignedCandidateQueueV1,
-  now: number,
-): GraphSharePendingSignedCandidateQueueV1 {
-  return pruneQueue(queue, now);
-}
+export const acknowledgeGraphShareSignedCandidatePage = Effect.fn('codeGraph.sharing.ackSignedCandidatePage')(
+  function* (threadnoteHome: string, repositoryId: string, id: string, acceptedIdentities: ReadonlySet<string>) {
+    if (!SHA256_HEX.test(repositoryId)) return yield* graphSharingFailure('Repository ID is invalid.');
+    const path = yield* Path.Path;
+    return yield* acknowledgeSignedCandidateJournalPage({
+      acceptedIdentities,
+      id,
+      manifestPath: signedCandidateQueuePath(path, threadnoteHome, repositoryId),
+      spec: signedJournalSpec,
+    });
+  },
+);
 
-export function pruneGraphShareSignedCandidateQueue(
-  queue: GraphShareSignedCandidateQueueV2,
-  now: number,
-): GraphShareSignedCandidateQueueV2 {
-  return pruneQueue(queue, now);
-}
-
-function pruneQueue<T extends {readonly queuedAtMilliseconds: number}, V extends 1 | 2>(
-  queue: {readonly candidates: readonly T[]; readonly schemaVersion: V},
-  now: number,
-): {readonly candidates: readonly T[]; readonly schemaVersion: V} {
-  let candidates = queue.candidates
-    .map(item => ({...item, queuedAtMilliseconds: Math.min(now, item.queuedAtMilliseconds)}))
-    .filter(item => item.queuedAtMilliseconds >= now - GRAPH_SHARE_QUEUE_MAXIMUM_AGE_MILLISECONDS)
-    .slice(-GRAPH_SHARE_QUEUE_MAXIMUM_ANNOUNCEMENTS);
-  let result = {...queue, candidates};
-  while (
-    candidates.length > 0 &&
-    new TextEncoder().encode(JSON.stringify(result)).byteLength > GRAPH_SHARE_QUEUE_MAXIMUM_BYTES
-  ) {
-    candidates = candidates.slice(1);
-    result = {...queue, candidates};
-  }
-  return result;
-}
+export const persistGraphShareSignedCandidates = Effect.fn('codeGraph.sharing.persistSignedCandidates')(function* (
+  threadnoteHome: string,
+  repositoryId: string,
+  candidates: readonly GraphShareSignedCandidateV2[],
+) {
+  if (!SHA256_HEX.test(repositoryId)) return yield* graphSharingFailure('Repository ID is invalid.');
+  const path = yield* Path.Path;
+  return yield* appendSignedCandidateJournal({
+    additions: candidates,
+    manifestPath: signedCandidateQueuePath(path, threadnoteHome, repositoryId),
+    spec: signedJournalSpec,
+  });
+});
 
 export function parseGraphSharePendingSignedCandidateQueue(value: unknown): GraphSharePendingSignedCandidateQueueV1 {
   if (
     !isRecord(value) ||
     value.schemaVersion !== 1 ||
     !Array.isArray(value.candidates) ||
-    value.candidates.length > GRAPH_SHARE_QUEUE_MAXIMUM_ANNOUNCEMENTS ||
+    value.candidates.length > SIGNED_CANDIDATE_PAGE_MAXIMUM_ITEMS ||
     value.candidates.some(candidate => !validPending(candidate)) ||
     Object.keys(value).sort().join(',') !== 'candidates,schemaVersion'
   )
@@ -358,7 +346,7 @@ export function parseGraphShareSignedCandidateQueue(value: unknown): GraphShareS
     !isRecord(value) ||
     value.schemaVersion !== 2 ||
     !Array.isArray(value.candidates) ||
-    value.candidates.length > GRAPH_SHARE_QUEUE_MAXIMUM_ANNOUNCEMENTS ||
+    value.candidates.length > SIGNED_CANDIDATE_PAGE_MAXIMUM_ITEMS ||
     value.candidates.some(candidate => !validCandidate(candidate)) ||
     Object.keys(value).sort().join(',') !== 'candidates,schemaVersion'
   )
@@ -443,57 +431,10 @@ function pendingIdentity(value: GraphSharePendingSignedCandidate): string {
   ]);
 }
 
-function candidateIdentity(value: GraphShareSignedCandidateV2): string {
+export function graphShareSignedCandidateIdentity(value: GraphShareSignedCandidateV2): string {
   return JSON.stringify([pendingIdentity(value), value.graphAbi, value.partialCoverage, value.snapshotId]);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function readPrivateQueue<T>(
-  locate: typeof pendingCandidateQueuePath,
-  home: string,
-  repositoryId: string,
-  parse: (value: unknown) => T,
-  empty: T,
-) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const target = locate(path, home, repositoryId);
-    if (!(yield* fs.exists(target))) return empty;
-    const bytes = yield* readBoundedPrivateBytes(target, MAX_METADATA_READ_BYTES);
-    return yield* Effect.try({
-      try: () => parse(JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes))),
-      catch: () => graphSharingFailure('Signed candidate metadata is invalid.'),
-    });
-  });
-}
-
-function mutatePrivateQueue<T extends {readonly candidates: readonly unknown[]}, A>(
-  locate: typeof pendingCandidateQueuePath,
-  home: string,
-  repositoryId: string,
-  update: (current: T) => {readonly next: T; readonly result: A},
-  parse: (value: unknown) => T,
-  empty: T,
-) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const target = locate(path, home, repositoryId);
-    yield* fs.makeDirectory(path.dirname(target), {recursive: true, mode: 0o700});
-    return yield* withExclusiveFileLock(
-      fs,
-      `${target}.lock`,
-      {retryIntervalMilliseconds: 25, staleAfterMilliseconds: 30_000, waitTimeoutMilliseconds: 30_000},
-      Effect.gen(function* () {
-        const current = yield* readPrivateQueue(locate, home, repositoryId, parse, empty);
-        const {next, result} = update(current);
-        if (JSON.stringify(next) !== JSON.stringify(current)) yield* writePrivateJsonFile(target, next);
-        return result;
-      }),
-    );
-  });
 }

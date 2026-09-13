@@ -1020,7 +1020,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 snapshot: summary.snapshot,
                 store,
                 threadnoteHome: request.threadnoteHome,
-              }).pipe(Effect.ignore);
+              });
             if (!options.sourceOnly)
               yield* drainQueuedGraphShareContributions({
                 identity: initialIdentity,
@@ -1302,7 +1302,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 snapshot: lease.summary.snapshot,
                 store,
                 threadnoteHome: request.threadnoteHome,
-              }).pipe(Effect.ignore);
+              });
             if (!options.sourceOnly)
               yield* drainQueuedGraphShareContributions({
                 identity: initialIdentity,

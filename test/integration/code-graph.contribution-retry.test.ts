@@ -180,22 +180,22 @@ describe('MCP-owned passive graph contribution retries', () => {
         expect(JSON.parse(await readFile(queuePath, 'utf8')).announcements.length).toBeGreaterThan(0);
         if (source !== 'persisted queue') {
           const pendingPath = join(home, 'graph-sharing', 'signed-pending', `${repositoryId}.json`);
-          let pendingCandidates = JSON.parse(await readFile(pendingPath, 'utf8')).candidates;
+          let pendingCandidates = await readJournalCandidates(pendingPath);
           if (source === 'dirty graph then clean restart') {
             expect(pendingCandidates.length).toBeGreaterThan(0);
             await unlink(join(repository, 'untracked.txt'));
             await client?.close();
             await startClient();
             await inspect('impact');
-            for (let attempt = 0; attempt < 80; attempt++) {
-              pendingCandidates = JSON.parse(await readFile(pendingPath, 'utf8')).candidates;
-              if (pendingCandidates.length === 0) break;
-              await new Promise(resolve => setTimeout(resolve, 250));
-            }
+          }
+          for (let attempt = 0; attempt < 80; attempt++) {
+            pendingCandidates = await readJournalCandidates(pendingPath);
+            if (pendingCandidates.length === 0) break;
+            await new Promise(resolve => setTimeout(resolve, 250));
           }
           expect(pendingCandidates).toHaveLength(0);
           const candidatePath = join(home, 'graph-sharing', 'signed-candidates', `${repositoryId}.json`);
-          const candidates = JSON.parse(await readFile(candidatePath, 'utf8')).candidates;
+          const candidates = await readJournalCandidates(candidatePath);
           const {stdout: sourceCommit} = await command('git', ['-C', repository, 'rev-parse', 'HEAD']);
           const packageVersion = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')).version;
           expect(candidates).toHaveLength(1);
@@ -220,6 +220,14 @@ describe('MCP-owned passive graph contribution retries', () => {
     60_000,
   );
 });
+
+async function readJournalCandidates(manifestPath: string): Promise<Array<Record<string, unknown>>> {
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const pages = await Promise.all(
+    manifest.segments.map((segment: {id: string}) => readFile(join(`${manifestPath}.d`, `${segment.id}.json`), 'utf8')),
+  );
+  return pages.flatMap(page => JSON.parse(page).candidates);
+}
 
 async function within<A>(promise: Promise<A>, milliseconds: number): Promise<A> {
   let timer: ReturnType<typeof setTimeout> | undefined;

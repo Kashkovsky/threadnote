@@ -4,6 +4,7 @@ import {Effect, FileSystem, Layer, Path} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {it} from 'vitest';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {codeGraphCheckpointAbiInputV1} from '../../src/code_graph/checkpoint/compatibility.js';
 import {codeGraphCheckpointAbiDigestV1} from '../../src/code_graph/checkpoint/pack.js';
 import {codeGraphCommittedContentHash} from '../../src/code_graph/content_identity.js';
@@ -13,13 +14,16 @@ import {putCasBytes} from '../../src/code_graph/sharing/cas.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
 import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
 import {
-  appendGraphSharePendingSignedCandidates,
-  appendGraphShareSignedCandidates,
+  acknowledgeGraphShareSignedCandidatePage,
   finalizeGraphShareSignedCandidates,
+  graphShareSignedCandidateIdentity,
+  listGraphShareSignedCandidatePageIds,
   parseGraphSharePendingSignedCandidateQueue,
   parseGraphShareSignedCandidateQueue,
   pendingCandidateQueuePath,
   persistGraphSharePendingSignedCandidates,
+  persistGraphShareSignedCandidates,
+  readGraphShareSignedCandidatePage,
   signedCandidateQueuePath,
   type GraphSharePendingSignedCandidate,
   type GraphShareSignedCandidateV2,
@@ -167,12 +171,11 @@ describe('producer-bound signed candidate evidence', () => {
           threadnoteHome: f.home,
         });
         expect(outcome).toEqual({examined: 1, queued: 1, verified: 1});
-        const final = parseGraphShareSignedCandidateQueue(
-          JSON.parse(yield* f.fs.readFileString(signedCandidateQueuePath(f.path, f.home, repositoryId))),
-        );
-        expect(final.schemaVersion).toBe(2);
-        expect(final.candidates).toHaveLength(1);
-        expect(final.candidates[0]).toMatchObject({
+        const finalIds = yield* listGraphShareSignedCandidatePageIds(f.home, repositoryId);
+        expect(finalIds).toHaveLength(1);
+        const final = yield* readGraphShareSignedCandidatePage(f.home, repositoryId, finalIds[0]);
+        expect(final?.candidates).toHaveLength(1);
+        expect(final!.candidates[0]).toMatchObject({
           actionKey,
           graphAbi: codeGraphCheckpointAbiDigestV1(codeGraphCheckpointAbiInputV1(packs)).digest,
           organization: 'acme',
@@ -182,14 +185,12 @@ describe('producer-bound signed candidate evidence', () => {
           resourceLimits: [],
           sourceCommit: commit,
         });
-        expect(final.candidates[0].graphAbi).not.toBe(
+        expect(final!.candidates[0].graphAbi).not.toBe(
           codeGraphCheckpointAbiDigestV1(codeGraphCheckpointAbiInputV1([packs[0]])).digest,
         );
         expect(f.observed).toEqual([`packs:${snapshot.id}`, `files:${snapshot.id}`, `cache:${packs[0].cacheIdentity}`]);
-        const pending = parseGraphSharePendingSignedCandidateQueue(
-          JSON.parse(yield* f.fs.readFileString(pendingCandidateQueuePath(f.path, f.home, repositoryId))),
-        );
-        expect(pending.candidates).toEqual([]);
+        const pending = JSON.parse(yield* f.fs.readFileString(pendingCandidateQueuePath(f.path, f.home, repositoryId)));
+        expect(pending.segments).toEqual([]);
         if ((yield* SystemInfo).platform !== 'win32')
           expect((yield* f.fs.stat(signedCandidateQueuePath(f.path, f.home, repositoryId))).mode & 0o777).toBe(0o600);
       }).pipe(provideTestLayer(layer)),
@@ -243,10 +244,8 @@ describe('producer-bound signed candidate evidence', () => {
         })).queued,
       ).toBe(0);
       expect(yield* f.fs.exists(signedCandidateQueuePath(f.path, f.home, repositoryId))).toBe(false);
-      const pending = parseGraphSharePendingSignedCandidateQueue(
-        JSON.parse(yield* f.fs.readFileString(pendingCandidateQueuePath(f.path, f.home, repositoryId))),
-      );
-      expect(pending.candidates).toHaveLength(1);
+      const pending = JSON.parse(yield* f.fs.readFileString(pendingCandidateQueuePath(f.path, f.home, repositoryId)));
+      expect(pending.segments).toHaveLength(1);
     }).pipe(provideTestLayer(layer)),
   );
 
@@ -277,31 +276,205 @@ describe('producer-bound signed candidate evidence', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
-  it('deduplicates and bounds pending/final queues without mutating input or changing retained order', () => {
-    FC.assert(
-      FC.property(FC.array(FC.integer({min: 0, max: 600}), {maxLength: 620}), ordinals => {
-        const additions = ordinals.map(index => ({
-          ...pendingFixture,
-          actionKey: index.toString(16).padStart(64, '0'),
-        }));
+  effectIt.effect('retains more than 512 pending and final records across a restart and acknowledges exactly one', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'graph-signed-journal-capacity-'});
+      const additions = Array.from({length: 600}, (_, index) => ({
+        ...pendingFixture,
+        actionKey: index.toString(16).padStart(64, '0'),
+      }));
+      expect(
+        (yield* persistGraphSharePendingSignedCandidates({
+          candidates: additions,
+          repositoryId,
+          threadnoteHome: home,
+        })).queued,
+      ).toBe(600);
+      const pendingPath = pendingCandidateQueuePath(path, home, repositoryId);
+      const pendingManifest = JSON.parse(yield* fs.readFileString(pendingPath));
+      expect(pendingManifest.schemaVersion).toBe(2);
+      expect(pendingManifest.segments.length).toBeGreaterThan(1);
+      const recovered: GraphSharePendingSignedCandidate[] = [];
+      for (const segment of pendingManifest.segments) {
+        const page = parseGraphSharePendingSignedCandidateQueue(
+          JSON.parse(yield* fs.readFileString(path.join(`${pendingPath}.d`, `${segment.id}.json`))),
+        );
+        recovered.push(...page.candidates);
+      }
+      expect(recovered.map(candidate => candidate.actionKey)).toEqual(additions.map(candidate => candidate.actionKey));
+      const final = recovered.map(candidate => ({
+        ...candidate,
+        graphAbi: candidateFixture.graphAbi,
+        partialCoverage: false,
+        resourceLimits: [],
+        snapshotId: snapshot.id,
+      }));
+      expect((yield* persistGraphShareSignedCandidates(home, repositoryId, final)).queued).toBe(600);
+      const ids = yield* listGraphShareSignedCandidatePageIds(home, repositoryId);
+      expect(ids.length).toBeGreaterThan(1);
+      const pages = [];
+      for (const id of ids) pages.push((yield* readGraphShareSignedCandidatePage(home, repositoryId, id))!);
+      expect(pages.flatMap(page => page.candidates).map(candidate => candidate.actionKey)).toEqual(
+        additions.map(candidate => candidate.actionKey),
+      );
+      const identity = graphShareSignedCandidateIdentity(pages[0].candidates[0]);
+      expect(
+        (yield* acknowledgeGraphShareSignedCandidatePage(home, repositoryId, ids[0], new Set([identity]))).acknowledged,
+      ).toBe(1);
+      expect(
+        (yield* acknowledgeGraphShareSignedCandidatePage(home, repositoryId, ids[0], new Set([identity]))).absent,
+      ).toBe(true);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('reconciles 520 committed source files from durable pending pages after producer restart', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const files = new Map<string, CodeGraphInventoryFile>();
+      const factsByPath = new Map<string, typeof facts>();
+      const pending: GraphSharePendingSignedCandidate[] = [];
+      for (let index = 0; index < 520; index++) {
+        const filePath = `src/file-${index}.ts`;
+        const gitBlobId = (index + 1).toString(16).padStart(40, '0');
+        const fileContentHash = codeGraphCommittedContentHash('sha1', gitBlobId);
+        const fileFacts = {...facts, path: filePath};
+        const key = graphShareParseActionKey({
+          contentHash: fileContentHash,
+          extractorSet: packs[0].cacheIdentity,
+          languageAndRole: 'typescript:source',
+          normalizedPath: filePath,
+          repositoryId,
+        });
+        const artifact = graphShareParseResultArtifact({
+          actionKey: key,
+          contentHash: fileContentHash,
+          extractorSet: packs[0].cacheIdentity,
+          facts: fileFacts,
+          gitBlobId,
+          languageAndRole: 'typescript:source',
+          normalizedPath: filePath,
+          repositoryId,
+        });
+        const bytes = new TextEncoder().encode(canonicalJson(artifact));
+        pending.push({
+          ...f.pending,
+          actionKey: key,
+          resultDigest: yield* putCasBytes(f.casRoot, bytes),
+          resultSize: bytes.byteLength,
+          semanticDigest: artifact.semanticDigest,
+        });
+        files.set(filePath, {...file, blobId: gitBlobId, contentHash: fileContentHash, path: filePath});
+        factsByPath.set(filePath, fileFacts);
+      }
+      expect(
+        (yield* persistGraphSharePendingSignedCandidates({
+          candidates: pending,
+          repositoryId,
+          threadnoteHome: f.home,
+        })).queued,
+      ).toBe(520);
+      const restartedStore = {
+        snapshotPackProvenance: () => Effect.succeed(packs),
+        effectiveSnapshotFilesByPaths: (_databasePath: string, _snapshotId: string, paths: readonly string[]) =>
+          Effect.succeed(paths.map(filePath => ({path: filePath, file: files.get(filePath)}))),
+        loadCachedFacts: (_databasePath: string, selected: readonly CodeGraphInventoryFile[]) =>
+          Effect.succeed({bytes: 0, facts: new Map(selected.map(item => [item.path, factsByPath.get(item.path)!]))}),
+      } as unknown as CodeGraphStoreShape;
+      const finalized = yield* finalizeGraphShareSignedCandidates({
+        databasePath: '/exact/ready.sqlite',
+        repositoryId,
+        skippedFiles: 0,
+        snapshot: {...snapshot, fileCount: 520},
+        store: restartedStore,
+        threadnoteHome: f.home,
+      });
+      expect(finalized).toEqual({examined: 520, queued: 520, verified: 520});
+      const ids = yield* listGraphShareSignedCandidatePageIds(f.home, repositoryId);
+      const observed: string[] = [];
+      for (const id of ids) {
+        const page = yield* readGraphShareSignedCandidatePage(f.home, repositoryId, id);
+        observed.push(...(page?.candidates.map(candidate => candidate.actionKey) ?? []));
+      }
+      expect(observed).toEqual(pending.map(candidate => candidate.actionKey));
+      const pendingManifest = JSON.parse(
+        yield* f.fs.readFileString(pendingCandidateQueuePath(f.path, f.home, repositoryId)),
+      );
+      expect(pendingManifest.segments).toEqual([]);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('recovers an orphaned segment and a final append interrupted before pending acknowledgement', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const pendingPath = pendingCandidateQueuePath(f.path, f.home, repositoryId);
+      const orphan = {...f.pending, actionKey: '0'.repeat(64)};
+      const orphanBytes = `${JSON.stringify({candidates: [orphan], schemaVersion: 1})}\n`;
+      const orphanPath = f.path.join(`${pendingPath}.d`, `${sha256HexSync(orphanBytes)}.json`);
+      yield* f.fs.makeDirectory(f.path.dirname(orphanPath), {recursive: true});
+      yield* f.fs.writeFileString(orphanPath, orphanBytes);
+      yield* persistGraphSharePendingSignedCandidates({candidates: [f.pending], repositoryId, threadnoteHome: f.home});
+      expect(yield* f.fs.exists(orphanPath)).toBe(false);
+      const finished = {
+        ...f.pending,
+        graphAbi: codeGraphCheckpointAbiDigestV1(codeGraphCheckpointAbiInputV1(packs)).digest,
+        partialCoverage: false,
+        resourceLimits: [],
+        snapshotId: snapshot.id,
+      };
+      yield* persistGraphShareSignedCandidates(f.home, repositoryId, [finished]);
+      const replay = yield* finalizeGraphShareSignedCandidates({
+        databasePath: '/exact/ready.sqlite',
+        repositoryId,
+        skippedFiles: 0,
+        snapshot,
+        store: f.store,
+        threadnoteHome: f.home,
+      });
+      expect(replay).toEqual({examined: 1, queued: 0, verified: 1});
+      expect(yield* listGraphShareSignedCandidatePageIds(f.home, repositoryId)).toHaveLength(1);
+      const pendingManifest = JSON.parse(yield* f.fs.readFileString(pendingPath));
+      expect(pendingManifest.segments).toEqual([]);
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect.prop(
+    'journal append is idempotent and preserves distinct arrival order',
+    {ordinals: FC.array(FC.integer({min: 0, max: 80}), {maxLength: 90})},
+    ({ordinals}) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'graph-signed-journal-property-'});
+        const additions = ordinals.map(index => ({...pendingFixture, actionKey: index.toString(16).padStart(64, '0')}));
         const before = JSON.stringify(additions);
-        const pending = appendGraphSharePendingSignedCandidates({candidates: [], schemaVersion: 1}, additions, 1_000);
-        expect(appendGraphSharePendingSignedCandidates(pending, additions, 1_000)).toEqual(pending);
+        yield* persistGraphSharePendingSignedCandidates({candidates: additions, repositoryId, threadnoteHome: home});
+        expect(
+          (yield* persistGraphSharePendingSignedCandidates({
+            candidates: additions,
+            repositoryId,
+            threadnoteHome: home,
+          })).queued,
+        ).toBe(0);
         expect(JSON.stringify(additions)).toBe(before);
-        expect(pending.candidates.map(item => item.actionKey)).toEqual(
-          [...new Set(ordinals.map(index => index.toString(16).padStart(64, '0')))].slice(-512),
-        );
-        const final = appendGraphShareSignedCandidates(
-          {candidates: [], schemaVersion: 2},
-          pending.candidates.map(item => ({...item, ...candidateFixture, actionKey: item.actionKey})),
-          1_000,
-        );
-        expect(appendGraphShareSignedCandidates(final, final.candidates, 1_000)).toEqual(final);
-        expect(new TextEncoder().encode(JSON.stringify(final)).byteLength).toBeLessThanOrEqual(512 * 1024);
-      }),
-      {numRuns: 30},
-    );
-  });
+        const pendingPath = pendingCandidateQueuePath(path, home, repositoryId);
+        if (ordinals.length === 0) {
+          expect(yield* fs.exists(pendingPath)).toBe(false);
+          return;
+        }
+        const manifest = JSON.parse(yield* fs.readFileString(pendingPath));
+        const observed: string[] = [];
+        for (const segment of manifest.segments) {
+          const page = parseGraphSharePendingSignedCandidateQueue(
+            JSON.parse(yield* fs.readFileString(path.join(`${pendingPath}.d`, `${segment.id}.json`))),
+          );
+          observed.push(...page.candidates.map(candidate => candidate.actionKey));
+        }
+        expect(observed).toEqual([...new Set(additions.map(candidate => candidate.actionKey))]);
+      }).pipe(provideTestLayer(layer)),
+    {fastCheck: {numRuns: 20}},
+  );
 
   it('discards pre-release final v1 evidence and rejects unsupported fields or commit/batch mismatch', () => {
     expect(parseGraphShareSignedCandidateQueue({candidates: [candidateFixture], schemaVersion: 1})).toEqual({
