@@ -90,7 +90,7 @@ export function makeGraphSharingCommands(
     {
       authorizationPolicy: optionalString(
         'authorization-policy',
-        'Policy file for authenticated metadata reads and worker enrollment; disables artifact and result routes',
+        'Policy file for authenticated graph control; signed worker results require distinct OCI registries; disables HTTP artifact routes',
       ),
       cas: optionalString('cas', 'Digest-addressed CAS directory for signed frontier artifacts'),
       cwd: codeGraphCliBounds.cwd,
