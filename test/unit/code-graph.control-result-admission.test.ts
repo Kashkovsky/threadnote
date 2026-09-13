@@ -2,7 +2,7 @@ import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import * as BunHttpServer from '@effect/platform-bun/BunHttpServer';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Clock, Console, Context, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
+import {Clock, Console, Context, Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import * as HttpClient from 'effect/unstable/http/HttpClient';
@@ -25,6 +25,7 @@ import {
   admitGraphControlWorkerResult,
   graphWorkerAdmissionStatePath,
 } from '../../src/code_graph/sharing/control_result_admission.js';
+import {emptyGraphWorkerAdmissionStore} from '../../src/code_graph/sharing/worker_admission_state.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
 import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
@@ -205,6 +206,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
     worker: {expiresAt: number; principalId: string; workerId: string},
     diagnostics: string[] = [],
     batchId = 'b'.repeat(40),
+    producerGraphAbi = graphAbi,
   ) =>
     Effect.gen(function* () {
       const action = {
@@ -222,7 +224,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
       });
       const authority = {
         expiresAt: worker.expiresAt,
-        graphAbi,
+        graphAbi: producerGraphAbi,
         principalId: worker.principalId,
         profileDigest,
         repositoryId,
@@ -233,7 +235,7 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
         metadata: {
           batchId,
           sourceCommit: batchId,
-          graphAbi,
+          graphAbi: producerGraphAbi,
           identityClass: 'oauth-principal',
           issuedAt: Math.floor((yield* Clock.currentTimeMillis) / 1000),
           partialCoverage: false,
@@ -313,6 +315,80 @@ describe('authenticated signed worker admission route', () => {
         expect(JSON.stringify(state)).not.toContain('src/index.ts');
         yield* f.fs.writeFileString(f.statePath, '{');
         expect((yield* f.request('/v1/results', f.validToken, announcement)).status).toBe(503);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
+  effectIt.effect('admits a signed new producer ABI before the published frontier changes', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const worker = yield* f.enroll;
+        const producerGraphAbi = 'd'.repeat(64);
+        const {announcement} = yield* f.candidate(worker, [], 'b'.repeat(40), producerGraphAbi);
+        expect((yield* f.request('/v1/results', f.validToken, announcement)).status).toBe(201);
+        const state = JSON.parse(yield* f.fs.readFileString(f.statePath));
+        expect(state.receipts[0].graphAbi).toBe(producerGraphAbi);
+        f.registryBytes.clear();
+        expect((yield* f.request('/v1/results', f.validToken, announcement)).body).toMatchObject({
+          status: 'duplicate',
+        });
+        expect(
+          (yield* f.request('/v1/results', f.validToken, {...announcement, signature: '0'.repeat(128)})).status,
+        ).toBe(400);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
+  effectIt.effect('keeps fast replay under the coordinator lock until retirement can run', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const worker = yield* f.enroll;
+        const {announcement} = yield* f.candidate(worker);
+        expect((yield* f.request('/v1/results', f.validToken, announcement)).status).toBe(201);
+        f.registryBytes.clear();
+        const policy = yield* readGraphControlPolicy(f.options.policyFile);
+        const executor = Context.get(yield* Layer.build(CommandExecutor.layer), CommandExecutor);
+        const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+        const calls = yield* Ref.make(0);
+        const paused = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const readCurrentPolicy = Ref.updateAndGet(calls, count => count + 1).pipe(
+          Effect.flatMap(count =>
+            count === 3
+              ? Deferred.succeed(paused, undefined).pipe(Effect.flatMap(() => Deferred.await(release)))
+              : Effect.void,
+          ),
+          Effect.as(policy),
+        );
+        const replay = yield* admitGraphControlWorkerResult({
+          announcement,
+          commandExecutor: executor,
+          home: f.options.threadnoteHome,
+          initialPolicy: policy,
+          principal: {
+            expiresAt: now + 600,
+            issuer,
+            scopes: new Set(['graph:contribute']),
+            subject: 'worker-principal',
+          },
+          profile: f.options.profile,
+          readCurrentPolicy,
+        }).pipe(Effect.forkChild);
+        yield* Deferred.await(paused);
+        const retirement = yield* withCoordinatorStateLock(
+          {threadnoteHome: f.options.threadnoteHome},
+          writePrivateJsonFile(f.statePath, emptyGraphWorkerAdmissionStore()),
+        ).pipe(Effect.forkChild);
+        const retiredBeforeReplay = yield* Effect.race(
+          Fiber.join(retirement).pipe(Effect.as(true)),
+          Effect.sleep('100 millis').pipe(Effect.as(false)),
+        );
+        yield* Deferred.succeed(release, undefined);
+        expect((yield* Fiber.join(replay)).status).toBe('duplicate');
+        yield* Fiber.join(retirement);
+        expect(retiredBeforeReplay).toBe(false);
       }).pipe(provideTestLayer(layer)),
     ),
   );
@@ -425,7 +501,6 @@ describe('authenticated signed worker admission route', () => {
           const outcome = yield* admitGraphControlWorkerResult({
             announcement,
             commandExecutor: executor,
-            graphAbi,
             home: f.options.threadnoteHome,
             initialPolicy: boundPolicy,
             principal: {
@@ -482,7 +557,7 @@ describe('authenticated signed worker admission route', () => {
     ),
   );
 
-  effectIt.effect('holds receipt commit behind the coordinator pointer lock', () =>
+  effectIt.effect('holds result download and receipt commit behind the coordinator pointer lock', () =>
     TestClock.withLive(
       Effect.gen(function* () {
         const f = yield* fixture();
@@ -490,16 +565,6 @@ describe('authenticated signed worker admission route', () => {
         const {announcement} = yield* f.candidate(worker);
         const locked = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
-        let signalFetched: (() => void) | undefined;
-        const fetched = new Promise<void>(resolve => {
-          signalFetched = resolve;
-        });
-        let blobs = 0;
-        f.registryHook.current = async address => {
-          if (!address.includes('/blobs/')) return;
-          blobs += 1;
-          if (blobs === 3) signalFetched?.();
-        };
         const lockOwner = yield* withCoordinatorStateLock(
           {threadnoteHome: f.options.threadnoteHome},
           Effect.gen(function* () {
@@ -510,8 +575,8 @@ describe('authenticated signed worker admission route', () => {
         yield* Deferred.await(locked);
         yield* Effect.gen(function* () {
           const submission = yield* Effect.forkChild(f.request('/v1/results', f.validToken, announcement));
-          yield* Effect.promise(() => fetched);
           yield* Effect.sleep('100 millis');
+          expect(f.registryPaths).toEqual([]);
           expect(yield* f.fs.exists(f.statePath)).toBe(false);
           yield* Deferred.succeed(release, undefined);
           expect((yield* Fiber.join(submission)).status).toBe(201);

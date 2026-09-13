@@ -188,11 +188,10 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
           return reply(400, {error: 'invalid-request'});
         const decoded = yield* readGraphControlWorkerResultRequest(request.stream).pipe(Effect.option);
         if (decoded._tag === 'None') return reply(400, {error: 'invalid-request'});
-        const frontier = yield* readGraphControlFrontier(options);
+        yield* readGraphControlFrontier(options);
         const admitted = yield* admitGraphControlWorkerResult({
           announcement: decoded.value,
           commandExecutor,
-          graphAbi: frontier.manifest.graphAbi,
           home: options.threadnoteHome,
           initialPolicy: initial,
           principal: principal.value,

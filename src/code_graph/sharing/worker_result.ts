@@ -81,6 +81,10 @@ export interface GraphWorkerResultAuthority {
   readonly workerId: string;
 }
 
+export type GraphWorkerResultVerificationAuthority = Omit<GraphWorkerResultAuthority, 'graphAbi'> & {
+  readonly graphAbi?: string;
+};
+
 export const createGraphWorkerResultArtifact = Effect.fn('codeGraph.sharing.createWorkerResult')(function* (input: {
   readonly metadata: GraphWorkerResultMetadata;
   readonly resultBytes: Uint8Array;
@@ -128,7 +132,7 @@ export const createGraphWorkerResultArtifact = Effect.fn('codeGraph.sharing.crea
 export const verifyGraphWorkerResultIntegrity = Effect.fn('codeGraph.sharing.verifyWorkerResultIntegrity')(
   function* (input: {
     readonly attestationBytes: Uint8Array;
-    readonly expected: GraphWorkerResultAuthority;
+    readonly expected: GraphWorkerResultVerificationAuthority;
     readonly manifestBytes: Uint8Array;
     readonly manifestDigest: string;
     readonly resultBytes: Uint8Array;
@@ -171,7 +175,7 @@ export const verifyGraphWorkerResultIntegrity = Effect.fn('codeGraph.sharing.ver
       claims.profileDigest !== expected.profileDigest ||
       claims.repositoryId !== expected.repositoryId ||
       claims.workerId !== expected.workerId ||
-      claims.graphAbi !== expected.graphAbi ||
+      (expected.graphAbi !== undefined && claims.graphAbi !== expected.graphAbi) ||
       attestation.publicKey !== expected.signingPublicKey ||
       claims.resultDigest !== result.digest ||
       claims.resultSize !== result.size ||
@@ -216,7 +220,7 @@ export const readGraphWorkerResultArtifact = Effect.fn('codeGraph.sharing.readWo
     readonly readBlob: (digest: string, size?: number) => Effect.Effect<Uint8Array, E, R>;
   },
   manifestDigest: string,
-  expected: GraphWorkerResultAuthority,
+  expected: GraphWorkerResultVerificationAuthority,
 ) {
   const authority = {...expected};
   const manifestBytes = yield* reader.readWorkerManifest(manifestDigest);

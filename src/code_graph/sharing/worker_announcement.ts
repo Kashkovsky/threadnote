@@ -7,6 +7,7 @@ import {
   verifyGraphWorkerResultIntegrity,
   type createGraphWorkerResultArtifact,
   type GraphWorkerResultAuthority,
+  type GraphWorkerResultVerificationAuthority,
 } from './worker_result.js';
 
 const Digest = Schema.String.check(Schema.isPattern(SHA256_DIGEST));
@@ -71,7 +72,7 @@ export const signGraphWorkerResultAnnouncement = Effect.fn('codeGraph.sharing.si
 );
 
 export const verifyGraphWorkerResultAnnouncement = Effect.fn('codeGraph.sharing.verifyWorkerResultAnnouncement')(
-  function* (value: unknown, authority: GraphWorkerResultAuthority) {
+  function* (value: unknown, authority: GraphWorkerResultVerificationAuthority) {
     const expected = {...authority};
     const signed = yield* Schema.decodeUnknownEffect(Announcement, STRICT)(value).pipe(Effect.mapError(failure));
     const {idempotencyKey, ...fields} = signed.body;

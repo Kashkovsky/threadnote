@@ -20,7 +20,11 @@ import {
   GRAPH_WORKER_ADMISSION_MAX_STATE_BYTES,
   parseGraphWorkerAdmissionBytes,
 } from './worker_admission_state.js';
-import {readGraphWorkerResultArtifact, type GraphWorkerResultAuthority} from './worker_result.js';
+import {
+  readGraphWorkerResultArtifact,
+  type GraphWorkerResultAuthority,
+  type GraphWorkerResultVerificationAuthority,
+} from './worker_result.js';
 import {graphWorkerRegistryForProfile} from './worker_registry_upload.js';
 
 const LOCK_OPTIONS = {
@@ -61,7 +65,6 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
 >(input: {
   readonly announcement: unknown;
   readonly commandExecutor: Context.Service.Shape<typeof CommandExecutor>;
-  readonly graphAbi: string;
   readonly home: string;
   readonly initialPolicy: GraphControlPolicy;
   readonly principal: AccessTokenClaims;
@@ -94,9 +97,8 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
     );
   const worker = yield* requireWorker();
   if (worker.signingPublicKey === undefined) return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
-  const authority: GraphWorkerResultAuthority = {
+  const authority: GraphWorkerResultVerificationAuthority = {
     expiresAt: worker.expiresAt,
-    graphAbi: input.graphAbi,
     principalId: worker.principalId,
     profileDigest: input.initialPolicy.profileDigest,
     repositoryId: input.initialPolicy.repositoryId,
@@ -108,23 +110,34 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
   const path = yield* Path.Path;
   const target = yield* graphWorkerAdmissionStatePath(input.home, input.initialPolicy);
   const fs = yield* FileSystem.FileSystem;
-  // A lost HTTP acknowledgement may arrive after the verified OCI read committed. Recheck live
-  // worker authority, then answer an exact durable replay without repeating the remote download.
-  const prior = yield* readAdmissionState(target, input.initialPolicy);
-  if (prior.receipts.some(item => item.announcement.body.idempotencyKey === body.idempotencyKey)) {
-    const currentWorker = yield* requireWorker();
-    const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
-    if (
-      currentWorker.signingPublicKey !== authority.signingPublicKey ||
-      currentWorker.principalId !== authority.principalId ||
-      currentWorker.expiresAt <= now
-    )
-      return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
-    const replay = admitGraphWorkerAnnouncement(prior, {
-      announcement: signed,
-      authority: {...authority, expiresAt: currentWorker.expiresAt},
-      nowSeconds: now,
-    });
+  yield* fs.makeDirectory(path.dirname(target), {recursive: true, mode: 0o700});
+  const replay = yield* withCoordinatorStateLock(
+    {threadnoteHome: input.home},
+    withExclusiveFileLock(
+      fs,
+      `${target}.lock`,
+      LOCK_OPTIONS,
+      Effect.gen(function* () {
+        const prior = yield* readAdmissionState(target, input.initialPolicy);
+        const receipt = prior.receipts.find(item => item.announcement.body.idempotencyKey === body.idempotencyKey);
+        if (receipt === undefined) return undefined;
+        const currentWorker = yield* requireWorker();
+        const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+        if (
+          currentWorker.signingPublicKey !== authority.signingPublicKey ||
+          currentWorker.principalId !== authority.principalId ||
+          currentWorker.expiresAt <= now
+        )
+          return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
+        return admitGraphWorkerAnnouncement(prior, {
+          announcement: signed,
+          authority: {...authority, graphAbi: receipt.graphAbi, expiresAt: currentWorker.expiresAt},
+          nowSeconds: now,
+        });
+      }),
+    ),
+  );
+  if (replay !== undefined) {
     if (replay.status === 'duplicate' || replay.status === 'operation-conflict') return replay;
     return yield* graphSharingUnavailable('Graph worker admission replay is invalid.');
   }
@@ -148,7 +161,6 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
   )
     return yield* graphSharingFailure('Graph worker result announcement does not match its signed artifact.');
   // The artifact verifier checks the signed full sourceCommit and its batch prefix.
-  yield* fs.makeDirectory(path.dirname(target), {recursive: true, mode: 0o700});
   return yield* withCoordinatorStateLock(
     {threadnoteHome: input.home},
     withExclusiveFileLock(
@@ -167,7 +179,11 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
           return yield* GraphControlEnrollmentError.make({code: 'forbidden'});
         const outcome = admitGraphWorkerAnnouncement(current, {
           announcement: signed,
-          authority: {...authority, expiresAt: currentWorker.expiresAt},
+          authority: {
+            ...authority,
+            graphAbi: claims.graphAbi,
+            expiresAt: currentWorker.expiresAt,
+          } satisfies GraphWorkerResultAuthority,
           nowSeconds: now,
         });
         if (outcome.status === 'accepted' || outcome.status === 'quarantined') {

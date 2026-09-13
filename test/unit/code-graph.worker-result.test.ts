@@ -312,6 +312,41 @@ describe('signed OCI worker parse-result artifacts', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
+  effectIt.effect('verifies a producer ABI without a predecessor expectation but rejects malformed signed claims', () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const {graphAbi, ...identity} = f.authority;
+      expect(
+        (yield* verifyGraphWorkerResultIntegrity({...f.artifact, expected: identity})).attestation.claims.graphAbi,
+      ).toBe(graphAbi);
+      const attestation = JSON.parse(new TextDecoder().decode(f.artifact.attestationBytes));
+      const claims = {...attestation.claims, graphAbi: 'invalid'};
+      const attestationBytes = encode({
+        ...attestation,
+        claims,
+        signature: yield* f.signer.sign('attestation', encode(claims)),
+      });
+      const manifest = JSON.parse(new TextDecoder().decode(f.artifact.manifestBytes));
+      manifest.layers[1] = {
+        ...manifest.layers[1],
+        digest: sha256Digest(attestationBytes),
+        size: attestationBytes.byteLength,
+      };
+      const manifestBytes = encode(manifest);
+      expect(
+        (yield* Effect.result(
+          verifyGraphWorkerResultIntegrity({
+            ...f.artifact,
+            attestationBytes,
+            expected: identity,
+            manifestBytes,
+            manifestDigest: sha256Digest(manifestBytes),
+          }),
+        ))._tag,
+      ).toBe('Failure');
+    }).pipe(provideTestLayer(layer)),
+  );
+
   effectIt.effect('attests the full SHA-256 source commit while preserving its 40-character batch identity', () =>
     Effect.gen(function* () {
       const f = yield* fixture();
