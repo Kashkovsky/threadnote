@@ -2,11 +2,12 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Clock, Effect, FileSystem, Path, Redacted} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {makeGraphControlCredentialLoader} from '../../src/code_graph/sharing/control_credentials.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 
 const scope = {
   coordinatorUrl: 'https://graph.example.test/team',
@@ -78,7 +79,8 @@ const fixture = Effect.fn('test.controlCredentials.fixture')(function* (
 });
 
 describe('graph control credential discovery', () => {
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'never returns expired credentials after arbitrary idle gaps',
     {gaps: FC.array(FC.integer({min: 0, max: 720_000}), {minLength: 1, maxLength: 8})},
     ({gaps}) =>

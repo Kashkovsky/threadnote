@@ -2,12 +2,13 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as FC from 'effect/testing/FastCheck';
+import * as FC from 'fast-check';
 import {SystemInfo} from '../../src/effect/system.js';
 import {generateGraphSharePublisherKey} from '../../src/code_graph/sharing/artifacts.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {makeGraphWorkerSigner, verifyGraphWorkerSignature} from '../../src/code_graph/sharing/worker_signing.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 
 const layer = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
 const identity = sha256Digest('approved provider, principal, repository and profile');
@@ -38,7 +39,8 @@ describe('graph worker signing identities', () => {
     ),
   );
 
-  effectIt.effect.prop(
+  fcEffectProp(
+    effectIt,
     'signatures are deterministic and bind the exact bytes, operation domain and enrolled key',
     {body: FC.uint8Array({minLength: 1, maxLength: 256})},
     ({body}) =>
