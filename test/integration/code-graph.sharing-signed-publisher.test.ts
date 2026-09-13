@@ -267,13 +267,17 @@ describe('signed worker publisher', () => {
               .sign(jwtKey.privateKey),
           );
           const ready = yield* Deferred.make<string>();
+          const holdWatch = yield* Deferred.make<void>();
           const listener = yield* Effect.forkScoped(
             registry.provide(runGraphPublisherListen(config(home), {
               authorizationPolicy: policyFile,
               cas,
               cwd: repository,
               listen: '127.0.0.1:0',
-              onReady: output => Deferred.succeed(ready, output.coordinatorUrl).pipe(Effect.asVoid),
+              // The server is live before onReady completes; hold its watch until admissions are settled.
+              onReady: output => Deferred.succeed(ready, output.coordinatorUrl).pipe(
+                Effect.andThen(Deferred.await(holdWatch)),
+              ),
             })),
           );
           const coordinatorUrl = yield* Deferred.await(ready);
