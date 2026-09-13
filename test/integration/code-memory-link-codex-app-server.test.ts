@@ -12,7 +12,10 @@ import {
   assertTraceIsolation,
   runCodeMemoryLinkAppServerTurn,
 } from '../../scripts/code-memory-link-app-server-client.js';
-import {selectCodeMemoryLinkQualifyingActionItemId} from '../../scripts/run-code-memory-link-codex-client.js';
+import {
+  createCodeMemoryLinkCodexClientTrialV1,
+  selectCodeMemoryLinkQualifyingActionItemId,
+} from '../../scripts/run-code-memory-link-codex-client.js';
 import {
   CODE_MEMORY_LINK_SAFE_EXECUTABLE_NAMES,
   createCodeMemoryLinkCodexIsolation,
@@ -519,18 +522,24 @@ describe('Code Memory Link Codex app-server transport', () => {
         evidence: observed.appServer,
         rubric,
       });
+      const emittedSummary = createCodeMemoryLinkCodexClientTrialV1({
+        bindings: observed.bindings,
+        judgment: {
+          acceptedStaleOrHarmful: trialSummary.acceptedStaleOrHarmful,
+          adjudicationHash: trialSummary.adjudicationHash,
+          constraintAdherence: trialSummary.constraintAdherence,
+          taskPassed: true,
+        },
+        projection: observedProjection,
+      });
+      expect(emittedSummary.taskPassed).toBe(false);
       const observedTrial = createCodeMemoryLinkAgentAbTrialV1({
         candidate,
         invocationNonce,
         postRuntime: runtime,
         preRuntime: runtime,
         previousReceiptDigest: null,
-        trial: {
-          ...trialSummary,
-          firstUsefulMemoryUse: observedProjection.firstUsefulMemoryUse,
-          providerUsageHash: observedProjection.providerUsageHash,
-          taskPassed: observedProjection.taskPassed,
-        },
+        trial: emittedSummary,
         trialId: trial.trialId,
       });
       const observedReceipt = createCodeMemoryLinkAgentEvidenceReceiptV1({
