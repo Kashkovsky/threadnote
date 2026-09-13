@@ -50,6 +50,11 @@ describe('Windows Git Bash command launchers', () => {
             Effect.provideService(SystemInfo, testSystem),
           ),
         ).toMatch(/docker-credential-threadnote-auth0-m2m\.cmd$/);
+        expect(
+          yield* commandLauncherPath('credential-registry-auth0-publisher-m2m').pipe(
+            Effect.provideService(SystemInfo, testSystem),
+          ),
+        ).toMatch(/docker-credential-threadnote-auth0-publisher-m2m\.cmd$/);
 
         const files = {
           cliCmd: yield* readLauncher(testSystem, 'cli', 'cmd'),
@@ -60,6 +65,8 @@ describe('Windows Git Bash command launchers', () => {
           auth0Posix: yield* readLauncher(testSystem, 'credential-auth0-m2m', 'posix'),
           registryCmd: yield* readLauncher(testSystem, 'credential-registry-auth0-m2m', 'cmd'),
           registryPosix: yield* readLauncher(testSystem, 'credential-registry-auth0-m2m', 'posix'),
+          publisherRegistryCmd: yield* readLauncher(testSystem, 'credential-registry-auth0-publisher-m2m', 'cmd'),
+          publisherRegistryPosix: yield* readLauncher(testSystem, 'credential-registry-auth0-publisher-m2m', 'posix'),
         };
         expect(installed.output).toContain(`Wrote command launcher: ${files.cliCmd.path}`);
         expect(installed.output).toContain(`Wrote command launcher: ${files.cliPosix.path}`);
@@ -80,6 +87,10 @@ describe('Windows Git Bash command launchers', () => {
         expect(files.auth0Cmd.content).toContain('__credential-auth0-m2m %*');
         expect(files.registryPosix.content).toContain('exec "$THREADNOTE_ENTRY" __credential-registry-auth0-m2m "$@"');
         expect(files.registryCmd.content).toContain('__credential-registry-auth0-m2m %*');
+        expect(files.publisherRegistryPosix.content).toContain(
+          'exec "$THREADNOTE_ENTRY" __credential-registry-auth0-publisher-m2m "$@"',
+        );
+        expect(files.publisherRegistryCmd.content).toContain('__credential-registry-auth0-publisher-m2m %*');
         expect(files.cliCmd.content.startsWith('@echo off\r\n')).toBe(true);
         expect(files.cliCmd.content).toContain('%*');
 
@@ -194,8 +205,15 @@ describe('Windows Git Bash command launchers', () => {
         const registryPosix = yield* commandLauncherPath('credential-registry-auth0-m2m', 'posix').pipe(
           Effect.provideService(SystemInfo, testSystem),
         );
+        const publisherRegistryCmd = yield* commandLauncherPath('credential-registry-auth0-publisher-m2m', 'cmd').pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        const publisherRegistryPosix = yield* commandLauncherPath(
+          'credential-registry-auth0-publisher-m2m',
+          'posix',
+        ).pipe(Effect.provideService(SystemInfo, testSystem));
         expect(check.detail).toBe(
-          `${cliCmd}; ${cliPosix}; ${mcpCmd}; ${mcpPosix}; ${auth0Cmd}; ${auth0Posix}; ${registryCmd}; ${registryPosix}`,
+          `${cliCmd}; ${cliPosix}; ${mcpCmd}; ${mcpPosix}; ${auth0Cmd}; ${auth0Posix}; ${registryCmd}; ${registryPosix}; ${publisherRegistryCmd}; ${publisherRegistryPosix}`,
         );
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
@@ -274,7 +292,13 @@ describe('Windows Git Bash command launchers', () => {
         const {releaseRoot, testSystem} = yield* windowsShimFixture(root);
         yield* installCommandShim(false, releaseRoot).pipe(Effect.provideService(SystemInfo, testSystem));
         yield* removeCommandShim(false).pipe(Effect.provideService(SystemInfo, testSystem));
-        for (const mode of ['cli', 'mcp', 'credential-auth0-m2m', 'credential-registry-auth0-m2m'] as const) {
+        for (const mode of [
+          'cli',
+          'mcp',
+          'credential-auth0-m2m',
+          'credential-registry-auth0-m2m',
+          'credential-registry-auth0-publisher-m2m',
+        ] as const) {
           for (const kind of managedCommandLauncherKinds('win32')) {
             const launcher = yield* commandLauncherPath(mode, kind).pipe(Effect.provideService(SystemInfo, testSystem));
             expect(yield* fs.exists(launcher)).toBe(false);
@@ -293,6 +317,7 @@ describe('Windows Git Bash command launchers', () => {
         'mcp' as const,
         'credential-auth0-m2m' as const,
         'credential-registry-auth0-m2m' as const,
+        'credential-registry-auth0-publisher-m2m' as const,
       ),
       variant: fc.constantFrom('plain' as const, 'spaced' as const),
       version: fc.stringMatching(/^[0-9]+\.[0-9]+\.[0-9]+$/),
@@ -334,6 +359,9 @@ describe('Windows Git Bash command launchers', () => {
         } else if (mode === 'credential-registry-auth0-m2m') {
           expect(posix).toContain('__credential-registry-auth0-m2m');
           expect(cmd).toContain('__credential-registry-auth0-m2m');
+        } else if (mode === 'credential-registry-auth0-publisher-m2m') {
+          expect(posix).toContain('__credential-registry-auth0-publisher-m2m');
+          expect(cmd).toContain('__credential-registry-auth0-publisher-m2m');
         } else {
           expect(posix).not.toContain('mcp-broker');
           expect(cmd).not.toContain('mcp-broker');
@@ -361,13 +389,23 @@ const windowsShimFixture = Effect.fn('test.windowsShimFixture')(function* (root:
 const renderFor = (
   testSystem: SystemInfoShape,
   releaseRoot: string,
-  mode: 'cli' | 'mcp' | 'credential-auth0-m2m' | 'credential-registry-auth0-m2m',
+  mode:
+    | 'cli'
+    | 'mcp'
+    | 'credential-auth0-m2m'
+    | 'credential-registry-auth0-m2m'
+    | 'credential-registry-auth0-publisher-m2m',
   kind: 'cmd' | 'posix',
 ) => renderCommandShim(releaseRoot, mode, kind).pipe(Effect.provideService(SystemInfo, testSystem));
 
 const readLauncher = Effect.fn('test.readLauncher')(function* (
   testSystem: SystemInfoShape,
-  mode: 'cli' | 'mcp' | 'credential-auth0-m2m' | 'credential-registry-auth0-m2m',
+  mode:
+    | 'cli'
+    | 'mcp'
+    | 'credential-auth0-m2m'
+    | 'credential-registry-auth0-m2m'
+    | 'credential-registry-auth0-publisher-m2m',
   kind: 'cmd' | 'posix',
 ) {
   const fs = yield* FileSystem.FileSystem;

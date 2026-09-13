@@ -91,7 +91,11 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
           expect(args).toEqual(['get']);
           expect(new TextDecoder().decode(input?.input)).toBe(target.registry + '\n');
           expect(input?.maxOutputBytes).toBe(16384);
-          expect(input?.timeoutMs).toBe(options.helperName === 'threadnote-auth0-m2m' ? 10000 : 5000);
+          expect(input?.timeoutMs).toBe(
+            options.helperName === 'threadnote-auth0-m2m' || options.helperName === 'threadnote-auth0-publisher-m2m'
+              ? 10000
+              : 5000,
+          );
           if (options.helperStarted) yield* Deferred.succeed(options.helperStarted, undefined);
           if (options.helperGate) yield* Deferred.await(options.helperGate);
           return {
@@ -99,7 +103,11 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
             stderr: secret,
             stdout: JSON.stringify(
               options.helperResponse?.(helperCalls) ?? {
-                Username: options.helperName === 'threadnote-auth0-m2m' ? 'zot' : 'synthetic-reader',
+                Username:
+                  options.helperName === 'threadnote-auth0-m2m' ||
+                  options.helperName === 'threadnote-auth0-publisher-m2m'
+                    ? 'zot'
+                    : 'synthetic-reader',
                 Secret: secret,
               },
             ),
@@ -208,42 +216,46 @@ describe('registry authentication and bounded transport', () => {
   effectIt.effect('sends the scoped Auth0 registry secret only to the exact Zot bearer-token realm', () =>
     Effect.gen(function* () {
       const zotBasic = 'Basic ' + Buffer.from('zot:' + secret).toString('base64');
-      const f = yield* fixture({
-        helper: true,
-        helperName: 'threadnote-auth0-m2m',
-        handler: request => {
-          if (request.url.pathname === '/zot/auth/token') {
-            expect(request.headers.get('authorization')).toBe(zotBasic);
-            return Response.json({token: 'zot-scoped-token', expires_in: 60});
-          }
-          return request.headers.get('authorization') === 'Bearer zot-scoped-token'
-            ? new Response(new Uint8Array([1, 2, 3]), {status: 200})
-            : new Response(null, {
-                status: 401,
-                headers: {
-                  'www-authenticate': `Bearer realm="${target.origin}/zot/auth/token",scope="${target.pullScope}"`,
-                },
-              });
-        },
-      });
-      expect((yield* f.read()).bytes).toEqual(Buffer.from([1, 2, 3]));
-      expect(f.requests.map(request => request.url.pathname)).toEqual([pathname, '/zot/auth/token', pathname]);
+      for (const helperName of ['threadnote-auth0-m2m', 'threadnote-auth0-publisher-m2m'] as const) {
+        const f = yield* fixture({
+          helper: true,
+          helperName,
+          handler: request => {
+            if (request.url.pathname === '/zot/auth/token') {
+              expect(request.headers.get('authorization')).toBe(zotBasic);
+              return Response.json({token: 'zot-scoped-token', expires_in: 60});
+            }
+            return request.headers.get('authorization') === 'Bearer zot-scoped-token'
+              ? new Response(new Uint8Array([1, 2, 3]), {status: 200})
+              : new Response(null, {
+                  status: 401,
+                  headers: {
+                    'www-authenticate': `Bearer realm="${target.origin}/zot/auth/token",scope="${target.pullScope}"`,
+                  },
+                });
+          },
+        });
+        expect((yield* f.read()).bytes).toEqual(Buffer.from([1, 2, 3]));
+        expect(f.requests.map(request => request.url.pathname)).toEqual([pathname, '/zot/auth/token', pathname]);
+      }
     }).pipe(provideTestLayer(layer)),
   );
 
   effectIt.effect('never sends Auth0 registry credentials to Basic or a different same-origin realm', () =>
     Effect.gen(function* () {
-      for (const challenge of [
-        'Basic realm="registry"',
-        `Bearer realm="${target.origin}/other/token",scope="${target.pullScope}"`,
-      ]) {
-        const f = yield* fixture({
-          helper: true,
-          helperName: 'threadnote-auth0-m2m',
-          handler: () => new Response(null, {status: 401, headers: {'www-authenticate': challenge}}),
-        });
-        expect((yield* Effect.result(f.read()))._tag).toBe('Failure');
-        expect(f.requests.map(request => request.url.pathname)).toEqual([pathname]);
+      for (const helperName of ['threadnote-auth0-m2m', 'threadnote-auth0-publisher-m2m'] as const) {
+        for (const challenge of [
+          'Basic realm="registry"',
+          `Bearer realm="${target.origin}/other/token",scope="${target.pullScope}"`,
+        ]) {
+          const f = yield* fixture({
+            helper: true,
+            helperName,
+            handler: () => new Response(null, {status: 401, headers: {'www-authenticate': challenge}}),
+          });
+          expect((yield* Effect.result(f.read()))._tag).toBe('Failure');
+          expect(f.requests.map(request => request.url.pathname)).toEqual([pathname]);
+        }
       }
     }).pipe(provideTestLayer(layer)),
   );

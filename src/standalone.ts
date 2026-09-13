@@ -27,6 +27,7 @@ const isRemoteMemoryOperator = arguments_[0] === 'remote-memory-operator';
 const isRemoteMemoryService = arguments_[0] === 'remote-memory-service';
 const isAuth0M2MGraphCredentialHelper = arguments_[0] === '__credential-auth0-m2m';
 const isAuth0M2MRegistryCredentialHelper = arguments_[0] === '__credential-registry-auth0-m2m';
+const isAuth0M2MPublisherRegistryCredentialHelper = arguments_[0] === '__credential-registry-auth0-publisher-m2m';
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
 const auth0M2MHelperIO = {
   stdin: process.stdin,
@@ -69,15 +70,17 @@ if (
       ? await auth0M2MGraphCredentialHelperProgram(arguments_.slice(1))
       : isAuth0M2MRegistryCredentialHelper
         ? await auth0M2MRegistryCredentialHelperProgram(arguments_.slice(1))
-        : isRemoteMemoryOperator
-          ? await remoteMemoryOperatorProgram(arguments_.slice(1))
-          : isLocalModelWorker
-            ? await localModelWorkerProgram(arguments_)
-            : isCodeGraphParserWorker
-              ? await codeGraphParserWorkerProgram(arguments_)
-              : isGitWorktreeRegistrationWorker
-                ? await gitWorktreeRegistrationWorkerProgram()
-                : await applicationProgram(arguments_, isMcpServer, isMcpBroker);
+        : isAuth0M2MPublisherRegistryCredentialHelper
+          ? await auth0M2MPublisherRegistryCredentialHelperProgram(arguments_.slice(1))
+          : isRemoteMemoryOperator
+            ? await remoteMemoryOperatorProgram(arguments_.slice(1))
+            : isLocalModelWorker
+              ? await localModelWorkerProgram(arguments_)
+              : isCodeGraphParserWorker
+                ? await codeGraphParserWorkerProgram(arguments_)
+                : isGitWorktreeRegistrationWorker
+                  ? await gitWorktreeRegistrationWorkerProgram()
+                  : await applicationProgram(arguments_, isMcpServer, isMcpBroker);
 
   BunRuntime.runMain(program, {
     disableErrorReporting:
@@ -105,6 +108,19 @@ async function auth0M2MRegistryCredentialHelperProgram(arguments_: readonly stri
   const helper = await import('./code_graph/sharing/auth0_m2m_registry_credential.js');
   return fromPromise('run Auth0 registry credential helper', () =>
     helper.runAuth0M2MRegistryCredentialHelper(arguments_, process.env, auth0M2MHelperIO),
+  ).pipe(
+    Effect.tap(code =>
+      Effect.sync(() => {
+        process.exitCode = code;
+      }),
+    ),
+  );
+}
+
+async function auth0M2MPublisherRegistryCredentialHelperProgram(arguments_: readonly string[]) {
+  const helper = await import('./code_graph/sharing/auth0_m2m_registry_credential.js');
+  return fromPromise('run Auth0 publisher registry credential helper', () =>
+    helper.runAuth0M2MPublisherRegistryCredentialHelper(arguments_, process.env, auth0M2MHelperIO),
   ).pipe(
     Effect.tap(code =>
       Effect.sync(() => {
