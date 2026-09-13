@@ -50,7 +50,13 @@ function announcement(seed: number, action = actionKey, semantic = 1, batch = so
 
 function admitted(items: readonly GraphWorkerResultAnnouncement[]) {
   return items.reduce(
-    (store, item) => admitGraphWorkerAnnouncement(store, {announcement: item, authority, nowSeconds: 1_000}).store,
+    (store, item) =>
+      admitGraphWorkerAnnouncement(store, {
+        announcement: item,
+        authority,
+        nowSeconds: 1_000,
+        sourceCommit: item.body.batchId === sourceCommit.slice(0, 40) ? sourceCommit : item.body.batchId,
+      }).store,
     emptyGraphWorkerAdmissionStore(),
   );
 }
@@ -91,6 +97,22 @@ describe('signed worker receipt selection', () => {
       const selected = selectGraphWorkerReceiptsForSource(store, source);
       expect(selected.quarantined).toEqual([actionKey]);
       expect(selected.candidateGroups).toEqual([]);
+      expect(selected.skippedLate).toHaveLength(1);
+    }),
+  );
+
+  effectIt.effect('distinguishes SHA-256 commits with the same batch prefix', () =>
+    Effect.sync(() => {
+      const samePrefixOtherCommit = `${sourceCommit.slice(0, 40)}${'e'.repeat(24)}`;
+      const signed = announcement(4);
+      const store = admitGraphWorkerAnnouncement(emptyGraphWorkerAdmissionStore(), {
+        announcement: signed,
+        authority,
+        nowSeconds: 1_000,
+        sourceCommit: samePrefixOtherCommit,
+      }).store;
+      const selected = selectGraphWorkerReceiptsForSource(store, source);
+      expect(selected.candidateGroups).toHaveLength(0);
       expect(selected.skippedLate).toHaveLength(1);
     }),
   );

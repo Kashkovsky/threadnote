@@ -1,9 +1,9 @@
 import {compareCodeUnits} from '../ordering.js';
-import type {GraphWorkerAdmissionReceiptV1, GraphWorkerAdmissionStoreV1} from './worker_admission_state.js';
+import type {GraphWorkerAdmissionReceiptV2, GraphWorkerAdmissionStoreV2} from './worker_admission_state.js';
 
 /** Keep ordered same-action alternatives until full source and OCI authority are verified. */
 export function selectGraphWorkerReceiptsForSource(
-  store: GraphWorkerAdmissionStoreV1,
+  store: GraphWorkerAdmissionStoreV2,
   source: {
     readonly actionKeys: readonly string[];
     readonly profileDigest: string;
@@ -14,22 +14,22 @@ export function selectGraphWorkerReceiptsForSource(
   readonly quarantined: readonly string[];
   readonly candidateGroups: readonly {
     readonly actionKey: string;
-    readonly alternatives: readonly GraphWorkerAdmissionReceiptV1[];
+    readonly alternatives: readonly GraphWorkerAdmissionReceiptV2[];
   }[];
-  readonly skippedLate: readonly GraphWorkerAdmissionReceiptV1[];
+  readonly skippedLate: readonly GraphWorkerAdmissionReceiptV2[];
 } {
   const requested = source.actionKeys.length === 0 ? undefined : new Set(source.actionKeys);
   const quarantined = new Set(
     store.quarantine.filter(item => item.repositoryId === source.repositoryId).map(item => item.actionKey),
   );
-  const byAction = new Map<string, GraphWorkerAdmissionReceiptV1[]>();
-  const skippedLate: GraphWorkerAdmissionReceiptV1[] = [];
+  const byAction = new Map<string, GraphWorkerAdmissionReceiptV2[]>();
+  const skippedLate: GraphWorkerAdmissionReceiptV2[] = [];
   for (const receipt of store.receipts) {
     const body = receipt.announcement.body;
     if (body.repositoryId !== source.repositoryId || body.profileDigest !== source.profileDigest) continue;
     if (requested !== undefined && !requested.has(body.actionKey)) continue;
     if (quarantined.has(body.actionKey)) continue;
-    if (body.batchId !== source.sourceCommit.slice(0, 40)) {
+    if (receipt.sourceCommit !== source.sourceCommit) {
       skippedLate.push(receipt);
       continue;
     }

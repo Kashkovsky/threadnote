@@ -89,6 +89,7 @@ describe('signed OCI worker parse-result artifacts', () => {
         authorityExpiresAt: f.authority.expiresAt,
         graphAbi: f.authority.graphAbi,
         signedBodyDigest: sha256Digest(canonicalJson(announcement.body)),
+        sourceCommit: f.metadata.sourceCommit,
       };
       const blobs = new Map(
         [encode({}), f.artifact.resultBytes, f.artifact.attestationBytes].map(bytes => [sha256Digest(bytes), bytes]),

@@ -3,7 +3,7 @@ import {canonicalJson} from '../checkpoint/canonical_json.js';
 import {parseSha256Digest, sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 import type {GraphShareSourceVerifiedReceipt} from './source_verification.js';
-import type {GraphWorkerAdmissionReceiptV1} from './worker_admission_state.js';
+import type {GraphWorkerAdmissionReceiptV2} from './worker_admission_state.js';
 import {verifyGraphWorkerResultAnnouncement} from './worker_announcement.js';
 import {readGraphWorkerResultArtifact, type GraphWorkerResultAuthority} from './worker_result.js';
 
@@ -18,13 +18,14 @@ export const verifyPublisherWorkerReceipt = Effect.fn('codeGraph.sharing.verifyP
     readonly readWorkerManifest: (digest: string) => Effect.Effect<Uint8Array, E, R>;
     readonly readBlob: (digest: string, size?: number) => Effect.Effect<Uint8Array, E, R>;
   };
-  readonly receipt: GraphWorkerAdmissionReceiptV1;
+  readonly receipt: GraphWorkerAdmissionReceiptV2;
   readonly sourceCommit: string;
 }) {
   const receipt = structuredClone(input.receipt);
   const authority = {...input.authority, graphAbi: input.expectedGraphAbi};
   if (
     receipt.graphAbi !== input.expectedGraphAbi ||
+    receipt.sourceCommit !== input.sourceCommit ||
     receipt.authorityExpiresAt <= receipt.admittedAt ||
     receipt.announcementDigest !== sha256Digest(canonicalJson(receipt.announcement)) ||
     receipt.signedBodyDigest !== sha256Digest(canonicalJson(receipt.announcement.body))

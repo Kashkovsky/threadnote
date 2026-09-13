@@ -10,6 +10,7 @@ import {
   GRAPH_WORKER_ADMISSION_MAX_STATE_BYTES,
   parseGraphWorkerAdmissionBytes,
   parseGraphWorkerAdmissionStore,
+  retireGraphWorkerAdmissionsForPublishedSource,
 } from '../../src/code_graph/sharing/worker_admission_state.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {verifyGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
@@ -64,8 +65,14 @@ function admit(
   store: ReturnType<typeof emptyGraphWorkerAdmissionStore>,
   signed: GraphWorkerResultAnnouncement,
   worker = authority,
+  sourceCommit = signed.body.batchId,
 ) {
-  return admitGraphWorkerAnnouncement(store, {announcement: signed, authority: worker, nowSeconds: NOW});
+  return admitGraphWorkerAnnouncement(store, {
+    announcement: signed,
+    authority: worker,
+    nowSeconds: NOW,
+    sourceCommit,
+  });
 }
 
 describe('signed worker admission state', () => {
@@ -88,6 +95,7 @@ describe('signed worker admission state', () => {
       announcement: signed,
       authority,
       nowSeconds: NOW + 1,
+      sourceCommit: signed.body.batchId,
     });
     expect(later).toEqual(replay);
     Object.assign(signed.body, {resultManifestDigest: sha256Digest('caller mutation')});
@@ -126,6 +134,22 @@ describe('signed worker admission state', () => {
     expect(admit(left.store, first).status).toBe('duplicate');
   });
 
+  it('retires only the exact canonical source, recomputes quarantine, and is idempotent', () => {
+    const prefix = 'f'.repeat(40);
+    const firstCommit = prefix + 'a'.repeat(24);
+    const nextCommit = prefix + 'b'.repeat(24);
+    const first = admit(emptyGraphWorkerAdmissionStore(), announcement(1, 1), authority, firstCommit);
+    const conflict = admit(first.store, announcement(2, 2), authority, firstCommit);
+    const future = admit(conflict.store, announcement(3, 2), authority, nextCommit);
+    expect(future.store.quarantine).toHaveLength(1);
+    const retired = retireGraphWorkerAdmissionsForPublishedSource(future.store, firstCommit);
+    expect(retired.receipts).toHaveLength(1);
+    expect(retired.receipts[0].sourceCommit).toBe(nextCommit);
+    expect(retired.quarantine).toHaveLength(0);
+    expect(retireGraphWorkerAdmissionsForPublishedSource(retired, firstCommit)).toBe(retired);
+    expect(parseGraphWorkerAdmissionStore(retired)).toEqual(retired);
+  });
+
   it('rejects expired or mismatched authority before acknowledging a replay', () => {
     const signed = announcement(1);
     const first = admit(emptyGraphWorkerAdmissionStore(), signed);
@@ -161,7 +185,7 @@ describe('signed worker admission state', () => {
   it('rejects malformed or inconsistent durable state rather than accepting it as empty', () => {
     const result = admit(emptyGraphWorkerAdmissionStore(), announcement(1));
     const valid = JSON.parse(JSON.stringify(result.store)) as Record<string, unknown>;
-    expect(() => parseGraphWorkerAdmissionStore({...valid, schemaVersion: 2})).toThrow();
+    expect(() => parseGraphWorkerAdmissionStore({...valid, schemaVersion: 1})).toThrow();
     expect(() => parseGraphWorkerAdmissionStore({...valid, extra: true})).toThrow();
     const receipts = valid.receipts as Array<Record<string, unknown>>;
     expect(() =>
@@ -226,6 +250,7 @@ describe('signed worker admission state', () => {
         announcement: signed,
         authority: scoped,
         nowSeconds: now,
+        sourceCommit: signed.body.batchId,
       });
       expect(result.status).toBe('accepted');
     }).pipe(provideTestLayer(layer)),

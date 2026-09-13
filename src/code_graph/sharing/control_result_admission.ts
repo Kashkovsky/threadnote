@@ -133,6 +133,7 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
           announcement: signed,
           authority: {...authority, graphAbi: receipt.graphAbi, expiresAt: currentWorker.expiresAt},
           nowSeconds: now,
+          sourceCommit: receipt.sourceCommit,
         });
       }),
     ),
@@ -185,6 +186,7 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
             expiresAt: currentWorker.expiresAt,
           } satisfies GraphWorkerResultAuthority,
           nowSeconds: now,
+          sourceCommit: claims.sourceCommit,
         });
         if (outcome.status === 'accepted' || outcome.status === 'quarantined') {
           const bytes = new TextEncoder().encode(JSON.stringify(outcome.store));
@@ -245,4 +247,12 @@ const readAdmissionState = Effect.fn('codeGraph.sharing.readWorkerAdmissionState
   )
     return yield* graphSharingUnavailable('Graph worker admission state does not match its scope.');
   return parsed;
+});
+
+/** Read a strictly bounded, policy-scoped signed admission store for canonical publication. */
+export const readGraphWorkerAdmissionStore = Effect.fn('codeGraph.sharing.readWorkerAdmissionStore')(function* (
+  home: string,
+  policy: GraphControlPolicy,
+) {
+  return yield* readAdmissionState(yield* graphWorkerAdmissionStatePath(home, policy), policy);
 });

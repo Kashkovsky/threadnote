@@ -7,7 +7,7 @@ import type {GraphWorkerResultAuthority} from './worker_result.js';
 
 export const GRAPH_WORKER_ADMISSION_MAX_RECEIPTS = 1024;
 export const GRAPH_WORKER_ADMISSION_MAX_STATE_BYTES = 2_097_152;
-export const GRAPH_WORKER_ADMISSION_SCHEMA_VERSION = 1 as const;
+export const GRAPH_WORKER_ADMISSION_SCHEMA_VERSION = 2 as const;
 
 const strict = {onExcessProperty: 'error'} as const;
 const digest = Schema.String.check(Schema.isPattern(SHA256_DIGEST));
@@ -39,6 +39,7 @@ const receipt = Schema.Struct({
   authorityExpiresAt: seconds,
   graphAbi: hex,
   signedBodyDigest: digest,
+  sourceCommit: Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u)),
 });
 const quarantine = Schema.Struct({
   actionKey: hex,
@@ -54,29 +55,29 @@ const storeSchema = Schema.Struct({
   schemaVersion: Schema.Literal(GRAPH_WORKER_ADMISSION_SCHEMA_VERSION),
 });
 
-export type GraphWorkerAdmissionReceiptV1 = typeof receipt.Type;
-export type GraphWorkerAdmissionQuarantineV1 = typeof quarantine.Type;
-export type GraphWorkerAdmissionStoreV1 = typeof storeSchema.Type;
+export type GraphWorkerAdmissionReceiptV2 = typeof receipt.Type;
+export type GraphWorkerAdmissionQuarantineV2 = typeof quarantine.Type;
+export type GraphWorkerAdmissionStoreV2 = typeof storeSchema.Type;
 export type GraphWorkerAdmissionStatus =
   'accepted' | 'quarantined' | 'duplicate' | 'operation-conflict' | 'capacity-exceeded' | 'invalid-authority';
 
 export type GraphWorkerAdmissionResult =
   | {
       readonly status: 'accepted' | 'quarantined' | 'duplicate';
-      readonly receipt: GraphWorkerAdmissionReceiptV1;
-      readonly store: GraphWorkerAdmissionStoreV1;
+      readonly receipt: GraphWorkerAdmissionReceiptV2;
+      readonly store: GraphWorkerAdmissionStoreV2;
     }
   | {
       readonly status: 'operation-conflict' | 'capacity-exceeded' | 'invalid-authority';
-      readonly store: GraphWorkerAdmissionStoreV1;
+      readonly store: GraphWorkerAdmissionStoreV2;
     };
 
-export function emptyGraphWorkerAdmissionStore(): GraphWorkerAdmissionStoreV1 {
+export function emptyGraphWorkerAdmissionStore(): GraphWorkerAdmissionStoreV2 {
   return {quarantine: [], receipts: [], schemaVersion: GRAPH_WORKER_ADMISSION_SCHEMA_VERSION};
 }
 
 /** Validate bounded private state after loading it. Signed authority must still be reverified by the caller. */
-export function parseGraphWorkerAdmissionStore(value: unknown): GraphWorkerAdmissionStoreV1 {
+export function parseGraphWorkerAdmissionStore(value: unknown): GraphWorkerAdmissionStoreV2 {
   const parsed = Schema.decodeUnknownSync(storeSchema, strict)(value);
   if (
     parsed.receipts.some(
@@ -84,7 +85,8 @@ export function parseGraphWorkerAdmissionStore(value: unknown): GraphWorkerAdmis
         item.authorityExpiresAt <= item.admittedAt ||
         item.signedBodyDigest !== sha256Digest(canonicalJson(item.announcement.body)) ||
         item.announcementDigest !== sha256Digest(canonicalJson(item.announcement)) ||
-        item.announcement.body.idempotencyKey !== operationId(item.announcement.body),
+        item.announcement.body.idempotencyKey !== operationId(item.announcement.body) ||
+        item.announcement.body.batchId !== item.sourceCommit.slice(0, 40),
     ) ||
     !strictlySorted(parsed.receipts.map(item => item.announcement.body.idempotencyKey)) ||
     canonicalJson(parsed.quarantine) !== canonicalJson(quarantineFor(parsed.receipts))
@@ -94,7 +96,7 @@ export function parseGraphWorkerAdmissionStore(value: unknown): GraphWorkerAdmis
 }
 
 /** A bounded, strict UTF-8/JSON boundary for loading the private receipt document. */
-export function parseGraphWorkerAdmissionBytes(bytes: Uint8Array): GraphWorkerAdmissionStoreV1 {
+export function parseGraphWorkerAdmissionBytes(bytes: Uint8Array): GraphWorkerAdmissionStoreV2 {
   if (bytes.byteLength > GRAPH_WORKER_ADMISSION_MAX_STATE_BYTES)
     throw new Error('Graph worker admission state exceeds its byte limit.');
   try {
@@ -110,11 +112,12 @@ export function parseGraphWorkerAdmissionBytes(bytes: Uint8Array): GraphWorkerAd
  * Network and cryptographic verification belong outside the coordinator's short mutation lock.
  */
 export function admitGraphWorkerAnnouncement(
-  store: GraphWorkerAdmissionStoreV1,
+  store: GraphWorkerAdmissionStoreV2,
   input: {
     readonly announcement: GraphWorkerResultAnnouncement;
     readonly authority: GraphWorkerResultAuthority;
     readonly nowSeconds: number;
+    readonly sourceCommit: string;
   },
 ): GraphWorkerAdmissionResult {
   let signed: typeof announcement.Type;
@@ -130,6 +133,8 @@ export function admitGraphWorkerAnnouncement(
     !Number.isSafeInteger(authority.expiresAt) ||
     authority.expiresAt <= nowSeconds ||
     !SHA256_HEX.test(authority.graphAbi) ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(input.sourceCommit) ||
+    signed.body.batchId !== input.sourceCommit.slice(0, 40) ||
     signed.publicKey !== authority.signingPublicKey ||
     signed.body.workerId !== authority.workerId ||
     signed.body.principalId !== authority.principalId ||
@@ -141,20 +146,25 @@ export function admitGraphWorkerAnnouncement(
   const announcementDigest = sha256Digest(canonicalJson(signed));
   const prior = store.receipts.find(item => item.announcement.body.idempotencyKey === signed.body.idempotencyKey);
   if (prior !== undefined) {
-    if (prior.announcementDigest !== announcementDigest || prior.graphAbi !== authority.graphAbi)
+    if (
+      prior.announcementDigest !== announcementDigest ||
+      prior.graphAbi !== authority.graphAbi ||
+      prior.sourceCommit !== input.sourceCommit
+    )
       return {status: 'operation-conflict', store};
     return {status: 'duplicate', receipt: prior, store};
   }
   if (signed.body.idempotencyKey !== operationId(signed.body)) return {status: 'invalid-authority', store};
   if (store.receipts.length >= GRAPH_WORKER_ADMISSION_MAX_RECEIPTS) return {status: 'capacity-exceeded', store};
 
-  const admitted: GraphWorkerAdmissionReceiptV1 = {
+  const admitted: GraphWorkerAdmissionReceiptV2 = {
     admittedAt: nowSeconds,
     announcement: signed,
     announcementDigest,
     authorityExpiresAt: authority.expiresAt,
     graphAbi: authority.graphAbi,
     signedBodyDigest: sha256Digest(canonicalJson(signed.body)),
+    sourceCommit: input.sourceCommit,
   };
   const receipts = [...store.receipts, admitted].sort((left, right) =>
     compareCodeUnits(left.announcement.body.idempotencyKey, right.announcement.body.idempotencyKey),
@@ -170,7 +180,22 @@ export function admitGraphWorkerAnnouncement(
   return {status: quarantined ? 'quarantined' : 'accepted', receipt: admitted, store: next};
 }
 
-function quarantineFor(receipts: readonly GraphWorkerAdmissionReceiptV1[]): GraphWorkerAdmissionQuarantineV1[] {
+/** Apply only after the exact source has a durably promoted canonical frontier. */
+export function retireGraphWorkerAdmissionsForPublishedSource(
+  store: GraphWorkerAdmissionStoreV2,
+  sourceCommit: string,
+): GraphWorkerAdmissionStoreV2 {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(sourceCommit)) throw new Error('Published source commit is invalid.');
+  const receipts = store.receipts.filter(receipt => receipt.sourceCommit !== sourceCommit);
+  if (receipts.length === store.receipts.length) return store;
+  return {
+    quarantine: quarantineFor(receipts),
+    receipts,
+    schemaVersion: GRAPH_WORKER_ADMISSION_SCHEMA_VERSION,
+  };
+}
+
+function quarantineFor(receipts: readonly GraphWorkerAdmissionReceiptV2[]): GraphWorkerAdmissionQuarantineV2[] {
   const byAction = new Map<string, {repositoryId: string; actionKey: string; digests: Set<string>}>();
   for (const item of receipts) {
     const {repositoryId, actionKey, semanticDigest} = item.announcement.body;
