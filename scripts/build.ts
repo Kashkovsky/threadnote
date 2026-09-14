@@ -8,6 +8,7 @@ import {isDevelopmentBuildVersion} from './development-runtime.js';
 
 interface PackageManifest {
   readonly dependencies?: Readonly<Record<string, string>>;
+  readonly packageManager?: string;
   readonly version?: string;
 }
 
@@ -27,6 +28,11 @@ const build = Effect.gen(function* () {
   const root = yield* path.fromFileUrl(ROOT_URL);
   const outputRoot = path.join(root, 'dist');
   const manifest = yield* readPackageManifest(fs, path.join(root, 'package.json'));
+  if (manifest.packageManager !== `bun@${Bun.version}`) {
+    return yield* ScriptError.make({
+      message: `Standalone builds require ${manifest.packageManager ?? 'an exact Bun packageManager pin'}; running bun@${Bun.version}.`,
+    });
+  }
   const configuredDevelopmentVersion = Bun.env.THREADNOTE_DEVELOPMENT_BUILD_VERSION?.trim();
   if (configuredDevelopmentVersion && !isDevelopmentBuildVersion(configuredDevelopmentVersion)) {
     return yield* ScriptError.make({
