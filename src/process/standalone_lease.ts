@@ -1,4 +1,4 @@
-import {Crypto, DateTime, Effect, Exit, FileSystem, Option, Path, Schema} from 'effect';
+import {Console, Crypto, DateTime, Effect, Exit, FileSystem, Option, Path, Schema} from 'effect';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {observeProcessInstanceIdentity, processInstanceIdentityMatches} from './process_identity.js';
 import {compareVersions} from '../release/version_compare.js';
@@ -109,24 +109,32 @@ export function withStandaloneProcessLease<A, E, R>(
       const processStartIdentity = yield* observeProcessInstanceIdentity(system, system.processId);
       const leaseDirectory = path.join(root, 'leases', release.version);
       const leasePath = path.join(leaseDirectory, `${system.processId}.json`);
-      yield* fs.makeDirectory(leaseDirectory, {recursive: true, mode: 0o700});
-      yield* fs.writeFileString(
-        leasePath,
-        `${JSON.stringify(
-          {
-            executable: system.executablePath,
-            parentProcessId: process.ppid,
-            processId: system.processId,
-            processStartIdentity,
-            retirementPolicy: options.retirementPolicy ?? 'terminate',
-            startedAt: DateTime.formatIso(yield* DateTime.now),
-            token,
-            version: release.version,
-          },
-          undefined,
-          2,
-        )}\n`,
-        {mode: 0o600},
+      yield* Effect.gen(function* () {
+        yield* fs.makeDirectory(leaseDirectory, {recursive: true, mode: 0o700});
+        yield* fs.writeFileString(
+          leasePath,
+          `${JSON.stringify(
+            {
+              executable: system.executablePath,
+              parentProcessId: process.ppid,
+              processId: system.processId,
+              processStartIdentity,
+              retirementPolicy: options.retirementPolicy ?? 'terminate',
+              startedAt: DateTime.formatIso(yield* DateTime.now),
+              token,
+              version: release.version,
+            },
+            undefined,
+            2,
+          )}\n`,
+          {mode: 0o600},
+        );
+      }).pipe(
+        Effect.tapError(() =>
+          Console.error(
+            `Threadnote could not write a process lease under ${root}. Grant this installation root write access to run inside a restricted sandbox.`,
+          ),
+        ),
       );
       yield* Effect.addFinalizer(() => removeOwnedLease(fs, leasePath, token));
       yield* Effect.forkScoped(refreshProcessLease(fs, leasePath, token));

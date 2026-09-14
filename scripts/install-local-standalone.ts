@@ -163,6 +163,11 @@ export const installLocalStandalone = Effect.fn('developmentInstall.run')(functi
     });
   }
   const manifest = yield* readPackageManifest(fs, path.join(sourceRoot, 'package.json'));
+  if (manifest.packageManager !== `bun@${Bun.version}`) {
+    return yield* ScriptError.make({
+      message: `Global development installs require ${manifest.packageManager}; running bun@${Bun.version}.`,
+    });
+  }
   const version = developmentBuildVersion(manifest.version, commit);
   const roots = yield* prepareCanonicalDevelopmentInstallRoots(installationRoot(path, system));
   const sourceCheckoutId = yield* developmentSourceCheckoutId(sourceRoot);
@@ -170,6 +175,14 @@ export const installLocalStandalone = Effect.fn('developmentInstall.run')(functi
   const releaseRoot = path.join(roots.versionsRoot, version);
   const executableName = system.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
   const releaseExists = yield* fs.exists(releaseRoot);
+  if (releaseExists) {
+    const existing = yield* readDevelopmentReleaseEvidence(releaseRoot, commit);
+    if (existing.runtime !== `bun-${Bun.version}`) {
+      return yield* ScriptError.make({
+        message: `The existing exact-HEAD development release uses ${existing.runtime}; expected bun-${Bun.version}.`,
+      });
+    }
+  }
   const stagedRoot = releaseExists
     ? Option.none<string>()
     : Option.some(
@@ -977,14 +990,17 @@ function readPackageManifest(fs: FileSystem.FileSystem, file: string) {
   return fs.readFileString(file).pipe(
     Effect.flatMap(source =>
       Effect.try({
-        try: () => JSON.parse(source) as {readonly version?: unknown},
+        try: () => JSON.parse(source) as {readonly packageManager?: unknown; readonly version?: unknown},
         catch: cause => ScriptError.make({message: 'Could not parse package.json.', cause}),
       }),
     ),
     Effect.flatMap(manifest =>
-      typeof manifest.version === 'string' && manifest.version.length > 0
-        ? Effect.succeed({version: manifest.version})
-        : Effect.fail(ScriptError.make({message: 'package.json does not declare a version.'})),
+      typeof manifest.version === 'string' &&
+      manifest.version.length > 0 &&
+      typeof manifest.packageManager === 'string' &&
+      /^bun@\d+\.\d+\.\d+$/u.test(manifest.packageManager)
+        ? Effect.succeed({packageManager: manifest.packageManager, version: manifest.version})
+        : Effect.fail(ScriptError.make({message: 'package.json must declare a version and exact Bun packageManager.'})),
     ),
   );
 }
