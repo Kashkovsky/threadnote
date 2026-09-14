@@ -18,6 +18,11 @@ on:
       - 'test/evaluation/candidates/threadnote-4.0.1/benchmarks/darwin-arm64-m1-max/code-graph-worktree-readiness-*.json'
       - 'website/**'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Stable release that must be published before the website refreshes
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -48,7 +53,31 @@ jobs:
 
       - run: bun install --frozen-lockfile
       - run: bun run site:check
+
+      - name: Load published immutable stable releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          published="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .prerelease == false and .immutable == true and .published_at != null) | {tagName: .tag_name, publishedAt: .published_at}' \
+            | jq -s -c '.')"
+          if [[ "$published" == '[]' ]]; then
+            echo '::error::No published immutable stable releases were found.'
+            exit 1
+          fi
+          if [[ -n "$EXPECTED_RELEASE_TAG" ]] && ! jq -e --arg tag "$EXPECTED_RELEASE_TAG" \
+            'any(.[]; .tagName == $tag)' <<< "$published" >/dev/null; then
+            echo "::error::${EXPECTED_RELEASE_TAG} is not a published immutable stable release."
+            exit 1
+          fi
+          printf 'THREADNOTE_SITE_PUBLISHED_RELEASES=%s\n' "$published" >> "$GITHUB_ENV"
+
       - run: bun run site:build
+        env:
+          THREADNOTE_SITE_PUBLIC_BUILD: '1'
 
       - uses: actions/configure-pages@v6
 

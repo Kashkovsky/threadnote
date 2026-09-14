@@ -67,6 +67,8 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    feature; the website uses that sentence to generate the release social card automatically. Describe user-visible
    value rather than implementation history, include concrete commands when useful, and do not add a validation/checks
    section.
+   Merging the notes does not publish the website post. Public Pages builds include only stable tags backed by a
+   published immutable GitHub Release, and the release publisher refreshes the website after verifying publication.
 2. Merge the release source and ensure ordinary CI is green.
 3. Dispatch `Platform benchmarks` on exact clean candidate **C** with
    `include_context_brief_citations_scale=true`, `include_code_memory_link_scale=true`, and

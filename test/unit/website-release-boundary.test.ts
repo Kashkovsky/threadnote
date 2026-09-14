@@ -15,7 +15,7 @@ import {
   performanceSourceDependencyHashesAtCommit,
   writePerformanceArtifactBinding,
 } from '../../scripts/site-performance-evidence.js';
-import {loadLatestMajorWebsiteReleases} from '../../scripts/site-release-notes.js';
+import {loadLatestMajorWebsiteReleases, selectPublishedReleaseRefs} from '../../scripts/site-release-notes.js';
 
 const root = process.cwd();
 
@@ -471,6 +471,11 @@ describe('website and standalone release boundary', () => {
     await expect(access(join(root, 'website', 'public', 'CNAME'))).rejects.toThrow();
     expect(workflow).toContain('bun run site:check');
     expect(workflow).toContain('bun run site:build');
+    expect(workflow).toContain('Load published immutable stable releases');
+    expect(workflow).toContain('.immutable == true');
+    expect(workflow).toContain("THREADNOTE_SITE_PUBLIC_BUILD: '1'");
+    expect(workflow).toContain('THREADNOTE_SITE_PUBLISHED_RELEASES=');
+    expect(workflow).toContain('EXPECTED_RELEASE_TAG: ${{ inputs.release_tag }}');
     expect(workflow).toContain('fetch-depth: 0');
     const pushTrigger = workflow.slice(workflow.indexOf('  push:'), workflow.indexOf('  workflow_dispatch:'));
     expect(pushTrigger).toContain('paths:');
@@ -490,7 +495,7 @@ describe('website and standalone release boundary', () => {
     expect(workflow).toMatch(/^ {2}THREADNOTE_SITE_BASE: \/$/m);
   });
 
-  it('loads a prepared stable release before tagging and deduplicates it after tagging', async () => {
+  it('keeps prepared and tagged releases off the public site until publication', async () => {
     const repository = await mkdtemp(join(tmpdir(), 'threadnote-prepared-site-release-'));
     const git = (...arguments_: string[]) =>
       execFileSync('git', arguments_, {cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
@@ -552,12 +557,7 @@ describe('website and standalone release boundary', () => {
       );
 
       const prepared = loadLatestMajorWebsiteReleases(repository);
-      expect(prepared.map(release => release.version)).toEqual(['v4.1.1', 'v4.0.0']);
-      expect(prepared[0]).toMatchObject({
-        releaseUrl: 'https://github.com/Kashkovsky/threadnote/releases/tag/v4.1.1',
-        summary: 'Threadnote 4.1.1 is ready.',
-      });
-      expect(new Date(prepared[0].publishedAt).toISOString()).toBe('2026-08-11T11:00:00.000Z');
+      expect(prepared.map(release => release.version)).toEqual(['v4.0.0']);
 
       gitAt(
         '2026-08-12T12:00:00Z',
@@ -574,8 +574,72 @@ describe('website and standalone release boundary', () => {
       const tagged = loadLatestMajorWebsiteReleases(repository);
       expect(tagged.map(release => release.version)).toEqual(['v4.1.1', 'v4.0.0']);
       expect(new Date(tagged[0].publishedAt).toISOString()).toBe('2026-08-12T12:00:00.000Z');
+
+      const earlierPublished = {tagName: 'v4.0.0', publishedAt: '2026-08-10T12:00:00Z'};
+      const unpublished = loadLatestMajorWebsiteReleases(repository, JSON.stringify([earlierPublished]));
+      expect(unpublished.map(release => release.version)).toEqual(['v4.0.0']);
+      const released = loadLatestMajorWebsiteReleases(
+        repository,
+        JSON.stringify([earlierPublished, {tagName: 'v4.1.1', publishedAt: '2026-08-13T09:00:00Z'}]),
+      );
+      expect(released.map(release => release.version)).toEqual(['v4.1.1', 'v4.0.0']);
+      expect(released[0]).toMatchObject({
+        releaseUrl: 'https://github.com/Kashkovsky/threadnote/releases/tag/v4.1.1',
+        summary: 'Threadnote 4.1.1 is ready.',
+        publishedAt: '2026-08-13T09:00:00Z',
+      });
+      expect(() => loadLatestMajorWebsiteReleases(repository, '[]')).toThrow('must contain releases');
     } finally {
       await rm(repository, {force: true, recursive: true});
+    }
+  });
+
+  it('selects only published tagged refs without changing the input or order', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.record({patch: fc.nat({max: 1000}), published: fc.boolean()}), {
+          maxLength: 30,
+          minLength: 1,
+          selector: entry => entry.patch,
+        }),
+        entries => {
+          const tagged = entries.map(({patch}) => ({
+            major: 4,
+            minor: 1,
+            patch,
+            version: `v4.1.${patch}`,
+            publishedAt: 'tag-date',
+          }));
+          const original = structuredClone(tagged);
+          const publishedAtByTag = new Map(
+            entries.filter(entry => entry.published).map(entry => [`v4.1.${entry.patch}`, 'release-date']),
+          );
+          const selected = selectPublishedReleaseRefs(tagged, publishedAtByTag);
+          expect(selected.map(release => release.version)).toEqual(
+            tagged.filter(release => publishedAtByTag.has(release.version)).map(release => release.version),
+          );
+          expect(selected.every(release => release.publishedAt === 'release-date')).toBe(true);
+          expect(tagged).toEqual(original);
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
+  it('fails a public site build when publication metadata is unavailable', () => {
+    const previousMode = process.env.THREADNOTE_SITE_PUBLIC_BUILD;
+    const previousReleases = process.env.THREADNOTE_SITE_PUBLISHED_RELEASES;
+    try {
+      process.env.THREADNOTE_SITE_PUBLIC_BUILD = '1';
+      delete process.env.THREADNOTE_SITE_PUBLISHED_RELEASES;
+      expect(() => loadLatestMajorWebsiteReleases(root)).toThrow(
+        'Public website builds require published GitHub release metadata',
+      );
+    } finally {
+      if (previousMode === undefined) delete process.env.THREADNOTE_SITE_PUBLIC_BUILD;
+      else process.env.THREADNOTE_SITE_PUBLIC_BUILD = previousMode;
+      if (previousReleases === undefined) delete process.env.THREADNOTE_SITE_PUBLISHED_RELEASES;
+      else process.env.THREADNOTE_SITE_PUBLISHED_RELEASES = previousReleases;
     }
   });
 
