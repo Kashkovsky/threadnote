@@ -5,7 +5,10 @@ const MCP_BROKER_MAX_LINE_BYTES = 32 * 1024 * 1024;
 const MCP_BROKER_REPLAY_TIMEOUT_MILLISECONDS = 10_000;
 const MCP_BROKER_CHILD_STOP_WAIT_MILLISECONDS = 1_000;
 const MCP_BROKER_RUNTIME_EXIT_ERROR =
-  'Threadnote MCP runtime exited before responding. The request outcome is unknown; inspect state before retrying a mutating operation.';
+  'Threadnote MCP runtime exited before responding. A write may have committed. Read the canonical record before deciding whether to retry; do not replay the write blindly.';
+const MCP_BROKER_RUNTIME_REPLACED_ERROR =
+  'Threadnote MCP runtime was replaced before responding. A write may have committed on the old runtime. Read the canonical record before deciding whether to retry; do not replay the write blindly.';
+const MCP_BROKER_INTERRUPTED_CODE = -32_080;
 const MCP_BROKER_NO_ACTIVE_RELEASE_ERROR =
   'No valid active Threadnote release is installed. Run "threadnote install --no-start" with the downloaded executable, then reconnect this client. This request was not sent to a runtime.';
 const MCP_BROKER_STARTUP_ERROR =
@@ -154,8 +157,10 @@ class McpBroker {
     } catch (cause) {
       const pending = [...this.#clientRequests.values()];
       this.#clientRequests.clear();
+      const failedChild = this.#child;
       await this.#stopCurrentChild();
-      for (const id of pending) await this.#queueRequestFailure(id);
+      const runtimeReason = failedChild ? await this.#runtimeFailureReason(failedChild) : 'runtime-interrupted';
+      for (const id of pending) await this.#queueRequestFailure(id, undefined, runtimeReason);
       if (requestId !== undefined && !trackedRequest) {
         const reason =
           Schema.is(McpBrokerError)(cause) && cause.reason === 'no-active-release'
@@ -242,10 +247,11 @@ class McpBroker {
     active.replay = undefined;
     const pending = [...this.#clientRequests.values()];
     this.#clientRequests.clear();
+    const runtimeReason = await this.#runtimeFailureReason(active);
     await this.#cancelServerRequestRoutes(active);
     this.#deleteServerRequestRoutes(active);
     for (const id of pending) {
-      await this.#queueRequestFailure(id);
+      await this.#queueRequestFailure(id, undefined, runtimeReason);
     }
   }
 
@@ -386,25 +392,44 @@ class McpBroker {
     await this.#queueOutput(JSON.stringify({jsonrpc: '2.0', method: 'notifications/resources/list_changed'}));
   }
 
-  #queueRequestFailure(id: string | number, startupFailure?: McpBrokerStartupFailure): Promise<void> {
+  #queueRequestFailure(
+    id: string | number,
+    startupFailure?: McpBrokerStartupFailure,
+    runtimeReason: 'runtime-interrupted' | 'runtime-replaced' = 'runtime-interrupted',
+  ): Promise<void> {
     return this.#queueOutput(
       JSON.stringify({
         error: {
-          code: -32_603,
+          code: startupFailure === undefined ? MCP_BROKER_INTERRUPTED_CODE : -32_603,
           message:
             startupFailure === undefined
-              ? MCP_BROKER_RUNTIME_EXIT_ERROR
+              ? runtimeReason === 'runtime-replaced'
+                ? MCP_BROKER_RUNTIME_REPLACED_ERROR
+                : MCP_BROKER_RUNTIME_EXIT_ERROR
               : startupFailure === 'no-active-release'
                 ? MCP_BROKER_NO_ACTIVE_RELEASE_ERROR
                 : MCP_BROKER_STARTUP_ERROR,
-          ...(startupFailure === undefined
-            ? {}
-            : {data: {reason: startupFailure, requestDisposition: 'not-dispatched'}}),
+          data:
+            startupFailure === undefined
+              ? {
+                  reason: runtimeReason,
+                  requestDisposition: 'dispatched-or-uncertain',
+                  writeOutcome: 'unknown',
+                  recovery: 'Read the canonical record before retrying a mutating operation.',
+                }
+              : {reason: startupFailure, requestDisposition: 'not-dispatched'},
         },
         id,
         jsonrpc: '2.0',
       }),
     );
+  }
+
+  async #runtimeFailureReason(active: ActiveBrokerChild): Promise<'runtime-interrupted' | 'runtime-replaced'> {
+    const current = await this.#dependencies.readActiveRelease().catch(() => undefined);
+    return current && (current.version !== active.release.version || current.releaseRoot !== active.release.releaseRoot)
+      ? 'runtime-replaced'
+      : 'runtime-interrupted';
   }
 
   #queueOutput(line: string): Promise<void> {
