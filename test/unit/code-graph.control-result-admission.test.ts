@@ -28,7 +28,10 @@ import {
   retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked,
   retireGraphWorkerAdmissionsForPublishedSourceLocked,
 } from '../../src/code_graph/sharing/control_result_admission.js';
-import {emptyGraphWorkerAdmissionStore} from '../../src/code_graph/sharing/worker_admission_state.js';
+import {
+  emptyGraphWorkerAdmissionStore,
+  GRAPH_WORKER_ADMISSION_MAX_RECEIPTS,
+} from '../../src/code_graph/sharing/worker_admission_state.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
 import {readAuthenticatedGraphShareFrontier} from '../../src/code_graph/sharing/frontier_acceptance.js';
@@ -36,6 +39,10 @@ import {graphShareRegistryPublicationScope} from '../../src/code_graph/sharing/r
 import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
 import {defaultGraphShareProfile, graphShareProfileDigest} from '../../src/code_graph/sharing/profile.js';
 import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
+import {
+  parkGraphWorkerAdmissionReceipts,
+  readGraphWorkerAdmissionArchive,
+} from '../../src/code_graph/sharing/worker_admission_archive.js';
 import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker_result.js';
 import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
 import {createAccessTokenVerifier} from '../../src/oauth/access_token.js';
@@ -318,6 +325,105 @@ const fixture = Effect.fn('test.workerAdmission.fixture')(function* (enabled = t
 });
 
 describe('authenticated signed worker admission route', () => {
+  effectIt.effect('parks an old source at hot capacity and replays it when that source returns', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const worker = yield* f.enroll;
+        const first = yield* f.candidate(worker);
+        expect((yield* f.request('/v1/results', f.validToken, first.announcement)).status).toBe(201);
+        const policy = yield* readGraphControlPolicy(f.options.policyFile);
+        const original = (yield* readGraphWorkerAdmissionStore(f.options.threadnoteHome, policy)).receipts[0];
+        const oldReceipts = [original];
+        for (let index = 1; index < GRAPH_WORKER_ADMISSION_MAX_RECEIPTS; index += 1) {
+          const fields = {
+            ...original.announcement.body,
+            actionKey: sha256Digest(`old-action-${index}`).slice(7),
+            resultManifestDigest: sha256Digest(`old-manifest-${index}`),
+          };
+          const {idempotencyKey: _, ...operation} = fields;
+          const body = {
+            ...fields,
+            idempotencyKey: sha256Digest('threadnote.graph.worker.result-operation.v1\0' + canonicalJson(operation)),
+          };
+          const announcement = {...original.announcement, body};
+          oldReceipts.push({
+            ...original,
+            announcement,
+            announcementDigest: sha256Digest(canonicalJson(announcement)),
+            signedBodyDigest: sha256Digest(canonicalJson(body)),
+          });
+        }
+        oldReceipts.sort((left, right) =>
+          left.announcement.body.idempotencyKey.localeCompare(right.announcement.body.idempotencyKey),
+        );
+        yield* writePrivateJsonFile(f.statePath, {
+          quarantine: [],
+          receipts: oldReceipts,
+          schemaVersion: 2,
+        });
+        const beforeOverflow = yield* f.fs.readFileString(f.statePath);
+        const excess = yield* f.candidate(worker, ['different result']);
+        expect(yield* f.request('/v1/results', f.validToken, excess.announcement)).toEqual({
+          body: {error: 'capacity-exceeded'},
+          status: 429,
+        });
+        expect(yield* f.fs.readFileString(f.statePath)).toBe(beforeOverflow);
+        const path = yield* Path.Path;
+        yield* f.fs.writeFileString(path.join(f.options.repoRoot, 'source.txt'), 'new head\n');
+        yield* f.git(['add', '.']);
+        yield* f.git([
+          '-c',
+          'user.name=Threadnote Test',
+          '-c',
+          'user.email=test@threadnote.local',
+          'commit',
+          '-qm',
+          'new head',
+        ]);
+        const newerHead = (yield* f.git(['rev-parse', 'HEAD'])).stdout.trim();
+        const newer = yield* f.candidate(worker, [], newerHead);
+        const nextManifest = {
+          ...f.manifest,
+          checkpoint: {...f.manifest.checkpoint, sourceCommit: f.candidateCommit},
+          generation: 2,
+          previousManifestDigest: sha256Digest(encode(f.manifest)),
+          sourceCommit: f.candidateCommit,
+        };
+        const signed = yield* signGraphShareFrontier(f.key, nextManifest);
+        const manifestDigest = yield* putCasBytes(f.options.casRoot, encode(signed.manifest));
+        const envelopeDigest = yield* putCasBytes(f.options.casRoot, encode(signed.envelope));
+        const pointerPath = graphSharingFrontierPointerPath(
+          path,
+          graphSharingLayout(path, f.options.threadnoteHome, f.options.casRoot).frontiersRoot,
+          repositoryId,
+        );
+        const initialPointer = JSON.parse(yield* f.fs.readFileString(pointerPath));
+        yield* writePrivateJsonFile(pointerPath, {envelopeDigest, manifestDigest, schemaVersion: 1});
+        expect(yield* f.request('/v1/results', f.validToken, newer.announcement)).toEqual({
+          body: {error: 'capacity-exceeded'},
+          status: 429,
+        });
+        expect(yield* f.fs.readFileString(f.statePath)).toBe(beforeOverflow);
+        yield* writePrivateJsonFile(pointerPath, initialPointer);
+        expect((yield* f.request('/v1/results', f.validToken, newer.announcement)).status).toBe(201);
+        const hot = JSON.parse(yield* f.fs.readFileString(f.statePath)) as {receipts: unknown[]};
+        expect(hot.receipts).toHaveLength(1);
+        expect((yield* readGraphWorkerAdmissionStore(f.options.threadnoteHome, policy)).receipts).toHaveLength(
+          GRAPH_WORKER_ADMISSION_MAX_RECEIPTS + 1,
+        );
+        yield* f.git(['checkout', '--detach', f.candidateCommit]);
+        const downloads = f.registryPaths.length;
+        f.registryBytes.clear();
+        expect(yield* f.request('/v1/results', f.validToken, first.announcement)).toEqual({
+          body: {idempotencyKey: first.announcement.body.idempotencyKey, status: 'duplicate'},
+          status: 200,
+        });
+        expect(f.registryPaths).toHaveLength(downloads);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
   effectIt.effect('keeps an intermediate source pending until canonical publication reaches it', () =>
     TestClock.withLive(
       Effect.gen(function* () {
@@ -470,6 +576,17 @@ describe('authenticated signed worker admission route', () => {
         const later = yield* f.candidate(worker, [], unpublished);
         expect((yield* f.request('/v1/results', f.validToken, later.announcement)).status).toBe(201);
         const policy = yield* readGraphControlPolicy(f.options.policyFile);
+        const beforeParking = yield* readGraphWorkerAdmissionStore(f.options.threadnoteHome, policy);
+        const parked = beforeParking.receipts.filter(receipt => receipt.sourceCommit === f.candidateCommit);
+        const archive = yield* readGraphWorkerAdmissionArchive(f.statePath, policy);
+        expect(
+          (yield* parkGraphWorkerAdmissionReceipts(f.statePath, policy, archive, f.candidateCommit, parked)).status,
+        ).toBe('parked');
+        yield* writePrivateJsonFile(f.statePath, {
+          quarantine: [],
+          receipts: beforeParking.receipts.filter(receipt => receipt.sourceCommit !== f.candidateCommit),
+          schemaVersion: 2,
+        });
         const cleanup = withCoordinatorStateLock(
           {threadnoteHome: f.options.threadnoteHome},
           retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked(
@@ -503,6 +620,7 @@ describe('authenticated signed worker admission route', () => {
           {envelopeDigest, manifestDigest, schemaVersion: 1},
         );
         expect((yield* cleanup).retired).toBe(2);
+        expect((yield* readGraphWorkerAdmissionArchive(f.statePath, policy)).receipts).toEqual([]);
         expect(
           (yield* readGraphWorkerAdmissionStore(f.options.threadnoteHome, policy)).receipts.map(r => r.sourceCommit),
         ).toEqual([unpublished]);

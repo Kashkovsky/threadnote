@@ -41,6 +41,7 @@ const receipt = Schema.Struct({
   signedBodyDigest: digest,
   sourceCommit: Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u)),
 });
+const receiptPage = Schema.Array(receipt).check(Schema.isMaxLength(GRAPH_WORKER_ADMISSION_MAX_RECEIPTS));
 const quarantine = Schema.Struct({
   actionKey: hex,
   repositoryId: hex,
@@ -50,6 +51,7 @@ const quarantine = Schema.Struct({
   ),
 });
 const storeSchema = Schema.Struct({
+  archiveStarted: Schema.optional(Schema.Literal(true)),
   quarantine: Schema.Array(quarantine).check(Schema.isMaxLength(GRAPH_WORKER_ADMISSION_MAX_RECEIPTS)),
   receipts: Schema.Array(receipt).check(Schema.isMaxLength(GRAPH_WORKER_ADMISSION_MAX_RECEIPTS)),
   schemaVersion: Schema.Literal(GRAPH_WORKER_ADMISSION_SCHEMA_VERSION),
@@ -58,6 +60,7 @@ const storeSchema = Schema.Struct({
 export type GraphWorkerAdmissionReceiptV2 = typeof receipt.Type;
 export type GraphWorkerAdmissionQuarantineV2 = typeof quarantine.Type;
 export type GraphWorkerAdmissionStoreV2 = typeof storeSchema.Type;
+export type GraphWorkerAdmissionView = Pick<GraphWorkerAdmissionStoreV2, 'quarantine' | 'receipts'>;
 export type GraphWorkerAdmissionStatus =
   'accepted' | 'quarantined' | 'duplicate' | 'operation-conflict' | 'capacity-exceeded' | 'invalid-authority';
 
@@ -76,22 +79,38 @@ export function emptyGraphWorkerAdmissionStore(): GraphWorkerAdmissionStoreV2 {
   return {quarantine: [], receipts: [], schemaVersion: GRAPH_WORKER_ADMISSION_SCHEMA_VERSION};
 }
 
+export function mergeGraphWorkerAdmissionReceipts(
+  hot: readonly GraphWorkerAdmissionReceiptV2[],
+  cold: readonly GraphWorkerAdmissionReceiptV2[],
+): GraphWorkerAdmissionView {
+  const byOperation = new Map<string, GraphWorkerAdmissionReceiptV2>();
+  for (const receipt of [...hot, ...cold]) {
+    const operation = receipt.announcement.body.idempotencyKey;
+    const prior = byOperation.get(operation);
+    if (prior !== undefined && canonicalJson(prior) !== canonicalJson(receipt))
+      throw new Error('Conflicting graph worker admission receipt copies.');
+    byOperation.set(operation, receipt);
+  }
+  const receipts = [...byOperation.values()].sort((left, right) =>
+    compareCodeUnits(left.announcement.body.idempotencyKey, right.announcement.body.idempotencyKey),
+  );
+  return {quarantine: quarantineFor(receipts), receipts};
+}
+
 /** Validate bounded private state after loading it. Signed authority must still be reverified by the caller. */
 export function parseGraphWorkerAdmissionStore(value: unknown): GraphWorkerAdmissionStoreV2 {
   const parsed = Schema.decodeUnknownSync(storeSchema, strict)(value);
   if (
-    parsed.receipts.some(
-      item =>
-        item.authorityExpiresAt <= item.admittedAt ||
-        item.signedBodyDigest !== sha256Digest(canonicalJson(item.announcement.body)) ||
-        item.announcementDigest !== sha256Digest(canonicalJson(item.announcement)) ||
-        item.announcement.body.idempotencyKey !== operationId(item.announcement.body) ||
-        item.announcement.body.batchId !== item.sourceCommit.slice(0, 40),
-    ) ||
-    !strictlySorted(parsed.receipts.map(item => item.announcement.body.idempotencyKey)) ||
+    !validReceipts(parsed.receipts) ||
     canonicalJson(parsed.quarantine) !== canonicalJson(quarantineFor(parsed.receipts))
   )
     throw new Error('Graph worker admission state is invalid.');
+  return parsed;
+}
+
+export function parseGraphWorkerAdmissionReceiptPage(value: unknown): readonly GraphWorkerAdmissionReceiptV2[] {
+  const parsed = Schema.decodeUnknownSync(receiptPage, strict)(value);
+  if (!validReceipts(parsed)) throw new Error('Graph worker admission receipt page is invalid.');
   return parsed;
 }
 
@@ -170,6 +189,7 @@ export function admitGraphWorkerAnnouncement(
     compareCodeUnits(left.announcement.body.idempotencyKey, right.announcement.body.idempotencyKey),
   );
   const next = {
+    ...(store.archiveStarted === true ? {archiveStarted: true as const} : {}),
     quarantine: quarantineFor(receipts),
     receipts,
     schemaVersion: GRAPH_WORKER_ADMISSION_SCHEMA_VERSION,
@@ -198,6 +218,7 @@ export function retireGraphWorkerAdmissionsForPublishedSources(
   const receipts = store.receipts.filter(receipt => !sourceCommits.has(receipt.sourceCommit));
   if (receipts.length === store.receipts.length) return store;
   return {
+    ...(store.archiveStarted === true ? {archiveStarted: true as const} : {}),
     quarantine: quarantineFor(receipts),
     receipts,
     schemaVersion: GRAPH_WORKER_ADMISSION_SCHEMA_VERSION,
@@ -205,9 +226,14 @@ export function retireGraphWorkerAdmissionsForPublishedSources(
 }
 
 function quarantineFor(receipts: readonly GraphWorkerAdmissionReceiptV2[]): GraphWorkerAdmissionQuarantineV2[] {
+  return graphWorkerAdmissionQuarantineForSummaries(receipts.map(item => item.announcement.body));
+}
+
+export function graphWorkerAdmissionQuarantineForSummaries(
+  summaries: readonly {readonly repositoryId: string; readonly actionKey: string; readonly semanticDigest: string}[],
+): GraphWorkerAdmissionQuarantineV2[] {
   const byAction = new Map<string, {repositoryId: string; actionKey: string; digests: Set<string>}>();
-  for (const item of receipts) {
-    const {repositoryId, actionKey, semanticDigest} = item.announcement.body;
+  for (const {repositoryId, actionKey, semanticDigest} of summaries) {
     const key = `${repositoryId}:${actionKey}`;
     const entry = byAction.get(key) ?? {repositoryId, actionKey, digests: new Set<string>()};
     entry.digests.add(semanticDigest);
@@ -228,6 +254,19 @@ function quarantineFor(receipts: readonly GraphWorkerAdmissionReceiptV2[]): Grap
 
 function strictlySorted(values: readonly string[]): boolean {
   return values.every((value, index) => index === 0 || compareCodeUnits(values[index - 1], value) < 0);
+}
+
+function validReceipts(receipts: readonly GraphWorkerAdmissionReceiptV2[]): boolean {
+  return (
+    !receipts.some(
+      item =>
+        item.authorityExpiresAt <= item.admittedAt ||
+        item.signedBodyDigest !== sha256Digest(canonicalJson(item.announcement.body)) ||
+        item.announcementDigest !== sha256Digest(canonicalJson(item.announcement)) ||
+        item.announcement.body.idempotencyKey !== operationId(item.announcement.body) ||
+        item.announcement.body.batchId !== item.sourceCommit.slice(0, 40),
+    ) && strictlySorted(receipts.map(item => item.announcement.body.idempotencyKey))
+  );
 }
 
 function operationId(body: typeof announcementBody.Type): string {

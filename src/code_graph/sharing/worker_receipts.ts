@@ -1,9 +1,9 @@
 import {compareCodeUnits} from '../ordering.js';
-import type {GraphWorkerAdmissionReceiptV2, GraphWorkerAdmissionStoreV2} from './worker_admission_state.js';
+import type {GraphWorkerAdmissionReceiptV2, GraphWorkerAdmissionView} from './worker_admission_state.js';
 
 /** Keep ordered same-action alternatives until full source and OCI authority are verified. */
 export function selectGraphWorkerReceiptsForSource(
-  store: GraphWorkerAdmissionStoreV2,
+  store: GraphWorkerAdmissionView,
   source: {
     readonly actionKeys: readonly string[];
     readonly profileDigest: string;

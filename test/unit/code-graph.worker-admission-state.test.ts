@@ -8,6 +8,7 @@ import {
   emptyGraphWorkerAdmissionStore,
   GRAPH_WORKER_ADMISSION_MAX_RECEIPTS,
   GRAPH_WORKER_ADMISSION_MAX_STATE_BYTES,
+  mergeGraphWorkerAdmissionReceipts,
   parseGraphWorkerAdmissionBytes,
   parseGraphWorkerAdmissionStore,
   retireGraphWorkerAdmissionsForPublishedSource,
@@ -133,6 +134,41 @@ describe('signed worker admission state', () => {
       },
     ]);
     expect(admit(left.store, first).status).toBe('duplicate');
+  });
+
+  it('keeps replay and same-action conflicts across parked and hot receipts', () => {
+    const first = admit(emptyGraphWorkerAdmissionStore(), announcement(1, 1));
+    const second = admit(
+      emptyGraphWorkerAdmissionStore(),
+      announcement(2, 2, first.store.receipts[0].announcement.body.actionKey),
+    );
+    const union = mergeGraphWorkerAdmissionReceipts(first.store.receipts, second.store.receipts);
+    expect(union.receipts).toHaveLength(2);
+    expect(union.quarantine).toHaveLength(1);
+    expect(mergeGraphWorkerAdmissionReceipts(first.store.receipts, first.store.receipts).receipts).toHaveLength(1);
+    expect(() =>
+      mergeGraphWorkerAdmissionReceipts(first.store.receipts, [{...first.store.receipts[0], graphAbi: '0'.repeat(64)}]),
+    ).toThrow();
+  });
+
+  it('preserves the logical receipt set and quarantine for every hot/cold partition', () => {
+    FC.assert(
+      FC.property(
+        FC.uniqueArray(FC.integer({min: 1, max: 100_000}), {minLength: 1, maxLength: 8}),
+        FC.array(FC.boolean(), {minLength: 8, maxLength: 8}),
+        (seeds, partition) => {
+          let store = emptyGraphWorkerAdmissionStore();
+          for (const seed of seeds) store = admit(store, announcement(seed, seed % 3)).store;
+          const hot = store.receipts.filter((_, index) => partition[index]);
+          const cold = store.receipts.filter((_, index) => !partition[index]);
+          expect(mergeGraphWorkerAdmissionReceipts(hot, cold)).toEqual({
+            quarantine: store.quarantine,
+            receipts: store.receipts,
+          });
+        },
+      ),
+      {numRuns: 40},
+    );
   });
 
   it('retires only the exact canonical source, recomputes quarantine, and is idempotent', () => {
