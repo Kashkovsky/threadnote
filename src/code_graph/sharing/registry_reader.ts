@@ -4,7 +4,7 @@ import {decodeJsonBytes} from './atomic.js';
 import {putCasBytes} from './cas.js';
 import {parseGraphShareCheckpointMetadata} from './checkpoint_cas.js';
 import {graphShareFrontierPointerFromOciDescriptor, parseGraphShareOciDescriptor} from './descriptor.js';
-import {parseSha256Digest, sha256Digest} from './digest.js';
+import {SHA256_DIGEST, parseSha256Digest, sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 import {
   GRAPH_SHARE_HTTP_CAS_MAX_BYTES,
@@ -40,6 +40,14 @@ export const makeGraphShareRegistryReader = Effect.fn('codeGraph.sharing.registr
       return {bytes: response.bytes, digest};
     });
   return {
+    readProfileManifest: (digest: string) =>
+      Effect.gen(function* () {
+        if (!SHA256_DIGEST.test(digest)) return yield* graphSharingFailure('Profile manifest digest is invalid.');
+        const response = yield* manifestResponse(digest, 8192);
+        if (response.digest !== digest)
+          return yield* graphSharingFailure('Profile manifest digest does not match its bytes.');
+        return response.bytes;
+      }),
     readWorkerManifest: (digest: string) =>
       Effect.gen(function* () {
         const expected = yield* Effect.try({

@@ -69,12 +69,12 @@ import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingL
 import {verifyGraphShareParseReceipt} from './parse_cache.js';
 import {
   assertEnrollmentMatchesIdentity,
+  enrolledProfileBodyDigest,
   graphShareProfileDigest,
   parseGraphShareEnrollment,
-  parseGraphShareProfile,
-  parseGraphShareProfilePointer,
   type GraphShareProfileV1,
 } from './profile.js';
+import {readGraphShareEnrolledProfile} from './profile_storage.js';
 import {selectGraphShareResultsForFrozenMachine} from './receipts.js';
 import {
   graphPublisherContributionEvidence,
@@ -152,10 +152,7 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
   const path = yield* Path.Path;
   const enrollment = parseGraphShareEnrollment(yield* readJsonFile(graphShareEnrollmentPath(path, identity.repoRoot)));
   assertEnrollmentMatchesIdentity(enrollment, identity.repositoryId);
-  const profilePointer = parseGraphShareProfilePointer(enrollment.profile);
-  const profile = parseGraphShareProfile(
-    yield* decodeJsonBytes(yield* readVerifiedCasBlob(casRoot, profilePointer.digest)),
-  );
+  const profile = yield* readGraphShareEnrolledProfile(casRoot, enrollment);
   const signedProfile = profile.registry.worker.startsWith('oci://');
   const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
   const pointerPath = graphSharingFrontierPointerPath(path, layout.frontiersRoot, identity.repositoryId);
@@ -214,7 +211,8 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
           latestIdentity.repositoryId !== identity.repositoryId ||
           latestIdentity.repoRoot !== identity.repoRoot ||
           latestIdentity.headCommit !== identity.headCommit ||
-          parseGraphShareProfilePointer(latestEnrollment.profile).digest !== current.profileDigest ||
+          latestEnrollment.profile !== enrollment.profile ||
+          enrolledProfileBodyDigest(latestEnrollment) !== current.profileDigest ||
           latestPointer.manifestDigest !== pointer.manifestDigest ||
           latestPointer.envelopeDigest !== pointer.envelopeDigest
         )
@@ -292,7 +290,7 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
   }
   const selected =
     admissions === undefined ? selectGraphShareResultsForFrozenMachine(coordinator.receipts, machine) : undefined;
-  if (profilePointer.digest !== current.profileDigest) {
+  if (enrolledProfileBodyDigest(enrollment) !== current.profileDigest) {
     return yield* graphSharingFailure('Publisher enrollment profile differs from the current canonical frontier.');
   }
   const verified: GraphShareSourceVerifiedReceipt[] = [];
@@ -374,7 +372,7 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
         ? undefined
         : selectGraphWorkerReceiptsForSource(admissions, {
             actionKeys: [...eligible.keys()],
-            profileDigest: profilePointer.digest,
+            profileDigest: enrolledProfileBodyDigest(enrollment),
             repositoryId: identity.repositoryId,
             sourceCommit: identity.headCommit,
           });
@@ -395,7 +393,7 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
     const workerRegistry = yield* Effect.try({
       try: () =>
         graphWorkerRegistryForProfile(profile, {
-          profileDigest: profilePointer.digest,
+          profileDigest: enrolledProfileBodyDigest(enrollment),
           repositoryId: identity.repositoryId,
         }),
       catch: () => graphSharingFailure('Publisher worker registry is outside its enrolled scope.'),
@@ -497,6 +495,7 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
     machine = verifyGraphShareBatch(machine);
     yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
     const exported = yield* exportSignedGeneration(config, options, current, identity.repositoryId, profile, {
+      enrollmentProfile: enrollment.profile,
       snapshotId: ready.id,
       sourceCommit: identity.headCommit,
       verified,
@@ -597,6 +596,7 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
   repositoryId: string,
   profile: GraphShareProfileV1,
   expected: {
+    readonly enrollmentProfile: string;
     readonly snapshotId: string;
     readonly sourceCommit: string;
     readonly verified: readonly GraphShareSourceVerifiedReceipt[];
@@ -687,7 +687,8 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
           latestIdentity.headCommit !== expected.sourceCommit ||
           exported.sourceCommit !== expected.sourceCommit ||
           latestPointer.manifestDigest !== graphShareFrontierDigest(current) ||
-          parseGraphShareProfilePointer(latestEnrollment.profile).digest !== current.profileDigest
+          latestEnrollment.profile !== expected.enrollmentProfile ||
+          enrolledProfileBodyDigest(latestEnrollment) !== current.profileDigest
         ) {
           return yield* graphSharingFailure('Publication source, profile, or predecessor changed during verification.');
         }

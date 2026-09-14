@@ -29,7 +29,7 @@ import {
   casProfilePointer,
   parseGraphShareEnrollment,
   parseGraphShareProfile,
-  parseGraphShareProfilePointer,
+  enrolledProfileBodyDigest,
 } from '../../src/code_graph/sharing/profile.js';
 import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher_cycle.js';
 import {
@@ -83,9 +83,7 @@ describe('signed worker publisher', () => {
           const enrollmentPath = graphShareEnrollmentPath(path, repository);
           const enrollment = parseGraphShareEnrollment(yield* readJsonFile(enrollmentPath));
           const original = parseGraphShareProfile(
-            yield* decodeJsonBytes(
-              yield* readVerifiedCasBlob(cas, parseGraphShareProfilePointer(enrollment.profile).digest),
-            ),
+            yield* decodeJsonBytes(yield* readVerifiedCasBlob(cas, enrolledProfileBodyDigest(enrollment))),
           );
           const profile = parseGraphShareProfile({
             ...original,
@@ -383,9 +381,7 @@ describe('signed worker publisher', () => {
           const enrollmentPath = graphShareEnrollmentPath(path, repository);
           const enrollment = parseGraphShareEnrollment(yield* readJsonFile(enrollmentPath));
           const original = parseGraphShareProfile(
-            yield* decodeJsonBytes(
-              yield* readVerifiedCasBlob(cas, parseGraphShareProfilePointer(enrollment.profile).digest),
-            ),
+            yield* decodeJsonBytes(yield* readVerifiedCasBlob(cas, enrolledProfileBodyDigest(enrollment))),
           );
           const profile = {...original, registry: {...original.registry, worker: 'oci://registry.example/acme/work'}};
           const profileDigest = yield* putCasBytes(cas, new TextEncoder().encode(canonicalJson(profile)));

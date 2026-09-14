@@ -2,7 +2,11 @@ import {Schema} from 'effect';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
 import {graphSharingFailure} from './errors.js';
 import {SHA256_DIGEST, SHA256_HEX, sha256Digest, type Sha256Digest} from './digest.js';
-import {isGraphShareRegistryReference} from './registry_reference.js';
+import {
+  isGraphShareRegistryReference,
+  parseGraphShareRegistryTarget,
+  type GraphShareRegistryTarget,
+} from './registry_reference.js';
 
 const STRICT = {errors: 'all', onExcessProperty: 'error'} as const;
 const ORGANIZATION = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
@@ -11,7 +15,6 @@ const COORDINATOR_URL =
   /^(?:https:\/\/[a-z0-9.-]+|http:\/\/(?:127\.0\.0\.1|localhost))(?::\d{1,5})?(?:\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=-]*)?$/u;
 const CAS_REGISTRY = /^cas:\/\/local(?:\/(?:canonical|worker))?$/u;
 const CAS_PROFILE = /^cas:\/\/sha256:[0-9a-f]{64}$/u;
-const OCI_PROFILE = /^oci:\/\/[a-z0-9.-]+(?:\/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}$/u;
 const CANONICAL_REMOTE = /^[a-z0-9.-]+\/[A-Za-z0-9._/-]+$/u;
 
 const HexId = Schema.String.check(Schema.isPattern(SHA256_HEX));
@@ -19,16 +22,28 @@ const Digest = Schema.String.check(Schema.isPattern(SHA256_DIGEST));
 const NonEmptyShort = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 
 export const GRAPH_SHARE_ENROLLMENT_SCHEMA_VERSION = 1 as const;
+export const GRAPH_SHARE_ENROLLMENT_OCI_SCHEMA_VERSION = 2 as const;
 export const GRAPH_SHARE_PROFILE_SCHEMA_VERSION = 1 as const;
 
 export const GraphShareEnrollmentSchemaV1 = Schema.Struct({
-  profile: Schema.String.check(Schema.isPattern(new RegExp(`${CAS_PROFILE.source}|${OCI_PROFILE.source}`, 'u'))),
+  profile: Schema.String.check(Schema.isPattern(CAS_PROFILE)),
   publisherKeyFingerprint: Digest,
   repositoryId: HexId,
   schemaVersion: Schema.Literal(GRAPH_SHARE_ENROLLMENT_SCHEMA_VERSION),
 });
 
 export type GraphShareEnrollmentV1 = typeof GraphShareEnrollmentSchemaV1.Type;
+
+export const GraphShareEnrollmentSchemaV2 = Schema.Struct({
+  profile: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(600)),
+  profileDigest: Digest,
+  publisherKeyFingerprint: Digest,
+  repositoryId: HexId,
+  schemaVersion: Schema.Literal(GRAPH_SHARE_ENROLLMENT_OCI_SCHEMA_VERSION),
+});
+
+export type GraphShareEnrollmentV2 = typeof GraphShareEnrollmentSchemaV2.Type;
+export type GraphShareEnrollment = GraphShareEnrollmentV1 | GraphShareEnrollmentV2;
 
 const RegistryReference = Schema.String.check(
   Schema.makeFilter(value => CAS_REGISTRY.test(value) || isGraphShareRegistryReference(value)),
@@ -83,15 +98,24 @@ export const GraphShareProfileSchemaV1 = Schema.Struct({
 
 export type GraphShareProfileV1 = typeof GraphShareProfileSchemaV1.Type;
 
-export interface GraphShareProfilePointer {
-  readonly digest: Sha256Digest;
-  readonly kind: 'cas' | 'oci';
-  readonly namespace?: string;
-}
+export type GraphShareProfilePointer =
+  | {readonly kind: 'cas'; readonly bodyDigest: Sha256Digest}
+  | {
+      readonly kind: 'oci';
+      readonly manifestDigest: Sha256Digest;
+      readonly registryReference: string;
+      readonly registryTarget: GraphShareRegistryTarget;
+    };
 
-export function parseGraphShareEnrollment(value: unknown): GraphShareEnrollmentV1 {
+export function parseGraphShareEnrollment(value: unknown): GraphShareEnrollment {
   try {
-    return Schema.decodeUnknownSync(GraphShareEnrollmentSchemaV1, STRICT)(value);
+    const enrollment = Schema.decodeUnknownSync(
+      Schema.Union([GraphShareEnrollmentSchemaV1, GraphShareEnrollmentSchemaV2]),
+      STRICT,
+    )(value);
+    if (enrollment.schemaVersion === 2 && parseGraphShareProfilePointer(enrollment.profile).kind !== 'oci')
+      throw new Error('OCI enrollment requires an OCI profile artifact');
+    return enrollment;
   } catch (cause) {
     throw graphSharingFailure('Enrollment pointer is invalid.', cause);
   }
@@ -111,17 +135,41 @@ export function graphShareProfileDigest(profile: GraphShareProfileV1): Sha256Dig
 
 export function parseGraphShareProfilePointer(value: string): GraphShareProfilePointer {
   if (CAS_PROFILE.test(value)) {
-    return {digest: `sha256:${value.slice('cas://sha256:'.length)}`, kind: 'cas'};
+    return {bodyDigest: `sha256:${value.slice('cas://sha256:'.length)}`, kind: 'cas'};
   }
-  if (OCI_PROFILE.test(value)) {
-    const at = value.lastIndexOf('@');
-    return {
-      digest: value.slice(at + 1) as Sha256Digest,
-      kind: 'oci',
-      namespace: value.slice('oci://'.length, at),
-    };
+  const at = value.lastIndexOf('@');
+  const registryReference = value.slice(0, at);
+  const manifestDigest = value.slice(at + 1);
+  if (at > 0 && SHA256_DIGEST.test(manifestDigest)) {
+    try {
+      const registryTarget = parseGraphShareRegistryTarget(registryReference);
+      if (registryReference === `oci://${registryTarget.registry}/${registryTarget.repository}`)
+        return {
+          kind: 'oci',
+          manifestDigest: manifestDigest as Sha256Digest,
+          registryReference,
+          registryTarget,
+        };
+    } catch {
+      throw graphSharingFailure('Enrollment profile pointer must be a digest-pinned cas:// or oci:// reference.');
+    }
   }
   throw graphSharingFailure('Enrollment profile pointer must be a digest-pinned cas:// or oci:// reference.');
+}
+
+export function ociProfilePointer(registryReference: string, manifestDigest: Sha256Digest): string {
+  const target = parseGraphShareRegistryTarget(registryReference);
+  if (registryReference !== `oci://${target.registry}/${target.repository}` || !SHA256_DIGEST.test(manifestDigest))
+    throw graphSharingFailure('OCI profile pointer is invalid.');
+  return `${registryReference}@${manifestDigest}`;
+}
+
+export function enrolledProfileBodyDigest(enrollment: GraphShareEnrollment): Sha256Digest {
+  const pointer = parseGraphShareProfilePointer(enrollment.profile);
+  if (enrollment.schemaVersion === 1 && pointer.kind === 'cas') return pointer.bodyDigest;
+  if (enrollment.schemaVersion === 2 && pointer.kind === 'oci' && SHA256_DIGEST.test(enrollment.profileDigest))
+    return enrollment.profileDigest as Sha256Digest;
+  throw graphSharingFailure('Enrollment profile pointer is invalid.');
 }
 
 export function parseGraphShareCoordinatorUrl(value: string): string {
@@ -204,7 +252,7 @@ export function defaultGraphShareProfile(input: {
   };
 }
 
-export function assertEnrollmentMatchesIdentity(enrollment: GraphShareEnrollmentV1, repositoryId: string): void {
+export function assertEnrollmentMatchesIdentity(enrollment: GraphShareEnrollment, repositoryId: string): void {
   if (enrollment.repositoryId !== repositoryId) {
     throw graphSharingFailure('Enrollment repositoryId does not match the credential-free checkout identity.');
   }
@@ -212,11 +260,10 @@ export function assertEnrollmentMatchesIdentity(enrollment: GraphShareEnrollment
 
 export function assertProfileMatchesEnrollment(
   profile: GraphShareProfileV1,
-  enrollment: GraphShareEnrollmentV1,
+  enrollment: GraphShareEnrollment,
   digest: Sha256Digest,
 ): void {
-  const pointer = parseGraphShareProfilePointer(enrollment.profile);
-  if (pointer.digest !== digest) {
+  if (enrolledProfileBodyDigest(enrollment) !== digest) {
     throw graphSharingFailure('Profile digest does not match the enrollment pointer.');
   }
   if (profile.repositoryId !== enrollment.repositoryId) {

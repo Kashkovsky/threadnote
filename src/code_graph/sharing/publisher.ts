@@ -29,14 +29,16 @@ import {
 import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {
   assertEnrollmentMatchesIdentity,
+  enrolledProfileBodyDigest,
   casProfilePointer,
   defaultGraphShareProfile,
   graphShareProfileDigest,
   parseGraphShareCoordinatorUrl,
   parseGraphShareEnrollment,
   parseGraphShareProfile,
-  parseGraphShareProfilePointer,
-  type GraphShareEnrollmentV1,
+  ociProfilePointer,
+  type GraphShareEnrollment,
+  type GraphShareEnrollmentV2,
   type GraphShareProfileV1,
 } from './profile.js';
 import {advanceGraphPublisherFrontier, ensureGraphSharePublishedOciDescriptor} from './publisher_cycle.js';
@@ -46,6 +48,11 @@ import {completeGraphPublisherRegistryPublication} from './publisher_registry.js
 import {graphShareRegistryPublicationScope, type GraphShareRegistryPublicationResult} from './registry_publication.js';
 import {readAuthenticatedGraphShareFrontier} from './frontier_acceptance.js';
 import {graphWorkerRegistryForProfile} from './worker_registry_upload.js';
+import {publishGraphShareProfileArtifact} from './profile_publication.js';
+import {makeGraphShareRegistryReader} from './registry_reader.js';
+import {makeGraphShareRegistryWriter} from './registry_writer.js';
+import {parseGraphShareRegistryTarget} from './registry_reference.js';
+import {readGraphShareEnrolledProfile} from './profile_storage.js';
 
 export interface GraphShareInitOptions {
   readonly cas?: string;
@@ -53,6 +60,8 @@ export interface GraphShareInitOptions {
   readonly cwd?: string;
   readonly json?: boolean;
   readonly organization?: string;
+  readonly registry?: string;
+  readonly workerRegistry?: string;
   readonly writeConfig?: boolean;
 }
 
@@ -63,6 +72,59 @@ export interface GraphPublisherBootstrapOptions {
   readonly json?: boolean;
   readonly listen?: string;
 }
+
+export interface GraphPublisherProfilePromoteOptions {
+  readonly cas?: string;
+  readonly cwd?: string;
+  readonly json?: boolean;
+  readonly registry: string;
+}
+
+export const runGraphPublisherProfilePromote = Effect.fn('codeGraph.sharing.promotePublisherProfile')(function* (
+  config: RuntimeConfig,
+  options: GraphPublisherProfilePromoteOptions,
+) {
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const cwd = yield* commandCwd(options.cwd);
+  const identity = yield* resolveRepositoryIdentity(cwd);
+  const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas);
+  const enrollment = parseGraphShareEnrollment(yield* readJsonFile(graphShareEnrollmentPath(path, identity.repoRoot)));
+  assertEnrollmentMatchesIdentity(enrollment, identity.repositoryId);
+  if (enrollment.schemaVersion !== 1)
+    return yield* graphSharingFailure('Profile promotion requires a staged v1 CAS enrollment.');
+  const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
+  if (!(yield* fs.exists(layout.publisherKeyPath)))
+    return yield* graphSharingFailure('Profile promotion requires the persisted publisher signing key.');
+  const key = parseGraphSharePublisherKey(yield* readJsonFile(layout.publisherKeyPath));
+  const profile = yield* readGraphShareEnrolledProfile(casRoot, enrollment);
+  if (
+    key.fingerprint !== enrollment.publisherKeyFingerprint ||
+    profile.source.canonicalRemote !== identity.remoteIdentity ||
+    profile.registry.canonical !== options.registry
+  )
+    return yield* graphSharingFailure('Publisher profile promotion authority does not match the staged enrollment.');
+  yield* Effect.try({
+    try: () =>
+      graphWorkerRegistryForProfile(profile, {
+        profileDigest: graphShareProfileDigest(profile),
+        repositoryId: identity.repositoryId,
+      }),
+    catch: () => graphSharingFailure('Publisher profile worker registry overlaps or exceeds its enrolled namespace.'),
+  });
+  const writer = yield* makeGraphShareRegistryWriter(options.registry);
+  const reader = yield* makeGraphShareRegistryReader(options.registry);
+  const artifact = yield* publishGraphShareProfileArtifact(profile, writer, reader);
+  yield* putCasBytes(casRoot, artifact.manifestBytes);
+  const candidate: GraphShareEnrollmentV2 = {
+    profile: ociProfilePointer(options.registry, artifact.manifestDigest),
+    profileDigest: artifact.profileDigest,
+    publisherKeyFingerprint: key.fingerprint,
+    repositoryId: identity.repositoryId,
+    schemaVersion: 2,
+  };
+  return {enrollment: candidate, manifestDigest: artifact.manifestDigest, profileDigest: artifact.profileDigest};
+});
 
 export const runGraphShareInit = Effect.fn('codeGraph.sharing.init')(function* (
   config: RuntimeConfig,
@@ -77,11 +139,27 @@ export const runGraphShareInit = Effect.fn('codeGraph.sharing.init')(function* (
       'Graph share init requires a credential-free origin remote such as github.com/org/repository.',
     );
   }
+  if ((options.registry === undefined) !== (options.workerRegistry === undefined))
+    return yield* graphSharingFailure('Specify both --registry and --worker-registry for OCI profile staging.');
+  const canonicalReference = options.registry;
+  const workerReference = options.workerRegistry;
+  if (canonicalReference !== undefined && workerReference !== undefined) {
+    const registry = yield* Effect.try({
+      try: () => parseGraphShareRegistryTarget(canonicalReference),
+      catch: () => graphSharingFailure('Canonical OCI registry reference is invalid.'),
+    });
+    const worker = yield* Effect.try({
+      try: () => parseGraphShareRegistryTarget(workerReference),
+      catch: () => graphSharingFailure('Worker OCI registry reference is invalid.'),
+    });
+    if (registry.origin === worker.origin && registry.repository === worker.repository)
+      return yield* graphSharingFailure('Canonical and worker OCI registry repositories must differ.');
+  }
   const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas);
   if (options.cas !== undefined) yield* writeGraphShareClientState(config.agentContextHome, casRoot);
   const key = yield* loadOrCreatePublisherKey(config.agentContextHome);
   const branch = identity.branch === undefined ? 'refs/heads/main' : `refs/heads/${identity.branch}`;
-  const profile = defaultGraphShareProfile({
+  const defaults = defaultGraphShareProfile({
     branch,
     canonicalRemote: identity.remoteIdentity,
     ...(options.coordinator === undefined ? {} : {coordinatorUrl: parseGraphShareCoordinatorUrl(options.coordinator)}),
@@ -89,9 +167,16 @@ export const runGraphShareInit = Effect.fn('codeGraph.sharing.init')(function* (
     publisherKeyFingerprint: key.fingerprint,
     repositoryId: identity.repositoryId,
   });
+  const profile =
+    canonicalReference === undefined || workerReference === undefined
+      ? defaults
+      : parseGraphShareProfile({
+          ...defaults,
+          registry: {canonical: canonicalReference, worker: workerReference},
+        });
   const profileDigest = graphShareProfileDigest(profile);
   yield* putCasBytes(casRoot, new TextEncoder().encode(canonicalJson(profile)));
-  const enrollment: GraphShareEnrollmentV1 = {
+  const enrollment: GraphShareEnrollment = {
     profile: casProfilePointer(profileDigest),
     publisherKeyFingerprint: key.fingerprint,
     repositoryId: identity.repositoryId,
@@ -142,10 +227,9 @@ const bootstrapGraphPublisherCandidate = Effect.fn('codeGraph.sharing.bootstrapP
   if (key.fingerprint !== enrollment.publisherKeyFingerprint) {
     return yield* graphSharingFailure('Publisher key fingerprint does not match enrollment.');
   }
-  const pointer = parseGraphShareProfilePointer(enrollment.profile);
-  const profile = parseGraphShareProfile(yield* decodeJsonBytes(yield* readVerifiedCasBlob(casRoot, pointer.digest)));
+  const profile = yield* readGraphShareEnrolledProfile(casRoot, enrollment);
   const profileDigest = graphShareProfileDigest(profile);
-  if (profileDigest !== pointer.digest || profile.repositoryId !== enrollment.repositoryId) {
+  if (profileDigest !== enrolledProfileBodyDigest(enrollment) || profile.repositoryId !== enrollment.repositoryId) {
     return yield* graphSharingFailure('Published profile digest does not match enrollment.');
   }
   const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
@@ -259,8 +343,7 @@ export const runGraphPublisherListen = Effect.fn('codeGraph.sharing.publisherLis
   const identity = yield* resolveRepositoryIdentity(cwd);
   const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas);
   const enrollment = parseGraphShareEnrollment(yield* readJsonFile(graphShareEnrollmentPath(path, identity.repoRoot)));
-  const pointer = parseGraphShareProfilePointer(enrollment.profile);
-  const profile = parseGraphShareProfile(yield* decodeJsonBytes(yield* readVerifiedCasBlob(casRoot, pointer.digest)));
+  const profile = yield* readGraphShareEnrolledProfile(casRoot, enrollment);
   const enableWorkerResults =
     profile.registry.canonical.startsWith('oci://') && profile.registry.worker.startsWith('oci://');
   if (enableWorkerResults)

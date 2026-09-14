@@ -6,7 +6,12 @@ import {join} from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
 import fc from 'fast-check';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
-import {defaultGraphShareProfile, graphShareProfileDigest} from '../../src/code_graph/sharing/profile.js';
+import {graphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile_oci_artifact.js';
+import {
+  defaultGraphShareProfile,
+  graphShareProfileDigest,
+  ociProfilePointer,
+} from '../../src/code_graph/sharing/profile.js';
 import {
   assertGraphPublisherDeploymentBinding,
   validateGraphPublisherDeployment,
@@ -100,6 +105,31 @@ describe('Fly graph publisher preflight', () => {
   it('admits a pinned persisted checkout, profile, policy, and publisher key', () => {
     const {env, root} = fixture();
     expect(() => validateGraphPublisherDeployment(root, env)).not.toThrow();
+  });
+
+  it('accepts an offline-pinned OCI profile manifest without contacting Zot', () => {
+    const {env, enrollment, profile, profileDigest, root, write} = fixture();
+    const artifact = graphShareProfileOciArtifact(profile);
+    const manifestFile = join(root, 'threadnote/graph-sharing/cas/sha256', artifact.manifestDigest.slice(7));
+    mkdirSync(join(manifestFile, '..'), {recursive: true});
+    writeFileSync(manifestFile, artifact.manifestBytes);
+    write('repository/.threadnote/graph-share.json', {
+      ...enrollment,
+      profile: ociProfilePointer(profile.registry.canonical, artifact.manifestDigest),
+      profileDigest,
+      schemaVersion: 2,
+    });
+    expect(() => validateGraphPublisherDeployment(root, env)).not.toThrow();
+    writeFileSync(manifestFile, '{}');
+    expect(() => validateGraphPublisherDeployment(root, env)).toThrow();
+    writeFileSync(manifestFile, artifact.manifestBytes);
+    write('repository/.threadnote/graph-share.json', {
+      ...enrollment,
+      profile: ociProfilePointer(profile.registry.worker, artifact.manifestDigest),
+      profileDigest,
+      schemaVersion: 2,
+    });
+    expect(() => validateGraphPublisherDeployment(root, env)).toThrow();
   });
 
   it('refuses a missing publisher key rather than allowing the runtime to generate one', () => {

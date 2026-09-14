@@ -6,10 +6,12 @@ import {
   parseGraphShareEnrollment,
   parseGraphShareProfile,
   parseGraphShareProfilePointer,
+  enrolledProfileBodyDigest,
   graphShareProfileDigest,
-  type GraphShareEnrollmentV1,
+  type GraphShareEnrollment,
   type GraphShareProfileV1,
 } from '../../src/code_graph/sharing/profile.js';
+import {parseGraphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile_oci_artifact.js';
 import {parseGraphSharePublisherKey, type GraphSharePublisherKeyV1} from '../../src/code_graph/sharing/artifacts.js';
 import {parseGraphControlPolicy, type GraphControlPolicy} from '../../src/code_graph/sharing/control_authorization.js';
 import {sha256Digest, SHA256_DIGEST, SHA256_HEX} from '../../src/code_graph/sharing/digest.js';
@@ -108,15 +110,15 @@ function deploymentBinding(env: Environment) {
 export function assertGraphPublisherDeploymentBinding(
   env: Environment,
   profile: GraphShareProfileV1,
-  enrollment: GraphShareEnrollmentV1,
+  enrollment: GraphShareEnrollment,
   policy: GraphControlPolicy,
   key: GraphSharePublisherKeyV1,
 ): void {
   const expected = deploymentBinding(env);
   const pointer = parseGraphShareProfilePointer(enrollment.profile);
   if (
-    pointer.kind !== 'cas' ||
-    pointer.digest !== expected.profileDigest ||
+    enrolledProfileBodyDigest(enrollment) !== expected.profileDigest ||
+    (pointer.kind === 'oci' && pointer.registryReference !== expected.canonicalRegistry) ||
     graphShareProfileDigest(profile) !== expected.profileDigest ||
     enrollment.repositoryId !== expected.repositoryId ||
     profile.repositoryId !== expected.repositoryId ||
@@ -189,10 +191,17 @@ function readJson(root: string, relative: string, limit: number, privateFile = f
 export function validateGraphPublisherDeployment(root: string, env: Environment): void {
   const enrollment = parseGraphShareEnrollment(readJson(root, 'repository/.threadnote/graph-share.json', 4096));
   const pointer = parseGraphShareProfilePointer(enrollment.profile);
-  if (pointer.kind !== 'cas') throw new Error('Publisher profile must be pinned to its persisted CAS');
-  const bytes = readStateFile(root, `threadnote/graph-sharing/cas/sha256/${pointer.digest.slice(7)}`, 128 * 1024);
-  if (sha256Digest(bytes) !== pointer.digest) throw new Error('Persisted profile digest differs from enrollment');
-  const profile = parseGraphShareProfile(JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes)));
+  const bodyDigest = enrolledProfileBodyDigest(enrollment);
+  const bytes = readStateFile(root, `threadnote/graph-sharing/cas/sha256/${bodyDigest.slice(7)}`, 128 * 1024);
+  if (sha256Digest(bytes) !== bodyDigest) throw new Error('Persisted profile digest differs from enrollment');
+  const profile =
+    pointer.kind === 'cas'
+      ? parseGraphShareProfile(JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes)))
+      : parseGraphShareProfileOciArtifact(
+          readStateFile(root, `threadnote/graph-sharing/cas/sha256/${pointer.manifestDigest.slice(7)}`, 8192),
+          pointer.manifestDigest,
+          bytes,
+        );
   const policy = parseGraphControlPolicy(readJson(root, 'control-policy.json', 128 * 1024, true));
   const key = parseGraphSharePublisherKey(
     readJson(root, 'threadnote/graph-sharing/keys/publisher.ed25519.json', 4096, true),

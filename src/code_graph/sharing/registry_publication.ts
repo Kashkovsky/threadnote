@@ -19,7 +19,7 @@ import {graphShareFrontierDiscoveryTag} from './namespace.js';
 import {
   assertProfileMatchesEnrollment,
   graphShareProfileDigest,
-  type GraphShareEnrollmentV1,
+  type GraphShareEnrollment,
   type GraphShareProfileV1,
 } from './profile.js';
 import {
@@ -43,7 +43,7 @@ import {graphShareContributionRetryDelay} from './contribution_retry_state.js';
 export interface GraphShareRegistryPublicationOptions {
   readonly home: string;
   readonly casRoot: string;
-  readonly enrollment: GraphShareEnrollmentV1;
+  readonly enrollment: GraphShareEnrollment;
   readonly profile: GraphShareProfileV1;
 }
 export interface GraphShareRegistryPublicationResult {
