@@ -225,6 +225,7 @@ export interface ContextBriefCitationScaleReleaseIdentityV1 {
 /** External review context, read from the exact candidate Git object rather than the artifact. */
 export interface ContextBriefCitationScaleCandidateBinding {
   readonly commit: string;
+  readonly runtime: string;
   readonly sourceVersion: string;
 }
 
@@ -238,7 +239,11 @@ export function contextBriefCitationScaleCandidateBinding(
   if (!CANDIDATE_PACKAGE_VERSION.test(version)) {
     invalid('candidate package version must be an explicit version');
   }
-  return {commit, sourceVersion: `threadnote-${version}`};
+  const packageManager = boundedString(manifest.packageManager, 'candidate package manager');
+  if (!packageManager.startsWith('bun@') || !CANDIDATE_PACKAGE_VERSION.test(packageManager.slice('bun@'.length))) {
+    invalid('candidate package manager must pin an explicit Bun version');
+  }
+  return {commit, runtime: `bun/${packageManager.slice('bun@'.length)}`, sourceVersion: `threadnote-${version}`};
 }
 
 export type ContextBriefCitationScaleEvidenceClass = 'development-smoke' | 'release-scale';
@@ -1309,6 +1314,7 @@ export function contextBriefCitationScaleReleaseIdentityFailures(
   // Omitting external review context preserves the immutable historical 4.6.0
   // artifact contract. New releases must supply a candidate-bound expectation.
   const expectedSourceVersion = candidate?.sourceVersion ?? CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SOURCE_VERSION;
+  const expectedRuntime = candidate?.runtime ?? CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNTIME;
   return [
     candidate === undefined || /^[0-9a-f]{40}$/u.test(candidate.commit)
       ? ''
@@ -1319,6 +1325,12 @@ export function contextBriefCitationScaleReleaseIdentityFailures(
       CANDIDATE_PACKAGE_VERSION.test(candidate.sourceVersion.slice('threadnote-'.length)))
       ? ''
       : 'candidate binding source version must name an explicit package version',
+    candidate === undefined ||
+    (typeof candidate.runtime === 'string' &&
+      candidate.runtime.startsWith('bun/') &&
+      CANDIDATE_PACKAGE_VERSION.test(candidate.runtime.slice('bun/'.length)))
+      ? ''
+      : 'candidate binding runtime must name an explicit Bun version',
     candidate === undefined || identity.candidateCommit === candidate.commit
       ? ''
       : `claimed candidate ${identity.candidateCommit}; required reviewed candidate ${candidate.commit}`,
@@ -1346,9 +1358,7 @@ export function contextBriefCitationScaleReleaseIdentityFailures(
     identity.operatingSystem.startsWith('macOS ')
       ? ''
       : `runner operating system ${identity.operatingSystem}; required macOS`,
-    identity.runtime === CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNTIME
-      ? ''
-      : `runtime ${identity.runtime}; required ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNTIME}`,
+    identity.runtime === expectedRuntime ? '' : `runtime ${identity.runtime}; required ${expectedRuntime}`,
     identity.sourceVersion === expectedSourceVersion
       ? ''
       : `source version ${identity.sourceVersion}; required ${expectedSourceVersion}`,

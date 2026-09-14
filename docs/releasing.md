@@ -106,11 +106,12 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    The absolute latency gate runs on the reviewed `macos-15`/ARM64/Apple-M1 class. Its artifact must bind the explicit
    candidate argument to the observed clean checkout; require observed Git status, GitHub Actions,
    `RUNNER_ENVIRONMENT=github-hosted`, `RUNNER_OS=macOS`, runner class `github-hosted-macos-15-ARM64`, arm64, an
-   Apple-M1-class CPU and `bun/1.3.14`. The built `sourceVersion` must equal `threadnote-` plus the package version
+   Apple-M1-class CPU and the exact Bun version pinned in the candidate's committed `packageManager` field
+   (`bun/1.4.2` for 4.7.0). The built `sourceVersion` must equal `threadnote-` plus the package version
    read independently from `git show C:package.json`. The benchmark verifies that binding before fixture setup;
-   retained-artifact review must pass the same independently derived `{commit: C, sourceVersion}` binding to
+   retained-artifact review must pass the same independently derived `{commit: C, runtime, sourceVersion}` binding to
    `parseContextBriefCitationScaleArtifactV2`. Never derive the expected version from the artifact itself. Omitting
-   that binding retains the historical `threadnote-4.6.0` validation contract and rejects later versions.
+   that binding retains the historical `threadnote-4.6.0`/`bun/1.3.14` validation contract and rejects later versions.
    Do not substitute a pass from the heterogeneous Ubuntu x64
    pool or normalize two failed absolute observations through a parent-relative comparison.
    Also require `bun run eval:code-memory-link-bench` to pass on that SHA for changes to code-anchored retrieval. Treat
@@ -356,11 +357,10 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
 7. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
    six enabled archives are verified while its bounded production-large observation continues independently.
 
-The main-branch website build includes the prepared stable `package.json` version when its matching release note is
-checked in but its tag does not exist yet. Merge only a ready-to-tag release commit and push the matching tag promptly.
-Until a later main deployment observes the tag, What's New uses the release-preparation commit date and its release
-link is intentionally future-facing. If tagging cannot finish promptly, stop the release window instead of continuing
-ordinary main development under unreleased stable-version wording.
+The main-branch website build hides prepared release notes until a published immutable GitHub Release exists for the
+matching stable tag. After publication, the release workflow dispatches a website build that verifies the release and
+publishes its What's New page. Merge only a ready-to-tag release commit and push the matching tag promptly. If tagging
+cannot finish promptly, stop the release window rather than leaving the prepared version unreleased on main.
 
 Optional experiment evidence must distinguish a clean candidate run from exact-tag evidence. Candidate evidence can
 close implementation gates before merge, but only a tag-triggered artifact may claim exact release provenance. None of

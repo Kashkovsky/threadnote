@@ -1987,7 +1987,6 @@ const topLevelCommandRegistrations = [
 ] as const;
 
 const inspectRegisteredCliInvocation = makeCliInvocationInspector(topLevelCommandRegistrations);
-
 export const threadnoteCommand = root.pipe(
   Command.withDescription('Threadnote shared context workflow for development agents'),
   Command.withSubcommands(topLevelCommandRegistrations.map(registration => registration.command)),
