@@ -130,6 +130,45 @@ describe('code graph schema initialization receipt', () => {
     ),
   );
 
+  effectIt.effect('restores the endpoint index when opening a valid pre-index receipt', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* CodeGraphStore;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-endpoint-index-upgrade-'});
+        const databasePath = path.join(root, 'graph.sqlite');
+        const writerLockPath = path.join(root, 'writer.lock');
+
+        yield* store.initialize(databasePath);
+        yield* useWritableDatabase(databasePath, database => {
+          database.exec('DROP INDEX edges_endpoints');
+          const schemaVersion = database
+            .query<{readonly schema_version: number}, []>('PRAGMA main.schema_version')
+            .get()?.schema_version;
+          if (schemaVersion === undefined) throw new Error('SQLite schema version is unavailable.');
+          database
+            .query(
+              `UPDATE ${CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_TABLE}
+               SET contract_revision = ?, sqlite_schema_version = ? WHERE singleton = 1`,
+            )
+            .run(CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_REVISION.endpointIndexPredecessor, schemaVersion);
+        });
+
+        yield* store.withSession(databasePath, store.initialize(databasePath), {writerLockPath});
+
+        yield* useReadonlyDatabase(databasePath, database => {
+          expect(database.query("SELECT type FROM sqlite_master WHERE name = 'edges_endpoints'").get()).toEqual({
+            type: 'index',
+          });
+          expect(
+            database.query(`SELECT contract_revision FROM ${CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_TABLE}`).get(),
+          ).toEqual({contract_revision: CODE_GRAPH_SCHEMA_INITIALIZATION_CONTRACT_REVISION});
+        });
+      }).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
   effectIt.effect('upgrades a valid predecessor receipt before fold-forward tables are used', () =>
     Effect.scoped(
       Effect.gen(function* () {

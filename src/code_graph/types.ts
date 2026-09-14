@@ -636,6 +636,13 @@ export interface CodeGraphQueryResult {
   readonly freshness: 'current' | 'deferred' | 'stale';
   readonly nodes: readonly CodeGraphQueryNode[];
   readonly operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query';
+  readonly searchCoverage?: {
+    readonly status: 'found' | 'exhaustive' | 'bounded' | 'timed-out' | 'unresolved';
+    readonly limitsReached: readonly ('depth' | 'node-limit' | 'edge-limit' | 'time-budget')[];
+    readonly visitedNodes: number;
+    readonly inspectedEdges: number;
+    readonly directEdgeChecked: boolean;
+  };
   readonly repository: {
     readonly displayName: string;
     readonly repositoryId: string;

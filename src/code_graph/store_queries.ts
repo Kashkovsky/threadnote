@@ -33,6 +33,7 @@ import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from './store_build_core.js';
 import {boundedPageLimit, chunk, normalizedTerms, sqlTextOption, uniqueBy} from './store_utilities.js';
 import {
   codeGraphAdjacencyQueryStatement,
+  codeGraphDirectEdgeQueryStatement,
   codeGraphExactSymbolQueryStatement,
   codeGraphSymbolSearchScoreMultiplier,
   codeGraphSymbolsByIdsQueryStatement,
@@ -1525,6 +1526,27 @@ const selectEdgesForNodes = Effect.fn('codeGraph.selectEdgesForNodes')(function*
   return rows.map(edgeFromRow);
 });
 
+const selectDirectEdgeBetweenNodes = Effect.fn('codeGraph.selectDirectEdgeBetweenNodes')(function* (
+  snapshotId: string,
+  sourceId: string,
+  targetId: string,
+  allowedProvenances: readonly CodeGraphProvenance[],
+) {
+  if (allowedProvenances.length === 0) return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  const statement = codeGraphDirectEdgeQueryStatement(
+    snapshotId,
+    baseSnapshotId,
+    sourceId,
+    targetId,
+    allowedProvenances,
+  );
+  const rows = yield* sql.unsafe<EdgeRow>(statement.text, statement.parameters);
+  return rows[0] ? edgeFromRow(rows[0]) : undefined;
+});
+
 function representativeEdgeRows(
   pages: readonly {readonly nodeId: string; readonly rows: readonly EdgeRow[]}[],
   limit: number,
@@ -1595,4 +1617,5 @@ export {
   selectSearchSymbolsMany,
   selectSymbolsByIds,
   selectEdgesForNodes,
+  selectDirectEdgeBetweenNodes,
 };
