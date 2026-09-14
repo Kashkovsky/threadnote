@@ -910,7 +910,12 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
   const hasCurrentCodeLinkedMemory = [...logical.activeHandoffs, ...logical.durableDecisions].some(
     memory => memory.selectionBasis === 'code-citation' && hasCurrentCodeRelation(memory),
   );
-  // Keep the exact code card ahead of stale linked handoffs without displacing current relations.
+  const firstStaleCodeLinkedMemoryUri = hasCurrentCodeLinkedMemory
+    ? undefined
+    : [...logical.activeHandoffs, ...logical.durableDecisions]
+        .filter(memory => memory.selectionBasis === 'code-citation')
+        .sort((left, right) => left.rank - right.rank || compareText(left.uri, right.uri))[0]?.uri;
+  // Reserve one linked memory, then the exact card, before admitting more stale handoffs.
   return [
     ...logical.coverage.gaps.map((gap, rank) => ({
       id: coverageGapProjectionId(gap),
@@ -940,7 +945,11 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
         ? memory.selectionBasis === 'code-citation'
           ? hasCurrentCodeRelation(memory)
             ? 0
-            : 2
+            : hasCurrentCodeLinkedMemory
+              ? 2
+              : memory.uri === firstStaleCodeLinkedMemoryUri
+                ? -2
+                : 1
           : 2
         : hasPreciselyValidatedMemory
           ? memory.citationSummary === undefined
@@ -956,7 +965,11 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
         ? memory.selectionBasis === 'code-citation'
           ? hasCurrentCodeRelation(memory)
             ? 0
-            : 2
+            : hasCurrentCodeLinkedMemory
+              ? 2
+              : memory.uri === firstStaleCodeLinkedMemoryUri
+                ? -2
+                : 1
           : 2
         : hasPreciselyValidatedMemory
           ? memory.citationSummary === undefined

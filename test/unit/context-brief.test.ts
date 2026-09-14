@@ -1863,7 +1863,7 @@ describe('Context Brief compiler', () => {
         };
         const narrow = yield* compileCodeLinkedRecoveryFixture(1, memoryCount, 1_250, options);
         const expanded = yield* compileCodeLinkedRecoveryFixture(1, memoryCount, 1_500, options);
-        expect(narrow.structuredContent.graph.cards).toHaveLength(1);
+        expect(narrow.structuredContent.activeHandoffs.length).toBeGreaterThan(0);
         expect(expanded.structuredContent.graph.cards).toHaveLength(1);
         expect(expanded.structuredContent.activeHandoffs.length).toBeGreaterThan(0);
         for (const memory of narrow.structuredContent.activeHandoffs) {
