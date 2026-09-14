@@ -1,5 +1,6 @@
 import {Clock, Effect, FileSystem, Path, Redacted, Schema, Semaphore} from 'effect';
 import {CommandExecutor} from '../../effect/command.js';
+import {SystemInfo} from '../../effect/system.js';
 import {readBoundedPrivateBytes} from './atomic.js';
 import {sha256Digest, SHA256_DIGEST, SHA256_HEX} from './digest.js';
 import {graphSharingFailure, graphSharingUnavailable} from './errors.js';
@@ -20,7 +21,7 @@ const Binding = Schema.Struct({
   issuer: Text,
   organization: Organization,
 });
-const Configuration = Schema.Struct({
+export const GraphControlCredentialConfiguration = Schema.Struct({
   bindings: Schema.Array(Binding).check(Schema.isMaxLength(32)),
   schemaVersion: Schema.Literal(1),
 });
@@ -51,6 +52,7 @@ export const makeGraphControlCredentialLoader = Effect.fn('codeGraph.sharing.con
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const command = yield* CommandExecutor;
+  const system = yield* SystemInfo;
   const scope = yield* Schema.decodeEffect(
     Scope,
     STRICT,
@@ -75,7 +77,7 @@ export const makeGraphControlCredentialLoader = Effect.fn('codeGraph.sharing.con
         catch: () => graphSharingFailure('Graph control credential configuration is invalid.'),
       });
       const config = yield* Schema.decodeEffect(
-        Schema.fromJsonString(Configuration),
+        Schema.fromJsonString(GraphControlCredentialConfiguration),
         STRICT,
       )(text).pipe(Effect.mapError(() => graphSharingFailure('Graph control credential configuration is invalid.')));
       if (
@@ -100,9 +102,19 @@ export const makeGraphControlCredentialLoader = Effect.fn('codeGraph.sharing.con
       const now = yield* Clock.currentTimeMillis;
       if (cached?.bindingId === bindingId && cached.refreshAt > now) return cached.credential;
       cached = undefined;
+      const helper =
+        binding.helper === 'auth0'
+          ? typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE
+            ? {executable: system.executablePath, args: ['__graph-auth0-helper', 'get']}
+            : {
+                executable: system.executablePath,
+                args: [new URL('../../standalone.ts', import.meta.url).pathname, '__graph-auth0-helper', 'get'],
+              }
+          : {executable: `threadnote-credential-${binding.helper}`, args: ['get']};
       const result = yield* command
-        .execute(`threadnote-credential-${binding.helper}`, ['get'], {
+        .execute(helper.executable, helper.args, {
           allowFailure: true,
+          env: {...system.environment(), THREADNOTE_HOME: home},
           input: new TextEncoder().encode(
             JSON.stringify({
               ...scope,
@@ -115,7 +127,7 @@ export const makeGraphControlCredentialLoader = Effect.fn('codeGraph.sharing.con
           ),
           maxOutputBytes: 32_768,
           // The packaged Auth0 helper may need both a token exchange and a cold JWKS fetch.
-          timeoutMs: binding.helper === 'auth0-m2m' ? 10_000 : 5_000,
+          timeoutMs: binding.helper === 'auth0' ? 25_000 : binding.helper === 'auth0-m2m' ? 10_000 : 5_000,
         })
         .pipe(Effect.mapError(() => graphSharingUnavailable('Graph control credential helper is unavailable.')));
       if (result.exitCode !== 0)

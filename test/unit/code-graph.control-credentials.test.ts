@@ -1,13 +1,16 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Clock, Effect, FileSystem, Path, Redacted} from 'effect';
+import {Clock, Effect, FileSystem, Layer, Path, Redacted} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as FC from 'fast-check';
 import {CommandExecutor} from '../../src/effect/command.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {makeGraphControlCredentialLoader} from '../../src/code_graph/sharing/control_credentials.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {fcEffectProp} from '../helpers/fast-check-property.js';
+
+const layer = Layer.merge(BunServices.layer, SystemInfo.layer);
 
 const scope = {
   coordinatorUrl: 'https://graph.example.test/team',
@@ -88,7 +91,50 @@ describe('graph control credential discovery', () => {
       const f = yield* fixture({helper: 'auth0-m2m'});
       expect((yield* f.loader.load).expiresAt).toBeGreaterThan((yield* Clock.currentTimeMillis) / 1000);
       expect(f.calls()).toBe(1);
-    }).pipe(provideTestLayer(BunServices.layer)),
+    }).pipe(provideTestLayer(layer)),
+  );
+
+  effectIt.effect('spawns the built-in Auth0 helper from the exact Threadnote executable with refresh headroom', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'graph-auth0-helper-binding-'});
+      const directory = path.join(home, 'graph-sharing');
+      yield* fs.makeDirectory(directory);
+      yield* fs.writeFileString(
+        path.join(directory, 'control-credentials.json'),
+        JSON.stringify({
+          bindings: [{...binding, helper: 'auth0'}],
+          schemaVersion: 1,
+        }),
+      );
+      const loader = yield* makeGraphControlCredentialLoader(home, scope, 'graph:contribute').pipe(
+        Effect.provideService(CommandExecutor, {
+          execute: (executable, args, options) =>
+            Effect.gen(function* () {
+              expect(executable).toBe(process.execPath);
+              expect(args.at(-2)).toBe('__graph-auth0-helper');
+              expect(args.at(-1)).toBe('get');
+              expect(options?.timeoutMs).toBe(25_000);
+              expect(options?.env?.THREADNOTE_HOME).toBe(home);
+              return {
+                exitCode: 0,
+                stderr: '',
+                stdout: JSON.stringify({
+                  accessToken: 'synthetic.token',
+                  audience: binding.audience,
+                  expiresAt: Math.floor((yield* Clock.currentTimeMillis) / 1000) + 300,
+                  issuer: binding.issuer,
+                  schemaVersion: 1,
+                  subject: 'auth0|synthetic',
+                }),
+              };
+            }),
+          executeStreaming: () => Effect.succeed({exitCode: 1, stdout: '', stderr: ''}),
+        }),
+      );
+      expect((yield* loader.load).expiresAt).toBeGreaterThan(0);
+    }).pipe(provideTestLayer(layer)),
   );
 
   fcEffectProp(
@@ -108,7 +154,7 @@ describe('graph control credential discovery', () => {
           if (previous.expiresAt <= now) expect(next).not.toBe(previous);
           previous = next;
         }
-      }).pipe(provideTestLayer(BunServices.layer)),
+      }).pipe(provideTestLayer(layer)),
     {fastCheck: {numRuns: 35}},
   );
 
@@ -129,7 +175,7 @@ describe('graph control credential discovery', () => {
       yield* TestClock.adjust(300_001);
       yield* wave();
       expect(f.calls()).toBe(3);
-    }).pipe(provideTestLayer(BunServices.layer)),
+    }).pipe(provideTestLayer(layer)),
   );
 
   effectIt.effect('does not invoke a helper without an exact approved local binding', () =>
@@ -149,7 +195,7 @@ describe('graph control credential discovery', () => {
         expect((yield* Effect.result(f.loader.load))._tag).toBe('Failure');
       }
       expect(f.calls()).toBe(0);
-    }).pipe(provideTestLayer(BunServices.layer)),
+    }).pipe(provideTestLayer(layer)),
   );
 
   effectIt.effect('rechecks local revocation before serving a cached token', () =>
@@ -160,7 +206,7 @@ describe('graph control credential discovery', () => {
       yield* fs.writeFileString(f.config, JSON.stringify({bindings: [], schemaVersion: 1}));
       expect((yield* Effect.result(f.loader.load))._tag).toBe('Failure');
       expect(f.calls()).toBe(1);
-    }).pipe(provideTestLayer(BunServices.layer)),
+    }).pipe(provideTestLayer(layer)),
   );
 
   effectIt.effect('binds identity changes to a different enrollment authority', () =>
@@ -180,7 +226,7 @@ describe('graph control credential discovery', () => {
       const second = yield* f.loader.load;
       expect(first.principalId).not.toBe(second.principalId);
       expect(first.identity).not.toBe(second.identity);
-    }).pipe(provideTestLayer(BunServices.layer)),
+    }).pipe(provideTestLayer(layer)),
   );
 
   effectIt.effect('rejects malformed, expired and foreign helper output without exposing its contents', () =>
@@ -211,6 +257,6 @@ describe('graph control credential discovery', () => {
       const failure = yield* Effect.result(denied.loader.load);
       expect(failure._tag).toBe('Failure');
       expect(JSON.stringify(failure)).not.toContain('synthetic-private-helper-detail');
-    }).pipe(provideTestLayer(BunServices.layer)),
+    }).pipe(provideTestLayer(layer)),
   );
 });
