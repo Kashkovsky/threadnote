@@ -27,6 +27,7 @@ import {
 } from '../../effect/share.js';
 import {withSharedRepositoryLock} from '../../effect/share_lock.js';
 import {canonicalMemoryDocumentContent} from '../../memory/document.js';
+import {sharePublishEligibilityError, sharePublishRelationWarnings} from '../../share/publish_policy.js';
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
@@ -202,6 +203,8 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
         isError: true,
       };
     }
+    const eligibilityError = sharePublishEligibilityError(config, sourceUri, sourceText);
+    if (eligibilityError) return argumentError(eligibilityError);
     const citationBlocker = memoryCodeCitationContentSharingBlocker(sourceUri, sourceText);
     if (citationBlocker) {
       return argumentError(
@@ -224,6 +227,7 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
       for (const redaction of scrub.redactions) {
         previewLines.push(`PREVIEW redact: ${redaction.count}× ${redaction.name}`);
       }
+      previewLines.push(...(yield* sharePublishRelationWarnings(config, sourceUri, scrub.cleaned, resolved.name)));
       previewLines.push('-----BEGIN PREVIEW-----');
       previewLines.push(scrub.cleaned);
       previewLines.push('-----END PREVIEW-----');
@@ -257,6 +261,10 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
             const currentSourceText = textFromCallToolResult(currentReadResult);
             if (currentReadResult.isError === true || !currentSourceText) {
               return {kind: 'source_missing' as const};
+            }
+            const currentEligibilityError = sharePublishEligibilityError(config, sourceUri, currentSourceText);
+            if (currentEligibilityError) {
+              return {kind: 'ineligible' as const, message: currentEligibilityError};
             }
             const currentCitationBlocker = memoryCodeCitationContentSharingBlocker(sourceUri, currentSourceText);
             if (currentCitationBlocker) {
@@ -346,6 +354,7 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
     if (publication.kind === 'source_missing') {
       return argumentError(`Could not resolve local memory content for ${sourceUri} before publishing.`);
     }
+    if (publication.kind === 'ineligible') return argumentError(publication.message);
     if (publication.kind === 'pending_code_refs') {
       return argumentError(
         `Refusing to publish ${sourceUri}: code citations are still pending. Prepare the graph and call finalize_code_refs, or pass allowUncitedPendingCodeRefs=true to publish without them and discard the private intent.`,

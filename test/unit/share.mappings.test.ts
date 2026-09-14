@@ -77,6 +77,18 @@ describe('sharedUriFor', () => {
       /outside the current user namespace/,
     );
   });
+
+  it('rejects handoffs before mapping them into the shared subtree', () => {
+    expect(() =>
+      sharedUriFor(runtime, 'threadnote://user/test-user/memories/handoffs/active/foo/bar.md', 'default'),
+    ).toThrow(/only personal durable memories/);
+  });
+
+  it('rejects anchored source URIs before computing a Git path', () => {
+    expect(() =>
+      sharedUriFor(runtime, 'threadnote://user/test-user/memories/durable/projects/foo/bar.md#x.md', 'default'),
+    ).toThrow(/anchored memory URI/);
+  });
 });
 
 describe('resourceUriToWorktreeRelative', () => {

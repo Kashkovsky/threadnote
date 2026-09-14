@@ -17,6 +17,7 @@ import {recordMemoryRelocation} from '../memory/relocation.js';
 import {ResourceStore} from '../effect/resource-store.js';
 
 import {applyScrubber} from './scrubber.js';
+import {sharePublishEligibilityError, sharePublishRelationWarnings} from './publish_policy.js';
 
 import type {
   ShareAgentArtifactAgent,
@@ -109,7 +110,11 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
     });
   }
   const ov = NATIVE_RESOURCE_BACKEND;
-  const rawContent = yield* readMemoryContent(config, ov, sourceUri, dryRun);
+  const rawContent = yield* readMemoryContent(config, ov, sourceUri, false);
+  const eligibilityError = sharePublishEligibilityError(config, sourceUri, rawContent);
+  if (eligibilityError) {
+    throw ShareOperationError.make({message: eligibilityError});
+  }
   const citationBlocker = memoryCodeCitationContentSharingBlocker(sourceUri, rawContent);
   if (citationBlocker) {
     throw ShareOperationError.make({
@@ -132,6 +137,9 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
     for (const redaction of scrub.redactions) {
       yield* Console.log(`PREVIEW redact: ${redaction.count}× ${redaction.name}`);
     }
+    for (const warning of yield* sharePublishRelationWarnings(config, sourceUri, scrub.cleaned, team.name)) {
+      yield* Console.log(warning);
+    }
     yield* Console.log('-----BEGIN PREVIEW-----');
     yield* Console.log(scrub.cleaned);
     yield* Console.log('-----END PREVIEW-----');
@@ -148,6 +156,10 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
   const message = options.message ?? `share: publish ${relativePath}`;
   const publish = Effect.fn('share.callback')(function* () {
     const currentRawContent = dryRun ? rawContent : yield* readMemoryContent(config, ov, sourceUri, false);
+    const currentEligibilityError = sharePublishEligibilityError(config, sourceUri, currentRawContent);
+    if (currentEligibilityError) {
+      throw ShareOperationError.make({message: currentEligibilityError});
+    }
     const currentCitationBlocker = memoryCodeCitationContentSharingBlocker(sourceUri, currentRawContent);
     if (currentCitationBlocker) {
       throw ShareOperationError.make({
