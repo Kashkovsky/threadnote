@@ -54,6 +54,19 @@ function subjects(env: Environment, name: string, requiredArray: boolean): strin
   return value;
 }
 
+function roleScopeValidation(publisher: string, workers: readonly string[], readers: readonly string[]) {
+  const hasScope = (scope: string) => `(' ' + claims.scope + ' ').contains(' ${scope} ')`;
+  const roles = [
+    `(claims.sub == ${JSON.stringify(publisher)} && ${hasScope('registry:publisher')})`,
+    `(claims.sub in ${JSON.stringify(workers)} && ${hasScope('registry:worker')})`,
+    `(claims.sub in ${JSON.stringify(readers)} && ${hasScope('registry:read')})`,
+  ];
+  return {
+    expression: `'scope' in claims && type(claims.scope) == string && (${roles.join(' || ')})`,
+    message: 'Registry role scope is required.',
+  };
+}
+
 export function buildZotConfig(env: Environment) {
   const origin = httpsUrl(required(env, 'ZOT_PUBLIC_ORIGIN'), 'ZOT_PUBLIC_ORIGIN', false).origin;
   const issuer = httpsUrl(required(env, 'ZOT_OIDC_ISSUER'), 'ZOT_OIDC_ISSUER', true).href;
@@ -81,7 +94,16 @@ export function buildZotConfig(env: Environment) {
         bearer: {
           realm: `${origin}/zot/auth/token`,
           service: 'threadnote-org-registry-e2e',
-          oidc: [{issuer, audiences: [audience], claimMapping: {username: 'claims.sub'}}],
+          oidc: [
+            {
+              issuer,
+              audiences: [audience],
+              claimMapping: {
+                username: 'claims.sub',
+                validations: [roleScopeValidation(publisher, workers, readers)],
+              },
+            },
+          ],
         },
       },
       accessControl: {
