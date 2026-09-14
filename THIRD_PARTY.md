@@ -14,7 +14,7 @@ Direct runtime software and packages bundled into the published JavaScript retai
 - `jose` 6.2.10 (MIT), used for OAuth and Cursor workload JWT/JWKS verification
 - `pxpipe-proxy` 0.13.2 (MIT), used to render optional MCP memory PNG pages
 - `postgres` 3.4.9 (MIT), used by the managed remote-memory PostgreSQL service and operator
-- `zod` 4.4.3 (MIT), used for strict remote MCP and operator request schemas
+- `zod` 4.4.3 (MIT), retained transitively by `@modelcontextprotocol/sdk` for its protocol implementation
 - `react`, `react-dom`, and `react-markdown` (MIT)
 - `remark-gfm` (MIT)
 - `three` (MIT), used for GPU-accelerated manager graph rendering

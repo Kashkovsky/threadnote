@@ -1,7 +1,7 @@
 import {McpServer, ResourceTemplate} from '@modelcontextprotocol/sdk/server/mcp.js';
-import * as z from 'zod/v4';
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Schema} from 'effect';
+import {EffectSchemaSdkTools} from '../mcp/effect_schema_sdk_tools.js';
 import {InvalidRemoteMemoryAddress, parseRemoteShareAddress} from '../memory_domain/address.js';
 import {parseRemoteMemoryReceiptV1, type RemoteMemoryReceiptV1} from '../memory_domain/receipts.js';
 import {
@@ -43,38 +43,55 @@ export const REMOTE_MEMORY_TOOL_NAMES = [
   'transition_handoff',
 ] as const;
 
-const Version = z.literal(1);
-const Identifier = z
-  .string()
-  .min(1)
-  .max(512)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u);
-const PortableSegment = z
-  .string()
-  .min(1)
-  .max(255)
-  .refine(isPortableSegment, 'Expected one canonical portable URI segment.');
-const Kind = z.enum(['durable', 'handoff']);
-const Status = z.enum(['active', 'archived', 'expired', 'superseded']);
+const Version = Schema.Literal(1);
+const Identifier = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(512),
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
+);
+const PortableSegment = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(255),
+  Schema.makeFilter(value => (isPortableSegment(value) ? undefined : 'Expected one canonical portable URI segment.')),
+);
+const Kind = Schema.Literals(['durable', 'handoff']);
+const Status = Schema.Literals(['active', 'archived', 'expired', 'superseded']);
+const NonEmptyUri = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4_096));
+const Kinds = Schema.Array(Kind).check(Schema.isMinLength(1), Schema.isMaxLength(2));
+const Limit = Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 100}));
+const IsoUtcInstant = Schema.String.check(
+  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z$/u),
+  Schema.makeFilter(value => {
+    const milliseconds = Date.parse(value);
+    const precision = value[16] === ':' ? 19 : 16;
+    return Number.isFinite(milliseconds) &&
+      new Date(milliseconds).toISOString().slice(0, precision) === value.slice(0, precision)
+      ? undefined
+      : 'Expected a valid UTC instant.';
+  }),
+);
 export const REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES = MEMORY_READ_MAXIMUM_CONTENT_BYTES;
 
-const RemoteReadToolInput = z
-  .object({
-    mode: z.enum(['content', 'outline']).optional(),
-    revision: Identifier.optional(),
-    section: z
-      .string()
-      .trim()
-      .min(1)
-      .refine(value => Buffer.byteLength(value, 'utf8') <= 256, 'Section exceeds 256 UTF-8 bytes.')
-      .optional(),
-    uri: z.string().min(1).max(4096),
-    version: Version,
-  })
-  .strict()
-  .refine(input => input.mode !== 'outline' || input.section === undefined, {
-    message: 'section cannot be combined with mode=outline.',
-  });
+const RemoteReadToolInput = Schema.Struct({
+  mode: Schema.optionalKey(Schema.Literals(['content', 'outline'])),
+  revision: Schema.optionalKey(Identifier),
+  section: Schema.optionalKey(
+    Schema.Trim.check(
+      Schema.isMinLength(1),
+      Schema.makeFilter(value =>
+        Buffer.byteLength(value.trim(), 'utf8') <= 256 ? undefined : 'Section exceeds 256 UTF-8 bytes.',
+      ),
+    ),
+  ),
+  uri: NonEmptyUri,
+  version: Version,
+}).check(
+  Schema.makeFilter(input =>
+    input.mode === 'outline' && input.section !== undefined
+      ? 'section cannot be combined with mode=outline.'
+      : undefined,
+  ),
+);
 
 export interface RemoteMcpRequestContext {
   readonly deadlineEpochMilliseconds: number;
@@ -100,6 +117,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
     },
   );
   const {dependencies, requestContext} = options;
+  const tools = new EffectSchemaSdkTools();
 
   registerRemoteMemoryResource(
     server,
@@ -116,33 +134,38 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
     requestContext,
   );
 
-  server.registerTool(
+  tools.register(
     'recall_context',
     {
       annotations: {readOnlyHint: true},
       description:
         'Return a budgeted ranked prefix of unread remote-memory pointers. Read structuredContent.nextAction before relying on them; explain=true adds bounded excerpts.',
-      inputSchema: z
-        .object({
-          budgetTokens: z
-            .number()
-            .int()
-            .min(REMOTE_RECALL_MINIMUM_BUDGET_TOKENS)
-            .max(REMOTE_RECALL_MAXIMUM_BUDGET_TOKENS)
-            .default(REMOTE_RECALL_DEFAULT_BUDGET_TOKENS),
-          explain: z.boolean().default(false),
-          kinds: z.array(Kind).min(1).max(2).optional(),
-          limit: z.number().int().min(1).max(100).optional(),
-          project: PortableSegment,
-          query: z.string().min(1).max(8192),
-          version: Version,
-        })
-        .strict(),
+      inputSchema: Schema.Struct({
+        budgetTokens: Schema.optionalKey(
+          Schema.Int.check(
+            Schema.isBetween({
+              minimum: REMOTE_RECALL_MINIMUM_BUDGET_TOKENS,
+              maximum: REMOTE_RECALL_MAXIMUM_BUDGET_TOKENS,
+            }),
+          ),
+        ),
+        explain: Schema.optionalKey(Schema.Boolean),
+        kinds: Schema.optionalKey(Kinds),
+        limit: Schema.optionalKey(Limit),
+        project: PortableSegment,
+        query: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(8_192)),
+        version: Version,
+      }),
     },
-    input => invokeRemoteRecallTool(requestContext, dependencies, input),
+    input =>
+      invokeRemoteRecallTool(requestContext, dependencies, {
+        ...input,
+        budgetTokens: input.budgetTokens ?? REMOTE_RECALL_DEFAULT_BUDGET_TOKENS,
+        explain: input.explain ?? false,
+      }),
   );
 
-  server.registerTool(
+  tools.register(
     'read_context',
     {
       annotations: {readOnlyHint: true},
@@ -152,28 +175,31 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
     input => invokeRemoteReadTool(requestContext, dependencies, input),
   );
 
-  server.registerTool(
+  tools.register(
     'list_context',
     {
       annotations: {readOnlyHint: true},
       description: 'List a bounded page of memory heads inside the authorized remote share.',
-      inputSchema: z
-        .object({
-          afterUri: z.string().min(1).max(4096).optional(),
-          kinds: z.array(Kind).min(1).max(2).optional(),
-          limit: z.number().int().min(1).max(100).default(50),
-          project: PortableSegment.optional(),
-          status: Status.optional(),
-          version: Version,
-        })
-        .strict(),
+      inputSchema: Schema.Struct({
+        afterUri: Schema.optionalKey(NonEmptyUri),
+        kinds: Schema.optionalKey(Kinds),
+        limit: Schema.optionalKey(Limit),
+        project: Schema.optionalKey(PortableSegment),
+        status: Schema.optionalKey(Status),
+        version: Version,
+      }),
     },
     input =>
       invokeRemoteTool(requestContext, dependencies, 'list_context', async (principal, execution) => {
         requireRemoteScope(principal, 'memory:read');
         if (input.project) requireAuthorizedProject(principal, input.project);
         if (input.afterUri) assertUriBelongsToAuthorizedShare(principal, input.afterUri);
-        const result = await dependencies.repository.list(principal, input, requestContext.requestId, execution);
+        const result = await dependencies.repository.list(
+          principal,
+          {...input, limit: input.limit ?? 50},
+          requestContext.requestId,
+          execution,
+        );
         assertReceipt(result.receipt, principal, requestContext.requestId);
         for (const entry of result.entries) {
           requireAuthorizedProject(principal, entry.project);
@@ -186,27 +212,27 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
       }),
   );
 
-  server.registerTool(
+  tools.register(
     'remember_context',
     {
       annotations: {destructiveHint: false, idempotentHint: true, readOnlyHint: false},
       description: 'Create or compare-and-swap one durable memory or handoff in the authorized remote share.',
-      inputSchema: z
-        .object({
-          attestationId: Identifier.optional(),
-          baseRevision: Identifier.optional(),
-          kind: Kind,
-          lifecycle: z
-            .object({expiresAt: z.iso.datetime({offset: false}).optional(), retentionClass: Identifier.optional()})
-            .strict()
-            .optional(),
-          operationId: Identifier,
-          project: PortableSegment,
-          text: z.string().min(1).max(1_000_000),
-          topic: PortableSegment,
-          version: Version,
-        })
-        .strict(),
+      inputSchema: Schema.Struct({
+        attestationId: Schema.optionalKey(Identifier),
+        baseRevision: Schema.optionalKey(Identifier),
+        kind: Kind,
+        lifecycle: Schema.optionalKey(
+          Schema.Struct({
+            expiresAt: Schema.optionalKey(IsoUtcInstant),
+            retentionClass: Schema.optionalKey(Identifier),
+          }),
+        ),
+        operationId: Identifier,
+        project: PortableSegment,
+        text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000_000)),
+        topic: PortableSegment,
+        version: Version,
+      }),
     },
     input =>
       invokeRemoteTool(requestContext, dependencies, 'remember_context', async (principal, execution) => {
@@ -236,12 +262,12 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
       }),
   );
 
-  server.registerTool(
+  tools.register(
     'memory_status',
     {
       annotations: {readOnlyHint: true},
       description: 'Return committed/indexed generations, consistency, policy version, and writable capabilities.',
-      inputSchema: z.object({version: Version}).strict(),
+      inputSchema: Schema.Struct({version: Version}),
     },
     () =>
       invokeRemoteTool(requestContext, dependencies, 'memory_status', async (principal, execution) => {
@@ -252,12 +278,12 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
       }),
   );
 
-  server.registerTool(
+  tools.register(
     'begin_cursor_attestation',
     {
       annotations: {idempotentHint: false, readOnlyHint: false},
       description: 'Create a short-lived challenge for out-of-band Cursor workload attestation.',
-      inputSchema: z.object({version: Version}).strict(),
+      inputSchema: Schema.Struct({version: Version}),
     },
     () =>
       invokeRemoteTool(requestContext, dependencies, 'begin_cursor_attestation', (principal, execution) => {
@@ -274,21 +300,19 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
       }),
   );
 
-  server.registerTool(
+  tools.register(
     'transition_handoff',
     {
       annotations: {destructiveHint: true, idempotentHint: true, readOnlyHint: false},
       description: 'Compare-and-swap an active or expired handoff to superseded, archived, or expired state.',
-      inputSchema: z
-        .object({
-          attestationId: Identifier.optional(),
-          baseRevision: Identifier,
-          operation: z.enum(['supersede', 'archive', 'expire']),
-          operationId: Identifier,
-          uri: z.string().min(1).max(4096),
-          version: Version,
-        })
-        .strict(),
+      inputSchema: Schema.Struct({
+        attestationId: Schema.optionalKey(Identifier),
+        baseRevision: Identifier,
+        operation: Schema.Literals(['supersede', 'archive', 'expire']),
+        operationId: Identifier,
+        uri: NonEmptyUri,
+        version: Version,
+      }),
     },
     input =>
       invokeRemoteTool(requestContext, dependencies, 'transition_handoff', async (principal, execution) => {
@@ -317,6 +341,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
       }),
   );
 
+  tools.install(server);
   return server;
 }
 
@@ -388,7 +413,7 @@ async function invokeRemoteRecallTool(
 async function invokeRemoteReadTool(
   context: RemoteMcpRequestContext,
   dependencies: RemoteMemoryServiceDependencies,
-  input: z.infer<typeof RemoteReadToolInput>,
+  input: typeof RemoteReadToolInput.Type,
 ): Promise<CallToolResult> {
   try {
     await withRequestDeadline(context, () =>

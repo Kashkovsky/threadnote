@@ -1997,5 +1997,4 @@ export function inspectCliInvocation(arguments_: readonly string[]): CliInvocati
   return inspectRegisteredCliInvocation(arguments_);
 }
 
-export type {CliInvocationInspection};
-export {CliError, normalizeCliArguments};
+export {CliError, normalizeCliArguments, type CliInvocationInspection};

@@ -8,7 +8,8 @@ import {isAbsolute, relative, resolve, sep} from 'node:path';
 import {spawn} from 'node:child_process';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
-import * as z from 'zod/v4';
+import {Schema} from 'effect';
+import {EffectSchemaSdkTools} from '../src/mcp/effect_schema_sdk_tools.js';
 import {AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN, measureAgentToolResponse} from '../src/evaluation/agent-response.js';
 import {
   CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1,
@@ -79,17 +80,17 @@ const PORTABLE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const CGS = /^cgs_[0-9a-f]{16,128}$/u;
 const MODES = ['brief', 'locate', 'explain', 'trace', 'impact'] as const;
 
-export const CODE_MEMORY_LINK_CONTEXT_BRIEF_INPUT_SCHEMA = z
-  .object({
-    budgetTokens: z.number().int().min(1).max(1_500).optional(),
-    callerCwd: z.string().min(1).max(4_096),
-    codeRefs: z.union([z.string().min(1).max(4_096), z.array(z.string().min(1).max(4_096)).max(8)]).optional(),
-    mode: z.enum(MODES).optional(),
-    project: z.string().min(1).max(128).optional(),
-    task: z.string().min(1).max(8_192),
-    workset: z.string().min(1).max(128).optional(),
-  })
-  .strict();
+const NonEmptyText = Schema.String.check(Schema.isMinLength(1));
+const CodeRef = NonEmptyText.check(Schema.isMaxLength(4_096));
+export const CODE_MEMORY_LINK_CONTEXT_BRIEF_INPUT_SCHEMA = Schema.Struct({
+  budgetTokens: Schema.optionalKey(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 1_500}))),
+  callerCwd: CodeRef,
+  codeRefs: Schema.optionalKey(Schema.Union([CodeRef, Schema.Array(CodeRef).check(Schema.isMaxLength(8))])),
+  mode: Schema.optionalKey(Schema.Literals(MODES)),
+  project: Schema.optionalKey(NonEmptyText.check(Schema.isMaxLength(128))),
+  task: NonEmptyText.check(Schema.isMaxLength(8_192)),
+  workset: Schema.optionalKey(NonEmptyText.check(Schema.isMaxLength(128))),
+});
 
 export async function handleCodeMemoryLinkContextBriefRequest(
   packetInput: CodeMemoryLinkContextProxyPacketV1 | unknown,
@@ -97,7 +98,9 @@ export async function handleCodeMemoryLinkContextBriefRequest(
   runCandidate: CodeMemoryLinkContextProxyCandidateRunner = runCodeMemoryLinkContextBriefCandidate,
 ): Promise<CodeMemoryLinkContextProxyCandidateResult> {
   const packet = parseCodeMemoryLinkContextProxyPacketV1(packetInput);
-  const request = CODE_MEMORY_LINK_CONTEXT_BRIEF_INPUT_SCHEMA.parse(requestInput);
+  const request = Schema.decodeUnknownSync(CODE_MEMORY_LINK_CONTEXT_BRIEF_INPUT_SCHEMA, {
+    onExcessProperty: 'error',
+  })(requestInput);
   const callerCwd = await realpath(request.callerCwd);
   if (callerCwd !== packet.callerCwd) throw new Error('context_brief callerCwd is outside the isolated fixture.');
   if (request.task !== packet.taskPacket.prompt)
@@ -264,7 +267,8 @@ async function main(): Promise<void> {
     {name: CODE_MEMORY_LINK_PROXY_SERVER_NAME, version: String(CODE_MEMORY_LINK_CONTEXT_PROXY_VERSION)},
     {capabilities: {tools: {listChanged: false}}},
   );
-  server.registerTool(
+  const tools = new EffectSchemaSdkTools();
+  tools.register(
     'context_brief',
     {
       annotations: {destructiveHint: false, idempotentHint: true, readOnlyHint: true},
@@ -281,6 +285,7 @@ async function main(): Promise<void> {
       };
     },
   );
+  tools.install(server);
   await server.connect(new StdioServerTransport(process.stdin, process.stdout, {maxBufferSize: 256 * 1024}));
 }
 

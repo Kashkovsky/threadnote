@@ -174,6 +174,25 @@ describe('Code Memory Link context proxy', () => {
     );
     expect(runCandidate).not.toHaveBeenCalled();
   });
+
+  it('rejects every unknown request field before forwarding', async () => {
+    const root = await fixtureRoot(temporaryRoots);
+    const sealed = packet(root, 'anchored');
+    const runCandidate = vi.fn();
+    await fc.assert(
+      fc.asyncProperty(fc.stringMatching(/^[a-z][a-z0-9]{0,12}$/u), async suffix => {
+        await expect(
+          handleCodeMemoryLinkContextBriefRequest(
+            sealed,
+            {callerCwd: root, task: sealed.taskPacket.prompt, [`unexpected${suffix}`]: 'private-value'},
+            runCandidate,
+          ),
+        ).rejects.toThrow();
+      }),
+      {numRuns: 40},
+    );
+    expect(runCandidate).not.toHaveBeenCalled();
+  });
 });
 
 async function fixtureRoot(roots: string[]): Promise<string> {
