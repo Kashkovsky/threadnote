@@ -1,8 +1,11 @@
 import {Schema} from 'effect';
+import {sha256HexSync} from '../crypto/sha256.js';
 
 export const MEMORY_READ_MAXIMUM_CONTENT_BYTES = 65_536;
+export const MEMORY_READ_PAGE_BYTES = 16_384;
 const MEMORY_READ_WARNING_MAXIMUM_BYTES = 160;
 const UTF8 = new TextEncoder();
+const UTF8_DECODER = new TextDecoder();
 
 export type MemoryReadMode = 'content' | 'outline';
 
@@ -15,13 +18,17 @@ export interface MemoryReadResource {
 
 export interface MemoryReadStructuredContent {
   readonly canonicalUri?: string;
-  readonly complete: true;
+  readonly complete: boolean;
   readonly content: string;
   readonly contentBytes: number;
   readonly mode: MemoryReadMode;
+  readonly nextOffsetBytes?: number;
+  readonly offsetBytes?: number;
   readonly requestedUri?: string;
   readonly resourceCount: number;
   readonly section?: string;
+  readonly sourceHash?: string;
+  readonly totalBytes?: number;
   readonly type: 'threadnote-read';
   readonly version: 1;
   readonly warnings?: readonly string[];
@@ -29,6 +36,7 @@ export interface MemoryReadStructuredContent {
 
 export interface MemoryRead {
   readonly content: string;
+  readonly continuation?: string;
   readonly receipt?: string;
   readonly structuredContent: MemoryReadStructuredContent;
   readonly uri: string;
@@ -54,7 +62,9 @@ export function projectMemoryRead(
   resources: readonly MemoryReadResource[],
   options: {
     readonly mode?: MemoryReadMode;
+    readonly offsetBytes?: number;
     readonly section?: string;
+    readonly sourceHash?: string;
     readonly toolName?: string;
     readonly warnings?: readonly string[];
   } = {},
@@ -69,15 +79,28 @@ export function projectMemoryRead(
   if (section !== undefined && resources.length !== 1) {
     throw MemoryReadProjectionError.make({message: 'Memory read section requires exactly one uri.'});
   }
+  if (options.offsetBytes !== undefined && (mode !== 'content' || resources.length !== 1)) {
+    throw MemoryReadProjectionError.make({message: 'Memory read offsetBytes requires one uri in content mode.'});
+  }
+  if (options.sourceHash !== undefined && options.offsetBytes === undefined) {
+    throw MemoryReadProjectionError.make({message: 'Memory read sourceHash requires offsetBytes.'});
+  }
 
   const projected = resources.map(resource => ({
     ...resource,
     text:
       mode === 'outline' ? memoryMarkdownOutline(resource.text) : selectMemoryMarkdownSection(resource.text, section),
   }));
-  const content = projected.length === 1 ? projected[0].text : projected.map(resource => resource.text).join('\n\n');
+  const fullContent =
+    projected.length === 1 ? projected[0].text : projected.map(resource => resource.text).join('\n\n');
+  const fullContentBytes = utf8Bytes(fullContent);
+  const page =
+    options.offsetBytes === undefined
+      ? undefined
+      : memoryReadPage(fullContent, options.offsetBytes, options.sourceHash);
+  const content = page?.content ?? fullContent;
   const contentBytes = utf8Bytes(content);
-  if (contentBytes > MEMORY_READ_MAXIMUM_CONTENT_BYTES) {
+  if (page === undefined && contentBytes > MEMORY_READ_MAXIMUM_CONTENT_BYTES) {
     const oversizedIndex = projected.findIndex(
       resource => utf8Bytes(resource.text) > MEMORY_READ_MAXIMUM_CONTENT_BYTES,
     );
@@ -86,10 +109,10 @@ export function projectMemoryRead(
     const source = resources[focusIndex] ?? resources[0];
     const outlineForError = memoryMarkdownOutline(source.text);
     throw MemoryReadTooLargeError.make({
-      contentBytes,
+      contentBytes: fullContentBytes,
       maximumContentBytes: MEMORY_READ_MAXIMUM_CONTENT_BYTES,
       message: memoryReadTooLargeMessage({
-        contentBytes,
+        contentBytes: fullContentBytes,
         outline: outlineForError,
         resourceCount: resources.length,
         toolName: options.toolName ?? 'read_context',
@@ -108,12 +131,25 @@ export function projectMemoryRead(
       : undefined;
   return {
     content,
+    ...(page?.nextOffsetBytes === undefined
+      ? {}
+      : {
+          continuation: `Incomplete memory page. Continue this URI with offsetBytes=${page.nextOffsetBytes} and sourceHash=${page.sourceHash}; read until complete=true.`,
+        }),
     ...(receipt === undefined ? {} : {receipt}),
     structuredContent: {
-      complete: true,
+      complete: page?.complete ?? true,
       content,
       contentBytes,
       mode,
+      ...(page === undefined
+        ? {}
+        : {
+            offsetBytes: page.offsetBytes,
+            sourceHash: page.sourceHash,
+            totalBytes: fullContentBytes,
+            ...(page.nextOffsetBytes === undefined ? {} : {nextOffsetBytes: page.nextOffsetBytes}),
+          }),
       resourceCount: resources.length,
       type: 'threadnote-read',
       version: 1,
@@ -165,6 +201,48 @@ export function memoryReadContentBytes(value: string): number {
   return utf8Bytes(value);
 }
 
+function memoryReadPage(content: string, offsetBytes: number, expectedHash: string | undefined) {
+  if (!Number.isSafeInteger(offsetBytes) || offsetBytes < 0) {
+    throw MemoryReadProjectionError.make({message: 'Memory read offsetBytes must be a non-negative safe integer.'});
+  }
+  if (expectedHash !== undefined && !/^[a-f0-9]{64}$/u.test(expectedHash)) {
+    throw MemoryReadProjectionError.make({message: 'Memory read sourceHash must be a lowercase SHA-256 hex digest.'});
+  }
+  if (offsetBytes > 0 && expectedHash === undefined) {
+    throw MemoryReadProjectionError.make({
+      message: 'Memory read continuation requires sourceHash from the first page.',
+    });
+  }
+  const encoded = UTF8.encode(content);
+  const sourceHash = sha256HexSync(encoded);
+  if (expectedHash !== undefined && expectedHash !== sourceHash) {
+    throw MemoryReadProjectionError.make({message: 'Memory changed between pages; restart with offsetBytes=0.'});
+  }
+  const totalBytes = encoded.byteLength;
+  if (offsetBytes > totalBytes || (offsetBytes < totalBytes && isUtf8ContinuationByte(encoded[offsetBytes]))) {
+    throw MemoryReadProjectionError.make({
+      message: 'Memory read offsetBytes must be on a UTF-8 character boundary within the memory.',
+    });
+  }
+  let nextOffsetBytes = Math.min(offsetBytes + MEMORY_READ_PAGE_BYTES, totalBytes);
+  while (nextOffsetBytes < totalBytes && isUtf8ContinuationByte(encoded[nextOffsetBytes])) {
+    nextOffsetBytes -= 1;
+  }
+  const start = UTF8_DECODER.decode(encoded.subarray(0, offsetBytes)).length;
+  const end = start + UTF8_DECODER.decode(encoded.subarray(offsetBytes, nextOffsetBytes)).length;
+  return {
+    complete: nextOffsetBytes === totalBytes,
+    content: content.slice(start, end),
+    nextOffsetBytes: nextOffsetBytes < totalBytes ? nextOffsetBytes : undefined,
+    offsetBytes,
+    sourceHash,
+  };
+}
+
+function isUtf8ContinuationByte(byte: number): boolean {
+  return (byte & 0xc0) === 0x80;
+}
+
 function memoryReadTooLargeMessage(input: {
   readonly contentBytes: number;
   readonly outline: string;
@@ -178,7 +256,7 @@ function memoryReadTooLargeMessage(input: {
       : `Memory ${input.uri} is ${input.contentBytes} bytes`;
   return [
     `${scope}; ${input.toolName} returns at most ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes.`,
-    'Use mode=outline or section="<heading>" to read a part.',
+    'Use mode=outline, section="<heading>", or pass one URI with offsetBytes=0 to start an explicit bounded read. Continue with nextOffsetBytes and sourceHash.',
     '',
     'Outline:',
     input.outline.trimEnd(),

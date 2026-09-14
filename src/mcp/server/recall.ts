@@ -41,6 +41,7 @@ import {captureMemoryCodeCitationsForMcp} from '../memory_code_citation.js';
 import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
 import {
   MEMORY_READ_MAXIMUM_CONTENT_BYTES,
+  MEMORY_READ_PAGE_BYTES,
   MemoryReadProjectionError,
   MemoryReadTooLargeError,
   projectMemoryRead,
@@ -1204,15 +1205,17 @@ export function registerReadTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description: `${description} Accepts canonical pointers and bounded threadnote://memory/tn_ identity aliases. Returns the full memory up to ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes. Larger memories refuse with an outline; retry with mode=outline or section.`,
+      description: `${description} Accepts canonical pointers and bounded threadnote://memory/tn_ identity aliases. Returns the full memory up to ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes. Larger memories refuse with an outline; retry with mode=outline or section, or opt into ${MEMORY_READ_PAGE_BYTES}-byte pages with offsetBytes=0. Continue with nextOffsetBytes and sourceHash until complete=true.`,
       inputSchema: {
         mode: McpInput.literals(['content', 'outline']),
+        offsetBytes: McpInput.integer('UTF-8 byte offset for an explicit bounded page; start at 0', {minimum: 0}),
         section: McpInput.string(),
+        sourceHash: McpInput.string('SHA-256 from the first page; required when offsetBytes > 0'),
         uri: McpInput.string(),
         uris: McpInput.stringOrStrings(),
       },
     },
-    ({mode, section, uri, uris}) => {
+    ({mode, offsetBytes, section, sourceHash, uri, uris}) => {
       const requestedUrisResult = requiredResourceUriList(
         uris ?? uri,
         name,
@@ -1220,8 +1223,8 @@ export function registerReadTool(
       );
       if (!requestedUrisResult.ok) return requestedUrisResult.error;
       const requestedUris = requestedUrisResult.value;
-      if (section !== undefined && requestedUris.length !== 1) {
-        return argumentError(`${name} section requires exactly one uri.`);
+      if ((section !== undefined || offsetBytes !== undefined) && requestedUris.length !== 1) {
+        return argumentError(`${name} section and offsetBytes require exactly one uri.`);
       }
       return Effect.gen(function* () {
         const outsideScope = memoryScope
@@ -1296,7 +1299,9 @@ export function registerReadTool(
         const projected = Result.try(() =>
           projectMemoryRead(resources, {
             mode,
+            offsetBytes,
             section,
+            sourceHash,
             toolName: name,
             warnings: [...syncMessages, ...missingWarnings],
           }),
@@ -1328,6 +1333,7 @@ export function registerReadTool(
           },
           content: [
             {type: 'text' as const, text: read.content},
+            ...(read.continuation === undefined ? [] : [{type: 'text' as const, text: read.continuation}]),
             ...(read.receipt === undefined ? [] : [{type: 'text' as const, text: read.receipt}]),
             ...missingRecoveries.map(text => ({type: 'text' as const, text})),
           ],
