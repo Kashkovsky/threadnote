@@ -28,6 +28,7 @@ import type {CodeGraphProgress, CodeGraphQueryResult} from '../../src/code_graph
 import type {CodeGraphRefreshStatus} from '../../src/code_graph/watcher.js';
 import type {CodeGraphStatusObservation} from '../../src/code_graph/query_contract.js';
 import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
+import {formatCodeGraphMcpResponse} from '../../src/mcp/code_graph_projection.js';
 import {analysisEdge, analysisSnapshot, analysisSymbol, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
 import {
   readAnonymousTelemetryDiagnostic,
@@ -488,6 +489,56 @@ describe('MCP code graph indexing progress', () => {
     expect(response.text).toContain('MCP output was bounded to');
     expect(new TextEncoder().encode(response.text).byteLength).toBeLessThan(20 * 1_024);
   });
+
+  it('returns the exact graph projection through one opt-in text channel', () => {
+    const response = codeGraphMcpResponse(verboseCodeGraphResult());
+    const dual = formatCodeGraphMcpResponse(response);
+    const text = formatCodeGraphMcpResponse(response, 'text');
+
+    expect(dual).toEqual({
+      content: [{type: 'text', text: response.text}],
+      structuredContent: response.structuredContent,
+    });
+    expect(text).not.toHaveProperty('structuredContent');
+    expect(text.content).toHaveLength(1);
+    expect(JSON.parse(text.content[0].text)).toEqual(dual.structuredContent);
+    expect(text.content[0].text).toBe(JSON.stringify(dual.structuredContent));
+    expect(text.content[0].text).toContain('"trust"');
+    expect(text.content[0].text).toContain('"snapshot"');
+    expect(text.content[0].text).toContain('"output"');
+    expect(response.structuredContent).toEqual(dual.structuredContent);
+  });
+
+  fcProp(
+    it,
+    'preserves every projected graph fact when opting into text-only at supported budgets',
+    {
+      budgetTokens: FC.option(FC.integer({max: 1_500, min: 500}), {nil: undefined}),
+      edgeCount: FC.integer({max: 20, min: 0}),
+      nodeCount: FC.integer({max: 20, min: 0}),
+      warningCount: FC.integer({max: 5, min: 0}),
+    },
+    ({budgetTokens, edgeCount, nodeCount, warningCount}) => {
+      const verbose = verboseCodeGraphResult();
+      const response = codeGraphMcpResponse(
+        {
+          ...verbose,
+          edges: verbose.edges.slice(0, edgeCount),
+          nodes: verbose.nodes.slice(0, nodeCount),
+          warnings: verbose.warnings.slice(0, warningCount),
+        },
+        budgetTokens,
+      );
+      const dual = formatCodeGraphMcpResponse(response, 'dual');
+      const text = formatCodeGraphMcpResponse(response, 'text');
+      expect(JSON.parse(text.content[0].text)).toEqual(dual.structuredContent);
+      expect(text).not.toHaveProperty('structuredContent');
+      expect(measureAgentToolResponse({text: text.content[0].text}).totalBytes).toBeLessThanOrEqual(
+        measureAgentToolResponse(response).totalBytes,
+      );
+    },
+    {fastCheck: {numRuns: 60}},
+  );
 
   it('keeps bounded path-search coverage distinct from MCP output truncation', () => {
     const result: CodeGraphQueryResult = {
