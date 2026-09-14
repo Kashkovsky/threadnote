@@ -81,7 +81,7 @@ describe('Auth0 graph worker credential helper', () => {
     expect(listenerClaims.scopes).toEqual(new Set(['graph:contribute']));
   });
 
-  it('accepts the complete Auth0 client grant while requiring the requested graph scope', async () => {
+  it('accepts the complete Auth0 client grant in either scope order while requiring the requested graph scope', async () => {
     const {publicKey, privateKey} = await generateKeyPair('RS256');
     const token = await signedToken(privateKey, {scope: 'graph:read graph:contribute'});
     const credential = await getAuth0M2MGraphCredential(request, environment, {
@@ -91,7 +91,7 @@ describe('Auth0 graph worker credential helper', () => {
         Response.json({
           access_token: token,
           expires_in: 600,
-          scope: 'graph:read graph:contribute',
+          scope: 'graph:contribute graph:read',
           token_type: 'Bearer',
         }),
     });
@@ -203,7 +203,13 @@ describe('Auth0 graph worker credential helper', () => {
           const result = getAuth0M2MGraphCredential(request, environment, {
             key: async () => publicKey,
             now: () => now * 1000,
-            fetch: async () => Response.json({access_token: token, expires_in: 600, token_type: 'Bearer'}),
+            fetch: async () =>
+              Response.json({
+                access_token: token,
+                expires_in: 600,
+                scope: [...scopes].reverse().join(' '),
+                token_type: 'Bearer',
+              }),
           });
           const expected =
             scopes.length > 0 &&

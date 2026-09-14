@@ -236,9 +236,10 @@ export async function requestVerifiedAuth0M2MToken(
       issuer: config.issuer,
       requiredClaims: ['sub', 'iat', 'exp'],
     });
-    if (body.scope !== undefined && body.scope !== payload.scope) throw credentialFailure();
     const receivedAt = Math.floor(now() / 1000);
     validateClaims(payload, config, startedAt, receivedAt, body.expires_in);
+    if (body.scope !== undefined && !hasMatchingAuthorizedScopes(body.scope, payload.scope, config))
+      throw credentialFailure();
     return {
       accessToken: body.access_token,
       expiresAt: payload.exp!,
@@ -324,6 +325,13 @@ function hasAuthorizedScopes(claim: unknown, requested: string, configured: Read
     granted.includes(requested) &&
     granted.every(scope => allowed.has(scope))
   );
+}
+
+function hasMatchingAuthorizedScopes(response: string, token: unknown, config: Auth0M2MTokenAuthority): boolean {
+  if (!hasAuthorizedScopes(response, config.scope, config.allowedScopes) || typeof token !== 'string') return false;
+  const responseScopes = response.split(' ');
+  const tokenScopes = new Set(token.split(' '));
+  return responseScopes.length === tokenScopes.size && responseScopes.every(scope => tokenScopes.has(scope));
 }
 
 async function boundedResponse(response: Response, limit: number): Promise<string> {
