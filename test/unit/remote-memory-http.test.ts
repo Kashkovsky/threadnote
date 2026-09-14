@@ -251,10 +251,12 @@ describe('remote memory HTTP transport', () => {
       new Request('https://memory.example.test/.well-known/oauth-protected-resource', {headers}),
     );
     expect(metadata.status).toBe(200);
-    expect(await json(metadata)).toMatchObject({
+    const metadataBody = await json(metadata);
+    expect(metadataBody).toMatchObject({
       authorization_servers: ['https://auth.example.test'],
       resource: 'https://memory.example.test/mcp',
     });
+    expect(metadataBody).not.toHaveProperty('resource_documentation');
     expect((await test.handler(new Request('https://memory.example.test/healthz', {headers}))).status).toBe(200);
     expect((await test.handler(new Request('https://memory.example.test/readyz', {headers}))).status).toBe(503);
     expect(test.calls).toEqual([]);
