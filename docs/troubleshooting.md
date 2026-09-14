@@ -8,6 +8,12 @@ Python installed. Verify the immutable release and archive checksum, then run `t
 Windows builds are unsigned, so Windows may display a SmartScreen warning; the PowerShell installer instead verifies
 the immutable GitHub release and its SHA-256 checksum before activation.
 
+In Codex CLI's `workspace-write` sandbox, `threadnote --version` can run without modifying the installation. Other
+commands pin their version with a process lease in the installation root. If the sandbox denies that write, Threadnote
+reports the root instead of exiting silently. For a controlled CLI run, include that root as a writable directory with
+`codex exec --sandbox workspace-write --add-dir "$HOME/.local/share/threadnote"`; substitute `THREADNOTE_INSTALL_ROOT`
+when the installation uses a custom root. The Threadnote MCP integration is the normal path for agent context work.
+
 If an older npm-based Threadnote command shadows the standalone launcher, compare every result from
 `command -v -a threadnote` on POSIX or `Get-Command threadnote -All` in PowerShell. The standalone installer removes
 verified npm-distributed Threadnote installations automatically, including early Node-based 4.0 betas. If it warns

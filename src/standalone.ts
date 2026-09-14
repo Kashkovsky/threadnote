@@ -455,20 +455,20 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
   const cliOperation = inspectCliInvocation(arguments_).operation;
   const processRole = cliOperation === 'manage' ? 'manager' : 'cli';
   const processOperation = cliOperation === 'manage' ? 'manager-ui' : cliOperation;
+  const isStaticVersionRequest = arguments_.length === 1 && (arguments_[0] === '--version' || arguments_[0] === '-v');
   const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
   return processHome.pipe(
-    Effect.flatMap(home =>
-      processLease
-        .withStandaloneProcessLease(
-          processDiagnostics.withThreadnoteProcessRegistration(
-            home,
-            processRole,
-            withCliOutputConsole(cliEffect(arguments_)),
-            processOperation,
-          ),
-        )
-        .pipe(Effect.provide(runtime.applicationLayerForHome(home, 'cli'))),
-    ),
+    Effect.flatMap(home => {
+      const command = processDiagnostics.withThreadnoteProcessRegistration(
+        home,
+        processRole,
+        withCliOutputConsole(cliEffect(arguments_)),
+        processOperation,
+      );
+      return (isStaticVersionRequest ? Effect.scoped(command) : processLease.withStandaloneProcessLease(command)).pipe(
+        Effect.provide(runtime.applicationLayerForHome(home, 'cli')),
+      );
+    }),
     Effect.provide(runtime.StandaloneBrokerLayer),
   );
 }
