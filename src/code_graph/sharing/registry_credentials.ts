@@ -54,7 +54,11 @@ export const makeGraphShareRegistryCredentialLoader = Effect.fn('codeGraph.shari
             input: new TextEncoder().encode(`${target.registry}\n`),
             maxOutputBytes: 16_384,
             timeoutMs:
-              selected === 'threadnote-auth0-m2m' || selected === 'threadnote-auth0-publisher-m2m' ? 10_000 : 5_000,
+              selected === 'threadnote-auth0-user'
+                ? 25_000
+                : selected === 'threadnote-auth0-m2m' || selected === 'threadnote-auth0-publisher-m2m'
+                  ? 10_000
+                  : 5_000,
           })
           .pipe(Effect.mapError(() => graphSharingFailure('Registry credential helper is unavailable.')));
         if (result.exitCode !== 0) return yield* graphSharingFailure('Registry credential helper denied access.');
@@ -80,7 +84,9 @@ export const makeGraphShareRegistryCredentialLoader = Effect.fn('codeGraph.shari
           authorization: Redacted.make(
             `Basic ${Buffer.from(`${credential.Username}:${credential.Secret}`).toString('base64')}`,
           ),
-          ...(selected === 'threadnote-auth0-m2m' || selected === 'threadnote-auth0-publisher-m2m'
+          ...(selected === 'threadnote-auth0-user' ||
+          selected === 'threadnote-auth0-m2m' ||
+          selected === 'threadnote-auth0-publisher-m2m'
             ? {allowedBearerRealm: `${target.origin}/zot/auth/token`}
             : {}),
         } satisfies GraphShareRegistryCredential;

@@ -29,6 +29,7 @@ const isAuth0M2MGraphCredentialHelper = arguments_[0] === '__credential-auth0-m2
 const isAuth0M2MRegistryCredentialHelper = arguments_[0] === '__credential-registry-auth0-m2m';
 const isAuth0M2MPublisherRegistryCredentialHelper = arguments_[0] === '__credential-registry-auth0-publisher-m2m';
 const isGraphAuth0Helper = arguments_[0] === '__graph-auth0-helper';
+const isAuth0UserRegistryCredentialHelper = arguments_[0] === '__credential-registry-auth0-user';
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
 const auth0M2MHelperIO = {
   stdin: process.stdin,
@@ -73,17 +74,19 @@ if (
         ? await auth0M2MRegistryCredentialHelperProgram(arguments_.slice(1))
         : isAuth0M2MPublisherRegistryCredentialHelper
           ? await auth0M2MPublisherRegistryCredentialHelperProgram(arguments_.slice(1))
-          : isGraphAuth0Helper
-            ? await graphAuth0HelperProgram(arguments_.slice(1))
-            : isRemoteMemoryOperator
-              ? await remoteMemoryOperatorProgram(arguments_.slice(1))
-              : isLocalModelWorker
-                ? await localModelWorkerProgram(arguments_)
-                : isCodeGraphParserWorker
-                  ? await codeGraphParserWorkerProgram(arguments_)
-                  : isGitWorktreeRegistrationWorker
-                    ? await gitWorktreeRegistrationWorkerProgram()
-                    : await applicationProgram(arguments_, isMcpServer, isMcpBroker);
+          : isAuth0UserRegistryCredentialHelper
+            ? await auth0UserRegistryCredentialHelperProgram(arguments_.slice(1))
+            : isGraphAuth0Helper
+              ? await graphAuth0HelperProgram(arguments_.slice(1))
+              : isRemoteMemoryOperator
+                ? await remoteMemoryOperatorProgram(arguments_.slice(1))
+                : isLocalModelWorker
+                  ? await localModelWorkerProgram(arguments_)
+                  : isCodeGraphParserWorker
+                    ? await codeGraphParserWorkerProgram(arguments_)
+                    : isGitWorktreeRegistrationWorker
+                      ? await gitWorktreeRegistrationWorkerProgram()
+                      : await applicationProgram(arguments_, isMcpServer, isMcpBroker);
 
   BunRuntime.runMain(program, {
     disableErrorReporting:
@@ -91,6 +94,7 @@ if (
       isCodeGraphParserWorker ||
       isGitWorktreeRegistrationWorker ||
       isGraphAuth0Helper ||
+      isAuth0UserRegistryCredentialHelper ||
       (!isMcpServer && !isMcpBroker),
   });
 }
@@ -141,6 +145,27 @@ async function graphAuth0HelperProgram(arguments_: readonly string[]) {
     import('./effect/system.js'),
   ]);
   return helper.runGraphAuth0UserHelper(arguments_, auth0M2MHelperIO).pipe(
+    Effect.tap(code =>
+      Effect.sync(() => {
+        process.exitCode = code;
+      }),
+    ),
+    Effect.provide(
+      Layer.merge(
+        system.SystemInfo.layer,
+        command.CommandExecutor.layer.pipe(Layer.provide(system.SystemInfo.layer)),
+      ).pipe(Layer.provideMerge(BunServices.layer)),
+    ),
+  );
+}
+
+async function auth0UserRegistryCredentialHelperProgram(arguments_: readonly string[]) {
+  const [helper, command, system] = await Promise.all([
+    import('./code_graph/sharing/auth0_user_registry_credential.js'),
+    import('./effect/command.js'),
+    import('./effect/system.js'),
+  ]);
+  return helper.runAuth0UserRegistryCredentialHelper(arguments_, auth0M2MHelperIO).pipe(
     Effect.tap(code =>
       Effect.sync(() => {
         process.exitCode = code;

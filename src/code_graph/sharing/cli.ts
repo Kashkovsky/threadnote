@@ -9,6 +9,9 @@ import {
   runGraphAuth0ConfigureCommand,
   runGraphAuth0LoginCommand,
   runGraphAuth0LogoutCommand,
+  runRegistryAuth0ConfigureCommand,
+  runRegistryAuth0LoginCommand,
+  runRegistryAuth0LogoutCommand,
   runGraphPublisherBootstrapCommand,
   runGraphPublisherServeCommand,
   runGraphPublisherStatusCommand,
@@ -189,9 +192,40 @@ export function makeGraphSharingCommands(
     withRuntimeEffect(config => runGraphAuth0LogoutCommand(config, options)),
   ).pipe(Command.withDescription('Remove the saved local Auth0 graph session from macOS Keychain'));
 
+  const registryAuth0Configure = Command.make(
+    'configure',
+    {
+      audience: requiredString('audience', 'Exact registry API audience; must equal the Zot HTTPS origin'),
+      clientId: requiredString('client-id', 'Public Auth0 Native application client ID'),
+      issuer: requiredString('issuer', 'Exact Auth0 tenant issuer URL'),
+      organization: requiredString('organization', 'Registry organization identity'),
+      origin: requiredString('origin', 'Exact Zot HTTPS origin'),
+      subject: requiredString('subject', 'Exact Auth0 reader subject admitted by Zot'),
+      json: codeGraphCliBounds.json,
+    },
+    options => withRuntimeEffect(config => runRegistryAuth0ConfigureCommand(config, options)),
+  ).pipe(Command.withDescription('Bind a separate Auth0 Native registry reader audience to this organization'));
+  const registryAuthSelection = {
+    origin: optionalString('origin', 'Select one configured Zot registry origin when multiple are present'),
+    organization: optionalString(
+      'organization',
+      'Select one configured registry organization when multiple are present',
+    ),
+  };
+  const registryAuth0Login = Command.make('login', registryAuthSelection, options =>
+    withRuntimeEffect(config => runRegistryAuth0LoginCommand(config, options)),
+  ).pipe(Command.withDescription('Authorize read-only Zot access with Auth0 Device Flow and macOS Keychain'));
+  const registryAuth0Logout = Command.make('logout', registryAuthSelection, options =>
+    withRuntimeEffect(config => runRegistryAuth0LogoutCommand(config, options)),
+  ).pipe(Command.withDescription('Remove the saved local Zot reader session from macOS Keychain'));
+  const registryAuth = Command.make('registry').pipe(
+    Command.withDescription('Set up user-delegated Auth0 credentials for Zot registry reads'),
+    Command.withSubcommands([registryAuth0Configure, registryAuth0Login, registryAuth0Logout]),
+  );
+
   const graphAuth = Command.make('auth').pipe(
     Command.withDescription('Set up user-delegated Auth0 credentials for organization graphs'),
-    Command.withSubcommands([graphAuth0Configure, graphAuth0Login, graphAuth0Logout]),
+    Command.withSubcommands([graphAuth0Configure, graphAuth0Login, graphAuth0Logout, registryAuth]),
   );
 
   return {graphAuth, graphContribute, graphPublisher, graphShare, graphWorker};

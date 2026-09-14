@@ -92,9 +92,11 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
           expect(new TextDecoder().decode(input?.input)).toBe(target.registry + '\n');
           expect(input?.maxOutputBytes).toBe(16384);
           expect(input?.timeoutMs).toBe(
-            options.helperName === 'threadnote-auth0-m2m' || options.helperName === 'threadnote-auth0-publisher-m2m'
-              ? 10000
-              : 5000,
+            options.helperName === 'threadnote-auth0-user'
+              ? 25000
+              : options.helperName === 'threadnote-auth0-m2m' || options.helperName === 'threadnote-auth0-publisher-m2m'
+                ? 10000
+                : 5000,
           );
           if (options.helperStarted) yield* Deferred.succeed(options.helperStarted, undefined);
           if (options.helperGate) yield* Deferred.await(options.helperGate);
@@ -105,7 +107,8 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
               options.helperResponse?.(helperCalls) ?? {
                 Username:
                   options.helperName === 'threadnote-auth0-m2m' ||
-                  options.helperName === 'threadnote-auth0-publisher-m2m'
+                  options.helperName === 'threadnote-auth0-publisher-m2m' ||
+                  options.helperName === 'threadnote-auth0-user'
                     ? 'zot'
                     : 'synthetic-reader',
                 Secret: secret,
@@ -216,7 +219,11 @@ describe('registry authentication and bounded transport', () => {
   effectIt.effect('sends the scoped Auth0 registry secret only to the exact Zot bearer-token realm', () =>
     Effect.gen(function* () {
       const zotBasic = 'Basic ' + Buffer.from('zot:' + secret).toString('base64');
-      for (const helperName of ['threadnote-auth0-m2m', 'threadnote-auth0-publisher-m2m'] as const) {
+      for (const helperName of [
+        'threadnote-auth0-m2m',
+        'threadnote-auth0-publisher-m2m',
+        'threadnote-auth0-user',
+      ] as const) {
         const f = yield* fixture({
           helper: true,
           helperName,
@@ -243,7 +250,11 @@ describe('registry authentication and bounded transport', () => {
 
   effectIt.effect('never sends Auth0 registry credentials to Basic or a different same-origin realm', () =>
     Effect.gen(function* () {
-      for (const helperName of ['threadnote-auth0-m2m', 'threadnote-auth0-publisher-m2m'] as const) {
+      for (const helperName of [
+        'threadnote-auth0-m2m',
+        'threadnote-auth0-publisher-m2m',
+        'threadnote-auth0-user',
+      ] as const) {
         for (const challenge of [
           'Basic realm="registry"',
           `Bearer realm="${target.origin}/other/token",scope="${target.pullScope}"`,

@@ -2,7 +2,14 @@ import {Console, Effect} from 'effect';
 import {writeFinalCliOutput} from '../../effect/cli_output.js';
 import type {RuntimeConfig} from '../../types.js';
 import {graphSharingFailure} from './errors.js';
-import {configureGraphAuth0User, loginGraphAuth0User, logoutGraphAuth0User} from './auth0_user.js';
+import {
+  configureGraphAuth0User,
+  configureRegistryAuth0User,
+  loginGraphAuth0User,
+  loginRegistryAuth0User,
+  logoutGraphAuth0User,
+  logoutRegistryAuth0User,
+} from './auth0_user.js';
 import {graphPublisherPublicationMessage, readGraphPublisherRegistryStatus} from './publisher_registry.js';
 import {
   runGraphContributeSet,
@@ -237,4 +244,52 @@ export const runGraphAuth0LogoutCommand = Effect.fn('codeGraph.sharing.auth0Logo
       : {coordinatorUrl: options.coordinatorUrl, organization: options.organization};
   yield* logoutGraphAuth0User(config.agentContextHome, undefined, selector);
   yield* Console.log('Removed the local Graph Auth0 session. Run `threadnote graph auth login` to reconnect.');
+});
+
+export const runRegistryAuth0ConfigureCommand = Effect.fn('codeGraph.sharing.registryAuth0ConfigureCommand')(function* (
+  config: RuntimeConfig,
+  options: {
+    readonly audience: string;
+    readonly clientId: string;
+    readonly issuer: string;
+    readonly organization: string;
+    readonly origin: string;
+    readonly subject: string;
+    readonly json: boolean;
+  },
+) {
+  const result = yield* configureRegistryAuth0User(config, options);
+  if (options.json) yield* writeFinalCliOutput(JSON.stringify(result));
+  else
+    yield* Console.log('Configured the public Auth0 registry reader. Run `threadnote graph auth registry login` once.');
+});
+
+export const runRegistryAuth0LoginCommand = Effect.fn('codeGraph.sharing.registryAuth0LoginCommand')(function* (
+  config: RuntimeConfig,
+  options: {readonly origin?: string; readonly organization?: string},
+) {
+  if ((options.origin === undefined) !== (options.organization === undefined))
+    return yield* graphSharingFailure('Specify both --origin and --organization.');
+  const selector =
+    options.origin === undefined || options.organization === undefined
+      ? undefined
+      : {coordinatorUrl: options.origin, organization: options.organization};
+  yield* loginRegistryAuth0User(config.agentContextHome, undefined, selector);
+  yield* Console.log('Registry Auth0 login complete. Verified registry reads can refresh silently.');
+});
+
+export const runRegistryAuth0LogoutCommand = Effect.fn('codeGraph.sharing.registryAuth0LogoutCommand')(function* (
+  config: RuntimeConfig,
+  options: {readonly origin?: string; readonly organization?: string},
+) {
+  if ((options.origin === undefined) !== (options.organization === undefined))
+    return yield* graphSharingFailure('Specify both --origin and --organization.');
+  const selector =
+    options.origin === undefined || options.organization === undefined
+      ? undefined
+      : {coordinatorUrl: options.origin, organization: options.organization};
+  yield* logoutRegistryAuth0User(config.agentContextHome, undefined, selector);
+  yield* Console.log(
+    'Removed the local registry Auth0 session. Run `threadnote graph auth registry login` to reconnect.',
+  );
 });
