@@ -802,7 +802,11 @@ function isInTeamNamespace(config: ShareRuntime, uri: string, team: string): boo
 }
 
 export function sharedUriFor(config: ShareRuntime, personalUri: string, team: string): string {
-  const canonicalUri = parseResourceId(personalUri).canonicalUri;
+  const resource = parseResourceId(personalUri);
+  if (resource.anchor !== undefined) {
+    throw ShareOperationError.make({message: `Refusing to share anchored memory URI: ${personalUri}`});
+  }
+  const canonicalUri = resource.canonicalUri;
   const prefix = `threadnote://user/${uriSegment(config.user)}/memories/`;
   if (!canonicalUri.startsWith(prefix)) {
     throw ShareOperationError.make({
@@ -810,6 +814,11 @@ export function sharedUriFor(config: ShareRuntime, personalUri: string, team: st
     });
   }
   const rest = canonicalUri.slice(prefix.length);
+  if (!rest.startsWith('durable/projects/')) {
+    throw ShareOperationError.make({
+      message: `Refusing to share ${personalUri}: only personal durable memories under durable/projects can enter a shared team.`,
+    });
+  }
   return `${prefix}${SHARED_SEGMENT}/${team}/${rest}`;
 }
 

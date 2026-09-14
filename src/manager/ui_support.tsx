@@ -24,6 +24,31 @@ export const SIDEBAR_WIDTH_KEY = 'threadnote.manager.sidebarWidth';
 export const SIDEBAR_WIDTH_MAX = 440;
 export const SIDEBAR_WIDTH_MIN = 260;
 
+export function canPublishMemoryFromManager(
+  uri: string | undefined,
+  metadata: {readonly kind?: string; readonly status?: string} | undefined,
+): boolean {
+  if (!uri || !/^threadnote:\/\/user\/[^/]+\/memories\/durable\/projects\/.+\.md$/u.test(uri)) return false;
+  return metadata?.kind === 'durable' && metadata.status === 'active';
+}
+
+export function canPublishSelectedMemoriesFromManager(tree: TreeNode | undefined, uris: readonly string[]): boolean {
+  if (!tree || uris.length === 0) return false;
+  const selected = new Set(uris);
+  let eligibleCount = 0;
+  const visit = (node: TreeNode): boolean => {
+    if (selected.has(node.uri)) {
+      if (node.isDir || node.isShared || !canPublishMemoryFromManager(node.uri, node.metadata)) return false;
+      eligibleCount += 1;
+    }
+    for (const child of node.children ?? []) {
+      if (!visit(child)) return false;
+    }
+    return true;
+  };
+  return visit(tree) && eligibleCount === selected.size;
+}
+
 export function clampSidebarWidth(width: number): number {
   return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)));
 }

@@ -36,6 +36,8 @@ import {
   api,
   clampSidebarWidth,
   bulkActionLabel,
+  canPublishMemoryFromManager,
+  canPublishSelectedMemoriesFromManager,
   countFiles,
   errorMessage,
   findNodeInTrees,
@@ -87,7 +89,6 @@ type MemoryStatus = 'active' | 'archived' | 'expired' | 'superseded';
 type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor' | 'effect-ai';
 type MemoryViewMode = 'edit' | 'preview';
 type SelectId = 'agent' | 'kind' | 'status';
-
 interface MemoryMetadata {
   readonly archivedFrom?: string;
   readonly kind: MemoryKind;
@@ -98,7 +99,6 @@ interface MemoryMetadata {
   readonly timestamp: string;
   readonly topic?: string;
 }
-
 export interface TreeNode {
   readonly children?: readonly TreeNode[];
   readonly isDir: boolean;
@@ -112,7 +112,6 @@ export interface TreeNode {
   readonly size?: number;
   readonly uri: string;
 }
-
 interface MemoryResponse {
   readonly content: string;
   readonly node: TreeNode;
@@ -123,7 +122,6 @@ interface MemoryResponse {
     readonly uri: string;
   };
 }
-
 interface ReadResponse {
   readonly content: string;
   readonly localMemory?: MemoryResponse;
@@ -416,6 +414,7 @@ function App(): React.ReactElement {
     [filter, navTreeTab, selectedUris, showSystem, tree],
   );
   const selectedList = useMemo(() => [...visibleSelectedUris], [visibleSelectedUris]);
+  const canBulkPublish = useMemo(() => canPublishSelectedMemoriesFromManager(tree, selectedList), [tree, selectedList]);
   const outputUris = useMemo(() => resourceUrisFromText(output), [output]);
   const projectOptions = useMemo(() => managerProjectOptions(tree), [tree]);
   const teamOptions = useMemo(
@@ -1330,7 +1329,7 @@ function App(): React.ReactElement {
               <button disabled={controlsBlocked} onClick={() => void bulk('archive')}>
                 {bulkAction === 'archive' ? 'Archiving...' : 'Archive'}
               </button>
-              <button disabled={controlsBlocked} onClick={() => void bulk('publish')}>
+              <button disabled={controlsBlocked || !canBulkPublish} onClick={() => void bulk('publish')}>
                 {bulkAction === 'publish' ? 'Publishing...' : 'Publish'}
               </button>
               <button className="danger" disabled={controlsBlocked} onClick={() => void bulk('forget')}>
@@ -1436,7 +1435,12 @@ function App(): React.ReactElement {
                       Archive
                     </button>
                     <button
-                      disabled={!canMutate || selectedNode?.isShared === true || controlsBlocked}
+                      disabled={
+                        !canMutate ||
+                        selectedNode?.isShared === true ||
+                        !canPublishMemoryFromManager(selectedUri, memory?.record?.metadata) ||
+                        controlsBlocked
+                      }
                       onClick={() => void publishCurrent()}
                     >
                       Publish

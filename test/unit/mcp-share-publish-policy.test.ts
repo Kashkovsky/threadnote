@@ -86,6 +86,25 @@ describe('MCP share-publish citation policy', () => {
         expect(text).toContain('dirty worktree cannot be shared');
         expect(yield* fs.readFileString(sourcePath)).toBe(swapped);
         expect(yield* fs.exists(path.join(worktree, 'durable', 'projects', 'threadnote', 'policy.md'))).toBe(false);
+
+        const changedKind = clean.replace('kind: durable', 'kind: handoff');
+        yield* fs.writeFileString(sourcePath, changedKind);
+        let kindReads = 0;
+        const kindSwapStore = ResourceStore.of({
+          ...realStore,
+          read: (location, uri) =>
+            uri === sourceUri
+              ? Effect.sync(() => (++kindReads === 1 ? clean : changedKind))
+              : realStore.read(location, uri),
+        });
+        const kindResult = yield* runSharePublishTool(config, sourceUri, {push: false}).pipe(
+          Effect.provideService(ResourceStore, kindSwapStore),
+        );
+        const kindText = kindResult.content.map(item => (item.type === 'text' ? item.text : '')).join('\n');
+        expect(kindResult.isError).toBe(true);
+        expect(kindReads).toBe(2);
+        expect(kindText).toContain('only active personal durable memories');
+        expect(yield* fs.exists(path.join(worktree, 'durable', 'projects', 'threadnote', 'policy.md'))).toBe(false);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -340,6 +359,9 @@ describe('MCP share-publish citation policy', () => {
 
         expect(result.isError).toBeUndefined();
         expect(text).toContain('relation: related_to threadnote://memory/tn_1c56a4a00279466aa450ac4db78a1a72');
+        expect(text).toContain(
+          'PREVIEW WARNING: relation threadnote://memory/tn_1c56a4a00279466aa450ac4db78a1a72 is not-found in team default.',
+        );
         expect(text).not.toContain('private.md');
         expect(yield* fs.exists(sourcePath)).toBe(true);
       }),
