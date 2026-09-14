@@ -615,11 +615,13 @@ const attemptReusableCleanCandidate = Effect.fn('codeGraph.attemptReusableCleanC
           return Option.some<ReusableCleanSnapshotAttempt>({mode: 'fallback', reason: 'staging-identity-mismatch'});
         }
         yield* input.store.markBuilding(input.layout.databasePath, input.identity, building);
+      if (preassessment.committedWorkspace.fingerprint !== workspace.fingerprint) {
         yield* input.store.stageWorkspaceCatalog(
           input.layout.databasePath,
           workspace,
           codeGraphDirectPersistentCapacityProtector(input),
         );
+      }
         const summary = yield* buildAndActivate({
           activatePointer: true,
           building,

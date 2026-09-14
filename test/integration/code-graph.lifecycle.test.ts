@@ -1096,7 +1096,6 @@ describe('native code graph lifecycle', () => {
         'prepare temporary incremental code graph activation': probesPerObservation,
         'promote ready code graph snapshot': probesPerObservation,
         'publish temporary code graph snapshot': probesPerObservation,
-        'stage temporary code graph workspace': probesPerObservation,
       });
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
