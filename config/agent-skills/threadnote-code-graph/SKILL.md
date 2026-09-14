@@ -12,6 +12,11 @@ then round-trip a stable `cgs_` or `cgr_` ID through `node`, `neighbors`, or `pa
 and `analyze_code_graph` for repository-wide structure. Follow graph evidence with exact path or literal search for
 verification.
 
+On the local MCP server, `inspect_code_graph` accepts `responseFormat: "text"` for a successful repository or named
+Workset inspection. Parse the complete bounded graph JSON in text `content[0]`; it includes stable IDs, evidence,
+freshness, trust, and coverage receipts without a duplicate structured graph. Keep the default `dual` format when a
+client needs `structuredContent`. Indexing, timeout, and error responses retain their existing status format.
+
 If indexing is in progress, continue safe work and retry after the returned delay. If graph tooling is unavailable,
 say so and use targeted text search. Skip graph only for known exact paths or symbols, remote review without a checkout,
 or visual and binary evidence; use it if the scope expands.

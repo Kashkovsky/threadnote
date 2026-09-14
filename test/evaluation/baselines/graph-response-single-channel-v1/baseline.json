@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "sourceCommit": "dd73e2d7aee74b1ff4147f2094a7161ef8d57a0c",
+  "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+  "measurement": "combined serialized text plus structuredContent UTF-8 bytes",
+  "queries": [
+    {"id": "definition-exclusive-lock", "dualBytes": 19902, "textBytes": 15833},
+    {"id": "path-app-to-lock", "dualBytes": 3392, "textBytes": 2713},
+    {"id": "impact-lock", "dualBytes": 18419, "textBytes": 14203},
+    {"id": "documentation-recovery", "dualBytes": 24158, "textBytes": 19979},
+    {"id": "missing-payment-service", "dualBytes": 815, "textBytes": 676}
+  ],
+  "totals": {"dualBytes": 66686, "textBytes": 53404},
+  "modelPilot": {
+    "model": "gpt-5.6-luna",
+    "harness": "codex exec --json --ephemeral --ignore-user-config --skip-git-repo-check -s read-only",
+    "runsPerQueryAndFormat": 2,
+    "correctAndGraphIdGrounded": {"dual": 10, "text": 10},
+    "toolCalls": {"dual": 0, "text": 0},
+    "reportedInputTokens": {"dual": 159446, "text": 151708},
+    "reportedCachedInputTokens": {"dual": 89600, "text": 91648}
+  },
+  "caveat": "Five synthetic queries and repeated short-answer pilots are not a powered task-quality or provider-cost study. Codex CLI has large fixed scaffolding; one text call had a different cached-input count. Do not present byte-derived estimates or this pilot as release-wide savings."
+}

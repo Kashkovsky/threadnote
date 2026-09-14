@@ -21,6 +21,24 @@ default remains dual-channel. The release gate for any broader default requires 
 task-quality study across supported clients, plus exact-current citation, authorization, no-answer, and recovery
 non-regression. Full content remains available through the default format.
 
+## Graph response single-channel baseline v1
+
+`baselines/graph-response-single-channel-v1/baseline.json` records the frozen five-query graph fixture, pre-change
+dual-channel bytes, and a paired model pilot. The normal integration test starts an isolated MCP server and proves that
+the opt-in `inspect_code_graph responseFormat=text` JSON parses to the exact default structured projection on all five
+queries, including path, impact, and no-answer, while the default response remains dual-channel:
+
+```sh
+bun --bun vitest run test/integration/mcp-code-graph-response-format.test.ts test/unit/mcp-code-graph-progress.test.ts
+```
+
+The checked-in baseline measures 66,686 dual versus 53,404 text-only UTF-8 bytes (19.9% less) on source commit
+`dd73e2d7aee74b1ff4147f2094a7161ef8d57a0c`. Two counterbalanced model runs per query and format returned 20/20
+correct, graph-ID-grounded answers, including abstention on the no-answer query; reported input tokens were 159,446
+dual versus 151,708 text-only across those calls. The model pilot uses synthetic evidence and Codex CLI scaffolding,
+so it is not a powered task-quality or provider-cost result. Keep the default dual format for existing clients. A
+broader default requires a larger paired corpus and supported-client compatibility evidence.
+
 ## MemoryConnectionsBench v1 (A+B)
 
 `fixtures/memory-connections-bench-v1/fixture.json` freezes the typed-authoring and memory-link selector projection contract introduced in schema v12. The private recall cache now uses schema v13: source URIs are copied from indexed documents to order bounded neighborhoods directly in the source/target indexes. Selector values, canonical proof requirements, fixture inputs, and result ordering are unchanged.

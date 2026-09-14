@@ -197,3 +197,16 @@ export function codeGraphMcpResponse(result: CodeGraphQueryResult, maximumEstima
   if (minimumBytes > maximumBytes) throw AgentResponseBudgetTooSmallError.of(maximumBytes, minimumBytes);
   return longestAdmittedPrefix(result, response => measureAgentToolResponse(response).totalBytes <= maximumBytes, true);
 }
+
+export function formatCodeGraphMcpResponse<T>(
+  response: {readonly structuredContent: T; readonly text: string},
+  responseFormat: 'dual' | 'text' = 'dual',
+) {
+  if (responseFormat === 'text') {
+    return {content: [{type: 'text' as const, text: JSON.stringify(response.structuredContent)}]};
+  }
+  return {
+    content: [{type: 'text' as const, text: response.text}],
+    structuredContent: response.structuredContent,
+  };
+}

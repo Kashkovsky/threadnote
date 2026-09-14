@@ -244,6 +244,7 @@ export const mcpTools: McpToolReference[] = [
       'base',
       'workset',
       'budgetTokens and cursor for workset query',
+      'responseFormat (local MCP)',
       'nodeLimit',
       'edgeLimit',
     ],
@@ -1126,6 +1127,10 @@ threadnote share conflict resolve <id> --take shared`,
           {
             type: 'note',
             text: 'MCP keeps scoped inspection and whole-graph analysis separate: inspect_code_graph supports query, node, neighbors, explain, path, impact, and workset topology; analyze_code_graph supports repository-local stats, communities, community, groups, hubs, surprises, confidence, and full.',
+          },
+          {
+            type: 'paragraph',
+            text: 'Local MCP inspect_code_graph accepts responseFormat=text for successful repository or named Workset inspections. It returns the complete bounded graph projection as JSON in the first text content block without repeating it in structuredContent. Parse that JSON to use stable IDs, source evidence, freshness, trust, and coverage receipts. The default responseFormat=dual keeps the readable text and structured graph for existing clients. Indexing, timeout, and error responses keep their existing status format.',
           },
         ],
       },
