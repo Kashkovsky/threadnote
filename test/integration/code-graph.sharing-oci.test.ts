@@ -15,8 +15,15 @@ import {parseSha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {readAcceptedGraphShareFrontier} from '../../src/code_graph/sharing/frontier_acceptance.js';
 import {graphShareFrontierDiscoveryTag} from '../../src/code_graph/sharing/namespace.js';
 import {parseGraphShareProfile} from '../../src/code_graph/sharing/profile.js';
+import {ociProfilePointer} from '../../src/code_graph/sharing/profile.js';
+import {graphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile_oci_artifact.js';
 import {readSharedGraphProvenance} from '../../src/code_graph/sharing/provenance.js';
 import {runGraphShareInit} from '../../src/code_graph/sharing/publisher.js';
+import {
+  trustReceiptFromEnrollment,
+  writeGraphShareClientState,
+  writeGraphShareTrustReceipt,
+} from '../../src/code_graph/sharing/trust.js';
 import {
   runGraphPublisherBootstrapCommand,
   runGraphPublisherServeCommand,
@@ -173,6 +180,24 @@ effectIt.effect(
           yield* putCasBytes(clientCas, profileBytes);
           yield* runGraphShareJoin(config(home), {cas: clientCas, cwd: repository, readOnly: true});
           expect(yield* fs.readDirectory(path.join(clientCas, 'sha256'))).toHaveLength(1);
+          const profileArtifact = graphShareProfileOciArtifact(profile);
+          if (label === 'current') {
+            yield* writeGraphShareClientState(home, clientCas);
+            yield* writeGraphShareTrustReceipt(
+              home,
+              trustReceiptFromEnrollment(enrollment, profile, profileDigest, 'read-only'),
+            );
+            registry.manifests.set(profileArtifact.manifestDigest, profileArtifact.manifestBytes);
+            registry.blobs.set(profileArtifact.profileDigest, profileArtifact.profileBytes);
+            yield* writePrivateJsonFile(path.join(repository, '.threadnote', 'graph-share.json'), {
+              profile: ociProfilePointer(profile.registry.canonical, profileArtifact.manifestDigest),
+              profileDigest: profileArtifact.profileDigest,
+              publisherKeyFingerprint: enrollment.publisherKeyFingerprint,
+              repositoryId: enrollment.repositoryId,
+              schemaVersion: 2,
+            });
+            yield* fs.remove(path.join(clientCas, 'sha256', profileDigest.slice('sha256:'.length)));
+          }
           const identity = yield* resolveRepositoryIdentity(repository);
           const imported = yield* registry.provide(
             maybeImportSharedGraphBase({cwd: repository, identity, threadnoteHome: home}),
@@ -191,6 +216,17 @@ effectIt.effect(
               branch: 'refs/heads/main',
             }),
           ).toMatchObject({generation: 2});
+          if (label === 'current') {
+            expect(registry.requests).toContainEqual({
+              method: 'GET',
+              pathname: `/v2/acme/canonical/manifests/${profileArtifact.manifestDigest}`,
+            });
+            expect(registry.requests).toContainEqual({
+              method: 'GET',
+              pathname: `/v2/acme/canonical/blobs/${profileArtifact.profileDigest}`,
+            });
+            yield* writePrivateJsonFile(path.join(repository, '.threadnote', 'graph-share.json'), enrollment);
+          }
         }
         expect(requiredChunks.length).toBeGreaterThan(2);
         for (const digest of requiredChunks) {
