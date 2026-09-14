@@ -42,6 +42,9 @@ describe('Context Brief action cards', () => {
       verify: 'Run focused tests.',
     });
     expect(parseMemoryActionCard('## Applies to: Catalog edits\nA vague story without an invariant.')).toBeUndefined();
+    expect(
+      parseMemoryActionCard('```text\nApplies to: sample\nInvariant: quoted code\n```\nA narrative line.'),
+    ).toBeUndefined();
   });
 
   it('delivers only current direct evidence and includes a validation hint', () => {

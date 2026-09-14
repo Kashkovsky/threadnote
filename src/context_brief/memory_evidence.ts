@@ -380,7 +380,13 @@ function retryContextBriefCodeAnchorRead<A, E, R>(
 /** Only explicit single-line sections are promoted; arbitrary memory prose stays in the full read. */
 export function parseMemoryActionCard(body: string): ContextBriefMemoryActionCardV1 | undefined {
   const fields = new Map<string, string>();
+  let fenced = false;
   for (const line of body.split(/\r?\n/gu).slice(0, 80)) {
+    if (/^\s{0,3}(?:```|~~~)/u.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) continue;
     const match = /^\s{0,3}(?:#{1,3}\s*)?(Applies to|Invariant|Avoid|Verify):\s*(.+?)\s*$/iu.exec(line);
     if (!match) continue;
     const key = match[1].toLowerCase();
