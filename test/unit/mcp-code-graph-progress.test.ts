@@ -489,6 +489,26 @@ describe('MCP code graph indexing progress', () => {
     expect(new TextEncoder().encode(response.text).byteLength).toBeLessThan(20 * 1_024);
   });
 
+  it('keeps bounded path-search coverage distinct from MCP output truncation', () => {
+    const result: CodeGraphQueryResult = {
+      ...verboseCodeGraphResult(),
+      edges: [],
+      nodes: [],
+      operation: 'path',
+      searchCoverage: {
+        status: 'bounded',
+        limitsReached: ['edge-limit'],
+        visitedNodes: 8,
+        inspectedEdges: 8,
+        directEdgeChecked: true,
+      },
+      warnings: ['Path search was bounded by edge-limit.'],
+    };
+    const response = codeGraphMcpResponse(result, 1_500);
+    expect(response.structuredContent.searchCoverage).toEqual(result.searchCoverage);
+    expect(response.structuredContent.output.truncated).toBe(false);
+  });
+
   it('keeps shared graph source fields after compact and a tight token budget', () => {
     const source = {
       deltaCount: 0,

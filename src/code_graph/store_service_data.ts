@@ -29,6 +29,7 @@ import {
   selectStoredSymbols,
   selectEdgePage,
   selectEdgesForNodes,
+  selectDirectEdgeBetweenNodes,
 } from './store_queries.js';
 import {selectSnapshotPackProvenance} from './store_pack_provenance.js';
 import {pruneCachedFileBlobs} from './store_cleanup_core.js';
@@ -104,6 +105,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'cachedCommittedFileKeys'
   | 'discardInvalidCachedFacts'
   | 'edgesForNodes'
+  | 'directEdgeBetweenNodes'
   | 'findSymbolsByPathAndName'
   | 'loadCachedFacts'
   | 'loadMaterializedFileShards'
@@ -360,6 +362,16 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
           ),
         ),
         Effect.mapError(cause => storeError('load code graph adjacency', cause)),
+      ),
+    directEdgeBetweenNodes: (databasePath, snapshotId, sourceId, targetId, allowedProvenances) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useReadOnlyDatabase(
+            databasePath,
+            selectDirectEdgeBetweenNodes(snapshotId, sourceId, targetId, allowedProvenances),
+          ),
+        ),
+        Effect.mapError(cause => storeError('load direct code graph edge', cause)),
       ),
     findSymbolsByPathAndName: (databasePath, snapshotId, sourcePath, name) =>
       prepare(databasePath).pipe(

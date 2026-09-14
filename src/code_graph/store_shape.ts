@@ -454,6 +454,13 @@ export interface CodeGraphStoreShape {
     limit: number,
     allowedProvenances: readonly CodeGraphProvenance[],
   ) => Effect.Effect<readonly CodeGraphEdge[], CodeGraphStoreFailure>;
+  readonly directEdgeBetweenNodes: (
+    databasePath: string,
+    snapshotId: string,
+    sourceId: string,
+    targetId: string,
+    allowedProvenances: readonly CodeGraphProvenance[],
+  ) => Effect.Effect<CodeGraphEdge | undefined, CodeGraphStoreFailure>;
   readonly representativeEdgesForNodes: (
     databasePath: string,
     snapshotId: string,

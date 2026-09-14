@@ -46,6 +46,11 @@ export const CODE_GRAPH_QUERY_INDEX_DEFINITIONS = [
     table: 'edges',
   },
   {
+    createSql: 'CREATE INDEX IF NOT EXISTS edges_endpoints ON edges(snapshot_id, source_id, target_id)',
+    name: 'edges_endpoints',
+    table: 'edges',
+  },
+  {
     createSql: `CREATE INDEX IF NOT EXISTS symbols_visualization_scope_v2
       ON symbols(snapshot_id, resolution_scope_id, exported DESC, (${visualizationKindOrder}), id)`,
     name: 'symbols_visualization_scope_v2',

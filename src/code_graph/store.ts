@@ -100,6 +100,7 @@ export {
 } from './store_maintenance_core.js';
 export {
   codeGraphAdjacencyQueryStatement,
+  codeGraphDirectEdgeQueryStatement,
   codeGraphCachedCommittedFileKeysStatement,
   codeGraphExactSymbolQueryStatement,
   codeGraphSymbolPathClass,

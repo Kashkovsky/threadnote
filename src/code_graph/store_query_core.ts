@@ -727,6 +727,57 @@ export function codeGraphAdjacencyQueryStatement(
   };
 }
 
+export function codeGraphDirectEdgeQueryStatement(
+  snapshotId: string,
+  baseSnapshotId: string | undefined,
+  sourceId: string,
+  targetId: string,
+  allowedProvenances: readonly CodeGraphProvenance[],
+): CodeGraphSqlQueryStatement {
+  const provenances = [...new Set(allowedProvenances)];
+  const placeholders = provenances.map(() => '?').join(', ');
+  return {
+    parameters: [
+      snapshotId,
+      sourceId,
+      targetId,
+      ...provenances,
+      baseSnapshotId ?? '',
+      sourceId,
+      targetId,
+      ...provenances,
+      snapshotId,
+      snapshotId,
+    ],
+    text: `WITH direct_edges AS (
+      SELECT current_edges.*
+      FROM edges AS current_edges INDEXED BY edges_endpoints
+      WHERE current_edges.snapshot_id = ?
+        AND current_edges.source_id = ?
+        AND current_edges.target_id = ?
+        AND current_edges.provenance IN (${placeholders})
+      UNION ALL
+      SELECT base_edges.*
+      FROM edges AS base_edges INDEXED BY edges_endpoints
+      WHERE base_edges.snapshot_id = ?
+        AND base_edges.source_id = ?
+        AND base_edges.target_id = ?
+        AND base_edges.provenance IN (${placeholders})
+        AND NOT EXISTS (
+          SELECT 1 FROM edges AS overrides
+          WHERE overrides.snapshot_id = ? AND overrides.id = base_edges.id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM snapshot_edge_deletions AS deletions
+          WHERE deletions.snapshot_id = ? AND deletions.edge_id = base_edges.id
+        )
+    )
+    SELECT * FROM direct_edges
+    ORDER BY ${edgePriorityOrder('direct_edges')}
+    LIMIT 1`,
+  };
+}
+
 export {
   selectBaseSnapshotId,
   effectiveSnapshotParameters,

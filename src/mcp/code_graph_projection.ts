@@ -70,6 +70,7 @@ function projectCodeGraphMcpResult(
     },
     snapshot: result.snapshot,
     ...(result.scope ? {scope: result.scope} : {}),
+    ...(result.searchCoverage ? {searchCoverage: result.searchCoverage} : {}),
     sourceVersion: result.version,
     trust: result.trust,
     type: 'code-graph-inspection' as const,

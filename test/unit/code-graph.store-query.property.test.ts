@@ -3,9 +3,11 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import * as FC from 'fast-check';
 import {
   codeGraphAdjacencyQueryStatement,
+  codeGraphDirectEdgeQueryStatement,
   codeGraphCachedCommittedFileKeysStatement,
   codeGraphCompactLexicalCleanupPageStatement,
   codeGraphEffectiveSymbolTermsQueryStatement,
@@ -23,7 +25,7 @@ import {
   CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE_SQL,
   CODE_GRAPH_FILE_BLOB_AUTHORITY_TRIGGER_SQL,
 } from '../../src/code_graph/store_cache_authority.js';
-import {neighborQuery} from '../../src/code_graph/query.js';
+import {neighborQuery, pathQuery} from '../../src/code_graph/query.js';
 import type {CodeGraphEdge, CodeGraphProvenance} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
@@ -405,6 +407,217 @@ describe('code graph indexed query properties', () => {
         expect(actual.filter(edge => edge.relation === 'contains')).toHaveLength(63);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('finds a direct path beyond the bounded adjacency prefix and reports bounded misses', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* CodeGraphStore;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-direct-path-'});
+        const databasePath = path.join(root, 'graph-v3.sqlite');
+        yield* store.initialize(databasePath);
+        const start = stableNodeId(0);
+        const target = stableNodeId(1);
+        const missing = stableNodeId(2);
+        const distractors = Array.from({length: 65}, (_, index): CodeGraphEdge => ({
+          ...graphEdge({
+            confidence: 100,
+            id: index,
+            provenance: 'resolved',
+            relation: 'imports',
+            source: 0,
+            target: index + 3,
+          }),
+          sourceId: start,
+          targetId: stableNodeId(index + 3),
+        }));
+        const direct: CodeGraphEdge = {
+          ...graphEdge({confidence: 100, id: 1_000, provenance: 'resolved', relation: 'imports', source: 0, target: 1}),
+          sourceId: start,
+          targetId: target,
+        };
+        yield* Effect.sync(() => {
+          insertOverlayFixture(databasePath, [], [...distractors, direct], new Set());
+          insertQuerySymbols(databasePath, [start, target, missing]);
+        });
+
+        const found = yield* pathQuery(store, databasePath, currentSnapshotId, start, target, 8, 8, 3, ['resolved']);
+        const bounded = yield* pathQuery(store, databasePath, currentSnapshotId, start, missing, 8, 8, 3, ['resolved']);
+
+        expect(found.edges.map(edge => edge.id)).toEqual([direct.id]);
+        expect(found.searchCoverage).toMatchObject({status: 'found', directEdgeChecked: true});
+        expect(bounded.edges).toEqual([]);
+        expect(bounded.searchCoverage).toMatchObject({status: 'bounded', directEdgeChecked: true});
+        expect(bounded.searchCoverage.limitsReached).toContain('edge-limit');
+        expect(bounded.searchCoverage.visitedNodes).toBeLessThanOrEqual(8);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('excludes overridden and deleted base edges from the exact endpoint lookup', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* CodeGraphStore;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-direct-overlay-'});
+        const databasePath = path.join(root, 'graph-v3.sqlite');
+        yield* store.initialize(databasePath);
+        const direct = graphEdge({
+          confidence: 100,
+          id: 1,
+          provenance: 'resolved',
+          relation: 'calls',
+          source: 0,
+          target: 1,
+        });
+        const deleted = graphEdge({
+          confidence: 90,
+          id: 2,
+          provenance: 'resolved',
+          relation: 'calls',
+          source: 0,
+          target: 1,
+        });
+        const moved = {...direct, targetId: nodeId(2), targetName: nodeId(2)};
+        yield* Effect.sync(() => insertOverlayFixture(databasePath, [direct, deleted], [moved], new Set([deleted.id])));
+
+        expect(
+          yield* store.directEdgeBetweenNodes(databasePath, currentSnapshotId, nodeId(0), nodeId(1), ['resolved']),
+        ).toBeUndefined();
+        expect(
+          yield* store.directEdgeBetweenNodes(databasePath, currentSnapshotId, nodeId(0), nodeId(2), ['resolved']),
+        ).toMatchObject({id: moved.id});
+
+        const database = new Database(databasePath, {readonly: true, strict: true});
+        try {
+          const statement = codeGraphDirectEdgeQueryStatement(currentSnapshotId, baseSnapshotId, nodeId(0), nodeId(2), [
+            'resolved',
+          ]);
+          const plan = queryPlan(database, statement.text, statement.parameters).join('\n');
+          expect(plan).toContain('edges_endpoints');
+          expect(plan).toContain('snapshot_id=? AND source_id=? AND target_id=?');
+        } finally {
+          database.close(false);
+        }
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('reports a direct lookup that finishes after the path deadline as timed out', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* CodeGraphStore;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-direct-deadline-'});
+        const databasePath = path.join(root, 'graph-v3.sqlite');
+        yield* store.initialize(databasePath);
+        const start = stableNodeId(0);
+        const target = stableNodeId(1);
+        const direct: CodeGraphEdge = {
+          ...graphEdge({confidence: 100, id: 1, provenance: 'resolved', relation: 'imports', source: 0, target: 1}),
+          sourceId: start,
+          targetId: target,
+        };
+        yield* Effect.sync(() => {
+          insertOverlayFixture(databasePath, [], [direct], new Set());
+          insertQuerySymbols(databasePath, [start, target]);
+        });
+        const delayedStore = {
+          ...store,
+          directEdgeBetweenNodes: (...args: Parameters<typeof store.directEdgeBetweenNodes>) =>
+            store.directEdgeBetweenNodes(...args).pipe(Effect.tap(() => TestClock.adjust(2_001))),
+        };
+
+        const result = yield* pathQuery(delayedStore, databasePath, currentSnapshotId, start, target, 8, 8, 3, [
+          'resolved',
+        ]);
+        expect(result.edges).toEqual([]);
+        expect(result.searchCoverage).toMatchObject({status: 'timed-out', limitsReached: ['time-budget']});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  fcEffectProp(
+    it,
+    'widening path traversal bounds preserves any established path',
+    {edgeLimit: FC.integer({min: 1, max: 12}), nodeLimit: FC.integer({min: 2, max: 12})},
+    ({edgeLimit, nodeLimit}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const store = yield* CodeGraphStore;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-path-monotone-'});
+          const databasePath = path.join(root, 'graph-v3.sqlite');
+          yield* store.initialize(databasePath);
+          const start = stableNodeId(0);
+          const middle = stableNodeId(1);
+          const target = stableNodeId(2);
+          const edges: CodeGraphEdge[] = [
+            {
+              ...graphEdge({confidence: 100, id: 1, provenance: 'resolved', relation: 'calls', source: 0, target: 1}),
+              sourceId: start,
+              targetId: middle,
+            },
+            {
+              ...graphEdge({confidence: 100, id: 2, provenance: 'resolved', relation: 'calls', source: 1, target: 2}),
+              sourceId: middle,
+              targetId: target,
+            },
+            ...Array.from({length: 5}, (_, index): CodeGraphEdge => ({
+              ...graphEdge({
+                confidence: 100,
+                id: index + 3,
+                provenance: 'resolved',
+                relation: 'calls',
+                source: 0,
+                target: index + 3,
+              }),
+              sourceId: start,
+              targetId: stableNodeId(index + 3),
+            })),
+          ];
+          yield* Effect.sync(() => {
+            insertOverlayFixture(databasePath, [], edges, new Set());
+            insertQuerySymbols(databasePath, [start, middle, target]);
+          });
+          const narrow = yield* pathQuery(
+            store,
+            databasePath,
+            currentSnapshotId,
+            start,
+            target,
+            nodeLimit,
+            edgeLimit,
+            2,
+            ['resolved'],
+          );
+          const wide = yield* pathQuery(
+            store,
+            databasePath,
+            currentSnapshotId,
+            start,
+            target,
+            nodeLimit + 4,
+            edgeLimit + 4,
+            2,
+            ['resolved'],
+          );
+          const unbounded = yield* pathQuery(store, databasePath, currentSnapshotId, start, target, 20, 20, 2, [
+            'resolved',
+          ]);
+          expect(unbounded.searchCoverage.status).toBe('found');
+          if (narrow.searchCoverage.status === 'found') {
+            expect(wide.searchCoverage.status).toBe('found');
+            expect(wide.edges.at(-1)?.targetId).toBe(target);
+          }
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    {fastCheck: {numRuns: 20}},
   );
 
   it.effect('retains a traversable edge ahead of unresolved direct source relationships', () =>
@@ -1283,6 +1496,10 @@ function edgeId(value: number): string {
 
 function nodeId(value: number): string {
   return `node-${value}`;
+}
+
+function stableNodeId(value: number): string {
+  return `cgs_${value.toString(16).padStart(32, '0')}`;
 }
 
 const spanJson = JSON.stringify({column: 1, endColumn: 2, endLine: 1, line: 1});
