@@ -46,6 +46,7 @@ const ResultReceipt = Schema.Struct({
 });
 const CoordinatorStatus = Schema.Struct({
   generation: Schema.Finite,
+  observedHead: Schema.optionalKey(Schema.NullOr(Schema.String)),
   organization: Schema.String,
   phase: Schema.String,
   publishedFrontier: Schema.NullOr(Schema.String),
@@ -68,6 +69,7 @@ export interface GraphShareCoordinatorFrontierResponse {
 
 export interface GraphShareCoordinatorStatusResponse {
   readonly generation: number;
+  readonly observedHead?: string | null;
   readonly organization: string;
   readonly phase: string;
   readonly publishedFrontier: string | null;

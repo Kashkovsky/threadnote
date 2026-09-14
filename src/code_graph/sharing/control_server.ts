@@ -94,20 +94,21 @@ export function parseGraphShareListenAddress(value: string): GraphShareListenAdd
 export const runGraphShareControlServer = Effect.fn('codeGraph.sharing.controlServer')(function* <E, R>(
   options: GraphShareControlServerOptions<E, R>,
 ) {
-  const authenticatedReader =
-    options.authorization === undefined
-      ? undefined
-      : yield* makeGraphControlReader({
-          ...options.authorization,
-          casRoot: options.casRoot,
-          threadnoteHome: options.threadnoteHome,
-        });
   return yield* Effect.scoped(
     Layer.build(BunHttpServer.layer({hostname: options.listen.hostname, port: options.listen.port})).pipe(
       Effect.flatMap(context =>
         Effect.gen(function* () {
           const server = yield* HttpServer.HttpServer;
           const stateRef = yield* Ref.make(yield* loadGraphShareCoordinatorState(options));
+          const authenticatedReader =
+            options.authorization === undefined
+              ? undefined
+              : yield* makeGraphControlReader({
+                  ...options.authorization,
+                  casRoot: options.casRoot,
+                  coordinatorStateRef: stateRef,
+                  threadnoteHome: options.threadnoteHome,
+                });
           yield* server.serve(authenticatedReader?.handle ?? handleGraphShareHttp(options, stateRef));
           const actualPort =
             server.address._tag === 'InetAddressV4' || server.address._tag === 'InetAddressV6'
