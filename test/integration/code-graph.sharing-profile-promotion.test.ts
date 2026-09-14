@@ -7,7 +7,11 @@ import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
 import {readVerifiedCasBlob} from '../../src/code_graph/sharing/cas.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
-import {runGraphShareJoin} from '../../src/code_graph/sharing/client.js';
+import {
+  maybeImportSharedGraphBase,
+  runGraphShareJoin,
+  runGraphShareLeave,
+} from '../../src/code_graph/sharing/client.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
   graphShareEnrollmentPath,
@@ -27,6 +31,7 @@ import {
 } from '../../src/code_graph/sharing/publisher.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {lookupGraphShareTrustReceipt} from '../../src/code_graph/sharing/trust.js';
 
 const canonicalRegistry = 'oci://registry.example.test/acme/canonical';
@@ -186,6 +191,156 @@ effectIt.effect('migrates a previously trusted v1 client to a cold v2 OCI profil
         yield* rejected(f.registry.provide(runGraphShareJoin(freshConfig, {cas: f.cas, cwd: f.repository}))),
       ).toBeInstanceOf(Error);
       expect(f.registry.requests).toHaveLength(requestsAfterMigration);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  ),
+);
+
+effectIt.effect('fresh managed approval pins the OCI root and verified profile before trust or CAS writes', () =>
+  TestClock.withLive(
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const promoted = yield* f.promote();
+      yield* f.fs.writeFileString(f.enrollmentPath, `${JSON.stringify(promoted.enrollment)}\n`);
+      const pointer = parseGraphShareProfilePointer(f.enrollment.profile);
+      if (pointer.kind !== 'cas') return yield* Effect.die('Expected staged CAS profile');
+      const profile = parseGraphShareProfile(
+        yield* decodeJsonBytes(yield* readVerifiedCasBlob(f.cas, pointer.bodyDigest)),
+      );
+      const approvalPath = yield* f.fs.realPath(f.path.join(f.repository, '..'));
+      const approvalFile = f.path.join(approvalPath, 'managed-approval.json');
+      const approval = {
+        accessMode: 'read-only' as const,
+        contribution: {declared: profile.contribution, effectiveMode: 'off' as const},
+        coordinatorUrl: null,
+        organization: profile.organization,
+        profileDigest: promoted.profileDigest,
+        publisherKeyFingerprint: promoted.enrollment.publisherKeyFingerprint,
+        registry: profile.registry,
+        repositoryId: promoted.enrollment.repositoryId,
+        schemaVersion: 1 as const,
+        source: profile.source,
+      };
+      const clientConfig = {...f.config, agentContextHome: f.path.join(f.repository, '..', 'fresh-approved-home')};
+      const clientCas = f.path.join(f.repository, '..', 'fresh-approved-cas');
+      const manifestPath = graphSharingCasBlobPath(f.path, clientCas, promoted.manifestDigest.slice('sha256:'.length));
+      yield* writePrivateJsonFile(approvalFile, {...approval, profileDigest: sha256Digest('wrong')});
+      const beforeWrongRoot = f.registry.requests.length;
+      expect(
+        yield* rejected(
+          f.registry.provide(runGraphShareJoin(clientConfig, {approvalFile, cas: clientCas, cwd: f.repository})),
+        ),
+      ).toBeInstanceOf(Error);
+      expect(f.registry.requests).toHaveLength(beforeWrongRoot);
+      expect(yield* lookupGraphShareTrustReceipt(clientConfig.agentContextHome, approval.repositoryId)).toBeUndefined();
+      expect(yield* f.fs.exists(manifestPath)).toBe(false);
+
+      yield* writePrivateJsonFile(approvalFile, {...approval, organization: 'wrong'});
+      expect(
+        yield* rejected(
+          f.registry.provide(runGraphShareJoin(clientConfig, {approvalFile, cas: clientCas, cwd: f.repository})),
+        ),
+      ).toBeInstanceOf(Error);
+      expect(f.registry.requests.length).toBeGreaterThan(beforeWrongRoot);
+      expect(yield* lookupGraphShareTrustReceipt(clientConfig.agentContextHome, approval.repositoryId)).toBeUndefined();
+      expect(yield* f.fs.exists(manifestPath)).toBe(false);
+
+      yield* writePrivateJsonFile(approvalFile, approval);
+      const joined = yield* f.registry.provide(
+        runGraphShareJoin(clientConfig, {approvalFile, cas: clientCas, cwd: f.repository}),
+      );
+      expect(joined.accessMode).toBe('read-only');
+      const repeated = yield* f.registry.provide(
+        runGraphShareJoin(clientConfig, {approvalFile, cas: clientCas, cwd: f.repository}),
+      );
+      expect(repeated.accessMode).toBe('read-only');
+      expect(yield* f.fs.exists(manifestPath)).toBe(true);
+      expect(
+        (yield* lookupGraphShareTrustReceipt(clientConfig.agentContextHome, approval.repositoryId))?.accessMode,
+      ).toBe('read-only');
+      yield* f.git(['checkout', '-qb', 'unapproved-branch']);
+      const system = yield* SystemInfo;
+      const deniedUpgrade = yield* rejected(
+        f.registry.provide(
+          runGraphShareJoin(clientConfig, {cas: clientCas, coordinator: 'http://127.0.0.1:9', cwd: f.repository}).pipe(
+            Effect.provideService(SystemInfo, {
+              ...system,
+              stdinIsTTY: true,
+              stdoutIsTTY: true,
+              readLine: (_prompt, onLine) => {
+                queueMicrotask(() => onLine('join'));
+                return () => undefined;
+              },
+            }),
+          ),
+        ),
+      );
+      expect(deniedUpgrade instanceof Error ? deniedUpgrade.message : String(deniedUpgrade)).toContain(
+        'does not authorize this checkout branch',
+      );
+      expect(
+        (yield* lookupGraphShareTrustReceipt(clientConfig.agentContextHome, approval.repositoryId))?.accessMode,
+      ).toBe('read-only');
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  ),
+);
+
+effectIt.effect('ordinary graph use auto-consumes managed approval without an explicit join', () =>
+  TestClock.withLive(
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const promoted = yield* f.promote();
+      yield* f.fs.writeFileString(f.enrollmentPath, `${JSON.stringify(promoted.enrollment)}\n`);
+      const pointer = parseGraphShareProfilePointer(f.enrollment.profile);
+      if (pointer.kind !== 'cas') return yield* Effect.die('Expected staged CAS profile');
+      const profile = parseGraphShareProfile(
+        yield* decodeJsonBytes(yield* readVerifiedCasBlob(f.cas, pointer.bodyDigest)),
+      );
+      const approvalPath = f.path.join(yield* f.fs.realPath(f.path.join(f.repository, '..')), 'auto-approval.json');
+      yield* writePrivateJsonFile(approvalPath, {
+        accessMode: 'join',
+        contribution: {declared: profile.contribution, effectiveMode: 'passive-on-index'},
+        coordinatorUrl: 'http://127.0.0.1:9',
+        organization: profile.organization,
+        profileDigest: promoted.profileDigest,
+        publisherKeyFingerprint: promoted.enrollment.publisherKeyFingerprint,
+        registry: profile.registry,
+        repositoryId: promoted.enrollment.repositoryId,
+        schemaVersion: 1,
+        source: profile.source,
+      });
+      const identity = yield* resolveRepositoryIdentity(f.repository);
+      const home = f.path.join(f.repository, '..', 'auto-client-home');
+      const clientConfig = {...f.config, agentContextHome: home};
+      const system = yield* SystemInfo;
+      const ordinaryUse = () =>
+        f.registry.provide(
+          maybeImportSharedGraphBase({cwd: f.repository, identity, threadnoteHome: home}).pipe(
+            Effect.provideService(SystemInfo, {
+              ...system,
+              environment: () => ({
+                ...system.environment(),
+                DOCKER_CONFIG: f.registry.docker,
+                THREADNOTE_GRAPH_APPROVAL_FILE: approvalPath,
+              }),
+            }),
+          ),
+        );
+      yield* ordinaryUse();
+      const trust = yield* lookupGraphShareTrustReceipt(home, identity.repositoryId);
+      expect(trust?.accessMode).toBe('join');
+      expect(trust?.client?.contributionMode).toBe('passive');
+      expect(trust?.client?.coordinatorUrl).toBe('http://127.0.0.1:9');
+      yield* runGraphShareLeave(clientConfig, {cwd: f.repository});
+      expect(yield* lookupGraphShareTrustReceipt(home, identity.repositoryId)).toBeUndefined();
+      const requestsBeforeRevokedUse = f.registry.requests.length;
+      expect((yield* ordinaryUse()).reason).toBe('untrusted');
+      expect(f.registry.requests).toHaveLength(requestsBeforeRevokedUse);
+      expect(yield* lookupGraphShareTrustReceipt(home, identity.repositoryId)).toBeUndefined();
+      const explicit = yield* f.registry.provide(
+        runGraphShareJoin(clientConfig, {approvalFile: approvalPath, cwd: f.repository}),
+      );
+      expect(explicit.accessMode).toBe('join');
+      expect((yield* lookupGraphShareTrustReceipt(home, identity.repositoryId))?.accessMode).toBe('join');
     }).pipe(provideTestLayer(ApplicationLayer)),
   ),
 );

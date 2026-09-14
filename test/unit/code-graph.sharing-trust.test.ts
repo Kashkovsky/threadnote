@@ -2,7 +2,9 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path, Result} from 'effect';
 import {TestClock} from 'effect/testing';
+import * as FC from 'fast-check';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {
   casBlobPath,
   putCasBytes,
@@ -15,6 +17,7 @@ import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/di
 import {graphSharingCasBlobPath} from '../../src/code_graph/sharing/layout.js';
 import {
   lookupGraphShareTrustReceipt,
+  isGraphShareAutoEnrollmentRevoked,
   removeGraphShareTrustReceipt,
   trustReceiptFromEnrollment,
   writeGraphShareTrustReceipt,
@@ -132,6 +135,45 @@ describe('graph share trust and CAS', () => {
         expect((yield* lookupGraphShareTrustReceipt(home, third.repositoryId))?.accessMode).toBe('join');
       }).pipe(provideTestLayer(sharingLayer)),
     ),
+  );
+
+  fcEffectProp(
+    effectIt,
+    'auto-enrollment revocation follows the latest explicit transition per repository',
+    {
+      operations: FC.array(
+        FC.record({
+          repository: FC.constantFrom(0, 1),
+          transition: FC.constantFrom('leave' as const, 'join' as const),
+        }),
+        {minLength: 1, maxLength: 6},
+      ),
+    },
+    ({operations}) =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-auto-revocation-'});
+          const ids = ['b'.repeat(64), 'c'.repeat(64)] as const;
+          const revoked = new Set<string>();
+          for (const {repository, transition} of operations) {
+            const id = ids[repository];
+            if (transition === 'leave') {
+              yield* removeGraphShareTrustReceipt(home, id, {revokeAutomatic: true});
+              revoked.add(id);
+            } else {
+              yield* writeGraphShareTrustReceipt(home, receiptFor(id, 'read-only'), {
+                clearAutoEnrollmentRevocation: true,
+              });
+              revoked.delete(id);
+            }
+            for (const observed of ids) {
+              expect(yield* isGraphShareAutoEnrollmentRevoked(home, observed)).toBe(revoked.has(observed));
+            }
+          }
+        }).pipe(provideTestLayer(sharingLayer)),
+      ),
+    {fastCheck: {numRuns: 12}},
   );
 });
 

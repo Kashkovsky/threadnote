@@ -29,6 +29,7 @@ export interface GraphShareTrustReceiptV1 {
 }
 
 export interface GraphShareTrustDocumentV1 {
+  readonly autoEnrollmentRevokedRepositoryIds?: readonly string[];
   readonly receipts: readonly GraphShareTrustReceiptV1[];
   readonly schemaVersion: typeof GRAPH_SHARE_TRUST_SCHEMA_VERSION;
 }
@@ -69,7 +70,11 @@ export const lookupGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.lookupT
 export const writeGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.writeTrustReceipt')(function* (
   threadnoteHome: string,
   receipt: GraphShareTrustReceiptV1,
-  options?: {readonly preserveContributionMode?: boolean},
+  options?: {
+    readonly automatic?: boolean;
+    readonly clearAutoEnrollmentRevocation?: boolean;
+    readonly preserveContributionMode?: boolean;
+  },
 ) {
   return yield* withGraphShareTrustReceiptsLock(
     threadnoteHome,
@@ -77,6 +82,9 @@ export const writeGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.writeTru
       const path = yield* Path.Path;
       const layout = graphSharingLayout(path, threadnoteHome);
       const document = yield* readGraphShareTrustDocument(threadnoteHome);
+      const revoked = document.autoEnrollmentRevokedRepositoryIds ?? [];
+      if (options?.automatic && revoked.includes(receipt.repositoryId))
+        return yield* graphSharingFailure('Automatic graph enrollment was revoked for this repository.');
       const previous = document.receipts.find(item => item.repositoryId === receipt.repositoryId);
       const stored =
         options?.preserveContributionMode &&
@@ -91,8 +99,11 @@ export const writeGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.writeTru
         (left, right) => (left.repositoryId < right.repositoryId ? -1 : left.repositoryId > right.repositoryId ? 1 : 0),
       );
       yield* writePrivateJsonFile(layout.trustReceiptsPath, {
+        ...document,
+        ...(options?.clearAutoEnrollmentRevocation
+          ? {autoEnrollmentRevokedRepositoryIds: revoked.filter(id => id !== receipt.repositoryId)}
+          : {}),
         receipts,
-        schemaVersion: GRAPH_SHARE_TRUST_SCHEMA_VERSION,
       } satisfies GraphShareTrustDocumentV1);
       return stored;
     }),
@@ -128,6 +139,7 @@ export const writeGraphShareRepositoryContributionMode = Effect.fn('codeGraph.sh
 export const removeGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.removeTrustReceipt')(function* (
   threadnoteHome: string,
   repositoryId: string,
+  options?: {readonly revokeAutomatic?: boolean},
 ) {
   yield* withGraphShareTrustReceiptsLock(
     threadnoteHome,
@@ -135,12 +147,24 @@ export const removeGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.removeT
       const path = yield* Path.Path;
       const layout = graphSharingLayout(path, threadnoteHome);
       const document = yield* readGraphShareTrustDocument(threadnoteHome);
+      const revoked = document.autoEnrollmentRevokedRepositoryIds ?? [];
       yield* writePrivateJsonFile(layout.trustReceiptsPath, {
+        ...document,
+        ...(options?.revokeAutomatic
+          ? {autoEnrollmentRevokedRepositoryIds: [...new Set([...revoked, repositoryId])].sort()}
+          : {}),
         receipts: document.receipts.filter(item => item.repositoryId !== repositoryId),
-        schemaVersion: GRAPH_SHARE_TRUST_SCHEMA_VERSION,
       } satisfies GraphShareTrustDocumentV1);
     }),
   );
+});
+
+export const isGraphShareAutoEnrollmentRevoked = Effect.fn('codeGraph.sharing.autoEnrollmentRevoked')(function* (
+  threadnoteHome: string,
+  repositoryId: string,
+) {
+  const document = yield* readGraphShareTrustDocument(threadnoteHome);
+  return document.autoEnrollmentRevokedRepositoryIds?.includes(repositoryId) ?? false;
 });
 
 export function trustReceiptFromEnrollment(
@@ -243,9 +267,21 @@ function parseTrustDocument(value: unknown): GraphShareTrustDocumentV1 {
     throw graphSharingFailure('Trust receipts file is invalid.');
   }
   return {
+    ...(value.autoEnrollmentRevokedRepositoryIds === undefined
+      ? {}
+      : {
+          autoEnrollmentRevokedRepositoryIds: parseRevokedRepositoryIds(value.autoEnrollmentRevokedRepositoryIds),
+        }),
     receipts: value.receipts.map(parseTrustReceipt),
     schemaVersion: GRAPH_SHARE_TRUST_SCHEMA_VERSION,
   };
+}
+
+function parseRevokedRepositoryIds(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) throw graphSharingFailure('Graph auto-enrollment revocations are invalid.');
+  const ids = value.map(requiredHex);
+  if (new Set(ids).size !== ids.length) throw graphSharingFailure('Graph auto-enrollment revocations are invalid.');
+  return ids;
 }
 
 function parseTrustReceipt(value: unknown): GraphShareTrustReceiptV1 {
