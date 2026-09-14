@@ -21,6 +21,7 @@ import {
   type ContextBriefCitationReceiptV2,
   type ContextBriefGraphCardV1,
   type ContextBriefGraphContractV1,
+  type ContextBriefLogicalMemoryEvidenceV1,
   type ContextBriefMemoryEvidenceV1,
   type ContextBriefV1,
   type ProjectedContextBriefV1,
@@ -896,12 +897,25 @@ function renderProjection(
 }
 
 function projectionItems(logical: ContextBriefLogicalResultV1): readonly ProjectionItem[] {
+  const hasCurrentCodeRelation = (memory: ContextBriefLogicalMemoryEvidenceV1): boolean =>
+    (memory.cohortCodeRelations ?? memory.codeRelations ?? []).some(
+      relation => relation.status === 'exact' || relation.status === 'relocated',
+    );
   const hasCodeLinkedMemory = [...logical.activeHandoffs, ...logical.durableDecisions].some(
     memory => memory.selectionBasis === 'code-citation',
   );
   const hasPreciselyValidatedMemory = [...logical.activeHandoffs, ...logical.durableDecisions].some(
     memory => memory.citationSummary !== undefined,
   );
+  const hasCurrentCodeLinkedMemory = [...logical.activeHandoffs, ...logical.durableDecisions].some(
+    memory => memory.selectionBasis === 'code-citation' && hasCurrentCodeRelation(memory),
+  );
+  const firstStaleCodeLinkedMemoryUri = hasCurrentCodeLinkedMemory
+    ? undefined
+    : [...logical.activeHandoffs, ...logical.durableDecisions]
+        .filter(memory => memory.selectionBasis === 'code-citation')
+        .sort((left, right) => left.rank - right.rank || compareText(left.uri, right.uri))[0]?.uri;
+  // Reserve one linked memory, then the exact card, before admitting more stale handoffs.
   return [
     ...logical.coverage.gaps.map((gap, rank) => ({
       id: coverageGapProjectionId(gap),
@@ -913,7 +927,15 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
       id: card.id,
       lane: 'graph-card' as const,
       laneRank: card.rank,
-      priority: hasCodeLinkedMemory ? (card.rank === 0 ? 1 : 2) : hasPreciselyValidatedMemory ? 1 : 0,
+      priority: hasCodeLinkedMemory
+        ? card.rank === 0
+          ? hasCurrentCodeLinkedMemory
+            ? 1
+            : -1
+          : 2
+        : hasPreciselyValidatedMemory
+          ? 1
+          : 0,
     })),
     ...logical.activeHandoffs.map(memory => ({
       id: memory.uri,
@@ -921,7 +943,13 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
       laneRank: memory.rank,
       priority: hasCodeLinkedMemory
         ? memory.selectionBasis === 'code-citation'
-          ? 0
+          ? hasCurrentCodeRelation(memory)
+            ? 0
+            : hasCurrentCodeLinkedMemory
+              ? 2
+              : memory.uri === firstStaleCodeLinkedMemoryUri
+                ? -2
+                : 1
           : 2
         : hasPreciselyValidatedMemory
           ? memory.citationSummary === undefined
@@ -935,7 +963,13 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
       laneRank: memory.rank,
       priority: hasCodeLinkedMemory
         ? memory.selectionBasis === 'code-citation'
-          ? 0
+          ? hasCurrentCodeRelation(memory)
+            ? 0
+            : hasCurrentCodeLinkedMemory
+              ? 2
+              : memory.uri === firstStaleCodeLinkedMemoryUri
+                ? -2
+                : 1
           : 2
         : hasPreciselyValidatedMemory
           ? memory.citationSummary === undefined

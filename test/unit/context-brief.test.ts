@@ -159,6 +159,68 @@ describe('Context Brief compiler', () => {
     }),
   );
 
+  effectIt.effect('keeps an exact graph card and linked memory under stale handoff pressure', () =>
+    Effect.gen(function* () {
+      const result = yield* compileCodeLinkedRecoveryFixture(1, 8, 1_500, {
+        allActiveHandoffs: true,
+        sharedCodeAnchor: true,
+        validationStatus: 'changed',
+      });
+      const brief = result.structuredContent;
+      expect(brief.graph.cards).toHaveLength(1);
+      expect(brief.activeHandoffs.length).toBeGreaterThan(0);
+      expect(brief.recommendedFollowUps).toContainEqual(
+        expect.objectContaining({operation: 'inspect-node', ref: recoveryGraphCardRef(0)}),
+      );
+      expect(result.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
+    }),
+  );
+
+  effectIt.effect('retains a short stale handoff beside the exact card at the default budget', () =>
+    Effect.gen(function* () {
+      const result = yield* compileCodeLinkedRecoveryFixture(1, 1, 1_250, {
+        allActiveHandoffs: true,
+        sharedCodeAnchor: true,
+        shortMemoryEvidence: ['short'],
+        validationStatus: 'changed',
+      });
+      expect(result.structuredContent.graph.cards).toHaveLength(1);
+      expect(result.structuredContent.activeHandoffs).toHaveLength(1);
+    }),
+  );
+
+  effectIt.effect('does not treat an unrelated exact citation as a current matched relation', () =>
+    Effect.gen(function* () {
+      const result = yield* compileCodeLinkedRecoveryFixture(1, 8, 1_500, {
+        allActiveHandoffs: true,
+        sharedCodeAnchor: true,
+        unmatchedExactCitationOnFirst: true,
+        validationStatus: 'changed',
+      });
+      const brief = result.structuredContent;
+      expect(brief.activeHandoffs[0]?.citationSummary?.exact).toBe(1);
+      expect(brief.activeHandoffs[0]?.codeRelations?.every(relation => relation.status === 'changed')).toBe(true);
+      expect(brief.graph.cards).toHaveLength(1);
+    }),
+  );
+
+  effectIt.effect('keeps the exact card between current and changed matched memories', () =>
+    Effect.gen(function* () {
+      const result = yield* compileCodeLinkedRecoveryFixture(1, 8, 1_500, {
+        allActiveHandoffs: true,
+        sharedCodeAnchor: true,
+        validationStatusesByMemory: ['exact', ...Array.from({length: 7}, () => 'changed' as const)],
+      });
+      const brief = result.structuredContent;
+      expect(
+        brief.activeHandoffs.some(memory => memory.codeRelations?.some(relation => relation.status === 'exact')),
+      ).toBe(true);
+      expect(brief.graph.cards).toHaveLength(1);
+      expect(brief.coverage.memory.codeAnchors?.matchedMemories).toBe(8);
+      expect(brief.coverage.omissions.activeHandoffs).toBeGreaterThan(0);
+    }),
+  );
+
   effectIt.effect('bounds the public relation proof for an overlap-connected memory cohort', () =>
     Effect.gen(function* () {
       const result = yield* compileCodeLinkedRecoveryFixture(12, 3, 1_500, {
@@ -1789,6 +1851,31 @@ describe('Context Brief compiler', () => {
 
   fcEffectProp(
     effectIt,
+    'keeps the exact card and a linked memory as stale handoffs grow',
+    {excerptLength: fc.integer({min: 0, max: 200}), memoryCount: fc.integer({min: 1, max: 8})},
+    ({excerptLength, memoryCount}) =>
+      Effect.gen(function* () {
+        const options = {
+          allActiveHandoffs: true,
+          sharedCodeAnchor: true,
+          shortMemoryEvidence: Array.from({length: memoryCount}, () => 'e'.repeat(excerptLength)),
+          validationStatus: 'changed' as const,
+        };
+        const narrow = yield* compileCodeLinkedRecoveryFixture(1, memoryCount, 1_250, options);
+        const expanded = yield* compileCodeLinkedRecoveryFixture(1, memoryCount, 1_500, options);
+        expect(narrow.structuredContent.activeHandoffs.length).toBeGreaterThan(0);
+        expect(expanded.structuredContent.graph.cards).toHaveLength(1);
+        expect(expanded.structuredContent.activeHandoffs.length).toBeGreaterThan(0);
+        for (const memory of narrow.structuredContent.activeHandoffs) {
+          expect(expanded.structuredContent.activeHandoffs.map(candidate => candidate.uri)).toContain(memory.uri);
+        }
+        expect(expanded.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
+      }),
+    {fastCheck: {numRuns: 20}},
+  );
+
+  fcEffectProp(
+    effectIt,
     'never projects a singleton from a multi-memory direct code anchor',
     {
       budget: fc.integer({min: 800, max: 1_500}),
@@ -2103,6 +2190,7 @@ function compileCodeLinkedRecoveryFixture(
   memoryCount: number,
   budget: number,
   options: {
+    readonly allActiveHandoffs?: boolean;
     readonly codeAnchorOrdinalsByMemory?: readonly (readonly number[])[];
     readonly contractCount?: number;
     readonly contractEvidencePath?: string;
@@ -2116,7 +2204,10 @@ function compileCodeLinkedRecoveryFixture(
     readonly shortMemoryEvidence?: readonly string[];
     readonly staleGraph?: boolean;
     readonly task?: string;
+    readonly unmatchedExactCitationOnFirst?: boolean;
     readonly unresolvedOrdinals?: readonly number[];
+    readonly validationStatus?: 'changed' | 'exact';
+    readonly validationStatusesByMemory?: readonly ('changed' | 'exact')[];
   } = {},
 ) {
   const anchorOrdinalsByMemory = Array.from(
@@ -2133,8 +2224,12 @@ function compileCodeLinkedRecoveryFixture(
     ),
   );
   const codeRefs = [...new Set(citationsByMemory.flat().map(citation => citation.path))];
+  const unmatchedCitation = codeCitation(9, 'file', 'src/unrelated.ts');
   const candidates: readonly ContextBriefMemoryCandidateV1[] = citationsByMemory.map((citations, rank) => {
-    const kind = options.includeActiveHandoff === true && rank === 0 ? ('handoff' as const) : ('durable' as const);
+    const kind =
+      options.allActiveHandoffs === true || (options.includeActiveHandoff === true && rank === 0)
+        ? ('handoff' as const)
+        : ('durable' as const);
     const maximumSegment = '界'.repeat(85);
     const user = options.maximumMemoryIdentity === true ? maximumSegment : 'u';
     const project = options.maximumMemoryIdentity === true ? maximumSegment : 'threadnote';
@@ -2157,7 +2252,8 @@ function compileCodeLinkedRecoveryFixture(
       ...(options.maximumMemoryIdentity === true
         ? {authority: 'reviewed_shared' as const, trust: 'untrusted' as const}
         : {}),
-      codeCitations: citations,
+      codeCitations:
+        options.unmatchedExactCitationOnFirst === true && rank === 0 ? [...citations, unmatchedCitation] : citations,
       codeLinkMatches: citations.map((citation, relationIndex) => ({
         anchorOrdinal: anchorOrdinalsByMemory[rank][relationIndex],
         anchorPath: citation.path,
@@ -2185,18 +2281,24 @@ function compileCodeLinkedRecoveryFixture(
       citationValidation: () =>
         Effect.succeed(
           linkedCandidates.map(candidate => ({
-            receipts: candidate.codeCitations.map(citation => ({
-              candidateCount: 1,
-              citationId: citation.id,
-              coverage: 'current-complete' as const,
-              kind: 'file' as const,
-              observedAt: '2026-08-30T00:00:00.000Z',
-              observedPath: citation.path,
-              reason: 'exact' as const,
-              status: 'exact' as const,
-              strategy: 'file-path' as const,
-              validatorVersion: 1 as const,
-            })),
+            receipts: candidate.codeCitations.map(citation => {
+              const status =
+                options.unmatchedExactCitationOnFirst === true && citation.id === unmatchedCitation.id
+                  ? 'exact'
+                  : (options.validationStatusesByMemory?.[candidate.rank] ?? options.validationStatus ?? 'exact');
+              return {
+                candidateCount: 1,
+                citationId: citation.id,
+                coverage: 'current-complete' as const,
+                kind: 'file' as const,
+                observedAt: '2026-08-30T00:00:00.000Z',
+                observedPath: citation.path,
+                reason: status === 'changed' ? ('source-changed' as const) : ('exact' as const),
+                status,
+                strategy: 'file-path' as const,
+                validatorVersion: 1 as const,
+              };
+            }),
             uri: candidate.uri,
           })),
         ),
