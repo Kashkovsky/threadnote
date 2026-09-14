@@ -5,6 +5,7 @@ export const MEMORY_READ_MAXIMUM_CONTENT_BYTES = 65_536;
 export const MEMORY_READ_PAGE_BYTES = 16_384;
 const MEMORY_READ_WARNING_MAXIMUM_BYTES = 160;
 const UTF8 = new TextEncoder();
+const UTF8_DECODER = new TextDecoder();
 
 export type MemoryReadMode = 'content' | 'outline';
 
@@ -212,38 +213,34 @@ function memoryReadPage(content: string, offsetBytes: number, expectedHash: stri
       message: 'Memory read continuation requires sourceHash from the first page.',
     });
   }
-  const sourceHash = sha256HexSync(content);
+  const encoded = UTF8.encode(content);
+  const sourceHash = sha256HexSync(encoded);
   if (expectedHash !== undefined && expectedHash !== sourceHash) {
     throw MemoryReadProjectionError.make({message: 'Memory changed between pages; restart with offsetBytes=0.'});
   }
-  const start = utf8IndexAtOffset(content, offsetBytes);
-  const page = utf8Prefix(content, start, MEMORY_READ_PAGE_BYTES);
-  const nextOffsetBytes = offsetBytes + utf8Bytes(page.text);
-  const totalBytes = utf8Bytes(content);
+  const totalBytes = encoded.byteLength;
+  if (offsetBytes > totalBytes || (offsetBytes < totalBytes && isUtf8ContinuationByte(encoded[offsetBytes]))) {
+    throw MemoryReadProjectionError.make({
+      message: 'Memory read offsetBytes must be on a UTF-8 character boundary within the memory.',
+    });
+  }
+  let nextOffsetBytes = Math.min(offsetBytes + MEMORY_READ_PAGE_BYTES, totalBytes);
+  while (nextOffsetBytes < totalBytes && isUtf8ContinuationByte(encoded[nextOffsetBytes])) {
+    nextOffsetBytes -= 1;
+  }
+  const start = UTF8_DECODER.decode(encoded.subarray(0, offsetBytes)).length;
+  const end = start + UTF8_DECODER.decode(encoded.subarray(offsetBytes, nextOffsetBytes)).length;
   return {
     complete: nextOffsetBytes === totalBytes,
-    content: page.text,
+    content: content.slice(start, end),
     nextOffsetBytes: nextOffsetBytes < totalBytes ? nextOffsetBytes : undefined,
     offsetBytes,
     sourceHash,
   };
 }
 
-function utf8IndexAtOffset(content: string, offsetBytes: number): number {
-  let bytes = 0;
-  let index = 0;
-  while (index < content.length && bytes < offsetBytes) {
-    const point = content.codePointAt(index)!;
-    const width = point > 0xffff ? 2 : 1;
-    bytes += utf8Bytes(content.slice(index, index + width));
-    index += width;
-  }
-  if (bytes !== offsetBytes) {
-    throw MemoryReadProjectionError.make({
-      message: 'Memory read offsetBytes must be on a UTF-8 character boundary within the memory.',
-    });
-  }
-  return index;
+function isUtf8ContinuationByte(byte: number): boolean {
+  return (byte & 0xc0) === 0x80;
 }
 
 function memoryReadTooLargeMessage(input: {
