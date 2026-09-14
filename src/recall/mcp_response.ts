@@ -48,7 +48,7 @@ export interface RecallMcpLogicalResponse {
 
 export interface RecallMcpConfidence extends RecallConfidence {
   /** Identifies whether confidence covers ranked relevance or verified pointer navigation. */
-  readonly basis: 'explicit-memory-connection' | 'ranked-relevance';
+  readonly basis: 'explicit-memory-connection' | 'ranked-relevance' | 'response-budget';
 }
 
 export interface RecallMcpResponseProjectionOptions {
@@ -74,10 +74,12 @@ export interface RecallMcpStructuredContent {
   };
   readonly output: {
     readonly budgetTokens: number;
+    readonly budgetLimited?: true;
     readonly explain: boolean;
     readonly explainDetails?: 'included' | 'omitted-response-budget';
     readonly omittedResults: number;
     readonly returnedResults: number;
+    readonly retryBudgetTokens?: number;
     readonly totalResults: number;
     readonly truncated: boolean;
   };
@@ -141,6 +143,9 @@ export function projectRecallMcpResponse(
   const explain = options.explain === true;
   const notices = compactNotices(logical.notices ?? []);
   const warnings = mergeRecallOperationalWarnings(logical.warnings ?? []);
+  const hasLogicalActionableConnection =
+    actionableMemoryConnectionUris(logical.memoryConnections, new Set(logical.results.map(result => result.uri)))
+      .length > 0;
   let selected:
     | {readonly measurement: AgentToolResponseMeasurement; readonly structuredContent: RecallMcpStructuredContent}
     | undefined;
@@ -155,6 +160,7 @@ export function projectRecallMcpResponse(
       for (const limits of receiptLimits) {
         const structuredContent = renderStructuredContent(
           logical,
+          hasLogicalActionableConnection,
           warnings,
           count,
           budgetTokens,
@@ -185,9 +191,16 @@ export function renderRecallMcpText(response: RecallMcpStructuredContent, notice
   const nextUri = response.nextAction.uris[0];
   const next = nextUri
     ? ` Next: call read_context for ${nextUri} before using memory as evidence.`
-    : ' No memory pointer is available to read.';
+    : response.output.budgetLimited
+      ? ''
+      : ' No memory pointer is available to read.';
+  const budgetRecovery = response.output.budgetLimited
+    ? response.output.retryBudgetTokens
+      ? ` Verified one-hop navigation evidence omitted by the response budget. Retry recall_context with budgetTokens=${response.output.retryBudgetTokens} and the same inputs.`
+      : ' Verified one-hop navigation evidence omitted by the response budget. Narrow the recall inputs and retry.'
+    : '';
   return [
-    `Recall returned ${count} unread pointer(s)${omitted}. Ranked pointers are not evidence.${next}`,
+    `Recall returned ${count} unread pointer(s)${omitted}. Ranked pointers are not evidence.${next}${budgetRecovery}`,
     ...(response.memoryConnections
       ? [
           `Seeded one-hop coverage: ${response.memoryConnections.coverage.resultCount} result(s), ${response.memoryConnections.connections.length} verified connection receipt(s), ${response.memoryConnections.premises.length} premise receipt(s)${response.memoryConnections.coverage.truncated ? '; truncated' : ''}. Relations are navigation evidence, not entailment.`,
@@ -200,6 +213,7 @@ export function renderRecallMcpText(response: RecallMcpStructuredContent, notice
 
 function renderStructuredContent(
   logical: RecallMcpLogicalResponse,
+  hasLogicalActionableConnection: boolean,
   warnings: readonly RecallOperationalWarning[],
   count: number,
   budgetTokens: number,
@@ -213,11 +227,16 @@ function renderStructuredContent(
     ? renderMemoryConnections(logical.memoryConnections, new Set(results.map(result => result.uri)), receiptLimits)
     : undefined;
   const actionableConnectionUris = resolvedConnectionResultUris(memoryConnections, results);
+  const hasUnprojectedActionableConnection = hasLogicalActionableConnection && actionableConnectionUris.length === 0;
   const nextActionUris = uniqueStrings([...actionableConnectionUris, ...results.map(result => result.uri)]).slice(
     0,
     NEXT_ACTION_URI_LIMIT,
   );
-  const confidence = renderConfidence(logical.confidence, actionableConnectionUris.length > 0);
+  const confidence = renderConfidence(
+    logical.confidence,
+    actionableConnectionUris.length > 0,
+    hasUnprojectedActionableConnection,
+  );
   const omittedResults = logical.results.length - results.length;
   return {
     ...(confidence === undefined ? {} : {confidence}),
@@ -229,6 +248,9 @@ function renderStructuredContent(
     },
     output: {
       budgetTokens,
+      ...(hasUnprojectedActionableConnection
+        ? {budgetLimited: true as const, ...(budgetTokens < 1_500 ? {retryBudgetTokens: 1_500} : {})}
+        : {}),
       explain: explainRequested,
       ...(explainRequested ? {explainDetails: includeExplainDetails ? 'included' : 'omitted-response-budget'} : {}),
       omittedResults,
@@ -254,11 +276,21 @@ function resolvedConnectionResultUris(
 function renderConfidence(
   confidence: RecallConfidence | undefined,
   hasActionableConnection: boolean,
+  budgetLimited: boolean,
 ): RecallMcpConfidence | undefined {
   if (hasActionableConnection) {
     return {
       ...explicitMemoryConnectionNavigationConfidence(),
       basis: EXPLICIT_MEMORY_CONNECTION_CONFIDENCE_BASIS,
+    };
+  }
+  if (budgetLimited && (confidence === undefined || confidence.level === 'no_answer')) {
+    return {
+      basis: 'response-budget',
+      level: 'low',
+      margin: 0,
+      reason: 'Verified one-hop navigation evidence omitted by response budget.',
+      score: 0,
     };
   }
   return confidence === undefined ? undefined : {...confidence, basis: 'ranked-relevance'};
