@@ -840,14 +840,19 @@ describe('Context Brief citation scale benchmark', () => {
   });
 
   it('rederives retained release evidence against the independently reviewed commit and package version', () => {
-    const candidate = contextBriefCitationScaleCandidateBinding('a'.repeat(40), {version: '4.6.8'});
-    const artifact = releaseScaleArtifact(candidate.sourceVersion);
+    const candidate = contextBriefCitationScaleCandidateBinding('a'.repeat(40), {
+      version: '4.6.8',
+      packageManager: 'bun@1.4.2',
+    });
+    const artifact = releaseScaleArtifact(candidate.sourceVersion, candidate.runtime);
     expect(parseContextBriefCitationScaleArtifactV2(artifact, budget, candidate)).toEqual(artifact);
     expect(() => parseContextBriefCitationScaleArtifactV2(artifact, budget)).toThrow();
     for (const mismatch of [
       {...candidate, commit: 'b'.repeat(40)},
       {...candidate, sourceVersion: 'threadnote-4.6.9'},
       {...candidate, sourceVersion: 'threadnote-4.6.8-..'},
+      {...candidate, runtime: 'bun/1.4.3'},
+      {...candidate, runtime: 'bun/latest'},
     ]) {
       expect(() => parseContextBriefCitationScaleArtifactV2(artifact, budget, mismatch)).toThrow();
     }
@@ -856,7 +861,10 @@ describe('Context Brief citation scale benchmark', () => {
   });
 
   it('keeps development smoke evidence non-release even with a valid candidate binding', () => {
-    const candidate = contextBriefCitationScaleCandidateBinding('a'.repeat(40), {version: '4.6.8'});
+    const candidate = contextBriefCitationScaleCandidateBinding('a'.repeat(40), {
+      version: '4.6.8',
+      packageManager: 'bun@1.4.2',
+    });
     const smoke = scaleArtifact();
     const artifact = {...smoke, environment: {...smoke.environment, sourceVersion: candidate.sourceVersion}};
     const parsed = parseContextBriefCitationScaleArtifactV2(artifact, budget, candidate);
@@ -1004,7 +1012,7 @@ function scaleArtifact(): ContextBriefCitationScaleArtifactV2 {
   };
 }
 
-function releaseScaleArtifact(sourceVersion: string): ContextBriefCitationScaleArtifactV2 {
+function releaseScaleArtifact(sourceVersion: string, runtime = 'bun/1.3.14'): ContextBriefCitationScaleArtifactV2 {
   const base = scaleArtifact();
   const profiles = budget.profiles.map(profile => {
     const observations = Array.from({length: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES}, (_, ordinal) =>
@@ -1025,6 +1033,7 @@ function releaseScaleArtifact(sourceVersion: string): ContextBriefCitationScaleA
       runnerClass: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNNER_CLASS,
       runnerEnvironment: 'github-hosted',
       runnerOperatingSystem: 'macOS',
+      runtime,
       sourceVersion,
     },
     evidenceClass: 'release-scale',

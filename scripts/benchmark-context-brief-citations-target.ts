@@ -131,7 +131,8 @@ export const readContextBriefCitationScaleCandidate = Effect.fn('contextBriefCit
   const manifest = yield* runCommandEffect('git', ['show', `${candidateCommit}:package.json`], options);
   const candidate = yield* Effect.try({
     try: () => contextBriefCitationScaleCandidateBinding(candidateCommit, JSON.parse(manifest.stdout)),
-    catch: cause => ScriptError.make({message: 'Could not validate the candidate package version.', cause}),
+    catch: cause =>
+      ScriptError.make({message: 'Could not validate the candidate package version and Bun runtime.', cause}),
   });
   if (observedSourceVersion !== candidate.sourceVersion) {
     return yield* ScriptError.make({
