@@ -1155,12 +1155,13 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
-  effectIt.effect('falls back when equally near merge parents are both reusable clean bases', () =>
+  effectIt.effect('reuses a compatible root when equally near merge parents are both ready', () =>
     Effect.gen(function* () {
       const root = createManySourceRepository(4);
       const home = join(root, '.threadnote-test-home');
       const indexer = yield* CodeGraphIndexer;
-      yield* indexer.index({cwd: root, threadnoteHome: home});
+      const store = yield* CodeGraphStore;
+      const base = yield* indexer.index({cwd: root, threadnoteHome: home});
       const baseCommit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
       const rightRoot = `${root}-right`;
       temporaryRoots.push(rightRoot);
@@ -1180,7 +1181,7 @@ describe('native code graph lifecycle', () => {
         '-qm',
         'left change',
       ]);
-      yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
+      const left = yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
 
       git(root, ['worktree', 'add', '-qb', 'right', rightRoot, baseCommit]);
       writeFileSync(
@@ -1197,7 +1198,7 @@ describe('native code graph lifecycle', () => {
         '-qm',
         'right change',
       ]);
-      yield* indexer.index({cwd: rightRoot, force: true, threadnoteHome: home});
+      const right = yield* indexer.index({cwd: rightRoot, force: true, threadnoteHome: home});
 
       git(root, [
         '-c',
@@ -1209,9 +1210,13 @@ describe('native code graph lifecycle', () => {
         'right',
       ]);
       const merged = yield* indexer.index({cwd: root, threadnoteHome: home});
+      const mergedGraph = yield* store.loadGraph(codeGraphDatabasePath(home, merged), merged.snapshot.id);
+      const full = yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
+      const fullGraph = yield* store.loadGraph(codeGraphDatabasePath(home, full), full.snapshot.id);
 
-      expect(merged.snapshot.baseSnapshotId).toBeUndefined();
-      expect(merged.materialization).toEqual({mode: 'full', stagedFiles: 4, totalFiles: 4});
+      expect([base.snapshot.id, left.snapshot.id, right.snapshot.id]).toContain(merged.snapshot.baseSnapshotId);
+      expect(merged.materialization?.mode).toBe('incremental-clean');
+      expect(normalizeStoredGraph(mergedGraph)).toEqual(normalizeStoredGraph(fullGraph));
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
@@ -3243,13 +3248,11 @@ describe('native code graph lifecycle', () => {
       const root = yield* Effect.sync(createFixtureRepository);
       const home = join(root, '.threadnote-test-home');
       let changed = false;
-      const reclamationProgress: Extract<CodeGraphProgress, {readonly phase: 'reclaiming'}>[] = [];
       const indexer = yield* CodeGraphIndexer;
       const current = yield* indexer.index({
         cwd: root,
         onProgress: progress =>
           Effect.sync(() => {
-            if (progress.phase === 'reclaiming') reclamationProgress.push(progress);
             if (!changed && progress.phase === 'activating' && progress.subphase === 'validating-input') {
               changed = true;
               replaceFunction(root, 'ensureVectorIndex', 'ensureStorageBoundedVectorIndex');
@@ -3260,11 +3263,6 @@ describe('native code graph lifecycle', () => {
 
       expect(changed).toBe(true);
       expect(current.snapshot.dirty).toBe(true);
-      const completedReclamation = reclamationProgress.at(-1);
-      expect(completedReclamation).toMatchObject({unit: 'snapshots'});
-      expect(completedReclamation?.pagesCompleted).toBe(1);
-      expect(completedReclamation?.completed).toBeLessThanOrEqual(completedReclamation?.total ?? 0);
-      expect(completedReclamation?.rowsDeleted).toBeGreaterThan(0);
       const database = new Database(codeGraphDatabasePath(home, current), {readonly: true, strict: true});
       try {
         const retired = database

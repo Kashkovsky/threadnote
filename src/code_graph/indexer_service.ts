@@ -872,9 +872,27 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             incrementalAssessment = {mode: 'fallback', reason: 'staging-identity-mismatch'};
                           }
                         }
-                        if (incrementalPrepared && incrementalBuilding !== undefined) {
+                        if (
+                          incrementalPrepared &&
+                          incrementalBuilding !== undefined &&
+                          preassessment.mode === 'compatible'
+                        ) {
                           building = incrementalBuilding;
                           yield* store.markBuilding(layout.databasePath, identity, building);
+                          if (preassessment.committedWorkspace.fingerprint !== workspace.fingerprint) {
+                            yield* store.stageWorkspaceCatalog(
+                              layout.databasePath,
+                              workspace,
+                              codeGraphDirectPersistentCapacityProtector({
+                                capacityProtection,
+                                fs,
+                                identity,
+                                layout,
+                                onProgress: options.onProgress,
+                                threadnoteHome: options.threadnoteHome,
+                              }),
+                            );
+                          }
                         } else {
                           building = {
                             commit: identity.headCommit,

@@ -172,9 +172,12 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
   graphContentId?: string,
   preferredCommitGroups?: readonly (readonly string[])[],
   allowExtractorMismatch = false,
+  workspaceProjectsJson = '[]',
+  excludedSnapshotIds: readonly string[] = [],
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
+  const excluded = new Set(excludedSnapshotIds);
   if (graphContentId !== undefined && !allowExtractorMismatch) {
     const exactCandidates = yield* sql<SnapshotRow>`
       SELECT snapshot.*
@@ -188,14 +191,19 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
         AND snapshot.graph_content_id = ${graphContentId}
         AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
         AND receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
-        AND receipt.workspace_fingerprint = ${workspaceFingerprint}
       ORDER BY
+        CASE WHEN receipt.workspace_fingerprint = ${workspaceFingerprint} THEN 0 ELSE 1 END,
+        (SELECT COUNT(*) FROM json_each(${workspaceProjectsJson}) AS project
+         WHERE json_extract(
+           CASE WHEN json_valid(receipt.component_surfaces_json) THEN receipt.component_surfaces_json ELSE '{}' END,
+           '$.' || json_quote(json_extract(project.value, '$.id'))
+         ) = json(project.value)) DESC,
         CASE WHEN receipt.file_set_fingerprint = ${fileSetFingerprint} THEN 0 ELSE 1 END,
         snapshot.completed_at DESC,
         snapshot.id
       LIMIT 8
     `;
-    const exact = yield* loadFirstReusableCleanBase(exactCandidates);
+    const exact = yield* loadFirstReusableCleanBase(exactCandidates.filter(candidate => !excluded.has(candidate.id)));
     if (exact !== undefined) return exact;
   }
 
@@ -209,8 +217,10 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
       }),
     );
     const candidateCommits = normalizedGroups.flat();
-    if (candidateCommits.length === 0) return undefined;
-    const availableRows = yield* sql<{readonly commit_id: string}>`
+    const availableRows =
+      candidateCommits.length === 0
+        ? []
+        : yield* sql<{readonly commit_id: string}>`
       SELECT DISTINCT snapshot.commit_id
       FROM snapshots AS snapshot
       JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
@@ -229,7 +239,7 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
       const matches = group.filter(commit => available.has(commit));
       if (matches.length === 0) continue;
       // Equally near commits on different merge branches are not interchangeable evidence.
-      if (matches.length !== 1) return undefined;
+      if (matches.length !== 1) break;
       const candidates = yield* sql<SnapshotRow>`
         SELECT snapshot.*
         FROM snapshots AS snapshot
@@ -250,9 +260,9 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
           snapshot.id
         LIMIT 8
       `;
-      return yield* loadFirstReusableCleanBase(candidates);
+      const candidate = yield* loadFirstReusableCleanBase(candidates.filter(row => !excluded.has(row.id)));
+      if (candidate !== undefined) return candidate;
     }
-    return undefined;
   }
 
   const legacyCandidates = yield* sql<SnapshotRow>`
@@ -266,15 +276,20 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
       AND snapshot.base_snapshot_id IS NULL
       AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
       AND receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
-      AND receipt.workspace_fingerprint = ${workspaceFingerprint}
     ORDER BY
+      CASE WHEN receipt.workspace_fingerprint = ${workspaceFingerprint} THEN 0 ELSE 1 END,
+      (SELECT COUNT(*) FROM json_each(${workspaceProjectsJson}) AS project
+       WHERE json_extract(
+         CASE WHEN json_valid(receipt.component_surfaces_json) THEN receipt.component_surfaces_json ELSE '{}' END,
+         '$.' || json_quote(json_extract(project.value, '$.id'))
+       ) = json(project.value)) DESC,
       CASE WHEN snapshot.extractor_set = ${extractorSet} THEN 0 ELSE 1 END,
       CASE WHEN receipt.file_set_fingerprint = ${fileSetFingerprint} THEN 0 ELSE 1 END,
       snapshot.completed_at DESC,
       snapshot.id
     LIMIT 8
   `;
-  return yield* loadFirstReusableCleanBase(legacyCandidates);
+  return yield* loadFirstReusableCleanBase(legacyCandidates.filter(candidate => !excluded.has(candidate.id)));
 });
 
 const selectReusableCleanBaseForCommit = Effect.fn('codeGraph.selectReusableCleanBaseForCommit')(function* (

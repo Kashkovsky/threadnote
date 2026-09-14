@@ -507,44 +507,42 @@ describe('routine code graph maintenance', () => {
     expect(results.second.state === 'completed' ? results.second.rowsDeleted : 0).toBeGreaterThan(0);
   });
 
-  it('keeps owner-aware markFailed logical-only and preserves an existing bounded summary', async () => {
-    const fixture = await routineFixture('threadnote-routine-mark-failed-');
-    const identity = routineIdentity(fixture, '4'.repeat(64));
-    const snapshot = routineBuildingSnapshot(identity, `cgsn_${'7'.repeat(40)}`);
-    const observed = await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, identity, snapshot, {
-          logicalSnapshotId: snapshot.id,
-          owner: {buildId: '56789abc-def0-1234', processId: process.pid},
-        });
-        yield* Effect.sync(() => {
-          const database = new Database(fixture.databasePath, {strict: true});
-          try {
-            database
-              .query(
-                `INSERT INTO building_lexical_counters
+  effectIt.effect('reclaims owner-aware failed builds before routine maintenance', () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => routineFixture('threadnote-routine-mark-failed-')),
+      fixture =>
+        Effect.gen(function* () {
+          const identity = routineIdentity(fixture, '4'.repeat(64));
+          const snapshot = routineBuildingSnapshot(identity, `cgsn_${'7'.repeat(40)}`);
+          const store = yield* CodeGraphStore;
+          const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, identity, snapshot, {
+            logicalSnapshotId: snapshot.id,
+            owner: {buildId: '56789abc-def0-1234', processId: process.pid},
+          });
+          yield* Effect.sync(() => {
+            const database = new Database(fixture.databasePath, {strict: true});
+            try {
+              database
+                .query(
+                  `INSERT INTO building_lexical_counters
                    (snapshot_id, completed_batch_count, posting_count, symbol_count, term_count)
                  VALUES (?, 1, 1, 1, 1)`,
-              )
-              .run(snapshot.id);
-            database.query('UPDATE snapshots SET failure_summary = ? WHERE id = ?').run('first failure', snapshot.id);
-          } finally {
-            database.close(false);
-          }
-        });
-        yield* store.markFailed(fixture.databasePath, snapshot.id, 'later failure', ownerToken);
-        const afterFailure = yield* Effect.sync(() => readAbandonedBuildState(fixture.databasePath, snapshot.id));
-        const maintenance = yield* store.runRoutineMaintenance(fixture.databasePath, routineOptions(fixture));
-        return {afterFailure, maintenance};
-      }),
-    );
-
-    expect(observed.afterFailure).toMatchObject({buildRows: 1, owners: 0, state: 'retired'});
-    expect(observed.afterFailure).toMatchObject({failure_summary: 'first failure'});
-    expect(observed.maintenance.state).toBe('completed');
-    expect(observed.maintenance.state === 'completed' ? observed.maintenance.rowsDeleted : 0).toBeGreaterThan(0);
-  });
+                )
+                .run(snapshot.id);
+              database.query('UPDATE snapshots SET failure_summary = ? WHERE id = ?').run('first failure', snapshot.id);
+            } finally {
+              database.close(false);
+            }
+          });
+          yield* store.markFailed(fixture.databasePath, snapshot.id, 'later failure', ownerToken);
+          const afterFailure = yield* Effect.sync(() => readAbandonedBuildState(fixture.databasePath, snapshot.id));
+          const maintenance = yield* store.runRoutineMaintenance(fixture.databasePath, routineOptions(fixture));
+          expect(afterFailure).toEqual({buildRows: 0, ownerInstances: 0, owners: 0});
+          expect(maintenance.state).toBe('completed');
+        }),
+      fixture => Effect.promise(() => rm(fixture.home, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
   it.each(['active', 'leased', 'required-base'] as const)(
     'refuses to retire an exact dead owner protected by %s state',

@@ -680,6 +680,12 @@ export function GraphAdministration(props: {
                   })
                 : undefined;
               const health = database.health?.integrity ?? database.healthState;
+              const snapshotAttribution =
+                database.storage.state === 'available' &&
+                database.storage.pageStorage?.state === 'available' &&
+                database.storage.pageStorage.attribution?.state === 'available'
+                  ? database.storage.pageStorage.attribution.semantic.snapshots
+                  : undefined;
               return (
                 <article className="graph-database-card" key={database.checkoutId}>
                   <header>
@@ -727,6 +733,21 @@ export function GraphAdministration(props: {
                     Snapshot and view counts can differ: views are per-worktree pointers, while ready snapshots are
                     stored graph versions that can be shared, retained for reuse, or protected while in use.
                   </p>
+                  {snapshotAttribution?.state === 'available' ? (
+                    <p
+                      className={
+                        snapshotAttribution.baseline.retiredLogicalPayloadBytes >
+                        snapshotAttribution.baseline.readyLogicalPayloadBytes
+                          ? 'graph-build-attention'
+                          : 'graph-database-inventory-note'
+                      }
+                    >
+                      Snapshot payload: {formatGraphBytes(snapshotAttribution.baseline.readyLogicalPayloadBytes)} ready
+                      · {formatGraphBytes(snapshotAttribution.baseline.retiredLogicalPayloadBytes)} retired/failed
+                      logical
+                      {snapshotAttribution.snapshotsTruncated ? ' (first 64 snapshots only)' : ''}
+                    </p>
+                  ) : null}
                   {database.storage.state === 'available' && 'pageStorage' in database.storage ? (
                     database.storage.pageStorage.state === 'available' ? (
                       <p className="graph-database-inventory-note">

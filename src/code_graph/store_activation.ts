@@ -793,12 +793,19 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           )
         `;
         yield* observe('copying-workspace', 'started');
+        const workspaceCatalogRows = yield* sql<{readonly value: string}>`
+          SELECT value FROM activation_state WHERE key = 'workspace_catalog_staged' LIMIT 1
+        `;
+        const currentWorkspaceCatalog = workspaceCatalogRows.length > 0;
         yield* sql`
           INSERT INTO workspace_scopes (
             snapshot_id, id, build_system, name, root, provenance, diagnostics_json
           )
           SELECT ${snapshot.id}, id, build_system, name, root, provenance, diagnostics_json
-          FROM workspace_scopes WHERE snapshot_id = ${baseSnapshotId}
+          FROM activation_workspace_scopes WHERE ${currentWorkspaceCatalog ? 1 : 0} = 1
+          UNION ALL
+          SELECT ${snapshot.id}, id, build_system, name, root, provenance, diagnostics_json
+          FROM workspace_scopes WHERE snapshot_id = ${baseSnapshotId} AND ${currentWorkspaceCatalog ? 0 : 1} = 1
         `;
         yield* sql`
           INSERT INTO workspace_components (
@@ -807,14 +814,22 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           )
           SELECT ${snapshot.id}, id, workspace_id, build_system, kind, name, root, resolution_domain,
             languages_json, source_roots_json, workspace_roots_json, provenance, diagnostics_json
-          FROM workspace_components WHERE snapshot_id = ${baseSnapshotId}
+          FROM activation_workspace_components WHERE ${currentWorkspaceCatalog ? 1 : 0} = 1
+          UNION ALL
+          SELECT ${snapshot.id}, id, workspace_id, build_system, kind, name, root, resolution_domain,
+            languages_json, source_roots_json, workspace_roots_json, provenance, diagnostics_json
+          FROM workspace_components WHERE snapshot_id = ${baseSnapshotId} AND ${currentWorkspaceCatalog ? 0 : 1} = 1
         `;
         yield* sql`
           INSERT INTO workspace_component_dependencies (
             snapshot_id, source_component_id, target_component_id, provenance, evidence
           )
           SELECT ${snapshot.id}, source_component_id, target_component_id, provenance, evidence
-          FROM workspace_component_dependencies WHERE snapshot_id = ${baseSnapshotId}
+          FROM activation_workspace_dependencies WHERE ${currentWorkspaceCatalog ? 1 : 0} = 1
+          UNION ALL
+          SELECT ${snapshot.id}, source_component_id, target_component_id, provenance, evidence
+          FROM workspace_component_dependencies
+          WHERE snapshot_id = ${baseSnapshotId} AND ${currentWorkspaceCatalog ? 0 : 1} = 1
         `;
         yield* sql`
           INSERT INTO workspace_external_dependencies (
@@ -823,7 +838,12 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           )
           SELECT ${snapshot.id}, source_component_id, ecosystem, package_name, import_alias, dependency_kind,
             version_constraint, evidence_path, evidence_span_json
-          FROM workspace_external_dependencies WHERE snapshot_id = ${baseSnapshotId}
+          FROM activation_workspace_external_dependencies WHERE ${currentWorkspaceCatalog ? 1 : 0} = 1
+          UNION ALL
+          SELECT ${snapshot.id}, source_component_id, ecosystem, package_name, import_alias, dependency_kind,
+            version_constraint, evidence_path, evidence_span_json
+          FROM workspace_external_dependencies
+          WHERE snapshot_id = ${baseSnapshotId} AND ${currentWorkspaceCatalog ? 0 : 1} = 1
         `;
         yield* sql`
           INSERT INTO code_graph_monikers (
@@ -837,8 +857,9 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           FROM code_graph_monikers AS base
           WHERE base.snapshot_id = ${baseSnapshotId}
             AND (
-              base.scheme = 'package'
-              OR base.evidence_path NOT IN (SELECT path FROM activation_incremental_paths)
+              (base.scheme = 'package' AND ${currentWorkspaceCatalog ? 0 : 1} = 1)
+              OR (base.scheme <> 'package'
+                AND base.evidence_path NOT IN (SELECT path FROM activation_incremental_paths))
             )
         `;
         yield* sql`

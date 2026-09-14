@@ -42,6 +42,105 @@ import type {RuntimeConfig} from '../../src/types.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 
 describe('cross-session code graph increments', () => {
+  it.effect('shares a clean structural root across divergent sibling worktrees', () => {
+    let home: string | undefined;
+    let fullHome: string | undefined;
+    let root: string | undefined;
+    let siblingRoot: string | undefined;
+    return Effect.gen(function* () {
+      root = createRepository(24);
+      siblingRoot = `${root}-sibling`;
+      git(root, ['branch', 'sibling']);
+      git(root, ['worktree', 'add', '-q', siblingRoot, 'sibling']);
+      writeFileSync(
+        join(root, 'src/passive-0.ts'),
+        'export function passive0(): number { return 0; }\n// first branch\n',
+      );
+      git(root, ['add', '.']);
+      git(root, ['commit', '-qm', 'first branch']);
+      writeFileSync(
+        join(siblingRoot, 'src/passive-1.ts'),
+        'export function passive1(): number { return 1; }\n// sibling branch\n',
+      );
+      git(siblingRoot, ['add', '.']);
+      git(siblingRoot, ['commit', '-qm', 'sibling branch']);
+      home = mkdtempSync(join(tmpdir(), 'threadnote-sibling-structural-root-home-'));
+      fullHome = mkdtempSync(join(tmpdir(), 'threadnote-sibling-structural-full-home-'));
+
+      const first = yield* indexAndLoadEffect(root, home);
+      const sibling = yield* indexAndLoadEffect(siblingRoot, home);
+      const indexer = yield* CodeGraphIndexer;
+      const fullSummary = yield* indexer.index({cwd: siblingRoot, incrementalOverlay: false, threadnoteHome: fullHome});
+      const full = yield* loadGraphEffect(siblingRoot, fullHome, fullSummary);
+      expect(sibling.summary.materialization?.mode).toBe('incremental-clean');
+      expect(sibling.summary.snapshot.baseSnapshotId).toBe(first.summary.snapshot.id);
+      expect(projectGraph(sibling.graph)).toEqual(projectGraph(full));
+      const database = new Database(first.databasePath, {readonly: true});
+      try {
+        const rows = database
+          .query('SELECT snapshot_id, component_surfaces_json FROM snapshot_reuse_receipts WHERE snapshot_id = ?')
+          .all(first.summary.snapshot.id) as readonly {component_surfaces_json: string | null; snapshot_id: string}[];
+        expect(rows[0]?.component_surfaces_json).not.toBeNull();
+        const physical = database
+          .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
+          .get(sibling.summary.snapshot.id) as {count: number};
+        expect(physical.count).toBeLessThan(sibling.summary.snapshot.symbolCount);
+      } finally {
+        database.close();
+      }
+    }).pipe(
+      provideTestLayer(ApplicationLayer),
+      TestClock.withLive,
+      Effect.ensuring(removeTemporaryPaths(() => [siblingRoot, root, home, fullHome])),
+    );
+  });
+
+  it.effect('tries an older compatible sibling root after a newer root exceeds the overlay budget', () => {
+    let home: string | undefined;
+    let root: string | undefined;
+    let recentRoot: string | undefined;
+    let targetRoot: string | undefined;
+    return Effect.gen(function* () {
+      root = createRepository(24);
+      recentRoot = `${root}-recent`;
+      targetRoot = `${root}-target`;
+      git(root, ['branch', 'recent']);
+      git(root, ['branch', 'target']);
+      git(root, ['worktree', 'add', '-q', recentRoot, 'recent']);
+      git(root, ['worktree', 'add', '-q', targetRoot, 'target']);
+      writeFileSync(join(root, 'src/passive-0.ts'), 'export function passive0(): number { return 0; }\n// older\n');
+      git(root, ['add', '.']);
+      git(root, ['commit', '-qm', 'older root']);
+      for (let index = 0; index < 201; index += 1) {
+        writeFileSync(
+          join(recentRoot, 'src', `extra-${index}.ts`),
+          `export function extra${index}(): number { return ${index}; }\n`,
+        );
+      }
+      git(recentRoot, ['add', '.']);
+      git(recentRoot, ['commit', '-qm', 'recent unrelated root']);
+      writeFileSync(
+        join(targetRoot, 'src/passive-1.ts'),
+        'export function passive1(): number { return 1; }\n// target\n',
+      );
+      git(targetRoot, ['add', '.']);
+      git(targetRoot, ['commit', '-qm', 'target root']);
+      home = mkdtempSync(join(tmpdir(), 'threadnote-ranked-sibling-roots-home-'));
+
+      const older = yield* indexAndLoadEffect(root, home);
+      const indexer = yield* CodeGraphIndexer;
+      const recent = yield* indexer.index({cwd: recentRoot, force: true, threadnoteHome: home});
+      const target = yield* indexAndLoadEffect(targetRoot, home);
+      expect(recent.snapshot.baseSnapshotId).toBeUndefined();
+      expect(target.summary.materialization?.mode).toBe('incremental-clean');
+      expect(target.summary.snapshot.baseSnapshotId).toBe(older.summary.snapshot.id);
+    }).pipe(
+      provideTestLayer(ApplicationLayer),
+      TestClock.withLive,
+      Effect.ensuring(removeTemporaryPaths(() => [targetRoot, recentRoot, root, home])),
+    );
+  });
+
   it.effect(
     'keeps one content identity when committed code is relocated through a dirty overlay',
     () => {

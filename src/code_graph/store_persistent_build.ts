@@ -181,7 +181,7 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
   retainedSnapshotIds: ReadonlySet<string>,
   writerGate?: CodeGraphWriterGate,
   onProgress?: CodeGraphRetiredSnapshotCleanupProgressCallback,
-  _cleanupMode: 'deferred' | 'required' = 'required',
+  cleanupMode: 'deferred' | 'required' = 'required',
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
@@ -243,7 +243,6 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
           SELECT id
           FROM snapshots AS candidate
           WHERE candidate.repository_id = ${repositoryId}
-            AND candidate.worktree_id = ${worktreeId}
             AND candidate.state = 'retired'
             AND candidate.id NOT IN (SELECT snapshot_id FROM active_snapshots)
             AND candidate.id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
@@ -267,7 +266,7 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
       }),
     ),
   );
-  const targets = result.reclaimable.slice(0, 100);
+  const targets = cleanupMode === 'required' ? result.reclaimable : result.reclaimable.slice(0, 100);
   if (targets.length > 0) {
     yield* onProgress?.({
       pagesCompleted: 0,
@@ -275,29 +274,28 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
       snapshotsCompleted: 0,
       snapshotsTotal: result.reclaimable.length,
     }) ?? Effect.void;
-    // Required admission cleanup remains necessary for genuinely incomplete
-    // repository-sized rows, but it is page-budgeted so it cannot hold the
-    // repository lock across an unbounded physical drain. Committed retained
-    // READY rows are lease-protected and later enter ordinary detached-ready
-    // retirement after that lease lapses; they never enter this incomplete-row
-    // cleaner.
-    const page = yield* runWrite(sql.withTransaction(reclaimRetiredSnapshotPage(sql, targets)));
-    yield* onProgress?.({
-      pagesCompleted: 1,
-      rowsDeleted: page.rowsDeleted,
-      snapshotsCompleted: page.complete ? targets.length : 0,
-      snapshotsTotal: result.reclaimable.length,
-    }) ?? Effect.void;
+    let pagesCompleted = 0;
+    let rowsDeleted = 0;
+    let snapshotsCompleted = 0;
+    for (const batch of chunk(targets, 100)) {
+      for (;;) {
+        const page = yield* runWrite(sql.withTransaction(reclaimRetiredSnapshotPage(sql, batch)));
+        pagesCompleted += 1;
+        rowsDeleted += page.rowsDeleted;
+        if (page.complete) snapshotsCompleted += batch.length;
+        yield* onProgress?.({
+          pagesCompleted,
+          rowsDeleted,
+          snapshotsCompleted,
+          snapshotsTotal: result.reclaimable.length,
+        }) ?? Effect.void;
+        if (page.complete || cleanupMode === 'deferred') break;
+        yield* Effect.yieldNow;
+      }
+    }
   }
   return {reclaimable: result.reclaimable.length, retired: result.retired, spoolCleanupSnapshotIds: targets};
 });
-
-/**
- * Superseded persistent builds can own repository-sized durable tables. The
- * required mode reclaims one bounded page before replacement work; deferred
- * maintenance converges the remaining exact identities without extending the
- * activation-drift window.
- */
 
 const finalizePersistentMaterializationPlan = Effect.fn('codeGraph.finalizePersistentMaterializationPlan')(function* (
   sql: SqlClient.SqlClient,
@@ -540,6 +538,7 @@ function stageActivationWorkspace(workspace: CodeGraphWorkspace) {
       }
       yield* stageActivationMonikers(sql, component.monikers ?? [], 'upsert');
     }
+    yield* sql`INSERT OR REPLACE INTO activation_state (key, value) VALUES ('workspace_catalog_staged', '1')`;
   });
 }
 

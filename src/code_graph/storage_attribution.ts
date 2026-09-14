@@ -58,6 +58,8 @@ export interface CodeGraphStorageBytesPerSymbolBaseline {
   readonly attributedBtreeBytes: number;
   readonly attributedBtreeBytesPerSymbol?: number;
   readonly denominator: 'unique-active-snapshot-symbols';
+  readonly readyLogicalPayloadBytes: number;
+  readonly retiredLogicalPayloadBytes: number;
 }
 
 export type CodeGraphStorageSnapshotAttribution =
@@ -205,6 +207,8 @@ function readSnapshotStorageAttribution(
         activeSymbolCount: 0,
         attributedBtreeBytes,
         denominator: 'unique-active-snapshot-symbols',
+        readyLogicalPayloadBytes: 0,
+        retiredLogicalPayloadBytes: 0,
       },
       snapshots: [],
       snapshotsTruncated,
@@ -339,9 +343,17 @@ function readSnapshotStorageAttribution(
   const active = snapshots.filter(snapshot => snapshot.active);
   const activeSymbolCount = active.reduce((total, snapshot) => total + snapshot.symbolCount, 0);
   const activeLogicalPayloadBytes = active.reduce((total, snapshot) => total + snapshot.logicalPayloadBytes, 0);
+  const readyLogicalPayloadBytes = snapshots
+    .filter(snapshot => snapshot.state === 'ready')
+    .reduce((total, snapshot) => total + snapshot.logicalPayloadBytes, 0);
+  const retiredLogicalPayloadBytes = snapshots
+    .filter(snapshot => snapshot.state === 'retired' || snapshot.state === 'failed')
+    .reduce((total, snapshot) => total + snapshot.logicalPayloadBytes, 0);
   return {
     baseline: {
       activeLogicalPayloadBytes,
+      readyLogicalPayloadBytes,
+      retiredLogicalPayloadBytes,
       ...(activeSymbolCount > 0
         ? {
             activeLogicalPayloadBytesPerSymbol: Math.round(activeLogicalPayloadBytes / activeSymbolCount),

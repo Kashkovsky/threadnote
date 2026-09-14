@@ -379,9 +379,15 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
     ) {
       return {mode: 'fallback', reason: 'extractor-context-changed'} satisfies IncrementalOverlayPreassessment;
     }
-    if (input.candidate.receipt.workspaceFingerprint !== workspace.fingerprint) {
+    const baseWorkspace = input.candidate.receipt.inventory?.workspace;
+    if (input.candidate.receipt.workspaceFingerprint !== workspace.fingerprint && baseWorkspace === undefined) {
       return {mode: 'fallback', reason: 'workspace-changed'} satisfies IncrementalOverlayPreassessment;
     }
+    const committedWorkspace = baseWorkspace ?? workspace;
+    const workspaceCompatibility = assessCodeGraphWorkspaceCompatibility(committedWorkspace, workspace);
+    if (workspaceCompatibility.mode === 'fallback') return workspaceCompatibility;
+    const workspaceSeedProjectIds =
+      workspaceCompatibility.mode === 'project-closure' ? workspaceCompatibility.seedProjectIds : [];
     const currentPaths = new Set(input.inventory.files.map(file => file.path));
     const deletedFiles = input.candidate.files.filter(file => !currentPaths.has(file.path));
     const deletedPaths = deletedFiles.map(file => file.path);
@@ -396,7 +402,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
       return yield* assessProjectFileSetIncrementalClosureCompatibility({
         baseFiles: input.candidate.files,
         baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.candidate.files),
-        baseWorkspace: workspace,
+        baseWorkspace: committedWorkspace,
         currentChangedFiles: modifiedFiles,
         currentFiles: input.inventory.files,
         currentWorkspace: workspace,
@@ -404,7 +410,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
         languagePacks: input.languagePacks,
         layout: input.layout,
         store: input.store,
-        workspaceSeedProjectIds: [],
+        workspaceSeedProjectIds,
       });
     }
     const baseFiles = inventoryFilesForPaths(
@@ -459,7 +465,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
     const currentRawFacts = modifiedFiles.map(file =>
       input.languagePacks.postprocessFile(file, currentCache.facts.get(file.path)!),
     );
-    const baseFacts = attributeInventoryFacts(input.candidate.files, workspace, baseRawFacts);
+    const baseFacts = attributeInventoryFacts(input.candidate.files, committedWorkspace, baseRawFacts);
     const currentFacts = attributeInventoryFacts(input.inventory.files, workspace, currentRawFacts);
     const baseFactsByPath = new Map(baseFacts.map(file => [file.path, file]));
     const resolutionSurfaceChanged = currentFacts.some(file => {
@@ -474,11 +480,11 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
       baseFacts.flatMap(file => file.references ?? []),
       currentFacts.flatMap(file => file.references ?? []),
     );
-    if (reexportResolutionSurfaceChanged || resolutionSurfaceChanged) {
+    if (reexportResolutionSurfaceChanged || resolutionSurfaceChanged || workspaceSeedProjectIds.length > 0) {
       const closure = yield* assessProjectIncrementalClosureCompatibility({
         baseFiles: input.candidate.files,
         baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.candidate.files),
-        baseWorkspace: workspace,
+        baseWorkspace: committedWorkspace,
         changedBaseFacts: baseFacts,
         changedCurrentFacts: currentFacts,
         currentChangedFiles: modifiedFiles,
@@ -487,7 +493,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
         languagePacks: input.languagePacks,
         layout: input.layout,
         store: input.store,
-        workspaceSeedProjectIds: [],
+        workspaceSeedProjectIds,
       });
       const result =
         closure.mode === 'compatible' && extractorTransition
@@ -503,7 +509,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
     // bases can otherwise union into a falsely complete deterministic batch.
     return {
       baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.candidate.files),
-      committedWorkspace: workspace,
+      committedWorkspace,
       ...(extractorTransition ? {extractorTransition: true as const} : {}),
       facts: currentFacts,
       files: modifiedFiles,

@@ -87,6 +87,7 @@ import {
   removePersistentMaterializationSpool,
 } from './store_materialization_spool_lifecycle.js';
 import {codeGraphMaterializationSpoolPath} from './materialization_spool.js';
+import {CODE_GRAPH_SNAPSHOT_ID} from './store_reconciliation_core.js';
 import {
   selectEffectiveSnapshotCitationEvidence,
   selectEffectiveSnapshotFilesByContentHashes,
@@ -163,6 +164,16 @@ type CodeGraphStoreDataMethods = Pick<
 export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): CodeGraphStoreDataMethods {
   const {prepare, ensureSchemaInitialized, scheduleRoutinePhysicalCleanup, withWriterGate, fs, system, crypto} =
     runtime;
+  const removeSnapshotSpool = (databasePath: string, snapshotId: string) =>
+    Effect.try({
+      catch: () => CodeGraphStoreError.of('Retired materialization spool identity is invalid.'),
+      try: () =>
+        codeGraphMaterializationSpoolPath(
+          runtime.path,
+          {repositoryRoot: runtime.path.dirname(databasePath)},
+          snapshotId,
+        ),
+    }).pipe(Effect.flatMap(spoolPath => removePersistentMaterializationSpool(runtime, spoolPath)));
   return {
     initialize: (databasePath, options) =>
       prepare(databasePath).pipe(
@@ -636,16 +647,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
           ),
         );
         for (const snapshotId of result.spoolCleanupSnapshotIds) {
-          const spoolPath = yield* Effect.try({
-            catch: () => CodeGraphStoreError.of('Retired materialization spool identity is invalid.'),
-            try: () =>
-              codeGraphMaterializationSpoolPath(
-                runtime.path,
-                {repositoryRoot: runtime.path.dirname(databasePath)},
-                snapshotId,
-              ),
-          });
-          yield* removePersistentMaterializationSpool(runtime, spoolPath);
+          yield* removeSnapshotSpool(databasePath, snapshotId);
         }
         if (result.reclaimable > 0) {
           yield* scheduleRoutinePhysicalCleanup(databasePath);
@@ -657,7 +659,13 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.andThen(
           useDatabase(
             databasePath,
-            withWriterGate(databasePath, failBuildingSnapshot(snapshotId, summary, ownerToken)).pipe(Effect.asVoid),
+            Effect.gen(function* () {
+              const failed = yield* withWriterGate(databasePath, failBuildingSnapshot(snapshotId, summary, ownerToken));
+              if (failed > 0 && ownerToken !== undefined) {
+                if (CODE_GRAPH_SNAPSHOT_ID.test(snapshotId)) yield* removeSnapshotSpool(databasePath, snapshotId);
+                yield* pruneRetiredSnapshotRows(effect => withWriterGate(databasePath, effect), snapshotId);
+              }
+            }),
           ),
         ),
         Effect.mapError(cause => storeError('fail code graph snapshot', cause)),
@@ -735,6 +743,8 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
       graphContentId,
       preferredCommitGroups,
       allowExtractorMismatch,
+      workspaceProjectsJson,
+      excludedSnapshotIds,
     ) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
@@ -749,6 +759,8 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                   graphContentId,
                   preferredCommitGroups,
                   allowExtractorMismatch,
+                  workspaceProjectsJson,
+                  excludedSnapshotIds,
                 ),
               )
             : succeedUndefined,

@@ -98,6 +98,7 @@ import {
 import {assessCodeGraphLanguagePackDelta} from './languages/provenance.js';
 import {packDerivationIdentity, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
+import {assessCodeGraphWorkspaceCompatibility} from './workspace_compatibility.js';
 import {codeGraphRequestBuildLockPath, codeGraphSnapshotBuildLockPath, type CodeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
 import {MaterializationSubphaseTiming} from './materialization_subphase_timing.js';
@@ -129,6 +130,11 @@ import {
 } from './types.js';
 
 export const CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY = 'Code graph build was interrupted before completion.';
+const REUSABLE_BASE_COMPONENT_RANKING_LIMIT = 256;
+
+function reusableBaseComponentRankingJson(workspace: CodeGraphWorkspace): string {
+  return JSON.stringify(workspace.projects.slice(0, REUSABLE_BASE_COMPONENT_RANKING_LIMIT));
+}
 
 export function settleInterruptedCodeGraphBuild(
   store: CodeGraphStoreShape,
@@ -400,33 +406,13 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
   );
 });
 
-const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSnapshot')(function* (
+const attemptReusableCleanCandidate = Effect.fn('codeGraph.attemptReusableCleanCandidate')(function* (
   input: ReusableCleanSnapshotInput,
   workspace: CodeGraphWorkspace,
+  candidate: CodeGraphReusableCleanBase,
+  extractorSet: string,
 ) {
-  if (!input.store.activateCleanSnapshotAlias) {
-    return Option.none<ReusableCleanSnapshotAttempt>();
-  }
-  const committedDirtyRoot = yield* attemptCommittedDirtyRootAlias(input, workspace);
-  if (Option.isSome(committedDirtyRoot)) return committedDirtyRoot;
-  if (!input.store.reusableCleanBase) return Option.none<ReusableCleanSnapshotAttempt>();
-  const extractorSet = extractorSetIdentity(input.inventory.files, input.languagePacks);
-  const preferredCommitGroups = yield* preferredIncrementalBaseCommitGroups(
-    input.identity.repoRoot,
-    input.identity.headCommit,
-  );
-  const candidate = yield* input.store.reusableCleanBase(
-    input.layout.databasePath,
-    input.identity.repositoryId,
-    extractorSet,
-    workspace.fingerprint,
-    reusableBaseFileSetFingerprint(input.inventory.files),
-    graphContentIdentity(extractorSet, input.inventory.files),
-    preferredCommitGroups,
-    true,
-  );
-  if (!candidate || candidate.snapshot.id === input.logicalSnapshotId)
-    return Option.none<ReusableCleanSnapshotAttempt>();
+  if (candidate.snapshot.id === input.logicalSnapshotId) return Option.none<ReusableCleanSnapshotAttempt>();
   const baseByPath = new Map(candidate.files.map(file => [file.path, file]));
   if (input.inventory.files.some(file => file.source !== 'commit')) {
     return Option.none<ReusableCleanSnapshotAttempt>();
@@ -471,10 +457,16 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
         });
         const currentPaths = new Set(input.inventory.files.map(file => file.path));
         const deletedPaths = candidate.files.filter(file => !currentPaths.has(file.path)).map(file => file.path);
+        const aliasWorkspaceCompatible =
+          candidate.receipt.workspaceFingerprint === workspace.fingerprint ||
+          (candidate.receipt.inventory?.workspace !== undefined &&
+            assessCodeGraphWorkspaceCompatibility(candidate.receipt.inventory.workspace, workspace).mode ===
+              'unchanged');
         if (
           modifiedFiles.length === 0 &&
           deletedPaths.length === 0 &&
-          candidate.snapshot.extractorSet === extractorSet
+          candidate.snapshot.extractorSet === extractorSet &&
+          aliasWorkspaceCompatible
         ) {
           const alias: CodeGraphSnapshot = {
             baseSnapshotId: candidate.snapshot.id,
@@ -623,6 +615,13 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
           return Option.some<ReusableCleanSnapshotAttempt>({mode: 'fallback', reason: 'staging-identity-mismatch'});
         }
         yield* input.store.markBuilding(input.layout.databasePath, input.identity, building);
+        if (preassessment.committedWorkspace.fingerprint !== workspace.fingerprint) {
+          yield* input.store.stageWorkspaceCatalog(
+            input.layout.databasePath,
+            workspace,
+            codeGraphDirectPersistentCapacityProtector(input),
+          );
+        }
         const summary = yield* buildAndActivate({
           activatePointer: true,
           building,
@@ -662,6 +661,47 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
       }),
     token => input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.ignore),
   );
+});
+
+const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSnapshot')(function* (
+  input: ReusableCleanSnapshotInput,
+  workspace: CodeGraphWorkspace,
+) {
+  if (!input.store.activateCleanSnapshotAlias) {
+    return Option.none<ReusableCleanSnapshotAttempt>();
+  }
+  const committedDirtyRoot = yield* attemptCommittedDirtyRootAlias(input, workspace);
+  if (Option.isSome(committedDirtyRoot)) return committedDirtyRoot;
+  if (!input.store.reusableCleanBase) return Option.none<ReusableCleanSnapshotAttempt>();
+  const extractorSet = extractorSetIdentity(input.inventory.files, input.languagePacks);
+  const preferredCommitGroups = yield* preferredIncrementalBaseCommitGroups(
+    input.identity.repoRoot,
+    input.identity.headCommit,
+  );
+  const excludedSnapshotIds: string[] = [];
+  let firstFallback = Option.none<ReusableCleanSnapshotAttempt>();
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const candidate = yield* input.store.reusableCleanBase(
+      input.layout.databasePath,
+      input.identity.repositoryId,
+      extractorSet,
+      workspace.fingerprint,
+      reusableBaseFileSetFingerprint(input.inventory.files),
+      graphContentIdentity(extractorSet, input.inventory.files),
+      attempt === 0 ? preferredCommitGroups : undefined,
+      true,
+      reusableBaseComponentRankingJson(workspace),
+      excludedSnapshotIds,
+    );
+    if (!candidate) break;
+    excludedSnapshotIds.push(candidate.snapshot.id);
+    const outcome = yield* attemptReusableCleanCandidate(input, workspace, candidate, extractorSet);
+    if (Option.isSome(outcome)) {
+      if (outcome.value.mode === 'complete') return outcome;
+      if (Option.isNone(firstFallback)) firstFallback = outcome;
+    }
+  }
+  return firstFallback;
 });
 
 export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirtyBase')(function* (
@@ -785,6 +825,7 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
       graphContentIdentity(input.extractorSet, input.inventory.files),
       preferredCommitGroups,
       true,
+      reusableBaseComponentRankingJson(workspace),
     );
   }
   if (!candidate) return Option.none();
@@ -1097,6 +1138,9 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     incrementalApplied = applied.result;
     incrementalStorageTelemetry = applied.storage;
     if (incrementalApplied) {
+      if (input.incrementalPrepared !== true) {
+        yield* input.store.stageWorkspaceCatalog(input.layout.databasePath, workspace, persistentCapacityGuard);
+      }
       materializedFiles = incrementalAssessment.files.length;
       for (const diagnostic of [
         ...input.committedBase!.diagnostics,

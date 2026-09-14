@@ -32,8 +32,10 @@ export function assessCodeGraphWorkspaceCompatibility(
     )
     .map(([id]) => id)
     .sort(compareCodeUnits);
-  return seedProjectIds.length > 0
-    ? {mode: 'project-closure', seedProjectIds}
+  if (seedProjectIds.length > 0) return {mode: 'project-closure', seedProjectIds};
+  return JSON.stringify(base.workspaces) === JSON.stringify(current.workspaces) &&
+    JSON.stringify(base.diagnostics) === JSON.stringify(current.diagnostics)
+    ? {mode: 'unchanged'}
     : {mode: 'fallback', reason: 'workspace-changed'};
 }
 
@@ -59,6 +61,8 @@ function projectCompatibilitySurface(project: CodeGraphWorkspaceProject): string
     project.root,
     project.resolutionDomain,
     project.dependencies,
+    project.externalDependencies ?? [],
+    project.monikers ?? [],
     project.dependencyDetails.map(dependency => [
       dependency.targetId,
       dependency.provenance,

@@ -12,7 +12,7 @@ export const CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_REVISION = {
   citationAliasPredecessor: 2,
   foldForwardPredecessor: 3,
   endpointIndexPredecessor: 4,
-  current: 5,
+  current: 6,
 } as const;
 export const CODE_GRAPH_SCHEMA_INITIALIZATION_CITATION_PREDECESSOR_CONTRACT_REVISION =
   CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_REVISION.citationAliasPredecessor;

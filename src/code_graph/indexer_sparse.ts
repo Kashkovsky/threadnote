@@ -324,6 +324,20 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
       const prepared = preparedMaterialization.result;
       if (!prepared) return Option.none<CodeGraphIndexSummary>();
       yield* input.store.markBuilding(input.layout.databasePath, input.identity, building);
+      if (preassessment.committedWorkspace.fingerprint !== admission.workspace.fingerprint) {
+        yield* input.store.stageWorkspaceCatalog(
+          input.layout.databasePath,
+          admission.workspace,
+          codeGraphDirectPersistentCapacityProtector({
+            capacityProtection: input.capacityProtection,
+            fs: input.fs,
+            identity: input.identity,
+            layout: input.layout,
+            onProgress: input.options.onProgress,
+            threadnoteHome: input.options.threadnoteHome,
+          }),
+        );
+      }
       const workspace = {
         diagnostics: admission.workspace.diagnostics,
         fingerprint: admission.workspace.fingerprint,

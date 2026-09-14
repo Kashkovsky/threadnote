@@ -27,6 +27,50 @@ import type {CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 describe('project-closure incremental indexing', () => {
+  it.effect('publishes current workspace dependencies when a manifest and source change together', () =>
+    Effect.acquireUseRelease(
+      Effect.sync(createProjectClosureRepository),
+      root =>
+        Effect.gen(function* () {
+          const indexer = yield* CodeGraphIndexer;
+          const path = yield* Path.Path;
+          const incrementalHome = join(root, '.threadnote-incremental');
+          const fullHome = join(root, '.threadnote-full');
+          const base = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+          yield* Effect.sync(() => {
+            write(root, 'packages/barrel/package.json', {
+              dependencies: {
+                '@fixture/core': 'workspace:*',
+                '@fixture/other': 'workspace:*',
+                '@fixture/unrelated': 'workspace:*',
+              },
+              name: '@fixture/barrel',
+            });
+            redirectBarrel(root);
+          });
+          const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+          const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+          const incrementalPath = codeGraphLayout(
+            path,
+            incrementalHome,
+            base.identity.checkoutId,
+            base.identity.worktreeId,
+          ).databasePath;
+          const fullPath = codeGraphLayout(
+            path,
+            fullHome,
+            full.identity.checkoutId,
+            full.identity.worktreeId,
+          ).databasePath;
+          expect(incremental.materialization?.mode).toBe('incremental-overlay');
+          expect(workspaceCatalogRows(incrementalPath, incremental.snapshot.id)).toEqual(
+            workspaceCatalogRows(fullPath, full.snapshot.id),
+          );
+        }),
+      root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   it.effect('reattributes the exact reverse-dependent project closure when a barrel redirects', () =>
     Effect.acquireUseRelease(
       Effect.sync(createProjectClosureRepository),
@@ -1340,6 +1384,28 @@ function redirectRandomBarrel(root: string, salt: number): void {
 
 function write(root: string, path: string, value: unknown): void {
   writeFile(root, path, `${JSON.stringify(value)}\n`);
+}
+
+function workspaceCatalogRows(databasePath: string, snapshotId: string): readonly unknown[] {
+  const database = new Database(databasePath, {readonly: true});
+  try {
+    return [
+      'workspace_scopes',
+      'workspace_components',
+      'workspace_component_dependencies',
+      'workspace_external_dependencies',
+      'code_graph_monikers',
+    ]
+      .map(
+        table =>
+          database
+            .query(`SELECT * FROM ${table} WHERE snapshot_id = ? ORDER BY 2, 3`)
+            .all(snapshotId) as readonly Record<string, unknown>[],
+      )
+      .map(rows => rows.map(({snapshot_id: _snapshotId, ...row}) => row));
+  } finally {
+    database.close();
+  }
 }
 
 function writeFile(root: string, path: string, content: string): void {
