@@ -44,6 +44,56 @@ function logical(results: readonly RecallHit[], notices: readonly string[] = [])
   };
 }
 
+function seededNavigation(results: readonly RecallHit[]) {
+  return {
+    ...logical(results),
+    confidence: {
+      level: 'no_answer' as const,
+      margin: 0,
+      reason: 'No candidate passed the minimum combined relevance threshold.',
+      score: 0,
+    },
+    memoryConnections: {
+      candidates: [],
+      connections: results.map((result, relationOrdinal) => ({
+        currentness: 'current' as const,
+        direction: 'outgoing' as const,
+        distance: 1 as const,
+        neighborMemoryId: `tn_direct_${relationOrdinal}`,
+        neighborUri: result.uri,
+        origin: 'relation' as const,
+        relationOrdinal,
+        relationType: 'evidence_for' as const,
+        requestedOrdinal: 0,
+        resolution: 'resolved' as const,
+        sourceMemoryId: 'tn_seed',
+      })),
+      coverage: {
+        connectionCount: results.length,
+        premiseCount: 1,
+        resultCount: results.length,
+        truncated: false,
+        version: 1 as const,
+      },
+      diagnostics: {
+        canonicalMismatches: 0,
+        canonicalRereads: results.length + 1,
+        rawLinkRows: results.length,
+        refreshRepairs: 0,
+        truncatedSeedOrdinals: [],
+      },
+      premises: [
+        {
+          memoryId: 'tn_seed',
+          requestedOrdinal: 0,
+          requestedRef: 'threadnote://memory/tn_seed',
+          state: 'current' as const,
+        },
+      ],
+    },
+  };
+}
+
 describe('recall MCP response projection', () => {
   it('rejects budgets that cannot fit the required dual-channel envelope', () => {
     expect(() =>
@@ -385,6 +435,81 @@ describe('recall MCP response projection', () => {
     });
     expect(projected.structuredContent.results.map(result => result.uri)).toEqual([topicalHit.uri, directHit.uri]);
     expect(projected.structuredContent.nextAction.uris[0]).toBe(directHit.uri);
+  });
+
+  it('marks a verified seed connection as budget-limited when 700 tokens omit its pointer', () => {
+    const directHit = hit(1, {
+      uri: `threadnote://user/test/memories/durable/projects/threadnote/${'verified-connection-'.repeat(4)}.md`,
+    });
+    const response = seededNavigation([directHit]);
+    const narrow = projectRecallMcpResponse(response, {budgetTokens: 700});
+    const expanded = projectRecallMcpResponse(response, {budgetTokens: 1_000});
+
+    expect(narrow.structuredContent.output).toMatchObject({budgetLimited: true, retryBudgetTokens: 1_500});
+    expect(narrow.structuredContent.confidence).toMatchObject({basis: 'response-budget', level: 'low'});
+    expect(narrow.text).toContain('budgetTokens=1500');
+    expect(expanded.structuredContent.nextAction.uris).toContain(directHit.uri);
+    expect(expanded.structuredContent.confidence?.basis).toBe('explicit-memory-connection');
+  });
+
+  it('keeps relevance absence distinct from a response-budget omission', () => {
+    const empty = projectRecallMcpResponse(seededNavigation([]), {budgetTokens: 700});
+    expect(empty.structuredContent.confidence).toMatchObject({basis: 'ranked-relevance', level: 'no_answer'});
+    expect(empty.structuredContent.output).not.toHaveProperty('budgetLimited');
+  });
+
+  it('preserves topical confidence when a later verified neighbor is budget-omitted', () => {
+    const topical = hit(1);
+    const neighbor = hit(2, {
+      uri: `threadnote://user/test/memories/durable/projects/threadnote/${'verified-neighbor-'.repeat(5)}.md`,
+    });
+    const seeded = seededNavigation([topical, neighbor]);
+    const response = {
+      ...seeded,
+      confidence: logical([]).confidence,
+      memoryConnections: {
+        ...seeded.memoryConnections,
+        connections: seeded.memoryConnections.connections.slice(1),
+        coverage: {...seeded.memoryConnections.coverage, connectionCount: 1, resultCount: 1},
+      },
+    };
+    const projected = projectRecallMcpResponse(response, {budgetTokens: 700});
+
+    expect(projected.structuredContent.results.map(result => result.uri)).toEqual([topical.uri]);
+    expect(projected.structuredContent.confidence).toMatchObject({basis: 'ranked-relevance', level: 'medium'});
+    expect(projected.structuredContent.output).toMatchObject({budgetLimited: true, retryBudgetTokens: 1_500});
+  });
+
+  it('classifies verified seeded evidence across budgets, URI lengths, and connection counts', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.integer({min: 1, max: 140}), {minLength: 1, maxLength: 8}),
+        fc.integer({min: 700, max: 1_500}),
+        (uriLengths, budgetTokens) => {
+          const results = uriLengths.map((length, index) =>
+            hit(index, {
+              uri: `threadnote://user/test/memories/durable/projects/threadnote/${index}-${'x'.repeat(length)}.md`,
+            }),
+          );
+          const projected = projectRecallMcpResponse(seededNavigation(results), {budgetTokens});
+          const {confidence, memoryConnections, output} = projected.structuredContent;
+
+          expect(projected.measurement.totalBytes).toBeLessThanOrEqual(budgetTokens * 3);
+          expect(confidence?.level).not.toBe('no_answer');
+          if (confidence?.basis === 'response-budget') {
+            expect(output.budgetLimited).toBe(true);
+            expect(memoryConnections?.coverage.resultCount).toBe(0);
+            if (budgetTokens < 1_500) expect(output.retryBudgetTokens).toBe(1_500);
+            expect(projected.text).toContain('Verified one-hop navigation evidence omitted by the response budget.');
+          } else {
+            expect(confidence?.basis).toBe('explicit-memory-connection');
+            expect(memoryConnections?.coverage.resultCount).toBeGreaterThan(0);
+            expect(output).not.toHaveProperty('budgetLimited');
+          }
+        },
+      ),
+      {numRuns: 100},
+    );
   });
 
   it('preserves a matching explicit-connection receipt bundle before max-budget explanation detail', () => {
