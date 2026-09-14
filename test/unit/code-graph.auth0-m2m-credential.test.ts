@@ -56,6 +56,7 @@ describe('Auth0 graph worker credential helper', () => {
         return Response.json({
           access_token: await signedToken(privateKey),
           expires_in: 600,
+          scope: 'graph:contribute',
           token_type: 'Bearer',
         });
       },
@@ -78,6 +79,56 @@ describe('Auth0 graph worker credential helper', () => {
     })(credential.accessToken);
     expect(listenerClaims.subject).toBe(environment.THREADNOTE_AUTH0_GRAPH_M2M_SUBJECT);
     expect(listenerClaims.scopes).toEqual(new Set(['graph:contribute']));
+  });
+
+  it('accepts the complete Auth0 client grant while requiring the requested graph scope', async () => {
+    const {publicKey, privateKey} = await generateKeyPair('RS256');
+    const token = await signedToken(privateKey, {scope: 'graph:read graph:contribute'});
+    const credential = await getAuth0M2MGraphCredential(request, environment, {
+      key: async () => publicKey,
+      now: () => now * 1000,
+      fetch: async () =>
+        Response.json({
+          access_token: token,
+          expires_in: 600,
+          scope: 'graph:read graph:contribute',
+          token_type: 'Bearer',
+        }),
+    });
+    const listenerClaims = await createAccessTokenVerifier(publicKey, {
+      audience: request.audience,
+      issuer: request.issuer,
+    })(credential.accessToken);
+    expect(listenerClaims.scopes).toEqual(new Set(['graph:read', 'graph:contribute']));
+    await expect(
+      getAuth0M2MGraphCredential(request, environment, {
+        key: async () => publicKey,
+        now: () => now * 1000,
+        fetch: async () =>
+          Response.json({access_token: token, expires_in: 600, scope: 'graph:contribute', token_type: 'Bearer'}),
+      }),
+    ).rejects.toThrow('Auth0 graph credential unavailable.');
+  });
+
+  it('accepts a canonical origin as the Auth0 audience and coordinator URL', async () => {
+    const {publicKey, privateKey} = await generateKeyPair('RS256');
+    const origin = 'https://graph.threadnote.test';
+    const originRequest = {...request, audience: origin, coordinatorUrl: origin};
+    const token = await signedToken(privateKey, {aud: origin});
+    const credential = await getAuth0M2MGraphCredential(
+      originRequest,
+      {
+        ...environment,
+        THREADNOTE_AUTH0_GRAPH_M2M_AUDIENCE: origin,
+        THREADNOTE_AUTH0_GRAPH_M2M_COORDINATOR_URL: origin,
+      },
+      {
+        key: async () => publicKey,
+        now: () => now * 1000,
+        fetch: async () => Response.json({access_token: token, expires_in: 600, token_type: 'Bearer'}),
+      },
+    );
+    expect(credential.audience).toBe(origin);
   });
 
   it('refuses mismatched local authority before sending the client secret', async () => {
@@ -112,8 +163,12 @@ describe('Auth0 graph worker credential helper', () => {
       {aud: 'https://other.threadnote.test/'},
       {sub: 'other@clients'},
       {azp: 'differentCloudClientId'},
-      {scope: 'graph:read graph:contribute'},
       {scope: 'graph:read'},
+      {scope: 'graph:read graph:write'},
+      {scope: 'graph:contribute graph:write'},
+      {scope: 'graph:contribute graph:contribute'},
+      {scope: 'graph:contribute  graph:read'},
+      {scope: ' graph:contribute'},
       {exp: now + 29},
       {exp: now + 610},
       {iat: now - 100},
@@ -133,6 +188,34 @@ describe('Auth0 graph worker credential helper', () => {
         expect(JSON.stringify(error)).not.toContain(token);
       }
     }
+  });
+
+  it('accepts only distinct configured graph scopes containing the requested scope', async () => {
+    const {publicKey, privateKey} = await generateKeyPair('RS256');
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(
+          fc.oneof(fc.constantFrom('graph:read', 'graph:contribute', 'graph:write', ''), fc.string({maxLength: 12})),
+          {maxLength: 4},
+        ),
+        async scopes => {
+          const token = await signedToken(privateKey, {scope: scopes.join(' ')});
+          const result = getAuth0M2MGraphCredential(request, environment, {
+            key: async () => publicKey,
+            now: () => now * 1000,
+            fetch: async () => Response.json({access_token: token, expires_in: 600, token_type: 'Bearer'}),
+          });
+          const expected =
+            scopes.length > 0 &&
+            scopes.includes('graph:contribute') &&
+            new Set(scopes).size === scopes.length &&
+            scopes.every(scope => scope === 'graph:read' || scope === 'graph:contribute');
+          if (expected) expect((await result).accessToken).toBe(token);
+          else await expect(result).rejects.toThrow('Auth0 graph credential unavailable.');
+        },
+      ),
+      {numRuns: 80},
+    );
   });
 
   it('rejects non-success, response expansion, unsupported token type, and inaccessible Auth0', async () => {

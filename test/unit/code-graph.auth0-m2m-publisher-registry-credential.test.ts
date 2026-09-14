@@ -41,7 +41,7 @@ describe('Auth0 M2M Zot publisher Docker helper', () => {
           grant_type: 'client_credentials',
           scope: 'registry:publisher',
         });
-        return Response.json({access_token: token, expires_in: 600, token_type: 'Bearer'});
+        return Response.json({access_token: token, expires_in: 600, scope: 'registry:publisher', token_type: 'Bearer'});
       },
     });
     expect(credential).toEqual({Username: 'zot', Secret: token, ServerURL: origin});
