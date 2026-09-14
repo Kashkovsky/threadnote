@@ -69,10 +69,18 @@ export type CodeGraphStatusJsonDetailsV5 = Pick<
   CodeGraphStatus,
   'databasePath' | 'identity' | 'languagePacks' | 'stale'
 > & {
+  readonly locks?: {
+    readonly databaseWriter?: CodeGraphStatusObservedLock;
+    readonly repository?: CodeGraphStatusObservedLock & {readonly worktreeId: string};
+  };
   readonly obsoleteStores: ObsoleteCodeGraphStoreInventory;
   readonly readySnapshot: CodeGraphStatus['readySnapshot'] | null;
   readonly storage: CodeGraphStorage;
 };
+
+export type CodeGraphStatusObservedLock =
+  | {readonly state: 'available' | 'unverified'}
+  | {readonly owner: {readonly processId: number}; readonly state: 'active'};
 
 export type CodeGraphStatusOptionsResolution =
   | {readonly buildLimit: number; readonly error?: undefined; readonly languagePackLimit: number}

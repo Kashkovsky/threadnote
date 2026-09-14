@@ -864,6 +864,144 @@ describe('code graph cross-process build status', () => {
     expect(owner.observation).toMatchObject({liveness: 'active'});
   });
 
+  effectIt.effect('identifies the writer and repository lock owners while indexing waits', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* Effect.acquireRelease(
+            fs.makeTempDirectory({prefix: 'threadnote-graph-wait-owners-'}),
+            directory => fs.remove(directory, {force: true, recursive: true}).pipe(Effect.ignore),
+          );
+          const repository = path.join(home, 'repository');
+          yield* fs.makeDirectory(repository, {recursive: true});
+          yield* fs.writeFileString(path.join(repository, 'source.ts'), 'export const value = 1;\n');
+          yield* Effect.sync(() => {
+            runGit(repository, ['init', '--quiet']);
+            runGit(repository, ['config', 'user.email', 'test@example.invalid']);
+            runGit(repository, ['config', 'user.name', 'Threadnote Test']);
+            runGit(repository, ['add', 'source.ts']);
+            runGit(repository, ['commit', '--quiet', '-m', 'fixture']);
+          });
+          const config: RuntimeConfig = {
+            account: 'local',
+            agentContextHome: home,
+            agentId: 'threadnote',
+            manifestPath: path.join(home, 'manifest.yaml'),
+            user: 'tester',
+          };
+          const identity = yield* resolveRepositoryIdentity(repository);
+          const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+          const lockOptions = {
+            retryIntervalMilliseconds: 5,
+            staleAfterMilliseconds: 120_000,
+            waitTimeoutMilliseconds: 1_000,
+          };
+          const outputs = yield* withExclusiveFileLock(
+            fs,
+            layout.lockPath,
+            lockOptions,
+            withExclusiveFileLock(
+              fs,
+              layout.databaseWriteLockPath,
+              lockOptions,
+              Effect.gen(function* () {
+                yield* reporter.progress({phase: 'waiting', reason: 'database-writer'});
+                const waiter = yield* makeCodeGraphBuildReporter(identity, layout);
+                yield* waiter.progress({phase: 'waiting', reason: 'repository-lock'});
+                return {
+                  human: (yield* captureConsole(runCodeGraphStatus(config, {cwd: repository}))).output,
+                  json: (yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}))).output,
+                };
+              }),
+            ),
+          );
+          const status = JSON.parse(outputs.json) as {
+            readonly locks?: {
+              readonly databaseWriter?: {readonly owner?: {readonly processId: number}; readonly state: string};
+              readonly repository?: {readonly owner?: {readonly processId: number}; readonly state: string};
+            };
+          };
+          expect(status.locks?.databaseWriter).toMatchObject({state: 'active', owner: {processId: process.pid}});
+          expect(status.locks?.repository).toMatchObject({state: 'active', owner: {processId: process.pid}});
+          expect(outputs.human).toContain(`Database writer lock: PID ${process.pid}`);
+          expect(outputs.human).toContain(`Repository lock: PID ${process.pid}`);
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    ),
+  );
+
+  effectIt.effect('attributes a linked worktree repository wait to its own lock', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* Effect.acquireRelease(
+            fs.makeTempDirectory({prefix: 'threadnote-graph-linked-wait-owner-'}),
+            directory => fs.remove(directory, {force: true, recursive: true}).pipe(Effect.ignore),
+          );
+          const repository = path.join(home, 'repository');
+          yield* fs.makeDirectory(repository, {recursive: true});
+          yield* fs.writeFileString(path.join(repository, 'source.ts'), 'export const value = 1;\n');
+          yield* Effect.sync(() => {
+            runGit(repository, ['init', '--quiet']);
+            runGit(repository, ['config', 'user.email', 'test@example.invalid']);
+            runGit(repository, ['config', 'user.name', 'Threadnote Test']);
+            runGit(repository, ['add', 'source.ts']);
+            runGit(repository, ['commit', '--quiet', '-m', 'fixture']);
+          });
+          const config: RuntimeConfig = {
+            account: 'local',
+            agentContextHome: home,
+            agentId: 'threadnote',
+            manifestPath: path.join(home, 'manifest.yaml'),
+            user: 'tester',
+          };
+          const identity = yield* resolveRepositoryIdentity(repository);
+          const otherIdentity = {...identity, worktreeId: 'e'.repeat(64)};
+          const requestedLayout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const otherLayout = codeGraphLayout(path, home, otherIdentity.checkoutId, otherIdentity.worktreeId);
+          const reporter = yield* makeCodeGraphBuildReporter(otherIdentity, otherLayout);
+          const outputs = yield* withExclusiveFileLock(
+            fs,
+            otherLayout.lockPath,
+            {
+              retryIntervalMilliseconds: 5,
+              staleAfterMilliseconds: 120_000,
+              waitTimeoutMilliseconds: 1_000,
+            },
+            Effect.gen(function* () {
+              yield* reporter.progress({phase: 'waiting', reason: 'repository-lock'});
+              return {
+                human: (yield* captureConsole(runCodeGraphStatus(config, {cwd: repository}))).output,
+                json: (yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}))).output,
+              };
+            }),
+          );
+          expect(yield* fs.exists(requestedLayout.lockPath)).toBe(false);
+          const status = JSON.parse(outputs.json) as {
+            readonly locks?: {
+              readonly repository?: {
+                readonly owner?: {readonly processId: number};
+                readonly state: string;
+                readonly worktreeId: string;
+              };
+            };
+          };
+          expect(status.locks?.repository).toMatchObject({
+            owner: {processId: process.pid},
+            state: 'active',
+            worktreeId: otherIdentity.worktreeId,
+          });
+          expect(outputs.human).toContain(`Repository lock (worktree eeeeeeee): PID ${process.pid}`);
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    ),
+  );
+
   it('retains a bounded privacy-safe terminal result without source paths', async () => {
     const home = await mkdtemp('threadnote-graph-build-terminal-');
     homes.push(home);

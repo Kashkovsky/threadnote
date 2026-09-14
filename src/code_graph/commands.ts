@@ -1,6 +1,7 @@
 import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {startProgress, withProgressLine} from '../cli_ui.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
+import {readExclusiveFileLockOwner} from '../effect/file_lock.js';
 import {
   runtimeFileDescriptorStatSync,
   runtimePathStatSync,
@@ -18,7 +19,7 @@ import {
   makeCodeGraphHumanProgressReporter,
 } from './cli_progress.js';
 import {makeCodeGraphJsonProgressReporter} from './json_progress.js';
-import {codeGraphLayout} from './layout.js';
+import {codeGraphLayout, codeGraphWorktreeLockPath} from './layout.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {
   repairCodeGraphIndexes,
@@ -84,7 +85,11 @@ import {exportCodeGraph, type CodeGraphExportFormat, type CodeGraphExportLimit} 
 import {materializationStorageShortfalls} from './indexer_materialization.js';
 import {readCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
-import {resolveCodeGraphStatusOptions, serializeCodeGraphStatusV5} from './status_projection.js';
+import {
+  resolveCodeGraphStatusOptions,
+  serializeCodeGraphStatusV5,
+  type CodeGraphStatusObservedLock,
+} from './status_projection.js';
 import {
   codeGraphEtaBasisLabel as etaBasisLabel,
   formatCodeGraphStatusDuration as formatStatusDuration,
@@ -312,7 +317,57 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
   const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
   const obsoleteStores = yield* inspectObsoleteCodeGraphStores(config.agentContextHome, identity.checkoutId);
   const storage = yield* inspectCodeGraphStorage(config.agentContextHome, identity.checkoutId);
-  const selection = selectCodeGraphBuildStatuses(yield* readCodeGraphBuildStatuses(layout));
+  const statuses = yield* readCodeGraphBuildStatuses(layout);
+  const selection = selectCodeGraphBuildStatuses(statuses);
+  const waitingFor = (reason: string) =>
+    statuses.find(
+      status => status.observation.liveness === 'active' && status.state === 'queued' && status.subphase === reason,
+    );
+  const waitingRepository =
+    statuses.find(
+      status =>
+        status.identity.worktreeId === identity.worktreeId &&
+        status.observation.liveness === 'active' &&
+        status.state === 'queued' &&
+        status.subphase === 'repository-lock',
+    ) ?? waitingFor('repository-lock');
+  const fs = yield* FileSystem.FileSystem;
+  const system = yield* SystemInfo;
+  const observeLock = (lockPath: string) =>
+    Effect.gen(function* () {
+      const observed = yield* readExclusiveFileLockOwner(fs, lockPath);
+      if (Option.isNone(observed)) {
+        return (yield* fs.exists(lockPath))
+          ? ({state: 'unverified'} satisfies CodeGraphStatusObservedLock)
+          : ({state: 'available'} satisfies CodeGraphStatusObservedLock);
+      }
+      const owner = observed.value;
+      if (!owner.processStartIdentity || !system.isProcessRunning(owner.processId)) {
+        return {state: 'unverified'} satisfies CodeGraphStatusObservedLock;
+      }
+      const currentStartIdentity = yield* system.processStartIdentity(owner.processId);
+      return currentStartIdentity === owner.processStartIdentity
+        ? ({owner: {processId: owner.processId}, state: 'active'} satisfies CodeGraphStatusObservedLock)
+        : ({state: 'unverified'} satisfies CodeGraphStatusObservedLock);
+    });
+  const locks = {
+    ...(waitingFor('database-writer') ? {databaseWriter: yield* observeLock(layout.databaseWriteLockPath)} : {}),
+    ...(waitingRepository
+      ? {
+          repository: {
+            ...(yield* observeLock(
+              codeGraphWorktreeLockPath(
+                path,
+                config.agentContextHome,
+                identity.checkoutId,
+                waitingRepository.identity.worktreeId,
+              ),
+            )),
+            worktreeId: waitingRepository.identity.worktreeId,
+          },
+        }
+      : {}),
+  };
   const buildStatuses = selection.builds;
   const current =
     buildStatuses.find(status => status.identity.worktreeId === identity.worktreeId) ??
@@ -329,6 +384,7 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
           databasePath: layout.databasePath,
           identity,
           languagePacks: ready.languagePacks,
+          ...(Object.keys(locks).length === 0 ? {} : {locks}),
           obsoleteStores,
           readySnapshot: ready.readySnapshot ?? null,
           stale: ready.stale,
@@ -355,6 +411,24 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
       `Owner: PID ${current.owner.processId} · Bun ${current.owner.runtimeVersion} · ` +
         `heartbeat ${formatStatusDuration(current.observation.heartbeatAgeMilliseconds)} ago`,
     );
+    if (locks.databaseWriter) {
+      yield* Console.log(
+        locks.databaseWriter.state === 'active'
+          ? `Database writer lock: PID ${locks.databaseWriter.owner.processId} · inspect with threadnote processes`
+          : `Database writer lock: ${locks.databaseWriter.state}`,
+      );
+    }
+    if (locks.repository) {
+      const label =
+        locks.repository.worktreeId === identity.worktreeId
+          ? 'Repository lock'
+          : `Repository lock (worktree ${locks.repository.worktreeId.slice(0, 8)})`;
+      yield* Console.log(
+        locks.repository.state === 'active'
+          ? `${label}: PID ${locks.repository.owner.processId} · inspect with threadnote processes`
+          : `${label}: ${locks.repository.state}`,
+      );
+    }
     const counters = renderBuildCounters(current);
     if (counters) yield* Console.log(`Progress: ${counters}`);
     if (current.activity) {

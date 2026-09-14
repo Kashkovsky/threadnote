@@ -36,6 +36,7 @@ import {
   type ActivationProgressObserver,
   type CodeGraphEdgeEndpoint,
   COMPLETED_PERSISTENT_BUILD_DRAIN_SPECS,
+  completedPersistentBuildDrainPageStatement,
   copyPersistentActivationRows,
   countPersistedFullReuseRows,
   dropPersistedFullResolutionViews,
@@ -531,23 +532,11 @@ const drainCompletedPersistentBuildRows = Effect.fn('codeGraph.drainCompletedPer
     let pages = 0;
     for (;;) {
       const startedAt = performance.now();
+      const statement = completedPersistentBuildDrainPageStatement(spec, batchRows, snapshotId);
       const deleted = yield* runWrite(
         sql.withTransaction(
           Effect.gen(function* () {
-            const key = `(${spec.keyColumns.join(', ')})`;
-            yield* sql.unsafe(
-              `DELETE FROM ${spec.table}
-             WHERE ${key} IN (
-               SELECT ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
-               FROM ${spec.table} AS candidate
-               JOIN snapshots AS snapshot ON snapshot.id = candidate.snapshot_id
-               WHERE snapshot.state <> 'building'
-                 AND (? IS NULL OR candidate.snapshot_id = ?)
-               ORDER BY ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
-               LIMIT ?
-             )`,
-              [snapshotId ?? null, snapshotId ?? null, batchRows],
-            );
+            yield* sql.unsafe(statement.text, statement.parameters);
             const changes = yield* sql.unsafe<{readonly count: number}>('SELECT changes() AS count');
             return Number(changes[0]?.count ?? 0);
           }),
@@ -570,14 +559,13 @@ const drainCompletedPersistentBuildRows = Effect.fn('codeGraph.drainCompletedPer
     if (spec.table === LEGACY_BUILDING_REFERENCES_V3_TABLE && !(yield* tableExists(sql, spec.table))) continue;
     const rows = yield* sql.unsafe<{readonly present: number}>(
       `SELECT EXISTS(
-         SELECT 1
-         FROM ${spec.table} AS candidate
-         JOIN snapshots AS snapshot ON snapshot.id = candidate.snapshot_id
-         WHERE snapshot.state <> 'building'
-           AND (? IS NULL OR candidate.snapshot_id = ?)
-         LIMIT 1
+         SELECT 1 FROM ${spec.table} AS candidate
+         WHERE candidate.snapshot_id IN (
+           SELECT snapshot.id FROM snapshots AS snapshot
+           WHERE snapshot.state <> 'building'${snapshotId === undefined ? '' : ' AND snapshot.id = ?'}
+         ) LIMIT 1
        ) AS present`,
-      [snapshotId ?? null, snapshotId ?? null],
+      snapshotId === undefined ? [] : [snapshotId],
     );
     if (Number(rows[0]?.present ?? 0) !== 0) {
       remaining = true;
