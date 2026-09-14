@@ -4,7 +4,7 @@ import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import * as BunHttpServer from '@effect/platform-bun/BunHttpServer';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Clock, Console, Effect, FileSystem, Layer, Path} from 'effect';
+import {Clock, Console, Effect, FileSystem, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as HttpServer from 'effect/unstable/http/HttpServer';
 import {generateKeyPair, SignJWT} from 'jose';
@@ -17,8 +17,10 @@ import {
 import {writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
 import {casBlobPath, putCasBytes} from '../../src/code_graph/sharing/cas.js';
 import {makeGraphControlReader, readGraphControlFrontier} from '../../src/code_graph/sharing/control_reader.js';
+import {emptyGraphShareCoordinatorState} from '../../src/code_graph/sharing/control_protocol.js';
 import {readGraphControlPolicy} from '../../src/code_graph/sharing/control_authorization.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
+import {adoptPublishedFrontier, observeCanonicalHead} from '../../src/code_graph/sharing/frontier.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
 import {graphShareFrontierDiscoveryTag} from '../../src/code_graph/sharing/namespace.js';
 import {defaultGraphShareProfile, graphShareProfileDigest} from '../../src/code_graph/sharing/profile.js';
@@ -95,6 +97,13 @@ const fixture = Effect.fn(function* () {
       return pointer;
     });
   const pointer = yield* publish(manifest);
+  const coordinatorStateRef = yield* Ref.make({
+    ...emptyGraphShareCoordinatorState({organization: 'acme', repositoryId: REPOSITORY}),
+    machine: adoptPublishedFrontier(
+      emptyGraphShareCoordinatorState({organization: 'acme', repositoryId: REPOSITORY}).machine,
+      {generation: manifest.generation, manifestDigest: pointer.manifestDigest, sourceCommit: manifest.sourceCommit},
+    ),
+  });
   const at = Math.floor((yield* Clock.currentTimeMillis) / 1000);
   const policy = {
     audience: AUDIENCE,
@@ -127,7 +136,7 @@ const fixture = Effect.fn(function* () {
     });
   const validToken = yield* token();
   const reader = yield* makeGraphControlReader(
-    options,
+    {...options, coordinatorStateRef},
     createAccessTokenVerifier(jwtKey.publicKey, {audience: AUDIENCE, issuer: ISSUER}),
   );
   const context = yield* Layer.build(BunHttpServer.layer({hostname: '127.0.0.1', port: 0}));
@@ -176,6 +185,7 @@ const fixture = Effect.fn(function* () {
     });
   return {
     audits,
+    coordinatorStateRef,
     fs,
     home,
     manifest,
@@ -192,6 +202,47 @@ const fixture = Effect.fn(function* () {
 });
 
 describe('authenticated metadata-only graph reads', () => {
+  effectIt.effect('shows an authorized exact collection head while retaining the verified published frontier', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const nextHead = 'e'.repeat(40);
+        expect((yield* f.request()).body).toMatchObject({
+          generation: 1,
+          observedHead: null,
+          phase: 'published',
+          publishedFrontier: f.manifest.sourceCommit,
+          receipts: [],
+        });
+        yield* Ref.update(f.coordinatorStateRef, state => ({
+          ...state,
+          machine: observeCanonicalHead(state.machine, {
+            commit: nextHead,
+            isDescendantOfPublished: true,
+            nowSeconds: 100,
+          }),
+        }));
+        expect((yield* f.request()).body).toMatchObject({
+          generation: 1,
+          observedHead: nextHead,
+          phase: 'collecting',
+          publishedFrontier: f.manifest.sourceCommit,
+          receipts: [],
+        });
+        expect((yield* f.request('/v1/status', '')).status).toBe(401);
+        yield* Ref.update(f.coordinatorStateRef, state => ({
+          ...state,
+          machine: {...state.machine, publishedFrontier: 'f'.repeat(40)},
+        }));
+        expect((yield* f.request()).body).toMatchObject({
+          observedHead: null,
+          phase: 'published',
+          publishedFrontier: f.manifest.sourceCommit,
+        });
+      }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, BunHttpClient.layer, SystemInfo.layer))),
+    ),
+  );
+
   effectIt.effect(
     'serves verified metadata while denying artifacts and every mutation without changing graph state',
     () =>

@@ -1,4 +1,4 @@
-import {Clock, Console, Context, Effect, Layer, Path, Schema, Semaphore} from 'effect';
+import {Clock, Console, Context, Effect, Layer, Path, Ref, Schema, Semaphore} from 'effect';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
 import {fromPromiseInterruptible} from '../../effect/errors.js';
@@ -30,6 +30,7 @@ import {
   readGraphWorkerEnrollmentRequest,
 } from './control_enrollment.js';
 import {GRAPH_SHARE_CONTROL_MAX_BODY_BYTES} from './control_protocol.js';
+import type {GraphShareCoordinatorStateV1} from './control_protocol.js';
 import {parseSha256Digest, sha256Digest} from './digest.js';
 import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
@@ -55,6 +56,8 @@ export interface GraphControlReaderOptions {
   readonly profile: GraphShareProfileV1;
   readonly repoRoot?: string;
   readonly threadnoteHome: string;
+  /** Live publisher state for the authorized collection window; omitted by standalone metadata readers. */
+  readonly coordinatorStateRef?: Ref.Ref<GraphShareCoordinatorStateV1>;
   /** Internal gate. The route stays closed until source-verifying publication and sender delivery are complete. */
   readonly enableWorkerResults?: boolean;
 }
@@ -244,10 +247,14 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
           manifestDigest: frontier.pointer.manifestDigest,
         });
       }
+      const machine =
+        options.coordinatorStateRef === undefined ? undefined : (yield* Ref.get(options.coordinatorStateRef)).machine;
+      const collectionIsCurrent = machine?.publishedFrontier === frontier.manifest.sourceCommit;
       return reply(200, {
         generation: frontier.manifest.generation,
         organization: scope.organization,
-        phase: 'published',
+        phase: collectionIsCurrent ? machine.phase : 'published',
+        observedHead: collectionIsCurrent && machine.phase === 'collecting' ? machine.observedHead : null,
         profileDigest: scope.profileDigest,
         publishedFrontier: frontier.manifest.sourceCommit,
         receipts: [],
