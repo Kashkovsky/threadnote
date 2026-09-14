@@ -45,6 +45,7 @@ export interface Auth0M2MTokenDependencies {
 }
 
 export interface Auth0M2MTokenAuthority {
+  readonly allowedScopes?: ReadonlySet<string>;
   readonly audience: string;
   readonly clientId: string;
   readonly clientSecret: string;
@@ -178,7 +179,10 @@ export async function getAuth0M2MGraphCredential(
   )
     throw credentialFailure();
 
-  const token = await requestVerifiedAuth0M2MToken({...config, scope: request.scopes[0]}, dependencies);
+  const token = await requestVerifiedAuth0M2MToken(
+    {...config, allowedScopes: config.scopes, scope: request.scopes[0]},
+    dependencies,
+  );
   return {
     accessToken: token.accessToken,
     audience: config.audience,
@@ -234,6 +238,8 @@ export async function requestVerifiedAuth0M2MToken(
     });
     const receivedAt = Math.floor(now() / 1000);
     validateClaims(payload, config, startedAt, receivedAt, body.expires_in);
+    if (body.scope !== undefined && !hasMatchingAuthorizedScopes(body.scope, payload.scope, config))
+      throw credentialFailure();
     return {
       accessToken: body.access_token,
       expiresAt: payload.exp!,
@@ -243,24 +249,34 @@ export async function requestVerifiedAuth0M2MToken(
   }
 }
 
-function parseTokenResponse(value: string): {access_token: string; expires_in: number; token_type: string} {
+function parseTokenResponse(value: string): {
+  access_token: string;
+  expires_in: number;
+  scope?: string;
+  token_type: string;
+} {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
   } catch {
     throw credentialFailure();
   }
-  if (!isObjectWithKeys(parsed, ['access_token', 'expires_in', 'token_type'])) throw credentialFailure();
+  if (
+    !isObjectWithKeys(parsed, ['access_token', 'expires_in', 'token_type']) &&
+    !isObjectWithKeys(parsed, ['access_token', 'expires_in', 'scope', 'token_type'])
+  )
+    throw credentialFailure();
   if (
     typeof parsed.access_token !== 'string' ||
     parsed.access_token.length > MAX_TOKEN_BYTES ||
     !BEARER_TOKEN.test(parsed.access_token) ||
     typeof parsed.expires_in !== 'number' ||
     !Number.isSafeInteger(parsed.expires_in) ||
-    typeof parsed.token_type !== 'string'
+    typeof parsed.token_type !== 'string' ||
+    (parsed.scope !== undefined && (typeof parsed.scope !== 'string' || parsed.scope.length > 512))
   )
     throw credentialFailure();
-  return parsed as {access_token: string; expires_in: number; token_type: string};
+  return parsed as {access_token: string; expires_in: number; scope?: string; token_type: string};
 }
 
 function validateClaims(
@@ -292,10 +308,30 @@ function validateClaims(
     expiresAt! - issuedAt! > MAX_TOKEN_LIFETIME_SECONDS ||
     expiresAt! <= issuedAt! ||
     Math.abs(expiresAt! - startedAt - expiresIn) > CLOCK_TOLERANCE_SECONDS + (receivedAt - startedAt) ||
-    payload.scope !== config.scope ||
+    !hasAuthorizedScopes(payload.scope, config.scope, config.allowedScopes) ||
     (payload.gty !== undefined && payload.gty !== 'client-credentials')
   )
     throw credentialFailure();
+}
+
+function hasAuthorizedScopes(claim: unknown, requested: string, configured: ReadonlySet<string> | undefined): boolean {
+  if (typeof claim !== 'string') return false;
+  const granted = claim.split(' ');
+  const allowed = configured ?? new Set([requested]);
+  return (
+    granted.length > 0 &&
+    granted.length <= allowed.size &&
+    new Set(granted).size === granted.length &&
+    granted.includes(requested) &&
+    granted.every(scope => allowed.has(scope))
+  );
+}
+
+function hasMatchingAuthorizedScopes(response: string, token: unknown, config: Auth0M2MTokenAuthority): boolean {
+  if (!hasAuthorizedScopes(response, config.scope, config.allowedScopes) || typeof token !== 'string') return false;
+  const responseScopes = response.split(' ');
+  const tokenScopes = new Set(token.split(' '));
+  return responseScopes.length === tokenScopes.size && responseScopes.every(scope => tokenScopes.has(scope));
 }
 
 async function boundedResponse(response: Response, limit: number): Promise<string> {
@@ -350,7 +386,7 @@ function canonicalHttpsUrl(value: string): boolean {
       url.password === '' &&
       url.search === '' &&
       url.hash === '' &&
-      url.href === value &&
+      (url.href === value || (url.pathname === '/' && url.origin === value)) &&
       value.length <= 512
     );
   } catch {

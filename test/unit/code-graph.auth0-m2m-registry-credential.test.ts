@@ -41,7 +41,7 @@ describe('Auth0 M2M Zot registry Docker helper', () => {
           scope: 'registry:worker',
         });
         expect(init?.redirect).toBe('error');
-        return Response.json({access_token: token, expires_in: 600, token_type: 'Bearer'});
+        return Response.json({access_token: token, expires_in: 600, scope: 'registry:worker', token_type: 'Bearer'});
       },
     });
     expect(calls).toBe(1);
@@ -93,6 +93,7 @@ describe('Auth0 M2M Zot registry Docker helper', () => {
     for (const override of [
       {aud: environment.THREADNOTE_AUTH0_GRAPH_M2M_AUDIENCE},
       {scope: 'graph:contribute'},
+      {scope: 'registry:worker registry:publisher'},
       {sub: 'other@clients'},
       {azp: environment.THREADNOTE_AUTH0_GRAPH_M2M_CLIENT_ID},
       {exp: now + 30},

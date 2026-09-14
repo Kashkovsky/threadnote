@@ -3,6 +3,8 @@
 .threadnoteignore.local
 node_modules/
 dist/
+# Bun may leave a root-level compiler intermediate during standalone builds.
+/.*.bun-build
 site-dist/
 build/
 out/
