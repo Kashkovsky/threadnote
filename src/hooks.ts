@@ -1,6 +1,7 @@
 import {Console, Effect, FileSystem, Path, Result, Stdio, Stream} from 'effect';
 import {
   CLAUDE_SETTINGS_PATH,
+  HOOK_CODE_BRIEF_COMMAND,
   HOOK_AUTO_PRECOMPACT_TOPIC,
   HOOK_PRE_COMPACT_COMMAND,
   HOOK_SESSION_START_COMMAND,
@@ -20,15 +21,22 @@ import {expandPath, exists, isJsonObject, parseJsonConfigObject, resolveRepoName
 import {getThreadnoteVersion} from './release/runtime_version.js';
 import {readAutoUpdateStatus, triggerAutoUpdateIfEnabled} from './release/auto_update.js';
 
-type HookEvent = 'PreCompact' | 'SessionStart';
+type HookEvent = 'PreCompact' | 'PreToolUse' | 'SessionStart';
 
 interface ManagedHookEntry {
   readonly event: HookEvent;
   readonly command: string;
   readonly description: string;
+  readonly matcher?: string;
 }
 
 const MANAGED_HOOKS: readonly ManagedHookEntry[] = [
+  {
+    event: 'PreToolUse',
+    command: HOOK_CODE_BRIEF_COMMAND,
+    description: 'Show current code-linked memory before editing a cited file.',
+    matcher: 'Edit|Write',
+  },
   {
     event: 'PreCompact',
     command: HOOK_PRE_COMPACT_COMMAND,
@@ -97,13 +105,13 @@ function runClaudeHooksInstall(options: {readonly apply: boolean; readonly remov
   });
 }
 
-function withThreadnoteHooks(input: JsonObject): JsonObject {
+export function withThreadnoteHooks(input: JsonObject): JsonObject {
   const hooks: Record<string, unknown> = ensureMutableObject(input.hooks);
   for (const entry of MANAGED_HOOKS) {
     const list = ensureMutableArray(hooks[entry.event]).filter(item => !isManagedThreadnoteEntry(item));
     list.push({
       [THREADNOTE_HOOK_MARKER]: THREADNOTE_HOOK_MARKER_VALUE,
-      matcher: '',
+      matcher: entry.matcher ?? '',
       hooks: [{type: 'command', command: entry.command}],
     });
     hooks[entry.event] = list;
@@ -383,6 +391,12 @@ export const readHookPayload = Effect.fn('hooks.readPayload')(function* () {
     return undefined;
   }
   return {
+    cwd: typeof parsed.cwd === 'string' ? parsed.cwd : undefined,
+    filePath:
+      isJsonObject(parsed.tool_input) && typeof parsed.tool_input.file_path === 'string'
+        ? parsed.tool_input.file_path
+        : undefined,
+    toolName: typeof parsed.tool_name === 'string' ? parsed.tool_name : undefined,
     sessionId:
       typeof parsed.session_id === 'string'
         ? parsed.session_id

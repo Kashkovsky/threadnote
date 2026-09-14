@@ -91,6 +91,7 @@ export function assembleContextBriefLogicalResult(input: {
     const citationReceipts = compactCodeLinkedCitationReceipts(publicReceipts, validatedCodeRelations);
     const coarse = classifyMemoryFreshness(candidate.sourceCommit, input.graph.resolvedSnapshots);
     const {
+      actionCard: privateActionCard,
       citationErrorCount,
       codeCitations: _privateCodeCitations,
       codeLinkMatches: _privateCodeLinkMatches,
@@ -108,6 +109,11 @@ export function assembleContextBriefLogicalResult(input: {
     return [
       {
         ...fullPublicCandidate,
+        ...(privateActionCard !== undefined &&
+        preciseStatus === 'exact' &&
+        codeRelations.some(relation => relation.status === 'exact')
+          ? {actionCard: privateActionCard}
+          : {}),
         ...(citationErrorCount === 0 ? {} : {citationErrorCount}),
         ...(citationReceipts.length === 0 ? {} : {citationReceipts}),
         ...(citationSummary === undefined ? {} : {citationSummary}),

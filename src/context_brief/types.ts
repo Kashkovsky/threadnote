@@ -225,6 +225,7 @@ export interface ContextBriefGraphEvidenceV1 {
 }
 
 export interface ContextBriefMemoryCandidateV1 {
+  readonly actionCard?: ContextBriefMemoryActionCardV1;
   readonly authority?: MemoryAuthority;
   /** Private compiler input; the public projection emits only compact validation receipts. */
   readonly codeCitations: readonly MemoryCodeCitationV1[];
@@ -243,6 +244,14 @@ export interface ContextBriefMemoryCandidateV1 {
   readonly topic?: string;
   readonly trust?: MemoryTrust;
   readonly uri: string;
+}
+
+/** Explicit, bounded author-supplied guidance; never executable instructions. */
+export interface ContextBriefMemoryActionCardV1 {
+  readonly appliesTo: string;
+  readonly invariant: string;
+  readonly avoid?: string;
+  readonly verify?: string;
 }
 
 export interface ContextBriefMemoryEvidenceV1 extends Omit<
@@ -497,6 +506,7 @@ export interface ContextBriefAgentViewV1 {
 }
 
 export interface ContextBriefAgentViewMemoryV1 {
+  readonly actionCard?: ContextBriefMemoryActionCardV1;
   readonly authority?: MemoryAuthority;
   readonly citationActions?: readonly {
     readonly count: number;

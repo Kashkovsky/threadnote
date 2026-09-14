@@ -221,6 +221,27 @@ argument errors before graph or memory retrieval starts. Context Brief retrieves
 explicitly link to those anchors alongside the ordinary task-text recall lane. It does not infer semantic links from
 nearby code. Combining otherwise valid `codeRefs` with a Workset scope remains an explicit unsupported coverage gap.
 Requests with nonempty `codeRefs` emit Context Brief v3; task-only requests retain the v2 output contract.
+Durable memories can optionally include four single-line fields near the start of the body:
+
+```text
+Applies to: edits to the checkout retry path
+Invariant: a retry must preserve the original request identity
+Avoid: replacing the identity when scheduling the next attempt
+Verify: run the focused retry-state test after editing
+```
+
+When a requested code anchor directly matches an exact, current citation, Context Brief can show these as a bounded
+`actionCard` alongside the memory URI and citation receipts. The card is author-supplied evidence, never an executable
+instruction. Stale, relocated, unknown, and merely topical memories do not get a promoted card. Under a tight response
+budget, Threadnote drops the optional card before sacrificing graph cards, memory links, coverage, or recovery steps;
+read the URI for the full decision.
+
+Claude Code users who run `threadnote install-hooks claude --apply` get a selective `PreToolUse` hook for `Edit` and
+`Write`. Before an edit to an existing repository file, it injects up to two exact-current, directly cited memories
+with any available action card and verification hint. Unlinked files and unavailable lookups pass through without
+injection. `threadnote code-brief-hook --diagnostic` reports only a closed delivery status on stderr for troubleshooting;
+it never logs file paths or memory content. This hook does not run for shell-based edits or in hosts without an
+equivalent pre-edit hook.
 The public task is limited to 4,096 UTF-8 bytes, repository `callerCwd` to 4,096 bytes, and project and Workset names
 to 256 bytes each; MCP schema descriptions, CLI help, and validation failures expose the same exact bounds.
 The v3 projection summarizes direct-link coverage as `coverage.memory.codeAnchors` with `requested`, `resolved`,

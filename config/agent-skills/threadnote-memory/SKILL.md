@@ -12,6 +12,11 @@ Store reusable decisions and contracts with `kind: durable`. Store status, check
 creating timestamped duplicates. Use `review_session_context` only for additional candidates that require explicit
 approval.
 
+For a durable decision tied to code, add short single-line `Applies to:`, `Invariant:`, and, when useful, `Avoid:` and
+`Verify:` fields near the start of the body. A code-linked Context Brief promotes these as an action card only after
+the cited code validates exact-current. State a verification observation or focused check, not a command to execute
+without examining the repository. Keep the full rationale in the memory body.
+
 Author `relations` only when the memory content or an explicit review establishes the connection. Use the closed types
 `depends_on`, `evidence_for`, `references`, `related_to`, and `supersedes`, and target a stable memory ID or canonical
 managed-memory URI that you have read in the same authorized memory scope. Never infer a durable edge from topical
