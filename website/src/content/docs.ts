@@ -1,4 +1,3 @@
-import {cursorCloudDocsSection} from './docsCursorCloud.js';
 import {cursorCloudPersonalDocsSection} from './docsCursorCloudPersonal.js';
 import {graphCheckpointsDocsArticle, graphCliCommand} from './docsGraphCheckpoints.js';
 import {
@@ -473,7 +472,7 @@ threadnote doctor`,
           },
           {
             type: 'note',
-            text: 'For individual use, see [Personal Cursor Cloud setup](personal-cursor-cloud/): one personal stdio MCP can expose one or more private Git memory shares and bootstrap installs Cloud-specific Cursor skills. Organizations operating managed remote memory should use [Bootstrap Threadnote for a Cursor organization](cursor-cloud-agents/).',
+            text: 'For individual use, see [Personal Cursor Cloud setup](personal-cursor-cloud/): one personal stdio MCP can expose one or more private Git memory shares and bootstrap installs Cloud-specific Cursor skills.',
           },
         ],
       },
@@ -852,7 +851,6 @@ threadnote recall --query "checkout retry contract" --threshold 0.3 --caller-cwd
   },
   memoryWorkflowsDocsSection,
   cursorCloudPersonalDocsSection,
-  cursorCloudDocsSection,
   {
     id: 'team-sharing',
     title: 'Team sharing',
