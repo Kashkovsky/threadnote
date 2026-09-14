@@ -3,6 +3,24 @@
 This directory is the release-quality contract for Threadnote retrieval. It is intentionally independent of a
 developer home, network access, local canonical data, and model-generated relevance scores.
 
+## Memory read token-efficiency baseline v1
+
+`baselines/memory-read-token-efficiency-v1/baseline.json` records the unchanged dual-channel `read_context`
+projection at commit `26d9fa50ee054dcfb73d5f20da39d443aaaeeee1` on three deterministic, privacy-safe memories.
+The evaluator fails if its fixture hash or dual-channel projection drifts and reports the opt-in text-channel comparison:
+
+```sh
+bun run eval:memory-read-token-efficiency
+bun run eval:memory-read-token-efficiency -- --text
+```
+
+On the frozen fixtures, text-only structured metadata reduces combined MCP bytes by 49.85% for the citation-heavy
+case and 50.61% for the long Unicode case; it adds 10 bytes to the short case. These are transmitted UTF-8 bytes and
+Threadnote's `ceil(bytes / 3)` estimate, **not** provider-billed tokens or task-quality evidence. The compatibility
+default remains dual-channel. The release gate for any broader default requires a paired provider-usage and
+task-quality study across supported clients, plus exact-current citation, authorization, no-answer, and recovery
+non-regression. Full content remains available through the default format.
+
 ## MemoryConnectionsBench v1 (A+B)
 
 `fixtures/memory-connections-bench-v1/fixture.json` freezes the typed-authoring and memory-link selector projection contract introduced in schema v12. The private recall cache now uses schema v13: source URIs are copied from indexed documents to order bounded neighborhoods directly in the source/target indexes. Selector values, canonical proof requirements, fixture inputs, and result ordering are unchanged.

@@ -41,9 +41,9 @@ import {captureMemoryCodeCitationsForMcp} from '../memory_code_citation.js';
 import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
 import {
   MEMORY_READ_MAXIMUM_CONTENT_BYTES,
-  MEMORY_READ_PAGE_BYTES,
   MemoryReadProjectionError,
   MemoryReadTooLargeError,
+  memoryReadMcpStructuredContent,
   projectMemoryRead,
   type MemoryReadResource,
 } from '../../memory/read_projection.js';
@@ -1205,17 +1205,18 @@ export function registerReadTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description: `${description} Accepts canonical pointers and bounded threadnote://memory/tn_ identity aliases. Returns the full memory up to ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes. Larger memories refuse with an outline; retry with mode=outline or section, or opt into ${MEMORY_READ_PAGE_BYTES}-byte pages with offsetBytes=0. Continue with nextOffsetBytes and sourceHash until complete=true.`,
+      description: `${description} Read up to ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes. responseFormat=text: body in text content[0] only; default dual repeats it. Oversize: mode=outline or section, or page with offsetBytes=0; follow nextOffsetBytes/sourceHash.`,
       inputSchema: {
         mode: McpInput.literals(['content', 'outline']),
         offsetBytes: McpInput.integer('UTF-8 byte offset for an explicit bounded page; start at 0', {minimum: 0}),
+        responseFormat: McpInput.literals(['dual', 'text'], 'text omits structured body'),
         section: McpInput.string(),
         sourceHash: McpInput.string('SHA-256 from the first page; required when offsetBytes > 0'),
         uri: McpInput.string(),
         uris: McpInput.stringOrStrings(),
       },
     },
-    ({mode, offsetBytes, section, sourceHash, uri, uris}) => {
+    ({mode, offsetBytes, responseFormat, section, sourceHash, uri, uris}) => {
       const requestedUrisResult = requiredResourceUriList(
         uris ?? uri,
         name,
@@ -1337,7 +1338,7 @@ export function registerReadTool(
             ...(read.receipt === undefined ? [] : [{type: 'text' as const, text: read.receipt}]),
             ...missingRecoveries.map(text => ({type: 'text' as const, text})),
           ],
-          structuredContent: read.structuredContent,
+          structuredContent: memoryReadMcpStructuredContent(read, responseFormat),
         };
       });
     },
