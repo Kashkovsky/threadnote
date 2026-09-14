@@ -20,7 +20,16 @@ describe('organization Zot configuration', () => {
     expect(config.http.auth.bearer.oidc[0]).toEqual({
       issuer: 'https://issuer.example.test/',
       audiences: ['https://registry.example.test'],
-      claimMapping: {username: 'claims.sub'},
+      claimMapping: {
+        username: 'claims.sub',
+        validations: [
+          {
+            expression:
+              "'scope' in claims && type(claims.scope) == string && ((claims.sub == \"publisher\" && (' ' + claims.scope + ' ').contains(' registry:publisher ')) || (claims.sub in [\"laptop\",\"cloud\"] && (' ' + claims.scope + ' ').contains(' registry:worker ')) || (claims.sub in [\"observer\"] && (' ' + claims.scope + ' ').contains(' registry:read ')))",
+            message: 'Registry role scope is required.',
+          },
+        ],
+      },
     });
     expect(config.http.accessControl.repositories['fixture/canonical'].policies).toEqual([
       {users: ['publisher'], actions: ['read', 'create', 'update']},
@@ -58,9 +67,19 @@ describe('organization Zot configuration', () => {
     );
   });
 
+  it('accepts an empty optional reader list without granting reader scope to another role', () => {
+    const config = buildZotConfig({...env, ZOT_READER_SUBJECTS_JSON: '[]'});
+    const validation = config.http.auth.bearer.oidc[0]?.claimMapping.validations[0];
+    expect(validation?.expression).toContain('claims.sub in []');
+    expect(config.http.accessControl.repositories['fixture/canonical'].policies?.[1]?.users).toEqual([
+      'laptop',
+      'cloud',
+    ]);
+  });
+
   it('keeps every generated worker limited to worker writes and canonical reads', () => {
     fc.assert(
-      fc.property(fc.uniqueArray(fc.stringMatching(/^[a-z0-9]{1,8}$/u), {minLength: 1, maxLength: 4}), suffixes => {
+      fc.property(fc.uniqueArray(fc.stringMatching(/^[a-z0-9"\\]{1,8}$/u), {minLength: 1, maxLength: 4}), suffixes => {
         const workers = suffixes.map(suffix => `worker-${suffix}`);
         const config = buildZotConfig({...env, ZOT_WORKER_SUBJECTS_JSON: JSON.stringify(workers)});
         const canonicalPolicies = config.http.accessControl.repositories['fixture/canonical'].policies;
@@ -69,6 +88,9 @@ describe('organization Zot configuration', () => {
         expect(canonicalPolicies.find(policy => policy.actions.includes('create'))?.users).toEqual(['publisher']);
         expect(workerPolicies.find(policy => policy.actions.includes('create'))?.users).toEqual(workers);
         expect(canonicalPolicies.find(policy => policy.actions.length === 1)?.users).toEqual([...workers, 'observer']);
+        expect(config.http.auth.bearer.oidc[0]?.claimMapping.validations[0]?.expression).toContain(
+          `claims.sub in ${JSON.stringify(workers)}`,
+        );
       }),
       {numRuns: 50},
     );
