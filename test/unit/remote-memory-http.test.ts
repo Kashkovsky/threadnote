@@ -340,6 +340,85 @@ describe('remote memory HTTP transport', () => {
     ]);
   });
 
+  it('advertises Effect input schemas that match valid and rejected MCP tool calls', async () => {
+    const test = fixture({trackRateLimits: true});
+    const listed = await json(await test.handler(mcpRequest({id: 20, method: 'tools/list', params: {}})));
+    const tools = (
+      listed.result as {
+        readonly tools: readonly {readonly inputSchema: Record<string, unknown>; readonly name: string}[];
+      }
+    ).tools;
+    const readSchema = tools.find(tool => tool.name === 'read_context')?.inputSchema;
+    expect(readSchema).toMatchObject({
+      additionalProperties: false,
+      properties: {mode: {type: 'string'}, uri: {type: 'string'}, version: {enum: [1]}},
+      required: ['uri', 'version'],
+      type: 'object',
+    });
+    expect(tools.find(tool => tool.name === 'remember_context')?.inputSchema).toMatchObject({
+      additionalProperties: false,
+      properties: {lifecycle: {additionalProperties: false}},
+    });
+    const uri = 'threadnote://share/share-1/memories/durable/threadnote/fixture.md';
+    const valid = await json(
+      await test.handler(
+        mcpRequest({
+          id: 21,
+          method: 'tools/call',
+          params: {arguments: {uri, version: 1}, name: 'read_context'},
+        }),
+      ),
+    );
+    expect(valid).toMatchObject({id: 21, result: {structuredContent: {uri}}});
+    const readsBeforeInvalid = test.calls.filter(call => call === 'rate:read_context').length;
+    for (const [id, arguments_] of [
+      [22, {version: 1}],
+      [23, {uri, unexpected: 'private-value', version: 1}],
+    ] as const) {
+      const response = await json(
+        await test.handler(
+          mcpRequest({
+            id,
+            method: 'tools/call',
+            params: {arguments: arguments_, name: 'read_context'},
+          }),
+        ),
+      );
+      expect(response).toMatchObject({id, result: {isError: true}});
+      expect(JSON.stringify(response)).not.toContain('private-value');
+    }
+    expect(test.calls.filter(call => call === 'rate:read_context')).toHaveLength(readsBeforeInvalid);
+  });
+
+  it('preserves minute-precision UTC expiry validation at the MCP boundary', async () => {
+    const test = fixture({trackRateLimits: true});
+    const call = (id: number, expiresAt: string) =>
+      test.handler(
+        mcpRequest({
+          id,
+          method: 'tools/call',
+          params: {
+            arguments: {
+              kind: 'handoff',
+              lifecycle: {expiresAt},
+              operationId: `operation-${id}`,
+              project: 'threadnote',
+              text: 'bounded fixture',
+              topic: 'remote',
+              version: 1,
+            },
+            name: 'remember_context',
+          },
+        }),
+      );
+    const valid = await json(await call(24, '2099-09-14T12:34Z'));
+    expect(valid).toMatchObject({id: 24, result: {structuredContent: {revision: 'revision-2'}}});
+    expect(test.calls).toContain('remember:request-123:operation-24');
+    const invalid = await json(await call(25, '2099-02-30T12:34Z'));
+    expect(invalid).toMatchObject({id: 25, result: {isError: true}});
+    expect(test.calls).not.toContain('remember:request-123:operation-25');
+  });
+
   it('passes request-scoped principal and correlation to tools without a process-global identity', async () => {
     const test = fixture({trackRateLimits: true});
     const response = await test.handler(

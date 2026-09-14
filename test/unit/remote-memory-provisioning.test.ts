@@ -1,5 +1,7 @@
 import fc from 'fast-check';
+import {Schema} from 'effect';
 import {describe, expect, it} from 'vitest';
+import {RemoteMemoryProvisioningInputSchema} from '../../src/remote_memory/operator_main.js';
 import {
   decodeStoredSharePolicyDocument,
   requireNoImplicitSharePolicyChange,
@@ -30,6 +32,17 @@ const validProvisioning: RemoteMemoryProvisioningInput = {
 };
 
 describe('remote memory provisioning boundary', () => {
+  it('decodes the operator file with exact keys and bounded URL lists', () => {
+    const decode = Schema.decodeUnknownSync(RemoteMemoryProvisioningInputSchema, {onExcessProperty: 'error'});
+    expect(decode(JSON.parse(JSON.stringify(validProvisioning)))).toEqual(validProvisioning);
+    expect(() => decode({...validProvisioning, unexpected: 'value'})).toThrow();
+    expect(() => decode({...validProvisioning, repositoryBindings: {threadnote: ['not a URL']}})).toThrow();
+    expect(() =>
+      decode({...validProvisioning, repositoryBindings: {threadnote: Array(1_001).fill('https://example.test')}}),
+    ).toThrow();
+    expect(() => decode({...validProvisioning, capabilities: []})).toThrow();
+  });
+
   it('accepts one end-to-end addressable Cursor share policy', () => {
     expect(() => validateRemoteMemoryProvisioningInput(validProvisioning)).not.toThrow();
   });
