@@ -229,6 +229,10 @@ rebuilt from canonical Markdown after corruption. Vector values are content-addr
 value already written. A changed active mapping is committed in one SQLite transaction only after every required
 vector is present; an interrupted embedding run leaves the previous mapping available.
 
+If repair stops on an unrelated host-instruction conflict, run `threadnote repair --core-only --no-post-update` to
+rebuild core state and indexes without changing host instructions, managed hooks, or MCP settings. The host warning
+remains for a separate integration repair; `--core-only` takes precedence over any `--mcp` selection.
+
 `threadnote repair --deep` runs a full SQLite integrity check over each derived native code graph. Large monorepo
 graphs can take time to scan, and a pause at one database means SQLite is still reading that database's pages. Use the
 home-wide graph commands when the issue is isolated to native code graphs:

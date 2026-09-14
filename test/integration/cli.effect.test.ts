@@ -9,6 +9,12 @@ import {describe, expect, it} from 'vitest';
 const execFilePromise = promisify(execFile);
 
 describe('Effect CLI', () => {
+  it('exposes a core repair mode that skips host integrations', async () => {
+    const result = await runCli(['repair', '--help']);
+    expect(result.stdout).toContain('--core-only');
+    expect(result.stdout).toContain('without host instructions, hooks, or MCP settings');
+  });
+
   it('renders the command tree without collapsing long names into descriptions', async () => {
     const result = await runCli(['--help']);
     expect(result.stdout).toContain('migrate-projects    Move memories');

@@ -370,6 +370,7 @@ const developmentInstallRepair = Command.make(
 const repair = Command.make(
   'repair',
   {
+    coreOnly: boolean('core-only', 'Repair core state and indexes without host instructions, hooks, or MCP settings'),
     deep: boolean('deep', 'Run explicit full SQLite integrity, foreign-key, and derived-state cleanup checks'),
     dryRun: boolean('dry-run', 'Print the repair actions without making changes'),
     mcp: defaultString(
