@@ -74,7 +74,6 @@ export function protectedResourceMetadata(publicBaseUrl: URL, authorizationServe
     authorization_servers: authorizationServers,
     bearer_methods_supported: ['header'],
     resource: new URL('/mcp', publicBaseUrl).toString(),
-    resource_documentation: new URL('/docs/remote-memory', publicBaseUrl).toString(),
     scopes_supported: [...COMPOSER_OAUTH_SCOPES, 'memory:admin'],
   } as const;
 }
