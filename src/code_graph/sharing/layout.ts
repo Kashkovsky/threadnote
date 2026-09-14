@@ -1,4 +1,6 @@
 import type {Path} from 'effect';
+import {sha256HexSync} from '../../crypto/sha256.js';
+import {sha256HexFromDigest, type Sha256Digest} from './digest.js';
 
 export const GRAPH_SHARE_ENROLLMENT_RELATIVE_PATH = '.threadnote/graph-share.json';
 export const GRAPH_SHARING_DIRECTORY = 'graph-sharing';
@@ -54,6 +56,20 @@ export function graphShareEnrollmentPath(path: Path.Path, repoRoot: string): str
 
 export function graphSharingFrontierPointerPath(path: Path.Path, frontiersRoot: string, repositoryId: string): string {
   return path.join(frontiersRoot, repositoryId, 'latest.json');
+}
+
+export function graphSharingPublisherEvidencePath(
+  path: Path.Path,
+  root: string,
+  repositoryId: string,
+  manifestDigest: Sha256Digest,
+): string {
+  return path.join(
+    root,
+    'publisher-evidence',
+    sha256HexSync(repositoryId),
+    `${sha256HexFromDigest(manifestDigest)}.json`,
+  );
 }
 
 export function graphSharingContributionQueuePath(path: Path.Path, root: string, repositoryId: string): string {

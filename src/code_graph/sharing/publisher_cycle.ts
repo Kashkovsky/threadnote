@@ -81,6 +81,7 @@ import {
   type GraphPublisherContributionEvidence,
   type GraphPublisherHydrationEvidence,
 } from './publication_evidence.js';
+import {writeGraphPublisherEvidenceRecord} from './publisher_evidence_record.js';
 import {resolveGraphShareCasRoot} from './trust.js';
 import {makeGraphShareSourceVerification, type GraphShareSourceVerifiedReceipt} from './source_verification.js';
 import {completeGraphPublisherRegistryPublication} from './publisher_registry.js';
@@ -494,7 +495,15 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
     yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
     machine = verifyGraphShareBatch(machine);
     yield* persistMachine(coordinatorOptions, machine, options.onMachine, options.stateRef);
+    const contributionEvidence = graphPublisherContributionEvidence({
+      hydration,
+      index: indexed,
+      selectedResults: selected?.selected.length ?? selectedSigned.length,
+      sourceUse,
+      verifiedResultDigests: verified.map(item => item.announcement.resultManifestDigest),
+    });
     const exported = yield* exportSignedGeneration(config, options, current, identity.repositoryId, profile, {
+      contributionEvidence,
       enrollmentProfile: enrollment.profile,
       snapshotId: ready.id,
       sourceCommit: identity.headCommit,
@@ -512,13 +521,7 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
     });
     return {
       ...exported,
-      contributionEvidence: graphPublisherContributionEvidence({
-        hydration,
-        index: indexed,
-        selectedResults: selected?.selected.length ?? selectedSigned.length,
-        sourceUse,
-        verifiedResultDigests: verified.map(item => item.announcement.resultManifestDigest),
-      }),
+      contributionEvidence,
     };
   }).pipe(
     Effect.tapError(() => {
@@ -600,6 +603,7 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
     readonly snapshotId: string;
     readonly sourceCommit: string;
     readonly verified: readonly GraphShareSourceVerifiedReceipt[];
+    readonly contributionEvidence: GraphPublisherContributionEvidence;
     readonly signedAdmissions?: {
       readonly initialPolicy: GraphControlPolicy;
       readonly policyFile: string;
@@ -802,6 +806,14 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
       const documents = yield* putSignedGraphShareFrontierDocuments(casRoot, signed, metadataBytes);
       const layout = graphSharingLayout(path, config.agentContextHome, casRoot);
       yield* verifyTarget;
+      yield* writeGraphPublisherEvidenceRecord({
+        contributionEvidence: expected.contributionEvidence,
+        generation: current.generation + 1,
+        manifestDigest: documents.manifestDigest,
+        repositoryId,
+        sourceCommit: exported.sourceCommit,
+        threadnoteHome: config.agentContextHome,
+      });
       yield* writeDurablePrivateJsonFile(graphSharingFrontierPointerPath(path, layout.frontiersRoot, repositoryId), {
         envelopeDigest: documents.envelopeDigest,
         manifestDigest: documents.manifestDigest,

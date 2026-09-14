@@ -218,7 +218,13 @@ export const runGraphPublisherStatusCommand = Effect.fn('codeGraph.sharing.publi
         ? 'Repository is not enrolled for graph publication.'
         : result.localCandidate === undefined || result.publication === undefined
           ? 'No local signed frontier has been prepared.'
-          : graphPublisherPublicationMessage({...result.localCandidate, publication: result.publication}),
+          : `${graphPublisherPublicationMessage({...result.localCandidate, publication: result.publication})}${
+              result.contributionEvidenceStatus === 'unavailable'
+                ? '; source-use evidence unavailable'
+                : result.contributionEvidence === undefined
+                  ? ''
+                  : `; source-used ${result.contributionEvidence.contributionEvidence.sourceUse.consumedActions} of ${result.contributionEvidence.contributionEvidence.selectedResults} selected results`
+            }`,
     );
   return result;
 });

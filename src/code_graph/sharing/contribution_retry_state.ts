@@ -15,6 +15,23 @@ export function graphShareContributionRetryDelay(failures: number, jitter: numbe
   return Math.max(retryAfterMilliseconds, Math.round(backoff * (1 + Math.max(0, Math.min(1, jitter)) * 0.2)));
 }
 
+const SOURCE_UNAVAILABLE_FAST_ATTEMPTS = 6;
+export const MAX_SIGNED_CONTRIBUTION_FAILURES = 13;
+
+/** Retry 425 quickly for one collection window, then back off if the source stays unavailable. */
+export function graphShareSignedContributionRetryDelay(
+  httpStatus: number | undefined,
+  failures: number,
+  jitter: number,
+  retryAfterMilliseconds = 0,
+): number {
+  return httpStatus === 425
+    ? failures <= SOURCE_UNAVAILABLE_FAST_ATTEMPTS
+      ? Math.max(2_000, retryAfterMilliseconds)
+      : graphShareContributionRetryDelay(failures - SOURCE_UNAVAILABLE_FAST_ATTEMPTS, jitter, retryAfterMilliseconds)
+    : graphShareContributionRetryDelay(failures, jitter, retryAfterMilliseconds);
+}
+
 const retryPath = Effect.fn('codeGraph.sharing.contributionRetryPath')(function* (
   home: string,
   repositoryId: string,
@@ -44,7 +61,7 @@ export const readContributionRetryState = Effect.fn('codeGraph.sharing.readContr
     typeof value.failures !== 'number' ||
     !Number.isInteger(value.failures) ||
     value.failures < 1 ||
-    value.failures > 7 ||
+    value.failures > (channel === 'signed' ? MAX_SIGNED_CONTRIBUTION_FAILURES : 7) ||
     typeof value.nextAttempt !== 'number' ||
     !Number.isSafeInteger(value.nextAttempt) ||
     value.nextAttempt < 0
