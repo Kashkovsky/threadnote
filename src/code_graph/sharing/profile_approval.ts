@@ -1,4 +1,5 @@
 import {Effect, FileSystem, Path, Schema} from 'effect';
+import {fromPromise} from '../../effect/errors.js';
 import {
   fileSystemModeIsPrivate,
   runtimeLstat,
@@ -163,7 +164,9 @@ export const loadGraphShareManagedApprovalFile = Effect.fn('codeGraph.sharing.lo
     const repoRoot = yield* fs.realPath(input.repoRoot);
     const gitRoot = yield* fs.realPath(input.gitCommonDirectory);
     const before = yield* inspectApprovalPath(target, repoRoot, gitRoot, path, system);
-    const bytes = yield* Effect.tryPromise(() => runtimeReadBoundedStableRegularFile(target, APPROVAL_MAX_BYTES));
+    const bytes = yield* fromPromise('codeGraph.sharing.readManagedApproval', () =>
+      runtimeReadBoundedStableRegularFile(target, APPROVAL_MAX_BYTES),
+    );
     const after = yield* inspectApprovalPath(target, repoRoot, gitRoot, path, system);
     if (!sameFile(before, after)) return yield* graphSharingFailure('Managed graph approval file changed during read.');
     const value = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes)) as unknown;
@@ -192,7 +195,7 @@ function inspectApprovalPath(
     }
     let directory = path.dirname(target);
     while (true) {
-      const info = yield* Effect.tryPromise(() => runtimeLstat(directory));
+      const info = yield* fromPromise('codeGraph.sharing.lstatApprovalDirectory', () => runtimeLstat(directory));
       if (!info.isDirectory() || info.isSymbolicLink()) {
         return yield* graphSharingFailure('Managed graph approval path contains a symbolic link.');
       }
@@ -200,7 +203,7 @@ function inspectApprovalPath(
       if (parent === directory) break;
       directory = parent;
     }
-    const info = yield* Effect.tryPromise(() => runtimeLstat(target));
+    const info = yield* fromPromise('codeGraph.sharing.lstatManagedApproval', () => runtimeLstat(target));
     const uid = (info as RuntimeBigIntStats & {readonly uid?: bigint}).uid;
     if (
       !info.isFile() ||
