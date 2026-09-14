@@ -1,5 +1,6 @@
 import {Crypto, Effect, Exit, FileSystem, Option, Path, Schema} from 'effect';
 import {importCodeGraphCheckpointSnapshot} from '../checkpoint/commands.js';
+import {canonicalJson} from '../checkpoint/canonical_json.js';
 import {encodeCodeGraphCheckpointPackV1} from '../checkpoint/pack.js';
 import {SystemInfo} from '../../effect/system.js';
 import {resolveRepositoryIdentity} from '../repository.js';
@@ -11,7 +12,7 @@ import {
   type GraphShareFrontierManifestV1,
 } from './artifacts.js';
 import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from './atomic.js';
-import {readVerifiedCasBlob} from './cas.js';
+import {putCasBytes, readVerifiedCasBlob} from './cas.js';
 import {ensureGraphShareCheckpointArtifact} from './checkpoint_cas.js';
 import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
 import type {Sha256Digest} from './digest.js';
@@ -27,7 +28,14 @@ import {graphShareControlGetFrontier, graphShareControlGetTag, mirrorCoordinator
 import {graphShareFrontierPointerFromOciDescriptor, parseGraphShareOciDescriptor} from './descriptor.js';
 import {graphShareFrontierDiscoveryTag} from './namespace.js';
 import {discoverGraphShareRegistryFrontier, makeGraphShareRegistryReader} from './registry_reader.js';
-import {readTrustedGraphShareOciProfile} from './profile_client.js';
+import {fetchGraphShareOciProfile, readTrustedGraphShareOciProfile} from './profile_client.js';
+import {parseGraphShareRegistryTarget} from './registry_reference.js';
+import {
+  assertGraphShareApprovalRoot,
+  assertGraphShareApprovedProfile,
+  loadGraphShareManagedApprovalFile,
+} from './profile_approval.js';
+import {promptGraphShareOciProfileAccess, promptGraphShareOciTrustRoot} from './profile_consent.js';
 import {ensureSharedGraphBlob as ensureSharedCasBlob, type GraphShareBlobSource} from './shared_blob.js';
 import {
   GRAPH_SHARE_CONTRIBUTION_MODES,
@@ -47,6 +55,7 @@ import {
   parseGraphShareProfile,
   parseGraphShareProfilePointer,
   type GraphShareEnrollment,
+  type GraphShareEnrollmentV2,
 } from './profile.js';
 import {
   readSharedGraphImportAttempt,
@@ -58,6 +67,7 @@ import {
 } from './provenance.js';
 import {
   lookupGraphShareTrustReceipt,
+  isGraphShareAutoEnrollmentRevoked,
   readGraphShareClientState,
   removeGraphShareTrustReceipt,
   resolveGraphShareCasRoot,
@@ -77,6 +87,9 @@ import {
 } from './frontier_acceptance.js';
 
 export interface GraphShareJoinOptions {
+  readonly approvalFile?: string;
+  /** Internal ordinary-graph-use path; revoked approvals never reenroll. */
+  readonly automatic?: boolean;
   readonly cas?: string;
   readonly coordinator?: string;
   readonly cwd?: string;
@@ -133,6 +146,29 @@ const sharingProgress = (
   subphase: 'applying-deltas' | 'building-local-overlay' | 'discovering-shared-base' | 'downloading-checkpoint',
 ) => (onProgress?.({phase: 'sharing', subphase}) ?? Effect.void).pipe(Effect.ignore);
 
+const assertOciJoinScope = Effect.fn('codeGraph.sharing.assertOciJoinScope')(function* (
+  profile: ReturnType<typeof parseGraphShareProfile>,
+  identity: RepositoryIdentity,
+  coordinatorUrl: string | undefined,
+) {
+  if (coordinatorUrl === undefined)
+    return yield* graphSharingFailure('Graph contribution needs an approved coordinator URL.');
+  const canonical = yield* decodeValue(
+    parseGraphShareRegistryTarget,
+    profile.registry.canonical,
+    'Canonical OCI registry is invalid.',
+  );
+  const worker = yield* decodeValue(
+    parseGraphShareRegistryTarget,
+    profile.registry.worker,
+    'Worker OCI registry is invalid.',
+  );
+  if (canonical.origin === worker.origin && canonical.repository === worker.repository)
+    return yield* graphSharingFailure('Graph contribution needs distinct canonical and worker OCI registries.');
+  if (identity.branch === undefined || !profile.source.branches.includes(`refs/heads/${identity.branch}`))
+    return yield* graphSharingFailure('OCI profile does not authorize this checkout branch for contribution.');
+});
+
 export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
   config: RuntimeConfig,
   options: GraphShareJoinOptions,
@@ -141,6 +177,18 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
   const cwd = yield* commandCwd(options.cwd);
   const identity = yield* resolveRepositoryIdentity(cwd);
   const previous = yield* lookupGraphShareTrustReceipt(config.agentContextHome, identity.repositoryId);
+  if (options.automatic) {
+    if (options.approvalFile === undefined)
+      return yield* graphSharingFailure('Automatic OCI graph enrollment requires a managed approval file.');
+    if (previous !== undefined)
+      return {
+        accessMode: previous.accessMode,
+        organization: previous.organization,
+        profileDigest: previous.profileDigest,
+        type: 'code-graph-share-join' as const,
+        version: 1 as const,
+      };
+  }
   const casRoot = yield* resolveGraphShareCasRoot(config.agentContextHome, options.cas ?? previous?.client?.casRoot);
   const enrollment = yield* decodeValue(
     parseGraphShareEnrollment,
@@ -158,11 +206,83 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
     'Enrollment profile pointer is invalid.',
   );
   let profile: ReturnType<typeof parseGraphShareProfile>;
+  let firstUseAccessMode: GraphShareAccessMode | undefined;
+  let firstUseCoordinatorUrl: string | undefined;
   if (pointer.kind === 'oci') {
-    if (previous === undefined)
-      return yield* graphSharingFailure('OCI profile enrollment needs independent first-use trust approval.');
-    profile = yield* readTrustedGraphShareOciProfile(casRoot, enrollment, previous);
+    if (enrollment.schemaVersion !== 2) return yield* graphSharingFailure('OCI enrollment must use schema version 2.');
+    if (previous === undefined || options.approvalFile !== undefined) {
+      const v2Enrollment: GraphShareEnrollmentV2 = enrollment;
+      const approval =
+        options.approvalFile === undefined
+          ? undefined
+          : yield* loadGraphShareManagedApprovalFile({
+              approvalPath: options.approvalFile,
+              repoRoot: identity.repoRoot,
+              gitCommonDirectory: identity.gitCommonDirectory,
+            });
+      const root =
+        approval === undefined
+          ? {
+              ...(yield* promptGraphShareOciTrustRoot({enrollment: v2Enrollment, json: options.json})),
+              profileDigest: enrolledProfileBodyDigest(v2Enrollment),
+              repositoryId: v2Enrollment.repositoryId,
+            }
+          : yield* decodeValue(
+              () => assertGraphShareApprovalRoot(approval, v2Enrollment, identity.remoteIdentity),
+              undefined,
+              'Managed OCI root approval is invalid.',
+            );
+      const fetched = yield* fetchGraphShareOciProfile(casRoot, enrollment, root);
+      profile = fetched.profile;
+      const coordinatorFallback = options.coordinator ?? approval?.coordinatorUrl ?? undefined;
+      const effectiveCoordinatorUrl =
+        profile.coordinator?.url ??
+        (coordinatorFallback === undefined
+          ? undefined
+          : yield* decodeValue(parseGraphShareCoordinatorUrl, coordinatorFallback, 'Coordinator URL is invalid.'));
+      firstUseCoordinatorUrl = effectiveCoordinatorUrl;
+      if (profile.source.canonicalRemote !== identity.remoteIdentity)
+        return yield* graphSharingFailure('OCI profile source remote differs from this checkout.');
+      if (approval === undefined) {
+        firstUseAccessMode = yield* promptGraphShareOciProfileAccess({
+          profile,
+          effectiveCoordinatorUrl,
+          readOnly: options.readOnly,
+          json: options.json,
+        });
+      } else {
+        yield* decodeValue(
+          () => assertGraphShareApprovedProfile(approval, profile, effectiveCoordinatorUrl),
+          undefined,
+          'Managed OCI profile approval is invalid.',
+        );
+        firstUseAccessMode = approval.accessMode;
+      }
+      if (options.readOnly && firstUseAccessMode !== 'read-only')
+        return yield* graphSharingFailure('Read-only join cannot approve graph contribution.');
+      if (firstUseAccessMode === 'join') yield* assertOciJoinScope(profile, identity, effectiveCoordinatorUrl);
+      const currentEnrollment = yield* decodeValue(
+        parseGraphShareEnrollment,
+        yield* readJsonFile(graphShareEnrollmentPath(path, identity.repoRoot)),
+        'Enrollment pointer changed during first-use approval.',
+      );
+      if (canonicalJson(currentEnrollment) !== canonicalJson(enrollment))
+        return yield* graphSharingFailure('Enrollment pointer changed during first-use approval.');
+      yield* putCasBytes(casRoot, fetched.manifest);
+      yield* putCasBytes(casRoot, fetched.body);
+    } else {
+      profile = yield* readTrustedGraphShareOciProfile(casRoot, enrollment, previous);
+      if (previous.accessMode === 'read-only' && !options.readOnly) {
+        firstUseAccessMode = yield* promptGraphShareOciProfileAccess({
+          profile,
+          effectiveCoordinatorUrl: profile.coordinator?.url ?? options.coordinator ?? previous.client?.coordinatorUrl,
+          json: options.json,
+        });
+      }
+    }
   } else {
+    if (options.approvalFile !== undefined || options.automatic)
+      return yield* graphSharingFailure('Managed graph approval only supports OCI enrollment.');
     if (options.coordinator !== undefined) {
       const coordinatorUrl = parseGraphShareCoordinatorUrl(options.coordinator);
       yield* mirrorCoordinatorCasBlob(casRoot, coordinatorUrl, pointer.bodyDigest);
@@ -180,10 +300,13 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
     'Profile does not match the enrollment pointer.',
   );
   const coordinatorUrl =
+    firstUseCoordinatorUrl ??
     profile.coordinator?.url ??
     options.coordinator ??
     (previous?.profileDigest === profileDigest ? previous.client?.coordinatorUrl : undefined);
-  const accessMode: GraphShareAccessMode = options.readOnly ? 'read-only' : 'join';
+  const accessMode: GraphShareAccessMode = firstUseAccessMode ?? (options.readOnly ? 'read-only' : 'join');
+  if (pointer.kind === 'oci' && previous !== undefined && options.approvalFile === undefined && accessMode === 'join')
+    yield* assertOciJoinScope(profile, identity, coordinatorUrl);
   const contributionMode =
     previous?.accessMode === 'join' && previous.profileDigest === profileDigest && previous.client === undefined
       ? legacyGraphShareContributionMode(
@@ -202,7 +325,11 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
         ...(coordinatorUrl === undefined ? {} : {coordinatorUrl: parseGraphShareCoordinatorUrl(coordinatorUrl)}),
       },
     },
-    {preserveContributionMode: true},
+    {
+      automatic: options.automatic,
+      clearAutoEnrollmentRevocation: !options.automatic,
+      preserveContributionMode: true,
+    },
   );
   return {
     accessMode: receipt.accessMode,
@@ -219,7 +346,7 @@ export const runGraphShareLeave = Effect.fn('codeGraph.sharing.leave')(function*
 ) {
   const cwd = yield* commandCwd(options.cwd);
   const identity = yield* resolveRepositoryIdentity(cwd);
-  yield* removeGraphShareTrustReceipt(config.agentContextHome, identity.repositoryId);
+  yield* removeGraphShareTrustReceipt(config.agentContextHome, identity.repositoryId, {revokeAutomatic: true});
   yield* removeSharedGraphProvenance(config.agentContextHome, identity.checkoutId);
   return {
     purged: true,
@@ -321,7 +448,24 @@ export const maybeImportSharedGraphBase = Effect.fn('codeGraph.sharing.maybeImpo
   if (enrollment.value.repositoryId !== request.identity.repositoryId) {
     return {imported: false as const, reason: 'repository-mismatch' as const};
   }
-  const trust = yield* lookupGraphShareTrustReceipt(request.threadnoteHome, request.identity.repositoryId);
+  let trust = yield* lookupGraphShareTrustReceipt(request.threadnoteHome, request.identity.repositoryId);
+  if (trust === undefined && enrollment.value.schemaVersion === 2) {
+    const system = yield* SystemInfo;
+    const approvalFile = system.environment().THREADNOTE_GRAPH_APPROVAL_FILE;
+    if (
+      approvalFile !== undefined &&
+      approvalFile.length > 0 &&
+      !(yield* isGraphShareAutoEnrollmentRevoked(request.threadnoteHome, request.identity.repositoryId))
+    ) {
+      const approved = yield* runGraphShareJoin(runtimeConfigForHome(request.threadnoteHome), {
+        approvalFile,
+        automatic: true,
+        cwd: request.cwd,
+      }).pipe(Effect.option);
+      if (Option.isSome(approved))
+        trust = yield* lookupGraphShareTrustReceipt(request.threadnoteHome, request.identity.repositoryId);
+    }
+  }
   if (trust === undefined) return {imported: false as const, reason: 'untrusted' as const};
   const enrollmentPointer = yield* decodeValue(
     parseGraphShareProfilePointer,

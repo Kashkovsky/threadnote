@@ -1,6 +1,7 @@
 import {Effect, FileSystem, Option} from 'effect';
 import {casBlobPath, putCasBytes, readVerifiedCasBlobBounded} from './cas.js';
 import {graphSharingFailure} from './errors.js';
+import type {Sha256Digest} from './digest.js';
 import {
   assertProfileMatchesEnrollment,
   enrolledProfileBodyDigest,
@@ -15,11 +16,18 @@ import {
 import {makeGraphShareRegistryReader} from './registry_reader.js';
 import type {GraphShareTrustReceiptV1} from './trust.js';
 
-/** Existing local trust is the authority for OCI reads during a v1-to-v2 migration. */
-export const readTrustedGraphShareOciProfile = Effect.fn('codeGraph.sharing.readTrustedOciProfile')(function* (
+export interface GraphShareOciProfileTrustRoot {
+  readonly profileDigest: Sha256Digest;
+  readonly publisherKeyFingerprint: Sha256Digest;
+  readonly registryCanonical: string;
+  readonly repositoryId: string;
+}
+
+/** Verify against an independently approved root without writing CAS or a trust receipt. */
+export const fetchGraphShareOciProfile = Effect.fn('codeGraph.sharing.fetchOciProfile')(function* (
   casRoot: string,
   enrollment: GraphShareEnrollment,
-  trust: GraphShareTrustReceiptV1,
+  trust: GraphShareOciProfileTrustRoot,
 ) {
   const pointer = parseGraphShareProfilePointer(enrollment.profile);
   if (pointer.kind !== 'oci') return yield* graphSharingFailure('Enrollment is not an OCI profile pointer.');
@@ -61,9 +69,19 @@ export const readTrustedGraphShareOciProfile = Effect.fn('codeGraph.sharing.read
     try: () => assertProfileMatchesEnrollment(profile, enrollment, bodyDigest),
     catch: () => graphSharingFailure('OCI graph profile does not match enrollment.'),
   });
-  if (Option.isNone(cachedManifest) || Option.isNone(cachedBody)) {
-    yield* putCasBytes(casRoot, manifest);
-    yield* putCasBytes(casRoot, body);
+  return {body, fromCache: Option.isSome(cachedManifest) && Option.isSome(cachedBody), manifest, profile};
+});
+
+/** Existing local trust is the authority for OCI reads during a v1-to-v2 migration. */
+export const readTrustedGraphShareOciProfile = Effect.fn('codeGraph.sharing.readTrustedOciProfile')(function* (
+  casRoot: string,
+  enrollment: GraphShareEnrollment,
+  trust: GraphShareTrustReceiptV1,
+) {
+  const fetched = yield* fetchGraphShareOciProfile(casRoot, enrollment, trust);
+  if (!fetched.fromCache) {
+    yield* putCasBytes(casRoot, fetched.manifest);
+    yield* putCasBytes(casRoot, fetched.body);
   }
-  return profile;
+  return fetched.profile;
 });

@@ -48,6 +48,10 @@ export function makeGraphSharingCommands(
   const graphShareJoin = Command.make(
     'join',
     {
+      approvalFile: optionalString(
+        'approval-file',
+        'Private administrator-approved OCI trust and contribution policy file outside the checkout',
+      ),
       cas: optionalString('cas', 'Digest-addressed CAS directory that stores the enrolled profile'),
       coordinator: optionalString(
         'coordinator',
