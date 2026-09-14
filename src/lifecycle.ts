@@ -424,7 +424,10 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
   } else {
     yield* Console.log('Would validate and rebuild the derived lexical and vector recall indexes.');
   }
-  if (options.skipAgentIntegrations !== true) {
+  if (options.coreOnly === true) {
+    yield* Console.log('Skipping host instructions, hooks, and MCP client repair (--core-only).');
+  }
+  if (options.skipAgentIntegrations !== true && options.coreOnly !== true) {
     const inferredMcpClients = yield* inferConfiguredMcpClients(config);
     yield* migrateLegacyAgentIntegrations(config, inferredMcpClients, dryRun);
     const repairedIntegrationClients = yield* repairAgentIntegrations(config, dryRun);

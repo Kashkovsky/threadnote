@@ -107,6 +107,20 @@ describe('development installer repair isolation', () => {
         expect(yield* f.fs.readFileString(f.instruction)).toBe(instruction);
         expect(yield* f.fs.readFileString(f.registry)).toBe(f.registryContent);
         expect(yield* f.fs.readFileString(f.path.join(f.installRoot, 'active-release.json'))).toBe(f.pointer);
+        const coreRepair = yield* f.provide(
+          captureConsole(
+            runRepair(f.config, {
+              coreOnly: true,
+              mcp: 'none',
+              postUpdate: false,
+              skipReleaseLifecycle: true,
+            }),
+          ),
+        );
+        expect(coreRepair.output).toContain('Rebuilt recall indexes for 0 document(s)');
+        expect(coreRepair.output).toContain('Skipping host instructions, hooks, and MCP client repair');
+        expect(yield* f.fs.readFileString(f.instruction)).toBe(instruction);
+        expect(yield* f.fs.readFileString(f.registry)).toBe(f.registryContent);
         const explicitRepair = yield* f
           .provide(
             runRepair(f.config, {
