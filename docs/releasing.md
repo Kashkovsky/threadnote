@@ -106,11 +106,12 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    The absolute latency gate runs on the reviewed `macos-15`/ARM64/Apple-M1 class. Its artifact must bind the explicit
    candidate argument to the observed clean checkout; require observed Git status, GitHub Actions,
    `RUNNER_ENVIRONMENT=github-hosted`, `RUNNER_OS=macOS`, runner class `github-hosted-macos-15-ARM64`, arm64, an
-   Apple-M1-class CPU and `bun/1.3.14`. The built `sourceVersion` must equal `threadnote-` plus the package version
+   Apple-M1-class CPU and the exact Bun version pinned in the candidate's committed `packageManager` field
+   (`bun/1.4.2` for 4.7.0). The built `sourceVersion` must equal `threadnote-` plus the package version
    read independently from `git show C:package.json`. The benchmark verifies that binding before fixture setup;
-   retained-artifact review must pass the same independently derived `{commit: C, sourceVersion}` binding to
+   retained-artifact review must pass the same independently derived `{commit: C, runtime, sourceVersion}` binding to
    `parseContextBriefCitationScaleArtifactV2`. Never derive the expected version from the artifact itself. Omitting
-   that binding retains the historical `threadnote-4.6.0` validation contract and rejects later versions.
+   that binding retains the historical `threadnote-4.6.0`/`bun/1.3.14` validation contract and rejects later versions.
    Do not substitute a pass from the heterogeneous Ubuntu x64
    pool or normalize two failed absolute observations through a parent-relative comparison.
    Also require `bun run eval:code-memory-link-bench` to pass on that SHA for changes to code-anchored retrieval. Treat

@@ -37,14 +37,14 @@ const candidateLayer = commandLayer.pipe(Layer.provideMerge(BunServices.layer));
 describe('Context Brief release candidate version binding', () => {
   it('retains historical 4.6.0 validation and requires external binding for later versions', () => {
     expect(contextBriefCitationScaleReleaseIdentityFailures(identity)).toEqual([]);
-    const current = {...identity, sourceVersion: 'threadnote-4.6.8'};
+    const current = {...identity, runtime: 'bun/1.4.2', sourceVersion: 'threadnote-4.6.8'};
     expect(contextBriefCitationScaleReleaseIdentityFailures(current)).toContain(
       'source version threadnote-4.6.8; required threadnote-4.6.0',
     );
     expect(
       contextBriefCitationScaleReleaseIdentityFailures(
         current,
-        contextBriefCitationScaleCandidateBinding(COMMIT, {version: '4.6.8'}),
+        contextBriefCitationScaleCandidateBinding(COMMIT, {version: '4.6.8', packageManager: 'bun@1.4.2'}),
       ),
     ).toEqual([]);
   });
@@ -61,20 +61,32 @@ describe('Context Brief release candidate version binding', () => {
       {version: '4.6.8+.'},
       {version: '4.6.8-01'},
       {version: '4.6.8-rc..1'},
+      {version: '4.6.8', packageManager: 'bun@latest'},
+      {version: '4.6.8', packageManager: 'npm@1.4.2'},
     ]) {
       expect(() => contextBriefCitationScaleCandidateBinding(COMMIT, manifest)).toThrow();
     }
     expect(
       contextBriefCitationScaleReleaseIdentityFailures(
         {...identity, sourceVersion: 'garbage'},
-        {commit: COMMIT, sourceVersion: 'garbage'},
+        {commit: COMMIT, runtime: 'bun/1.4.2', sourceVersion: 'garbage'},
       ),
     ).toContain('candidate binding source version must name an explicit package version');
+    expect(
+      contextBriefCitationScaleReleaseIdentityFailures(
+        {...identity, runtime: 'bun/whatever'},
+        {commit: COMMIT, runtime: 'bun/whatever', sourceVersion: identity.sourceVersion},
+      ),
+    ).toContain('candidate binding runtime must name an explicit Bun version');
   });
 
   it('accepts explicit prerelease and build metadata versions', () => {
     for (const version of ['0.0.0', '4.6.8-rc.1', '4.6.8-0', '4.6.8+build.01', '4.6.8-rc.1+build.2']) {
-      expect(contextBriefCitationScaleCandidateBinding(COMMIT, {version}).sourceVersion).toBe(`threadnote-${version}`);
+      expect(contextBriefCitationScaleCandidateBinding(COMMIT, {version, packageManager: 'bun@1.4.2'})).toEqual({
+        commit: COMMIT,
+        runtime: 'bun/1.4.2',
+        sourceVersion: `threadnote-${version}`,
+      });
     }
   });
 
@@ -84,17 +96,22 @@ describe('Context Brief release candidate version binding', () => {
         fc.record({major: fc.integer({min: 1, max: 20}), minor: fc.nat(30), patch: fc.nat(100)}),
         fc.boolean(),
         fc.boolean(),
-        ({major, minor, patch}, commitMatches, versionMatches) => {
+        fc.boolean(),
+        ({major, minor, patch}, commitMatches, versionMatches, runtimeMatches) => {
           const version = `${major}.${minor}.${patch}`;
-          const candidate = contextBriefCitationScaleCandidateBinding(COMMIT, {version});
+          const candidate = contextBriefCitationScaleCandidateBinding(COMMIT, {
+            version,
+            packageManager: 'bun@1.4.2',
+          });
           const observed = {
             ...identity,
             candidateCommit: commitMatches ? COMMIT : 'b'.repeat(40),
             commit: commitMatches ? COMMIT : 'b'.repeat(40),
+            runtime: runtimeMatches ? 'bun/1.4.2' : 'bun/1.4.3',
             sourceVersion: `threadnote-${major}.${minor}.${versionMatches ? patch : patch + 1}`,
           };
           expect(contextBriefCitationScaleReleaseIdentityFailures(observed, candidate).length === 0).toBe(
-            commitMatches && versionMatches,
+            commitMatches && versionMatches && runtimeMatches,
           );
         },
       ),
@@ -109,7 +126,7 @@ describe('Context Brief release candidate version binding', () => {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-citation-candidate-'});
       const manifestPath = path.join(root, 'package.json');
-      yield* fs.writeFileString(manifestPath, '{"version":"4.6.8"}\n');
+      yield* fs.writeFileString(manifestPath, '{"version":"4.6.8","packageManager":"bun@1.4.2"}\n');
       yield* runCommandEffect('git', ['init', '--quiet'], {cwd: root});
       yield* runCommandEffect('git', ['add', 'package.json'], {cwd: root});
       yield* runCommandEffect(
@@ -131,6 +148,7 @@ describe('Context Brief release candidate version binding', () => {
       const commit = (yield* runCommandEffect('git', ['rev-parse', 'HEAD'], {cwd: root})).stdout.trim();
       expect(yield* readContextBriefCitationScaleCandidate(commit, 'threadnote-4.6.8', root)).toEqual({
         commit,
+        runtime: 'bun/1.4.2',
         sourceVersion: 'threadnote-4.6.8',
       });
       const wrongBuild = yield* readContextBriefCitationScaleCandidate(commit, 'threadnote-4.6.0', root).pipe(
@@ -143,7 +161,7 @@ describe('Context Brief release candidate version binding', () => {
         Effect.result,
       );
       expect(Result.isFailure(wrongCommit)).toBe(true);
-      yield* fs.writeFileString(manifestPath, '{"version":"4.6.9"}\n');
+      yield* fs.writeFileString(manifestPath, '{"version":"4.6.9","packageManager":"bun@1.4.2"}\n');
       const dirty = yield* readContextBriefCitationScaleCandidate(commit, 'threadnote-4.6.9', root).pipe(Effect.result);
       expect(Result.isFailure(dirty)).toBe(true);
       if (Result.isFailure(dirty)) expect(dirty.failure.message).toContain('clean candidate checkout');
