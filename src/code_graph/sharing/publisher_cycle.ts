@@ -268,7 +268,7 @@ const advanceGraphPublisherCandidate = Effect.fn('codeGraph.sharing.advancePubli
   const admissions =
     initialPolicy === undefined
       ? undefined
-      : yield* readGraphWorkerAdmissionStore(config.agentContextHome, initialPolicy);
+      : yield* readGraphWorkerAdmissionStore(config.agentContextHome, initialPolicy, identity.headCommit);
   const actionKeys =
     admissions === undefined
       ? coordinator.receipts.receipts
@@ -696,6 +696,7 @@ const exportSignedGeneration = Effect.fn('codeGraph.sharing.exportSignedGenerati
           const admissions = yield* readGraphWorkerAdmissionStore(
             config.agentContextHome,
             expected.signedAdmissions.initialPolicy,
+            expected.sourceCommit,
           );
           if (
             canonicalJson(admissions.receipts.filter(receipt => receipt.sourceCommit === expected.sourceCommit)) !==

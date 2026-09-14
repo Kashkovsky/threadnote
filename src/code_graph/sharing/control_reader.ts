@@ -36,7 +36,11 @@ import {graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {graphShareFrontierDiscoveryTag} from './namespace.js';
 import {graphShareRegistryPublicationScope, graphSharePublicationPointer} from './registry_publication.js';
 import {graphSharePublicationAuthority, readGraphSharePublicationReceipt} from './registry_publication_state.js';
-import {admitGraphControlWorkerResult, readGraphControlWorkerResultRequest} from './control_result_admission.js';
+import {
+  admitGraphControlWorkerResult,
+  readGraphControlWorkerResultRequest,
+  readGraphWorkerAdmissionStore,
+} from './control_result_admission.js';
 import {
   assertProfileMatchesEnrollment,
   graphShareProfileDigest,
@@ -80,6 +84,7 @@ export const makeGraphControlReader = Effect.fn('codeGraph.sharing.makeControlRe
     return yield* graphSharingFailure('Signed worker admission requires a trusted source checkout.');
   const scope = graphControlReaderScope(options);
   const initial = yield* validateGraphControlPolicy(options);
+  if (options.enableWorkerResults === true) yield* readGraphWorkerAdmissionStore(options.threadnoteHome, initial);
   const verify = verifyToken ?? createRemoteAccessTokenVerifier({...initial, jwksUrl: new URL(initial.jwksUrl)});
   const commandExecutor =
     options.enableWorkerResults === true

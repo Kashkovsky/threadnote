@@ -16,7 +16,12 @@ import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {maybeImportSharedGraphBase, runGraphShareJoin} from '../../src/code_graph/sharing/client.js';
 import {putCasBytes, readVerifiedCasBlob} from '../../src/code_graph/sharing/cas.js';
-import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
+import {
+  decodeJsonBytes,
+  readJsonFile,
+  writeDurablePrivateJsonFile,
+  writePrivateJsonFile,
+} from '../../src/code_graph/sharing/atomic.js';
 import {loadGraphShareCoordinatorState} from '../../src/code_graph/sharing/control_server.js';
 import {enrollGraphControlWorker} from '../../src/code_graph/sharing/control_enrollment.js';
 import {
@@ -24,6 +29,10 @@ import {
   readGraphWorkerAdmissionStore,
 } from '../../src/code_graph/sharing/control_result_admission.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
+import {
+  parkGraphWorkerAdmissionReceipts,
+  readGraphWorkerAdmissionArchive,
+} from '../../src/code_graph/sharing/worker_admission_archive.js';
 import {graphShareEnrollmentPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
 import {
   casProfilePointer,
@@ -315,6 +324,24 @@ describe('signed worker publisher', () => {
           });
           expect((yield* readGraphWorkerAdmissionStore(home, policy)).receipts).toHaveLength(2);
           yield* Fiber.interrupt(listener);
+          yield* git(repository, ['checkout', '-qb', 'diversion']);
+          yield* fs.writeFileString(path.join(repository, 'src', 'diversion.ts'), 'export const diversion = 3;\n');
+          yield* git(repository, ['add', 'src/diversion.ts']);
+          yield* commit(repository, 'diversion');
+          const admissionPath = yield* graphWorkerAdmissionStatePath(home, policy);
+          const beforeParking = yield* readGraphWorkerAdmissionStore(home, policy);
+          const archive = yield* readGraphWorkerAdmissionArchive(admissionPath, policy);
+          expect(
+            (yield* parkGraphWorkerAdmissionReceipts(
+              admissionPath,
+              policy,
+              archive,
+              nextIdentity.headCommit,
+              beforeParking.receipts,
+            )).status,
+          ).toBe('parked');
+          yield* writeDurablePrivateJsonFile(admissionPath, emptyGraphWorkerAdmissionStore());
+          yield* git(repository, ['checkout', '-q', 'main']);
           const result = yield* registry.provide(
             advanceGraphPublisherFrontier(config(home), {
               authorizationPolicy: policyFile,
@@ -338,6 +365,7 @@ describe('signed worker publisher', () => {
           ).toBe(true);
           expect(registry.manifests.size).toBeGreaterThan(0);
           expect((yield* readGraphWorkerAdmissionStore(home, policy)).receipts).toHaveLength(0);
+          expect((yield* readGraphWorkerAdmissionArchive(admissionPath, policy)).receipts).toHaveLength(0);
           const clientRepo = path.join(root, 'client');
           const clientHome = path.join(root, 'client-home');
           const clientCas = path.join(root, 'client-cas');
