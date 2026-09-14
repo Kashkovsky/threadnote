@@ -1,16 +1,20 @@
 import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
+import {it as effectIt} from '@effect/vitest';
 import {execFileSync} from '../helpers/node-child-process.js';
 import {existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Context, Effect, Layer} from 'effect';
+import {TestClock} from 'effect/testing';
 import {afterAll, beforeAll, beforeEach, describe, expect, it, vi} from 'vitest';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
 import {repairCodeGraphIndexes} from '../../src/code_graph/maintenance.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from '../../src/code_graph/types.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const sqliteSessions = vi.hoisted(() => ({
@@ -144,45 +148,57 @@ describe('code graph SQLite session lifetime', () => {
     expect([...postprocessed.values()]).toEqual(Array.from({length: indexed.snapshot.fileCount}, () => 1));
   }, 60_000);
 
-  it('uses one client for every store call across a multi-batch index', async () => {
-    const activeClientsByActivity: number[] = [];
-    const indexed = await runEffect(
+  effectIt.effect(
+    'uses one client for every store call across a multi-batch index',
+    () =>
       Effect.gen(function* () {
+        const clientsByActivity: Array<{active: number; opened: number}> = [];
         const indexer = yield* CodeGraphIndexer;
-        return yield* indexer.index({
+        const indexed = yield* indexer.index({
           cwd: repositoryRoot,
           onProgress: progress =>
             Effect.sync(() => {
               if (progress.phase !== 'materializing' || progress.activity === undefined) return;
-              activeClientsByActivity.push(sqliteSessions.active);
+              clientsByActivity.push({active: sqliteSessions.active, opened: sqliteSessions.opened.length});
             }),
           threadnoteHome: join(repositoryRoot, '.threadnote-index-home'),
         });
-      }),
-    );
 
-    expect(indexed.snapshot.fileCount).toBeGreaterThan(128);
-    expect(activeClientsByActivity.length).toBeGreaterThan(1);
-    expect(activeClientsByActivity.every(active => active === 1)).toBe(true);
-    expectClosedSessions(2);
-  }, 60_000);
+        expect(indexed.snapshot.fileCount).toBeGreaterThan(128);
+        expect(clientsByActivity.length).toBeGreaterThan(1);
+        expect(clientsByActivity.every(({active}) => active === 1)).toBe(true);
+        expect(new Set(clientsByActivity.map(({opened}) => opened)).size).toBe(1);
+        expectClosedSessions(2);
+      }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    60_000,
+  );
 
-  it('uses one client while materializing and leasing a multi-batch committed base', async () => {
-    const lease = await runEffect(
+  effectIt.effect(
+    'uses one client while materializing and leasing a multi-batch committed base',
+    () =>
       Effect.gen(function* () {
+        const clientsByActivity: Array<{active: number; opened: number}> = [];
         const indexer = yield* CodeGraphIndexer;
-        return yield* indexer.ensureCommit({
+        const lease = yield* indexer.ensureCommit({
           commit: baseCommit,
           cwd: repositoryRoot,
+          onProgress: progress =>
+            Effect.sync(() => {
+              if (progress.phase !== 'materializing' || progress.activity === undefined) return;
+              clientsByActivity.push({active: sqliteSessions.active, opened: sqliteSessions.opened.length});
+            }),
           threadnoteHome: join(repositoryRoot, '.threadnote-commit-home'),
         });
-      }),
-    );
 
-    expect(lease.snapshot.commit).toBe(baseCommit);
-    expect(lease.snapshot.fileCount).toBeGreaterThan(128);
-    expectClosedSessions(2);
-  }, 60_000);
+        expect(lease.snapshot.commit).toBe(baseCommit);
+        expect(lease.snapshot.fileCount).toBeGreaterThan(128);
+        expect(clientsByActivity.length).toBeGreaterThan(1);
+        expect(clientsByActivity.every(({active}) => active === 1)).toBe(true);
+        expect(new Set(clientsByActivity.map(({opened}) => opened)).size).toBe(1);
+        expectClosedSessions(2);
+      }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    60_000,
+  );
 
   it('closes the shared client when a multi-batch index fails after inventory caching', async () => {
     let materializingObserved = false;
@@ -273,12 +289,10 @@ describe('code graph SQLite session lifetime', () => {
 });
 
 function expectClosedSessions(expected: number): void {
-  // Index completion may open one additional zero-wait Store routine session
-  // after the indexing session closes. Whether a fixture has cleanup work is
-  // platform/state dependent, but a store-call-per-connection regression would
-  // still exceed this bounded allowance.
+  // Completion may open sequential cleanup and routine-maintenance sessions.
+  // Their count depends on when those independent units run; the materializing
+  // assertions above protect the single writer session across store calls.
   expect(sqliteSessions.opened.length, JSON.stringify(sqliteSessions.opened)).toBeGreaterThanOrEqual(expected);
-  expect(sqliteSessions.opened.length, JSON.stringify(sqliteSessions.opened)).toBeLessThanOrEqual(expected + 1);
   expect(sqliteSessions.closed).toEqual(sqliteSessions.opened);
   expect(sqliteSessions.maximumActive).toBeLessThanOrEqual(1);
   expect(sqliteSessions.active).toBe(0);
