@@ -1,6 +1,6 @@
 import {Effect} from 'effect';
 import {SystemInfo, type SystemInfoShape} from '../../effect/system.js';
-import {effectiveGraphShareContributionMode} from './contribution.js';
+import {effectiveGraphShareContributionPolicy} from './contribution.js';
 import {SHA256_DIGEST, type Sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
 import {
@@ -96,11 +96,17 @@ export const promptGraphShareOciProfileAccess = Effect.fn('codeGraph.sharing.pro
           catch: () => graphSharingFailure('Effective graph coordinator URL is invalid.'),
         });
   const profile = input.profile;
-  const joinMode = effectiveGraphShareContributionMode('join', profile.contribution.defaultMode);
+  const joinPolicy = effectiveGraphShareContributionPolicy(
+    'join',
+    profile.contribution.defaultMode,
+    profile.contribution.maximumUploadBytesPerSecond,
+  );
   const contributionBehavior =
-    joinMode === 'off'
+    joinPolicy.mode === 'off'
       ? 'off: joining does not upload graph results until contribution mode is changed'
-      : 'passive: ordinary graph indexing/use may build results and the MCP monitor delivers them automatically';
+      : joinPolicy.deliveryPausedReason === 'organization-upload-disabled'
+        ? 'passive: ordinary graph indexing/use may build results; the organization profile disables contribution uploads'
+        : 'passive: ordinary graph indexing/use may build results and the MCP monitor delivers them automatically';
   const prompt = [
     'Verified organization graph profile:',
     `  Organization: ${profile.organization}`,
@@ -114,12 +120,14 @@ export const promptGraphShareOciProfileAccess = Effect.fn('codeGraph.sharing.pro
     ...(profile.contribution.defaultMode === 'idle' || profile.contribution.defaultMode === 'dedicated'
       ? ['  Idle and dedicated currently map to passive work on graph use; no idle/dedicated scheduler is active.']
       : []),
-    '  Declared resource settings are not currently enforced scheduling controls:',
+    '  AC/idle/CPU/memory settings are declared; no active scheduler enforces them:',
     `    AC power only: ${profile.contribution.activeOnlyOnAcPower}`,
     `    Idle only: ${profile.contribution.activeOnlyWhenIdle}`,
     `    Maximum CPUs: ${profile.contribution.maximumCpus}`,
     `    Maximum memory bytes: ${profile.contribution.maximumMemoryBytes}`,
-    `    Maximum upload bytes/second: ${profile.contribution.maximumUploadBytesPerSecond}`,
+    profile.contribution.maximumUploadBytesPerSecond === 0
+      ? '  Upload limit 0 bytes/second disables contribution delivery.'
+      : `  Positive upload limit ${profile.contribution.maximumUploadBytesPerSecond} bytes/second is declared but not enforced.`,
     '  Read-only disables contributions. Join permits the actual behavior above.',
     input.readOnly === true
       ? 'Type read-only to approve this profile, or anything else to deny: '

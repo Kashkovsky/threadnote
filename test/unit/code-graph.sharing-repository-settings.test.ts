@@ -9,7 +9,7 @@ import * as FC from 'fast-check';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
-import {putCasBytes} from '../../src/code_graph/sharing/cas.js';
+import {casBlobPath, putCasBytes} from '../../src/code_graph/sharing/cas.js';
 import {
   runGraphContributeSet,
   runGraphContributeStatus,
@@ -27,7 +27,11 @@ import {
 } from '../../src/code_graph/sharing/trust.js';
 import {resolveGraphShareRepositoryClient} from '../../src/code_graph/sharing/client_state.js';
 import {drainQueuedGraphShareContributions} from '../../src/code_graph/sharing/parse_cache.js';
-import {enqueuePersistedGraphShareContribution} from '../../src/code_graph/sharing/contribution.js';
+import {
+  effectiveGraphShareContributionPolicy,
+  enqueuePersistedGraphShareContribution,
+  readGraphShareContributionQueue,
+} from '../../src/code_graph/sharing/contribution.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -39,6 +43,34 @@ const layer = CommandExecutor.layer.pipe(
 );
 
 describe('repository-scoped graph sharing settings', () => {
+  fcEffectProp(
+    effectIt,
+    'lower upload budgets never enable delivery and inactive modes never upload',
+    {
+      budgets: FC.tuple(FC.constantFrom(0, 0, 1, 1_024), FC.integer({min: 1, max: 1_000_000_000})),
+      requested: FC.constantFrom('off', 'passive', 'idle', 'dedicated'),
+    },
+    ({budgets, requested}) =>
+      Effect.sync(() => {
+        const lower = Math.min(...budgets);
+        const higher = Math.max(...budgets);
+        const lowerPolicy = effectiveGraphShareContributionPolicy('join', requested, lower);
+        const higherPolicy = effectiveGraphShareContributionPolicy('join', requested, higher);
+        expect(lowerPolicy.deliveryPausedReason === undefined && higherPolicy.deliveryPausedReason !== undefined).toBe(
+          false,
+        );
+        if (requested !== 'off' && lower === 0) {
+          expect(lowerPolicy.deliveryPausedReason).toBe('organization-upload-disabled');
+          expect(higherPolicy.deliveryPausedReason).toBeUndefined();
+        }
+        if (requested === 'off') expect(higherPolicy.deliveryPausedReason).toBe('mode-off');
+        expect(effectiveGraphShareContributionPolicy('read-only', requested, higher).deliveryPausedReason).toBe(
+          'mode-off',
+        );
+      }),
+    {fastCheck: {numRuns: 50}},
+  );
+
   fcEffectProp(
     effectIt,
     'updates only the selected repository under arbitrary contribution-mode changes',
@@ -150,6 +182,66 @@ describe('repository-scoped graph sharing settings', () => {
         expect(yield* drain).toEqual({sent: 0});
         expect(destinations[0]).toHaveLength(8);
         expect(destinations[1]).toEqual([]);
+      }).pipe(provideTestLayer(layer)),
+    ),
+  );
+
+  effectIt.effect('pauses legacy delivery at a zero profile upload budget without dropping queued results', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-zero-upload-'});
+        const requests: string[] = [];
+        const server = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            Bun.serve({
+              hostname: '127.0.0.1',
+              port: 0,
+              fetch: async request => {
+                requests.push(request.method);
+                return Response.json({});
+              },
+            }),
+          ),
+          server => Effect.promise(() => server.stop(true)),
+        );
+        const item = yield* fixture(root, 'zero', `http://127.0.0.1:${server.port}`, 'passive', 0);
+        const config = runtimeConfig(root);
+        yield* runGraphShareJoin(config, {cwd: item.repo, cas: item.cas});
+        const {announcement, resultBytes, attestationBytes} = graphShareContributionFixture(item.repositoryId);
+        yield* putCasBytes(item.cas, resultBytes);
+        yield* putCasBytes(item.cas, attestationBytes);
+        yield* enqueuePersistedGraphShareContribution(
+          config.agentContextHome,
+          item.repositoryId,
+          'join',
+          announcement,
+          'passive',
+        );
+        expect(yield* runGraphContributeStatus(config, {cwd: item.repo})).toMatchObject({
+          mode: 'passive',
+          resourcePolicy: {
+            declaredMaximumUploadBytesPerSecond: 0,
+            deliveryPausedReason: 'organization-upload-disabled',
+            positiveUploadRateLimitEnforced: false,
+          },
+        });
+        expect(
+          yield* drainQueuedGraphShareContributions({identity: item, threadnoteHome: config.agentContextHome}),
+        ).toEqual({sent: 0});
+        expect(requests).toEqual([]);
+        expect(
+          (yield* readGraphShareContributionQueue(config.agentContextHome, item.repositoryId, 'passive')).announcements,
+        ).toEqual([announcement]);
+        yield* fs.remove(yield* casBlobPath(item.cas, item.digest));
+        expect(yield* runGraphContributeStatus(config, {cwd: item.repo})).toMatchObject({
+          mode: 'passive',
+          queued: 1,
+          resourcePolicy: {
+            deliveryPausedReason: 'profile-unavailable',
+            verification: 'unavailable',
+          },
+        });
       }).pipe(provideTestLayer(layer)),
     ),
   );
@@ -291,6 +383,7 @@ const fixture = Effect.fn('test.sharing.repositoryFixture')(function* (
   name: string,
   endpoint?: string,
   defaultMode: 'dedicated' | 'idle' | 'passive' = 'passive',
+  maximumUploadBytesPerSecond = 1_048_576,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -321,7 +414,10 @@ const fixture = Effect.fn('test.sharing.repositoryFixture')(function* (
     publisherKeyFingerprint: `sha256:${'a'.repeat(64)}`,
     repositoryId: identity.repositoryId,
   });
-  const configuredProfile = {...profile, contribution: {...profile.contribution, defaultMode}};
+  const configuredProfile = {
+    ...profile,
+    contribution: {...profile.contribution, defaultMode, maximumUploadBytesPerSecond},
+  };
   const digest = yield* putCasBytes(cas, new TextEncoder().encode(canonicalJson(configuredProfile)));
   yield* fs.writeFileString(
     path.join(repo, '.threadnote/graph-share.json'),

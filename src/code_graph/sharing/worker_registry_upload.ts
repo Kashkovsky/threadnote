@@ -6,6 +6,7 @@ import {makeGraphShareRegistryReader} from './registry_reader.js';
 import {parseGraphShareRegistryTarget} from './registry_reference.js';
 import {makeGraphShareRegistryWriter} from './registry_writer.js';
 import {sha256Digest} from './digest.js';
+import {effectiveGraphShareContributionPolicy} from './contribution.js';
 import {
   readGraphWorkerResultArtifact,
   verifyGraphWorkerResultIntegrity,
@@ -64,6 +65,11 @@ export const uploadGraphWorkerArtifactToRegistry = Effect.fn('codeGraph.sharing.
   }) {
     const authority = {...input.authority};
     const isAuthorized = safeAuthorization(input.isAuthorized);
+    if (
+      effectiveGraphShareContributionPolicy('join', 'passive', input.profile.contribution.maximumUploadBytesPerSecond)
+        .deliveryPausedReason === 'organization-upload-disabled'
+    )
+      return yield* graphSharingFailure('Organization profile disables graph contribution uploads.');
     const workerRegistry = yield* Effect.try({
       try: () => graphWorkerRegistryForProfile(input.profile, authority),
       catch: cause => graphSharingFailure('Graph worker registry is outside its enrolled scope.', cause),

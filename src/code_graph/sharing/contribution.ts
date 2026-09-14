@@ -35,6 +35,26 @@ export function effectiveGraphShareContributionMode(
   return requested;
 }
 
+export function effectiveGraphShareContributionPolicy(
+  accessMode: 'join' | 'read-only' | undefined,
+  requested: GraphShareContributionMode,
+  maximumUploadBytesPerSecond: number,
+) {
+  const mode = effectiveGraphShareContributionMode(accessMode, requested);
+  return {
+    activeResourceLimitsEnforced: false,
+    declaredMaximumUploadBytesPerSecond: maximumUploadBytesPerSecond,
+    deliveryPausedReason:
+      mode === 'off'
+        ? ('mode-off' as const)
+        : maximumUploadBytesPerSecond === 0
+          ? ('organization-upload-disabled' as const)
+          : undefined,
+    mode,
+    positiveUploadRateLimitEnforced: false,
+  };
+}
+
 export function enqueueGraphShareContribution(
   queue: GraphShareContributionQueueV1,
   announcement: GraphShareResultAnnouncementV1,

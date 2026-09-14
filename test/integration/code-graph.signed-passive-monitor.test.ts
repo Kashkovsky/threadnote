@@ -8,6 +8,7 @@ import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
 import {putCasBytes} from '../../src/code_graph/sharing/cas.js';
 import {monitorGraphShareSignedContributions} from '../../src/code_graph/sharing/contribution_retry.js';
+import {drainQueuedGraphShareSignedContributions} from '../../src/code_graph/sharing/worker_delivery.js';
 import {readContributionRetryState} from '../../src/code_graph/sharing/contribution_retry_state.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
@@ -27,6 +28,76 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 describe('passive signed graph delivery monitor', () => {
+  effectIt.effect('keeps signed candidates queued when the organization disables uploads', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-signed-zero-upload-'});
+        const cas = `${home}/cas`;
+        const repositoryId = 'a'.repeat(64);
+        const publisherKeyFingerprint = sha256Digest('publisher');
+        const base = defaultGraphShareProfile({
+          branch: 'main',
+          canonicalRemote: 'github.com/acme/signed-zero-upload',
+          organization: 'acme',
+          publisherKeyFingerprint,
+          repositoryId,
+        });
+        const profile = {
+          ...base,
+          contribution: {
+            ...base.contribution,
+            maximumUploadBytesPerSecond: 0,
+          },
+          coordinator: {url: 'https://control.example.test'},
+          registry: {
+            canonical: 'oci://registry.example.test/acme/canonical',
+            worker: 'oci://registry.example.test/acme/worker',
+          },
+        };
+        const profileDigest = graphShareProfileDigest(profile);
+        yield* putCasBytes(cas, new TextEncoder().encode(canonicalJson(profile)));
+        yield* writeGraphShareTrustReceipt(home, {
+          accessMode: 'join',
+          client: {casRoot: cas, contributionMode: 'passive', coordinatorUrl: profile.coordinator.url},
+          organization: 'acme',
+          policyVersion: 1,
+          profileDigest,
+          publisherKeyFingerprint,
+          registryCanonical: profile.registry.canonical,
+          repositoryId,
+        });
+        yield* persistGraphShareSignedCandidates(home, repositoryId, [
+          {
+            actionKey: 'a'.repeat(64),
+            batchId: '1'.repeat(40),
+            casRoot: cas,
+            extractorSet: 'b'.repeat(64),
+            graphAbi: 'e'.repeat(64),
+            organization: 'acme',
+            partialCoverage: false,
+            platform: {architecture: 'x64', os: 'linux'},
+            profileDigest,
+            queuedAtMilliseconds: yield* Clock.currentTimeMillis,
+            releaseIdentity: '4.6.12-local.gfixture',
+            resourceLimits: [],
+            resultDigest: sha256Digest('result'),
+            resultSize: 6,
+            semanticDigest: sha256Digest('semantic'),
+            snapshotId: `cgsn_${'f'.repeat(40)}`,
+            sourceCommit: '1'.repeat(40),
+          },
+        ]);
+        const pages = yield* listGraphShareSignedCandidatePageIds(home, repositoryId);
+        expect(pages.length).toBeGreaterThan(0);
+        expect(yield* drainQueuedGraphShareSignedContributions({repositoryId, threadnoteHome: home})).toEqual({
+          sent: 0,
+        });
+        expect(yield* listGraphShareSignedCandidatePageIds(home, repositoryId)).toEqual(pages);
+      }).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
   effectIt.effect(
     'replays the exact prepared operation after a coordinator outage and monitor restart',
     () =>

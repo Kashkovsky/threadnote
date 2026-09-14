@@ -165,6 +165,14 @@ export const runGraphContributeStatusCommand = Effect.fn('codeGraph.sharing.cont
   yield* Console.log(
     `Graph contribution mode ${result.mode}${result.requestedMode === result.mode ? '' : ` (requested ${result.requestedMode})`}`,
   );
+  if (result.resourcePolicy?.verification === 'unavailable')
+    yield* Console.log('Trusted organization profile is unavailable; contribution uploads fail closed.');
+  else if (result.resourcePolicy?.deliveryPausedReason === 'organization-upload-disabled')
+    yield* Console.log('Organization profile disables contribution uploads (0 bytes/second).');
+  else if (result.resourcePolicy !== undefined && result.mode !== 'off')
+    yield* Console.log(
+      `Organization upload limit ${result.resourcePolicy.declaredMaximumUploadBytesPerSecond} bytes/second is declared but not enforced; active resource limits are not enforced.`,
+    );
   return result;
 });
 

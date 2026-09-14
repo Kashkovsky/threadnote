@@ -119,7 +119,7 @@ describe('interactive OCI graph first-use approval', () => {
     }).pipe(provideTestLayer(SystemInfo.layer)),
   );
 
-  effectIt.effect('shows verified destinations, source scope, actual passive behavior, and unenforced limits', () =>
+  effectIt.effect('shows verified destinations, source scope, actual passive behavior, and declared limits', () =>
     Effect.gen(function* () {
       const prompts: string[] = [];
       const mode = yield* withSystem(promptGraphShareOciProfileAccess({profile}), ['join'], prompts);
@@ -136,14 +136,30 @@ describe('interactive OCI graph first-use approval', () => {
         'Declared default contribution mode: idle',
         'passive: ordinary graph indexing/use',
         'Idle and dedicated currently map to passive',
-        'not currently enforced scheduling controls',
+        'no active scheduler enforces them',
         'AC power only: true',
         'Idle only: true',
         'Maximum CPUs: 2',
         'Maximum memory bytes: 4294967296',
-        'Maximum upload bytes/second: 1048576',
+        'Positive upload limit 1048576 bytes/second is declared but not enforced',
       ])
         expect(displayed).toContain(value);
+    }).pipe(provideTestLayer(SystemInfo.layer)),
+  );
+
+  effectIt.effect('explains that a zero upload budget pauses automatic delivery on join', () =>
+    Effect.gen(function* () {
+      const prompts: string[] = [];
+      const zeroProfile = {
+        ...profile,
+        contribution: {...profile.contribution, maximumUploadBytesPerSecond: 0},
+      };
+      expect(yield* withSystem(promptGraphShareOciProfileAccess({profile: zeroProfile}), ['join'], prompts)).toBe(
+        'join',
+      );
+      expect(prompts[0]).toContain('organization profile disables contribution uploads');
+      expect(prompts[0]).toContain('Upload limit 0 bytes/second disables contribution delivery');
+      expect(prompts[0]).not.toContain('MCP monitor delivers them automatically');
     }).pipe(provideTestLayer(SystemInfo.layer)),
   );
 

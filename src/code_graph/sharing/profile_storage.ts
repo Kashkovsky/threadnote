@@ -16,6 +16,26 @@ import {
   GRAPH_SHARE_PROFILE_OCI_MANIFEST_MAX_BYTES,
   parseGraphShareProfileOciArtifact,
 } from './profile_oci_artifact.js';
+import type {GraphShareTrustReceiptV1} from './trust.js';
+
+export const readTrustedGraphShareContributionProfile = Effect.fn('codeGraph.sharing.readContributionProfile')(
+  function* (trust: GraphShareTrustReceiptV1, casRoot: string) {
+    const value = yield* decodeJsonBytes(yield* readVerifiedCasBlobBounded(casRoot, trust.profileDigest, 65_536));
+    const profile = yield* Effect.try({
+      try: () => parseGraphShareProfile(value),
+      catch: () => graphSharingFailure('Trusted graph contribution profile is invalid.'),
+    });
+    if (
+      graphShareProfileDigest(profile) !== trust.profileDigest ||
+      profile.repositoryId !== trust.repositoryId ||
+      profile.organization !== trust.organization ||
+      profile.registry.canonical !== trust.registryCanonical ||
+      !profile.trust.publisherKeys.includes(trust.publisherKeyFingerprint)
+    )
+      return yield* graphSharingFailure('Trusted graph contribution profile is outside its trust receipt.');
+    return profile;
+  },
+);
 
 export const readGraphShareEnrolledProfile = Effect.fn('codeGraph.sharing.readEnrolledProfile')(function* (
   casRoot: string,

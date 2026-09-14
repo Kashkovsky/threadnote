@@ -1,8 +1,11 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
+import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
+import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Clock, Effect, FileSystem, Layer, Ref} from 'effect';
 import * as FC from 'fast-check';
 import {SystemInfo} from '../../src/effect/system.js';
+import {CommandExecutor} from '../../src/effect/command.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
 import {GRAPH_SHARE_OCI_EMPTY_CONFIG_DIGEST} from '../../src/code_graph/sharing/descriptor.js';
@@ -14,12 +17,17 @@ import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/work
 import {
   graphWorkerRegistryForProfile,
   uploadGraphWorkerArtifactClosure,
+  uploadGraphWorkerArtifactToRegistry,
 } from '../../src/code_graph/sharing/worker_registry_upload.js';
 import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {fcEffectProp} from '../helpers/fast-check-property.js';
 
-const layer = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
+const layer = CommandExecutor.layer.pipe(
+  Layer.provideMerge(SystemInfo.layer),
+  Layer.provideMerge(BunServices.layer),
+  Layer.provideMerge(BunHttpClient.layer),
+);
 
 const fixture = Effect.fn('test.workerRegistryUpload.fixture')(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -71,6 +79,59 @@ const fixture = Effect.fn('test.workerRegistryUpload.fixture')(function* () {
 });
 
 describe('worker OCI closure upload', () => {
+  effectIt.effect('rejects a zero upload budget before loading registry credentials', () =>
+    Effect.gen(function* () {
+      const {artifact, authority} = yield* fixture();
+      const system = yield* SystemInfo;
+      let credentialConfigurationReads = 0;
+      let registryRequests = 0;
+      const base = defaultGraphShareProfile({
+        branch: 'main',
+        canonicalRemote: 'github.com/acme/repo',
+        organization: 'acme',
+        publisherKeyFingerprint: sha256Digest('publisher'),
+        repositoryId: authority.repositoryId,
+      });
+      const profile = {
+        ...base,
+        contribution: {...base.contribution, maximumUploadBytesPerSecond: 0},
+        registry: {
+          canonical: 'oci://registry.example.test/acme/canonical',
+          worker: 'oci://registry.example.test/acme/worker',
+        },
+      };
+      const fetch = Object.assign(
+        async () => {
+          registryRequests++;
+          throw new Error('Registry request should not start.');
+        },
+        {preconnect: () => undefined},
+      ) as typeof globalThis.fetch;
+      const result = yield* Effect.result(
+        uploadGraphWorkerArtifactToRegistry({
+          artifact,
+          authority: {...authority, profileDigest: graphShareProfileDigest(profile)},
+          isAuthorized: Effect.succeed(true),
+          profile,
+        }).pipe(
+          Effect.provideService(FetchHttpClient.Fetch, fetch),
+          Effect.provideService(SystemInfo, {
+            ...system,
+            environment: () => {
+              credentialConfigurationReads++;
+              return system.environment();
+            },
+          }),
+        ),
+      );
+      expect(result).toMatchObject({
+        failure: {message: 'Organization profile disables graph contribution uploads.'},
+      });
+      expect(credentialConfigurationReads).toBe(0);
+      expect(registryRequests).toBe(0);
+    }).pipe(provideTestLayer(layer)),
+  );
+
   effectIt.effect('binds the worker destination to the signed profile and a distinct normalized repository', () =>
     Effect.gen(function* () {
       const {authority} = yield* fixture();
