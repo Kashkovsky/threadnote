@@ -1,7 +1,6 @@
-import * as z from 'zod/v4';
 import {Cause, Console, Crypto, Effect, FileSystem, Path, Schema} from 'effect';
 import {fromPromiseInterruptibleAwaiting} from '../effect/errors.js';
-import {createRemoteMemorySql, type RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
+import {createRemoteMemorySql} from './postgres_control_plane.js';
 import {
   applyGitBetaImportOperator,
   exportRemoteMemoryOperator,
@@ -21,50 +20,58 @@ import {
 } from './operator_files.js';
 import {PostgresRemoteMemoryOperatorAdapter} from './operator_postgres.js';
 
-const Identifier = z
-  .string()
-  .min(1)
-  .max(512)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u);
-const ProvisioningInput = z
-  .object({
-    allowedProjects: z.array(z.string().min(1).max(255)).max(1000).optional(),
-    capabilities: z
-      .array(z.enum(['memory:admin', 'memory:read', 'memory:write:durable', 'memory:write:handoff']))
-      .min(1)
-      .max(4),
-    cursorAttestationRequired: z.boolean().optional(),
-    cursorOwnerIds: z.array(Identifier).max(1000).optional(),
-    cursorSubjects: z.array(Identifier).min(1).max(1000).optional(),
-    cursorTeamId: Identifier.optional(),
-    displayName: z.string().min(1).max(255),
-    expectedCurrentPolicyVersion: Identifier.optional(),
-    expectedCurrentSharePolicyVersion: Identifier.optional(),
-    featureFlags: z
-      .array(
-        z.enum([
-          'remote_memory_read',
-          'remote_memory_durable_write',
-          'remote_memory_handoff_write',
-          'cursor_oidc_required',
-          'git_beta_import',
-          'remote_memory_ga',
-        ]),
-      )
-      .max(6)
-      .optional(),
-    issuer: z.url(),
-    policyVersion: Identifier,
-    principalId: Identifier,
-    projects: z.array(z.string().min(1).max(255)).max(1000).optional(),
-    region: Identifier,
-    repositoryBindings: z.record(z.string().min(1).max(255), z.array(z.url()).max(1000)).optional(),
-    shareId: Identifier,
-    sharePolicyVersion: Identifier.optional(),
-    subject: z.string().min(1).max(1024),
-    tenantId: Identifier,
-  })
-  .strict();
+const Identifier = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(512),
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
+);
+const Project = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255));
+const Projects = Schema.Array(Project).check(Schema.isMaxLength(1_000));
+const Url = Schema.String.check(
+  Schema.makeFilter(value => {
+    try {
+      new URL(value);
+      return undefined;
+    } catch {
+      return 'Expected a URL.';
+    }
+  }),
+);
+export const RemoteMemoryProvisioningInputSchema = Schema.Struct({
+  allowedProjects: Schema.optionalKey(Projects),
+  capabilities: Schema.Array(
+    Schema.Literals(['memory:admin', 'memory:read', 'memory:write:durable', 'memory:write:handoff']),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(4)),
+  cursorAttestationRequired: Schema.optionalKey(Schema.Boolean),
+  cursorOwnerIds: Schema.optionalKey(Schema.Array(Identifier).check(Schema.isMaxLength(1_000))),
+  cursorSubjects: Schema.optionalKey(Schema.Array(Identifier).check(Schema.isMinLength(1), Schema.isMaxLength(1_000))),
+  cursorTeamId: Schema.optionalKey(Identifier),
+  displayName: Project,
+  expectedCurrentPolicyVersion: Schema.optionalKey(Identifier),
+  expectedCurrentSharePolicyVersion: Schema.optionalKey(Identifier),
+  featureFlags: Schema.optionalKey(
+    Schema.Array(
+      Schema.Literals([
+        'remote_memory_read',
+        'remote_memory_durable_write',
+        'remote_memory_handoff_write',
+        'cursor_oidc_required',
+        'git_beta_import',
+        'remote_memory_ga',
+      ]),
+    ).check(Schema.isMaxLength(6)),
+  ),
+  issuer: Url,
+  policyVersion: Identifier,
+  principalId: Identifier,
+  projects: Schema.optionalKey(Projects),
+  region: Identifier,
+  repositoryBindings: Schema.optionalKey(Schema.Record(Project, Schema.Array(Url).check(Schema.isMaxLength(1_000)))),
+  shareId: Identifier,
+  sharePolicyVersion: Schema.optionalKey(Identifier),
+  subject: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_024)),
+  tenantId: Identifier,
+});
 
 class RemoteMemoryOperatorInvocationError extends Schema.TaggedError<RemoteMemoryOperatorInvocationError>()(
   'RemoteMemoryOperatorInvocationError',
@@ -115,13 +122,11 @@ export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(fu
           }
           if (command === 'provision') {
             rejectOptions(options, ['input']);
-            const input = ProvisioningInput.parse(yield* readOperatorJson<unknown>(requiredOption(options, 'input')));
+            const input = yield* Schema.decodeUnknownEffect(RemoteMemoryProvisioningInputSchema, {
+              onExcessProperty: 'error',
+            })(yield* readOperatorJson<unknown>(requiredOption(options, 'input')));
             yield* Console.log(
-              JSON.stringify(
-                yield* operatorPromise(() =>
-                  provisionRemoteMemoryOperator(adapter, input as RemoteMemoryProvisioningInput),
-                ),
-              ),
+              JSON.stringify(yield* operatorPromise(() => provisionRemoteMemoryOperator(adapter, input))),
             );
             return 0;
           }
