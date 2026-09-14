@@ -2,6 +2,8 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   MEMORY_READ_MAXIMUM_CONTENT_BYTES,
+  MEMORY_READ_PAGE_BYTES,
+  MemoryReadProjectionError,
   MemoryReadTooLargeError,
   memoryMarkdownOutline,
   memoryReadContentBytes,
@@ -67,6 +69,61 @@ describe('complete memory read projection', () => {
       }),
       {numRuns: 10},
     );
+  });
+
+  it('reconstructs heading-less Unicode memories only when paging is explicitly requested', () => {
+    fc.assert(
+      fc.property(fc.array(fc.constantFrom('a', 'é', '🙂', '\n'), {maxLength: 12, minLength: 1}), characters => {
+        const segment = characters.join('');
+        const text = segment.repeat(Math.ceil(70_000 / memoryReadContentBytes(segment)));
+        const resources = [{text, uri: 'threadnote://test/headingless.md'}];
+        expect(() => projectMemoryRead(resources)).toThrow(MemoryReadTooLargeError);
+        let offsetBytes = 0;
+        let sourceHash: string | undefined;
+        const parts: string[] = [];
+        let complete = false;
+        for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+          const read = projectMemoryRead(resources, {offsetBytes, sourceHash});
+          const page = read.structuredContent;
+          expect(page.contentBytes).toBeLessThanOrEqual(MEMORY_READ_PAGE_BYTES);
+          expect(page.content).toBe(read.content);
+          expect(page.offsetBytes).toBe(offsetBytes);
+          expect(page.totalBytes).toBe(memoryReadContentBytes(text));
+          expect(page.sourceHash).toMatch(/^[a-f0-9]{64}$/u);
+          if (!page.complete) expect(read.continuation).toContain(`offsetBytes=${page.nextOffsetBytes}`);
+          parts.push(page.content);
+          sourceHash = page.sourceHash;
+          if (page.complete) {
+            expect(page.nextOffsetBytes).toBeUndefined();
+            expect(read.continuation).toBeUndefined();
+            complete = true;
+            break;
+          }
+          expect(page.nextOffsetBytes).toBeGreaterThan(offsetBytes);
+          offsetBytes = page.nextOffsetBytes!;
+        }
+        expect(complete).toBe(true);
+        expect(parts.join('')).toBe(text);
+      }),
+      {numRuns: 10},
+    );
+  });
+
+  it('rejects stale and invalid page continuations', () => {
+    const resources = [{text: `🙂${'a'.repeat(70_000)}`, uri: 'threadnote://test/large.md'}];
+    const first = projectMemoryRead(resources, {offsetBytes: 0}).structuredContent;
+    expect(() => projectMemoryRead(resources, {offsetBytes: first.nextOffsetBytes})).toThrow(MemoryReadProjectionError);
+    expect(() => projectMemoryRead(resources, {offsetBytes: 1, sourceHash: first.sourceHash})).toThrow(
+      MemoryReadProjectionError,
+    );
+    expect(() =>
+      projectMemoryRead([{...resources[0], text: `${resources[0].text}!`}], {
+        offsetBytes: first.nextOffsetBytes,
+        sourceHash: first.sourceHash,
+      }),
+    ).toThrow('Memory changed between pages');
+    expect(() => projectMemoryRead(resources, {offsetBytes: 0, mode: 'outline'})).toThrow(MemoryReadProjectionError);
+    expect(() => projectMemoryRead([...resources, ...resources], {offsetBytes: 0})).toThrow(MemoryReadProjectionError);
   });
 
   it('mirrors a complete outline without paging', () => {

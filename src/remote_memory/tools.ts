@@ -19,6 +19,7 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import type {RemoteMemoryRequestExecution} from './request_execution.js';
 import {
   MEMORY_READ_MAXIMUM_CONTENT_BYTES,
+  MEMORY_READ_PAGE_BYTES,
   MemoryReadProjectionError,
   MemoryReadTooLargeError,
   projectMemoryRead,
@@ -74,6 +75,7 @@ export const REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES = MEMORY_READ_MAXIMUM_CONTENT
 
 const RemoteReadToolInput = Schema.Struct({
   mode: Schema.optionalKey(Schema.Literals(['content', 'outline'])),
+  offsetBytes: Schema.optionalKey(Schema.Int.check(Schema.isBetween({minimum: 0, maximum: Number.MAX_SAFE_INTEGER}))),
   revision: Schema.optionalKey(Identifier),
   section: Schema.optionalKey(
     Schema.Trim.check(
@@ -83,6 +85,7 @@ const RemoteReadToolInput = Schema.Struct({
       ),
     ),
   ),
+  sourceHash: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u))),
   uri: NonEmptyUri,
   version: Version,
 }).check(
@@ -169,7 +172,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
     'read_context',
     {
       annotations: {readOnlyHint: true},
-      description: `Read untrusted remote evidence. Returns the full memory up to ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes. Larger memories refuse with an outline; retry with mode=outline or section. Provide uri and version.`,
+      description: `Read untrusted remote evidence. Returns the full memory up to ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes. Larger memories refuse with an outline; retry with mode=outline or section, or opt into ${MEMORY_READ_PAGE_BYTES}-byte pages with offsetBytes=0. Continue with nextOffsetBytes and sourceHash until complete=true. Provide uri and version.`,
       inputSchema: RemoteReadToolInput,
     },
     input => invokeRemoteReadTool(requestContext, dependencies, input),
@@ -457,7 +460,9 @@ async function invokeRemoteReadTool(
       try {
         read = projectMemoryRead([{text: result.content, uri: result.uri}], {
           mode: input.mode,
+          offsetBytes: input.offsetBytes,
           section: input.section,
+          sourceHash: input.sourceHash,
           toolName: 'read_context',
         });
       } catch (cause) {
@@ -480,6 +485,7 @@ async function invokeRemoteReadTool(
         },
         content: [
           {type: 'text', text: read.content},
+          ...(read.continuation === undefined ? [] : [{type: 'text' as const, text: read.continuation}]),
           ...(read.receipt === undefined ? [] : [{type: 'text' as const, text: read.receipt}]),
           {type: 'text', text: safeToolText(sourceMetadata)},
         ],
@@ -544,7 +550,7 @@ function registerRemoteMemoryResource(
         if (Buffer.byteLength(result.content, 'utf8') > REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES) {
           throw remoteMemoryError(
             'invalid_request',
-            `Remote memory exceeds the ${REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES}-byte resources/read cap; use read_context with mode=outline or section.`,
+            `Remote memory exceeds the ${REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES}-byte resources/read cap; use read_context with mode=outline or section, or pass one URI with offsetBytes=0 for explicit pages.`,
           );
         }
         return {

@@ -639,6 +639,50 @@ describe('remote memory HTTP transport', () => {
     expect(test.calls.filter(call => call === 'rate:read_context')).toEqual(['rate:read_context']);
   });
 
+  it('explicitly pages an oversized heading-less remote memory with a stable source hash', async () => {
+    const content = `MEMORY\nkind: durable\n\n${'🙂'.repeat(28_000)}`;
+    const test = fixture({readContent: content});
+    const uri = 'threadnote://share/share-1/memories/durable/threadnote/fixture.md';
+    let offsetBytes = 0;
+    let sourceHash: string | undefined;
+    const parts: string[] = [];
+    for (let index = 0; index < 20; index += 1) {
+      const response = await test.handler(
+        mcpRequest({
+          id: 5_000 + index,
+          method: 'tools/call',
+          params: {arguments: {uri, version: 1, offsetBytes, sourceHash}, name: 'read_context'},
+        }),
+      );
+      const payload = await json(response);
+      const result = payload.result as {
+        readonly content: readonly {readonly text: string}[];
+        readonly isError?: boolean;
+        readonly structuredContent: {
+          readonly complete: boolean;
+          readonly content: string;
+          readonly nextOffsetBytes?: number;
+          readonly sourceHash: string;
+          readonly totalBytes: number;
+        };
+      };
+      expect(result.isError, JSON.stringify(payload)).not.toBe(true);
+      const page = result.structuredContent;
+      expect(result.content[0]?.text).toBe(page.content);
+      if (!page.complete) expect(result.content[1]?.text).toContain('Incomplete memory page');
+      expect(page.totalBytes).toBe(Buffer.byteLength(content, 'utf8'));
+      parts.push(page.content);
+      sourceHash = page.sourceHash;
+      if (page.complete) {
+        expect(page.nextOffsetBytes).toBeUndefined();
+        break;
+      }
+      expect(page.nextOffsetBytes).toBeGreaterThan(offsetBytes);
+      offsetBytes = page.nextOffsetBytes!;
+    }
+    expect(parts.join('')).toBe(content);
+  });
+
   it('refuses to expose an oversized remote memory through resources/read', async () => {
     const privateBody = `REMOTE_RESOURCE_PRIVATE_SENTINEL\n${'x'.repeat(70_000)}`;
     const test = fixture({readContent: privateBody});

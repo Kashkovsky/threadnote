@@ -29,6 +29,7 @@ import {
   projectContextBriefAgentView,
 } from '../../src/context_brief/projector.js';
 import {MCP_RESOURCE_READ_MAX_BYTES} from '../../src/effect/ai/mcp_resource.js';
+import {MEMORY_READ_PAGE_BYTES} from '../../src/memory/read_projection.js';
 
 interface TextContent {
   readonly text: string;
@@ -44,11 +45,15 @@ interface ThreadnoteProgress {
 
 interface ReadStructuredContent {
   readonly canonicalUri?: string;
-  readonly complete: true;
+  readonly complete: boolean;
   readonly content: string;
   readonly contentBytes: number;
+  readonly nextOffsetBytes?: number;
+  readonly offsetBytes?: number;
   readonly requestedUri?: string;
   readonly resourceCount: number;
+  readonly sourceHash?: string;
+  readonly totalBytes?: number;
   readonly type: 'threadnote-read';
 }
 
@@ -308,6 +313,7 @@ describe('Threadnote MCP toolsets', () => {
         const readContext = tools.tools.find(tool => tool.name === 'read_context');
         expect(readContext?.description).toContain(`${MCP_RESOURCE_READ_MAX_BYTES} bytes`);
         expect(readContext?.description).toContain('mode=outline or section');
+        expect(readContext?.description).toContain('offsetBytes=0');
         expect(readContext?.inputSchema.properties).not.toHaveProperty('budgetTokens');
         expect(readContext?.inputSchema.properties).not.toHaveProperty('cursor');
       },
@@ -461,7 +467,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(oversizedError).toMatchObject({
           code: -32602,
           message: expect.stringContaining(
-            `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context with mode=outline or section.`,
+            `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context with mode=outline or section, or pass one URI with offsetBytes=0 for explicit pages.`,
           ),
         });
         expect(oversizedError?.message).not.toContain('LOCAL_RESOURCE_PRIVATE_SENTINEL');
@@ -1151,6 +1157,45 @@ describe('Threadnote MCP toolsets', () => {
         expect(text).toContain('## Open');
         expect(text).not.toContain(sentinel);
         expect(text).not.toContain('x'.repeat(80));
+      },
+      {toolset: 'core'},
+    );
+  }, 40_000);
+
+  it('explicitly pages a 110 KB heading-less memory without losing Unicode or hiding incompleteness', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/headingless-read.md';
+        const content = canonicalMemoryContent('headingless-read', '🙂'.repeat(28_000));
+        await writeCanonicalMemory(fixture.home, 'headingless-read.md', content);
+        const refusal = await client.callTool({arguments: {uri}, name: 'read_context'});
+        expect(refusal.isError).toBe(true);
+        const refusalContent = Array.isArray(refusal.content) ? refusal.content : [];
+        expect((refusalContent[0] as TextContent).text).toContain('offsetBytes=0');
+
+        let offsetBytes = 0;
+        let sourceHash: string | undefined;
+        const parts: string[] = [];
+        for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+          const result = await client.callTool({arguments: {uri, offsetBytes, sourceHash}, name: 'read_context'});
+          expect(result.isError, JSON.stringify(result)).not.toBe(true);
+          const page = result.structuredContent as ReadStructuredContent;
+          const resultContent = Array.isArray(result.content) ? result.content : [];
+          expect(page.contentBytes).toBeLessThanOrEqual(MEMORY_READ_PAGE_BYTES);
+          expect((resultContent[0] as TextContent).text).toBe(page.content);
+          expect(page.offsetBytes).toBe(offsetBytes);
+          expect(page.totalBytes).toBe(Buffer.byteLength(content, 'utf8'));
+          if (!page.complete) expect((resultContent[1] as TextContent).text).toContain('Incomplete memory page');
+          parts.push(page.content);
+          sourceHash = page.sourceHash;
+          if (page.complete) {
+            expect(page.nextOffsetBytes).toBeUndefined();
+            break;
+          }
+          expect(page.nextOffsetBytes).toBeGreaterThan(offsetBytes);
+          offsetBytes = page.nextOffsetBytes!;
+        }
+        expect(parts.join('')).toBe(content);
       },
       {toolset: 'core'},
     );

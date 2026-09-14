@@ -115,7 +115,7 @@ function canonicalThreadnoteUri(uri: string): Effect.Effect<string, McpSchema.In
 function resourceTooLarge(): McpSchema.InvalidParams {
   return McpSchema.InvalidParams.make({
     data: MCP_RESOURCE_ERROR_DATA,
-    message: `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context with mode=outline or section.`,
+    message: `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context with mode=outline or section, or pass one URI with offsetBytes=0 for explicit pages.`,
   });
 }
 

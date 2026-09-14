@@ -25,7 +25,7 @@ threadnote image-projection --disable`,
     },
     {
       type: 'paragraph',
-      text: 'MCP read_context returns the full memory up to 64 KiB. Larger memories refuse with an outline so you can retry with mode=outline or section. Image projection no longer replaces text with PNG pages. threadnote read on the CLI stays text. Restart connected MCP clients after changing the setting.',
+      text: 'MCP read_context returns the full memory up to 64 KiB. Larger memories refuse with an outline; retry with mode=outline or section, or explicitly page one URI with offsetBytes=0 and continue with nextOffsetBytes plus sourceHash until complete=true. Image projection no longer replaces text with PNG pages. threadnote read on the CLI stays text. Restart connected MCP clients after changing the setting.',
     },
     {
       type: 'list',
