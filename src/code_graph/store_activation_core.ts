@@ -721,6 +721,28 @@ const COMPLETED_PERSISTENT_BUILD_DRAIN_SPECS = [
   },
 ] as const;
 
+export function completedPersistentBuildDrainPageStatement(
+  spec: (typeof COMPLETED_PERSISTENT_BUILD_DRAIN_SPECS)[number],
+  batchRows: number,
+  snapshotId?: string,
+) {
+  const key = `(${spec.keyColumns.join(', ')})`;
+  return {
+    text: `DELETE FROM ${spec.table}
+           WHERE ${key} IN (
+             SELECT ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
+             FROM ${spec.table} AS candidate
+             WHERE candidate.snapshot_id IN (
+               SELECT snapshot.id FROM snapshots AS snapshot
+               WHERE snapshot.state <> 'building'${snapshotId === undefined ? '' : ' AND snapshot.id = ?'}
+             )
+             ORDER BY ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
+             LIMIT ?
+           )`,
+    parameters: snapshotId === undefined ? [batchRows] : [snapshotId, batchRows],
+  };
+}
+
 interface CompletedBuildCleanupPage {
   readonly deleted: number;
 }
@@ -733,21 +755,10 @@ const drainCompletedPersistentBuildRowsPage = Effect.fn('codeGraph.drainComplete
     // A killed schema publisher can leave an additive extension absent. A
     // routine tick skips it; ordinary indexing owns extension publication.
     if (!(yield* tableExists(sql, spec.table))) continue;
-    const key = `(${spec.keyColumns.join(', ')})`;
+    const statement = completedPersistentBuildDrainPageStatement(spec, spec.batchRows);
     const deleted = yield* sql.withTransaction(
       Effect.gen(function* () {
-        yield* sql.unsafe(
-          `DELETE FROM ${spec.table}
-             WHERE ${key} IN (
-               SELECT ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
-               FROM ${spec.table} AS candidate
-               JOIN snapshots AS snapshot ON snapshot.id = candidate.snapshot_id
-               WHERE snapshot.state <> 'building'
-               ORDER BY ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
-               LIMIT ?
-             )`,
-          [spec.batchRows],
-        );
+        yield* sql.unsafe(statement.text, statement.parameters);
         return yield* lastStatementChangeCount(sql);
       }),
     );

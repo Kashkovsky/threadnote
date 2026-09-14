@@ -9,6 +9,10 @@ import {afterEach, describe, expect, it} from 'vitest';
 import {makeCodeGraphBuildReporter, type CodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
 import {codeGraphLayout, codeGraphSnapshotBuildLockPath} from '../../src/code_graph/layout.js';
 import {
+  COMPLETED_PERSISTENT_BUILD_DRAIN_SPECS,
+  completedPersistentBuildDrainPageStatement,
+} from '../../src/code_graph/store_activation_core.js';
+import {
   CodeGraphMaintenanceCoordinator,
   makeCodeGraphMaintenanceCoordinator,
   type CodeGraphRoutineMaintenanceTick,
@@ -42,6 +46,65 @@ afterEach(async () => {
 });
 
 describe('routine code graph maintenance', () => {
+  it('seeks completed build rows by snapshot before taking a bounded cleanup page', () => {
+    const spec = COMPLETED_PERSISTENT_BUILD_DRAIN_SPECS[0];
+    fc.assert(
+      fc.property(
+        fc.array(fc.boolean(), {maxLength: 6}),
+        fc.option(fc.integer({max: 11, min: 0}), {nil: undefined}),
+        (additionalBuilding, targetIndex) => {
+          const building = [false, true, false, false, true, false, ...additionalBuilding];
+          const database = new Database(':memory:', {strict: true});
+          try {
+            database.exec(`
+              CREATE TABLE snapshots (id TEXT PRIMARY KEY, state TEXT NOT NULL);
+              CREATE TABLE building_reference_candidates (
+                snapshot_id TEXT NOT NULL, edge_id TEXT NOT NULL, tier INTEGER NOT NULL,
+                lookup_key TEXT NOT NULL, PRIMARY KEY (snapshot_id, edge_id, tier, lookup_key)
+              ) WITHOUT ROWID;
+            `);
+            for (const [index, active] of building.entries()) {
+              const id = `snapshot-${index.toString().padStart(2, '0')}`;
+              database.query('INSERT INTO snapshots VALUES (?, ?)').run(id, active ? 'building' : 'ready');
+              database.query('INSERT INTO building_reference_candidates VALUES (?, ?, 0, ?)').run(id, 'edge', 'key');
+            }
+            const target =
+              targetIndex === undefined
+                ? undefined
+                : `snapshot-${(targetIndex % building.length).toString().padStart(2, '0')}`;
+            const statement = completedPersistentBuildDrainPageStatement(spec, 3, target);
+            const plan = database
+              .query(`EXPLAIN QUERY PLAN ${statement.text}`)
+              .all(...statement.parameters) as readonly {
+              readonly detail: string;
+            }[];
+            expect(plan.some(row => row.detail.includes('SEARCH candidate USING PRIMARY KEY (snapshot_id=?)'))).toBe(
+              true,
+            );
+            expect(plan.some(row => /SCAN candidate|USE TEMP B-TREE/u.test(row.detail))).toBe(false);
+            const ids = building.map((_, index) => `snapshot-${index.toString().padStart(2, '0')}`);
+            const eligible = ids.filter((id, index) => !building[index] && (target === undefined || target === id));
+            const remainingIds = () =>
+              (
+                database
+                  .query('SELECT snapshot_id FROM building_reference_candidates ORDER BY snapshot_id')
+                  .all() as readonly {readonly snapshot_id: string}[]
+              ).map(row => row.snapshot_id);
+            database.query(statement.text).run(...statement.parameters);
+            expect(remainingIds()).toEqual(ids.filter(id => !eligible.slice(0, 3).includes(id)));
+            for (let page = 0; page < 4; page += 1) {
+              database.query(statement.text).run(...statement.parameters);
+            }
+            expect(remainingIds()).toEqual(ids.filter(id => !eligible.includes(id)));
+          } finally {
+            database.close(false);
+          }
+        },
+      ),
+      {numRuns: 30},
+    );
+  });
+
   it('defers immediately on checkout writer contention without opening SQLite', async () => {
     const fixture = await routineFixture('threadnote-routine-maintenance-contention-', false);
     await writeFile(fixture.databasePath, 'must not be opened while the writer gate is held');
