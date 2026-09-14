@@ -28,9 +28,11 @@ import {
 import {
   runGraphPublisherBootstrap,
   runGraphPublisherListen,
+  runGraphPublisherProfilePromote,
   runGraphPublisherServe,
   runGraphShareInit,
   type GraphPublisherBootstrapOptions,
+  type GraphPublisherProfilePromoteOptions,
   type GraphShareInitOptions,
 } from './publisher.js';
 
@@ -44,9 +46,13 @@ export const runGraphShareInitCommand = Effect.fn('codeGraph.sharing.initCommand
     return result;
   }
   yield* Console.log(
-    result.written
-      ? `Wrote graph share enrollment ${result.enrollmentPath}`
-      : `Graph share enrollment preview ${result.profileDigest}; pass --write-config to write ${result.enrollmentPath}`,
+    options.registry !== undefined
+      ? result.written
+        ? `Wrote temporary local-CAS enrollment ${result.enrollmentPath}. Run graph publisher profile-promote --registry ${options.registry}, then replace this file with the verified v2 candidate before committing.`
+        : `Staged local-CAS graph profile ${result.profileDigest}. Run again with --write-config for promotion, then replace the v1 file with the verified v2 candidate before committing.`
+      : result.written
+        ? `Wrote graph share enrollment ${result.enrollmentPath}`
+        : `Graph share enrollment preview ${result.profileDigest}; pass --write-config to write ${result.enrollmentPath}`,
   );
   return result;
 });
@@ -110,6 +116,19 @@ export const runGraphPublisherBootstrapCommand = Effect.fn('codeGraph.sharing.pu
   yield* Console.log(graphPublisherPublicationMessage(result));
   return result;
 });
+
+export const runGraphPublisherProfilePromoteCommand = Effect.fn('codeGraph.sharing.publisherProfilePromoteCommand')(
+  function* (config: RuntimeConfig, options: GraphPublisherProfilePromoteOptions) {
+    const result = yield* runGraphPublisherProfilePromote(config, options);
+    const candidate = JSON.stringify(result.enrollment, undefined, 2);
+    if (options.json) yield* writeFinalCliOutput(JSON.stringify(result));
+    else
+      yield* Console.log(
+        `Verified OCI profile artifact. Review this candidate enrollment; no repository file was changed:\n${candidate}`,
+      );
+    return result;
+  },
+);
 
 export const runGraphPublisherServeCommand = Effect.fn('codeGraph.sharing.publisherServeCommand')(function* (
   config: RuntimeConfig,

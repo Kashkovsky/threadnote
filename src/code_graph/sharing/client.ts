@@ -39,12 +39,13 @@ import {planGraphWorkerActions, readAdvertisedGraphWorkerActions} from './worker
 import {
   assertEnrollmentMatchesIdentity,
   assertProfileMatchesEnrollment,
+  enrolledProfileBodyDigest,
   graphShareProfileDigest,
   parseGraphShareCoordinatorUrl,
   parseGraphShareEnrollment,
   parseGraphShareProfile,
   parseGraphShareProfilePointer,
-  type GraphShareEnrollmentV1,
+  type GraphShareEnrollment,
 } from './profile.js';
 import {
   readSharedGraphImportAttempt,
@@ -158,10 +159,10 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
   if (pointer.kind === 'oci') return yield* graphSharingUnavailable('Remote OCI profile enrollment is not supported.');
   if (options.coordinator !== undefined) {
     const coordinatorUrl = parseGraphShareCoordinatorUrl(options.coordinator);
-    yield* mirrorCoordinatorCasBlob(casRoot, coordinatorUrl, pointer.digest);
+    yield* mirrorCoordinatorCasBlob(casRoot, coordinatorUrl, pointer.bodyDigest);
   }
   const profile = yield* decodeJson(
-    yield* readVerifiedCasBlob(casRoot, pointer.digest),
+    yield* readVerifiedCasBlob(casRoot, pointer.bodyDigest),
     parseGraphShareProfile,
     'Organization graph profile is invalid.',
   );
@@ -323,7 +324,7 @@ export const maybeImportSharedGraphBase = Effect.fn('codeGraph.sharing.maybeImpo
   if (enrollmentPointer._tag === 'None') return {imported: false as const, reason: 'invalid-enrollment' as const};
   if (
     trust.publisherKeyFingerprint !== enrollment.value.publisherKeyFingerprint ||
-    trust.profileDigest !== enrollmentPointer.value.digest
+    trust.profileDigest !== enrolledProfileBodyDigest(enrollment.value)
   ) {
     return {imported: false as const, reason: 'trust-pin-mismatch' as const};
   }
@@ -363,7 +364,7 @@ export const captureSharedGraphImportBase = Effect.fn('codeGraph.sharing.capture
 
 const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifiedCheckpoint')(function* (input: {
   readonly casRoot: string;
-  readonly enrollment: GraphShareEnrollmentV1;
+  readonly enrollment: GraphShareEnrollment;
   readonly request: SharedGraphImportRequest;
   readonly trust: GraphShareTrustReceiptV1;
 }) {
@@ -378,7 +379,7 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
   const client = yield* resolveGraphShareRepositoryClient(input.request.threadnoteHome, input.trust);
   const coordinatorHint = client.coordinatorUrl;
   const profile = yield* decodeJson(
-    yield* ensureSharedCasBlob(input.casRoot, pointer.digest, coordinatorHint),
+    yield* ensureSharedCasBlob(input.casRoot, pointer.bodyDigest, coordinatorHint),
     parseGraphShareProfile,
     'Organization graph profile is invalid.',
   );

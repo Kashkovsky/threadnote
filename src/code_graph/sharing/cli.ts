@@ -13,6 +13,7 @@ import {
   runRegistryAuth0LoginCommand,
   runRegistryAuth0LogoutCommand,
   runGraphPublisherBootstrapCommand,
+  runGraphPublisherProfilePromoteCommand,
   runGraphPublisherServeCommand,
   runGraphPublisherStatusCommand,
   runGraphShareInitCommand,
@@ -34,6 +35,11 @@ export function makeGraphSharingCommands(
       cwd: codeGraphCliBounds.cwd,
       json: codeGraphCliBounds.json,
       organization: optionalString('organization', 'Organization identity recorded in the issued profile'),
+      registry: optionalString('registry', 'Canonical OCI repository for an administrator-staged profile'),
+      workerRegistry: optionalString(
+        'worker-registry',
+        'Distinct worker OCI repository for an administrator-staged profile',
+      ),
       writeConfig: boolean('write-config', 'Write .threadnote/graph-share.json in the repository'),
     },
     options => withRuntimeEffect(config => runGraphShareInitCommand(config, options)),
@@ -114,6 +120,17 @@ export function makeGraphSharingCommands(
     ),
   );
 
+  const graphPublisherProfilePromote = Command.make(
+    'profile-promote',
+    {
+      cas: optionalString('cas', 'Persisted CAS directory containing the staged v1 profile'),
+      cwd: codeGraphCliBounds.cwd,
+      json: codeGraphCliBounds.json,
+      registry: requiredString('registry', 'Exact canonical OCI registry reference; publisher M2M push is required'),
+    },
+    options => withRuntimeEffect(config => runGraphPublisherProfilePromoteCommand(config, options)),
+  ).pipe(Command.withDescription('Publish and verify a staged profile, then print a v2 enrollment candidate'));
+
   const graphPublisherStatus = Command.make(
     'status',
     {
@@ -126,7 +143,12 @@ export function makeGraphSharingCommands(
 
   const graphPublisher = Command.make('publisher').pipe(
     Command.withDescription('Publish signed shared graph checkpoints for enrolled repositories'),
-    Command.withSubcommands([graphPublisherBootstrap, graphPublisherServe, graphPublisherStatus]),
+    Command.withSubcommands([
+      graphPublisherBootstrap,
+      graphPublisherProfilePromote,
+      graphPublisherServe,
+      graphPublisherStatus,
+    ]),
   );
 
   const graphContributeStatus = Command.make(

@@ -4,7 +4,7 @@ import {readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {graphSharingFailure} from './errors.js';
 import {parseSha256Digest, SHA256_DIGEST, SHA256_HEX, type Sha256Digest} from './digest.js';
 import {graphSharingLayout} from './layout.js';
-import {parseGraphShareCoordinatorUrl, type GraphShareEnrollmentV1, type GraphShareProfileV1} from './profile.js';
+import {parseGraphShareCoordinatorUrl, type GraphShareEnrollment, type GraphShareProfileV1} from './profile.js';
 
 const GRAPH_SHARE_TRUST_LOCK_OPTIONS = {
   heartbeatIntervalMilliseconds: 10_000,
@@ -144,7 +144,7 @@ export const removeGraphShareTrustReceipt = Effect.fn('codeGraph.sharing.removeT
 });
 
 export function trustReceiptFromEnrollment(
-  enrollment: GraphShareEnrollmentV1,
+  enrollment: GraphShareEnrollment,
   profile: GraphShareProfileV1,
   digest: Sha256Digest,
   accessMode: GraphShareAccessMode,

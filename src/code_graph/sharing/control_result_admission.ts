@@ -15,7 +15,7 @@ import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from '.
 import {graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {readAuthenticatedGraphShareFrontier} from './frontier_acceptance.js';
 import {graphShareCommitIsAncestor, GRAPH_SHARE_GIT_OBJECT_ID} from './git.js';
-import type {GraphShareEnrollmentV1, GraphShareProfileV1} from './profile.js';
+import type {GraphShareEnrollment, GraphShareProfileV1} from './profile.js';
 import {graphShareRegistryPublicationScope} from './registry_publication.js';
 import {makeGraphShareRegistryReader} from './registry_reader.js';
 import {verifyGraphWorkerResultAnnouncement, type GraphWorkerResultAnnouncement} from './worker_announcement.js';
@@ -74,7 +74,7 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
   readonly announcement: unknown;
   readonly casRoot: string;
   readonly commandExecutor: Context.Service.Shape<typeof CommandExecutor>;
-  readonly enrollment: GraphShareEnrollmentV1;
+  readonly enrollment: GraphShareEnrollment;
   readonly home: string;
   readonly initialPolicy: GraphControlPolicy;
   readonly principal: AccessTokenClaims;
@@ -231,7 +231,7 @@ export const admitGraphControlWorkerResult = Effect.fn('codeGraph.sharing.admitC
 const sourceDisposition = Effect.fn('codeGraph.sharing.workerSourceDisposition')(function* (
   input: {
     readonly casRoot: string;
-    readonly enrollment: GraphShareEnrollmentV1;
+    readonly enrollment: GraphShareEnrollment;
     readonly home: string;
     readonly profile: GraphShareProfileV1;
     readonly repoRoot: string;
@@ -264,7 +264,7 @@ const sourceDisposition = Effect.fn('codeGraph.sharing.workerSourceDisposition')
 /** Read the authenticated local pointer under the coordinator lock, which serializes its promotion. */
 const publishedSourceCommit = Effect.fn('codeGraph.sharing.publishedWorkerSourceCommit')(function* (input: {
   readonly casRoot: string;
-  readonly enrollment: GraphShareEnrollmentV1;
+  readonly enrollment: GraphShareEnrollment;
   readonly home: string;
   readonly profile: GraphShareProfileV1;
 }) {
@@ -365,7 +365,7 @@ export const retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked = Effect.
 )(function* (
   input: {
     readonly casRoot: string;
-    readonly enrollment: GraphShareEnrollmentV1;
+    readonly enrollment: GraphShareEnrollment;
     readonly home: string;
     readonly profile: GraphShareProfileV1;
     readonly repoRoot: string;

@@ -4,7 +4,9 @@ import {
   assertEnrollmentMatchesIdentity,
   casProfilePointer,
   defaultGraphShareProfile,
+  enrolledProfileBodyDigest,
   graphShareProfileDigest,
+  ociProfilePointer,
   parseGraphShareCoordinatorUrl,
   parseGraphShareEnrollment,
   parseGraphShareProfile,
@@ -28,7 +30,8 @@ describe('graph share enrollment and profile', () => {
       repositoryId: PROFILE.repositoryId,
       schemaVersion: 1,
     });
-    expect(parseGraphShareProfilePointer(enrollment.profile)).toEqual({digest, kind: 'cas'});
+    expect(parseGraphShareProfilePointer(enrollment.profile)).toEqual({bodyDigest: digest, kind: 'cas'});
+    expect(enrolledProfileBodyDigest(enrollment)).toBe(digest);
     expect(() =>
       parseGraphShareEnrollment({
         ...enrollment,
@@ -41,6 +44,35 @@ describe('graph share enrollment and profile', () => {
         profile: 'oci://user:token@registry.example/threadnote/profile@sha256:' + 'c'.repeat(64),
       }),
     ).toThrow(/invalid/i);
+  });
+
+  it('separates the OCI manifest pin from the canonical profile body digest', () => {
+    const profileDigest = graphShareProfileDigest(PROFILE);
+    const manifestDigest = `sha256:${'c'.repeat(64)}` as const;
+    const profile = ociProfilePointer('oci://registry.example.test/acme/canonical', manifestDigest);
+    const enrollment = parseGraphShareEnrollment({
+      profile,
+      profileDigest,
+      publisherKeyFingerprint: PROFILE.trust.publisherKeys[0],
+      repositoryId: PROFILE.repositoryId,
+      schemaVersion: 2,
+    });
+    expect(enrolledProfileBodyDigest(enrollment)).toBe(profileDigest);
+    expect(parseGraphShareProfilePointer(enrollment.profile)).toMatchObject({
+      kind: 'oci',
+      manifestDigest,
+      registryReference: 'oci://registry.example.test/acme/canonical',
+    });
+    for (const invalid of [
+      {...enrollment, profileDigest: undefined},
+      {...enrollment, profile: casProfilePointer(profileDigest)},
+      {...enrollment, profile: profile.replace('registry.example.test', 'user:secret@registry.example.test')},
+      {...enrollment, profile: profile.replace('registry.example.test', 'registry.example.test:443')},
+      {...enrollment, profile: profile.replace('acme/canonical', 'Acme/canonical')},
+      {...enrollment, extra: 'unexpected'},
+      {...enrollment, schemaVersion: 1},
+    ])
+      expect(() => parseGraphShareEnrollment(invalid)).toThrow(/invalid/i);
   });
 
   it('rejects enrollment when repositoryId does not match the checkout identity', () => {

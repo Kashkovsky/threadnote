@@ -3,17 +3,12 @@ import {SystemInfo} from '../../effect/system.js';
 import type {RuntimeConfig} from '../../types.js';
 import {resolveRepositoryIdentity} from '../repository.js';
 import {decodeJsonBytes, readBoundedPrivateBytes, readJsonFile} from './atomic.js';
-import {readVerifiedCasBlob} from './cas.js';
 import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {parseGraphShareFrontierPointer} from './artifacts.js';
 import {readAuthenticatedGraphShareFrontier} from './frontier_acceptance.js';
 import {graphSharingFailure} from './errors.js';
-import {
-  assertEnrollmentMatchesIdentity,
-  parseGraphShareEnrollment,
-  parseGraphShareProfile,
-  parseGraphShareProfilePointer,
-} from './profile.js';
+import {assertEnrollmentMatchesIdentity, parseGraphShareEnrollment} from './profile.js';
+import {readGraphShareEnrolledProfile} from './profile_storage.js';
 import {
   graphShareRegistryPublicationScope,
   publishGraphShareRegistryFrontier,
@@ -35,11 +30,7 @@ const loadGraphPublisherRegistry = Effect.fn('codeGraph.sharing.loadPublisherReg
   if (!(yield* (yield* FileSystem.FileSystem).exists(enrollmentPath))) return undefined;
   const enrollment = parseGraphShareEnrollment(yield* readJsonFile(enrollmentPath));
   assertEnrollmentMatchesIdentity(enrollment, identity.repositoryId);
-  const profile = parseGraphShareProfile(
-    yield* decodeJsonBytes(
-      yield* readVerifiedCasBlob(casRoot, parseGraphShareProfilePointer(enrollment.profile).digest),
-    ),
-  );
+  const profile = yield* readGraphShareEnrolledProfile(casRoot, enrollment);
   const scope = graphShareRegistryPublicationScope({enrollment, profile});
   return {home: config.agentContextHome, casRoot, enrollment, profile, scope};
 });

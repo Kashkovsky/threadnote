@@ -40,13 +40,13 @@ import {admitGraphControlWorkerResult, readGraphControlWorkerResultRequest} from
 import {
   assertProfileMatchesEnrollment,
   graphShareProfileDigest,
-  type GraphShareEnrollmentV1,
+  type GraphShareEnrollment,
   type GraphShareProfileV1,
 } from './profile.js';
 
 export interface GraphControlReaderOptions {
   readonly casRoot: string;
-  readonly enrollment: GraphShareEnrollmentV1;
+  readonly enrollment: GraphShareEnrollment;
   readonly policyFile: string;
   readonly profile: GraphShareProfileV1;
   readonly repoRoot?: string;
