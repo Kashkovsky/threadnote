@@ -35,7 +35,7 @@ describe('MCP session broker', () => {
           error: {code: -32_603, data: {reason: 'no-active-release', requestDisposition: 'not-dispatched'}},
         });
         expect(failure.error.message).toContain('threadnote install --no-start');
-        expect(failure.error.message).not.toContain('outcome is unknown');
+        expect(failure.error.message).not.toContain('write may have committed');
         expect(spawned).toBe(0);
         expect(clientOutput.availableLines()).toBe(0);
       }),
@@ -97,14 +97,95 @@ describe('MCP session broker', () => {
     const lookup = JSON.parse(await clientOutput.nextLine());
     clientInput.end();
     await running;
-    expect(mutation).toMatchObject({id: 2, error: {message: expect.stringContaining('outcome is unknown')}});
-    expect(mutation.error.data).toBeUndefined();
+    expect(mutation).toMatchObject({
+      id: 2,
+      error: {
+        code: -32_080,
+        data: {reason: 'runtime-interrupted', requestDisposition: 'dispatched-or-uncertain', writeOutcome: 'unknown'},
+        message: expect.stringContaining('Read the canonical record'),
+      },
+    });
     expect(lookup).toMatchObject({
       id: 3,
       error: {data: {reason: 'startup-failed', requestDisposition: 'not-dispatched'}},
     });
     expect(JSON.stringify(lookup)).not.toContain('private');
     expect(child.received).toHaveLength(2);
+  });
+
+  it('identifies a confirmed runtime replacement without replaying an in-flight write', async () => {
+    const clientInput = new AsyncByteQueue();
+    const clientOutput = new AsyncByteQueue();
+    const oldRelease = {releaseRoot: '/threadnote/versions/old', version: 'old'};
+    const newRelease = {releaseRoot: '/threadnote/versions/new', version: 'new'};
+    let active = oldRelease;
+    const child = new FakeMcpChild(oldRelease.version, {respondToTools: false});
+    let spawnCount = 0;
+    const running = runMcpBroker({
+      input: clientInput,
+      readActiveRelease: async () => active,
+      spawn: () => {
+        spawnCount += 1;
+        return child;
+      },
+      writeOutput: async line => clientOutput.pushLine(line),
+    });
+    clientInput.pushLine(JSON.stringify({id: 1, jsonrpc: '2.0', method: 'initialize', params: {}}));
+    await clientOutput.nextLine();
+    clientInput.pushLine(
+      JSON.stringify({id: 2, jsonrpc: '2.0', method: 'tools/call', params: {name: 'remember_context'}}),
+    );
+    await child.receivedCount(2);
+    active = newRelease;
+    child.exitUnexpectedly();
+
+    const failure = JSON.parse(await clientOutput.nextLine());
+    expect(failure).toMatchObject({
+      id: 2,
+      error: {
+        code: -32_080,
+        data: {
+          reason: 'runtime-replaced',
+          requestDisposition: 'dispatched-or-uncertain',
+          writeOutcome: 'unknown',
+        },
+        message: expect.stringContaining('old runtime'),
+      },
+    });
+    expect(spawnCount).toBe(1);
+    clientInput.end();
+    await running;
+  });
+
+  it('identifies a replacement when the old runtime closes during the child write', async () => {
+    const clientInput = new AsyncByteQueue();
+    const clientOutput = new AsyncByteQueue();
+    const oldRelease = {releaseRoot: '/threadnote/versions/old', version: 'old'};
+    const newRelease = {releaseRoot: '/threadnote/versions/new', version: 'new'};
+    let active = oldRelease;
+    const child = new FakeMcpChild(oldRelease.version, {
+      exitBeforeFirstToolWrite: true,
+      onFailedToolWrite: () => {
+        active = newRelease;
+      },
+    });
+    const running = runMcpBroker({
+      input: clientInput,
+      readActiveRelease: async () => active,
+      spawn: () => child,
+      writeOutput: async line => clientOutput.pushLine(line),
+    });
+    clientInput.pushLine(JSON.stringify({id: 1, jsonrpc: '2.0', method: 'initialize', params: {}}));
+    await clientOutput.nextLine();
+    clientInput.pushLine(
+      JSON.stringify({id: 2, jsonrpc: '2.0', method: 'tools/call', params: {name: 'remember_context'}}),
+    );
+    expect(JSON.parse(await clientOutput.nextLine())).toMatchObject({
+      id: 2,
+      error: {code: -32_080, data: {reason: 'runtime-replaced', writeOutcome: 'unknown'}},
+    });
+    clientInput.end();
+    await running;
   });
 
   it('reports a closed spawn failure without allowing the observer to alter recovery', async () => {
@@ -219,7 +300,7 @@ describe('MCP session broker', () => {
       readonly id: string;
     };
     expect(failure.id).toBe('mutation-1');
-    expect(failure.error.message).toContain('outcome is unknown');
+    expect(failure.error.message).toContain('Read the canonical record');
     expect(spawned).toHaveLength(1);
     expect(failures).toEqual([{area: 'child', reason: 'exit'}]);
 
@@ -339,7 +420,7 @@ describe('MCP session broker', () => {
     await clientOutput.nextLine();
     clientInput.pushLine(JSON.stringify({jsonrpc: '2.0', method: 'notifications/initialized'}));
     clientInput.pushLine(JSON.stringify({id: 2, jsonrpc: '2.0', method: 'tools/call', params: {name: 'health'}}));
-    expect(JSON.parse(await clientOutput.nextLine())).toMatchObject({error: {code: -32_603}, id: 2});
+    expect(JSON.parse(await clientOutput.nextLine())).toMatchObject({error: {code: -32_080}, id: 2});
     expect(failures).toContainEqual({area: 'child', reason: 'write'});
 
     clientInput.pushLine(JSON.stringify({id: 3, jsonrpc: '2.0', method: 'tools/call', params: {name: 'health'}}));
@@ -584,7 +665,7 @@ describe('MCP session broker', () => {
       method: 'notifications/cancelled',
       params: {requestId: externalId},
     });
-    expect(JSON.parse(await clientOutput.nextLine())).toMatchObject({error: {code: -32_603}, id: 2});
+    expect(JSON.parse(await clientOutput.nextLine())).toMatchObject({error: {code: -32_080}, id: 2});
 
     clientInput.end();
     await running;
@@ -662,6 +743,7 @@ class FakeMcpChild implements McpBrokerChild {
     readonly options: {
       readonly exitBeforeFirstToolWrite?: boolean;
       readonly ignoreInitialize?: boolean;
+      readonly onFailedToolWrite?: () => void;
       readonly progressFramesBeforeToolResult?: number;
       readonly rejectInitialize?: boolean;
       readonly respondToTools?: boolean;
@@ -725,6 +807,7 @@ class FakeMcpChild implements McpBrokerChild {
             }),
       );
     } else if (envelope.method === 'tools/call' && this.options.exitBeforeFirstToolWrite) {
+      this.options.onFailedToolWrite?.();
       this.#end();
       throw new Error('Child exited before accepting the request.');
     } else if (envelope.method === 'tools/call' && this.options.respondToTools !== false) {

@@ -1,13 +1,20 @@
-import React, {useEffect, useMemo, useRef, useState} from 'react';
+import React, {useEffect, useMemo, useReducer, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import type {CodeGraphLocalDiagnosticsReport} from '../code_graph/diagnostics.js';
 import {ContextPanel} from './context_view.js';
 import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from './dialog.js';
 import {WorksetsPanel} from './worksets_view.js';
 import {ProcessesPanel} from './processes_view.js';
 import {settleManagerRefreshTasks} from './refresh.js';
+import {DropdownSelect, MarkdownViewer, Metadata, TargetFields} from './ui_controls.js';
+import {
+  initialManagerAvailability,
+  managerActionsAreAvailable,
+  managerAvailabilityTransition,
+  managerSelectionIsReadable,
+  reconcileManagerDraft,
+  type ManagerDraft,
+} from './connection.js';
 import {managerUpdateIndicator} from './update_indicator.js';
 import {
   graphViewRemovalApprovalDialog,
@@ -46,8 +53,6 @@ import {
   isAgentClient,
   isMarkdownNode,
   isMarkdownUri,
-  isMemoryKind,
-  isMemoryStatus,
   isResourceUri,
   loadSidebarWidth,
   SIDEBAR_WIDTH_DEFAULT,
@@ -88,8 +93,8 @@ type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
 type MemoryStatus = 'active' | 'archived' | 'expired' | 'superseded';
 type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor' | 'effect-ai';
 type MemoryViewMode = 'edit' | 'preview';
-type SelectId = 'agent' | 'kind' | 'status';
-interface MemoryMetadata {
+export type SelectId = 'agent' | 'kind' | 'status';
+export interface MemoryMetadata {
   readonly archivedFrom?: string;
   readonly kind: MemoryKind;
   readonly project?: string;
@@ -199,18 +204,12 @@ export interface BulkItemResult {
   readonly uri: string;
 }
 
-interface TargetForm {
+export interface TargetForm {
   kind: MemoryKind;
   project: string;
   status: MemoryStatus;
   team: string;
   topic: string;
-}
-
-interface DropdownOption {
-  readonly disabled?: boolean;
-  readonly label: string;
-  readonly value: string;
 }
 
 const EMPTY_SELECTED_URIS: ReadonlySet<string> = new Set();
@@ -236,6 +235,10 @@ function App(): React.ReactElement {
   const [selectedUri, setSelectedUri] = useState<string | undefined>();
   const [selectedUris, setSelectedUris] = useState<ReadonlySet<string>>(new Set());
   const [memory, setMemory] = useState<MemoryResponse | undefined>();
+  const [loadedUri, setLoadedUri] = useState<string | undefined>();
+  const draftRef = useRef<ManagerDraft | undefined>(undefined);
+  const [pendingCanonical, setPendingCanonical] = useState<MemoryResponse | undefined>();
+  const [availability, dispatchAvailability] = useReducer(managerAvailabilityTransition, initialManagerAvailability);
   const [content, setContent] = useState('');
   const [memoryViewMode, setMemoryViewMode] = useState<MemoryViewMode>('edit');
   const [openSelect, setOpenSelect] = useState<SelectId | undefined>();
@@ -276,6 +279,18 @@ function App(): React.ReactElement {
   useEffect(() => {
     void refreshAll();
   }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void api<StateResponse>('/api/state').then(
+        () => {
+          if (availability.runtime === 'disconnected') void refreshAll();
+        },
+        () => dispatchAvailability('runtime-lost'),
+      );
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }, [availability.runtime]);
 
   useEffect(() => {
     if (panel === 'doctor') {
@@ -373,24 +388,41 @@ function App(): React.ReactElement {
 
   useEffect(() => {
     if (!selectedUri) {
+      dispatchAvailability('selection-cleared');
       setMemory(undefined);
-      setContent('');
+      setLoadedUri(undefined);
       setMemoryViewMode('edit');
       return;
     }
     const node = findNodeInTrees([tree, resourceTree], selectedUri);
     if (node?.isDir) {
+      dispatchAvailability('selection-cleared');
       setMemory(undefined);
+      setLoadedUri(undefined);
       setContent('');
       setMemoryViewMode('preview');
       setTarget({kind: 'durable', project: '', status: 'active', team: node.sharedTeam ?? '', topic: ''});
       return;
     }
-    if (isResourceUri(selectedUri)) {
-      void loadResource(selectedUri);
-      return;
-    }
-    void loadMemory(selectedUri);
+    let cancelled = false;
+    dispatchAvailability('selection-started');
+    setMemory(undefined);
+    setLoadedUri(undefined);
+    if (draftRef.current?.uri !== selectedUri) setContent('');
+    void (
+      isResourceUri(selectedUri)
+        ? loadResource(selectedUri, () => !cancelled)
+        : loadMemory(selectedUri, () => !cancelled)
+    )
+      .then(() => {
+        if (!cancelled) dispatchAvailability('selection-ready');
+      })
+      .catch(() => {
+        if (!cancelled) dispatchAvailability('selection-failed');
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [resourceTree, selectedUri, tree]);
 
   useEffect(() => {
@@ -423,6 +455,7 @@ function App(): React.ReactElement {
   );
 
   async function refreshAll(): Promise<void> {
+    let nextTree: TreeResponse | undefined;
     const failures = await settleManagerRefreshTasks([
       {
         label: 'Graph indexes',
@@ -445,9 +478,7 @@ function App(): React.ReactElement {
       {
         label: 'Memory library',
         run: async () => {
-          const next = await api<TreeResponse>('/api/tree');
-          setTree(next.tree);
-          setResourceTree(next.resourcesTree);
+          nextTree = await api<TreeResponse>('/api/tree');
         },
       },
       {
@@ -455,6 +486,13 @@ function App(): React.ReactElement {
         run: async () => setShares((await api<{shares: readonly ShareSummary[]}>('/api/shares')).shares),
       },
     ]);
+    dispatchAvailability(
+      failures.some(failure => /^(Runtime|Memory library):/u.test(failure)) ? 'runtime-lost' : 'runtime-ready',
+    );
+    if (nextTree) {
+      setTree(nextTree.tree);
+      setResourceTree(nextTree.resourcesTree);
+    }
     toastMessage(failures.length === 0 ? 'Refreshed' : `Refresh incomplete · ${failures.join(' · ')}`);
   }
 
@@ -559,14 +597,17 @@ function App(): React.ReactElement {
     setGraphDiagnostics(current => withoutRemovedGraphDiagnosticsView(current, target));
   }
 
-  async function loadMemory(uri: string): Promise<void> {
+  async function loadMemory(uri: string, accept: () => boolean = () => true): Promise<void> {
     const next = await api<MemoryResponse>(`/api/memory?uri=${encodeURIComponent(uri)}`);
-    showMemory(next);
+    if (accept()) showMemory(next);
   }
 
   function showMemory(next: MemoryResponse): void {
     setMemory(next);
-    setContent(next.content);
+    setLoadedUri(next.node.uri);
+    const reconciled = reconcileManagerDraft(draftRef.current, {content: next.content, uri: next.node.uri});
+    setContent(reconciled.content);
+    setPendingCanonical(reconciled.needsReview ? next : undefined);
     setMemoryViewMode(isMarkdownNode(next.node) ? 'preview' : 'edit');
     setTarget({
       kind: next.record?.metadata.kind ?? 'durable',
@@ -577,9 +618,11 @@ function App(): React.ReactElement {
     });
   }
 
-  async function loadResource(uri: string): Promise<void> {
+  async function loadResource(uri: string, accept: () => boolean = () => true): Promise<void> {
     const result = await api<ReadResponse>('/api/read', {uri});
+    if (!accept()) return;
     setMemory(undefined);
+    setLoadedUri(uri);
     setContent(result.content || result.output);
     setOutput(result.output || result.content);
     setReadUri(uri);
@@ -665,7 +708,7 @@ function App(): React.ReactElement {
 
   async function saveCurrent(): Promise<void> {
     await runAction('Saved memory', () =>
-      api('/api/memory/save', {
+      api<{readonly output?: string}>('/api/memory/save', {
         kind: target.kind,
         project: target.project,
         expectedContent: memory?.content,
@@ -673,6 +716,9 @@ function App(): React.ReactElement {
         status: target.status,
         text: content,
         topic: target.topic,
+      }).then(result => {
+        draftRef.current = undefined;
+        return result;
       }),
     );
   }
@@ -712,16 +758,28 @@ function App(): React.ReactElement {
 
   async function forgetCurrent(): Promise<void> {
     if (!selectedUri) return;
+    const forgottenUri = selectedUri;
     const confirmed = await dialogs.confirm({
       confirmLabel: 'Forget memory',
-      detail: selectedUri,
+      detail: forgottenUri,
       message: 'This permanently removes the memory from local context.',
       title: 'Forget this memory?',
       tone: 'danger',
     });
     if (!confirmed) return;
-    await runAction('Forgot memory', () => api('/api/memory/forget', {confirm: true, uri: selectedUri}));
-    setSelectedUri(undefined);
+    try {
+      await api('/api/memory/forget', {confirm: true, uri: forgottenUri});
+      if (draftRef.current?.uri === forgottenUri) draftRef.current = undefined;
+      setPendingCanonical(current => (current?.node.uri === forgottenUri ? undefined : current));
+      setSelectedUri(undefined);
+      setMemory(undefined);
+      setContent('');
+      setTarget({kind: 'durable', project: '', status: 'active', team: '', topic: ''});
+      await refreshTreeOnly();
+      toastMessage('Forgot memory');
+    } catch (cause) {
+      toastMessage(errorMessage(cause));
+    }
   }
 
   async function removeFolderCurrent(): Promise<void> {
@@ -1144,21 +1202,29 @@ function App(): React.ReactElement {
 
   const selectedIsDir = selectedNode?.isDir === true;
   const selectedIsResource = selectedUri ? isResourceUri(selectedUri) : false;
+  const selectedIsReadable = selectedUri === loadedUri && managerSelectionIsReadable(availability);
   const selectedIsMarkdown = Boolean(selectedNode && isMarkdownNode(selectedNode));
   const markdownPreview = markdownBodyForPreview(content);
-  const canMutate = Boolean(selectedUri && !selectedIsDir && !selectedIsResource);
+  const canMutate = Boolean(selectedUri && selectedIsReadable && !selectedIsDir && !selectedIsResource);
   const canRemoveFolder = Boolean(
     selectedNode?.isDir && selectedNode.relativePath && !selectedNode.isShared && !selectedIsResource,
   );
   const consolidationBusy = draftingConsolidation || applyingConsolidation;
   const canDraftConsolidation = selectedList.length > 0 || !selectedIsResource;
   const doctorBusy = doctorAction !== undefined;
-  const controlsBlocked = bulkAction !== undefined;
+  const selectedHasPendingCanonical = pendingCanonical !== undefined && pendingCanonical.node.uri === selectedUri;
+  const controlsBlocked =
+    bulkAction !== undefined ||
+    selectedHasPendingCanonical ||
+    !managerActionsAreAvailable(availability) ||
+    Boolean(selectedUri && !selectedIsDir && !selectedIsReadable);
   const busyOverlayMessage = bulkAction
     ? `${actionProgressLabel(bulkAction)} ${selectedList.length} selected ${selectedList.length === 1 ? 'memory' : 'memories'}...`
     : '';
   const doctorBusyMessage = doctorAction ? `${doctorAction}...` : '';
-  const metadataFieldsDisabled = Boolean(memory || selectedIsDir || selectedIsResource);
+  const metadataFieldsDisabled = Boolean(
+    memory || selectedIsDir || selectedIsResource || (selectedUri && !selectedIsReadable),
+  );
   const appStyle: React.CSSProperties & {'--sidebar-width': string} = {'--sidebar-width': `${sidebarWidth}px`};
   const updateIndicator = state ? managerUpdateIndicator(state) : undefined;
 
@@ -1203,7 +1269,7 @@ function App(): React.ReactElement {
               <button
                 aria-label="Refresh memory library"
                 className="icon-button"
-                disabled={controlsBlocked}
+                disabled={bulkAction !== undefined}
                 onClick={() => void refreshAll()}
                 title="Refresh"
                 type="button"
@@ -1340,7 +1406,7 @@ function App(): React.ReactElement {
             <button
               aria-label="Refresh manager"
               className="topbar-refresh"
-              disabled={controlsBlocked}
+              disabled={bulkAction !== undefined}
               onClick={() => void refreshAll()}
               title="Refresh manager"
               type="button"
@@ -1348,6 +1414,19 @@ function App(): React.ReactElement {
               ↻
             </button>
           )}
+          {availability.runtime !== 'connected' ? (
+            <div className="manager-connection-alert" role="alert">
+              {availability.runtime === 'disconnected'
+                ? 'Manager disconnected. Memory contents and write actions are unavailable. Restart the Manager, then refresh this page.'
+                : 'Connecting to Manager. Memory contents and write actions are unavailable.'}
+            </div>
+          ) : selectedUri && !selectedIsReadable ? (
+            <div className="manager-connection-alert" role="status">
+              {availability.selection === 'failed'
+                ? 'Could not load the selected record. Refresh before editing.'
+                : 'Loading the selected record before editing.'}
+            </div>
+          ) : null}
         </header>
 
         {panel === 'graph' ? (
@@ -1471,12 +1550,48 @@ function App(): React.ReactElement {
                     </button>
                   </div>
                 </div>
-                {memoryViewMode === 'preview' && selectedIsMarkdown && !selectedIsDir ? (
+                {pendingCanonical && selectedUri === pendingCanonical.node.uri ? (
+                  <div className="manager-draft-reconcile" role="alert">
+                    <p>The record changed while Manager was disconnected. Your unsaved draft is preserved.</p>
+                    <details>
+                      <summary>Review the reloaded record</summary>
+                      <pre>{pendingCanonical.content}</pre>
+                    </details>
+                    <div className="action-row">
+                      <button
+                        onClick={() => {
+                          draftRef.current = {...draftRef.current!, base: pendingCanonical.content};
+                          setPendingCanonical(undefined);
+                        }}
+                      >
+                        Keep my draft
+                      </button>
+                      <button
+                        onClick={() => {
+                          draftRef.current = undefined;
+                          showMemory(pendingCanonical);
+                        }}
+                      >
+                        Load reloaded record
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                {selectedUri && !selectedIsDir && !selectedIsReadable ? (
+                  <div className="manager-record-unavailable" role="status">
+                    Record unavailable until it loads.
+                  </div>
+                ) : memoryViewMode === 'preview' && selectedIsMarkdown && !selectedIsDir ? (
                   <MarkdownViewer markdown={markdownPreview} />
                 ) : (
                   <textarea
                     disabled={selectedIsDir || selectedIsResource || controlsBlocked}
-                    onChange={event => setContent(event.target.value)}
+                    onChange={event => {
+                      const next = event.target.value;
+                      if (selectedUri && memory)
+                        draftRef.current = {base: memory.content, text: next, uri: selectedUri};
+                      setContent(next);
+                    }}
                     placeholder={
                       selectedIsDir ? 'Folder selected' : selectedIsResource ? 'Resource content' : 'Memory content'
                     }
@@ -1488,16 +1603,24 @@ function App(): React.ReactElement {
 
               <aside className="inspector">
                 <h3>Metadata</h3>
-                <TargetFields
-                  disabled={metadataFieldsDisabled}
-                  onChange={setTarget}
-                  openSelect={openSelect}
-                  projectOptions={projectOptions}
-                  setOpenSelect={setOpenSelect}
-                  target={target}
-                />
-                {metadataFieldsDisabled ? <p className="muted">Metadata is read-only for existing entries.</p> : null}
-                <Metadata metadata={memory?.record?.metadata} node={memory?.node ?? selectedNode} />
+                {selectedUri && !selectedIsReadable && !selectedIsDir ? (
+                  <p className="muted">Metadata unavailable until the selected record loads.</p>
+                ) : (
+                  <>
+                    <TargetFields
+                      disabled={metadataFieldsDisabled}
+                      onChange={setTarget}
+                      openSelect={openSelect}
+                      projectOptions={projectOptions}
+                      setOpenSelect={setOpenSelect}
+                      target={target}
+                    />
+                    {metadataFieldsDisabled ? (
+                      <p className="muted">Metadata is read-only for existing entries.</p>
+                    ) : null}
+                    <Metadata metadata={memory?.record?.metadata} node={memory?.node ?? selectedNode} />
+                  </>
+                )}
                 <h3>Consolidate</h3>
                 <div className="field-row select-row">
                   <DropdownSelect
@@ -1840,149 +1963,6 @@ function TreeSelectionCheckbox(props: {
       ref={ref}
       type="checkbox"
     />
-  );
-}
-
-function Metadata(props: {readonly metadata?: MemoryMetadata; readonly node?: TreeNode}): React.ReactElement {
-  const rows: Array<[string, string | undefined]> = [
-    ['kind', props.metadata?.kind],
-    ['status', props.metadata?.status],
-    ['project', props.metadata?.project],
-    ['topic', props.metadata?.topic],
-    ['source', props.metadata?.sourceAgentClient],
-    ['timestamp', props.metadata?.timestamp],
-    ['team', props.node?.sharedTeam],
-    ['size', props.node?.size === undefined ? undefined : `${props.node.size} bytes`],
-  ].filter((row): row is [string, string] => typeof row[1] === 'string' && row[1].length > 0);
-  return (
-    <dl>
-      {rows.map(([label, value]) => (
-        <React.Fragment key={label}>
-          <dt>{label}</dt>
-          <dd>{value}</dd>
-        </React.Fragment>
-      ))}
-    </dl>
-  );
-}
-
-function MarkdownViewer(props: {readonly markdown: string}): React.ReactElement {
-  return (
-    <article className="markdown-viewer">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{props.markdown || '_No content_'}</ReactMarkdown>
-    </article>
-  );
-}
-
-function TargetFields(props: {
-  readonly disabled: boolean;
-  readonly onChange: (value: TargetForm) => void;
-  readonly openSelect?: SelectId;
-  readonly projectOptions: readonly string[];
-  readonly setOpenSelect: (value: SelectId | undefined) => void;
-  readonly target: TargetForm;
-}): React.ReactElement {
-  const set = (patch: Partial<TargetForm>) => props.onChange({...props.target, ...patch});
-  return (
-    <div className="target-fields">
-      <DropdownSelect
-        disabled={props.disabled}
-        id="kind"
-        label="Kind"
-        onChange={value => void (isMemoryKind(value) && set({kind: value}))}
-        openSelect={props.openSelect}
-        options={(['durable', 'handoff', 'incident', 'preference', 'smoke'] as const).map(kind => ({
-          label: kind,
-          value: kind,
-        }))}
-        setOpenSelect={props.setOpenSelect}
-        value={props.target.kind}
-      />
-      <DropdownSelect
-        disabled={props.disabled}
-        id="status"
-        label="Status"
-        onChange={value => void (isMemoryStatus(value) && set({status: value}))}
-        openSelect={props.openSelect}
-        options={(['active', 'archived', 'expired', 'superseded'] as const).map(status => ({
-          label: status,
-          value: status,
-        }))}
-        setOpenSelect={props.setOpenSelect}
-        value={props.target.status}
-      />
-      <ManagerAutocompleteInput
-        allowCreate
-        disabled={props.disabled}
-        onChange={project => set({project})}
-        options={props.projectOptions}
-        placeholder="project"
-        value={props.target.project}
-      />
-      <input
-        disabled={props.disabled}
-        value={props.target.topic}
-        onChange={event => set({topic: event.target.value})}
-        placeholder="topic"
-      />
-    </div>
-  );
-}
-
-function DropdownSelect(props: {
-  readonly disabled?: boolean;
-  readonly id: SelectId;
-  readonly label: string;
-  readonly onChange: (value: string) => void;
-  readonly openSelect?: SelectId;
-  readonly options: readonly DropdownOption[];
-  readonly setOpenSelect: (value: SelectId | undefined) => void;
-  readonly value: string;
-}): React.ReactElement {
-  const isOpen = props.disabled !== true && props.openSelect === props.id;
-  const selected = props.options.find(option => option.value === props.value);
-  return (
-    <div
-      className="select-field"
-      onBlur={event => {
-        const relatedTarget = event.relatedTarget;
-        if (!(relatedTarget instanceof Node) || !event.currentTarget.contains(relatedTarget)) {
-          props.setOpenSelect(undefined);
-        }
-      }}
-    >
-      <button
-        aria-expanded={isOpen}
-        aria-haspopup="listbox"
-        className="select-button"
-        disabled={props.disabled === true}
-        onClick={() => props.setOpenSelect(isOpen ? undefined : props.id)}
-        type="button"
-      >
-        <span>{selected?.label ?? props.value}</span>
-        <span aria-hidden="true" className="select-chevron" />
-      </button>
-      {isOpen ? (
-        <div aria-label={props.label} className="select-menu" role="listbox">
-          {props.options.map(option => (
-            <button
-              aria-selected={option.value === props.value}
-              className={`select-option ${option.value === props.value ? 'is-selected' : ''}`}
-              disabled={option.disabled === true}
-              key={option.value}
-              onClick={() => {
-                props.onChange(option.value);
-                props.setOpenSelect(undefined);
-              }}
-              role="option"
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
   );
 }
 

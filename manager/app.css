@@ -526,10 +526,45 @@ body.is-resizing-sidebar * {
 .topbar {
   background: rgba(12, 16, 23, 0.9);
   border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
   justify-content: space-between;
   min-height: 64px;
   padding: 10px 20px;
   backdrop-filter: blur(18px);
+}
+
+.manager-connection-alert {
+  background: var(--warn-soft);
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  color: var(--warn);
+  flex: 0 0 100%;
+  font-size: 12px;
+  order: 2;
+  padding: 8px 12px;
+}
+
+.manager-record-unavailable {
+  color: var(--muted);
+  min-height: 420px;
+  padding: 20px;
+}
+
+.manager-draft-reconcile {
+  background: var(--warn-soft);
+  border-bottom: 1px solid var(--warn);
+  color: var(--text);
+  padding: 12px 20px;
+}
+
+.manager-draft-reconcile p {
+  margin: 0 0 8px;
+}
+
+.manager-draft-reconcile pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 
 .page-title {
