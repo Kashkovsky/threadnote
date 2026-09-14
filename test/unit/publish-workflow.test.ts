@@ -126,6 +126,11 @@ describe('standalone release workflows', () => {
       expect(signedWindowsArchive).toBeGreaterThan(authenticode);
       expect(publisher).toContain('gh release create');
       expect(publisher).toContain('Verify release immutability');
+      const websiteRefresh = workflow.slice(workflow.indexOf('\n  refresh-website:'));
+      expect(websiteRefresh).toContain('needs: publish-release');
+      expect(websiteRefresh).toContain('Refresh website after stable release publication');
+      expect(websiteRefresh).toContain('gh workflow run pages.yml --ref main -f release_tag="$RELEASE_TAG"');
+      expect(workflow).toContain('actions: write');
       expect(workflow).not.toContain('types: [published]');
     }),
   );

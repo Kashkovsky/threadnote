@@ -52,12 +52,45 @@ export function selectLatestMajorReleases(releases: readonly PublishedReleaseRef
   return [...byVersion.values()].sort(compareReleasesDescending);
 }
 
-function includePreparedWebsiteRelease<T extends PublishedReleaseRef>(
-  published: readonly T[],
-  prepared: T | undefined,
+export function selectPublishedReleaseRefs<T extends PublishedReleaseRef>(
+  tagged: readonly T[],
+  publishedAtByTag: ReadonlyMap<string, string>,
 ): readonly T[] {
-  if (prepared === undefined || published.some(release => release.version === prepared.version)) return published;
-  return [...published, prepared];
+  return tagged.flatMap(release => {
+    const publishedAt = publishedAtByTag.get(release.version);
+    return publishedAt === undefined ? [] : [{...release, publishedAt}];
+  });
+}
+
+export function parsePublishedWebsiteReleases(manifestJson: string): ReadonlyMap<string, string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(manifestJson);
+  } catch {
+    throw ScriptError.make({message: 'Published website release metadata is not valid JSON.'});
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw ScriptError.make({message: 'Published website release metadata must contain releases.'});
+  }
+  const publishedAtByTag = new Map<string, string>();
+  for (const entry of parsed) {
+    if (
+      typeof entry !== 'object' ||
+      entry === null ||
+      typeof entry.tagName !== 'string' ||
+      typeof entry.publishedAt !== 'string' ||
+      Number.isNaN(Date.parse(entry.publishedAt))
+    ) {
+      throw ScriptError.make({message: 'Published website release metadata has an invalid entry.'});
+    }
+    if (parseStableReleaseVersion(entry.tagName) !== undefined) {
+      publishedAtByTag.set(entry.tagName, entry.publishedAt);
+    }
+  }
+  if (publishedAtByTag.size === 0) {
+    throw ScriptError.make({message: 'Published website release metadata has no stable releases.'});
+  }
+  return publishedAtByTag;
 }
 
 function plainText(markdown: string): string {
@@ -141,42 +174,14 @@ function runGit(repositoryRoot: string, arguments_: readonly string[]): string {
   return result.stdout.toString();
 }
 
-function gitObjectExists(repositoryRoot: string, object: string): boolean {
-  return (
-    Bun.spawnSync({
-      cmd: ['git', 'cat-file', '-e', object],
-      cwd: repositoryRoot,
-      stderr: 'ignore',
-      stdout: 'ignore',
-    }).exitCode === 0
-  );
-}
-
-function loadPreparedWebsiteRelease(
+export function loadLatestMajorWebsiteReleases(
   repositoryRoot: string,
-  published: readonly WebsiteReleaseSource[],
-): WebsiteReleaseSource | undefined {
-  const manifest = JSON.parse(runGit(repositoryRoot, ['show', 'HEAD:package.json'])) as {readonly version?: unknown};
-  if (typeof manifest.version !== 'string') return undefined;
-  const parsed = parseStableReleaseVersion(`v${manifest.version}`);
-  if (parsed === undefined) return undefined;
-  if (published.some(release => compareReleasesDescending(parsed, release) >= 0)) return undefined;
-
-  const releaseNotePath = `.github/release-notes/${parsed.version}.md`;
-  if (!gitObjectExists(repositoryRoot, `HEAD:${releaseNotePath}`)) return undefined;
-  const publishedAt = runGit(repositoryRoot, [
-    'log',
-    '-1',
-    '--format=%cI',
-    '--',
-    'package.json',
-    releaseNotePath,
-  ]).trim();
-  return {...parsed, noteRef: 'HEAD', publishedAt};
-}
-
-export function loadLatestMajorWebsiteReleases(repositoryRoot: string): readonly WebsiteRelease[] {
-  const published = runGit(repositoryRoot, [
+  publishedReleaseManifest = process.env.THREADNOTE_SITE_PUBLISHED_RELEASES,
+): readonly WebsiteRelease[] {
+  if (process.env.THREADNOTE_SITE_PUBLIC_BUILD === '1' && publishedReleaseManifest === undefined) {
+    throw ScriptError.make({message: 'Public website builds require published GitHub release metadata.'});
+  }
+  const tagged = runGit(repositoryRoot, [
     'for-each-ref',
     '--format=%(refname:short)|%(creatordate:iso-strict)',
     'refs/tags/v*',
@@ -192,11 +197,14 @@ export function loadLatestMajorWebsiteReleases(repositoryRoot: string): readonly
       if (!parsed) return [];
       return [{...parsed, noteRef: version, publishedAt: line.slice(separator + 1)} satisfies WebsiteReleaseSource];
     });
-  const refs = includePreparedWebsiteRelease(published, loadPreparedWebsiteRelease(repositoryRoot, published));
+  const refs =
+    publishedReleaseManifest === undefined
+      ? tagged
+      : selectPublishedReleaseRefs(tagged, parsePublishedWebsiteReleases(publishedReleaseManifest));
 
   const selected = selectLatestMajorReleases(refs);
   if (selected.length === 0)
-    throw ScriptError.make({message: 'The website needs at least one published or prepared stable release.'});
+    throw ScriptError.make({message: 'The website needs at least one published stable release.'});
   const sourcesByVersion = new Map(refs.map(release => [release.version, release]));
 
   return selected.map(release => {
