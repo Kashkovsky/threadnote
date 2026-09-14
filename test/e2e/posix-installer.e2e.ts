@@ -418,6 +418,8 @@ esac
         'utf8',
       );
       expect(publisherLauncher).toContain('exec "$THREADNOTE_ENTRY" __credential-registry-auth0-publisher-m2m "$@"');
+      const userRegistryLauncher = await readFile(join(binRoot, 'docker-credential-threadnote-auth0-user'), 'utf8');
+      expect(userRegistryLauncher).toContain('exec "$THREADNOTE_ENTRY" __credential-registry-auth0-user "$@"');
       const profiledVersion = await execute(
         'sh',
         [
