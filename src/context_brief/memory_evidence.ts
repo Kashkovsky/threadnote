@@ -22,6 +22,7 @@ import type {RuntimeConfig} from '../types.js';
 import type {
   ContextBriefFreshness,
   ContextBriefMemoryCandidateV1,
+  ContextBriefMemoryActionCardV1,
   ContextBriefMemoryRetrievalV1,
   ContextBriefPlanV1,
   ContextBriefPreciseEvidenceStatus,
@@ -376,6 +377,52 @@ function retryContextBriefCodeAnchorRead<A, E, R>(
   );
 }
 
+/** Only explicit single-line sections are promoted; arbitrary memory prose stays in the full read. */
+export function parseMemoryActionCard(body: string): ContextBriefMemoryActionCardV1 | undefined {
+  const fields = new Map<string, string>();
+  let fence: {readonly marker: string; readonly length: number} | undefined;
+  for (const line of body.split(/\r?\n/gu).slice(0, 80)) {
+    const fenceLine = /^ {0,3}(?:(?:>|[-+*]|\d+[.)])[ \t]+)*(`{3,}|~{3,})(.*)$/u.exec(line);
+    if (fence !== undefined) {
+      if (
+        fenceLine !== null &&
+        fenceLine[1][0] === fence.marker &&
+        fenceLine[1].length >= fence.length &&
+        fenceLine[2].trim() === ''
+      ) {
+        fence = undefined;
+      }
+      continue;
+    }
+    if (fenceLine !== null && (fenceLine[1][0] === '~' || !fenceLine[2].includes('`'))) {
+      fence = {marker: fenceLine[1][0], length: fenceLine[1].length};
+      continue;
+    }
+    const match = /^\s{0,3}(?:#{1,3}\s*)?(Applies to|Invariant|Avoid|Verify):\s*(.+?)\s*$/iu.exec(line);
+    if (!match) continue;
+    const key = match[1].toLowerCase();
+    if (fields.has(key)) continue;
+    const value = match[2].replace(/\s+/gu, ' ').trim();
+    if (
+      value &&
+      ![...value].some(character => {
+        const code = character.codePointAt(0) ?? 0;
+        return code < 32 || code === 127;
+      })
+    )
+      fields.set(key, utf8Prefix(value, 96));
+  }
+  const appliesTo = fields.get('applies to');
+  const invariant = fields.get('invariant');
+  if (!appliesTo || !invariant) return undefined;
+  return {
+    appliesTo,
+    invariant,
+    ...(fields.get('avoid') === undefined ? {} : {avoid: fields.get('avoid')}),
+    ...(fields.get('verify') === undefined ? {} : {verify: fields.get('verify')}),
+  };
+}
+
 function isUnresolvedContextBriefCodeAnchorFailure(error: unknown): boolean {
   return Schema.is(MemoryCodeCitationCaptureError)(error) && error.failureCode === 'code-reference-unresolved';
 }
@@ -639,7 +686,9 @@ function contextBriefMemoryCandidate(
   const sourceCommit = boundedSourceCommit(record.metadata.sourceCommit);
   const citationIds = new Set((record.metadata.codeCitations ?? []).map(citation => citation.id));
   const currentCodeLinkMatches = codeLinkMatches?.filter(match => citationIds.has(match.citationId));
+  const actionCard = record.metadata.kind === 'durable' ? parseMemoryActionCard(record.body) : undefined;
   return {
+    ...(actionCard === undefined ? {} : {actionCard}),
     ...(record.metadata.authority === undefined ? {} : {authority: record.metadata.authority}),
     citationErrorCount: record.metadata.citationErrors?.length ?? 0,
     codeCitations: record.metadata.codeCitations ?? [],

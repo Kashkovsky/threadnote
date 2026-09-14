@@ -89,6 +89,7 @@ export const CONTEXT_BRIEF_AGENT_VIEW_ROOT_FIELD_POLICY = {
 
 /** Memory audit metadata is omitted only when the agent view carries its decision-equivalent signal. */
 export const CONTEXT_BRIEF_AGENT_VIEW_MEMORY_FIELD_POLICY = {
+  actionCard: 'agent-view',
   authority: 'agent-view',
   citationDetailsOmitted: 'agent-view',
   citationErrorCount: 'represented',
@@ -184,6 +185,54 @@ export const CONTEXT_BRIEF_AGENT_VIEW_CITATION_RECEIPT_FIELD_POLICY = {
 export function projectContextBrief(
   logical: ContextBriefLogicalResultV1,
   maximumEstimatedTokens: number = CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS,
+): ProjectedContextBriefV1 {
+  if (![...logical.activeHandoffs, ...logical.durableDecisions].some(memory => memory.actionCard !== undefined)) {
+    return projectContextBriefCore(logical, maximumEstimatedTokens);
+  }
+  const withoutCards = {
+    ...logical,
+    activeHandoffs: logical.activeHandoffs.map(({actionCard: _actionCard, ...memory}) => memory),
+    durableDecisions: logical.durableDecisions.map(({actionCard: _actionCard, ...memory}) => memory),
+  };
+  const baseline = projectContextBriefCore(withoutCards, maximumEstimatedTokens);
+  const withCards = projectContextBriefCore(logical, maximumEstimatedTokens);
+  return preservesBaselineEvidence(withCards.structuredContent, baseline.structuredContent) ? withCards : baseline;
+}
+
+function preservesBaselineEvidence(candidate: ContextBriefV1, baseline: ContextBriefV1): boolean {
+  const contains = (left: readonly string[], right: readonly string[]) => right.every(value => left.includes(value));
+  return (
+    contains(
+      candidate.activeHandoffs.map(memory => memory.uri),
+      baseline.activeHandoffs.map(memory => memory.uri),
+    ) &&
+    contains(
+      candidate.durableDecisions.map(memory => memory.uri),
+      baseline.durableDecisions.map(memory => memory.uri),
+    ) &&
+    contains(
+      candidate.graph.cards.map(card => card.id),
+      baseline.graph.cards.map(card => card.id),
+    ) &&
+    contains(
+      candidate.graph.contracts.map(contract => contract.id),
+      baseline.graph.contracts.map(contract => contract.id),
+    ) &&
+    contains(
+      candidate.recommendedFollowUps.map(followUp => followUp.id),
+      baseline.recommendedFollowUps.map(followUp => followUp.id),
+    ) &&
+    contains(candidate.coverage.gaps, baseline.coverage.gaps) &&
+    contains(
+      candidate.stalenessAndConflicts.map(issue => issue.id),
+      baseline.stalenessAndConflicts.map(issue => issue.id),
+    )
+  );
+}
+
+function projectContextBriefCore(
+  logical: ContextBriefLogicalResultV1,
+  maximumEstimatedTokens: number,
 ): ProjectedContextBriefV1 {
   logical = withStableMemoryIdentityGap(logical);
   const maximumBytes = projectionMaximumBytes(maximumEstimatedTokens);
@@ -513,6 +562,7 @@ function validateAgentViewMemory(value: unknown, label: string): void {
   assertAgentViewKeys(
     value,
     [
+      'actionCard',
       'authority',
       'citationActions',
       'citationDetailsOmitted',
@@ -545,6 +595,17 @@ function validateAgentViewMemory(value: unknown, label: string): void {
     (value.selectionBasis !== undefined && value.selectionBasis !== 'code-citation')
   ) {
     throw invalid(`${label} is invalid`);
+  }
+  if (value.actionCard !== undefined) {
+    if (!Predicate.isObject(value.actionCard)) throw invalid(`${label}.actionCard must be an object`);
+    assertAgentViewKeys(value.actionCard, ['appliesTo', 'invariant', 'avoid', 'verify'], `${label}.actionCard`);
+    if (
+      typeof value.actionCard.appliesTo !== 'string' ||
+      typeof value.actionCard.invariant !== 'string' ||
+      (value.actionCard.avoid !== undefined && typeof value.actionCard.avoid !== 'string') ||
+      (value.actionCard.verify !== undefined && typeof value.actionCard.verify !== 'string')
+    )
+      throw invalid(`${label}.actionCard is invalid`);
   }
   if (value.citationActions !== undefined && !Array.isArray(value.citationActions)) {
     throw invalid(`${label}.citationActions must be an array`);
@@ -656,6 +717,7 @@ function projectAgentViewMemory(memory: ContextBriefMemoryEvidenceV1): ContextBr
     status: group.status,
   }));
   return {
+    ...(memory.actionCard === undefined ? {} : {actionCard: memory.actionCard}),
     ...(memory.authority === undefined ? {} : {authority: memory.authority}),
     ...(citationActions === undefined || citationActions.length === 0 ? {} : {citationActions}),
     ...(memory.citationDetailsOmitted === undefined ? {} : {citationDetailsOmitted: memory.citationDetailsOmitted}),
@@ -1324,17 +1386,41 @@ function compactProjectedMemory(
     allowIdentityAlias && memoryId !== undefined && isMemoryId(memoryId) ? memoryIdentityAlias(memoryId) : memory.uri;
   if (memory.selectionBasis !== 'code-citation') return {...withoutIdentity, uri: stableUri};
   const {project: _project, sourceCommit: _sourceCommit, topic: _topic, ...compact} = withoutIdentity;
+  const compactActionCard =
+    memory.actionCard === undefined
+      ? {}
+      : {
+          actionCard: {
+            appliesTo: utf8Prefix(memory.actionCard.appliesTo, 32),
+            invariant: utf8Prefix(memory.actionCard.invariant, 56),
+            ...(memory.actionCard.avoid === undefined ? {} : {avoid: utf8Prefix(memory.actionCard.avoid, 48)}),
+            ...(memory.actionCard.verify === undefined ? {} : {verify: utf8Prefix(memory.actionCard.verify, 48)}),
+          },
+        };
   if (compactCodeLinkedCohort) {
-    const {citationSummary: _citationSummary, preciseStatus: _preciseStatus, ...cohortMemory} = compact;
+    const {
+      actionCard: _actionCard,
+      citationSummary: _citationSummary,
+      preciseStatus: _preciseStatus,
+      ...cohortMemory
+    } = compact;
     return {
       ...cohortMemory,
+      ...compactActionCard,
       ...(cohortCodeRelations === undefined ? {} : {codeRelations: cohortCodeRelations}),
-      excerpt: utf8Prefix(memory.excerpt, 96),
+      excerpt: memory.actionCard === undefined ? utf8Prefix(memory.excerpt, 96) : '',
       uri: stableUri,
     };
   }
   if (protectRelationshipBundle) {
-    const {citationErrorCount, citationReceipts, citationSummary, codeRelations, ...protectedMemory} = compact;
+    const {
+      actionCard: _actionCard,
+      citationErrorCount,
+      citationReceipts,
+      citationSummary,
+      codeRelations,
+      ...protectedMemory
+    } = compact;
     const citationDetailsOmitted =
       citationErrorCount !== undefined ||
       citationReceipts !== undefined ||
@@ -1342,12 +1428,18 @@ function compactProjectedMemory(
       codeRelations !== undefined;
     return {
       ...protectedMemory,
+      ...compactActionCard,
       ...(citationDetailsOmitted ? {citationDetailsOmitted: true as const} : {}),
-      excerpt: utf8Prefix(memory.excerpt, 32),
+      excerpt: memory.actionCard === undefined ? utf8Prefix(memory.excerpt, 32) : '',
       uri: stableUri,
     };
   }
-  return {...compact, excerpt: utf8Prefix(memory.excerpt, 96), uri: stableUri};
+  return {
+    ...compact,
+    ...compactActionCard,
+    excerpt: memory.actionCard === undefined ? utf8Prefix(memory.excerpt, 96) : '',
+    uri: stableUri,
+  };
 }
 
 function compactProjectedFollowUp(

@@ -135,6 +135,7 @@ import {
 } from '../code_graph/workset_evidence.js';
 import {runProcessDiagnostics} from '../process/diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
+import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';
 import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
@@ -1227,6 +1228,11 @@ const sessionStartHook = Command.make(
   options => withRuntimeEffect(config => runSessionStartHook(config, options)),
 ).pipe(Command.withDescription('Print current repo handoff context at session start'), Command.unlisted);
 
+const codeBriefHook = Command.make(
+  'code-brief-hook',
+  {diagnostic: boolean('diagnostic', 'Print a privacy-safe delivery status to stderr')},
+  options => withRuntimeEffect(config => runCodeBriefEditHook(config, options)),
+).pipe(Command.withDescription('Inject current cited memory before a Claude file edit'), Command.unlisted);
 const remember = Command.make(
   'remember',
   {
@@ -1939,6 +1945,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('pre-compact-hook', preCompactHook),
   registerTopLevelCommand('cursor-hook', cursorHook),
   registerTopLevelCommand('session-start-hook', sessionStartHook),
+  registerTopLevelCommand('code-brief-hook', codeBriefHook),
   registerTopLevelCommand('remember', remember),
   registerTopLevelCommand('finalize-code-refs', finalizeCodeRefs),
   registerTopLevelCommand('migrate', migrateHome, {productionLog: {mode: 'requires-apply'}}),

@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {renderSessionStartRecallQueue} from '../../src/hooks.js';
+import {renderSessionStartRecallQueue, withThreadnoteHooks} from '../../src/hooks.js';
 
 describe('session-start recall queue', () => {
   it('renders only actionable unread pointers and removes ranking diagnostics', () => {
@@ -105,5 +105,21 @@ describe('session-start recall queue', () => {
       }),
       {numRuns: 100},
     );
+  });
+});
+
+describe('Claude code-brief hook install', () => {
+  it('adds one selective pre-edit hook and preserves unrelated hooks across reinstall', () => {
+    const input = {hooks: {PreToolUse: [{matcher: 'Bash', hooks: [{type: 'command', command: 'other'}]}]}};
+    const installed = withThreadnoteHooks(input);
+    expect(withThreadnoteHooks(installed)).toEqual(installed);
+    expect(installed).toMatchObject({
+      hooks: {
+        PreToolUse: [
+          input.hooks.PreToolUse[0],
+          {matcher: 'Edit|Write', hooks: [{type: 'command', command: 'threadnote code-brief-hook'}]},
+        ],
+      },
+    });
   });
 });

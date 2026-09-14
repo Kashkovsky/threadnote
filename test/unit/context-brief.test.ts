@@ -35,6 +35,7 @@ import {createCodeMemoryLinkAgentSuiteCorpusV1} from '../../src/evaluation/code-
 import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
 import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
 import {canonicalResourceUri} from '../../src/storage/resource-id.js';
+import {renderCodeBriefEditContext} from '../../src/context_brief/edit_hook.js';
 
 const COMMIT = 'a'.repeat(40);
 const OTHER_COMMIT = 'b'.repeat(40);
@@ -791,6 +792,12 @@ describe('Context Brief compiler', () => {
         const symbolCitation = codeCitation(2, 'symbol');
         const directUri = 'threadnote://user/test/memories/durable/projects/threadnote/code-linked.md';
         const directCandidate: ContextBriefMemoryCandidateV1 = {
+          actionCard: {
+            appliesTo: 'Catalog store edits',
+            invariant: 'Preserve the catalog key when replacing entries.',
+            avoid: 'Do not reset the stored identity.',
+            verify: 'Run the focused catalog store test.',
+          },
           citationErrorCount: 0,
           codeCitations: [fileCitation, symbolCitation],
           codeLinkMatches: [
@@ -891,15 +898,91 @@ describe('Context Brief compiler', () => {
           excerpt: 'The reverse citation index selected this decision from the inspected code.',
           selectionBasis: 'code-citation',
         });
+        expect(direct?.actionCard).toBeUndefined();
         expect(direct?.codeRelations).toEqual([
           {anchorOrdinal: 1, citationId: symbolCitation.id, kind: 'symbol', status: 'exact'},
         ]);
         expectTextCarriesSelectedEvidence(result.text, result.structuredContent);
+        expect(renderCodeBriefEditContext(result.structuredContent)).toContain('Read and verify');
         const publicJson = JSON.stringify(result.structuredContent);
         expect(publicJson).not.toContain('codeLinkMatches');
         expect(publicJson).not.toContain('matchKind');
         expect(publicJson).not.toContain(REPOSITORY_ID);
       }),
+  );
+
+  effectIt.effect('projects an explicit action card when current direct evidence fits', () =>
+    Effect.gen(function* () {
+      const citation = codeCitation(5, 'file');
+      const uri = 'threadnote://user/test/memories/durable/projects/threadnote/action-card.md';
+      const candidate: ContextBriefMemoryCandidateV1 = {
+        actionCard: {
+          appliesTo: 'Catalog edits',
+          invariant: 'Keep stable keys.',
+          avoid: 'Do not reset identities.',
+          verify: 'Run catalog tests.',
+        },
+        citationErrorCount: 0,
+        codeCitations: [citation],
+        codeLinkMatches: [
+          {anchorOrdinal: 0, anchorPath: citation.path, citationId: citation.id, matchKind: 'file-path'},
+        ],
+        excerpt: 'Older narrative summary.',
+        kind: 'durable',
+        rank: 0,
+        uri,
+      };
+      const emptyMemory: ContextBriefMemoryRetrievalV1 = {
+        candidates: [],
+        consideredCandidates: 0,
+        gaps: [],
+        trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
+      };
+      const result = yield* compileContextBriefWith(
+        {
+          citationValidation: () =>
+            Effect.succeed([
+              {
+                receipts: [
+                  {
+                    candidateCount: 1,
+                    citationId: citation.id,
+                    coverage: 'current-complete',
+                    kind: 'file',
+                    observedAt: '2026-08-28T00:00:00.000Z',
+                    observedPath: citation.path,
+                    reason: 'exact',
+                    status: 'exact',
+                    strategy: 'file-path',
+                    validatorVersion: 1,
+                  },
+                ],
+                uri,
+              },
+            ]),
+          codeLinkedMemoryEvidence: () =>
+            Effect.succeed({
+              ...emptyMemory,
+              candidates: [candidate],
+              codeAnchorCoverage: {complete: true, matchedMemories: 1, requested: 1, resolved: 1},
+            }),
+          graphEvidence: () => Effect.succeed({...minimalGraphEvidence(), cards: []}),
+          memoryEvidence: () => Effect.succeed(emptyMemory),
+        },
+        {...request(1_500), codeRefs: [citation.path]},
+      );
+      expect(result.structuredContent.durableDecisions[0]?.actionCard).toMatchObject({
+        appliesTo: 'Catalog edits',
+        invariant: 'Keep stable keys.',
+        avoid: 'Do not reset identities.',
+        verify: 'Run catalog tests.',
+      });
+      expect(renderCodeBriefEditContext(result.structuredContent)).toContain('Avoid: Do not reset identities.');
+      expect(renderCodeBriefEditContext(result.structuredContent)).toContain(
+        'Verify after the edit: Run catalog tests.',
+      );
+      expectTextCarriesSelectedEvidence(result.text, result.structuredContent);
+    }),
   );
 
   effectIt.effect('keeps a maximum compact graph card and eight-link direct memory at the default budget', () =>
