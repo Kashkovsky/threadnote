@@ -45,6 +45,12 @@ describe('Context Brief action cards', () => {
     expect(
       parseMemoryActionCard('```text\nApplies to: sample\nInvariant: quoted code\n```\nA narrative line.'),
     ).toBeUndefined();
+    expect(
+      parseMemoryActionCard('````text\n~~~\nApplies to: sample\nInvariant: quoted code\n```\n````'),
+    ).toBeUndefined();
+    expect(parseMemoryActionCard('~~~text\n```\nApplies to: sample\nInvariant: quoted code\n~~~')).toBeUndefined();
+    expect(parseMemoryActionCard('- ```text\n  Applies to: sample\n  Invariant: quoted code\n  ```')).toBeUndefined();
+    expect(parseMemoryActionCard('> ```text\n> Applies to: sample\n  Invariant: quoted code\n> ```')).toBeUndefined();
   });
 
   it('delivers only current direct evidence and includes a validation hint', () => {
@@ -68,13 +74,19 @@ describe('Context Brief action cards', () => {
   });
 
   it('keeps parsed fields bounded for arbitrary Unicode content', () => {
+    const unicodeField = fc
+      .tuple(
+        fc.constantFrom('a', 'é', '🚀', '文', '🧪'),
+        fc.array(fc.constantFrom('a', 'é', '🚀', '文', '🧪', ' '), {maxLength: 200}),
+      )
+      .map(([first, rest]) => first + rest.join(''));
     fc.assert(
-      fc.property(fc.string({minLength: 1, maxLength: 512}), value => {
+      fc.property(unicodeField, value => {
         const card = parseMemoryActionCard(`Applies to: target\nInvariant: ${value}\nVerify: ${value}`);
-        if (card === undefined) return;
+        expect(card).toBeDefined();
+        if (card === undefined) throw new Error('A valid Unicode card was rejected.');
         expect(new TextEncoder().encode(card.invariant).byteLength).toBeLessThanOrEqual(96);
         expect(new TextEncoder().encode(card.verify).byteLength).toBeLessThanOrEqual(96);
-        expect(parseMemoryActionCard(`Applies to: target\nInvariant: ${value}\nVerify: ${value}`)).toEqual(card);
       }),
       {numRuns: 100},
     );

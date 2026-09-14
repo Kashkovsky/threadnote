@@ -916,7 +916,12 @@ describe('Context Brief compiler', () => {
       const citation = codeCitation(5, 'file');
       const uri = 'threadnote://user/test/memories/durable/projects/threadnote/action-card.md';
       const candidate: ContextBriefMemoryCandidateV1 = {
-        actionCard: {appliesTo: 'Catalog edits', invariant: 'Keep stable keys.', verify: 'Run catalog tests.'},
+        actionCard: {
+          appliesTo: 'Catalog edits',
+          invariant: 'Keep stable keys.',
+          avoid: 'Do not reset identities.',
+          verify: 'Run catalog tests.',
+        },
         citationErrorCount: 0,
         codeCitations: [citation],
         codeLinkMatches: [
@@ -969,8 +974,10 @@ describe('Context Brief compiler', () => {
       expect(result.structuredContent.durableDecisions[0]?.actionCard).toMatchObject({
         appliesTo: 'Catalog edits',
         invariant: 'Keep stable keys.',
+        avoid: 'Do not reset identities.',
         verify: 'Run catalog tests.',
       });
+      expect(renderCodeBriefEditContext(result.structuredContent)).toContain('Avoid: Do not reset identities.');
       expect(renderCodeBriefEditContext(result.structuredContent)).toContain(
         'Verify after the edit: Run catalog tests.',
       );

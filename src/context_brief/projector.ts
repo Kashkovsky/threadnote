@@ -1393,6 +1393,7 @@ function compactProjectedMemory(
           actionCard: {
             appliesTo: utf8Prefix(memory.actionCard.appliesTo, 32),
             invariant: utf8Prefix(memory.actionCard.invariant, 56),
+            ...(memory.actionCard.avoid === undefined ? {} : {avoid: utf8Prefix(memory.actionCard.avoid, 48)}),
             ...(memory.actionCard.verify === undefined ? {} : {verify: utf8Prefix(memory.actionCard.verify, 48)}),
           },
         };

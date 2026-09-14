@@ -380,13 +380,24 @@ function retryContextBriefCodeAnchorRead<A, E, R>(
 /** Only explicit single-line sections are promoted; arbitrary memory prose stays in the full read. */
 export function parseMemoryActionCard(body: string): ContextBriefMemoryActionCardV1 | undefined {
   const fields = new Map<string, string>();
-  let fenced = false;
+  let fence: {readonly marker: string; readonly length: number} | undefined;
   for (const line of body.split(/\r?\n/gu).slice(0, 80)) {
-    if (/^\s{0,3}(?:```|~~~)/u.test(line)) {
-      fenced = !fenced;
+    const fenceLine = /^ {0,3}(?:(?:>|[-+*]|\d+[.)])[ \t]+)*(`{3,}|~{3,})(.*)$/u.exec(line);
+    if (fence !== undefined) {
+      if (
+        fenceLine !== null &&
+        fenceLine[1][0] === fence.marker &&
+        fenceLine[1].length >= fence.length &&
+        fenceLine[2].trim() === ''
+      ) {
+        fence = undefined;
+      }
       continue;
     }
-    if (fenced) continue;
+    if (fenceLine !== null && (fenceLine[1][0] === '~' || !fenceLine[2].includes('`'))) {
+      fence = {marker: fenceLine[1][0], length: fenceLine[1].length};
+      continue;
+    }
     const match = /^\s{0,3}(?:#{1,3}\s*)?(Applies to|Invariant|Avoid|Verify):\s*(.+?)\s*$/iu.exec(line);
     if (!match) continue;
     const key = match[1].toLowerCase();
