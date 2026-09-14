@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "sourceCommit": "26d9fa50ee054dcfb73d5f20da39d443aaaeeee1",
+  "caseHash": "1f84ef962f73e884b3d01a3961c9af34e7558500c0409393174c4632b31a0534",
+  "measurement": "UTF-8 bytes in structuredContent plus text; estimatedTokens is ceil(totalBytes / 3), not provider usage",
+  "cases": [
+    {
+      "name": "short",
+      "contentBytes": 75,
+      "estimatedTokens": 92,
+      "structuredBytes": 201,
+      "textBytes": 75,
+      "totalBytes": 276
+    },
+    {
+      "name": "citation-heavy",
+      "contentBytes": 7834,
+      "estimatedTokens": 5349,
+      "structuredBytes": 8213,
+      "textBytes": 7834,
+      "totalBytes": 16047
+    },
+    {
+      "name": "unicode-long",
+      "contentBytes": 22235,
+      "estimatedTokens": 15151,
+      "structuredBytes": 23216,
+      "textBytes": 22235,
+      "totalBytes": 45451
+    }
+  ]
+}

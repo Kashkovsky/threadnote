@@ -6,12 +6,49 @@ import {
   MemoryReadProjectionError,
   MemoryReadTooLargeError,
   memoryMarkdownOutline,
+  memoryReadMcpStructuredContent,
   memoryReadContentBytes,
   projectMemoryRead,
   selectMemoryMarkdownSection,
 } from '../../src/memory/read_projection.js';
 
 describe('complete memory read projection', () => {
+  it('keeps the dual-channel response as the compatibility default', () => {
+    const read = projectMemoryRead([
+      {text: '# Decision\nPreserve the citation.\n', uri: 'threadnote://test/decision.md'},
+    ]);
+    expect(memoryReadMcpStructuredContent(read)).toBe(read.structuredContent);
+  });
+
+  it('moves complete text into one authoritative channel without dropping read metadata', () => {
+    fc.assert(
+      fc.property(fc.string({maxLength: 2_000}), text => {
+        const read = projectMemoryRead([{text, uri: 'threadnote://test/decision.md'}]);
+        const compact = memoryReadMcpStructuredContent(read, 'text');
+        const {content: _content, version: _version, ...metadata} = read.structuredContent;
+        expect(compact).toEqual({...metadata, contentChannel: 'text', uri: read.uri, version: 2});
+        expect(compact).not.toHaveProperty('content');
+        expect(read.content).toBe(text);
+      }),
+      {numRuns: 50},
+    );
+  });
+
+  it('preserves outline, section, and page recovery in the text-channel form', () => {
+    const resources = [
+      {text: '# Decision\nKeep evidence.\n## Verify\nCheck current source.\n', uri: 'threadnote://test/decision.md'},
+    ];
+    for (const options of [{mode: 'outline' as const}, {section: 'Verify'}, {offsetBytes: 0}]) {
+      const read = projectMemoryRead(resources, options);
+      const compact = memoryReadMcpStructuredContent(read, 'text');
+      expect(compact).not.toHaveProperty('content');
+      expect(compact.contentBytes).toBe(memoryReadContentBytes(read.content));
+      expect(compact.complete).toBe(read.structuredContent.complete);
+      expect(compact.nextOffsetBytes).toBe(read.structuredContent.nextOffsetBytes);
+      expect(compact.sourceHash).toBe(read.structuredContent.sourceHash);
+    }
+  });
+
   it('returns exact under-cap source bytes in one shot', () => {
     fc.assert(
       fc.property(fc.string({maxLength: 2_000}), text => {

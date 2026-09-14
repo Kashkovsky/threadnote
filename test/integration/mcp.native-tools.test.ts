@@ -314,6 +314,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(readContext?.description).toContain(`${MCP_RESOURCE_READ_MAX_BYTES} bytes`);
         expect(readContext?.description).toContain('mode=outline or section');
         expect(readContext?.description).toContain('offsetBytes=0');
+        expect(readContext?.inputSchema.properties).toHaveProperty('responseFormat');
         expect(readContext?.inputSchema.properties).not.toHaveProperty('budgetTokens');
         expect(readContext?.inputSchema.properties).not.toHaveProperty('cursor');
       },
@@ -1104,6 +1105,36 @@ describe('Threadnote MCP toolsets', () => {
         expect(structured).not.toHaveProperty('cursor');
         expect(structured).not.toHaveProperty('budgetTokens');
         expect(result._meta).not.toHaveProperty('threadnote.io/canonical-read');
+      },
+      {toolset: 'core'},
+    );
+  }, 40_000);
+
+  it('returns complete text once when read_context opts into text response format', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/text-read.md';
+        const content = canonicalMemoryContent('text-read', `${'Evidence 🙂漢字\n'.repeat(500)}terminal`);
+        await writeCanonicalMemory(fixture.home, 'text-read.md', content);
+
+        const result = await client.callTool(
+          {arguments: {responseFormat: 'text', uri}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const output = Array.isArray(result.content) ? result.content : [];
+        const structured = result.structuredContent as Record<string, unknown>;
+        expect((output[0] as TextContent | undefined)?.text).toBe(content);
+        expect(structured).toMatchObject({
+          complete: true,
+          contentBytes: Buffer.byteLength(content),
+          contentChannel: 'text',
+          type: 'threadnote-read',
+          uri,
+          version: 2,
+        });
+        expect(structured).not.toHaveProperty('content');
       },
       {toolset: 'core'},
     );

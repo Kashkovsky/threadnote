@@ -42,6 +42,16 @@ export interface MemoryRead {
   readonly uri: string;
 }
 
+export type MemoryReadMcpResponseFormat = 'dual' | 'text';
+
+export type MemoryReadMcpStructuredContent =
+  | MemoryReadStructuredContent
+  | (Omit<MemoryReadStructuredContent, 'content' | 'version'> & {
+      readonly contentChannel: 'text';
+      readonly uri: string;
+      readonly version: 2;
+    });
+
 export class MemoryReadProjectionError extends Schema.TaggedError<MemoryReadProjectionError>()(
   'MemoryReadProjectionError',
   {
@@ -160,6 +170,15 @@ export function projectMemoryRead(
     },
     uri: resource.uri,
   };
+}
+
+export function memoryReadMcpStructuredContent(
+  read: MemoryRead,
+  responseFormat: MemoryReadMcpResponseFormat = 'dual',
+): MemoryReadMcpStructuredContent {
+  if (responseFormat === 'dual') return read.structuredContent;
+  const {content: _content, version: _version, ...metadata} = read.structuredContent;
+  return {...metadata, contentChannel: 'text', uri: read.uri, version: 2};
 }
 
 export function memoryMarkdownOutline(content: string): string {

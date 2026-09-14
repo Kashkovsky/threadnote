@@ -30,7 +30,10 @@ conflicted, or out-of-scope premise does not expand, and truncated connection co
 neighbors are absent.
 
 Recall results are unread pointers, not evidence. Read every relevant `threadnote://` result with `read_context` before
-using it. `read_context` returns the full memory up to 64 KiB; larger memories refuse with an outline. Retry with
+using it. On the local Threadnote MCP server, when your client exposes tool text content, pass
+`responseFormat: "text"` to receive the full memory once; structured-only clients should keep the default `dual`
+format. Do not pass `responseFormat` to remote Threadnote tools; they do not accept it. `read_context` returns the full memory up to 64 KiB;
+larger memories refuse with an outline. Retry with
 `mode=outline` or `section`, or explicitly page one URI with `offsetBytes=0`, then pass each `nextOffsetBytes` and
 `sourceHash` until `complete=true`. Keep recall
 compact; use `explain: true` only to diagnose ranking.

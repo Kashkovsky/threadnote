@@ -215,7 +215,12 @@ export const mcpTools: McpToolReference[] = [
     name: 'read_context',
     toolset: 'core',
     summary: 'Read one or more canonical threadnote:// file URIs so their content can be used as evidence.',
-    keyInputs: ['uri or uris', 'mode or section', 'offsetBytes and sourceHash for explicit pages'],
+    keyInputs: [
+      'uri or uris',
+      'mode or section',
+      'responseFormat (local MCP)',
+      'offsetBytes and sourceHash for explicit pages',
+    ],
   },
   {
     name: 'list_context',
@@ -677,6 +682,10 @@ threadnote index status`,
           {
             type: 'paragraph',
             text: 'MCP clients can read one canonical threadnote:// URI or bounded threadnote://memory/tn_ identity selector through the standard resources/read protocol without enumerating private memories. Identity selectors resolve only inside the authorized active corpus and are checked against the live document memory_id. Protocol reads are UTF-8 text capped at 65,536 bytes; use read_context with mode=outline or section for larger evidence, or explicitly page one URI with offsetBytes=0 and continue with nextOffsetBytes plus sourceHash until complete=true.',
+          },
+          {
+            type: 'paragraph',
+            text: 'On the local Threadnote MCP server, read_context responseFormat=text keeps the complete memory in the first text content block and returns only read metadata in structuredContent. This avoids transmitting the same memory twice for clients that consume tool text. The default responseFormat=dual retains the complete memory in both channels for structured-only clients. Remote Threadnote tools do not accept responseFormat. Text format is opt-in and does not change canonical memory or paging semantics.',
           },
           {
             type: 'table',
