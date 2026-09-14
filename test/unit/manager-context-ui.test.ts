@@ -261,6 +261,57 @@ describe('Manager Context workspace', () => {
     expect(reruns[0]).not.toHaveProperty('codeRefs');
   });
 
+  it('uses the returned exact selector when rerunning omitted graph evidence', async () => {
+    const reruns: Array<{readonly codeRefs?: readonly string[]; readonly mode?: string; readonly task?: string}> = [];
+    const container = document.createElement('div');
+    document.body.append(container);
+    reactRoot = createRoot(container);
+    await act(async () =>
+      reactRoot?.render(
+        React.createElement(ContextBriefResult, {
+          brief: projectedBrief(GRAPH_REF).structuredContent,
+          onOpenMemory: () => undefined,
+          onRecoverGraph: () => undefined,
+          onRerun: overrides => reruns.push(overrides),
+          recoveryBusy: false,
+        }),
+      ),
+    );
+
+    await clickButton('Rerun from exact ref');
+
+    expect(reruns).toHaveLength(1);
+    expect(reruns[0]).toMatchObject({codeRefs: [GRAPH_REF], mode: 'explain'});
+    expect(reruns[0]?.task).toContain(GRAPH_REF);
+  });
+
+  it('refreshes a stale graph before continuing omitted anchor evidence', async () => {
+    const recoveries: string[] = [];
+    const reruns: unknown[] = [];
+    const container = document.createElement('div');
+    document.body.append(container);
+    reactRoot = createRoot(container);
+    await act(async () =>
+      reactRoot?.render(
+        React.createElement(ContextBriefResult, {
+          brief: projectedBrief(GRAPH_REF, 'repository', {staleAnchorRecovery: true}).structuredContent,
+          onOpenMemory: () => undefined,
+          onRecoverGraph: scope => recoveries.push(scope),
+          onRerun: overrides => reruns.push(overrides),
+          recoveryBusy: false,
+        }),
+      ),
+    );
+
+    const continuationButton = document.querySelector<HTMLButtonElement>('.context-continuation button');
+    expect(continuationButton?.textContent).toBe('Index graph and rerun');
+    await act(async () => continuationButton?.click());
+
+    expect(recoveries).toEqual(['repository']);
+    expect(reruns).toHaveLength(0);
+    expect(document.querySelector('.context-continuation')?.textContent).toContain('refresh it before');
+  });
+
   it('pages ranked structured recall rows and reads the selected canonical source', async () => {
     await renderContext();
     await clickButton('Recall & read');

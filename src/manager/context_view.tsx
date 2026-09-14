@@ -672,6 +672,12 @@ export function ContextBriefResult(props: {
 }): React.ReactElement {
   const brief = props.brief;
   const anchors = brief.coverage.memory.codeAnchors;
+  const continuationRef = brief.recommendedFollowUps.find(followUp => followUp.operation === 'inspect-node')?.ref;
+  const continuationCodeRefs = continuationRef === undefined ? undefined : contextBriefRerunCodeRefs(continuationRef);
+  const continuationRecovery =
+    brief.scope.freshness === 'stale' && anchors?.complete === false
+      ? brief.recommendedFollowUps.find(followUp => followUp.operation === 'graph-status')
+      : undefined;
   return (
     <div className="context-brief-result" aria-label="Context Brief result">
       <div className="context-metrics">
@@ -725,21 +731,40 @@ export function ContextBriefResult(props: {
             <div className="context-continuation">
               <strong>More graph evidence is available</strong>
               <span>
-                {brief.graph.continuation.state === 'available'
-                  ? `${brief.graph.continuation.remainingEstimate} estimated cards remain.`
-                  : `${brief.graph.continuation.omittedCards} cards were omitted; narrow the task and rerun.`}
+                {continuationRecovery?.operation === 'graph-status'
+                  ? 'The graph is stale; refresh it before retrieving omitted cards.'
+                  : brief.graph.continuation.state === 'available'
+                    ? `${brief.graph.continuation.remainingEstimate} estimated cards remain.`
+                    : `${brief.graph.continuation.omittedCards} cards were omitted; narrow the task and rerun.`}
               </span>
-              <button
-                onClick={() =>
-                  props.onRerun({
-                    mode: 'locate',
-                    task: `${brief.task.summary} Narrow to the most relevant implementation surface and its direct constraints.`,
-                  })
-                }
-                type="button"
-              >
-                Narrow and rerun
-              </button>
+              {continuationRecovery?.operation === 'graph-status' ? (
+                <button
+                  disabled={props.recoveryBusy}
+                  onClick={() => props.onRecoverGraph(continuationRecovery.scope)}
+                  type="button"
+                >
+                  {props.recoveryBusy
+                    ? 'Preparing graph…'
+                    : continuationRecovery.scope === 'repository'
+                      ? 'Index graph and rerun'
+                      : 'Prepare Workset and rerun'}
+                </button>
+              ) : continuationCodeRefs ? (
+                <button
+                  onClick={() =>
+                    props.onRerun({
+                      codeRefs: continuationCodeRefs,
+                      mode: 'explain',
+                      task: `Explain the current code and memory evidence for ${continuationCodeRefs[0]}.`,
+                    })
+                  }
+                  type="button"
+                >
+                  Rerun from exact ref
+                </button>
+              ) : (
+                <span>Inspect the returned graph reference directly to recover omitted cards.</span>
+              )}
             </div>
           ) : null}
         </section>
