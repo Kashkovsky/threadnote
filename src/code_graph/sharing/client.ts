@@ -39,10 +39,12 @@ import {promptGraphShareOciProfileAccess, promptGraphShareOciTrustRoot} from './
 import {ensureSharedGraphBlob as ensureSharedCasBlob, type GraphShareBlobSource} from './shared_blob.js';
 import {
   GRAPH_SHARE_CONTRIBUTION_MODES,
+  effectiveGraphShareContributionPolicy,
   effectiveGraphShareContributionMode,
   readGraphShareContributionQueue,
   type GraphShareContributionMode,
 } from './contribution.js';
+import {readTrustedGraphShareContributionProfile} from './profile_storage.js';
 import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {planGraphWorkerActions, readAdvertisedGraphWorkerActions} from './worker.js';
 import {
@@ -811,11 +813,35 @@ export const runGraphContributeStatus = Effect.fn('codeGraph.sharing.contributeS
   const requested = state?.contributionMode ?? 'off';
   const mode = effectiveGraphShareContributionMode(trust?.accessMode, requested);
   const queue = yield* readGraphShareContributionQueue(config.agentContextHome, identity.repositoryId, mode);
+  const profile =
+    trust === undefined || state === undefined
+      ? Option.none()
+      : yield* readTrustedGraphShareContributionProfile(trust, state.casRoot).pipe(Effect.option);
+  const resourcePolicy =
+    trust === undefined
+      ? undefined
+      : Option.isSome(profile)
+        ? {
+            ...effectiveGraphShareContributionPolicy(
+              trust.accessMode,
+              requested,
+              profile.value.contribution.maximumUploadBytesPerSecond,
+            ),
+            verification: 'verified' as const,
+          }
+        : {
+            activeResourceLimitsEnforced: false,
+            deliveryPausedReason: 'profile-unavailable' as const,
+            mode,
+            positiveUploadRateLimitEnforced: false,
+            verification: 'unavailable' as const,
+          };
   return {
     accessMode: trust?.accessMode,
     mode,
     requestedMode: requested,
     queued: queue.announcements.length,
+    resourcePolicy,
     repositoryId: identity.repositoryId,
     type: 'code-graph-contribute-status' as const,
     version: 1 as const,

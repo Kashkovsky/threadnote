@@ -1,11 +1,14 @@
 import {Clock, Effect, FileSystem, Path, Random, Schema} from 'effect';
 import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file_lock.js';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
-import {decodeJsonBytes} from './atomic.js';
 import {readVerifiedCasBlobBounded} from './cas.js';
 import {resolveGraphShareRepositoryClient} from './client_state.js';
 import {makeAuthenticatedGraphControlClient} from './control_http.js';
-import {acknowledgeGraphShareContributions, effectiveGraphShareContributionMode} from './contribution.js';
+import {
+  acknowledgeGraphShareContributions,
+  effectiveGraphShareContributionMode,
+  effectiveGraphShareContributionPolicy,
+} from './contribution.js';
 import {
   graphShareContributionRetryDelay,
   readContributionRetryState,
@@ -14,7 +17,8 @@ import {
 import {parseSha256Digest, sha256Digest, SHA256_DIGEST} from './digest.js';
 import {graphSharingFailure, graphSharingUnavailable, GraphSharingError} from './errors.js';
 import {GRAPH_SHARE_HTTP_CAS_MAX_BYTES} from './oci.js';
-import {graphShareProfileDigest, parseGraphShareProfile, type GraphShareProfileV1} from './profile.js';
+import type {GraphShareProfileV1} from './profile.js';
+import {readTrustedGraphShareContributionProfile} from './profile_storage.js';
 import {signedCandidateQueuePath} from './signed_candidate.js';
 import {
   acknowledgeGraphShareSignedCandidatePage,
@@ -100,7 +104,15 @@ const drainSignedBatch = Effect.fn('codeGraph.sharing.drainSignedBatch')(functio
   const state = yield* resolveGraphShareRepositoryClient(input.threadnoteHome, trust);
   const mode = effectiveGraphShareContributionMode(trust.accessMode, state.contributionMode);
   if (mode === 'off' || state.coordinatorUrl === undefined) return {sent: 0};
-  const profile = yield* readCurrentWorkerProfile(trust, state.casRoot);
+  const profile = yield* readTrustedGraphShareContributionProfile(trust, state.casRoot);
+  if (
+    effectiveGraphShareContributionPolicy(
+      trust.accessMode,
+      state.contributionMode,
+      profile.contribution.maximumUploadBytesPerSecond,
+    ).deliveryPausedReason !== undefined
+  )
+    return {sent: 0};
   if (profile.coordinator?.url !== state.coordinatorUrl || !profile.registry.worker.startsWith('oci://'))
     return yield* graphSharingFailure('Signed graph worker profile is outside its trusted transport.');
   yield* Effect.try({
@@ -259,29 +271,6 @@ export const reclaimExpiredGraphWorkerGenerations = Effect.fn('codeGraph.sharing
     }
   },
 );
-
-const readCurrentWorkerProfile = Effect.fn('codeGraph.sharing.readWorkerProfile')(function* (
-  trust: GraphShareTrustReceiptV1,
-  casRoot: string,
-) {
-  const profile = yield* decodeJsonBytes(yield* readVerifiedCasBlobBounded(casRoot, trust.profileDigest, 65_536)).pipe(
-    Effect.flatMap(value =>
-      Effect.try({
-        try: () => parseGraphShareProfile(value),
-        catch: () => graphSharingFailure('Signed graph worker profile is invalid.'),
-      }),
-    ),
-  );
-  if (
-    graphShareProfileDigest(profile) !== trust.profileDigest ||
-    profile.repositoryId !== trust.repositoryId ||
-    profile.organization !== trust.organization ||
-    profile.registry.canonical !== trust.registryCanonical ||
-    !profile.trust.publisherKeys.includes(trust.publisherKeyFingerprint)
-  )
-    return yield* graphSharingFailure('Signed graph worker profile is outside its trust receipt.');
-  return profile;
-});
 
 const prepareCandidate = Effect.fn('codeGraph.sharing.prepareSignedCandidate')(function* (
   input: {readonly repositoryId: string; readonly threadnoteHome: string},

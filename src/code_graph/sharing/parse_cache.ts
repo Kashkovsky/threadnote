@@ -21,6 +21,7 @@ import {
   enqueuePersistedGraphShareContribution,
   acknowledgeGraphShareContributions,
   effectiveGraphShareContributionMode,
+  effectiveGraphShareContributionPolicy,
   readGraphShareContributionQueue,
   prunePersistedGraphShareContributionQueue,
 } from './contribution.js';
@@ -36,6 +37,7 @@ import {
 } from './parse_result.js';
 import {lookupGraphShareTrustReceipt} from './trust.js';
 import {resolveGraphShareRepositoryClient} from './client_state.js';
+import {readTrustedGraphShareContributionProfile} from './profile_storage.js';
 import {graphSharingContributionQueuePath, graphSharingLayout} from './layout.js';
 import {persistGraphSharePendingSignedCandidates, type GraphSharePendingSignedCandidate} from './signed_candidate.js';
 import {usesSignedGraphWorkerDelivery} from './worker_delivery.js';
@@ -193,6 +195,15 @@ const drainContributionBatch = Effect.fn('codeGraph.sharing.drainContributionBat
   const mode = effectiveGraphShareContributionMode(trust.accessMode, state.contributionMode);
   yield* prunePersistedGraphShareContributionQueue(input.threadnoteHome, input.identity.repositoryId, mode);
   if (mode === 'off' || state.coordinatorUrl === undefined) return {sent: 0};
+  const profile = yield* readTrustedGraphShareContributionProfile(trust, state.casRoot);
+  if (
+    effectiveGraphShareContributionPolicy(
+      trust.accessMode,
+      state.contributionMode,
+      profile.contribution.maximumUploadBytesPerSecond,
+    ).deliveryPausedReason !== undefined
+  )
+    return {sent: 0};
   const queue = yield* readGraphShareContributionQueue(input.threadnoteHome, input.identity.repositoryId, mode);
   if (queue.announcements.length === 0) return {sent: 0};
   const identity = sha256Digest(JSON.stringify({trust, state}));

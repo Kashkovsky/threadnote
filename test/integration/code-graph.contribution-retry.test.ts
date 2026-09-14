@@ -7,7 +7,9 @@ import {describe, expect, it} from 'vitest';
 import {mkdir, mkdtemp, readFile, rm, unlink, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
+import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
+import {defaultGraphShareProfile, graphShareProfileDigest} from '../../src/code_graph/sharing/profile.js';
 
 describe('MCP-owned passive graph contribution retries', () => {
   it.each(['persisted queue', 'ordinary graph query', 'dirty graph then clean restart'] as const)(
@@ -60,6 +62,18 @@ describe('MCP-owned passive graph contribution retries', () => {
       try {
         await mkdir(join(home, 'graph-sharing', 'contribution'), {recursive: true});
         await mkdir(join(cas, 'sha256'), {recursive: true});
+        const publisherKeyFingerprint = sha256Digest('publisher');
+        const coordinatorUrl = `http://127.0.0.1:${server.port}`;
+        const profile = defaultGraphShareProfile({
+          branch: 'main',
+          canonicalRemote: 'github.com/acme/automatic-contribution',
+          coordinatorUrl,
+          organization: 'acme',
+          publisherKeyFingerprint,
+          repositoryId,
+        });
+        const profileDigest = graphShareProfileDigest(profile);
+        await writeFile(join(cas, 'sha256', sha256HexFromDigest(profileDigest)), canonicalJson(profile));
         await writeFile(join(home, 'seed-manifest.yaml'), 'version: 1\nprojects: []\n');
         if (source !== 'persisted queue') {
           await mkdir(join(repository, 'src'), {recursive: true});
@@ -121,11 +135,11 @@ describe('MCP-owned passive graph contribution retries', () => {
                 accessMode: 'join',
                 organization: 'acme',
                 policyVersion: 1,
-                profileDigest: sha256Digest('profile'),
-                publisherKeyFingerprint: sha256Digest('publisher'),
+                profileDigest,
+                publisherKeyFingerprint,
                 registryCanonical: 'cas://local',
                 repositoryId,
-                client: {casRoot: cas, contributionMode: 'passive', coordinatorUrl: `http://127.0.0.1:${server.port}`},
+                client: {casRoot: cas, contributionMode: 'passive', coordinatorUrl},
               },
             ],
           }),
