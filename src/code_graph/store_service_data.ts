@@ -87,6 +87,7 @@ import {
   removePersistentMaterializationSpool,
 } from './store_materialization_spool_lifecycle.js';
 import {codeGraphMaterializationSpoolPath} from './materialization_spool.js';
+import {CODE_GRAPH_SNAPSHOT_ID} from './store_reconciliation_core.js';
 import {
   selectEffectiveSnapshotCitationEvidence,
   selectEffectiveSnapshotFilesByContentHashes,
@@ -661,7 +662,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             Effect.gen(function* () {
               const failed = yield* withWriterGate(databasePath, failBuildingSnapshot(snapshotId, summary, ownerToken));
               if (failed > 0 && ownerToken !== undefined) {
-                yield* removeSnapshotSpool(databasePath, snapshotId);
+                if (CODE_GRAPH_SNAPSHOT_ID.test(snapshotId)) yield* removeSnapshotSpool(databasePath, snapshotId);
                 yield* pruneRetiredSnapshotRows(effect => withWriterGate(databasePath, effect), snapshotId);
               }
             }),

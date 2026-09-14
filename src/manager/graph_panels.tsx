@@ -682,7 +682,7 @@ export function GraphAdministration(props: {
               const health = database.health?.integrity ?? database.healthState;
               const snapshotAttribution =
                 database.storage.state === 'available' &&
-                database.storage.pageStorage.state === 'available' &&
+                database.storage.pageStorage?.state === 'available' &&
                 database.storage.pageStorage.attribution?.state === 'available'
                   ? database.storage.pageStorage.attribution.semantic.snapshots
                   : undefined;

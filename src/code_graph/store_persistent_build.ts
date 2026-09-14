@@ -538,6 +538,7 @@ function stageActivationWorkspace(workspace: CodeGraphWorkspace) {
       }
       yield* stageActivationMonikers(sql, component.monikers ?? [], 'upsert');
     }
+    yield* sql`INSERT OR REPLACE INTO activation_state (key, value) VALUES ('workspace_catalog_staged', '1')`;
   });
 }
 

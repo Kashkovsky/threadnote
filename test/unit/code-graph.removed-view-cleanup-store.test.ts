@@ -155,6 +155,8 @@ describe('removed code graph view cleanup queue', () => {
         yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
           try {
+            database.exec('DROP TRIGGER IF EXISTS snapshot_reuse_component_surfaces');
+            database.exec('ALTER TABLE snapshot_reuse_receipts DROP COLUMN component_surfaces_json');
             database.exec('ALTER TABLE snapshot_reuse_receipts DROP COLUMN inventory_receipt_json');
             database
               .query("UPDATE schema_metadata SET value = '12' WHERE key = 'persistent_extension_schema_revision'")
