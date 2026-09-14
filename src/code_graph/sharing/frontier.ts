@@ -46,9 +46,8 @@ export function observeCanonicalHead(
     return {
       ...idleGraphShareFrontier(),
       observedHead: input.commit,
-      pendingRange: [input.commit],
-      phase: 'collecting',
-      collectingStartedAtSeconds: input.nowSeconds,
+      pendingRange: [],
+      phase: 'published',
       generation: state.generation,
       previousManifestDigest: state.previousManifestDigest,
       publishedFrontier: state.publishedFrontier,

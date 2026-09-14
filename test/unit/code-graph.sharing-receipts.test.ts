@@ -213,8 +213,27 @@ describe('graph share receipts and frozen batches', () => {
     });
     expect(machine.publishedFrontier).toBe(published);
     expect(machine.generation).toBe(1);
-    expect(machine.phase).toBe('collecting');
-    expect(machine.pendingRange).toEqual([unrelated]);
+    expect(machine.phase).toBe('published');
+    expect(machine.pendingRange).toEqual([]);
+    expect(machine.collectingStartedAtSeconds).toBeNull();
+  });
+
+  it('never opens a collection for a sequence of unrelated heads', () => {
+    FC.assert(
+      FC.property(hex(40), FC.array(hex(40), {minLength: 1, maxLength: 4}), (published, heads) => {
+        FC.pre(heads.every(head => head !== published));
+        let machine = idleGraphShareFrontier();
+        machine = {...machine, generation: 3, phase: 'published', publishedFrontier: published};
+        for (const head of heads) {
+          machine = observeCanonicalHead(machine, {commit: head, isDescendantOfPublished: false, nowSeconds: 10});
+          expect(machine.phase).toBe('published');
+          expect(machine.publishedFrontier).toBe(published);
+          expect(machine.generation).toBe(3);
+          expect(machine.pendingRange).toEqual([]);
+        }
+      }),
+      {numRuns: 30},
+    );
   });
 
   it('late results cannot mutate a frozen generation', () => {

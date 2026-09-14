@@ -229,6 +229,19 @@ describe('authenticated metadata-only graph reads', () => {
           publishedFrontier: f.manifest.sourceCommit,
           receipts: [],
         });
+        yield* Ref.update(f.coordinatorStateRef, state => ({
+          ...state,
+          machine: observeCanonicalHead(state.machine, {
+            commit: 'f'.repeat(40),
+            isDescendantOfPublished: false,
+            nowSeconds: 101,
+          }),
+        }));
+        expect((yield* f.request()).body).toMatchObject({
+          observedHead: null,
+          phase: 'published',
+          publishedFrontier: f.manifest.sourceCommit,
+        });
         expect((yield* f.request('/v1/status', '')).status).toBe(401);
         yield* Ref.update(f.coordinatorStateRef, state => ({
           ...state,
