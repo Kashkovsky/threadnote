@@ -36,6 +36,7 @@ describe('code graph semantic storage attribution', () => {
       const repositoryId = 'b'.repeat(64);
       const worktreeId = 'c'.repeat(64);
       const snapshotId = `cgsn_${'d'.repeat(40)}`;
+      const retiredSnapshotId = `cgsn_${'e'.repeat(40)}`;
       const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
       const databasePath = path.join(repositoryRoot, 'graph-v3.sqlite');
       yield* fs.makeDirectory(repositoryRoot, {recursive: true});
@@ -64,6 +65,15 @@ describe('code graph semantic storage attribution', () => {
           .query('INSERT INTO snapshot_extractor_generations (snapshot_id, generation) VALUES (?, ?)')
           .run(snapshotId, CODE_GRAPH_EXTRACTOR_GENERATION);
         database
+          .query(
+            `INSERT INTO snapshots (
+             id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id,
+             extractor_set, dirty, overlay_fingerprint, state, file_count, symbol_count,
+             edge_count, started_at, completed_at, failure_summary
+           ) VALUES (?, ?, ?, ?, ?, NULL, 'storage-fixture', 0, NULL, 'retired', 0, 0, 0, ?, ?, NULL)`,
+          )
+          .run(retiredSnapshotId, repositoryId, worktreeId, 'f'.repeat(40), `cgc_${'a'.repeat(40)}`, now, now);
+        database
           .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
           .run(worktreeId, snapshotId, now);
         database
@@ -82,6 +92,16 @@ describe('code graph semantic storage attribution', () => {
              NULL, '[]', 'typescript', NULL, 1, NULL, NULL, '{"line":1}', NULL)`,
           )
           .run(snapshotId, '2'.repeat(64));
+        database
+          .query(
+            `INSERT INTO symbols (
+             snapshot_id, id, content_hash, kind, name, qualified_name, path, language,
+             arity, lookup_keys_json, resolution_domain, package_name, exported,
+             signature, documentation, span_json, resolution_scope_id
+           ) VALUES (?, 'orphan', ?, 'module', 'orphan', 'orphan', 'src/old.ts', 'typescript',
+             NULL, '[]', 'typescript', NULL, 1, NULL, NULL, '{"line":1}', NULL)`,
+          )
+          .run(retiredSnapshotId, '3'.repeat(64));
         database
           .query(
             `INSERT INTO materialized_file_shards (
@@ -151,6 +171,8 @@ function assertSnapshotAttribution(
 ): void {
   if (attribution.state !== 'available') throw TestError.make({message: 'missing snapshot attribution'});
   expect(attribution.baseline).toMatchObject({activeSnapshotCount: 1, activeSymbolCount: 1});
+  expect(attribution.baseline.readyLogicalPayloadBytes).toBeGreaterThan(0);
+  expect(attribution.baseline.retiredLogicalPayloadBytes).toBeGreaterThan(0);
   expect(attribution.snapshots[0]).toMatchObject({
     active: true,
     associatedFactRawBytes: Buffer.byteLength(factsJson),

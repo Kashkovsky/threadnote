@@ -566,6 +566,8 @@ export interface CodeGraphStoreShape {
     graphContentId?: string,
     preferredCommitGroups?: readonly (readonly string[])[],
     allowExtractorMismatch?: boolean,
+    workspaceProjectsJson?: string,
+    excludedSnapshotIds?: readonly string[],
   ) => Effect.Effect<CodeGraphReusableCleanBase | undefined, CodeGraphStoreFailure>;
   readonly reusableCleanBaseForCommit: (
     databasePath: string,

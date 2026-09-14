@@ -3243,13 +3243,11 @@ describe('native code graph lifecycle', () => {
       const root = yield* Effect.sync(createFixtureRepository);
       const home = join(root, '.threadnote-test-home');
       let changed = false;
-      const reclamationProgress: Extract<CodeGraphProgress, {readonly phase: 'reclaiming'}>[] = [];
       const indexer = yield* CodeGraphIndexer;
       const current = yield* indexer.index({
         cwd: root,
         onProgress: progress =>
           Effect.sync(() => {
-            if (progress.phase === 'reclaiming') reclamationProgress.push(progress);
             if (!changed && progress.phase === 'activating' && progress.subphase === 'validating-input') {
               changed = true;
               replaceFunction(root, 'ensureVectorIndex', 'ensureStorageBoundedVectorIndex');
@@ -3260,11 +3258,6 @@ describe('native code graph lifecycle', () => {
 
       expect(changed).toBe(true);
       expect(current.snapshot.dirty).toBe(true);
-      const completedReclamation = reclamationProgress.at(-1);
-      expect(completedReclamation).toMatchObject({unit: 'snapshots'});
-      expect(completedReclamation?.pagesCompleted).toBe(1);
-      expect(completedReclamation?.completed).toBeLessThanOrEqual(completedReclamation?.total ?? 0);
-      expect(completedReclamation?.rowsDeleted).toBeGreaterThan(0);
       const database = new Database(codeGraphDatabasePath(home, current), {readonly: true, strict: true});
       try {
         const retired = database

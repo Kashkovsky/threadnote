@@ -386,6 +386,32 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
   `);
   yield* ensureColumn(sql, 'snapshot_reuse_receipts', 'reexport_count', 'INTEGER NOT NULL DEFAULT 0');
   yield* ensureColumn(sql, 'snapshot_reuse_receipts', 'inventory_receipt_json', 'TEXT');
+  // Candidate ranking uses per-project surfaces. The complete receipt remains
+  // authoritative and is validated before a base can be reused.
+  yield* ensureColumn(sql, 'snapshot_reuse_receipts', 'component_surfaces_json', 'TEXT');
+  yield* sql.unsafe(`
+    CREATE TRIGGER IF NOT EXISTS snapshot_reuse_component_surfaces
+    AFTER INSERT ON snapshot_reuse_receipts
+    WHEN NEW.inventory_receipt_json IS NOT NULL
+    BEGIN
+      UPDATE snapshot_reuse_receipts
+      SET component_surfaces_json = (
+        SELECT json_group_object(json_extract(project.value, '$.id'), json(project.value))
+        FROM json_each(NEW.inventory_receipt_json, '$.workspace.projects') AS project
+      )
+      WHERE snapshot_id = NEW.snapshot_id;
+    END
+  `);
+  yield* sql.unsafe(`
+    UPDATE snapshot_reuse_receipts
+    SET component_surfaces_json = (
+      SELECT json_group_object(json_extract(project.value, '$.id'), json(project.value))
+      FROM json_each(snapshot_reuse_receipts.inventory_receipt_json, '$.workspace.projects') AS project
+    )
+    WHERE component_surfaces_json IS NULL
+      AND inventory_receipt_json IS NOT NULL
+      AND json_valid(inventory_receipt_json)
+  `);
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_pack_provenance (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,

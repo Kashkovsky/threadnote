@@ -502,6 +502,11 @@ export function renderCodeGraphDiagnostics(
       if (attribution.semantic.snapshots.state === 'available') {
         const baseline = attribution.semantic.snapshots.baseline;
         lines.push(
+          `Snapshot payload: ready ${formatBytes(baseline.readyLogicalPayloadBytes)} logical · ` +
+            `retired/failed ${formatBytes(baseline.retiredLogicalPayloadBytes)} logical` +
+            (attribution.semantic.snapshots.snapshotsTruncated ? ' (first 64 snapshots only)' : ''),
+        );
+        lines.push(
           baseline.activeSymbolCount > 0
             ? `Bytes/symbol: attributed B-trees ${formatBytes(baseline.attributedBtreeBytesPerSymbol ?? 0)} · ` +
                 `active logical payload ${formatBytes(baseline.activeLogicalPayloadBytesPerSymbol ?? 0)} · ` +

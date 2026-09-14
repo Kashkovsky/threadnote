@@ -4,6 +4,20 @@ import type {CodeGraphWorkspace, CodeGraphWorkspaceProject} from '../../src/code
 import {assessCodeGraphWorkspaceCompatibility} from '../../src/code_graph/workspace_compatibility.js';
 
 describe('code graph workspace compatibility properties', () => {
+  it('ignores repository fingerprint churn when every project surface stays identical', () => {
+    fc.assert(
+      fc.property(fc.integer({max: 12, min: 1}), projectCount => {
+        const projects = Array.from({length: projectCount}, (_, index) => project(index));
+        expect(
+          assessCodeGraphWorkspaceCompatibility(workspace('base', projects), workspace('current', projects)),
+        ).toEqual({
+          mode: 'unchanged',
+        });
+      }),
+      {numRuns: 50},
+    );
+  });
+
   it('seeds only projects whose semantic workspace surface changed', () => {
     fc.assert(
       fc.property(fc.integer({max: 12, min: 2}), fc.nat(), (projectCount, salt) => {

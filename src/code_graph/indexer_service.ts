@@ -875,6 +875,18 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         if (incrementalPrepared && incrementalBuilding !== undefined) {
                           building = incrementalBuilding;
                           yield* store.markBuilding(layout.databasePath, identity, building);
+                          yield* store.stageWorkspaceCatalog(
+                            layout.databasePath,
+                            workspace,
+                            codeGraphDirectPersistentCapacityProtector({
+                              capacityProtection,
+                              fs,
+                              identity,
+                              layout,
+                              onProgress: options.onProgress,
+                              threadnoteHome: options.threadnoteHome,
+                            }),
+                          );
                         } else {
                           building = {
                             commit: identity.headCommit,
