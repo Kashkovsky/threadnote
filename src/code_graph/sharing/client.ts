@@ -27,6 +27,7 @@ import {graphShareControlGetFrontier, graphShareControlGetTag, mirrorCoordinator
 import {graphShareFrontierPointerFromOciDescriptor, parseGraphShareOciDescriptor} from './descriptor.js';
 import {graphShareFrontierDiscoveryTag} from './namespace.js';
 import {discoverGraphShareRegistryFrontier, makeGraphShareRegistryReader} from './registry_reader.js';
+import {readTrustedGraphShareOciProfile} from './profile_client.js';
 import {ensureSharedGraphBlob as ensureSharedCasBlob, type GraphShareBlobSource} from './shared_blob.js';
 import {
   GRAPH_SHARE_CONTRIBUTION_MODES,
@@ -156,16 +157,22 @@ export const runGraphShareJoin = Effect.fn('codeGraph.sharing.join')(function* (
     enrollment.profile,
     'Enrollment profile pointer is invalid.',
   );
-  if (pointer.kind === 'oci') return yield* graphSharingUnavailable('Remote OCI profile enrollment is not supported.');
-  if (options.coordinator !== undefined) {
-    const coordinatorUrl = parseGraphShareCoordinatorUrl(options.coordinator);
-    yield* mirrorCoordinatorCasBlob(casRoot, coordinatorUrl, pointer.bodyDigest);
+  let profile: ReturnType<typeof parseGraphShareProfile>;
+  if (pointer.kind === 'oci') {
+    if (previous === undefined)
+      return yield* graphSharingFailure('OCI profile enrollment needs independent first-use trust approval.');
+    profile = yield* readTrustedGraphShareOciProfile(casRoot, enrollment, previous);
+  } else {
+    if (options.coordinator !== undefined) {
+      const coordinatorUrl = parseGraphShareCoordinatorUrl(options.coordinator);
+      yield* mirrorCoordinatorCasBlob(casRoot, coordinatorUrl, pointer.bodyDigest);
+    }
+    profile = yield* decodeJson(
+      yield* readVerifiedCasBlob(casRoot, pointer.bodyDigest),
+      parseGraphShareProfile,
+      'Organization graph profile is invalid.',
+    );
   }
-  const profile = yield* decodeJson(
-    yield* readVerifiedCasBlob(casRoot, pointer.bodyDigest),
-    parseGraphShareProfile,
-    'Organization graph profile is invalid.',
-  );
   const profileDigest = graphShareProfileDigest(profile);
   yield* decodeValue(
     () => assertProfileMatchesEnrollment(profile, enrollment, profileDigest),
@@ -375,14 +382,19 @@ const importVerifiedSharedCheckpoint = Effect.fn('codeGraph.sharing.importVerifi
     input.enrollment.profile,
     'Enrollment profile pointer is invalid.',
   );
-  if (pointer.kind === 'oci') return yield* graphSharingUnavailable('Remote OCI profile enrollment is not supported.');
-  const client = yield* resolveGraphShareRepositoryClient(input.request.threadnoteHome, input.trust);
-  const coordinatorHint = client.coordinatorUrl;
-  const profile = yield* decodeJson(
-    yield* ensureSharedCasBlob(input.casRoot, pointer.bodyDigest, coordinatorHint),
-    parseGraphShareProfile,
-    'Organization graph profile is invalid.',
-  );
+  const legacyClient =
+    pointer.kind === 'cas'
+      ? yield* resolveGraphShareRepositoryClient(input.request.threadnoteHome, input.trust)
+      : undefined;
+  const profile =
+    pointer.kind === 'oci'
+      ? yield* readTrustedGraphShareOciProfile(input.casRoot, input.enrollment, input.trust)
+      : yield* decodeJson(
+          yield* ensureSharedCasBlob(input.casRoot, pointer.bodyDigest, legacyClient?.coordinatorUrl),
+          parseGraphShareProfile,
+          'Organization graph profile is invalid.',
+        );
+  const client = legacyClient ?? (yield* resolveGraphShareRepositoryClient(input.request.threadnoteHome, input.trust));
   const profileDigest = graphShareProfileDigest(profile);
   yield* decodeValue(
     () => {

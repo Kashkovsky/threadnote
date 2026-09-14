@@ -7,6 +7,7 @@ import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {decodeJsonBytes, readJsonFile, writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
 import {readVerifiedCasBlob} from '../../src/code_graph/sharing/cas.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {runGraphShareJoin} from '../../src/code_graph/sharing/client.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
   graphShareEnrollmentPath,
@@ -26,6 +27,7 @@ import {
 } from '../../src/code_graph/sharing/publisher.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {lookupGraphShareTrustReceipt} from '../../src/code_graph/sharing/trust.js';
 
 const canonicalRegistry = 'oci://registry.example.test/acme/canonical';
 const workerRegistry = 'oci://registry.example.test/acme/worker';
@@ -148,6 +150,42 @@ effectIt.effect('stages a fresh org outside Git history and replaces its tempora
       );
       expect((yield* f.git(['rev-parse', 'HEAD'])).stdout.trim()).toBe(initialHead);
       expect((yield* f.git(['status', '--porcelain'])).stdout).toContain('.threadnote/');
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  ),
+);
+
+effectIt.effect('migrates a previously trusted v1 client to a cold v2 OCI profile without coordinator CAS', () =>
+  TestClock.withLive(
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const clientConfig = {...f.config, agentContextHome: f.path.join(f.repository, '..', 'client-home')};
+      const joined = yield* runGraphShareJoin(clientConfig, {cas: f.cas, cwd: f.repository, readOnly: true});
+      expect(joined.accessMode).toBe('read-only');
+      const promoted = yield* f.promote();
+      yield* f.fs.writeFileString(f.enrollmentPath, `${JSON.stringify(promoted.enrollment, undefined, 2)}\n`);
+      yield* f.fs.remove(graphSharingCasBlobPath(f.path, f.cas, promoted.profileDigest.slice('sha256:'.length)));
+      yield* f.fs.remove(graphSharingCasBlobPath(f.path, f.cas, promoted.manifestDigest.slice('sha256:'.length)));
+      const requestsBefore = f.registry.requests.length;
+      const migrated = yield* f.registry.provide(
+        runGraphShareJoin(clientConfig, {cas: f.cas, cwd: f.repository, readOnly: true}),
+      );
+      expect(migrated.profileDigest).toBe(promoted.profileDigest);
+      expect(f.registry.requests.slice(requestsBefore).map(request => request.pathname)).toEqual([
+        `/v2/acme/canonical/manifests/${promoted.manifestDigest}`,
+        `/v2/acme/canonical/blobs/${promoted.profileDigest}`,
+      ]);
+      const trust = yield* lookupGraphShareTrustReceipt(
+        clientConfig.agentContextHome,
+        promoted.enrollment.repositoryId,
+      );
+      expect(trust?.registryCanonical).toBe(canonicalRegistry);
+      expect(trust?.accessMode).toBe('read-only');
+      const freshConfig = {...clientConfig, agentContextHome: f.path.join(f.repository, '..', 'fresh-home')};
+      const requestsAfterMigration = f.registry.requests.length;
+      expect(
+        yield* rejected(f.registry.provide(runGraphShareJoin(freshConfig, {cas: f.cas, cwd: f.repository}))),
+      ).toBeInstanceOf(Error);
+      expect(f.registry.requests).toHaveLength(requestsAfterMigration);
     }).pipe(provideTestLayer(ApplicationLayer)),
   ),
 );

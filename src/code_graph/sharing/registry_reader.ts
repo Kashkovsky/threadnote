@@ -13,6 +13,7 @@ import {
 } from './oci.js';
 import {makeGraphShareRegistryHttp} from './registry_http.js';
 import {parseGraphShareRegistryTarget} from './registry_reference.js';
+import {GRAPH_SHARE_PROFILE_OCI_BODY_MAX_BYTES} from './profile_oci_artifact.js';
 
 export const makeGraphShareRegistryReader = Effect.fn('codeGraph.sharing.registryReader')(function* <
   E = never,
@@ -40,6 +41,23 @@ export const makeGraphShareRegistryReader = Effect.fn('codeGraph.sharing.registr
       return {bytes: response.bytes, digest};
     });
   return {
+    readProfileBlob: (digest: string) =>
+      Effect.gen(function* () {
+        if (!SHA256_DIGEST.test(digest)) return yield* graphSharingFailure('Profile blob digest is invalid.');
+        const response = yield* request(
+          `/v2/${target.repository}/blobs/${digest}`,
+          GRAPH_SHARE_PROFILE_OCI_BODY_MAX_BYTES,
+          'application/octet-stream',
+        );
+        if (
+          sha256Digest(response.bytes) !== digest ||
+          (response.headers['docker-content-digest'] !== undefined &&
+            response.headers['docker-content-digest'] !== digest) ||
+          graphSharePayloadLooksLikeGitObject(response.bytes)
+        )
+          return yield* graphSharingFailure('Profile blob verification failed.');
+        return response.bytes;
+      }),
     readProfileManifest: (digest: string) =>
       Effect.gen(function* () {
         if (!SHA256_DIGEST.test(digest)) return yield* graphSharingFailure('Profile manifest digest is invalid.');
