@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Path, Result} from 'effect';
 import {SystemInfo} from '../../effect/system.js';
 import type {RuntimeConfig} from '../../types.js';
 import {resolveRepositoryIdentity} from '../repository.js';
@@ -16,6 +16,7 @@ import {
 } from './registry_publication.js';
 import {graphSharePublicationAuthority, readGraphSharePublicationReceipt} from './registry_publication_state.js';
 import {resolveGraphShareCasRoot} from './trust.js';
+import {readGraphPublisherEvidenceRecord, type GraphPublisherEvidenceRecordV1} from './publisher_evidence_record.js';
 
 const loadGraphPublisherRegistry = Effect.fn('codeGraph.sharing.loadPublisherRegistry')(function* (
   config: RuntimeConfig,
@@ -44,6 +45,8 @@ export const completeGraphPublisherRegistryPublication = Effect.fn('codeGraph.sh
 );
 
 interface PublisherStatus {
+  readonly contributionEvidence?: GraphPublisherEvidenceRecordV1;
+  readonly contributionEvidenceStatus?: 'available' | 'missing' | 'unavailable';
   readonly enrolled: boolean;
   readonly localCandidate?: {
     readonly generation: number;
@@ -99,7 +102,34 @@ export const readGraphPublisherRegistryStatus = Effect.fn('codeGraph.sharing.pub
           nextAttempt: receipt.nextAttempt,
           lastFailure: receipt.lastFailure,
         };
+  const evidenceResult =
+    manifest === undefined || pointer === undefined
+      ? undefined
+      : yield* Effect.result(
+          readGraphPublisherEvidenceRecord({
+            manifestDigest: pointer.manifestDigest,
+            repositoryId: input.scope.repositoryId,
+            threadnoteHome: input.home,
+          }),
+        );
+  const evidence =
+    evidenceResult !== undefined && Result.isSuccess(evidenceResult) ? evidenceResult.success : undefined;
+  const evidenceMatches =
+    evidence !== undefined &&
+    evidence.generation === manifest?.generation &&
+    evidence.sourceCommit === manifest?.sourceCommit;
   const status: PublisherStatus = {
+    ...(evidenceMatches ? {contributionEvidence: evidence} : {}),
+    ...(evidenceResult === undefined
+      ? {}
+      : {
+          contributionEvidenceStatus:
+            Result.isFailure(evidenceResult) || (evidence !== undefined && !evidenceMatches)
+              ? ('unavailable' as const)
+              : evidenceMatches
+                ? ('available' as const)
+                : ('missing' as const),
+        }),
     enrolled: true,
     localCandidate:
       manifest === undefined || pointer === undefined

@@ -99,7 +99,7 @@ describe('passive signed graph delivery monitor', () => {
   );
 
   effectIt.effect(
-    'replays the exact prepared operation after a coordinator outage and monitor restart',
+    'retries source-unavailable promptly and replays the exact prepared operation after monitor restart',
     () =>
       TestClock.withLive(
         Effect.gen(function* () {
@@ -224,7 +224,7 @@ describe('passive signed graph delivery monitor', () => {
               submittedIds.push(body.body!.idempotencyKey!);
               return healthy
                 ? Response.json({idempotencyKey: body.body!.idempotencyKey, status: 'accepted'}, {status: 201})
-                : Response.json({error: 'outage'}, {status: 503, headers: {'retry-after': '1'}});
+                : Response.json({error: 'source-unavailable'}, {status: 425});
             },
             {preconnect: () => undefined},
           ) as typeof globalThis.fetch;
@@ -272,6 +272,7 @@ describe('passive signed graph delivery monitor', () => {
           expect(beforeRestart[0].state).toBe('prepared');
           expect(beforeRestart[0].operationId).toBe(submittedIds[0]);
           const retry = (yield* readContributionRetryState(home, repositoryId, 'signed'))!;
+          expect(retry.nextAttempt - (yield* Clock.currentTimeMillis)).toBeLessThanOrEqual(2_000);
           yield* Effect.sleep(Math.max(0, retry.nextAttempt - (yield* Clock.currentTimeMillis)) + 100);
           healthy = true;
           const secondMonitor = yield* Effect.forkScoped(services(monitorGraphShareSignedContributions(home)));

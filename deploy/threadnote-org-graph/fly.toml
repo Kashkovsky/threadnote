@@ -28,7 +28,7 @@ kill_timeout = 60
   THREADNOTE_AUTH0_REGISTRY_M2M_AUDIENCE = "https://threadnote-org-registry-e2e.fly.dev"
 
 [[mounts]]
-  source = "threadnote_org_graph"
+  source = "graph_data"
   destination = "/data"
   snapshot_retention = 14
 

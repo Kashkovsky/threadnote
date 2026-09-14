@@ -10,7 +10,8 @@ import {
   effectiveGraphShareContributionPolicy,
 } from './contribution.js';
 import {
-  graphShareContributionRetryDelay,
+  MAX_SIGNED_CONTRIBUTION_FAILURES,
+  graphShareSignedContributionRetryDelay,
   readContributionRetryState,
   writeContributionRetryState,
 } from './contribution_retry_state.js';
@@ -229,11 +230,16 @@ const drainSignedBatch = Effect.fn('codeGraph.sharing.drainSignedBatch')(functio
     Effect.catch(error =>
       Effect.gen(function* () {
         const failure = Schema.is(GraphSharingError)(error) ? error : undefined;
-        const failures = Math.min(7, (previous?.failures ?? 0) + 1);
+        const failures = Math.min(MAX_SIGNED_CONTRIBUTION_FAILURES, (previous?.failures ?? 0) + 1);
         const delay =
           failure?.httpStatus === 401 || failure?.httpStatus === 403
             ? Math.max(3_600_000, failure?.retryAfterMilliseconds ?? 0)
-            : graphShareContributionRetryDelay(failures, yield* Random.next, failure?.retryAfterMilliseconds);
+            : graphShareSignedContributionRetryDelay(
+                failure?.httpStatus,
+                failures,
+                yield* Random.next,
+                failure?.retryAfterMilliseconds,
+              );
         yield* writeContributionRetryState(
           input.threadnoteHome,
           input.repositoryId,
