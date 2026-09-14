@@ -5,6 +5,7 @@ import {Clock, Effect, FileSystem, Layer, Result} from 'effect';
 import {TestClock} from 'effect/testing';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {graphShareContributionFixture} from '../helpers/graph-share-contribution.js';
+import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {putCasBytes} from '../../src/code_graph/sharing/cas.js';
 import {
   enqueuePersistedGraphShareContribution,
@@ -16,6 +17,7 @@ import {
 } from '../../src/code_graph/sharing/contribution_retry_state.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
 import {drainQueuedGraphShareContributions} from '../../src/code_graph/sharing/parse_cache.js';
+import {defaultGraphShareProfile, graphShareProfileDigest} from '../../src/code_graph/sharing/profile.js';
 import {writeGraphShareTrustReceipt} from '../../src/code_graph/sharing/trust.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
@@ -32,15 +34,27 @@ const fixture = Effect.fn('test.contributionDeliveryFixture')(function* (
     Effect.sync(() => Bun.serve({hostname: '127.0.0.1', port: 0, fetch: reply})),
     server => Effect.promise(() => server.stop(true)),
   );
+  const publisherKeyFingerprint = sha256Digest('publisher');
+  const coordinatorUrl = `http://127.0.0.1:${server.port}`;
+  const profile = defaultGraphShareProfile({
+    branch: 'main',
+    canonicalRemote: 'github.com/acme/contribution-delivery',
+    coordinatorUrl,
+    organization: 'acme',
+    publisherKeyFingerprint,
+    repositoryId,
+  });
+  const profileDigest = graphShareProfileDigest(profile);
+  yield* putCasBytes(cas, new TextEncoder().encode(canonicalJson(profile)));
   const trust = {
     accessMode: 'join' as const,
     organization: 'acme',
     policyVersion: 1 as const,
-    profileDigest: sha256Digest('profile'),
-    publisherKeyFingerprint: sha256Digest('publisher'),
+    profileDigest,
+    publisherKeyFingerprint,
     registryCanonical: 'cas://local',
     repositoryId,
-    client: {casRoot: cas, contributionMode: 'passive' as const, coordinatorUrl: `http://127.0.0.1:${server.port}`},
+    client: {casRoot: cas, contributionMode: 'passive' as const, coordinatorUrl},
   };
   yield* writeGraphShareTrustReceipt(home, trust);
   const contribution = graphShareContributionFixture(repositoryId);
