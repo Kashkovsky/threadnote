@@ -53,10 +53,15 @@ describe('Context Brief action cards', () => {
     );
     expect(renderCodeBriefEditContext(briefWith({...memory, freshness: 'stale'}))).toBeUndefined();
     expect(renderCodeBriefEditContext(briefWith({...memory, preciseStatus: 'relocated'}))).toBeUndefined();
+    expect(renderCodeBriefEditContext(briefWith({...memory, preciseStatus: undefined}))).toContain(
+      'Verify after the edit: Run the focused catalog test.',
+    );
     expect(renderCodeBriefEditContext(briefWith({...memory, selectionBasis: undefined}))).toBeUndefined();
     expect(renderCodeBriefEditContext(briefWith({...memory, codeRelations: []}))).toBeUndefined();
     expect(classifyCodeBriefEditDelivery(briefWith(memory)).status).toBe('delivered');
     expect(classifyCodeBriefEditDelivery(briefWith({...memory, freshness: 'stale'})).status).toBe('unsafe-link');
+    expect(classifyCodeBriefEditDelivery(briefWith({...memory, preciseStatus: undefined})).status).toBe('delivered');
+    expect(classifyCodeBriefEditDelivery(briefWith({...memory, codeRelations: []})).status).toBe('unsafe-link');
     expect(classifyCodeBriefEditDelivery(briefWith({...memory, selectionBasis: undefined})).status).toBe(
       'evidence-omitted',
     );

@@ -21,7 +21,7 @@ export function renderCodeBriefEditContext(brief: ContextBriefV1): string | unde
     memory =>
       memory.selectionBasis === 'code-citation' &&
       memory.freshness === 'fresh' &&
-      memory.preciseStatus === 'exact' &&
+      (memory.preciseStatus === undefined || memory.preciseStatus === 'exact') &&
       memory.codeRelations?.some(relation => relation.status === 'exact'),
   );
   if (memories.length === 0) return undefined;
@@ -55,7 +55,14 @@ export function classifyCodeBriefEditDelivery(
   const selected = [...brief.durableDecisions, ...brief.activeHandoffs].filter(
     memory => memory.selectionBasis === 'code-citation',
   );
-  if (selected.some(memory => memory.freshness !== 'fresh' || memory.preciseStatus !== 'exact')) {
+  if (
+    selected.some(
+      memory =>
+        memory.freshness !== 'fresh' ||
+        (memory.preciseStatus !== undefined && memory.preciseStatus !== 'exact') ||
+        !memory.codeRelations?.some(relation => relation.status === 'exact'),
+    )
+  ) {
     return {status: 'unsafe-link'};
   }
   if ((brief.coverage.memory.codeAnchors?.matchedMemories ?? 0) > selected.length) {
