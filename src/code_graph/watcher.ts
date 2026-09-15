@@ -22,7 +22,7 @@ import {observeCodeGraphAdmissionEnvironment} from './admission_freshness.js';
 import {worktreeBuildRequestState, worktreeOverlayState} from './inventory.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult, type CodeGraphStoreShape} from './store.js';
-import {CommandExecutor, type CommandOptions} from '../effect/command.js';
+import {CommandExecutor, runCommandEffect, type CommandOptions} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import type {CommandResult} from '../types.js';
 import type {
@@ -58,6 +58,13 @@ import {anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure} from '../teleme
 import type {CodeGraphBuilderAdmissionClass} from './builder_admission.js';
 import {codeGraphBuildRequestKey} from './indexer_build.js';
 import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
+import {
+  compileThreadnoteIgnore,
+  isIgnoredByThreadnote,
+  isOverlayAdmissionControlPath,
+  readThreadnoteIgnoreSources,
+  type CompiledIgnoreRule,
+} from './threadnote_ignore.js';
 
 export interface CodeGraphWatchOptions {
   readonly admissionClass?: CodeGraphBuilderAdmissionClass;
@@ -152,6 +159,13 @@ export interface CodeGraphWatchReconciliationHooks {
   readonly periodicRefreshRequired: Effect.Effect<boolean, unknown>;
   readonly requestAfterChange: Effect.Effect<void, unknown>;
   readonly requestInitial?: Effect.Effect<void, unknown>;
+  /** @internal Supplied by the production watcher; custom test watches may omit it. */
+  readonly watchIgnorePolicy?: Effect.Effect<CodeGraphWatchIgnorePolicy, unknown>;
+}
+
+export interface CodeGraphWatchIgnorePolicy {
+  readonly accepts: (repositoryPath: string) => Effect.Effect<boolean, unknown>;
+  readonly reload: Effect.Effect<void, unknown>;
 }
 
 export interface CodeGraphAutomaticRecoveryIdentity extends Partial<RepositoryIdentity> {
@@ -355,6 +369,14 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
         });
       };
       const watchReconciliationHooks = (options: CodeGraphWatchOptions): CodeGraphWatchReconciliationHooks => ({
+        watchIgnorePolicy: resolveRecoveryIdentity(options.cwd).pipe(
+          Effect.flatMap(identity =>
+            makeCodeGraphWatchIgnorePolicy(fs, path, identity.repoRoot, options.cwd).pipe(
+              Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(SystemInfo, systemInfo),
+            ),
+          ),
+        ),
         changeRefreshRequired: Effect.gen(function* () {
           const identity = yield* resolveRecoveryIdentity(options.cwd);
           const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
@@ -1088,8 +1110,14 @@ export const watchRepository = Effect.fn('codeGraph.watchRepository')(function* 
   yield* (reconciliationHooks.requestInitial ?? reconciliationHooks.requestAfterChange).pipe(
     Effect.catch(() => Effect.logWarning('Code graph initial maintenance scheduling failed; watch remains active.')),
   );
+  const ignorePolicy = yield* (reconciliationHooks.watchIgnorePolicy ?? Effect.succeed(ALLOW_ALL_WATCH_POLICY)).pipe(
+    Effect.orElseSucceed(() => ALLOW_ALL_WATCH_POLICY),
+  );
   const changes = fs.watch(options.cwd, {recursive: true}).pipe(
-    Stream.filter(event => relevantWatchPath(path, options.cwd, event.path)),
+    Stream.filterEffect(event => {
+      const relative = relevantWatchPath(path, options.cwd, event.path);
+      return relative === undefined ? Effect.succeed(false) : ignorePolicy.accepts(relative);
+    }),
     Stream.debounce('750 millis'),
     Stream.map(() => 'change' as const),
     Stream.catchCause(cause =>
@@ -1118,7 +1146,9 @@ export const watchRepository = Effect.fn('codeGraph.watchRepository')(function* 
               ),
             ),
           )
-        : reconciliationHooks.periodicRefreshRequired.pipe(
+        : ignorePolicy.reload.pipe(
+            Effect.ignore,
+            Effect.andThen(reconciliationHooks.periodicRefreshRequired),
             Effect.match({
               onFailure: () => false,
               onSuccess: refreshRequired => refreshRequired,
@@ -1162,18 +1192,96 @@ export function codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh(
   return latest?.result?.overlayAssessment?.outcome === 'overlay-success';
 }
 
-function relevantWatchPath(path: Path.Path, cwd: string, eventPath: string): boolean {
+const ALLOW_ALL_WATCH_POLICY: CodeGraphWatchIgnorePolicy = {
+  accepts: () => Effect.succeed(true),
+  reload: Effect.void,
+};
+
+interface WatchIgnoreState {
+  readonly gitDecisions: ReadonlyMap<string, boolean>;
+  readonly rules: readonly CompiledIgnoreRule[];
+}
+
+const WATCH_GIT_IGNORE_CACHE_LIMIT = 1_024;
+
+/** @internal Use the inventory ignore union before debounce and maintenance scheduling. */
+export const makeCodeGraphWatchIgnorePolicy = Effect.fn('codeGraph.makeWatchIgnorePolicy')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  repoRoot: string,
+  watchCwd = repoRoot,
+) {
+  const command = yield* CommandExecutor;
+  const system = yield* SystemInfo;
+  const sources = yield* readThreadnoteIgnoreSources(fs, path, repoRoot);
+  const state = yield* Ref.make<WatchIgnoreState>({
+    gitDecisions: new Map(),
+    rules: compileThreadnoteIgnore(sources.committed, sources.local),
+  });
+  const reload = Effect.gen(function* () {
+    const updated = yield* readThreadnoteIgnoreSources(fs, path, repoRoot);
+    yield* Ref.set(state, {
+      gitDecisions: new Map(),
+      rules: compileThreadnoteIgnore(updated.committed, updated.local),
+    });
+  }).pipe(Effect.provideService(SystemInfo, system));
+  return {
+    accepts: (watchPath: string) =>
+      Effect.gen(function* () {
+        const repositoryPath = path.relative(repoRoot, path.join(watchCwd, watchPath)).split(path.sep).join('/');
+        if (isOverlayAdmissionControlPath(repositoryPath)) {
+          yield* reload;
+          return true;
+        }
+        const current = yield* Ref.get(state);
+        if (isIgnoredByThreadnote(repositoryPath, current.rules)) return false;
+        const prefixes = repositoryPath.split('/').map((_, index, segments) => segments.slice(0, index + 1).join('/'));
+        if (prefixes.some(prefix => current.gitDecisions.get(prefix) === true)) return false;
+        const unknown = prefixes.filter(prefix => !current.gitDecisions.has(prefix));
+        if (unknown.length === 0) return true;
+        const checked = yield* runCommandEffect(
+          'git',
+          ['-C', repoRoot, '-c', 'core.ignorecase=false', 'check-ignore', '--no-index', '-z', '--stdin'],
+          {
+            allowFailure: true,
+            input: new TextEncoder().encode(`${unknown.join('\0')}\0`),
+            maxOutputBytes: 0,
+            timeoutMs: 0,
+          },
+        ).pipe(
+          Effect.map(result => new Set(result.stdout.split('\0').filter(Boolean))),
+          Effect.orElseSucceed(() => new Set<string>()),
+        );
+        yield* Ref.update(state, previous => {
+          const gitDecisions = new Map(previous.gitDecisions);
+          for (const prefix of unknown) {
+            if (gitDecisions.size >= WATCH_GIT_IGNORE_CACHE_LIMIT) {
+              gitDecisions.delete(gitDecisions.keys().next().value ?? '');
+            }
+            gitDecisions.set(prefix, checked.has(prefix));
+          }
+          return {...previous, gitDecisions};
+        });
+        return !prefixes.some(prefix => checked.has(prefix));
+      }).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, system)),
+    reload,
+  } satisfies CodeGraphWatchIgnorePolicy;
+});
+
+function relevantWatchPath(path: Path.Path, cwd: string, eventPath: string): string | undefined {
   const absolute = path.isAbsolute(eventPath) ? eventPath : path.join(cwd, eventPath);
   const relative = path.relative(cwd, absolute);
   if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    return false;
+    return undefined;
   }
   const segments = relative.split(path.sep);
-  return !segments.some(
+  return segments.some(
     segment =>
       segment.startsWith('.') &&
       segment !== '.gitignore' &&
       segment !== '.threadnoteignore' &&
       segment !== '.threadnoteignore.local',
-  );
+  )
+    ? undefined
+    : relative;
 }

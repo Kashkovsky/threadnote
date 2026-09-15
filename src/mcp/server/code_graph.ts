@@ -232,6 +232,7 @@ export function registerCodeGraphTool(
         readonly target: {readonly cwd: string; readonly threadnoteHome: string};
         readonly watcher: CodeGraphWatcherShape;
       }>();
+      let readyReadStarted = false;
       const checkedCwd = requiredText(callerCwd, 'inspect_code_graph', 'callerCwd', {
         callerCwd: '/workspace/project',
         operation: 'query',
@@ -253,13 +254,14 @@ export function registerCodeGraphTool(
       } satisfies CodeGraphQueryTelemetryObserver;
       const timeoutResult = () =>
         Effect.gen(function* () {
-          const status = Option.isSome(timeoutContext)
-            ? yield* queryTelemetry.status(codeGraphQueryTimeoutStatusFor(timeoutContext))
-            : undefined;
+          const status =
+            !readyReadStarted && Option.isSome(timeoutContext)
+              ? yield* queryTelemetry.status(codeGraphQueryTimeoutStatusFor(timeoutContext))
+              : undefined;
           return yield* queryTelemetry.stage(
             'graph.query.execute',
             'query-serialization',
-            Effect.sync(() => codeGraphQueryTimeoutResult(operation, status)),
+            Effect.sync(() => codeGraphQueryTimeoutResult(operation, status, readyReadStarted)),
           );
         });
       return Effect.gen(function* () {
@@ -433,7 +435,7 @@ export function registerCodeGraphTool(
             let identity = status.identity;
             let selection: ReturnType<typeof codeGraphQueryAnonymousTelemetrySnapshotSelection> =
               status.readySnapshot === undefined ? 'none' : 'active';
-            if (status.stale || !status.readySnapshot) {
+            if (codeGraphInspectionStartsRefresh(status, operation)) {
               const beforeAttach = status;
               status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
                 allowBorrowedStale: allowStaleReadySnapshot,
@@ -461,7 +463,7 @@ export function registerCodeGraphTool(
               });
               identity = status.identity;
               selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(beforeRefreshStatus, status);
-              if (status.stale || !status.readySnapshot) {
+              if (codeGraphInspectionStartsRefresh(status, operation)) {
                 const beforeAttach = status;
                 status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
                   allowBorrowedStale: allowStaleReadySnapshot,
@@ -506,6 +508,7 @@ export function registerCodeGraphTool(
         }
         const {refreshStatus, selection, status} = snapshotResolution;
         const queryText = impactQueryTransportSelector(requestedQuery, changes?.paths);
+        readyReadStarted = true;
         const result = yield* queryTelemetry.execute(
           operation === 'impact'
             ? inspectCodeGraphImpactIsolated({
@@ -1712,6 +1715,7 @@ function codeGraphRefreshResult(
   const compactProgress = compactCodeGraphMcpProgress(progress);
   const compactTiming = compactCodeGraphMcpTiming(timing);
   const phase = progress?.phase ?? 'queued';
+  const waitingOnWriter = progress?.phase === 'waiting' && progress.reason === 'database-writer';
   const retryAfterMilliseconds = codeGraphRetryAfterMilliseconds(status);
   const progressSummary = codeGraphProgressSummary(progress);
   const estimateSummary =
@@ -1730,7 +1734,9 @@ function codeGraphRefreshResult(
           text:
             `Code graph indexing is continuing in the background (${progressSummary ?? `phase: ${phase}`}).` +
             estimateSummary +
-            ` Retry this inspect_code_graph call in about ${retryAfterMilliseconds / 1_000} seconds for graph evidence. ` +
+            (waitingOnWriter
+              ? ' A database writer is active and build progress is unavailable; retry after it releases. '
+              : ` Retry this inspect_code_graph call in about ${retryAfterMilliseconds / 1_000} seconds for graph evidence. `) +
             'Continue with targeted text/path search or other independent investigation while the graph builds; ' +
             'retry before making relationship-aware graph claims.',
         },
@@ -1739,7 +1745,7 @@ function codeGraphRefreshResult(
         operation,
         phase,
         ...(compactProgress ? {progress: compactProgress} : {}),
-        retryAfterMilliseconds,
+        ...(waitingOnWriter ? {} : {retryAfterMilliseconds}),
         state: 'indexing',
         ...(compactTiming ? {timing: compactTiming} : {}),
         type: 'code-graph-index-state',
@@ -1805,8 +1811,9 @@ const codeGraphQueryTimeoutStatusFor = Effect.fn('mcpServer.codeGraphQueryTimeou
 export function codeGraphQueryTimeoutResult(
   operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query' | 'topology',
   status?: CodeGraphRefreshStatus,
+  readyReadStarted = false,
 ): CallToolResult {
-  if (status?.state === 'deferred' || status?.state === 'indexing') {
+  if (!readyReadStarted && (status?.state === 'deferred' || status?.state === 'indexing')) {
     return codeGraphRefreshResult(operation, status);
   }
   return attachAnonymousTelemetryReportedOutcome(
@@ -1814,16 +1821,20 @@ export function codeGraphQueryTimeoutResult(
       content: [
         {
           type: 'text',
-          text:
-            `Code graph inspection exceeded Threadnote's ${MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS / 1_000}-second ` +
-            'server budget and was stopped before the MCP client timeout. No indexing failure was observed; retry the ' +
-            'same request after the suggested delay. If it repeats, run `threadnote graph status`, then ' +
-            '`threadnote doctor --dry-run`, and report the bounded diagnostic.',
+          text: readyReadStarted
+            ? `Code graph ready-snapshot inspection exceeded Threadnote's ${MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS / 1_000}-second MCP budget. ` +
+              'The ready snapshot remains available; use the matching `threadnote graph` command with `--freshness ready --read-timeout-ms 60000` for a longer foreground read.'
+            : `Code graph inspection exceeded Threadnote's ${MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS / 1_000}-second ` +
+              'server budget and was stopped before the MCP client timeout. No indexing failure was observed; retry the ' +
+              'same request after the suggested delay. If it repeats, run `threadnote graph status`, then ' +
+              '`threadnote doctor --dry-run`, and report the bounded diagnostic.',
         },
       ],
       structuredContent: {
         operation,
-        retryAfterMilliseconds: MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS,
+        ...(readyReadStarted
+          ? {readySnapshotAvailable: true}
+          : {retryAfterMilliseconds: MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS}),
         state: 'timed-out',
         type: 'code-graph-query-state',
         version: 2,

@@ -25,6 +25,130 @@ import {
 const fixturePackProvenance = BUILTIN_LANGUAGE_PACK_REGISTRY.activePackProvenance(['main.ts']);
 
 describe('shared ready view attachment locking', () => {
+  effectIt.effect('borrows ready evidence without observing the worktree while its builder holds the target lock', () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryRepository();
+      const repositoryRoot = join(root, 'repository');
+      const threadnoteHome = join(root, 'threadnote-home');
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const command = yield* CommandExecutor;
+      const graph = yield* CodeGraphQueryService;
+      const store = yield* CodeGraphStore;
+      const identity = yield* resolveRepositoryIdentity(repositoryRoot);
+      const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+      const snapshot = readySnapshot(identity);
+      yield* store.activate(layout.databasePath, identity, snapshot, [], [], [], fixturePackProvenance);
+      const before = yield* graph.statusForIdentity(threadnoteHome, identity, {
+        observeWorktree: false,
+        requestMaintenance: false,
+      });
+      expect(before.readySnapshot).toBeUndefined();
+
+      const acquired = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const owner = yield* Effect.forkChild(
+        withExclusiveFileLock(
+          fs,
+          layout.lockPath,
+          {
+            onAcquired: () => Deferred.succeed(acquired, undefined).pipe(Effect.asVoid),
+            retryIntervalMilliseconds: 5,
+            staleAfterMilliseconds: 120_000,
+            waitTimeoutMilliseconds: 5_000,
+          },
+          Deferred.await(release),
+        ),
+      );
+      yield* Deferred.await(acquired);
+      const mutableCommand = command as {
+        execute: typeof command.execute;
+        executeBytes?: NonNullable<typeof command.executeBytes>;
+      };
+      const execute = command.execute;
+      const executeBytes = command.executeBytes;
+      let worktreeStatusCalls = 0;
+      const countStatus = (executable: string, args: readonly string[]) => {
+        if (executable === 'git' && args.includes('status')) worktreeStatusCalls += 1;
+      };
+      const borrowed = yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          mutableCommand.execute = (executable, args, options) => {
+            countStatus(executable, args);
+            return execute(executable, args, options);
+          };
+          if (executeBytes) {
+            mutableCommand.executeBytes = (executable, args, options) => {
+              countStatus(executable, args);
+              return executeBytes(executable, args, options);
+            };
+          }
+        }),
+        () =>
+          graph.attachSharedReadySnapshot(threadnoteHome, identity, before, {
+            allowBorrowedStale: true,
+            requestMaintenance: false,
+          }),
+        () =>
+          Effect.sync(() => {
+            mutableCommand.execute = execute;
+            mutableCommand.executeBytes = executeBytes;
+          }),
+      );
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(owner);
+
+      expect(borrowed.readySnapshot?.id).toBe(snapshot.id);
+      expect(borrowed.stale).toBe(true);
+      expect(worktreeStatusCalls).toBe(0);
+      expect(yield* store.readySnapshot(layout.databasePath, identity.worktreeId)).toBeUndefined();
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('recovers an orphaned target lock and attaches an exact ready view', () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryRepository();
+      const repositoryRoot = join(root, 'repository');
+      const threadnoteHome = join(root, 'threadnote-home');
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const graph = yield* CodeGraphQueryService;
+      const store = yield* CodeGraphStore;
+      const identity = yield* resolveRepositoryIdentity(repositoryRoot);
+      const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+      const snapshot = readySnapshot(identity);
+      yield* store.activate(layout.databasePath, identity, snapshot, [], [], [], fixturePackProvenance);
+      yield* recordCodeGraphSnapshotAdmission(
+        layout,
+        snapshot,
+        yield* observeCodeGraphAdmissionEnvironment(identity),
+        BUILTIN_LANGUAGE_PACK_REGISTRY,
+        false,
+      );
+      yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
+      const before = yield* graph.statusForIdentity(threadnoteHome, identity, {
+        observeWorktree: false,
+        requestMaintenance: false,
+      });
+      expect(before.readySnapshot).toBeUndefined();
+      yield* fs.makeDirectory(path.dirname(layout.lockPath), {recursive: true});
+      yield* fs.writeFileString(
+        layout.lockPath,
+        JSON.stringify({processId: 999_999_999, token: 'orphaned-builder', version: 1}),
+      );
+
+      const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before, {
+        allowBorrowedStale: true,
+        requestMaintenance: false,
+      });
+      const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+      expect(attached.readySnapshot?.id).toBe(snapshot.id);
+      expect(attached.stale).toBe(false);
+      expect(pointer?.id).toBe(snapshot.id);
+      expect(yield* fs.exists(layout.lockPath)).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   effectIt.effect('protects shared-ready promotion and retries the exact candidate after capacity returns', () =>
     Effect.gen(function* () {
       const root = yield* temporaryRepository();
