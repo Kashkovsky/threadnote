@@ -1,5 +1,6 @@
 import {Effect, Schema} from 'effect';
 import {getJsonEffect} from '../effect/http.js';
+import {GITHUB_RELEASES_URL, githubReleaseHeaders} from './github_auth.js';
 import {compareVersions, errorMessage, isJsonObject} from '../utils.js';
 
 class ReleaseNotesError extends Schema.TaggedError<ReleaseNotesError>()('ReleaseNotesError', {
@@ -7,7 +8,6 @@ class ReleaseNotesError extends Schema.TaggedError<ReleaseNotesError>()('Release
   message: Schema.String,
 }) {}
 
-const GITHUB_RELEASES_URL = 'https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=100';
 const RELEASE_FETCH_TIMEOUT_MS = 3500;
 
 export interface ReleaseNote {
@@ -24,11 +24,9 @@ interface ReleaseNotesOptions {
 export const fetchThreadnoteReleaseNotes = Effect.fn('fetchThreadnoteReleaseNotes')(function* (
   options: ReleaseNotesOptions = {},
 ) {
+  const headers = yield* githubReleaseHeaders(GITHUB_RELEASES_URL);
   const response = yield* getJsonEffect(GITHUB_RELEASES_URL, {
-    headers: {
-      accept: 'application/vnd.github+json',
-      'user-agent': 'threadnote-cli',
-    },
+    headers,
     timeoutMs: RELEASE_FETCH_TIMEOUT_MS,
   });
   if (!Array.isArray(response.body)) {

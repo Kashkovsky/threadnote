@@ -282,7 +282,7 @@ function App(): React.ReactElement {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      void api<StateResponse>('/api/state').then(
+      void api<{readonly status: 'ok'}>('/api/health').then(
         () => {
           if (availability.runtime === 'disconnected') void refreshAll();
         },

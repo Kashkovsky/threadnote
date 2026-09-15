@@ -31,6 +31,7 @@ import {
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from '../memory/index.js';
 import {isLegacyHomeMigrationPending, isThreadnoteHomeMigrationPending} from '../migration/home.js';
 import {whatsNewLinesForVersionRange} from './notes.js';
+import {GITHUB_RELEASES_URL, githubReleaseHeaders} from './github_auth.js';
 import {redactSensitiveText} from '../share/scrubber.js';
 import {sendSystemNotification} from '../system_notification.js';
 import {readTelemetryConsentRenewal} from '../telemetry/config.js';
@@ -55,7 +56,7 @@ class UpdateOperationError extends Schema.TaggedError<UpdateOperationError>()('U
 }) {}
 
 const THREADNOTE_COMMAND = 'threadnote';
-const DEFAULT_RELEASE_SOURCE = 'https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=100';
+const DEFAULT_RELEASE_SOURCE = GITHUB_RELEASES_URL;
 const ALLOW_UNTRUSTED_SOURCE_ENV = 'THREADNOTE_ALLOW_UNTRUSTED_RELEASE_SOURCE';
 const RELEASE_SOURCE_ENV = 'THREADNOTE_RELEASE_SOURCE';
 const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
@@ -867,11 +868,9 @@ export const fetchLatestVersion = Effect.fn('fetchLatestVersion')(function* (
 });
 
 const fetchAvailableReleases = Effect.fn('update.fetchAvailableReleases')(function* (source: string) {
+  const headers = yield* githubReleaseHeaders(source);
   const response = yield* getJsonEffect(source, {
-    headers: {
-      accept: 'application/vnd.github+json',
-      'user-agent': 'threadnote-cli',
-    },
+    headers,
     timeoutMs: 5000,
   }).pipe(
     Effect.mapError(cause =>

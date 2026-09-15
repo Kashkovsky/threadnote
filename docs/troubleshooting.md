@@ -38,6 +38,18 @@ selection.
 
 The PowerShell installer supports the official unsigned Windows x64 and arm64 archives published with Threadnote 4.6.
 
+## GitHub update checks return HTTP 403
+
+GitHub's unauthenticated REST API limit is shared by all processes using the same public IP. On older Threadnote
+builds, an open Manager page can query the releases API every three seconds and exhaust that limit. Close the Manager
+page until upgrading; newer builds use a local heartbeat instead.
+
+For official release checks, Threadnote uses `GH_TOKEN`, then `GITHUB_TOKEN`, or the active `github.com` identity from
+`gh auth token` when available. Check the identity without printing the token with
+`gh auth status --active --hostname github.com`; run `gh auth login --hostname github.com` if needed. Without a GitHub
+identity, release checks remain public and may need to wait until GitHub's rate-limit reset. Credentials are never sent
+to a custom release source.
+
 ## The installer finished but `threadnote` is not found
 
 The POSIX launcher lives in `~/.local/bin`. When that directory is absent from `PATH`, the standalone installer adds an

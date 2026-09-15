@@ -723,6 +723,24 @@ describe('manager http API', () => {
     }
   });
 
+  it('answers Manager heartbeat requests locally with the same session-token protection', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const server = await startServer(config, 'secret');
+    try {
+      const rejected = await testHttpFetch(`${server.url}/api/health`);
+      expect(rejected.status).toBe(401);
+
+      const accepted = await testHttpFetch(`${server.url}/api/health`, {
+        headers: {authorization: 'Bearer secret'},
+      });
+      expect(accepted.status).toBe(200);
+      expect(await accepted.json()).toEqual({status: 'ok'});
+    } finally {
+      await server.close();
+    }
+  });
+
   it('serves an empty memory tree from a fresh Threadnote home', async () => {
     const home = await mkdtemp(join(tmpdir(), 'threadnote-manager-fresh-'));
     homes.push(home);
