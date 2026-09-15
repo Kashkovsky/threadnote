@@ -18,6 +18,7 @@ const MAX_RECALL_EXPANSION_SCOPES = 1;
 const MAX_RECALL_EXPANSION_CACHE_ENTRIES = 128;
 const RECALL_EXPANSION_TIMEOUT_MILLISECONDS = 5_000;
 export const RECALL_SELECTION_TIMEOUT_MILLISECONDS = 5_000;
+export const NATIVE_RECALL_TIMEOUT_MILLISECONDS = 25_000;
 const RECALL_VOCABULARY_DESCRIPTION_SEPARATOR = ' :: ';
 export const MAX_RECALL_SELECTION_CANDIDATES = 24;
 const MAX_RECALL_SELECTED_CANDIDATES = 8;
@@ -244,7 +245,10 @@ export const selectExpandedRecallCandidatesEffect = Effect.fn('RecallCandidateSe
         ),
       );
     }
-    return yield* boundedRecallCandidateSelection(runNativeAiRecallSelection(bounded, runtimeConfig));
+    return yield* boundedRecallCandidateSelection(
+      runNativeAiRecallSelection(bounded, runtimeConfig),
+      NATIVE_RECALL_TIMEOUT_MILLISECONDS,
+    );
   },
 );
 
@@ -260,7 +264,7 @@ const runNativeAiRecallExpansion = Effect.fn('RecallQueryExpander.runNative')(fu
     system: 'Return only retrieval queries matching the provided JSON schema.',
   }).pipe(
     Effect.timeoutOrElse({
-      duration: RECALL_EXPANSION_TIMEOUT_MILLISECONDS,
+      duration: NATIVE_RECALL_TIMEOUT_MILLISECONDS,
       orElse: () => succeedUndefined,
     }),
     Effect.orElseSucceed(() => undefined),
@@ -296,11 +300,12 @@ const runNativeAiRecallSelection = Effect.fn('RecallCandidateSelector.runNative'
 
 export function boundedRecallCandidateSelection<A, E, R>(
   selection: Effect.Effect<A, E, R>,
+  timeoutMilliseconds = RECALL_SELECTION_TIMEOUT_MILLISECONDS,
 ): Effect.Effect<A | undefined, never, R> {
   return selection.pipe(
     Effect.map(selected => selected as A | undefined),
     Effect.timeoutOrElse({
-      duration: RECALL_SELECTION_TIMEOUT_MILLISECONDS,
+      duration: timeoutMilliseconds,
       orElse: () => succeedUndefined,
     }),
     Effect.orElseSucceed(() => undefined),

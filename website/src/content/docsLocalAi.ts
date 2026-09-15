@@ -79,7 +79,7 @@ threadnote enrich-memories --apply --install-local-ai`,
     },
     {
       type: 'paragraph',
-      text: 'When deterministic recall has low, medium, or no-answer confidence, the selected generation model can locally propose bounded search rewrites and choose IDs from a bounded candidate shortlist. The original query, exact-match protection, and deterministic ranker remain in control. High-confidence recall never asks the generation model; an absent model, invalid output, failure, or timeout leaves recall unchanged. Generation is not used as an embedding model or reranker.',
+      text: 'When deterministic recall has low, medium, or no-answer confidence, the selected generation model can locally propose bounded search rewrites and choose IDs from a bounded candidate shortlist. The original query, exact-match protection, and deterministic ranker remain in control. High-confidence recall never asks the generation model; an absent model, invalid output, failure, or timeout leaves recall unchanged. Native generation has a 25-second per-call deadline because cold model startup can take many seconds; selecting it can noticeably slow weak recalls. Generation is not used as an embedding model or reranker.',
     },
   ],
 };

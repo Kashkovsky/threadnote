@@ -27,6 +27,7 @@ import {
   mergeRecallRewritesForConfidence,
   normalizeRecallCandidateSelection,
   normalizeRecallRewrites,
+  NATIVE_RECALL_TIMEOUT_MILLISECONDS,
   RecallCandidateSelector,
   RECALL_SELECTION_TIMEOUT_MILLISECONDS,
   recallHybridMinimumScore,
@@ -430,6 +431,26 @@ describe('Effect AI recall expansion', () => {
 
       expect(yield* Fiber.join(fiber)).toBeUndefined();
       expect(invocations).toBe(1);
+      expect(interrupted).toBe(1);
+    }),
+  );
+
+  effectIt.effect('gives cold native generation a longer but still bounded selection window', () =>
+    Effect.gen(function* () {
+      const completed = yield* boundedRecallCandidateSelection(
+        Effect.sleep(RECALL_SELECTION_TIMEOUT_MILLISECONDS + 1).pipe(Effect.as(['c1'] as const)),
+        NATIVE_RECALL_TIMEOUT_MILLISECONDS,
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust(RECALL_SELECTION_TIMEOUT_MILLISECONDS + 1);
+      expect(yield* Fiber.join(completed)).toEqual(['c1']);
+
+      let interrupted = 0;
+      const stalled = yield* boundedRecallCandidateSelection(
+        Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => (interrupted += 1)))),
+        NATIVE_RECALL_TIMEOUT_MILLISECONDS,
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust(NATIVE_RECALL_TIMEOUT_MILLISECONDS);
+      expect(yield* Fiber.join(stalled)).toBeUndefined();
       expect(interrupted).toBe(1);
     }),
   );
