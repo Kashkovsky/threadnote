@@ -1060,6 +1060,7 @@ describe('standalone updater', () => {
             ...baseSystem,
             environment: () => ({
               ...baseSystem.environment(),
+              GH_TOKEN: 'fixture-token',
               LOCALAPPDATA: path.join(temporaryRoot, 'local-app-data'),
               THREADNOTE_BIN_DIR: binRoot,
               THREADNOTE_INSTALL_ROOT: installRoot,

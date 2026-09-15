@@ -483,11 +483,15 @@ export const readContextUri = Effect.fn('manager.readContextUri')(function* (
 });
 
 export {detectConsolidationAgents} from './state.js';
-
 function handleRequestEffect(context: ApiContext, request: ManagerRequest, response: ManagerResponseSink) {
   const url = new URL(request.url ?? '/', 'http://127.0.0.1');
   let requestEffect;
-  if (request.method === 'GET' && url.pathname === '/api/state') {
+  if (request.method === 'GET' && url.pathname === '/api/health') {
+    requestEffect = Effect.sync(() => {
+      const authorized = isAuthorized(context, request);
+      writeJson(response, authorized ? 200 : 401, authorized ? {status: 'ok'} : {error: 'Unauthorized'});
+    });
+  } else if (request.method === 'GET' && url.pathname === '/api/state') {
     requestEffect = Effect.gen(function* () {
       if (!isAuthorized(context, request)) {
         writeJson(response, 401, {error: 'Unauthorized'});
