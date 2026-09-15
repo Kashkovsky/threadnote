@@ -355,6 +355,16 @@ describe('MCP code graph indexing progress', () => {
     });
     expect(readAnonymousTelemetryReportedOutcome(timedOut)).toBe('timed-out');
 
+    const readyReadTimedOut = codeGraphQueryTimeoutResult('query', indexingStatus(60_000), true);
+    expect(readyReadTimedOut.structuredContent).toMatchObject({
+      readySnapshotAvailable: true,
+      state: 'timed-out',
+      type: 'code-graph-query-state',
+    });
+    expect(JSON.stringify(readyReadTimedOut.structuredContent)).not.toContain('retryAfterMilliseconds');
+    expect((readyReadTimedOut.content[0] as {readonly text: string}).text).toContain('--freshness ready');
+    expect(readAnonymousTelemetryReportedOutcome(readyReadTimedOut)).toBe('timed-out');
+
     const indexing = codeGraphQueryTimeoutResult('query', indexingStatus(60_000));
     expect(indexing.isError).not.toBe(true);
     expect(indexing.structuredContent).toMatchObject({
@@ -364,6 +374,18 @@ describe('MCP code graph indexing progress', () => {
       version: 3,
     });
     expect(readAnonymousTelemetryReportedOutcome(indexing)).toBe('unavailable');
+
+    const writerWaiting = codeGraphQueryTimeoutResult('query', {
+      ...indexingStatus(60_000),
+      progress: {phase: 'waiting', reason: 'database-writer'},
+    });
+    expect(writerWaiting.structuredContent).toMatchObject({
+      phase: 'waiting',
+      progress: {reason: 'database-writer'},
+      state: 'indexing',
+    });
+    expect(JSON.stringify(writerWaiting.structuredContent)).not.toContain('retryAfterMilliseconds');
+    expect((writerWaiting.content[0] as {readonly text: string}).text).toContain('retry after it releases');
 
     const deferred = codeGraphQueryTimeoutResult('query', deferredStatus('transient-io'));
     expect(deferred.isError).not.toBe(true);
@@ -387,6 +409,28 @@ describe('MCP code graph indexing progress', () => {
       expect(Object.getOwnPropertySymbols(result)).not.toEqual([]);
     }
   });
+
+  fcProp(
+    it,
+    'never reports refresh progress after a ready-snapshot read has begun',
+    {
+      operation: FC.constantFrom('query' as const, 'node' as const, 'neighbors' as const, 'explain' as const),
+      refreshState: FC.constantFrom('none' as const, 'indexing' as const, 'deferred' as const),
+    },
+    ({operation, refreshState}) => {
+      const status =
+        refreshState === 'indexing'
+          ? indexingStatus(60_000)
+          : refreshState === 'deferred'
+            ? deferredStatus('busy')
+            : undefined;
+      const result = codeGraphQueryTimeoutResult(operation, status, true);
+      expect(result.structuredContent).toMatchObject({readySnapshotAvailable: true, state: 'timed-out'});
+      expect(JSON.stringify(result)).not.toContain('Retry this inspect_code_graph call in about');
+      expect(JSON.stringify(result)).not.toContain('retryAfterMilliseconds');
+    },
+    {fastCheck: {numRuns: 60}},
+  );
 
   it('keeps detailed materialization telemetry out of MCP indexing state', () => {
     const progress: CodeGraphProgress = {
@@ -910,7 +954,9 @@ describe('MCP code graph indexing progress', () => {
   );
 });
 
-function indexingStatus(estimatedPhaseRemainingMilliseconds: number): CodeGraphRefreshStatus {
+function indexingStatus(
+  estimatedPhaseRemainingMilliseconds: number,
+): Extract<CodeGraphRefreshStatus, {readonly state: 'indexing'}> {
   return {
     state: 'indexing',
     timing: {

@@ -1,6 +1,7 @@
 import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path, Schema} from 'effect';
 import {CommandExecutor, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
+import {readExclusiveFileLockOwner} from '../effect/file_lock.js';
 import {
   codeGraphDirectPersistentCapacityProtector,
   CodeGraphIndexer,
@@ -11,7 +12,7 @@ import {worktreeOverlayState} from './inventory.js';
 import type {CodeGraphCliPurgeProgress} from './cli_progress.js';
 import {CodeGraphLanguagePackRegistry, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {codeGraphLayout, type CodeGraphLayout} from './layout.js';
-import {withCodeGraphTargetWorktreeLock} from './maintenance_gate.js';
+import {CODE_GRAPH_GATE_LOCK_OPTIONS, withCodeGraphTargetWorktreeLock} from './maintenance_gate.js';
 import {purgeCodeGraphRepositoryRoot} from './maintenance.js';
 import {
   recordVerifiedCodeGraphLocalAssociation,
@@ -452,15 +453,9 @@ export class CodeGraphQueryService extends Context.Service<
         if (status.readySnapshot) return status;
         const identity = status.identity;
         const observation = observationFromCodeGraphStatus(status);
-        const overlay =
-          observation?.overlay ??
-          (yield* withCodeGraphQueryTelemetryStage(
-            telemetry,
-            'graph.query.snapshot',
-            'query-worktree-observation',
-            worktreeOverlayState(identity),
-            'fallback',
-          ));
+        if (observation?.overlay === undefined) {
+          yield* skipCodeGraphQueryTelemetryStage(telemetry, 'graph.query.snapshot', 'query-worktree-observation');
+        }
         const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
         const candidate = yield* store.latestReadySnapshotForRepository(layout.databasePath, identity.repositoryId);
         if (
@@ -476,7 +471,11 @@ export class CodeGraphQueryService extends Context.Service<
             readySnapshot: {...candidate, worktreeId: identity.worktreeId},
             stale: true,
           },
-          {borrowedSnapshotId: candidate.id, identity, overlay},
+          {
+            borrowedSnapshotId: candidate.id,
+            identity,
+            ...(observation?.overlay === undefined ? {} : {overlay: observation.overlay}),
+          },
         );
       });
       const attachSharedReadySnapshot = (
@@ -486,11 +485,34 @@ export class CodeGraphQueryService extends Context.Service<
         interlock?: CodeGraphSharedReadyAttachInterlock,
       ) => {
         const exact = attachExactSharedReadySnapshot(threadnoteHome, identity, observedStatus, interlock);
-        return interlock?.allowBorrowedStale === true
-          ? exact.pipe(
-              Effect.flatMap(status => borrowSharedReadySnapshot(threadnoteHome, status, interlock?.telemetry)),
-            )
-          : exact;
+        if (interlock?.allowBorrowedStale !== true) return exact;
+        return Effect.gen(function* () {
+          if (observedStatus && !observedStatus.readySnapshot) {
+            const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+            const owner = yield* readExclusiveFileLockOwner(fs, layout.lockPath);
+            const liveOwner = Option.isSome(owner) && system.isProcessRunning(owner.value.processId);
+            const matchingOwnerIdentity =
+              liveOwner && owner.value.processStartIdentity
+                ? (yield* system.processStartIdentity(owner.value.processId)) === owner.value.processStartIdentity
+                : false;
+            const lockAge = matchingOwnerIdentity
+              ? yield* fs.stat(layout.lockPath).pipe(
+                  Effect.map(info => Option.getOrUndefined(info.mtime)?.getTime()),
+                  Effect.orElseSucceed(() => undefined as number | undefined),
+                )
+              : undefined;
+            if (
+              lockAge !== undefined &&
+              (yield* Clock.currentTimeMillis) - lockAge <= CODE_GRAPH_GATE_LOCK_OPTIONS.staleAfterMilliseconds
+            ) {
+              const borrowed = yield* borrowSharedReadySnapshot(threadnoteHome, observedStatus, interlock.telemetry);
+              if (borrowed.readySnapshot) return borrowed;
+            }
+          }
+          return yield* exact.pipe(
+            Effect.flatMap(status => borrowSharedReadySnapshot(threadnoteHome, status, interlock.telemetry)),
+          );
+        });
       };
       return CodeGraphQueryService.of({
         attachSharedReadySnapshot: (threadnoteHome, identity, observedStatus, interlock) => {

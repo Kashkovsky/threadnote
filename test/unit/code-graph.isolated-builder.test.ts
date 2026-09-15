@@ -5,7 +5,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
 import fc from 'fast-check';
-import {DateTime, Deferred, Effect, Fiber} from 'effect';
+import {DateTime, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {
   assertIsolatedBuilderPlan,
@@ -29,6 +29,8 @@ import {mkdtempSync, rmSync} from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {codeGraphLayout} from '../../src/code_graph/layout.js';
+import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 
 function systemInfoStub(overrides: Partial<SystemInfoShape>): SystemInfoShape {
   return {
@@ -589,6 +591,100 @@ describe('isolated builder exit contracts', () => {
 });
 
 describe('isolated builder cross-host spawn admission', () => {
+  effectIt.effect('reports a database writer including the child owner while build status is unavailable', () =>
+    Effect.forEach([process.pid + 1, process.pid], childProcessId =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-isolated-writer-progress-'});
+          const identity: RepositoryIdentity = {
+            caseMode: 'sensitive',
+            checkoutId: 'a'.repeat(64),
+            displayName: 'fixture/repository',
+            gitCommonDirectory: '/fixture/repository/.git',
+            headCommit: 'b'.repeat(40),
+            objectFormat: 'sha1',
+            repoRoot: '/fixture/repository',
+            repositoryId: 'c'.repeat(64),
+            worktreeId: 'd'.repeat(64),
+          };
+          const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          yield* fs.makeDirectory(path.dirname(layout.databaseWriteLockPath), {recursive: true});
+          const acquired = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const observed = yield* Deferred.make<void>();
+          const writer = yield* Effect.forkChild(
+            withExclusiveFileLock(
+              fs,
+              layout.databaseWriteLockPath,
+              {
+                onAcquired: () => Deferred.succeed(acquired, undefined).pipe(Effect.asVoid),
+                retryIntervalMilliseconds: 5,
+                staleAfterMilliseconds: 120_000,
+                waitTimeoutMilliseconds: 5_000,
+              },
+              Deferred.await(release),
+            ),
+          );
+          yield* Deferred.await(acquired);
+          const timestamp = DateTime.formatIso(yield* DateTime.now);
+          const activeStatus = {
+            buildId: 'owned-build',
+            counters: {},
+            identity: {
+              checkoutId: identity.checkoutId,
+              commit: identity.headCommit,
+              repositoryId: identity.repositoryId,
+              worktreeId: identity.worktreeId,
+            },
+            observation: {heartbeatAgeMilliseconds: 0, liveness: 'active'},
+            owner: {processId: childProcessId, runtime: 'bun' as const, runtimeVersion: '1'},
+            phase: 'registering' as const,
+            schemaVersion: 2,
+            state: 'running' as const,
+            timestamps: {
+              heartbeatAt: timestamp,
+              lastProgressAt: timestamp,
+              phaseStartedAt: timestamp,
+              startedAt: timestamp,
+              updatedAt: timestamp,
+            },
+          } as unknown as ObservedCodeGraphBuildStatus;
+          let spawned = false;
+          let supplied = false;
+          const child = yield* runIsolatedCodeGraphIndex({
+            assertRuntimeSchemaCompatible: () => Effect.void,
+            cwd: identity.repoRoot,
+            onProgress: progress =>
+              progress.phase === 'waiting' && progress.reason === 'database-writer'
+                ? Deferred.succeed(observed, undefined).pipe(Effect.asVoid)
+                : Effect.void,
+            readStatus: Effect.sync(() => {
+              if (!spawned || supplied) return undefined;
+              supplied = true;
+              return activeStatus;
+            }),
+            resolveIdentity: () => Effect.succeed(identity),
+            spawn: () => {
+              spawned = true;
+              return {
+                exited: new Promise<number>(() => undefined),
+                kill: () => undefined,
+                processId: childProcessId,
+              };
+            },
+            threadnoteHome: home,
+          }).pipe(Effect.forkChild);
+          yield* Effect.raceFirst(Deferred.await(observed), Fiber.join(child));
+          yield* Fiber.interrupt(child);
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(writer);
+        }),
+      ),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   effectIt.effect('spawns once for concurrent callers on one worktree and attaches the waiter', () =>
     TestClock.withLive(
       Effect.acquireUseRelease(

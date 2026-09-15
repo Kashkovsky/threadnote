@@ -1,6 +1,6 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, Ref, Schema} from 'effect';
 import {fromPromiseInterruptible} from '../effect/errors.js';
-import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
+import {isFileLockTimeout, readExclusiveFileLockOwner, withExclusiveFileLock} from '../effect/file_lock.js';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {pollUntilEffect} from '../effect/time.js';
@@ -384,7 +384,14 @@ export const runIsolatedCodeGraphIndex: (
 
   const exitCode = yield* Effect.raceFirst(
     isolatedBuilderPromise('Could not await isolated code graph builder', () => child.exited),
-    mirrorBuildStatusProgress(readStatus, child.processId, priorBuildId, observedBuildId, options.onProgress),
+    mirrorBuildStatusProgress(
+      readStatus,
+      child.processId,
+      priorBuildId,
+      observedBuildId,
+      options.onProgress,
+      readExclusiveFileLockOwner(fs, layout.databaseWriteLockPath),
+    ),
   );
 
   if (exitCode !== 0) {
@@ -652,6 +659,7 @@ function mirrorBuildStatusProgress<E, R>(
   priorBuildId: string | undefined,
   observedBuildId: Ref.Ref<string | undefined>,
   onProgress: CodeGraphIsolatedBuilderOptions['onProgress'],
+  writerOwner: Effect.Effect<Option.Option<{readonly processId: number}>>,
 ) {
   // Never succeed or fail: only the child's exit should settle the race. Progress errors must not kill the build.
   return Effect.forever(
@@ -666,7 +674,11 @@ function mirrorBuildStatusProgress<E, R>(
         yield* Ref.update(observedBuildId, current => current ?? status.buildId);
         yield* emitProgress(onProgress, codeGraphProgressFromBuildStatus(status));
       } else {
-        yield* emitProgress(onProgress, {phase: 'registering'});
+        const owner = yield* writerOwner;
+        yield* emitProgress(
+          onProgress,
+          Option.isSome(owner) ? {phase: 'waiting', reason: 'database-writer'} : {phase: 'registering'},
+        );
       }
       yield* Effect.sleep(BUILD_STATUS_POLL_MILLISECONDS);
     }).pipe(Effect.ignoreCause),
