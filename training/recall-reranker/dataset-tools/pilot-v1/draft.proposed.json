@@ -1,0 +1,25 @@
+{
+  "createdAt": "2026-09-15T00:00:00.000Z",
+  "description": "AI-authored fictional engineering pilot proposals; every source and label awaits human attestation.",
+  "generatorRevision": "pilot-proposal-assembly-v1",
+  "labelMethod": "Proposed relevance, negative kind, and answerability; all candidates retain reviewed=false.",
+  "name": "threadnote-reranker-fictional-pilot-proposals-v1",
+  "partitionStrategy": "Whole fictional organizations assigned to train, validation, or test; no source-text templates.",
+  "privacyReviewed": false,
+  "purpose": "training_candidate",
+  "seed": 20260915,
+  "sources": [
+    {
+      "id": "threadnote-owned-fictional-pilot-v1",
+      "kind": "self_authored_synthetic",
+      "license": "AGPL-3.0-or-later",
+      "licenseUrl": "https://github.com/Kashkovsky/threadnote/blob/9f50c64dd491b0ab3b847884b0cb3afa47ea3b2d/LICENSE",
+      "privacyBasis": "self_authored",
+      "provenance": "Fictional seed file training/recall-reranker/dataset-tools/pilot-v1/seeds.json; seed sha256 18a8cd80b0bc22d48ed4439209e85ca9f8b83a524e3f2b6fe96095c5b43c5286; source inventory sha256 abd836b33e6d13feb248c73cbeddffa9a5eea29e3a5531d1b01261e3e591af48; license sha256 0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0; assembly pilot-proposal-assembly-v1.",
+      "redistributionApproved": false,
+      "revision": "sha256:18a8cd80b0bc22d48ed4439209e85ca9f8b83a524e3f2b6fe96095c5b43c5286",
+      "sourceUri": "urn:sha256:18a8cd80b0bc22d48ed4439209e85ca9f8b83a524e3f2b6fe96095c5b43c5286",
+      "trainingApproved": false
+    }
+  ]
+}

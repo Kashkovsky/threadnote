@@ -1,0 +1,98 @@
+[
+  {
+    "id": "effect-2026-09-15",
+    "kind": "public_repository",
+    "license": "MIT",
+    "licenseUrl": "https://github.com/Effect-TS/effect/blob/90695b0d5bee3aa33e67cbea1aa2e6298816a64f/LICENSE",
+    "privacyBasis": "public_licensed",
+    "provenance": "Pinned archive sha256 785c74888524427540b30e6b425c741621979fffa4d24301ea84a01ba3c0d183; license sha256 774c3bc5924ad8ae6c5a75f1c53db13feb238ade15989625c513d07b60dedf30; notice sha256 None; selected file inventory under public-source-inventory-v1; subtree rights and content privacy await review.",
+    "redistributionApproved": false,
+    "revision": "90695b0d5bee3aa33e67cbea1aa2e6298816a64f",
+    "sourceUri": "https://github.com/Effect-TS/effect/tree/90695b0d5bee3aa33e67cbea1aa2e6298816a64f",
+    "trainingApproved": false
+  },
+  {
+    "id": "typescript-2026-09-15",
+    "kind": "public_repository",
+    "license": "Apache-2.0",
+    "licenseUrl": "https://github.com/microsoft/TypeScript/blob/57d9528db25b8dc8375e18468a870ec3f4277d62/LICENSE.txt",
+    "privacyBasis": "public_licensed",
+    "provenance": "Pinned archive sha256 859d837132da59fe9ea996fe02a038488e1a85497daeb3a0ecdc6be5724e3c56; license sha256 a7d00bfd54525bc694b6e32f64c7ebcf5e6b7ae3657be5cc12767bce74654a47; notice sha256 f5c708b59114507b8b27b48181b6883d106bbca0c1634bbee45b5e344237b66b; selected file inventory under public-source-inventory-v1; subtree rights and content privacy await review.",
+    "redistributionApproved": false,
+    "revision": "57d9528db25b8dc8375e18468a870ec3f4277d62",
+    "sourceUri": "https://github.com/microsoft/TypeScript/tree/57d9528db25b8dc8375e18468a870ec3f4277d62",
+    "trainingApproved": false
+  },
+  {
+    "id": "go-2026-09-15",
+    "kind": "public_repository",
+    "license": "BSD-3-Clause",
+    "licenseUrl": "https://github.com/golang/go/blob/8f5d82065574065efc3016ca075fb9548ea9cf1e/LICENSE",
+    "privacyBasis": "public_licensed",
+    "provenance": "Pinned archive sha256 1f927d7a8a7c146917160aab449a1999ad4533a0ecf72c38e5288e9dd88ebe8e; license sha256 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad; notice sha256 None; selected file inventory under public-source-inventory-v1; subtree rights and content privacy await review.",
+    "redistributionApproved": false,
+    "revision": "8f5d82065574065efc3016ca075fb9548ea9cf1e",
+    "sourceUri": "https://github.com/golang/go/tree/8f5d82065574065efc3016ca075fb9548ea9cf1e",
+    "trainingApproved": false
+  },
+  {
+    "id": "rust-book-2026-09-15",
+    "kind": "public_repository",
+    "license": "MIT OR Apache-2.0",
+    "licenseUrl": "https://github.com/rust-lang/book/blob/1500248d8f230566e4ec9f27fcbb8fe9e2898ab1/LICENSE-MIT",
+    "privacyBasis": "public_licensed",
+    "provenance": "Pinned archive sha256 e4d11084f9e46cb13d2563be7a970864c5236fce51043b9665082e017e42b0e2; license sha256 ('0621878e61f0d0fda054bcbe02df75192c28bde1ecc8289cbd86aeba2dd72720', '0f2763086f981043fb18879abfa15e75ecfc188219ef9eba4483f45ce7438e1c'); notice sha256 None; selected file inventory under public-source-inventory-v1; subtree rights and content privacy await review.",
+    "redistributionApproved": false,
+    "revision": "1500248d8f230566e4ec9f27fcbb8fe9e2898ab1",
+    "sourceUri": "https://github.com/rust-lang/book/tree/1500248d8f230566e4ec9f27fcbb8fe9e2898ab1",
+    "trainingApproved": false
+  },
+  {
+    "id": "bazel-2026-09-15",
+    "kind": "public_repository",
+    "license": "Apache-2.0",
+    "licenseUrl": "https://github.com/bazelbuild/bazel/blob/f4a3bfda175174418bf56cd81adfc7a64a04a969/LICENSE",
+    "privacyBasis": "public_licensed",
+    "provenance": "Pinned archive sha256 77928c1438efaae34bb4c4433e1f8d4bfd3d450a40dda556c8f5e6f63301354e; license sha256 9fe6dae7684812d0117f5a0611aa773656776545797608f201fef88fa7363e0b; notice sha256 None; selected file inventory under public-source-inventory-v1; subtree rights and content privacy await review.",
+    "redistributionApproved": false,
+    "revision": "f4a3bfda175174418bf56cd81adfc7a64a04a969",
+    "sourceUri": "https://github.com/bazelbuild/bazel/tree/f4a3bfda175174418bf56cd81adfc7a64a04a969",
+    "trainingApproved": false
+  },
+  {
+    "id": "rules-swift-2026-09-15",
+    "kind": "public_repository",
+    "license": "Apache-2.0",
+    "licenseUrl": "https://github.com/bazelbuild/rules_swift/blob/1f94286323b261a8d122f3bd2dc7b0530d918002/LICENSE",
+    "privacyBasis": "public_licensed",
+    "provenance": "Pinned archive sha256 f0920e9102b3fe42d417551cc97d1a9c97803f97b65507b18c6cc33104079d81; license sha256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30; notice sha256 None; selected file inventory under public-source-inventory-v1; subtree rights and content privacy await review.",
+    "redistributionApproved": false,
+    "revision": "1f94286323b261a8d122f3bd2dc7b0530d918002",
+    "sourceUri": "https://github.com/bazelbuild/rules_swift/tree/1f94286323b261a8d122f3bd2dc7b0530d918002",
+    "trainingApproved": false
+  },
+  {
+    "id": "swift-2026-09-15",
+    "kind": "public_repository",
+    "license": "Apache-2.0 with Runtime Library Exception",
+    "licenseUrl": "https://github.com/swiftlang/swift/blob/f1d2faf44333d2ec0e653ddf5c93bd37540ea165/LICENSE.txt",
+    "privacyBasis": "public_licensed",
+    "provenance": "Pinned archive sha256 4c0f7bf6ffd3dcd62783d385acb1b87517c364db56186ff769a2c8d7488f8ca6; license sha256 770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55; notice sha256 None; selected file inventory under public-source-inventory-v1; subtree rights and content privacy await review.",
+    "redistributionApproved": false,
+    "revision": "f1d2faf44333d2ec0e653ddf5c93bd37540ea165",
+    "sourceUri": "https://github.com/swiftlang/swift/tree/f1d2faf44333d2ec0e653ddf5c93bd37540ea165",
+    "trainingApproved": false
+  },
+  {
+    "id": "nvidia-techqa-2026-09-15",
+    "kind": "public_dataset",
+    "license": "Apache-2.0",
+    "licenseUrl": "https://huggingface.co/datasets/nvidia/TechQA-RAG-Eval/blob/0b5bbc84b7f07d6d09d063130e90b716d8d4a32a/README.md",
+    "privacyBasis": "public_licensed",
+    "provenance": "Pinned dataset revision 0b5bbc84b7f07d6d09d063130e90b716d8d4a32a; file hashes {'README.md': '8d85191f81a748f2a66bb32cecb972727e69fcc0541c1f936c4debfa4823190b', 'train.json': '69d97231509482ed6bd5ec1c4bc0607acb82a88d11169eb8383592d0ca8b93c7', 'corpus.zip': 'c06aa287dcc1abf8db6b49b8495df095db73342d729f6451ac330785245d10be'}; original-split shared Technote filenames 40; publisher card license only; underlying Technote rights and privacy are unreviewed.",
+    "redistributionApproved": false,
+    "revision": "0b5bbc84b7f07d6d09d063130e90b716d8d4a32a",
+    "sourceUri": "https://huggingface.co/datasets/nvidia/TechQA-RAG-Eval/tree/0b5bbc84b7f07d6d09d063130e90b716d8d4a32a",
+    "trainingApproved": false
+  }
+]

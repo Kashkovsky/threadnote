@@ -1,0 +1,14 @@
+{
+  "groups": 132,
+  "candidates": 792,
+  "noAnswerGroups": 44,
+  "splits": {
+    "train": 102,
+    "validation": 18,
+    "test": 12
+  },
+  "organizations": 22,
+  "seedSha256": "18a8cd80b0bc22d48ed4439209e85ca9f8b83a524e3f2b6fe96095c5b43c5286",
+  "inventorySha256": "abd836b33e6d13feb248c73cbeddffa9a5eea29e3a5531d1b01261e3e591af48",
+  "groupFileSha256": "f8bcbb21155edba3ee66b79d5e0f694c1e3f8c45e7aae81e1d839cfd6e4cb5b3"
+}

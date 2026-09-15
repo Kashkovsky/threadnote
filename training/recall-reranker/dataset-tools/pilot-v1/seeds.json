@@ -1,0 +1,1168 @@
+[
+  {
+    "id": "meridian-rivergate",
+    "organization": "Meridian Works",
+    "repository": "rivergate",
+    "product": "Rivergate",
+    "split": "train",
+    "facts": [
+      {
+        "id": "canary",
+        "topic": "canary promotion",
+        "query": "For Rivergate, what stops canary promotion after the first zone?",
+        "current": "The current Rivergate release policy stops promotion when the first zone spends 70 percent of its hourly error budget. The release controller then requires an operator review.",
+        "stale": "A superseded Rivergate rollout note used a fixed twenty-minute timer after the first zone, regardless of the error budget."
+      },
+      {
+        "id": "rollback",
+        "topic": "rollback trigger",
+        "query": "Which Rivergate signal triggers automatic rollback of a canary?",
+        "current": "Rivergate rolls back a canary when five-minute request failure rate exceeds three percent in two consecutive windows. A single noisy window only pauses promotion.",
+        "stale": "An obsolete Rivergate draft rolled back after any single failed health probe; this trigger was replaced by two failure-rate windows."
+      },
+      {
+        "id": "manifest",
+        "topic": "artifact verification",
+        "query": "What does Rivergate verify before accepting a release manifest?",
+        "current": "Rivergate accepts a release manifest only after the binary digest and the signed provenance digest both match its deployment record.",
+        "stale": "The retired Rivergate verifier compared only the binary digest and ignored provenance signatures."
+      },
+      {
+        "id": "region",
+        "topic": "regional order",
+        "query": "In what order does Rivergate deploy to its regions?",
+        "current": "The Rivergate deployment plan starts in the west test zone, waits for the canary gate, and then expands to the central and east zones together.",
+        "stale": "An older Rivergate plan expanded east before central without a shared canary gate; it no longer applies."
+      }
+    ],
+    "missing": [
+      {
+        "id": "satellite",
+        "topic": "satellite recovery cap",
+        "query": "What replay cap does Rivergate apply to offline satellite recovery?",
+        "near": "The Rivergate recovery guide describes signed checkpoints, regional replay order, and operator checks after a failed restore batch.",
+        "otherProduct": "Meridian Works' Beacon service caps satellite replay at four hours; that service has a separate recovery controller."
+      },
+      {
+        "id": "tablet",
+        "topic": "tablet release window",
+        "query": "Which maintenance window is approved for Rivergate tablet releases?",
+        "near": "Rivergate release notes record tablet client compatibility probes alongside ordinary deployment health checks.",
+        "otherProduct": "Meridian Works' Slate product ships tablet updates on Tuesdays, using its own maintenance calendar."
+      }
+    ]
+  },
+  {
+    "id": "drift-delta",
+    "organization": "Drift API",
+    "repository": "delta",
+    "product": "Delta",
+    "split": "train",
+    "facts": [
+      {
+        "id": "cursor",
+        "topic": "pagination cursor",
+        "query": "What does a Delta pagination cursor bind to?",
+        "current": "Delta signs a cursor containing the tenant scope, sort key, and snapshot revision. A cursor cannot be reused after its snapshot expires.",
+        "stale": "Delta's old cursor was only an unsigned row offset and could drift when records were inserted."
+      },
+      {
+        "id": "limit",
+        "topic": "page limit",
+        "query": "What is Delta's maximum page size for list requests?",
+        "current": "Delta accepts at most two hundred records per list page and returns a validation error for larger requested limits.",
+        "stale": "A superseded Delta API version allowed five hundred records per page without server validation."
+      },
+      {
+        "id": "retry",
+        "topic": "idempotent create",
+        "query": "How does Delta avoid creating duplicate records after a client retry?",
+        "current": "Delta stores an idempotency key with the request digest for twenty-four hours and returns the first create result on an identical retry.",
+        "stale": "Delta previously keyed retries only by timestamp, allowing the same request to create a second record."
+      },
+      {
+        "id": "filter",
+        "topic": "filter authorization",
+        "query": "When does Delta apply authorization to filtered list results?",
+        "current": "Delta applies tenant authorization before evaluating client filters, so a filter cannot reveal another tenant's record count.",
+        "stale": "The retired Delta list flow filtered across all tenants before applying authorization."
+      }
+    ],
+    "missing": [
+      {
+        "id": "fax",
+        "topic": "fax pagination",
+        "query": "What page limit does Delta set for fax-gateway records?",
+        "near": "Delta list requests use signed snapshot cursors and a validated page-size limit for ordinary API records.",
+        "otherProduct": "Drift API's RelayFax product returns sixty records per page, using its own endpoint."
+      },
+      {
+        "id": "offline",
+        "topic": "offline cursor renewal",
+        "query": "How may an offline Delta client renew an expired cursor?",
+        "near": "Delta cursors bind tenant scope and snapshot revision, while list requests return the next cursor for an active snapshot.",
+        "otherProduct": "Drift API's Harbor client renews offline cursors through a local journal, outside Delta."
+      }
+    ]
+  },
+  {
+    "id": "finch-cedar",
+    "organization": "Finch Storage",
+    "repository": "cedar",
+    "product": "Cedar",
+    "split": "train",
+    "facts": [
+      {
+        "id": "quota",
+        "topic": "storage quota",
+        "query": "When does Cedar reject a tenant write for quota reasons?",
+        "current": "Cedar rejects a write when committed bytes plus the staged write would exceed the tenant's hard quota; reserved but uncommitted bytes are counted.",
+        "stale": "An old Cedar quota check counted only committed bytes and could oversubscribe storage during concurrent writes."
+      },
+      {
+        "id": "reserve",
+        "topic": "quota reservation",
+        "query": "How long may a Cedar write reservation remain uncommitted?",
+        "current": "Cedar expires an uncommitted write reservation after fifteen minutes and releases its quota hold.",
+        "stale": "The superseded Cedar reservation policy held quota until the client disconnected, with no fixed deadline."
+      },
+      {
+        "id": "tier",
+        "topic": "storage tier move",
+        "query": "What verification precedes a Cedar cold-tier move?",
+        "current": "Cedar moves an object to cold tier only after the destination checksum matches and its restore pointer is committed.",
+        "stale": "An earlier Cedar tier mover deleted the warm copy before checking the destination checksum."
+      },
+      {
+        "id": "restore",
+        "topic": "restore readiness",
+        "query": "When does Cedar report a cold object as restored?",
+        "current": "Cedar reports restored status only after the retrieved payload checksum matches the original manifest and the warm pointer is visible.",
+        "stale": "The obsolete Cedar restore job marked success when cold retrieval began, before checksum verification."
+      }
+    ],
+    "missing": [
+      {
+        "id": "glacier",
+        "topic": "glacier replication",
+        "query": "How many glacier replicas does Cedar require for archival objects?",
+        "near": "Cedar moves objects from warm to cold tier after verifying destination checksums and restore pointers.",
+        "otherProduct": "Finch Storage's Icebox archive stores three glacier replicas; Cedar has no matching commitment."
+      },
+      {
+        "id": "tape",
+        "topic": "tape restore deadline",
+        "query": "What deadline does Cedar promise for tape restores?",
+        "near": "Cedar cold-object restores verify a manifest checksum before marking a warm pointer visible.",
+        "otherProduct": "Finch Storage's Reel service promises twelve-hour tape restores under a separate support contract."
+      }
+    ]
+  },
+  {
+    "id": "cobalt-arc",
+    "organization": "Cobalt Edge",
+    "repository": "arc",
+    "product": "Arc",
+    "split": "train",
+    "facts": [
+      {
+        "id": "route",
+        "topic": "edge route choice",
+        "query": "How does Arc choose an edge route for a tenant request?",
+        "current": "Arc first selects routes allowed by the tenant policy, then chooses the lowest-latency healthy route within that set.",
+        "stale": "An obsolete Arc router chose the lowest-latency route before checking tenant policy constraints."
+      },
+      {
+        "id": "failover",
+        "topic": "route failover",
+        "query": "When does Arc fail over from an unhealthy edge route?",
+        "current": "Arc fails over after three failed probes in one minute, provided the alternative route passes its policy gate.",
+        "stale": "Arc's old failover rule switched after one failed probe without rechecking route policy."
+      },
+      {
+        "id": "header",
+        "topic": "forwarded header",
+        "query": "Which forwarded request headers does Arc preserve?",
+        "current": "Arc preserves the trace ID and validated client region, but strips untrusted forwarding headers before the origin hop.",
+        "stale": "A superseded Arc proxy copied every client-supplied forwarding header to the origin."
+      },
+      {
+        "id": "cache",
+        "topic": "edge response cache",
+        "query": "When may Arc serve a cached edge response?",
+        "current": "Arc serves a cached response only when the tenant policy, route revision, and response vary keys match the current request.",
+        "stale": "The retired Arc cache keyed responses by URL alone and could cross tenant policy boundaries."
+      }
+    ],
+    "missing": [
+      {
+        "id": "subsea",
+        "topic": "subsea route timeout",
+        "query": "What timeout does Arc use for subsea backup routes?",
+        "near": "Arc evaluates terrestrial route health with repeated probes and checks tenant policy before failover.",
+        "otherProduct": "Cobalt Edge's Seafloor gateway uses a nine-second subsea timeout, not an Arc route rule."
+      },
+      {
+        "id": "postal",
+        "topic": "postal edge override",
+        "query": "Who approves an Arc edge override for postal zones?",
+        "near": "Arc validates client region headers and records policy revisions for route selection.",
+        "otherProduct": "Cobalt Edge's Postline gateway lets its routing lead approve postal overrides under a separate process."
+      }
+    ]
+  },
+  {
+    "id": "juniper-moss",
+    "organization": "Juniper Plugins",
+    "repository": "moss",
+    "product": "Moss",
+    "split": "train",
+    "facts": [
+      {
+        "id": "install",
+        "topic": "plugin installation",
+        "query": "What does Moss verify before activating a plugin?",
+        "current": "Moss verifies the signed package digest, declared permissions, and compatible host ABI before activating a plugin.",
+        "stale": "An old Moss installer activated plugins after checking only the package filename."
+      },
+      {
+        "id": "update",
+        "topic": "plugin update",
+        "query": "How does Moss keep an existing plugin available during an update?",
+        "current": "Moss stages the new plugin beside the active version and switches only after its health probe succeeds.",
+        "stale": "The superseded Moss updater removed the active plugin before downloading its replacement."
+      },
+      {
+        "id": "permission",
+        "topic": "permission expansion",
+        "query": "When may a Moss plugin update request broader permissions?",
+        "current": "Moss pauses an update that expands permissions until the owner approves the exact new permission set.",
+        "stale": "Moss previously accepted any permission expansion declared by a signed update package."
+      },
+      {
+        "id": "disable",
+        "topic": "plugin disable",
+        "query": "What happens when Moss disables a failing plugin?",
+        "current": "Moss stops new calls, drains active calls for thirty seconds, and then marks the plugin inactive while retaining its package.",
+        "stale": "An obsolete Moss disable path deleted the plugin package immediately when one call failed."
+      }
+    ],
+    "missing": [
+      {
+        "id": "vehicle",
+        "topic": "vehicle plugin sandbox",
+        "query": "Which sandbox does Moss use for vehicle-control plugins?",
+        "near": "Moss activates plugins only after signature, permission, and host-ABI checks, then drains calls before disable.",
+        "otherProduct": "Juniper Plugins' Rover host runs vehicle plugins in a dedicated process, but that host is outside Moss."
+      },
+      {
+        "id": "billing",
+        "topic": "billing plugin cap",
+        "query": "What monthly call cap applies to Moss billing plugins?",
+        "near": "Moss records plugin call counts and owner permissions for diagnostics and update review.",
+        "otherProduct": "Juniper Plugins' Payleaf platform caps billing-plugin calls at a million per month."
+      }
+    ]
+  },
+  {
+    "id": "vela-summit",
+    "organization": "Vela Policy",
+    "repository": "summit",
+    "product": "Summit",
+    "split": "train",
+    "facts": [
+      {
+        "id": "import",
+        "topic": "policy import",
+        "query": "Which checks must a Summit policy import pass?",
+        "current": "Summit checks schema version, signer identity, and referenced rule IDs before storing an imported policy bundle.",
+        "stale": "A retired Summit importer stored a bundle before resolving its referenced rule IDs."
+      },
+      {
+        "id": "conflict",
+        "topic": "rule conflict",
+        "query": "How does Summit handle two policy rules with equal priority?",
+        "current": "Summit rejects equal-priority rules that overlap the same subject and action unless an explicit tie-break order is recorded.",
+        "stale": "The obsolete Summit evaluator chose whichever equal-priority rule happened to load first."
+      },
+      {
+        "id": "rollout",
+        "topic": "policy rollout",
+        "query": "When does Summit make a new policy revision effective?",
+        "current": "Summit makes a revision effective after every enforcement node acknowledges its digest and the scheduled activation time arrives.",
+        "stale": "An earlier Summit rollout applied a policy after the first enforcement node acknowledged it."
+      },
+      {
+        "id": "revert",
+        "topic": "policy revert",
+        "query": "What does Summit require to revert a policy revision?",
+        "current": "Summit requires a signed revert request naming the last known-good revision and records the reason before switching nodes.",
+        "stale": "A superseded Summit console reverted to the previous revision on an unsigned operator click."
+      }
+    ],
+    "missing": [
+      {
+        "id": "submarine",
+        "topic": "submarine access policy",
+        "query": "What Summit access rule covers submarine maintenance crews?",
+        "near": "Summit access rules name subjects and actions, with conflict checks for overlapping equal-priority rules.",
+        "otherProduct": "Vela Policy's Seabright controller permits submarine crews during daylight windows, outside Summit."
+      },
+      {
+        "id": "paper",
+        "topic": "paper policy expiry",
+        "query": "When do Summit paper-form policy exceptions expire?",
+        "near": "Summit digital exceptions carry signer identity, effective time, and referenced rule IDs.",
+        "otherProduct": "Vela Policy's Ledgerform service expires paper exceptions after forty-eight hours."
+      }
+    ]
+  },
+  {
+    "id": "olive-elm",
+    "organization": "Olive Graph",
+    "repository": "elm",
+    "product": "Elm",
+    "split": "train",
+    "facts": [
+      {
+        "id": "index",
+        "topic": "graph indexing",
+        "query": "When does Elm publish a new code-graph snapshot?",
+        "current": "Elm publishes a snapshot after parser coverage and resolved-edge counts pass its gate and the snapshot hash matches staged files.",
+        "stale": "An obsolete Elm indexer published snapshots whenever parsing finished, without checking edge coverage."
+      },
+      {
+        "id": "incremental",
+        "topic": "incremental indexing",
+        "query": "Which files does Elm reparse after a source edit?",
+        "current": "Elm reparses changed files and their direct import dependents, then checks that the resulting digest matches a clean build sample.",
+        "stale": "The older Elm indexer reparsed only edited files and could leave dependent import edges stale."
+      },
+      {
+        "id": "symbol",
+        "topic": "symbol identity",
+        "query": "How does Elm keep a symbol identity stable across line shifts?",
+        "current": "Elm derives symbol identity from repository, path, qualified name, and declaration kind, rather than line number.",
+        "stale": "A retired Elm graph format used line and column as part of every symbol ID."
+      },
+      {
+        "id": "fallback",
+        "topic": "graph read fallback",
+        "query": "What does Elm return when a ready graph snapshot is unavailable?",
+        "current": "Elm reports indexing status and a retry interval; it never presents a partial graph as proof that a symbol is absent.",
+        "stale": "An old Elm reader returned an empty result while indexing and labeled it as a completed graph read."
+      }
+    ],
+    "missing": [
+      {
+        "id": "diagram",
+        "topic": "diagram export cap",
+        "query": "How many nodes may Elm include in a printable diagram export?",
+        "near": "Elm code-graph reads return bounded node sets with parser coverage and resolved-edge evidence.",
+        "otherProduct": "Olive Graph's CedarDraw product limits printable diagrams to five hundred nodes."
+      },
+      {
+        "id": "voice",
+        "topic": "voice symbol search",
+        "query": "What normalization rule does Elm use for spoken symbol queries?",
+        "near": "Elm symbol search indexes textual qualified names and declaration kinds from ready snapshots.",
+        "otherProduct": "Olive Graph's EchoSearch service normalizes spoken symbols phonetically, outside Elm."
+      }
+    ]
+  },
+  {
+    "id": "opal-shard",
+    "organization": "Opal Recovery",
+    "repository": "shard",
+    "product": "Shard",
+    "split": "validation",
+    "facts": [
+      {
+        "id": "snapshot",
+        "topic": "snapshot commit",
+        "query": "When is a Shard backup snapshot considered committed?",
+        "current": "Shard commits a snapshot only after every shard manifest digest and the coordinator index digest have been verified.",
+        "stale": "A superseded Shard backup job marked a snapshot committed after uploading the first shard manifest."
+      },
+      {
+        "id": "restore",
+        "topic": "restore order",
+        "query": "What order does Shard use when restoring a snapshot?",
+        "current": "Shard restores the coordinator index first, then shard manifests, and finally object payloads after verifying their referenced digests.",
+        "stale": "The obsolete Shard restorer downloaded object payloads before checking the coordinator index."
+      },
+      {
+        "id": "lease",
+        "topic": "restore lease",
+        "query": "Who holds Shard's restore lease during a recovery?",
+        "current": "Shard grants one restore lease to the elected recovery coordinator; replacements wait for expiry before writing any restore state.",
+        "stale": "An earlier Shard flow let every worker write restore progress without a coordinator lease."
+      },
+      {
+        "id": "verify",
+        "topic": "post-restore verification",
+        "query": "What does Shard verify before reopening writes after restore?",
+        "current": "Shard compares restored object counts and root digest with the committed snapshot, then runs a bounded read probe before reopening writes.",
+        "stale": "A retired Shard runbook reopened writes as soon as object transfer finished."
+      }
+    ],
+    "missing": [
+      {
+        "id": "solar",
+        "topic": "solar-powered restore",
+        "query": "What power-loss checkpoint does Shard use for solar-powered restore sites?",
+        "near": "Shard restore checkpoints bind coordinator index and shard-manifest digests before object replay.",
+        "otherProduct": "Opal Recovery's Sunvault product writes a power-loss checkpoint every ten minutes at solar sites."
+      },
+      {
+        "id": "tape",
+        "topic": "tape verification sample",
+        "query": "What sampling fraction does Shard use for tape restore verification?",
+        "near": "Shard validates restored object counts, root digests, and a bounded read probe before reopening writes.",
+        "otherProduct": "Opal Recovery's Reelguard checks one in twenty tape blocks, under a separate archival process."
+      }
+    ]
+  },
+  {
+    "id": "birch-branch",
+    "organization": "Birch Workflow",
+    "repository": "branch",
+    "product": "Branch",
+    "split": "validation",
+    "facts": [
+      {
+        "id": "merge",
+        "topic": "merge gate",
+        "query": "Which checks must Branch pass before merging a change?",
+        "current": "Branch merges after required CI jobs pass, the base commit is current, and a reviewer approves the final diff.",
+        "stale": "The superseded Branch merge bot accepted an approval from before the final diff changed."
+      },
+      {
+        "id": "conflict",
+        "topic": "conflict resolution",
+        "query": "What does Branch require after resolving a merge conflict?",
+        "current": "Branch reruns focused tests for touched paths and requires a new reviewer acknowledgment of the resolved diff.",
+        "stale": "An older Branch workflow merged resolved conflicts without rerunning tests or updating review."
+      },
+      {
+        "id": "rebase",
+        "topic": "rebase safety",
+        "query": "When may Branch rebase an active review?",
+        "current": "Branch rebases an active review only after pinning its original head and notifying reviewers of the new diff identity.",
+        "stale": "The retired Branch bot silently rebased reviews every night and reused old approvals."
+      },
+      {
+        "id": "release",
+        "topic": "release branch",
+        "query": "What is Branch's rule for creating a release branch?",
+        "current": "Branch cuts a release branch from the verified main head after the changelog and version file agree.",
+        "stale": "A superseded Branch release step cut a branch from the last green CI commit even if version files were newer."
+      }
+    ],
+    "missing": [
+      {
+        "id": "satellite",
+        "topic": "satellite review",
+        "query": "How does Branch route reviews for satellite-control changes?",
+        "near": "Branch routes ordinary changes through code owners and requires approval of the final diff.",
+        "otherProduct": "Birch Workflow's OrbitDesk routes satellite reviews to a flight-systems board, outside Branch."
+      },
+      {
+        "id": "fax",
+        "topic": "fax release notice",
+        "query": "When does Branch send fax notices for emergency releases?",
+        "near": "Branch cuts release branches from a verified main head after version and changelog checks.",
+        "otherProduct": "Birch Workflow's Paperline service sends fax notices one hour after emergency deployment."
+      }
+    ]
+  },
+  {
+    "id": "solari-flare",
+    "organization": "Solari Metrics",
+    "repository": "flare",
+    "product": "Flare",
+    "split": "test",
+    "facts": [
+      {
+        "id": "batch",
+        "topic": "telemetry batch",
+        "query": "When does Flare seal a telemetry batch?",
+        "current": "Flare seals a batch at five thousand events or thirty seconds, whichever comes first, and records the batch digest.",
+        "stale": "An obsolete Flare collector sealed only when it reached ten thousand events, with no time deadline."
+      },
+      {
+        "id": "privacy",
+        "topic": "telemetry fields",
+        "query": "Which fields does Flare exclude from collected telemetry?",
+        "current": "Flare excludes request bodies, credential values, and raw user identifiers; it retains aggregate operation and region codes.",
+        "stale": "A retired Flare prototype collected full request bodies alongside metrics."
+      },
+      {
+        "id": "retry",
+        "topic": "telemetry retry",
+        "query": "How does Flare prevent a retried telemetry batch from being counted twice?",
+        "current": "Flare resends the sealed batch ID and digest, and the receiver acknowledges repeats without applying them again.",
+        "stale": "The old Flare sender created a new batch ID on each retry, which could double-count events."
+      },
+      {
+        "id": "window",
+        "topic": "metric window",
+        "query": "Which event time does Flare use for a late metric sample?",
+        "current": "Flare assigns late samples to their original event-time window until the ten-minute watermark closes that window.",
+        "stale": "A superseded Flare aggregator placed every late sample in the current receive-time window."
+      }
+    ],
+    "missing": [
+      {
+        "id": "balloon",
+        "topic": "balloon telemetry",
+        "query": "What radio retry limit does Flare use for balloon telemetry uploads?",
+        "near": "Flare retries sealed telemetry batches by resending their original batch ID and digest.",
+        "otherProduct": "Solari Metrics' Skytrace balloon collector retries radio upload four times; it is not Flare."
+      },
+      {
+        "id": "paper",
+        "topic": "paper metric reports",
+        "query": "How often does Flare issue paper metric reports?",
+        "near": "Flare reports aggregate operation and region codes in digital metric windows.",
+        "otherProduct": "Solari Metrics' Printline product mails paper reports each quarter, under another workflow."
+      }
+    ]
+  },
+  {
+    "id": "raven-nightfall",
+    "organization": "Raven Archive",
+    "repository": "nightfall",
+    "product": "Nightfall",
+    "split": "test",
+    "facts": [
+      {
+        "id": "retention",
+        "topic": "document retention",
+        "query": "How long does Nightfall retain a superseded document version?",
+        "current": "Nightfall keeps superseded versions for ninety days after the replacement becomes active, then retains only their signed digest.",
+        "stale": "An obsolete Nightfall rule removed superseded document versions immediately after a replacement was uploaded."
+      },
+      {
+        "id": "hold",
+        "topic": "legal hold",
+        "query": "What happens to a Nightfall document under a legal hold?",
+        "current": "Nightfall suspends scheduled deletion for a held document and records the hold ID and issuer until an authorized release arrives.",
+        "stale": "A retired Nightfall deletion job ignored hold IDs when its retention timer expired."
+      },
+      {
+        "id": "duplicate",
+        "topic": "near-duplicate review",
+        "query": "When does Nightfall link two near-duplicate archive records?",
+        "current": "Nightfall links near-duplicate records only after a reviewer confirms matching subject, authority, and effective period.",
+        "stale": "An early Nightfall prototype linked records when their titles had a high string similarity score."
+      },
+      {
+        "id": "export",
+        "topic": "archive export",
+        "query": "What must Nightfall include in a verified archive export?",
+        "current": "Nightfall exports document digests, effective periods, hold state, and a signed inventory alongside the selected bodies.",
+        "stale": "The superseded Nightfall exporter delivered bodies alone without an inventory or hold state."
+      }
+    ],
+    "missing": [
+      {
+        "id": "astronomy",
+        "topic": "astronomy image retention",
+        "query": "How long does Nightfall retain astronomy image originals?",
+        "near": "Nightfall retains document versions by effective period and keeps signed digests after body deletion.",
+        "otherProduct": "Raven Archive's Starling image vault keeps originals for seven years, under a separate archive policy."
+      },
+      {
+        "id": "oral",
+        "topic": "oral history consent",
+        "query": "Which consent form does Nightfall require for oral-history recordings?",
+        "near": "Nightfall records hold state and signed inventories when exporting archived documents.",
+        "otherProduct": "Raven Archive's Voicebook uses Form C-12 for oral-history recordings, not Nightfall."
+      }
+    ]
+  },
+  {
+    "id": "aster-helix",
+    "organization": "Aster Systems",
+    "repository": "helix",
+    "product": "Helix",
+    "split": "train",
+    "facts": [
+      {
+        "id": "routing",
+        "topic": "event routing",
+        "query": "How does Helix choose the owner shard for an event?",
+        "current": "Helix hashes the tenant key and event family together to choose an owner shard. Retries retain that shard until the event reaches a terminal state.",
+        "stale": "A discarded Helix design hashed only the tenant key and reassigned the shard on every retry."
+      },
+      {
+        "id": "dedupe",
+        "topic": "duplicate suppression",
+        "query": "What key does Helix use to suppress duplicate event deliveries?",
+        "current": "Helix deduplicates deliveries by event ID plus destination ID for seven days. Replaying to a new destination remains a distinct delivery.",
+        "stale": "Helix previously used event ID alone, which incorrectly suppressed delivery to additional destinations."
+      },
+      {
+        "id": "poison",
+        "topic": "poison queue",
+        "query": "When does Helix send an event to its poison queue?",
+        "current": "Helix sends an event to the poison queue after six deterministic handler failures, while transient network failures stay on exponential retry.",
+        "stale": "The obsolete Helix handler sent events to the poison queue after any third failure, including network timeouts."
+      },
+      {
+        "id": "schema",
+        "topic": "schema transition",
+        "query": "How does Helix handle a producer changing an event schema?",
+        "current": "Helix accepts a changed producer schema only after the compatibility scanner verifies readers for both the old and new envelope versions.",
+        "stale": "An early Helix draft let producers publish a new envelope before reader compatibility was checked."
+      }
+    ],
+    "missing": [
+      {
+        "id": "radio",
+        "topic": "radio relay ordering",
+        "query": "What ordering guarantee does Helix provide for radio-relay event batches?",
+        "near": "Helix assigns owner shards by tenant key and event family and retains shard identity during retries.",
+        "otherProduct": "Aster Systems' Tidal relay preserves radio batch sequence numbers, but it is not part of Helix."
+      },
+      {
+        "id": "legacy",
+        "topic": "legacy mirror expiry",
+        "query": "When will Helix retire the legacy mirror topic?",
+        "near": "Helix compatibility checks verify readers for both old and new event envelope revisions.",
+        "otherProduct": "Aster Systems' Comet mirror was retired after its spring release, under a separate migration."
+      }
+    ]
+  },
+  {
+    "id": "copperline-foundry",
+    "organization": "Copperline Labs",
+    "repository": "foundry",
+    "product": "Foundry",
+    "split": "train",
+    "facts": [
+      {
+        "id": "compaction",
+        "topic": "cache compaction",
+        "query": "When does Foundry compact cache segments?",
+        "current": "Foundry compacts a segment when tombstones exceed a quarter of its entries and the segment has been idle for one hour.",
+        "stale": "A superseded Foundry setting compacted every segment nightly, even when no tombstones existed."
+      },
+      {
+        "id": "checksum",
+        "topic": "cache publication",
+        "query": "Which checks must pass before Foundry publishes a cache object?",
+        "current": "Foundry publishes a cache object after its payload checksum and metadata checksum both match the staged object record.",
+        "stale": "Foundry's retired publisher checked only the payload checksum before making an object visible."
+      },
+      {
+        "id": "eviction",
+        "topic": "tenant eviction",
+        "query": "How does Foundry choose objects for tenant quota eviction?",
+        "current": "Foundry evicts the least recently read unpinned objects within the over-quota tenant; objects belonging to other tenants are unaffected.",
+        "stale": "An abandoned Foundry eviction plan used a global least-recently-used list across all tenants."
+      },
+      {
+        "id": "warmup",
+        "topic": "index warmup",
+        "query": "What does Foundry load during index warmup?",
+        "current": "Foundry warms only the key directory and the newest segment footer before accepting reads. Older segment bodies load on demand.",
+        "stale": "Foundry previously loaded every segment body before accepting a read, causing long startup delays."
+      }
+    ],
+    "missing": [
+      {
+        "id": "gpu",
+        "topic": "GPU cache quota",
+        "query": "What GPU cache quota is approved for Foundry preview workers?",
+        "near": "Foundry preview workers record memory counters while cache entries are staged and checked.",
+        "otherProduct": "Copperline Labs' Forge renderer gives GPU preview workers a two-gigabyte cache quota; Foundry uses different workers."
+      },
+      {
+        "id": "cold",
+        "topic": "cold archive interval",
+        "query": "How often does Foundry export its cold archive?",
+        "near": "Foundry compacts idle cache segments with sufficient tombstones and loads old bodies on demand.",
+        "otherProduct": "Copperline Labs' Vault product exports cold archives every six hours, outside the Foundry cache system."
+      }
+    ]
+  },
+  {
+    "id": "rowan-kepler",
+    "organization": "Rowan Computing",
+    "repository": "kepler",
+    "product": "Kepler",
+    "split": "train",
+    "facts": [
+      {
+        "id": "migration",
+        "topic": "schema migration",
+        "query": "When may Kepler switch writes to a new schema column?",
+        "current": "Kepler switches writes only after the backfill checksum matches in every region and all readers accept both old and new columns.",
+        "stale": "The superseded Kepler migration flow switched writes as soon as the first region finished backfill."
+      },
+      {
+        "id": "lease",
+        "topic": "migration lease",
+        "query": "How long is a Kepler migration lease and who renews it?",
+        "current": "Kepler grants a ninety-second migration lease that the active coordinator renews every thirty seconds. A replacement coordinator waits for lease expiry.",
+        "stale": "An old Kepler coordinator used a ten-minute static lease without renewal or takeover rules."
+      },
+      {
+        "id": "rollback",
+        "topic": "migration rollback",
+        "query": "What does Kepler retain for rollback during a schema migration?",
+        "current": "Kepler retains the old column and its last verified backfill checkpoint until the new reader rollout completes in every region.",
+        "stale": "A retired Kepler draft dropped the old column immediately after switching the first writer."
+      },
+      {
+        "id": "audit",
+        "topic": "migration audit",
+        "query": "Which records does Kepler write for each migration phase?",
+        "current": "Kepler records the phase ID, coordinator lease, checksum, and regional reader acknowledgments in its migration audit entry.",
+        "stale": "Kepler's obsolete audit entry stored only a timestamp and migration name."
+      }
+    ],
+    "missing": [
+      {
+        "id": "mobile",
+        "topic": "mobile schema bridge",
+        "query": "What is Kepler's approved bridge for offline mobile schema changes?",
+        "near": "Kepler server-side migrations keep old and new columns readable during verified regional backfills.",
+        "otherProduct": "Rowan Computing's Orbit client uses a mobile schema bridge, but its protocol is separate from Kepler."
+      },
+      {
+        "id": "xml",
+        "topic": "XML migration cutoff",
+        "query": "Which cutoff date applies to Kepler's XML import migration?",
+        "near": "Kepler migration audits record phase IDs, coordinator leases, checksums, and reader acknowledgments.",
+        "otherProduct": "Rowan Computing's Aurora importer stopped XML ingestion in June, under another team's plan."
+      }
+    ]
+  },
+  {
+    "id": "beacon-harbor",
+    "organization": "Beacon Fabric",
+    "repository": "harbor",
+    "product": "Harbor",
+    "split": "train",
+    "facts": [
+      {
+        "id": "rotation",
+        "topic": "credential rotation",
+        "query": "How does Harbor rotate service credentials without interrupting clients?",
+        "current": "Harbor overlaps old and new service credentials for one hour, then revokes the old credential after clients acknowledge the new key ID.",
+        "stale": "A superseded Harbor rotation procedure revoked the old credential immediately after issuing a replacement."
+      },
+      {
+        "id": "approval",
+        "topic": "rotation approval",
+        "query": "Who approves an emergency Harbor credential rotation?",
+        "current": "Harbor requires the on-call security lead and the affected service owner to approve an emergency rotation before revocation begins.",
+        "stale": "Harbor's old emergency flow allowed the service owner alone to approve credential revocation."
+      },
+      {
+        "id": "audit",
+        "topic": "rotation audit",
+        "query": "What evidence does Harbor keep for a completed rotation?",
+        "current": "Harbor records key IDs, approval IDs, client acknowledgment counts, and revocation time in a rotation audit record.",
+        "stale": "An earlier Harbor audit kept only the credential creation timestamp and ticket number."
+      },
+      {
+        "id": "fallback",
+        "topic": "rotation fallback",
+        "query": "What happens if a Harbor client misses the new credential acknowledgment?",
+        "current": "Harbor leaves the old credential valid for that client during the overlap window and pages its owner before the revocation deadline.",
+        "stale": "A retired Harbor fallback silently extended every old credential for a day when any client missed acknowledgment."
+      }
+    ],
+    "missing": [
+      {
+        "id": "hardware",
+        "topic": "hardware token cadence",
+        "query": "What hardware-token replacement cadence has Harbor approved?",
+        "near": "Harbor service-credential rotations overlap keys and record client acknowledgment counts.",
+        "otherProduct": "Beacon Fabric's Gatehouse system replaces hardware tokens every eighteen months; Harbor does not manage that fleet."
+      },
+      {
+        "id": "partner",
+        "topic": "partner vault escrow",
+        "query": "Which escrow provider does Harbor use for partner vault recovery?",
+        "near": "Harbor rotation audits retain approval IDs, key IDs, and revocation times for service credentials.",
+        "otherProduct": "Beacon Fabric's Anchor product uses Northstar Escrow for partner recovery, under a different agreement."
+      }
+    ]
+  },
+  {
+    "id": "nimbus-orbit",
+    "organization": "Nimbus Data",
+    "repository": "orbit",
+    "product": "Orbit",
+    "split": "train",
+    "facts": [
+      {
+        "id": "audit",
+        "topic": "audit event chain",
+        "query": "How does Orbit link consecutive audit events?",
+        "current": "Orbit stores each audit event with the previous event's digest and signs the resulting chain head at the end of each hour.",
+        "stale": "An obsolete Orbit audit format stored unsigned event IDs without a previous-event digest."
+      },
+      {
+        "id": "retention",
+        "topic": "audit retention",
+        "query": "How long does Orbit retain immutable audit events?",
+        "current": "Orbit retains immutable audit events for thirteen months, then exports their signed chain heads before removing event bodies.",
+        "stale": "An old Orbit retention note proposed keeping audit event bodies for only thirty days."
+      },
+      {
+        "id": "redaction",
+        "topic": "audit redaction",
+        "query": "Which fields does Orbit omit from its audit events?",
+        "current": "Orbit omits raw request payloads and access tokens from audit events, retaining only operation codes and pseudonymous actor IDs.",
+        "stale": "An abandoned Orbit audit prototype copied full request bodies into every event."
+      },
+      {
+        "id": "replay",
+        "topic": "audit replay",
+        "query": "What must Orbit verify before replaying an audit segment?",
+        "current": "Orbit verifies segment signature, chain-head continuity, and sequence bounds before a replay can become visible to auditors.",
+        "stale": "The retired Orbit replay tool checked only whether a segment file could be parsed."
+      }
+    ],
+    "missing": [
+      {
+        "id": "satellite",
+        "topic": "satellite audit relay",
+        "query": "What signing interval does Orbit use for satellite audit relay batches?",
+        "near": "Orbit signs hourly audit chain heads after linking each event to its predecessor digest.",
+        "otherProduct": "Nimbus Data's Moonbeam relay signs satellite audit batches every ten minutes, independently of Orbit."
+      },
+      {
+        "id": "paper",
+        "topic": "paper archive custody",
+        "query": "Who holds custody of Orbit's paper audit archive?",
+        "near": "Orbit retains digital audit events for thirteen months and exports signed chain heads.",
+        "otherProduct": "Nimbus Data's Ledger service assigns paper archive custody to its records team; Orbit has no such assignment."
+      }
+    ]
+  },
+  {
+    "id": "willow-spruce",
+    "organization": "Willow Mobile",
+    "repository": "spruce",
+    "product": "Spruce",
+    "split": "train",
+    "facts": [
+      {
+        "id": "merge",
+        "topic": "offline merge",
+        "query": "How does Spruce resolve concurrent offline edits to a note?",
+        "current": "Spruce merges disjoint note fields automatically but sends conflicting edits to an explicit user choice screen. It never silently replaces a conflict.",
+        "stale": "A superseded Spruce merge rule chose the last device timestamp even when edits touched the same note field."
+      },
+      {
+        "id": "checkpoint",
+        "topic": "sync checkpoint",
+        "query": "What checkpoint does Spruce persist before acknowledging a sync batch?",
+        "current": "Spruce persists the server sequence and the batch digest together before acknowledging an offline sync batch.",
+        "stale": "The old Spruce sync client acknowledged batches after saving only the server sequence."
+      },
+      {
+        "id": "retry",
+        "topic": "sync retry",
+        "query": "What happens when Spruce retries an unacknowledged sync batch?",
+        "current": "Spruce resends the original batch ID and digest; the server returns the prior acknowledgment rather than applying edits twice.",
+        "stale": "An early Spruce retry implementation generated a new batch ID on every retry and could duplicate edits."
+      },
+      {
+        "id": "expiry",
+        "topic": "offline expiry",
+        "query": "When does Spruce require a full resync instead of an incremental one?",
+        "current": "Spruce requires a full resync when a device's last checkpoint predates the server's ninety-day incremental history window.",
+        "stale": "A retired Spruce note allowed incremental sync indefinitely, even after history was compacted."
+      }
+    ],
+    "missing": [
+      {
+        "id": "watch",
+        "topic": "watch sync conflict",
+        "query": "How does Spruce resolve conflicts from watch-only sync clients?",
+        "near": "Spruce resolves phone-note field conflicts through a user choice screen after offline synchronization.",
+        "otherProduct": "Willow Mobile's Bud tracker discards watch conflicts by server timestamp, but it is a separate product."
+      },
+      {
+        "id": "airplane",
+        "topic": "airplane transfer limit",
+        "query": "What transfer-size limit does Spruce apply in airplane mode?",
+        "near": "Spruce queues disconnected edits and resends original batch IDs when a network link returns.",
+        "otherProduct": "Willow Mobile's Leaf media app limits airplane-mode transfers to fifty megabytes; Spruce does not use that policy."
+      }
+    ]
+  },
+  {
+    "id": "quartz-lumen",
+    "organization": "Quartz Platform",
+    "repository": "lumen",
+    "product": "Lumen",
+    "split": "train",
+    "facts": [
+      {
+        "id": "flag",
+        "topic": "flag evaluation",
+        "query": "Which inputs determine Lumen's flag evaluation for a request?",
+        "current": "Lumen evaluates a flag using tenant ID, environment, and pinned rule revision, so one request cannot observe mixed rule versions.",
+        "stale": "A superseded Lumen evaluator read the latest rule revision on every clause, allowing mixed versions within one request."
+      },
+      {
+        "id": "rollout",
+        "topic": "percentage rollout",
+        "query": "How does Lumen assign a user to a percentage rollout bucket?",
+        "current": "Lumen hashes tenant ID, stable user ID, and flag ID; changing the percentage changes the threshold but not a user's bucket.",
+        "stale": "The old Lumen rollout code used a random number on each request and could move users between buckets."
+      },
+      {
+        "id": "kill",
+        "topic": "kill switch",
+        "query": "What takes precedence when Lumen's global kill switch is active?",
+        "current": "Lumen's global kill switch overrides tenant rollout rules and returns the safe default before any experimental clause is evaluated.",
+        "stale": "An obsolete Lumen rule engine evaluated tenant overrides before consulting the global kill switch."
+      },
+      {
+        "id": "audit",
+        "topic": "flag audit",
+        "query": "What does Lumen record when a flag rule is changed?",
+        "current": "Lumen records the prior and new rule revisions, the approving operator ID, and the effective time for each flag change.",
+        "stale": "A retired Lumen audit log recorded only that a flag had changed, without rule revisions."
+      }
+    ],
+    "missing": [
+      {
+        "id": "wearable",
+        "topic": "wearable flags",
+        "query": "What Lumen rollout policy applies to wearable clients?",
+        "near": "Lumen evaluates tenant flag rules using environment and pinned rule revisions for each request.",
+        "otherProduct": "Quartz Platform's Prism wearable app enables flags by device generation; its rollout is independent of Lumen."
+      },
+      {
+        "id": "postal",
+        "topic": "postal cache interval",
+        "query": "How long may Lumen cache postal-region flag decisions?",
+        "near": "Lumen caches tenant flag snapshots and records prior and new rule revisions after changes.",
+        "otherProduct": "Quartz Platform's Atlas routing cache keeps postal regions for fifteen minutes; Lumen uses another cache."
+      }
+    ]
+  },
+  {
+    "id": "sable-ferro",
+    "organization": "Sable Build",
+    "repository": "ferro",
+    "product": "Ferro",
+    "split": "train",
+    "facts": [
+      {
+        "id": "queue",
+        "topic": "build queue order",
+        "query": "How does Ferro prioritize ready build jobs?",
+        "current": "Ferro orders ready builds by reserved priority class and original enqueue time; a retry keeps its original enqueue position.",
+        "stale": "A superseded Ferro scheduler gave every retry a new enqueue time, moving retried jobs to the back."
+      },
+      {
+        "id": "cache",
+        "topic": "build cache key",
+        "query": "What inputs make up a Ferro build cache key?",
+        "current": "Ferro keys a build cache entry by source tree digest, toolchain digest, and declared environment inputs.",
+        "stale": "An earlier Ferro cache used the branch name and job ID, which prevented cross-job reuse."
+      },
+      {
+        "id": "worker",
+        "topic": "worker isolation",
+        "query": "How does Ferro isolate two tenants sharing a build worker?",
+        "current": "Ferro mounts each tenant's build root in a separate sandbox and discards the sandbox before assigning the worker again.",
+        "stale": "The retired Ferro worker reused a shared workspace directory between tenants without a sandbox reset."
+      },
+      {
+        "id": "publish",
+        "topic": "build publication",
+        "query": "When does Ferro publish a completed build artifact?",
+        "current": "Ferro publishes only after the build attestations and output digest match the job's declared source and toolchain digests.",
+        "stale": "A retired Ferro publisher exposed output immediately after the build process exited successfully."
+      }
+    ],
+    "missing": [
+      {
+        "id": "quantum",
+        "topic": "quantum build class",
+        "query": "Which priority does Ferro assign to quantum-simulator builds?",
+        "near": "Ferro orders ordinary CI and release jobs by reserved priority class and enqueue time.",
+        "otherProduct": "Sable Build's Quanta service reserves the highest priority for simulator jobs; Ferro has no matching rule."
+      },
+      {
+        "id": "night",
+        "topic": "nightly GPU budget",
+        "query": "What GPU-hour budget is approved for Ferro's nightly jobs?",
+        "near": "Ferro records toolchain digests and declared environment inputs for nightly build jobs.",
+        "otherProduct": "Sable Build's Nova renderer has a nightly twelve-GPU-hour budget outside Ferro."
+      }
+    ]
+  },
+  {
+    "id": "tern-marlin",
+    "organization": "Tern Operations",
+    "repository": "marlin",
+    "product": "Marlin",
+    "split": "train",
+    "facts": [
+      {
+        "id": "handoff",
+        "topic": "incident handoff",
+        "query": "What must a Marlin incident handoff contain before the next shift accepts it?",
+        "current": "Marlin handoffs include current impact, last verified mitigation, owner, unresolved hypotheses, and the next checkpoint time.",
+        "stale": "An older Marlin handoff template contained only an incident title and the on-call person's name."
+      },
+      {
+        "id": "severity",
+        "topic": "severity change",
+        "query": "When may Marlin lower the severity of an active incident?",
+        "current": "Marlin lowers severity only after the incident commander confirms impact has stayed below the threshold for thirty minutes.",
+        "stale": "The obsolete Marlin playbook lowered severity as soon as error rate fell for one sample."
+      },
+      {
+        "id": "timeline",
+        "topic": "timeline evidence",
+        "query": "Which timestamps does Marlin preserve in an incident timeline?",
+        "current": "Marlin records detection, mitigation start, user-impact end, and verification times, with each event tied to its evidence source.",
+        "stale": "A superseded Marlin timeline used a single incident-open timestamp and free-form notes."
+      },
+      {
+        "id": "closure",
+        "topic": "incident closure",
+        "query": "What checks are required to close a Marlin incident?",
+        "current": "Marlin closes an incident after the commander verifies recovery, names follow-up owners, and publishes a bounded impact summary.",
+        "stale": "The retired Marlin closure rule marked incidents closed when the alert stopped firing."
+      }
+    ],
+    "missing": [
+      {
+        "id": "drone",
+        "topic": "drone outage escalation",
+        "query": "Who escalates Marlin drone-link outages after the first hour?",
+        "near": "Marlin handoffs retain current service impact, owner, last verified mitigation, and next checkpoint time.",
+        "otherProduct": "Tern Operations' Swift drone service escalates link outages to its flight lead after an hour."
+      },
+      {
+        "id": "audio",
+        "topic": "audio bridge archive",
+        "query": "Where does Marlin archive incident audio bridges?",
+        "near": "Marlin incident timelines tie detection and mitigation timestamps to written evidence sources.",
+        "otherProduct": "Tern Operations' Gull contact center archives audio bridges in its internal media vault, not in Marlin."
+      }
+    ]
+  },
+  {
+    "id": "orchard-swiftbuild",
+    "organization": "Orchard Engineering",
+    "repository": "swiftbuild",
+    "product": "Orchard Swift Build",
+    "split": "train",
+    "facts": [
+      {
+        "id": "toolchain",
+        "topic": "Bazel Swift toolchain selection",
+        "query": "How does Orchard Swift Build select a Swift compiler for a Bazel target?",
+        "current": "Orchard Swift Build resolves a registered Swift toolchain for the target platform and records its compiler digest in the action inputs. The target never chooses a compiler from the developer's PATH.",
+        "stale": "The retired Orchard Swift Build rule invoked whichever swiftc binary appeared first on the worker PATH."
+      },
+      {
+        "id": "module",
+        "topic": "Swift module dependency",
+        "query": "Which inputs must Orchard's Bazel Swift compile action declare for an imported module?",
+        "current": "The Orchard Swift compile action declares the imported module interface, module map when C interoperability is used, and the selected Swift toolchain as inputs.",
+        "stale": "The old Orchard action declared only Swift source files and discovered imported modules from a shared worker directory."
+      },
+      {
+        "id": "cache",
+        "topic": "remote cache key",
+        "query": "What invalidates Orchard's remote cache entry for a Swift compilation?",
+        "current": "Orchard hashes Swift sources, declared module interfaces, compiler digest, target triple, and compile flags into the Bazel action key. A change to any of these inputs produces a new cache entry.",
+        "stale": "An obsolete Orchard cache key hashed only Swift source paths and reused results across compiler versions."
+      },
+      {
+        "id": "plugin",
+        "topic": "Swift compiler plugin",
+        "query": "Where does Orchard register a Swift compiler plugin in its Bazel graph?",
+        "current": "Orchard exposes a Swift compiler plugin through a dedicated tool dependency of the compile rule, so the plugin binary and its transitively declared inputs participate in the action key.",
+        "stale": "The superseded Orchard rule loaded compiler plugins from an undeclared directory on the build worker."
+      }
+    ],
+    "missing": [
+      {
+        "id": "watch",
+        "topic": "watchOS deployment minimum",
+        "query": "What watchOS deployment version does Orchard Swift Build require?",
+        "near": "Orchard Swift Build resolves registered toolchains against the target platform and tracks target triples in compile actions.",
+        "otherProduct": "Orchard Engineering's WristKit application supports watchOS 11 through its own release policy."
+      },
+      {
+        "id": "macro",
+        "topic": "macro sandbox deadline",
+        "query": "How long may an Orchard Swift macro plugin run inside the Bazel sandbox?",
+        "near": "Orchard declares compiler plugins as tool dependencies of Swift compile actions so their digests enter the action key.",
+        "otherProduct": "Orchard Engineering's ScriptLab macro service limits plugin execution to thirty seconds under a separate policy."
+      }
+    ]
+  },
+  {
+    "id": "granite-bazel",
+    "organization": "Granite Build Systems",
+    "repository": "bazelgraph",
+    "product": "Granite Bazel Graph",
+    "split": "validation",
+    "facts": [
+      {
+        "id": "aspect",
+        "topic": "Starlark aspect traversal",
+        "query": "Which dependency edges does Granite's Starlark aspect traverse?",
+        "current": "The Granite aspect traverses only the deps attribute of library targets and collects each target's declared interface artifact. It skips runtime-only dependencies.",
+        "stale": "A retired Granite aspect traversed every target attribute, including runtime data, and included unrelated artifacts."
+      },
+      {
+        "id": "config",
+        "topic": "Bazel configuration transition",
+        "query": "What does Granite's Bazel transition change for code generation tools?",
+        "current": "Granite runs code generators in the execution configuration while keeping their outputs labeled for the target configuration. The transition leaves target platform constraints unchanged.",
+        "stale": "The previous Granite transition ran code generators under the target configuration and ignored execution platform constraints."
+      },
+      {
+        "id": "action",
+        "topic": "action declaration",
+        "query": "When may Granite's rule declare a Bazel action with a source manifest?",
+        "current": "Granite declares the action after enumerating the manifest and all direct source artifacts, then records the toolchain and output path before analysis completes.",
+        "stale": "An old Granite rule scanned the filesystem for source files when the action executed, outside the declared input set."
+      },
+      {
+        "id": "visibility",
+        "topic": "provider visibility",
+        "query": "How does Granite expose analysis metadata to dependent Bazel targets?",
+        "current": "Granite returns an explicit provider carrying interface artifacts and target platform metadata. Dependent rules read that provider through declared dependency edges.",
+        "stale": "The retired Granite rule wrote analysis metadata to a workspace file instead of returning a provider."
+      }
+    ],
+    "missing": [
+      {
+        "id": "ios",
+        "topic": "iOS signing identity",
+        "query": "Which signing identity does Granite use for iOS Bazel builds?",
+        "near": "Granite's rule exposes platform metadata through a provider and selects execution platforms for code generation tools.",
+        "otherProduct": "Granite Build Systems' MobileShip product signs iOS releases with its distribution identity."
+      },
+      {
+        "id": "warm",
+        "topic": "remote cache warm-up schedule",
+        "query": "When does Granite warm its Bazel remote cache before release builds?",
+        "near": "Granite declares source manifests, toolchain inputs, and output paths during Bazel analysis.",
+        "otherProduct": "Granite Build Systems' Forge CI service warms a separate artifact cache each Friday evening."
+      }
+    ]
+  }
+]
