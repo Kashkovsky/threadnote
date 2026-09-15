@@ -30,6 +30,22 @@ effectIt.effect('prefers GH_TOKEN over GITHUB_TOKEN without starting gh', () =>
   }).pipe(provideTestLayer(SystemInfo.layer)),
 );
 
+effectIt.effect('uses GITHUB_TOKEN when GH_TOKEN is absent without starting gh', () =>
+  Effect.gen(function* () {
+    const baseSystem = yield* SystemInfo;
+    const system = SystemInfo.of({...baseSystem, environment: () => ({GITHUB_TOKEN: 'fallback-token'})});
+    const command = CommandExecutor.of({
+      execute: () => Effect.die('gh should not run when an environment token is available'),
+      executeStreaming: () => Effect.die('not used'),
+    });
+    const headers = yield* githubReleaseHeaders(GITHUB_RELEASES_URL).pipe(
+      Effect.provideService(SystemInfo, system),
+      Effect.provideService(CommandExecutor, command),
+    );
+    expect(headers).toHaveProperty('authorization', 'Bearer fallback-token');
+  }).pipe(provideTestLayer(SystemInfo.layer)),
+);
+
 effectIt.effect('uses a stored github.com gh identity when no environment token exists', () =>
   Effect.gen(function* () {
     const baseSystem = yield* SystemInfo;
@@ -130,13 +146,20 @@ effectIt.effect('authenticates updater and release notes requests but never a cu
 fcEffectProp(
   effectIt,
   'never forwards a GitHub credential to generated custom release sources',
-  {host: fc.domain()},
-  ({host}) =>
+  {
+    source: fc.oneof(
+      fc.domain().map(host => `https://${host}/releases`),
+      fc.constant('https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=50'),
+      fc.constant('https://api.github.com/repos/Elsewhere/threadnote/releases?per_page=100'),
+    ),
+  },
+  ({source}) =>
     Effect.gen(function* () {
-      const source = `https://${host}/releases`;
-      const headers = yield* githubReleaseHeaders(source);
+      const baseSystem = yield* SystemInfo;
+      const system = SystemInfo.of({...baseSystem, environment: () => ({GH_TOKEN: 'fixture-token'})});
+      const headers = yield* githubReleaseHeaders(source).pipe(Effect.provideService(SystemInfo, system));
       expect(headers).not.toHaveProperty('authorization');
       expect(headers['user-agent']).toBe('threadnote-cli');
-    }),
+    }).pipe(provideTestLayer(SystemInfo.layer)),
   {fastCheck: {numRuns: 100}},
 );
