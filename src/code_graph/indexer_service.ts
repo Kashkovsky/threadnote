@@ -993,11 +993,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         ),
                       );
                     }),
-                    writerSessionOptions(
-                      layout,
-                      options,
-                      () => options.onProgress?.(lastActiveProgress) ?? Effect.void,
-                    ),
+                    writerSessionOptions(layout, options, () => reporter.progress(lastActiveProgress)),
                   )
                   .pipe(
                     Effect.onInterrupt(() =>
@@ -1310,7 +1306,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         summary: committedBase.summary,
                       };
                     }),
-                    writerSessionOptions(layout, options, () => options.onProgress(lastActiveProgress)),
+                    writerSessionOptions(layout, options, () => reporter.progress(lastActiveProgress)),
                   )
                   .pipe(
                     Effect.onInterrupt(() =>

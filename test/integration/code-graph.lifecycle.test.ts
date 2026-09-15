@@ -3113,7 +3113,7 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
-  effectIt.effect('leaves a post-promotion snapshot active and retained when the retry also drifts', () =>
+  effectIt.effect('retains both completed dirty targets when a post-promotion retry also drifts', () =>
     Effect.gen(function* () {
       const root = yield* Effect.sync(createFixtureRepository);
       const home = join(root, '.threadnote-test-home');
@@ -3126,6 +3126,7 @@ describe('native code graph lifecycle', () => {
       });
       let promotingEvents = 0;
       let postPromotedSnapshotId: string | undefined;
+      let retrySnapshotId: string | undefined;
       let postPromoteMutation = false;
       let retryMutation = false;
       const exit = yield* Effect.exit(
@@ -3150,6 +3151,7 @@ describe('native code graph lifecycle', () => {
                 progress.subphase === 'validating-input'
               ) {
                 retryMutation = true;
+                retrySnapshotId = progress.snapshotId;
                 writeFileSync(
                   sourcePath,
                   readFileSync(sourcePath, 'utf8').replace('vectors-raced-once', 'vectors-raced-twice'),
@@ -3163,10 +3165,12 @@ describe('native code graph lifecycle', () => {
       expect(exit._tag).toBe('Failure');
       expect(postPromotedSnapshotId).toBeDefined();
       expect(retryMutation).toBe(true);
+      expect(retrySnapshotId).toBeDefined();
       const databasePath = codeGraphDatabasePath(home, baseline);
       const active = yield* store.readySnapshot(databasePath, baseline.identity.worktreeId);
       const postPromoted = yield* store.currentLexicalReadySnapshotById(databasePath, postPromotedSnapshotId!);
-      expect(active?.id).toBe(postPromotedSnapshotId);
+      expect(active?.id).toBe(retrySnapshotId);
+      expect(active).toMatchObject({dirty: true, id: retrySnapshotId, state: 'ready'});
       expect(postPromoted).toMatchObject({dirty: true, id: postPromotedSnapshotId, state: 'ready'});
       const database = new Database(databasePath, {readonly: true});
       try {
