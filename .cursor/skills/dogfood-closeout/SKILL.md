@@ -13,7 +13,7 @@ Repository files remain authoritative. Prefer MCP; CLI is the fallback.
 
 ## Durable memory (only when a reusable contract changed)
 
-Ask the user before writing or publishing `kind: durable`. After confirmation, publish to the default team only. Update the existing topic with `replaceUri`; do not create timestamped duplicates.
+When a reusable contract changed, write `kind: durable` and publish it to the default team as part of closeout without a separate approval request. Review the text and citations before publishing. Update the existing topic with `replaceUri`; do not create timestamped duplicates. Never publish handoffs or preferences.
 
 ## Relations
 
@@ -21,7 +21,7 @@ Author `relations` only from content you read. Closed types: `depends_on`, `evid
 
 ## Dogfood issues
 
-One ledger: `kind: durable`, `project: threadnote`, `topic: dogfood-issues`. Recall and read it first; update with `replaceUri`. Keep evidence privacy-safe. Do not store secrets, credentials, customer data, or raw production logs.
+GitHub issues are the source of truth for dogfood defects; do not maintain a Threadnote `dogfood-issues` memory ledger. Keep evidence privacy-safe. Do not store secrets, credentials, customer data, or raw production logs. Public issue creation still requires explicit user approval.
 
 ## Pending code refs
 

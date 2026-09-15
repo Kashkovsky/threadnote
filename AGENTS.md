@@ -16,6 +16,8 @@ nearest checked-in guidance remain authoritative.
   per-repository evidence from existing ready snapshots rather than proof or implicit cold indexing.
 - Store reusable decisions and contracts as durable memory. Store current status, checks, blockers, and next steps as a
   handoff before pausing or ending meaningful work.
+- Publish reviewed durable feature memory to the default team during closeout without a separate approval request.
+  Never publish handoffs or preferences.
 - Use stable project/topic identities and update an existing memory with `replaceUri`; do not create timestamped
   duplicates. Never store secrets, credentials, customer data, or raw production logs.
 - Prefer the Threadnote MCP tools. If they are unavailable, use the `threadnote` CLI as the fallback and treat the
