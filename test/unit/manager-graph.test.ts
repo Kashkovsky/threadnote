@@ -846,9 +846,9 @@ describe('manager graph focus', () => {
     }));
     const selected = graphAdministrationJobSelection(builds, waiters);
 
-    expect(selected.jobs).toHaveLength(4);
-    expect(selected.total).toBe(7);
-    expect(selected.hiddenCount).toBe(3);
+    expect(selected.jobs).toHaveLength(2);
+    expect(selected.total).toBe(2);
+    expect(selected.hiddenCount).toBe(0);
     expect(selected.jobs.map(job => job.state)).not.toContain('completed');
     expect(selected.jobs.map(job => job.buildId)).not.toContain('expired-failed');
     expect(selected.jobs[0]?.buildId).toBe('running');
@@ -866,9 +866,21 @@ describe('manager graph focus', () => {
         onRefresh: () => undefined,
       }),
     );
-    expect(markup.match(/class="graph-build-card/g)).toHaveLength(4);
-    expect(markup).toContain('3 older build notices are summarized.');
-    expect(markup).toContain('aria-label="7 status notices"');
+    expect(markup.match(/class="graph-build-card/g)).toHaveLength(2);
+    expect(markup).not.toContain('older build notices are summarized.');
+    expect(markup).toContain('aria-label="2 status notices"');
+  });
+
+  it('shows one build card when an exact-target request is queued behind its owner', () => {
+    const owner = {...graphBuildStatus('queued'), buildId: 'owner', request: {key: 'same-request'}};
+    const waiter = {...graphBuildStatus('queued'), buildId: 'waiter', request: {key: 'same-request'}};
+    const selection = graphAdministrationJobSelection([owner], [waiter]);
+
+    expect(selection.jobs).toEqual([owner]);
+    expect(selection.total).toBe(1);
+    expect(graphWaiterCountForBuild(owner, [waiter])).toBe(1);
+    expect(graphWaiterCountForBuild(waiter, [waiter])).toBe(0);
+    expect(graphBuildConcurrencyState(owner, [waiter], []).queuedRequests).toBe(1);
   });
 
   it('refreshes a terminal snapshot missing from the catalog and scopes waiters to their build', () => {

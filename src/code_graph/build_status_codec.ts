@@ -118,6 +118,7 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
   if (ownerStart !== undefined && !isText(ownerStart, 256)) return undefined;
   const subphase = value.subphase;
   if (subphase !== undefined && !isText(subphase, 64)) return undefined;
+  if (value.worktreeLockHeld !== undefined && typeof value.worktreeLockHeld !== 'boolean') return undefined;
   const error = parseError(value.error);
   if (value.error !== undefined && !error) return undefined;
   const eta = parseEta(value.eta);
@@ -163,6 +164,7 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
     state: value.state,
     ...(subphase ? {subphase} : {}),
     ...(timings ? {timings} : {}),
+    ...(value.worktreeLockHeld !== undefined ? {worktreeLockHeld: value.worktreeLockHeld} : {}),
     timestamps: {
       ...(timestamps.completedAt ? {completedAt: timestamps.completedAt} : {}),
       heartbeatAt: timestamps.heartbeatAt,

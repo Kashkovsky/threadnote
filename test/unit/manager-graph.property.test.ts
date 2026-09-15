@@ -88,13 +88,14 @@ describe('Manager graph properties', () => {
           const waiters = statuses.filter((_, index) => index % 2 === 1);
           const forward = graphAdministrationJobSelection(builds, waiters);
           const reverse = graphAdministrationJobSelection([...builds].reverse(), [...waiters].reverse());
-          const expectedTotal = statuses.filter(status => status.state !== 'completed').length;
+          const expectedTotal = builds.filter(status => status.state !== 'completed').length;
 
           expect(forward).toEqual(reverse);
           expect(forward.jobs.length).toBeLessThanOrEqual(4);
           expect(forward.jobs.length + forward.hiddenCount).toBe(forward.total);
           expect(forward.total).toBe(expectedTotal);
           expect(new Set(forward.jobs.map(job => job.buildId)).size).toBe(forward.jobs.length);
+          expect(forward.jobs.every(job => builds.some(build => build.buildId === job.buildId))).toBe(true);
           expect(forward.jobs.every(job => job.state !== 'completed')).toBe(true);
         },
       ),

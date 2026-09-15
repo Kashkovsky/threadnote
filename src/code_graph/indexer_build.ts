@@ -99,7 +99,7 @@ import {assessCodeGraphLanguagePackDelta} from './languages/provenance.js';
 import {packDerivationIdentity, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
 import {assessCodeGraphWorkspaceCompatibility} from './workspace_compatibility.js';
-import {codeGraphRequestBuildLockPath, codeGraphSnapshotBuildLockPath, type CodeGraphLayout} from './layout.js';
+import {codeGraphSnapshotBuildLockPath, type CodeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
 import {MaterializationSubphaseTiming} from './materialization_subphase_timing.js';
 import {codeGraphMaterializationSpoolPath} from './materialization_spool.js';
@@ -153,6 +153,10 @@ export function withCodeGraphProcessLock<A, E, R>(
   onContention: () => Effect.Effect<void>,
   builderOperation: string,
   effect: Effect.Effect<A, E, R>,
+  coordination?: {
+    readonly onAcquired: () => Effect.Effect<void, never>;
+    readonly onCompleted: () => Effect.Effect<void, never>;
+  },
 ) {
   return withThreadnoteProcessActivity(
     'graph-waiter',
@@ -160,18 +164,27 @@ export function withCodeGraphProcessLock<A, E, R>(
     withExclusiveFileLock(
       fs,
       lockPath,
-      {...CODE_GRAPH_LOCK_OPTIONS, onContention},
+      {
+        ...CODE_GRAPH_LOCK_OPTIONS,
+        onContention,
+        ...(coordination ? {onAcquired: coordination.onAcquired, onCompleted: coordination.onCompleted} : {}),
+      },
       withThreadnoteProcessActivity('graph-builder', builderOperation, effect),
     ),
   );
 }
 
-export function writerSessionOptions(layout: CodeGraphLayout, options: CodeGraphIndexOptions) {
+export function writerSessionOptions(
+  layout: CodeGraphLayout,
+  options: Pick<CodeGraphIndexOptions, 'onProgress' | 'onSqliteWriterConfigured' | 'sqliteWriterTuning'>,
+  resumeProgress: () => Effect.Effect<void, unknown>,
+) {
   return {
     cleanupCompletedBuildRows: true,
     ...(options.onSqliteWriterConfigured ? {onSqliteWriterConfigured: options.onSqliteWriterConfigured} : {}),
     onWriterContention: () =>
       (options.onProgress?.({phase: 'waiting', reason: 'database-writer'}) ?? Effect.void).pipe(Effect.ignore),
+    onWriterAcquired: () => resumeProgress().pipe(Effect.ignore),
     ...(options.sqliteWriterTuning ? {sqliteWriterTuning: options.sqliteWriterTuning} : {}),
     writerLockPath: layout.databaseWriteLockPath,
   } as const;
@@ -189,29 +202,6 @@ export function retiredSnapshotCleanupReporter(onProgress: CodeGraphIndexOptions
         unit: 'snapshots',
       }) ?? Effect.void
     ).pipe(Effect.ignore);
-}
-
-export function withSharedCleanRequestGate<A, E, R>(input: {
-  readonly checkoutId: string;
-  readonly effect: Effect.Effect<A, E, R>;
-  readonly fs: FileSystem.FileSystem;
-  readonly onProgress: CodeGraphIndexOptions['onProgress'];
-  readonly path: Path.Path;
-  readonly requestedOverlay: {readonly dirty: boolean; readonly fingerprint?: string} | undefined;
-  readonly requestKey: string | undefined;
-  readonly threadnoteHome: string;
-}) {
-  if (!input.requestKey || input.requestedOverlay?.dirty !== false) return input.effect;
-  return withExclusiveFileLock(
-    input.fs,
-    codeGraphRequestBuildLockPath(input.path, input.threadnoteHome, input.checkoutId, input.requestKey),
-    {
-      ...CODE_GRAPH_LOCK_OPTIONS,
-      onContention: () =>
-        (input.onProgress?.({phase: 'waiting', reason: 'request-lock'}) ?? Effect.void).pipe(Effect.ignore),
-    },
-    input.effect,
-  );
 }
 
 export {prepareReadyAnalysisSummary, reuseReadySnapshot};
@@ -1794,7 +1784,12 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     symbolCount: stagedCounts.symbols,
   };
   yield* input.onProgress?.({phase: 'activating', snapshotId: ready.id, subphase: 'validating-input'}) ?? Effect.void;
-  yield* verifyIndexInput(input.identity, input.activatePointer, input.threadnoteHome, input.requestedOverlay);
+  yield* verifyIndexInput(
+    input.identity,
+    input.activatePointer && !input.building.dirty,
+    input.threadnoteHome,
+    input.requestedOverlay,
+  );
   yield* input.onProgress?.({
     phase: 'activating',
     snapshotId: ready.id,
@@ -1834,16 +1829,20 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
   yield* input.store.shrinkMemory(input.layout.databasePath);
   if (input.activatePointer) {
     yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'promoting'}) ?? Effect.void;
-    // Progress callbacks may yield long enough for the worktree to change. Revalidate on both sides of
-    // pointer promotion so a mutation in this window triggers the bounded retry.
-    yield* verifyCommittedIndexInput({
-      databasePath: input.layout.databasePath,
-      identity: input.identity,
-      requestedOverlay: input.requestedOverlay,
-      snapshotId: activated.id,
-      store: input.store,
-      threadnoteHome: input.threadnoteHome,
-    });
+    // A completed dirty target can become stale while progress callbacks run. Promote its coherent
+    // snapshot before the post-promotion fence requests a retry; clean targets still require exact input.
+    if (input.building.dirty) {
+      yield* verifyIndexInput(input.identity, false, input.threadnoteHome, input.requestedOverlay);
+    } else {
+      yield* verifyCommittedIndexInput({
+        databasePath: input.layout.databasePath,
+        identity: input.identity,
+        requestedOverlay: input.requestedOverlay,
+        snapshotId: activated.id,
+        store: input.store,
+        threadnoteHome: input.threadnoteHome,
+      });
+    }
     yield* input.store.promote(input.layout.databasePath, input.identity, activated.id, {
       persistentCapacityProtector: protectDirectPersistentWrite,
     });
