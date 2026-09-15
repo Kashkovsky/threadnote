@@ -7,6 +7,10 @@ description: Prepare a Threadnote patch release (version bump, curated notes, PR
 
 Authority: `docs/releasing.md`. This skill is the mechanical path only.
 
+## Execution agent
+
+Delegate patch-release preparation and post-merge publication to one `gpt-5.6-terra` agent with `low` reasoning effort. Keep `docs/releasing.md` authoritative: the agent must satisfy every applicable gate and stop on a failed or missing prerequisite rather than treating this delegation as permission to bypass it.
+
 ## Prepare (this PR)
 
 1. Write `.github/release-notes/vX.Y.Z.md` first. Start with `## What's new`, then one user-visible opening sentence (social-card headline ≤ 240 characters after the `Threadnote X.Y.Z` prefix). No validation/checks section. Follow `v4.6.4`–`v4.6.6`.
