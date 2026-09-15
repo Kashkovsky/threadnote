@@ -1869,7 +1869,11 @@ const benchmarkCodeGraph = Effect.scoped(
     parseBenchmarkArtifactV1(artifact);
     if (prepared.profile) {
       if (releaseEvidenceSource) {
-        assertProductionReleaseEvidence(artifact);
+        if (isGovernedReducedProductionProfile(artifact)) {
+          assertGovernedReducedProductionReleaseEvidence(artifact);
+        } else {
+          assertProductionReleaseEvidence(artifact);
+        }
       } else {
         assertProductionLargeEvidence(artifact);
       }
@@ -4802,10 +4806,17 @@ export function codeGraphQueryResultParityFailureMessage(evidence: CodeGraphQuer
 }
 
 export function assertProductionReleaseEvidence(artifact: BenchmarkArtifactV1): void {
-  assertProductionLargeEvidence(artifact, true);
+  assertProductionLargeEvidence(artifact, 'full-release');
 }
 
-function assertProductionLargeEvidence(artifact: BenchmarkArtifactV1, requireReleaseSource = false): void {
+export function assertGovernedReducedProductionReleaseEvidence(artifact: BenchmarkArtifactV1): void {
+  assertProductionLargeEvidence(artifact, 'governed-reduced-release');
+}
+
+function assertProductionLargeEvidence(
+  artifact: BenchmarkArtifactV1,
+  releaseProfile?: 'full-release' | 'governed-reduced-release',
+): void {
   if (!artifact.suite.startsWith('code-graph-production-large-')) {
     throw ScriptError.make({message: `Production release evidence has the wrong suite: ${artifact.suite}.`});
   }
@@ -4829,12 +4840,16 @@ function assertProductionLargeEvidence(artifact: BenchmarkArtifactV1, requireRel
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(String(artifact.metadata.sqliteVersion ?? ''))) {
     missing.push('SQLite version');
   }
-  if (requireReleaseSource) {
+  if (releaseProfile) {
     missing.push(...missingReleaseSourceProvenance(artifact));
-    missing.push(...missingReviewedProductionProfile(artifact));
+    missing.push(
+      ...(releaseProfile === 'full-release'
+        ? missingReviewedProductionProfile(artifact)
+        : missingGovernedReducedProductionProfile(artifact)),
+    );
   }
   missing.push(...missingBenchmarkRuntimeProvenance(artifact));
-  missing.push(...missingProductionShapeTargetAttainment(measurements, artifact));
+  missing.push(...missingProductionShapeTargetAttainment(measurements, artifact, releaseProfile));
   missing.push(...missingDeterministicParityEvidence(measurements));
   missing.push(...missingSamplerObservations(measurements));
   missing.push(...missingActivationObservations(artifact, measurements));
@@ -4967,8 +4982,9 @@ function exactSingleSampleCount(measurement: BenchmarkArtifactV1['measurements']
 function missingProductionShapeTargetAttainment(
   measurements: ReadonlyMap<string, BenchmarkArtifactV1['measurements'][number]>,
   artifact: BenchmarkArtifactV1,
+  releaseProfile?: 'full-release' | 'governed-reduced-release',
 ): readonly string[] {
-  if (!isReviewedProductionProfile(artifact)) return [];
+  if (!isReviewedProductionProfile(artifact) && releaseProfile !== 'governed-reduced-release') return [];
   return PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS.filter(required =>
     required.name.startsWith('production-shape-'),
   ).flatMap(required => {
@@ -4990,6 +5006,33 @@ function isReviewedProductionProfile(artifact: BenchmarkArtifactV1): boolean {
 
 function missingReviewedProductionProfile(artifact: BenchmarkArtifactV1): readonly string[] {
   return isReviewedProductionProfile(artifact) ? [] : ['reviewed default production-large profile'];
+}
+
+function isGovernedReducedProductionProfile(artifact: BenchmarkArtifactV1): boolean {
+  const expected = productionProfileArtifactMetadata(
+    productionProfile({profile: 'production-large', profileFiles: 3_000, profileSymbols: 110_000}),
+  );
+  return Object.entries(expected).every(([name, value]) => artifact.metadata[name] === value);
+}
+
+function missingGovernedReducedProductionProfile(artifact: BenchmarkArtifactV1): readonly string[] {
+  const metadata = artifact.metadata;
+  return isGovernedReducedProductionProfile(artifact) &&
+    artifact.suite === 'code-graph-production-large-v2' &&
+    metadata.vectorEnabled === false &&
+    metadata.benchmarkGoverned === true &&
+    typeof metadata.benchmarkMinimumFreeBytes === 'number' &&
+    metadata.benchmarkMinimumFreeBytes >= PRODUCTION_RATCHET_REDUCED_MINIMUM_FREE_BYTES &&
+    typeof metadata.benchmarkPrimaryAvailableBytesAtStart === 'number' &&
+    metadata.benchmarkPrimaryAvailableBytesAtStart >= metadata.benchmarkMinimumFreeBytes &&
+    typeof metadata.benchmarkReferenceAvailableBytesAtStart === 'number' &&
+    metadata.benchmarkReferenceAvailableBytesAtStart >= metadata.benchmarkMinimumFreeBytes &&
+    metadata.benchmarkSourceValidationMode === 'github-actions-clean-source' &&
+    metadata.benchmarkGithubRunnerEnvironment === 'github-hosted' &&
+    metadata.benchmarkGithubRunnerOperatingSystem === 'Linux' &&
+    metadata.runtimePlatform === 'linux'
+    ? []
+    : ['governed hosted reduced production profile'];
 }
 
 export function assertExternalRepositoryEvidence(artifact: BenchmarkArtifactV1): void {
@@ -6704,7 +6747,9 @@ const canonicalizeProspectivePath = Effect.fn('benchmarkCodeGraph.canonicalizePr
   }
 });
 
-export function productionProfile(options: CodeGraphBenchmarkOptions): ProductionCodeGraphFixtureProfile {
+export function productionProfile(
+  options: Pick<CodeGraphBenchmarkOptions, 'profile' | 'profileFiles' | 'profileSymbols'>,
+): ProductionCodeGraphFixtureProfile {
   if (options.profile !== 'production-large')
     throw ScriptError.make({message: 'Production fixture profile was not selected.'});
   if (options.profileFiles === undefined && options.profileSymbols === undefined) {
