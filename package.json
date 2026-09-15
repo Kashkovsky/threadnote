@@ -84,6 +84,7 @@
     "eval:memory-connections-retrieval": "bun scripts/evaluate-memory-connections-retrieval.ts",
     "eval:code-memory-link-client-descriptor": "bun scripts/describe-code-memory-link-client.ts",
     "eval:code-memory-link-agent-ab": "bun scripts/evaluate-code-memory-link-agent-ab.ts",
+    "eval:code-memory-link-agent-study": "bun scripts/evaluate-code-memory-link-agent-study.ts",
     "eval:code-memory-link-agent-prepare": "bun scripts/prepare-code-memory-link-agent-ab.ts",
     "eval:code-memory-link-agent-matrix": "bun scripts/run-code-memory-link-agent-matrix.ts",
     "eval:code-memory-link-agent-calibration-client": "bun scripts/run-code-memory-link-calibration-client.ts",
