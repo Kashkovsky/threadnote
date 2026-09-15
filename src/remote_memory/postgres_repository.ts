@@ -29,7 +29,12 @@ import {
   REMOTE_MEMORY_RECEIPT_VERSION,
   type RemoteMemoryReceiptV1,
 } from '../memory_domain/receipts.js';
-import type {AuthorizedRemotePrincipal, RemoteMemoryFeatureFlag, RemoteMemoryScope} from './authorization.js';
+import {
+  assertRemoteRememberReplacementTarget,
+  type AuthorizedRemotePrincipal,
+  type RemoteMemoryFeatureFlag,
+  type RemoteMemoryScope,
+} from './authorization.js';
 import {authorizeCursorClaims, type CursorWorkloadAttestation} from './cursor_oidc.js';
 import {RemoteMemoryError, remoteMemoryError, type RemoteMemoryErrorCode} from './errors.js';
 import {GitCanonicalMemoryStore, gitCanonicalSharePath} from './git_canonical_store.js';
@@ -397,6 +402,7 @@ export class PostgresRemoteMemoryRepository {
   ): Promise<RemoteMemoryReceiptV1> {
     assertGitMemoryBinding(this.gitStore?.binding, principal);
     requirePrincipalProject(principal, input.project);
+    assertRemoteRememberReplacementTarget(principal, input);
     if (input.lifecycle?.expiresAt && Date.parse(input.lifecycle.expiresAt) <= now.getTime()) {
       throw remoteMemoryError('invalid_request', 'Remote memory expiry must be in the future.');
     }
@@ -1483,6 +1489,7 @@ function requestFingerprint(principal: AuthorizedRemotePrincipal, input: RemoteR
       lifecycle: input.lifecycle ?? null,
       operationId: input.operationId,
       project: input.project,
+      ...(input.replaceUri === undefined ? {} : {replaceUri: input.replaceUri}),
       shareId: principal.shareId,
       text: input.text,
       topic: input.topic,

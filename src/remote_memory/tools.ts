@@ -5,6 +5,7 @@ import {EffectSchemaSdkTools} from '../mcp/effect_schema_sdk_tools.js';
 import {InvalidRemoteMemoryAddress, parseRemoteShareAddress} from '../memory_domain/address.js';
 import {parseRemoteMemoryReceiptV1, type RemoteMemoryReceiptV1} from '../memory_domain/receipts.js';
 import {
+  assertRemoteRememberReplacementTarget,
   assertUriBelongsToAuthorizedShare,
   requireAuthorizedProject,
   requireRemoteScope,
@@ -219,7 +220,8 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
     'remember_context',
     {
       annotations: {destructiveHint: false, idempotentHint: true, readOnlyHint: false},
-      description: 'Create or compare-and-swap one durable memory or handoff in the authorized remote share.',
+      description:
+        'Create or compare-and-swap one durable memory or handoff in the authorized remote share; replaceUri may identify the same memory with baseRevision.',
       inputSchema: Schema.Struct({
         attestationId: Schema.optionalKey(Identifier),
         baseRevision: Schema.optionalKey(Identifier),
@@ -232,6 +234,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
         ),
         operationId: Identifier,
         project: PortableSegment,
+        replaceUri: Schema.optionalKey(NonEmptyUri),
         text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000_000)),
         topic: PortableSegment,
         version: Version,
@@ -244,6 +247,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
         }
         requireRemoteScope(principal, input.kind === 'durable' ? 'memory:write:durable' : 'memory:write:handoff');
         requireAuthorizedProject(principal, input.project);
+        assertRemoteRememberReplacementTarget(principal, input);
         const attestation = await requireCursorAttestation(
           dependencies.attestations,
           principal,

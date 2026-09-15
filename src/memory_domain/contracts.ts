@@ -15,6 +15,7 @@ const BoundedIdentifier = NonEmptyString.check(
 const BoundedPortableSegment = NonEmptyString.check(Schema.isMaxLength(255));
 const BoundedQuery = NonEmptyString.check(Schema.isMaxLength(8_192));
 const BoundedMemoryText = NonEmptyString.check(Schema.isMaxLength(1_000_000));
+const BoundedUri = NonEmptyString.check(Schema.isMaxLength(4_096));
 const RecallLimit = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(100));
 const IsoInstant = NonEmptyString.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u));
 
@@ -32,7 +33,7 @@ export type RemoteRecallInputV1 = typeof RemoteRecallInputSchemaV1.Type;
 
 export const RemoteReadInputSchemaV1 = Schema.Struct({
   revision: Schema.optionalKey(BoundedIdentifier),
-  uri: NonEmptyString.check(Schema.isMaxLength(4_096)),
+  uri: BoundedUri,
   version: Schema.Literal(REMOTE_MEMORY_CONTRACT_VERSION),
 });
 
@@ -52,6 +53,7 @@ export const RemoteRememberInputSchemaV1 = Schema.Struct({
   lifecycle: Schema.optionalKey(RemoteLifecycleInputSchemaV1),
   operationId: BoundedIdentifier,
   project: BoundedPortableSegment,
+  replaceUri: Schema.optionalKey(BoundedUri),
   text: BoundedMemoryText,
   topic: BoundedPortableSegment,
   version: Schema.Literal(REMOTE_MEMORY_CONTRACT_VERSION),
@@ -77,6 +79,15 @@ export function parseRemoteRememberInputV1(value: unknown): RemoteRememberInputV
   const parsed = Schema.decodeUnknownSync(RemoteRememberInputSchemaV1, STRICT_PARSE_OPTIONS)(value);
   validatePortableSegment(parsed.project);
   validatePortableSegment(parsed.topic);
+  if (parsed.replaceUri !== undefined) {
+    if (parsed.baseRevision === undefined) {
+      throw new TypeError('Remote memory replaceUri requires baseRevision.');
+    }
+    const address = parseRemoteShareAddress(parsed.replaceUri);
+    if (address.kind !== parsed.kind || address.project !== parsed.project || address.topic !== parsed.topic) {
+      throw new TypeError('Remote memory replaceUri must match kind, project, and topic.');
+    }
+  }
   if (parsed.kind === 'durable' && parsed.lifecycle !== undefined) {
     throw new TypeError('Remote memory lifecycle controls are only supported for handoffs.');
   }
