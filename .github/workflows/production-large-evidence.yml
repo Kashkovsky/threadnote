@@ -3,11 +3,6 @@ name: Production-large code graph evidence
 on:
   workflow_call:
     inputs:
-      strict:
-        description: Whether an incomplete bounded observation should fail the evidence workflow
-        required: false
-        type: boolean
-        default: true
       release_ref:
         description: Optional exact Threadnote 4 release tag ref
         required: false
@@ -27,7 +22,7 @@ env:
 
 jobs:
   code-graph-production-large:
-    name: Code graph production-large admission and bounded capture · pinned Linux class
+    name: Code graph production-shaped admission and bounded capture · pinned Linux class
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -35,7 +30,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
-          ref: ${{ inputs.release_ref || github.ref }}
+          ref: ${{ inputs.release_ref || github.sha }}
 
       - name: Verify the release tag resolves to the measured commit
         if: inputs.release_ref != ''
@@ -60,6 +55,7 @@ jobs:
         env:
           ADMISSION_ARTIFACT: artifacts/code-graph-production-large-admission-${{ runner.os }}-${{ runner.arch }}-${{ inputs.release_sha || github.sha }}.json
           MINIMUM_FREE_GIB: 120
+          REDUCED_MINIMUM_FREE_GIB: 20
           RUNNER_ARCHITECTURE: ${{ runner.arch }}
           RUNNER_ENVIRONMENT_CLASS: ${{ runner.environment }}
           RUNNER_OPERATING_SYSTEM: ${{ runner.os }}
@@ -69,6 +65,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts "$RUNNER_TEMP/threadnote-production-large-admission"
           required_bytes=$((MINIMUM_FREE_GIB * 1024 * 1024 * 1024))
+          reduced_required_bytes=$((REDUCED_MINIMUM_FREE_GIB * 1024 * 1024 * 1024))
           available_kib=$(df -Pk "$RUNNER_TEMP/threadnote-production-large-admission" | awk 'END {print $4}')
           available_bytes=$((available_kib * 1024))
           filesystem=$(df -Pk "$RUNNER_TEMP/threadnote-production-large-admission" | awk 'END {print $1}')
@@ -77,6 +74,10 @@ jobs:
           if (( available_bytes >= required_bytes )); then
             admitted=true
             classification=admitted
+          fi
+          reduced_admitted=false
+          if (( available_bytes >= reduced_required_bytes )); then
+            reduced_admitted=true
           fi
           jq -n \
             --arg classification "$classification" \
@@ -89,9 +90,11 @@ jobs:
             --arg filesystem "$filesystem" \
             --argjson availableBytes "$available_bytes" \
             --argjson minimumFreeBytes "$required_bytes" \
+            --argjson reducedMinimumFreeBytes "$reduced_required_bytes" \
+            --argjson reducedAdmitted "$reduced_admitted" \
             '{
               type: "threadnote-production-large-admission",
-              version: 1,
+              version: 2,
               classification: $classification,
               source: {ref: $sourceRef, sha: $sourceSha},
               runner: {
@@ -105,6 +108,13 @@ jobs:
                 filesystem: $filesystem,
                 availableBytes: $availableBytes,
                 minimumFreeBytes: $minimumFreeBytes
+              },
+              hostedFallback: {
+                profile: "governed-reduced-production",
+                sourceFiles: 3000,
+                targetGraphSymbols: 110000,
+                minimumFreeBytes: $reducedMinimumFreeBytes,
+                admitted: $reducedAdmitted
               }
             }' > "$ADMISSION_ARTIFACT"
           {
@@ -112,6 +122,8 @@ jobs:
             echo "available_bytes=$available_bytes"
             echo "classification=$classification"
             echo "minimum_free_bytes=$required_bytes"
+            echo "reduced_admitted=$reduced_admitted"
+            echo "reduced_minimum_free_bytes=$reduced_required_bytes"
           } >> "$GITHUB_OUTPUT"
           if [[ "$admitted" != true ]]; then
             echo "::warning title=Production-large evidence not admitted::Runner temp has ${available_bytes} bytes free; governed capture requires ${required_bytes} bytes."
@@ -137,6 +149,30 @@ jobs:
           --warmups 0
           --output artifacts/code-graph-production-large-n1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.release_sha || github.sha }}.json
 
+      - id: capture_hosted_reduced
+        name: Capture the governed reduced production profile when the full shape is not admitted
+        if: steps.classify_production_large_admission.outputs.admitted != 'true' && steps.classify_production_large_admission.outputs.reduced_admitted == 'true'
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          SQLITE_TMPDIR: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
+          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
+          THREADNOTE_BENCHMARK_RELEASE_REF: ${{ inputs.release_ref }}
+          THREADNOTE_BENCHMARK_RELEASE_SHA: ${{ inputs.release_sha }}
+          THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '4'
+        run: >-
+          bun run bench:code-graph --
+          --profile production-large
+          --profile-files 3000
+          --profile-symbols 110000
+          --minimum-free-gib 20
+          --samples 1
+          --warmups 0
+          --quiet
+          --output artifacts/code-graph-production-reduced-n1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.release_sha || github.sha }}.json
+
       - id: upload-production-large
         uses: actions/upload-artifact@v7
         if: always()
@@ -146,6 +182,7 @@ jobs:
           path: |
             artifacts/code-graph-production-large-admission-*.json
             artifacts/code-graph-production-large-n1-*.json
+            artifacts/code-graph-production-reduced-n1-*.json
           if-no-files-found: error
           retention-days: 90
 
@@ -158,17 +195,16 @@ jobs:
           ADMISSION_AVAILABLE_BYTES: ${{ steps.classify_production_large_admission.outputs.available_bytes }}
           ADMISSION_CLASSIFICATION: ${{ steps.classify_production_large_admission.outputs.classification }}
           ADMISSION_MINIMUM_FREE_BYTES: ${{ steps.classify_production_large_admission.outputs.minimum_free_bytes }}
+          REDUCED_MINIMUM_FREE_BYTES: ${{ steps.classify_production_large_admission.outputs.reduced_minimum_free_bytes }}
           SOURCE_REF: ${{ inputs.release_ref || github.ref }}
           SOURCE_SHA: ${{ inputs.release_sha || github.sha }}
           MEASUREMENT_OUTCOME: ${{ steps.capture_production_large.outcome }}
-          STRICT_EVIDENCE: ${{ inputs.strict }}
+          REDUCED_MEASUREMENT_OUTCOME: ${{ steps.capture_hosted_reduced.outcome }}
         run: |
           if [[ "$ADMISSION_CLASSIFICATION" != "admitted" ]]; then
-            evidence_policy='benchmark not attempted; capacity classification retained and this independent evidence workflow fails'
-          elif [[ "$STRICT_EVIDENCE" == "true" ]]; then
-            evidence_policy='must complete for this evidence workflow to pass'
+            evidence_policy='full 73k shape not admitted; governed 3k-file/110k-symbol profile must complete for this evidence workflow to pass'
           else
-            evidence_policy='bounded observation retained without blocking release publication'
+            evidence_policy='full 73k-file profile must complete for this evidence workflow to pass'
           fi
           {
             echo '## Production-large release evidence'
@@ -178,31 +214,27 @@ jobs:
             echo "- Admission classification: \`${ADMISSION_CLASSIFICATION:-classification-unavailable}\`"
             echo "- Runner-temp available bytes: \`${ADMISSION_AVAILABLE_BYTES:-unknown}\`"
             echo "- Required free bytes: \`${ADMISSION_MINIMUM_FREE_BYTES:-unknown}\`"
-            echo "- Measurement outcome: \`${MEASUREMENT_OUTCOME}\`"
+            echo "- Governed reduced-profile free-byte floor: \`${REDUCED_MINIMUM_FREE_BYTES:-unknown}\`"
+            echo "- Full-shape measurement outcome: \`${MEASUREMENT_OUTCOME}\`"
+            echo "- Governed reduced-profile measurement outcome: \`${REDUCED_MEASUREMENT_OUTCOME}\`"
             echo "- Evidence policy: ${evidence_policy}"
             echo "- Retained artifact digest: \`${ARTIFACT_DIGEST:-not-produced}\`"
             echo "- Retained artifact: ${ARTIFACT_URL:-not-produced}"
-            echo '- Profile target: 73,000 repository files / 59,936 graph-eligible files, exact class and target-excluded-byte distributions, and six declared linked-worktree churn scenarios.'
-            echo '- Measured scope: aggregate materialization and one-file reindex telemetry; production-shape attainment records actual-versus-target counts.'
+            echo '- Full target: 73,000 repository files / 59,936 graph-eligible files, exact class and target-excluded-byte distributions, and six declared linked-worktree churn scenarios.'
+            echo '- Hosted fallback: the separately governed 3,000-file / 110,000-symbol production-shaped profile; it does not claim full-target attainment.'
+            echo '- Measured scope: aggregate materialization and one-file reindex telemetry; each artifact records actual-versus-target counts.'
             echo '- Workspace policy: package-manager exclusion never removes active source from graph eligibility.'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Enforce production-large admission
-        if: always() && steps.classify_production_large_admission.outputs.admitted != 'true'
+      - name: Enforce a completed production-shaped observation
+        if: always() && steps.capture_production_large.outcome != 'success' && steps.capture_hosted_reduced.outcome != 'success'
         env:
           ADMISSION_AVAILABLE_BYTES: ${{ steps.classify_production_large_admission.outputs.available_bytes }}
           ADMISSION_CLASSIFICATION: ${{ steps.classify_production_large_admission.outputs.classification }}
           ADMISSION_MINIMUM_FREE_BYTES: ${{ steps.classify_production_large_admission.outputs.minimum_free_bytes }}
-        shell: bash
-        run: |
-          echo "::error::Production-large evidence admission was ${ADMISSION_CLASSIFICATION:-classification-unavailable}: ${ADMISSION_AVAILABLE_BYTES:-unknown} bytes free, ${ADMISSION_MINIMUM_FREE_BYTES:-unknown} required."
-          exit 1
-
-      - name: Enforce strict evidence completion
-        if: inputs.strict && steps.classify_production_large_admission.outputs.admitted == 'true' && steps.capture_production_large.outcome != 'success'
-        env:
           MEASUREMENT_OUTCOME: ${{ steps.capture_production_large.outcome }}
+          REDUCED_MEASUREMENT_OUTCOME: ${{ steps.capture_hosted_reduced.outcome }}
         shell: bash
         run: |
-          echo "::error::Production-large evidence ended with outcome ${MEASUREMENT_OUTCOME}."
+          echo "::error::Production-shaped evidence has no completed observation: full admission ${ADMISSION_CLASSIFICATION:-classification-unavailable} (${ADMISSION_AVAILABLE_BYTES:-unknown} bytes free, ${ADMISSION_MINIMUM_FREE_BYTES:-unknown} required), full capture ${MEASUREMENT_OUTCOME:-not-attempted}, governed reduced capture ${REDUCED_MEASUREMENT_OUTCOME:-not-attempted}."
           exit 1

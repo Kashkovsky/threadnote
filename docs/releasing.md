@@ -343,8 +343,12 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
 
 4. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
    graph correctness and performance. The tag starts one separate exact-tag production-large capacity classification
-   and, only on an admitted runner, one `code-graph-production-large-n1` observation automatically. Do not dispatch a
-   duplicate hosted run for that tag; if the runner is not admitted, use a separately governed capable environment.
+   and, on an admitted runner, one `code-graph-production-large-n1` observation automatically. When the hosted runner
+   lacks the governed 120 GiB floor but has at least 20 GiB, it must instead complete the separately governed
+   3,000-file / 110,000-symbol production-shaped observation. Its retained artifact identifies the measured profile;
+   a passing fallback does not claim full 73,000-file attainment. Use a separately governed capable environment when
+   full-shape evidence is needed. Do not dispatch a duplicate hosted run for a tag; the event SHA must match the
+   exact tagged checkout for governed release evidence.
 5. Confirm immutable releases are enabled, the Apple signing secrets below are configured, the protected-main ruleset
    still requires signed linear reviewed merges, and an active `v*` tag ruleset forbids tag updates and deletion. The
    workflow can compare the pushed tag, exact checkout, protected-main ancestry, and remote tag peel; repository tag

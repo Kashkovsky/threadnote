@@ -1054,9 +1054,12 @@ repeat the public repository cold build.
 
 The production-large workflow first pins all benchmark temporary homes to the runner-temp filesystem and writes an
 exact-source capacity-classification artifact. The unchanged governed 120 GiB floor is checked before fixture
-construction. An ineligible runner does not attempt the benchmark; its explicit `not-admitted-insufficient-capacity`
-classification is retained and the independent evidence workflow fails without blocking release publication. An
-admitted run additionally starts a 25 ms external sampler before it constructs the fixture, then
+construction. A runner below that floor retains `not-admitted-insufficient-capacity` for the full shape and, if it has
+at least 20 GiB free, must measure the already governed 3,000-file / 110,000-symbol production-shaped profile. The
+fallback artifact records its reduced counts and cannot stand in for the 73,000-file target. The independent evidence
+workflow passes only when its selected profile completes; a runner below both floors or a failed fallback leaves it
+red without blocking release publication. An admitted full-shape run additionally starts a 25 ms external sampler
+before it constructs the fixture, then
 uses distinct, non-overlapping bootstrap, cold-index, incremental-index, and same-overlay reference samplers. A prior
 sampler is stopped before the next measured sampler starts, so CPU, RSS, I/O, and temporary-file totals cannot leak
 between measurements. Each sampler must publish a parseable readiness marker before the parent enters the measured
