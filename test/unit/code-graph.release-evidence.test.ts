@@ -8,6 +8,7 @@ import {
   PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS,
   assertExternalPerformanceEvidence,
   assertExternalRepositoryEvidence,
+  assertGovernedReducedProductionReleaseEvidence,
   assertProductionReleaseEvidence,
   createCodeGraphProductionRatchet,
   enforceCodeGraphBenchmarkBudget,
@@ -743,6 +744,87 @@ describe('code graph release evidence', () => {
         },
       }),
     ).toThrow(/reviewed default production-large profile/);
+  });
+
+  it('retains exact-tag evidence for the governed hosted reduced profile without treating it as the full profile', () => {
+    const reducedProfile = productionProfile(
+      parseCodeGraphBenchmarkArguments([
+        '--profile',
+        'production-large',
+        '--profile-files',
+        '3000',
+        '--profile-symbols',
+        '110000',
+        '--minimum-free-gib',
+        '20',
+      ]),
+    );
+    const governedMetadata = {
+      ...productionProfileArtifactMetadata(reducedProfile),
+      benchmarkGoverned: true,
+      benchmarkMinimumFreeBytes: 20 * 1_073_741_824,
+      benchmarkPrimaryAvailableBytesAtStart: 30 * 1_073_741_824,
+      benchmarkReferenceAvailableBytesAtStart: 30 * 1_073_741_824,
+      coldMaterializationStorageMode: 'direct-persistent',
+      oneFileReindexMaterializationMode: 'incremental-overlay',
+      runtimePlatform: 'linux',
+      sameOverlayReferenceMaterializationMode: 'full',
+      sqliteVersion: '3.49.1',
+      vectorEnabled: false,
+    } as const;
+    const artifact = benchmarkArtifact(
+      requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
+      governedMetadata,
+      'code-graph-production-large-v2',
+    );
+
+    expect(() => assertGovernedReducedProductionReleaseEvidence(artifact)).not.toThrow();
+    expect(() => assertProductionReleaseEvidence(artifact)).toThrow(/reviewed default production-large profile/);
+    expect(() =>
+      assertGovernedReducedProductionReleaseEvidence({
+        ...artifact,
+        metadata: {...artifact.metadata, releaseEvidenceSha: 'f'.repeat(40)},
+      }),
+    ).toThrow(/clean exact release source provenance/);
+    expect(() =>
+      assertGovernedReducedProductionReleaseEvidence({
+        ...artifact,
+        metadata: {...artifact.metadata, benchmarkMinimumFreeBytes: 19 * 1_073_741_824},
+      }),
+    ).toThrow(/governed hosted reduced production profile/);
+    expect(() =>
+      assertGovernedReducedProductionReleaseEvidence({
+        ...artifact,
+        measurements: artifact.measurements.map(measurement =>
+          measurement.name === 'production-shape-symbol-target-attainment'
+            ? benchmarkMeasurement(measurement.name, measurement.unit, [89])
+            : measurement,
+        ),
+      }),
+    ).toThrow(/production-shape-symbol-target-attainment expected at least 90% target attainment/);
+
+    fc.assert(
+      fc.property(
+        fc.integer({min: 2_800, max: 3_200}),
+        fc.integer({min: 105_000, max: 115_000}),
+        (sourceFiles, targetSymbols) => {
+          if (sourceFiles === 3_000 && targetSymbols === 110_000) return;
+          const profile = productionProfile({
+            profile: 'production-large',
+            profileFiles: sourceFiles,
+            profileSymbols: targetSymbols,
+          });
+          const candidate = {
+            ...artifact,
+            metadata: {...artifact.metadata, ...productionProfileArtifactMetadata(profile)},
+          };
+          expect(() => assertGovernedReducedProductionReleaseEvidence(candidate)).toThrow(
+            /governed hosted reduced production profile/,
+          );
+        },
+      ),
+      {numRuns: 40},
+    );
   });
 
   it('retains and requires split replay, storage planning, and relationship deduplication counters', () => {
@@ -3351,7 +3433,6 @@ describe('code graph release evidence', () => {
     expect(releaseGate.needs).toBeUndefined();
     expect(releaseGate.uses).toBe('./.github/workflows/production-large-evidence.yml');
     expect(releaseGate.with).toMatchObject({
-      strict: false,
       release_ref: '${{ github.ref }}',
       release_sha: '${{ github.sha }}',
     });
@@ -3378,12 +3459,16 @@ describe('code graph release evidence', () => {
     expect(upload?.with).toMatchObject({'if-no-files-found': 'error', 'retention-days': 90});
     expect(upload?.with?.path).toContain('code-graph-production-large-admission-*.json');
     expect(upload?.with?.path).toContain('code-graph-production-large-n1-*.json');
+    expect(upload?.with?.path).toContain('code-graph-production-reduced-n1-*.json');
     const admission = production.steps?.find(step => step.id === 'classify_production_large_admission');
     expect(admission?.run).toContain('not-admitted-insufficient-capacity');
     expect(admission?.run).toContain('available_bytes >= required_bytes');
-    const admissionEnforcement = production.steps?.find(step => step.name === 'Enforce production-large admission');
-    expect(admissionEnforcement?.if).toContain("outputs.admitted != 'true'");
-    expect(admissionEnforcement?.run).toContain('exit 1');
+    const enforcement = production.steps?.find(
+      step => step.name === 'Enforce a completed production-shaped observation',
+    );
+    expect(enforcement?.if).toContain("steps.capture_production_large.outcome != 'success'");
+    expect(enforcement?.if).toContain("steps.capture_hosted_reduced.outcome != 'success'");
+    expect(enforcement?.run).toContain('exit 1');
     const capture = production.steps?.find(step => step.name?.includes('Capture one production-large'));
     expect(production.steps?.indexOf(admission!)).toBeLessThan(production.steps?.indexOf(capture!) ?? 0);
     expect(capture?.if).toContain("steps.classify_production_large_admission.outputs.admitted == 'true'");
@@ -3392,6 +3477,11 @@ describe('code graph release evidence', () => {
       THREADNOTE_BENCHMARK_RELEASE_REF: '${{ inputs.release_ref }}',
       THREADNOTE_BENCHMARK_RELEASE_SHA: '${{ inputs.release_sha }}',
     });
+    const fallback = production.steps?.find(step => step.id === 'capture_hosted_reduced');
+    expect(fallback?.if).toContain("outputs.admitted != 'true'");
+    expect(fallback?.run).toContain('--profile-files 3000');
+    expect(fallback?.run).toContain('--profile-symbols 110000');
+    expect(fallback?.run).toContain('--minimum-free-gib 20');
 
     for (const jobName of [
       'code-graph',

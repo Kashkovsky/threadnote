@@ -375,12 +375,16 @@ describe('platform benchmark workflow', () => {
     const caller = workflow.jobs['code-graph-production-large'];
     const job = evidence.jobs['code-graph-production-large'];
     const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
-    const capture = job.steps?.find(step => step.run?.includes('--profile production-large'));
+    const capture = job.steps?.find(step => step.id === 'capture_production_large');
+    const fallback = job.steps?.find(step => step.id === 'capture_hosted_reduced');
+    const checkout = job.steps?.find(step => step.uses === 'actions/checkout@v7');
+    const verifyReleaseSource = job.steps?.find(
+      step => step.name === 'Verify the release tag resolves to the measured commit',
+    );
     const admission = job.steps?.find(step => step.id === 'classify_production_large_admission');
     const upload = job.steps?.find(step => step.uses?.startsWith('actions/upload-artifact@'));
     const summary = job.steps?.find(step => step.run?.includes('Production-large release evidence'));
-    const admissionEnforcement = job.steps?.find(step => step.name === 'Enforce production-large admission');
-    const enforcement = job.steps?.find(step => step.name === 'Enforce strict evidence completion');
+    const enforcement = job.steps?.find(step => step.name === 'Enforce a completed production-shaped observation');
     const productionInput = workflow.on.workflow_dispatch?.inputs?.include_production_large as
       {readonly description?: string} | undefined;
 
@@ -391,9 +395,12 @@ describe('platform benchmark workflow', () => {
     expect(caller.if).toContain("github.event_name == 'schedule'");
     expect(caller.if).toContain('inputs.include_production_large');
     expect(caller.uses).toBe('./.github/workflows/production-large-evidence.yml');
-    expect(evidence.on.workflow_call?.inputs?.strict).toMatchObject({default: true, type: 'boolean'});
+    expect(evidence.on.workflow_call?.inputs?.strict).toBeUndefined();
     expect(job['runs-on']).toBe('ubuntu-24.04');
     expect(job['timeout-minutes']).toBe(30);
+    expect(checkout?.with?.ref).toBe('${{ inputs.release_ref || github.sha }}');
+    expect(verifyReleaseSource?.if).toBe("inputs.release_ref != ''");
+    expect(verifyReleaseSource?.run).toContain('test "$resolved" = "$RELEASE_SHA"');
     expect(command).toContain('--profile production-large');
     expect(command).toContain('--minimum-free-gib 120');
     expect(command).toContain('--samples 1');
@@ -405,8 +412,11 @@ describe('platform benchmark workflow', () => {
     expect(admission?.run).toContain('threadnote-production-large-admission');
     expect(admission?.run).toContain('not-admitted-insufficient-capacity');
     expect(admission?.run).toContain('available_bytes >= required_bytes');
+    expect(admission?.run).toContain('available_bytes >= reduced_required_bytes');
+    expect(admission?.run).toContain('governed-reduced-production');
     expect(admission?.env).toMatchObject({
       MINIMUM_FREE_GIB: 120,
+      REDUCED_MINIMUM_FREE_GIB: 20,
       SOURCE_REF: '${{ inputs.release_ref || github.ref }}',
       SOURCE_SHA: '${{ inputs.release_sha || github.sha }}',
     });
@@ -424,24 +434,28 @@ describe('platform benchmark workflow', () => {
     expect(captureTimeout).toBe(20);
     expect(capture?.['continue-on-error']).toBe(true);
     expect(job['timeout-minutes']! - (captureTimeout ?? 0)).toBeGreaterThanOrEqual(10);
+    expect(fallback?.if).toContain("outputs.admitted != 'true'");
+    expect(fallback?.if).toContain("outputs.reduced_admitted == 'true'");
+    expect(fallback?.run).toContain('--profile-files 3000');
+    expect(fallback?.run).toContain('--profile-symbols 110000');
+    expect(fallback?.run).toContain('--minimum-free-gib 20');
+    expect(fallback?.run).toContain('code-graph-production-reduced-n1-');
+    expect(fallback?.['timeout-minutes']).toBe(20);
+    expect(fallback?.['continue-on-error']).toBe(true);
     expect(upload?.uses).toBe('actions/upload-artifact@v7');
     expect(upload?.if).toBe('always()');
     expect(upload?.['timeout-minutes']).toBeLessThanOrEqual(5);
     expect(upload?.with?.path).toContain('artifacts/code-graph-production-large-admission-*.json');
     expect(upload?.with?.path).toContain('artifacts/code-graph-production-large-n1-*.json');
+    expect(upload?.with?.path).toContain('artifacts/code-graph-production-reduced-n1-*.json');
     expect(upload?.with?.['if-no-files-found']).toBe('error');
     expect(upload?.with?.['retention-days']).toBe(90);
-    expect(enforcement?.if).toContain('inputs.strict');
-    expect(enforcement?.if).toContain("steps.classify_production_large_admission.outputs.admitted == 'true'");
+    expect(enforcement?.if).toContain('always()');
     expect(enforcement?.if).toContain("steps.capture_production_large.outcome != 'success'");
+    expect(enforcement?.if).toContain("steps.capture_hosted_reduced.outcome != 'success'");
     expect(enforcement?.run).toContain('exit 1');
     expect(job.steps?.indexOf(enforcement!)).toBeGreaterThan(job.steps?.indexOf(upload!) ?? -1);
     expect(job.steps?.indexOf(enforcement!)).toBeGreaterThan(job.steps?.indexOf(summary!) ?? -1);
-    expect(admissionEnforcement?.if).toContain('always()');
-    expect(admissionEnforcement?.if).toContain("outputs.admitted != 'true'");
-    expect(admissionEnforcement?.run).toContain('exit 1');
-    expect(job.steps?.indexOf(admissionEnforcement!)).toBeGreaterThan(job.steps?.indexOf(upload!) ?? -1);
-    expect(job.steps?.indexOf(admissionEnforcement!)).toBeGreaterThan(job.steps?.indexOf(summary!) ?? -1);
     expect(summary?.run).toContain('six declared linked-worktree churn scenarios');
     expect(summary?.run).toContain('actual-versus-target counts');
     expect(summary?.run).toContain('package-manager exclusion never removes active source');
@@ -468,7 +482,6 @@ describe('platform benchmark workflow', () => {
     expect(releaseEvidence.on.push?.tags).toEqual(['v4.*']);
     expect(evidence.uses).toBe('./.github/workflows/production-large-evidence.yml');
     expect(evidence.with).toMatchObject({
-      strict: false,
       release_ref: '${{ github.ref }}',
       release_sha: '${{ github.sha }}',
     });
@@ -494,7 +507,7 @@ describe('platform benchmark workflow', () => {
     expect(releaseCommand).toContain('--json isImmutable');
   });
 
-  it('reports bounded evidence outcome and strictness without coupling it to publication', () => {
+  it('reports bounded evidence outcomes without coupling them to publication', () => {
     const evidence = load(readFileSync('.github/workflows/production-large-evidence.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
@@ -504,12 +517,12 @@ describe('platform benchmark workflow', () => {
     expect(summary?.env).toMatchObject({
       ADMISSION_CLASSIFICATION: '${{ steps.classify_production_large_admission.outputs.classification }}',
       MEASUREMENT_OUTCOME: '${{ steps.capture_production_large.outcome }}',
-      STRICT_EVIDENCE: '${{ inputs.strict }}',
+      REDUCED_MEASUREMENT_OUTCOME: '${{ steps.capture_hosted_reduced.outcome }}',
     });
     expect(summary?.run).toContain('must complete for this evidence workflow to pass');
-    expect(summary?.run).toContain('bounded observation retained without blocking release publication');
-    expect(summary?.run).toContain('benchmark not attempted; capacity classification retained');
+    expect(summary?.run).toContain('governed 3k-file/110k-symbol profile must complete');
     expect(summary?.run).toContain('Admission classification');
+    expect(summary?.run).toContain('does not claim full-target attainment');
   });
 
   it('runs the large-monorepo heavy-tail regression only by schedule or explicit opt-in', () => {
