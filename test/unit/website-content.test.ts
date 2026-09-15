@@ -1127,6 +1127,9 @@ The body remains ordinary **Markdown**.
     expect(content).toContain('threadnote enrich-memories --apply');
     expect(content).toContain('threadnote enrich-memories --apply --install-local-ai');
     expect(content).toContain('new remember and MCP store writes try enrichment automatically');
+    expect(content).toContain('Weak-recall assistance');
+    expect(content).toContain('High-confidence recall never asks the generation model');
+    expect(content).toContain('Generation is not used as an embedding model or reranker');
     expect(content).not.toContain('gemma-4-e4b-it-q4');
   });
 

@@ -10,9 +10,11 @@ import * as FC from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 const inference = vi.hoisted(() => ({
+  generate: vi.fn(),
   rerank: vi.fn(),
 }));
 vi.mock('../../src/models/inference.js', () => ({
+  generateWithSelectedLocalModel: inference.generate,
   rerankWithSelectedLocalModel: inference.rerank,
 }));
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -44,6 +46,8 @@ import {buildRecallSections} from '../../src/utils.js';
 describe('recall runtime orchestration', () => {
   const homes: string[] = [];
   beforeEach(() => {
+    inference.generate.mockReset();
+    inference.generate.mockReturnValue(Effect.void);
     inference.rerank.mockReset();
     inference.rerank.mockReturnValue(Effect.succeed([0.8]));
   });
