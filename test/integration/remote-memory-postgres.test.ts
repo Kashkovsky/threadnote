@@ -742,6 +742,75 @@ postgresDescribe('remote memory PostgreSQL service', () => {
     });
   });
 
+  it('commits a same-identity explicit replacement URI and rejects other targets before reservation', async () => {
+    const created = await repository.remember(
+      principalA,
+      rememberFixture({operationId: 'replace-uri-create', text: 'Initial.', topic: 'replace-uri'}),
+      'request-replace-uri-create',
+    );
+    const historicalHash = await withTenant(
+      fixture.migratorSql,
+      TENANT_A,
+      transaction => transaction<{request_hash: string}[]>`
+        SELECT request_hash FROM remote_memory.idempotency_records
+        WHERE tenant_id = ${TENANT_A} AND principal_id = ${PRINCIPAL_A}
+          AND operation_id = 'replace-uri-create'
+      `,
+    );
+    expect(historicalHash).toEqual([
+      {request_hash: '7af5efc1439a49d31529168287d154231ca066b210fe0b218e9414baa189d404'},
+    ]);
+    const updatedInput = {
+      ...rememberFixture({
+        baseRevision: created.revision!,
+        operationId: 'replace-uri-update',
+        text: 'Updated.',
+        topic: 'replace-uri',
+      }),
+      replaceUri: created.uri!,
+    };
+    const updated = await repository.remember(principalA, updatedInput, 'request-replace-uri-update');
+    expect(updated).toMatchObject({uri: created.uri});
+    expect(updated.revision).not.toBe(created.revision);
+    await expect(
+      repository.remember(
+        principalA,
+        {
+          ...updatedInput,
+          operationId: 'replace-uri-other-share',
+          replaceUri: formatRemoteMemoryUri({
+            kind: 'durable',
+            project: PROJECT,
+            shareId: SHARE_B,
+            topic: 'replace-uri',
+          }),
+        },
+        'request-replace-uri-other-share',
+      ),
+    ).rejects.toMatchObject({code: 'forbidden', name: 'RemoteMemoryError'});
+    await expect(
+      repository.remember(
+        principalA,
+        {
+          ...updatedInput,
+          operationId: 'replace-uri-other-topic',
+          replaceUri: formatRemoteMemoryUri({kind: 'durable', project: PROJECT, shareId: SHARE_A, topic: 'other'}),
+        },
+        'request-replace-uri-other-topic',
+      ),
+    ).rejects.toMatchObject({code: 'invalid_request', name: 'RemoteMemoryError'});
+    await expect(
+      repository.remember(
+        principalA,
+        {...updatedInput, operationId: 'replace-uri-no-base', baseRevision: undefined},
+        'request-replace-uri-no-base',
+      ),
+    ).rejects.toMatchObject({code: 'invalid_request', name: 'RemoteMemoryError'});
+    const read = await repository.read(principalA, {uri: created.uri!, version: 1}, 'request-replace-uri-read');
+    expect(read.receipt.revision).toBe(updated.revision);
+    expect(read.content).toContain('Updated.');
+  });
+
   it('cancels a blocked write without a late commit and permanently binds its operation id', async () => {
     const input = rememberFixture({
       operationId: 'cancelled-blocked-write',

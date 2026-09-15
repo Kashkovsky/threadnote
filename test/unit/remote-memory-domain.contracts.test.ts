@@ -1,6 +1,7 @@
 import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'fast-check';
+import {formatRemoteMemoryUri} from '../../src/memory_domain/address.js';
 import {
   parseRemoteReadInputV1,
   parseRemoteRecallInputV1,
@@ -70,6 +71,55 @@ describe('remote memory versioned schemas', () => {
       }),
     ).toThrow('only supported for handoffs');
   });
+
+  it('accepts an explicit CAS replacement URI only with the matching identity and base revision', () => {
+    const input = {
+      baseRevision: 'revision-1',
+      kind: 'durable' as const,
+      operationId: 'operation-2',
+      project: 'threadnote',
+      replaceUri: receipt.uri,
+      text: 'Updated decision.',
+      topic: 'decision',
+      version: 1 as const,
+    };
+    expect(parseRemoteRememberInputV1(input)).toEqual(input);
+    expect(() => parseRemoteRememberInputV1({...input, baseRevision: undefined})).toThrow('baseRevision');
+    expect(() => parseRemoteRememberInputV1({...input, topic: 'other'})).toThrow('replaceUri');
+    expect(() => parseRemoteRememberInputV1({...input, kind: 'handoff'})).toThrow('replaceUri');
+    expect(() =>
+      parseRemoteRememberInputV1({
+        ...input,
+        replaceUri: 'threadnote://share/share-1/memories/durable/threadnote/decision.md#anchor',
+      }),
+    ).toThrow();
+  });
+
+  fcProp(
+    it,
+    'an explicit remote replacement URI identifies exactly one generated memory topic',
+    {
+      kind: FC.constantFrom('durable' as const, 'handoff' as const),
+      project: FC.stringMatching(/^[a-z][a-z0-9]{0,8}$/u),
+      topic: FC.stringMatching(/^[a-z][a-z0-9]{0,8}$/u),
+    },
+    ({kind, project, topic}) => {
+      const replaceUri = formatRemoteMemoryUri({kind, project, shareId: 'share-1', topic});
+      const input = {
+        baseRevision: 'revision-1',
+        kind,
+        operationId: 'operation-2',
+        project,
+        replaceUri,
+        text: 'Updated.',
+        topic,
+        version: 1 as const,
+      };
+      expect(parseRemoteRememberInputV1(input).replaceUri).toBe(replaceUri);
+      expect(() => parseRemoteRememberInputV1({...input, topic: `${topic}x`})).toThrow();
+    },
+    {fastCheck: {numRuns: 40}},
+  );
 
   it.each([
     {callerCwd: '/private/vm', project: 'threadnote', query: 'x', version: 1},

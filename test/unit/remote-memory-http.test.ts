@@ -357,7 +357,7 @@ describe('remote memory HTTP transport', () => {
     });
     expect(tools.find(tool => tool.name === 'remember_context')?.inputSchema).toMatchObject({
       additionalProperties: false,
-      properties: {lifecycle: {additionalProperties: false}},
+      properties: {lifecycle: {additionalProperties: false}, replaceUri: {type: 'string'}},
     });
     const uri = 'threadnote://share/share-1/memories/durable/threadnote/fixture.md';
     const valid = await json(
@@ -388,6 +388,35 @@ describe('remote memory HTTP transport', () => {
       expect(JSON.stringify(response)).not.toContain('private-value');
     }
     expect(test.calls.filter(call => call === 'rate:read_context')).toHaveLength(readsBeforeInvalid);
+  });
+
+  it('routes only an authorized matching explicit CAS replacement URI to storage', async () => {
+    const test = fixture({trackRateLimits: true});
+    const input = {
+      baseRevision: 'revision-1',
+      kind: 'durable',
+      operationId: 'operation-30',
+      project: 'threadnote',
+      replaceUri: 'threadnote://share/share-1/memories/durable/threadnote/remote.md',
+      text: 'Updated fixture.',
+      topic: 'remote',
+      version: 1,
+    };
+    const call = (id: number, arguments_: Record<string, unknown>) =>
+      test.handler(mcpRequest({id, method: 'tools/call', params: {arguments: arguments_, name: 'remember_context'}}));
+    const valid = await json(await call(30, input));
+    expect(valid).toMatchObject({id: 30, result: {structuredContent: {revision: 'revision-2'}}});
+    expect(test.calls).toContain('remember:request-123:operation-30');
+    const writes = test.calls.filter(entry => entry.startsWith('remember:')).length;
+    for (const [id, overrides, code] of [
+      [31, {replaceUri: 'threadnote://share/share-2/memories/durable/threadnote/remote.md'}, 'forbidden'],
+      [32, {replaceUri: 'threadnote://share/share-1/memories/durable/threadnote/other.md'}, 'invalid_request'],
+      [33, {baseRevision: undefined}, 'invalid_request'],
+    ] as const) {
+      const result = await json(await call(id, {...input, ...overrides, operationId: `operation-${id}`}));
+      expect(result).toMatchObject({id, result: {isError: true, structuredContent: {code}}});
+    }
+    expect(test.calls.filter(entry => entry.startsWith('remember:'))).toHaveLength(writes);
   });
 
   it('preserves minute-precision UTC expiry validation at the MCP boundary', async () => {

@@ -1,3 +1,6 @@
+import {Schema} from 'effect';
+import {InvalidRemoteMemoryAddress, parseRemoteShareAddress} from '../memory_domain/address.js';
+import type {RemoteRememberInputV1} from '../memory_domain/contracts.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import type {OAuthPrincipalClaims} from './oauth.js';
 import {remoteMemoryError} from './errors.js';
@@ -95,6 +98,29 @@ export function assertUriBelongsToAuthorizedShare(principal: AuthorizedRemotePri
   const resource = parseResourceId(uri);
   if (resource.namespace !== 'share' || resource.segments[0] !== principal.shareId) {
     throw remoteMemoryError('forbidden', 'The resource is outside the authorized memory share.');
+  }
+}
+
+export function assertRemoteRememberReplacementTarget(
+  principal: AuthorizedRemotePrincipal,
+  input: RemoteRememberInputV1,
+): void {
+  if (input.replaceUri === undefined) return;
+  if (input.baseRevision === undefined) {
+    throw remoteMemoryError('invalid_request', 'An explicit replacement URI requires a base revision.');
+  }
+  let address;
+  try {
+    address = parseRemoteShareAddress(input.replaceUri);
+  } catch (cause) {
+    if (!Schema.is(InvalidRemoteMemoryAddress)(cause)) throw cause;
+    throw remoteMemoryError('invalid_request', 'The replacement memory URI is invalid.');
+  }
+  if (address.shareId !== principal.shareId) {
+    throw remoteMemoryError('forbidden', 'The replacement memory is outside the authorized share.');
+  }
+  if (address.kind !== input.kind || address.project !== input.project || address.topic !== input.topic) {
+    throw remoteMemoryError('invalid_request', 'The replacement URI must identify the requested memory.');
   }
 }
 
