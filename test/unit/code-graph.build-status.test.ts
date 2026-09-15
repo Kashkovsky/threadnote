@@ -16,6 +16,7 @@ import {
   selectCodeGraphBuildStatuses,
 } from '../../src/code_graph/build_status.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
+import {writerSessionOptions} from '../../src/code_graph/indexer_build.js';
 import {runCodeGraphStatus} from '../../src/code_graph/commands.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
@@ -238,6 +239,36 @@ describe('code graph cross-process build status', () => {
     expect(result.global.every(status => status.managerContext?.worktreePath === `${home}/repository`)).toBe(true);
     expect(result.global.every(status => status.managerContext?.branch === 'feature/manager-labels')).toBe(true);
   });
+
+  effectIt.effect('resumes the builder status when it acquires a contended writer lock', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectory({prefix: 'threadnote-graph-writer-acquired-'});
+      homes.push(home);
+      const identity = fixtureIdentity(home);
+      const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+      const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+      const activeProgress = {completed: 8, phase: 'materializing', reused: 0, total: 10, unit: 'files'} as const;
+      yield* reporter.progress(activeProgress);
+      const writer = writerSessionOptions(layout, {onProgress: progress => reporter.progress(progress)}, () =>
+        reporter.progress(activeProgress),
+      );
+
+      yield* writer.onWriterContention();
+      expect((yield* readCodeGraphBuildStatuses(layout))[0]).toMatchObject({
+        phase: 'waiting',
+        state: 'queued',
+        subphase: 'database-writer',
+      });
+      yield* writer.onWriterAcquired();
+      expect((yield* readCodeGraphBuildStatuses(layout))[0]).toMatchObject({
+        counters: {completed: 8, total: 10},
+        phase: 'materializing',
+        state: 'running',
+      });
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   it('persists privacy-safe superseded-snapshot reclamation progress', async () => {
     const home = await mkdtemp('threadnote-graph-reclaim-status-');
@@ -834,6 +865,7 @@ describe('code graph cross-process build status', () => {
         const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
         const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
         yield* reporter.progress({completed: 1, phase: 'materializing', reused: 0, total: 10, unit: 'files'});
+        yield* reporter.markWorktreeLockHeld(true);
         const directory = path.join(layout.repositoryRoot, 'build-status', identity.worktreeId);
         const statusFile = (yield* fs.readDirectory(directory)).find(name => name.endsWith('.json'))!;
         const statusPath = path.join(directory, statusFile);
@@ -863,6 +895,91 @@ describe('code graph cross-process build status', () => {
     expect(owner.coordination).toEqual({lockVerified: true, progressSilent: true, role: 'owner'});
     expect(owner.observation).toMatchObject({liveness: 'active'});
   });
+
+  effectIt.effect('keeps same-process pre-lock contenders separate from their builder', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* Effect.acquireRelease(
+            fs.makeTempDirectory({prefix: 'threadnote-graph-same-process-waiter-'}),
+            directory => fs.remove(directory, {force: true, recursive: true}).pipe(Effect.ignore),
+          );
+          const identity = fixtureIdentity(home);
+          const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const builder = yield* makeCodeGraphBuildReporter(identity, layout);
+          const contenders = yield* Effect.forEach(
+            ['home-builder-cap', 'repository-lock', 'request-lock'] as const,
+            reason => Effect.map(makeCodeGraphBuildReporter(identity, layout), reporter => ({reason, reporter})),
+          );
+          const selections = yield* withExclusiveFileLock(
+            fs,
+            layout.lockPath,
+            {
+              onAcquired: () => builder.markWorktreeLockHeld(true),
+              retryIntervalMilliseconds: 5,
+              staleAfterMilliseconds: 1_000,
+              waitTimeoutMilliseconds: 1_000,
+            },
+            Effect.gen(function* () {
+              yield* builder.progress({completed: 1, phase: 'materializing', reused: 0, total: 2, unit: 'files'});
+              yield* Effect.forEach(contenders, contender =>
+                contender.reporter.progress({phase: 'waiting', reason: contender.reason}),
+              );
+              const running = selectCodeGraphBuildStatuses(yield* readCodeGraphBuildStatuses(layout));
+              yield* builder.progress({phase: 'waiting', reason: 'database-writer'});
+              const writerQueued = selectCodeGraphBuildStatuses(yield* readCodeGraphBuildStatuses(layout));
+              return {running, writerQueued};
+            }),
+          );
+          expect(selections.running.builds).toHaveLength(1);
+          expect(selections.running.builds[0]?.state).toBe('running');
+          expect(selections.running.builds[0]?.coordination?.role).toBe('owner');
+          expect(selections.running.waiters).toHaveLength(3);
+          expect(selections.running.waiters.every(status => status.coordination?.role === 'waiter')).toBe(true);
+          expect(selections.writerQueued.builds[0]?.state).toBe('queued');
+          expect(selections.writerQueued.builds[0]?.coordination?.role).toBe('owner');
+          expect(selections.writerQueued.waiters).toHaveLength(3);
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    ),
+  );
+
+  effectIt.effect('does not assign a newly registered same-process contender the held worktree lock', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* Effect.acquireRelease(
+            fs.makeTempDirectory({prefix: 'threadnote-graph-registered-contender-'}),
+            directory => fs.remove(directory, {force: true, recursive: true}).pipe(Effect.ignore),
+          );
+          const identity = fixtureIdentity(home);
+          const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const builder = yield* makeCodeGraphBuildReporter(identity, layout);
+          const selected = yield* withExclusiveFileLock(
+            fs,
+            layout.lockPath,
+            {
+              onAcquired: () => builder.markWorktreeLockHeld(true),
+              retryIntervalMilliseconds: 5,
+              staleAfterMilliseconds: 1_000,
+              waitTimeoutMilliseconds: 1_000,
+            },
+            Effect.gen(function* () {
+              yield* builder.progress({completed: 1, phase: 'materializing', reused: 0, total: 2, unit: 'files'});
+              yield* Effect.sleep(2);
+              yield* makeCodeGraphBuildReporter(identity, layout);
+              return selectCodeGraphBuildStatuses(yield* readCodeGraphBuildStatuses(layout));
+            }),
+          );
+          expect(selected.builds[0]?.buildId).toBe(builder.ownerIdentity.buildId);
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    ),
+  );
 
   effectIt.effect('identifies the writer and repository lock owners while indexing waits', () =>
     TestClock.withLive(
@@ -909,11 +1026,16 @@ describe('code graph cross-process build status', () => {
               lockOptions,
               Effect.gen(function* () {
                 yield* reporter.progress({phase: 'waiting', reason: 'database-writer'});
+                const ownerHuman = (yield* captureConsole(runCodeGraphStatus(config, {cwd: repository}))).output;
+                const ownerJson = (yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true})))
+                  .output;
                 const waiter = yield* makeCodeGraphBuildReporter(identity, layout);
                 yield* waiter.progress({phase: 'waiting', reason: 'repository-lock'});
                 return {
                   human: (yield* captureConsole(runCodeGraphStatus(config, {cwd: repository}))).output,
                   json: (yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}))).output,
+                  ownerHuman,
+                  ownerJson,
                 };
               }),
             ),
@@ -928,6 +1050,12 @@ describe('code graph cross-process build status', () => {
           expect(status.locks?.repository).toMatchObject({state: 'active', owner: {processId: process.pid}});
           expect(outputs.human).toContain(`Database writer lock: PID ${process.pid}`);
           expect(outputs.human).toContain(`Repository lock: PID ${process.pid}`);
+          expect(outputs.ownerHuman).toContain('Build: queued · active · waiting/database-writer');
+          expect(outputs.ownerHuman).not.toContain('held by build owner');
+          expect(JSON.parse(outputs.ownerJson).locks.databaseWriter).toEqual({
+            owner: {processId: process.pid},
+            state: 'active',
+          });
         }).pipe(provideTestLayer(ApplicationLayer)),
       ),
     ),

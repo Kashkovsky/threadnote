@@ -4,6 +4,11 @@ import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_loc
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import {parseCodeGraphBuildStatus} from './build_status_codec.js';
+import {
+  annotateBuildCoordination,
+  groupBuildStatusesByWorktree,
+  sameProcessOwner,
+} from './build_status_coordination.js';
 import {codeGraphProgressTimings} from './build_status_timings.js';
 import {
   CODE_GRAPH_BUILD_HASH_ID as HASH_ID,
@@ -173,6 +178,7 @@ export interface CodeGraphBuildStatus {
   readonly state: CodeGraphBuildState;
   readonly subphase?: string;
   readonly timings?: CodeGraphBuildTimings;
+  readonly worktreeLockHeld?: boolean;
   readonly timestamps: {
     readonly completedAt?: string;
     readonly heartbeatAt: string;
@@ -216,6 +222,7 @@ export interface CodeGraphBuildReporter {
   /** Exact privacy-safe owner instance persisted with resumable build state. */
   readonly ownerIdentity: CodeGraphBuildOwnerIdentity;
   readonly progress: (progress: CodeGraphProgress) => Effect.Effect<void, never>;
+  readonly markWorktreeLockHeld: (held: boolean) => Effect.Effect<void, never>;
 }
 
 export type CodeGraphBuildOwnerStatusCorroboration = 'absent' | 'matches' | 'mismatch';
@@ -312,6 +319,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
       schemaVersion: CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
       state: 'running',
       subphase: 'registration',
+      worktreeLockHeld: false,
       timestamps: {
         heartbeatAt: startedAt,
         lastProgressAt: startedAt,
@@ -499,6 +507,18 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
       processId: system.processId,
       ...(processStartIdentity ? {processStartIdentity} : {}),
     },
+    markWorktreeLockHeld: held =>
+      persist(
+        (current, now) => ({
+          ...current,
+          status: {
+            ...current.status,
+            timestamps: {...current.status.timestamps, updatedAt: new Date(now).toISOString()},
+            worktreeLockHeld: held,
+          },
+        }),
+        true,
+      ),
     progress: progress =>
       persist(
         (current, now) => observeProgress(current, progress, now, pathHashSalt),
@@ -1898,35 +1918,6 @@ export function selectCodeGraphBuildStatuses(
   };
 }
 
-function annotateBuildCoordination(
-  statuses: readonly ObservedCodeGraphBuildStatus[],
-  lockOwner: FileLockOwner | undefined,
-): readonly ObservedCodeGraphBuildStatus[] {
-  return statuses.map(status => {
-    const terminal = status.state === 'completed' || status.state === 'failed';
-    const progressSilent = status.observation.liveness === 'stalled';
-    const ownsLock =
-      !terminal &&
-      status.observation.liveness !== 'abandoned' &&
-      lockOwner !== undefined &&
-      sameProcessOwner(status, lockOwner);
-    const role = ownsLock
-      ? ('owner' as const)
-      : !terminal && status.state === 'queued'
-        ? ('waiter' as const)
-        : 'history';
-    const observation =
-      ownsLock && progressSilent
-        ? {heartbeatAgeMilliseconds: status.observation.heartbeatAgeMilliseconds, liveness: 'active' as const}
-        : status.observation;
-    return {
-      ...status,
-      coordination: {lockVerified: ownsLock, ...(progressSilent ? {progressSilent} : {}), role},
-      observation,
-    };
-  });
-}
-
 function annotateCheckoutBuildCoordination(
   fs: FileSystem.FileSystem,
   path: Path.Path,
@@ -1958,24 +1949,6 @@ function annotateBuildCoordinationByWorktree(
       ),
     {concurrency: 8},
   ).pipe(Effect.map(groups => groups.flat().sort(compareObservedBuildStatus)));
-}
-
-function groupBuildStatusesByWorktree(
-  statuses: readonly ObservedCodeGraphBuildStatus[],
-): readonly (readonly [string, readonly ObservedCodeGraphBuildStatus[]])[] {
-  const groups = new Map<string, ObservedCodeGraphBuildStatus[]>();
-  for (const status of statuses) {
-    const group = groups.get(status.identity.worktreeId) ?? [];
-    group.push(status);
-    groups.set(status.identity.worktreeId, group);
-  }
-  return [...groups].sort(([left], [right]) => left.localeCompare(right));
-}
-
-function sameProcessOwner(status: ObservedCodeGraphBuildStatus, lockOwner: FileLockOwner): boolean {
-  if (status.owner.processId !== lockOwner.processId) return false;
-  if (!status.owner.processStartIdentity || !lockOwner.processStartIdentity) return true;
-  return status.owner.processStartIdentity === lockOwner.processStartIdentity;
 }
 
 function privacySafeError(cause: unknown): string {

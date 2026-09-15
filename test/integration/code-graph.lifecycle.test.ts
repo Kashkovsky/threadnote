@@ -3284,6 +3284,90 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  effectIt.effect('retains a completed dirty target when the worktree changes before activation', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createFixtureRepository);
+      const home = join(root, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const baseline = yield* indexer.index({cwd: root, threadnoteHome: home});
+      yield* Effect.sync(() => replaceFunction(root, 'ensureVectorIndex', 'ensureVectorIndexFirst'));
+      let firstTargetId: string | undefined;
+      const current = yield* indexer.index({
+        cwd: root,
+        onProgress: progress =>
+          Effect.sync(() => {
+            if (!firstTargetId && progress.phase === 'activating' && progress.subphase === 'validating-input') {
+              firstTargetId = progress.snapshotId;
+              replaceFunction(root, 'ensureVectorIndexFirst', 'ensureVectorIndexSecond');
+            }
+          }),
+        threadnoteHome: home,
+      });
+
+      expect(firstTargetId).toBeDefined();
+      expect(current.snapshot.id).not.toBe(firstTargetId);
+      const databasePath = codeGraphDatabasePath(home, baseline);
+      expect(yield* store.currentLexicalReadySnapshotById(databasePath, firstTargetId!)).toMatchObject({
+        dirty: true,
+        id: firstTargetId,
+        state: 'ready',
+      });
+      expect(yield* store.readySnapshot(databasePath, baseline.identity.worktreeId)).toMatchObject({
+        id: current.snapshot.id,
+      });
+      const firstGraph = yield* store.loadGraph(databasePath, firstTargetId!);
+      const currentGraph = yield* store.loadGraph(databasePath, current.snapshot.id);
+      expect(firstGraph.symbols.some(symbol => symbol.name === 'ensureVectorIndexFirst')).toBe(true);
+      expect(currentGraph.symbols.some(symbol => symbol.name === 'ensureVectorIndexSecond')).toBe(true);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('joins an identical dirty request behind its active builder', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const root = yield* Effect.sync(createFixtureRepository);
+        const home = join(root, '.threadnote-test-home');
+        yield* Effect.sync(() => replaceFunction(root, 'ensureVectorIndex', 'ensureVectorIndexDirty'));
+        const indexer = yield* CodeGraphIndexer;
+        const ownerScanning = yield* Deferred.make<void>();
+        const releaseOwner = yield* Deferred.make<void>();
+        const waiterQueued = yield* Deferred.make<void>();
+        let held = false;
+        const owner = yield* Effect.forkScoped(
+          indexer.index({
+            cwd: root,
+            onProgress: progress => {
+              if (held || progress.phase !== 'scanning') {
+                return Effect.void;
+              }
+              held = true;
+              return Deferred.succeed(ownerScanning, undefined).pipe(Effect.andThen(Deferred.await(releaseOwner)));
+            },
+            threadnoteHome: home,
+          }),
+        );
+        yield* Deferred.await(ownerScanning);
+        const waiter = yield* Effect.forkScoped(
+          indexer.index({
+            cwd: root,
+            onProgress: progress =>
+              progress.phase === 'waiting' && progress.reason === 'request-lock'
+                ? Deferred.succeed(waiterQueued, undefined).pipe(Effect.asVoid)
+                : Effect.void,
+            threadnoteHome: home,
+          }),
+        );
+        yield* Deferred.await(waiterQueued);
+        yield* Deferred.succeed(releaseOwner, undefined);
+        const ownerSummary = yield* Fiber.join(owner);
+        const waiterSummary = yield* Fiber.join(waiter);
+        expect(waiterSummary.snapshot.id).toBe(ownerSummary.snapshot.id);
+        expect(waiterSummary.materialization?.mode).toBe('reused-snapshot');
+      }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    ),
+  );
+
   it('removes stale committed facts when a changed source becomes ineligible', async () => {
     const root = createFixtureRepository();
     const home = join(root, '.threadnote-test-home');

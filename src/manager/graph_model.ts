@@ -486,10 +486,10 @@ export interface GraphAdministrationJobSelection {
 /** Keep administration cards focused on bounded, actionable build state. */
 export function graphAdministrationJobSelection(
   builds: readonly GraphBuildStatus[],
-  waiters: readonly GraphBuildStatus[],
+  _waiters: readonly GraphBuildStatus[],
 ): GraphAdministrationJobSelection {
   const unique = new Map<string, GraphBuildStatus>();
-  for (const job of [...builds, ...waiters]) {
+  for (const job of builds) {
     if (graphBuildShouldDisplay(job) && !unique.has(job.buildId)) unique.set(job.buildId, job);
   }
   const relevant = [...unique.values()].sort(compareGraphAdministrationJob);
@@ -584,7 +584,7 @@ export function graphBuildConcurrencyState(
     candidate =>
       candidate.checkoutId === build.identity.checkoutId && candidate.worktreeId === build.identity.worktreeId,
   );
-  const queuedRequests = matchingWaiters.length + (build.state === 'queued' ? 1 : 0);
+  const queuedRequests = matchingWaiters.length;
   const readySnapshotCommit = ready?.snapshot.commit;
   return {
     ...(build.state === 'running' ? {activeTargetCommit: build.identity.commit} : {}),
@@ -787,6 +787,7 @@ export function graphDiagnosticsRequiresCatalogRefresh(
 export function graphWaiterCountForBuild(build: GraphBuildStatus, waiters: readonly GraphBuildStatus[]): number {
   return waiters.filter(
     waiter =>
+      waiter.buildId !== build.buildId &&
       waiter.identity.checkoutId === build.identity.checkoutId &&
       waiter.identity.worktreeId === build.identity.worktreeId &&
       waiter.request?.key === build.request?.key,

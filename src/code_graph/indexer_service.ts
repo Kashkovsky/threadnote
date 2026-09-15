@@ -19,9 +19,9 @@ import {
   reuseReadySnapshot,
   settleInterruptedCodeGraphBuild,
   withCodeGraphProcessLock,
-  withSharedCleanRequestGate,
   writerSessionOptions,
 } from './indexer_build.js';
+import {withSharedCodeGraphRequestGate} from './indexer_request_gate.js';
 import {completedConcurrentSnapshot} from './indexer_concurrent_snapshot.js';
 import {assessIncrementalOverlay, assessIncrementalOverlayCompatibility} from './indexer_incremental.js';
 import {attemptSparseReusableOverlay} from './indexer_sparse.js';
@@ -217,15 +217,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               }),
             );
             yield* Effect.forkScoped(reporter.heartbeat);
+            let lastActiveProgress: CodeGraphProgress = {phase: 'registering'};
             const options: CodeGraphIndexOptions = {
               ...request,
               onProgress: progress =>
-                anonymousTelemetry
-                  .progress(progress)
-                  .pipe(
-                    Effect.andThen(reporter.progress(progress)),
-                    Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
-                  ),
+                Effect.sync(() => {
+                  if (progress.phase !== 'waiting') lastActiveProgress = progress;
+                }).pipe(
+                  Effect.andThen(anonymousTelemetry.progress(progress)),
+                  Effect.andThen(reporter.progress(progress)),
+                  Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
+                ),
             };
             if (!options.sourceOnly && (yield* fs.exists(graphShareEnrollmentPath(path, initialIdentity.repoRoot)))) {
               yield* captureSharedGraphImportBase({
@@ -491,6 +493,23 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         Effect.tap(() => cacheCoalescer.flush),
                         Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))),
                       );
+                      if (rawInventory.dirty) {
+                        const capturedHashes = new Map(
+                          inventoryOverlayObservation.files.map(file => [file.path, file.contentHash]),
+                        );
+                        const currentRequest = yield* worktreeBuildRequestObservation(
+                          identity,
+                          options.threadnoteHome,
+                        ).pipe(Effect.provideService(Crypto.Crypto, crypto));
+                        if (
+                          !sameOverlayState(currentRequest.state, requestedOverlay) ||
+                          rawInventory.files.some(
+                            file => file.source === 'worktree' && capturedHashes.get(file.path) !== file.contentHash,
+                          )
+                        ) {
+                          return yield* WorktreeChangedDuringIndex.make({});
+                        }
+                      }
                       const sparseExtractedFiles = yield* cacheCoalescer.sparseExtractedFiles;
                       const inventory = {
                         ...rawInventory,
@@ -974,7 +993,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         ),
                       );
                     }),
-                    writerSessionOptions(layout, options),
+                    writerSessionOptions(
+                      layout,
+                      options,
+                      () => options.onProgress?.(lastActiveProgress) ?? Effect.void,
+                    ),
                   )
                   .pipe(
                     Effect.onInterrupt(() =>
@@ -997,19 +1020,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     Effect.tap(summary => reporter.complete(summary)),
                     Effect.tapError(cause => reporter.fail(cause)),
                   );
-                return yield* withSharedCleanRequestGate({
-                  checkoutId: initialIdentity.checkoutId,
-                  effect: build,
-                  fs,
-                  onProgress: options.onProgress,
-                  path,
-                  requestKey,
-                  requestedOverlay,
-                  threadnoteHome: options.threadnoteHome,
-                });
+                return yield* build;
               }),
+              {
+                onAcquired: () => reporter.markWorktreeLockHeld(true),
+                onCompleted: () => reporter.markWorktreeLockHeld(false),
+              },
             );
-            const summary = yield* withCodeGraphBuilderAdmission(
+            const admittedBuild = withCodeGraphBuilderAdmission(
               {
                 admissionClass: codeGraphBuilderAdmissionClass(options, system.environment()),
                 onWaiting: (options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap'}) ?? Effect.void).pipe(
@@ -1030,6 +1048,16 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 }).pipe(Effect.ignore),
               ),
             );
+            const summary = yield* withSharedCodeGraphRequestGate({
+              checkoutId: initialIdentity.checkoutId,
+              effect: admittedBuild,
+              fs,
+              onProgress: options.onProgress,
+              path,
+              requestKey,
+              requestedOverlay,
+              threadnoteHome: options.threadnoteHome,
+            });
             if (!options.sourceOnly && !summary.snapshot.dirty)
               yield* finalizeGraphShareSignedCandidates({
                 databasePath: layout.databasePath,
@@ -1121,15 +1149,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               }),
             );
             yield* Effect.forkScoped(reporter.heartbeat);
+            let lastActiveProgress: CodeGraphProgress = {phase: 'registering'};
             const options = {
               ...request,
               onProgress: (progress: CodeGraphProgress) =>
-                anonymousTelemetry
-                  .progress(progress)
-                  .pipe(
-                    Effect.andThen(reporter.progress(progress)),
-                    Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
-                  ),
+                Effect.sync(() => {
+                  if (progress.phase !== 'waiting') lastActiveProgress = progress;
+                }).pipe(
+                  Effect.andThen(anonymousTelemetry.progress(progress)),
+                  Effect.andThen(reporter.progress(progress)),
+                  Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
+                ),
             };
             const commitIdentity = {...initialIdentity, headCommit: request.commit};
             const capacityProtection: DirectPersistentCapacityProtection = {
@@ -1280,7 +1310,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         summary: committedBase.summary,
                       };
                     }),
-                    writerSessionOptions(layout, options),
+                    writerSessionOptions(layout, options, () => options.onProgress(lastActiveProgress)),
                   )
                   .pipe(
                     Effect.onInterrupt(() =>
@@ -1290,6 +1320,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     Effect.tapError(cause => reporter.fail(cause)),
                   );
               }),
+              {
+                onAcquired: () => reporter.markWorktreeLockHeld(true),
+                onCompleted: () => reporter.markWorktreeLockHeld(false),
+              },
             );
             const lease = yield* withCodeGraphBuilderAdmission(
               {
