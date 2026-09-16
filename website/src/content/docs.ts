@@ -976,11 +976,11 @@ threadnote share conflict resolve <id> --take shared`,
         id: 'shared-artifacts',
         title: 'Share agent artifacts',
         summary:
-          'Publish reusable Codex or Claude skills, commands, and multi-skill bundles with the full MCP toolset.',
+          'Publish reusable Codex, Claude, or Cursor skills, commands, and multi-skill bundles with the full MCP toolset.',
         body: [
           {
             type: 'paragraph',
-            text: 'The full toolset can preview and publish Codex or Claude skills, Claude command Markdown, and declared multi-skill bundles. Companion scripts, references, and assets can travel with a skill. Manifests describe names, agents, included paths, external dependencies, and portable path rewrites.',
+            text: 'The full toolset can preview and publish Codex, Claude, or Cursor skills, Claude command Markdown, and declared multi-skill bundles. Companion scripts, references, and assets can travel with a skill. Manifests describe names, agents, included paths, external dependencies, and portable path rewrites.',
           },
           {
             type: 'list',

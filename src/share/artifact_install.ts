@@ -182,7 +182,7 @@ function sharedArtifactFromRelativePath(relativePath: string): ShareArtifactMeta
   if (
     parts.length === 5 &&
     parts[1] === 'skills' &&
-    (parts[2] === 'codex' || parts[2] === 'claude') &&
+    (parts[2] === 'codex' || parts[2] === 'claude' || parts[2] === 'cursor') &&
     parts[4] === 'SKILL.md'
   ) {
     return {agent: parts[2], kind: 'skill', name: parts[3]};
@@ -193,7 +193,7 @@ function sharedArtifactFromRelativePath(relativePath: string): ShareArtifactMeta
   if (
     parts.length === 5 &&
     parts[1] === 'packs' &&
-    (parts[2] === 'codex' || parts[2] === 'claude') &&
+    (parts[2] === 'codex' || parts[2] === 'claude' || parts[2] === 'cursor') &&
     parts[4] === `${parts[3]}${PACK_INDEX_SUFFIX}`
   ) {
     return {agent: parts[2], kind: 'pack', name: parts[3]};
@@ -904,7 +904,7 @@ const sharedArtifactInstallPath = Effect.fn('share.sharedArtifactInstallPath')(f
   artifact: ShareArtifactMetadata,
 ) {
   const system = yield* SystemInfo;
-  const agentDir = artifact.agent === 'codex' ? '.codex' : '.claude';
+  const agentDir = artifact.agent === 'codex' ? '.codex' : artifact.agent === 'claude' ? '.claude' : '.cursor';
   if (artifact.kind === 'pack') {
     // Packs install under a dedicated `threadnote-packs` namespace so a pack and
     // a same-named skill can never share an install root or metadata file. The

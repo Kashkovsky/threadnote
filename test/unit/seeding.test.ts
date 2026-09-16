@@ -765,7 +765,7 @@ describe('seed-skills', () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
 
-  effectIt.effect('discovers global and repo-local Claude command markdown files', () =>
+  effectIt.effect('discovers global Cursor skills and repo-local Claude command markdown files', () =>
     Effect.gen(function* () {
       const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-skills-home-')));
       const contextHome = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-skills-context-')));
@@ -776,6 +776,10 @@ describe('seed-skills', () => {
       yield* Effect.promise(() => mkdir(join(home, '.claude', 'commands'), {recursive: true}));
       yield* Effect.promise(() =>
         writeFile(join(home, '.claude', 'commands', 'weekly.md'), '# Weekly\n\nSummarize the week.\n'),
+      );
+      yield* Effect.promise(() => mkdir(join(home, '.cursor', 'skills', 'reviewer'), {recursive: true}));
+      yield* Effect.promise(() =>
+        writeFile(join(home, '.cursor', 'skills', 'reviewer', 'SKILL.md'), '# Cursor Reviewer\n\nReview diffs.\n'),
       );
       yield* Effect.promise(() => mkdir(join(repo, '.claude', 'commands'), {recursive: true}));
       yield* Effect.promise(() =>
@@ -808,6 +812,7 @@ describe('seed-skills', () => {
       const output = yield* captureConsole(runSeedSkills(config, {dryRun: true}));
 
       expect(output).toContain(`Command claude-commands-global: ${join(home, '.claude', 'commands', 'weekly.md')}`);
+      expect(output).toContain(`Skill cursor-global: ${join(home, '.cursor', 'skills', 'reviewer', 'SKILL.md')}`);
       expect(output).toContain(
         `Command repo-local:sample-repo:claude-commands: ${join(repo, '.claude', 'commands', 'review-pr.md')}`,
       );
@@ -817,7 +822,7 @@ describe('seed-skills', () => {
       );
       expect(output).not.toContain('--reason');
       expect(output).not.toContain('Agent command catalog item from claude-commands-global: weekly.md');
-      expect(output).toContain('Skill seed complete: 2 unique catalog item(s).');
+      expect(output).toContain('Skill seed complete: 3 unique catalog item(s).');
     }),
   );
 });

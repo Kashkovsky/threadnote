@@ -963,6 +963,7 @@ const collectSkillCandidates = Effect.fn('seeding.collectSkillCandidates')(funct
     {kind: 'skill', pattern: '~/.codex/skills/**/SKILL.md', source: 'codex-global'},
     {kind: 'skill', pattern: '~/.codex/plugins/cache/**/skills/**/SKILL.md', source: 'codex-plugin-cache'},
     {kind: 'skill', pattern: '~/.claude/skills/**/SKILL.md', source: 'claude-global'},
+    {kind: 'skill', pattern: '~/.cursor/skills/**/SKILL.md', source: 'cursor-global'},
     {kind: 'command', pattern: '~/.claude/commands/**/*.md', source: 'claude-commands-global'},
   ];
 

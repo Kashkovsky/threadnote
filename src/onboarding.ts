@@ -143,7 +143,7 @@ export function buildOnboardingGuide(state: OnboardingState): string {
           'Tidy memory — when recall surfaces overlapping notes for one topic, preview a scoped merge.',
           '  Run: compact_context({"project":"<repo>","topic":"<topic>","dryRun":true}) and review before applying.',
           '',
-          'Share skills & packs — publish a Codex/Claude skill, or a multi-skill pack (skills + shared',
+          'Share skills & packs — publish a Codex/Claude/Cursor skill, or a multi-skill pack (skills + shared',
           'scripts), into the team catalog; teammates install them on demand.',
           '  Run: share_skill({"path":"~/.claude/skills/<name>/SKILL.md"}) or',
           '  share_bundle({"path":"<repo>/threadnote-bundle.json"}). Teammates: list_shared_skills({})',
