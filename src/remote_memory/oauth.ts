@@ -9,7 +9,13 @@ import {
 import {Schema} from 'effect';
 import {remoteMemoryError} from './errors.js';
 
-export const COMPOSER_OAUTH_SCOPES = ['memory:read', 'memory:write:durable', 'memory:write:handoff'] as const;
+export const COMPOSER_OAUTH_SCOPES = [
+  'memory:read',
+  'memory:propose:durable',
+  'memory:review:durable',
+  'memory:write:durable',
+  'memory:write:handoff',
+] as const;
 
 export interface OAuthPrincipalClaims {
   readonly issuer: string;

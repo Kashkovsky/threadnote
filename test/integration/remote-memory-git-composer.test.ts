@@ -1,11 +1,13 @@
+import {richRemoteMemoryMetadata} from '../helpers/remote-memory-document.js';
 import {testGitWorktreeLock} from '../helpers/git-worktree-lock.js';
 import {mkdir, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
-import type {Sql, TransactionSql} from 'postgres';
+import postgres, {type Sql, type TransactionSql} from 'postgres';
 import {formatRemoteMemoryUri} from '../../src/memory_domain/address.js';
-import {formatMemoryDocument} from '../../src/memory/document.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import type {RemoteRememberInputV1} from '../../src/memory_domain/contracts.js';
+import {formatRemoteMemoryLogicalKey, REMOTE_MEMORY_REVISION_VERSION} from '../../src/memory_domain/revisions.js';
 import type {AuthorizedRemotePrincipal, RemoteMemoryScope} from '../../src/remote_memory/authorization.js';
 import {provisionGitTeamShare} from '../../src/remote_memory/composer_serve.js';
 import {GitCanonicalMemoryStore, gitCanonicalSharePath} from '../../src/remote_memory/git_canonical_store.js';
@@ -40,6 +42,7 @@ const ALL_SCOPES = [
 postgresDescribe('git-backed remote memory composer', () => {
   let fixture: RemoteMemoryPostgresFixture;
   let gitFixture: GitShareWorktreeFixture;
+  let gitStore: GitCanonicalMemoryStore;
   let repository: PostgresRemoteMemoryRepository;
   let indexer: RemoteMemoryIndexer;
   let principal: AuthorizedRemotePrincipal;
@@ -71,7 +74,7 @@ postgresDescribe('git-backed remote memory composer', () => {
       subject: 'subject-git',
       tenantId: TENANT,
     });
-    const gitStore = new GitCanonicalMemoryStore({
+    gitStore = new GitCanonicalMemoryStore({
       worktreeLock: testGitWorktreeLock,
       binding: {tenantId: TENANT, shareId: SHARE},
       worktree: gitFixture.worktree,
@@ -86,6 +89,209 @@ postgresDescribe('git-backed remote memory composer', () => {
   afterAll(async () => {
     await fixture?.dispose();
     if (gitFixture) await rm(gitFixture.root, {force: true, recursive: true});
+  });
+
+  it('copies canonical citations with preserve/clear semantics, exact replay, and one database connection', async () => {
+    const metadata = {...richRemoteMemoryMetadata(), project: PROJECT, topic: 'citation-donor'};
+    const citation = metadata.codeCitations![0];
+    await gitStore.commit({
+      content: formatMemoryDocument('MEMORY', metadata, 'Canonical evidence.'),
+      message: 'seed citation donor',
+      path: gitCanonicalSharePath('durable', PROJECT, metadata.topic),
+    });
+    await repository.ingestGitShare(principal, 'citation-ingest');
+    const donorUri = formatRemoteMemoryUri({kind: 'durable', project: PROJECT, shareId: SHARE, topic: metadata.topic});
+    const citationSources = [{uri: donorUri, citationId: citation.id}];
+    const singleSql = postgres(fixture.runtimeDatabaseUrl, {max: 1, prepare: false});
+    try {
+      const single = new PostgresRemoteMemoryRepository(singleSql, {gitStore});
+      const input = {
+        ...rememberInput({
+          operationId: 'citation-create',
+          text: 'Chosen canonical evidence.',
+          topic: 'citation-target',
+        }),
+        citationSources,
+      };
+      const created = await single.remember(principal, input, 'citation-create');
+      expect(
+        await single.remember(
+          principal,
+          {...input, citationSources: [...citationSources, ...citationSources]},
+          'citation-replay',
+        ),
+      ).toEqual({...created, requestId: 'citation-replay'});
+      const read = await single.read(principal, {uri: created.uri!, version: 1}, 'citation-read');
+      expect(parseMemoryDocument(created.uri!, read.content)?.metadata.codeCitations).toEqual([citation]);
+      const preserved = await single.remember(
+        principal,
+        {
+          ...input,
+          citationSources: undefined,
+          baseRevision: created.revision,
+          operationId: 'citation-preserve',
+          text: 'Preserved.',
+        },
+        'citation-preserve',
+      );
+      expect(
+        parseMemoryDocument(
+          created.uri!,
+          (await single.read(principal, {uri: created.uri!, version: 1}, 'citation-preserved-read')).content,
+        )?.metadata.codeCitations,
+      ).toEqual([citation]);
+      await single.remember(
+        principal,
+        {
+          ...input,
+          citationSources: [],
+          baseRevision: preserved.revision,
+          operationId: 'citation-clear',
+          text: 'Cleared.',
+        },
+        'citation-clear',
+      );
+      expect(
+        parseMemoryDocument(
+          created.uri!,
+          (await single.read(principal, {uri: created.uri!, version: 1}, 'citation-cleared-read')).content,
+        )?.metadata.codeCitations,
+      ).toBeUndefined();
+    } finally {
+      await singleSql.end({timeout: 1});
+    }
+  });
+
+  it('recovers a landed cited write after database rollback even when its donor changes', async () => {
+    const metadata = {...richRemoteMemoryMetadata(), project: PROJECT, topic: 'citation-recovery-donor'};
+    const citation = metadata.codeCitations![0];
+    await gitStore.commit({
+      content: formatMemoryDocument('MEMORY', metadata, 'Recovery evidence.'),
+      message: 'seed citation recovery donor',
+      path: gitCanonicalSharePath('durable', PROJECT, metadata.topic),
+    });
+    await repository.ingestGitShare(principal, 'citation-recovery-ingest');
+    const donorUri = formatRemoteMemoryUri({kind: 'durable', project: PROJECT, shareId: SHARE, topic: metadata.topic});
+    const input = {
+      ...rememberInput({
+        operationId: 'citation-recovery-create',
+        text: 'Recover this exact cited publication.',
+        topic: 'citation-recovery-target',
+      }),
+      citationSources: [{uri: donorUri, citationId: citation.id}],
+    };
+    const beforeCount = Number(await git(['rev-list', '--count', 'HEAD'], gitFixture.worktree));
+    await fixture.migratorSql.unsafe(`
+      CREATE FUNCTION remote_memory.fail_cited_remember_finalize() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'injected cited remember finalization failure'; END;
+      $$;
+      CREATE TRIGGER fail_cited_remember_finalize
+        BEFORE INSERT ON remote_memory.memory_revisions
+        FOR EACH ROW WHEN (NEW.operation_id = 'citation-recovery-create')
+        EXECUTE FUNCTION remote_memory.fail_cited_remember_finalize();
+    `);
+    try {
+      await expect(repository.remember(principal, input, 'citation-recovery-failed')).rejects.toThrow(
+        'injected cited remember finalization failure',
+      );
+    } finally {
+      await fixture.migratorSql.unsafe(`
+        DROP TRIGGER IF EXISTS fail_cited_remember_finalize ON remote_memory.memory_revisions;
+        DROP FUNCTION IF EXISTS remote_memory.fail_cited_remember_finalize();
+      `);
+    }
+    expect(Number(await git(['rev-list', '--count', 'HEAD'], gitFixture.worktree))).toBe(beforeCount + 1);
+    const donor = await repository.read(principal, {uri: donorUri, version: 1}, 'citation-recovery-donor-read');
+    await repository.remember(
+      principal,
+      {
+        ...rememberInput({
+          operationId: 'citation-recovery-donor-clear',
+          text: 'Recovery donor changed.',
+          topic: metadata.topic,
+        }),
+        baseRevision: donor.receipt.revision,
+        citationSources: [],
+      },
+      'citation-recovery-donor-clear',
+    );
+    const recovered = await repository.remember(principal, input, 'citation-recovery-retry');
+    expect(Number(await git(['rev-list', '--count', 'HEAD'], gitFixture.worktree))).toBe(beforeCount + 2);
+    const content = (await repository.read(principal, {uri: recovered.uri!, version: 1}, 'citation-recovery-read'))
+      .content;
+    expect(parseMemoryDocument(recovered.uri!, content)?.metadata.codeCitations).toEqual([citation]);
+  });
+
+  it('blocks unauthorized or missing citation donors before canonical publication', async () => {
+    const citationId = richRemoteMemoryMetadata().codeCitations![0].id;
+    for (const [suffix, uri, code] of [
+      [
+        'share',
+        formatRemoteMemoryUri({kind: 'durable', project: PROJECT, shareId: 'other', topic: 'donor'}),
+        'forbidden',
+      ],
+      [
+        'project',
+        formatRemoteMemoryUri({kind: 'durable', project: 'other', shareId: SHARE, topic: 'donor'}),
+        'forbidden',
+      ],
+      [
+        'missing',
+        formatRemoteMemoryUri({kind: 'durable', project: PROJECT, shareId: SHARE, topic: 'missing-citation-donor'}),
+        'invalid_request',
+      ],
+    ]) {
+      const topic = `citation-rejected-${suffix}`;
+      await expect(
+        repository.remember(
+          principal,
+          {
+            ...rememberInput({operationId: topic, topic, text: 'Must not publish.'}),
+            citationSources: [{uri, citationId}],
+          },
+          topic,
+        ),
+      ).rejects.toMatchObject({code});
+      expect(await Bun.file(join(gitFixture.worktree, gitCanonicalSharePath('durable', PROJECT, topic))).exists()).toBe(
+        false,
+      );
+    }
+  });
+
+  it('rejects canonical Git donor drift after ingestion without publishing the target', async () => {
+    const metadata = {...richRemoteMemoryMetadata(), project: PROJECT, topic: 'citation-drift-donor'};
+    const path = gitCanonicalSharePath('durable', PROJECT, metadata.topic);
+    const seeded = await gitStore.commit({
+      content: formatMemoryDocument('MEMORY', metadata, 'Before drift.'),
+      message: 'seed drift donor',
+      path,
+    });
+    await repository.ingestGitShare(principal, 'citation-drift-ingest');
+    await gitStore.commit({
+      content: formatMemoryDocument('MEMORY', metadata, 'After drift.'),
+      expectedContentHash: seeded.contentHash,
+      message: 'drift donor',
+      path,
+    });
+    const topic = 'citation-drift-target';
+    await expect(
+      repository.remember(
+        principal,
+        {
+          ...rememberInput({operationId: topic, topic, text: 'Must not publish.'}),
+          citationSources: [
+            {
+              uri: formatRemoteMemoryUri({kind: 'durable', project: PROJECT, shareId: SHARE, topic: metadata.topic}),
+              citationId: metadata.codeCitations![0].id,
+            },
+          ],
+        },
+        topic,
+      ),
+    ).rejects.toMatchObject({code: 'conflict'});
+    expect(await Bun.file(join(gitFixture.worktree, gitCanonicalSharePath('durable', PROJECT, topic))).exists()).toBe(
+      false,
+    );
   });
 
   it('writes a cloud remember to git without storing a postgres canonical body', async () => {
@@ -119,6 +325,373 @@ postgresDescribe('git-backed remote memory composer', () => {
     await cloneGitShareWorktree(gitFixture.remote, laptop);
     expect(await git(['show', `HEAD:${pointer.git_path}`], laptop)).toBe(read.content);
   });
+
+  it('persists canonical relations in Git, preserves omission, clears explicit empty input, and reserves only valid writes', async () => {
+    const firstTarget = await repository.remember(
+      principal,
+      rememberInput({operationId: 'relation-target-a', text: 'First relation target.', topic: 'relation-target-a'}),
+      'request-relation-target-a',
+    );
+    const secondTarget = await repository.remember(
+      principal,
+      rememberInput({operationId: 'relation-target-b', text: 'Second relation target.', topic: 'relation-target-b'}),
+      'request-relation-target-b',
+    );
+    const handoffTarget = await repository.remember(
+      principal,
+      rememberInput({
+        kind: 'handoff',
+        operationId: 'relation-handoff-target',
+        text: 'Active handoff relation target.',
+        topic: 'relation-handoff-target',
+      }),
+      'request-relation-handoff-target',
+    );
+    const relations = [
+      {type: 'references' as const, uri: secondTarget.uri!},
+      {type: 'depends_on' as const, uri: firstTarget.uri!},
+      {type: 'related_to' as const, uri: handoffTarget.uri!},
+    ];
+    const created = await repository.remember(
+      principal,
+      rememberInput({
+        operationId: 'relation-source-create',
+        relations,
+        text: 'Source with canonical relations.',
+        topic: 'relation-source',
+      }),
+      'request-relation-source-create',
+    );
+    const replayed = await repository.remember(
+      principal,
+      rememberInput({
+        operationId: 'relation-source-create',
+        relations: [...relations].reverse(),
+        text: 'Source with canonical relations.',
+        topic: 'relation-source',
+      }),
+      'request-relation-source-replay',
+    );
+    expect(replayed.revision).toBe(created.revision);
+    const createdRead = await repository.read(principal, {uri: created.uri!, version: 1}, 'request-relation-read');
+    expect(createdRead.content).toContain(`relation: depends_on ${firstTarget.uri}`);
+    expect(createdRead.content).toContain(`relation: references ${secondTarget.uri}`);
+    expect(createdRead.content).toContain(`relation: related_to ${handoffTarget.uri}`);
+
+    const preserved = await repository.remember(
+      principal,
+      rememberInput({
+        baseRevision: created.revision,
+        operationId: 'relation-source-preserve',
+        text: 'Source body changed while preserving relations.',
+        topic: 'relation-source',
+      }),
+      'request-relation-source-preserve',
+    );
+    const preservedRead = await repository.read(
+      principal,
+      {uri: created.uri!, version: 1},
+      'request-relation-preserved-read',
+    );
+    expect(preservedRead.content).toContain(`relation: depends_on ${firstTarget.uri}`);
+    expect(preservedRead.content).toContain(`relation: references ${secondTarget.uri}`);
+    expect(preservedRead.content).toContain(`relation: related_to ${handoffTarget.uri}`);
+
+    const cleared = await repository.remember(
+      principal,
+      rememberInput({
+        baseRevision: preserved.revision,
+        operationId: 'relation-source-clear',
+        relations: [],
+        text: 'Source body changed while clearing relations.',
+        topic: 'relation-source',
+      }),
+      'request-relation-source-clear',
+    );
+    const clearedRead = await repository.read(
+      principal,
+      {uri: created.uri!, version: 1},
+      'request-relation-clear-read',
+    );
+    expect(clearedRead.receipt.revision).toBe(cleared.revision);
+    expect(clearedRead.content).not.toContain('relation:');
+
+    const missingUri = formatRemoteMemoryUri({
+      kind: 'durable',
+      project: PROJECT,
+      shareId: SHARE,
+      topic: 'missing-relation-target',
+    });
+    await expect(
+      repository.remember(
+        principal,
+        rememberInput({
+          operationId: 'relation-source-missing',
+          relations: [{type: 'references', uri: missingUri}],
+          text: 'This source must not be written.',
+          topic: 'relation-source-missing',
+        }),
+        'request-relation-source-missing',
+      ),
+    ).rejects.toMatchObject({code: 'invalid_request'});
+    await repository.transitionHandoff(
+      principal,
+      {
+        baseRevision: handoffTarget.revision!,
+        operation: 'archive',
+        operationId: 'relation-inactive-target-archive',
+        uri: handoffTarget.uri!,
+      },
+      'request-relation-inactive-target-archive',
+    );
+    const replayedAfterTargetArchive = await repository.remember(
+      principal,
+      rememberInput({
+        operationId: 'relation-source-create',
+        relations: [...relations].reverse(),
+        text: 'Source with canonical relations.',
+        topic: 'relation-source',
+      }),
+      'request-relation-source-replay-after-archive',
+    );
+    expect(replayedAfterTargetArchive.revision).toBe(created.revision);
+    await expect(
+      repository.remember(
+        principal,
+        rememberInput({
+          operationId: 'relation-source-inactive',
+          relations: [{type: 'references', uri: handoffTarget.uri!}],
+          text: 'This source must not relate to an archived handoff.',
+          topic: 'relation-source-inactive',
+        }),
+        'request-relation-source-inactive',
+      ),
+    ).rejects.toMatchObject({code: 'invalid_request'});
+    const reservations = await withTenant(
+      fixture.migratorSql,
+      TENANT,
+      transaction => transaction<{count: string}[]>`
+        SELECT count(*) AS count FROM remote_memory.idempotency_records
+        WHERE operation_id = ANY(${transaction.array(['relation-source-missing', 'relation-source-inactive'])})
+      `,
+    );
+    expect(Number(reservations[0]?.count)).toBe(0);
+    expect(await indexer.runPass({batchSize: 32})).toMatchObject({failed: 0});
+  });
+
+  it('rejects a relation source when its target is archived after initial admission', async () => {
+    const target = await repository.remember(
+      principal,
+      rememberInput({
+        kind: 'handoff',
+        operationId: 'relation-race-target',
+        text: 'Target active during initial relation admission.',
+        topic: 'relation-race-target',
+      }),
+      'request-relation-race-target',
+    );
+    const source = rememberInput({
+      operationId: 'relation-race-source',
+      relations: [{type: 'references', uri: target.uri!}],
+      text: 'This source must not survive a target archival race.',
+      topic: 'relation-race-source',
+    });
+    const logicalKey = formatRemoteMemoryLogicalKey({
+      kind: source.kind,
+      project: source.project,
+      shareId: principal.shareId,
+      tenantId: principal.tenantId,
+      topic: source.topic,
+      version: REMOTE_MEMORY_REVISION_VERSION,
+    });
+    let pending: ReturnType<typeof repository.remember> | undefined;
+
+    await fixture.migratorSql.begin(async lockTransaction => {
+      await lockTransaction`SELECT pg_advisory_xact_lock(hashtextextended(${logicalKey}, 0))`;
+      pending = repository.remember(principal, source, 'request-relation-race-source');
+      await waitUntil(async () => {
+        const rows = await withTenant(
+          fixture.migratorSql,
+          TENANT,
+          transaction => transaction<{blocked: boolean; reserved: boolean}[]>`
+            SELECT
+              EXISTS(
+                SELECT 1 FROM remote_memory.idempotency_records
+                WHERE principal_id = ${PRINCIPAL} AND operation_id = ${source.operationId}
+              ) AS reserved,
+              EXISTS(
+                SELECT 1 FROM pg_locks waiting
+                WHERE waiting.locktype = 'advisory' AND waiting.granted = false
+                  AND waiting.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+              ) AS blocked
+          `,
+        );
+        return rows[0]?.reserved === true && rows[0]?.blocked === true;
+      });
+      await repository.transitionHandoff(
+        principal,
+        {
+          baseRevision: target.revision!,
+          operation: 'archive',
+          operationId: 'relation-race-target-archive',
+          uri: target.uri!,
+        },
+        'request-relation-race-target-archive',
+      );
+    });
+
+    if (!pending) throw new Error('Relation race source did not start.');
+    await expect(pending).rejects.toMatchObject({code: 'invalid_request'});
+    const sourceHeads = await withTenant(
+      fixture.migratorSql,
+      TENANT,
+      transaction => transaction<{count: string}[]>`
+        SELECT count(*) AS count FROM remote_memory.memory_heads
+        WHERE canonical_uri = ${formatRemoteMemoryUri({
+          kind: source.kind,
+          project: source.project,
+          shareId: principal.shareId,
+          topic: source.topic,
+        })}
+      `,
+    );
+    expect(Number(sourceHeads[0]?.count)).toBe(0);
+    expect(
+      await Bun.file(
+        join(gitFixture.worktree, gitCanonicalSharePath(source.kind, source.project, source.topic)),
+      ).exists(),
+    ).toBe(false);
+  });
+
+  it('rejects a citation source when its donor is archived before final admission', async () => {
+    const metadata = {
+      ...richRemoteMemoryMetadata(),
+      kind: 'handoff' as const,
+      project: PROJECT,
+      topic: 'citation-race-target',
+    };
+    await gitStore.commit({
+      content: formatMemoryDocument('HANDOFF', metadata, 'Active donor.'),
+      message: 'seed lifecycle donor',
+      path: gitCanonicalSharePath('handoff', PROJECT, metadata.topic),
+    });
+    await repository.ingestGitShare(principal, 'citation-race-ingest');
+    const uri = formatRemoteMemoryUri({kind: 'handoff', project: PROJECT, shareId: SHARE, topic: metadata.topic});
+    const target = (await repository.read(principal, {uri, version: 1}, 'citation-race-read')).receipt;
+    const source = {
+      ...rememberInput({
+        operationId: 'citation-race-source',
+        topic: 'citation-race-source',
+        text: 'Must not survive donor archival.',
+      }),
+      citationSources: [{uri, citationId: metadata.codeCitations![0].id}],
+    };
+    const logicalKey = formatRemoteMemoryLogicalKey({
+      kind: source.kind,
+      project: source.project,
+      shareId: principal.shareId,
+      tenantId: principal.tenantId,
+      topic: source.topic,
+      version: REMOTE_MEMORY_REVISION_VERSION,
+    });
+    let pending: ReturnType<typeof repository.remember> | undefined;
+
+    await fixture.migratorSql.begin(async lockTransaction => {
+      await lockTransaction`SELECT pg_advisory_xact_lock(hashtextextended(${logicalKey}, 0))`;
+      pending = repository.remember(principal, source, 'request-citation-race-source');
+      await waitUntil(async () => {
+        const rows = await withTenant(
+          fixture.migratorSql,
+          TENANT,
+          transaction => transaction<{blocked: boolean; reserved: boolean}[]>`
+            SELECT
+              EXISTS(
+                SELECT 1 FROM remote_memory.idempotency_records
+                WHERE principal_id = ${PRINCIPAL} AND operation_id = ${source.operationId}
+              ) AS reserved,
+              EXISTS(
+                SELECT 1 FROM pg_locks waiting
+                WHERE waiting.locktype = 'advisory' AND waiting.granted = false
+                  AND waiting.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+              ) AS blocked
+          `,
+        );
+        return rows[0]?.reserved === true && rows[0]?.blocked === true;
+      });
+      await repository.transitionHandoff(
+        principal,
+        {
+          baseRevision: target.revision!,
+          operation: 'archive',
+          operationId: 'citation-race-target-archive',
+          uri,
+        },
+        'request-citation-race-target-archive',
+      );
+    });
+
+    if (!pending) throw new Error('Relation race source did not start.');
+    await expect(pending).rejects.toMatchObject({code: 'invalid_request'});
+    const sourceHeads = await withTenant(
+      fixture.migratorSql,
+      TENANT,
+      transaction => transaction<{count: string}[]>`
+        SELECT count(*) AS count FROM remote_memory.memory_heads
+        WHERE canonical_uri = ${formatRemoteMemoryUri({
+          kind: source.kind,
+          project: source.project,
+          shareId: principal.shareId,
+          topic: source.topic,
+        })}
+      `,
+    );
+    expect(Number(sourceHeads[0]?.count)).toBe(0);
+    expect(
+      await Bun.file(
+        join(gitFixture.worktree, gitCanonicalSharePath(source.kind, source.project, source.topic)),
+      ).exists(),
+    ).toBe(false);
+  });
+
+  it('publishes relations without leasing a second PostgreSQL connection behind the admission fence', async () => {
+    const target = await repository.remember(
+      principal,
+      rememberInput({
+        operationId: 'relation-single-connection-target',
+        text: 'Target for a one-connection relation writer.',
+        topic: 'relation-single-connection-target',
+      }),
+      'request-relation-single-connection-target',
+    );
+    const singleConnectionSql = postgres(fixture.runtimeDatabaseUrl, {
+      connect_timeout: 10,
+      idle_timeout: 20,
+      max: 1,
+      onnotice: () => undefined,
+      prepare: true,
+    });
+    try {
+      const singleConnectionRepository = new PostgresRemoteMemoryRepository(singleConnectionSql, {gitStore});
+      const created = await singleConnectionRepository.remember(
+        principal,
+        rememberInput({
+          operationId: 'relation-single-connection-source',
+          relations: [{type: 'references', uri: target.uri!}],
+          text: 'A fenced relation write completes with one database lease.',
+          topic: 'relation-single-connection-source',
+        }),
+        'request-relation-single-connection-source',
+      );
+      const read = await singleConnectionRepository.read(
+        principal,
+        {uri: created.uri!, version: 1},
+        'request-relation-single-connection-read',
+      );
+      expect(read.content).toContain(`relation: references ${target.uri}`);
+    } finally {
+      await singleConnectionSql.end({timeout: 1});
+    }
+  }, 10_000);
 
   it('rejects one of two concurrent composer writes and keeps a single winner', async () => {
     const created = await repository.remember(
@@ -403,15 +976,18 @@ function claims(): OAuthPrincipalClaims {
 
 function rememberInput(input: {
   readonly baseRevision?: string;
+  readonly kind?: 'durable' | 'handoff';
   readonly operationId: string;
+  readonly relations?: RemoteRememberInputV1['relations'];
   readonly text: string;
   readonly topic: string;
 }): RemoteRememberInputV1 {
   return {
     ...(input.baseRevision ? {baseRevision: input.baseRevision} : {}),
-    kind: 'durable',
+    kind: input.kind ?? 'durable',
     operationId: input.operationId,
     project: PROJECT,
+    ...(input.relations === undefined ? {} : {relations: input.relations}),
     text: input.text,
     topic: input.topic,
     version: 1,
@@ -449,6 +1025,14 @@ async function writeCanonicalMemory(
   await git(['commit', '-m', `share ${kind} ${project}/${topic}`], worktree);
   await git(['push', 'origin', 'main'], worktree);
   return path;
+}
+
+async function waitUntil(predicate: () => Promise<boolean>, timeoutMilliseconds = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMilliseconds;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for PostgreSQL test state.');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
 }
 
 async function withTenant<A>(sql: Sql, tenantId: string, use: (transaction: TransactionSql) => Promise<A>): Promise<A> {

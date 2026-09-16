@@ -7,6 +7,14 @@ import type {OAuthTokenVerifier} from './oauth.js';
 import type {RemoteMemoryRateLimiter} from './rate_limit.js';
 import type {RemoteMemoryRequestExecution} from './request_execution.js';
 import type {
+  RemoteDurableProposalInputV1,
+  RemoteMemoryProposalListInputV1,
+  RemoteMemoryProposalReceiptV1,
+  RemoteMemoryProposalReviewInputV1,
+  RemoteMemoryProposalSummaryV1,
+  RemoteMemoryProposalV1,
+} from './proposals.js';
+import type {
   RemoteMemoryListEntry,
   RemoteMemoryReadResult,
   RemoteMemoryRecallResult,
@@ -32,6 +40,11 @@ export interface RemoteHandoffTransitionInput {
 
 /** Promise-native storage boundary used by the official MCP SDK handlers. */
 export interface RemoteMemoryServiceRepository {
+  readonly listProposals: (
+    principal: AuthorizedRemotePrincipal,
+    input: RemoteMemoryProposalListInputV1,
+    execution?: RemoteMemoryRequestExecution,
+  ) => Promise<{readonly entries: readonly RemoteMemoryProposalSummaryV1[]; readonly nextProposalId?: string}>;
   readonly list: (
     principal: AuthorizedRemotePrincipal,
     input: RemoteMemoryListInput,
@@ -48,6 +61,11 @@ export interface RemoteMemoryServiceRepository {
     requestId: string,
     execution?: RemoteMemoryRequestExecution,
   ) => Promise<RemoteMemoryReadResult>;
+  readonly readProposal: (
+    principal: AuthorizedRemotePrincipal,
+    proposalId: string,
+    execution?: RemoteMemoryRequestExecution,
+  ) => Promise<RemoteMemoryProposalV1>;
   readonly recall: (
     principal: AuthorizedRemotePrincipal,
     input: RemoteRecallInputV1,
@@ -62,6 +80,22 @@ export interface RemoteMemoryServiceRepository {
     now?: Date,
     execution?: RemoteMemoryRequestExecution,
   ) => Promise<RemoteMemoryReceiptV1>;
+  readonly proposeDurable: (
+    principal: AuthorizedRemotePrincipal,
+    input: RemoteDurableProposalInputV1,
+    requestId: string,
+    attestation?: CursorWorkloadAttestation,
+    now?: Date,
+    execution?: RemoteMemoryRequestExecution,
+  ) => Promise<RemoteMemoryProposalReceiptV1>;
+  readonly reviewProposal: (
+    principal: AuthorizedRemotePrincipal,
+    input: RemoteMemoryProposalReviewInputV1,
+    requestId: string,
+    attestation?: CursorWorkloadAttestation,
+    now?: Date,
+    execution?: RemoteMemoryRequestExecution,
+  ) => Promise<RemoteMemoryProposalV1>;
   readonly status: (
     principal: AuthorizedRemotePrincipal,
     requestId: string,

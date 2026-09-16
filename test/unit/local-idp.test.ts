@@ -13,6 +13,13 @@ const AUDIENCE = 'http://127.0.0.1:18788/mcp';
 const SUBJECT = 'local:tester';
 const REDIRECT = COMPOSER_OAUTH_REDIRECT_URIS[0];
 const PKCE_VERIFIER = FC.stringMatching(/^[A-Za-z0-9-._~]{43,96}$/u);
+const COMPOSER_REQUIRED_SCOPES = [
+  'memory:read',
+  'memory:propose:durable',
+  'memory:review:durable',
+  'memory:write:durable',
+  'memory:write:handoff',
+] as const;
 
 async function localIdp() {
   return createLocalIdp({audience: AUDIENCE, issuer: ISSUER, subject: SUBJECT});
@@ -36,7 +43,7 @@ describe('local composer OAuth issuer', () => {
     const claims = await idp.verifier().verify(token);
     expect(claims).toEqual({
       issuer: ISSUER,
-      scopes: new Set(['memory:read', 'memory:write:durable', 'memory:write:handoff']),
+      scopes: new Set(COMPOSER_REQUIRED_SCOPES),
       subject: SUBJECT,
     });
     expect(

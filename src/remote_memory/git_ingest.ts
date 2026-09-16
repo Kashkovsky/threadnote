@@ -13,6 +13,7 @@ import {
 } from './git_canonical_store.js';
 import {classifyGitIngestDocument, type GitIngestRejection, type GitIngestStatus} from './git_ingest_document.js';
 import {principalAllows, principalAllowsProject, requireActiveProject, requireShareState} from './repository_policy.js';
+import {acquireRemoteRelationAdmissionTransactionLock} from './relation_admission.js';
 
 const CANDIDATE_LIMIT = 256;
 type WithTenant = <A>(use: (transaction: TransactionSql) => Promise<A>) => Promise<A>;
@@ -299,6 +300,7 @@ async function applyPlan(input: {
 }): Promise<boolean> {
   const {principal, candidate, plan} = input;
   return input.withTenant(async transaction => {
+    await acquireRemoteRelationAdmissionTransactionLock(transaction, principal.tenantId, principal.shareId);
     await requireShareState(transaction, principal);
     await requireActiveProject(transaction, principal, candidate.project);
     const logicalKey = formatRemoteMemoryLogicalKey({

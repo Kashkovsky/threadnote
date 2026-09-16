@@ -1,3 +1,4 @@
+import {RemoteCitationSourcesSchema} from '../memory_domain/citation_sources.js';
 import {McpServer, ResourceTemplate} from '@modelcontextprotocol/sdk/server/mcp.js';
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Schema} from 'effect';
@@ -7,6 +8,7 @@ import {parseRemoteMemoryReceiptV1, type RemoteMemoryReceiptV1} from '../memory_
 import {
   assertRemoteRememberReplacementTarget,
   assertUriBelongsToAuthorizedShare,
+  authorizeRemoteRememberRelations,
   requireAuthorizedProject,
   requireRemoteScope,
   type AuthorizedRemotePrincipal,
@@ -34,6 +36,7 @@ import {
   REMOTE_RECALL_MINIMUM_BUDGET_TOKENS,
   RemoteRecallProjectionError,
 } from './recall_projection.js';
+import {MAX_MEMORY_RELATIONS, MEMORY_RELATION_TYPES} from '../memory/document.js';
 
 export const REMOTE_MEMORY_TOOL_NAMES = [
   'recall_context',
@@ -41,6 +44,10 @@ export const REMOTE_MEMORY_TOOL_NAMES = [
   'list_context',
   'remember_context',
   'memory_status',
+  'propose_durable_memory',
+  'list_memory_proposals',
+  'read_memory_proposal',
+  'review_memory_proposal',
   'begin_cursor_attestation',
   'transition_handoff',
 ] as const;
@@ -59,6 +66,11 @@ const PortableSegment = Schema.String.check(
 const Kind = Schema.Literals(['durable', 'handoff']);
 const Status = Schema.Literals(['active', 'archived', 'expired', 'superseded']);
 const NonEmptyUri = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4_096));
+const Relation = Schema.Struct({
+  type: Schema.Literals(MEMORY_RELATION_TYPES),
+  uri: NonEmptyUri,
+});
+const ProposalStatus = Schema.Literals(['pending', 'approved', 'rejected', 'conflict']);
 const Kinds = Schema.Array(Kind).check(Schema.isMinLength(1), Schema.isMaxLength(2));
 const Limit = Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 100}));
 const IsoUtcInstant = Schema.String.check(
@@ -221,10 +233,11 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
     {
       annotations: {destructiveHint: false, idempotentHint: true, readOnlyHint: false},
       description:
-        'Create or compare-and-swap one durable memory or handoff in the authorized remote share; replaceUri may identify the same memory with baseRevision.',
+        'Create or compare-and-swap one durable memory or handoff in the authorized remote share; replaceUri may identify the same memory with baseRevision. citationSources selects existing clean canonical citations from active same-share memories; omission preserves, [] clears, a nonempty list replaces. Citations record provenance, not proof of prose.',
       inputSchema: Schema.Struct({
         attestationId: Schema.optionalKey(Identifier),
         baseRevision: Schema.optionalKey(Identifier),
+        citationSources: Schema.optionalKey(RemoteCitationSourcesSchema),
         kind: Kind,
         lifecycle: Schema.optionalKey(
           Schema.Struct({
@@ -234,6 +247,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
         ),
         operationId: Identifier,
         project: PortableSegment,
+        relations: Schema.optionalKey(Schema.Array(Relation).check(Schema.isMaxLength(MAX_MEMORY_RELATIONS))),
         replaceUri: Schema.optionalKey(NonEmptyUri),
         text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000_000)),
         topic: PortableSegment,
@@ -248,6 +262,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
         requireRemoteScope(principal, input.kind === 'durable' ? 'memory:write:durable' : 'memory:write:handoff');
         requireAuthorizedProject(principal, input.project);
         assertRemoteRememberReplacementTarget(principal, input);
+        const authorizedInput = authorizeRemoteRememberRelations(principal, input);
         const attestation = await requireCursorAttestation(
           dependencies.attestations,
           principal,
@@ -257,7 +272,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
         );
         const result = await dependencies.repository.remember(
           principal,
-          input,
+          authorizedInput,
           requestContext.requestId,
           attestation,
           undefined,
@@ -282,6 +297,142 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
         const result = await dependencies.repository.status(principal, requestContext.requestId, execution);
         assertReceipt(result.receipt, principal, requestContext.requestId);
         return result;
+      }),
+  );
+
+  tools.register(
+    'propose_durable_memory',
+    {
+      annotations: {destructiveHint: false, idempotentHint: true, readOnlyHint: false},
+      description:
+        'Submit an immutable durable-memory proposal for independent review. The proposal is not a memory and does not write canonical Git. citationSources stores only canonical donor URI/citationId selectors, revalidated at approval; omission preserves, [] clears, a nonempty list replaces.',
+      inputSchema: Schema.Struct({
+        attestationId: Schema.optionalKey(Identifier),
+        baseRevision: Schema.optionalKey(Identifier),
+        citationSources: Schema.optionalKey(RemoteCitationSourcesSchema),
+        operationId: Identifier,
+        project: PortableSegment,
+        relations: Schema.optionalKey(Schema.Array(Relation).check(Schema.isMaxLength(MAX_MEMORY_RELATIONS))),
+        replaceUri: Schema.optionalKey(NonEmptyUri),
+        text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000_000)),
+        topic: PortableSegment,
+        version: Version,
+      }),
+    },
+    input =>
+      invokeRemoteTool(requestContext, dependencies, 'propose_durable_memory', async (principal, execution) => {
+        requireRemoteScope(principal, 'memory:propose:durable');
+        requireAuthorizedProject(principal, input.project);
+        const durableInput = authorizeRemoteRememberRelations(principal, {...input, kind: 'durable'});
+        assertRemoteRememberReplacementTarget(principal, durableInput);
+        const attestation = await requireCursorAttestation(
+          dependencies.attestations,
+          principal,
+          input.attestationId,
+          input.project,
+          execution,
+        );
+        return dependencies.repository.proposeDurable(
+          principal,
+          {
+            ...input,
+            ...(durableInput.relations === undefined ? {} : {relations: durableInput.relations}),
+            ...(durableInput.citationSources === undefined ? {} : {citationSources: durableInput.citationSources}),
+          },
+          requestContext.requestId,
+          attestation,
+          undefined,
+          execution,
+        );
+      }),
+  );
+
+  tools.register(
+    'list_memory_proposals',
+    {
+      annotations: {readOnlyHint: true},
+      description: 'List a bounded review queue of noncanonical durable-memory proposals.',
+      inputSchema: Schema.Struct({
+        afterProposalId: Schema.optionalKey(Identifier),
+        limit: Schema.optionalKey(Limit),
+        project: Schema.optionalKey(PortableSegment),
+        status: Schema.optionalKey(ProposalStatus),
+        version: Version,
+      }),
+    },
+    input =>
+      invokeRemoteTool(requestContext, dependencies, 'list_memory_proposals', async (principal, execution) => {
+        requireRemoteScope(principal, 'memory:review:durable');
+        if (input.project) requireAuthorizedProject(principal, input.project);
+        return dependencies.repository.listProposals(principal, {...input, limit: input.limit ?? 50}, execution);
+      }),
+  );
+
+  tools.register(
+    'read_memory_proposal',
+    {
+      annotations: {readOnlyHint: true},
+      description: 'Read one immutable noncanonical durable-memory proposal by exact proposal id.',
+      inputSchema: Schema.Struct({proposalId: Identifier, version: Version}),
+    },
+    input =>
+      invokeRemoteTool(requestContext, dependencies, 'read_memory_proposal', async (principal, execution) => {
+        requireRemoteScope(principal, 'memory:review:durable');
+        return dependencies.repository.readProposal(principal, input.proposalId, execution);
+      }),
+  );
+
+  tools.register(
+    'review_memory_proposal',
+    {
+      annotations: {destructiveHint: true, idempotentHint: true, readOnlyHint: false},
+      description:
+        'Approve or reject one exact durable-memory proposal revision. Approval revalidates current policy and writes through canonical remember_context semantics.',
+      inputSchema: Schema.Struct({
+        attestationId: Schema.optionalKey(Identifier),
+        decision: Schema.Literals(['approve', 'reject']),
+        operationId: Identifier,
+        proposalId: Identifier,
+        reason: Schema.optionalKey(
+          Schema.String.check(
+            Schema.isMinLength(1),
+            Schema.makeFilter(value => {
+              if (!value.trim()) return 'Review reason must contain non-whitespace text.';
+              return Buffer.byteLength(value.trim(), 'utf8') <= 1_024
+                ? undefined
+                : 'Review reason exceeds 1024 UTF-8 bytes.';
+            }),
+          ),
+        ),
+        revision: Identifier,
+        version: Version,
+      }).check(
+        Schema.makeFilter(input =>
+          input.decision === 'reject' && input.reason === undefined ? 'A rejection requires a reason.' : undefined,
+        ),
+      ),
+    },
+    input =>
+      invokeRemoteTool(requestContext, dependencies, 'review_memory_proposal', async (principal, execution) => {
+        requireRemoteScope(principal, 'memory:review:durable');
+        if (input.decision === 'approve') requireRemoteScope(principal, 'memory:write:durable');
+        const proposal = await dependencies.repository.readProposal(principal, input.proposalId, execution);
+        requireAuthorizedProject(principal, proposal.project);
+        const attestation = await requireCursorAttestation(
+          dependencies.attestations,
+          principal,
+          input.attestationId,
+          proposal.project,
+          execution,
+        );
+        return dependencies.repository.reviewProposal(
+          principal,
+          input,
+          requestContext.requestId,
+          attestation,
+          undefined,
+          execution,
+        );
       }),
   );
 

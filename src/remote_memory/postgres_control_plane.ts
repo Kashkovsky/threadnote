@@ -25,6 +25,7 @@ import {
   type RemoteMemoryRequestExecution,
   withRemoteMemoryRequestCancellation,
 } from './request_execution.js';
+import {acquireRemoteRelationAdmissionTransactionLock} from './relation_admission.js';
 
 const DATABASE_TIMEOUT_MILLISECONDS = 5_000;
 export const STORED_SHARE_POLICY_MAX_BYTES = 4 * 1024 * 1024;
@@ -387,6 +388,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
     const retentionPolicy = internalRetentionPolicy();
     await this.sql.begin(async transaction => {
       await setTenant(transaction, input.tenantId);
+      await acquireRemoteRelationAdmissionTransactionLock(transaction, input.tenantId, input.shareId);
       await transaction`
         INSERT INTO remote_memory.tenants(id, region, status)
         VALUES (${input.tenantId}, ${input.region}, 'active')
@@ -1034,7 +1036,9 @@ function authorizedPrincipal(row: AuthorizationRow, OAuth: OAuthPrincipalClaims)
 function isRemoteMemoryScope(value: string): value is RemoteMemoryScope {
   return (
     value === 'memory:admin' ||
+    value === 'memory:propose:durable' ||
     value === 'memory:read' ||
+    value === 'memory:review:durable' ||
     value === 'memory:write:durable' ||
     value === 'memory:write:handoff'
   );

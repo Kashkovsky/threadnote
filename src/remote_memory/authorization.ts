@@ -1,12 +1,20 @@
+import {normalizeRemoteCitationSources} from '../memory_domain/citation_sources.js';
 import {Schema} from 'effect';
-import {InvalidRemoteMemoryAddress, parseRemoteShareAddress} from '../memory_domain/address.js';
+import {formatRemoteMemoryUri, InvalidRemoteMemoryAddress, parseRemoteShareAddress} from '../memory_domain/address.js';
 import type {RemoteRememberInputV1} from '../memory_domain/contracts.js';
+import {InvalidRemoteMemoryRelations, normalizeRemoteMemoryRelations} from '../memory_domain/relations.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import type {OAuthPrincipalClaims} from './oauth.js';
 import {remoteMemoryError} from './errors.js';
 import type {RemoteMemoryRequestExecution} from './request_execution.js';
 
-export type RemoteMemoryScope = 'memory:admin' | 'memory:read' | 'memory:write:durable' | 'memory:write:handoff';
+export type RemoteMemoryScope =
+  | 'memory:admin'
+  | 'memory:propose:durable'
+  | 'memory:read'
+  | 'memory:review:durable'
+  | 'memory:write:durable'
+  | 'memory:write:handoff';
 
 export const REMOTE_MEMORY_FEATURE_FLAGS = [
   'remote_memory_read',
@@ -124,10 +132,44 @@ export function assertRemoteRememberReplacementTarget(
   }
 }
 
+export function authorizeRemoteRememberRelations(
+  principal: AuthorizedRemotePrincipal,
+  input: RemoteRememberInputV1,
+): RemoteRememberInputV1 {
+  input = authorizeRemoteCitationSources(principal, input);
+  let relations;
+  try {
+    relations = normalizeRemoteMemoryRelations(input.relations);
+  } catch (cause) {
+    if (!Schema.is(InvalidRemoteMemoryRelations)(cause)) throw cause;
+    throw remoteMemoryError('invalid_request', cause.message);
+  }
+  if (relations === undefined) return input;
+  const sourceUri = formatRemoteMemoryUri({
+    kind: input.kind,
+    project: input.project,
+    shareId: principal.shareId,
+    topic: input.topic,
+  });
+  for (const relation of relations) {
+    const address = parseRemoteShareAddress(relation.uri);
+    if (address.shareId !== principal.shareId) {
+      throw remoteMemoryError('forbidden', 'A relation target is outside the authorized memory share.');
+    }
+    requireAuthorizedProject(principal, address.project);
+    if (address.canonicalUri === sourceUri) {
+      throw remoteMemoryError('invalid_request', 'A remote memory cannot relate to itself.');
+    }
+  }
+  return {...input, relations};
+}
+
 function featureForScope(scope: RemoteMemoryScope): RemoteMemoryFeatureFlag | undefined {
   switch (scope) {
     case 'memory:read':
       return 'remote_memory_read';
+    case 'memory:propose:durable':
+    case 'memory:review:durable':
     case 'memory:write:durable':
       return 'remote_memory_durable_write';
     case 'memory:write:handoff':
@@ -135,4 +177,27 @@ function featureForScope(scope: RemoteMemoryScope): RemoteMemoryFeatureFlag | un
     case 'memory:admin':
       return undefined;
   }
+}
+
+export function authorizeRemoteCitationSources(
+  principal: AuthorizedRemotePrincipal,
+  input: RemoteRememberInputV1,
+): RemoteRememberInputV1 {
+  let citationSources;
+  try {
+    citationSources = normalizeRemoteCitationSources(input.citationSources);
+  } catch {
+    throw remoteMemoryError(
+      'invalid_request',
+      'Citation sources must be bounded canonical URI and citation ID selectors.',
+    );
+  }
+  if (citationSources === undefined) return input;
+  for (const source of citationSources) {
+    const address = parseRemoteShareAddress(source.uri);
+    if (address.shareId !== principal.shareId)
+      throw remoteMemoryError('forbidden', 'A citation source is outside the authorized memory share.');
+    requireAuthorizedProject(principal, address.project);
+  }
+  return {...input, citationSources};
 }

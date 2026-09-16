@@ -3,6 +3,8 @@ import type {RemoteMemoryKind} from './contracts.js';
 export const REMOTE_MEMORY_POLICY_CONTRACT_VERSION = 1 as const;
 export const REMOTE_MEMORY_CAPABILITIES = [
   'memory:read',
+  'memory:propose:durable',
+  'memory:review:durable',
   'memory:write:durable',
   'memory:write:handoff',
   'memory:admin',

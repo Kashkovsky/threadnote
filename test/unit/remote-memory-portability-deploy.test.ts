@@ -77,5 +77,6 @@ describe('remote memory reference deployment', () => {
     expect(migrations).toContain("name: '001_initial.sql'");
     expect(migrations).toContain("name: '002_git_canonical_pointers.sql'");
     expect(migrations).toContain("name: '003_git_ingest_observations.sql'");
+    expect(migrations).toContain("name: '004_durable_memory_proposals.sql'");
   });
 });

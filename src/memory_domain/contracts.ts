@@ -1,6 +1,9 @@
 import {Schema} from 'effect';
 import {parseRemoteShareAddress} from './address.js';
 import {validatePortableSegment} from '../storage/resource-id.js';
+import {MAX_MEMORY_RELATIONS, MEMORY_RELATION_TYPES} from '../memory/document.js';
+import {normalizeRemoteCitationSources, RemoteCitationSourcesSchema} from './citation_sources.js';
+import {normalizeRemoteMemoryRelations} from './relations.js';
 
 export const REMOTE_MEMORY_CONTRACT_VERSION = 1 as const;
 export const REMOTE_MEMORY_KINDS = ['durable', 'handoff'] as const;
@@ -49,10 +52,19 @@ export type RemoteLifecycleInputV1 = typeof RemoteLifecycleInputSchemaV1.Type;
 export const RemoteRememberInputSchemaV1 = Schema.Struct({
   attestationId: Schema.optionalKey(BoundedIdentifier),
   baseRevision: Schema.optionalKey(BoundedIdentifier),
+  citationSources: Schema.optionalKey(RemoteCitationSourcesSchema),
   kind: Schema.Literals(REMOTE_MEMORY_KINDS),
   lifecycle: Schema.optionalKey(RemoteLifecycleInputSchemaV1),
   operationId: BoundedIdentifier,
   project: BoundedPortableSegment,
+  relations: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        type: Schema.Literals(MEMORY_RELATION_TYPES),
+        uri: BoundedUri,
+      }),
+    ).check(Schema.isMaxLength(MAX_MEMORY_RELATIONS)),
+  ),
   replaceUri: Schema.optionalKey(BoundedUri),
   text: BoundedMemoryText,
   topic: BoundedPortableSegment,
@@ -94,5 +106,11 @@ export function parseRemoteRememberInputV1(value: unknown): RemoteRememberInputV
   if (parsed.lifecycle?.expiresAt !== undefined && Number.isNaN(Date.parse(parsed.lifecycle.expiresAt))) {
     throw new TypeError('Remote memory expiry must be a valid UTC instant.');
   }
-  return parsed;
+  return {
+    ...parsed,
+    ...(parsed.relations === undefined ? {} : {relations: normalizeRemoteMemoryRelations(parsed.relations)!}),
+    ...(parsed.citationSources === undefined
+      ? {}
+      : {citationSources: normalizeRemoteCitationSources(parsed.citationSources)!}),
+  };
 }
