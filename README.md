@@ -86,7 +86,7 @@ macOS and Linux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
-threadnote mcp-install codex --apply # or claude / cursor / copilot
+threadnote mcp-install codex --apply # or claude / cursor / copilot / omp
 threadnote doctor
 ```
 
@@ -94,7 +94,8 @@ Each applied `mcp-install` registers only the selected host and installs its MCP
 bootstrap, and progressively loaded Threadnote skills. Cursor uses its supported user rule and skill directories; the
 Marketplace plugin remains an optional alternative instruction provider. Threadnote never writes to Cursor's
 local-plugin directory. See the [Cursor plugin guide](./docs/cursor-plugin.md) for the alternative provider and
-publishing workflow.
+publishing workflow. omp uses its native `~/.omp/agent/mcp.json`, `~/.omp/agent/AGENTS.md`, and `~/.omp/agent/skills`
+locations; `threadnote install-hooks omp --apply` adds its session-start and pre-compaction hooks.
 
 To select the Threadnote 4 beta channel on macOS or Linux, pass `--beta`. This inclusive preview channel installs the
 newest immutable release across stable and prerelease builds, so a newer stable release wins when one is available:
@@ -111,7 +112,7 @@ Windows PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex
-threadnote mcp-install codex --apply # or claude / cursor / copilot
+threadnote mcp-install codex --apply # or claude / cursor / copilot / omp
 threadnote doctor
 ```
 

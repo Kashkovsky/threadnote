@@ -7,7 +7,7 @@ import {ensureDirectory, errorMessage, readFileIfExists} from '../utils.js';
 
 export const AGENT_INTEGRATION_REGISTRY_VERSION = 1;
 export const AGENT_INTEGRATION_ARTIFACT_VERSION = 1;
-export const AGENT_CLIENTS = ['codex', 'claude', 'cursor', 'copilot'] as const;
+export const AGENT_CLIENTS = ['codex', 'claude', 'cursor', 'copilot', 'omp'] as const;
 
 const AGENT_INTEGRATION_REGISTRY_PATH = 'integrations/agents.json';
 const AGENT_INTEGRATION_LOCK_PATH = 'locks/agent-integrations.lock';
@@ -22,6 +22,7 @@ export interface AgentIntegrationMcpReceipt {
   readonly artifactProfile?: 'cursor-cloud-personal' | 'default';
   readonly cwd?: string;
   readonly external?: boolean;
+  readonly hostRoot?: string;
   readonly name: string;
   readonly repair: boolean;
   readonly scope?: ClaudeMcpScope;
@@ -165,6 +166,9 @@ function isHostReceipt(value: unknown): value is AgentIntegrationHostReceipt {
     return false;
   }
   if (value.mcp.external !== undefined && typeof value.mcp.external !== 'boolean') return false;
+  if (value.mcp.hostRoot !== undefined && (typeof value.mcp.hostRoot !== 'string' || value.mcp.hostRoot.length === 0)) {
+    return false;
+  }
   if (value.mcp.repair && value.mcp.toolset === undefined) return false;
   if (
     value.mcp.scope !== undefined &&

@@ -14,6 +14,7 @@ import {startProgress, withProgressLine} from './cli_ui.js';
 import {commandShimCheck, installCommandShim, removeCommandShim} from './command-shim.js';
 import {sha256FileHex} from './effect/digest.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
+import {hasManagedOmpHooks} from './omp_hooks.js';
 import {localAiDoctorCheck} from './effect/local-ai.js';
 import {SystemInfo} from './effect/system.js';
 import {
@@ -434,14 +435,23 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
     const registry = yield* readAgentIntegrationRegistry(config);
     const registeredClients = registry === undefined ? inferredMcpClients : registeredAgentClients(registry);
     const repairableClients = repairableAgentClients(registry);
+    const receipts = Object.fromEntries(
+      registeredClients.flatMap(agent =>
+        registry?.hosts[agent]?.mcp === undefined ? [] : [[agent, registry.hosts[agent].mcp]],
+      ),
+    );
     const requestedMcpClients = options.mcp ?? (repairableClients.length === 0 ? 'none' : repairableClients.join(','));
-    const mcpClients = yield* resolveMcpClients(requestedMcpClients, 'repair');
+    const mcpClients = yield* resolveMcpClients(requestedMcpClients, 'repair', receipts);
     yield* repairRegisteredMcpClients(config, registry, mcpClients, dryRun);
     if (repairedIntegrationClients.length === 0 && registeredClients.length === 0) {
       yield* Console.log('No agent integrations are registered; skipping host-specific repair.');
     }
     if (yield* hasManagedClaudeHooks()) {
       yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
+    }
+    const ompHostRoot = registry?.hosts.omp?.mcp.hostRoot;
+    if (yield* hasManagedOmpHooks(ompHostRoot)) {
+      yield* runHooksInstall(config, 'omp', {apply: !dryRun, dryRun, hostRoot: ompHostRoot});
     }
   }
   let completion: CodeGraphRepairCompletion | undefined;
@@ -496,8 +506,9 @@ export const repairRegisteredMcpClients = Effect.fn('lifecycle.repairRegisteredM
       apply: !dryRun,
       cwd: receipt.mcp.cwd,
       dryRunApplyCommand: 'threadnote repair',
+      hostRoot: receipt.mcp.hostRoot,
       name: receipt.mcp.name,
-      project: client === 'cursor' || client === 'copilot' ? receipt.mcp.cwd : undefined,
+      project: client === 'cursor' || client === 'copilot' || client === 'omp' ? receipt.mcp.cwd : undefined,
       scope: receipt.mcp.scope,
       toolset: receipt.mcp.toolset,
     });
@@ -673,6 +684,10 @@ const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(
   }
   if (yield* hasManagedCursorHooks()) {
     yield* runHooksInstall(config, 'cursor', {apply: !dryRun, dryRun, remove: true});
+  }
+  const ompHostRoot = registry?.hosts.omp?.mcp.hostRoot;
+  if (yield* hasManagedOmpHooks(ompHostRoot)) {
+    yield* runHooksInstall(config, 'omp', {apply: !dryRun, dryRun, hostRoot: ompHostRoot, remove: true});
   }
   yield* removeCommandShim(dryRun);
   yield* removeAgentIntegrationsInTransaction(config, dryRun);

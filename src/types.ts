@@ -1,6 +1,6 @@
 import type {McpToolset} from './mcp/toolset.js';
 
-export type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor';
+export type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor' | 'omp';
 export type ConsolidationAgent = AgentClient | 'effect-ai';
 export type ClaudeMcpScope = 'local' | 'project' | 'user';
 export type CommandStatus = 'fail' | 'ok' | 'warn';
@@ -95,6 +95,8 @@ export interface HooksInstallOptions {
   readonly project?: string;
   readonly apply?: boolean;
   readonly dryRun?: boolean;
+  /** @internal Recorded relocatable host root used by repair and uninstall. */
+  readonly hostRoot?: string;
   readonly remove?: boolean;
 }
 
@@ -181,6 +183,8 @@ export interface McpInstallOptions {
   /** @internal Recorded Claude project/local installation directory used by repair. */
   readonly cwd?: string;
   readonly dryRunApplyCommand?: string;
+  /** @internal Recorded relocatable host root used by repair and uninstall. */
+  readonly hostRoot?: string;
   readonly name?: string;
   readonly project?: string;
   readonly scope?: ClaudeMcpScope;

@@ -1,10 +1,11 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {withoutOmpPathSelectors} from '../helpers/omp-environment.js';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {installAgentIntegration} from '../../src/agent_integration/index.js';
+import {installAgentIntegration, migrateLegacyAgentIntegrations} from '../../src/agent_integration/index.js';
 import {mcpConfigurationChecks} from '../../src/mcp/index.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
@@ -151,6 +152,13 @@ describe('MCP doctor checks', () => {
             mcpServers: {threadnote: {args: ['mcp-server'], command: '/home/test/.local/bin/threadnote'}},
           }),
         );
+        yield* fs.makeDirectory(path.join(user, '.omp', 'agent'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(user, '.omp', 'agent', 'mcp.json'),
+          JSON.stringify({
+            mcpServers: {threadnote: {args: ['mcp-server'], command: '/home/test/.local/bin/threadnote'}},
+          }),
+        );
         const testSystem = SystemInfo.of({
           ...system,
           environment: () => ({...system.environment(), PATH: bin}),
@@ -161,7 +169,7 @@ describe('MCP doctor checks', () => {
         const checks = yield* mcpConfigurationChecks(runtime(path.join(user, '.threadnote'))).pipe(
           Effect.provideService(SystemInfo, testSystem),
         );
-        for (const name of ['codex MCP', 'cursor MCP']) {
+        for (const name of ['codex MCP', 'cursor MCP', 'omp MCP']) {
           expect(checks).toContainEqual({
             detail: expect.stringContaining('legacy direct server command'),
             name,
@@ -202,6 +210,177 @@ describe('MCP doctor checks', () => {
           detail: `threadnote broker configured in ${cursorConfig}`,
           name: 'cursor MCP',
           status: 'ok',
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('reports a configured omp MCP broker in the native user config', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-doctor-omp-'});
+        const user = path.join(root, 'user');
+        const configPath = path.join(user, '.omp', 'agent', 'mcp.json');
+        yield* fs.makeDirectory(path.dirname(configPath), {recursive: true});
+        yield* fs.writeFileString(
+          configPath,
+          JSON.stringify({
+            mcpServers: {threadnote: {command: path.join(root, 'bin', 'threadnote-mcp-server')}},
+          }),
+        );
+        const testSystem = SystemInfo.of({
+          ...system,
+          environment: () => withoutOmpPathSelectors(system.environment()),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+
+        const checks = yield* mcpConfigurationChecks(runtime(path.join(user, '.threadnote'))).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+
+        expect(checks).toContainEqual({
+          detail: `threadnote broker configured in ${configPath}`,
+          name: 'omp MCP',
+          status: 'ok',
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('reports each native omp disable mechanism independently', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-doctor-omp-disabled-'});
+        for (const scenario of ['denylist', 'entry', 'both'] as const) {
+          const user = path.join(root, scenario, 'user');
+          const agentRoot = path.join(user, '.omp', 'agent');
+          const configPath = path.join(agentRoot, 'mcp.json');
+          const testRuntime = runtime(path.join(user, '.threadnote'));
+          const testSystem = SystemInfo.of({
+            ...system,
+            environment: () => ({
+              ...withoutOmpPathSelectors(system.environment()),
+              PI_CODING_AGENT_DIR: agentRoot,
+            }),
+            homeDirectory: user,
+            platform: 'linux',
+          });
+          yield* fs.makeDirectory(path.dirname(configPath), {recursive: true});
+          yield* fs.writeFileString(
+            configPath,
+            JSON.stringify({
+              ...(scenario === 'entry' ? {} : {disabledServers: ['threadnote']}),
+              mcpServers: {
+                threadnote: {
+                  command: path.join(root, 'bin', 'threadnote-mcp-server'),
+                  ...(scenario === 'denylist' ? {} : {enabled: false}),
+                },
+              },
+            }),
+          );
+          yield* installAgentIntegration(testRuntime, 'omp', {
+            dryRun: false,
+            name: 'threadnote',
+            toolset: 'core',
+          }).pipe(Effect.provideService(SystemInfo, testSystem));
+
+          const checks = yield* mcpConfigurationChecks(testRuntime).pipe(Effect.provideService(SystemInfo, testSystem));
+          expect(checks, scenario).toContainEqual({
+            detail: expect.stringContaining('disabled'),
+            name: 'omp MCP',
+            status: 'warn',
+          });
+        }
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('treats enabledServers as overriding an omp entry disabled flag', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-doctor-omp-enabled-'});
+        const user = path.join(root, 'user');
+        const configPath = path.join(user, '.omp', 'agent', 'mcp.json');
+        const testRuntime = runtime(path.join(user, '.threadnote'));
+        const testSystem = SystemInfo.of({
+          ...system,
+          environment: () => withoutOmpPathSelectors(system.environment()),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+        yield* fs.makeDirectory(path.dirname(configPath), {recursive: true});
+        yield* fs.writeFileString(
+          configPath,
+          JSON.stringify({
+            enabledServers: ['threadnote'],
+            mcpServers: {
+              threadnote: {command: path.join(root, 'bin', 'threadnote-mcp-server'), enabled: false},
+            },
+          }),
+        );
+        yield* installAgentIntegration(testRuntime, 'omp', {
+          dryRun: false,
+          name: 'threadnote',
+          toolset: 'core',
+        }).pipe(Effect.provideService(SystemInfo, testSystem));
+
+        const checks = yield* mcpConfigurationChecks(testRuntime).pipe(Effect.provideService(SystemInfo, testSystem));
+        expect(checks).toContainEqual({
+          detail: `threadnote broker configured in ${configPath}`,
+          name: 'omp MCP',
+          status: 'ok',
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('does not promise automatic repair for a disabled legacy omp receipt', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-doctor-omp-legacy-disabled-'});
+        const user = path.join(root, 'user');
+        const agentRoot = path.join(user, '.omp', 'agent');
+        const configPath = path.join(agentRoot, 'mcp.json');
+        const testRuntime = runtime(path.join(user, '.threadnote'));
+        const testSystem = SystemInfo.of({
+          ...system,
+          environment: () => ({
+            ...withoutOmpPathSelectors(system.environment()),
+            PI_CODING_AGENT_DIR: agentRoot,
+          }),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+        yield* fs.makeDirectory(path.dirname(configPath), {recursive: true});
+        yield* fs.writeFileString(
+          configPath,
+          JSON.stringify({
+            disabledServers: ['threadnote'],
+            mcpServers: {threadnote: {command: path.join(root, 'bin', 'threadnote-mcp-server')}},
+          }),
+        );
+        yield* migrateLegacyAgentIntegrations(testRuntime, ['omp'], false).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+
+        const checks = yield* mcpConfigurationChecks(testRuntime).pipe(Effect.provideService(SystemInfo, testSystem));
+        expect(checks).toContainEqual({
+          detail: expect.stringContaining('threadnote mcp-install omp --apply'),
+          name: 'omp MCP',
+          status: 'warn',
         });
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),

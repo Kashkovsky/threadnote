@@ -18,8 +18,9 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import type {AgentClient, RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {withoutOmpPathSelectors} from '../helpers/omp-environment.js';
 
-const agents = ['codex', 'claude', 'cursor', 'copilot'] as const;
+const agents = ['codex', 'claude', 'cursor', 'copilot', 'omp'] as const;
 
 function config(home: string): RuntimeConfig {
   return {
@@ -32,6 +33,186 @@ function config(home: string): RuntimeConfig {
 }
 
 describe('agent integrations', () => {
+  effectIt.effect('uses the active OMP agent root for instructions and skills', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-omp-profile-'});
+        const userHome = path.join(root, 'user');
+        const profileRoot = path.join(userHome, '.omp', 'profiles', 'work', 'agent');
+        const overriddenRoot = path.join(root, 'overridden-agent');
+        const threadnoteHome = path.join(root, 'shared-threadnote');
+        const testSystem = SystemInfo.of({
+          ...system,
+          environment: () => ({
+            ...withoutOmpPathSelectors(system.environment()),
+            OMP_PROFILE: 'work',
+            PI_CODING_AGENT_DIR: overriddenRoot,
+            PI_PROFILE: 'ignored',
+          }),
+          homeDirectory: userHome,
+        });
+
+        yield* installAgentIntegration(config(threadnoteHome), 'omp', {
+          dryRun: false,
+          name: 'threadnote',
+          toolset: 'core',
+        }).pipe(Effect.provideService(SystemInfo, testSystem));
+
+        expect(yield* fs.readFileString(path.join(profileRoot, 'AGENTS.md'))).toContain(
+          '<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->',
+        );
+        expect(yield* fs.exists(path.join(profileRoot, 'skills', 'threadnote-context', 'SKILL.md'))).toBe(true);
+        expect(yield* fs.exists(path.join(overriddenRoot, 'AGENTS.md'))).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('uses PI_CODING_AGENT_DIR when no OMP profile is active', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-omp-agent-dir-'});
+        const userHome = path.join(root, 'user');
+        const agentRoot = path.join(root, 'active-agent');
+        const testSystem = SystemInfo.of({
+          ...system,
+          environment: () => ({...withoutOmpPathSelectors(system.environment()), PI_CODING_AGENT_DIR: agentRoot}),
+          homeDirectory: userHome,
+        });
+
+        yield* installAgentIntegration(config(path.join(root, 'shared-threadnote')), 'omp', {
+          dryRun: false,
+          name: 'threadnote',
+          toolset: 'core',
+        }).pipe(Effect.provideService(SystemInfo, testSystem));
+
+        expect(yield* fs.exists(path.join(agentRoot, 'AGENTS.md'))).toBe(true);
+        expect(yield* fs.exists(path.join(userHome, '.omp', 'agent', 'AGENTS.md'))).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('uses PI_PROFILE when OMP_PROFILE is absent', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-pi-profile-'});
+        const userHome = path.join(root, 'user');
+        const profileRoot = path.join(userHome, '.omp', 'profiles', 'pi-work', 'agent');
+        const testSystem = SystemInfo.of({
+          ...system,
+          environment: () => ({...withoutOmpPathSelectors(system.environment()), PI_PROFILE: 'pi-work'}),
+          homeDirectory: userHome,
+        });
+
+        yield* installAgentIntegration(config(path.join(root, 'shared-threadnote')), 'omp', {
+          dryRun: false,
+          name: 'threadnote',
+          toolset: 'core',
+        }).pipe(Effect.provideService(SystemInfo, testSystem));
+
+        expect(yield* fs.exists(path.join(profileRoot, 'AGENTS.md'))).toBe(true);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('moves managed artifacts when a relocatable host root changes', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-omp-profile-move-'});
+        const userHome = path.join(root, 'user');
+        const threadnoteHome = path.join(root, 'shared-threadnote');
+        const profileRoot = (profile: string) => path.join(userHome, '.omp', 'profiles', profile, 'agent');
+        const testSystem = (profile: string) =>
+          SystemInfo.of({
+            ...system,
+            environment: () => ({...withoutOmpPathSelectors(system.environment()), OMP_PROFILE: profile}),
+            homeDirectory: userHome,
+          });
+
+        yield* installAgentIntegration(config(threadnoteHome), 'omp', {
+          dryRun: false,
+          name: 'threadnote',
+          toolset: 'core',
+        }).pipe(Effect.provideService(SystemInfo, testSystem('first')));
+        yield* installAgentIntegration(config(threadnoteHome), 'omp', {
+          dryRun: false,
+          name: 'threadnote',
+          toolset: 'core',
+        }).pipe(Effect.provideService(SystemInfo, testSystem('second')));
+
+        expect(yield* fs.exists(path.join(profileRoot('first'), 'AGENTS.md'))).toBe(false);
+        expect(yield* fs.exists(path.join(profileRoot('first'), 'skills', 'threadnote-context', 'SKILL.md'))).toBe(
+          false,
+        );
+        expect(yield* fs.exists(path.join(profileRoot('second'), 'AGENTS.md'))).toBe(true);
+        expect(yield* fs.exists(path.join(profileRoot('second'), 'skills', 'threadnote-context', 'SKILL.md'))).toBe(
+          true,
+        );
+        expect((yield* readAgentIntegrationRegistry(config(threadnoteHome)))?.hosts.omp?.mcp.hostRoot).toBe(
+          profileRoot('second'),
+        );
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('removes older generated skill content while relocating a host root', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-omp-old-skill-move-'});
+        const userHome = path.join(root, 'user');
+        const threadnoteHome = path.join(root, 'shared-threadnote');
+        const profileRoot = (profile: string) => path.join(userHome, '.omp', 'profiles', profile, 'agent');
+        const skillPath = (profile: string) =>
+          path.join(profileRoot(profile), 'skills', 'threadnote-context', 'SKILL.md');
+        const testSystem = (profile: string) =>
+          SystemInfo.of({
+            ...system,
+            environment: () => ({...withoutOmpPathSelectors(system.environment()), OMP_PROFILE: profile}),
+            homeDirectory: userHome,
+          });
+
+        yield* installAgentIntegration(config(threadnoteHome), 'omp', {
+          dryRun: false,
+          name: 'threadnote',
+          toolset: 'core',
+        }).pipe(Effect.provideService(SystemInfo, testSystem('first')));
+        const olderGeneratedSkill = (yield* fs.readFileString(skillPath('first'))).replace(
+          USER_INSTRUCTIONS_START_MARKER,
+          `${USER_INSTRUCTIONS_START_MARKER}\nLegacy generated content from an older Threadnote release.`,
+        );
+        yield* fs.writeFileString(skillPath('first'), olderGeneratedSkill);
+
+        yield* installAgentIntegration(config(threadnoteHome), 'omp', {
+          dryRun: false,
+          name: 'threadnote',
+          toolset: 'core',
+        }).pipe(Effect.provideService(SystemInfo, testSystem('second')));
+        expect(yield* fs.exists(skillPath('first'))).toBe(false);
+
+        yield* installAgentIntegration(config(threadnoteHome), 'omp', {
+          dryRun: false,
+          name: 'threadnote',
+          toolset: 'core',
+        }).pipe(Effect.provideService(SystemInfo, testSystem('first')));
+        expect(yield* fs.readFileString(skillPath('first'))).toContain(USER_INSTRUCTIONS_START_MARKER);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('registers one selected host with its bootstrap and skills', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -104,6 +285,9 @@ describe('agent integrations', () => {
         expect(
           yield* fs.readFileString(path.join(userHome, '.copilot', 'instructions', 'threadnote.instructions.md')),
         ).toContain('applyTo: "**"');
+        expect(yield* fs.readFileString(path.join(userHome, '.omp', 'agent', 'AGENTS.md'))).toContain(
+          'Use the installed Threadnote skills',
+        );
         expect(yield* fs.exists(path.join(userHome, '.agents', 'AGENTS.md'))).toBe(false);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),

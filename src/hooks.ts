@@ -9,6 +9,7 @@ import {
   THREADNOTE_HOOK_MARKER_VALUE,
 } from './constants.js';
 import {runCursorHooksInstall} from './cursor_hooks.js';
+import {runOmpHooksInstall} from './omp_hooks.js';
 import {parseAgentClient} from './mcp/index.js';
 import {captureConsole} from './effect/console.js';
 import {SystemInfo} from './effect/system.js';
@@ -64,6 +65,9 @@ export function runHooksInstall(config: RuntimeConfig, agent: AgentClient, optio
         return;
       case 'cursor':
         yield* runCursorHooksInstall(options);
+        return;
+      case 'omp':
+        yield* runOmpHooksInstall(options);
         return;
       case 'copilot':
         yield* printNoHooksSupported('copilot', remove);
@@ -204,16 +208,19 @@ export const hasManagedClaudeHooks = Effect.fn('hooks.hasManagedClaudeHooks')(fu
 
 export function runPreCompactHook(
   config: RuntimeConfig,
-  options: HookRunnerOptions & {readonly sourceAgentClient?: 'claude' | 'cursor'; readonly sessionId?: string} = {},
+  options: HookRunnerOptions & {
+    readonly sourceAgentClient?: 'claude' | 'cursor' | 'omp';
+    readonly sessionId?: string;
+  } = {},
 ) {
   // Hooks must never block compaction. Anything that throws here gets swallowed
   // and the process still exits 0 — the worst-case is a missed snapshot.
   return Effect.gen(function* () {
     const project = (yield* resolveRepoName()) ?? 'general';
     const sourceAgentClient = options.sourceAgentClient ?? 'claude';
-    // Cursor transcripts use a different format; keep its snapshot state-only.
+    // Only Claude passes a compatible transcript; other hosts use state-only snapshots.
     const {sessionId, trace}: TraceContext =
-      sourceAgentClient === 'cursor' ? {sessionId: options.sessionId} : yield* captureTraceContext();
+      sourceAgentClient === 'claude' ? yield* captureTraceContext() : {sessionId: options.sessionId};
     yield* runHandoff(config, {
       blockers: '- none recorded',
       dryRun: options.dryRun === true,
@@ -222,7 +229,11 @@ export function runPreCompactHook(
       project,
       sessionId,
       sourceAgentClient,
-      task: `Auto-snapshot captured at ${sourceAgentClient === 'cursor' ? 'Cursor preCompact' : 'Claude PreCompact'} (deterministic safety net before context compaction).`,
+      task: `Auto-snapshot captured at ${
+        sourceAgentClient === 'claude'
+          ? 'Claude PreCompact'
+          : `${sourceAgentClient === 'cursor' ? 'Cursor' : 'OMP'} preCompact`
+      } (deterministic safety net before context compaction).`,
       tests: '- not recorded (auto-snapshot)',
       topic: HOOK_AUTO_PRECOMPACT_TOPIC,
       trace,

@@ -1,4 +1,4 @@
-import {makeCursorHookCommand, makeInstallHooksCommand} from './hooks_cli.js';
+import {makeCursorHookCommand, makeInstallHooksCommand, makePreCompactHookCommand} from './hooks_cli.js';
 import {runCursorHook} from '../cursor_hook_runner.js';
 import {Console, Effect, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
@@ -259,7 +259,7 @@ const install = Command.make(
         if (!options.dryRun) yield* initializeAutoUpdatePolicy('automatic');
         yield* maybeRunPostUpdateAfterRepair(config, {dryRun: options.dryRun});
         if (options.withHooks) {
-          for (const agent of ['claude', 'codex', 'cursor', 'copilot'] as const) {
+          for (const agent of ['claude', 'codex', 'cursor', 'copilot', 'omp'] as const) {
             yield* Console.log(`\n--- ${agent} hooks ---`);
             yield* runHooksInstall(config, agent, {apply: !options.dryRun, dryRun: options.dryRun});
           }
@@ -376,7 +376,7 @@ const repair = Command.make(
     dryRun: boolean('dry-run', 'Print the repair actions without making changes'),
     mcp: defaultString(
       'mcp',
-      'MCP clients: available, all, none, codex, claude, cursor, copilot, or comma-separated list',
+      'MCP clients: available, all, none, codex, claude, cursor, copilot, omp, or comma-separated list',
       'available',
     ),
     postUpdate: negatedBoolean('post-update', 'Skip post-update migration prompts after repair'),
@@ -443,7 +443,7 @@ const uninstall = Command.make(
     eraseMemories: boolean('erase-memories', 'Delete THREADNOTE_HOME, including all Threadnote memories and models'),
     mcp: defaultString(
       'mcp',
-      'MCP clients to remove: available, all, none, codex, claude, cursor, copilot, or comma-separated list',
+      'MCP clients to remove: available, all, none, codex, claude, cursor, copilot, omp, or comma-separated list',
       'available',
     ),
     preserveMemories: boolean('preserve-memories', 'Preserve THREADNOTE_HOME and Threadnote memories (default)'),
@@ -1196,13 +1196,13 @@ const seedSkills = Command.make(
 const mcpInstall = Command.make(
   'mcp-install',
   {
-    agent: Argument.Literals('agent', ['codex', 'claude', 'cursor', 'copilot']).pipe(
-      Argument.withDescription('codex, claude, cursor, or copilot'),
+    agent: Argument.Literals('agent', ['codex', 'claude', 'cursor', 'copilot', 'omp']).pipe(
+      Argument.withDescription('codex, claude, cursor, copilot, or omp'),
     ),
     apply: boolean('apply', 'Actually modify the selected agent config'),
     ...makeComposerAttachFlags(),
     name: defaultString('name', 'MCP server name', THREADNOTE_MCP_NAME),
-    project: optionalString('project', 'Write Cursor/Copilot MCP into this repository .cursor/mcp.json'),
+    project: optionalString('project', 'Write Cursor/Copilot/omp MCP into this repository config'),
     scope: defaultChoice('scope', ['user', 'local', 'project'], 'Claude MCP config scope', 'user'),
     toolset: optionalChoice('toolset', ['core', 'full'], 'Stdio adapter toolset'),
   },
@@ -1216,11 +1216,9 @@ const cursorHook = makeCursorHookCommand((event, options) =>
   withRuntimeEffect(config => runCursorHook(config, event, options)),
 );
 
-const preCompactHook = Command.make(
-  'pre-compact-hook',
-  {dryRun: boolean('dry-run', 'Print the handoff payload without writing it')},
-  options => withRuntimeEffect(config => runPreCompactHook(config, options)),
-).pipe(Command.withDescription('Store a handoff snapshot before context compaction'), Command.unlisted);
+const preCompactHook = makePreCompactHookCommand(options =>
+  withRuntimeEffect(config => runPreCompactHook(config, options)),
+);
 
 const sessionStartHook = Command.make(
   'session-start-hook',

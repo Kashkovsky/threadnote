@@ -10,8 +10,8 @@ export function makeInstallHooksCommand<E, R>(
   return Command.make(
     'install-hooks',
     {
-      agent: Argument.Literals('agent', ['codex', 'claude', 'cursor', 'copilot']).pipe(
-        Argument.withDescription('codex, claude, cursor, or copilot'),
+      agent: Argument.Literals('agent', ['codex', 'claude', 'cursor', 'copilot', 'omp']).pipe(
+        Argument.withDescription('codex, claude, cursor, copilot, or omp'),
       ),
       apply: boolean('apply', 'Actually modify the selected agent config'),
       dryRun: boolean('dry-run', 'Print the planned change without applying it'),
@@ -34,4 +34,17 @@ export function makeCursorHookCommand<E, R>(
     },
     ({event, ...options}) => handler(event, options),
   ).pipe(Command.withDescription('Run a managed Cursor JSON lifecycle hook'), Command.unlisted);
+}
+
+export function makePreCompactHookCommand<E, R>(
+  handler: (options: HookRunnerOptions & {readonly sourceAgentClient?: 'omp'}) => Effect.Effect<void, E, R>,
+) {
+  return Command.make(
+    'pre-compact-hook',
+    {
+      dryRun: boolean('dry-run', 'Print the handoff payload without writing it'),
+      sourceAgentClient: optionalChoice('source-agent-client', ['omp'], 'Source host for a state-only snapshot'),
+    },
+    handler,
+  ).pipe(Command.withDescription('Store a handoff snapshot before context compaction'), Command.unlisted);
 }
