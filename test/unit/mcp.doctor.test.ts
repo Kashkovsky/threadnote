@@ -151,6 +151,13 @@ describe('MCP doctor checks', () => {
             mcpServers: {threadnote: {args: ['mcp-server'], command: '/home/test/.local/bin/threadnote'}},
           }),
         );
+        yield* fs.makeDirectory(path.join(user, '.omp', 'agent'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(user, '.omp', 'agent', 'mcp.json'),
+          JSON.stringify({
+            mcpServers: {threadnote: {args: ['mcp-server'], command: '/home/test/.local/bin/threadnote'}},
+          }),
+        );
         const testSystem = SystemInfo.of({
           ...system,
           environment: () => ({...system.environment(), PATH: bin}),
@@ -161,7 +168,7 @@ describe('MCP doctor checks', () => {
         const checks = yield* mcpConfigurationChecks(runtime(path.join(user, '.threadnote'))).pipe(
           Effect.provideService(SystemInfo, testSystem),
         );
-        for (const name of ['codex MCP', 'cursor MCP']) {
+        for (const name of ['codex MCP', 'cursor MCP', 'omp MCP']) {
           expect(checks).toContainEqual({
             detail: expect.stringContaining('legacy direct server command'),
             name,
@@ -201,6 +208,37 @@ describe('MCP doctor checks', () => {
         expect(checks).toContainEqual({
           detail: `threadnote broker configured in ${cursorConfig}`,
           name: 'cursor MCP',
+          status: 'ok',
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('reports a configured omp MCP broker in the native user config', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-doctor-omp-'});
+        const user = path.join(root, 'user');
+        const configPath = path.join(user, '.omp', 'agent', 'mcp.json');
+        yield* fs.makeDirectory(path.dirname(configPath), {recursive: true});
+        yield* fs.writeFileString(
+          configPath,
+          JSON.stringify({
+            mcpServers: {threadnote: {command: path.join(root, 'bin', 'threadnote-mcp-server')}},
+          }),
+        );
+        const testSystem = SystemInfo.of({...system, homeDirectory: user, platform: 'linux'});
+
+        const checks = yield* mcpConfigurationChecks(runtime(path.join(user, '.threadnote'))).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+
+        expect(checks).toContainEqual({
+          detail: `threadnote broker configured in ${configPath}`,
+          name: 'omp MCP',
           status: 'ok',
         });
       }),

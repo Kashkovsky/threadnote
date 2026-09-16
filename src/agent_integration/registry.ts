@@ -7,7 +7,7 @@ import {ensureDirectory, errorMessage, readFileIfExists} from '../utils.js';
 
 export const AGENT_INTEGRATION_REGISTRY_VERSION = 1;
 export const AGENT_INTEGRATION_ARTIFACT_VERSION = 1;
-export const AGENT_CLIENTS = ['codex', 'claude', 'cursor', 'copilot'] as const;
+export const AGENT_CLIENTS = ['codex', 'claude', 'cursor', 'copilot', 'omp'] as const;
 
 const AGENT_INTEGRATION_REGISTRY_PATH = 'integrations/agents.json';
 const AGENT_INTEGRATION_LOCK_PATH = 'locks/agent-integrations.lock';

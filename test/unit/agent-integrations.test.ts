@@ -19,7 +19,7 @@ import {SystemInfo} from '../../src/effect/system.js';
 import type {AgentClient, RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
-const agents = ['codex', 'claude', 'cursor', 'copilot'] as const;
+const agents = ['codex', 'claude', 'cursor', 'copilot', 'omp'] as const;
 
 function config(home: string): RuntimeConfig {
   return {
@@ -104,6 +104,9 @@ describe('agent integrations', () => {
         expect(
           yield* fs.readFileString(path.join(userHome, '.copilot', 'instructions', 'threadnote.instructions.md')),
         ).toContain('applyTo: "**"');
+        expect(yield* fs.readFileString(path.join(userHome, '.omp', 'agent', 'AGENTS.md'))).toContain(
+          'Use the installed Threadnote skills',
+        );
         expect(yield* fs.exists(path.join(userHome, '.agents', 'AGENTS.md'))).toBe(false);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),

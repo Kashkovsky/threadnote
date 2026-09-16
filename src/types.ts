@@ -1,6 +1,6 @@
 import type {McpToolset} from './mcp/toolset.js';
 
-export type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor';
+export type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor' | 'omp';
 export type ConsolidationAgent = AgentClient | 'effect-ai';
 export type ClaudeMcpScope = 'local' | 'project' | 'user';
 export type CommandStatus = 'fail' | 'ok' | 'warn';

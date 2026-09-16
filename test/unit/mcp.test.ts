@@ -114,12 +114,14 @@ describe('MCP toolsets', () => {
         platform: 'linux',
       });
 
-      for (const agent of ['codex', 'claude', 'cursor', 'copilot'] as const) {
+      for (const agent of ['codex', 'claude', 'cursor', 'copilot', 'omp'] as const) {
         const result = yield* captureConsole(runMcpInstall(testRuntime, agent, {})).pipe(
           Effect.provideService(SystemInfo, testSystem),
         );
         const renderedBrokerLauncher =
-          agent === 'cursor' || agent === 'copilot' ? JSON.stringify(brokerLauncher).slice(1, -1) : brokerLauncher;
+          agent === 'cursor' || agent === 'copilot' || agent === 'omp'
+            ? JSON.stringify(brokerLauncher).slice(1, -1)
+            : brokerLauncher;
         expect(result.output, agent).toContain(renderedBrokerLauncher);
         expect(result.output, agent).not.toMatch(/\bthreadnote\s+mcp-server\b/);
       }
@@ -275,6 +277,132 @@ describe('JSON MCP host configuration', () => {
           const skillRoot = path.join(user, agent === 'cursor' ? '.cursor' : '.copilot', 'skills');
           expect(yield* fs.exists(path.join(skillRoot, 'threadnote-context', 'SKILL.md')), agent).toBe(true);
         }
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('writes the omp native user config, preserving unrelated keys and staying idempotent', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-json-mcp-omp-'});
+        const user = path.join(root, 'user');
+        const bin = path.join(root, 'bin');
+        const broker = path.join(bin, 'threadnote-mcp-server');
+        const configPath = path.join(user, '.omp', 'agent', 'mcp.json');
+        const testRuntime = runtime(path.join(user, '.threadnote'));
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({...baseSystem.environment(), THREADNOTE_BIN_DIR: bin}),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+        yield* fs.makeDirectory(path.dirname(configPath), {recursive: true});
+        yield* fs.writeFileString(
+          configPath,
+          JSON.stringify({
+            disabledServers: ['unrelated-disabled'],
+            mcpServers: {unrelated: {command: 'unrelated-server'}},
+          }),
+        );
+
+        const firstRun = yield* captureConsole(runMcpInstall(testRuntime, 'omp', {apply: true})).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(firstRun.output).toContain(`Updated omp MCP config: ${configPath}`);
+        expect(JSON.parse(yield* fs.readFileString(configPath))).toMatchObject({
+          disabledServers: ['unrelated-disabled'],
+          mcpServers: {
+            unrelated: {command: 'unrelated-server'},
+            threadnote: {
+              args: [],
+              command: broker,
+              env: {
+                THREADNOTE_ACCOUNT: 'local',
+                THREADNOTE_AGENT_ID: 'threadnote',
+                THREADNOTE_HOME: testRuntime.agentContextHome,
+                THREADNOTE_MCP_CLIENT: 'omp',
+                THREADNOTE_MCP_TOOLSET: 'core',
+                THREADNOTE_USER: 'test-user',
+              },
+              type: 'stdio',
+            },
+          },
+        });
+
+        const registry = yield* readAgentIntegrationRegistry(testRuntime);
+        expect(registry?.hosts.omp).toMatchObject({
+          mcp: {name: 'threadnote', repair: true, toolset: 'core'},
+          status: 'current',
+        });
+        expect(
+          yield* fs.readFileString(path.join(user, '.omp', 'agent', 'skills', 'threadnote-context', 'SKILL.md')),
+        ).toContain('name: threadnote-context');
+        expect(yield* fs.readFileString(path.join(user, '.omp', 'agent', 'AGENTS.md'))).toContain(
+          '<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->',
+        );
+
+        const secondRun = yield* captureConsole(runMcpInstall(testRuntime, 'omp', {apply: true})).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(secondRun.output).toContain(`Already configured: ${configPath}`);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rewrites a drifted omp entry onto the broker launcher without dropping foreign keys', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-json-mcp-omp-drift-'});
+        const user = path.join(root, 'user');
+        const bin = path.join(root, 'bin');
+        const broker = path.join(bin, 'threadnote-mcp-server');
+        const configPath = path.join(user, '.omp', 'agent', 'mcp.json');
+        const testRuntime = runtime(path.join(user, '.threadnote'));
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({...baseSystem.environment(), THREADNOTE_BIN_DIR: bin}),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+        yield* fs.makeDirectory(path.dirname(configPath), {recursive: true});
+        yield* fs.writeFileString(
+          configPath,
+          JSON.stringify({
+            $schema: 'https://example.com/omp-mcp-schema.json',
+            enabledServers: ['threadnote'],
+            mcpServers: {
+              threadnote: {
+                args: ['mcp-server'],
+                command: path.join(bin, 'threadnote'),
+                env: {THREADNOTE_HOME: testRuntime.agentContextHome, THREADNOTE_MCP_TOOLSET: 'full'},
+              },
+            },
+          }),
+        );
+
+        const result = yield* captureConsole(runMcpInstall(testRuntime, 'omp', {apply: true})).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+
+        expect(result.output).toContain(`Updated omp MCP config: ${configPath}`);
+        expect(JSON.parse(yield* fs.readFileString(configPath))).toMatchObject({
+          $schema: 'https://example.com/omp-mcp-schema.json',
+          enabledServers: ['threadnote'],
+          mcpServers: {
+            threadnote: {
+              args: [],
+              command: broker,
+              env: {THREADNOTE_MCP_CLIENT: 'omp', THREADNOTE_MCP_TOOLSET: 'core'},
+              type: 'stdio',
+            },
+          },
+        });
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

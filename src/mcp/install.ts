@@ -114,12 +114,14 @@ const runMcpInstallInTransaction = Effect.fn('mcp.runInstallInTransaction')(func
           : 'Organization composer attach must write a project .cursor/mcp.json; pass --project so personal ~/.cursor/mcp.json is not rewritten.',
     });
   }
-  if (!personalHome && (agent === 'cursor' || agent === 'copilot') && !project) {
+  if (!personalHome && (agent === 'cursor' || agent === 'copilot' || agent === 'omp') && !project) {
     return yield* McpOperationError.make({
       message:
-        agent === 'copilot'
-          ? 'This THREADNOTE_HOME is not the personal ~/.threadnote home; pass --project to write project .vscode/mcp.json instead of rewriting the user Copilot mcp.json.'
-          : 'This THREADNOTE_HOME is not the personal ~/.threadnote home; pass --project to write project MCP config instead of rewriting ~/.cursor/mcp.json.',
+        agent === 'omp'
+          ? 'This THREADNOTE_HOME is not the personal ~/.threadnote home; pass --project to write project .omp/mcp.json instead of rewriting the user omp mcp.json.'
+          : agent === 'copilot'
+            ? 'This THREADNOTE_HOME is not the personal ~/.threadnote home; pass --project to write project .vscode/mcp.json instead of rewriting the user Copilot mcp.json.'
+            : 'This THREADNOTE_HOME is not the personal ~/.threadnote home; pass --project to write project MCP config instead of rewriting ~/.cursor/mcp.json.',
     });
   }
   const scope = agent === 'claude' ? (options.scope ?? 'user') : undefined;
@@ -163,6 +165,22 @@ const runMcpInstallInTransaction = Effect.fn('mcp.runInstallInTransaction')(func
     yield* runCopilotMcpInstall(config, name, {
       apply,
       attach,
+      dryRunApplyCommand: options.dryRunApplyCommand,
+      project,
+      toolset,
+    });
+    yield* finishAgentIntegrationInstall(config, agent, {
+      apply,
+      cwd: project,
+      legacyInferredClients,
+      name,
+      toolset,
+    });
+    return;
+  }
+  if (agent === 'omp') {
+    yield* runOmpMcpInstall(config, name, {
+      apply,
       dryRunApplyCommand: options.dryRunApplyCommand,
       project,
       toolset,
@@ -283,9 +301,15 @@ export const mcpConfigurationChecks = Effect.fn('mcp.configurationChecks')(funct
       });
       continue;
     }
-    if (!personalHome && (agent === 'cursor' || agent === 'copilot')) {
+    if (!personalHome && (agent === 'cursor' || agent === 'copilot' || agent === 'omp')) {
       const project = receipt?.mcp.cwd?.trim();
       if (!project) continue;
+      if (agent === 'omp') {
+        checks.push(
+          yield* jsonMcpConfigurationCheck('omp MCP', yield* ompMcpConfigPath(project), 'mcpServers', name, repair),
+        );
+        continue;
+      }
       const containerKey = agent === 'cursor' ? 'mcpServers' : 'servers';
       const configPath =
         agent === 'cursor' ? yield* cursorMcpConfigPath(project) : yield* copilotMcpConfigPath(project);
@@ -310,6 +334,18 @@ export const mcpConfigurationChecks = Effect.fn('mcp.configurationChecks')(funct
           'copilot MCP',
           yield* copilotMcpConfigPath(receipt?.mcp.cwd),
           'servers',
+          name,
+          repair,
+        ),
+      );
+      continue;
+    }
+    if (agent === 'omp') {
+      checks.push(
+        yield* jsonMcpConfigurationCheck(
+          'omp MCP',
+          yield* ompMcpConfigPath(receipt?.mcp.cwd),
+          'mcpServers',
           name,
           repair,
         ),
@@ -413,6 +449,8 @@ export const inferConfiguredMcpClients = Effect.fn('mcp.inferConfiguredClients')
     if (cursor !== undefined) clients.push('cursor');
     const copilot = yield* readJsonMcpServer(yield* copilotMcpConfigPath(), 'servers', THREADNOTE_MCP_NAME);
     if (copilot !== undefined) clients.push('copilot');
+    const omp = yield* readJsonMcpServer(yield* ompMcpConfigPath(), 'mcpServers', THREADNOTE_MCP_NAME);
+    if (omp !== undefined) clients.push('omp');
   }
   return clients;
 });
@@ -685,6 +723,50 @@ const runCopilotMcpInstall = Effect.fn('mcp.runCopilotInstall')(function* (
   );
 });
 
+const runOmpMcpInstall = Effect.fn('mcp.runOmpInstall')(function* (
+  config: RuntimeConfig,
+  name: string,
+  options: {
+    readonly apply: boolean;
+    readonly dryRunApplyCommand?: string;
+    readonly project?: string;
+    readonly toolset: McpToolset;
+  },
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const path = yield* ompMcpConfigPath(options.project);
+  const serverConfig = yield* buildOmpMcpServerConfig(config, {
+    toolset: options.toolset,
+  });
+  const currentContent = yield* readFileIfExists(path);
+  const current = jsonMcpConfigurationMatches(currentContent, 'mcpServers', name, serverConfig);
+  const nextContent = renderOmpMcpConfig(path, currentContent, name, serverConfig);
+
+  if (!options.apply) {
+    yield* Console.log(
+      options.dryRunApplyCommand
+        ? `Dry run. Run \`${options.dryRunApplyCommand}\` without \`--dry-run\` to modify the omp MCP config.`
+        : 'Dry run. Re-run with --apply to modify the omp MCP config.',
+    );
+    yield* printOmpMcpSnippet(config, name, {
+      project: options.project,
+      toolset: options.toolset,
+    });
+    return;
+  }
+
+  if (current || currentContent === nextContent) {
+    yield* Console.log(`Already configured: ${path}`);
+    return;
+  }
+  yield* ensureDirectory(pathService.dirname(path), false);
+  yield* fs.writeFileString(path, nextContent, {mode: 0o644});
+  yield* Console.log(
+    currentContent === undefined ? `Wrote omp MCP config: ${path}` : `Updated omp MCP config: ${path}`,
+  );
+});
+
 export const removeMcpConfigs = Effect.fn('mcp.removeConfigs')(function* (
   value: string,
   dryRun: boolean,
@@ -710,6 +792,10 @@ export const removeMcpConfigs = Effect.fn('mcp.removeConfigs')(function* (
     }
     if (client === 'copilot') {
       if (yield* removeCopilotMcpConfig(name, dryRun)) removed.push(client);
+      continue;
+    }
+    if (client === 'omp') {
+      if (yield* removeOmpMcpConfig(name, dryRun, receipt?.cwd)) removed.push(client);
       continue;
     }
     const executable = yield* requiredMcpAgentExecutable(client);
@@ -769,6 +855,11 @@ const buildMcpInstallCommand = Effect.fn('mcp.buildInstallCommand')(function* (
       message: 'GitHub Copilot MCP config is written directly to the VS Code user mcp.json file.',
     });
   }
+  if (agent === 'omp') {
+    return yield* McpOperationError.make({
+      message: 'omp MCP config is written directly to ~/.omp/agent/mcp.json.',
+    });
+  }
   const claudeCwd = options.cwd ?? (yield* getInvocationCwd());
   const claudeScope = options.scope ?? 'user';
   const command = yield* mcpAdapterCommand();
@@ -808,6 +899,11 @@ const buildMcpRemoveCommand = Effect.fn('mcp.buildRemoveCommand')(function* (
   if (agent === 'copilot') {
     return yield* McpOperationError.make({
       message: 'GitHub Copilot MCP config is removed directly from the VS Code user mcp.json file.',
+    });
+  }
+  if (agent === 'omp') {
+    return yield* McpOperationError.make({
+      message: 'omp MCP config is removed directly from ~/.omp/agent/mcp.json.',
     });
   }
   return agent === 'codex'
@@ -892,6 +988,21 @@ const buildCopilotMcpServerConfig = Effect.fn('mcp.buildCopilotServerConfig')(fu
   };
 });
 
+const buildOmpMcpServerConfig = Effect.fn('mcp.buildOmpServerConfig')(function* (
+  config: RuntimeConfig,
+  options: {
+    readonly toolset: McpToolset;
+  },
+) {
+  const command = yield* mcpAdapterCommand();
+  return {
+    args: command.slice(1),
+    command: command[0],
+    env: mcpEnvironmentObject(config, options.toolset, 'omp'),
+    type: 'stdio',
+  };
+});
+
 function isEmptyConfigContent(content: string | undefined): boolean {
   return content === undefined || content.trim().length === 0;
 }
@@ -946,6 +1057,26 @@ function renderCopilotMcpConfig(
   servers[name] = serverConfig;
   if (composerEntry) servers[THREADNOTE_ORG_MCP_NAME] = composerEntry;
   nextConfig.servers = servers;
+  return `${JSON.stringify(nextConfig, null, 2)}\n`;
+}
+
+function renderOmpMcpConfig(
+  configPath: string,
+  currentContent: string | undefined,
+  name: string,
+  serverConfig: JsonObject,
+): string {
+  const parsed = isEmptyConfigContent(currentContent) ? {} : parseJsonConfigObject(currentContent ?? '');
+  if (parsed === undefined) {
+    throw McpOperationError.make({message: `${configPath} exists but is not a JSON object; not modifying it.`});
+  }
+  if (parsed.mcpServers !== undefined && !isJsonObject(parsed.mcpServers)) {
+    throw McpOperationError.make({message: `${configPath} has a non-object mcpServers field; not modifying it.`});
+  }
+  const nextConfig: Record<string, unknown> = {...parsed};
+  const mcpServers = isJsonObject(parsed.mcpServers) ? {...parsed.mcpServers} : {};
+  mcpServers[name] = serverConfig;
+  nextConfig.mcpServers = mcpServers;
   return `${JSON.stringify(nextConfig, null, 2)}\n`;
 }
 
@@ -1007,6 +1138,41 @@ const removeCopilotMcpConfig = Effect.fn('mcp.removeCopilotConfig')(function* (n
   return true;
 });
 
+const removeOmpMcpConfig = Effect.fn('mcp.removeOmpConfig')(function* (
+  name: string,
+  dryRun: boolean,
+  project?: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* ompMcpConfigPath(project);
+  const currentContent = yield* readFileIfExists(path);
+  if (isEmptyConfigContent(currentContent)) {
+    yield* Console.log(`Already absent: ${path}`);
+    return true;
+  }
+  const parsed = parseJsonConfigObject(currentContent ?? '');
+  if (parsed === undefined) {
+    yield* Console.log(`WARN ${path} exists but is not a JSON object; not modifying it.`);
+    return false;
+  }
+  if (!isJsonObject(parsed.mcpServers) || parsed.mcpServers[name] === undefined) {
+    yield* Console.log(`No omp MCP config found: ${path}`);
+    return true;
+  }
+  const nextConfig: Record<string, unknown> = {...parsed};
+  const mcpServers = {...parsed.mcpServers};
+  delete mcpServers[name];
+  nextConfig.mcpServers = mcpServers;
+  const nextContent = `${JSON.stringify(nextConfig, null, 2)}\n`;
+  if (dryRun) {
+    yield* Console.log(`Would update omp MCP config: ${path}`);
+    return true;
+  }
+  yield* fs.writeFileString(path, nextContent, {mode: 0o644});
+  yield* Console.log(`Updated omp MCP config: ${path}`);
+  return true;
+});
+
 const printMcpSnippet = Effect.fn('mcp.printSnippet')(function* (
   config: RuntimeConfig,
   agent: AgentClient,
@@ -1024,6 +1190,12 @@ const printMcpSnippet = Effect.fn('mcp.printSnippet')(function* (
   }
   if (agent === 'copilot') {
     yield* printCopilotMcpSnippet(config, name, {
+      toolset: options.toolset,
+    });
+    return;
+  }
+  if (agent === 'omp') {
+    yield* printOmpMcpSnippet(config, name, {
       toolset: options.toolset,
     });
     return;
@@ -1079,6 +1251,21 @@ const printCopilotMcpSnippet = Effect.fn('mcp.printCopilotSnippet')(function* (
   );
 });
 
+const printOmpMcpSnippet = Effect.fn('mcp.printOmpSnippet')(function* (
+  config: RuntimeConfig,
+  name: string,
+  options: {
+    readonly project?: string;
+    readonly toolset: McpToolset;
+  },
+) {
+  const path = yield* Path.Path;
+  const snippetPath = path.join(config.agentContextHome, 'mcp', `${name}.omp.json`);
+  const stdio = yield* buildOmpMcpServerConfig(config, options);
+  const snippet = JSON.stringify({mcpServers: {[name]: stdio}}, null, 2);
+  yield* Console.log(`\nSnippet (${snippetPath}; merge into ${yield* ompMcpConfigPath(options.project)}):\n${snippet}`);
+});
+
 const cursorMcpConfigPath = Effect.fn('mcp.cursorConfigPath')(function* (project?: string) {
   if (project?.trim()) {
     const path = yield* Path.Path;
@@ -1118,11 +1305,21 @@ const copilotMcpConfigPath = Effect.fn('mcp.copilotConfigPath')(function* (proje
   return path.join(configHome, 'Code', 'User', 'mcp.json');
 });
 
+const ompMcpConfigPath = Effect.fn('mcp.ompConfigPath')(function* (project?: string) {
+  if (project?.trim()) {
+    const path = yield* Path.Path;
+    return path.join(path.resolve(project.trim()), '.omp', 'mcp.json');
+  }
+  return yield* expandPath('~/.omp/agent/mcp.json');
+});
+
 export function parseAgentClient(value: string): AgentClient {
-  if (value === 'codex' || value === 'claude' || value === 'copilot' || value === 'cursor') {
+  if (value === 'codex' || value === 'claude' || value === 'copilot' || value === 'cursor' || value === 'omp') {
     return value;
   }
-  throw McpOperationError.make({message: `Unsupported agent: ${value}. Expected codex, claude, copilot, or cursor.`});
+  throw McpOperationError.make({
+    message: `Unsupported agent: ${value}. Expected codex, claude, copilot, cursor, or omp.`,
+  });
 }
 
 export function parseClaudeMcpScope(value: string): ClaudeMcpScope {
@@ -1143,7 +1340,7 @@ export const resolveMcpClients = Effect.fn('mcp.resolveClients')(function* (
 
   let requested: readonly AgentClient[];
   if (normalized === 'available' || normalized === 'all') {
-    requested = ['codex', 'claude', 'cursor', 'copilot'];
+    requested = ['codex', 'claude', 'cursor', 'copilot', 'omp'];
   } else {
     requested = normalized
       .split(',')
@@ -1167,6 +1364,16 @@ export const resolveMcpClients = Effect.fn('mcp.resolveClients')(function* (
     if (client === 'copilot') {
       if (!(yield* isCopilotAvailable())) {
         yield* Console.log(`WARN VS Code/Copilot config not found; cannot ${action} copilot MCP config.`);
+        continue;
+      }
+      if (!clients.includes(client)) {
+        clients.push(client);
+      }
+      continue;
+    }
+    if (client === 'omp') {
+      if (!(yield* isOmpAvailable())) {
+        yield* Console.log(`WARN omp config not found; cannot ${action} omp MCP config.`);
         continue;
       }
       if (!clients.includes(client)) {
@@ -1215,4 +1422,8 @@ const isCopilotAvailable = Effect.fn('mcp.isCopilotAvailable')(function* () {
     return true;
   }
   return system.platform === 'darwin' && (yield* exists('/Applications/Visual Studio Code.app'));
+});
+
+const isOmpAvailable = Effect.fn('mcp.isOmpAvailable')(function* () {
+  return (yield* exists(yield* expandPath('~/.omp'))) || (yield* findExecutable(['omp'])) !== undefined;
 });

@@ -45,7 +45,7 @@ function sanitizePxpipeModelId(value: string | undefined): string | undefined {
 
 function parseMcpClient(value: string | undefined): AgentClient | undefined {
   const client = value?.trim().toLowerCase();
-  if (client === 'claude' || client === 'codex' || client === 'copilot' || client === 'cursor') {
+  if (client === 'claude' || client === 'codex' || client === 'copilot' || client === 'cursor' || client === 'omp') {
     return client;
   }
   return undefined;

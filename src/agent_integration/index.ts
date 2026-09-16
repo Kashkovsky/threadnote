@@ -44,6 +44,10 @@ const HOST_TARGETS = {
     instruction: {kind: 'file', path: '~/.cursor/rules/threadnote.mdc'},
     skillRoot: '~/.cursor/skills',
   },
+  omp: {
+    instruction: {kind: 'block', path: '~/.omp/agent/AGENTS.md'},
+    skillRoot: '~/.omp/agent/skills',
+  },
 } as const satisfies Record<
   AgentClient,
   {

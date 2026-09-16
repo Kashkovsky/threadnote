@@ -9,6 +9,7 @@ import {
   THREADNOTE_HOOK_MARKER_VALUE,
 } from './constants.js';
 import {runCursorHooksInstall} from './cursor_hooks.js';
+import {runOmpHooksInstall} from './omp_hooks.js';
 import {parseAgentClient} from './mcp/index.js';
 import {captureConsole} from './effect/console.js';
 import {SystemInfo} from './effect/system.js';
@@ -64,6 +65,9 @@ export function runHooksInstall(config: RuntimeConfig, agent: AgentClient, optio
         return;
       case 'cursor':
         yield* runCursorHooksInstall(options);
+        return;
+      case 'omp':
+        yield* runOmpHooksInstall(options);
         return;
       case 'copilot':
         yield* printNoHooksSupported('copilot', remove);

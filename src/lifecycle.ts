@@ -14,6 +14,7 @@ import {startProgress, withProgressLine} from './cli_ui.js';
 import {commandShimCheck, installCommandShim, removeCommandShim} from './command-shim.js';
 import {sha256FileHex} from './effect/digest.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
+import {hasManagedOmpHooks} from './omp_hooks.js';
 import {localAiDoctorCheck} from './effect/local-ai.js';
 import {SystemInfo} from './effect/system.js';
 import {
@@ -443,6 +444,9 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
     if (yield* hasManagedClaudeHooks()) {
       yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
     }
+    if (yield* hasManagedOmpHooks()) {
+      yield* runHooksInstall(config, 'omp', {apply: !dryRun, dryRun});
+    }
   }
   let completion: CodeGraphRepairCompletion | undefined;
   yield* withProgressLine(
@@ -482,7 +486,7 @@ export const repairRegisteredMcpClients = Effect.fn('lifecycle.repairRegisteredM
   );
   for (const client of mcpClients) {
     const receipt = registry?.hosts[client];
-    if (!personalHome && (client === 'cursor' || client === 'copilot')) {
+    if (!personalHome && (client === 'cursor' || client === 'copilot' || client === 'omp')) {
       yield* Console.log(`Skipping ${client} MCP repair for non-personal THREADNOTE_HOME.`);
       continue;
     }
@@ -497,7 +501,7 @@ export const repairRegisteredMcpClients = Effect.fn('lifecycle.repairRegisteredM
       cwd: receipt.mcp.cwd,
       dryRunApplyCommand: 'threadnote repair',
       name: receipt.mcp.name,
-      project: client === 'cursor' || client === 'copilot' ? receipt.mcp.cwd : undefined,
+      project: client === 'cursor' || client === 'copilot' || client === 'omp' ? receipt.mcp.cwd : undefined,
       scope: receipt.mcp.scope,
       toolset: receipt.mcp.toolset,
     });
@@ -673,6 +677,9 @@ const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(
   }
   if (yield* hasManagedCursorHooks()) {
     yield* runHooksInstall(config, 'cursor', {apply: !dryRun, dryRun, remove: true});
+  }
+  if (yield* hasManagedOmpHooks()) {
+    yield* runHooksInstall(config, 'omp', {apply: !dryRun, dryRun, remove: true});
   }
   yield* removeCommandShim(dryRun);
   yield* removeAgentIntegrationsInTransaction(config, dryRun);

@@ -10,8 +10,8 @@ export function makeInstallHooksCommand<E, R>(
   return Command.make(
     'install-hooks',
     {
-      agent: Argument.Literals('agent', ['codex', 'claude', 'cursor', 'copilot']).pipe(
-        Argument.withDescription('codex, claude, cursor, or copilot'),
+      agent: Argument.Literals('agent', ['codex', 'claude', 'cursor', 'copilot', 'omp']).pipe(
+        Argument.withDescription('codex, claude, cursor, copilot, or omp'),
       ),
       apply: boolean('apply', 'Actually modify the selected agent config'),
       dryRun: boolean('dry-run', 'Print the planned change without applying it'),
