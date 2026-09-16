@@ -7,6 +7,7 @@ import {parseRemoteMemoryReceiptV1, type RemoteMemoryReceiptV1} from '../memory_
 import {
   assertRemoteRememberReplacementTarget,
   assertUriBelongsToAuthorizedShare,
+  authorizeRemoteRememberRelations,
   requireAuthorizedProject,
   requireRemoteScope,
   type AuthorizedRemotePrincipal,
@@ -34,6 +35,7 @@ import {
   REMOTE_RECALL_MINIMUM_BUDGET_TOKENS,
   RemoteRecallProjectionError,
 } from './recall_projection.js';
+import {MAX_MEMORY_RELATIONS, MEMORY_RELATION_TYPES} from '../memory/document.js';
 
 export const REMOTE_MEMORY_TOOL_NAMES = [
   'recall_context',
@@ -59,6 +61,10 @@ const PortableSegment = Schema.String.check(
 const Kind = Schema.Literals(['durable', 'handoff']);
 const Status = Schema.Literals(['active', 'archived', 'expired', 'superseded']);
 const NonEmptyUri = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4_096));
+const Relation = Schema.Struct({
+  type: Schema.Literals(MEMORY_RELATION_TYPES),
+  uri: NonEmptyUri,
+});
 const Kinds = Schema.Array(Kind).check(Schema.isMinLength(1), Schema.isMaxLength(2));
 const Limit = Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 100}));
 const IsoUtcInstant = Schema.String.check(
@@ -234,6 +240,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
         ),
         operationId: Identifier,
         project: PortableSegment,
+        relations: Schema.optionalKey(Schema.Array(Relation).check(Schema.isMaxLength(MAX_MEMORY_RELATIONS))),
         replaceUri: Schema.optionalKey(NonEmptyUri),
         text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000_000)),
         topic: PortableSegment,
@@ -248,6 +255,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
         requireRemoteScope(principal, input.kind === 'durable' ? 'memory:write:durable' : 'memory:write:handoff');
         requireAuthorizedProject(principal, input.project);
         assertRemoteRememberReplacementTarget(principal, input);
+        const authorizedInput = authorizeRemoteRememberRelations(principal, input);
         const attestation = await requireCursorAttestation(
           dependencies.attestations,
           principal,
@@ -257,7 +265,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
         );
         const result = await dependencies.repository.remember(
           principal,
-          input,
+          authorizedInput,
           requestContext.requestId,
           attestation,
           undefined,

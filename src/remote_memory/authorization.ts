@@ -1,6 +1,7 @@
 import {Schema} from 'effect';
-import {InvalidRemoteMemoryAddress, parseRemoteShareAddress} from '../memory_domain/address.js';
+import {formatRemoteMemoryUri, InvalidRemoteMemoryAddress, parseRemoteShareAddress} from '../memory_domain/address.js';
 import type {RemoteRememberInputV1} from '../memory_domain/contracts.js';
+import {InvalidRemoteMemoryRelations, normalizeRemoteMemoryRelations} from '../memory_domain/relations.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import type {OAuthPrincipalClaims} from './oauth.js';
 import {remoteMemoryError} from './errors.js';
@@ -122,6 +123,37 @@ export function assertRemoteRememberReplacementTarget(
   if (address.kind !== input.kind || address.project !== input.project || address.topic !== input.topic) {
     throw remoteMemoryError('invalid_request', 'The replacement URI must identify the requested memory.');
   }
+}
+
+export function authorizeRemoteRememberRelations(
+  principal: AuthorizedRemotePrincipal,
+  input: RemoteRememberInputV1,
+): RemoteRememberInputV1 {
+  let relations;
+  try {
+    relations = normalizeRemoteMemoryRelations(input.relations);
+  } catch (cause) {
+    if (!Schema.is(InvalidRemoteMemoryRelations)(cause)) throw cause;
+    throw remoteMemoryError('invalid_request', cause.message);
+  }
+  if (relations === undefined) return input;
+  const sourceUri = formatRemoteMemoryUri({
+    kind: input.kind,
+    project: input.project,
+    shareId: principal.shareId,
+    topic: input.topic,
+  });
+  for (const relation of relations) {
+    const address = parseRemoteShareAddress(relation.uri);
+    if (address.shareId !== principal.shareId) {
+      throw remoteMemoryError('forbidden', 'A relation target is outside the authorized memory share.');
+    }
+    requireAuthorizedProject(principal, address.project);
+    if (address.canonicalUri === sourceUri) {
+      throw remoteMemoryError('invalid_request', 'A remote memory cannot relate to itself.');
+    }
+  }
+  return {...input, relations};
 }
 
 function featureForScope(scope: RemoteMemoryScope): RemoteMemoryFeatureFlag | undefined {

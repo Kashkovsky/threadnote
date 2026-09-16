@@ -357,7 +357,11 @@ describe('remote memory HTTP transport', () => {
     });
     expect(tools.find(tool => tool.name === 'remember_context')?.inputSchema).toMatchObject({
       additionalProperties: false,
-      properties: {lifecycle: {additionalProperties: false}, replaceUri: {type: 'string'}},
+      properties: {
+        lifecycle: {additionalProperties: false},
+        relations: {maxItems: 16, type: 'array'},
+        replaceUri: {type: 'string'},
+      },
     });
     const uri = 'threadnote://share/share-1/memories/durable/threadnote/fixture.md';
     const valid = await json(
@@ -415,6 +419,70 @@ describe('remote memory HTTP transport', () => {
     ] as const) {
       const result = await json(await call(id, {...input, ...overrides, operationId: `operation-${id}`}));
       expect(result).toMatchObject({id, result: {isError: true, structuredContent: {code}}});
+    }
+    expect(test.calls.filter(entry => entry.startsWith('remember:'))).toHaveLength(writes);
+  });
+
+  it('rejects unauthorized, malformed, duplicate, and self relations before storage dispatch', async () => {
+    const test = fixture({allowedProjects: new Set(['threadnote']), trackRateLimits: true});
+    const source = 'threadnote://share/share-1/memories/durable/threadnote/source.md';
+    const input = {
+      kind: 'durable',
+      operationId: 'operation-relations-valid',
+      project: 'threadnote',
+      relations: [
+        {
+          type: 'depends_on',
+          uri: 'threadnote://share/share-1/memories/durable/threadnote/dependency.md',
+        },
+      ],
+      text: 'Authorized relation source.',
+      topic: 'source',
+      version: 1,
+    };
+    const call = (id: number, arguments_: Record<string, unknown>) =>
+      test.handler(mcpRequest({id, method: 'tools/call', params: {arguments: arguments_, name: 'remember_context'}}));
+
+    expect(await json(await call(40, input))).toMatchObject({
+      id: 40,
+      result: {structuredContent: {revision: 'revision-2'}},
+    });
+    const writes = test.calls.filter(entry => entry.startsWith('remember:')).length;
+    const invalid = [
+      [{relations: [{type: 'depends_on', uri: source}]}, 'invalid_request'],
+      [
+        {
+          relations: [
+            {
+              type: 'depends_on',
+              uri: 'threadnote://share/share-2/memories/durable/threadnote/dependency.md',
+            },
+          ],
+        },
+        'forbidden',
+      ],
+      [
+        {
+          relations: [{type: 'depends_on', uri: 'threadnote://share/share-1/memories/durable/other/dependency.md'}],
+        },
+        'forbidden',
+      ],
+      [{relations: [{type: 'depends_on', uri: `${source}#anchor`}]}, 'invalid_request'],
+      [
+        {
+          relations: [
+            {type: 'depends_on', uri: input.relations[0].uri},
+            {type: 'depends_on', uri: input.relations[0].uri},
+          ],
+        },
+        'invalid_request',
+      ],
+    ] as const;
+    for (const [index, [overrides, code]] of invalid.entries()) {
+      const operationId = `operation-relations-invalid-${index}`;
+      const result = await json(await call(41 + index, {...input, ...overrides, operationId}));
+      expect(result).toMatchObject({result: {isError: true, structuredContent: {code}}});
+      expect(JSON.stringify(result)).not.toContain((overrides.relations as readonly {readonly uri: string}[])[0]?.uri);
     }
     expect(test.calls.filter(entry => entry.startsWith('remember:'))).toHaveLength(writes);
   });
