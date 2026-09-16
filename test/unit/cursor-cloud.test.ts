@@ -133,7 +133,13 @@ describe('Cursor Cloud profile', () => {
         'threadnote-memory': {
           auth: {
             CLIENT_ID: 'threadnote-composer',
-            scopes: ['memory:read', 'memory:write:durable', 'memory:write:handoff'],
+            scopes: [
+              'memory:read',
+              'memory:propose:durable',
+              'memory:review:durable',
+              'memory:write:durable',
+              'memory:write:handoff',
+            ],
           },
           headers: {'threadnote-share-id': 'share-engineering'},
           url: 'https://memory.threadnote.io/mcp',
