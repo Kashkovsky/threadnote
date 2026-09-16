@@ -3934,6 +3934,13 @@ describe('Threadnote MCP toolsets', () => {
             uri: {type: 'string'},
           },
         });
+        for (const toolName of ['share_skill', 'list_shared_skills', 'install_shared_skill']) {
+          expect(tools.tools.find(tool => tool.name === toolName)?.inputSchema).toMatchObject({
+            properties: {
+              agent: {enum: ['codex', 'claude', 'cursor']},
+            },
+          });
+        }
       },
       {toolset: 'full'},
     );

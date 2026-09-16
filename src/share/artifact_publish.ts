@@ -590,8 +590,10 @@ const parsePackManifest = Effect.fn('share.parsePackManifest')(function* (raw: s
     throw ShareOperationError.make({message: `Pack manifest must set a non-empty "name": ${manifestPath}`});
   }
   const agent = parsed.agent;
-  if (agent !== 'codex' && agent !== 'claude') {
-    throw ShareOperationError.make({message: `Pack manifest "agent" must be "codex" or "claude": ${manifestPath}`});
+  if (agent !== 'codex' && agent !== 'claude' && agent !== 'cursor') {
+    throw ShareOperationError.make({
+      message: `Pack manifest "agent" must be "codex", "claude", or "cursor": ${manifestPath}`,
+    });
   }
   const stringArray = (value: unknown): string[] =>
     Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
@@ -1174,7 +1176,9 @@ const inferShareArtifact = Effect.fn('share.inferShareArtifact')(function* (
     ? 'codex'
     : lowerPath.includes('/.claude/skills/') || lowerPath.includes('/.claude/commands/')
       ? 'claude'
-      : undefined;
+      : lowerPath.includes('/.cursor/skills/')
+        ? 'cursor'
+        : undefined;
   const extensionIndex = fileName.lastIndexOf('.');
   const stem = extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName;
   const inferredName = lowerFileName === 'skill.md' ? yield* pathBasename(yield* pathDirname(path)) : stem;
@@ -1185,8 +1189,10 @@ const inferShareArtifact = Effect.fn('share.inferShareArtifact')(function* (
   if (kind !== 'skill' && kind !== 'command') {
     throw ShareOperationError.make({message: 'Could not infer artifact kind. Pass --kind skill or --kind command.'});
   }
-  if (agent !== 'codex' && agent !== 'claude') {
-    throw ShareOperationError.make({message: 'Could not infer artifact agent. Pass --agent codex or --agent claude.'});
+  if (agent !== 'codex' && agent !== 'claude' && agent !== 'cursor') {
+    throw ShareOperationError.make({
+      message: 'Could not infer artifact agent. Pass --agent codex, --agent claude, or --agent cursor.',
+    });
   }
   if (kind === 'skill' && lowerFileName !== 'skill.md') {
     throw ShareOperationError.make({message: 'Skill artifacts must point at a SKILL.md file.'});

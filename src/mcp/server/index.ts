@@ -657,9 +657,9 @@ function registerTools(
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
       description:
-        "Publish a local Codex/Claude skill or Claude command markdown file into a team's shared artifact catalog. Path inference handles ~/.codex/skills/**/SKILL.md, ~/.claude/skills/**/SKILL.md, and ~/.claude/commands/**/*.md; pass agent/kind/name when sharing from another path. A skill is shared as its whole directory: companion files (scripts, references, assets) beside the SKILL.md travel with it. Default team is used unless team is provided. Pass preview=true to inspect what would land without writing or committing.",
+        "Publish a local Codex/Claude/Cursor skill or Claude command markdown file into a team's shared artifact catalog. Path inference handles ~/.codex/skills/**/SKILL.md, ~/.claude/skills/**/SKILL.md, ~/.cursor/skills/**/SKILL.md, and ~/.claude/commands/**/*.md; pass agent/kind/name when sharing from another path. A skill is shared as its whole directory: companion files (scripts, references, assets) beside the SKILL.md travel with it. Default team is used unless team is provided. Pass preview=true to inspect what would land without writing or committing.",
       inputSchema: {
-        agent: McpInput.literals(['codex', 'claude'], 'Agent owner when path inference is ambiguous'),
+        agent: McpInput.literals(['codex', 'claude', 'cursor'], 'Agent owner when path inference is ambiguous'),
         allowBinary: McpInput.boolean(
           'Include binary skill files; embedded binary credentials and machine-local paths in binaries still block',
         ),
@@ -735,9 +735,9 @@ function registerTools(
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
       description:
-        'List shared Codex/Claude skills, Claude commands, and skill packs available in a configured Threadnote team repo, including whether each one is already installed locally.',
+        'List shared Codex/Claude/Cursor skills, Claude commands, and skill packs available in a configured Threadnote team repo, including whether each one is already installed locally.',
       inputSchema: {
-        agent: McpInput.literals(['codex', 'claude'], 'Optional agent filter'),
+        agent: McpInput.literals(['codex', 'claude', 'cursor'], 'Optional agent filter'),
         kind: McpInput.literals(['skill', 'command', 'pack'], 'Optional kind filter'),
         name: McpInput.string('Optional shared artifact name filter'),
         team: McpInput.string('Team name; defaults to the configured default team'),
@@ -751,9 +751,9 @@ function registerTools(
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
       description:
-        'Install one shared Codex/Claude skill or Claude command from a configured Threadnote team repo into the local agent skill/command directory. Use list_shared_skills first to find names and disambiguate agent/kind.',
+        'Install one shared Codex/Claude/Cursor skill or Claude command from a configured Threadnote team repo into the local agent skill/command directory. Use list_shared_skills first to find names and disambiguate agent/kind.',
       inputSchema: {
-        agent: McpInput.literals(['codex', 'claude'], 'Agent owner; required when name is ambiguous'),
+        agent: McpInput.literals(['codex', 'claude', 'cursor'], 'Agent owner; required when name is ambiguous'),
         dryRun: McpInput.boolean('Preview install without writing local files'),
         force: McpInput.boolean('Replace an existing installed artifact with different content'),
         kind: McpInput.literals(['skill', 'command', 'pack'], 'Artifact kind; required when name is ambiguous'),

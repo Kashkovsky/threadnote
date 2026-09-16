@@ -407,7 +407,7 @@ export interface FinalizeCodeRefsOptions {
   readonly uris?: readonly string[];
 }
 
-export type ShareAgentArtifactAgent = 'claude' | 'codex';
+export type ShareAgentArtifactAgent = 'claude' | 'codex' | 'cursor';
 export type ShareAgentArtifactKind = 'command' | 'pack' | 'skill';
 
 export interface SharePublishArtifactOptions {

@@ -1191,7 +1191,7 @@ const seedSkills = Command.make(
     dryRun: boolean('dry-run', 'Print skill files without importing'),
   },
   options => withRuntimeEffect(config => runSeedSkills(config, options)),
-).pipe(Command.withDescription('Seed Codex/Claude skills and Claude command markdown files as a searchable catalog'));
+).pipe(Command.withDescription('Seed Codex, Claude, and Cursor skills plus Claude commands'));
 
 const mcpInstall = Command.make(
   'mcp-install',
@@ -1741,7 +1741,7 @@ const artifactFlags = {
     'Ignored for agent artifacts; the memory-share scrubber does not run on skills, commands, or packs',
   ),
   team: publishFlags.team,
-  agent: optionalChoice('agent', ['codex', 'claude'], 'Agent owner'),
+  agent: optionalChoice('agent', ['codex', 'claude', 'cursor'], 'Agent owner'),
   allowBinary: boolean(
     'allow-binary',
     'Include binary files; embedded binary credentials and machine-local paths in binaries still block',
@@ -1766,7 +1766,7 @@ const sharePublishBundle = Command.make(
 const shareInstallArtifacts = Command.make(
   'install-artifacts',
   {
-    agent: optionalChoice('agent', ['codex', 'claude'], 'Agent filter'),
+    agent: optionalChoice('agent', ['codex', 'claude', 'cursor'], 'Agent filter'),
     apply: boolean('apply', 'Actually write local artifact files'),
     dryRun: boolean('dry-run', 'Preview without writing files'),
     force: boolean('force', 'Replace existing installed artifacts'),

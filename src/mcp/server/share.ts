@@ -65,7 +65,7 @@ interface ShareConflictResolveToolOptions {
 }
 
 interface ShareSkillToolOptions {
-  readonly agent?: 'claude' | 'codex';
+  readonly agent?: 'claude' | 'codex' | 'cursor';
   readonly allowBinary?: boolean;
   readonly force?: boolean;
   readonly kind?: 'command' | 'pack' | 'skill';
@@ -78,14 +78,14 @@ interface ShareSkillToolOptions {
 }
 
 interface SharedSkillFilterOptions {
-  readonly agent?: 'claude' | 'codex';
+  readonly agent?: 'claude' | 'codex' | 'cursor';
   readonly kind?: 'command' | 'pack' | 'skill';
   readonly name?: string;
   readonly team?: string;
 }
 
 interface InstallSharedSkillToolOptions {
-  readonly agent?: 'claude' | 'codex';
+  readonly agent?: 'claude' | 'codex' | 'cursor';
   readonly dryRun?: boolean;
   readonly force?: boolean;
   readonly kind?: 'command' | 'pack' | 'skill';

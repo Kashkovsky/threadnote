@@ -1,8 +1,11 @@
 import {mkdtemp, mkdir, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
-import {Effect} from 'effect';
+import {inheritedProcessEnvironment} from '../helpers/process-environment.js';
+import {it as effectIt} from '@effect/vitest';
+import {Cause, Effect, Exit} from 'effect';
 import {succeedUndefined} from '../../src/effect/optional.js';
+import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
 import * as fc from 'fast-check';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {shareAgentArtifact, shareBundlePack} from '../../src/share/index.js';
@@ -13,6 +16,7 @@ import {
 } from '../../src/effect/share.js';
 import type {CommandResult, ShareRuntime} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const runShareInstallArtifacts = (...args: Parameters<typeof runShareInstallArtifactsEffect>) =>
@@ -21,6 +25,8 @@ const listSharedAgentArtifacts = (...args: Parameters<typeof listSharedAgentArti
   runEffect(listSharedAgentArtifactsEffect(...args));
 const installSharedAgentArtifacts = (...args: Parameters<typeof installSharedAgentArtifactsEffect>) =>
   runEffect(installSharedAgentArtifactsEffect(...args));
+const provideApplicationTestLayer = <A, E>(effect: Effect.Effect<A, E, ApplicationServices>) =>
+  effect.pipe(provideTestLayer(ApplicationLayer));
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
@@ -170,6 +176,70 @@ describe('shared agent artifacts', () => {
       ),
     ).resolves.toContain('Reviewer');
   });
+
+  effectIt.effect('publishes and installs a Cursor skill under the native Cursor skill root', () =>
+    Effect.gen(function* () {
+      const config = yield* Effect.promise(makeRuntime);
+      homes.push(config.agentContextHome);
+      const installHome = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), 'threadnote-cursor-artifact-install-home-')),
+      );
+      homes.push(installHome);
+      inheritedProcessEnvironment().HOME = installHome;
+      const sourcePath = join(config.agentContextHome, '.cursor', 'skills', 'reviewer', 'SKILL.md');
+      yield* Effect.promise(() => mkdir(join(sourcePath, '..'), {recursive: true}));
+      yield* Effect.promise(() => writeFile(sourcePath, '# Cursor Reviewer\n'));
+      mockPublishCommands();
+
+      const published = yield* provideApplicationTestLayer(shareAgentArtifact(config, sourcePath, {}));
+      expect(published.artifact).toEqual({agent: 'cursor', kind: 'skill', name: 'reviewer'});
+      expect(published.targetPath).toBe(
+        join(
+          config.agentContextHome,
+          'shared',
+          'default',
+          'agent-artifacts',
+          'skills',
+          'cursor',
+          'reviewer',
+          'SKILL.md',
+        ),
+      );
+
+      yield* provideApplicationTestLayer(
+        installSharedAgentArtifactsEffect(config, {
+          agent: 'cursor',
+          apply: true,
+          kind: 'skill',
+          name: 'reviewer',
+          sync: false,
+        }),
+      );
+      const installed = yield* Effect.promise(() =>
+        readFile(join(installHome, '.cursor', 'skills', 'threadnote', 'default', 'reviewer', 'SKILL.md'), 'utf8'),
+      );
+      expect(installed).toBe('# Cursor Reviewer\n');
+    }),
+  );
+
+  effectIt.effect('keeps command artifacts Claude-only', () =>
+    Effect.gen(function* () {
+      const config = yield* Effect.promise(makeRuntime);
+      homes.push(config.agentContextHome);
+      const sourcePath = join(config.agentContextHome, 'review.md');
+      yield* Effect.promise(() => writeFile(sourcePath, '# Review command\n'));
+
+      for (const agent of ['codex', 'cursor'] as const) {
+        const exit = yield* provideApplicationTestLayer(
+          shareAgentArtifact(config, sourcePath, {agent, kind: 'command', name: 'review'}),
+        ).pipe(Effect.exit);
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) {
+          expect(Cause.squash(exit.cause)).toMatchObject({message: 'Only Claude command artifacts are supported.'});
+        }
+      }
+    }),
+  );
 
   it('refuses to overwrite a different shared artifact unless forced', async () => {
     const config = await makeRuntime();
@@ -864,6 +934,73 @@ describe('shared agent artifacts', () => {
     );
     expect(result.messages.join('\n')).toContain('mcp__pal__clink');
   });
+
+  effectIt.effect('publishes and installs a Cursor skill pack in the Cursor pack namespace', () =>
+    Effect.gen(function* () {
+      const config = yield* Effect.promise(makeRuntime);
+      homes.push(config.agentContextHome);
+      const installHome = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-cursor-pack-install-home-')));
+      homes.push(installHome);
+      inheritedProcessEnvironment().HOME = installHome;
+      const repo = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-cursor-pack-src-')));
+      homes.push(repo);
+      const skillRoot = join(repo, '.cursor', 'skills', 'review-pr');
+      yield* Effect.promise(() => mkdir(skillRoot, {recursive: true}));
+      yield* Effect.promise(() => writeFile(join(skillRoot, 'SKILL.md'), '# Cursor Review\n'));
+      const manifestPath = join(repo, 'threadnote-bundle.json');
+      yield* Effect.promise(() =>
+        writeFile(
+          manifestPath,
+          `${JSON.stringify({
+            agent: 'cursor',
+            deps: {},
+            include: [],
+            name: 'reviewer',
+            pathRewrites: [],
+            skills: ['.cursor/skills/review-pr'],
+            version: 1,
+          })}\n`,
+        ),
+      );
+      mockPublishCommands();
+
+      const published = yield* provideApplicationTestLayer(shareBundlePack(config, manifestPath, {}));
+      expect(published.artifact).toEqual({agent: 'cursor', kind: 'pack', name: 'reviewer'});
+      const packRoot = join(
+        config.agentContextHome,
+        'shared',
+        'default',
+        'agent-artifacts',
+        'packs',
+        'cursor',
+        'reviewer',
+      );
+      const publishedManifest = yield* Effect.promise(() => readFile(join(packRoot, 'reviewer.pack.json'), 'utf8'));
+      expect(JSON.parse(publishedManifest)).toMatchObject({
+        artifact: {agent: 'cursor', kind: 'pack', name: 'reviewer'},
+        members: [{binary: false, path: '.cursor/skills/review-pr/SKILL.md'}],
+      });
+
+      const listed = yield* provideApplicationTestLayer(
+        listSharedAgentArtifactsEffect(config, {agent: 'cursor', kind: 'pack', sync: false}),
+      );
+      expect(listed.artifacts).toHaveLength(1);
+      yield* provideApplicationTestLayer(
+        installSharedAgentArtifactsEffect(config, {
+          agent: 'cursor',
+          apply: true,
+          kind: 'pack',
+          name: 'reviewer',
+          sync: false,
+        }),
+      );
+      const installRoot = join(installHome, '.cursor', 'skills', 'threadnote-packs', 'default', 'reviewer');
+      const installed = yield* Effect.promise(() =>
+        readFile(join(installRoot, '.cursor', 'skills', 'review-pr', 'SKILL.md'), 'utf8'),
+      );
+      expect(installed).toBe('# Cursor Review\n');
+    }),
+  );
 
   it('reports current after install despite token expansion, and update_available on change', async () => {
     const config = await makeRuntime();
