@@ -416,6 +416,7 @@ export class PostgresRemoteMemoryRepository {
     requirePrincipalProject(principal, input.project);
     assertRemoteRememberReplacementTarget(principal, input);
     input = authorizeRemoteRememberRelations(principal, input);
+    const authoredRelations = input.relations;
     if (input.lifecycle?.expiresAt && Date.parse(input.lifecycle.expiresAt) <= now.getTime()) {
       throw remoteMemoryError('invalid_request', 'Remote memory expiry must be in the future.');
     }
@@ -435,7 +436,7 @@ export class PostgresRemoteMemoryRepository {
       requestId,
       now,
       execution,
-      input.relations,
+      authoredRelations,
     );
     if (reservation.kind === 'replay') return reservation.receipt;
     let gitLanded = false;
@@ -480,10 +481,10 @@ export class PostgresRemoteMemoryRepository {
       const persistAndCommit = async (tenantTransaction?: TenantTransactionRunner) => {
         const withTenant: TenantTransactionRunner =
           tenantTransaction ?? ((tenantId, use, requestExecution) => this.withTenant(tenantId, use, requestExecution));
-        if (document.relations?.length) {
+        if (authoredRelations?.length) {
           await withTenant(
             principal.tenantId,
-            transaction => this.requireActiveRelationTargets(transaction, principal, document.relations),
+            transaction => this.requireActiveRelationTargets(transaction, principal, authoredRelations),
             execution,
           );
         }
@@ -534,7 +535,7 @@ export class PostgresRemoteMemoryRepository {
           });
         }
       };
-      return document.relations?.length
+      return authoredRelations?.length
         ? await this.withRelationAdmissionFence(principal, execution, persistAndCommit)
         : await persistAndCommit();
     } catch (cause) {
