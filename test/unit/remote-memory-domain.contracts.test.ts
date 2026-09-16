@@ -95,6 +95,99 @@ describe('remote memory versioned schemas', () => {
     ).toThrow();
   });
 
+  it('accepts only canonical typed remote-memory relations and rejects duplicate declarations', () => {
+    const dependency = formatRemoteMemoryUri({
+      kind: 'durable',
+      project: 'threadnote',
+      shareId: 'share-1',
+      topic: 'dependency',
+    });
+    const handoff = formatRemoteMemoryUri({
+      kind: 'handoff',
+      project: 'threadnote',
+      shareId: 'share-1',
+      topic: 'release',
+    });
+    const input = {
+      kind: 'durable' as const,
+      operationId: 'operation-relations',
+      project: 'threadnote',
+      relations: [
+        {type: 'references' as const, uri: handoff},
+        {type: 'depends_on' as const, uri: dependency},
+      ],
+      text: 'Typed remote relations.',
+      topic: 'source',
+      version: 1 as const,
+    };
+
+    expect(parseRemoteRememberInputV1(input).relations).toEqual([
+      {type: 'depends_on', uri: dependency},
+      {type: 'references', uri: handoff},
+    ]);
+    expect(() => parseRemoteRememberInputV1({...input, relations: [input.relations[0], input.relations[0]]})).toThrow(
+      'Duplicate remote memory relations',
+    );
+    for (const uri of [
+      `${dependency}#anchor`,
+      'threadnote://memory/tn_relation_alias',
+      'threadnote://share/share-1/memories',
+      'threadnote://share/share-1/memories/durable/threadnote/%73ource.md',
+    ]) {
+      expect(() => parseRemoteRememberInputV1({...input, relations: [{type: 'references' as const, uri}]})).toThrow(
+        'canonical remote memory',
+      );
+    }
+  });
+
+  fcProp(
+    it,
+    'canonical relation ordering preserves declaration identity across input permutations',
+    {
+      relations: FC.uniqueArray(
+        FC.record({
+          project: FC.stringMatching(/^[a-z][a-z0-9]{0,8}$/u),
+          topic: FC.stringMatching(/^[a-z][a-z0-9]{0,8}$/u),
+          type: FC.constantFrom(
+            'depends_on' as const,
+            'evidence_for' as const,
+            'references' as const,
+            'related_to' as const,
+            'supersedes' as const,
+          ),
+        }),
+        {maxLength: 16, selector: relation => `${relation.type}\n${relation.project}\n${relation.topic}`},
+      ),
+    },
+    ({relations}) => {
+      const authored = relations.map(relation => ({
+        type: relation.type,
+        uri: formatRemoteMemoryUri({
+          kind: 'durable',
+          project: relation.project,
+          shareId: 'share-1',
+          topic: relation.topic,
+        }),
+      }));
+      const parse = (items: typeof authored) =>
+        parseRemoteRememberInputV1({
+          kind: 'durable',
+          operationId: 'operation-relations-property',
+          project: 'threadnote',
+          relations: items,
+          text: 'Property relation set.',
+          topic: 'source',
+          version: 1,
+        }).relations;
+
+      expect(parse(authored)).toEqual(parse([...authored].reverse()));
+      expect(new Set(parse(authored)?.map(relation => `${relation.type}\n${relation.uri}`))).toEqual(
+        new Set(authored.map(relation => `${relation.type}\n${relation.uri}`)),
+      );
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   fcProp(
     it,
     'an explicit remote replacement URI identifies exactly one generated memory topic',
