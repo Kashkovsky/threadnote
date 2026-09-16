@@ -25,6 +25,7 @@ export interface GitCanonicalMemoryStoreOptions {
 export interface GitCanonicalCommitInput {
   readonly content: string;
   readonly expectedContentHash?: string;
+  readonly expectedSourceHashes?: readonly {readonly path: string; readonly contentHash: string}[];
   readonly message: string;
   readonly path: string;
 }
@@ -38,6 +39,10 @@ export interface GitCanonicalCommitResult {
 export interface GitCanonicalReadInput {
   readonly commit: string;
   readonly path: string;
+}
+
+export interface GitCanonicalCurrentFile extends GitCanonicalCommitResult {
+  readonly content: string;
 }
 
 export interface GitCanonicalListedPath {
@@ -146,6 +151,22 @@ export class GitCanonicalMemoryStore {
     });
   }
 
+  readCurrentIfHash(path: string, expectedContentHash: string): Promise<GitCanonicalCurrentFile | undefined> {
+    return this.serialize(() =>
+      this.withLock(async () => {
+        const gitPath = requireSafeGitPath(path);
+        await this.refreshExclusive();
+        if ((await this.worktreeFileHash(gitPath)) !== expectedContentHash) return undefined;
+        const gitCommit = await this.headCommit();
+        const content = await this.showAtCommit(gitCommit, gitPath);
+        if (sha256HexSync(content) !== expectedContentHash) {
+          throw remoteMemoryError('service_unavailable', 'The current canonical Git memory could not be verified.');
+        }
+        return {content, contentHash: expectedContentHash, gitCommit, gitPath};
+      }),
+    );
+  }
+
   listCanonicalPaths(): Promise<readonly GitCanonicalListedPath[]> {
     return this.serialize(() => this.withLock(() => this.listCanonicalPathsExclusive()));
   }
@@ -230,6 +251,14 @@ export class GitCanonicalMemoryStore {
     return this.withLock(async () => {
       await this.refreshExclusive();
       const currentHash = await this.worktreeFileHash(gitPath);
+      for (const source of input.expectedSourceHashes ?? []) {
+        if (source.path === gitPath && currentHash === contentHash) continue;
+        if ((await this.worktreeFileHash(requireSafeGitPath(source.path))) !== source.contentHash) {
+          throw remoteMemoryError('conflict', 'A citation source changed in canonical Git; re-read it and retry.', {
+            reason: 'citation_source_changed',
+          });
+        }
+      }
       if (currentHash === contentHash) {
         return {contentHash, gitCommit: await this.headCommit(), gitPath};
       }

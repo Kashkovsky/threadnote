@@ -1,3 +1,5 @@
+import {requestFingerprint} from './remember_fingerprint.js';
+import {resolveRemoteCitationSources} from './citation_sources.js';
 import {ingestGitShare} from './git_ingest.js';
 import {
   requireShareState,
@@ -23,11 +25,7 @@ import {
   type RemoteMemoryHeadV1,
   type RemoteMutationIntentV1,
 } from '../memory_domain/revisions.js';
-import {
-  parseRemoteMemoryReceiptV1,
-  REMOTE_MEMORY_RECEIPT_VERSION,
-  type RemoteMemoryReceiptV1,
-} from '../memory_domain/receipts.js';
+import {REMOTE_MEMORY_RECEIPT_VERSION, type RemoteMemoryReceiptV1} from '../memory_domain/receipts.js';
 import {
   assertRemoteRememberReplacementTarget,
   authorizeRemoteRememberRelations,
@@ -36,12 +34,23 @@ import {
   type RemoteMemoryScope,
 } from './authorization.js';
 import type {CursorWorkloadAttestation} from './cursor_oidc.js';
-import {RemoteMemoryError, remoteMemoryError, type RemoteMemoryErrorCode} from './errors.js';
+import {RemoteMemoryError, remoteMemoryError} from './errors.js';
 import {GitCanonicalMemoryStore, gitCanonicalSharePath} from './git_canonical_store.js';
 import {requireJsonValue} from './json.js';
 import {assertGitMemoryBinding, requireGitMemoryBinding} from './git_binding.js';
 import {remoteGitIngestPrincipalId} from './git_ingest_principal.js';
 import {makeRemoteDocument} from './remote_document.js';
+import {
+  isRetryableProposalOperationOutcome,
+  readStoredOperationOutcome,
+  storedOperationRejection,
+} from './operation_outcome.js';
+import {
+  recordRememberPublicationPlan,
+  storedRememberPublicationPlan,
+  storedRememberPublicationPlanDate,
+  type StoredRememberPublicationPlanV1,
+} from './remember_publication_recovery.js';
 import {
   remoteMemoryDatabaseTimeoutMilliseconds,
   requireActiveRemoteMemoryRequest,
@@ -102,18 +111,9 @@ interface IdempotencyRecordRow {
   readonly request_hash: string;
 }
 
-interface StoredOperationRejectionV1 {
-  readonly error: {
-    readonly code: RemoteMemoryErrorCode;
-    readonly details: Readonly<Record<string, boolean | number | string>>;
-    readonly message: string;
-  };
-  readonly kind: 'rejected';
-  readonly version: 1;
-}
-
 type OperationReplay = {readonly kind: 'replay'; readonly receipt: RemoteMemoryReceiptV1};
-type OperationReservation = {readonly kind: 'execute'} | OperationReplay;
+type OperationReservation =
+  {readonly kind: 'execute'; readonly publicationPlan?: StoredRememberPublicationPlanV1} | OperationReplay;
 type TenantTransactionRunner = <A>(
   tenantId: string,
   use: (transaction: TransactionSql) => Promise<A>,
@@ -645,7 +645,10 @@ export class PostgresRemoteMemoryRepository {
           }
           const share = await requireShareState(transaction, principal);
           requireFreshAttestationPolicy(principal, share, attestation, input.project);
-          const proposedRevision = proposalApproval?.proposal.approval_revision_id ?? randomUuidV4();
+          const proposedRevision =
+            reservation.publicationPlan?.proposedRevision ??
+            proposalApproval?.proposal.approval_revision_id ??
+            randomUuidV4();
           if (!proposalApproval || !current) {
             this.assertRememberDecision(principal, input, current, logicalKey, fingerprint, proposedRevision, share);
           }
@@ -664,30 +667,44 @@ export class PostgresRemoteMemoryRepository {
         execution,
       );
       const priorBody = planned.current ? await this.revisionBody(planned.current) : undefined;
-      const document = makeRemoteDocument(
+      const renderedAt = reservation.publicationPlan
+        ? storedRememberPublicationPlanDate(reservation.publicationPlan)
+        : now;
+      const memoryId =
+        reservation.publicationPlan?.memoryId ??
+        (proposalApproval
+          ? `tn_${proposalApproval.proposal.id.replaceAll('-', '')}`
+          : `tn_${randomUuidV4().replaceAll('-', '')}`);
+      const sourceAgentClient =
+        proposalApproval?.proposal.approval_source_agent_client ?? (attestation ? 'cursor' : 'remote');
+      let document = makeRemoteDocument(
         input,
         planned.current !== undefined,
         planned.canonicalUri,
-        proposalApproval?.proposal.approval_source_agent_client ?? (attestation ? 'cursor' : 'remote'),
-        now,
+        sourceAgentClient,
+        renderedAt,
         priorBody,
-        proposalApproval ? `tn_${proposalApproval.proposal.id.replaceAll('-', '')}` : undefined,
+        memoryId,
       );
-      if (proposalApproval && planned.current && planned.current.content_hash !== document.contentHash) {
-        this.assertRememberDecision(
-          principal,
-          input,
-          planned.current,
-          logicalKey,
-          fingerprint,
-          planned.proposedRevision,
-          planned.share,
-        );
-      }
       const persistAndCommit = async (tenantTransaction?: TenantTransactionRunner) => {
         const withTenant: TenantTransactionRunner =
           tenantTransaction ?? ((tenantId, use, requestExecution) => this.withTenant(tenantId, use, requestExecution));
-        if (proposalApproval || authoredRelations?.length) {
+        let expectedSourceHashes: readonly {readonly path: string; readonly contentHash: string}[] | undefined;
+        let stored:
+          | {readonly gitCommit: string | null; readonly gitPath: string | null; readonly markdownBody: string}
+          | undefined;
+        if (reservation.publicationPlan && this.gitStore) {
+          const recovered = await this.gitStore.readCurrentIfHash(
+            gitCanonicalSharePath(input.kind, input.project, input.topic),
+            reservation.publicationPlan.contentHash,
+          );
+          if (recovered) {
+            document = {content: recovered.content, contentHash: recovered.contentHash};
+            stored = {gitCommit: recovered.gitCommit, gitPath: recovered.gitPath, markdownBody: ''};
+            gitLanded = true;
+          }
+        }
+        if (!stored && (proposalApproval || authoredRelations?.length || input.citationSources !== undefined)) {
           await withTenant(
             principal.tenantId,
             async transaction => {
@@ -697,19 +714,70 @@ export class PostgresRemoteMemoryRepository {
               if (authoredRelations?.length) {
                 await this.requireActiveRelationTargets(transaction, principal, authoredRelations);
               }
+              if (input.citationSources !== undefined) {
+                const resolved = await resolveRemoteCitationSources(
+                  transaction,
+                  principal,
+                  input.citationSources,
+                  this.gitStore,
+                );
+                expectedSourceHashes = resolved.expectedSourceHashes;
+                document = makeRemoteDocument(
+                  input,
+                  planned.current !== undefined,
+                  planned.canonicalUri,
+                  sourceAgentClient,
+                  renderedAt,
+                  priorBody,
+                  memoryId,
+                  resolved.citations,
+                );
+              }
             },
             execution,
           );
         }
-        const stored = await this.persistCanonicalBody({
-          current: planned.current,
-          document,
-          kind: input.kind,
-          message: `remember ${input.kind} ${input.project}/${input.topic}`,
-          project: input.project,
-          topic: input.topic,
-        });
-        gitLanded = stored.gitCommit !== null;
+        if (proposalApproval && planned.current && planned.current.content_hash !== document.contentHash) {
+          this.assertRememberDecision(
+            principal,
+            input,
+            planned.current,
+            logicalKey,
+            fingerprint,
+            planned.proposedRevision,
+            planned.share,
+          );
+        }
+        if (!stored) {
+          const prepared = await withTenant(
+            principal.tenantId,
+            transaction =>
+              recordRememberPublicationPlan(transaction, principal, input.operationId, fingerprint, {
+                contentHash: document.contentHash,
+                kind: 'remember_publication_plan',
+                memoryId,
+                proposedRevision: planned.proposedRevision,
+                renderedAt: renderedAt.toISOString(),
+                version: 1,
+              }),
+            execution,
+          );
+          if (prepared.kind === 'outcome') {
+            const replay = readStoredOperationOutcome(prepared.outcome, requestId);
+            if (Schema.is(RemoteMemoryError)(replay)) throw replay;
+            return replay;
+          }
+          stored = await this.persistCanonicalBody({
+            expectedSourceHashes,
+            current: planned.current,
+            document,
+            kind: input.kind,
+            message: `remember ${input.kind} ${input.project}/${input.topic}`,
+            project: input.project,
+            topic: input.topic,
+          });
+          gitLanded = stored.gitCommit !== null;
+        }
         try {
           return await this.commitRememberRevision({
             attestation,
@@ -720,7 +788,7 @@ export class PostgresRemoteMemoryRepository {
             fingerprint,
             input,
             logicalKey,
-            now,
+            now: renderedAt,
             principal,
             proposedRevision: planned.proposedRevision,
             proposalApproval,
@@ -739,7 +807,7 @@ export class PostgresRemoteMemoryRepository {
             fingerprint,
             input,
             logicalKey,
-            now,
+            now: renderedAt,
             principal,
             proposedRevision: planned.proposedRevision,
             proposalApproval,
@@ -750,9 +818,7 @@ export class PostgresRemoteMemoryRepository {
           });
         }
       };
-      return proposalApproval || authoredRelations?.length
-        ? await this.withRelationAdmissionFence(principal, execution, persistAndCommit)
-        : await persistAndCommit();
+      return await this.withRelationAdmissionFence(principal, execution, persistAndCommit);
     } catch (cause) {
       const conflictAfterGit = gitLanded && Schema.is(RemoteMemoryError)(cause) && cause.code === 'conflict';
       if ((!gitLanded && !proposalApproval) || conflictAfterGit) {
@@ -969,6 +1035,7 @@ export class PostgresRemoteMemoryRepository {
   private async persistCanonicalBody(input: {
     readonly current?: HeadRow;
     readonly document: {readonly content: string; readonly contentHash: string};
+    readonly expectedSourceHashes?: readonly {readonly path: string; readonly contentHash: string}[];
     readonly kind: 'durable' | 'handoff';
     readonly message: string;
     readonly project: string;
@@ -979,6 +1046,7 @@ export class PostgresRemoteMemoryRepository {
     }
     const committed = await this.gitStore.commit({
       content: input.document.content,
+      ...(input.expectedSourceHashes === undefined ? {} : {expectedSourceHashes: input.expectedSourceHashes}),
       ...(input.current ? {expectedContentHash: input.current.content_hash} : {}),
       message: input.message,
       path: gitCanonicalSharePath(input.kind, input.project, input.topic),
@@ -1759,6 +1827,8 @@ function operationReservationFromRecord(
     });
   }
   if (record.outcome !== null) {
+    const publicationPlan = storedRememberPublicationPlan(record.outcome);
+    if (publicationPlan) return {kind: 'execute', publicationPlan};
     if (allowAmbiguousReplay && isRetryableProposalOperationOutcome(record.outcome)) return {kind: 'execute'};
     const replay = readStoredOperationOutcome(record.outcome, requestId);
     if (Schema.is(RemoteMemoryError)(replay)) throw replay;
@@ -1767,61 +1837,6 @@ function operationReservationFromRecord(
   throw remoteMemoryError('service_unavailable', 'The operation outcome is unavailable and will not be re-executed.', {
     reason: 'outcome_ambiguous',
   });
-}
-
-function isRetryableProposalOperationOutcome(value: unknown): boolean {
-  return isStoredOperationRejection(value) && value.error.code === 'service_unavailable';
-}
-
-function readStoredOperationOutcome(outcome: unknown, requestId: string): RemoteMemoryReceiptV1 | RemoteMemoryError {
-  if (isStoredOperationRejection(outcome)) {
-    return remoteMemoryError(outcome.error.code, outcome.error.message, outcome.error.details);
-  }
-  return {...parseRemoteMemoryReceiptV1(outcome), requestId};
-}
-
-function storedOperationRejection(error: RemoteMemoryError): StoredOperationRejectionV1 {
-  return {
-    error: {code: error.code, details: error.details, message: error.message},
-    kind: 'rejected',
-    version: 1,
-  };
-}
-
-function isStoredOperationRejection(value: unknown): value is StoredOperationRejectionV1 {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const error = 'error' in value ? value.error : undefined;
-  return (
-    'kind' in value &&
-    value.kind === 'rejected' &&
-    'version' in value &&
-    value.version === 1 &&
-    typeof error === 'object' &&
-    error !== null &&
-    !Array.isArray(error) &&
-    'code' in error &&
-    isRemoteMemoryErrorCode(error.code) &&
-    'message' in error &&
-    typeof error.message === 'string' &&
-    'details' in error &&
-    typeof error.details === 'object' &&
-    error.details !== null &&
-    !Array.isArray(error.details)
-  );
-}
-
-function isRemoteMemoryErrorCode(value: unknown): value is RemoteMemoryErrorCode {
-  return (
-    value === 'attestation_required' ||
-    value === 'conflict' ||
-    value === 'forbidden' ||
-    value === 'idempotency_mismatch' ||
-    value === 'invalid_request' ||
-    value === 'not_found' ||
-    value === 'rate_limited' ||
-    value === 'service_unavailable' ||
-    value === 'unauthorized'
-  );
 }
 
 async function resolveCanonicalUri(
@@ -1877,26 +1892,6 @@ function receipt(
     tenantId: principal.tenantId,
     version: REMOTE_MEMORY_RECEIPT_VERSION,
   };
-}
-
-function requestFingerprint(principal: AuthorizedRemotePrincipal, input: RemoteRememberInputV1): string {
-  // Attestation IDs are renewable authorization proofs, not mutation intent.
-  // A retried operation must replay its original committed actor after renewal.
-  return sha256HexSync(
-    JSON.stringify({
-      baseRevision: input.baseRevision ?? null,
-      kind: input.kind,
-      lifecycle: input.lifecycle ?? null,
-      operationId: input.operationId,
-      project: input.project,
-      ...(input.relations === undefined ? {} : {relations: input.relations}),
-      ...(input.replaceUri === undefined ? {} : {replaceUri: input.replaceUri}),
-      shareId: principal.shareId,
-      text: input.text,
-      topic: input.topic,
-      version: input.version,
-    }),
-  );
 }
 
 function lifecycleRequestFingerprint(

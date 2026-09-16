@@ -1,3 +1,4 @@
+import {normalizeRemoteCitationSources} from '../memory_domain/citation_sources.js';
 import {Schema} from 'effect';
 import {formatRemoteMemoryUri, InvalidRemoteMemoryAddress, parseRemoteShareAddress} from '../memory_domain/address.js';
 import type {RemoteRememberInputV1} from '../memory_domain/contracts.js';
@@ -135,6 +136,7 @@ export function authorizeRemoteRememberRelations(
   principal: AuthorizedRemotePrincipal,
   input: RemoteRememberInputV1,
 ): RemoteRememberInputV1 {
+  input = authorizeRemoteCitationSources(principal, input);
   let relations;
   try {
     relations = normalizeRemoteMemoryRelations(input.relations);
@@ -175,4 +177,27 @@ function featureForScope(scope: RemoteMemoryScope): RemoteMemoryFeatureFlag | un
     case 'memory:admin':
       return undefined;
   }
+}
+
+export function authorizeRemoteCitationSources(
+  principal: AuthorizedRemotePrincipal,
+  input: RemoteRememberInputV1,
+): RemoteRememberInputV1 {
+  let citationSources;
+  try {
+    citationSources = normalizeRemoteCitationSources(input.citationSources);
+  } catch {
+    throw remoteMemoryError(
+      'invalid_request',
+      'Citation sources must be bounded canonical URI and citation ID selectors.',
+    );
+  }
+  if (citationSources === undefined) return input;
+  for (const source of citationSources) {
+    const address = parseRemoteShareAddress(source.uri);
+    if (address.shareId !== principal.shareId)
+      throw remoteMemoryError('forbidden', 'A citation source is outside the authorized memory share.');
+    requireAuthorizedProject(principal, address.project);
+  }
+  return {...input, citationSources};
 }
