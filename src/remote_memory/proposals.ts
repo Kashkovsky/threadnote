@@ -1,3 +1,4 @@
+import {normalizeRemoteCitationSources, type RemoteCitationSource} from '../memory_domain/citation_sources.js';
 import type {MemoryRelation} from '../memory/document.js';
 import {parseRemoteRememberInputV1, type RemoteRememberInputV1} from '../memory_domain/contracts.js';
 import {parseRemoteMemoryReceiptV1, type RemoteMemoryReceiptV1} from '../memory_domain/receipts.js';
@@ -58,6 +59,7 @@ export interface RemoteDurableProposalInputV1 {
   readonly operationId: string;
   readonly project: string;
   readonly relations?: readonly MemoryRelation[];
+  readonly citationSources?: readonly RemoteCitationSource[];
   readonly replaceUri?: string;
   readonly text: string;
   readonly topic: string;
@@ -68,6 +70,7 @@ export interface RemoteDurableProposalPayloadV1 {
   readonly baseRevision?: string;
   readonly project: string;
   readonly relations?: readonly MemoryRelation[];
+  readonly citationSources?: readonly RemoteCitationSource[];
   readonly replaceUri?: string;
   readonly text: string;
   readonly topic: string;
@@ -123,12 +126,14 @@ export function remoteDurableProposalRequestHash(input: {
   readonly tenantId: string;
 }): string {
   const relations = normalizeRemoteMemoryRelations(input.payload.relations);
+  const citationSources = normalizeRemoteCitationSources(input.payload.citationSources);
   return sha256HexSync(
     JSON.stringify({
       operationId: input.operationId,
       payload: {
         ...input.payload,
         ...(relations === undefined ? {} : {relations}),
+        ...(citationSources === undefined ? {} : {citationSources}),
       },
       principalId: input.principalId,
       shareId: input.shareId,
@@ -149,6 +154,9 @@ export function durableProposalPayload(
   }
   const payload: RemoteDurableProposalPayloadV1 = {
     ...(input.baseRevision === undefined ? {} : {baseRevision: input.baseRevision}),
+    ...(input.citationSources === undefined
+      ? {}
+      : {citationSources: normalizeRemoteCitationSources(input.citationSources)!}),
     project: input.project,
     ...(input.relations === undefined ? {} : {relations: input.relations}),
     ...(input.replaceUri === undefined ? {} : {replaceUri: input.replaceUri}),
@@ -170,6 +178,9 @@ export function durableProposalRememberInput(
     ...(input.baseRevision === undefined ? {} : {baseRevision: input.baseRevision}),
     kind: 'durable',
     operationId,
+    ...(input.citationSources === undefined
+      ? {}
+      : {citationSources: normalizeRemoteCitationSources(input.citationSources)!}),
     project: input.project,
     ...(input.relations === undefined ? {} : {relations: input.relations}),
     ...(input.replaceUri === undefined ? {} : {replaceUri: input.replaceUri}),

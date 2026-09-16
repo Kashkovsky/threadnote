@@ -14,9 +14,34 @@ import {
 } from '../../src/remote_memory/git_canonical_store.js';
 import {cloneGitShareWorktree, createGitShareWorktreeFixture, git} from '../helpers/git-share-worktree.js';
 
-const portableSegment = FC.stringMatching(/^[a-z][a-z0-9-]{0,15}$/u);
+const portableSegment = FC.stringMatching(/^[a-z][a-z0-9-]{0,15}$/u).map(value => `project-${value}`);
 
 describe('git canonical memory store', () => {
+  it('checks donor hashes before publication and permits exact recovery when the target is its own donor', async () => {
+    const fixture = await createGitShareWorktreeFixture('threadnote-citation-source-cas-');
+    try {
+      const store = new GitCanonicalMemoryStore({worktreeLock: testGitWorktreeLock, worktree: fixture.worktree});
+      const path = gitCanonicalSharePath('durable', 'project', 'donor');
+      const first = await store.commit({path, content: 'Before.', message: 'seed donor'});
+      const input = {
+        path,
+        content: 'After.',
+        message: 'replace self donor',
+        expectedContentHash: first.contentHash,
+        expectedSourceHashes: [{path, contentHash: first.contentHash}],
+      };
+      const updated = await store.commit(input);
+      expect(await store.commit(input)).toEqual(updated);
+      const target = gitCanonicalSharePath('durable', 'project', 'target');
+      await expect(
+        store.commit({...input, path: target, content: 'Must not publish.', expectedContentHash: undefined}),
+      ).rejects.toMatchObject({code: 'conflict', details: {reason: 'citation_source_changed'}});
+      expect(await Bun.file(join(fixture.worktree, target)).exists()).toBe(false);
+    } finally {
+      await rm(fixture.root, {recursive: true, force: true});
+    }
+  });
+
   it('round-trips share path encoding for durable and handoff files', () => {
     FC.assert(
       FC.property(FC.constantFrom('durable', 'handoff'), portableSegment, portableSegment, (kind, project, topic) => {

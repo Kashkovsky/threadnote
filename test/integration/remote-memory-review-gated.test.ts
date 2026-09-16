@@ -1,3 +1,5 @@
+import {richRemoteMemoryMetadata} from '../helpers/remote-memory-document.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {afterAll, beforeAll, describe, expect, it, vi} from 'vitest';
 import {rm} from '../helpers/node-fs-promises.js';
 import {testGitWorktreeLock} from '../helpers/git-worktree-lock.js';
@@ -148,6 +150,83 @@ postgresDescribe('review-gated durable organization memory', () => {
   afterAll(async () => {
     await fixture?.dispose();
     if (gitFixture) await rm(gitFixture.root, {force: true, recursive: true});
+  });
+
+  it('stores canonical citation selectors and revalidates them at approval', async () => {
+    const metadata = {...richRemoteMemoryMetadata(), project: PROJECT, topic: 'proposal-citation-donor'};
+    const citation = metadata.codeCitations![0];
+    await gitStore.commit({
+      content: formatMemoryDocument('MEMORY', metadata, 'Donor evidence.'),
+      message: 'seed proposal citation donor',
+      path: gitCanonicalSharePath('durable', PROJECT, metadata.topic),
+    });
+    await repository.ingestGitShare(reviewer, 'proposal-citation-ingest');
+    const citationSources = [{uri: durableUri(metadata.topic), citationId: citation.id}];
+    const input = {
+      operationId: 'proposal-citation',
+      project: PROJECT,
+      topic: 'proposal-citation-target',
+      text: 'Candidate.',
+      citationSources,
+      version: 1 as const,
+    };
+    const proposed = await repository.proposeDurable(proposer, input, 'proposal-citation');
+    expect(
+      await repository.proposeDurable(
+        proposer,
+        {...input, citationSources: [...citationSources, ...citationSources]},
+        'proposal-citation-replay',
+      ),
+    ).toEqual(proposed);
+    const stored = await repository.readProposal(reviewer, proposed.proposalId);
+    expect(stored.payload?.citationSources).toEqual(citationSources);
+    expect(stored.payload).not.toHaveProperty('codeCitations');
+    const review = {
+      decision: 'approve' as const,
+      operationId: 'approve-citation',
+      proposalId: proposed.proposalId,
+      revision: proposed.revision,
+      version: 1 as const,
+    };
+    const approved = await repository.reviewProposal(reviewer, review, 'approve-citation');
+    expect(approved.status).toBe('approved');
+    expect((await repository.reviewProposal(reviewer, review, 'approve-citation-replay')).result).toEqual(
+      approved.result,
+    );
+    expect(
+      parseMemoryDocument(
+        approved.result!.uri!,
+        (await repository.read(reviewer, {uri: approved.result!.uri!, version: 1}, 'read-citation-approved')).content,
+      )?.metadata.codeCitations,
+    ).toEqual([citation]);
+    const stale = await repository.proposeDurable(
+      proposer,
+      {...input, operationId: 'proposal-citation-stale', topic: 'proposal-citation-stale'},
+      'proposal-citation-stale',
+    );
+    const donor = await repository.read(reviewer, {uri: citationSources[0].uri, version: 1}, 'read-donor');
+    await repository.remember(
+      reviewer,
+      {
+        ...rememberInput('clear-proposal-donor', 'Evidence removed.', metadata.topic),
+        baseRevision: donor.receipt.revision,
+        citationSources: [],
+      },
+      'clear-proposal-donor',
+    );
+    await expect(
+      repository.reviewProposal(
+        reviewer,
+        {...review, operationId: 'approve-citation-stale', proposalId: stale.proposalId, revision: stale.revision},
+        'approve-citation-stale',
+      ),
+    ).rejects.toMatchObject({code: 'invalid_request'});
+    expect((await repository.readProposal(reviewer, stale.proposalId)).status).toBe('conflict');
+    expect(
+      await Bun.file(
+        `${gitFixture.worktree}/${gitCanonicalSharePath('durable', PROJECT, 'proposal-citation-stale')}`,
+      ).exists(),
+    ).toBe(false);
   });
 
   it('keeps proposals outside Git until approval, then writes canonically and replays idempotently', async () => {
@@ -452,12 +531,21 @@ postgresDescribe('review-gated durable organization memory', () => {
     ).rejects.toMatchObject({code: 'forbidden'});
   });
 
-  it('recovers the same approval after Git lands but the atomic database decision rolls back', async () => {
+  it('recovers the same cited approval after Git lands even when the donor changes before retry', async () => {
     const originalAttestation = await insertReviewerAttestation('recovery-original');
     const differentAttestation = await insertReviewerAttestation('recovery-different');
+    const donorMetadata = {...richRemoteMemoryMetadata(), project: PROJECT, topic: 'proposal-recovery-donor'};
+    const citation = donorMetadata.codeCitations![0];
+    await gitStore.commit({
+      content: formatMemoryDocument('MEMORY', donorMetadata, 'Recovery donor evidence.'),
+      message: 'seed proposal recovery donor',
+      path: gitCanonicalSharePath('durable', PROJECT, donorMetadata.topic),
+    });
+    await repository.ingestGitShare(reviewer, 'proposal-recovery-donor-ingest');
     const proposed = await repository.proposeDurable(
       proposer,
       {
+        citationSources: [{citationId: citation.id, uri: durableUri(donorMetadata.topic)}],
         operationId: 'proposal-recovery-create',
         project: PROJECT,
         text: 'Recovery reuses one canonical Git commit.',
@@ -495,6 +583,16 @@ postgresDescribe('review-gated durable organization memory', () => {
     }
     expect(Number(await git(['rev-list', '--count', 'HEAD'], gitFixture.worktree))).toBe(beforeCount + 1);
     expect((await repository.readProposal(reviewer, proposed.proposalId)).status).toBe('pending');
+    const donor = await repository.read(reviewer, {uri: durableUri(donorMetadata.topic), version: 1}, 'recovery-donor');
+    await repository.remember(
+      reviewer,
+      {
+        ...rememberInput('proposal-recovery-donor-clear', 'Recovery donor changed.', donorMetadata.topic),
+        baseRevision: donor.receipt.revision,
+        citationSources: [],
+      },
+      'proposal-recovery-donor-clear',
+    );
     await expect(
       repository.reviewProposal(reviewer, review, 'request-review-recovery-wrong-attestation', differentAttestation),
     ).rejects.toMatchObject({code: 'idempotency_mismatch'});
@@ -505,13 +603,13 @@ postgresDescribe('review-gated durable organization memory', () => {
       originalAttestation,
     );
     expect(recovered.status).toBe('approved');
-    expect(Number(await git(['rev-list', '--count', 'HEAD'], gitFixture.worktree))).toBe(beforeCount + 1);
-    expect(
-      await git(
-        ['show', `HEAD:${gitCanonicalSharePath('durable', PROJECT, 'proposal-recovery')}`],
-        gitFixture.worktree,
-      ),
-    ).toContain('source_agent_client: cursor');
+    expect(Number(await git(['rev-list', '--count', 'HEAD'], gitFixture.worktree))).toBe(beforeCount + 2);
+    const recoveredContent = await git(
+      ['show', `HEAD:${gitCanonicalSharePath('durable', PROJECT, 'proposal-recovery')}`],
+      gitFixture.worktree,
+    );
+    expect(recoveredContent).toContain('source_agent_client: cursor');
+    expect(parseMemoryDocument(recovered.result!.uri!, recoveredContent)?.metadata.codeCitations).toEqual([citation]);
   });
 
   it('leases failed approval claims for bounded takeover and rechecks current grant policy', async () => {

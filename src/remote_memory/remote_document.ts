@@ -1,6 +1,6 @@
 import {randomUuidV4} from '../crypto/uuid.js';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {MEMORY_SCHEMA_VERSION} from '../memory/code_citation.js';
+import {type MemoryCodeCitationV1, MEMORY_SCHEMA_VERSION} from '../memory/code_citation.js';
 import {
   formatMemoryDocument,
   parseMemoryDocument,
@@ -20,12 +20,14 @@ export function makeRemoteDocument(
   now: Date,
   priorBody: string | undefined,
   memoryId?: string,
+  codeCitations?: readonly MemoryCodeCitationV1[],
 ): {readonly content: string; readonly contentHash: string; readonly relations?: readonly MemoryRelation[]} {
   const timestamp = now.toISOString();
   const prior = hasCurrent && priorBody ? parseMemoryDocument(uri, priorBody) : undefined;
   if (hasCurrent && priorBody) assertRemoteBodyReplacementSupported(priorBody);
   const metadata: MemoryMetadata = {
     ...prior?.metadata,
+    codeCitations: codeCitations === undefined ? prior?.metadata.codeCitations : codeCitations,
     createdAt: prior?.metadata.createdAt ?? prior?.metadata.timestamp ?? timestamp,
     kind: input.kind,
     memoryId: prior?.metadata.memoryId ?? memoryId ?? `tn_${randomUuidV4().replaceAll('-', '')}`,

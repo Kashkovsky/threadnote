@@ -1,3 +1,4 @@
+import {RemoteCitationSourcesSchema} from '../memory_domain/citation_sources.js';
 import {McpServer, ResourceTemplate} from '@modelcontextprotocol/sdk/server/mcp.js';
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Schema} from 'effect';
@@ -232,10 +233,11 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
     {
       annotations: {destructiveHint: false, idempotentHint: true, readOnlyHint: false},
       description:
-        'Create or compare-and-swap one durable memory or handoff in the authorized remote share; replaceUri may identify the same memory with baseRevision.',
+        'Create or compare-and-swap one durable memory or handoff in the authorized remote share; replaceUri may identify the same memory with baseRevision. citationSources selects existing clean canonical citations from active same-share memories; omission preserves, [] clears, a nonempty list replaces. Citations record provenance, not proof of prose.',
       inputSchema: Schema.Struct({
         attestationId: Schema.optionalKey(Identifier),
         baseRevision: Schema.optionalKey(Identifier),
+        citationSources: Schema.optionalKey(RemoteCitationSourcesSchema),
         kind: Kind,
         lifecycle: Schema.optionalKey(
           Schema.Struct({
@@ -303,10 +305,11 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
     {
       annotations: {destructiveHint: false, idempotentHint: true, readOnlyHint: false},
       description:
-        'Submit an immutable durable-memory proposal for independent review. The proposal is not a memory and does not write canonical Git.',
+        'Submit an immutable durable-memory proposal for independent review. The proposal is not a memory and does not write canonical Git. citationSources stores only canonical donor URI/citationId selectors, revalidated at approval; omission preserves, [] clears, a nonempty list replaces.',
       inputSchema: Schema.Struct({
         attestationId: Schema.optionalKey(Identifier),
         baseRevision: Schema.optionalKey(Identifier),
+        citationSources: Schema.optionalKey(RemoteCitationSourcesSchema),
         operationId: Identifier,
         project: PortableSegment,
         relations: Schema.optionalKey(Schema.Array(Relation).check(Schema.isMaxLength(MAX_MEMORY_RELATIONS))),
@@ -331,7 +334,11 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
         );
         return dependencies.repository.proposeDurable(
           principal,
-          {...input, ...(durableInput.relations === undefined ? {} : {relations: durableInput.relations})},
+          {
+            ...input,
+            ...(durableInput.relations === undefined ? {} : {relations: durableInput.relations}),
+            ...(durableInput.citationSources === undefined ? {} : {citationSources: durableInput.citationSources}),
+          },
           requestContext.requestId,
           attestation,
           undefined,
