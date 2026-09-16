@@ -43,17 +43,16 @@ function fixture(
 ): Fixture {
   const calls: string[] = [];
   const readInputs: Array<{readonly revision?: string; readonly uri: string}> = [];
+  const capabilities = options.capabilities ?? ['memory:read', 'memory:write:durable', 'memory:write:handoff'];
   const OAuth: OAuthPrincipalClaims = {
     issuer: 'https://auth.example.test',
-    scopes: new Set(options.capabilities ?? ['memory:read', 'memory:write:durable', 'memory:write:handoff']),
+    scopes: new Set(capabilities),
     subject: 'oauth-subject',
   };
   const principal: AuthorizedRemotePrincipal = {
     allowedProjects: options.allowedProjects ?? 'all',
     attestationRequiredForWrites: false,
-    capabilities: new Set(
-      options.capabilities ?? ['memory:read', 'memory:write:durable', 'memory:write:handoff'],
-    ) as AuthorizedRemotePrincipal['capabilities'],
+    capabilities: new Set(capabilities) as AuthorizedRemotePrincipal['capabilities'],
     cursorOwnerIds: new Set(),
     cursorSubjects: new Set(),
     featureFlags: new Set([
@@ -75,6 +74,10 @@ function fixture(
   };
   const receipt = {...receiptFixture(), ...options.receipt};
   const repository: RemoteMemoryServiceRepository = {
+    listProposals: async () => {
+      calls.push('proposal:list');
+      return {entries: []};
+    },
     list: async (_principal, _input, requestId) => {
       calls.push(`list:${requestId}`);
       return {entries: [], receipt: {...receipt, requestId}};
@@ -94,6 +97,22 @@ function fixture(
         uri: input.uri,
       };
     },
+    readProposal: async (_principal, proposalId) => {
+      calls.push(`proposal:read:${proposalId}`);
+      return {
+        createdAt: '2026-09-16T00:00:00.000Z',
+        expiresAt: '2026-10-16T00:00:00.000Z',
+        payload: {project: 'threadnote', text: 'Proposed body.', topic: 'proposal', version: 1},
+        project: 'threadnote',
+        proposalId,
+        proposerPrincipalId: 'principal-proposer',
+        requestHash: 'a'.repeat(64),
+        revision: 'proposal-revision-1',
+        status: 'pending',
+        topic: 'proposal',
+        version: 1,
+      };
+    },
     recall: async (_principal, input, requestId) => {
       calls.push(`recall:${requestId}:${input.query}`);
       return {receipt: {...receipt, requestId}, results: options.recallResults ?? []};
@@ -102,9 +121,43 @@ function fixture(
       calls.push(`remember:${requestId}:${input.operationId}`);
       return {...receipt, requestId, revision: 'revision-2'};
     },
+    proposeDurable: async (_principal, input) => {
+      calls.push(`proposal:create:${input.operationId}`);
+      return {
+        expiresAt: '2026-10-16T00:00:00.000Z',
+        proposalId: 'proposal-1',
+        requestHash: 'a'.repeat(64),
+        revision: 'proposal-revision-1',
+        status: 'pending',
+        version: 1,
+      };
+    },
+    reviewProposal: async (_principal, input) => {
+      calls.push(`proposal:review:${input.decision}:${input.operationId}`);
+      return {
+        createdAt: '2026-09-16T00:00:00.000Z',
+        expiresAt: '2026-10-16T00:00:00.000Z',
+        payload: {project: 'threadnote', text: 'Proposed body.', topic: 'proposal', version: 1},
+        project: 'threadnote',
+        proposalId: input.proposalId,
+        proposerPrincipalId: 'principal-proposer',
+        requestHash: 'a'.repeat(64),
+        revision: input.revision,
+        status: input.decision === 'approve' ? 'approved' : 'rejected',
+        topic: 'proposal',
+        version: 1,
+      };
+    },
     status: async (_principal, requestId) => {
       calls.push(`status:${requestId}`);
-      return {receipt: {...receipt, requestId}, writable: {durable: true, handoff: true}};
+      return {
+        receipt: {...receipt, requestId},
+        reviewGated: {
+          propose: capabilities.includes('memory:propose:durable'),
+          review: capabilities.includes('memory:review:durable'),
+        },
+        writable: {durable: true, handoff: true},
+      };
     },
     transitionHandoff: async (_principal, input, requestId) => {
       calls.push(`transition:${requestId}:${input.operation}`);
@@ -423,6 +476,209 @@ describe('remote memory HTTP transport', () => {
     expect(test.calls.filter(entry => entry.startsWith('remember:'))).toHaveLength(writes);
   });
 
+  it('keeps proposal-only principals outside direct durable writes', async () => {
+    const test = fixture({capabilities: ['memory:read', 'memory:propose:durable'], trackRateLimits: true});
+    const proposal = {
+      operationId: 'proposal-operation-1',
+      project: 'threadnote',
+      text: 'A reviewed durable memory candidate.',
+      topic: 'reviewed-candidate',
+      version: 1,
+    };
+    const proposed = await json(
+      await test.handler(
+        mcpRequest({
+          id: 35,
+          method: 'tools/call',
+          params: {arguments: proposal, name: 'propose_durable_memory'},
+        }),
+      ),
+    );
+    expect(proposed).toMatchObject({
+      id: 35,
+      result: {structuredContent: {proposalId: 'proposal-1', status: 'pending'}},
+    });
+    expect(test.calls).toContain('proposal:create:proposal-operation-1');
+
+    const direct = await json(
+      await test.handler(
+        mcpRequest({
+          id: 36,
+          method: 'tools/call',
+          params: {arguments: {...proposal, kind: 'durable'}, name: 'remember_context'},
+        }),
+      ),
+    );
+    expect(direct).toMatchObject({id: 36, result: {isError: true, structuredContent: {code: 'forbidden'}}});
+    expect(test.calls.some(call => call.startsWith('remember:'))).toBe(false);
+  });
+
+  it('requires review plus durable-write capability for approval while allowing reviewer rejection', async () => {
+    const reviewer = fixture({capabilities: ['memory:read', 'memory:review:durable'], trackRateLimits: true});
+    expect(
+      await json(
+        await reviewer.handler(
+          mcpRequest({
+            id: 37,
+            method: 'tools/call',
+            params: {
+              arguments: {
+                decision: 'approve',
+                operationId: 'review-operation-approve',
+                proposalId: 'proposal-1',
+                revision: 'proposal-revision-1',
+                version: 1,
+              },
+              name: 'review_memory_proposal',
+            },
+          }),
+        ),
+      ),
+    ).toMatchObject({id: 37, result: {isError: true, structuredContent: {code: 'forbidden'}}});
+    expect(reviewer.calls.some(call => call.startsWith('proposal:review:'))).toBe(false);
+
+    const rejected = await json(
+      await reviewer.handler(
+        mcpRequest({
+          id: 38,
+          method: 'tools/call',
+          params: {
+            arguments: {
+              decision: 'reject',
+              operationId: 'review-operation-reject',
+              proposalId: 'proposal-1',
+              reason: 'The evidence is incomplete.',
+              revision: 'proposal-revision-1',
+              version: 1,
+            },
+            name: 'review_memory_proposal',
+          },
+        }),
+      ),
+    );
+    expect(rejected).toMatchObject({id: 38, result: {structuredContent: {status: 'rejected'}}});
+    expect(reviewer.calls).toContain('proposal:review:reject:review-operation-reject');
+
+    const approver = fixture({
+      capabilities: ['memory:read', 'memory:review:durable', 'memory:write:durable'],
+      trackRateLimits: true,
+    });
+    const approved = await json(
+      await approver.handler(
+        mcpRequest({
+          id: 39,
+          method: 'tools/call',
+          params: {
+            arguments: {
+              decision: 'approve',
+              operationId: 'review-operation-approved',
+              proposalId: 'proposal-1',
+              revision: 'proposal-revision-1',
+              version: 1,
+            },
+            name: 'review_memory_proposal',
+          },
+        }),
+      ),
+    );
+    expect(approved).toMatchObject({id: 39, result: {structuredContent: {status: 'approved'}}});
+    expect(approver.calls).toContain('proposal:review:approve:review-operation-approved');
+  });
+
+  it('bounds proposal discovery and review schemas', async () => {
+    const test = fixture({capabilities: ['memory:read', 'memory:review:durable'], trackRateLimits: true});
+    const listed = await json(await test.handler(mcpRequest({id: 40, method: 'tools/list', params: {}})));
+    const tools = (listed.result as {readonly tools: readonly {inputSchema: unknown; name: string}[]}).tools;
+    expect(tools.find(tool => tool.name === 'propose_durable_memory')?.inputSchema).toMatchObject({
+      additionalProperties: false,
+      properties: {relations: {maxItems: 16}, text: {maxLength: 1_000_000}, version: {enum: [1]}},
+      required: ['operationId', 'project', 'text', 'topic', 'version'],
+    });
+    expect(tools.find(tool => tool.name === 'list_memory_proposals')?.inputSchema).toMatchObject({
+      additionalProperties: false,
+      properties: {limit: {maximum: 100}, status: {type: 'string'}},
+    });
+    const invalidRejection = await json(
+      await test.handler(
+        mcpRequest({
+          id: 41,
+          method: 'tools/call',
+          params: {
+            arguments: {
+              decision: 'reject',
+              operationId: 'review-invalid',
+              proposalId: 'proposal-1',
+              revision: 'proposal-revision-1',
+              version: 1,
+            },
+            name: 'review_memory_proposal',
+          },
+        }),
+      ),
+    );
+    expect(invalidRejection).toMatchObject({id: 41, result: {isError: true}});
+    const whitespaceRejection = await json(
+      await test.handler(
+        mcpRequest({
+          id: 42,
+          method: 'tools/call',
+          params: {
+            arguments: {
+              decision: 'reject',
+              operationId: 'review-whitespace',
+              proposalId: 'proposal-1',
+              reason: '   ',
+              revision: 'proposal-revision-1',
+              version: 1,
+            },
+            name: 'review_memory_proposal',
+          },
+        }),
+      ),
+    );
+    expect(whitespaceRejection).toMatchObject({id: 42, result: {isError: true}});
+    expect(test.calls.some(call => call.startsWith('proposal:review:'))).toBe(false);
+  });
+
+  it('charges each proposal tool to its stable rate-limit operation key', async () => {
+    const test = fixture({
+      capabilities: ['memory:read', 'memory:propose:durable', 'memory:review:durable', 'memory:write:durable'],
+      trackRateLimits: true,
+    });
+    const calls = [
+      {
+        arguments: {operationId: 'proposal-rate', project: 'threadnote', text: 'Candidate.', topic: 'rate', version: 1},
+        name: 'propose_durable_memory',
+      },
+      {arguments: {limit: 5, version: 1}, name: 'list_memory_proposals'},
+      {arguments: {proposalId: 'proposal-1', version: 1}, name: 'read_memory_proposal'},
+      {
+        arguments: {
+          decision: 'reject',
+          operationId: 'review-rate',
+          proposalId: 'proposal-1',
+          reason: 'Insufficient evidence.',
+          revision: 'proposal-revision-1',
+          version: 1,
+        },
+        name: 'review_memory_proposal',
+      },
+    ] as const;
+    for (const [index, call] of calls.entries()) {
+      const response = await json(
+        await test.handler(mcpRequest({id: 410 + index, method: 'tools/call', params: call})),
+      );
+      expect(response).toMatchObject({id: 410 + index});
+      expect(response).not.toMatchObject({result: {isError: true}});
+    }
+    expect(test.calls.filter(call => call.startsWith('rate:'))).toEqual([
+      'rate:propose_durable_memory',
+      'rate:list_memory_proposals',
+      'rate:read_memory_proposal',
+      'rate:review_memory_proposal',
+    ]);
+  });
+
   it('rejects unauthorized, malformed, duplicate, and self relations before storage dispatch', async () => {
     const test = fixture({allowedProjects: new Set(['threadnote']), trackRateLimits: true});
     const source = 'threadnote://share/share-1/memories/durable/threadnote/source.md';
@@ -528,6 +784,7 @@ describe('remote memory HTTP transport', () => {
       id: 3,
       result: {
         structuredContent: {
+          reviewGated: {propose: false, review: false},
           receipt: {
             policyVersion: 'policy-v1',
             requestId: 'request-123',
@@ -540,6 +797,24 @@ describe('remote memory HTTP transport', () => {
     });
     expect(test.calls).toContain('status:request-123');
     expect(test.calls).toContain('rate:memory_status');
+  });
+
+  it.each([
+    {capabilities: ['memory:read', 'memory:propose:durable'], expected: {propose: true, review: false}},
+    {capabilities: ['memory:read', 'memory:review:durable'], expected: {propose: false, review: true}},
+    {
+      capabilities: ['memory:read', 'memory:propose:durable', 'memory:review:durable'],
+      expected: {propose: true, review: true},
+    },
+    {capabilities: ['memory:read'], expected: {propose: false, review: false}},
+  ])('reports review-gated capabilities for $capabilities', async ({capabilities, expected}) => {
+    const test = fixture({capabilities});
+    const response = await json(
+      await test.handler(
+        mcpRequest({id: 303, method: 'tools/call', params: {arguments: {version: 1}, name: 'memory_status'}}),
+      ),
+    );
+    expect(response).toMatchObject({result: {structuredContent: {reviewGated: expected}}});
   });
 
   it('projects 100 worst-case remote recall hits as a compact unread prefix with bounded explain details', async () => {

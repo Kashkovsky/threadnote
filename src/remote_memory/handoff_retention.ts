@@ -7,6 +7,7 @@ import {rotateShares} from './indexer.js';
 import {PostgresRemoteMemoryRepository} from './postgres_repository.js';
 import {remoteRetentionPrincipalId} from './postgres_control_plane.js';
 import type {GitCanonicalMemoryStore} from './git_canonical_store.js';
+import {REMOTE_MEMORY_PROPOSAL_CLAIM_LEASE_MILLISECONDS} from './proposals.js';
 
 const DEFAULT_RETENTION_LIMIT = 64;
 const DEFAULT_RETENTION_POLL_MILLISECONDS = 60_000;
@@ -142,6 +143,30 @@ export class RemoteHandoffRetentionWorker {
             SELECT ctid FROM remote_memory.workload_attestations
             WHERE tenant_id = ${tenantId} AND expires_at <= ${now.toISOString()}
               AND (issuer <> 'expired' OR subject <> 'expired' OR cloud_agent_id <> 'expired')
+            ORDER BY expires_at, id LIMIT ${CLEANUP_ROWS_PER_TENANT}
+          )
+        `;
+        const staleClaimCutoff = new Date(
+          now.getTime() - REMOTE_MEMORY_PROPOSAL_CLAIM_LEASE_MILLISECONDS,
+        ).toISOString();
+        await transaction`
+          UPDATE remote_memory.durable_memory_proposals SET
+            status = 'expired', payload = NULL, payload_purged_at = ${now.toISOString()},
+            reviewed_at = COALESCE(reviewed_at, ${now.toISOString()})
+          WHERE ctid IN (
+            SELECT ctid FROM remote_memory.durable_memory_proposals
+            WHERE tenant_id = ${tenantId} AND status = 'pending' AND expires_at <= ${now.toISOString()}
+              AND (decision_claimed_at IS NULL OR decision_claimed_at <= ${staleClaimCutoff})
+            ORDER BY expires_at, id LIMIT ${CLEANUP_ROWS_PER_TENANT}
+          )
+        `;
+        await transaction`
+          UPDATE remote_memory.durable_memory_proposals SET
+            payload = NULL, payload_purged_at = ${now.toISOString()}
+          WHERE ctid IN (
+            SELECT ctid FROM remote_memory.durable_memory_proposals
+            WHERE tenant_id = ${tenantId} AND status <> 'pending' AND payload IS NOT NULL
+              AND expires_at <= ${now.toISOString()}
             ORDER BY expires_at, id LIMIT ${CLEANUP_ROWS_PER_TENANT}
           )
         `;

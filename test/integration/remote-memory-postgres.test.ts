@@ -148,7 +148,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
     const before = await fixture.migratorSql<{checksum: string; version: number}[]>`
       SELECT version, checksum FROM remote_memory.schema_migrations ORDER BY version
     `;
-    expect(before).toHaveLength(3);
+    expect(before).toHaveLength(4);
     expect(before[0]?.checksum).toMatch(/^[a-f0-9]{64}$/u);
 
     await migrateRemoteMemoryDatabase(fixture.migratorSql);
@@ -1431,6 +1431,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
 const tenantScopedTableNames = [
   'attestation_challenges',
   'audit_events',
+  'durable_memory_proposals',
   'external_identities',
   'idempotency_records',
   'memory_heads',

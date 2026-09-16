@@ -230,13 +230,13 @@ export class GitCanonicalMemoryStore {
     return this.withLock(async () => {
       await this.refreshExclusive();
       const currentHash = await this.worktreeFileHash(gitPath);
+      if (currentHash === contentHash) {
+        return {contentHash, gitCommit: await this.headCommit(), gitPath};
+      }
       if (input.expectedContentHash !== undefined && currentHash !== input.expectedContentHash) {
         throw remoteMemoryError('conflict', 'The shared git memory changed; re-read it and retry.', {
           reason: 'git_cas',
         });
-      }
-      if (currentHash === contentHash) {
-        return {contentHash, gitCommit: await this.headCommit(), gitPath};
       }
       if (input.expectedContentHash === undefined && currentHash !== undefined) {
         throw remoteMemoryError('conflict', 'The shared git memory already exists; re-read it and retry.', {

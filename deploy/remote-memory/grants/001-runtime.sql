@@ -25,6 +25,7 @@ GRANT SELECT ON
   remote_memory.rate_limit_windows,
   remote_memory.uri_aliases,
   remote_memory.search_documents
+  ,remote_memory.durable_memory_proposals
 TO threadnote_remote_runtime;
 
 GRANT SELECT (id, status) ON remote_memory.tenants TO threadnote_remote_runtime;
@@ -44,6 +45,7 @@ GRANT INSERT ON
   remote_memory.rate_limit_windows,
   remote_memory.search_documents,
   remote_memory.projects
+  ,remote_memory.durable_memory_proposals
 TO threadnote_remote_runtime;
 
 GRANT UPDATE (share_generation, indexed_generation, git_ingest_snapshot_commit, git_ingest_cursor, git_ingest_rejected_path) ON remote_memory.shares TO threadnote_remote_runtime;
@@ -60,6 +62,11 @@ GRANT UPDATE (attempts, available_at, processed_at, dead_lettered_at, last_error
 GRANT UPDATE (window_started_at, request_count) ON remote_memory.rate_limit_windows TO threadnote_remote_runtime;
 GRANT UPDATE (revision_id, generation, project, topic, kind, searchable, updated_at)
   ON remote_memory.search_documents TO threadnote_remote_runtime;
+GRANT UPDATE (status, payload, payload_purged_at, decision_kind, decision_operation_id, decision_request_hash,
+  reviewer_principal_id, decision_claimed_at, approval_revision_id, approval_source_agent_client,
+  reviewer_workload_attestation_id,
+  decision_reason, result_receipt, reviewed_at)
+  ON remote_memory.durable_memory_proposals TO threadnote_remote_runtime;
 
 GRANT DELETE ON
   remote_memory.challenge_directory,
