@@ -24,6 +24,7 @@ import type {McpToolset} from '../mcp/toolset.js';
 import {getThreadnoteVersion} from '../release/runtime_version.js';
 import type {AgentClient, ClaudeMcpScope, DoctorCheck, RuntimeConfig} from '../types.js';
 import {expandPath, getInvocationCwd, readFileIfExists, toolRoot} from '../utils.js';
+import {resolveAgentHostPaths} from './host_paths.js';
 
 const AGENT_SKILLS = ['threadnote-context', 'threadnote-code-graph', 'threadnote-memory'] as const;
 
@@ -44,12 +45,8 @@ const HOST_TARGETS = {
     instruction: {kind: 'file', path: '~/.cursor/rules/threadnote.mdc'},
     skillRoot: '~/.cursor/skills',
   },
-  omp: {
-    instruction: {kind: 'block', path: '~/.omp/agent/AGENTS.md'},
-    skillRoot: '~/.omp/agent/skills',
-  },
 } as const satisfies Record<
-  AgentClient,
+  Exclude<AgentClient, 'omp'>,
   {
     readonly instruction: {readonly kind: 'block' | 'file'; readonly path: string};
     readonly skillRoot: string;
@@ -70,6 +67,11 @@ interface AgentArtifact {
   readonly kind: 'block' | 'file';
   readonly name: string;
   readonly path: string;
+}
+
+interface AgentArtifactPlan {
+  readonly artifacts: readonly AgentArtifact[];
+  readonly hostRoot?: string;
 }
 
 type AgentArtifactProfile = NonNullable<AgentIntegrationMcpReceipt['artifactProfile']>;
@@ -138,11 +140,11 @@ export const migrateLegacyAgentIntegrationsInTransaction = Effect.fn('agentInteg
       const installedVersion = yield* getThreadnoteVersion();
       let pendingRegistry = emptyAgentIntegrationRegistry(true);
       for (const agent of selected) {
-        const artifacts = yield* agentArtifacts(agent, unknownMcp.artifactProfile);
+        const plan = yield* agentArtifacts(agent, unknownMcp.artifactProfile);
         pendingRegistry = withAgentIntegrationHost(
           pendingRegistry,
           agent,
-          hostReceipt(artifacts, installedVersion, unknownMcp, 'pending'),
+          hostReceipt(plan, installedVersion, unknownMcp, 'pending'),
         );
       }
       yield* writeAgentIntegrationRegistry(config, pendingRegistry);
@@ -200,8 +202,8 @@ export const agentIntegrationDoctorChecks = Effect.fn('agentIntegrations.doctorC
         status: 'warn',
       });
     }
-    const artifacts = yield* agentArtifacts(agent, receipt.mcp.artifactProfile);
-    for (const artifact of artifacts) {
+    const plan = yield* agentArtifacts(agent, receipt.mcp.artifactProfile, receipt.mcp.hostRoot);
+    for (const artifact of plan.artifacts) {
       const current = yield* readFileIfExists(artifact.path);
       const currentManagedBlock = current === undefined ? undefined : extractManagedBlock(current);
       const expectedManagedBlock = extractManagedBlock(artifact.content);
@@ -236,7 +238,8 @@ export const removeAgentIntegrationsInTransaction = Effect.fn('agentIntegrations
   const clients = registry === undefined ? AGENT_CLIENTS : registeredAgentClients(registry);
   for (const agent of clients) {
     const receipt = registry?.hosts[agent];
-    for (const artifact of yield* agentArtifacts(agent, receipt?.mcp.artifactProfile)) {
+    const plan = yield* agentArtifacts(agent, receipt?.mcp.artifactProfile, receipt?.mcp.hostRoot);
+    for (const artifact of plan.artifacts) {
       yield* removeArtifact(artifact, dryRun);
     }
   }
@@ -262,11 +265,19 @@ export const installAgentIntegrationInTransaction = Effect.fn('agentIntegrations
   dryRun: boolean,
 ) {
   const currentRegistry = (yield* readAgentIntegrationRegistry(config)) ?? emptyAgentIntegrationRegistry(false);
-  const artifacts = yield* agentArtifacts(agent, mcp.artifactProfile);
+  const plan = yield* agentArtifacts(agent, mcp.artifactProfile, mcp.hostRoot);
   const installedVersion = yield* getThreadnoteVersion();
-  const receipt = hostReceipt(artifacts, installedVersion, mcp, 'pending');
+  const receipt = hostReceipt(plan, installedVersion, mcp, 'pending');
+  const previous = currentRegistry.hosts[agent];
+  const previousPlan =
+    previous?.mcp.hostRoot !== undefined && previous.mcp.hostRoot !== plan.hostRoot
+      ? yield* agentArtifacts(agent, previous.mcp.artifactProfile, previous.mcp.hostRoot)
+      : undefined;
   if (dryRun) {
-    if (agent === 'cursor' && !artifacts.some(artifact => artifact.name === 'instructions')) {
+    if (previousPlan !== undefined) {
+      for (const artifact of previousPlan.artifacts) yield* removeArtifact(artifact, true);
+    }
+    if (agent === 'cursor' && !plan.artifacts.some(artifact => artifact.name === 'instructions')) {
       yield* removeManagedPath(
         yield* expandPath(HOST_TARGETS.cursor.instruction.path),
         'duplicate Cursor instructions',
@@ -274,13 +285,16 @@ export const installAgentIntegrationInTransaction = Effect.fn('agentIntegrations
         false,
       );
     }
-    for (const artifact of artifacts) yield* logArtifactPlan(artifact);
+    for (const artifact of plan.artifacts) yield* logArtifactPlan(artifact);
     yield* Console.log(`Would register ${agent} agent integration in ${yield* agentIntegrationRegistryPath(config)}.`);
     return;
   }
 
+  if (previousPlan !== undefined) {
+    for (const artifact of previousPlan.artifacts) yield* removeArtifact(artifact, false);
+  }
   yield* writeAgentIntegrationRegistry(config, withAgentIntegrationHost(currentRegistry, agent, receipt));
-  if (agent === 'cursor' && !artifacts.some(artifact => artifact.name === 'instructions')) {
+  if (agent === 'cursor' && !plan.artifacts.some(artifact => artifact.name === 'instructions')) {
     yield* removeManagedPath(
       yield* expandPath(HOST_TARGETS.cursor.instruction.path),
       'duplicate Cursor instructions',
@@ -288,7 +302,7 @@ export const installAgentIntegrationInTransaction = Effect.fn('agentIntegrations
       false,
     );
   }
-  for (const artifact of artifacts) yield* writeArtifact(artifact);
+  for (const artifact of plan.artifacts) yield* writeArtifact(artifact);
   const latestRegistry = (yield* readAgentIntegrationRegistry(config)) ?? currentRegistry;
   yield* writeAgentIntegrationRegistry(
     config,
@@ -297,12 +311,13 @@ export const installAgentIntegrationInTransaction = Effect.fn('agentIntegrations
   yield* Console.log(`Registered ${agent} agent integration.`);
 });
 
-function agentArtifacts(agent: AgentClient, requestedProfile?: AgentArtifactProfile) {
+function agentArtifacts(agent: AgentClient, requestedProfile?: AgentArtifactProfile, hostRoot?: string) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     const root = yield* toolRoot();
-    const host = HOST_TARGETS[agent];
-    const instructionPath = yield* expandPath(host.instruction.path);
+    const host = agent === 'omp' ? undefined : HOST_TARGETS[agent];
+    const ompPaths = yield* resolveAgentHostPaths(agent, hostRoot);
+    const instructionPath = ompPaths?.instructionPath ?? (yield* expandPath(host!.instruction.path));
     const profile = requestedProfile ?? 'default';
     const profileRoot =
       profile === 'default' ? path.join(root, 'config') : path.join(root, 'config', 'agent-profiles', profile);
@@ -310,7 +325,7 @@ function agentArtifacts(agent: AgentClient, requestedProfile?: AgentArtifactProf
       path.join(profileRoot, 'agent-instructions.md'),
     )).trim();
     const block = `${USER_INSTRUCTIONS_START_MARKER}\n${bootstrap}\n${USER_INSTRUCTIONS_END_MARKER}`;
-    const instructionContent = renderInstructionContent(agent, host.instruction.kind, block);
+    const instructionContent = renderInstructionContent(agent, host?.instruction.kind ?? 'block', block);
     const cursorPluginProvidesInstructions =
       profile === 'default' && agent === 'cursor' && (yield* isCursorMarketplacePluginInstalled());
     const artifacts: AgentArtifact[] = cursorPluginProvidesInstructions
@@ -319,12 +334,12 @@ function agentArtifacts(agent: AgentClient, requestedProfile?: AgentArtifactProf
           {
             content: instructionContent,
             hash: yield* sha256Hex(instructionContent),
-            kind: host.instruction.kind,
+            kind: host?.instruction.kind ?? 'block',
             name: 'instructions',
             path: instructionPath,
           },
         ];
-    const skillRoot = yield* expandPath(host.skillRoot);
+    const skillRoot = ompPaths?.skillRoot ?? (yield* expandPath(host!.skillRoot));
     for (const skill of AGENT_SKILLS) {
       const content = `${(yield* (yield* FileSystem.FileSystem).readFileString(
         path.join(profileRoot, 'agent-skills', skill, 'SKILL.md'),
@@ -337,21 +352,21 @@ function agentArtifacts(agent: AgentClient, requestedProfile?: AgentArtifactProf
         path: path.join(skillRoot, skill, 'SKILL.md'),
       });
     }
-    return artifacts;
+    return {artifacts, ...(ompPaths === undefined ? {} : {hostRoot: ompPaths.agentRoot})} satisfies AgentArtifactPlan;
   });
 }
 
 function hostReceipt(
-  artifacts: readonly AgentArtifact[],
+  plan: AgentArtifactPlan,
   installedVersion: string,
   mcp: AgentIntegrationMcpReceipt,
   status: AgentIntegrationHostReceipt['status'],
 ): AgentIntegrationHostReceipt {
   return {
-    artifacts: Object.fromEntries(artifacts.map(artifact => [artifact.path, artifact.hash])),
+    artifacts: Object.fromEntries(plan.artifacts.map(artifact => [artifact.path, artifact.hash])),
     artifactVersion: AGENT_INTEGRATION_ARTIFACT_VERSION,
     installedVersion,
-    mcp,
+    mcp: {...mcp, ...(plan.hostRoot === undefined ? {} : {hostRoot: plan.hostRoot})},
     status,
   };
 }
@@ -431,13 +446,10 @@ function removeOrphanedLegacyInstructions(selected: readonly AgentClient[], dryR
   return Effect.gen(function* () {
     for (const agent of AGENT_CLIENTS) {
       if (selected.includes(agent)) continue;
-      const target = yield* expandPath(HOST_TARGETS[agent].instruction.path);
-      yield* removeManagedPath(
-        target,
-        `${agent} instructions`,
-        dryRun,
-        HOST_TARGETS[agent].instruction.kind === 'file',
-      );
+      const host = agent === 'omp' ? undefined : HOST_TARGETS[agent];
+      const ompPaths = yield* resolveAgentHostPaths(agent);
+      const target = ompPaths?.instructionPath ?? (yield* expandPath(host!.instruction.path));
+      yield* removeManagedPath(target, `${agent} instructions`, dryRun, host?.instruction.kind === 'file');
     }
     const cursorMarkdown = yield* expandPath('~/.cursor/rules/threadnote.md');
     yield* removeManagedPath(cursorMarkdown, 'legacy Cursor user rule', dryRun, true);
@@ -466,7 +478,8 @@ const removeManagedPath = Effect.fn('agentIntegrations.removeManagedPath')(funct
   if (next === current) return;
   const shouldRemove =
     next.trim().length === 0 ||
-    (removeWholeFile && (current === expectedContent || isGeneratedInstructionFrontmatter(next)));
+    (removeWholeFile &&
+      (current === expectedContent || isGeneratedInstructionFrontmatter(next) || isGeneratedSkillFrontmatter(next)));
   if (dryRun) {
     yield* Console.log(`${shouldRemove ? 'Would remove' : 'Would update'} ${label}: ${target}`);
   } else if (shouldRemove) {

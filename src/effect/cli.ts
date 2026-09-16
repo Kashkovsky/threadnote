@@ -1,4 +1,4 @@
-import {makeCursorHookCommand, makeInstallHooksCommand} from './hooks_cli.js';
+import {makeCursorHookCommand, makeInstallHooksCommand, makePreCompactHookCommand} from './hooks_cli.js';
 import {runCursorHook} from '../cursor_hook_runner.js';
 import {Console, Effect, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
@@ -1216,11 +1216,9 @@ const cursorHook = makeCursorHookCommand((event, options) =>
   withRuntimeEffect(config => runCursorHook(config, event, options)),
 );
 
-const preCompactHook = Command.make(
-  'pre-compact-hook',
-  {dryRun: boolean('dry-run', 'Print the handoff payload without writing it')},
-  options => withRuntimeEffect(config => runPreCompactHook(config, options)),
-).pipe(Command.withDescription('Store a handoff snapshot before context compaction'), Command.unlisted);
+const preCompactHook = makePreCompactHookCommand(options =>
+  withRuntimeEffect(config => runPreCompactHook(config, options)),
+);
 
 const sessionStartHook = Command.make(
   'session-start-hook',

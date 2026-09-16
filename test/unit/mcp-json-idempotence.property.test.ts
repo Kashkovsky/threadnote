@@ -8,6 +8,7 @@ import {SystemInfo} from '../../src/effect/system.js';
 import {runMcpInstall} from '../../src/mcp/index.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {withoutOmpPathSelectors} from '../helpers/omp-environment.js';
 
 const runtime: RuntimeConfig = {
   account: 'local',
@@ -65,7 +66,7 @@ fcEffectProp(
         const original = JSON.stringify(config, null, indentation);
         const testSystem = SystemInfo.of({
           ...baseSystem,
-          environment: () => ({...baseSystem.environment(), THREADNOTE_BIN_DIR: bin}),
+          environment: () => ({...withoutOmpPathSelectors(baseSystem.environment()), THREADNOTE_BIN_DIR: bin}),
           homeDirectory: user,
           platform: 'linux',
         });
@@ -84,7 +85,7 @@ fcEffectProp(
   it,
   'preserves semantically current omp user configs across formatting, key order, and unrelated fields',
   {
-    disabledServer: FC.stringMatching(/^[a-z][a-z0-9-]{0,15}$/u),
+    disabledServer: FC.stringMatching(/^[a-z][a-z0-9-]{0,15}$/u).filter(value => value !== 'threadnote'),
     extraFieldValue: FC.oneof(FC.boolean(), FC.integer(), FC.string({maxLength: 24})),
     indentation: FC.constantFrom(0, 1, 2, 4),
     reverseRootOrder: FC.boolean(),
@@ -123,7 +124,7 @@ fcEffectProp(
         const original = JSON.stringify(config, null, indentation);
         const testSystem = SystemInfo.of({
           ...baseSystem,
-          environment: () => ({...baseSystem.environment(), THREADNOTE_BIN_DIR: bin}),
+          environment: () => ({...withoutOmpPathSelectors(baseSystem.environment()), THREADNOTE_BIN_DIR: bin}),
           homeDirectory: user,
           platform: 'linux',
         });

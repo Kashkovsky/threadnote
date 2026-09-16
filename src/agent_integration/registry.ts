@@ -22,6 +22,7 @@ export interface AgentIntegrationMcpReceipt {
   readonly artifactProfile?: 'cursor-cloud-personal' | 'default';
   readonly cwd?: string;
   readonly external?: boolean;
+  readonly hostRoot?: string;
   readonly name: string;
   readonly repair: boolean;
   readonly scope?: ClaudeMcpScope;
@@ -165,6 +166,9 @@ function isHostReceipt(value: unknown): value is AgentIntegrationHostReceipt {
     return false;
   }
   if (value.mcp.external !== undefined && typeof value.mcp.external !== 'boolean') return false;
+  if (value.mcp.hostRoot !== undefined && (typeof value.mcp.hostRoot !== 'string' || value.mcp.hostRoot.length === 0)) {
+    return false;
+  }
   if (value.mcp.repair && value.mcp.toolset === undefined) return false;
   if (
     value.mcp.scope !== undefined &&

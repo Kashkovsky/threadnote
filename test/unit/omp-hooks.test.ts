@@ -1,4 +1,5 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {withoutOmpPathSelectors} from '../helpers/omp-environment.js';
 import {BunFileSystem, BunPath} from '@effect/platform-bun';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path, Result} from 'effect';
@@ -39,7 +40,7 @@ describe('omp session hooks', () => {
       expect(installed).toContain("pi.on('session_start'");
       expect(installed).toContain("pi.on('session_before_compact'");
       expect(installed).toContain("['session-start-hook']");
-      expect(installed).toContain("['pre-compact-hook']");
+      expect(installed).toContain("['pre-compact-hook', '--source-agent-client', 'omp']");
       expect(yield* hasManagedOmpHooks().pipe(Effect.provideService(SystemInfo, system))).toBe(true);
 
       const second = yield* run({apply: true});
@@ -71,6 +72,28 @@ describe('omp session hooks', () => {
       expect(remove.output).toContain('not managed by Threadnote');
       expect(yield* fs.readFileString(hookPath)).toBe(userOwned);
       expect(yield* hasManagedOmpHooks().pipe(Effect.provideService(SystemInfo, system))).toBe(false);
+    }).pipe(provideTestLayer(TestLayer)),
+  );
+
+  effectIt.effect('uses the active OMP agent root for hook installation', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseSystem = yield* SystemInfo;
+      const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-omp-hooks-agent-dir-'});
+      const agentRoot = path.join(root, 'active-agent');
+      const system = SystemInfo.of({
+        ...baseSystem,
+        environment: () => ({
+          ...withoutOmpPathSelectors(baseSystem.environment()),
+          PI_CODING_AGENT_DIR: agentRoot,
+        }),
+        homeDirectory: path.join(root, 'user'),
+      });
+
+      yield* runOmpHooksInstall({apply: true}).pipe(Effect.provideService(SystemInfo, system));
+
+      expect(yield* fs.exists(path.join(agentRoot, 'hooks', 'pre', 'threadnote.ts'))).toBe(true);
     }).pipe(provideTestLayer(TestLayer)),
   );
 });
