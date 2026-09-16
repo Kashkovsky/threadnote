@@ -12,9 +12,13 @@ export const REMOTE_MEMORY_RATE_LIMIT_OPERATIONS = [
   'begin_cursor_attestation',
   'list_context',
   'memory_status',
+  'list_memory_proposals',
+  'propose_durable_memory',
+  'read_memory_proposal',
   'read_context',
   'recall_context',
   'remember_context',
+  'review_memory_proposal',
   'transition_handoff',
 ] as const;
 
@@ -108,7 +112,12 @@ export class PostgresRemoteRateLimiter implements RemoteMemoryRateLimiter {
 }
 
 function isWriteOperation(operation: RemoteMemoryRateLimitOperation): boolean {
-  return operation === 'remember_context' || operation === 'transition_handoff';
+  return (
+    operation === 'propose_durable_memory' ||
+    operation === 'remember_context' ||
+    operation === 'review_memory_proposal' ||
+    operation === 'transition_handoff'
+  );
 }
 
 function numeric(value: string | number): number {

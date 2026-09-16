@@ -40,8 +40,15 @@ const Url = Schema.String.check(
 export const RemoteMemoryProvisioningInputSchema = Schema.Struct({
   allowedProjects: Schema.optionalKey(Projects),
   capabilities: Schema.Array(
-    Schema.Literals(['memory:admin', 'memory:read', 'memory:write:durable', 'memory:write:handoff']),
-  ).check(Schema.isMinLength(1), Schema.isMaxLength(4)),
+    Schema.Literals([
+      'memory:admin',
+      'memory:propose:durable',
+      'memory:read',
+      'memory:review:durable',
+      'memory:write:durable',
+      'memory:write:handoff',
+    ]),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(6)),
   cursorAttestationRequired: Schema.optionalKey(Schema.Boolean),
   cursorOwnerIds: Schema.optionalKey(Schema.Array(Identifier).check(Schema.isMaxLength(1_000))),
   cursorSubjects: Schema.optionalKey(Schema.Array(Identifier).check(Schema.isMinLength(1), Schema.isMaxLength(1_000))),

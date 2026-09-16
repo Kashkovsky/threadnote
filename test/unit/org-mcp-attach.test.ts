@@ -57,6 +57,13 @@ const profile = buildCursorCloudProfile(runtimeConfig('/tmp/threadnote-org-mcp')
 
 const SHARE_ID = FC.stringMatching(/^[A-Za-z0-9][A-Za-z0-9._-]{0,40}$/u);
 const HOST = FC.constantFrom('composer.example.test', 'memory.example.test', 'org.example.test');
+const COMPOSER_REQUIRED_SCOPES = [
+  'memory:read',
+  'memory:propose:durable',
+  'memory:review:durable',
+  'memory:write:durable',
+  'memory:write:handoff',
+] as const;
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -73,10 +80,8 @@ describe('organization composer attach', () => {
     ({extras}) =>
       Effect.sync(() => {
         const scopes = composerOAuthScopes(extras);
-        expect(scopes.slice(0, 3)).toEqual(['memory:read', 'memory:write:durable', 'memory:write:handoff']);
-        expect(new Set(scopes)).toEqual(
-          new Set(['memory:read', 'memory:write:durable', 'memory:write:handoff', ...extras]),
-        );
+        expect(scopes.slice(0, COMPOSER_REQUIRED_SCOPES.length)).toEqual(COMPOSER_REQUIRED_SCOPES);
+        expect(new Set(scopes)).toEqual(new Set([...COMPOSER_REQUIRED_SCOPES, ...extras]));
         expect(composerOAuthScopes(scopes)).toEqual(scopes);
         expect(composerOAuthScopes([...extras].reverse())).toEqual(scopes);
         expect(composerOAuthScopes([...extras, ...extras])).toEqual(scopes);
@@ -281,7 +286,7 @@ vitestDescribe('organization cloud hybrid MCP', () => {
     expect(config.mcpServers[THREADNOTE_ORG_MCP_NAME]).toEqual({
       auth: {
         CLIENT_ID: 'threadnote-composer',
-        scopes: ['memory:read', 'memory:write:durable', 'memory:write:handoff'],
+        scopes: COMPOSER_REQUIRED_SCOPES,
       },
       headers: {[THREADNOTE_COMPOSER_SHARE_ID_HEADER]: 'share-engineering'},
       url: 'https://composer.example.test/mcp',

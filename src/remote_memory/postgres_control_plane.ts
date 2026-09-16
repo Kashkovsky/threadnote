@@ -1036,7 +1036,9 @@ function authorizedPrincipal(row: AuthorizationRow, OAuth: OAuthPrincipalClaims)
 function isRemoteMemoryScope(value: string): value is RemoteMemoryScope {
   return (
     value === 'memory:admin' ||
+    value === 'memory:propose:durable' ||
     value === 'memory:read' ||
+    value === 'memory:review:durable' ||
     value === 'memory:write:durable' ||
     value === 'memory:write:handoff'
   );

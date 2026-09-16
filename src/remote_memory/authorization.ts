@@ -7,7 +7,13 @@ import type {OAuthPrincipalClaims} from './oauth.js';
 import {remoteMemoryError} from './errors.js';
 import type {RemoteMemoryRequestExecution} from './request_execution.js';
 
-export type RemoteMemoryScope = 'memory:admin' | 'memory:read' | 'memory:write:durable' | 'memory:write:handoff';
+export type RemoteMemoryScope =
+  | 'memory:admin'
+  | 'memory:propose:durable'
+  | 'memory:read'
+  | 'memory:review:durable'
+  | 'memory:write:durable'
+  | 'memory:write:handoff';
 
 export const REMOTE_MEMORY_FEATURE_FLAGS = [
   'remote_memory_read',
@@ -160,6 +166,8 @@ function featureForScope(scope: RemoteMemoryScope): RemoteMemoryFeatureFlag | un
   switch (scope) {
     case 'memory:read':
       return 'remote_memory_read';
+    case 'memory:propose:durable':
+    case 'memory:review:durable':
     case 'memory:write:durable':
       return 'remote_memory_durable_write';
     case 'memory:write:handoff':

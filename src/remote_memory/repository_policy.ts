@@ -1,5 +1,6 @@
 import type {TransactionSql} from 'postgres';
 import type {AuthorizedRemotePrincipal, RemoteMemoryFeatureFlag, RemoteMemoryScope} from './authorization.js';
+import {authorizeCursorClaims, type CursorWorkloadAttestation} from './cursor_oidc.js';
 import {remoteMemoryError} from './errors.js';
 
 export interface ShareStateRow {
@@ -12,6 +13,7 @@ export interface ShareStateRow {
 export interface GrantStateRow extends ShareStateRow {
   readonly allowed_projects: string[] | null;
   readonly capabilities: string[];
+  readonly cursor_attestation_required: boolean;
   readonly feature_flags: string[];
   readonly grant_policy_version: string;
   readonly grant_policy_digest: string;
@@ -23,7 +25,8 @@ export async function requireShareState(
 ): Promise<GrantStateRow> {
   const rows = await transaction<GrantStateRow[]>`
     SELECT s.share_generation, s.indexed_generation, s.policy_version, s.policy_digest,
-      s.feature_flags, g.capabilities, g.allowed_projects, g.policy_version AS grant_policy_version,
+      s.feature_flags, g.capabilities, g.allowed_projects, g.cursor_attestation_required,
+      g.policy_version AS grant_policy_version,
       g.policy_digest AS grant_policy_digest
     FROM remote_memory.shares s
     JOIN remote_memory.tenants t ON t.id = s.tenant_id AND t.status = 'active'
@@ -36,7 +39,10 @@ export async function requireShareState(
       ON p.tenant_id = m.tenant_id AND p.id = m.principal_id AND p.status = 'active'
     WHERE s.tenant_id = ${principal.tenantId} AND s.id = ${principal.shareId} AND s.status = 'active'
   `;
-  const state = rows[0];
+  return validateShareState(rows[0], principal);
+}
+
+function validateShareState(state: GrantStateRow | undefined, principal: AuthorizedRemotePrincipal): GrantStateRow {
   if (!state) throw remoteMemoryError('forbidden', 'The memory share grant is not active.');
   const allowedProjects = state.allowed_projects === null ? 'all' : new Set(state.allowed_projects);
   if (!sameSetOrAll(principal.allowedProjects, allowedProjects)) {
@@ -72,6 +78,24 @@ export function principalAllowsProject(principal: AuthorizedRemotePrincipal, pro
 export function requirePrincipalProject(principal: AuthorizedRemotePrincipal, project: string): void {
   if (principal.allowedProjects !== 'all' && !principal.allowedProjects.has(project)) {
     throw remoteMemoryError('forbidden', 'The project is outside the authorized share grant.');
+  }
+}
+
+export function requireFreshAttestationPolicy(
+  principal: AuthorizedRemotePrincipal,
+  state: GrantStateRow,
+  attestation: CursorWorkloadAttestation | undefined,
+  project: string,
+): void {
+  if ((state.cursor_attestation_required || state.feature_flags.includes('cursor_oidc_required')) && !attestation) {
+    throw remoteMemoryError('attestation_required', 'A fresh Cursor workload attestation is required.');
+  }
+  if (attestation) {
+    const expiresAt = Date.parse(attestation.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      throw remoteMemoryError('attestation_required', 'The Cursor workload attestation is invalid or expired.');
+    }
+    authorizeCursorClaims(principal, attestation, project);
   }
 }
 

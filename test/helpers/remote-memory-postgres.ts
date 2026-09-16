@@ -123,6 +123,7 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
         'rate_limit_windows',
         'uri_aliases',
         'search_documents',
+        'durable_memory_proposals',
       ],
     },
     {
@@ -139,6 +140,7 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
         'rate_limit_windows',
         'search_documents',
         'projects',
+        'durable_memory_proposals',
       ],
     },
     {
@@ -202,6 +204,25 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
     {
       columns: ['revision_id', 'generation', 'project', 'topic', 'kind', 'searchable', 'updated_at'],
       table: 'search_documents',
+    },
+    {
+      columns: [
+        'status',
+        'payload',
+        'payload_purged_at',
+        'decision_kind',
+        'decision_operation_id',
+        'decision_request_hash',
+        'reviewer_principal_id',
+        'reviewer_workload_attestation_id',
+        'decision_claimed_at',
+        'approval_revision_id',
+        'approval_source_agent_client',
+        'decision_reason',
+        'result_receipt',
+        'reviewed_at',
+      ],
+      table: 'durable_memory_proposals',
     },
   ] as const;
   for (const grant of updateGrants) {
