@@ -68,12 +68,23 @@ describe('agents CLI', () => {
     expect(help.stdout).toContain('remove');
 
     const catalog = JSON.parse((await runCli(['agents', 'list', '--json'], environment)).stdout) as {
-      readonly agents: readonly {readonly id: string}[];
+      readonly agents: readonly {
+        readonly id: string;
+        readonly projectGuidance: {readonly status: string; readonly targetPath?: string};
+      }[];
       readonly version: number;
     };
     expect(catalog.version).toBe(1);
     expect(catalog.agents).toHaveLength(27);
     expect(catalog.agents.some(agent => agent.id === 'gemini-cli')).toBe(true);
+    expect(catalog.agents.find(agent => agent.id === 'gemini-cli')?.projectGuidance).toEqual({
+      status: 'managed',
+      targetPath: 'GEMINI.md',
+    });
+    expect(catalog.agents.find(agent => agent.id === 'zed-native')?.projectGuidance.status).toBe('unsupported');
+    const catalogText = (await runCli(['agents', 'list'], environment)).stdout;
+    expect(catalogText).toContain('Project guidance: GEMINI.md');
+    expect(catalogText).toContain('Project guidance needs first-match dynamic target selection before automation.');
 
     const preview = await runCli(['agents', 'install', 'gemini'], environment);
     expect(preview.stdout).toContain('Would merge mcpServers.threadnote');

@@ -116,8 +116,10 @@ To bring existing project instructions into the reviewable context loop, use `th
 explicitly selected active durable memories with `threadnote guidance project <surface> --project <name> --memory
 <uri>`; projection is deterministic, provenance- and hash-managed, and never overwrites unmanaged text. Use
 `guidance status` to see current, missing, modified, stale, or evidence-unavailable targets, and `guidance remove`
-for preview-first cleanup. Existing AGENTS.md, CLAUDE.md, Cursor rules, and Copilot instructions are
-adapter-declared surfaces, not competing canonical copies; drift feeds context health and Context Check.
+for preview-first cleanup. Verified project-guidance support is declared by the agent catalog instead of maintained as
+a separate product list. Shared physical targets use one target-owned receipt instead of competing per-agent copies;
+drift feeds context health and Context Check. `threadnote agents list` reports each surface's managed target or why
+project projection is withheld.
 
 To select the Threadnote 4 beta channel on macOS or Linux, pass `--beta`. This inclusive preview channel installs the
 newest immutable release across stable and prerelease builds, so a newer stable release wins when one is available:

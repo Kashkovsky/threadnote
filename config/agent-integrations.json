@@ -28,7 +28,11 @@
       "lastVerified": "2026-09-17",
       "caveats": [],
       "setup": ["Use threadnote mcp-install codex --apply; restart the host after installation."],
-      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending."
+      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": "AGENTS.md"
+      }
     },
     {
       "id": "claude-code",
@@ -59,7 +63,11 @@
         "Use threadnote mcp-install claude --apply; restart the host after installation.",
         "Install lifecycle hooks separately with threadnote install-hooks claude --apply."
       ],
-      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending."
+      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": "CLAUDE.md"
+      }
     },
     {
       "id": "cursor-desktop",
@@ -90,7 +98,11 @@
         "Use threadnote mcp-install cursor --apply; restart the host after installation.",
         "Install lifecycle hooks separately with threadnote install-hooks cursor --apply."
       ],
-      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending."
+      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": ".cursor/rules/threadnote.mdc"
+      }
     },
     {
       "id": "copilot-vscode",
@@ -124,7 +136,11 @@
         "Compatibility installer uses VS Code MCP and Copilot CLI instruction/skill roots; lifecycle hooks are not installed."
       ],
       "setup": ["Use threadnote mcp-install copilot --apply; restart the host after installation."],
-      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending."
+      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": ".github/instructions/threadnote.instructions.md"
+      }
     },
     {
       "id": "omp-agent",
@@ -155,7 +171,11 @@
         "Use threadnote mcp-install omp --apply; restart the host after installation.",
         "Install lifecycle hooks separately with threadnote install-hooks omp --apply."
       ],
-      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending."
+      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": ".omp/AGENTS.md"
+      }
     },
     {
       "id": "cursor-cloud-personal",
@@ -187,7 +207,11 @@
       "lastVerified": "2026-09-17",
       "caveats": ["MCP is registered externally in the Cloud Dashboard; use the existing Cursor Cloud setup flow."],
       "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "verification": "Research only; installation not verified.",
+      "projectGuidance": {
+        "status": "unsupported",
+        "reason": "Use upstream documentation for manual setup."
+      }
     },
     {
       "id": "copilot-cli",
@@ -219,7 +243,11 @@
       "lastVerified": "2026-09-17",
       "caveats": ["Dedicated CLI MCP and hook adapter awaits conformance fixtures."],
       "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "verification": "Research only; installation not verified.",
+      "projectGuidance": {
+        "status": "unsupported",
+        "reason": "Use upstream documentation for manual setup."
+      }
     },
     {
       "id": "gemini-cli",
@@ -256,7 +284,11 @@
         "Personal user scope only. Existing configuration must be strict JSON; commented or malformed configuration is refused without changes."
       ],
       "setup": ["Preview threadnote agents install gemini-cli; add --apply to install, then restart the host."],
-      "verification": "Documented JSON contract; isolated adapter fixtures; live host smoke pending."
+      "verification": "Documented JSON contract; isolated adapter fixtures; live host smoke pending.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": "GEMINI.md"
+      }
     },
     {
       "id": "qwen-code",
@@ -292,7 +324,11 @@
         "Personal user scope only. Existing configuration must be strict JSON; commented or malformed configuration is refused without changes."
       ],
       "setup": ["Preview threadnote agents install qwen-code; add --apply to install, then restart the host."],
-      "verification": "Documented JSON contract; isolated adapter fixtures; live host smoke pending."
+      "verification": "Documented JSON contract; isolated adapter fixtures; live host smoke pending.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": "QWEN.md"
+      }
     },
     {
       "id": "opencode-v2",
@@ -329,7 +365,11 @@
         "Catalog only: v2 uses mcp.servers and command arrays; v1 is incompatible. Requires version probing before installation."
       ],
       "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "verification": "Research only; installation not verified.",
+      "projectGuidance": {
+        "status": "unsupported",
+        "reason": "Use upstream documentation for manual setup."
+      }
     },
     {
       "id": "amp-cli",
@@ -366,7 +406,11 @@
         "Personal user scope only. Existing configuration must be strict JSON; commented or malformed configuration is refused without changes."
       ],
       "setup": ["Preview threadnote agents install amp-cli; add --apply to install, then restart the host."],
-      "verification": "Documented JSON contract; isolated adapter fixtures; live host smoke pending."
+      "verification": "Documented JSON contract; isolated adapter fixtures; live host smoke pending.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": "AGENTS.md"
+      }
     },
     {
       "id": "factory-droid",
@@ -402,7 +446,11 @@
         "Personal user scope only. Existing configuration must be strict JSON; commented or malformed configuration is refused without changes."
       ],
       "setup": ["Preview threadnote agents install factory-droid; add --apply to install, then restart the host."],
-      "verification": "Documented JSON contract; isolated adapter fixtures; live host smoke pending."
+      "verification": "Documented JSON contract; isolated adapter fixtures; live host smoke pending.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": "AGENTS.md"
+      }
     },
     {
       "id": "auggie-cli",
@@ -438,7 +486,11 @@
       "lastVerified": "2026-09-17",
       "caveats": ["Catalog only: MCP CLI management, guidelines and hook enablement need host fixtures."],
       "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "verification": "Research only; installation not verified.",
+      "projectGuidance": {
+        "status": "unsupported",
+        "reason": "Use upstream documentation for manual setup."
+      }
     },
     {
       "id": "goose",
@@ -476,7 +528,11 @@
         "Catalog only: YAML extension configuration and Open Plugins require verified fixtures. No pre-compaction event."
       ],
       "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "verification": "Research only; installation not verified.",
+      "projectGuidance": {
+        "status": "unsupported",
+        "reason": "Use upstream documentation for manual setup."
+      }
     },
     {
       "id": "cline",
@@ -515,7 +571,11 @@
         "Preview: threadnote agents install cline",
         "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
       ],
-      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": ".clinerules/threadnote.md"
+      }
     },
     {
       "id": "kiro-cli",
@@ -554,7 +614,11 @@
         "Preview: threadnote agents install kiro-cli",
         "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
       ],
-      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": ".kiro/steering/threadnote.md"
+      }
     },
     {
       "id": "devin-local",
@@ -592,7 +656,11 @@
         "Preview: threadnote agents install devin-local",
         "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
       ],
-      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": ".devin/global_rules.md"
+      }
     },
     {
       "id": "junie-cli",
@@ -630,7 +698,11 @@
         "Preview: threadnote agents install junie-cli",
         "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
       ],
-      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified.",
+      "projectGuidance": {
+        "status": "unsupported",
+        "reason": "Project guidance needs precedence-aware dynamic target selection before automation."
+      }
     },
     {
       "id": "zed-native",
@@ -669,7 +741,11 @@
         "Preview: threadnote agents install zed-native",
         "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
       ],
-      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified.",
+      "projectGuidance": {
+        "status": "unsupported",
+        "reason": "Project guidance needs first-match dynamic target selection before automation."
+      }
     },
     {
       "id": "roo-project",
@@ -707,7 +783,11 @@
         "Preview: threadnote agents install roo-project --scope project",
         "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
       ],
-      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": ".roo/rules/threadnote.md"
+      }
     },
     {
       "id": "continue-project",
@@ -746,7 +826,11 @@
         "Preview: threadnote agents install continue-project --scope project",
         "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
       ],
-      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": ".continue/rules/threadnote-guidance.md"
+      }
     },
     {
       "id": "antigravity-cli",
@@ -782,7 +866,11 @@
         "Preview: threadnote agents install antigravity-cli",
         "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
       ],
-      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified.",
+      "projectGuidance": {
+        "status": "unsupported",
+        "reason": "Automatic global instruction discovery is not verified for the CLI; use the managed skills."
+      }
     },
     {
       "id": "antigravity-ide",
@@ -817,7 +905,11 @@
         "Preview: threadnote agents install antigravity-ide",
         "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
       ],
-      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified.",
+      "projectGuidance": {
+        "status": "unsupported",
+        "reason": "Project guidance needs a verified on-disk activation fixture before automation."
+      }
     },
     {
       "id": "kilo",
@@ -853,7 +945,11 @@
         "Preview: threadnote agents install kilo",
         "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
       ],
-      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified.",
+      "projectGuidance": {
+        "status": "unsupported",
+        "reason": "Rules require instructions-array registration; ownership of that separate array is not yet implemented."
+      }
     },
     {
       "id": "aider",
@@ -885,7 +981,11 @@
       "lastVerified": "2026-09-17",
       "caveats": ["No native MCP host; use the Threadnote CLI and explicit conventions."],
       "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "verification": "Research only; installation not verified.",
+      "projectGuidance": {
+        "status": "unsupported",
+        "reason": "Use upstream documentation for manual setup."
+      }
     },
     {
       "id": "windsurf-legacy",
@@ -920,7 +1020,11 @@
         "Preview: threadnote agents install windsurf-legacy",
         "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
       ],
-      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified.",
+      "projectGuidance": {
+        "status": "managed",
+        "targetPath": ".windsurf/rules/threadnote.md"
+      }
     },
     {
       "id": "amazon-q-legacy",
@@ -952,7 +1056,11 @@
       "lastVerified": "2026-09-17",
       "caveats": ["Migration source only; use Kiro for new installations."],
       "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "verification": "Research only; installation not verified.",
+      "projectGuidance": {
+        "status": "unsupported",
+        "reason": "Use upstream documentation for manual setup."
+      }
     }
   ]
 }

@@ -7,7 +7,7 @@ export const projectGuidanceDocsArticle: DocsArticle = {
   body: [
     {
       type: 'paragraph',
-      text: 'Existing AGENTS.md, CLAUDE.md, Cursor rules, and Copilot instructions are adapter-declared import sources and project targets. Import creates only a private Knowledge Delta candidate for review; it never approves or publishes. Approved active durable memories can then be projected to another agent surface without maintaining a second canonical copy.',
+      text: 'Verified project-guidance targets and explicit safety holds are declared by the canonical agent catalog, keeping documentation aligned with the adapters that implement support. Import creates only a private Knowledge Delta candidate for review; it never approves or publishes. Approved active durable memories can then be projected to another agent surface without maintaining a second canonical copy. Shared physical targets use one target-owned receipt. The agent catalog reports unsupported project projection explicitly when precedence, target selection, or activation metadata is not yet safe to automate.',
     },
     {
       type: 'code',
@@ -28,6 +28,7 @@ threadnote guidance remove <surface> --project <name> [--cwd <path>] [--apply] [
         'Conflicts require --force, and force never overwrites unmanaged text.',
         'Status reports current, missing, modified, stale, or evidence-unavailable.',
         'Removal is preview-first and preserves unmanaged content; drift feeds context health and Context Check.',
+        'threadnote agents list reports the managed project-guidance target or the reason it is unavailable.',
       ],
     },
   ],
