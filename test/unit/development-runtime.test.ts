@@ -24,7 +24,9 @@ import {
   activateLocalStandaloneRelease,
   developmentDoctorHasOnlyConcurrentRecallProjectionFailures,
   developmentRuntimeOwnershipConflict,
+  developmentRuntimeTakeoverAuthorizationMatches,
   parseLocalStandaloneInstallArguments,
+  prepareDevelopmentRuntimeOwnershipAuthorization,
 } from '../../scripts/install-local-standalone.js';
 import {commandLauncherPath, renderCommandShim} from '../../src/command-shim.js';
 import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
@@ -139,7 +141,37 @@ describe('exact-head development runtime', () => {
         expect(developmentRuntimeOwnershipConflict(activeVersion, 'invalid', sourceCheckoutId)).toBe(
           'invalid-ownership-record',
         );
+        expect(developmentRuntimeOwnershipConflict(activeVersion, 'absent', sourceCheckoutId)).toBe(
+          'untracked-development-activation',
+        );
         expect(developmentRuntimeOwnershipConflict('4.0.3', owner, otherSourceCheckoutId)).toBeUndefined();
+      }),
+      {numRuns: 200},
+    );
+  });
+
+  it('never accepts a takeover authorization after its ownership revision or state changes', () => {
+    fc.assert(
+      fc.property(sourceCommitArbitrary, sourceCommit => {
+        const activeVersion = developmentBuildVersion('4.0.3', sourceCommit);
+        const sourceCheckoutId = sourceCommit.padEnd(64, '0');
+        const ownershipRevision = sourceCheckoutId;
+        const changedRevision = `${ownershipRevision[0] === '0' ? '1' : '0'}${ownershipRevision.slice(1)}`;
+        const authorization = {
+          activeVersion,
+          owner: {schemaVersion: 2 as const, sourceCheckoutId, ownershipRevision, version: activeVersion},
+          requestedSourceCheckoutId: 'f'.repeat(64),
+        };
+
+        expect(
+          developmentRuntimeTakeoverAuthorizationMatches(authorization, {
+            activeVersion,
+            owner: {...authorization.owner, ownershipRevision: changedRevision},
+          }),
+        ).toBe(false);
+        expect(developmentRuntimeTakeoverAuthorizationMatches(authorization, {activeVersion, owner: 'absent'})).toBe(
+          false,
+        );
       }),
       {numRuns: 200},
     );
@@ -194,18 +226,25 @@ describe('exact-head development runtime', () => {
             const canonicalInstallRoot = yield* fs.realPath(installRoot);
             const canonicalVersionsRoot = yield* fs.realPath(path.join(installRoot, 'versions'));
             const activation = (takeOverGlobalRuntime: boolean) =>
-              activateLocalStandaloneRelease({
-                canonicalInstallRoot,
-                canonicalVersionsRoot,
-                commit: sourceCommit,
-                executableName,
-                releaseRoot,
-                reused: true,
-                sourceCheckoutId: secondCheckoutId,
-                stagedRoot: Option.none(),
-                takeOverGlobalRuntime,
-                terminateSuperseded: false,
-                version,
+              Effect.gen(function* () {
+                const ownershipAuthorization = yield* prepareDevelopmentRuntimeOwnershipAuthorization(
+                  installRoot,
+                  secondCheckoutId,
+                  takeOverGlobalRuntime,
+                );
+                return yield* activateLocalStandaloneRelease({
+                  canonicalInstallRoot,
+                  canonicalVersionsRoot,
+                  commit: sourceCommit,
+                  executableName,
+                  ownershipAuthorization,
+                  releaseRoot,
+                  reused: true,
+                  sourceCheckoutId: secondCheckoutId,
+                  stagedRoot: Option.none(),
+                  terminateSuperseded: false,
+                  version,
+                });
               }).pipe(
                 Effect.provideService(CommandExecutor, versionCommandExecutor(version)),
                 Effect.provideService(SystemInfo, testSystem),
@@ -215,16 +254,268 @@ describe('exact-head development runtime', () => {
             const ownerAfterRefusal = yield* fs.readFileString(ownerFile);
             const installed = yield* activation(true);
             const ownerAfterTakeover = yield* fs.readFileString(ownerFile);
-            return {installed, ownerAfterRefusal, ownerAfterTakeover, refusal, root};
+            yield* activation(false);
+            const ownerAfterReinstall = yield* fs.readFileString(ownerFile);
+            return {installed, ownerAfterRefusal, ownerAfterReinstall, ownerAfterTakeover, refusal, root};
           }),
         ).pipe(provideTestLayer(ApplicationLayer));
 
         expect(result.refusal).toContain('another source checkout owns');
         expect(JSON.parse(result.ownerAfterRefusal)).toMatchObject({sourceCheckoutId: '1'.repeat(64)});
-        expect(JSON.parse(result.ownerAfterTakeover)).toMatchObject({sourceCheckoutId: '2'.repeat(64)});
+        expect(JSON.parse(result.ownerAfterTakeover)).toMatchObject({
+          ownershipRevision: expect.any(String),
+          schemaVersion: 2,
+          sourceCheckoutId: '2'.repeat(64),
+        });
+        expect(JSON.parse(result.ownerAfterReinstall)).toMatchObject({schemaVersion: 2});
+        expect(JSON.parse(result.ownerAfterReinstall).ownershipRevision).not.toBe(
+          JSON.parse(result.ownerAfterTakeover).ownershipRevision,
+        );
         expect(result.ownerAfterTakeover).not.toContain(result.root);
         expect(result.installed.active).toBe(true);
       }),
+  );
+
+  effectIt.effect('rejects authorization when a legacy owner recreates the pre-migration state', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-v1-aba-'});
+          const installRoot = path.join(root, 'install');
+          const binRoot = path.join(root, 'bin');
+          const versionsRoot = path.join(installRoot, 'versions');
+          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+          const firstCommit = '4'.repeat(40);
+          const waitingCommit = '5'.repeat(40);
+          const firstVersion = developmentBuildVersion('4.0.1', firstCommit);
+          const waitingVersion = developmentBuildVersion('4.0.2', waitingCommit);
+          const firstReleaseRoot = path.join(versionsRoot, firstVersion);
+          const waitingReleaseRoot = path.join(versionsRoot, waitingVersion);
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            firstReleaseRoot,
+            firstVersion,
+            firstCommit,
+            executableName,
+            'legacy-owner',
+          );
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            waitingReleaseRoot,
+            waitingVersion,
+            waitingCommit,
+            executableName,
+            'waiting-owner',
+          );
+          const activePointerPath = path.join(installRoot, 'active-release.json');
+          const ownerPath = path.join(installRoot, 'development-runtime-owner.json');
+          const firstPointer = `${JSON.stringify({releaseRoot: firstReleaseRoot, version: firstVersion})}\n`;
+          const legacyOwner = `${JSON.stringify({
+            schemaVersion: 1,
+            sourceCheckoutId: '1'.repeat(64),
+            version: firstVersion,
+          })}\n`;
+          yield* fs.writeFileString(activePointerPath, firstPointer, {mode: 0o600});
+          yield* fs.writeFileString(ownerPath, legacyOwner, {mode: 0o600});
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              THREADNOTE_BIN_DIR: binRoot,
+              THREADNOTE_INSTALL_ROOT: installRoot,
+            }),
+          });
+          const authorization = yield* prepareDevelopmentRuntimeOwnershipAuthorization(
+            installRoot,
+            '2'.repeat(64),
+            true,
+          ).pipe(Effect.provideService(SystemInfo, testSystem));
+          const upgradedOwner = yield* fs.readFileString(ownerPath);
+          yield* fs.writeFileString(ownerPath, legacyOwner, {mode: 0o600});
+          const [cliLauncher, mcpLauncher] = yield* Effect.all([
+            commandLauncherPath('cli'),
+            commandLauncherPath('mcp'),
+          ]).pipe(Effect.provideService(SystemInfo, testSystem));
+          yield* fs.makeDirectory(binRoot, {recursive: true});
+          yield* fs.writeFileString(cliLauncher, 'legacy cli launcher\n', {mode: 0o755});
+          yield* fs.writeFileString(mcpLauncher, 'legacy mcp launcher\n', {mode: 0o755});
+
+          const failure = yield* activateLocalStandaloneRelease({
+            canonicalInstallRoot: yield* fs.realPath(installRoot),
+            canonicalVersionsRoot: yield* fs.realPath(versionsRoot),
+            commit: waitingCommit,
+            executableName,
+            ownershipAuthorization: authorization,
+            releaseRoot: waitingReleaseRoot,
+            reused: true,
+            sourceCheckoutId: '2'.repeat(64),
+            stagedRoot: Option.none(),
+            terminateSuperseded: false,
+            version: waitingVersion,
+          }).pipe(
+            Effect.provideService(CommandExecutor, versionCommandExecutor(waitingVersion)),
+            Effect.provideService(SystemInfo, testSystem),
+            Effect.flip,
+          );
+          return {
+            activePointer: yield* fs.readFileString(activePointerPath),
+            cliLauncher: yield* fs.readFileString(cliLauncher),
+            failure: String(failure),
+            firstPointer,
+            legacyOwner,
+            mcpLauncher: yield* fs.readFileString(mcpLauncher),
+            owner: yield* fs.readFileString(ownerPath),
+            upgradedOwner,
+          };
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(JSON.parse(result.upgradedOwner)).toMatchObject({
+        ownershipRevision: expect.any(String),
+        schemaVersion: 2,
+        sourceCheckoutId: '1'.repeat(64),
+      });
+      expect(result.failure).toContain('ownership changed after takeover authorization');
+      expect(result.activePointer).toBe(result.firstPointer);
+      expect(result.owner).toBe(result.legacyOwner);
+      expect(result.cliLauncher).toBe('legacy cli launcher\n');
+      expect(result.mcpLauncher).toBe('legacy mcp launcher\n');
+    }),
+  );
+
+  effectIt.effect('rejects stale takeover authorization without touching the newer activation', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-stale-takeover-'});
+          const installRoot = path.join(root, 'install');
+          const binRoot = path.join(root, 'bin');
+          const versionsRoot = path.join(installRoot, 'versions');
+          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+          const firstCheckoutId = '1'.repeat(64);
+          const waitingCheckoutId = '2'.repeat(64);
+          const winnerCheckoutId = '3'.repeat(64);
+          const firstCommit = 'a'.repeat(40);
+          const waitingCommit = 'b'.repeat(40);
+          const winnerCommit = 'c'.repeat(40);
+          const firstVersion = developmentBuildVersion('4.0.1', firstCommit);
+          const waitingVersion = developmentBuildVersion('4.0.2', waitingCommit);
+          const winnerVersion = developmentBuildVersion('4.0.3', winnerCommit);
+          const firstReleaseRoot = path.join(versionsRoot, firstVersion);
+          const waitingReleaseRoot = path.join(versionsRoot, waitingVersion);
+          const winnerReleaseRoot = path.join(versionsRoot, winnerVersion);
+          for (const [releaseRoot, version, commit, marker] of [
+            [firstReleaseRoot, firstVersion, firstCommit, 'first'],
+            [waitingReleaseRoot, waitingVersion, waitingCommit, 'waiting'],
+            [winnerReleaseRoot, winnerVersion, winnerCommit, 'winner'],
+          ] as const) {
+            yield* writeDevelopmentReleaseFixture(fs, path, releaseRoot, version, commit, executableName, marker);
+          }
+          const activePointerPath = path.join(installRoot, 'active-release.json');
+          const ownerPath = path.join(installRoot, 'development-runtime-owner.json');
+          yield* fs.writeFileString(
+            activePointerPath,
+            `${JSON.stringify({releaseRoot: firstReleaseRoot, version: firstVersion})}\n`,
+            {mode: 0o600},
+          );
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              THREADNOTE_BIN_DIR: binRoot,
+              THREADNOTE_INSTALL_ROOT: installRoot,
+            }),
+          });
+          const absentRefusal = String(
+            yield* prepareDevelopmentRuntimeOwnershipAuthorization(installRoot, waitingCheckoutId, false).pipe(
+              Effect.provideService(SystemInfo, testSystem),
+              Effect.flip,
+            ),
+          );
+          const absentAuthorization = yield* prepareDevelopmentRuntimeOwnershipAuthorization(
+            installRoot,
+            waitingCheckoutId,
+            true,
+          ).pipe(Effect.provideService(SystemInfo, testSystem));
+          yield* fs.writeFileString(
+            ownerPath,
+            `${JSON.stringify({
+              ownershipRevision: 'first-ownership-revision',
+              schemaVersion: 2,
+              sourceCheckoutId: firstCheckoutId,
+              version: firstVersion,
+            })}\n`,
+            {mode: 0o600},
+          );
+          const waitingAuthorization = yield* prepareDevelopmentRuntimeOwnershipAuthorization(
+            installRoot,
+            waitingCheckoutId,
+            true,
+          ).pipe(Effect.provideService(SystemInfo, testSystem));
+          const winnerPointer = `${JSON.stringify({releaseRoot: winnerReleaseRoot, version: winnerVersion})}\n`;
+          const winnerOwner = `${JSON.stringify({
+            ownershipRevision: 'winner-ownership-revision',
+            schemaVersion: 2,
+            sourceCheckoutId: winnerCheckoutId,
+            version: winnerVersion,
+          })}\n`;
+          yield* fs.writeFileString(activePointerPath, winnerPointer, {mode: 0o600});
+          yield* fs.writeFileString(ownerPath, winnerOwner, {mode: 0o600});
+          const [cliLauncher, mcpLauncher] = yield* Effect.all([
+            commandLauncherPath('cli'),
+            commandLauncherPath('mcp'),
+          ]).pipe(Effect.provideService(SystemInfo, testSystem));
+          yield* fs.makeDirectory(binRoot, {recursive: true});
+          yield* fs.writeFileString(cliLauncher, 'winner cli launcher\n', {mode: 0o755});
+          yield* fs.writeFileString(mcpLauncher, 'winner mcp launcher\n', {mode: 0o755});
+
+          const failure = yield* activateLocalStandaloneRelease({
+            canonicalInstallRoot: yield* fs.realPath(installRoot),
+            canonicalVersionsRoot: yield* fs.realPath(versionsRoot),
+            commit: waitingCommit,
+            executableName,
+            ownershipAuthorization: waitingAuthorization,
+            releaseRoot: waitingReleaseRoot,
+            reused: true,
+            sourceCheckoutId: waitingCheckoutId,
+            stagedRoot: Option.none(),
+            terminateSuperseded: false,
+            version: waitingVersion,
+          }).pipe(
+            Effect.provideService(CommandExecutor, versionCommandExecutor(waitingVersion)),
+            Effect.provideService(SystemInfo, testSystem),
+            Effect.flip,
+          );
+          return {
+            absentAuthorization,
+            absentRefusal,
+            activePointer: yield* fs.readFileString(activePointerPath),
+            cliLauncher: yield* fs.readFileString(cliLauncher),
+            failure: String(failure),
+            mcpLauncher: yield* fs.readFileString(mcpLauncher),
+            owner: yield* fs.readFileString(ownerPath),
+            winnerOwner,
+            winnerPointer,
+          };
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(result.absentRefusal).toContain('changed outside its owning installer');
+      expect(result.absentAuthorization).toMatchObject({owner: 'absent'});
+      expect(result.failure).toContain('ownership changed after takeover authorization');
+      expect(result.activePointer).toBe(result.winnerPointer);
+      expect(result.owner).toBe(result.winnerOwner);
+      expect(result.cliLauncher).toBe('winner cli launcher\n');
+      expect(result.mcpLauncher).toBe('winner mcp launcher\n');
+    }),
   );
 
   it('derives an unambiguous SHA-bound development version for valid release versions', () => {
@@ -806,7 +1097,7 @@ describe('exact-head development runtime', () => {
             reused: true,
             sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.none(),
-            takeOverGlobalRuntime: false,
+            ownershipAuthorization: undefined,
             terminateSuperseded: false,
             version,
           }).pipe(
@@ -877,7 +1168,7 @@ describe('exact-head development runtime', () => {
             reused: false,
             sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.some(stagedRoot),
-            takeOverGlobalRuntime: false,
+            ownershipAuthorization: undefined,
             terminateSuperseded: false,
             version,
           }).pipe(
@@ -965,7 +1256,7 @@ describe('exact-head development runtime', () => {
               reused: true,
               sourceCheckoutId: 'a'.repeat(64),
               stagedRoot: Option.none(),
-              takeOverGlobalRuntime: false,
+              ownershipAuthorization: undefined,
               terminateSuperseded: false,
               version,
             }).pipe(Effect.provideService(CommandExecutor, executor), Effect.provideService(SystemInfo, testSystem));
@@ -1066,7 +1357,7 @@ describe('exact-head development runtime', () => {
             reused: true,
             sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.none(),
-            takeOverGlobalRuntime: false,
+            ownershipAuthorization: undefined,
             terminateSuperseded: false,
             version,
           }).pipe(Effect.provideService(CommandExecutor, executor), Effect.provideService(SystemInfo, testSystem));
@@ -1148,6 +1439,11 @@ describe('exact-head development runtime', () => {
         yield* fs.makeDirectory(binRoot, {recursive: true});
         yield* fs.writeFileString(cliLauncher, priorCli, {mode: 0o755});
         yield* fs.writeFileString(mcpLauncher, priorMcp, {mode: 0o755});
+        const ownershipAuthorization = yield* prepareDevelopmentRuntimeOwnershipAuthorization(
+          installRoot,
+          'a'.repeat(64),
+          true,
+        ).pipe(Effect.provideService(SystemInfo, testSystem));
         const invocations: Array<readonly string[]> = [];
         const executor = CommandExecutor.of({
           execute: (_executable, arguments_) => {
@@ -1169,11 +1465,11 @@ describe('exact-head development runtime', () => {
           canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
           commit: sourceCommit,
           executableName,
+          ownershipAuthorization,
           releaseRoot,
           reused: true,
           sourceCheckoutId: 'a'.repeat(64),
           stagedRoot: Option.none(),
-          takeOverGlobalRuntime: true,
           terminateSuperseded: true,
           version,
         }).pipe(
@@ -1188,7 +1484,8 @@ describe('exact-head development runtime', () => {
           version,
         });
         expect(JSON.parse(yield* fs.readFileString(ownerPath))).toEqual({
-          schemaVersion: 1,
+          ownershipRevision: expect.any(String),
+          schemaVersion: 2,
           sourceCheckoutId: 'a'.repeat(64),
           version,
         });
@@ -1262,7 +1559,7 @@ describe('exact-head development runtime', () => {
               reused: true,
               sourceCheckoutId: 'a'.repeat(64),
               stagedRoot: Option.none(),
-              takeOverGlobalRuntime: false,
+              ownershipAuthorization: undefined,
               terminateSuperseded: false,
               version,
             }).pipe(Effect.provideService(SystemInfo, testSystem));
@@ -1374,7 +1671,7 @@ describe('exact-head development runtime', () => {
             reused: true,
             sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.none(),
-            takeOverGlobalRuntime: false,
+            ownershipAuthorization: undefined,
             terminateSuperseded: false,
             version,
           } as const;
@@ -1469,7 +1766,7 @@ describe('exact-head development runtime', () => {
             reused: true,
             sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.none(),
-            takeOverGlobalRuntime: false,
+            ownershipAuthorization: undefined,
             terminateSuperseded: false,
             version,
           }).pipe(
@@ -1562,7 +1859,7 @@ describe('exact-head development runtime', () => {
             reused: true,
             sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.none(),
-            takeOverGlobalRuntime: false,
+            ownershipAuthorization: undefined,
             terminateSuperseded: false,
             version,
           }).pipe(
@@ -1647,7 +1944,7 @@ describe('exact-head development runtime', () => {
             reused: false,
             sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.some(stagedRoot),
-            takeOverGlobalRuntime: false,
+            ownershipAuthorization: undefined,
             terminateSuperseded: false,
             version,
           }).pipe(
