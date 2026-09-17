@@ -1,6 +1,9 @@
 import {Effect, Schema} from 'effect';
 import {Command, Flag} from 'effect/unstable/cli';
-import type {KnowledgeDeltaGitProposalExportOptionsV1} from '../git_proposal/commands.js';
+import type {
+  KnowledgeDeltaGitProposalExportOptionsV1,
+  KnowledgeDeltaGitProposalMaterializeOptionsV1,
+} from '../git_proposal/commands.js';
 import type {SharePublishOptions} from '../types.js';
 import {
   argument,
@@ -25,6 +28,7 @@ export const publishFlags = {
 export function makeShareMemoryCommands<E, R>(
   publishHandler: (uri: string, options: SharePublishOptions) => Effect.Effect<void, E, R>,
   proposeHandler: (options: KnowledgeDeltaGitProposalExportOptionsV1) => Effect.Effect<void, E, R>,
+  materializeHandler: (options: KnowledgeDeltaGitProposalMaterializeOptionsV1) => Effect.Effect<void, E, R>,
 ) {
   const sharePublish = Command.make(
     'publish',
@@ -55,5 +59,15 @@ export function makeShareMemoryCommands<E, R>(
     proposeHandler,
   ).pipe(Command.withDescription('Export an approved Knowledge Delta as a provider-neutral Git proposal'));
 
-  return {sharePropose, sharePublish};
+  const shareMaterialize = Command.make(
+    'materialize',
+    {
+      apply: boolean('apply', 'Create the local deterministic proposal branch and commit'),
+      proposal: requiredString('proposal', 'Local Knowledge Delta Git proposal JSON'),
+      team: optionalString('team', 'Shared Git team; defaults to configured default'),
+    },
+    materializeHandler,
+  ).pipe(Command.withDescription('Preview or explicitly materialize a provider-neutral Git proposal locally'));
+
+  return {shareMaterialize, sharePropose, sharePublish};
 }

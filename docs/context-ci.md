@@ -1,8 +1,9 @@
 # Context CI
 
 `threadnote context check` is a local, provider-neutral CI gate. It compares the current checkout with a Git base and
-reports health findings only for memories that directly cite changed files. It does not call a hosted Threadnote
-service, mutate memory, prepare a code graph, push a branch, or include source and memory bodies in its output.
+reports bounded citation, graph-impact, conflict, documentation, and capture findings. It does not call a hosted Threadnote
+service, mutate memory, prepare a code graph, push a branch, or include source and memory bodies in its output. When a
+current local graph is already ready, the same check also traces bounded reverse impact from changed paths.
 
 ## Command contract
 
@@ -16,15 +17,21 @@ threadnote context check --project "$THREADNOTE_PROJECT" --base origin/main --fo
 
 The legacy `--json` and `--sarif` flags remain aliases. Do not combine selectors for different formats.
 
-| Exit | CI meaning                                                                                 |
-| ---: | ------------------------------------------------------------------------------------------ |
-|  `0` | Evidence is complete and no directly affected actionable finding exists.                   |
-|  `1` | At least one directly affected, actionable context finding exists.                         |
-|  `2` | Invocation is invalid or required Git, graph, citation, or health evidence is unavailable. |
+| Exit | CI meaning                                                                                     |
+| ---: | ---------------------------------------------------------------------------------------------- |
+|  `0` | Evidence is complete and no affected or project-conflict finding exists.                       |
+|  `1` | At least one actionable citation, graph-impact, conflict, document, or capture finding exists. |
+|  `2` | Invocation is invalid or required Git, graph, citation, or health evidence is unavailable.     |
 
 Treat exit `2` as a failed gate, never as clean. Shallow checkouts must fetch the requested base commit. JSON and SARIF
 contain bounded categories, severity, repairability, counts, and stable fingerprints. They omit source fragments,
 memory bodies, memory URIs, changed paths, repository identities, queries, and credentials.
+
+The report combines five bounded evidence lanes: direct citation health, exact-current graph impact, active candidate
+or relation conflicts, changed or missing documentation citations, and capture advisories for uncited impacted code.
+Capture advisories are capped at eight. Graph impact never starts indexing: a missing, stale, partial, timed-out, or
+limit-truncated graph returns `graph-impact-evidence-*` with exit `2`, while retaining any independently proven
+findings. An empty Git diff does not require graph evidence.
 
 ## CI-provider pattern
 
@@ -40,8 +47,8 @@ it read-only and explicitly fails when the selected project loads zero canonical
 from passing vacuously. It uploads SARIF to GitHub code scanning but grants Threadnote no repository write credential
 and never pushes. Copy it into `.github/workflows/` in a consuming repository and replace the example project name.
 
-Context Check's scope is deliberately narrow: direct citations of changed files. It does not claim that callers,
-dependants, uncited memories, or other transitive graph relationships were checked.
+Context Check makes a transitive claim only for the exact-current bounded graph result included in that invocation. It
+never treats an incomplete graph as proof that no callers, dependants, or uncited architectural changes exist.
 
 ## Local proposal materialization
 

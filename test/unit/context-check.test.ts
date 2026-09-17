@@ -6,6 +6,7 @@ import {
   type ContextHealthReportV1,
 } from '../../src/memory/context_health.js';
 import type {MemoryRecord} from '../../src/memory/document.js';
+import {contextCheckReadFenceIntact, sameChangedPathSelection} from '../../src/context_check/commands.js';
 import {
   buildContextCheckReport,
   parseContextCheckReportJson,
@@ -31,6 +32,29 @@ function finding(category: ContextHealthFindingV1['category'], uris: readonly st
 }
 
 describe('buildContextCheckReport', () => {
+  it('rejects a changed-path observation that no longer matches the graph read fence', () => {
+    const observed = {
+      baseCommit: 'a'.repeat(40),
+      caseMode: 'sensitive' as const,
+      paths: ['src/changed.ts'],
+      repositoryId: 'b'.repeat(64),
+      repoRoot: '/repository',
+    };
+    expect(sameChangedPathSelection(observed, observed)).toBe(true);
+    expect(sameChangedPathSelection(observed, {...observed, paths: [...observed.paths, 'src/raced.ts']})).toBe(false);
+    const current = {freshness: 'current' as const, readySnapshot: {id: 'snapshot-after'}, stale: false};
+    expect(contextCheckReadFenceIntact(observed, observed, 'snapshot-after', current)).toBe(true);
+    expect(
+      contextCheckReadFenceIntact(
+        observed,
+        {...observed, paths: [...observed.paths, 'src/raced.ts']},
+        'snapshot-after',
+        current,
+      ),
+    ).toBe(false);
+    expect(contextCheckReadFenceIntact(observed, observed, 'snapshot-before', current)).toBe(false);
+  });
+
   it('preserves exit classification at every output limit, including zero', () => {
     fc.assert(
       fc.property(
@@ -104,6 +128,63 @@ describe('buildContextCheckReport', () => {
     });
 
     expect(report.findings).toEqual([expect.objectContaining({category: 'exact-duplicate'})]);
+  });
+
+  it('includes exact graph impact, active conflicts, cited-document gaps, and bounded capture advisories', () => {
+    const documentUri = 'threadnote://memory/document';
+    const graphUri = 'threadnote://memory/graph';
+    const report = buildContextCheckReport({
+      healthReport: healthReport([
+        {
+          ...finding('citation-missing', [documentUri]),
+          id: 'missing-document',
+          repair: {
+            kind: 'repair-citation',
+            summary: 'Review the missing citation.',
+            targetUri: `${documentUri}#tncc_document`,
+          },
+        },
+        {...finding('candidate-contradiction', []), id: 'active-conflict'},
+      ]),
+      selection: {
+        affectedMemoryUris: [documentUri, graphUri],
+        captureAdvisoryIds: ['capture-b', 'capture-a'],
+        changedPaths: ['docs/guide.md', 'src/source.ts'],
+        citedDocumentCitationUris: [`${documentUri}#tncc_document`],
+        graphImpactedMemoryUris: [graphUri],
+        status: 'available',
+      },
+    });
+
+    expect(report.findings.map(item => item.category)).toEqual([
+      'candidate-contradiction',
+      'cited-document-missing',
+      'graph-impact',
+      'capture-advisory',
+      'capture-advisory',
+    ]);
+    expect(report.exitCode).toBe(1);
+    expect(JSON.stringify(report)).not.toContain(documentUri);
+    expect(JSON.stringify(report)).not.toContain('docs/guide.md');
+  });
+
+  it('reports incomplete graph evidence as unknown while retaining known findings', () => {
+    const report = buildContextCheckReport({
+      healthReport: healthReport([finding('candidate-contradiction', [])]),
+      selection: {
+        affectedMemoryUris: [],
+        changedPaths: ['src/source.ts'],
+        evidenceReason: 'graph-impact-evidence-incomplete',
+        status: 'available',
+      },
+    });
+
+    expect(report).toMatchObject({
+      evidenceReason: 'graph-impact-evidence-incomplete',
+      evidenceStatus: 'unavailable',
+      exitCode: 2,
+    });
+    expect(report.findings).toEqual([expect.objectContaining({category: 'candidate-contradiction'})]);
   });
 
   it('reports unavailable affected-memory evidence separately from unknown health findings', () => {

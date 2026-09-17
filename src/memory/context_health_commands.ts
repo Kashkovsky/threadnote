@@ -48,7 +48,10 @@ export const collectContextHealth = Effect.fn('memory.contextHealth.collect')(fu
   project: string,
   records: Parameters<typeof buildContextHealthReport>[0]['records'],
   cwd: string,
-  options: {readonly includeFindingUris?: readonly string[]} = {},
+  options: {
+    readonly includeFindingCategories?: Parameters<typeof buildContextHealthReport>[0]['includeFindingCategories'];
+    readonly includeFindingUris?: readonly string[];
+  } = {},
 ) {
   const now = yield* DateTime.nowAsDate;
   const includedUris = options.includeFindingUris === undefined ? undefined : new Set(options.includeFindingUris);
@@ -58,13 +61,17 @@ export const collectContextHealth = Effect.fn('memory.contextHealth.collect')(fu
     {callerCwd: cwd, kind: 'repository', project},
     citationCandidates(evidenceRecords),
   );
-  const relationEvidence = yield* relationStatusEvidence(config, evidenceRecords);
+  const relationEvidence = yield* relationStatusEvidence(
+    config,
+    options.includeFindingCategories?.includes('relation-target-conflicted') === true ? records : evidenceRecords,
+  );
   const candidateEvidence = yield* candidateStatusEvidence(config, project);
   const guidanceEvidence = yield* guidanceHealthEvidence(config, project, cwd);
   return buildContextHealthReport({
     candidateEvidence,
     guidanceEvidence,
     citationValidations,
+    includeFindingCategories: options.includeFindingCategories,
     includeFindingUris: options.includeFindingUris,
     now,
     project,

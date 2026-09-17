@@ -186,6 +186,26 @@ describe('buildContextHealthReport', () => {
       {numRuns: 20},
     );
   });
+
+  it('can retain selected project-level conflict categories beside URI-scoped findings', () => {
+    const affected = record('threadnote://memory/affected', 'affected', {reviewAfter: '2026-09-16'});
+    const unrelated = record('threadnote://memory/unrelated', 'unrelated', {
+      relations: [{type: 'depends_on', uri: 'threadnote://memory/conflicted'}],
+    });
+    const report = buildContextHealthReport({
+      includeFindingCategories: ['relation-target-conflicted'],
+      includeFindingUris: [affected.uri],
+      now,
+      project: 'threadnote',
+      records: [unrelated, affected],
+      relationEvidence: [
+        {sourceUri: unrelated.uri, status: 'conflicted', targetUri: 'threadnote://memory/conflicted'},
+        {sourceUri: unrelated.uri, status: 'missing', targetUri: 'threadnote://memory/missing'},
+      ],
+    });
+
+    expect(report.findings.map(finding => finding.category)).toEqual(['relation-target-conflicted', 'review-overdue']);
+  });
 });
 
 function receipt(

@@ -182,10 +182,11 @@ threadnote context check --project <name> --base <ref> --format json
 threadnote context check --project <name> --base <ref> --format sarif
 ```
 
-The versioned `ContextCheckReportV1` projection filters a health report to memories directly cited by changed tracked
-or untracked paths. Deletions and renames include their source paths. The check does not claim transitive coverage of
-callers, dependants, or other graph-related files. It has stable finding fingerprints and JSON/SARIF projections. Its
-exit classes are:
+The versioned `ContextCheckReportV1` projection combines direct citations of changed tracked or untracked paths with
+exact-current reverse graph impact, active conflicts, cited-document gaps, and at most eight content-free capture
+advisories. Deletions and renames include their source paths. The check never prepares a graph, and it makes no clean
+transitive claim when graph evidence is missing, stale, partial, timed out, or truncated. It has stable finding
+fingerprints and JSON/SARIF projections. Its exit classes are:
 
 | Exit | Meaning                                                   |
 | ---: | --------------------------------------------------------- |

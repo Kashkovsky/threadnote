@@ -1719,19 +1719,11 @@ const shareConflict = Command.make('conflict').pipe(
   Command.withSubcommands([conflictShow, conflictResolve]),
 );
 
-const {sharePropose, sharePublish} = makeShareMemoryCommands(
+const {shareMaterialize, sharePropose, sharePublish} = makeShareMemoryCommands(
   (uri, options) => withRuntimeEffect(config => runSharePublish(config, uri, options)),
   options => withRuntimeEffect(config => runKnowledgeDeltaGitProposalExport(config, options)),
-);
-const shareMaterialize = Command.make(
-  'materialize',
-  {
-    apply: boolean('apply', 'Create the local deterministic proposal branch and commit'),
-    proposal: requiredString('proposal', 'Local Knowledge Delta Git proposal JSON'),
-    team: optionalString('team', 'Shared Git team; defaults to configured default'),
-  },
   options => withRuntimeEffect(config => runKnowledgeDeltaGitProposalMaterialize(config, options)),
-).pipe(Command.withDescription('Preview or explicitly materialize a provider-neutral Git proposal locally'));
+);
 
 const artifactFlags = {
   dryRun: publishFlags.dryRun,

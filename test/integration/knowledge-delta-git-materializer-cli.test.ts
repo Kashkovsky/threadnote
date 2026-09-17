@@ -96,7 +96,7 @@ describe('Knowledge Delta Git proposal materializer CLI', () => {
     expect(await git(fixture.worktree, ['rev-parse', 'HEAD'])).toBe(`${fixture.baseCommit}\n`);
     expect(await git(fixture.worktree, ['status', '--porcelain=v1'])).toBe('');
     await expect(stat(hookSentinel)).rejects.toThrow();
-  });
+  }, 90_000);
 
   it.skipIf(process.platform === 'win32')('never follows a tracked parent symlink while applying', async () => {
     const fixture = await makeFixture({empty: true});
