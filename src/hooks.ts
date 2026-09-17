@@ -20,6 +20,7 @@ import type {AgentClient, HookRunnerOptions, HooksInstallOptions, JsonObject, Ru
 import {checkForThreadnoteUpdate} from './release/check.js';
 import {expandPath, exists, isJsonObject, parseJsonConfigObject, resolveRepoName} from './utils.js';
 import {getThreadnoteVersion} from './release/runtime_version.js';
+import {withSetupMutationLock} from './setup/lock.js';
 import {readAutoUpdateStatus, triggerAutoUpdateIfEnabled} from './release/auto_update.js';
 
 type HookEvent = 'PreCompact' | 'PreToolUse' | 'SessionStart';
@@ -53,7 +54,7 @@ const MANAGED_HOOKS: readonly ManagedHookEntry[] = [
 export {parseAgentClient as parseHookClient};
 
 export function runHooksInstall(config: RuntimeConfig, agent: AgentClient, options: HooksInstallOptions) {
-  return Effect.gen(function* () {
+  const operation = Effect.gen(function* () {
     const apply = options.apply === true && options.dryRun !== true;
     const remove = options.remove === true;
     switch (agent) {
@@ -74,6 +75,10 @@ export function runHooksInstall(config: RuntimeConfig, agent: AgentClient, optio
         return;
     }
   });
+  const apply = options.apply === true && options.dryRun !== true;
+  return !apply || options.setupLockHeld === true
+    ? operation
+    : withSetupMutationLock(config.agentContextHome, operation);
 }
 
 function runClaudeHooksInstall(options: {readonly apply: boolean; readonly remove: boolean}) {
@@ -121,6 +126,10 @@ export function withThreadnoteHooks(input: JsonObject): JsonObject {
     hooks[entry.event] = list;
   }
   return {...input, hooks};
+}
+
+export function threadnoteHooksAreCurrent(input: JsonObject): boolean {
+  return JSON.stringify(input) === JSON.stringify(withThreadnoteHooks(input));
 }
 
 function withoutThreadnoteHooks(input: JsonObject): JsonObject {
@@ -204,6 +213,14 @@ export const hasManagedClaudeHooks = Effect.fn('hooks.hasManagedClaudeHooks')(fu
     }
   }
   return false;
+});
+
+export const hasCurrentClaudeHooks = Effect.fn('hooks.hasCurrentClaudeHooks')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* expandPath(CLAUDE_SETTINGS_PATH);
+  if (!(yield* exists(path))) return false;
+  const parsed = parseJsonConfigObject(yield* fs.readFileString(path));
+  return parsed !== undefined && threadnoteHooksAreCurrent(parsed);
 });
 
 export function runPreCompactHook(

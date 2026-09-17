@@ -98,6 +98,8 @@ export interface HooksInstallOptions {
   /** @internal Recorded relocatable host root used by repair and uninstall. */
   readonly hostRoot?: string;
   readonly remove?: boolean;
+  /** @internal The caller already holds the home-wide setup mutation lock. */
+  readonly setupLockHeld?: boolean;
 }
 
 export interface HookRunnerOptions {
@@ -189,6 +191,8 @@ export interface McpInstallOptions {
   readonly project?: string;
   readonly scope?: ClaudeMcpScope;
   readonly shareId?: string;
+  /** @internal The caller already holds the home-wide setup mutation lock. */
+  readonly setupLockHeld?: boolean;
   readonly toolset?: McpToolset;
 }
 
@@ -324,6 +328,8 @@ export interface InitManifestOptions {
   readonly path?: string;
   readonly replace?: boolean;
   readonly repo?: readonly string[];
+  /** @internal The caller already holds the home-wide setup mutation lock. */
+  readonly setupLockHeld?: boolean;
 }
 
 export interface JsonObject {
