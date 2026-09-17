@@ -70,6 +70,7 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
           requestedWaitTimeout === 0 && detachedCleanupActive.has(databasePath)
             ? CODE_GRAPH_INTERNAL_CLEANUP_FOREGROUND_WAIT_MILLISECONDS
             : requestedWaitTimeout;
+        const guarded = options?.onWriterReleased ? effect.pipe(Effect.ensuring(options.onWriterReleased())) : effect;
         return withExclusiveFileLock(
           fs,
           writerLockPath,
@@ -79,7 +80,7 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
             onAcquired: () => options?.onWriterAcquired?.() ?? Effect.void,
             onContention: () => options?.onWriterContention?.() ?? Effect.void,
           },
-          effect,
+          guarded,
         ).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.provideService(Path.Path, path),

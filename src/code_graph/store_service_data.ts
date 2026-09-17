@@ -82,8 +82,9 @@ import {
 } from './store_temporary_capacity.js';
 import {restoreCodeGraphQueryIndexesAfterColdBuild} from './store_cold_index_deferral.js';
 import {
-  finalizePersistentMaterializationSpool,
   persistentMaterializationStorageObservation,
+  preparePersistentMaterializationSpool,
+  publishPersistentMaterializationSpool,
   removePersistentMaterializationSpool,
 } from './store_materialization_spool_lifecycle.js';
 import {codeGraphMaterializationSpoolPath} from './materialization_spool.js';
@@ -100,6 +101,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'initialize'
   | 'prepareActivation'
   | 'finalizePersistentMaterializationPlan'
+  | 'preparePersistentMaterializationSpool'
   | 'preparePersistedIncrementalActivation'
   | 'replaceStagedModifiedFiles'
   | 'diagnose'
@@ -233,6 +235,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
       persistentCapacityProtector,
       onSecondaryIndexProgress,
       materializationSpool,
+      preparedSpool,
     ) =>
       prepare(databasePath).pipe(
         Effect.andThen(
@@ -244,8 +247,9 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
               if (mode?.mode !== 'persisted-full') {
                 return yield* CodeGraphStoreError.of('Persistent full-build materialization is not active.');
               }
-              const spoolPath = materializationSpool
-                ? yield* finalizePersistentMaterializationSpool(
+              const prepared = materializationSpool
+                ? (preparedSpool ??
+                  (yield* preparePersistentMaterializationSpool(
                     runtime,
                     databasePath,
                     sql,
@@ -253,10 +257,24 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                     mode.ownerToken,
                     expectedBatchCount,
                     materializationSpool,
-                    effect => withWriterGate(databasePath, effect),
+                    effect => effect,
                     persistentCapacityProtector,
-                  )
+                  )))
                 : undefined;
+              const spoolPath =
+                prepared && materializationSpool
+                  ? yield* publishPersistentMaterializationSpool(
+                      runtime,
+                      databasePath,
+                      sql,
+                      mode.snapshotId,
+                      mode.ownerToken,
+                      prepared,
+                      materializationSpool,
+                      effect => withWriterGate(databasePath, effect),
+                      persistentCapacityProtector,
+                    )
+                  : undefined;
               const boundary: CodeGraphDirectPersistentCapacityBoundary = {
                 finalFactBytes: 0,
                 operation: 'register persistent code graph materialization plan',
@@ -291,6 +309,39 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
           ),
         ),
         Effect.mapError(cause => storeError('finalize persistent code graph materialization plan', cause)),
+      ),
+    preparePersistentMaterializationSpool: (
+      databasePath,
+      expectedBatchCount,
+      persistentCapacityProtector,
+      materializationSpool,
+      preparationGate,
+    ) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useDatabase(
+            databasePath,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              const mode = yield* activationMode(sql);
+              if (mode?.mode !== 'persisted-full') {
+                return yield* CodeGraphStoreError.of('Persistent full-build materialization is not active.');
+              }
+              return yield* preparePersistentMaterializationSpool(
+                runtime,
+                databasePath,
+                sql,
+                mode.snapshotId,
+                mode.ownerToken,
+                expectedBatchCount,
+                materializationSpool,
+                preparationGate,
+                persistentCapacityProtector,
+              );
+            }),
+          ),
+        ),
+        Effect.mapError(cause => storeError('prepare persistent code graph materialization spool', cause)),
       ),
     preparePersistedIncrementalActivation: (
       databasePath,

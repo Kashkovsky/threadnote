@@ -1,5 +1,5 @@
 import {Database} from 'bun:sqlite';
-import {Effect} from 'effect';
+import {Effect, FileSystem, Option} from 'effect';
 import type * as SqlClient from 'effect/unstable/sql/SqlClient';
 import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import {
@@ -34,6 +34,8 @@ import type {
   CodeGraphDirectPersistentCapacityProtector,
   CodeGraphMaterializationSpoolContext,
   CodeGraphMaterializationStorageObservation,
+  CodeGraphPreparationGate,
+  CodeGraphPreparedMaterializationSpool,
   CodeGraphStagingBatch,
 } from './store_models.js';
 import {partitionPersistedReferenceEdges} from './store_resolution_core.js';
@@ -144,7 +146,7 @@ export const appendPersistentMaterializationSpoolFactBatches = Effect.fn(
   }
 });
 
-export const finalizePersistentMaterializationSpool = Effect.fn('codeGraph.finalizePersistentMaterializationSpool')(
+export const preparePersistentMaterializationSpool = Effect.fn('codeGraph.preparePersistentMaterializationSpool')(
   function* (
     runtime: CodeGraphStoreRuntime,
     databasePath: string,
@@ -153,54 +155,93 @@ export const finalizePersistentMaterializationSpool = Effect.fn('codeGraph.final
     ownerToken: string,
     expectedBatchCount: number,
     context: CodeGraphMaterializationSpoolContext,
-    runWrite: CodeGraphWriterGate,
+    runPreparation: CodeGraphPreparationGate,
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   ) {
     const protect = <A, E, R>(boundary: CodeGraphDirectPersistentCapacityBoundary, effect: Effect.Effect<A, E, R>) =>
       persistentCapacityProtector ? persistentCapacityProtector(boundary, effect) : effect;
     const header = yield* persistentSpoolHeader(runtime, databasePath, sql, snapshotId, context);
     const spoolPath = codeGraphMaterializationSpoolPath(runtime.path, context, snapshotId);
-    yield* protect(
-      {finalFactBytes: 0, operation: 'register persistent code graph materialization plan', rowCount: 2},
-      runWrite(
-        sql.withTransaction(registerPersistentMaterializationPlan(sql, snapshotId, ownerToken, expectedBatchCount)),
-      ),
-    );
-    const sortBoundary = yield* usePersistentSpool(runtime, header, context, database => {
-      sealCodeGraphMaterializationSpool(database, expectedBatchCount);
-      const totals = codeGraphSqliteGet<{readonly fact_bytes: number | bigint; readonly row_count: number | bigint}>(
-        database,
-        'SELECT COALESCE(SUM(fact_bytes), 0) AS fact_bytes, COALESCE(SUM(row_count), 0) AS row_count FROM materialization_spool_batches',
-      );
-      if (totals === null) {
-        throw CodeGraphStoreError.of('Persistent materialization spool totals are missing.');
-      }
-      return {
-        finalFactBytes: Number(totals.fact_bytes),
-        operation: 'sort persistent code graph materialization spool',
-        rowCount: Number(totals.row_count),
-      } satisfies CodeGraphDirectPersistentCapacityBoundary;
-    });
-    const ready = yield* protect(
-      sortBoundary,
-      usePersistentSpool(runtime, header, context, database => {
-        sortCodeGraphMaterializationSpoolSurfaces(database, () =>
-          observePersistentMaterializationStorage(databasePath, spoolPath, context),
+    const ready = yield* runPreparation(
+      Effect.gen(function* () {
+        const sortBoundary = yield* usePersistentSpool(runtime, header, context, database => {
+          sealCodeGraphMaterializationSpool(database, expectedBatchCount);
+          const totals = codeGraphSqliteGet<{
+            readonly fact_bytes: number | bigint;
+            readonly row_count: number | bigint;
+          }>(
+            database,
+            'SELECT COALESCE(SUM(fact_bytes), 0) AS fact_bytes, COALESCE(SUM(row_count), 0) AS row_count FROM materialization_spool_batches',
+          );
+          if (totals === null) throw CodeGraphStoreError.of('Persistent materialization spool totals are missing.');
+          return {
+            finalFactBytes: Number(totals.fact_bytes),
+            operation: 'sort persistent code graph materialization spool',
+            rowCount: Number(totals.row_count),
+          } satisfies CodeGraphDirectPersistentCapacityBoundary;
+        });
+        return yield* protect(
+          sortBoundary,
+          usePersistentSpool(runtime, header, context, database => {
+            sortCodeGraphMaterializationSpoolSurfaces(database, () =>
+              observePersistentMaterializationStorage(databasePath, spoolPath, context),
+            );
+            return readCodeGraphMaterializationSpoolReadyPlan(database);
+          }),
         );
-        return readCodeGraphMaterializationSpoolReadyPlan(database);
       }),
     );
     const plan = codeGraphMaterializationSpoolApplyPlan(ready);
+    return {
+      batchCount: ready.batches.length,
+      spoolIdentity: ready.spoolIdentity,
+      spoolPath,
+      surfaces: plan,
+    } satisfies CodeGraphPreparedMaterializationSpool;
+  },
+);
+
+export const publishPersistentMaterializationSpool = Effect.fn('codeGraph.publishPersistentMaterializationSpool')(
+  function* (
+    runtime: CodeGraphStoreRuntime,
+    databasePath: string,
+    sql: SqlClient.SqlClient,
+    snapshotId: string,
+    ownerToken: string,
+    prepared: CodeGraphPreparedMaterializationSpool,
+    context: CodeGraphMaterializationSpoolContext,
+    runWrite: CodeGraphWriterGate,
+    persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
+  ) {
+    const protect = <A, E, R>(boundary: CodeGraphDirectPersistentCapacityBoundary, effect: Effect.Effect<A, E, R>) =>
+      persistentCapacityProtector ? persistentCapacityProtector(boundary, effect) : effect;
+    const observedSpool = yield* validatePreparedPersistentMaterializationSpool(runtime, snapshotId, prepared, context);
     const attached = Effect.gen(function* () {
+      yield* assertPreparedPersistentMaterializationSpoolIdentity(runtime, prepared.spoolPath, observedSpool);
       yield* protect(
-        {finalFactBytes: 0, operation: 'register persistent code graph materialization plan', rowCount: plan.length},
+        {finalFactBytes: 0, operation: 'register persistent code graph materialization plan', rowCount: 2},
         runWrite(
-          registerCodeGraphMaterializationSpoolApply(sql, snapshotId, ownerToken, ready.spoolIdentity, plan, () =>
-            observePersistentMaterializationStorageEffect(databasePath, spoolPath, context),
+          sql.withTransaction(registerPersistentMaterializationPlan(sql, snapshotId, ownerToken, prepared.batchCount)),
+        ),
+      );
+      yield* protect(
+        {
+          finalFactBytes: 0,
+          operation: 'register persistent code graph materialization plan',
+          rowCount: prepared.surfaces.length,
+        },
+        runWrite(
+          registerCodeGraphMaterializationSpoolApply(
+            sql,
+            snapshotId,
+            ownerToken,
+            prepared.spoolIdentity,
+            prepared.surfaces,
+            () => observePersistentMaterializationStorageEffect(databasePath, prepared.spoolPath, context),
           ),
         ),
       );
-      for (let surfaceIndex = 0; surfaceIndex < plan.length; surfaceIndex += 1) {
+      for (let surfaceIndex = 0; surfaceIndex < prepared.surfaces.length; surfaceIndex += 1) {
         for (;;) {
           const result = yield* protect(
             {finalFactBytes: 0, operation: 'apply persistent code graph materialization spool', rowCount: 50_000},
@@ -209,10 +250,10 @@ export const finalizePersistentMaterializationSpool = Effect.fn('codeGraph.final
                 sql,
                 snapshotId,
                 ownerToken,
-                ready.spoolIdentity,
+                prepared.spoolIdentity,
                 surfaceIndex,
                 page => writeCodeGraphMaterializationSpoolSurfacePage(sql, snapshotId, surfaceIndex, page),
-                () => observePersistentMaterializationStorageEffect(databasePath, spoolPath, context),
+                () => observePersistentMaterializationStorageEffect(databasePath, prepared.spoolPath, context),
               ),
             ),
           );
@@ -223,18 +264,18 @@ export const finalizePersistentMaterializationSpool = Effect.fn('codeGraph.final
         {
           finalFactBytes: 0,
           operation: 'publish persistent code graph materialization spool receipts',
-          rowCount: ready.batches.length,
+          rowCount: prepared.batchCount,
         },
         runWrite(
-          finalizeCodeGraphMaterializationSpoolReceipts(sql, snapshotId, ownerToken, ready.spoolIdentity, () =>
-            observePersistentMaterializationStorageEffect(databasePath, spoolPath, context),
+          finalizeCodeGraphMaterializationSpoolReceipts(sql, snapshotId, ownerToken, prepared.spoolIdentity, () =>
+            observePersistentMaterializationStorageEffect(databasePath, prepared.spoolPath, context),
           ),
         ),
       );
     });
-    yield* attachPersistentMaterializationSpool(sql, spoolPath);
+    yield* attachPersistentMaterializationSpool(sql, prepared.spoolPath);
     yield* attached.pipe(Effect.ensuring(sql.unsafe('DETACH DATABASE materialization_spool').pipe(Effect.orDie)));
-    return spoolPath;
+    return prepared.spoolPath;
   },
 );
 
@@ -269,6 +310,87 @@ export function attachPersistentMaterializationSpool(
           .unsafe('ATTACH DATABASE ? AS materialization_spool', [spoolPath])
           .pipe(Effect.as('verified-path-fallback' as const)),
     ),
+  );
+}
+
+const validatePreparedPersistentMaterializationSpool = Effect.fn(
+  'codeGraph.validatePreparedPersistentMaterializationSpool',
+)(function* (
+  runtime: CodeGraphStoreRuntime,
+  snapshotId: string,
+  prepared: CodeGraphPreparedMaterializationSpool,
+  context: CodeGraphMaterializationSpoolContext,
+) {
+  const expectedPath = codeGraphMaterializationSpoolPath(runtime.path, context, snapshotId);
+  if (
+    prepared.spoolPath !== expectedPath ||
+    Option.isSome(yield* runtime.fs.readLink(expectedPath).pipe(Effect.option))
+  ) {
+    return yield* CodeGraphStoreError.of('Prepared materialization spool path is invalid.');
+  }
+  const before = yield* runtime.fs.stat(expectedPath);
+  if (before.type !== 'File') {
+    return yield* CodeGraphStoreError.of('Prepared materialization spool is not a regular file.');
+  }
+  const ready = yield* Effect.acquireUseRelease(
+    Effect.try({
+      try: () => new Database(expectedPath, {readonly: true, strict: true}),
+      catch: () => CodeGraphStoreError.of('Prepared materialization spool could not be opened.'),
+    }),
+    database =>
+      Effect.try({
+        try: () => readCodeGraphMaterializationSpoolReadyPlan(database),
+        catch: () => CodeGraphStoreError.of('Prepared materialization spool could not be revalidated.'),
+      }),
+    database =>
+      Effect.try({
+        try: () => database.close(true),
+        catch: () => CodeGraphStoreError.of('Prepared materialization spool could not be closed.'),
+      }),
+  );
+  const surfaces = codeGraphMaterializationSpoolApplyPlan(ready);
+  if (
+    ready.spoolIdentity !== prepared.spoolIdentity ||
+    ready.batches.length !== prepared.batchCount ||
+    !samePreparedSpoolSurfaces(surfaces, prepared.surfaces)
+  ) {
+    return yield* CodeGraphStoreError.of('Prepared materialization spool identity changed before publication.');
+  }
+  yield* assertPreparedPersistentMaterializationSpoolIdentity(runtime, expectedPath, before);
+  return before;
+});
+
+const assertPreparedPersistentMaterializationSpoolIdentity = Effect.fn(
+  'codeGraph.assertPreparedPersistentMaterializationSpoolIdentity',
+)(function* (runtime: CodeGraphStoreRuntime, spoolPath: string, expected: FileSystem.File.Info) {
+  if (Option.isSome(yield* runtime.fs.readLink(spoolPath).pipe(Effect.option))) {
+    return yield* CodeGraphStoreError.of('Prepared materialization spool became symbolic before publication.');
+  }
+  const observed = yield* runtime.fs.stat(spoolPath);
+  if (!samePreparedSpoolFileInfo(expected, observed)) {
+    return yield* CodeGraphStoreError.of('Prepared materialization spool file changed before publication.');
+  }
+});
+
+function samePreparedSpoolSurfaces(
+  left: readonly {readonly name: string; readonly rowCount: number}[],
+  right: readonly {readonly name: string; readonly rowCount: number}[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((surface, index) => surface.name === right[index]?.name && surface.rowCount === right[index]?.rowCount)
+  );
+}
+
+function samePreparedSpoolFileInfo(left: FileSystem.File.Info, right: FileSystem.File.Info): boolean {
+  return (
+    left.type === 'File' &&
+    right.type === 'File' &&
+    left.dev === right.dev &&
+    Option.getOrUndefined(left.ino) === Option.getOrUndefined(right.ino) &&
+    left.size === right.size &&
+    left.mode === right.mode &&
+    Option.getOrUndefined(left.mtime)?.getTime() === Option.getOrUndefined(right.mtime)?.getTime()
   );
 }
 

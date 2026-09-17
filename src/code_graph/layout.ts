@@ -47,6 +47,14 @@ export function codeGraphBuilderAdmissionSlotPath(path: Path.Path, threadnoteHom
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'builder-slots', `${slot}.lock`);
 }
 
+export function codeGraphPreparedSpoolBudgetRoot(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'prepared-spool-budget');
+}
+
+export function codeGraphPreparedSpoolBudgetLockPath(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'prepared-spool-budget.lock');
+}
+
 export function codeGraphRetainedBaseReservationRoot(path: Path.Path, threadnoteHome: string): string {
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'retained-base-reservations');
 }

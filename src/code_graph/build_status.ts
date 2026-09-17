@@ -13,6 +13,7 @@ import {codeGraphProgressTimings} from './build_status_timings.js';
 import {
   accountCodeGraphBuildScheduling,
   observeCodeGraphBuildAdmission,
+  observeCodeGraphBuildResource,
   type CodeGraphBuildScheduling,
 } from './build_status_scheduling.js';
 import type {CodeGraphBuilderAdmissionQueue} from './builder_admission_scheduler.js';
@@ -230,6 +231,9 @@ export interface CodeGraphBuildReporter {
   /** Exact privacy-safe owner instance persisted with resumable build state. */
   readonly ownerIdentity: CodeGraphBuildOwnerIdentity;
   readonly progress: (progress: CodeGraphProgress) => Effect.Effect<void, never>;
+  readonly resource: (
+    resource: import('./build_resources.js').CodeGraphBuildResource | undefined,
+  ) => Effect.Effect<void, never>;
   readonly markWorktreeLockHeld: (held: boolean) => Effect.Effect<void, never>;
 }
 
@@ -564,6 +568,8 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           );
         },
       ),
+    resource: resource =>
+      persist(current => ({...current, status: observeCodeGraphBuildResource(current.status, resource)}), true),
   } satisfies CodeGraphBuildReporter;
 });
 

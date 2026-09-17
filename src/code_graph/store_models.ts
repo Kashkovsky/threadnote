@@ -457,6 +457,17 @@ export interface CodeGraphMaterializationSpoolContext {
   readonly repositoryRoot: string;
 }
 
+export interface CodeGraphPreparedMaterializationSpool {
+  readonly batchCount: number;
+  readonly spoolIdentity: string;
+  readonly spoolPath: string;
+  readonly surfaces: readonly {readonly name: string; readonly rowCount: number}[];
+}
+
+export type CodeGraphPreparationGate = <A, E, R>(
+  preparation: Effect.Effect<A, E, R>,
+) => Effect.Effect<A, E | unknown, R>;
+
 export interface CodeGraphMaterializationStorageObservation {
   readonly databaseBytes: number;
   readonly journalBytes: number;
