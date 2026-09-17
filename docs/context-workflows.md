@@ -45,9 +45,9 @@ organization service.
 ## Project guidance into agent surfaces
 
 Threadnote can import existing repository guidance for review, then project approved durable knowledge into an
-agent's native project instructions. Existing `AGENTS.md`, `CLAUDE.md`, Cursor rules, and Copilot instructions are
-adapter-declared sources and targets; they remain authoritative for the host, while Threadnote avoids creating a
-second canonical copy.
+agent's native project instructions. Verified targets and explicit safety holds are declared by the canonical agent
+catalog, so support stays aligned with the adapters that implement it. Native instructions remain authoritative for
+the host, while Threadnote avoids creating a second canonical copy.
 
 Preview an import and, only when explicitly applied, create or reuse a private Knowledge Delta candidate review:
 
@@ -65,11 +65,15 @@ threadnote guidance project <surface> --project <name> \
 
 Projection is preview-first and deterministic: source memories are ordered stably, and the managed block records
 provenance and hashes. A conflict requires `--force`; even forced projection never overwrites unmanaged text.
+Receipts belong to the physical project target, so agents that share `AGENTS.md` also share one block and one receipt.
 Projection status distinguishes `current`, `missing`, `modified`, `stale`, and `evidence-unavailable`:
 
 ```sh
 threadnote guidance status <surface> --project <name> [--cwd <path>] [--json]
 ```
+
+`threadnote agents list` exposes the project-guidance status and target for each catalog entry, or the catalog's
+specific reason that safe automated projection is not yet available.
 
 Remove is also preview-first and preserves unmanaged content. `--force` is required only when resolving a managed
 target conflict:

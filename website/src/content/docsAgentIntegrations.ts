@@ -6,6 +6,13 @@ function agentDetailsArticle(integration: (typeof agentIntegrations)[number]): D
     const details = integration.capabilities[capability];
     return [capabilityLabel(capability), details.status, details.reason ?? 'Managed as described by this surface.'];
   });
+  capabilityRows.push([
+    'Project guidance',
+    integration.projectGuidance.status,
+    integration.projectGuidance.status === 'managed'
+      ? `Managed target: ${integration.projectGuidance.targetPath}.`
+      : integration.projectGuidance.reason,
+  ]);
   const officialLinks = integration.officialDocs
     .map((url, index) => `[Official documentation ${index + 1}](${url})`)
     .join(' · ');

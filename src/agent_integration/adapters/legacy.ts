@@ -8,17 +8,49 @@ export {LEGACY_ARTIFACT_TARGETS} from './legacy_targets.js';
 
 const guidanceByAdapter: Readonly<Record<string, NonNullable<AgentAdapterDefinition['guidance']>>> = {
   'codex-cli': {importPaths: ['AGENTS.md'], projection: {relativePath: 'AGENTS.md'}},
-  'claude-code': {importPaths: ['CLAUDE.md'], projection: {relativePath: 'CLAUDE.md'}},
+  'claude-code': {
+    importMode: 'first-existing',
+    importPaths: ['CLAUDE.md', '.claude/CLAUDE.md'],
+    projection: {relativePath: 'CLAUDE.md'},
+  },
   'cursor-desktop': {
+    importDirectories: [{extensions: ['.md', '.mdc'], relativePath: '.cursor/rules'}],
     importPaths: ['.cursor/rules/threadnote.mdc', '.cursorrules'],
+    importWrappers: [
+      {
+        prefix:
+          '---\ndescription: Route non-trivial work through installed Threadnote skills\nglobs:\nalwaysApply: true\n---\n\n',
+        suffix: '',
+      },
+    ],
     projection: {
       relativePath: '.cursor/rules/threadnote.mdc',
-      wrapper: {prefix: '---\ndescription: Threadnote project guidance\nalwaysApply: true\n---\n\n', suffix: ''},
+      wrapper: {
+        prefix: '---\ndescription: Threadnote project guidance\nalwaysApply: true\n---\n\n',
+        required: true,
+        suffix: '',
+      },
     },
   },
   'copilot-vscode': {
+    importDirectories: [{extensions: ['.instructions.md'], relativePath: '.github/instructions'}],
     importPaths: ['.github/copilot-instructions.md', '.github/instructions/threadnote.instructions.md'],
-    projection: {relativePath: '.github/instructions/threadnote.instructions.md'},
+    importWrappers: [
+      {
+        prefix:
+          '---\nname: Threadnote\ndescription: Route non-trivial work through installed Threadnote skills\napplyTo: "**"\n---\n\n',
+        suffix: '',
+      },
+    ],
+    projection: {
+      relativePath: '.github/instructions/threadnote.instructions.md',
+      wrapper: {prefix: '---\napplyTo: "**"\n---\n\n', required: true, suffix: ''},
+    },
+  },
+  'omp-agent': {
+    importMode: 'first-existing',
+    importPaths: ['.omp/AGENTS.md', 'AGENTS.md'],
+    projection: {relativePath: '.omp/AGENTS.md'},
   },
 };
 

@@ -320,7 +320,11 @@ const removeAgentSurfaceFromRegistry = Effect.fn('agentSurfaces.removeFromRegist
   return nextRegistry;
 });
 
-export function defineJsonAgentAdapter(id: string, json: JsonAgentStrategy): AgentAdapterDefinition {
+export function defineJsonAgentAdapter(
+  id: string,
+  json: JsonAgentStrategy,
+  guidance?: AgentAdapterDefinition['guidance'],
+): AgentAdapterDefinition {
   const install: AgentAdapterDefinition['actions']['install'] = (config, adapter, options) =>
     installJsonAgentSurface(config, adapter, {
       apply: options.apply,
@@ -345,6 +349,7 @@ export function defineJsonAgentAdapter(id: string, json: JsonAgentStrategy): Age
       status: agentSurfaceStatus,
     },
     adapterVersion: 1,
+    guidance,
     id,
     json,
     kind: 'json',

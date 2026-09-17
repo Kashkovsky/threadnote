@@ -15,6 +15,10 @@ export const AgentCatalogEntry = Schema.Struct({
   scopes: Schema.Array(Schema.Literals(['user', 'project', 'local'])),
   platforms: Schema.Array(Schema.Literals(['darwin', 'linux', 'win32'])),
   capabilities: Schema.Struct({mcp: capability, instructions: capability, skills: capability, hooks: capability}),
+  projectGuidance: Schema.Union([
+    Schema.Struct({status: Schema.Literal('managed'), targetPath: Schema.String}),
+    Schema.Struct({status: Schema.Literal('unsupported'), reason: Schema.String}),
+  ]),
   officialDocs: Schema.Array(Schema.String),
   lastVerified: Schema.String,
   caveats: Schema.Array(Schema.String),
@@ -47,6 +51,11 @@ export function validateAgentCatalog(value: unknown): readonly AgentCatalogEntry
       if (value.status !== 'managed' && !value.reason?.trim())
         throw new Error(`Missing capability reason: ${entry.id}`);
     }
+    if (
+      (entry.projectGuidance.status === 'managed' && !entry.projectGuidance.targetPath.trim()) ||
+      (entry.projectGuidance.status === 'unsupported' && !entry.projectGuidance.reason.trim())
+    )
+      throw new Error(`Missing project-guidance capability detail: ${entry.id}`);
   }
   return parsed.agents;
 }
