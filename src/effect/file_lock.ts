@@ -1,7 +1,13 @@
 import {Clock, Crypto, DateTime, Effect, FileSystem, Option, Path, PlatformError, Predicate, Schema} from 'effect';
 import {succeedUndefined} from './optional.js';
 import {sha256Hex} from './digest.js';
-import {SystemInfo, type SystemInfoShape} from './system.js';
+import {fromPromise} from './errors.js';
+import {
+  runtimeReadBoundedStableRegularFile,
+  runtimeTouchBoundedStableRegularFile,
+  SystemInfo,
+  type SystemInfoShape,
+} from './system.js';
 
 export interface ExclusiveFileLockOptions {
   readonly heartbeatIntervalMilliseconds?: number;
@@ -87,7 +93,7 @@ export function withExclusiveFileLock<A, E, R>(
       options.heartbeatIntervalMilliseconds ?? Math.max(1, Math.floor(options.staleAfterMilliseconds / 3));
     const protectedEffect = Effect.scoped(
       Effect.gen(function* () {
-        yield* Effect.forkScoped(refreshFileLockLease(fs, lockPath, token, heartbeatIntervalMilliseconds));
+        yield* Effect.forkScoped(refreshFileLockLease(lockPath, token, heartbeatIntervalMilliseconds));
         yield* options.onAcquired?.(lockPath) ?? Effect.void;
         return yield* effect.pipe(Effect.ensuring(options.onCompleted?.(lockPath) ?? Effect.void));
       }),
@@ -207,11 +213,10 @@ function staleDeadLockToken(
 ): Effect.Effect<string | undefined, unknown, SystemInfo> {
   return Effect.gen(function* () {
     const system = yield* SystemInfo;
-    if (!(yield* fs.exists(path))) {
-      return undefined;
-    }
+    const token = yield* readStableFileLockToken(path);
+    if (token === undefined) return undefined;
     const info = yield* fs.stat(path);
-    const token = (yield* fs.readFileString(path)).trim();
+    if ((yield* readStableFileLockToken(path)) !== token) return undefined;
     const owner = fileLockOwner(token);
     if (owner && !system.isProcessRunning(owner.processId)) {
       return token;
@@ -299,7 +304,6 @@ function recoveryGuardPath(lockPath: string): string {
 }
 
 function refreshFileLockLease(
-  fs: FileSystem.FileSystem,
   lockPath: string,
   token: string,
   intervalMilliseconds: number,
@@ -307,15 +311,11 @@ function refreshFileLockLease(
   return Effect.gen(function* () {
     while (true) {
       yield* Effect.sleep(intervalMilliseconds);
-      if (!(yield* fs.exists(lockPath))) {
-        return;
-      }
-      const content = yield* fs.readFileString(lockPath);
-      if (content.trim() !== token) {
-        return;
-      }
       const now = yield* DateTime.nowAsDate;
-      yield* fs.utimes(lockPath, now, now);
+      const refreshed = yield* fromPromise('fileLock.refreshStableLease', () =>
+        runtimeTouchBoundedStableRegularFile(lockPath, 4_096, new TextEncoder().encode(`${token}\n`), now),
+      ).pipe(Effect.orElseSucceed(() => false));
+      if (!refreshed) return;
     }
   }).pipe(Effect.ignore);
 }
@@ -373,12 +373,19 @@ function fileLockOwner(token: string): FileLockOwner | undefined {
 
 function releaseFileLock(fs: FileSystem.FileSystem, lockPath: string, token: string): Effect.Effect<void, never> {
   return Effect.gen(function* () {
-    if (!(yield* fs.exists(lockPath))) {
-      return;
-    }
-    const content = yield* fs.readFileString(lockPath);
-    if (content.trim() === token) {
+    if ((yield* readStableFileLockToken(lockPath)) === token) {
       yield* fs.remove(lockPath, {force: true});
     }
   }).pipe(Effect.ignore);
+}
+
+function readStableFileLockToken(path: string, remainingAttempts = 2): Effect.Effect<string | undefined, never> {
+  return fromPromise('fileLock.readStableToken', () => runtimeReadBoundedStableRegularFile(path, 4_096)).pipe(
+    Effect.map(bytes => new TextDecoder().decode(bytes).trim()),
+    Effect.catch(() =>
+      remainingAttempts <= 0
+        ? succeedUndefined
+        : Effect.yieldNow.pipe(Effect.andThen(readStableFileLockToken(path, remainingAttempts - 1))),
+    ),
+  );
 }

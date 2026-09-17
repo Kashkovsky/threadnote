@@ -605,6 +605,30 @@ describe('Effect CLI', () => {
     expect(repair.stdout).toContain('--dry-run');
   });
 
+  it('transports a pre-status refresh-demand supersession as private exit code 75', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-refresh-demand-'));
+    const home = join(root, 'home');
+    const repository = join(root, 'repository');
+    try {
+      await mkdir(home, {mode: 0o700, recursive: true});
+      await mkdir(repository, {recursive: true});
+      await writeFile(join(repository, 'source.ts'), 'export const value = 1;\n');
+      await execFilePromise('git', ['init', '--quiet'], {cwd: repository});
+      await execFilePromise('git', ['config', 'user.email', 'threadnote@example.test'], {cwd: repository});
+      await execFilePromise('git', ['config', 'user.name', 'Threadnote Test'], {cwd: repository});
+      await execFilePromise('git', ['add', '.'], {cwd: repository});
+      await execFilePromise('git', ['commit', '--quiet', '--message', 'fixture'], {cwd: repository});
+
+      await expect(
+        runCli(['graph', 'index', '--home', home, '--cwd', repository, '--no-vectors'], {
+          THREADNOTE_CODE_GRAPH_REFRESH_DEMAND_TOKEN: `cgdq_${'a'.repeat(32)}`,
+        }),
+      ).rejects.toMatchObject({code: 75});
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
   it('rejects more than eight Context Brief code references during CLI parsing', async () => {
     const args = ['context', 'brief', '--task', 'Find memories linked to these files.'];
     for (let index = 0; index < 9; index += 1) args.push('--code-ref', `src/ref-${index}.ts`);

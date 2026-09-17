@@ -76,6 +76,12 @@ import {codeGraphLayout} from './layout.js';
 import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from './local_provenance.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
+import {
+  adoptCodeGraphBackgroundDemand,
+  beginCodeGraphBackgroundPublication,
+  codeGraphRefreshDemandFromEnvironment,
+  CodeGraphRefreshDemandSuperseded,
+} from './refresh_demand.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {CodeGraphParserPool} from './parser_worker.js';
 import {withCodeGraphPreparedSpoolBudget} from './prepared_spool_budget.js';
@@ -289,6 +295,42 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   ensureVectors,
                   admissionEnvironment,
                 );
+            // A demand token is carried only by an isolated background child.
+            // It must adopt the exact observed target before any retry can use it.
+            const refreshDemandToken =
+              request.refreshDemandToken ?? codeGraphRefreshDemandFromEnvironment(system.environment());
+            const refreshDemandIdentity = {
+              checkoutId: initialIdentity.checkoutId,
+              threadnoteHome: request.threadnoteHome,
+              worktreeId: initialIdentity.worktreeId,
+            };
+            if (refreshDemandToken !== undefined) {
+              if (
+                requestKey === undefined ||
+                !(yield* adoptCodeGraphBackgroundDemand(refreshDemandIdentity, refreshDemandToken, requestKey))
+              ) {
+                return yield* CodeGraphRefreshDemandSuperseded.make({
+                  message: 'Code graph refresh demand no longer owns the observed worktree target.',
+                });
+              }
+            }
+            let demandPublishing = false;
+            const beginDemandPublication = () =>
+              demandPublishing
+                ? Effect.void
+                : refreshDemandToken === undefined || requestKey === undefined
+                  ? Effect.void
+                  : beginCodeGraphBackgroundPublication(refreshDemandIdentity, refreshDemandToken, requestKey).pipe(
+                      Effect.flatMap(result =>
+                        result === 'publish'
+                          ? Effect.sync(() => {
+                              demandPublishing = true;
+                            })
+                          : CodeGraphRefreshDemandSuperseded.make({
+                              message: 'Code graph refresh demand was superseded before publication.',
+                            }),
+                      ),
+                    );
             const reporter = yield* withCodeGraphMaintenanceRegistration(
               request.threadnoteHome,
               Effect.gen(function* () {
@@ -446,6 +488,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             options.incrementalOverlay === false,
                           );
                           if (completedByOwner) {
+                            // Completed-concurrent promotion changes the ready authority.
+                            yield* beginDemandPublication();
                             // An isolated builder exits as soon as it returns this shared result.
                             // Drain superseded persistent rows before that scope closes so a
                             // high-churn worktree cannot accumulate one full graph per request.
@@ -527,6 +571,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                                 languagePacks,
                                 layout,
                                 observation: inventoryOverlayObservation,
+                                beforePublication: beginDemandPublication().pipe(
+                                  Effect.provideService(Crypto.Crypto, crypto),
+                                  Effect.provideService(FileSystem.FileSystem, fs),
+                                  Effect.provideService(Path.Path, path),
+                                  Effect.provideService(SystemInfo, system),
+                                ),
                                 onInvalidBaseCache: Effect.sync(() => {
                                   bypassReusableInventoryBase = true;
                                 }),
@@ -704,6 +754,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           : inventory.dirty
                             ? new Set(readyCandidateIds)
                             : new Set([logicalSnapshotId]);
+                      // Inventory is complete; every remaining route can promote or materialize.
+                      yield* beginDemandPublication();
                       // Apply storage backpressure before another repository-sized materialization.
                       // Detached cleanup is cancelled with short-lived CLI graph builders and cannot
                       // keep pace with repeated WorktreeChangedDuringIndex failures.

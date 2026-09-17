@@ -4,11 +4,33 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Clock, DateTime, Deferred, Effect, Exit, Fiber, FileSystem, Layer, PlatformError, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
-import {afterEach, beforeEach, describe, expect, it} from 'vitest';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {FileLockTimeout, withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {join, mkdir, mkdtemp, rm, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
+
+const stableFileReadFailure = vi.hoisted(() => ({
+  failuresObserved: 0,
+  failuresRemaining: 0,
+}));
+
+vi.mock('../../src/effect/system.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/effect/system.js')>();
+  return {
+    ...actual,
+    runtimeReadBoundedStableRegularFile: (
+      ...arguments_: Parameters<typeof actual.runtimeReadBoundedStableRegularFile>
+    ) => {
+      if (stableFileReadFailure.failuresRemaining > 0) {
+        stableFileReadFailure.failuresRemaining -= 1;
+        stableFileReadFailure.failuresObserved += 1;
+        return Promise.reject(new Error('Target changed during bounded read.'));
+      }
+      return actual.runtimeReadBoundedStableRegularFile(...arguments_);
+    },
+  };
+});
 
 const TEST_LOCK_OPTIONS = {
   heartbeatIntervalMilliseconds: 5,
@@ -28,6 +50,8 @@ describe('Effect file lock', () => {
   });
 
   afterEach(async () => {
+    stableFileReadFailure.failuresObserved = 0;
+    stableFileReadFailure.failuresRemaining = 0;
     await rm(directory, {force: true, recursive: true});
   });
 
@@ -91,6 +115,36 @@ describe('Effect file lock', () => {
         expect(yield* fs.exists(lockPath)).toBe(false);
 
         const reacquired = yield* withExclusiveFileLock(fs, lockPath, TEST_LOCK_OPTIONS, Effect.succeed('reacquired'));
+        expect(reacquired).toBe('reacquired');
+        expect(yield* fs.exists(lockPath)).toBe(false);
+      }).pipe(provideTestLayer(FILE_LOCK_TEST_LAYER)),
+    ),
+  );
+
+  effectIt.effect('retries one transient stable-token read failure while releasing its own lock', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const released = yield* withExclusiveFileLock(
+          fs,
+          lockPath,
+          {...TEST_LOCK_OPTIONS, heartbeatIntervalMilliseconds: 60_000},
+          Effect.sync(() => {
+            stableFileReadFailure.failuresRemaining = 1;
+            return 'released';
+          }),
+        );
+
+        expect(released).toBe('released');
+        expect(stableFileReadFailure).toEqual({failuresObserved: 1, failuresRemaining: 0});
+        expect(yield* fs.exists(lockPath)).toBe(false);
+
+        const reacquired = yield* withExclusiveFileLock(
+          fs,
+          lockPath,
+          {...TEST_LOCK_OPTIONS, heartbeatIntervalMilliseconds: 60_000},
+          Effect.succeed('reacquired'),
+        );
         expect(reacquired).toBe('reacquired');
         expect(yield* fs.exists(lockPath)).toBe(false);
       }).pipe(provideTestLayer(FILE_LOCK_TEST_LAYER)),
