@@ -15,6 +15,10 @@ import {
 import type {runContextBrief} from '../context_brief/commands.js';
 import type {runCompact} from '../memory/commands.js';
 import type {runContextHealth} from '../memory/context_health_commands.js';
+import type {
+  runContextHealthRepairApply,
+  runContextHealthRepairPreview,
+} from '../memory/context_health_repair_commands.js';
 import type {runContextCheck} from '../context_check/commands.js';
 import type {runValueReport, runValueReportExport} from '../value_report/commands.js';
 import type {runProcedureVerify, runProcedureStatus} from '../procedure/commands.js';
@@ -90,6 +94,37 @@ export function makeContextHealthCommand<E, R>(
     },
     handler,
   ).pipe(Command.withDescription('Inspect active project memories and report read-only hygiene findings'));
+}
+
+export function makeContextHealthRepairCommand<E, R>(
+  previewHandler: (options: Parameters<typeof runContextHealthRepairPreview>[1]) => Effect.Effect<void, E, R>,
+  applyHandler: (options: Parameters<typeof runContextHealthRepairApply>[1]) => Effect.Effect<void, E, R>,
+) {
+  const preview = Command.make(
+    'preview',
+    {
+      json: boolean('json', 'Emit the bounded ContextHealthRepairPlanV1 as JSON'),
+      project: requiredString('project', 'Project/repo namespace to inspect'),
+    },
+    previewHandler,
+  ).pipe(Command.withDescription('Preview exact, bounded repairs without changing memory'));
+
+  const apply = Command.make(
+    'apply',
+    {
+      approved: boolean('approved', 'Confirm explicit approval for this exact repair proposal revision'),
+      json: boolean('json', 'Emit the ContextHealthRepairApplyResultV1 as JSON'),
+      project: requiredString('project', 'Project/repo namespace containing the reviewed proposal'),
+      proposalId: requiredString('proposal-id', 'Exact proposal ID from context repair preview'),
+      revision: requiredString('revision', 'Exact proposal revision from context repair preview'),
+    },
+    applyHandler,
+  ).pipe(Command.withDescription('Apply one explicitly approved, revision-checked personal-memory repair'));
+
+  return Command.make('repair').pipe(
+    Command.withDescription('Preview or apply reviewable context-health repairs'),
+    Command.withSubcommands([preview, apply]),
+  );
 }
 
 export function makeContextCheckCommand<E, R>(

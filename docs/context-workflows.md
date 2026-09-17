@@ -112,6 +112,24 @@ requires `--approved`. Use `--edited-text` to approve an edited proposal and `--
 memory. A Knowledge Delta is not an unconditional memory write: keep personal handoffs local, and publish shared
 durable knowledge only through the existing reviewed Git share workflow.
 
+An applied durable candidate can also be exported as a provider-neutral Git proposal after a second, explicit shared
+approval:
+
+```sh
+threadnote share propose \
+  --review-id <review-id> \
+  --revision <revision> \
+  --candidate-id <candidate-id> \
+  --approved
+threadnote share propose ... --output ./knowledge-delta-proposal.json
+```
+
+The default prints canonical JSON and writes nothing. `--output` writes only the local artifact; neither mode creates a
+branch, commit, pull request, provider object, or network request. The proposal binds the exact review revision, base
+commit, approved personal source hash, and absent-or-exact shared target precondition. It preserves portable relations
+and stable shared identity, including when a personally created candidate proposes replacing an existing shared record.
+Agents with the core MCP toolset can request the same read-only artifact with `share_propose`.
+
 ## Context health
 
 Inspect active records in one project with the read-only health command:
@@ -131,6 +149,25 @@ candidates. Severity, confidence, and repairability are separate fields. Finding
 Health proposes reviewable repairs; it never silently archives, deletes, overwrites, or renews a record. Unknown code
 coverage remains unknown rather than being presented as current. Shared records remain read-only until the user enters
 the existing conflict or publish workflow.
+
+Preview the bounded repair plan separately from the read-only health report, then apply one exact proposal only after
+reviewing its content-bound revision:
+
+```sh
+threadnote context repair preview --project <project> --json
+threadnote context repair apply \
+  --project <project> \
+  --proposal-id <proposal-id> \
+  --revision <revision> \
+  --approved
+```
+
+Only personal durable, handoff, and incident records receive automatic archive proposals. A missing or inactive
+relation target can produce an exact relation-removal proposal. Shared memories, preferences, smoke records, citation
+repairs, guidance drift, and ambiguous findings remain review-only. Apply rechecks project and canonical content hashes,
+preserves stable identity and unrelated relations, and records a private recovery journal so the same revision can be
+retried safely. The full MCP toolset exposes the same split through read-only `context_health_repair_preview` and
+destructive `context_health_repair_apply`; the latter also requires explicit approval.
 
 ## Context Check
 
