@@ -11,6 +11,7 @@ const THREADNOTE_AUTH0_CREDENTIAL_COMMAND = 'threadnote-credential-auth0-m2m';
 const THREADNOTE_AUTH0_REGISTRY_CREDENTIAL_COMMAND = 'docker-credential-threadnote-auth0-m2m';
 const THREADNOTE_AUTH0_PUBLISHER_REGISTRY_CREDENTIAL_COMMAND = 'docker-credential-threadnote-auth0-publisher-m2m';
 const THREADNOTE_AUTH0_USER_REGISTRY_CREDENTIAL_COMMAND = 'docker-credential-threadnote-auth0-user';
+const THREADNOTE_OAUTH_USER_REGISTRY_CREDENTIAL_COMMAND = 'docker-credential-threadnote-oauth-user';
 type LauncherMode =
   | 'cli'
   | 'mcp'
@@ -20,6 +21,7 @@ type LauncherMode =
   | 'credential-auth0-m2m'
   | 'credential-registry-auth0-m2m'
   | 'credential-registry-auth0-publisher-m2m'
+  | 'credential-registry-oauth-user'
   | 'credential-registry-auth0-user';
 const LAUNCHER_MODES: readonly LauncherMode[] = [
   'cli',
@@ -27,6 +29,7 @@ const LAUNCHER_MODES: readonly LauncherMode[] = [
   'credential-oauth-m2m',
   'credential-registry-oauth-m2m',
   'credential-registry-oauth-publisher-m2m',
+  'credential-registry-oauth-user',
   'credential-auth0-m2m',
   'credential-registry-auth0-m2m',
   'credential-registry-auth0-publisher-m2m',
@@ -209,9 +212,11 @@ export const renderCommandShim = Effect.fn('commandShim.render')(function* (
                 ? ['__credential-registry-auth0-m2m']
                 : mode === 'credential-registry-auth0-publisher-m2m'
                   ? ['__credential-registry-auth0-publisher-m2m']
-                  : mode === 'credential-registry-auth0-user'
-                    ? ['__credential-registry-auth0-user']
-                    : [];
+                  : mode === 'credential-registry-oauth-user'
+                    ? ['__credential-registry-oauth-user']
+                    : mode === 'credential-registry-auth0-user'
+                      ? ['__credential-registry-auth0-user']
+                      : [];
   if (resolvedKind === 'cmd') {
     const command = [cmdQuote(executable), ...modeArguments, '%*'].join(' ');
     return [
@@ -282,9 +287,11 @@ const managedCommandShimPath = Effect.fn('commandShim.path')(function* (
                 ? THREADNOTE_AUTH0_REGISTRY_CREDENTIAL_COMMAND
                 : mode === 'credential-registry-auth0-publisher-m2m'
                   ? THREADNOTE_AUTH0_PUBLISHER_REGISTRY_CREDENTIAL_COMMAND
-                  : mode === 'credential-registry-auth0-user'
-                    ? THREADNOTE_AUTH0_USER_REGISTRY_CREDENTIAL_COMMAND
-                    : THREADNOTE_COMMAND;
+                  : mode === 'credential-registry-oauth-user'
+                    ? THREADNOTE_OAUTH_USER_REGISTRY_CREDENTIAL_COMMAND
+                    : mode === 'credential-registry-auth0-user'
+                      ? THREADNOTE_AUTH0_USER_REGISTRY_CREDENTIAL_COMMAND
+                      : THREADNOTE_COMMAND;
   const resolvedKind = kind ?? primaryCommandLauncherKind(system.platform);
   return path.join(binDirectory, resolvedKind === 'cmd' ? `${command}.cmd` : command);
 });

@@ -4,16 +4,16 @@ import {Clock, Effect, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as FC from 'fast-check';
 import {
-  configureGraphAuth0User,
-  configureRegistryAuth0User,
-  getRegistryAuth0UserCredential,
-  loginGraphAuth0User,
-  loginRegistryAuth0User,
-  logoutRegistryAuth0User,
-  type Auth0UserBackend,
-} from '../../src/code_graph/sharing/auth0_user.js';
-import {runAuth0UserRegistryCredentialHelper} from '../../src/code_graph/sharing/auth0_user_registry_credential.js';
-import {withRegistryReaderHelper} from '../../src/code_graph/sharing/auth0_user_registry_docker.js';
+  configureGraphOAuthUser,
+  configureRegistryOAuthUser,
+  getRegistryOAuthUserCredential,
+  loginGraphOAuthUser,
+  loginRegistryOAuthUser,
+  logoutRegistryOAuthUser,
+  type OAuthUserBackend,
+} from '../../src/code_graph/sharing/oauth_user.js';
+import {runOAuthUserRegistryCredentialHelper} from '../../src/code_graph/sharing/oauth_user_registry_credential.js';
+import {withOAuthRegistryReaderHelper} from '../../src/code_graph/sharing/oauth_user_registry_docker.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import type {RuntimeConfig} from '../../src/types.js';
@@ -32,6 +32,42 @@ const registry = {
   origin: 'https://registry.example.test',
   subject: 'auth0|reader',
 };
+type Auth0UserBackend = OAuthUserBackend;
+const legacyProvider = (issuer: string, audience: string) => ({
+  audienceParameter: audience,
+  clientIdClaim: 'azp-or-client_id' as const,
+  deviceAuthorizationUrl: new URL('oauth/device/code', issuer).href,
+  jwksUrl: new URL('.well-known/jwks.json', issuer).href,
+  tokenUrl: new URL('oauth/token', issuer).href,
+});
+const configureGraphAuth0User = (
+  runtime: RuntimeConfig,
+  input: {
+    readonly audience: string;
+    readonly clientId: string;
+    readonly coordinatorUrl: string;
+    readonly issuer: string;
+    readonly organization: string;
+  },
+) =>
+  configureGraphOAuthUser(
+    runtime,
+    {...input, ...legacyProvider(input.issuer, input.audience)},
+    {profile: 'legacy-auth0'},
+  );
+const configureRegistryAuth0User = (runtime: RuntimeConfig, input: typeof registry) =>
+  configureRegistryOAuthUser(
+    runtime,
+    {...input, ...legacyProvider(input.issuer, input.audience)},
+    {profile: 'legacy-auth0'},
+  );
+const getRegistryAuth0UserCredential = getRegistryOAuthUserCredential;
+const loginGraphAuth0User = loginGraphOAuthUser;
+const loginRegistryAuth0User = loginRegistryOAuthUser;
+const logoutRegistryAuth0User = logoutRegistryOAuthUser;
+const runAuth0UserRegistryCredentialHelper = runOAuthUserRegistryCredentialHelper;
+const withRegistryReaderHelper = (config: unknown, host: string) =>
+  withOAuthRegistryReaderHelper(config, host, 'threadnote-auth0-user');
 
 const fixture = Effect.fn('test.auth0Registry.fixture')(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -101,7 +137,8 @@ const fixture = Effect.fn('test.auth0Registry.fixture')(function* () {
           body: {access_token: 'synthetic.registry.token', refresh_token: 'opaque-refresh', token_type: 'Bearer'},
         };
       }),
-    verify: () => Effect.succeed({expiresAt, issuer: registry.issuer, scopes: scope, subject}),
+    verify: () =>
+      Effect.succeed({clientId: registry.clientId, expiresAt, issuer: registry.issuer, scopes: scope, subject}),
   };
   return {
     accounts,
@@ -246,8 +283,8 @@ describe('Auth0 user Zot registry reader', () => {
       expect(f.reads()).toBe(readsBeforeDenials);
       expect(outputs).toHaveLength(1);
       expect(requests).toEqual([
-        'Auth0 registry credential unavailable.\n',
-        'Auth0 registry credential unavailable.\n',
+        'OAuth registry credential unavailable.\n',
+        'OAuth registry credential unavailable.\n',
       ]);
       yield* logoutRegistryAuth0User(f.home, f.backend);
       expect(f.values.size).toBe(0);
@@ -296,6 +333,7 @@ describe('Auth0 user Zot registry reader', () => {
           }),
         verify: () =>
           Effect.succeed({
+            clientId: graph.clientId,
             expiresAt: now + 300,
             issuer: graph.issuer,
             scopes: new Set(['graph:read', 'graph:contribute']),
@@ -333,7 +371,7 @@ describe('Auth0 user Zot registry reader', () => {
       ).pipe(Effect.provideService(SystemInfo, {...system, environment: () => ({THREADNOTE_HOME: f.home})}));
       expect(code).toBe(1);
       expect(output).toEqual([]);
-      expect(errors).toEqual(['Auth0 registry credential unavailable.\n']);
+      expect(errors).toEqual(['OAuth registry credential unavailable.\n']);
       expect(f.refreshes()).toBe(2);
       yield* logoutRegistryAuth0User(f.home, f.backend);
       expect(f.values.size).toBe(1);
