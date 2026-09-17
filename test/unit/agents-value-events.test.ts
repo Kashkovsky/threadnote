@@ -5,9 +5,10 @@ import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {getAgentAdapter} from '../../src/agent_integration/adapters.js';
+import {setupCompletionForRegistrationStates} from '../../src/agent_integration/registry.js';
 import {planAgentSurface} from '../../src/agent_integration/surfaces.js';
 import {CommandExecutor} from '../../src/effect/command.js';
-import {runAgentCliAction, setupCompletionForRegistration} from '../../src/effect/agents_cli.js';
+import {runAgentCliAction} from '../../src/effect/agents_cli.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {readLocalValueEvents, summarizeLocalValueEvents} from '../../src/value_report/events.js';
@@ -28,20 +29,22 @@ const reportPeriod = {
 } as const;
 
 describe('agent setup value events', () => {
-  it('classifies only a newly registered target and reports reuse iff another registration existed', () => {
+  it('classifies only an absent or pending target and reports reuse iff another current registration existed', () => {
     fc.assert(
       fc.property(
-        fc.array(fc.string({maxLength: 12}), {maxLength: 12}),
-        fc.array(fc.string({maxLength: 12}), {maxLength: 12}),
-        fc.string({maxLength: 12}),
-        (before, after, target) => {
-          const completion = setupCompletionForRegistration(before, after, target);
-          const beforeSet = new Set(before);
-          const expectedCompletion = !beforeSet.has(target) && new Set(after).has(target);
+        fc.option(fc.constantFrom('current' as const, 'pending' as const), {nil: undefined}),
+        fc.array(fc.option(fc.constantFrom('current' as const, 'pending' as const), {nil: undefined}), {
+          maxLength: 12,
+        }),
+        (target, others) => {
+          const completion = setupCompletionForRegistrationStates(target, others);
+          const expectedCompletion = target !== 'current';
           expect(completion !== undefined).toBe(expectedCompletion);
           if (completion !== undefined) {
-            expect(completion).toEqual({supportedAgentReuse: beforeSet.size > 0});
-            expect(Object.keys(completion)).toEqual(['supportedAgentReuse']);
+            expect(completion).toEqual({
+              _tag: 'AgentSetupCompletion',
+              supportedAgentReuse: others.includes('current'),
+            });
           }
         },
       ),
@@ -71,7 +74,10 @@ describe('agent setup value events', () => {
           yield* runAgentCliAction(config, gemini, 'install', false);
           expect(yield* readLocalValueEvents(config.agentContextHome)).toEqual([]);
 
-          yield* runAgentCliAction(config, gemini, 'install', true);
+          yield* Effect.all(
+            [runAgentCliAction(config, gemini, 'install', true), runAgentCliAction(config, gemini, 'install', true)],
+            {concurrency: 'unbounded'},
+          );
           yield* runAgentCliAction(config, gemini, 'install', true);
           yield* runAgentCliAction(config, gemini, 'repair', true);
           yield* runAgentCliAction(config, gemini, 'remove', false);

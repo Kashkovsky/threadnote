@@ -51,16 +51,19 @@ export interface AgentSurfaceReceipt {
   readonly agentId: string;
   readonly root: string;
   readonly skillRoot: string;
+  readonly scope?: 'user' | 'project' | 'local';
+  readonly cwd?: string;
   readonly installedVersion: string;
   readonly status: 'pending' | 'current';
   readonly artifacts: Readonly<Record<string, string>>;
   readonly artifactDescriptors: readonly AgentSurfaceArtifactReceipt[];
   readonly strategy: {
     readonly kind: 'json';
-    readonly codec: 'json';
+    readonly codec: 'json' | 'jsonc';
     readonly container: string;
   };
   readonly mcp: {
+    readonly root?: string;
     readonly path: string;
     readonly name: string;
     readonly hash: string;
@@ -75,6 +78,43 @@ export interface AgentSurfaceArtifactReceipt {
   readonly kind: 'block' | 'file';
   readonly name: string;
   readonly path: string;
+}
+
+export interface AgentSetupCompletion {
+  readonly _tag: 'AgentSetupCompletion';
+  readonly supportedAgentReuse: boolean;
+}
+
+type RegistrationStatus = 'current' | 'pending' | undefined;
+
+export function setupCompletionForRegistrationStates(
+  targetStatus: RegistrationStatus,
+  otherStatuses: readonly RegistrationStatus[],
+): AgentSetupCompletion | undefined {
+  return targetStatus === 'current'
+    ? undefined
+    : {_tag: 'AgentSetupCompletion', supportedAgentReuse: otherStatuses.includes('current')};
+}
+
+export function setupCompletionForSuccessfulInstall(
+  registry: AgentIntegrationRegistry,
+  target: {readonly host: AgentClient} | {readonly surface: string},
+): AgentSetupCompletion | undefined {
+  const targetStatus =
+    'host' in target ? registry.hosts[target.host]?.status : registry.surfaces?.[target.surface]?.status;
+  const otherStatuses = [
+    ...Object.entries(registry.hosts)
+      .filter(([id]) => !('host' in target) || id !== target.host)
+      .map(([, receipt]) => receipt?.status),
+    ...Object.entries(registry.surfaces ?? {})
+      .filter(([id]) => !('surface' in target) || id !== target.surface)
+      .map(([, receipt]) => receipt.status),
+  ];
+  return setupCompletionForRegistrationStates(targetStatus, otherStatuses);
+}
+
+export function isAgentSetupCompletion(value: unknown): value is AgentSetupCompletion {
+  return Predicate.isObject(value) && value._tag === 'AgentSetupCompletion';
 }
 
 export function migrateAgentIntegrationRegistry(
@@ -231,11 +271,15 @@ function isSurfaceReceipt(id: string, value: unknown): value is AgentSurfaceRece
   const artifacts = value.artifacts as Record<string, unknown>;
   return (
     value.strategy.kind === 'json' &&
-    value.strategy.codec === 'json' &&
+    (value.strategy.codec === 'json' || value.strategy.codec === 'jsonc') &&
+    (value.scope === undefined || value.scope === 'user' || value.scope === 'project' || value.scope === 'local') &&
+    (value.cwd === undefined || (typeof value.cwd === 'string' && value.cwd.length > 0)) &&
+    ((value.scope !== 'project' && value.scope !== 'local') || typeof value.cwd === 'string') &&
     typeof value.strategy.container === 'string' &&
     value.strategy.container.length > 0 &&
     typeof value.mcp.path === 'string' &&
     value.mcp.path.length > 0 &&
+    (value.mcp.root === undefined || (typeof value.mcp.root === 'string' && value.mcp.root.length > 0)) &&
     typeof value.mcp.name === 'string' &&
     typeof value.mcp.hash === 'string' &&
     /^[0-9a-f]{64}$/.test(value.mcp.hash) &&

@@ -1,17 +1,14 @@
 import {Clock, Console, DateTime, Effect} from 'effect';
 import {Argument, Command} from 'effect/unstable/cli';
 import {AGENT_ADAPTERS, getAgentAdapter} from '../agent_integration/adapters.js';
-import {
-  agentAdapterStatuses,
-  registeredAgentAdapterIds,
-  runAgentAdapterAction,
-} from '../agent_integration/adapter_actions.js';
+import {agentAdapterStatuses, runAgentAdapterAction} from '../agent_integration/adapter_actions.js';
 import type {AgentAdapter, AgentAdapterAction} from '../agent_integration/adapters/contract.js';
 import {AGENT_CATALOG} from '../agent_integration/catalog.js';
+import {isAgentSetupCompletion} from '../agent_integration/registry.js';
 import {AgentSurfaceError} from '../agent_integration/surfaces.js';
 import type {RuntimeConfig} from '../types.js';
 import {recordSetupCompletionValueEvent} from '../value_report/events.js';
-import {boolean} from './cli_flags.js';
+import {boolean, optionalChoice} from './cli_flags.js';
 
 export const agentsCommandMetadata = {
   productionLog: {
@@ -25,30 +22,20 @@ export const agentsCommandMetadata = {
   },
 } as const;
 
-export function setupCompletionForRegistration(
-  registeredBefore: readonly string[],
-  registeredAfter: readonly string[],
-  installedAdapterId: string,
-): {readonly supportedAgentReuse: boolean} | undefined {
-  const before = new Set(registeredBefore);
-  if (before.has(installedAdapterId) || !new Set(registeredAfter).has(installedAdapterId)) return undefined;
-  return {supportedAgentReuse: before.size > 0};
-}
-
 export const runAgentCliAction = Effect.fn('agents.cliAction')(function* (
   config: RuntimeConfig,
   adapter: AgentAdapter,
   action: AgentAdapterAction,
   apply: boolean,
+  scope?: 'user' | 'project' | 'local',
 ) {
-  if (action !== 'install' || !apply) return yield* runAgentAdapterAction(config, adapter, action, apply);
-  const registeredBefore = yield* registeredAgentAdapterIds(config);
-  const result = yield* runAgentAdapterAction(config, adapter, action, apply);
-  const registeredAfter = yield* registeredAgentAdapterIds(config);
-  const completion = setupCompletionForRegistration(registeredBefore, registeredAfter, adapter.catalog.id);
-  if (completion !== undefined) {
+  const result = yield* runAgentAdapterAction(config, adapter, action, apply, scope);
+  if (action === 'install' && apply && isAgentSetupCompletion(result)) {
     const timestamp = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
-    yield* recordSetupCompletionValueEvent(config.agentContextHome, {...completion, timestamp}).pipe(Effect.ignore);
+    yield* recordSetupCompletionValueEvent(config.agentContextHome, {
+      supportedAgentReuse: result.supportedAgentReuse,
+      timestamp,
+    }).pipe(Effect.ignore);
   }
   return result;
 });
@@ -83,8 +70,13 @@ export function makeAgentsCommand(
       {
         surface: Argument.String('surface'),
         apply: boolean('apply', 'Apply the plan; otherwise only preview paths'),
+        scope: optionalChoice(
+          'scope',
+          ['user', 'project', 'local'],
+          'Installation scope; repair and removal use the receipt',
+        ),
       },
-      ({surface, apply}) =>
+      ({surface, apply, scope}) =>
         withRuntime(
           Effect.fn(function* (config: RuntimeConfig) {
             const adapter = getAgentAdapter(surface);
@@ -92,7 +84,12 @@ export function makeAgentsCommand(
               return yield* AgentSurfaceError.make({
                 message: `Unknown surface ${surface}; run threadnote agents list.`,
               });
-            yield* runAgentCliAction(config, adapter, action, apply);
+            if (scope && (adapter.legacyClient || action !== 'install'))
+              return yield* AgentSurfaceError.make({
+                message:
+                  '--scope is supported only by managed surface installation; repair and removal use the receipt.',
+              });
+            yield* runAgentCliAction(config, adapter, action, apply, scope);
           }),
         ),
     ),

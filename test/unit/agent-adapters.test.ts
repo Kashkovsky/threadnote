@@ -27,7 +27,9 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const commandLayer = CommandExecutor.layer.pipe(Layer.provideMerge(BunServices.layer), Layer.provide(SystemInfo.layer));
 const testLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer, commandLayer);
-const jsonAdapters = AGENT_ADAPTERS.filter(adapter => adapter.json !== undefined);
+const jsonAdapters = AGENT_ADAPTERS.filter(adapter =>
+  ['gemini-cli', 'qwen-code', 'amp-cli', 'factory-droid'].includes(adapter.catalog.id),
+);
 const runtime = (home: string): RuntimeConfig => ({
   account: 'local',
   agentContextHome: home,

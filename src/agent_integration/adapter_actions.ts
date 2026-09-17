@@ -4,7 +4,12 @@ import type {AgentClient, DoctorCheck, RuntimeConfig} from '../types.js';
 import {AGENT_ADAPTERS, getAgentAdapter} from './adapters.js';
 import type {AgentAdapter, AgentAdapterAction, AgentAdapterStatusContext} from './adapters/contract.js';
 import {agentIntegrationDoctorChecks} from './index.js';
-import {readAgentIntegrationRegistry} from './registry.js';
+import {
+  isAgentSetupCompletion,
+  readAgentIntegrationRegistry,
+  type AgentIntegrationRegistry,
+  type AgentSetupCompletion,
+} from './registry.js';
 
 const makeStatusContext = Effect.fn('agentAdapters.statusContext')(function* (
   config: RuntimeConfig,
@@ -22,8 +27,9 @@ export function runAgentAdapterAction(
   adapter: AgentAdapter,
   action: AgentAdapterAction,
   apply: boolean,
+  scope?: 'user' | 'project' | 'local',
 ) {
-  return adapter.actions[action](config, adapter, {apply});
+  return adapter.actions[action](config, adapter, {apply, scope});
 }
 
 export const agentAdapterStatuses = Effect.fn('agentAdapters.statuses')(function* (
@@ -68,13 +74,17 @@ export const removeRegisteredAgentAdaptersInTransaction = Effect.fn('agentAdapte
   for (const id of Object.keys(registry.surfaces ?? {})) {
     const adapter = getAgentAdapter(id);
     if (!adapter) continue;
-    const next: typeof registry | void = yield* adapter.actions.remove(config, adapter, {
-      apply: !dryRun,
-      excludedConsumers,
-      inTransaction: true,
-      registry,
-    });
-    if (next) registry = next;
+    const next: AgentIntegrationRegistry | AgentSetupCompletion | void = yield* adapter.actions.remove(
+      config,
+      adapter,
+      {
+        apply: !dryRun,
+        excludedConsumers,
+        inTransaction: true,
+        registry,
+      },
+    );
+    if (next && !isAgentSetupCompletion(next)) registry = next;
   }
 });
 
@@ -96,13 +106,4 @@ export const agentAdapterDoctorChecks = Effect.fn('agentAdapters.doctor')(functi
     });
   }
   return checks;
-});
-
-export const registeredAgentAdapterIds = Effect.fn('agentAdapters.registeredIds')(function* (config: RuntimeConfig) {
-  const registry = yield* readAgentIntegrationRegistry(config);
-  return AGENT_ADAPTERS.filter(
-    adapter =>
-      (adapter.legacyClient !== undefined && registry?.hosts[adapter.legacyClient] !== undefined) ||
-      registry?.surfaces?.[adapter.catalog.id] !== undefined,
-  ).map(adapter => adapter.catalog.id);
 });

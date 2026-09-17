@@ -7,7 +7,12 @@ import {
   registeredAgentClients,
 } from '../agent_integration/index.js';
 import {resolveAgentHostPaths} from '../agent_integration/host_paths.js';
-import {type AgentIntegrationMcpReceipt, withAgentIntegrationLock} from '../agent_integration/registry.js';
+import {
+  emptyAgentIntegrationRegistry,
+  setupCompletionForSuccessfulInstall,
+  type AgentIntegrationMcpReceipt,
+  withAgentIntegrationLock,
+} from '../agent_integration/registry.js';
 import {commandLauncherPath} from '../command-shim.js';
 import {THREADNOTE_MCP_CLIENT_ENV, THREADNOTE_MCP_NAME} from '../constants.js';
 import {maybeRunEffect, runCommandEffect} from '../effect/command.js';
@@ -83,7 +88,12 @@ export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options
       });
     }
     if (attach && agent === 'codex') return yield* runCodexOrgMcpInstall(attach, options.apply === true);
-    const install = runMcpInstallInTransaction(config, agent, options);
+    const install = Effect.gen(function* () {
+      const registry = (yield* readAgentIntegrationRegistry(config)) ?? emptyAgentIntegrationRegistry(false);
+      const setupCompletion = options.apply ? setupCompletionForSuccessfulInstall(registry, {host: agent}) : undefined;
+      yield* runMcpInstallInTransaction(config, agent, options);
+      return setupCompletion;
+    });
     return yield* options.apply === true ? withAgentIntegrationLock(config, install) : install;
   });
 }
