@@ -3,6 +3,7 @@ export const sitePagePaths = {
   performance: 'performance',
   'performance-graphify': 'performance/graphify',
   docs: 'docs',
+  agents: 'agents',
   'whats-new': 'whats-new',
   'pro-tips': 'pro-tips',
   'manager-demo': 'manager-demo',

@@ -23,6 +23,24 @@ describe('CLI production log policy', () => {
   });
 
   it('does not log explicit or implicit preview operations', () => {
+    for (const action of ['install', 'repair', 'remove']) {
+      expect(inspectCliInvocation(['agents', action, 'gemini-cli'])).toMatchObject({
+        operation: 'agents',
+        writeProductionLog: false,
+      });
+      expect(inspectCliInvocation(['agents', action, 'gemini-cli', '--apply'])).toMatchObject({
+        operation: 'agents',
+        writeProductionLog: true,
+      });
+    }
+    expect(inspectCliInvocation(['agents', 'list', '--json'])).toMatchObject({
+      operation: 'agents',
+      writeProductionLog: false,
+    });
+    expect(inspectCliInvocation(['agents', 'status', '--json'])).toMatchObject({
+      operation: 'agents',
+      writeProductionLog: false,
+    });
     expect(inspectCliInvocation(['remember', '--dry-run', '--text', 'preview'])).toMatchObject({
       operation: 'remember',
       writeProductionLog: false,

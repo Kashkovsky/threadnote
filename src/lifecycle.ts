@@ -1,7 +1,11 @@
 import {hasManagedCursorHooks} from './cursor_hooks.js';
 import {Console, Effect, FileSystem, Path, Result, Schema} from 'effect';
 import {
-  agentIntegrationDoctorChecks,
+  repairRegisteredAgentAdapters,
+  removeRegisteredAgentAdaptersInTransaction,
+} from './agent_integration/adapter_actions.js';
+import {agentAdapterDoctorChecks} from './agent_integration/adapter_actions.js';
+import {
   migrateLegacyAgentIntegrations,
   readAgentIntegrationRegistry,
   registeredAgentClients,
@@ -217,9 +221,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* safeDoctorCheck('memory project consistency', memoryProjectConsistencyCheck(config)),
     yield* safeDoctorCheck('deferred code anchors', deferredCodeAnchorDoctorCheck(config)),
   );
-  checks.push(
-    ...(yield* safeDoctorChecks('agent integrations', agentIntegrationDoctorChecks(config, inferredMcpClients))),
-  );
+  checks.push(...(yield* safeDoctorChecks('agent integrations', agentAdapterDoctorChecks(config, inferredMcpClients))));
   if (config.agentContextHome.endsWith('.openviking')) {
     checks.push({
       detail: 'THREADNOTE_HOME still targets a legacy .openviking directory; run `threadnote migrate`',
@@ -432,6 +434,9 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
     const inferredMcpClients = yield* inferConfiguredMcpClients(config);
     yield* migrateLegacyAgentIntegrations(config, inferredMcpClients, dryRun);
     const repairedIntegrationClients = yield* repairAgentIntegrations(config, dryRun);
+    if (options.mcp === undefined || ['all', 'available'].includes(options.mcp.trim().toLowerCase())) {
+      yield* repairRegisteredAgentAdapters(config, dryRun);
+    }
     const registry = yield* readAgentIntegrationRegistry(config);
     const registeredClients = registry === undefined ? inferredMcpClients : registeredAgentClients(registry);
     const repairableClients = repairableAgentClients(registry);
@@ -443,7 +448,11 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
     const requestedMcpClients = options.mcp ?? (repairableClients.length === 0 ? 'none' : repairableClients.join(','));
     const mcpClients = yield* resolveMcpClients(requestedMcpClients, 'repair', receipts);
     yield* repairRegisteredMcpClients(config, registry, mcpClients, dryRun);
-    if (repairedIntegrationClients.length === 0 && registeredClients.length === 0) {
+    if (
+      repairedIntegrationClients.length === 0 &&
+      registeredClients.length === 0 &&
+      Object.keys(registry?.surfaces ?? {}).length === 0
+    ) {
       yield* Console.log('No agent integrations are registered; skipping host-specific repair.');
     }
     if (yield* hasManagedClaudeHooks()) {
@@ -659,6 +668,16 @@ const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(
   }
   const registry = yield* readAgentIntegrationRegistry(config);
   const registeredClients = registeredAgentClients(registry);
+  if (
+    Object.keys(registry?.surfaces ?? {}).length > 0 &&
+    options.mcp !== undefined &&
+    !['all', 'available'].includes(options.mcp.trim().toLowerCase())
+  ) {
+    return yield* LifecycleOperationError.make({
+      message:
+        'Managed agent surfaces remain outside the requested MCP selection; remove them with threadnote agents remove <surface> --apply first, or uninstall without --mcp.',
+    });
+  }
   const selectedMcpClients =
     options.mcp ?? (registeredClients.length === 0 ? 'available' : registeredClients.join(','));
   const receipts = Object.fromEntries(
@@ -689,6 +708,7 @@ const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(
   if (yield* hasManagedOmpHooks(ompHostRoot)) {
     yield* runHooksInstall(config, 'omp', {apply: !dryRun, dryRun, hostRoot: ompHostRoot, remove: true});
   }
+  yield* removeRegisteredAgentAdaptersInTransaction(config, dryRun, true);
   yield* removeCommandShim(dryRun);
   yield* removeAgentIntegrationsInTransaction(config, dryRun);
   if (options.eraseMemories === true) {

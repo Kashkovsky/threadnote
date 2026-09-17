@@ -333,7 +333,8 @@ export default function LandingPage() {
           </h1>
           <p className="hero__lede">
             Local-first engineering memory that can cite current code and warn when evidence moves or changes, plus
-            large-scale polyglot graph search for Codex, Claude, Cursor, Copilot, and the next agent you try.
+            large-scale polyglot graph search for <a href={siteHref('agents/')}>supported agents</a> and the next agent
+            you try.
           </p>
           <div className="hero__actions">
             <a className="button" href={docsArticleHref('installation')}>
@@ -459,10 +460,10 @@ export default function LandingPage() {
               <strong>Code snapshots</strong>
             </div>
             <div className="architecture-map__agents">
-              <span>Codex</span>
-              <span>Claude</span>
-              <span>Cursor</span>
-              <span>Copilot</span>
+              <span>Supported</span>
+              <span>agent</span>
+              <span>surfaces</span>
+              <span>↗</span>
             </div>
           </div>
           <div className="architecture-map__external">
