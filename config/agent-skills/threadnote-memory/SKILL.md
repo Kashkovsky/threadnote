@@ -12,6 +12,20 @@ Store reusable decisions and contracts with `kind: durable`. Store status, check
 creating timestamped duplicates. Use `review_session_context` only for additional candidates that require explicit
 approval.
 
+At task closeout, prefer the reviewed Knowledge Delta from `review_session_context` over an unconditional durable
+write. Inspect each item's source evidence, comparison, recommendation, confidence, and mutation preview; apply only
+the user's explicit approve (optionally with edited text), defer, or reject decision at the reviewed revision. A preview must not mutate
+canonical memory. Keep the required handoff state separate from optional durable candidates, and publish shared
+knowledge only through the existing scrubbed Git share workflow.
+
+For maintenance, `threadnote context check --project <name>` evaluates direct citations for changed tracked and
+untracked paths, including deletion and rename source paths; it makes no transitive coverage claim. For procedures,
+`threadnote procedure verify <manifest>` previews by default; execution requires explicit `--apply --artifact <file>`
+and optional repeated `--fixture id=path`, while `--preview` and `--dry-run` override apply. `procedure status` is
+read-only; `--available-manifest <path>` enables explicit local update comparison without downloading or executing it.
+Procedure publication is unavailable until source bytes are cryptographically bound to the verified manifest and
+receipt.
+
 For a durable decision tied to code, add short single-line `Applies to:`, `Invariant:`, and, when useful, `Avoid:` and
 `Verify:` fields near the start of the body. A code-linked Context Brief promotes these as an action card only after
 the cited code validates exact-current. State a verification observation or focused check, not a command to execute

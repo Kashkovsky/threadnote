@@ -75,7 +75,7 @@ describe('remote citation selectors', () => {
     for (const content of [
       body.replace('status: active', 'status: archived'),
       body.replace('code_citation: {', 'code_citation: invalid{'),
-      body.replace('schema_version: 4', 'schema_version: 999'),
+      body.replace(`schema_version: ${metadata.schemaVersion}`, 'schema_version: 999'),
       formatMemoryDocument(
         'MEMORY',
         {...metadata, codeCitations: [createMemoryCodeCitation({...citationInput, sourceDirty: true})]},

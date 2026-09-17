@@ -69,6 +69,7 @@ import {
   runNativeHealthTool,
   runNativeRemoveTool,
 } from './memory.js';
+import {registerContextHealthTool} from './context_health.js';
 import {
   runInstallSharedSkillTool,
   runListSharedSkillsTool,
@@ -380,6 +381,7 @@ function registerTools(
     );
     registerArchiveTool(server, config, 'archive', 'Compatibility alias for archive_context.');
     registerCompactTool(server, config);
+    registerContextHealthTool(server, config);
     registerRecallFeedbackTool(server, config);
   }
 

@@ -1,10 +1,13 @@
-import {Console, Effect} from 'effect';
+import {Clock, Console, DateTime, Effect} from 'effect';
 import {Argument, Command} from 'effect/unstable/cli';
 import {AGENT_ADAPTERS, getAgentAdapter} from '../agent_integration/adapters.js';
 import {agentAdapterStatuses, runAgentAdapterAction} from '../agent_integration/adapter_actions.js';
+import type {AgentAdapter, AgentAdapterAction} from '../agent_integration/adapters/contract.js';
 import {AGENT_CATALOG} from '../agent_integration/catalog.js';
+import {isAgentSetupCompletion} from '../agent_integration/registry.js';
 import {AgentSurfaceError} from '../agent_integration/surfaces.js';
 import type {RuntimeConfig} from '../types.js';
+import {recordSetupCompletionValueEvent} from '../value_report/events.js';
 import {boolean, optionalChoice} from './cli_flags.js';
 
 export const agentsCommandMetadata = {
@@ -18,6 +21,24 @@ export const agentsCommandMetadata = {
     },
   },
 } as const;
+
+export const runAgentCliAction = Effect.fn('agents.cliAction')(function* (
+  config: RuntimeConfig,
+  adapter: AgentAdapter,
+  action: AgentAdapterAction,
+  apply: boolean,
+  scope?: 'user' | 'project' | 'local',
+) {
+  const result = yield* runAgentAdapterAction(config, adapter, action, apply, scope);
+  if (action === 'install' && apply && isAgentSetupCompletion(result)) {
+    const timestamp = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+    yield* recordSetupCompletionValueEvent(config.agentContextHome, {
+      supportedAgentReuse: result.supportedAgentReuse,
+      timestamp,
+    }).pipe(Effect.ignore);
+  }
+  return result;
+});
 
 export function makeAgentsCommand(
   withRuntime: <E, R>(body: (config: RuntimeConfig) => Effect.Effect<void, E, R>) => Effect.Effect<void, E, R>,
@@ -68,7 +89,7 @@ export function makeAgentsCommand(
                 message:
                   '--scope is supported only by managed surface installation; repair and removal use the receipt.',
               });
-            yield* runAgentAdapterAction(config, adapter, action, apply, scope);
+            yield* runAgentCliAction(config, adapter, action, apply, scope);
           }),
         ),
     ),

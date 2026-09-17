@@ -1,4 +1,4 @@
-import {Clock, DateTime, Effect} from 'effect';
+import {Clock, DateTime, Effect, Exit} from 'effect';
 import {succeedUndefined} from '../effect/optional.js';
 import type {AnonymousTelemetryContextBriefCitationUnknownReason} from '../effect/telemetry.js';
 import {
@@ -6,6 +6,7 @@ import {
   type ContextBriefCitationTelemetrySummary,
 } from '../telemetry/context_brief.js';
 import type {RuntimeConfig} from '../types.js';
+import {recordContextBriefValueEvent, type ContextBriefValueEventV1} from '../value_report/events.js';
 import {validateContextBriefMemoryCitations} from './citation_validation.js';
 import {retrieveContextBriefGraphEvidence, unavailableContextBriefGraphEvidence} from './graph_evidence.js';
 import {
@@ -233,36 +234,79 @@ export const compileContextBrief = Effect.fn('contextBrief.compile')(function* (
   config: RuntimeConfig,
   input: ContextBriefRequestV1 | unknown,
 ) {
+  const startedAt = yield* Clock.currentTimeMillis;
   const request = planContextBrief(input);
   const requestedRepositories = request.scope.kind === 'repository' ? 1 : 0;
   const reporter = makeContextBriefAnonymousTelemetryReporter(request.scope.kind === 'workset' ? 'workset' : 'local', {
     contract: request.codeAnchors.codeRefs.length === 0 ? 'task-only-v2' : 'code-anchored-v3',
     mode: request.mode,
   });
-  yield* reporter.annotate;
-  return yield* compileContextBriefWith(
-    instrumentContextBriefCompilerDependencies(
-      reporter,
+  const compilation = Effect.gen(function* () {
+    yield* reporter.annotate;
+    return yield* compileContextBriefWith(
+      instrumentContextBriefCompilerDependencies(
+        reporter,
+        {
+          citationValidation: (scope, candidates, fence) =>
+            validateContextBriefMemoryCitations(config, scope, candidates, fence),
+          graphEvidence: graphPlan => retrieveContextBriefGraphEvidence(config, graphPlan),
+          codeLinkedMemoryEvidence: codePlan => retrieveContextBriefCodeLinkedMemoryEvidence(config, codePlan),
+          memoryEvidence: memoryPlan => retrieveContextBriefMemoryEvidence(config, memoryPlan),
+          projection: (logical, maximumEstimatedTokens) =>
+            Effect.sync(() => projectContextBrief(logical, maximumEstimatedTokens)),
+        },
+        requestedRepositories,
+      ),
       {
-        citationValidation: (scope, candidates, fence) =>
-          validateContextBriefMemoryCitations(config, scope, candidates, fence),
-        graphEvidence: graphPlan => retrieveContextBriefGraphEvidence(config, graphPlan),
-        codeLinkedMemoryEvidence: codePlan => retrieveContextBriefCodeLinkedMemoryEvidence(config, codePlan),
-        memoryEvidence: memoryPlan => retrieveContextBriefMemoryEvidence(config, memoryPlan),
-        projection: (logical, maximumEstimatedTokens) =>
-          Effect.sync(() => projectContextBrief(logical, maximumEstimatedTokens)),
+        budgetTokens: request.outputBudgetTokens,
+        ...(request.codeAnchors.codeRefs.length === 0 ? {} : {codeRefs: request.codeAnchors.codeRefs}),
+        mode: request.mode,
+        scope: request.scope,
+        task: request.task,
       },
-      requestedRepositories,
+    );
+  });
+  return yield* compilation.pipe(
+    Effect.onExit(exit =>
+      Clock.currentTimeMillis.pipe(
+        Effect.flatMap(completedAt =>
+          recordContextBriefValueEvent(
+            config.agentContextHome,
+            contextBriefValueEventForExit(
+              request,
+              startedAt,
+              completedAt,
+              DateTime.formatIso(DateTime.makeUnsafe(completedAt)),
+              exit,
+            ),
+          ),
+        ),
+        Effect.ignore,
+      ),
     ),
-    {
-      budgetTokens: request.outputBudgetTokens,
-      ...(request.codeAnchors.codeRefs.length === 0 ? {} : {codeRefs: request.codeAnchors.codeRefs}),
-      mode: request.mode,
-      scope: request.scope,
-      task: request.task,
-    },
   );
 });
+
+export function contextBriefValueEventForExit(
+  request: ContextBriefPlanV1,
+  startedAt: number,
+  completedAt: number,
+  timestamp: string,
+  exit: Exit.Exit<ProjectedContextBriefV1, unknown>,
+): Omit<ContextBriefValueEventV1, 'kind' | 'version'> {
+  const projected = Exit.isSuccess(exit) ? exit.value : undefined;
+  const codeAnchors = projected?.structuredContent.coverage.memory.codeAnchors;
+  return {
+    coverageGaps: projected?.structuredContent.coverage.gaps.length ?? 0,
+    durationMilliseconds: Math.max(0, completedAt - startedAt),
+    estimatedTokens: projected?.measurement.estimatedTokens ?? 0,
+    ...(request.scope.project === undefined ? {} : {project: request.scope.project}),
+    requestedCodeAnchors: codeAnchors?.requested ?? request.codeAnchors.codeRefs.length,
+    resolvedCodeAnchors: codeAnchors?.resolved ?? 0,
+    successful: projected !== undefined,
+    timestamp,
+  };
+}
 
 function failedContextBriefCitationValidations(
   candidates: ContextBriefMemoryRetrievalV1['candidates'],

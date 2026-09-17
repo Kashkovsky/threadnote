@@ -344,6 +344,19 @@ describe('agent expansion conformance', () => {
     );
   });
 
+  it('preserves an own __proto__ JSONC property without exposing it as the object prototype', () => {
+    const raw = '{"__proto__":null,"mcp":{"other":{"command":"kept"}}}';
+    const parsed = parseAgentJson(raw, 'jsonc');
+    expect(Object.hasOwn(parsed, '__proto__')).toBe(true);
+    expect(parsed.__proto__).toBe(null);
+    expect(Object.getPrototypeOf(parsed)).toBe(Object.prototype);
+    const merged = mergeAgentServer(parsed, 'mcp', 'threadnote', {command: ['threadnote']});
+    const written = writeAgentServer(raw, 'jsonc', 'mcp', 'threadnote', merged);
+    const roundTrip = parseAgentJson(written, 'jsonc');
+    expect(Object.hasOwn(roundTrip, '__proto__')).toBe(true);
+    expect(roundTrip.__proto__).toBe(null);
+  });
+
   it('preserves comments inside a customized JSONC MCP entry during repair', () => {
     const raw =
       '{"mcp":{"threadnote":{"command":["old"],"environment":{\n// keep custom explanation\n"CUSTOM":"yes", "THREADNOTE_HOME":"old"}}}}';

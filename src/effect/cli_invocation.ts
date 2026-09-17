@@ -13,6 +13,8 @@ interface CliCommandRegistration {
 }
 
 export interface CliInvocationInspection {
+  /** CI reserves exit 1 for actionable findings, including when parsing fails before its handler. */
+  readonly failureExitCode?: 2;
   readonly homeOverride?: string;
   readonly operation?: string;
   readonly telemetryOperation?: string;
@@ -76,6 +78,7 @@ export function makeCliInvocationInspector(registrations: readonly CliCommandReg
     const writeAnonymousTelemetry =
       operation !== undefined && operation !== 'telemetry' && !scanned.flags.has('--help') && !scanned.flags.has('-h');
     return {
+      ...(operation === 'context' && scanned.positionals[1] === 'check' ? {failureExitCode: 2 as const} : {}),
       ...(scanned.homeOverride === undefined ? {} : {homeOverride: scanned.homeOverride}),
       ...(operation === undefined ? {} : {operation}),
       ...(telemetryOperation === undefined ? {} : {telemetryOperation}),

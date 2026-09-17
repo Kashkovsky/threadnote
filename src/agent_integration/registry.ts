@@ -80,6 +80,43 @@ export interface AgentSurfaceArtifactReceipt {
   readonly path: string;
 }
 
+export interface AgentSetupCompletion {
+  readonly _tag: 'AgentSetupCompletion';
+  readonly supportedAgentReuse: boolean;
+}
+
+type RegistrationStatus = 'current' | 'pending' | undefined;
+
+export function setupCompletionForRegistrationStates(
+  targetStatus: RegistrationStatus,
+  otherStatuses: readonly RegistrationStatus[],
+): AgentSetupCompletion | undefined {
+  return targetStatus === 'current'
+    ? undefined
+    : {_tag: 'AgentSetupCompletion', supportedAgentReuse: otherStatuses.includes('current')};
+}
+
+export function setupCompletionForSuccessfulInstall(
+  registry: AgentIntegrationRegistry,
+  target: {readonly host: AgentClient} | {readonly surface: string},
+): AgentSetupCompletion | undefined {
+  const targetStatus =
+    'host' in target ? registry.hosts[target.host]?.status : registry.surfaces?.[target.surface]?.status;
+  const otherStatuses = [
+    ...Object.entries(registry.hosts)
+      .filter(([id]) => !('host' in target) || id !== target.host)
+      .map(([, receipt]) => receipt?.status),
+    ...Object.entries(registry.surfaces ?? {})
+      .filter(([id]) => !('surface' in target) || id !== target.surface)
+      .map(([, receipt]) => receipt.status),
+  ];
+  return setupCompletionForRegistrationStates(targetStatus, otherStatuses);
+}
+
+export function isAgentSetupCompletion(value: unknown): value is AgentSetupCompletion {
+  return Predicate.isObject(value) && value._tag === 'AgentSetupCompletion';
+}
+
 export function migrateAgentIntegrationRegistry(
   registry: Omit<AgentIntegrationRegistry, 'version'> & {readonly version: 1 | 2},
 ): AgentIntegrationRegistry {

@@ -912,7 +912,10 @@ describe('manager http API', () => {
       expect(await rejectedIncoming.json()).toMatchObject({error: expect.stringContaining('newer than supported')});
       expect(await readFile(memoryPath, 'utf8')).toBe(original);
 
-      const futureExisting = original.replace('status: active', 'status: active\nschema_version: 5');
+      const futureExisting = original.replace(
+        'status: active',
+        `status: active\nschema_version: ${MEMORY_SCHEMA_VERSION + 1}`,
+      );
       await writeFile(memoryPath, futureExisting);
       const rejectedExisting = await requestSave(original.replace('feature notes', 'replacement notes'));
       expect(rejectedExisting.status).toBe(500);

@@ -1,14 +1,45 @@
 import type {JsonObject} from '../types.js';
-import {applyEdits, createScanner, modify, parse, stripComments, SyntaxKind, type ParseError} from 'jsonc-parser';
+import {
+  applyEdits,
+  createScanner,
+  modify,
+  parseTree,
+  stripComments,
+  SyntaxKind,
+  type Node,
+  type ParseError,
+} from 'jsonc-parser';
 import {escapeRegExp, isJsonObject} from '../utils.js';
 
 export function parseAgentJson(content: string | undefined, codec: 'json' | 'jsonc' = 'json'): JsonObject {
   const errors: ParseError[] = [];
   const value: unknown =
-    codec === 'jsonc' ? parse(content ?? '{}', errors, {allowTrailingComma: true}) : JSON.parse(content ?? '{}');
+    codec === 'jsonc'
+      ? jsoncNodeValue(parseTree(content ?? '{}', errors, {allowTrailingComma: true}))
+      : JSON.parse(content ?? '{}');
   if (errors.length > 0) throw new Error('Agent configuration contains invalid JSONC.');
   if (!isJsonObject(value)) throw new Error('Agent configuration must be a JSON object.');
   return value;
+}
+
+function jsoncNodeValue(node: Node | undefined): unknown {
+  if (node === undefined) return undefined;
+  if (node.type === 'array') return (node.children ?? []).map(jsoncNodeValue);
+  if (node.type === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const property of node.children ?? []) {
+      const [key, value] = property.children ?? [];
+      if (typeof key?.value !== 'string' || value === undefined) continue;
+      Object.defineProperty(result, key.value, {
+        configurable: true,
+        enumerable: true,
+        value: jsoncNodeValue(value),
+        writable: true,
+      });
+    }
+    return result;
+  }
+  return node.type === 'null' ? null : node.value;
 }
 
 export function writeAgentServer(
