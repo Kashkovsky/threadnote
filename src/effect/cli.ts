@@ -1,4 +1,5 @@
 import {makeCursorHookCommand, makeInstallHooksCommand, makePreCompactHookCommand} from './hooks_cli.js';
+import {agentsCommandMetadata, makeAgentsCommand} from './agents_cli.js';
 import {runCursorHook} from '../cursor_hook_runner.js';
 import {Console, Effect, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
@@ -1894,6 +1895,7 @@ const registerTopLevelCommand = <const Name extends string, CommandType>(
 });
 
 const topLevelCommandRegistrations = [
+  registerTopLevelCommand('agents', makeAgentsCommand(withScopedRuntime), agentsCommandMetadata),
   registerTopLevelCommand('manage', manage),
   registerTopLevelCommand('processes', processes, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('doctor', doctor),

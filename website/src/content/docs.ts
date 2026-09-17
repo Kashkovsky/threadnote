@@ -1,4 +1,5 @@
 import {cursorCloudPersonalDocsSection} from './docsCursorCloudPersonal.js';
+import {agentIntegrationDocsSection} from './docsAgentIntegrations.js';
 import {graphCheckpointsDocsArticle, graphCliCommand} from './docsGraphCheckpoints.js';
 import {
   contextBriefMcpTool,
@@ -371,7 +372,7 @@ export const docsSections: DocsSection[] = [
         body: [
           {
             type: 'paragraph',
-            text: 'Threadnote gives Codex, Claude Code, Cursor, and Copilot two complementary evidence systems without forcing the team into one chat product: durable engineering memory for what people learned, and a snapshot-aware polyglot code graph for what the current source actually contains. Personal working state and code indexes stay local. Curated durable knowledge can be published to a Git-backed team store, then recalled by another teammate using another agent.',
+            text: 'Threadnote gives [supported agents](/agents/) two complementary evidence systems without forcing the team into one chat product: durable engineering memory for what people learned, and a snapshot-aware polyglot code graph for what the current source actually contains. Personal working state and code indexes stay local. Curated durable knowledge can be published to a Git-backed team store, then recalled by another teammate using another agent.',
           },
           {
             type: 'list',
@@ -455,13 +456,13 @@ threadnote doctor`,
           {
             type: 'code',
             language: 'sh',
-            code: `threadnote mcp-install codex --apply
-# Or: claude, cursor, copilot
+            code: `threadnote agents install <surface>
+threadnote agents install <surface> --apply
 threadnote doctor`,
           },
           {
             type: 'paragraph',
-            text: 'MCP runs as a local stdio child process. Applying mcp-install also registers only the selected host and installs its compact user-level bootstrap plus Threadnote skills. There is no HTTP endpoint, host, token, port, or daemon to configure. Restart the agent after changing its integration.',
+            text: 'MCP runs as a local stdio child process. Applying agents install registers only the selected surface and installs the artifacts declared for that surface. There is no HTTP endpoint, host, token, port, or daemon to configure. Restart the agent after changing its integration.',
           },
           {
             type: 'paragraph',
@@ -489,7 +490,7 @@ threadnote doctor`,
         body: [
           {
             type: 'paragraph',
-            text: 'Core install does not modify any agent host. Each applied mcp-install writes a compact bootstrap and progressively loaded Threadnote skills only for the selected Codex, Claude Code, Cursor, or Copilot integration. Checked-in AGENTS.md, CLAUDE.md, and equivalent repository guidance remain authoritative and take precedence.',
+            text: 'Core install does not modify any agent host. Each applied mcp-install writes a compact bootstrap and progressively loaded Threadnote skills only for the selected [supported agent surface](/agents/). Checked-in AGENTS.md, CLAUDE.md, and equivalent repository guidance remain authoritative and take precedence.',
           },
           {
             type: 'list',
@@ -1677,7 +1678,7 @@ threadnote repair`,
           },
           {
             type: 'paragraph',
-            text: 'Doctor checks the self-contained home, canonical layout, core model, recall indexes, readable code-graph snapshots and pending maintenance, plus MCP, instructions, and skills for registered agent integrations only. Merely installing Codex, Claude Code, Cursor, or Copilot does not create a warning. A supported older graph that is still queryable is reported as migrating or maintenance-pending, not corrupt or incompatible. Strict mode exits non-zero when a check fails.',
+            text: 'Doctor checks the self-contained home, canonical layout, core model, recall indexes, readable code-graph snapshots and pending maintenance, plus MCP, instructions, and skills for registered [supported agent surfaces](/agents/) only. Merely installing an unrelated host does not create a warning. A supported older graph that is still queryable is reported as migrating or maintenance-pending, not corrupt or incompatible. Strict mode exits non-zero when a check fails.',
           },
           {
             type: 'paragraph',
@@ -1962,4 +1963,5 @@ threadnote report-issue \\
       },
     ],
   },
+  agentIntegrationDocsSection,
 ];
