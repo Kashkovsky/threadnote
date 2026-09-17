@@ -67,7 +67,7 @@ describe('Auth0 M2M Zot registry Docker helper', () => {
             return new Response(null);
           },
         }),
-      ).rejects.toThrow('Auth0 registry credential unavailable.');
+      ).rejects.toThrow('OAuth registry credential unavailable.');
       expect(called).toBe(false);
     }
   });
@@ -84,7 +84,7 @@ describe('Auth0 M2M Zot registry Docker helper', () => {
       {THREADNOTE_AUTH0_REGISTRY_M2M_SUBJECT: 'bad\nsubject'},
     ])
       expect(() => parseAuth0M2MRegistryCredentialConfig({...environment, ...override})).toThrow(
-        'Auth0 registry credential unavailable.',
+        'OAuth registry credential unavailable.',
       );
   });
 
@@ -105,7 +105,7 @@ describe('Auth0 M2M Zot registry Docker helper', () => {
           now: () => now * 1000,
           fetch: async () => Response.json({access_token: token, expires_in: 600, token_type: 'Bearer'}),
         }),
-      ).rejects.toThrow('Auth0 registry credential unavailable.');
+      ).rejects.toThrow('OAuth registry credential unavailable.');
     }
   });
 
@@ -120,7 +120,7 @@ describe('Auth0 M2M Zot registry Docker helper', () => {
         now: () => now * 1000,
         fetch: async () => Response.json({access_token: token, expires_in: 600, token_type: 'Bearer'}),
       }),
-    ).rejects.toThrow('Auth0 registry credential unavailable.');
+    ).rejects.toThrow('OAuth registry credential unavailable.');
   });
 
   it('never sends a secret for any nonempty mutation of the configured host', async () => {
@@ -134,7 +134,7 @@ describe('Auth0 M2M Zot registry Docker helper', () => {
               return new Response(null);
             },
           }),
-        ).rejects.toThrow('Auth0 registry credential unavailable.');
+        ).rejects.toThrow('OAuth registry credential unavailable.');
         expect(called).toBe(false);
       }),
       {numRuns: 100},

@@ -127,7 +127,12 @@ export const makeGraphControlCredentialLoader = Effect.fn('codeGraph.sharing.con
           ),
           maxOutputBytes: 32_768,
           // The packaged Auth0 helper may need both a token exchange and a cold JWKS fetch.
-          timeoutMs: binding.helper === 'auth0' ? 25_000 : binding.helper === 'auth0-m2m' ? 10_000 : 5_000,
+          timeoutMs:
+            binding.helper === 'auth0'
+              ? 25_000
+              : binding.helper === 'auth0-m2m' || binding.helper === 'oauth-m2m'
+                ? 10_000
+                : 5_000,
         })
         .pipe(Effect.mapError(() => graphSharingUnavailable('Graph control credential helper is unavailable.')));
       if (result.exitCode !== 0)

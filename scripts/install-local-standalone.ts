@@ -566,6 +566,9 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
       for (const mode of [
         'cli',
         'mcp',
+        'credential-oauth-m2m',
+        'credential-registry-oauth-m2m',
+        'credential-registry-oauth-publisher-m2m',
         'credential-auth0-m2m',
         'credential-registry-auth0-m2m',
         'credential-registry-auth0-publisher-m2m',
@@ -1013,6 +1016,9 @@ const verifyLaunchers = Effect.fn('developmentInstall.verifyLaunchers')(function
   for (const mode of [
     'cli',
     'mcp',
+    'credential-oauth-m2m',
+    'credential-registry-oauth-m2m',
+    'credential-registry-oauth-publisher-m2m',
     'credential-auth0-m2m',
     'credential-registry-auth0-m2m',
     'credential-registry-auth0-publisher-m2m',

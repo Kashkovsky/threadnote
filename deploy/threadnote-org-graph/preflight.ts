@@ -1,4 +1,6 @@
 /* oxlint-disable effecttsgo/node-builtin-import -- This container preflight verifies raw volume files and native Ed25519 key identity before starting Effect services. */
+import {canonicalOAuthUrl, sameOriginOAuthEndpoint} from '../../src/code_graph/sharing/oauth_m2m_config.js';
+import {parseOAuthM2MPublisherRegistryCredentialConfig} from '../../src/code_graph/sharing/oauth_m2m_registry_credential.js';
 import {createPrivateKey, createPublicKey} from 'node:crypto';
 import {constants, fstatSync, lstatSync, openSync, readFileSync, closeSync} from 'node:fs';
 import {join, resolve, sep} from 'node:path';
@@ -38,10 +40,9 @@ function canonicalHttps(value: string, name: string, issuer = false): URL {
     url.password ||
     url.search ||
     url.hash ||
-    url.pathname !== '/' ||
-    value !== (issuer ? url.href : url.origin)
+    (issuer ? !canonicalOAuthUrl(value) : url.pathname !== '/' || value !== url.origin)
   )
-    throw new Error(`${name} must be a canonical HTTPS origin`);
+    throw new Error(`${name} must be a canonical HTTPS ${issuer ? 'URL' : 'origin'}`);
   return url;
 }
 
@@ -50,26 +51,18 @@ function deploymentBinding(env: Environment) {
   const registry = canonicalHttps(required(env, 'THREADNOTE_GRAPH_REGISTRY_ORIGIN'), 'Registry origin');
   const issuer = canonicalHttps(required(env, 'THREADNOTE_GRAPH_OAUTH_ISSUER'), 'OAuth issuer', true);
   const audience = canonicalHttps(required(env, 'THREADNOTE_GRAPH_OAUTH_AUDIENCE'), 'OAuth audience');
-  const registryCredentialOrigin = canonicalHttps(
-    required(env, 'THREADNOTE_AUTH0_REGISTRY_M2M_ORIGIN'),
-    'Publisher credential registry origin',
-  );
-  const registryCredentialAudience = canonicalHttps(
-    required(env, 'THREADNOTE_AUTH0_REGISTRY_M2M_AUDIENCE'),
-    'Publisher credential registry audience',
-  );
-  const registryCredentialIssuer = canonicalHttps(
-    required(env, 'THREADNOTE_AUTH0_REGISTRY_M2M_ISSUER'),
-    'Publisher credential issuer',
-    true,
-  );
-  required(env, 'THREADNOTE_AUTH0_PUBLISHER_M2M_CLIENT_ID');
-  required(env, 'THREADNOTE_AUTH0_PUBLISHER_M2M_CLIENT_SECRET');
-  required(env, 'THREADNOTE_AUTH0_PUBLISHER_M2M_SUBJECT');
+  const credentials = parseOAuthM2MPublisherRegistryCredentialConfig(env);
+  const issuerValue = required(env, 'THREADNOTE_GRAPH_OAUTH_ISSUER');
+  const jwksUrl =
+    env.THREADNOTE_GRAPH_OAUTH_JWKS_URL ??
+    (env.THREADNOTE_AUTH0_REGISTRY_M2M_ISSUER === issuerValue && env.THREADNOTE_OAUTH_REGISTRY_M2M_ISSUER === undefined
+      ? new URL('.well-known/jwks.json', issuer).href
+      : undefined);
   if (
-    registryCredentialOrigin.origin !== registry.origin ||
-    registryCredentialAudience.origin !== registry.origin ||
-    registryCredentialIssuer.href !== issuer.href
+    !jwksUrl ||
+    !sameOriginOAuthEndpoint(jwksUrl, issuerValue) ||
+    credentials.origin !== registry.origin ||
+    credentials.audience !== registry.origin
   )
     throw new Error('Publisher credential authority differs from the graph deployment');
   const canonicalRepository = required(env, 'THREADNOTE_GRAPH_CANONICAL_REPOSITORY');
@@ -98,8 +91,8 @@ function deploymentBinding(env: Environment) {
     canonicalRegistry: `oci://${registry.host}/${canonicalRepository}`,
     controlOrigin: control.origin,
     gitRemoteIdentity,
-    issuer: issuer.href,
-    jwksUrl: new URL('.well-known/jwks.json', issuer).href,
+    issuer: issuerValue,
+    jwksUrl,
     organization: required(env, 'THREADNOTE_GRAPH_ORGANIZATION'),
     profileDigest,
     repositoryId,

@@ -94,7 +94,10 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
           expect(input?.timeoutMs).toBe(
             options.helperName === 'threadnote-auth0-user'
               ? 25000
-              : options.helperName === 'threadnote-auth0-m2m' || options.helperName === 'threadnote-auth0-publisher-m2m'
+              : options.helperName === 'threadnote-oauth-m2m' ||
+                  options.helperName === 'threadnote-oauth-publisher-m2m' ||
+                  options.helperName === 'threadnote-auth0-m2m' ||
+                  options.helperName === 'threadnote-auth0-publisher-m2m'
                 ? 10000
                 : 5000,
           );
@@ -106,6 +109,8 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
             stdout: JSON.stringify(
               options.helperResponse?.(helperCalls) ?? {
                 Username:
+                  options.helperName === 'threadnote-oauth-m2m' ||
+                  options.helperName === 'threadnote-oauth-publisher-m2m' ||
                   options.helperName === 'threadnote-auth0-m2m' ||
                   options.helperName === 'threadnote-auth0-publisher-m2m' ||
                   options.helperName === 'threadnote-auth0-user'
@@ -216,10 +221,12 @@ describe('registry authentication and bounded transport', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
-  effectIt.effect('sends the scoped Auth0 registry secret only to the exact Zot bearer-token realm', () =>
+  effectIt.effect('sends the scoped OAuth registry secret only to the exact Zot bearer-token realm', () =>
     Effect.gen(function* () {
       const zotBasic = 'Basic ' + Buffer.from('zot:' + secret).toString('base64');
       for (const helperName of [
+        'threadnote-oauth-m2m',
+        'threadnote-oauth-publisher-m2m',
         'threadnote-auth0-m2m',
         'threadnote-auth0-publisher-m2m',
         'threadnote-auth0-user',
@@ -248,9 +255,11 @@ describe('registry authentication and bounded transport', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
-  effectIt.effect('never sends Auth0 registry credentials to Basic or a different same-origin realm', () =>
+  effectIt.effect('never sends OAuth registry credentials to Basic or a different same-origin realm', () =>
     Effect.gen(function* () {
       for (const helperName of [
+        'threadnote-oauth-m2m',
+        'threadnote-oauth-publisher-m2m',
         'threadnote-auth0-m2m',
         'threadnote-auth0-publisher-m2m',
         'threadnote-auth0-user',
