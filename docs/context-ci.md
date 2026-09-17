@@ -42,3 +42,11 @@ and never pushes. Copy it into `.github/workflows/` in a consuming repository an
 
 Context Check's scope is deliberately narrow: direct citations of changed files. It does not claim that callers,
 dependants, uncited memories, or other transitive graph relationships were checked.
+
+## Local proposal materialization
+
+The provider-neutral Knowledge Delta Git proposal is separately materialized through an explicit local action. Preview
+is the default. Apply rechecks the proposal hash, repository identity, exact base commit, and every target CAS before
+creating the deterministic proposal branch and commit. A retry reuses an existing matching branch result; a changed
+binding is a stable conflict. Materialization never pushes, opens a pull request, calls a hosted provider, or schedules
+hosted work.

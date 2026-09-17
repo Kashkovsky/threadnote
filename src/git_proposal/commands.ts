@@ -2,6 +2,7 @@ import {Console, Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {SystemInfo} from '../effect/system.js';
+import {CommandExecutor} from '../effect/command.js';
 import {listCandidateReviews, withCandidateReviewLock, type CandidateReview} from '../memory/candidate.js';
 import {
   memoryCodeCitationContentSharingBlocker,
@@ -12,15 +13,18 @@ import {canonicalMemoryDocumentContent, type MemoryRecord} from '../memory/docum
 import {projectKnowledgeDeltaV1} from '../memory/knowledge_delta.js';
 import {readMaintenanceMemoryRecords} from '../memory/maintenance_records.js';
 import {MemoryOperationError} from '../memory/migrations.js';
-import {assertSafeShareRelativePath, resolveTeam} from '../share/core.js';
+import {assertSafeShareRelativePath, assertShareTeamWritable, resolveTeam} from '../share/core.js';
 import {gitFileContent} from '../share/git.js';
 import {validatePortableSegment} from '../storage/resource-id.js';
-import type {RuntimeConfig} from '../types.js';
+import type {CommandResult, RuntimeConfig} from '../types.js';
 import {
   buildKnowledgeDeltaGitProposalV1,
+  verifyKnowledgeDeltaGitProposalV1,
+  type KnowledgeDeltaGitProposalV1,
   type KnowledgeDeltaGitProposalBuildV1,
   type ReviewedSharedMemoryMutationV1,
 } from './knowledge_delta.js';
+import {planKnowledgeDeltaGitMaterializationV1, type KnowledgeDeltaGitMaterializationPlanV1} from './materializer.js';
 
 const MAXIMUM_GIT_PROPOSAL_OUTPUT_BYTES = 256 * 1_024;
 
@@ -31,6 +35,218 @@ export interface KnowledgeDeltaGitProposalExportOptionsV1 {
   readonly reviewId: string;
   readonly revision: number;
   readonly team?: string;
+}
+
+export interface KnowledgeDeltaGitProposalMaterializeOptionsV1 {
+  readonly apply?: boolean;
+  readonly proposal: string;
+  readonly team?: string;
+}
+
+interface GitMaterializeRunOptions {
+  readonly allowFailure?: boolean;
+  readonly indexFile?: string;
+  readonly input?: Uint8Array;
+}
+
+type GitMaterializeRunner = (
+  args: readonly string[],
+  options?: GitMaterializeRunOptions,
+) => Effect.Effect<CommandResult, unknown>;
+
+export const runKnowledgeDeltaGitProposalMaterialize = Effect.fn('gitProposal.materializeCommand')(function* (
+  config: RuntimeConfig,
+  options: KnowledgeDeltaGitProposalMaterializeOptionsV1,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const rawProposal = yield* fs
+    .readFileString(options.proposal)
+    .pipe(Effect.mapError(() => operationError('Git proposal file is unreadable.')));
+  const proposal = yield* Effect.try({
+    try: () => JSON.parse(rawProposal) as KnowledgeDeltaGitProposalV1,
+    catch: () => operationError('Git proposal file is unreadable or invalid JSON.'),
+  });
+  yield* Effect.try({
+    try: () => verifyKnowledgeDeltaGitProposalV1(proposal),
+    catch: cause => operationError(cause instanceof Error ? cause.message : 'Git proposal is invalid.'),
+  });
+  const team = yield* resolveTeam(config, options.team);
+  if (team.name !== proposal.target.team) {
+    return yield* operationError(
+      `Git proposal targets shared team "${proposal.target.team}", not configured team "${team.name}".`,
+    );
+  }
+  if (options.apply === true) {
+    yield* Effect.try({
+      try: () => assertShareTeamWritable(team, 'materialize a Knowledge Delta Git proposal'),
+      catch: cause => operationError(cause instanceof Error ? cause.message : 'Shared team is not writable.'),
+    });
+  }
+  const repository = yield* resolveRepositoryIdentity(team.config.worktree).pipe(
+    Effect.mapError(() => operationError('Could not resolve the local shared Git repository.')),
+  );
+  const command = yield* CommandExecutor;
+  const run: GitMaterializeRunner = (args, runOptions = {}) =>
+    command.execute('git', args, {
+      allowFailure: runOptions.allowFailure,
+      cwd: team.config.worktree,
+      input: runOptions.input,
+      maxOutputBytes: 1_048_576,
+      timeoutMs: 30_000,
+      trustedGitIndexFile: runOptions.indexFile,
+    });
+  const read: GitMaterializeRunner = (args, runOptions = {}) => run(['--no-optional-locks', ...args], runOptions);
+  const status = yield* read(['status', '--porcelain=v1', '-z', '--untracked-files=normal']);
+  if (status.stdout.trim())
+    return yield* operationError('Local shared Git worktree must be clean before materialization.');
+  const base = proposal.base.expectedCommit;
+  const readableBase = yield* read(['rev-parse', '--verify', '--quiet', `${base}^{commit}`], {allowFailure: true});
+  if (readableBase.exitCode !== 0 || readableBase.stdout.trim() !== base) {
+    return yield* operationError('Git proposal base commit is not readable in the configured shared repository.');
+  }
+  const files = Object.fromEntries(
+    yield* Effect.forEach(proposal.files, file =>
+      read(['show', `${base}:${file.path}`], {allowFailure: true}).pipe(
+        Effect.map(result => [file.path, result.exitCode === 0 ? result.stdout : undefined] as const),
+      ),
+    ),
+  );
+  const plan = yield* Effect.try({
+    try: () =>
+      planKnowledgeDeltaGitMaterializationV1(proposal, {
+        baseCommit: base,
+        files,
+        repositoryId: repository.repositoryId,
+      }),
+    catch: cause => operationError(cause instanceof Error ? cause.message : 'Proposal precondition changed.'),
+  });
+  const branchRef = `refs/heads/${plan.branch}`;
+  const refCheck = yield* read(['check-ref-format', '--branch', plan.branch], {allowFailure: true});
+  if (refCheck.exitCode !== 0) return yield* operationError('Git proposal branch binding is invalid.');
+  const existing = yield* materializedBranchCommit(read, branchRef);
+  if (existing !== undefined) {
+    yield* verifyMaterializedBranch(read, branchRef, existing, base, plan);
+    return yield* Console.log(
+      JSON.stringify({
+        branch: plan.branch,
+        commit: existing,
+        outcome: options.apply === true ? 'reused' : 'preview',
+        proposalHash: plan.proposalHash,
+      }),
+    );
+  }
+  if (repository.headCommit !== base) return yield* operationError('Proposal base commit changed.');
+  if (options.apply !== true) {
+    return yield* Console.log(
+      JSON.stringify({
+        branch: plan.branch,
+        files: plan.files.map(file => file.path),
+        outcome: 'preview',
+        proposalHash: plan.proposalHash,
+      }),
+    );
+  }
+  const commit = yield* createMaterializedBranch(fs, yield* Path.Path, run, read, branchRef, base, plan);
+  yield* Console.log(
+    JSON.stringify({
+      branch: plan.branch,
+      commit: commit.commit,
+      outcome: commit.outcome,
+      proposalHash: plan.proposalHash,
+    }),
+  );
+});
+
+const materializedBranchCommit = Effect.fn('gitProposal.materializedBranchCommit')(function* (
+  read: GitMaterializeRunner,
+  branchRef: string,
+) {
+  const result = yield* read(['rev-parse', '--verify', '--quiet', `${branchRef}^{commit}`], {allowFailure: true});
+  return result.exitCode === 0 ? result.stdout.trim() : undefined;
+});
+
+const verifyMaterializedBranch = Effect.fn('gitProposal.verifyMaterializedBranch')(function* (
+  read: GitMaterializeRunner,
+  branchRef: string,
+  commit: string,
+  base: string,
+  plan: KnowledgeDeltaGitMaterializationPlanV1,
+) {
+  const parents = (yield* read(['rev-list', '--parents', '-n', '1', branchRef])).stdout.trim().split(/\s+/u);
+  const message = (yield* read(['show', '-s', '--format=%B', branchRef])).stdout.trimEnd();
+  const changed = (yield* read([
+    'diff-tree',
+    '--no-commit-id',
+    '--name-only',
+    '-r',
+    '--no-renames',
+    base,
+    commit,
+  ])).stdout
+    .split('\n')
+    .filter(Boolean)
+    .sort();
+  const planned = plan.files.map(file => file.path).sort();
+  if (
+    parents.length !== 2 ||
+    parents[0] !== commit ||
+    parents[1] !== base ||
+    message !== plan.commitMessage.trimEnd() ||
+    JSON.stringify(changed) !== JSON.stringify(planned)
+  ) {
+    return yield* operationError('Existing materialization branch conflicts with the Git proposal.');
+  }
+  for (const file of plan.files) {
+    const treeEntry = yield* read(['ls-tree', commit, '--', file.path]);
+    const content = yield* read(['show', `${commit}:${file.path}`]);
+    if (!treeEntry.stdout.startsWith('100644 blob ') || content.stdout !== file.content) {
+      return yield* operationError('Existing materialization branch conflicts with the Git proposal.');
+    }
+  }
+});
+
+const createMaterializedBranch = Effect.fn('gitProposal.createMaterializedBranch')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  run: GitMaterializeRunner,
+  read: GitMaterializeRunner,
+  branchRef: string,
+  base: string,
+  plan: KnowledgeDeltaGitMaterializationPlanV1,
+) {
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const temporary = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-git-proposal-'});
+      const indexFile = path.join(temporary, 'index');
+      yield* run(['read-tree', base], {indexFile});
+      for (const file of plan.files) {
+        const blob = (yield* run(['hash-object', '-w', '--stdin'], {
+          input: new TextEncoder().encode(file.content),
+        })).stdout.trim();
+        yield* run(['update-index', '--add', '--cacheinfo', '100644', blob, file.path], {indexFile});
+      }
+      const tree = (yield* run(['write-tree'], {indexFile})).stdout.trim();
+      const commit = (yield* run(['commit-tree', tree, '-p', base, '-m', plan.commitMessage])).stdout.trim();
+      const objectFormat = (yield* read(['rev-parse', '--show-object-format'])).stdout.trim();
+      const updated = yield* run(['update-ref', branchRef, commit, gitNullObjectId(objectFormat)], {
+        allowFailure: true,
+      });
+      if (updated.exitCode !== 0) {
+        const raced = yield* materializedBranchCommit(read, branchRef);
+        if (raced === undefined) return yield* operationError('Could not create the materialization branch.');
+        yield* verifyMaterializedBranch(read, branchRef, raced, base, plan);
+        return {commit: raced, outcome: 'reused' as const};
+      }
+      yield* verifyMaterializedBranch(read, branchRef, commit, base, plan);
+      return {commit, outcome: 'applied' as const};
+    }),
+  );
+});
+
+export function gitNullObjectId(objectFormat: string): string {
+  if (objectFormat === 'sha1') return '0'.repeat(40);
+  if (objectFormat === 'sha256') return '0'.repeat(64);
+  throw operationError(`Unsupported Git object format: ${objectFormat || 'unknown'}.`);
 }
 
 export const buildReviewedKnowledgeDeltaGitProposal = Effect.fn('gitProposal.buildReviewed')(function* (

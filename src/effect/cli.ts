@@ -160,7 +160,7 @@ import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';
 import {runImageProjectionCommand} from '../image_projection/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
 import * as valueReportCommands from '../value_report/commands.js';
-import {runKnowledgeDeltaGitProposalExport} from '../git_proposal/commands.js';
+import {runKnowledgeDeltaGitProposalExport, runKnowledgeDeltaGitProposalMaterialize} from '../git_proposal/commands.js';
 import {makeShareMemoryCommands, publishFlags} from './share_memory_cli.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
 import {
@@ -1723,6 +1723,15 @@ const {sharePropose, sharePublish} = makeShareMemoryCommands(
   (uri, options) => withRuntimeEffect(config => runSharePublish(config, uri, options)),
   options => withRuntimeEffect(config => runKnowledgeDeltaGitProposalExport(config, options)),
 );
+const shareMaterialize = Command.make(
+  'materialize',
+  {
+    apply: boolean('apply', 'Create the local deterministic proposal branch and commit'),
+    proposal: requiredString('proposal', 'Local Knowledge Delta Git proposal JSON'),
+    team: optionalString('team', 'Shared Git team; defaults to configured default'),
+  },
+  options => withRuntimeEffect(config => runKnowledgeDeltaGitProposalMaterialize(config, options)),
+).pipe(Command.withDescription('Preview or explicitly materialize a provider-neutral Git proposal locally'));
 
 const artifactFlags = {
   dryRun: publishFlags.dryRun,
@@ -1837,6 +1846,7 @@ const share = Command.make('share').pipe(
     shareConflicts,
     shareConflict,
     sharePropose,
+    shareMaterialize,
     sharePublish,
     sharePublishArtifact,
     sharePublishBundle,
