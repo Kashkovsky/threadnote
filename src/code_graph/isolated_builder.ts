@@ -154,7 +154,15 @@ export function codeGraphIsolatedBuilderSpawnPlan(
 export function codeGraphProgressFromBuildStatus(
   status: Pick<
     CodeGraphBuildStatus,
-    'activation' | 'counters' | 'materialization' | 'phase' | 'registration' | 'resolution' | 'subphase' | 'timings'
+    | 'activation'
+    | 'counters'
+    | 'materialization'
+    | 'phase'
+    | 'registration'
+    | 'resolution'
+    | 'scheduling'
+    | 'subphase'
+    | 'timings'
   >,
 ): CodeGraphProgress {
   const counters = status.counters;
@@ -166,6 +174,7 @@ export function codeGraphProgressFromBuildStatus(
       };
     case 'waiting':
       return {
+        ...(status.scheduling?.queue && !status.scheduling.admittedAt ? {admission: status.scheduling.queue} : {}),
         phase: 'waiting',
         ...(status.subphase === 'database-writer' ||
         status.subphase === 'disk-capacity' ||
