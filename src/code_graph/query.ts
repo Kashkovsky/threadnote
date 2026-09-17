@@ -37,6 +37,7 @@ import {
   type CodeGraphTraversalTimeBudgets,
 } from './query_contract.js';
 import {codeGraphSnapshotRuntimeCurrent} from './query_snapshot_runtime.js';
+import {isCodeGraphCapacityPause} from './disk_capacity.js';
 import {pathQuery, QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS} from './query_path.js';
 export {pathQuery, QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS} from './query_path.js';
 import {adoptCodeGraphSnapshotAdmission, codeGraphSnapshotAdmissionCurrentForIdentity} from './admission_freshness.js';
@@ -443,26 +444,40 @@ export class CodeGraphQueryService extends Context.Service<
                 finalOverlay === undefined ? undefined : {identity: promotionIdentity.value, overlay: finalOverlay},
               );
             }),
-          ).pipe(Effect.catchIf(Schema.is(CodeGraphStoreBusyError), () => Effect.succeed(status)));
+          ).pipe(Effect.catchIf(isPreWriteSharedReadyAttachFailure, () => Effect.succeed(status)));
         });
       const borrowSharedReadySnapshot = Effect.fn('codeGraph.query.borrowSharedReadySnapshot')(function* (
         threadnoteHome: string,
         status: CodeGraphStatus,
         telemetry?: CodeGraphQueryTelemetryObserver,
       ) {
-        if (status.readySnapshot) return status;
         const identity = status.identity;
         const observation = observationFromCodeGraphStatus(status);
         if (observation?.overlay === undefined) {
           yield* skipCodeGraphQueryTelemetryStage(telemetry, 'graph.query.snapshot', 'query-worktree-observation');
         }
         const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
-        const candidate = yield* store.latestReadySnapshotForRepository(layout.databasePath, identity.repositoryId);
-        if (
-          candidate === undefined ||
-          !(yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, candidate, languagePacks))
-        ) {
-          return status;
+        const statusSnapshotRuntimeCurrent =
+          status.readySnapshot !== undefined &&
+          status.readySnapshot.repositoryId === identity.repositoryId &&
+          (yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, status.readySnapshot, languagePacks));
+        if (statusSnapshotRuntimeCurrent) return status;
+        const candidates = yield* store.recentReadySnapshotsForRepository(layout.databasePath, identity.repositoryId);
+        let candidate: CodeGraphSnapshot | undefined;
+        for (const recent of candidates) {
+          if (
+            recent.repositoryId === identity.repositoryId &&
+            (yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, recent, languagePacks))
+          ) {
+            candidate = recent;
+            break;
+          }
+        }
+        if (candidate === undefined) {
+          return attachCodeGraphStatusObservation(
+            {...status, freshness: 'stale', readySnapshot: undefined, stale: true},
+            observation,
+          );
         }
         return attachCodeGraphStatusObservation(
           {
@@ -1764,6 +1779,16 @@ function sameRepositoryIdentity(left: RepositoryIdentity, right: RepositoryIdent
     left.headCommit === right.headCommit &&
     left.objectFormat === right.objectFormat
   );
+}
+
+/**
+ * Shared-ready attachment has not changed the target view when either of
+ * these failures is reported. Keep this deliberately narrower than generic
+ * retryable storage failures: reconnect, corruption, permission, schema, and
+ * unknown failures must remain visible to the caller.
+ */
+function isPreWriteSharedReadyAttachFailure(cause: unknown): boolean {
+  return Schema.is(CodeGraphStoreBusyError)(cause) || isCodeGraphCapacityPause(cause);
 }
 
 function sanitizeSelection(selection: {
