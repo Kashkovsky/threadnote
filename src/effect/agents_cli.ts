@@ -5,7 +5,7 @@ import {agentAdapterStatuses, runAgentAdapterAction} from '../agent_integration/
 import {AGENT_CATALOG} from '../agent_integration/catalog.js';
 import {AgentSurfaceError} from '../agent_integration/surfaces.js';
 import type {RuntimeConfig} from '../types.js';
-import {boolean} from './cli_flags.js';
+import {boolean, optionalChoice} from './cli_flags.js';
 
 export const agentsCommandMetadata = {
   productionLog: {
@@ -49,8 +49,13 @@ export function makeAgentsCommand(
       {
         surface: Argument.String('surface'),
         apply: boolean('apply', 'Apply the plan; otherwise only preview paths'),
+        scope: optionalChoice(
+          'scope',
+          ['user', 'project', 'local'],
+          'Installation scope; repair and removal use the receipt',
+        ),
       },
-      ({surface, apply}) =>
+      ({surface, apply, scope}) =>
         withRuntime(
           Effect.fn(function* (config: RuntimeConfig) {
             const adapter = getAgentAdapter(surface);
@@ -58,7 +63,12 @@ export function makeAgentsCommand(
               return yield* AgentSurfaceError.make({
                 message: `Unknown surface ${surface}; run threadnote agents list.`,
               });
-            yield* runAgentAdapterAction(config, adapter, action, apply);
+            if (scope && (adapter.legacyClient || action !== 'install'))
+              return yield* AgentSurfaceError.make({
+                message:
+                  '--scope is supported only by managed surface installation; repair and removal use the receipt.',
+              });
+            yield* runAgentAdapterAction(config, adapter, action, apply, scope);
           }),
         ),
     ),
