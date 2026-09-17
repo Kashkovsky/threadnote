@@ -60,7 +60,7 @@ describe('Auth0 M2M Zot publisher Docker helper', () => {
       {THREADNOTE_AUTH0_REGISTRY_M2M_AUDIENCE: `${origin}/`},
     ])
       expect(() => parseAuth0M2MPublisherRegistryCredentialConfig({...environment, ...override})).toThrow(
-        'Auth0 registry credential unavailable.',
+        'OAuth registry credential unavailable.',
       );
   });
 
@@ -80,7 +80,7 @@ describe('Auth0 M2M Zot publisher Docker helper', () => {
           now: () => now * 1000,
           fetch: async () => Response.json({access_token: token, expires_in: 600, token_type: 'Bearer'}),
         }),
-      ).rejects.toThrow('Auth0 registry credential unavailable.');
+      ).rejects.toThrow('OAuth registry credential unavailable.');
     }
   });
 
@@ -95,7 +95,7 @@ describe('Auth0 M2M Zot publisher Docker helper', () => {
               return new Response(null);
             },
           }),
-        ).rejects.toThrow('Auth0 registry credential unavailable.');
+        ).rejects.toThrow('OAuth registry credential unavailable.');
         expect(called).toBe(false);
       }),
       {numRuns: 100},
@@ -119,7 +119,7 @@ describe('Auth0 M2M Zot publisher Docker helper', () => {
       });
       expect(code).toBe(1);
       expect(stdout).toEqual([]);
-      expect(stderr).toEqual(['Auth0 registry credential unavailable.\n']);
+      expect(stderr).toEqual(['OAuth registry credential unavailable.\n']);
     }
   });
 });

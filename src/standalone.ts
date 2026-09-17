@@ -25,13 +25,17 @@ const isWindowsDiskCapacityWorker = arguments_[0] === WINDOWS_DISK_CAPACITY_WORK
 const isMcpBroker = arguments_[0] === 'mcp-broker';
 const isRemoteMemoryOperator = arguments_[0] === 'remote-memory-operator';
 const isRemoteMemoryService = arguments_[0] === 'remote-memory-service';
-const isAuth0M2MGraphCredentialHelper = arguments_[0] === '__credential-auth0-m2m';
-const isAuth0M2MRegistryCredentialHelper = arguments_[0] === '__credential-registry-auth0-m2m';
-const isAuth0M2MPublisherRegistryCredentialHelper = arguments_[0] === '__credential-registry-auth0-publisher-m2m';
+const isOAuthM2MGraphCredentialHelper =
+  arguments_[0] === '__credential-auth0-m2m' || arguments_[0] === '__credential-oauth-m2m';
+const isOAuthM2MRegistryCredentialHelper =
+  arguments_[0] === '__credential-registry-auth0-m2m' || arguments_[0] === '__credential-registry-oauth-m2m';
+const isOAuthM2MPublisherRegistryCredentialHelper =
+  arguments_[0] === '__credential-registry-auth0-publisher-m2m' ||
+  arguments_[0] === '__credential-registry-oauth-publisher-m2m';
 const isGraphAuth0Helper = arguments_[0] === '__graph-auth0-helper';
 const isAuth0UserRegistryCredentialHelper = arguments_[0] === '__credential-registry-auth0-user';
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
-const auth0M2MHelperIO = {
+const oauthM2MHelperIO = {
   stdin: process.stdin,
   writeStderr: (text: string) => {
     process.stderr.write(text);
@@ -68,12 +72,12 @@ if (
 } else {
   const program: Effect.Effect<void, unknown, never> = isRemoteMemoryService
     ? await remoteMemoryServiceProgram()
-    : isAuth0M2MGraphCredentialHelper
-      ? await auth0M2MGraphCredentialHelperProgram(arguments_.slice(1))
-      : isAuth0M2MRegistryCredentialHelper
-        ? await auth0M2MRegistryCredentialHelperProgram(arguments_.slice(1))
-        : isAuth0M2MPublisherRegistryCredentialHelper
-          ? await auth0M2MPublisherRegistryCredentialHelperProgram(arguments_.slice(1))
+    : isOAuthM2MGraphCredentialHelper
+      ? await oauthM2MGraphCredentialHelperProgram(arguments_.slice(1))
+      : isOAuthM2MRegistryCredentialHelper
+        ? await oauthM2MRegistryCredentialHelperProgram(arguments_.slice(1))
+        : isOAuthM2MPublisherRegistryCredentialHelper
+          ? await oauthM2MPublisherRegistryCredentialHelperProgram(arguments_.slice(1))
           : isAuth0UserRegistryCredentialHelper
             ? await auth0UserRegistryCredentialHelperProgram(arguments_.slice(1))
             : isGraphAuth0Helper
@@ -99,10 +103,10 @@ if (
   });
 }
 
-async function auth0M2MGraphCredentialHelperProgram(arguments_: readonly string[]) {
-  const helper = await import('./code_graph/sharing/auth0_m2m_graph_credential.js');
-  return fromPromise('run Auth0 graph credential helper', () =>
-    helper.runAuth0M2MGraphCredentialHelper(arguments_, process.env, auth0M2MHelperIO),
+async function oauthM2MGraphCredentialHelperProgram(arguments_: readonly string[]) {
+  const helper = await import('./code_graph/sharing/oauth_m2m_graph_credential.js');
+  return fromPromise('run OAuth graph credential helper', () =>
+    helper.runOAuthM2MGraphCredentialHelper(arguments_, process.env, oauthM2MHelperIO),
   ).pipe(
     Effect.tap(code =>
       Effect.sync(() => {
@@ -112,10 +116,10 @@ async function auth0M2MGraphCredentialHelperProgram(arguments_: readonly string[
   );
 }
 
-async function auth0M2MRegistryCredentialHelperProgram(arguments_: readonly string[]) {
-  const helper = await import('./code_graph/sharing/auth0_m2m_registry_credential.js');
-  return fromPromise('run Auth0 registry credential helper', () =>
-    helper.runAuth0M2MRegistryCredentialHelper(arguments_, process.env, auth0M2MHelperIO),
+async function oauthM2MRegistryCredentialHelperProgram(arguments_: readonly string[]) {
+  const helper = await import('./code_graph/sharing/oauth_m2m_registry_credential.js');
+  return fromPromise('run OAuth registry credential helper', () =>
+    helper.runOAuthM2MRegistryCredentialHelper(arguments_, process.env, oauthM2MHelperIO),
   ).pipe(
     Effect.tap(code =>
       Effect.sync(() => {
@@ -125,10 +129,10 @@ async function auth0M2MRegistryCredentialHelperProgram(arguments_: readonly stri
   );
 }
 
-async function auth0M2MPublisherRegistryCredentialHelperProgram(arguments_: readonly string[]) {
-  const helper = await import('./code_graph/sharing/auth0_m2m_registry_credential.js');
-  return fromPromise('run Auth0 publisher registry credential helper', () =>
-    helper.runAuth0M2MPublisherRegistryCredentialHelper(arguments_, process.env, auth0M2MHelperIO),
+async function oauthM2MPublisherRegistryCredentialHelperProgram(arguments_: readonly string[]) {
+  const helper = await import('./code_graph/sharing/oauth_m2m_registry_credential.js');
+  return fromPromise('run OAuth publisher registry credential helper', () =>
+    helper.runOAuthM2MPublisherRegistryCredentialHelper(arguments_, process.env, oauthM2MHelperIO),
   ).pipe(
     Effect.tap(code =>
       Effect.sync(() => {
@@ -144,7 +148,7 @@ async function graphAuth0HelperProgram(arguments_: readonly string[]) {
     import('./effect/command.js'),
     import('./effect/system.js'),
   ]);
-  return helper.runGraphAuth0UserHelper(arguments_, auth0M2MHelperIO).pipe(
+  return helper.runGraphAuth0UserHelper(arguments_, oauthM2MHelperIO).pipe(
     Effect.tap(code =>
       Effect.sync(() => {
         process.exitCode = code;
@@ -165,7 +169,7 @@ async function auth0UserRegistryCredentialHelperProgram(arguments_: readonly str
     import('./effect/command.js'),
     import('./effect/system.js'),
   ]);
-  return helper.runAuth0UserRegistryCredentialHelper(arguments_, auth0M2MHelperIO).pipe(
+  return helper.runAuth0UserRegistryCredentialHelper(arguments_, oauthM2MHelperIO).pipe(
     Effect.tap(code =>
       Effect.sync(() => {
         process.exitCode = code;

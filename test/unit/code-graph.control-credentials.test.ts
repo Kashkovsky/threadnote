@@ -53,7 +53,9 @@ const fixture = Effect.fn('test.controlCredentials.fixture')(function* (
           calls++;
           expect(executable).toBe(`threadnote-credential-${options.helper ?? 'fixture'}`);
           expect(args).toEqual(['get']);
-          expect(options_?.timeoutMs).toBe(options.helper === 'auth0-m2m' ? 10000 : 5000);
+          expect(options_?.timeoutMs).toBe(
+            options.helper === 'auth0-m2m' || options.helper === 'oauth-m2m' ? 10000 : 5000,
+          );
           expect(options_?.maxOutputBytes).toBe(32768);
           expect(JSON.parse(new TextDecoder().decode(options_?.input))).toEqual({
             ...scope,
@@ -86,11 +88,13 @@ const fixture = Effect.fn('test.controlCredentials.fixture')(function* (
 });
 
 describe('graph control credential discovery', () => {
-  effectIt.effect('allows the packaged Auth0 helper a bounded token and cold-JWKS acquisition window', () =>
+  effectIt.effect('allows the packaged OAuth helpers a bounded token and cold-JWKS acquisition window', () =>
     Effect.gen(function* () {
-      const f = yield* fixture({helper: 'auth0-m2m'});
-      expect((yield* f.loader.load).expiresAt).toBeGreaterThan((yield* Clock.currentTimeMillis) / 1000);
-      expect(f.calls()).toBe(1);
+      for (const helper of ['auth0-m2m', 'oauth-m2m']) {
+        const f = yield* fixture({helper});
+        expect((yield* f.loader.load).expiresAt).toBeGreaterThan((yield* Clock.currentTimeMillis) / 1000);
+        expect(f.calls()).toBe(1);
+      }
     }).pipe(provideTestLayer(layer)),
   );
 

@@ -56,7 +56,10 @@ export const makeGraphShareRegistryCredentialLoader = Effect.fn('codeGraph.shari
             timeoutMs:
               selected === 'threadnote-auth0-user'
                 ? 25_000
-                : selected === 'threadnote-auth0-m2m' || selected === 'threadnote-auth0-publisher-m2m'
+                : selected === 'threadnote-oauth-m2m' ||
+                    selected === 'threadnote-oauth-publisher-m2m' ||
+                    selected === 'threadnote-auth0-m2m' ||
+                    selected === 'threadnote-auth0-publisher-m2m'
                   ? 10_000
                   : 5_000,
           })
@@ -85,6 +88,8 @@ export const makeGraphShareRegistryCredentialLoader = Effect.fn('codeGraph.shari
             `Basic ${Buffer.from(`${credential.Username}:${credential.Secret}`).toString('base64')}`,
           ),
           ...(selected === 'threadnote-auth0-user' ||
+          selected === 'threadnote-oauth-m2m' ||
+          selected === 'threadnote-oauth-publisher-m2m' ||
           selected === 'threadnote-auth0-m2m' ||
           selected === 'threadnote-auth0-publisher-m2m'
             ? {allowedBearerRealm: `${target.origin}/zot/auth/token`}
