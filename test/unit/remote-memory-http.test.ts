@@ -78,6 +78,16 @@ function fixture(
       calls.push('proposal:list');
       return {entries: []};
     },
+    contextBrief: async (_principal, input, requestId) => {
+      calls.push(`brief:${requestId}:${input.task}`);
+      return {
+        directSearchComplete: true,
+        directSearchTruncated: false,
+        matchedAnchorOrdinals: [],
+        receipt: {...receipt, requestId},
+        results: (options.recallResults ?? []).map(result => ({...result, evidence: 'lexical' as const})),
+      };
+    },
     list: async (_principal, _input, requestId) => {
       calls.push(`list:${requestId}`);
       return {entries: [], receipt: {...receipt, requestId}};
@@ -900,6 +910,61 @@ describe('remote memory HTTP transport', () => {
       JSON.stringify({content: explained.blocks, structured: explained.structured}).match(/REMOTE_EXCERPT_000_/gu),
     ).toHaveLength(2);
     expect(test.calls.filter(call => call === 'rate:recall_context')).toHaveLength(2);
+  });
+
+  it('exposes a read-only remote Context Brief with bounded task input and no checkout claim', async () => {
+    const test = fixture({
+      recallResults: [
+        {
+          excerpt: 'fixture evidence',
+          kind: 'durable',
+          project: 'threadnote',
+          revision: 'revision-1',
+          score: 1,
+          status: 'active',
+          topic: 'brief',
+          uri: 'threadnote://share/share-1/memories/durable/threadnote/brief.md',
+        },
+      ],
+      trackRateLimits: true,
+    });
+    const response = await json(
+      await test.handler(
+        mcpRequest({
+          id: 3_150,
+          method: 'tools/call',
+          params: {
+            arguments: {
+              anchors: [{path: 'src/remote_memory/tools.ts', repositoryId: 'a'.repeat(64)}],
+              budgetTokens: 800,
+              project: 'threadnote',
+              task: 'Explain the remote brief boundary.',
+              version: 1,
+            },
+            name: 'context_brief',
+          },
+        }),
+      ),
+    );
+    const result = response.result as {content: readonly {text: string}[]; structuredContent: Record<string, unknown>};
+    expect(result.structuredContent.type).toBe('threadnote-remote-context-brief');
+    expect(result.content[0]?.text).toContain('capture-time provenance');
+    expect(result.content[0]?.text).toContain('threadnote-local');
+    expect(test.calls).toContain('brief:request-123:Explain the remote brief boundary.');
+    expect(test.calls).toContain('rate:context_brief');
+
+    const denied = fixture({allowedProjects: new Set(['other']), trackRateLimits: true});
+    const deniedResponse = await json(
+      await denied.handler(
+        mcpRequest({
+          id: 3_151,
+          method: 'tools/call',
+          params: {arguments: {project: 'threadnote', task: 'Denied.', version: 1}, name: 'context_brief'},
+        }),
+      ),
+    );
+    expect(deniedResponse).toMatchObject({result: {isError: true, structuredContent: {code: 'forbidden'}}});
+    expect(denied.calls.some(call => call.startsWith('brief:'))).toBe(false);
   });
 
   it.each([{policyVersion: 'wrong-grant-policy'}, {sharePolicyVersion: 'wrong-share-policy'}])(

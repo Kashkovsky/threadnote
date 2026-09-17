@@ -2,6 +2,9 @@ import type {Sql, TransactionSql} from 'postgres';
 import {GitCanonicalMemoryStore} from './git_canonical_store.js';
 import {assertGitMemoryBinding, requireGitMemoryBinding} from './git_binding.js';
 import {PostgresRemoteMemoryRepository} from './postgres_repository.js';
+import {parseMemoryDocument} from '../memory/document.js';
+import {formatRemoteMemoryUri} from '../memory_domain/address.js';
+import {replaceRemoteCodeLinkBacklinks} from './code_link_backlinks.js';
 
 const DEFAULT_BATCH_SIZE = 64;
 const DEFAULT_POLL_MILLISECONDS = 250;
@@ -35,7 +38,7 @@ interface ClaimedHead {
   readonly git_commit: string | null;
   readonly git_path: string | null;
   readonly head_id: string;
-  readonly kind: string;
+  readonly kind: 'durable' | 'handoff';
   readonly markdown_body: string;
   readonly project: string;
   readonly revision_id: string;
@@ -171,7 +174,9 @@ export class RemoteMemoryIndexer {
       const event = locked[0];
       if (!event) return {kind: 'not_claimed' as const};
       try {
-        if (event.event_type !== 'memory_head_changed') throw new Error('unsupported_outbox_event');
+        if (event.event_type !== 'memory_head_changed' && event.event_type !== 'code_link_backfill') {
+          throw new Error('unsupported_outbox_event');
+        }
         const head = await loadOutboxHead(transaction, share, event.aggregate_id);
         if (!head) throw new Error('missing_outbox_aggregate');
         if (head.markdown_body !== '' || !head.git_commit || !head.git_path) {
@@ -207,7 +212,17 @@ export class RemoteMemoryIndexer {
         const event = locked[0];
         if (!event) return 'claimed_processed' as const;
         try {
-          await projectSearchDocument(transaction, share, event, claimed.head, body);
+          const current = await loadOutboxHead(transaction, share, event.aggregate_id);
+          if (!current) throw new Error('missing_outbox_aggregate');
+          if (current.revision_id !== claimed.head.revision_id) {
+            await transaction`
+              UPDATE remote_memory.outbox_events SET processed_at = now(), last_error_class = NULL
+              WHERE tenant_id = ${share.tenant_id} AND share_id = ${share.share_id} AND id = ${event.id}
+            `;
+            await advanceContiguousGeneration(transaction, share);
+            return 'claimed_processed' as const;
+          }
+          await projectSearchDocument(transaction, share, event, current, body);
           return 'claimed_processed' as const;
         } catch (cause) {
           await markIndexerFailure(transaction, share, event, cause);
@@ -313,6 +328,7 @@ async function loadOutboxHead(
       ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
     WHERE h.tenant_id = ${share.tenant_id} AND h.share_id = ${share.share_id}
       AND h.id = ${headId}
+    FOR UPDATE OF h
   `;
   return heads[0];
 }
@@ -324,6 +340,20 @@ async function projectSearchDocument(
   head: ClaimedHead,
   body: string,
 ): Promise<void> {
+  const uri = formatRemoteMemoryUri({
+    kind: head.kind,
+    project: head.project,
+    shareId: share.share_id,
+    topic: head.topic,
+  });
+  const record = parseMemoryDocument(uri, body);
+  await replaceRemoteCodeLinkBacklinks(transaction, {
+    citations: record?.metadata.codeCitations ?? [],
+    headId: head.head_id,
+    revisionId: head.revision_id,
+    shareId: share.share_id,
+    tenantId: share.tenant_id,
+  });
   const projected = await transaction`
     INSERT INTO remote_memory.search_documents(
       tenant_id, share_id, head_id, revision_id, generation, project, topic, kind, searchable

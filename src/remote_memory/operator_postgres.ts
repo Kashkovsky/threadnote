@@ -5,6 +5,7 @@ import {parseRemoteShareAddress} from '../memory_domain/address.js';
 import {parseRemoteCanonicalMemoryDocument} from '../memory_domain/content.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import {migrateRemoteMemoryDatabase, remoteMemoryMigrationVersions} from './migrations.js';
+import {replaceRemoteCodeLinkBacklinks} from './code_link_backlinks.js';
 import {PostgresRemoteControlPlane, type RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
 import {
   REMOTE_MEMORY_OPERATOR_CONTRACT_VERSION,
@@ -174,7 +175,7 @@ async function importRecord(
   plan: {readonly aliasCompatibilityEndsAt: string; readonly planId: string},
   record: RemoteMemoryPortableRecordV1,
 ): Promise<GitBetaImportApplyOutcomeV1> {
-  const address = validatePortableRecord(record, shareId);
+  const {address, document} = validatePortableRecord(record, shareId);
   const project = await transaction<{name: string}[]>`
     SELECT name FROM remote_memory.projects
     WHERE tenant_id = ${tenantId} AND share_id = ${shareId}
@@ -227,6 +228,13 @@ async function importRecord(
       ${record.canonicalContent}, ${record.contentHash}, 'system:migration', ${`import:${plan.planId}:${headId}`}
     )
   `;
+  await replaceRemoteCodeLinkBacklinks(transaction, {
+    citations: document.record.metadata.codeCitations ?? [],
+    headId,
+    revisionId,
+    shareId,
+    tenantId,
+  });
   await transaction`
     UPDATE remote_memory.memory_heads SET current_revision_id = ${revisionId}
     WHERE tenant_id = ${tenantId} AND share_id = ${shareId} AND id = ${headId}
@@ -387,7 +395,7 @@ function validatePortableRecord(record: RemoteMemoryPortableRecordV1, shareId: s
   }
   if (record.aliases.length === 0) throw new Error('Git beta imports require a source alias.');
   for (const alias of record.aliases) validateGitBetaAlias(alias);
-  return address;
+  return {address, document};
 }
 
 function portableRecordFromRow(row: PortableRecordRow, shareId: string): RemoteMemoryPortableRecordV1 {

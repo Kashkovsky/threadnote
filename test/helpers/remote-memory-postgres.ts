@@ -123,6 +123,7 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
         'rate_limit_windows',
         'uri_aliases',
         'search_documents',
+        'code_link_backlinks',
         'durable_memory_proposals',
       ],
     },
@@ -139,13 +140,14 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
         'audit_events',
         'rate_limit_windows',
         'search_documents',
+        'code_link_backlinks',
         'projects',
         'durable_memory_proposals',
       ],
     },
     {
       privileges: 'DELETE',
-      tables: ['challenge_directory', 'attestation_challenges', 'uri_aliases'],
+      tables: ['challenge_directory', 'attestation_challenges', 'uri_aliases', 'code_link_backlinks'],
     },
   ] as const;
   for (const grant of tablePrivileges) {

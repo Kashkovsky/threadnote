@@ -62,6 +62,18 @@ export interface RecallCodeLinkQuerySelector {
   readonly selectorKind: RecallCodeLinkMatchKind;
 }
 
+/**
+ * Opaque selector material shared by local and remote derived backlink indexes.
+ * The inputs are only used to derive the digest; callers must never persist them
+ * alongside the result.
+ */
+export interface RecallCodeLinkSelectorInput {
+  readonly repositoryId: string;
+  readonly repositoryIdentityKind: MemoryCodeCitationV1['repositoryIdentityKind'];
+  readonly selectorKind: RecallCodeLinkMatchKind;
+  readonly value: unknown;
+}
+
 interface RecallCodeLinkSelectionRow {
   readonly anchor_id: string;
   readonly anchor_ordinal: number;
@@ -371,20 +383,26 @@ function selectorsForCitation(
   }
   return selectorInputs
     .map(([selectorKind, value]) => ({
-      selectorDigest: selectorDigest(citation.repositoryId, citation.repositoryIdentityKind, selectorKind, value),
+      selectorDigest: deriveRecallCodeLinkSelectorDigest({
+        repositoryId: citation.repositoryId,
+        repositoryIdentityKind: citation.repositoryIdentityKind,
+        selectorKind,
+        value,
+      }),
       selectorKind,
     }))
     .sort(compareIndexedSelectors);
 }
 
-function selectorDigest(
-  repositoryId: string,
-  repositoryIdentityKind: MemoryCodeCitationV1['repositoryIdentityKind'],
-  selectorKind: RecallCodeLinkMatchKind,
-  value: unknown,
-): string {
+/** Derive the stable opaque selector digest used by rebuildable backlink indexes. */
+export function deriveRecallCodeLinkSelectorDigest(input: RecallCodeLinkSelectorInput): string {
   return sha256HexSync(
-    JSON.stringify({repositoryId, repositoryIdentityKind, selector: {kind: selectorKind, value}, version: 1}),
+    JSON.stringify({
+      repositoryId: input.repositoryId,
+      repositoryIdentityKind: input.repositoryIdentityKind,
+      selector: {kind: input.selectorKind, value: input.value},
+      version: 1,
+    }),
   );
 }
 

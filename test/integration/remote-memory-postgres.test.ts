@@ -13,6 +13,7 @@ import {RemoteMemoryIndexer} from '../../src/remote_memory/indexer.js';
 import {migrateRemoteMemoryDatabase} from '../../src/remote_memory/migrations.js';
 import type {OAuthPrincipalClaims} from '../../src/remote_memory/oauth.js';
 import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator_postgres.js';
+import {remoteContextBriefAnchorSelectors} from '../../src/remote_memory/context_brief.js';
 import type {RemoteMemoryPortableRecordV1} from '../../src/remote_memory/portability.js';
 import {
   PostgresRemoteControlPlane,
@@ -51,6 +52,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
   let indexer: RemoteMemoryIndexer;
   let principalA: AuthorizedRemotePrincipal;
   let principalASecondary: AuthorizedRemotePrincipal;
+  let principalAMultiPrimary: AuthorizedRemotePrincipal;
   let principalAMemberTwo: AuthorizedRemotePrincipal;
   let principalB: AuthorizedRemotePrincipal;
 
@@ -70,16 +72,21 @@ postgresDescribe('remote memory PostgreSQL service', () => {
     indexer = new RemoteMemoryIndexer(fixture.sql);
     const authorizedA = await control.authorize(claimsFixture('subject-alpha'), SHARE_A);
     const authorizedASecondary = await control.authorize(claimsFixture('subject-alpha-secondary'), SHARE_A_SECONDARY);
+    const authorizedAMultiPrimary = await control.authorize(
+      claimsFixture('subject-alpha-multi-primary'),
+      SHARE_A_MULTI_MEMBER,
+    );
     const authorizedAMemberTwo = await control.authorize(
       claimsFixture('subject-alpha-member-two'),
       SHARE_A_MULTI_MEMBER,
     );
     const authorizedB = await control.authorize(claimsFixture('subject-beta'), SHARE_B);
-    if (!authorizedA || !authorizedASecondary || !authorizedAMemberTwo || !authorizedB) {
+    if (!authorizedA || !authorizedASecondary || !authorizedAMultiPrimary || !authorizedAMemberTwo || !authorizedB) {
       throw new Error('Remote PostgreSQL fixture authorization failed.');
     }
     principalA = authorizedA;
     principalASecondary = authorizedASecondary;
+    principalAMultiPrimary = authorizedAMultiPrimary;
     principalAMemberTwo = authorizedAMemberTwo;
     principalB = authorizedB;
   });
@@ -148,7 +155,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
     const before = await fixture.migratorSql<{checksum: string; version: number}[]>`
       SELECT version, checksum FROM remote_memory.schema_migrations ORDER BY version
     `;
-    expect(before).toHaveLength(4);
+    expect(before).toHaveLength(5);
     expect(before[0]?.checksum).toMatch(/^[a-f0-9]{64}$/u);
 
     await migrateRemoteMemoryDatabase(fixture.migratorSql);
@@ -564,6 +571,173 @@ postgresDescribe('remote memory PostgreSQL service', () => {
     );
     expect(blockedHeads).toEqual([{topic: clean.topic}]);
     expect(await indexer.runPass({batchSize: 1})).toEqual({failed: 0, processed: 1});
+  });
+
+  it('builds canonical PostgreSQL graph-linked briefs and repairs their bounded backlink projection', async () => {
+    const operator = new PostgresRemoteMemoryOperatorAdapter(fixture.migratorSql);
+    const suffix = randomUuidV4();
+    const repositoryId = 'e'.repeat(64);
+    const firstPath = `src/remote_memory/brief-${suffix}.ts`;
+    const secondPath = `src/remote_memory/brief-helper-${suffix}.ts`;
+    const citations = [
+      operatorCitation({path: firstPath, repositoryId}),
+      operatorCitation({path: secondPath, repositoryId}),
+    ];
+    const topic = `context-brief-${suffix}`;
+    const content = formatMemoryDocument(
+      'MEMORY',
+      {
+        codeCitations: citations,
+        kind: 'durable',
+        project: PROJECT,
+        schemaVersion: MEMORY_SCHEMA_VERSION,
+        sourceAgentClient: 'codex',
+        status: 'active',
+        timestamp: '2026-09-17T00:00:00.000Z',
+        topic,
+      },
+      'Canonical PostgreSQL Context Brief evidence.',
+    );
+    const record = operatorPortableRecord(SHARE_A_MULTI_MEMBER, topic, content);
+    await operator.applyGitBetaImport(operatorImportInput(record, SHARE_A_MULTI_MEMBER));
+    const input = {
+      anchors: [
+        {path: firstPath, repositoryId},
+        {path: secondPath, repositoryId},
+      ],
+      budgetTokens: 1_250,
+      project: PROJECT,
+      task: 'Canonical PostgreSQL Context Brief evidence.',
+      version: 1 as const,
+    };
+    const immediate = await repository.contextBrief(
+      principalAMultiPrimary,
+      {...input, task: `pre-index-${suffix}`},
+      `request-brief-pre-index-${suffix}`,
+    );
+    expect(immediate).toMatchObject({directSearchComplete: true, matchedAnchorOrdinals: [0, 1]});
+    expect(immediate.results.filter(result => result.uri === record.uri)).toHaveLength(1);
+    expect(await indexer.runPass({batchSize: 1_000})).toMatchObject({failed: 0});
+
+    const initial = await repository.contextBrief(principalAMultiPrimary, input, `request-brief-${suffix}`);
+    expect(initial).toMatchObject({directSearchTruncated: false, matchedAnchorOrdinals: [0, 1]});
+    expect(initial.results.filter(result => result.uri === record.uri)).toEqual([
+      expect.objectContaining({anchorOrdinals: [0, 1], evidence: 'anchor'}),
+    ]);
+    const otherProject = await repository.contextBrief(
+      principalAMemberTwo,
+      {...input, project: 'api'},
+      `request-brief-other-project-${suffix}`,
+    );
+    expect(otherProject.results).toEqual([]);
+    expect(otherProject.matchedAnchorOrdinals).toEqual([]);
+    const isolated = await repository.contextBrief(principalB, input, `request-brief-isolated-${suffix}`);
+    expect(isolated.results).toEqual([]);
+    expect(isolated.matchedAnchorOrdinals).toEqual([]);
+
+    const raceTopic = `context-brief-race-${suffix}`;
+    class RaceOnceRepository extends PostgresRemoteMemoryRepository {
+      raced = false;
+
+      override async recall(...args: Parameters<PostgresRemoteMemoryRepository['recall']>) {
+        const result = await super.recall(...args);
+        if (!this.raced) {
+          this.raced = true;
+          await this.remember(
+            args[0],
+            rememberFixture({
+              operationId: `context-brief-race-${suffix}`,
+              text: 'Unrelated write used to exercise the final generation fence.',
+              topic: raceTopic,
+            }),
+            `${args[2]}-race`,
+          );
+        }
+        return result;
+      }
+    }
+    const racingRepository = new RaceOnceRepository(fixture.sql);
+    const fenced = await racingRepository.contextBrief(principalAMultiPrimary, input, `request-brief-fenced-${suffix}`);
+    expect(racingRepository.raced).toBe(true);
+    expect(fenced.results.filter(result => result.uri === record.uri)).toEqual([
+      expect.objectContaining({anchorOrdinals: [0, 1], evidence: 'anchor'}),
+    ]);
+    expect(fenced.receipt.shareGeneration).toBeGreaterThan(initial.receipt.shareGeneration);
+
+    const selector = remoteContextBriefAnchorSelectors([{path: firstPath, repositoryId}])[0];
+    const forgedUri = formatRemoteMemoryUri({
+      kind: 'durable',
+      project: PROJECT,
+      shareId: SHARE_A_MULTI_MEMBER,
+      topic: raceTopic,
+    });
+    await withTenant(fixture.migratorSql, TENANT_A, async transaction => {
+      const rows = await transaction<{head_id: string; revision_id: string}[]>`
+        SELECT h.id AS head_id, h.current_revision_id AS revision_id
+        FROM remote_memory.memory_heads h
+        WHERE h.tenant_id = ${TENANT_A} AND h.share_id = ${SHARE_A_MULTI_MEMBER}
+          AND h.canonical_uri = ${forgedUri}
+      `;
+      const forged = rows[0];
+      if (!forged) throw new Error('Context Brief forged backlink fixture head was not found.');
+      await transaction`
+        INSERT INTO remote_memory.code_link_backlinks(
+          tenant_id, share_id, head_id, revision_id, citation_ordinal, selector_kind, selector_digest
+        ) VALUES (
+          ${TENANT_A}, ${SHARE_A_MULTI_MEMBER}, ${forged.head_id}, ${forged.revision_id}, 0,
+          'file-path', ${selector.selectorDigest}
+        )
+      `;
+    });
+    const verified = await repository.contextBrief(principalAMultiPrimary, input, `request-brief-verified-${suffix}`);
+    expect(verified.results.some(result => result.uri === forgedUri)).toBe(false);
+    expect(verified.results.filter(result => result.uri === record.uri)).toHaveLength(1);
+
+    const projectionState = await withTenant(fixture.migratorSql, TENANT_A, async transaction => {
+      const rows = await transaction<
+        {generation: string | number; head_id: string; revision_id: string; selector_count: string | number}[]
+      >`
+        SELECT h.id AS head_id, h.current_revision_id AS revision_id, r.generation,
+          count(b.selector_digest) AS selector_count
+        FROM remote_memory.memory_heads h
+        JOIN remote_memory.memory_revisions r
+          ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
+        LEFT JOIN remote_memory.code_link_backlinks b
+          ON b.tenant_id = h.tenant_id AND b.share_id = h.share_id AND b.head_id = h.id
+        WHERE h.tenant_id = ${TENANT_A} AND h.share_id = ${SHARE_A_MULTI_MEMBER} AND h.canonical_uri = ${record.uri}
+        GROUP BY h.id, h.current_revision_id, r.generation
+      `;
+      const state = rows[0];
+      if (!state) throw new Error('Context Brief fixture head was not projected.');
+      await transaction`
+        DELETE FROM remote_memory.code_link_backlinks
+        WHERE tenant_id = ${TENANT_A} AND share_id = ${SHARE_A_MULTI_MEMBER} AND head_id = ${state.head_id}
+      `;
+      await transaction`
+        INSERT INTO remote_memory.outbox_events(tenant_id, share_id, id, generation, event_type, aggregate_id)
+        VALUES (
+          ${TENANT_A}, ${SHARE_A_MULTI_MEMBER}, ${`code-link-backfill-test:${state.head_id}`}, ${state.generation},
+          'code_link_backfill', ${state.head_id}
+        )
+      `;
+      return state;
+    });
+    expect(Number(projectionState.selector_count)).toBeGreaterThanOrEqual(2);
+    const pendingRepair = await repository.contextBrief(
+      principalAMultiPrimary,
+      input,
+      `request-brief-pending-repair-${suffix}`,
+    );
+    expect(pendingRepair).toMatchObject({
+      directSearchComplete: false,
+      directSearchTruncated: false,
+      matchedAnchorOrdinals: [],
+    });
+    expect(await indexer.runPass({batchSize: 1_000})).toMatchObject({failed: 0});
+    const repaired = await repository.contextBrief(principalAMultiPrimary, input, `request-brief-repaired-${suffix}`);
+    expect(repaired.directSearchComplete).toBe(true);
+    expect(repaired.results.filter(result => result.uri === record.uri)).toHaveLength(1);
+    expect(repaired.matchedAnchorOrdinals).toEqual([0, 1]);
   });
 
   it('commits one immutable CAS winner, replays exact outcomes, and recalls through the recent-write overlay', async () => {
@@ -1428,9 +1602,83 @@ postgresDescribe('remote memory PostgreSQL service', () => {
   });
 });
 
+postgresDescribe('remote memory code-link migration upgrade', () => {
+  it('enqueues and projects pre-existing heads through forced tenant RLS', async () => {
+    if (!TEST_DATABASE_URL)
+      throw new Error('THREADNOTE_TEST_POSTGRES_URL is required for PostgreSQL integration tests.');
+    const upgradeFixture = await createRemoteMemoryPostgresFixture(TEST_DATABASE_URL);
+    try {
+      const control = new PostgresRemoteControlPlane(upgradeFixture.migratorSql);
+      await control.provision(provisioningFixture('alpha-multi-primary'));
+      const operator = new PostgresRemoteMemoryOperatorAdapter(upgradeFixture.migratorSql);
+      const topic = `upgrade-code-link-${randomUuidV4()}`;
+      const record = operatorPortableRecord(
+        SHARE_A_MULTI_MEMBER,
+        topic,
+        operatorCitationContent(topic, operatorCitation()),
+      );
+      await operator.applyGitBetaImport(operatorImportInput(record, SHARE_A_MULTI_MEMBER));
+      const head = await withTenant(
+        upgradeFixture.migratorSql,
+        TENANT_A,
+        transaction => transaction<{head_id: string}[]>`
+          SELECT id AS head_id FROM remote_memory.memory_heads
+          WHERE tenant_id = ${TENANT_A} AND share_id = ${SHARE_A_MULTI_MEMBER} AND canonical_uri = ${record.uri}
+        `,
+      );
+      if (!head[0]) throw new Error('Upgrade fixture head was not imported.');
+
+      await upgradeFixture.migratorSql.unsafe(
+        'DROP TABLE remote_memory.code_link_backlinks; DELETE FROM remote_memory.schema_migrations WHERE version = 5',
+      );
+      await migrateRemoteMemoryDatabase(upgradeFixture.migratorSql);
+      const events = await withTenant(
+        upgradeFixture.migratorSql,
+        TENANT_A,
+        transaction => transaction<{aggregate_id: string; event_type: string}[]>`
+          SELECT aggregate_id, event_type FROM remote_memory.outbox_events
+          WHERE tenant_id = ${TENANT_A} AND share_id = ${SHARE_A_MULTI_MEMBER}
+            AND event_type = 'code_link_backfill' AND aggregate_id = ${head[0].head_id}
+        `,
+      );
+      expect(events).toEqual([{aggregate_id: head[0].head_id, event_type: 'code_link_backfill'}]);
+
+      await upgradeFixture.migratorSql.unsafe(
+        `GRANT SELECT, INSERT, DELETE ON remote_memory.code_link_backlinks TO ${upgradeFixture.runtimeRoleName}`,
+      );
+      expect(await new RemoteMemoryIndexer(upgradeFixture.sql).runPass({batchSize: 16})).toMatchObject({failed: 0});
+      const authorized = await new PostgresRemoteControlPlane(upgradeFixture.sql).authorize(
+        claimsFixture('subject-alpha-multi-primary'),
+        SHARE_A_MULTI_MEMBER,
+      );
+      if (!authorized) throw new Error('Upgrade fixture authorization failed.');
+      const citation = operatorCitation();
+      const brief = await new PostgresRemoteMemoryRepository(upgradeFixture.sql).contextBrief(
+        authorized,
+        {
+          anchors: [{path: citation.path, repositoryId: citation.repositoryId}],
+          budgetTokens: 1_250,
+          project: PROJECT,
+          task: 'canonical citation sharing policy',
+          version: 1,
+        },
+        'request-upgrade-code-link',
+      );
+      expect(brief).toMatchObject({
+        directSearchComplete: true,
+        matchedAnchorOrdinals: [0],
+        results: [expect.objectContaining({evidence: 'anchor', uri: record.uri})],
+      });
+    } finally {
+      await upgradeFixture.dispose();
+    }
+  });
+});
+
 const tenantScopedTableNames = [
   'attestation_challenges',
   'audit_events',
+  'code_link_backlinks',
   'durable_memory_proposals',
   'external_identities',
   'idempotency_records',
@@ -1542,13 +1790,18 @@ function rememberFixture(
 }
 
 function operatorCitation(
-  overrides: {readonly repositoryIdentityKind?: 'local' | 'remote'; readonly sourceDirty?: boolean} = {},
+  overrides: {
+    readonly path?: string;
+    readonly repositoryId?: string;
+    readonly repositoryIdentityKind?: 'local' | 'remote';
+    readonly sourceDirty?: boolean;
+  } = {},
 ) {
   return createMemoryCodeCitation({
     extractorSet: 'native-code-graph-13',
     fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
-    path: 'src/remote_memory/operator_postgres.ts',
-    repositoryId: 'b'.repeat(64),
+    path: overrides.path ?? 'src/remote_memory/operator_postgres.ts',
+    repositoryId: overrides.repositoryId ?? 'b'.repeat(64),
     repositoryIdentityKind: overrides.repositoryIdentityKind ?? 'remote',
     sourceCommit: 'c'.repeat(40),
     sourceDirty: overrides.sourceDirty ?? false,
