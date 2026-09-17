@@ -17,6 +17,7 @@ import {codeGraphLayout, codeGraphWorktreeSpawnLockPath} from './layout.js';
 import {resolveRepositoryIdentity} from './repository.js';
 import type {CodeGraphProgress, RepositoryIdentity} from './types.js';
 import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, type CodeGraphBuilderAdmissionClass} from './builder_admission.js';
+import {CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE, CodeGraphRefreshDemandSuperseded} from './refresh_demand.js';
 
 class IsolatedBuilderError extends Schema.TaggedError<IsolatedBuilderError>()('IsolatedBuilderError', {
   cause: Schema.optionalKey(Schema.Defect()),
@@ -73,6 +74,8 @@ export interface CodeGraphIsolatedBuilderOptions {
   readonly readStatus?: Effect.Effect<ObservedCodeGraphBuildStatus | undefined, unknown>;
   /** Privacy-safe build request identity used for exact completed-result reuse. */
   readonly requestKey?: string;
+  /** Opaque private coordination claim. Never included in build-status or MCP output. */
+  readonly refreshDemandToken?: string;
   /** @internal Deterministic identity seam for pre-spawn compatibility tests. */
   readonly resolveIdentity?: (cwd: string) => Effect.Effect<RepositoryIdentity, unknown>;
   readonly spawn?: CodeGraphIsolatedBuilderSpawner;
@@ -83,6 +86,7 @@ export interface CodeGraphIsolatedBuilderOptions {
       readonly cwd: string;
       readonly full?: boolean;
       readonly noVectors?: boolean;
+      readonly refreshDemandToken?: string;
       readonly threadnoteHome: string;
     },
   ) => CodeGraphIsolatedBuilderSpawnPlan;
@@ -125,6 +129,7 @@ export function codeGraphIsolatedBuilderSpawnPlan(
     readonly cwd: string;
     readonly full?: boolean;
     readonly noVectors?: boolean;
+    readonly refreshDemandToken?: string;
     readonly threadnoteHome: string;
   },
 ): CodeGraphIsolatedBuilderSpawnPlan {
@@ -144,6 +149,9 @@ export function codeGraphIsolatedBuilderSpawnPlan(
     environment: {
       ...withCurrentAgentSessionEnvironment(system.environment(), 'graph-builder'),
       [CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV]: options.admissionClass ?? 'current-required',
+      ...(options.refreshDemandToken === undefined
+        ? {}
+        : {THREADNOTE_CODE_GRAPH_REFRESH_DEMAND_TOKEN: options.refreshDemandToken}),
       THREADNOTE_HOME: options.threadnoteHome,
     },
     executable: system.executablePath,
@@ -308,6 +316,7 @@ export const runIsolatedCodeGraphIndex: (
     cwd: identity.repoRoot,
     full: options.full,
     noVectors: options.noVectors,
+    refreshDemandToken: options.refreshDemandToken,
     threadnoteHome: options.threadnoteHome,
   });
   yield* assertIsolatedBuilderPlanEffect(plan);
@@ -352,10 +361,27 @@ export const runIsolatedCodeGraphIndex: (
       const child = yield* isolatedBuilderPromise('Could not spawn isolated code graph builder', () =>
         Promise.resolve(spawn(plan)),
       );
-      const observed = yield* pollUntilEffect(statusOwnedBy(readStatus, child.processId, priorBuildId), {
-        intervalMs: ISOLATED_BUILDER_RESULT_POLL_MILLISECONDS,
-        timeoutMs: ISOLATED_BUILDER_SPAWN_OBSERVATION_MILLISECONDS,
-      });
+      const startup = yield* Effect.raceFirst(
+        pollUntilEffect(statusOwnedBy(readStatus, child.processId, priorBuildId), {
+          intervalMs: ISOLATED_BUILDER_RESULT_POLL_MILLISECONDS,
+          timeoutMs: ISOLATED_BUILDER_SPAWN_OBSERVATION_MILLISECONDS,
+        }).pipe(Effect.map(observed => ({observed, type: 'status' as const}))),
+        isolatedBuilderPromise('Could not await isolated code graph builder startup', () => child.exited).pipe(
+          Effect.map(exitCode => ({exitCode, type: 'exit' as const})),
+        ),
+      );
+      if (startup.type === 'exit') {
+        if (startup.exitCode === CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE)
+          return yield* CodeGraphRefreshDemandSuperseded.make({
+            message: 'Code graph refresh demand was superseded before build status publication.',
+          });
+        if (startup.exitCode !== 0)
+          return yield* IsolatedBuilderError.make({
+            message: isolatedBuilderFailureMessage(startup.exitCode, undefined, child.stderrTail?.()),
+          });
+        return {compatible: false, mode: 'attach' as const};
+      }
+      const observed = startup.observed;
       if (!observed) {
         // The child remains detached. A caller that lost the bounded startup
         // race follows the same sidecar attach path as a spawn-lock waiter.
@@ -404,6 +430,8 @@ export const runIsolatedCodeGraphIndex: (
   );
 
   if (exitCode !== 0) {
+    if (exitCode === CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE)
+      return yield* CodeGraphRefreshDemandSuperseded.make({message: 'Code graph refresh demand was superseded.'});
     // A failed child is never rescued by a later sidecar; only enrich its failure with the exact owned status.
     const failed = yield* statusOwnedBy(readStatus, child.processId, priorBuildId, yield* Ref.get(observedBuildId));
     return yield* IsolatedBuilderError.make({

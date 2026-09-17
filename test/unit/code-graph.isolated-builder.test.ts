@@ -31,6 +31,10 @@ import {join} from '../helpers/node-path.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {
+  CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE,
+  CodeGraphRefreshDemandSuperseded,
+} from '../../src/code_graph/refresh_demand.js';
 
 function systemInfoStub(overrides: Partial<SystemInfoShape>): SystemInfoShape {
   return {
@@ -611,6 +615,44 @@ describe('isolated builder exit contracts', () => {
 });
 
 describe('isolated builder cross-host spawn admission', () => {
+  effectIt.effect('transports supersession before the child can publish build status', () =>
+    TestClock.withLive(
+      Effect.acquireUseRelease(
+        Effect.sync(() => mkdtempSync(join(tmpdir(), 'threadnote-isolated-superseded-'))),
+        home =>
+          Effect.gen(function* () {
+            const identity: RepositoryIdentity = {
+              caseMode: 'sensitive',
+              checkoutId: 'a'.repeat(64),
+              displayName: 'fixture/repository',
+              gitCommonDirectory: '/fixture/repository/.git',
+              headCommit: 'b'.repeat(40),
+              objectFormat: 'sha1',
+              repoRoot: '/fixture/repository',
+              repositoryId: 'c'.repeat(64),
+              worktreeId: 'd'.repeat(64),
+            };
+            const failure = yield* Effect.flip(
+              runIsolatedCodeGraphIndex({
+                assertRuntimeSchemaCompatible: () => Effect.void,
+                cwd: identity.repoRoot,
+                readStatus: succeedUndefined,
+                resolveIdentity: () => Effect.succeed(identity),
+                spawn: () => ({
+                  exited: Promise.resolve(CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE),
+                  kill: () => undefined,
+                  processId: 77,
+                }),
+                threadnoteHome: home,
+              }),
+            );
+            expect(failure).toBeInstanceOf(CodeGraphRefreshDemandSuperseded);
+          }),
+        home => Effect.sync(() => rmSync(home, {force: true, recursive: true})),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
   effectIt.effect('reports a database writer including the child owner while build status is unavailable', () =>
     Effect.forEach([process.pid + 1, process.pid], childProcessId =>
       Effect.scoped(

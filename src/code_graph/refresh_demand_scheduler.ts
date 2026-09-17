@@ -1,0 +1,308 @@
+/**
+ * The refresh-demand document is deliberately a scheduling hint, not a
+ * publication authority.  It has one active claim and one replaceable desired
+ * target per worktree, so a noisy caller cannot turn coordination into an
+ * unbounded per-caller ledger.
+ */
+export const CODE_GRAPH_REFRESH_DEMAND_VERSION = 1 as const;
+export const CODE_GRAPH_REFRESH_DEMAND_TOKEN = /^cgdq_[0-9a-f]{32}$/u;
+export const CODE_GRAPH_REFRESH_DEMAND_KEY = /^[0-9a-f]{64}$/u;
+
+export type CodeGraphRefreshDemandPhase = 'claimed' | 'preparing' | 'publishing';
+
+export interface CodeGraphRefreshDemandTarget {
+  readonly attachmentCount: number;
+  readonly requestedAt: number;
+  readonly retry?: {readonly attempt: number; readonly notBefore: number};
+  readonly targetKey: string;
+  readonly targetToken: string;
+  readonly updatedAt: number;
+}
+
+export interface CodeGraphRefreshDemandActive extends CodeGraphRefreshDemandTarget {
+  readonly claimStartedAt: number;
+  readonly claimOwner?: {readonly processId: number; readonly processStartIdentity?: string};
+  readonly phase: CodeGraphRefreshDemandPhase;
+}
+
+export interface CodeGraphRefreshDemandState {
+  readonly active?: CodeGraphRefreshDemandActive;
+  readonly checkoutId: string;
+  readonly desired?: CodeGraphRefreshDemandTarget;
+  readonly revision: number;
+  readonly version: typeof CODE_GRAPH_REFRESH_DEMAND_VERSION;
+  readonly worktreeId: string;
+}
+
+export type CodeGraphRefreshDemandRegistration =
+  | {
+      readonly state: CodeGraphRefreshDemandState;
+      readonly target: CodeGraphRefreshDemandActive;
+      readonly type: 'claimed';
+    }
+  | {
+      readonly state: CodeGraphRefreshDemandState;
+      readonly target: CodeGraphRefreshDemandTarget;
+      readonly type: 'attached';
+    }
+  | {
+      readonly state: CodeGraphRefreshDemandState;
+      readonly target: CodeGraphRefreshDemandTarget;
+      readonly type: 'deferred';
+    }
+  | {
+      readonly state: CodeGraphRefreshDemandState;
+      readonly target: CodeGraphRefreshDemandTarget;
+      readonly type: 'queued';
+    };
+
+const MAX_ATTACHMENTS = 1_000_000;
+const nextRevision = (state: CodeGraphRefreshDemandState) => state.revision + 1;
+const attach = <A extends CodeGraphRefreshDemandTarget>(target: A, now: number): A => ({
+  ...target,
+  attachmentCount: Math.min(MAX_ATTACHMENTS, target.attachmentCount + 1),
+  updatedAt: now,
+});
+
+export function emptyCodeGraphRefreshDemand(checkoutId: string, worktreeId: string): CodeGraphRefreshDemandState {
+  return {checkoutId, revision: 0, version: CODE_GRAPH_REFRESH_DEMAND_VERSION, worktreeId};
+}
+
+/**
+ * Records latest intent without electing an owner. This is the synchronous
+ * request preflight used before in-process deduplication or global permits.
+ */
+export function enqueueCodeGraphRefreshDemand(
+  state: CodeGraphRefreshDemandState,
+  input: {readonly now: number; readonly targetKey: string; readonly token: string},
+): CodeGraphRefreshDemandRegistration {
+  const active = state.active;
+  if (active?.targetKey === input.targetKey) {
+    const target = attach(active, input.now);
+    return {
+      state: {...state, active: target, desired: undefined, revision: nextRevision(state)},
+      target,
+      type: 'attached',
+    };
+  }
+  if (active) {
+    if (state.desired?.targetKey === input.targetKey) {
+      const target = attach(state.desired, input.now);
+      return {
+        state: {...state, desired: target, revision: nextRevision(state)},
+        target,
+        type: target.retry && target.retry.notBefore > input.now ? 'deferred' : 'attached',
+      };
+    }
+    const target: CodeGraphRefreshDemandTarget = {
+      attachmentCount: 1,
+      requestedAt: input.now,
+      targetKey: input.targetKey,
+      targetToken: input.token,
+      updatedAt: input.now,
+    };
+    return {state: {...state, desired: target, revision: nextRevision(state)}, target, type: 'queued'};
+  }
+  const retained = state.desired?.targetKey === input.targetKey ? attach(state.desired, input.now) : undefined;
+  const target = retained ?? {
+    attachmentCount: 1,
+    requestedAt: input.now,
+    targetKey: input.targetKey,
+    targetToken: input.token,
+    updatedAt: input.now,
+  };
+  return {
+    state: {...state, desired: target, revision: nextRevision(state)},
+    target,
+    type: target.retry && target.retry.notBefore > input.now ? 'deferred' : 'queued',
+  };
+}
+
+/** Latest target wins, except a publishing target is irrevocable. */
+export function registerCodeGraphRefreshDemand(
+  state: CodeGraphRefreshDemandState,
+  input: {
+    readonly now: number;
+    readonly owner?: CodeGraphRefreshDemandActive['claimOwner'];
+    readonly targetKey: string;
+    readonly token: string;
+  },
+): CodeGraphRefreshDemandRegistration {
+  const active = state.active;
+  if (active?.targetKey === input.targetKey) {
+    const target = attach(active, input.now);
+    return {
+      state: {...state, active: target, desired: undefined, revision: nextRevision(state)},
+      target,
+      type: 'attached',
+    };
+  }
+  if (!active) {
+    const retained = state.desired?.targetKey === input.targetKey ? state.desired : undefined;
+    const target = retained ?? {
+      attachmentCount: 1,
+      requestedAt: input.now,
+      targetKey: input.targetKey,
+      targetToken: input.token,
+      updatedAt: input.now,
+    };
+    if (retained?.retry && retained.retry.notBefore > input.now) return {state, target: retained, type: 'deferred'};
+    const claimed: CodeGraphRefreshDemandActive = {
+      ...target,
+      attachmentCount: retained ? Math.min(MAX_ATTACHMENTS, retained.attachmentCount + 1) : target.attachmentCount,
+      claimStartedAt: input.now,
+      claimOwner: input.owner,
+      phase: 'claimed',
+      updatedAt: input.now,
+    };
+    return {
+      state: {...state, active: claimed, desired: undefined, revision: nextRevision(state)},
+      target: claimed,
+      type: 'claimed',
+    };
+  }
+  if (state.desired?.targetKey === input.targetKey) {
+    const target = attach(state.desired, input.now);
+    if (target.retry && target.retry.notBefore > input.now) return {state, target, type: 'deferred'};
+    return {state: {...state, desired: target, revision: nextRevision(state)}, target, type: 'attached'};
+  }
+  const target: CodeGraphRefreshDemandTarget = {
+    attachmentCount: 1,
+    requestedAt: input.now,
+    targetKey: input.targetKey,
+    targetToken: input.token,
+    updatedAt: input.now,
+  };
+  return {state: {...state, desired: target, revision: nextRevision(state)}, target, type: 'queued'};
+}
+
+/** A child may adopt only the exact claim it was spawned for. */
+export function adoptCodeGraphRefreshDemand(
+  state: CodeGraphRefreshDemandState,
+  token: string,
+  targetKey: string,
+  owner: CodeGraphRefreshDemandActive['claimOwner'],
+): {readonly state: CodeGraphRefreshDemandState; readonly adopted: boolean} {
+  const active = state.active;
+  if (!active || active.targetToken !== token || active.targetKey !== targetKey || active.phase === 'publishing')
+    return {adopted: false, state};
+  return {
+    adopted: true,
+    state: {...state, active: {...active, claimOwner: owner, phase: 'preparing'}, revision: nextRevision(state)},
+  };
+}
+
+/** Supersession is allowed at authority checkpoints until the writer begins. */
+export function beginCodeGraphRefreshDemandPublication(
+  state: CodeGraphRefreshDemandState,
+  token: string,
+  targetKey: string,
+): {readonly state: CodeGraphRefreshDemandState; readonly type: 'publish' | 'superseded' | 'unauthorized'} {
+  const active = state.active;
+  if (!active || active.targetToken !== token || active.targetKey !== targetKey) return {state, type: 'unauthorized'};
+  if (active.phase === 'publishing') return {state, type: 'publish'};
+  if (state.desired && state.desired.targetKey !== targetKey)
+    return {state: {...state, active: undefined, revision: nextRevision(state)}, type: 'superseded'};
+  return {state: {...state, active: {...active, phase: 'publishing'}, revision: nextRevision(state)}, type: 'publish'};
+}
+
+/** Completion never clears a newer desired target. */
+export function completeCodeGraphRefreshDemand(
+  state: CodeGraphRefreshDemandState,
+  token: string,
+  targetKey: string,
+): CodeGraphRefreshDemandState {
+  const active = state.active;
+  if (!active || active.targetToken !== token || active.targetKey !== targetKey) return state;
+  return {
+    ...state,
+    active: undefined,
+    desired: state.desired?.targetKey === targetKey ? undefined : state.desired,
+    revision: nextRevision(state),
+  };
+}
+
+/** Dead claims are replaced only by the last desired target. */
+export function recoverCodeGraphRefreshDemand(
+  state: CodeGraphRefreshDemandState,
+  ownerLive: boolean,
+): CodeGraphRefreshDemandState {
+  if (!state.active || ownerLive) return state;
+  return {...state, active: undefined, revision: nextRevision(state)};
+}
+
+/** Retry state is attached only to the latest desired target and is capped. */
+export function deferCodeGraphRefreshDemand(
+  state: CodeGraphRefreshDemandState,
+  token: string,
+  targetKey: string,
+  now: number,
+): CodeGraphRefreshDemandState {
+  const active = state.active;
+  if (active?.targetToken !== token || active.targetKey !== targetKey) return state;
+  if (state.desired && state.desired.targetKey !== targetKey) {
+    return {...state, active: undefined, revision: nextRevision(state)};
+  }
+  const prior = active.retry?.attempt ?? state.desired?.retry?.attempt ?? 0;
+  const attempt = Math.min(8, prior + 1);
+  const desired: CodeGraphRefreshDemandTarget = {
+    attachmentCount: active.attachmentCount,
+    requestedAt: active.requestedAt,
+    retry: {attempt, notBefore: now + Math.min(60_000, 250 * 2 ** (attempt - 1))},
+    targetKey: active.targetKey,
+    targetToken: active.targetToken,
+    updatedAt: now,
+  };
+  return {...state, active: undefined, desired, revision: nextRevision(state)};
+}
+
+/** Permanent failure releases only the failed claim and retains a newer target. */
+export function failCodeGraphRefreshDemand(
+  state: CodeGraphRefreshDemandState,
+  token: string,
+  targetKey: string,
+): CodeGraphRefreshDemandState {
+  const active = state.active;
+  if (active?.targetToken !== token || active.targetKey !== targetKey) return state;
+  return {
+    ...state,
+    active: undefined,
+    desired: state.desired?.targetKey === targetKey ? undefined : state.desired,
+    revision: nextRevision(state),
+  };
+}
+
+export function validCodeGraphRefreshDemand(state: CodeGraphRefreshDemandState): boolean {
+  const validRetry = (retry: unknown) =>
+    retry === undefined ||
+    (typeof retry === 'object' &&
+      retry !== null &&
+      Number.isSafeInteger((retry as {attempt?: unknown}).attempt) &&
+      (retry as {attempt: number}).attempt >= 1 &&
+      (retry as {attempt: number}).attempt <= 8 &&
+      Number.isSafeInteger((retry as {notBefore?: unknown}).notBefore) &&
+      (retry as {notBefore: number}).notBefore >= 0);
+  const validTarget = (target: CodeGraphRefreshDemandTarget | undefined) =>
+    target === undefined ||
+    (CODE_GRAPH_REFRESH_DEMAND_KEY.test(target.targetKey) &&
+      CODE_GRAPH_REFRESH_DEMAND_TOKEN.test(target.targetToken) &&
+      Number.isSafeInteger(target.requestedAt) &&
+      Number.isSafeInteger(target.updatedAt) &&
+      Number.isSafeInteger(target.attachmentCount) &&
+      target.attachmentCount > 0 &&
+      target.attachmentCount <= MAX_ATTACHMENTS &&
+      (!('retry' in target) || validRetry((target as {retry?: unknown}).retry)));
+  return (
+    state.version === CODE_GRAPH_REFRESH_DEMAND_VERSION &&
+    CODE_GRAPH_REFRESH_DEMAND_KEY.test(state.checkoutId) &&
+    CODE_GRAPH_REFRESH_DEMAND_KEY.test(state.worktreeId) &&
+    Number.isSafeInteger(state.revision) &&
+    state.revision >= 0 &&
+    validTarget(state.active) &&
+    validTarget(state.desired) &&
+    (state.active === undefined ||
+      (Number.isSafeInteger(state.active.claimStartedAt) &&
+        state.active.claimStartedAt >= 0 &&
+        ['claimed', 'preparing', 'publishing'].includes(state.active.phase)))
+  );
+}

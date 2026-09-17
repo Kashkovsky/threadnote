@@ -56,6 +56,8 @@ export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   readonly incrementalOverlay?: boolean;
   /** @internal Records read-back PRAGMA values for controlled benchmark evidence. */
   readonly onSqliteWriterConfigured?: (settings: CodeGraphSqliteWriterSettings) => Effect.Effect<void, never>;
+  /** @internal Opaque background-demand claim for in-process watcher refreshes. */
+  readonly refreshDemandToken?: string;
   /** @internal Benchmark-only physical transaction grouping; normal indexing uses four logical receipts. */
   readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
   /** @internal Benchmark-only SQLite writer candidate; normal indexing leaves this unset. */

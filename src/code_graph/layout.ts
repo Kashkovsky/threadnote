@@ -193,6 +193,29 @@ export function codeGraphWorktreeSpawnLockPath(
   );
 }
 
+/** Bounded, reconstructible per-worktree scheduling intent; never publication state. */
+export function codeGraphRefreshDemandPath(
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+  worktreeId: string,
+): string {
+  assertCheckoutId(checkoutId);
+  assertWorktreeId(worktreeId);
+  return path.join(threadnoteHome, `.code-graph-refresh-demand-v1-${checkoutId}-${worktreeId}.json`);
+}
+
+export function codeGraphRefreshDemandLockPath(
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+  worktreeId: string,
+): string {
+  assertCheckoutId(checkoutId);
+  assertWorktreeId(worktreeId);
+  return path.join(threadnoteHome, `.code-graph-refresh-demand-v1-${checkoutId}-${worktreeId}.lock`);
+}
+
 export function codeGraphLayout(
   path: Path.Path,
   threadnoteHome: string,
