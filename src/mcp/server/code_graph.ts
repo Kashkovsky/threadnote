@@ -112,11 +112,12 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
         }),
         mode: McpInput.literals(['brief', 'locate', 'explain', 'trace', 'impact'], 'Default brief'),
         project: McpInput.string('Project; max 256 UTF-8 bytes'),
+        surface: McpInput.string('Agent catalog surface selector for compatible verified procedures'),
         task: McpInput.string('Task/question; 1-4096 UTF-8 bytes; no controls'),
         workset: McpInput.string('Prepared workset; max 256 UTF-8 bytes; else callerCwd'),
       },
     },
-    ({budgetTokens, callerCwd, codeRefs, mode, project, task, workset}) => {
+    ({budgetTokens, callerCwd, codeRefs, mode, project, surface, task, workset}) => {
       const worksetName = workset?.trim();
       const checkedCwd = worksetName
         ? undefined
@@ -148,6 +149,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
                 kind: 'repository',
                 ...(project?.trim() ? {project: project.trim()} : {}),
               },
+          ...(surface?.trim() ? {surface: surface.trim()} : {}),
           task: checkedTask.value,
         });
         return {

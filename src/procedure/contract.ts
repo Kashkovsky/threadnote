@@ -1,6 +1,7 @@
 import {Schema} from 'effect';
 
-const PROCEDURE_MANIFEST_VERSION = 1;
+const LEGACY_PROCEDURE_MANIFEST_VERSION = 1;
+const PROCEDURE_MANIFEST_VERSION = 2;
 const PROCEDURE_RECEIPT_VERSION = 1;
 
 const MAX_ARGUMENTS = 16;
@@ -11,6 +12,8 @@ const MAX_DURABLE_MEMORY_IDS = 64;
 const MAX_FIXTURES = 32;
 const MAX_IDENTIFIER_LENGTH = 128;
 const MAX_OPAQUE_VALUE_LENGTH = 256;
+const MAX_SUMMARY_LENGTH = 512;
+const MAX_TASK_KEYWORDS = 32;
 const MAX_ARGUMENT_LENGTH = 512;
 const MAX_SEMANTIC_VERSION_LENGTH = 128;
 
@@ -47,7 +50,7 @@ export interface ProcedureCommandDescriptor {
   readonly id: string;
 }
 
-export interface ProcedureManifest {
+interface ProcedureManifestBase {
   readonly artifact: ProcedureArtifactIdentity;
   readonly compatible: {
     readonly capabilities: readonly string[];
@@ -57,12 +60,31 @@ export interface ProcedureManifest {
   readonly owner: string;
   readonly relatedDurableMemoryIds: readonly string[];
   readonly reviewedOn: string;
-  readonly schemaVersion: typeof PROCEDURE_MANIFEST_VERSION;
   readonly verification: {
     readonly commands: readonly ProcedureCommandDescriptor[];
     readonly fixtures: readonly ProcedureFixtureDescriptor[];
   };
 }
+
+export interface ProcedureRollout {
+  readonly channel: 'preview' | 'stable';
+  readonly percentage: number;
+}
+
+export interface ProcedureManifestV1 extends ProcedureManifestBase {
+  readonly schemaVersion: typeof LEGACY_PROCEDURE_MANIFEST_VERSION;
+}
+
+export interface ProcedureManifestV2 extends ProcedureManifestBase {
+  readonly presentation: {
+    readonly summary: string;
+    readonly taskKeywords: readonly string[];
+  };
+  readonly rollout: ProcedureRollout;
+  readonly schemaVersion: typeof PROCEDURE_MANIFEST_VERSION;
+}
+
+export type ProcedureManifest = ProcedureManifestV1 | ProcedureManifestV2;
 
 export interface ProcedureVerificationReceipt {
   readonly artifact: ProcedureArtifactIdentity;
@@ -88,6 +110,10 @@ export interface ProcedureStatusInput {
 
 export function parseProcedureManifest(value: unknown): ProcedureManifest {
   const source = object(value, 'procedure manifest');
+  const schemaVersion = source.schemaVersion;
+  if (schemaVersion !== LEGACY_PROCEDURE_MANIFEST_VERSION && schemaVersion !== PROCEDURE_MANIFEST_VERSION) {
+    fail('procedure manifest schemaVersion must be 1 or 2');
+  }
   exactKeys(
     source,
     [
@@ -95,44 +121,85 @@ export function parseProcedureManifest(value: unknown): ProcedureManifest {
       'compatible',
       'dependencies',
       'owner',
+      ...(schemaVersion === PROCEDURE_MANIFEST_VERSION ? ['presentation'] : []),
       'relatedDurableMemoryIds',
       'reviewedOn',
+      ...(schemaVersion === PROCEDURE_MANIFEST_VERSION ? ['rollout'] : []),
       'schemaVersion',
       'verification',
     ],
     'procedure manifest',
   );
-  if (source.schemaVersion !== PROCEDURE_MANIFEST_VERSION) {
-    fail('procedure manifest schemaVersion must be 1');
-  }
   const compatible = object(source.compatible, 'compatible');
   exactKeys(compatible, ['capabilities', 'surfaceIds'], 'compatible');
   const verification = object(source.verification, 'verification');
   exactKeys(verification, ['commands', 'fixtures'], 'verification');
-  return {
-    artifact: parseArtifact(source.artifact, 'artifact'),
-    compatible: {
-      capabilities: sortedIdentifiers(
-        sourceArray(compatible.capabilities, 'compatible.capabilities'),
-        MAX_CAPABILITIES,
-        'compatible.capabilities',
-      ),
-      surfaceIds: sortedIdentifiers(
-        sourceArray(compatible.surfaceIds, 'compatible.surfaceIds'),
-        MAX_CAPABILITIES,
-        'compatible.surfaceIds',
-      ),
-    },
-    dependencies: sortedDependencies(sourceArray(source.dependencies, 'dependencies')),
-    owner: opaque(source.owner, 'owner'),
-    relatedDurableMemoryIds: sortedMemoryIds(sourceArray(source.relatedDurableMemoryIds, 'relatedDurableMemoryIds')),
-    reviewedOn: calendarDate(source.reviewedOn, 'reviewedOn'),
-    schemaVersion: PROCEDURE_MANIFEST_VERSION,
-    verification: {
-      commands: orderedCommands(sourceArray(verification.commands, 'verification.commands')),
-      fixtures: sortedFixtures(sourceArray(verification.fixtures, 'verification.fixtures')),
-    },
+  const artifact = parseArtifact(source.artifact, 'artifact');
+  const parsedCompatible = {
+    capabilities: sortedIdentifiers(
+      sourceArray(compatible.capabilities, 'compatible.capabilities'),
+      MAX_CAPABILITIES,
+      'compatible.capabilities',
+    ),
+    surfaceIds: sortedIdentifiers(
+      sourceArray(compatible.surfaceIds, 'compatible.surfaceIds'),
+      MAX_CAPABILITIES,
+      'compatible.surfaceIds',
+    ),
   };
+  const dependencies = sortedDependencies(sourceArray(source.dependencies, 'dependencies'));
+  const owner = opaque(source.owner, 'owner');
+  const relatedDurableMemoryIds = sortedMemoryIds(
+    sourceArray(source.relatedDurableMemoryIds, 'relatedDurableMemoryIds'),
+  );
+  const reviewedOn = calendarDate(source.reviewedOn, 'reviewedOn');
+  const parsedVerification = {
+    commands: orderedCommands(sourceArray(verification.commands, 'verification.commands')),
+    fixtures: sortedFixtures(sourceArray(verification.fixtures, 'verification.fixtures')),
+  };
+  if (schemaVersion === LEGACY_PROCEDURE_MANIFEST_VERSION) {
+    return {
+      artifact,
+      compatible: parsedCompatible,
+      dependencies,
+      owner,
+      relatedDurableMemoryIds,
+      reviewedOn,
+      schemaVersion: LEGACY_PROCEDURE_MANIFEST_VERSION,
+      verification: parsedVerification,
+    };
+  }
+  const presentation = object(source.presentation, 'presentation');
+  exactKeys(presentation, ['summary', 'taskKeywords'], 'presentation');
+  const rollout = object(source.rollout, 'rollout');
+  exactKeys(rollout, ['channel', 'percentage'], 'rollout');
+  const channel = rolloutChannel(rollout.channel);
+  if (channel === 'stable' && artifact.semanticVersion.includes('-')) {
+    fail('stable procedure rollout requires a stable semantic version');
+  }
+  return {
+    artifact,
+    compatible: parsedCompatible,
+    dependencies,
+    owner,
+    presentation: {
+      summary: boundedText(presentation.summary, 'presentation.summary', MAX_SUMMARY_LENGTH),
+      taskKeywords: sortedIdentifiers(
+        sourceArray(presentation.taskKeywords, 'presentation.taskKeywords'),
+        MAX_TASK_KEYWORDS,
+        'presentation.taskKeywords',
+      ),
+    },
+    relatedDurableMemoryIds,
+    reviewedOn,
+    rollout: {channel, percentage: rolloutPercentage(rollout.percentage)},
+    schemaVersion: PROCEDURE_MANIFEST_VERSION,
+    verification: parsedVerification,
+  };
+}
+
+export function isPublishableProcedureManifest(manifest: ProcedureManifest): manifest is ProcedureManifestV2 {
+  return manifest.schemaVersion === PROCEDURE_MANIFEST_VERSION;
 }
 
 export function parseProcedureVerificationReceipt(value: unknown): ProcedureVerificationReceipt {
@@ -174,6 +241,10 @@ export function parseProcedureVerificationReceipt(value: unknown): ProcedureVeri
 
 export function canonicalProcedureManifest(manifest: ProcedureManifest): string {
   return `${JSON.stringify(parseProcedureManifest(manifest))}\n`;
+}
+
+export function canonicalProcedureVerificationReceipt(receipt: ProcedureVerificationReceipt): string {
+  return `${JSON.stringify(parseProcedureVerificationReceipt(receipt))}\n`;
 }
 
 export function procedureManifestSha256(manifest: ProcedureManifest): string {
@@ -336,7 +407,7 @@ function isNewerArtifact(current: ProcedureArtifactIdentity, available: Procedur
   return current.id === available.id && compareSemanticVersions(available.semanticVersion, current.semanticVersion) > 0;
 }
 
-function compareSemanticVersions(left: string, right: string): number {
+export function compareSemanticVersions(left: string, right: string): number {
   const parsedLeft = semanticVersionParts(left);
   const parsedRight = semanticVersionParts(right);
   for (let index = 0; index < 3; index += 1) {
@@ -361,6 +432,18 @@ function compareSemanticVersions(left: string, right: string): number {
     return compareStrings(leftPart, rightPart);
   }
   return 0;
+}
+
+function rolloutChannel(value: unknown): ProcedureRollout['channel'] {
+  if (value !== 'preview' && value !== 'stable') fail('rollout.channel must be preview or stable');
+  return value;
+}
+
+function rolloutPercentage(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 100) {
+    fail('rollout.percentage must be an integer from 0 to 100');
+  }
+  return value;
 }
 
 function semanticVersionParts(value: string): {readonly numbers: readonly string[]; readonly prerelease?: string} {
@@ -426,6 +509,19 @@ function opaque(value: unknown, label: string): string {
     containsControlCharacter(value)
   ) {
     fail(`${label} must be a non-empty opaque value`);
+  }
+  return value;
+}
+
+function boundedText(value: unknown, label: string, maximum: number): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > maximum ||
+    value.trim() !== value ||
+    containsControlCharacter(value)
+  ) {
+    fail(`${label} must be non-empty bounded text`);
   }
   return value;
 }

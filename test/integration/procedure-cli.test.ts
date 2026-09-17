@@ -152,9 +152,11 @@ async function makeFixture() {
       compatible: {capabilities: [], surfaceIds: []},
       dependencies: [],
       owner: 'test',
+      presentation: {summary: 'Run the reviewed test procedure.', taskKeywords: ['test']},
       relatedDurableMemoryIds: [],
       reviewedOn: '2026-09-17',
-      schemaVersion: 1,
+      rollout: {channel: 'stable', percentage: 100},
+      schemaVersion: 2,
       verification: {
         commands: [{id: 'check', argv: [process.execPath, '-e', 'await Bun.write("executed.txt", "verified");']}],
         fixtures: [],

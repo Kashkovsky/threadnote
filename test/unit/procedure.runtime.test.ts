@@ -10,9 +10,11 @@ const manifest = {
   compatible: {capabilities: ['filesystem.read'], surfaceIds: ['terminal']},
   dependencies: [],
   owner: 'owner',
+  presentation: {summary: 'Run the reviewed repository verification workflow.', taskKeywords: ['review']},
   relatedDurableMemoryIds: [],
   reviewedOn: '2026-09-17',
-  schemaVersion: 1,
+  rollout: {channel: 'stable', percentage: 100},
+  schemaVersion: 2,
   verification: {
     commands: [
       {argv: ['setup', '--prepare'], id: 'z-setup'},

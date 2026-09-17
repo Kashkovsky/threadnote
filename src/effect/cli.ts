@@ -8,6 +8,7 @@ import {
   makeValueCommand,
   makeProcedureVerifyCommand,
   makeProcedureStatusCommand,
+  makeProcedurePublishCommand,
 } from './workflow_cli.js';
 import {makeCursorHookCommand, makeInstallHooksCommand, makePreCompactHookCommand} from './hooks_cli.js';
 import {agentsCommandMetadata, makeAgentsCommand} from './agents_cli.js';
@@ -64,7 +65,7 @@ import {makeCloseoutCommand} from './closeout_cli.js';
 import {runContextHealth} from '../memory/context_health_commands.js';
 import {runContextHealthRepairApply, runContextHealthRepairPreview} from '../memory/context_health_repair_commands.js';
 import {runContextCheck} from '../context_check/commands.js';
-import {runProcedureStatus, runProcedureVerify} from '../procedure/commands.js';
+import {runProcedurePublish, runProcedureStatus, runProcedureVerify} from '../procedure/commands.js';
 import {runMcpInstall} from '../mcp/index.js';
 import {runObsidianInboxScan} from '../obsidian/inbox.js';
 import {runObsidianOpen} from '../obsidian/open.js';
@@ -1454,12 +1455,13 @@ const value = makeValueCommand(
   options => withRuntimeEffect(config => valueReportCommands.runValueReportDelete(config, options)),
 );
 const procedureVerify = makeProcedureVerifyCommand(options => withRuntimeEffect(() => runProcedureVerify(options)));
-
 const procedureStatus = makeProcedureStatusCommand(options => withRuntimeEffect(() => runProcedureStatus(options)));
-
+const procedurePublish = makeProcedurePublishCommand(options =>
+  withRuntimeEffect(config => runProcedurePublish(config, options)),
+);
 const procedure = Command.make('procedure').pipe(
-  Command.withDescription('Explicit local procedure verification and read-only status'),
-  Command.withSubcommands([procedureVerify, procedureStatus]),
+  Command.withDescription('Verify, inspect, and publish reviewed procedures'),
+  Command.withSubcommands([procedureVerify, procedureStatus, procedurePublish]),
 );
 
 const compact = makeCompactCommand(options => withRuntimeEffect(config => runCompact(config, options)));

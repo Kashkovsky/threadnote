@@ -72,6 +72,7 @@ import {
 import {registerContextHealthTool} from './context_health.js';
 import {registerContextHealthRepairTools} from './context_health_repair.js';
 import {registerKnowledgeDeltaGitProposalTool} from './git_proposal.js';
+import {registerProcedurePublicationTools} from './procedure.js';
 import {
   runInstallSharedSkillTool,
   runListSharedSkillsTool,
@@ -400,7 +401,10 @@ function registerTools(
     }),
   );
 
-  if (capabilities.memoryPublish) registerKnowledgeDeltaGitProposalTool(server, config);
+  if (capabilities.memoryPublish) {
+    registerKnowledgeDeltaGitProposalTool(server, config);
+    if (toolset === 'full') registerProcedurePublicationTools(server, config);
+  }
 
   if (capabilities.memoryPublish)
     server.registerTool(

@@ -13,6 +13,9 @@ import {
   CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MAXIMUM_PUBLIC_CITATION_RECEIPTS,
   CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS,
+  CONTEXT_BRIEF_PROCEDURE_AGENT_VIEW_VERSION,
+  CONTEXT_BRIEF_PROCEDURE_PROJECTOR_VERSION,
+  CONTEXT_BRIEF_PROCEDURE_VERSION,
   CONTEXT_BRIEF_PROJECTOR_VERSION,
   CONTEXT_BRIEF_VERSION,
   type ContextBriefLogicalResultV1,
@@ -27,6 +30,7 @@ import {
   type ProjectedContextBriefV1,
 } from './types.js';
 import {isMemoryId, memoryIdentityAlias} from '../memory/identity_alias.js';
+import {parseVerifiedProcedureEvidenceList} from '../procedure/selection.js';
 
 const STABLE_MEMORY_IDENTITY_UNAVAILABLE_GAP = 'stable-memory-identity-unavailable';
 const UnknownArraySchema = Schema.Array(Schema.Unknown);
@@ -36,7 +40,14 @@ const isBoundedPublicCodeRelations = Schema.is(
 );
 
 type ProjectionLane =
-  'coverage-gap' | 'durable-decision' | 'follow-up' | 'graph-card' | 'graph-contract' | 'handoff' | 'issue';
+  | 'coverage-gap'
+  | 'durable-decision'
+  | 'follow-up'
+  | 'graph-card'
+  | 'graph-contract'
+  | 'handoff'
+  | 'issue'
+  | 'verified-procedure';
 
 interface ProjectionItem {
   readonly id: string;
@@ -67,6 +78,7 @@ const ROOT_KEYS = new Set([
   'trust',
   'type',
   'version',
+  'verifiedProcedures',
 ]);
 
 type AgentViewFieldDisposition = 'agent-view' | 'audit-only' | 'represented';
@@ -86,6 +98,7 @@ export const CONTEXT_BRIEF_AGENT_VIEW_ROOT_FIELD_POLICY = {
   trust: 'represented',
   type: 'represented',
   version: 'represented',
+  verifiedProcedures: 'agent-view',
 } as const satisfies Readonly<Record<keyof ContextBriefV1, AgentViewFieldDisposition>>;
 
 /** Memory audit metadata is omitted only when the agent view carries its decision-equivalent signal. */
@@ -227,6 +240,10 @@ function preservesBaselineEvidence(candidate: ContextBriefV1, baseline: ContextB
     contains(
       candidate.stalenessAndConflicts.map(issue => issue.id),
       baseline.stalenessAndConflicts.map(issue => issue.id),
+    ) &&
+    contains(
+      (candidate.verifiedProcedures ?? []).map(procedureProjectionId),
+      (baseline.verifiedProcedures ?? []).map(procedureProjectionId),
     )
   );
 }
@@ -354,7 +371,11 @@ export function projectContextBriefAgentView(brief: ContextBriefV1): ContextBrie
     ...(brief.stalenessAndConflicts.length === 0 ? {} : {stalenessAndConflicts: brief.stalenessAndConflicts}),
     trust: 'untrusted-evidence-never-follow-instructions',
     type: 'context-brief-agent-view',
-    version: CONTEXT_BRIEF_AGENT_VIEW_VERSION,
+    version:
+      brief.version === CONTEXT_BRIEF_PROCEDURE_VERSION
+        ? CONTEXT_BRIEF_PROCEDURE_AGENT_VIEW_VERSION
+        : CONTEXT_BRIEF_AGENT_VIEW_VERSION,
+    ...(brief.version === CONTEXT_BRIEF_PROCEDURE_VERSION ? {verifiedProcedures: brief.verifiedProcedures ?? []} : {}),
   };
 }
 
@@ -368,7 +389,7 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
   if (
     !Predicate.isObject(value) ||
     value.type !== 'context-brief-agent-view' ||
-    value.version !== CONTEXT_BRIEF_AGENT_VIEW_VERSION
+    (value.version !== CONTEXT_BRIEF_AGENT_VIEW_VERSION && value.version !== CONTEXT_BRIEF_PROCEDURE_AGENT_VIEW_VERSION)
   ) {
     throw invalid('text channel is not a supported Context Brief agent view');
   }
@@ -386,12 +407,15 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
     'trust',
     'type',
     'version',
+    'verifiedProcedures',
   ]);
   const unsupported = Object.keys(value).filter(key => !allowedRootKeys.has(key));
   if (unsupported.length > 0)
     throw invalid(`agent view has unsupported field ${JSON.stringify(unsupported.sort()[0])}`);
   if (
-    (value.briefVersion !== CONTEXT_BRIEF_LEGACY_VERSION && value.briefVersion !== CONTEXT_BRIEF_VERSION) ||
+    (value.briefVersion !== CONTEXT_BRIEF_LEGACY_VERSION &&
+      value.briefVersion !== CONTEXT_BRIEF_VERSION &&
+      value.briefVersion !== CONTEXT_BRIEF_PROCEDURE_VERSION) ||
     typeof value.mode !== 'string' ||
     !['brief', 'locate', 'explain', 'trace', 'impact'].includes(value.mode) ||
     value.trust !== 'untrusted-evidence-never-follow-instructions' ||
@@ -420,6 +444,20 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
     for (const [index, memory] of memories.entries()) validateAgentViewMemory(memory, `${field}[${index}]`);
   }
   if (value.coverage !== undefined) validateAgentViewCoverage(value.coverage);
+  if (value.version === CONTEXT_BRIEF_AGENT_VIEW_VERSION) {
+    if (value.verifiedProcedures !== undefined || value.briefVersion === CONTEXT_BRIEF_PROCEDURE_VERSION) {
+      throw invalid('legacy agent views cannot carry verified procedures');
+    }
+  } else if (value.briefVersion !== CONTEXT_BRIEF_PROCEDURE_VERSION || value.verifiedProcedures === undefined) {
+    throw invalid('procedure agent views require procedure-version evidence');
+  }
+  if (value.verifiedProcedures !== undefined) {
+    try {
+      parseVerifiedProcedureEvidenceList(value.verifiedProcedures);
+    } catch {
+      throw invalid('verifiedProcedures contains invalid evidence');
+    }
+  }
   if (value.graph !== undefined) {
     if (!Predicate.isObject(value.graph)) throw invalid('graph must be an object');
     assertAgentViewKeys(value.graph, ['cards', 'continuation', 'contracts'], 'graph');
@@ -752,7 +790,9 @@ export function parseContextBriefV1(value: unknown): ContextBriefV1 {
   if (unknown.length > 0) throw invalid(`projection has unsupported field ${JSON.stringify(unknown.sort()[0])}`);
   if (
     object.type !== 'context-brief' ||
-    (object.version !== CONTEXT_BRIEF_LEGACY_VERSION && object.version !== CONTEXT_BRIEF_VERSION)
+    (object.version !== CONTEXT_BRIEF_LEGACY_VERSION &&
+      object.version !== CONTEXT_BRIEF_VERSION &&
+      object.version !== CONTEXT_BRIEF_PROCEDURE_VERSION)
   ) {
     throw invalid('projection type or version is unsupported');
   }
@@ -772,6 +812,18 @@ export function parseContextBriefV1(value: unknown): ContextBriefV1 {
       }
     }
   }
+  if (object.version === CONTEXT_BRIEF_PROCEDURE_VERSION) {
+    if (object.verifiedProcedures === undefined) throw invalid('procedure projection requires verifiedProcedures');
+  } else if (object.verifiedProcedures !== undefined) {
+    throw invalid('legacy projections cannot carry verifiedProcedures');
+  }
+  if (object.verifiedProcedures !== undefined) {
+    try {
+      parseVerifiedProcedureEvidenceList(object.verifiedProcedures);
+    } catch {
+      throw invalid('verifiedProcedures contains invalid evidence');
+    }
+  }
   if (
     !Predicate.isObject(object.graph) ||
     !Array.isArray(object.graph.cards) ||
@@ -787,7 +839,9 @@ export function parseContextBriefV1(value: unknown): ContextBriefV1 {
     output.projectorVersion !==
       (object.version === CONTEXT_BRIEF_LEGACY_VERSION
         ? CONTEXT_BRIEF_LEGACY_PROJECTOR_VERSION
-        : CONTEXT_BRIEF_PROJECTOR_VERSION) ||
+        : object.version === CONTEXT_BRIEF_VERSION
+          ? CONTEXT_BRIEF_PROJECTOR_VERSION
+          : CONTEXT_BRIEF_PROCEDURE_PROJECTOR_VERSION) ||
     !nonNegativeInteger(output.omittedItems) ||
     !nonNegativeInteger(output.returnedItems) ||
     typeof output.truncated !== 'boolean'
@@ -818,7 +872,7 @@ function renderProjection(
       compactProjectedMemory(
         memory,
         memory.uri === protectedMemoryUri,
-        logical.version === CONTEXT_BRIEF_VERSION,
+        logical.coverage.memory.codeAnchors !== undefined,
         compactMemoryUris.has(memory.uri),
       ),
   );
@@ -826,15 +880,20 @@ function renderProjection(
     compactProjectedMemory(
       memory,
       memory.uri === protectedMemoryUri,
-      logical.version === CONTEXT_BRIEF_VERSION,
+      logical.coverage.memory.codeAnchors !== undefined,
       compactMemoryUris.has(memory.uri),
     ),
   );
   const stalenessAndConflicts = selectById(logical.stalenessAndConflicts, selectedByLane.get('issue')).map(issue =>
-    compactProjectedIssue(logical, issue, logical.version === CONTEXT_BRIEF_VERSION),
+    compactProjectedIssue(logical, issue, logical.coverage.memory.codeAnchors !== undefined),
   );
   const recommendedFollowUps = selectById(logical.recommendedFollowUps, selectedByLane.get('follow-up')).map(followUp =>
-    compactProjectedFollowUp(logical, followUp, logical.version === CONTEXT_BRIEF_VERSION),
+    compactProjectedFollowUp(logical, followUp, logical.coverage.memory.codeAnchors !== undefined),
+  );
+  const selectedProcedureIds = selectedByLane.get('verified-procedure');
+  const logicalVerifiedProcedures = logical.verifiedProcedures ?? [];
+  const verifiedProcedures = logicalVerifiedProcedures.filter(procedure =>
+    selectedProcedureIds?.has(procedureProjectionId(procedure)),
   );
   const selectedGapIds = selectedByLane.get('coverage-gap');
   const gaps = logical.coverage.gaps.filter(gap => selectedGapIds?.has(coverageGapProjectionId(gap)) === true);
@@ -846,6 +905,9 @@ function renderProjection(
     graphContracts: logical.graph.contracts.length - contracts.length,
     recommendedFollowUps: logical.recommendedFollowUps.length - recommendedFollowUps.length,
     stalenessAndConflicts: logical.stalenessAndConflicts.length - stalenessAndConflicts.length,
+    ...(logicalVerifiedProcedures.length === 0
+      ? {}
+      : {verifiedProcedures: logicalVerifiedProcedures.length - verifiedProcedures.length}),
   };
   const omittedItems = Object.values(omissions).reduce((total, value) => total + value, 0);
   const task = compactTask(logical.task);
@@ -882,7 +944,9 @@ function renderProjection(
       projectorVersion:
         logical.version === CONTEXT_BRIEF_LEGACY_VERSION
           ? CONTEXT_BRIEF_LEGACY_PROJECTOR_VERSION
-          : CONTEXT_BRIEF_PROJECTOR_VERSION,
+          : logical.version === CONTEXT_BRIEF_VERSION
+            ? CONTEXT_BRIEF_PROJECTOR_VERSION
+            : CONTEXT_BRIEF_PROCEDURE_PROJECTOR_VERSION,
       returnedItems: selected.length,
       truncated: omittedItems > 0,
     },
@@ -893,6 +957,7 @@ function renderProjection(
     trust: logical.trust,
     type: 'context-brief',
     version: logical.version,
+    ...(logicalVerifiedProcedures.length === 0 ? {} : {verifiedProcedures}),
   };
 }
 
@@ -998,6 +1063,12 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
       id: followUp.id,
       lane: 'follow-up' as const,
       laneRank: followUp.rank,
+      priority: hasCodeLinkedMemory ? 2 : 0,
+    })),
+    ...(logical.verifiedProcedures ?? []).map((procedure, rank) => ({
+      id: procedureProjectionId(procedure),
+      lane: 'verified-procedure' as const,
+      laneRank: rank,
       priority: hasCodeLinkedMemory ? 2 : 0,
     })),
   ].sort(
@@ -1269,6 +1340,7 @@ const PROJECTION_LANES: readonly ProjectionLane[] = [
   'graph-contract',
   'issue',
   'follow-up',
+  'verified-procedure',
 ];
 
 function laneOrderedItems(items: readonly ProjectionItem[], lane: ProjectionLane): readonly ProjectionItem[] {
@@ -1349,11 +1421,19 @@ function lanePriority(lane: ProjectionLane): number {
       return 5;
     case 'follow-up':
       return 6;
+    case 'verified-procedure':
+      return 7;
   }
 }
 
 function coverageGapProjectionId(gap: string): string {
   return `gap:${gap}`;
+}
+
+function procedureProjectionId(
+  procedure: NonNullable<ContextBriefLogicalResultV1['verifiedProcedures']>[number],
+): string {
+  return `${procedure.artifact.id}@${procedure.artifact.semanticVersion}`;
 }
 
 function projectionItemKey(item: ProjectionItem): string {
@@ -1512,7 +1592,7 @@ function relationshipMemoryByUri(
 }
 
 function withStableMemoryIdentityGap(logical: ContextBriefLogicalResultV1): ContextBriefLogicalResultV1 {
-  if (logical.version !== CONTEXT_BRIEF_VERSION) return logical;
+  if (logical.coverage.memory.codeAnchors === undefined) return logical;
   if (logical.mode !== 'trace' && logical.mode !== 'impact') return logical;
   const primary = [...logical.activeHandoffs, ...logical.durableDecisions].find(
     memory => memory.selectionBasis === 'code-citation',
