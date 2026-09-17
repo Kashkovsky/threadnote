@@ -411,6 +411,20 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
       `Owner: PID ${current.owner.processId} · Bun ${current.owner.runtimeVersion} · ` +
         `heartbeat ${formatStatusDuration(current.observation.heartbeatAgeMilliseconds)} ago`,
     );
+    if (current.scheduling?.queue) {
+      const queue = current.scheduling.queue;
+      yield* Console.log(
+        `Admission: ${queue.admissionClass} · ${current.scheduling.admittedAt ? 'admitted' : `queue ${queue.position}/${queue.size}`} · enqueued ${queue.enqueuedAt}`,
+      );
+    }
+    if (current.scheduling?.blocker) yield* Console.log(`Waiting for: ${current.scheduling.blocker}`);
+    if (current.scheduling?.phaseMilliseconds) {
+      yield* Console.log(
+        `Phase time: ${Object.entries(current.scheduling.phaseMilliseconds)
+          .map(([phase, milliseconds]) => `${phase} ${formatStatusDuration(milliseconds)}`)
+          .join(' · ')}`,
+      );
+    }
     if (locks.databaseWriter) {
       yield* Console.log(
         locks.databaseWriter.state === 'active'

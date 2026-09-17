@@ -202,6 +202,26 @@ describe('isolated code-graph builder spawn plan', () => {
     expect(() => assertIsolatedBuilderPlan(plan)).not.toThrow();
   });
 
+  it('preserves bounded admission metadata while mirroring queued child progress', () => {
+    const queue = {admissionClass: 'background' as const, enqueuedAt: '2026-09-17T12:00:00.000Z', position: 3, size: 4};
+    expect(
+      codeGraphProgressFromBuildStatus({
+        counters: {},
+        phase: 'waiting',
+        subphase: 'home-builder-cap',
+        scheduling: {queue},
+      }),
+    ).toEqual({phase: 'waiting', reason: 'home-builder-cap', admission: queue});
+    expect(
+      codeGraphProgressFromBuildStatus({
+        counters: {},
+        phase: 'waiting',
+        subphase: 'database-writer',
+        scheduling: {queue, admittedAt: '2026-09-17T12:00:01.000Z'},
+      }),
+    ).toEqual({phase: 'waiting', reason: 'database-writer'});
+  });
+
   it('forwards a Manager full rebuild without disabling vectors', () => {
     const plan = codeGraphIsolatedBuilderSpawnPlan(systemInfoStub({}), {
       cwd: '/repo/worktree',

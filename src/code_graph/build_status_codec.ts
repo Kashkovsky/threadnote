@@ -1,4 +1,5 @@
 import {Option} from 'effect';
+import {CODE_GRAPH_BUILD_PHASES as VALID_PHASES, parseCodeGraphBuildScheduling} from './build_status_scheduling.js';
 import {
   CODE_GRAPH_BUILD_COMMIT_ID,
   CODE_GRAPH_BUILD_ID,
@@ -19,7 +20,6 @@ import type {
   CodeGraphMaterializationMetrics,
   CodeGraphMaterializationRows,
   CodeGraphOverlayFallbackReason,
-  CodeGraphProgress,
 } from './types.js';
 import type {
   CodeGraphBuildActivation,
@@ -36,17 +36,6 @@ import type {
 
 const BUILD_ID = CODE_GRAPH_BUILD_ID;
 const COMMIT_ID = CODE_GRAPH_BUILD_COMMIT_ID;
-const VALID_PHASES = [
-  'activating',
-  'embedding',
-  'materializing',
-  'reclaiming',
-  'registering',
-  'resolving',
-  'scanning',
-  'sharing',
-  'waiting',
-] as const satisfies readonly CodeGraphProgress['phase'][];
 const VALID_STATES = ['completed', 'failed', 'queued', 'running'] as const satisfies readonly CodeGraphBuildState[];
 const VALID_MATERIALIZATION_FALLBACK_REASONS = [
   'cache-incomplete',
@@ -103,6 +92,8 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
     return undefined;
   }
   const counters = parseCounters(value.counters);
+  const scheduling = parseCodeGraphBuildScheduling(value.scheduling);
+  if (value.scheduling !== undefined && !scheduling) return undefined;
   if (!counters) return undefined;
   const activity = parseActivity(value.activity);
   if (value.activity !== undefined && !activity) return undefined;
@@ -161,6 +152,7 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
     ...(resolution ? {resolution} : {}),
     ...(result ? {result} : {}),
     schemaVersion: CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
+    ...(scheduling ? {scheduling} : {}),
     state: value.state,
     ...(subphase ? {subphase} : {}),
     ...(timings ? {timings} : {}),

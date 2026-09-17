@@ -6,6 +6,7 @@ import type {
 import type {ObsoleteCodeGraphStoreInventory} from './maintenance.js';
 import type {CodeGraphStorage} from './storage.js';
 import type {CodeGraphStatus} from './types.js';
+import {parseCodeGraphBuildScheduling, type CodeGraphBuildScheduling} from './build_status_scheduling.js';
 
 export const CODE_GRAPH_STATUS_DEFAULT_BUILD_LIMIT = 4;
 export const CODE_GRAPH_STATUS_MINIMUM_BUILD_LIMIT = 1;
@@ -50,6 +51,7 @@ export interface CodeGraphStatusBuildSummaryV5 {
   readonly phase: ObservedCodeGraphBuildStatus['phase'];
   readonly result?: NonNullable<ObservedCodeGraphBuildStatus['result']>;
   readonly state: ObservedCodeGraphBuildStatus['state'];
+  readonly scheduling?: CodeGraphBuildScheduling;
   readonly subphase?: string;
   readonly timestamps: ObservedCodeGraphBuildStatus['timestamps'];
 }
@@ -196,11 +198,13 @@ export function projectCodeGraphStatusBuildSummaryV5(
   status: ObservedCodeGraphBuildStatus,
 ): CodeGraphStatusBuildSummaryV5 {
   const retainsActiveActivity = status.state === 'queued' || status.state === 'running';
+  const scheduling = parseCodeGraphBuildScheduling(status.scheduling);
   return {
     ...(retainsActiveActivity && status.activity
       ? {activity: projectCodeGraphStatusBuildActivityV5(status.activity)}
       : {}),
     buildId: boundedText(status.buildId, 64),
+    ...(scheduling ? {scheduling} : {}),
     ...(status.coordination
       ? {
           coordination: {
