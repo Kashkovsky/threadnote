@@ -26,8 +26,9 @@ relation set, so carry forward relations that remain valid. Keep `replaceUri` as
 
 For consequential source claims, attach graph-indexed repository paths or returned `cgs_` and `cgr_` handles as code
 references. Threadnote first attempts capture from a ready exact-current graph and never starts indexing during the
-write. For active personal memory with explicit code references, a retryable graph-readiness failure stores the memory
-and queues a private pending anchor by default. Shared and inactive writes remain strict. Use MCP
+write. For active personal `remember_context` writes with `codeRefs`, always pass MCP `citationPolicy: "defer"` or CLI
+`--defer-code-refs` so graph-readiness failures store the memory with a private pending anchor. Shared and inactive
+writes remain strict. Use MCP
 `citationPolicy: "require-current"` or CLI `--require-current-code-refs` only when the memory must fail before writing.
 
 Pending locators are not citations or graph-to-memory backlinks and cannot be shared. Prepare the graph explicitly;

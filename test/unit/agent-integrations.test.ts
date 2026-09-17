@@ -240,9 +240,11 @@ describe('agent integrations', () => {
         expect(cursorRule).toContain('alwaysApply: true');
         expect(cursorRule).toContain('Use the installed Threadnote skills');
         for (const skill of ['threadnote-context', 'threadnote-code-graph', 'threadnote-memory']) {
-          expect(yield* fs.readFileString(path.join(userHome, '.cursor', 'skills', skill, 'SKILL.md'))).toContain(
-            `name: ${skill}`,
-          );
+          const installedSkill = yield* fs.readFileString(path.join(userHome, '.cursor', 'skills', skill, 'SKILL.md'));
+          expect(installedSkill).toContain(`name: ${skill}`);
+          if (skill === 'threadnote-memory') {
+            expect(installedSkill).toContain('`citationPolicy: "defer"`');
+          }
         }
         expect(yield* fs.exists(path.join(userHome, '.codex', 'AGENTS.md'))).toBe(false);
         expect(yield* fs.exists(path.join(userHome, '.claude', 'CLAUDE.md'))).toBe(false);

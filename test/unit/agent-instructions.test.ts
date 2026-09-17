@@ -109,6 +109,8 @@ describe('agent instructions', () => {
       'Never infer a durable edge from topical similarity alone',
       'complete intended relation set',
       'ready exact-current graph',
+      '`citationPolicy: "defer"`',
+      '`--defer-code-refs`',
       '`citationPolicy: "require-current"`',
       '`finalize_code_refs`',
       'private pending anchor',
