@@ -95,7 +95,10 @@ describe('procedure CLI', () => {
     const fixture = await makeFixture();
     const manifest = JSON.parse(await readFile(fixture.manifest, 'utf8'));
     manifest.verification.commands = [
-      {id: 'fail', argv: [process.execPath, '-e', 'console.error("private-command-output");process.exit(1);']},
+      {
+        id: 'fail',
+        argv: [process.execPath, '-e', 'process.stderr.write("private-command-output\\n");process.exit(1);'],
+      },
     ];
     await writeFile(fixture.manifest, JSON.stringify(manifest));
     const failed = await runCli(
