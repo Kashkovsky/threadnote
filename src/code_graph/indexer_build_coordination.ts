@@ -1,6 +1,18 @@
-import type {Effect} from 'effect';
+import {Clock, Effect} from 'effect';
 import {estimatedMaterializationStorageBytes} from './indexer_materialization.js';
-import type {CodeGraphBuildAndActivateInput} from './indexer_types.js';
+import type {CodeGraphBuildAndActivateInput, CodeGraphIndexResourceGate} from './indexer_types.js';
+
+export const measureCodeGraphAttribution = <A, E, R>(
+  preparationGate: CodeGraphIndexResourceGate,
+  effect: Effect.Effect<A, E, R>,
+) =>
+  preparationGate(
+    Effect.gen(function* () {
+      const startedAt = yield* Clock.currentTimeMillis;
+      const value = yield* effect;
+      return [(yield* Clock.currentTimeMillis) - startedAt, value] as const;
+    }),
+  );
 
 export function coordinateCodeGraphBuild<A, E, R>(
   input: CodeGraphBuildAndActivateInput,

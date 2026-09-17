@@ -1,7 +1,10 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path, Ref} from 'effect';
+import {Effect, FileSystem, Fiber, Path, Ref} from 'effect';
+import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {buildOwnedCleanSnapshot} from '../../src/code_graph/indexer_build.js';
+import {measureCodeGraphAttribution} from '../../src/code_graph/indexer_build_coordination.js';
+import type {CodeGraphIndexResourceGate} from '../../src/code_graph/indexer_types.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import type {CodeGraphStoreShape} from '../../src/code_graph/store.js';
 import type {CodeGraphLanguagePackRegistryShape} from '../../src/code_graph/languages/registry.js';
@@ -10,6 +13,19 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 describe('indexer build coordination wiring', () => {
+  effectIt.effect('starts attribution timing after preparation admission wait', () =>
+    Effect.gen(function* () {
+      const preparationGate: CodeGraphIndexResourceGate = effect =>
+        Effect.sleep('100 millis').pipe(Effect.andThen(effect));
+      const fiber = yield* measureCodeGraphAttribution(
+        preparationGate,
+        Effect.sleep('25 millis').pipe(Effect.as('attributed')),
+      ).pipe(Effect.forkChild({startImmediately: true}));
+      yield* TestClock.adjust('125 millis');
+      expect(yield* Fiber.join(fiber)).toEqual([25, 'attributed']);
+    }),
+  );
+
   effectIt.effect('forwards clean direct builds through the prepared budget and scoped preparation gates', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
