@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "suite": "threadnote-5-task-loop",
+  "networkAllowed": false,
+  "cases": [
+    {
+      "id": "activation",
+      "contract": {
+        "attempts": 10,
+        "maximumDurationMilliseconds": 600000,
+        "minimumSuccessfulAttempts": 9,
+        "requiresSourceVerifiedBrief": true,
+        "requiresUndoableReceipt": true,
+        "requiresSecondSurfaceReuse": true
+      }
+    },
+    {
+      "id": "closeout-usefulness",
+      "contract": {
+        "maximumDurableCandidates": 3,
+        "minimumFormableRate": 0.9,
+        "requiresExplicitApply": true,
+        "requiresHandoffState": true
+      }
+    },
+    {
+      "id": "stale-citation-detection",
+      "contract": {
+        "changedNeverCurrent": true,
+        "missingNeverCurrent": true,
+        "unknownRemainsDistinct": true
+      }
+    },
+    {
+      "id": "contradiction-triage",
+      "contract": {
+        "expectedCategories": ["candidate-contradiction", "candidate-possible-duplicate"],
+        "requiresManualReview": true,
+        "requiresStableOrdering": true
+      }
+    },
+    {
+      "id": "projection-drift",
+      "contract": {
+        "preservesUnmanagedText": true,
+        "reportsBeforeApply": true,
+        "requiresContentPrecondition": true
+      }
+    },
+    {
+      "id": "token-budgets",
+      "contract": {
+        "contextBriefMaximumEstimatedTokens": 1500,
+        "contextBriefMinimumEstimatedTokens": 800,
+        "maximumKnowledgeDeltaItems": 3
+      }
+    }
+  ]
+}

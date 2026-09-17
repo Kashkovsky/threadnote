@@ -102,6 +102,13 @@ export const loadRecallFeedback = Effect.fn('recall.loadFeedback')(function* (
   return yield* aggregateRecallFeedback(events, input);
 });
 
+/** Read bounded local feedback events for aggregate reporting without recording or rewriting them. */
+export const readRecallFeedbackEvents = Effect.fn('recall.readFeedbackEvents')(function* (agentContextHome: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  return yield* readFeedbackEvents(fs, feedbackPath(pathService, agentContextHome));
+});
+
 export const aggregateRecallFeedback = Effect.fn('recall.aggregateFeedback')(function* (
   events: readonly RecallFeedbackEvent[],
   input: {readonly now: Date; readonly project?: string; readonly query: string},
@@ -128,6 +135,23 @@ export const aggregateRecallFeedback = Effect.fn('recall.aggregateFeedback')(fun
   }
   return scores;
 });
+
+/** Count feedback actions without projecting query, URI, or fingerprint fields. */
+export function summarizeRecallFeedback(
+  events: readonly RecallFeedbackEvent[],
+  options: {readonly from?: Date; readonly project?: string; readonly to?: Date} = {},
+): Readonly<Record<RecallFeedbackAction, number>> {
+  const counts: Record<RecallFeedbackAction, number> = {dismiss: 0, pin: 0, useful: 0, wrong: 0};
+  for (const event of events) {
+    if (options.project !== undefined && event.project !== options.project) continue;
+    const timestamp = Date.parse(event.timestamp);
+    if (!Number.isFinite(timestamp)) continue;
+    if (options.from !== undefined && timestamp < options.from.getTime()) continue;
+    if (options.to !== undefined && timestamp > options.to.getTime()) continue;
+    counts[event.action] += 1;
+  }
+  return counts;
+}
 
 export const recallQueryFingerprint = Effect.fn('recall.queryFingerprint')((query: string) =>
   sha256Hex(query.replace(/\s+/g, ' ').trim().toLowerCase()),

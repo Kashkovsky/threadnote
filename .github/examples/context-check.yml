@@ -1,0 +1,62 @@
+name: Threadnote context check
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  context-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Threadnote
+        run: curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
+
+      - name: Hydrate reviewed canonical context
+        env:
+          THREADNOTE_MEMORY_REPOSITORY: ${{ vars.THREADNOTE_MEMORY_REPOSITORY }}
+        shell: bash
+        run: |
+          test -n "$THREADNOTE_MEMORY_REPOSITORY"
+          "$HOME/.local/bin/threadnote" share init \
+            "$THREADNOTE_MEMORY_REPOSITORY" \
+            --team ci \
+            --read-only
+
+      - name: Refuse a vacuous context gate
+        shell: bash
+        run: |
+          "$HOME/.local/bin/threadnote" context health \
+            --project example-project \
+            --json > threadnote-context-health.json
+          jq -e '.recordsScanned > 0' threadnote-context-health.json
+
+      - id: check
+        name: Produce privacy-safe SARIF
+        shell: bash
+        run: |
+          set +e
+          "$HOME/.local/bin/threadnote" context check \
+            --project example-project \
+            --base "origin/${{ github.base_ref }}" \
+            --format sarif > threadnote-context.sarif
+          status=$?
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload Context Check SARIF
+        if: always() && hashFiles('threadnote-context.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: threadnote-context.sarif
+
+      - name: Enforce Context Check result
+        if: always()
+        shell: bash
+        run: exit "${{ steps.check.outputs.status }}"

@@ -9,6 +9,7 @@ import {
   compileContextBriefWith,
   contextBriefCodeLinkRecallGaps,
   contextBriefMemoryUriScope,
+  contextBriefValueEventForExit,
   handoffEvidenceExcerpt,
   mapContextBriefCodeLinkMatches,
   mergeContextBriefMemoryEvidence,
@@ -36,6 +37,7 @@ import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
 import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
 import {canonicalResourceUri} from '../../src/storage/resource-id.js';
 import {renderCodeBriefEditContext} from '../../src/context_brief/edit_hook.js';
+import {summarizeLocalValueEvents, type LocalValueEventV1} from '../../src/value_report/events.js';
 
 const COMMIT = 'a'.repeat(40);
 const OTHER_COMMIT = 'b'.repeat(40);
@@ -64,6 +66,27 @@ const SNAPSHOT = {
 };
 
 describe('Context Brief compiler', () => {
+  it('counts a failed planned compilation as an unsuccessful value attempt', () => {
+    const event: LocalValueEventV1 = {
+      kind: 'context-brief',
+      version: 1,
+      ...contextBriefValueEventForExit(
+        planContextBrief(request(1_250)),
+        100,
+        175,
+        '2026-09-17T12:00:00.000Z',
+        Exit.fail('projection failed'),
+      ),
+    };
+
+    expect(
+      summarizeLocalValueEvents([event], {
+        from: new Date('2026-09-17T00:00:00.000Z'),
+        to: new Date('2026-09-18T00:00:00.000Z'),
+      }).contextBrief,
+    ).toMatchObject({attempts: 1, successful: 0, timeToFirstSuccessfulMillisecondsSamples: []});
+  });
+
   effectIt.effect('combines graph, durable decisions, active handoffs, freshness, gaps, and exact follow-ups', () =>
     Effect.gen(function* () {
       const result = yield* compileContextBriefWith(

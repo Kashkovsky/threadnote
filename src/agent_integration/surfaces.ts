@@ -34,6 +34,7 @@ import {
   artifactHasOtherConsumers,
   emptyAgentIntegrationRegistry,
   readAgentIntegrationRegistry,
+  setupCompletionForSuccessfulInstall,
   withAgentIntegrationLock,
   writeAgentIntegrationRegistry,
   type AgentIntegrationRegistry,
@@ -66,6 +67,7 @@ export function installJsonAgentSurface(
     const registry = (yield* readAgentIntegrationRegistry(config)) ?? emptyAgentIntegrationRegistry(false);
     const id = adapter.catalog.id;
     const previous = registry.surfaces?.[id];
+    const setupCompletion = setupCompletionForSuccessfulInstall(registry, {surface: id});
     const plan = yield* planAgentSurface(config, adapter, options, previous);
     if (previous !== undefined && !receiptMatchesPlan(previous, plan)) {
       return yield* AgentSurfaceError.make({
@@ -160,6 +162,7 @@ export function installJsonAgentSurface(
     yield* Console.log(
       `Installed ${plan.adapter.catalog.displayName}; restart the host. Lifecycle hooks are not installed.`,
     );
+    return setupCompletion;
   });
   return options.apply ? withAgentIntegrationLock(config, install) : install;
 }

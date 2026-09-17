@@ -5,7 +5,7 @@ import type {SystemInfo} from '../../effect/system.js';
 import type {McpToolset} from '../../mcp/toolset.js';
 import type {AgentClient, DoctorCheck, RuntimeConfig} from '../../types.js';
 import type {AgentCatalogEntry} from '../catalog.js';
-import type {AgentIntegrationRegistry} from '../registry.js';
+import type {AgentIntegrationRegistry, AgentSetupCompletion} from '../registry.js';
 
 export class AgentAdapterActionError extends Schema.TaggedError<AgentAdapterActionError>()('AgentAdapterActionError', {
   message: Schema.String,
@@ -68,7 +68,7 @@ export type AgentAdapterMutation = (
   config: RuntimeConfig,
   adapter: AgentAdapter,
   options: AgentAdapterActionOptions,
-) => Effect.Effect<AgentIntegrationRegistry | void, unknown, AgentAdapterRuntimeServices>;
+) => Effect.Effect<AgentIntegrationRegistry | AgentSetupCompletion | void, unknown, AgentAdapterRuntimeServices>;
 
 export interface AgentAdapterActions {
   readonly install: AgentAdapterMutation;

@@ -10,6 +10,7 @@ import {
   memoryHeaderValue,
   type MemoryMetadata,
 } from './document.js';
+import {MEMORY_SCHEMA_VERSION} from './code_citation.js';
 import type {
   MigrateLifecycleOptions,
   MigrateMemoriesOptions,
@@ -89,6 +90,15 @@ export const attemptSync = <A>(evaluate: () => A) =>
   });
 
 export const NATIVE_RESOURCE_BACKEND = 'threadnote-native';
+
+/** Upgrades only the canonical v4 header; all existing metadata, including citations, remains byte-for-byte intact. */
+export function migrateMemoryDocumentV4ToV5(content: string): string {
+  assertMemoryDocumentSchemaWritable(content);
+  if (parseMemoryDocument('threadnote://memory/migration', content)?.metadata.schemaVersion !== 4) {
+    return content;
+  }
+  return content.replace(/^schema_version: 4(\r?)$/mu, `schema_version: ${MEMORY_SCHEMA_VERSION}$1`);
+}
 
 export const runMigrateMemories = Effect.fn('runMigrateMemories')(function* (
   config: RuntimeConfig,
