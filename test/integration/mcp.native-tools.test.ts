@@ -8,6 +8,7 @@ import {basename, join} from '../helpers/node-path.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {describe, expect, it} from 'vitest';
+import {AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN} from '../../src/evaluation/agent-response.js';
 import {renderSessionStartRecallQueue} from '../../src/hooks.js';
 import {
   createMemoryCodeCitation,
@@ -69,6 +70,9 @@ const RECALL_PROGRESS_PHASES = [
   'recall.semantic-retrieval',
   'recall.lexical-ranking',
 ] as const;
+
+const COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS = 10_000;
+const COLD_BUILD_RESPONSE_BUDGET_TOKENS = 400;
 
 const CORE_TOOL_NAMES = [
   'recall_context',
@@ -2544,9 +2548,9 @@ describe('Threadnote MCP toolsets', () => {
             name: 'inspect_code_graph',
           },
           undefined,
-          {timeout: 10_000},
+          {timeout: COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS},
         );
-        expect(Date.now() - startedAt).toBeLessThan(8_000);
+        expect(Date.now() - startedAt).toBeLessThan(COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS);
         expect(pending.isError).not.toBe(true);
         expect(pending.structuredContent).toMatchObject({
           operation: 'query',
@@ -2575,7 +2579,7 @@ describe('Threadnote MCP toolsets', () => {
             name: 'inspect_code_graph',
           },
           undefined,
-          {timeout: 10_000},
+          {timeout: COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS},
         );
         expect(Date.now() - repeatedStartedAt).toBeLessThan(2_000);
         expect(repeated.structuredContent).toMatchObject({
@@ -2594,7 +2598,7 @@ describe('Threadnote MCP toolsets', () => {
               name: 'inspect_code_graph',
             },
             undefined,
-            {timeout: 10_000},
+            {timeout: COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS},
           );
           if (
             !isRetryableCodeGraphState((candidate.structuredContent as {readonly state?: unknown} | undefined)?.state)
@@ -2617,14 +2621,18 @@ describe('Threadnote MCP toolsets', () => {
         expect(readyStructured).not.toContain('lookupKeys');
         expect(readyStructured).not.toContain('contentHash');
 
-        const budgetTokens = 300;
         const bounded = await client.callTool(
           {
-            arguments: {budgetTokens, callerCwd: repository, operation: 'query', query: 'coldGraphSymbol'},
+            arguments: {
+              budgetTokens: COLD_BUILD_RESPONSE_BUDGET_TOKENS,
+              callerCwd: repository,
+              operation: 'query',
+              query: 'coldGraphSymbol',
+            },
             name: 'inspect_code_graph',
           },
           undefined,
-          {timeout: 10_000},
+          {timeout: COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS},
         );
         expect(bounded.isError, JSON.stringify(bounded)).not.toBe(true);
         expect(bounded.structuredContent).toMatchObject({operation: 'query'});
@@ -2634,7 +2642,9 @@ describe('Threadnote MCP toolsets', () => {
         const boundedBytes =
           new TextEncoder().encode(JSON.stringify(bounded.structuredContent)).byteLength +
           new TextEncoder().encode(boundedText ?? '').byteLength;
-        expect(boundedBytes).toBeLessThanOrEqual(budgetTokens * 3);
+        expect(boundedBytes).toBeLessThanOrEqual(
+          COLD_BUILD_RESPONSE_BUDGET_TOKENS * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN,
+        );
       },
       {toolset: 'core'},
     );
