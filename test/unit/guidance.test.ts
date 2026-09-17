@@ -1158,6 +1158,32 @@ describe('project guidance blocks', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  effectIt.effect('skips non-repositories for health but surfaces invalid guidance receipts', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeGuidanceFixture('Health evidence.');
+        const outsideRepository = fixture.path.join(fixture.root, 'outside-repository');
+        yield* fixture.fs.makeDirectory(outsideRepository);
+        expect(yield* guidanceHealthEvidence(fixture.config, 'threadnote', outsideRepository)).toEqual([]);
+
+        yield* runGuidanceProject(fixture.config, getAgentAdapter('codex-cli')!, {
+          apply: true,
+          cwd: fixture.repository,
+          force: false,
+          memory: [fixture.memoryUri],
+          project: 'threadnote',
+        });
+        const receiptDirectory = fixture.path.join(fixture.home, 'guidance/v2/receipts');
+        const [receiptName] = yield* fixture.fs.readDirectory(receiptDirectory);
+        yield* fixture.fs.writeFileString(fixture.path.join(receiptDirectory, receiptName), '{"invalid":true}\n');
+        const failure = yield* guidanceHealthEvidence(fixture.config, 'threadnote', fixture.repository).pipe(
+          Effect.flip,
+        );
+        expect(String(failure)).toContain('Guidance receipt is invalid');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('refuses to read a symlinked project target during preview', () =>
     Effect.scoped(
       Effect.gen(function* () {

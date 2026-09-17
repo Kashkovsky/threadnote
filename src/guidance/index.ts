@@ -388,7 +388,12 @@ export const guidanceHealthEvidence = Effect.fn('guidance.healthEvidence')(funct
   cwd: string,
 ) {
   const root = yield* projectRoot(cwd);
-  const repository = yield* resolveRepositoryIdentity(root);
+  const repository = yield* resolveRepositoryIdentity(root).pipe(
+    Effect.catchTag('CodeGraphRepositoryError', error =>
+      error.message.startsWith('Not a Git repository') ? Effect.void : Effect.fail(error),
+    ),
+  );
+  if (repository === undefined) return [];
   const evidence: readonly (GuidanceHealthEvidenceV1 | undefined)[] = yield* Effect.forEach(
     guidanceProjectionAdapters(),
     adapter =>
