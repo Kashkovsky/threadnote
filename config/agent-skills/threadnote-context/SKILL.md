@@ -48,6 +48,7 @@ narrow the next graph call or brief; do not treat omitted cards or memories as a
 repository. When anchor resolution is partial, use `unresolvedOrdinals` as zero-based positions in the deduplicated
 request, correct or remove those refs, and rerun. Keep Workset `cgr_` handles in `inspect_code_graph` instead of passing
 them as Context Brief code refs. If a ready graph read fails and the retained action is `graph-status`, inspect that
-status and rerun the same brief after the transient condition clears; ready coverage plus an empty card lane is not
-evidence that the code is absent.
+status and rerun the same brief only when no usable graph cards survive. Stale cards plus exact source verification can
+support bounded progress while a refresh is active, queued, or deferred; do not tight-poll. Ready coverage plus an
+empty card lane is not evidence that the code is absent.
 <!-- END THREADNOTE USER INSTRUCTIONS -->

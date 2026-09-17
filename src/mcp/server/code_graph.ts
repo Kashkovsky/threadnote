@@ -46,6 +46,7 @@ import {
   type CodeGraphProgressTiming,
   type CodeGraphRefreshFailure,
   type CodeGraphRefreshStatus,
+  type CodeGraphRefreshContinuity,
   type CodeGraphWatcherShape,
 } from '../../code_graph/watcher.js';
 import {
@@ -435,7 +436,7 @@ export function registerCodeGraphTool(
             let identity = status.identity;
             let selection: ReturnType<typeof codeGraphQueryAnonymousTelemetrySnapshotSelection> =
               status.readySnapshot === undefined ? 'none' : 'active';
-            if (codeGraphInspectionStartsRefresh(status, operation)) {
+            if (status.stale || codeGraphInspectionStartsRefresh(status, operation)) {
               const beforeAttach = status;
               status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
                 allowBorrowedStale: allowStaleReadySnapshot,
@@ -445,7 +446,22 @@ export function registerCodeGraphTool(
               selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(beforeAttach, status);
             }
             let refreshStarted = false;
-            if (codeGraphInspectionStartsRefresh(status, operation)) {
+            let refreshContinuity: CodeGraphRefreshContinuity | undefined;
+            if (codeGraphInspectionRequestsBackgroundRefresh(status, operation)) {
+              // Registration is deliberately awaited; the detached build is not.
+              refreshContinuity = yield* watcher
+                .request({...refreshTarget, key: identity.worktreeId, admissionClass: 'background'})
+                .pipe(
+                  Effect.map(receipt => receipt.refresh),
+                  // A stale immutable snapshot remains useful if the bounded
+                  // preflight cannot record demand. Do not expose the cause.
+                  Effect.orElseSucceed(() => ({
+                    type: 'code-graph-refresh-continuity' as const,
+                    version: 1 as const,
+                    state: 'deferred' as const,
+                  })),
+                );
+            } else if (codeGraphInspectionStartsRefresh(status, operation)) {
               refreshStarted = yield* watcher.refresh({
                 ...refreshTarget,
                 key: identity.worktreeId,
@@ -478,6 +494,7 @@ export function registerCodeGraphTool(
                   identity,
                   ready: false as const,
                   refreshStatus,
+                  ...(refreshContinuity === undefined ? {} : {refreshContinuity}),
                   selection,
                   status,
                 };
@@ -491,11 +508,19 @@ export function registerCodeGraphTool(
                 identity,
                 ready: false as const,
                 refreshStatus,
+                ...(refreshContinuity === undefined ? {} : {refreshContinuity}),
                 selection,
                 status,
               };
             }
-            return {identity, ready: true as const, refreshStatus, selection, status};
+            return {
+              identity,
+              ready: true as const,
+              refreshStatus,
+              ...(refreshContinuity === undefined ? {} : {refreshContinuity}),
+              selection,
+              status,
+            };
           }),
           resolution => codeGraphQueryAnonymousTelemetrySnapshotSurface(resolution.status, resolution.selection),
         );
@@ -503,10 +528,13 @@ export function registerCodeGraphTool(
           return yield* queryTelemetry.stage(
             'graph.query.execute',
             'query-serialization',
-            Effect.sync(() => codeGraphRefreshResult(operation, snapshotResolution.refreshStatus)),
+            Effect.sync(() =>
+              codeGraphRefreshResult(operation, snapshotResolution.refreshStatus, snapshotResolution.refreshContinuity),
+            ),
           );
         }
         const {refreshStatus, selection, status} = snapshotResolution;
+        const refreshContinuity = snapshotResolution.refreshContinuity ?? refreshStatus?.refresh;
         const queryText = impactQueryTransportSelector(requestedQuery, changes?.paths);
         readyReadStarted = true;
         const result = yield* queryTelemetry.execute(
@@ -551,8 +579,9 @@ export function registerCodeGraphTool(
           'query-serialization',
           Effect.sync(() => {
             const response = codeGraphMcpResponse(
-              codeGraphResultWithRefreshContinuity(result, refreshStatus),
+              codeGraphResultWithRefreshContinuity(result, refreshStatus, refreshContinuity),
               budgetTokens,
+              refreshContinuity,
             );
             return formatCodeGraphMcpResponse(response, responseFormat);
           }),
@@ -1490,6 +1519,7 @@ export function codeGraphAnalysisRefreshResult(
         structuredContent: {
           failure: status.failure,
           operation,
+          ...(status.refresh === undefined ? {} : {refresh: status.refresh}),
           state: 'deferred',
           type: 'code-graph-analysis-state',
           version: 2,
@@ -1513,6 +1543,7 @@ export function codeGraphAnalysisRefreshResult(
       ],
       structuredContent: {
         operation,
+        ...(status?.refresh === undefined ? {} : {refresh: status.refresh}),
         ...(compactProgress ? {progress: compactProgress} : {}),
         retryAfterMilliseconds,
         state: 'indexing',
@@ -1611,6 +1642,14 @@ export function codeGraphInspectionStartsRefresh(
   return !status.readySnapshot || (status.stale && !codeGraphInspectionAllowsStaleReady(operation));
 }
 
+/** Stale compatible evidence is served immediately, but refresh intent is durable. */
+export function codeGraphInspectionRequestsBackgroundRefresh(
+  status: {readonly readySnapshot?: unknown; readonly stale: boolean},
+  operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
+): boolean {
+  return status.readySnapshot !== undefined && status.stale && codeGraphInspectionAllowsStaleReady(operation);
+}
+
 /** Retain the exact observed pointer; refresh status alone is never promotion authority. */
 export function selectCodeGraphReadySnapshotForInspection<T>(
   status: {readonly readySnapshot?: T; readonly stale: boolean},
@@ -1626,16 +1665,22 @@ export function selectCodeGraphReadySnapshotForInspection<T>(
 export function codeGraphResultWithRefreshContinuity(
   result: CodeGraphQueryResult,
   refreshStatus: CodeGraphRefreshStatus | undefined,
+  refresh?: CodeGraphRefreshContinuity,
 ): CodeGraphQueryResult {
   if (result.freshness !== 'stale') return result;
   const warning =
-    refreshStatus?.state === 'deferred'
-      ? `Serving the existing stale ready snapshot because code graph refresh is deferred ` +
-        `(${refreshStatus.failure.code}). ${codeGraphRefreshRecoveryWarning(refreshStatus.failure)}`
-      : refreshStatus?.state === 'indexing'
-        ? 'Serving the existing stale ready snapshot while code graph refresh continues in the background.'
-        : 'Serving the existing stale ready snapshot without starting a background rebuild. ' +
-          'Run `threadnote graph index`, or use `path` or `impact`, when current graph evidence is required.';
+    refresh?.state === 'deferred'
+      ? 'Serving the existing stale ready snapshot while refresh is deferred; continue bounded discovery and retry only before a current relationship claim.'
+      : refresh?.state === 'queued'
+        ? 'Serving the existing stale ready snapshot while refresh is queued; continue bounded discovery while it converges.'
+        : refresh?.state === 'active'
+          ? 'Serving the existing stale ready snapshot while refresh continues in the background.'
+          : refreshStatus?.state === 'deferred'
+            ? `Serving the existing stale ready snapshot because code graph refresh is deferred ` +
+              `(${refreshStatus.failure.code}). ${codeGraphRefreshRecoveryWarning(refreshStatus.failure)}`
+            : refreshStatus?.state === 'indexing'
+              ? 'Serving the existing stale ready snapshot while code graph refresh continues in the background.'
+              : 'Serving the existing stale ready snapshot while background refresh discovery is pending; continue bounded discovery and use `path` or `impact` when current graph evidence is required.';
   const bounded = compactMcpText(warning, 320);
   return result.warnings.includes(bounded) ? result : {...result, warnings: [...result.warnings, bounded]};
 }
@@ -1697,7 +1742,9 @@ function codeGraphWorksetTopologyText(result: CodeGraphWorksetTopologyResultV1):
 function codeGraphRefreshResult(
   operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query' | 'topology',
   status: CodeGraphRefreshStatus | undefined,
+  continuity?: CodeGraphRefreshContinuity,
 ): CallToolResult {
+  const refresh = continuity ?? status?.refresh;
   if (status?.state === 'deferred') {
     if (status.failure.recovery === 'reconnect-runtime') {
       return codeGraphRuntimeReconnectResult(operation, status.failure, 'code-graph-index-state');
@@ -1716,6 +1763,7 @@ function codeGraphRefreshResult(
         structuredContent: {
           failure: status.failure,
           operation,
+          ...(refresh === undefined ? {} : {refresh}),
           state: 'deferred',
           type: 'code-graph-index-state',
           version: 4,
@@ -1757,6 +1805,7 @@ function codeGraphRefreshResult(
       ],
       structuredContent: {
         operation,
+        ...(refresh === undefined ? {} : {refresh}),
         phase,
         ...(compactProgress ? {progress: compactProgress} : {}),
         ...(waitingOnWriter ? {} : {retryAfterMilliseconds}),

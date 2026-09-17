@@ -1,6 +1,7 @@
 import {cursorCloudPersonalDocsSection} from './docsCursorCloudPersonal.js';
 import {agentIntegrationDocsSection} from './docsAgentIntegrations.js';
 import {graphCheckpointsDocsArticle, graphCliCommand} from './docsGraphCheckpoints.js';
+import {codeGraphReadinessDocsArticle} from './docsCodeGraphReadiness.js';
 import {
   contextBriefMcpTool,
   finalizeCodeRefsMcpTool,
@@ -872,7 +873,7 @@ threadnote recall --query "checkout retry contract" --threshold 0.3 --caller-cwd
           },
           {
             type: 'note',
-            text: 'Concurrent sessions share the local memory home, not a chat transcript. Repository files remain authoritative, and every graph answer still identifies the worktree snapshot it used.',
+            text: 'Concurrent sessions share the local memory home, not a chat transcript. Repository files remain authoritative, and every graph answer still identifies the worktree snapshot it used. During a refresh, use the [code graph readiness](#graph-readiness) guidance: stale cards support bounded discovery, while strict relationship claims wait for current evidence.',
           },
         ],
       },
@@ -1020,6 +1021,7 @@ threadnote share conflict resolve <id> --take shared`,
     description:
       'Inspect and analyze the current Git snapshot and dirty worktree across code, schemas, documentation, and local project artifacts.',
     articles: [
+      codeGraphReadinessDocsArticle,
       {
         id: 'graph-operations',
         title: 'Query, exact nodes, neighbors, path, and impact',
@@ -1078,7 +1080,7 @@ threadnote share conflict resolve <id> --take shared`,
           },
           {
             type: 'note',
-            text: 'For non-trivial source investigation, agents should use inspect_code_graph before broad text search. Use analyze_code_graph when the question is about whole-repository topology. Use rg or grep afterward for exact literals, unsupported files, verification, or an explicitly reported graph failure.',
+            text: 'For non-trivial source investigation, agents should use inspect_code_graph before broad text search. Use analyze_code_graph when the question is about whole-repository topology. Use rg or grep afterward for exact literals, unsupported files, verification, or an explicitly reported graph failure. See [code graph readiness](#graph-readiness) for stale cards and bounded retry guidance.',
           },
         ],
       },
@@ -1164,7 +1166,7 @@ threadnote share conflict resolve <id> --take shared`,
           },
           {
             type: 'paragraph',
-            text: 'Graph query, node, neighbors, and explain read the latest ready snapshot by default, so ordinary semantic lookup does not queue behind a large refresh. Select --freshness current for a bounded current-worktree refresh, --freshness allow-stale to guarantee no indexing, and --read-timeout-ms to override the default 25-second foreground budget. Graph path remains current by default, and impact remains strict-current.',
+            text: 'Graph query, node, neighbors, and explain read the latest compatible ready snapshot by default, so ordinary semantic lookup can continue while a durable refresh is active, queued, or deferred. Verify exact literals in source, and retry only before strict current or relationship claims or when no usable cards survive. Select --freshness current for a bounded current-worktree refresh, --freshness allow-stale to guarantee no indexing, and --read-timeout-ms to override the default 25-second foreground budget. Graph path, impact, and whole-graph analysis remain current-only.',
           },
           {
             type: 'code',

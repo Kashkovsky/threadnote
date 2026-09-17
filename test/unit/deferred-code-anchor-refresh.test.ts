@@ -183,6 +183,7 @@ describe('deferred code-anchor workspace refresh', () => {
                       scheduled.push({admissionClass: options.admissionClass, cwd: options.cwd});
                       return true;
                     }),
+                  request: () => Effect.die('Unexpected graph request.'),
                   status: () => Effect.succeedNone,
                   watch: () => Effect.void,
                 }),

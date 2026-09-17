@@ -17,9 +17,12 @@ Workset inspection. Parse the complete bounded graph JSON in text `content[0]`; 
 freshness, trust, and coverage receipts without a duplicate structured graph. Keep the default `dual` format when a
 client needs `structuredContent`. Indexing, timeout, and error responses retain their existing status format.
 
-If indexing is in progress, continue safe work and retry after the returned delay. If graph tooling is unavailable,
-say so and use targeted text search. Skip graph only for known exact paths or symbols, remote review without a checkout,
-or visual and binary evidence; use it if the scope expands.
+If indexing is in progress, continue bounded discovery with compatible stale/deferred graph cards when available. Verify
+exact literals and source details with targeted text search. Retry only before a strict current or relationship claim
+(including `path`, `impact`, `analyze_code_graph`, or exact-current citations), or when no usable cards survive. A
+refresh continuity state of active, queued, or deferred is progress: do not repeatedly poll it. If graph tooling is
+unavailable, say so and use targeted text search. Skip graph only for known exact paths or symbols, remote review
+without a checkout, or visual and binary evidence; use it if the scope expands.
 
 Named Worksets read only their published ready generation. Run `threadnote workset prepare <name>` explicitly when a
 member needs a ready or fresher snapshot. Treat bounded results as evidence with provenance, not proof of absence.

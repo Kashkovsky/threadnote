@@ -10,6 +10,7 @@ import {
   recoverCodeGraphRefreshDemand,
   registerCodeGraphRefreshDemand,
 } from '../../src/code_graph/refresh_demand_scheduler.js';
+import {codeGraphRefreshDemandContinuity} from '../../src/code_graph/refresh_demand.js';
 
 const checkout = 'a'.repeat(64);
 const worktree = 'b'.repeat(64);
@@ -18,6 +19,31 @@ const token = (value: string) => `cgdq_${value.repeat(32).slice(0, 32)}`;
 const initial = () => emptyCodeGraphRefreshDemand(checkout, worktree);
 
 describe('code graph refresh demand scheduler', () => {
+  it('projects only opaque continuity from active, queued, and deferred demand', () => {
+    const active = registerCodeGraphRefreshDemand(initial(), {now: 1, targetKey: key('1'), token: token('1')});
+    expect(codeGraphRefreshDemandContinuity(active.state, 2)).toEqual({
+      type: 'code-graph-refresh-continuity',
+      version: 1,
+      state: 'active',
+      currentTargetToken: token('1'),
+    });
+    const queued = enqueueCodeGraphRefreshDemand(active.state, {now: 3, targetKey: key('2'), token: token('2')});
+    expect(codeGraphRefreshDemandContinuity(queued.state, 4)).toMatchObject({
+      state: 'active',
+      currentTargetToken: token('1'),
+      latestDesiredToken: token('2'),
+    });
+    const deferred = deferCodeGraphRefreshDemand(active.state, token('1'), key('1'), 10);
+    expect(codeGraphRefreshDemandContinuity(deferred, 100)).toEqual({
+      type: 'code-graph-refresh-continuity',
+      version: 1,
+      state: 'deferred',
+      queueToken: token('1'),
+      latestDesiredToken: token('1'),
+      retryAfterMilliseconds: 160,
+    });
+    expect(JSON.stringify(codeGraphRefreshDemandContinuity(queued.state, 4))).not.toContain(key('1'));
+  });
   it('records intent before ownership and preserves the original claim deadline on attachment', () => {
     const queued = enqueueCodeGraphRefreshDemand(initial(), {now: 1, targetKey: key('1'), token: token('1')});
     expect(queued.type).toBe('queued');
