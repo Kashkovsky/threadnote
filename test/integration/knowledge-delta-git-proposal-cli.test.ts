@@ -1,6 +1,13 @@
-import {buildCandidateReview, saveCandidateReview, type SessionCloseoutInput} from '../../src/memory/candidate.js';
+import {
+  buildCandidateReview,
+  candidateReviewWithState,
+  saveCandidateReview,
+  withCandidateReviewLock,
+  type SessionCloseoutInput,
+} from '../../src/memory/candidate.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {canonicalMemoryDocumentContent, formatMemoryDocument} from '../../src/memory/document.js';
+import {Effect} from 'effect';
 import {execFile} from '../helpers/node-child-process.js';
 import {mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
@@ -26,6 +33,7 @@ describe('Knowledge Delta Git proposal CLI', () => {
     await git(worktree, ['init']);
     await git(worktree, ['config', 'user.email', 'test@example.com']);
     await git(worktree, ['config', 'user.name', 'Threadnote Test']);
+    await git(worktree, ['remote', 'add', 'origin', 'https://example.com/threadnote/shared.git']);
 
     const targetPath = join(worktree, 'durable', 'projects', 'threadnote', 'git-proposal.md');
     await mkdir(join(targetPath, '..'), {recursive: true});
@@ -139,6 +147,10 @@ describe('Knowledge Delta Git proposal CLI', () => {
         },
       ],
       knowledgeDelta: {reviewId: review.reviewId, expectedRevision: review.revision},
+      target: {
+        repositoryId: sha256HexSync('repository-v1\nexample.com/threadnote/shared'),
+        team: 'default',
+      },
       type: 'knowledge-delta-git-proposal',
       version: 1,
     });
@@ -151,6 +163,39 @@ describe('Knowledge Delta Git proposal CLI', () => {
     expect(JSON.parse(await readFile(output, 'utf8'))).toEqual(artifact);
     expect((await git(worktree, ['rev-parse', 'HEAD'])).trim()).toBe(baseCommit.trim());
     expect((await git(worktree, ['status', '--short'])).trim()).toBe('');
+
+    const advancedReview = candidateReviewWithState(review, candidate.candidateId, 'rejected', {
+      action: 'reject',
+      at: '2026-09-17T00:01:00.000Z',
+    });
+    let racedExport: ReturnType<typeof runCli> | undefined;
+    await run(
+      withCandidateReviewLock(
+        home,
+        review.reviewId,
+        Effect.gen(function* () {
+          racedExport = runCli([...args, '--approved'], home);
+          const settledWhileTransitionHeldLock = yield* Effect.promise(() =>
+            Promise.race([
+              racedExport!.then(
+                () => true,
+                () => true,
+              ),
+              new Promise<false>(resolve => setTimeout(() => resolve(false), 1_000)),
+            ]),
+          );
+          expect(settledWhileTransitionHeldLock).toBe(false);
+          yield* saveCandidateReview(home, advancedReview);
+        }),
+      ),
+    );
+    if (!racedExport) throw new Error('Expected a concurrent Git proposal export.');
+    const staleReview = await racedExport.catch(error => error as CliFailure);
+    expect(staleReview).toMatchObject({code: 1});
+    expect(staleReview.stderr).toContain(
+      `Candidate review revision changed: expected ${review.revision}, current ${advancedReview.revision}`,
+    );
+    await run(saveCandidateReview(home, review));
 
     await writeFile(sourcePath, sourceContent.replace('Updated shared contract.', 'Changed after approval.'), 'utf8');
     const changedSource = await runCli([...args, '--approved'], home).catch(error => error as CliFailure);

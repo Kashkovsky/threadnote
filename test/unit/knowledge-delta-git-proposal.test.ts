@@ -16,6 +16,7 @@ import type {KnowledgeDeltaItemV1, KnowledgeDeltaV1} from '../../src/memory/know
 
 const REVIEW_ID = 'review-0123456789abcdef';
 const BASE_COMMIT = 'a'.repeat(40);
+const TARGET = {repositoryId: '1'.repeat(64), team: 'default'} as const;
 
 describe('Knowledge Delta Git proposals', () => {
   it('builds a canonical non-mutating shared-memory proposal with exact preconditions', () => {
@@ -26,6 +27,7 @@ describe('Knowledge Delta Git proposals', () => {
       delta,
       mutations: [createMutation(1, 'architecture', sourceContent)],
       project: 'threadnote',
+      target: TARGET,
     } as const;
     const before = JSON.stringify(input);
 
@@ -35,6 +37,7 @@ describe('Knowledge Delta Git proposals', () => {
     expect(built.artifact).toBe(knowledgeDeltaGitProposalArtifactV1(built.proposal));
     expect(built.artifact.endsWith('\n')).toBe(true);
     expect(built.proposal.base.expectedCommit).toBe(BASE_COMMIT);
+    expect(built.proposal.target).toEqual(TARGET);
     expect(built.proposal.branch.name).toMatch(/^threadnote\/knowledge-delta\/review-0123456789abcdef-[0-9a-f]{12}$/u);
     expect(built.proposal.files).toHaveLength(1);
     expect(built.proposal.files[0]).toMatchObject({
@@ -81,6 +84,7 @@ describe('Knowledge Delta Git proposals', () => {
       delta: knowledgeDelta(items),
       mutations,
       project: 'threadnote',
+      target: TARGET,
     }).artifact;
 
     fc.assert(
@@ -93,6 +97,7 @@ describe('Knowledge Delta Git proposals', () => {
             delta: knowledgeDelta(permutedItems),
             mutations: permutedMutations,
             project: 'threadnote',
+            target: TARGET,
           };
           const before = JSON.stringify(input);
           expect(buildKnowledgeDeltaGitProposalV1(input).artifact).toBe(baseline);
@@ -123,6 +128,7 @@ describe('Knowledge Delta Git proposals', () => {
       delta,
       mutations: [mutation],
       project: 'threadnote',
+      target: TARGET,
     }).proposal;
 
     expect(proposal.files[0]?.targetPrecondition).toEqual({
@@ -149,6 +155,7 @@ describe('Knowledge Delta Git proposals', () => {
           },
         ],
         project: 'threadnote',
+        target: TARGET,
       }),
     ).toThrow(/does not match its expected hash/u);
   });
@@ -164,6 +171,7 @@ describe('Knowledge Delta Git proposals', () => {
         delta,
         mutations: [{...mutation, approval: {...mutation.approval, revision: delta.revision - 1}}],
         project: 'threadnote',
+        target: TARGET,
       }),
     ).toThrow(/approval is stale/u);
     expect(() =>
@@ -178,6 +186,7 @@ describe('Knowledge Delta Git proposals', () => {
           ),
         ],
         project: 'threadnote',
+        target: TARGET,
       }),
     ).toThrow(/outside its reviewed project\/topic/u);
     const localRelation = approvedSource(1, 'architecture').replace(
@@ -190,6 +199,7 @@ describe('Knowledge Delta Git proposals', () => {
         delta,
         mutations: [createMutation(1, 'architecture', localRelation)],
         project: 'threadnote',
+        target: TARGET,
       }),
     ).toThrow(/non-portable reviewed relation/u);
   });
@@ -213,6 +223,7 @@ describe('Knowledge Delta Git proposals', () => {
         delta,
         mutations: [createMutation(1, 'architecture', sourceContent)],
         project: 'threadnote',
+        target: TARGET,
       }),
     ).toThrow(message);
 
@@ -221,6 +232,7 @@ describe('Knowledge Delta Git proposals', () => {
       delta,
       mutations: [createMutation(1, 'architecture', approvedSource(1, 'architecture'))],
       project: 'threadnote',
+      target: TARGET,
     });
     const file = built.proposal.files[0];
     expect(file).toBeDefined();
@@ -267,6 +279,7 @@ describe('Knowledge Delta Git proposals', () => {
             },
           ],
           project: 'threadnote',
+          target: TARGET,
         }),
       ).toThrow(/relate to itself/u);
     }
@@ -278,6 +291,7 @@ describe('Knowledge Delta Git proposals', () => {
       delta: knowledgeDelta([item(1, 'architecture')]),
       mutations: [createMutation(1, 'architecture', approvedSource(1, 'architecture'))],
       project: 'threadnote',
+      target: TARGET,
     });
     const tampered = {
       ...built.proposal,
@@ -285,6 +299,39 @@ describe('Knowledge Delta Git proposals', () => {
     };
 
     expect(() => verifyKnowledgeDeltaGitProposalV1(tampered)).toThrow(KnowledgeDeltaGitProposalError);
+  });
+
+  it('binds identical base commits and content to the exact team repository', () => {
+    const common = {
+      baseCommit: BASE_COMMIT,
+      delta: knowledgeDelta([item(1, 'architecture')]),
+      mutations: [createMutation(1, 'architecture', approvedSource(1, 'architecture'))],
+      project: 'threadnote',
+    } as const;
+
+    const first = buildKnowledgeDeltaGitProposalV1({...common, target: TARGET}).proposal;
+    const second = buildKnowledgeDeltaGitProposalV1({
+      ...common,
+      target: {repositoryId: '2'.repeat(64), team: 'other'},
+    }).proposal;
+
+    expect(first.base).toEqual(second.base);
+    expect(first.files).toEqual(second.files);
+    expect(first.target).not.toEqual(second.target);
+    expect(first.branch.name).not.toBe(second.branch.name);
+    expect(first.proposalHash).not.toBe(second.proposalHash);
+  });
+
+  it('rejects an unborn all-zero Git base', () => {
+    expect(() =>
+      buildKnowledgeDeltaGitProposalV1({
+        baseCommit: '0'.repeat(40),
+        delta: knowledgeDelta([item(1, 'architecture')]),
+        mutations: [createMutation(1, 'architecture', approvedSource(1, 'architecture'))],
+        project: 'threadnote',
+        target: TARGET,
+      }),
+    ).toThrow(/existing Git object/u);
   });
 });
 
@@ -415,6 +462,7 @@ function resignProposal(
       project: proposal.project,
       reviewId: proposal.knowledgeDelta.reviewId,
       revision: proposal.knowledgeDelta.expectedRevision,
+      target: proposal.target,
     }),
   );
   const {proposalHash: _proposalHash, ...unsigned} = {

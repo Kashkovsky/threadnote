@@ -1,7 +1,8 @@
 import {Console, Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {SystemInfo} from '../effect/system.js';
-import {listCandidateReviews, type CandidateReview} from '../memory/candidate.js';
+import {listCandidateReviews, withCandidateReviewLock, type CandidateReview} from '../memory/candidate.js';
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
@@ -12,7 +13,7 @@ import {projectKnowledgeDeltaV1} from '../memory/knowledge_delta.js';
 import {readMaintenanceMemoryRecords} from '../memory/maintenance_records.js';
 import {MemoryOperationError} from '../memory/migrations.js';
 import {assertSafeShareRelativePath, resolveTeam} from '../share/core.js';
-import {gitFileContent, gitOutput} from '../share/git.js';
+import {gitFileContent} from '../share/git.js';
 import {validatePortableSegment} from '../storage/resource-id.js';
 import type {RuntimeConfig} from '../types.js';
 import {
@@ -43,26 +44,49 @@ export const buildReviewedKnowledgeDeltaGitProposal = Effect.fn('gitProposal.bui
   if (candidateIds.length === 0) return yield* operationError('Select at least one --candidate-id to share.');
   if (candidateIds.length > 3) return yield* operationError('A Git proposal can contain at most three candidates.');
   const reviewId = options.reviewId.trim();
-  const reviews = yield* listCandidateReviews(config.agentContextHome);
-  const review = reviews.find(item => item.reviewId === reviewId);
-  if (!review) return yield* operationError(`Candidate review ${reviewId} was not found.`);
-  if (review.revision !== options.revision) {
-    return yield* operationError(
-      `Candidate review revision changed: expected ${options.revision}, current ${review.revision}. Review it again before export.`,
-    );
-  }
-  const delta = projectKnowledgeDeltaV1(review);
-  const team = yield* resolveTeam(config, options.team);
-  const baseCommit = yield* gitOutput(team.config.worktree, ['rev-parse', 'HEAD'], false);
-  if (!baseCommit) return yield* operationError('The configured shared Git worktree has no readable HEAD commit.');
-  const records = yield* readMaintenanceMemoryRecords(config);
-  const mutations = yield* Effect.forEach(candidateIds, candidateId =>
-    reviewedMutation(config, review, candidateId, records, team.config.worktree, baseCommit),
+  return yield* withCandidateReviewLock(
+    config.agentContextHome,
+    reviewId,
+    Effect.gen(function* () {
+      const reviews = yield* listCandidateReviews(config.agentContextHome);
+      const review = reviews.find(item => item.reviewId === reviewId);
+      if (!review) return yield* operationError(`Candidate review ${reviewId} was not found.`);
+      if (review.revision !== options.revision) {
+        return yield* operationError(
+          `Candidate review revision changed: expected ${options.revision}, current ${review.revision}. Review it again before export.`,
+        );
+      }
+      const delta = projectKnowledgeDeltaV1(review);
+      const team = yield* resolveTeam(config, options.team);
+      const repository = yield* resolveRepositoryIdentity(team.config.worktree).pipe(
+        Effect.mapError(cause => operationError(`Could not resolve the shared Git repository: ${cause.message}`)),
+      );
+      if (repository.remoteIdentity === undefined) {
+        return yield* operationError(
+          'The configured shared Git worktree needs a portable remote repository identity before proposal export.',
+        );
+      }
+      const baseCommit = repository.headCommit;
+      if (/^0+$/u.test(baseCommit)) {
+        return yield* operationError('The configured shared Git worktree has no readable HEAD commit.');
+      }
+      const records = yield* readMaintenanceMemoryRecords(config);
+      const mutations = yield* Effect.forEach(candidateIds, candidateId =>
+        reviewedMutation(config, review, candidateId, records, team.config.worktree, baseCommit),
+      );
+      return yield* Effect.try({
+        try: () =>
+          buildKnowledgeDeltaGitProposalV1({
+            baseCommit,
+            delta,
+            mutations,
+            project: review.project,
+            target: {repositoryId: repository.repositoryId, team: team.name},
+          }),
+        catch: cause => operationError(cause instanceof Error ? cause.message : 'Could not build the Git proposal.'),
+      });
+    }),
   );
-  return yield* Effect.try({
-    try: () => buildKnowledgeDeltaGitProposalV1({baseCommit, delta, mutations, project: review.project}),
-    catch: cause => operationError(cause instanceof Error ? cause.message : 'Could not build the Git proposal.'),
-  });
 });
 
 export const runKnowledgeDeltaGitProposalExport = Effect.fn('gitProposal.exportCommand')(function* (

@@ -44,8 +44,8 @@ describe('context health repair proposals', () => {
     const originalReport = structuredClone(report);
     const originalRecords = structuredClone(records);
 
-    const preview = previewContextHealthRepairPlanV1(report, records);
-    const boundedPreview = previewContextHealthRepairPlanV1(report, records, {limit: 3});
+    const preview = previewWithStorageAbsence(report, records);
+    const boundedPreview = previewWithStorageAbsence(report, records, 3);
 
     expect(preview.proposals).toHaveLength(4);
     expect(preview.omittedProposals).toBe(0);
@@ -84,6 +84,7 @@ describe('context health repair proposals', () => {
     const original = structuredClone([source, otherProject]);
 
     const applied = applyContextHealthRepairProposalV1({
+      absentTargetUris: [missingUri],
       expectedRevision: proposal.revision,
       proposal,
       records: [source, otherProject],
@@ -104,6 +105,7 @@ describe('context health repair proposals', () => {
     expect([source, otherProject]).toEqual(original);
 
     const repeated = applyContextHealthRepairProposalV1({
+      absentTargetUris: [missingUri],
       expectedRevision: proposal.revision,
       proposal,
       records: applied.records,
@@ -116,6 +118,12 @@ describe('context health repair proposals', () => {
     const missingSource = record('missing-source', 'Missing target.', {
       relations: [{type: 'depends_on', uri: missingUri}],
     });
+    expect(
+      previewContextHealthRepairPlanV1(
+        healthReport([finding('relation-target-missing', 'repair-relation', missingSource.uri, missingUri)]),
+        [missingSource],
+      ).proposals[0]?.mutation,
+    ).toMatchObject({kind: 'review-only'});
     const missingProposal = onlyProposal(
       healthReport([finding('relation-target-missing', 'repair-relation', missingSource.uri, missingUri)]),
       [missingSource],
@@ -367,9 +375,24 @@ describe('context health repair proposals', () => {
 });
 
 function onlyProposal(report: ContextHealthReportV1, records: readonly MemoryRecord[]): ContextHealthRepairProposalV1 {
-  const proposals = previewContextHealthRepairPlanV1(report, records).proposals;
+  const proposals = previewWithStorageAbsence(report, records).proposals;
   expect(proposals).toHaveLength(1);
   return proposals[0];
+}
+
+function previewWithStorageAbsence(report: ContextHealthReportV1, records: readonly MemoryRecord[], limit?: number) {
+  const existingUris = new Set(records.map(record => record.uri));
+  const absentTargetUris = report.findings.flatMap(finding =>
+    finding.category === 'relation-target-missing' &&
+    finding.repair.targetUri !== undefined &&
+    !existingUris.has(finding.repair.targetUri)
+      ? [finding.repair.targetUri]
+      : [],
+  );
+  return previewContextHealthRepairPlanV1(report, records, {
+    absentTargetUris,
+    ...(limit === undefined ? {} : {limit}),
+  });
 }
 
 function record(

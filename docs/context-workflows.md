@@ -126,9 +126,10 @@ threadnote share propose ... --output ./knowledge-delta-proposal.json
 
 The default prints canonical JSON and writes nothing. `--output` writes only the local artifact; neither mode creates a
 branch, commit, pull request, provider object, or network request. The proposal binds the exact review revision, base
-commit, approved personal source hash, and absent-or-exact shared target precondition. It preserves portable relations
-and stable shared identity, including when a personally created candidate proposes replacing an existing shared record.
-Agents with the core MCP toolset can request the same read-only artifact with `share_propose`.
+commit, configured team, portable remote repository identity, approved personal source hash, and absent-or-exact shared
+target precondition. It preserves portable relations and stable shared identity, including when a personally created
+candidate proposes replacing an existing shared record. Agents with the core MCP toolset can request the same read-only
+artifact with `share_propose`.
 
 ## Context health
 

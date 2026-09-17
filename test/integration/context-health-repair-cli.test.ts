@@ -122,6 +122,42 @@ describe('context health repair CLI', () => {
     expect(updated?.metadata.relations).toEqual([{type: 'references', uri: 'threadnote://memory/tn_active'}]);
   });
 
+  it('keeps malformed direct targets and missing stable aliases review-only', async () => {
+    const home = await makeHome();
+    const malformedUri = 'threadnote://user/local/memories/durable/projects/project-a/malformed-target.md';
+    await storedMemory(home, 'source', {
+      relations: [
+        {type: 'depends_on', uri: malformedUri},
+        {type: 'references', uri: 'threadnote://memory/tn_missing_alias'},
+      ],
+    });
+    const malformedPath = join(
+      home,
+      'data',
+      'local',
+      'user',
+      'local',
+      'memories',
+      'durable',
+      'projects',
+      'project-a',
+      'malformed-target.md',
+    );
+    await writeFile(malformedPath, 'not a memory document\n', 'utf8');
+
+    const preview = JSON.parse(
+      (await runCli(['context', 'repair', 'preview', '--project', 'project-a', '--json'], home)).stdout,
+    ) as RepairPlan;
+    const relationProposals = preview.proposals.filter(item => item.category === 'relation-target-missing');
+
+    expect(relationProposals).toHaveLength(2);
+    expect(relationProposals.every(item => item.mutation.kind === 'review-only')).toBe(true);
+    expect(relationProposals.some(item => item.mutation.targetUri === malformedUri)).toBe(true);
+    expect(relationProposals.some(item => item.mutation.targetUri === 'threadnote://memory/tn_missing_alias')).toBe(
+      true,
+    );
+  });
+
   it('resumes an applying archive journal by reusing its exact revision-addressed archive', async () => {
     const home = await makeHome();
     const sourcePath = await storedMemory(home, 'crash-recovery', {validTo: '2000-01-01T00:00:00.000Z'});
@@ -272,7 +308,8 @@ describe('context health repair CLI', () => {
 
 interface RepairPlan {
   readonly proposals: readonly {
-    readonly mutation: {readonly kind: string};
+    readonly category: string;
+    readonly mutation: {readonly kind: string; readonly targetUri?: string};
     readonly proposalId: string;
     readonly revision: string;
     readonly [key: string]: unknown;

@@ -53,6 +53,11 @@ export interface KnowledgeDeltaGitProposalInputV1 {
   readonly delta: KnowledgeDeltaV1;
   readonly mutations: readonly ReviewedSharedMemoryMutationV1[];
   readonly project: string;
+  readonly target: {
+    /** Credential-free, portable repository identity hash. */
+    readonly repositoryId: string;
+    readonly team: string;
+  };
 }
 
 export interface KnowledgeDeltaGitProposalFileV1 {
@@ -94,6 +99,10 @@ export interface KnowledgeDeltaGitProposalV1 {
   };
   readonly project: string;
   readonly proposalHash: string;
+  readonly target: {
+    readonly repositoryId: string;
+    readonly team: string;
+  };
   readonly type: 'knowledge-delta-git-proposal';
   readonly version: 1;
 }
@@ -112,7 +121,11 @@ export function buildKnowledgeDeltaGitProposalV1(
   input: KnowledgeDeltaGitProposalInputV1,
 ): KnowledgeDeltaGitProposalBuildV1 {
   const project = portableSegment(input.project, 'project');
-  const baseCommit = requirePattern(input.baseCommit, GIT_COMMIT, 'base commit');
+  const baseCommit = requireGitCommit(input.baseCommit);
+  const target = {
+    repositoryId: requirePattern(input.target.repositoryId, SHA256, 'target repository ID'),
+    team: portableSegment(input.target.team, 'target team'),
+  };
   const delta = validateKnowledgeDelta(input.delta, project);
   if (input.mutations.length === 0) invalid('A Git proposal requires at least one explicitly shared mutation.');
   if (input.mutations.length > 3) invalid('A Git proposal can contain at most three Knowledge Delta mutations.');
@@ -135,7 +148,15 @@ export function buildKnowledgeDeltaGitProposalV1(
   const normalizedDelta = {...delta, items: [...delta.items].sort(compareCandidate)};
   const expectedHash = sha256HexSync(canonicalJson(normalizedDelta));
   const contentSetHash = sha256HexSync(
-    canonicalJson({baseCommit, expectedHash, files, project, reviewId: delta.reviewId, revision: delta.revision}),
+    canonicalJson({
+      baseCommit,
+      expectedHash,
+      files,
+      project,
+      reviewId: delta.reviewId,
+      revision: delta.revision,
+      target,
+    }),
   );
   const unsigned = {
     base: {expectedCommit: baseCommit},
@@ -148,6 +169,7 @@ export function buildKnowledgeDeltaGitProposalV1(
       reviewId: delta.reviewId,
     },
     project,
+    target,
     type: 'knowledge-delta-git-proposal' as const,
     version: 1 as const,
   };
@@ -177,7 +199,9 @@ export function verifyKnowledgeDeltaGitProposalV1(proposal: KnowledgeDeltaGitPro
     invalid('Git proposal type or version is unsupported.');
   }
   portableSegment(proposal.project, 'project');
-  requirePattern(proposal.base.expectedCommit, GIT_COMMIT, 'base commit');
+  requireGitCommit(proposal.base.expectedCommit);
+  requirePattern(proposal.target.repositoryId, SHA256, 'target repository ID');
+  portableSegment(proposal.target.team, 'target team');
   requirePattern(proposal.knowledgeDelta.expectedHash, SHA256, 'Knowledge Delta hash');
   requireReview(proposal.knowledgeDelta.reviewId, proposal.knowledgeDelta.expectedRevision);
   if (proposal.files.length === 0 || proposal.files.length > 3) invalid('Git proposal file count is out of bounds.');
@@ -500,6 +524,7 @@ function expectedBranchName(proposal: KnowledgeDeltaGitProposalV1): string {
       project: proposal.project,
       reviewId: proposal.knowledgeDelta.reviewId,
       revision: proposal.knowledgeDelta.expectedRevision,
+      target: proposal.target,
     }),
   );
   return `threadnote/knowledge-delta/${proposal.knowledgeDelta.reviewId}-${contentSetHash.slice(0, 12)}`;
@@ -520,6 +545,12 @@ function portableSegment(value: string, label: string): string {
 
 function requirePattern(value: string, pattern: RegExp, label: string): string {
   if (!pattern.test(value)) invalid(`${label} is malformed.`);
+  return value;
+}
+
+function requireGitCommit(value: string): string {
+  requirePattern(value, GIT_COMMIT, 'base commit');
+  if (/^0+$/u.test(value)) invalid('base commit must identify an existing Git object.');
   return value;
 }
 

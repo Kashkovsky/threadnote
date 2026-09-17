@@ -9,6 +9,7 @@ import {uriSegment} from '../manifest.js';
 import {
   forgetResourceWithRetry,
   readMemoryRecordsByUri,
+  resourceExists,
   resourceStoreLocation,
   writeMemoryContentWithExpectedHash,
 } from '../mcp/server/memory.js';
@@ -16,6 +17,7 @@ import type {RuntimeConfig} from '../types.js';
 import {collectContextHealth} from './context_health_commands.js';
 import {
   applyContextHealthRepairProposalV1,
+  isAutomaticRelationRepairTargetV1,
   previewContextHealthRepairPlanV1,
   type ContextHealthRepairApplyReceiptV1,
   type ContextHealthRepairConflictV1,
@@ -103,7 +105,18 @@ export const previewContextHealthRepairs = Effect.fn('memory.contextHealthRepair
     record => record.metadata.status === 'active' && record.metadata.project === project,
   );
   const report = yield* collectContextHealth(config, project, activeRecords, cwd);
-  return previewContextHealthRepairPlanV1(report, records);
+  const absentTargetUris = yield* storageAbsentUris(
+    config,
+    report.findings.flatMap(finding =>
+      finding.category === 'relation-target-missing' &&
+      finding.repair.subjectUri !== undefined &&
+      finding.repair.targetUri !== undefined &&
+      isAutomaticRelationRepairTargetV1(finding.repair.subjectUri, finding.repair.targetUri)
+        ? [finding.repair.targetUri]
+        : [],
+    ),
+  );
+  return previewContextHealthRepairPlanV1(report, records, {absentTargetUris});
 });
 
 export const runContextHealthRepairPreview = Effect.fn('memory.contextHealthRepair.previewCommand')(function* (
@@ -200,6 +213,7 @@ function applyLocked(
       proposal = matched;
       const records = yield* readMaintenanceMemoryRecords(config);
       const preflight = applyContextHealthRepairProposalV1({
+        absentTargetUris: yield* proposalAbsentTargetUris(config, proposal),
         expectedRevision: input.revision,
         proposal,
         records,
@@ -232,6 +246,7 @@ function applyLocked(
       return publicApplyResult({receipt: recovered, status: 'already-applied'}, proposal);
     }
     const planned = applyContextHealthRepairProposalV1({
+      absentTargetUris: yield* proposalAbsentTargetUris(config, proposal),
       expectedRevision: input.revision,
       proposal,
       records,
@@ -291,6 +306,7 @@ function executeRepairMutation(
           const archiveBlocker = archiveSourceBlocker(source);
           if (archiveBlocker !== undefined) return yield* repairError(archiveBlocker);
           const lockedPlan = applyContextHealthRepairProposalV1({
+            absentTargetUris: yield* proposalAbsentTargetUris(config, proposal),
             expectedRevision: proposal.revision,
             proposal,
             records: current,
@@ -330,6 +346,7 @@ function executeRepairMutation(
       Effect.gen(function* () {
         const current = yield* readMemoryRecordsByUri(config, lockedUris);
         const lockedPlan = applyContextHealthRepairProposalV1({
+          absentTargetUris: yield* proposalAbsentTargetUris(config, proposal),
           expectedRevision: proposal.revision,
           proposal,
           records: current,
@@ -432,6 +449,24 @@ function repairArchiveUri(
 function memoryContentHash(content: string): string {
   return sha256HexSync(canonicalMemoryDocumentContent(content));
 }
+
+function proposalAbsentTargetUris(config: RuntimeConfig, proposal: ContextHealthRepairProposalV1) {
+  return proposal.mutation.kind === 'remove-relations' && proposal.mutation.targetPrecondition.state === 'absent'
+    ? storageAbsentUris(config, [proposal.mutation.targetUri])
+    : Effect.succeed([] as readonly string[]);
+}
+
+const storageAbsentUris = Effect.fn('memory.contextHealthRepair.storageAbsentUris')(function* (
+  config: RuntimeConfig,
+  uris: readonly string[],
+) {
+  const observations = yield* Effect.forEach(
+    [...new Set(uris)].sort(),
+    uri => resourceExists('threadnote-native', config, uri).pipe(Effect.map(exists => ({exists, uri}))),
+    {concurrency: 16},
+  );
+  return observations.flatMap(observation => (observation.exists ? [] : [observation.uri]));
+});
 
 function isArchiveRepairableKind(kind: MemoryRecord['metadata']['kind']): kind is RepairArchiveKind {
   return kind === 'durable' || kind === 'handoff' || kind === 'incident';

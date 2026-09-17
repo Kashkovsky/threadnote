@@ -113,6 +113,8 @@ export type ContextHealthRepairApplyResultV1 =
     };
 
 export interface ApplyContextHealthRepairProposalInputV1 {
+  /** Direct target URIs that storage proved do not exist; unreadable resources are not considered absent. */
+  readonly absentTargetUris?: readonly string[];
   readonly expectedRevision: string;
   readonly proposal: ContextHealthRepairProposalV1;
   /** A receipt returned by an earlier successful application of this exact revision. */
@@ -128,12 +130,13 @@ export interface ApplyContextHealthRepairProposalInputV1 {
 export function previewContextHealthRepairPlanV1(
   report: ContextHealthReportV1,
   records: readonly MemoryRecord[],
-  options: {readonly limit?: number} = {},
+  options: {readonly absentTargetUris?: readonly string[]; readonly limit?: number} = {},
 ): ContextHealthRepairPlanV1 {
   const recordsByUri = uniqueRecordsByUri(records);
+  const absentTargetUris = new Set(options.absentTargetUris ?? []);
   const proposals = [...report.findings]
     .sort((left, right) => compareText(left.id, right.id))
-    .map(finding => proposalForFinding(report.project, finding, recordsByUri))
+    .map(finding => proposalForFinding(report.project, finding, recordsByUri, absentTargetUris))
     .sort((left, right) => compareText(left.proposalId, right.proposalId));
   const limit = proposalLimit(options.limit);
   return {
@@ -215,7 +218,10 @@ export function applyContextHealthRepairProposalV1(
     return conflict(input, 'precondition-failed', 'Memory content changed after the repair proposal was previewed.');
   }
 
-  if (mutation.kind === 'remove-relations' && !relationTargetPreconditionMatches(mutation, records)) {
+  if (
+    mutation.kind === 'remove-relations' &&
+    !relationTargetPreconditionMatches(mutation, records, new Set(input.absentTargetUris ?? []))
+  ) {
     return conflict(
       input,
       'precondition-failed',
@@ -289,8 +295,9 @@ function proposalForFinding(
   project: string,
   finding: ContextHealthFindingV1,
   recordsByUri: ReadonlyMap<string, MemoryRecord | undefined>,
+  absentTargetUris: ReadonlySet<string>,
 ): ContextHealthRepairProposalV1 {
-  const mutation = mutationForFinding(project, finding, recordsByUri);
+  const mutation = mutationForFinding(project, finding, recordsByUri, absentTargetUris);
   const preconditions = mutationPreconditions(project, mutation, recordsByUri);
   const base = {
     category: finding.category,
@@ -310,6 +317,7 @@ function mutationForFinding(
   project: string,
   finding: ContextHealthFindingV1,
   recordsByUri: ReadonlyMap<string, MemoryRecord | undefined>,
+  absentTargetUris: ReadonlySet<string>,
 ): ContextHealthRepairMutationV1 {
   const subjectUri = finding.repair.subjectUri;
   const targetUri = finding.repair.targetUri;
@@ -377,16 +385,14 @@ function mutationForFinding(
     (finding.category === 'relation-target-inactive' || finding.category === 'relation-target-missing') &&
     subjectUri !== undefined &&
     targetUri !== undefined &&
-    memoryIdFromIdentityAlias(targetUri) === undefined &&
-    !isSharedMemoryUri(targetUri) &&
-    isSamePersonalMemoryScope(subjectUri, targetUri) &&
+    isAutomaticRelationRepairTargetV1(subjectUri, targetUri) &&
     subject?.metadata.project === project &&
     subject.metadata.status === 'active' &&
     subject.metadata.relations?.some(relation => relation.uri === targetUri) === true
   ) {
     const target = recordsByUri.get(targetUri);
     const targetPrecondition =
-      finding.category === 'relation-target-missing' && !recordsByUri.has(targetUri)
+      finding.category === 'relation-target-missing' && !recordsByUri.has(targetUri) && absentTargetUris.has(targetUri)
         ? ({state: 'absent'} as const)
         : finding.category === 'relation-target-inactive' && target !== undefined && target.metadata.status !== 'active'
           ? ({expectedContentHash: memoryContentHash(target.content), state: 'inactive'} as const)
@@ -428,6 +434,15 @@ function mutationForFinding(
     ...(subjectUri === undefined ? {} : {subjectUri}),
     ...(targetUri === undefined ? {} : {targetUri}),
   };
+}
+
+/** True only for the direct, same-user personal memory targets that automatic relation repair may inspect. */
+export function isAutomaticRelationRepairTargetV1(subjectUri: string, targetUri: string): boolean {
+  return (
+    memoryIdFromIdentityAlias(targetUri) === undefined &&
+    !isSharedMemoryUri(targetUri) &&
+    isSamePersonalMemoryScope(subjectUri, targetUri)
+  );
 }
 
 function mutationPreconditions(
@@ -615,9 +630,12 @@ function conflict(
 function relationTargetPreconditionMatches(
   mutation: Extract<ContextHealthRepairMutationV1, {readonly kind: 'remove-relations'}>,
   records: readonly MemoryRecord[],
+  absentTargetUris: ReadonlySet<string>,
 ): boolean {
   const matches = records.filter(record => record.uri === mutation.targetUri);
-  if (mutation.targetPrecondition.state === 'absent') return matches.length === 0;
+  if (mutation.targetPrecondition.state === 'absent') {
+    return matches.length === 0 && absentTargetUris.has(mutation.targetUri);
+  }
   if (matches.length !== 1) return false;
   const target = matches[0];
   if (!target) return false;
