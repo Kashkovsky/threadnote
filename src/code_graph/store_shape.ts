@@ -33,6 +33,8 @@ import type {
   CodeGraphDirectPersistentCapacityProtector,
   CodeGraphEdgeCursor,
   CodeGraphPersistentBuildClaim,
+  CodeGraphPreparationGate,
+  CodeGraphPreparedMaterializationSpool,
   CodeGraphLanguagePackProvenance,
   CodeGraphMaterializationSpoolContext,
   CodeGraphMaterializedShardAssociationBatch,
@@ -305,7 +307,15 @@ export interface CodeGraphStoreShape {
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
     onSecondaryIndexProgress?: CodeGraphSecondaryIndexRestorationProgressCallback,
     materializationSpool?: CodeGraphMaterializationSpoolContext,
+    preparedSpool?: CodeGraphPreparedMaterializationSpool,
   ) => Effect.Effect<void, CodeGraphStoreFailure>;
+  readonly preparePersistentMaterializationSpool: (
+    databasePath: string,
+    expectedBatchCount: number,
+    persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector | undefined,
+    materializationSpool: CodeGraphMaterializationSpoolContext,
+    preparationGate: CodeGraphPreparationGate,
+  ) => Effect.Effect<CodeGraphPreparedMaterializationSpool, CodeGraphStoreFailure | unknown>;
   readonly preparePersistedIncrementalActivation: (
     databasePath: string,
     baseSnapshotId: string,
@@ -731,6 +741,7 @@ export interface CodeGraphDatabaseSessionOptions {
   /** @internal Deterministic checkout-writer acquisition observer used by coordination tests. */
   readonly onWriterAcquired?: () => Effect.Effect<void, never>;
   readonly onWriterContention?: () => Effect.Effect<void, never>;
+  readonly onWriterReleased?: () => Effect.Effect<void, never>;
   /** @internal Records effective PRAGMA values for controlled benchmark evidence. */
   readonly onSqliteWriterConfigured?: (settings: CodeGraphSqliteWriterSettings) => Effect.Effect<void, never>;
   /** @internal Benchmark-only overrides. Production indexing leaves this unset. */

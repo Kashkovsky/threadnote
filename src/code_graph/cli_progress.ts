@@ -161,6 +161,8 @@ function waitingProgressLabel(reason: Extract<CodeGraphProgress, {readonly phase
       return 'Waiting for database writer';
     case 'home-builder-cap':
       return 'Waiting for builder cap';
+    case 'prepared-spool-budget':
+      return 'Waiting for prepared graph publication capacity';
     case 'request-lock':
       return 'Waiting for matching request';
     case 'snapshot-build':

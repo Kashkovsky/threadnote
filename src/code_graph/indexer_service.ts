@@ -5,8 +5,10 @@ import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {getThreadnoteVersion} from '../release/runtime_version.js';
 import {observeCodeGraphAdmissionEnvironment, recordCodeGraphSnapshotAdmission} from './admission_freshness.js';
-import {makeCodeGraphBuildReporter} from './build_status.js';
+import {makeCodeGraphBuildReporter, type CodeGraphBuildReporter} from './build_status.js';
 import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, withCodeGraphBuilderAdmission} from './builder_admission.js';
+import type {CodeGraphBuilderAdmissionQueue} from './builder_admission_scheduler.js';
+import {makeCodeGraphBuildResourceCoordinator} from './build_resources.js';
 import {isCodeGraphCapacityPause} from './disk_capacity.js';
 import {CodeGraphEmbeddingIndex} from './embedding.js';
 import {
@@ -57,6 +59,8 @@ import type {
   DirectPersistentCapacityProtection,
   IncrementalOverlayAssessment,
   IncrementalOverlayPreassessment,
+  CodeGraphIndexResourceGate,
+  CodeGraphPreparedSpoolBudgetGate,
 } from './indexer_types.js';
 import {codeGraphIndexEnsuresVectors} from './indexer_types.js';
 import type {BoundedCodeGraphFact} from './fact_budget.js';
@@ -74,6 +78,7 @@ import {resolveAndRecordCodeGraphLocalAssociation} from './local_provenance.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {CodeGraphParserPool} from './parser_worker.js';
+import {withCodeGraphPreparedSpoolBudget} from './prepared_spool_budget.js';
 import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {captureSharedGraphImportBase} from './sharing/client.js';
 import {
@@ -111,6 +116,93 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       const system = yield* SystemInfo;
       const http = yield* HttpClient.HttpClient;
       const releaseIdentity = yield* getThreadnoteVersion();
+      const makeBuildResourceGates = Effect.fn('codeGraph.indexer.makeBuildResourceGates')(function* (input: {
+        readonly admissionClass: ReturnType<typeof codeGraphBuilderAdmissionClass>;
+        readonly checkoutId: string;
+        readonly desiredOverlayDigest?: string;
+        readonly onProgress?: CodeGraphIndexOptions['onProgress'];
+        readonly reporter: CodeGraphBuildReporter;
+        readonly resumeProgress: () => Effect.Effect<void, unknown>;
+        readonly requestKey?: string;
+        readonly threadnoteHome: string;
+        readonly worktreeId: string;
+      }) {
+        const resources = yield* makeCodeGraphBuildResourceCoordinator(input.reporter.resource);
+        const admissionOptions = {
+          admissionClass: input.admissionClass,
+          identity: {
+            checkoutId: input.checkoutId,
+            worktreeId: input.worktreeId,
+            ...(input.requestKey === undefined ? {} : {requestKey: input.requestKey}),
+            ...(input.desiredOverlayDigest === undefined ? {} : {desiredOverlayDigest: input.desiredOverlayDigest}),
+          },
+          onQueue: (queue: CodeGraphBuilderAdmissionQueue) =>
+            input.reporter
+              .admission(queue)
+              .pipe(
+                Effect.andThen(
+                  input.onProgress?.({phase: 'waiting', reason: 'home-builder-cap', admission: queue}) ?? Effect.void,
+                ),
+                Effect.ignore,
+              ),
+          onAdmitted: input.reporter.admission().pipe(Effect.andThen(input.resumeProgress()), Effect.ignore),
+          threadnoteHome: input.threadnoteHome,
+        } as const;
+        const admit: CodeGraphIndexResourceGate = effect =>
+          withCodeGraphBuilderAdmission(admissionOptions, effect).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(SystemInfo, system),
+          );
+        const legacyBuildAdmission: CodeGraphIndexResourceGate = effect =>
+          admit(
+            Effect.acquireUseRelease(
+              resources.acquireLegacyBuilder,
+              () => effect,
+              () => resources.releaseLegacyBuilder,
+            ),
+          );
+        const preparationGate: CodeGraphIndexResourceGate = effect =>
+          admit(
+            Effect.acquireUseRelease(
+              resources.acquirePreparation,
+              () => effect,
+              () => resources.releasePreparation,
+            ),
+          );
+        const extractionPreparationGate: CodeGraphIndexResourceGate = effect =>
+          resources.current.pipe(Effect.flatMap(current => (current.legacyBuilder ? effect : preparationGate(effect))));
+        const preparedSpoolBudgetGate: CodeGraphPreparedSpoolBudgetGate = (bytes, snapshotId, effect) =>
+          withCodeGraphPreparedSpoolBudget(
+            {
+              bytes,
+              checkoutId: input.checkoutId,
+              onWaiting: (input.onProgress?.({phase: 'waiting', reason: 'prepared-spool-budget'}) ?? Effect.void).pipe(
+                Effect.ignore,
+              ),
+              snapshotId,
+              threadnoteHome: input.threadnoteHome,
+            },
+            Effect.acquireUseRelease(
+              resources.acquirePreparedSpool(bytes),
+              () => effect,
+              () => resources.releasePreparedSpool(bytes),
+            ),
+          ).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(SystemInfo, system),
+          );
+        return {
+          extractionPreparationGate,
+          legacyBuildAdmission,
+          preparationGate,
+          preparedSpoolBudgetGate,
+          resources,
+        } as const;
+      });
       const enqueueSharedParserBatch = (
         identity: {readonly headCommit: string; readonly repositoryId: string},
         threadnoteHome: string,
@@ -230,6 +322,19 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
                 ),
             };
+            const buildResources = yield* makeBuildResourceGates({
+              admissionClass: codeGraphBuilderAdmissionClass(options, system.environment()),
+              checkoutId: initialIdentity.checkoutId,
+              ...(requestedOverlay.fingerprint
+                ? {desiredOverlayDigest: sha256HexSync(requestedOverlay.fingerprint)}
+                : {}),
+              onProgress: options.onProgress,
+              reporter,
+              requestKey,
+              resumeProgress: () => reporter.progress(lastActiveProgress),
+              threadnoteHome: options.threadnoteHome,
+              worktreeId: initialIdentity.worktreeId,
+            });
             if (!options.sourceOnly && (yield* fs.exists(graphShareEnrollmentPath(path, initialIdentity.repoRoot)))) {
               yield* captureSharedGraphImportBase({
                 cwd: request.cwd,
@@ -392,6 +497,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           }),
                         onProgress: options.onProgress,
                         parserPool,
+                        preparationGate: buildResources.extractionPreparationGate,
                         persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
                           capacityProtection,
                           fs,
@@ -406,36 +512,38 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       });
                       let bypassReusableInventoryBase = false;
                       yield* cacheCoalescer.beginSparseExtractionTracking;
-                      const sparseOverlay = yield* (
-                        bypassCachedFacts
-                          ? Effect.succeed(Option.none<CodeGraphIndexSummary>())
-                          : attemptSparseReusableOverlay({
-                              anonymousTelemetry,
-                              cacheCoalescer,
-                              capacityProtection,
-                              embedding,
-                              ensureVectors,
-                              fs,
-                              identity,
-                              languagePacks,
-                              layout,
-                              observation: inventoryOverlayObservation,
-                              onInvalidBaseCache: Effect.sync(() => {
-                                bypassReusableInventoryBase = true;
+                      const sparseOverlay = yield* buildResources
+                        .legacyBuildAdmission(
+                          bypassCachedFacts
+                            ? Effect.succeed(Option.none<CodeGraphIndexSummary>())
+                            : attemptSparseReusableOverlay({
+                                anonymousTelemetry,
+                                cacheCoalescer,
+                                capacityProtection,
+                                embedding,
+                                ensureVectors,
+                                fs,
+                                identity,
+                                languagePacks,
+                                layout,
+                                observation: inventoryOverlayObservation,
+                                onInvalidBaseCache: Effect.sync(() => {
+                                  bypassReusableInventoryBase = true;
+                                }),
+                                options,
+                                requestedOverlay,
+                                startedAt,
+                                store,
                               }),
-                              options,
-                              requestedOverlay,
-                              startedAt,
-                              store,
-                            })
-                      ).pipe(
-                        Effect.ensuring(
-                          cacheCoalescer.endSparseExtractionTracking.pipe(
-                            Effect.andThen(cacheCoalescer.discard),
-                            Effect.andThen(parserPool.trimIdle),
+                        )
+                        .pipe(
+                          Effect.ensuring(
+                            cacheCoalescer.endSparseExtractionTracking.pipe(
+                              Effect.andThen(cacheCoalescer.discard),
+                              Effect.andThen(parserPool.trimIdle),
+                            ),
                           ),
-                        ),
-                      );
+                        );
                       if (Option.isSome(sparseOverlay)) return sparseOverlay.value;
                       const rawInventory = yield* Effect.gen(function* () {
                         const changedPathCount =
@@ -640,6 +748,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       if (!inventory.dirty) {
                         return yield* buildOwnedCleanSnapshot({
                           buildOwner: reporter.ownerIdentity,
+                          legacyBuildAdmission: buildResources.legacyBuildAdmission,
                           capacityProtection,
                           embedding,
                           ensureVectors,
@@ -656,6 +765,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           onProgress: options.onProgress,
                           persistentMaterializationTransactionBatchLimit:
                             options.persistentMaterializationTransactionBatchLimit,
+                          preparationGate: buildResources.preparationGate,
+                          preparedSpoolBudgetGate: buildResources.preparedSpoolBudgetGate,
                           requestedOverlay,
                           startedAt,
                           store,
@@ -668,7 +779,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         inventory.dirty && !options.force
                           ? yield* store.resumableBuildById(layout.databasePath, directSnapshotId)
                           : undefined;
-                      let workspace = inventory.workspace ?? (yield* languagePacks.discoverWorkspace(inventory.files));
+                      let workspace =
+                        inventory.workspace ??
+                        (yield* buildResources.preparationGate(languagePacks.discoverWorkspace(inventory.files)));
                       let committedBase: CommittedBaseResult | undefined;
                       let incrementalAssessment: IncrementalOverlayAssessment | undefined;
                       let incrementalPrepared = false;
@@ -773,6 +886,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           if (preassessment.mode === 'compatible') {
                             committedBase = yield* ensureCommittedBase({
                               buildOwner: reporter.ownerIdentity,
+                              legacyBuildAdmission: buildResources.legacyBuildAdmission,
                               capacityProtection,
                               embedding,
                               existing,
@@ -786,6 +900,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                               onProgress: options.onProgress,
                               persistentMaterializationTransactionBatchLimit:
                                 options.persistentMaterializationTransactionBatchLimit,
+                              preparationGate: buildResources.preparationGate,
+                              preparedSpoolBudgetGate: buildResources.preparedSpoolBudgetGate,
                               requestedOverlay,
                               startedAt,
                               store,
@@ -822,19 +938,21 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             symbolCount: 0,
                             worktreeId: identity.worktreeId,
                           };
-                          incrementalAssessment = yield* assessIncrementalOverlay(
-                            {
-                              building: incrementalBuilding,
-                              committedBase: committedBase!,
-                              force: false,
-                              incrementalOverlayEnabled: true,
-                              inventory,
-                              languagePacks,
-                              layout,
-                              store,
-                            },
-                            workspace,
-                            preassessment,
+                          incrementalAssessment = yield* buildResources.preparationGate(
+                            assessIncrementalOverlay(
+                              {
+                                building: incrementalBuilding,
+                                committedBase: committedBase!,
+                                force: false,
+                                incrementalOverlayEnabled: true,
+                                inventory,
+                                languagePacks,
+                                layout,
+                                store,
+                              },
+                              workspace,
+                              preassessment,
+                            ),
                           );
                         }
                         if (incrementalAssessment.mode === 'eligible') {
@@ -859,9 +977,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             total: incrementalAssessment.files.length,
                             unit: 'files',
                           }) ?? Effect.void;
-                          incrementalPrepared =
+                          incrementalPrepared = yield* buildResources.legacyBuildAdmission(
                             incrementalAssessment.reuse === 'persisted-base'
-                              ? yield* store.preparePersistedIncrementalActivation(
+                              ? store.preparePersistedIncrementalActivation(
                                   layout.databasePath,
                                   committedBase.snapshot.id,
                                   incrementalAssessment.files,
@@ -881,13 +999,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                                   },
                                   incrementalCapacityProtector,
                                 )
-                              : yield* store.replaceStagedModifiedFiles(
+                              : store.replaceStagedModifiedFiles(
                                   layout.databasePath,
                                   committedBase.snapshot.id,
                                   incrementalAssessment.files,
                                   incrementalAssessment.facts,
                                   incrementalCapacityProtector,
-                                );
+                                ),
+                          );
                           if (!incrementalPrepared) {
                             incrementalAssessment = {mode: 'fallback', reason: 'staging-identity-mismatch'};
                           }
@@ -966,11 +1085,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         incrementalOverlayEnabled: options.incrementalOverlay !== false,
                         incrementalPrepared,
                         languagePacks,
+                        legacyBuildAdmission: buildResources.legacyBuildAdmission,
                         layout,
                         onProgress: options.onProgress,
                         persistentMaterializationTransactionBatchLimit:
                           options.persistentMaterializationTransactionBatchLimit,
                         persistentOwnerToken,
+                        preparationGate: buildResources.extractionPreparationGate,
+                        preparedSpoolBudgetGate: buildResources.preparedSpoolBudgetGate,
                         requestedOverlay,
                         startedAt,
                         store,
@@ -994,7 +1116,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         ),
                       );
                     }),
-                    writerSessionOptions(layout, options, () => reporter.progress(lastActiveProgress)),
+                    writerSessionOptions(
+                      layout,
+                      options,
+                      () => reporter.progress(lastActiveProgress),
+                      buildResources.resources,
+                    ),
                   )
                   .pipe(
                     Effect.onInterrupt(() =>
@@ -1024,35 +1151,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 onCompleted: () => reporter.markWorktreeLockHeld(false),
               },
             );
-            const admittedBuild = withCodeGraphBuilderAdmission(
-              {
-                admissionClass: codeGraphBuilderAdmissionClass(options, system.environment()),
-                identity: {
-                  checkoutId: initialIdentity.checkoutId,
-                  worktreeId: initialIdentity.worktreeId,
-                  requestKey,
-                  ...(requestedOverlay.fingerprint
-                    ? {desiredOverlayDigest: sha256HexSync(requestedOverlay.fingerprint)}
-                    : {}),
-                },
-                onQueue: queue =>
-                  reporter
-                    .admission(queue)
-                    .pipe(
-                      Effect.andThen(
-                        options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap', admission: queue}) ??
-                          Effect.void,
-                      ),
-                      Effect.ignore,
-                    ),
-                onAdmitted: reporter.admission().pipe(Effect.andThen(reporter.progress(lastActiveProgress))),
-                onWaiting: (options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap'}) ?? Effect.void).pipe(
-                  Effect.ignore,
-                ),
-                threadnoteHome: options.threadnoteHome,
-              },
-              repositoryBuild,
-            ).pipe(
+            const coordinatedBuild = repositoryBuild.pipe(
               Effect.ensuring(
                 runCodeGraphLifecycleOpportunity({
                   maintenance,
@@ -1066,7 +1165,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             );
             const summary = yield* withSharedCodeGraphRequestGate({
               checkoutId: initialIdentity.checkoutId,
-              effect: admittedBuild,
+              effect: coordinatedBuild,
               fs,
               onProgress: options.onProgress,
               path,
@@ -1177,6 +1276,15 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
                 ),
             };
+            const buildResources = yield* makeBuildResourceGates({
+              admissionClass: codeGraphBuilderAdmissionClass(options, system.environment()),
+              checkoutId: initialIdentity.checkoutId,
+              onProgress: options.onProgress,
+              reporter,
+              resumeProgress: () => reporter.progress(lastActiveProgress),
+              threadnoteHome: options.threadnoteHome,
+              worktreeId: initialIdentity.worktreeId,
+            });
             const commitIdentity = {...initialIdentity, headCommit: request.commit};
             const capacityProtection: DirectPersistentCapacityProtection = {
               availableDiskBytes:
@@ -1274,6 +1382,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           : group => enqueueSharedParserBatch(identity, options.threadnoteHome, group, producer),
                         onProgress: options.onProgress,
                         parserPool,
+                        preparationGate: buildResources.preparationGate,
                         persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
                           capacityProtection,
                           fs,
@@ -1300,6 +1409,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       yield* anonymousTelemetry.observeExtractedFactBytes(yield* cacheCoalescer.extractedFactBytes);
                       const committedBase = yield* ensureCommittedBase({
                         buildOwner: reporter.ownerIdentity,
+                        legacyBuildAdmission: buildResources.legacyBuildAdmission,
                         capacityProtection,
                         embedding,
                         force: false,
@@ -1311,6 +1421,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         onProgress: options.onProgress,
                         persistentMaterializationTransactionBatchLimit:
                           options.persistentMaterializationTransactionBatchLimit,
+                        preparationGate: buildResources.preparationGate,
+                        preparedSpoolBudgetGate: buildResources.preparedSpoolBudgetGate,
                         startedAt: yield* Clock.currentTimeMillis,
                         store,
                         threadnoteHome: options.threadnoteHome,
@@ -1326,7 +1438,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         summary: committedBase.summary,
                       };
                     }),
-                    writerSessionOptions(layout, options, () => reporter.progress(lastActiveProgress)),
+                    writerSessionOptions(
+                      layout,
+                      options,
+                      () => reporter.progress(lastActiveProgress),
+                      buildResources.resources,
+                    ),
                   )
                   .pipe(
                     Effect.onInterrupt(() =>
@@ -1341,28 +1458,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 onCompleted: () => reporter.markWorktreeLockHeld(false),
               },
             );
-            const lease = yield* withCodeGraphBuilderAdmission(
-              {
-                admissionClass: codeGraphBuilderAdmissionClass(options, system.environment()),
-                identity: {checkoutId: initialIdentity.checkoutId, worktreeId: initialIdentity.worktreeId},
-                onQueue: queue =>
-                  reporter
-                    .admission(queue)
-                    .pipe(
-                      Effect.andThen(
-                        options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap', admission: queue}) ??
-                          Effect.void,
-                      ),
-                      Effect.ignore,
-                    ),
-                onAdmitted: reporter.admission().pipe(Effect.andThen(reporter.progress(lastActiveProgress))),
-                onWaiting: (options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap'}) ?? Effect.void).pipe(
-                  Effect.ignore,
-                ),
-                threadnoteHome: options.threadnoteHome,
-              },
-              commitBuild,
-            ).pipe(
+            const lease = yield* commitBuild.pipe(
               Effect.ensuring(
                 runCodeGraphLifecycleOpportunity({
                   maintenance,
