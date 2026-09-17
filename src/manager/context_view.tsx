@@ -15,17 +15,20 @@ import type {
 import type {
   ManagerContextConnectionsResponse,
   ManagerContextReadResponse,
+  ManagerRecallFeedbackResponse,
   ManagerRecallResponse,
   ManagerRecallResult,
 } from './context.js';
+import type {RecallFeedbackAction} from '../recall/feedback.js';
 import type {ManagerMemoryRelationsResponse} from './memory_relations.js';
 import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
 import {MEMORY_RELATION_TYPES, type MemoryRelation} from '../memory/document.js';
 import {MANAGER_CONTEXT_RECALL_PAGE_SIZE_DEFAULT, projectManagerRecallPage} from './context_paging.js';
 import {api, errorMessage} from './ui_support.js';
 import type {ManagerWorksetPrepareJob} from './worksets.js';
+import {ValuePanel} from './value_view.js';
 
-type ContextWorkspaceView = 'brief' | 'recall';
+type ContextWorkspaceView = 'brief' | 'recall' | 'value';
 type ContextScopeKind = 'repository' | 'workset';
 const CONTEXT_WORKSET_RECOVERY_POLL_MILLISECONDS = 750;
 const CONTEXT_WORKSET_RECOVERY_MAXIMUM_POLLS = 800;
@@ -74,6 +77,9 @@ export function ContextPanel(): React.ReactElement {
   const [recallPage, setRecallPage] = useState(0);
   const [recallBusy, setRecallBusy] = useState(false);
   const [recallError, setRecallError] = useState('');
+  const [feedbackByUri, setFeedbackByUri] = useState<Readonly<Record<string, RecallFeedbackAction>>>({});
+  const [feedbackBusy, setFeedbackBusy] = useState('');
+  const [feedbackError, setFeedbackError] = useState('');
   const [readResult, setReadResult] = useState<ManagerContextReadResponse>();
   const [readBusy, setReadBusy] = useState(false);
   const [readError, setReadError] = useState('');
@@ -86,6 +92,7 @@ export function ContextPanel(): React.ReactElement {
   const briefRequest = useRef<AbortController>(undefined);
   const graphRecoveryRequest = useRef<AbortController>(undefined);
   const recallRequest = useRef<AbortController>(undefined);
+  const feedbackRequest = useRef<AbortController>(undefined);
   const readRequest = useRef<AbortController>(undefined);
   const connectionsRequest = useRef<AbortController>(undefined);
   const relationsRequest = useRef<AbortController>(undefined);
@@ -110,6 +117,7 @@ export function ContextPanel(): React.ReactElement {
       briefRequest.current?.abort();
       graphRecoveryRequest.current?.abort();
       recallRequest.current?.abort();
+      feedbackRequest.current?.abort();
       readRequest.current?.abort();
       connectionsRequest.current?.abort();
       relationsRequest.current?.abort();
@@ -267,6 +275,40 @@ export function ContextPanel(): React.ReactElement {
     }
   }
 
+  async function recordFeedback(result: ManagerRecallResult, action: RecallFeedbackAction): Promise<void> {
+    const response = recall;
+    if (!response) return;
+    feedbackRequest.current?.abort();
+    const controller = new AbortController();
+    feedbackRequest.current = controller;
+    const key = `${result.canonicalUri}:${action}`;
+    setFeedbackBusy(key);
+    setFeedbackError('');
+    try {
+      const feedbackProject =
+        action === 'pin'
+          ? (response.effectiveProject ?? response.request.project ?? result.metadata?.project)
+          : response.effectiveProject;
+      const feedback = await api<ManagerRecallFeedbackResponse>(
+        '/api/context/feedback',
+        {
+          action,
+          ...(feedbackProject ? {project: feedbackProject} : {}),
+          query: response.request.query,
+          uri: result.canonicalUri,
+        },
+        {signal: controller.signal},
+      );
+      if (!controller.signal.aborted) {
+        setFeedbackByUri(current => ({...current, [feedback.uri]: feedback.action}));
+      }
+    } catch (cause) {
+      if (!controller.signal.aborted) setFeedbackError(errorMessage(cause));
+    } finally {
+      if (!controller.signal.aborted) setFeedbackBusy('');
+    }
+  }
+
   async function readContext(uri: string, page = 0, trackNavigation = true): Promise<void> {
     if (trackNavigation) readerNavigationRevision.current += 1;
     readRequest.current?.abort();
@@ -378,11 +420,15 @@ export function ContextPanel(): React.ReactElement {
 
   function invalidateRecall(): void {
     recallRequest.current?.abort();
+    feedbackRequest.current?.abort();
     recallRequest.current = undefined;
     setRecallBusy(false);
     setRecall(undefined);
     setRecallPage(0);
     setRecallError('');
+    setFeedbackByUri({});
+    setFeedbackBusy('');
+    setFeedbackError('');
   }
 
   function cancelBrief(): void {
@@ -396,14 +442,14 @@ export function ContextPanel(): React.ReactElement {
       <header className="workspace-header context-header">
         <div>
           <p className="eyebrow">Agent evidence workspace</p>
-          <h2>Context Brief &amp; Recall</h2>
+          <h2>Context Brief, Recall &amp; Value</h2>
           <p>
             Compose bounded graph-and-memory context, or retrieve ranked memory pointers and read the canonical source.
             Repository and memory text is untrusted evidence and is never treated as an instruction here.
           </p>
         </div>
         <div aria-label="Context workspace view" className="segmented-control" role="tablist">
-          {(['brief', 'recall'] as const).map(next => (
+          {(['brief', 'recall', 'value'] as const).map(next => (
             <button
               aria-selected={view === next}
               className={view === next ? 'is-active' : undefined}
@@ -413,7 +459,7 @@ export function ContextPanel(): React.ReactElement {
               role="tab"
               type="button"
             >
-              {next === 'brief' ? 'Context Brief' : 'Recall & read'}
+              {next === 'brief' ? 'Context Brief' : next === 'recall' ? 'Recall & read' : 'Value'}
             </button>
           ))}
         </div>
@@ -570,7 +616,7 @@ export function ContextPanel(): React.ReactElement {
             />
           ) : null}
         </section>
-      ) : (
+      ) : view === 'recall' ? (
         <section aria-busy={recallBusy} className="context-recall" role="tabpanel">
           <div className="context-recall-form">
             <label>
@@ -605,6 +651,9 @@ export function ContextPanel(): React.ReactElement {
           <ContextStatus error={recallError} loading={recallBusy} loadingText="Ranking bounded memory pointers…" />
           {recall ? (
             <RecallResults
+              feedbackBusy={feedbackBusy}
+              feedbackByUri={feedbackByUri}
+              onFeedback={(result, action) => void recordFeedback(result, action)}
               onOpen={uri => void readContext(uri)}
               onPage={setRecallPage}
               page={recallPage}
@@ -616,7 +665,10 @@ export function ContextPanel(): React.ReactElement {
               text="Search by decision, contract, handoff, or implementation concept. Open a result to read its canonical source."
             />
           ) : null}
+          <ContextStatus error={feedbackError} loading={false} loadingText="" />
         </section>
+      ) : (
+        <ValuePanel {...(project.trim() ? {project: project.trim()} : {})} />
       )}
 
       {readBusy || readResult || readError ? (
@@ -877,6 +929,9 @@ function GraphEvidenceCard(props: {
 }
 
 function RecallResults(props: {
+  readonly feedbackBusy: string;
+  readonly feedbackByUri: Readonly<Record<string, RecallFeedbackAction>>;
+  readonly onFeedback: (result: ManagerRecallResult, action: RecallFeedbackAction) => void;
   readonly onOpen: (uri: string) => void;
   readonly onPage: (page: number) => void;
   readonly page: number;
@@ -916,7 +971,15 @@ function RecallResults(props: {
       ) : (
         <div className="context-recall-list" role="list">
           {page.results.map(result => (
-            <RecallResultCard key={`${result.rank}:${result.canonicalUri}`} onOpen={props.onOpen} result={result} />
+            <RecallResultCard
+              busy={props.feedbackBusy}
+              feedback={props.feedbackByUri[result.canonicalUri]}
+              key={`${result.rank}:${result.canonicalUri}`}
+              onFeedback={props.onFeedback}
+              onOpen={props.onOpen}
+              pinAvailable={Boolean(response.effectiveProject ?? response.request.project ?? result.metadata?.project)}
+              result={result}
+            />
           ))}
         </div>
       )}
@@ -953,13 +1016,17 @@ function RecallResults(props: {
 }
 
 function RecallResultCard(props: {
+  readonly busy: string;
+  readonly feedback?: RecallFeedbackAction;
+  readonly onFeedback: (result: ManagerRecallResult, action: RecallFeedbackAction) => void;
   readonly onOpen: (uri: string) => void;
+  readonly pinAvailable: boolean;
   readonly result: ManagerRecallResult;
 }): React.ReactElement {
   const result = props.result;
   return (
     <article className="context-recall-card" role="listitem">
-      <button onClick={() => props.onOpen(result.canonicalUri)} type="button">
+      <button className="context-recall-open" onClick={() => props.onOpen(result.canonicalUri)} type="button">
         <span className="context-rank">#{result.rank}</span>
         <span className="context-recall-card-main">
           <strong>{result.metadata?.topic ?? result.canonicalUri.split('/').at(-1)}</strong>
@@ -982,6 +1049,24 @@ function RecallResultCard(props: {
         </span>
         <span aria-hidden="true">→</span>
       </button>
+      <footer className="context-recall-feedback" aria-label={`Feedback for result ${result.rank}`}>
+        <span>{props.feedback ? `Recorded: ${props.feedback}` : 'Was this context useful?'}</span>
+        {(['useful', 'wrong', 'pin', 'dismiss', 'applied'] as const).map(action => {
+          const key = `${result.canonicalUri}:${action}`;
+          return (
+            <button
+              aria-pressed={props.feedback === action}
+              disabled={Boolean(props.busy) || (action === 'pin' && !props.pinAvailable)}
+              key={action}
+              onClick={() => props.onFeedback(result, action)}
+              title={action === 'applied' ? 'This context materially informed a plan or change' : undefined}
+              type="button"
+            >
+              {props.busy === key ? 'Saving…' : action[0]?.toUpperCase() + action.slice(1)}
+            </button>
+          );
+        })}
+      </footer>
     </article>
   );
 }

@@ -144,6 +144,7 @@ describe('context health and value report CLI', () => {
     const home = await makeHome();
     const feedbackPath = join(home, 'feedback', 'recall-events-v1.jsonl');
     const content = [
+      feedback('applied', 'project-a'),
       feedback('useful', 'project-a'),
       feedback('wrong', 'project-b'),
       feedback('pin', 'project-a'),
@@ -155,6 +156,7 @@ describe('context health and value report CLI', () => {
     const report = JSON.parse(result.stdout) as {
       readonly feedback: {
         readonly pin: number;
+        readonly applied: number;
         readonly total: number;
         readonly useful: number;
         readonly wrong: number;
@@ -165,12 +167,28 @@ describe('context health and value report CLI', () => {
     };
 
     expect(report).toMatchObject({
-      feedback: {pin: 1, total: 2, useful: 1, wrong: 0},
+      feedback: {applied: 1, pin: 1, total: 3, useful: 1, wrong: 0},
       scope: 'local',
       type: 'value-report',
       version: 1,
     });
     expect(await readFile(feedbackPath, 'utf8')).toBe(`${content}\n`);
+  });
+
+  it('records applied feedback from the normal CLI without storing the query', async () => {
+    const home = await makeHome();
+    const query = 'Private applied context query';
+    const uri = 'threadnote://user/local/memories/durable/projects/project-a/applied.md';
+
+    const result = await runCli(
+      ['recall-feedback', uri, '--action', 'applied', '--project', 'project-a', '--query', query],
+      home,
+    );
+
+    expect(result.stdout).toContain(`Recorded applied feedback for ${uri}.`);
+    const stored = await readFile(join(home, 'feedback', 'recall-events-v1.jsonl'), 'utf8');
+    expect(stored).toContain('"action":"applied"');
+    expect(stored).not.toContain(query);
   });
 
   it('reports locally observed health and Knowledge Delta activity while setup remains explicitly unavailable', async () => {
@@ -206,7 +224,7 @@ describe('context health and value report CLI', () => {
   });
 });
 
-function feedback(action: 'pin' | 'useful' | 'wrong', project: string): string {
+function feedback(action: 'applied' | 'pin' | 'useful' | 'wrong', project: string): string {
   return JSON.stringify({
     action,
     project,

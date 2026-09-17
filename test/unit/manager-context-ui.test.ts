@@ -63,7 +63,13 @@ beforeEach(() => {
       );
     }
     if (path === '/api/context/recall') {
-      return Promise.resolve(jsonResponse(recallResponse(String(body.query ?? ''))));
+      const explicitProject = typeof body.project === 'string' ? body.project : undefined;
+      return Promise.resolve(
+        jsonResponse(recallResponse(String(body.query ?? ''), explicitProject ?? 'threadnote', explicitProject)),
+      );
+    }
+    if (path === '/api/context/feedback') {
+      return Promise.resolve(jsonResponse({action: body.action, recorded: true, uri: body.uri}));
     }
     if (path === '/api/context/connections') {
       return Promise.resolve(jsonResponse(connectionsResponse(String(body.uri ?? ''))));
@@ -92,6 +98,15 @@ afterEach(async () => {
 });
 
 describe('Manager Context workspace', () => {
+  it('surfaces the local value workspace beside Context Brief and Recall', async () => {
+    await renderContext();
+    await clickButton('Value');
+
+    expect(document.body.textContent).toContain('Load value report');
+    expect(document.body.textContent).toContain('Retention');
+    expect(document.body.textContent).toContain('Delete local value data');
+  });
+
   it('composes a full brief, opens canonical memory, and reruns from an exact graph ref', async () => {
     await renderContext();
     await changeInput(inputWithLabel('Caller workspace'), '/private/threadnote');
@@ -327,6 +342,21 @@ describe('Manager Context workspace', () => {
     expect(document.body.textContent).toContain('High-confidence code-linked result');
     expect(document.body.textContent).toContain('Evaluated query expansions');
     expect(document.body.textContent).toContain('Recall may be incomplete');
+    expect(document.body.textContent).toContain('Useful');
+    expect(document.body.textContent).toContain('Applied');
+
+    await clickButton('Applied');
+    await waitForRequestCount('/api/context/feedback', 1);
+    expect(requests.find(request => request.path === '/api/context/feedback')).toEqual({
+      body: {
+        action: 'applied',
+        project: 'threadnote',
+        query: 'Manager Context Brief decision',
+        uri: MEMORY_URI,
+      },
+      path: '/api/context/feedback',
+    });
+    await waitForText('Recorded: applied');
 
     await clickButton('Next');
     await waitForText('Second page result');
@@ -737,10 +767,15 @@ function projectedBrief(
   };
 }
 
-function recallResponse(query: string): ManagerRecallResponse {
+function recallResponse(
+  query: string,
+  effectiveProject?: string,
+  requestedProject = effectiveProject,
+): ManagerRecallResponse {
   return {
     confidence: {level: 'high', reason: 'Strong memory and exact-term agreement.', score: 0.91},
-    request: {includeArchived: false, query},
+    ...(effectiveProject === undefined ? {} : {effectiveProject}),
+    request: {includeArchived: false, ...(requestedProject === undefined ? {} : {project: requestedProject}), query},
     queryExpansions: ['Context Brief graph memory contract'],
     resultSet: {availableResults: 9, maximumResults: 48, totalRanked: 9, truncated: false},
     results: Array.from({length: 9}, (_, index) => {

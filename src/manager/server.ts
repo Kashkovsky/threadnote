@@ -87,7 +87,7 @@ import {collectDoctorChecks, runRepair, runStart} from '../lifecycle.js';
 import {runSeed, runSeedSkills} from '../seeding.js';
 import {readManagerRuntimeState} from './state.js';
 import {handleManagerProcessRequest} from './processes.js';
-import {handleManagerContextRequest} from './context.js';
+import {handleManagerWorkspaceRequest} from './value.js';
 import {emptyManagerTree, readManagerTreeRoot} from './tree.js';
 import {
   handleManagerWorksetRequest,
@@ -574,16 +574,13 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
     writeJson(response, processResponse.status, processResponse.body);
     return;
   }
-  const contextResponse = yield* handleManagerContextRequest({
+  const workspaceResponse = yield* handleManagerWorkspaceRequest({
     body: request.body,
     config: context.config,
     method: request.method,
     url,
   });
-  if (contextResponse) {
-    writeJson(response, contextResponse.status, contextResponse.body);
-    return;
-  }
+  if (workspaceResponse) return writeJson(response, workspaceResponse.status, workspaceResponse.body);
   if (
     ((isGraphApiPath(url.pathname) && url.pathname !== '/api/graphs/status') ||
       (isManagerWorksetApiPath(url.pathname) &&

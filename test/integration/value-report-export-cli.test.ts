@@ -39,6 +39,28 @@ describe('value report export CLI', () => {
       version: 1,
     });
     expect(exported).not.toContain('private-project');
+
+    const retention = await runCli(['value', 'report', 'retention', '--days', '30'], home);
+    expect(JSON.parse(retention.stdout)).toMatchObject({
+      applied: false,
+      retentionDays: 30,
+      type: 'value-report-retention',
+    });
+
+    const deletionPreview = await runCli(['value', 'report', 'delete', '--exports'], home);
+    expect(JSON.parse(deletionPreview.stdout)).toMatchObject({
+      applied: false,
+      exports: {removed: 1, selected: true},
+      type: 'value-report-deletion',
+    });
+    expect(await stat(outputPath!)).toBeDefined();
+
+    const deletionApplied = await runCli(['value', 'report', 'delete', '--exports', '--apply'], home);
+    expect(JSON.parse(deletionApplied.stdout)).toMatchObject({
+      applied: true,
+      exports: {removed: 1, selected: true},
+    });
+    await expect(stat(outputPath!)).rejects.toThrow();
   });
 });
 

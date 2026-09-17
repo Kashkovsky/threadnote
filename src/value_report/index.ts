@@ -37,11 +37,13 @@ export interface ValueReportContextBriefV1 {
 }
 
 export interface ValueReportFeedbackV1 {
+  readonly applied: number;
   readonly dismiss: number;
   readonly pin: number;
   readonly useful: number;
   readonly wrong: number;
   readonly total: number;
+  readonly appliedRate: number;
   readonly dismissRate: number;
   readonly pinRate: number;
   readonly usefulRate: number;
@@ -131,6 +133,8 @@ export const ValueReportV1Schema = Schema.Struct({
     timeToFirstSuccessfulMilliseconds: Schema.optionalKey(boundedDuration),
   }),
   feedback: Schema.Struct({
+    applied: Schema.optionalKey(boundedCount),
+    appliedRate: Schema.optionalKey(rate),
     dismiss: boundedCount,
     dismissRate: rate,
     pin: boundedCount,
@@ -172,7 +176,18 @@ export const ValueReportV1Schema = Schema.Struct({
 const STRICT_PARSE_OPTIONS = {errors: 'all', onExcessProperty: 'error'} as const;
 
 export function parseValueReportV1(value: unknown): ValueReportV1 {
-  const report = Schema.decodeUnknownSync(ValueReportV1Schema, STRICT_PARSE_OPTIONS)(value);
+  const decoded = Schema.decodeUnknownSync(ValueReportV1Schema, STRICT_PARSE_OPTIONS)(value);
+  if ((decoded.feedback.applied === undefined) !== (decoded.feedback.appliedRate === undefined)) {
+    throw new Error('Value report applied feedback count and rate must be provided together.');
+  }
+  const report: ValueReportV1 = {
+    ...decoded,
+    feedback: {
+      ...decoded.feedback,
+      applied: decoded.feedback.applied ?? 0,
+      appliedRate: decoded.feedback.appliedRate ?? 0,
+    },
+  };
   if (report.period.from > report.period.to) throw new Error('Value report period must be ordered.');
   if (report.contextBrief.resolvedCodeAnchors > report.contextBrief.requestedCodeAnchors) {
     throw new Error('Value report resolved anchors cannot exceed requested anchors.');
@@ -188,15 +203,18 @@ export function aggregateValueReportV1(input: ValueReportInputV1): ValueReportV1
   const from = new Date(period.from);
   const to = new Date(period.to);
   const feedback = summarizeRecallFeedback(input.feedbackEvents ?? [], {from, project: input.project, to});
+  const applied = boundedInputCount(feedback.applied);
   const dismiss = boundedInputCount(feedback.dismiss);
   const pin = boundedInputCount(feedback.pin);
   const useful = boundedInputCount(feedback.useful);
   const wrong = boundedInputCount(feedback.wrong);
-  const feedbackTotal = sumCounts(dismiss, pin, useful, wrong);
+  const feedbackTotal = sumCounts(applied, dismiss, pin, useful, wrong);
   const contextBrief = aggregateContextBrief(input.counts?.contextBrief);
   return {
     contextBrief,
     feedback: {
+      applied,
+      appliedRate: ratio(applied, feedbackTotal),
       dismiss,
       dismissRate: ratio(dismiss, feedbackTotal),
       pin,

@@ -201,13 +201,28 @@ See [Context CI](context-ci.md) for the provider-neutral job pattern and a minim
 
 ## Value report
 
-The local value report is count-only and works independently of telemetry:
+Recall now surfaces local feedback in the normal result workflow. In Manager, every ranked pointer offers `Useful`,
+`Wrong`, `Pin`, `Dismiss`, and `Applied`; `Applied` means the item materially informed a plan or change rather than only
+looking relevant. MCP recall responses advertise the same `recall_feedback` actions. CLI users can record one directly:
+
+```sh
+threadnote recall-feedback <threadnote://uri> --query '<original query>' --action applied --project <project>
+```
+
+Only a SHA-256 query fingerprint is stored. Pins require a project scope. Applied feedback is independently counted,
+deduplicated, and decayed; existing v1 feedback remains readable.
+
+The local value report is count-only, visible in Manager, and works independently of telemetry:
 
 ```sh
 threadnote value report
 threadnote value report --project <project> --period 14 --json
 threadnote value report export --project <project> --period 14
 threadnote value report export --project <project> --period 14 --apply
+threadnote value report retention --days 90
+threadnote value report retention --days 90 --apply
+threadnote value report delete --feedback --events --exports
+threadnote value report delete --feedback --events --exports --apply
 ```
 
 `ValueReportV1` summarizes a bounded period of Context Brief attempts, code-anchor coverage, estimated tokens,
@@ -215,6 +230,11 @@ follow-up operations, recall feedback, Knowledge Delta outcomes, health activity
 metrics include applied starts, terminal failures, completions, supported-agent reuse, and median time to the first
 verified Context Brief. Project filtering affects local aggregation only; the project label is not emitted in the
 report. The report has `scope: local`.
+
+Retention and deletion are preview-first. `retention` reports how many feedback and value events a one-time policy
+would remove, while `--apply` performs that exact bounded prune. `delete` requires explicit categories (or `--all`)
+and removes nothing until `--apply`; feedback, count-only value events, and explicit export bundles can be selected
+independently. The Manager Value view exposes the same local report, preview, and apply controls.
 
 A fresh successful `setup <surface> --apply` or direct `agents install <surface> --apply` contributes one setup
 completion. Each setup apply that enters work contributes one start and then either a failure or a completion timing;

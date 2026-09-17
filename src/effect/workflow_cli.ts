@@ -10,17 +10,24 @@ import {
   optionalChoice,
   optionalString,
   repeatedString,
+  requiredChoice,
   requiredString,
 } from './cli_flags.js';
 import type {runContextBrief} from '../context_brief/commands.js';
 import type {runCompact} from '../memory/commands.js';
+import type {runRecallFeedback} from '../recall/feedback_commands.js';
 import type {runContextHealth} from '../memory/context_health_commands.js';
 import type {
   runContextHealthRepairApply,
   runContextHealthRepairPreview,
 } from '../memory/context_health_repair_commands.js';
 import type {runContextCheck} from '../context_check/commands.js';
-import type {runValueReport, runValueReportExport} from '../value_report/commands.js';
+import type {
+  runValueReport,
+  runValueReportDelete,
+  runValueReportExport,
+  runValueReportRetention,
+} from '../value_report/commands.js';
 import type {runProcedureVerify, runProcedureStatus} from '../procedure/commands.js';
 import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
@@ -41,6 +48,21 @@ export function makeCompactCommand<E, R>(
     },
     handler,
   ).pipe(Command.withDescription('Plan or apply scoped memory hygiene for active personal memories'));
+}
+
+export function makeRecallFeedbackCommand<E, R>(
+  handler: (options: Parameters<typeof runRecallFeedback>[1]) => Effect.Effect<void, E, R>,
+) {
+  return Command.make(
+    'recall-feedback',
+    {
+      action: requiredChoice('action', ['useful', 'wrong', 'pin', 'dismiss', 'applied'], 'Feedback action'),
+      project: optionalString('project', 'Project scope; required for pin because pins are never global'),
+      query: requiredString('query', 'The original recall query; only its SHA-256 fingerprint is stored'),
+      uri: argument('uri', 'The recalled threadnote:// result URI'),
+    },
+    handler,
+  ).pipe(Command.withDescription('Record local feedback for one recalled result'));
 }
 
 export function makeContextBriefCommand<E, R>(
@@ -148,9 +170,11 @@ export function makeContextCheckCommand<E, R>(
   );
 }
 
-export function makeValueReportCommand<E, R>(
+export function makeValueCommand<E, R>(
   handler: (options: Parameters<typeof runValueReport>[1]) => Effect.Effect<void, E, R>,
   exportHandler: (options: Parameters<typeof runValueReportExport>[1]) => Effect.Effect<void, E, R>,
+  retentionHandler: (options: Parameters<typeof runValueReportRetention>[1]) => Effect.Effect<void, E, R>,
+  deleteHandler: (options: Parameters<typeof runValueReportDelete>[1]) => Effect.Effect<void, E, R>,
 ) {
   const exportCommand = Command.make(
     'export',
@@ -170,7 +194,33 @@ export function makeValueReportCommand<E, R>(
     exportHandler,
   ).pipe(Command.withDescription('Preview or explicitly write a redacted design-partner bundle'));
 
-  return Command.make(
+  const retentionCommand = Command.make(
+    'retention',
+    {
+      apply: boolean('apply', 'Prune the selected expired local inputs after previewing the count-only receipt'),
+      days: optional(
+        describeFlag(
+          integerFlag('days').pipe(Flag.withSchema(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)))),
+          'Keep feedback and value events from this many days (default 365)',
+        ),
+      ),
+    },
+    retentionHandler,
+  ).pipe(Command.withDescription('Preview or apply one-time local feedback and value-event retention'));
+
+  const deleteCommand = Command.make(
+    'delete',
+    {
+      all: boolean('all', 'Select feedback, value events, and explicit export bundles'),
+      apply: boolean('apply', 'Delete the selected local value data after previewing the count-only receipt'),
+      events: boolean('events', 'Select local Context Brief, setup, and health value events'),
+      exports: boolean('exports', 'Select explicit redacted value-report export bundles'),
+      feedback: boolean('feedback', 'Select local recall feedback events'),
+    },
+    deleteHandler,
+  ).pipe(Command.withDescription('Preview or explicitly delete selected local value data'));
+
+  const reportCommand = Command.make(
     'report',
     {
       json: boolean('json', 'Emit the bounded ValueReportV1 as JSON'),
@@ -185,7 +235,11 @@ export function makeValueReportCommand<E, R>(
     handler,
   ).pipe(
     Command.withDescription('Summarize bounded local value inputs without exporting telemetry'),
-    Command.withSubcommands([exportCommand]),
+    Command.withSubcommands([exportCommand, retentionCommand, deleteCommand]),
+  );
+  return Command.make('value').pipe(
+    Command.withDescription('Inspect local, count-only value signals'),
+    Command.withSubcommands([reportCommand]),
   );
 }
 

@@ -5,8 +5,10 @@ import type {ValueReportCountsInputV1} from './index.js';
 
 const VALUE_EVENT_VERSION = 1 as const;
 const VALUE_EVENT_FILE = 'value-events-v1.jsonl';
-const MAX_VALUE_EVENTS = 10_000;
-const VALUE_EVENT_RETENTION_MILLISECONDS = 365 * 24 * 60 * 60 * 1_000;
+export const VALUE_EVENT_MAXIMUM_EVENTS = 10_000 as const;
+export const VALUE_EVENT_RETENTION_DAYS = 365 as const;
+const MAX_VALUE_EVENTS = VALUE_EVENT_MAXIMUM_EVENTS;
+const VALUE_EVENT_RETENTION_MILLISECONDS = VALUE_EVENT_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
 const LOCK_OPTIONS = {
   retryIntervalMilliseconds: 25,
   staleAfterMilliseconds: 5 * 60 * 1_000,
@@ -130,6 +132,33 @@ export const readLocalValueEvents = Effect.fn('valueReport.readEvents')(function
   return yield* readValueEvents(fs, valueEventPath(pathService, agentContextHome));
 });
 
+export interface LocalValueEventStorageResultV1 {
+  readonly after: number;
+  readonly applied: boolean;
+  readonly before: number;
+  readonly removed: number;
+}
+
+export const pruneLocalValueEvents = Effect.fn('valueReport.pruneEvents')(function* (
+  agentContextHome: string,
+  input: {readonly apply: boolean; readonly now: Date; readonly retentionDays: number},
+) {
+  if (!Number.isSafeInteger(input.retentionDays) || input.retentionDays < 1) {
+    throw new RangeError('Value event retention days must be a positive whole number.');
+  }
+  const cutoff = input.now.getTime() - input.retentionDays * 86_400_000;
+  return yield* mutateValueEvents(agentContextHome, input.apply, events =>
+    events.filter(event => Date.parse(event.timestamp) >= cutoff),
+  );
+});
+
+export const clearLocalValueEvents = Effect.fn('valueReport.clearEvents')(function* (
+  agentContextHome: string,
+  apply: boolean,
+) {
+  return yield* mutateValueEvents(agentContextHome, apply, () => []);
+});
+
 export function summarizeLocalValueEvents(
   events: readonly LocalValueEventV1[],
   options: {readonly from: Date; readonly project?: string; readonly to: Date},
@@ -228,6 +257,23 @@ const appendValueEvent = Effect.fn('valueReport.appendEvent')(function* (
       yield* writeValueEvents(fs, path, retainEvents([...existing, event], event.timestamp));
     }),
   );
+});
+
+const mutateValueEvents = Effect.fn('valueReport.mutateEvents')(function* (
+  agentContextHome: string,
+  apply: boolean,
+  retain: (events: readonly LocalValueEventV1[]) => readonly LocalValueEventV1[],
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const path = valueEventPath(pathService, agentContextHome);
+  const inspect = Effect.gen(function* () {
+    const before = yield* readValueEvents(fs, path);
+    const after = retain(before).slice(-MAX_VALUE_EVENTS);
+    if (apply) yield* writeValueEvents(fs, path, after);
+    return {after: after.length, applied: apply, before: before.length, removed: before.length - after.length};
+  });
+  return yield* apply ? withExclusiveFileLock(fs, `${path}.lock`, LOCK_OPTIONS, inspect) : inspect;
 });
 
 function eventMatches(

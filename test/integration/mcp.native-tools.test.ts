@@ -4060,6 +4060,30 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
+  it('records applied recall feedback through the full MCP tool without persisting the raw query', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const query = 'private applied feedback query';
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/applied.md';
+        const result = await client.callTool({
+          arguments: {action: 'applied', project: 'threadnote', query, uri},
+          name: 'recall_feedback',
+        });
+
+        expect(result.isError).not.toBe(true);
+        expect(result.content).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({text: expect.stringContaining('Recorded applied feedback')}),
+          ]),
+        );
+        const stored = await readFile(join(fixture.home, 'feedback', 'recall-events-v1.jsonl'), 'utf8');
+        expect(stored).not.toContain(query);
+        expect(JSON.parse(stored.trim())).toMatchObject({action: 'applied', project: 'threadnote', uri});
+      },
+      {toolset: 'full'},
+    );
+  });
+
   it('returns read-only structured context health from the full toolset', async () => {
     await withMcpClient(
       async (client, fixture) => {
