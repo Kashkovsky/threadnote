@@ -7,7 +7,7 @@ import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import type {CodeGraphBuildResourceCoordinator} from './build_resources.js';
 import {canonicalCodeGraphMonikers} from './cross_repository/monikers.js';
 import {isCodeGraphCapacityPause} from './disk_capacity.js';
-import {coordinateCodeGraphBuild} from './indexer_build_coordination.js';
+import {coordinateCodeGraphBuild, measureCodeGraphAttribution} from './indexer_build_coordination.js';
 import type {CodeGraphEmbeddingIndexShape, CodeGraphEmbeddingStatus} from './embedding.js';
 import {finalCodeGraphFactBatches, serializeBoundedCodeGraphFact} from './fact_budget.js';
 import {
@@ -1531,14 +1531,16 @@ const buildAndActivateInternal = Effect.fn('codeGraph.buildAndActivate')(functio
         total: totalFiles,
         unit: 'files',
       }) ?? Effect.void;
-      const attributionStartedAt = yield* Clock.currentTimeMillis;
-      // Original worker objects flow directly into this assembly; they never become raw-cache donors.
+      const batchAttributionStartedTotal = attributionMilliseconds;
+      const sourceVerificationStartedAt = yield* Clock.currentTimeMillis;
       const materializationFacts =
         input.sourceVerification === undefined
           ? cached.facts
           : yield* input.sourceVerification.materializeFacts({facts: cached.facts, files: fallbackFiles});
+      attributionMilliseconds += (yield* Clock.currentTimeMillis) - sourceVerificationStartedAt;
       let flushShardCacheAfterAttribution = false;
-      const attributedFallbackFacts = yield* runPreparation(
+      const [attributionComputeMilliseconds, attributedFallbackFacts] = yield* measureCodeGraphAttribution(
+        runPreparation,
         Effect.sync(() =>
           materializationSubphases.measure('attributionCompute', () =>
             attributeFacts(
@@ -1549,6 +1551,8 @@ const buildAndActivateInternal = Effect.fn('codeGraph.buildAndActivate')(functio
           ),
         ),
       );
+      attributionMilliseconds += attributionComputeMilliseconds;
+      const attributionPersistenceStartedAt = yield* Clock.currentTimeMillis;
       replayMetrics = addMaterializationReplayMetrics(replayMetrics, {
         attributedFiles: fallbackFiles.length,
         materializedShardCacheDeferredFiles: deferMaterializedShardCache ? fallbackFiles.length : 0,
@@ -1605,10 +1609,10 @@ const buildAndActivateInternal = Effect.fn('codeGraph.buildAndActivate')(functio
           : attributedFallbackByPath.get(file.path)!,
       );
       materializedShardFilesReused += materializedShardBatchComplete ? files.length : 0;
-      const batchAttributionMilliseconds = (yield* Clock.currentTimeMillis) - attributionStartedAt;
-      attributionMilliseconds += batchAttributionMilliseconds;
-      stageMilliseconds.attributing = attributionMilliseconds;
+      attributionMilliseconds += (yield* Clock.currentTimeMillis) - attributionPersistenceStartedAt;
       if (flushShardCacheAfterAttribution) yield* shardWrites.flushCaches();
+      stageMilliseconds.attributing = attributionMilliseconds;
+      const batchAttributionMilliseconds = attributionMilliseconds - batchAttributionStartedTotal;
       const finalBatchPreparationStartedAt = performance.now();
       const finalBatches = yield* runPreparation(Effect.sync(() => finalCodeGraphFactBatches(facts)));
       materializationSubphases.add('factBatchPreparation', performance.now() - finalBatchPreparationStartedAt);
