@@ -70,6 +70,8 @@ import {
   runNativeRemoveTool,
 } from './memory.js';
 import {registerContextHealthTool} from './context_health.js';
+import {registerContextHealthRepairTools} from './context_health_repair.js';
+import {registerKnowledgeDeltaGitProposalTool} from './git_proposal.js';
 import {
   runInstallSharedSkillTool,
   runListSharedSkillsTool,
@@ -320,6 +322,8 @@ function registerTools(
 
   if (toolset === CURSOR_CLOUD_LOCAL_MCP_TOOLSET) registerCursorCloudLocalTools(server, config);
 
+  if (capabilities.memoryPublish) registerKnowledgeDeltaGitProposalTool(server, config);
+
   if (capabilities.memoryPublish)
     server.registerTool(
       'obsidian_publish',
@@ -382,6 +386,7 @@ function registerTools(
     registerArchiveTool(server, config, 'archive', 'Compatibility alias for archive_context.');
     registerCompactTool(server, config);
     registerContextHealthTool(server, config);
+    registerContextHealthRepairTools(server, config);
     registerRecallFeedbackTool(server, config);
   }
 

@@ -60,9 +60,11 @@ One supported agent ──publish curated memory──▶ team Git repo
 - **Routine continuity is automatic.** At meaningful task closeout, agents store normal durable feature knowledge and
   handoffs. Additional extracted candidates still require review before they become durable truth.
 - **Knowledge Delta at closeout.** Review proposed decisions, preferences, handoff state, and context repairs
-  before applying any candidate; previews are non-mutating and revision-checked.
+  before applying any candidate; previews are non-mutating and revision-checked. Applied durable candidates can become
+  exact provider-neutral Git proposals without creating a branch, commit, pull request, or provider object.
 - **Context health and value.** Inspect stale citations, overdue reviews, contradictions, and duplicate context with a
-  bounded read-only health report, and measure local count-only value without exporting content.
+  bounded read-only health report, review content-bound repair proposals separately, and measure local count-only value
+  without exporting content.
 - **Durable and addressable.** Stable pointers let agents replace one current `project/topic` memory instead of
   accumulating stale notes.
 - **Built for engineering work.** Decisions, invariants, preferences, handoffs, release workflows, and branch state
@@ -120,6 +122,11 @@ for preview-first cleanup. Verified project-guidance support is declared by the 
 a separate product list. Shared physical targets use one target-owned receipt instead of competing per-agent copies;
 drift feeds context health and Context Check. `threadnote agents list` reports each surface's managed target or why
 project projection is withheld.
+
+Use `threadnote context repair preview --project <name>` to inspect deterministic repairs and `context repair apply`
+with the exact proposal revision plus `--approved` to apply one personal-memory repair. Use `threadnote share propose`
+with an applied candidate and exact review revision to print canonical provider-neutral Git proposal JSON; `--output`
+is an explicit local artifact write only.
 
 To select the Threadnote 4 beta channel on macOS or Linux, pass `--beta`. This inclusive preview channel installs the
 newest immutable release across stable and prerelease builds, so a newer stable release wins when one is available:

@@ -1361,23 +1361,22 @@ export function writeMemoryContentWithExpectedHash(
   uri: string,
   content: string,
   expectedContent: string,
+  options: {readonly alreadyLocked?: boolean} = {},
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    return yield* withMemoryUriLocks(
-      fs,
-      config.agentContextHome,
-      [uri],
-      Effect.gen(function* () {
-        const [current] = yield* readMemoryRecordsByUri(config, [uri]);
-        if (!current || current.content !== expectedContent) {
-          return argumentError(`Memory ${uri} changed after compact_context planned its update. Re-run the plan.`);
-        }
-        yield* writeMemoryFile(config, ov, uri, content, 'replace', false, {quiet: true});
-        yield* discardDeferredCodeAnchorIntent(config, uri);
-        return {content: [{type: 'text' as const, text: `Updated memory: ${uri}`}]};
-      }),
-    );
+    const write = Effect.gen(function* () {
+      const [current] = yield* readMemoryRecordsByUri(config, [uri]);
+      if (!current || current.content !== expectedContent) {
+        return argumentError(`Memory ${uri} changed after compact_context planned its update. Re-run the plan.`);
+      }
+      yield* writeMemoryFile(config, ov, uri, content, 'replace', false, {quiet: true});
+      yield* discardDeferredCodeAnchorIntent(config, uri);
+      return {content: [{type: 'text' as const, text: `Updated memory: ${uri}`}]};
+    });
+    return yield* options.alreadyLocked === true
+      ? write
+      : withMemoryUriLocks(fs, config.agentContextHome, [uri], write);
   });
 }
 

@@ -2,6 +2,7 @@ import {
   makeCompactCommand,
   makeContextBriefCommand,
   makeContextHealthCommand,
+  makeContextHealthRepairCommand,
   makeContextCheckCommand,
   makeValueReportCommand,
   makeProcedureVerifyCommand,
@@ -59,6 +60,7 @@ import {
 } from '../memory/index.js';
 import {makeCloseoutCommand} from './closeout_cli.js';
 import {runContextHealth} from '../memory/context_health_commands.js';
+import {runContextHealthRepairApply, runContextHealthRepairPreview} from '../memory/context_health_repair_commands.js';
 import {runContextCheck} from '../context_check/commands.js';
 import {runProcedureStatus, runProcedureVerify} from '../procedure/commands.js';
 import {runMcpInstall} from '../mcp/index.js';
@@ -155,6 +157,8 @@ import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';
 import {runImageProjectionCommand} from '../image_projection/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
 import {runValueReport, runValueReportExport} from '../value_report/commands.js';
+import {runKnowledgeDeltaGitProposalExport} from '../git_proposal/commands.js';
+import {makeShareMemoryCommands, publishFlags} from './share_memory_cli.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
 import {
   cursorCloudRuntimeConfig,
@@ -1427,11 +1431,15 @@ const contextBrief = makeContextBriefCommand(options => withRuntimeEffect(config
 const contextHealth = makeContextHealthCommand(options =>
   withRuntimeEffect(config => runContextHealth(config, options)),
 );
+const contextHealthRepair = makeContextHealthRepairCommand(
+  options => withRuntimeEffect(config => runContextHealthRepairPreview(config, options)),
+  options => withRuntimeEffect(config => runContextHealthRepairApply(config, options)),
+);
 const contextCheck = makeContextCheckCommand(options => withRuntimeEffect(config => runContextCheck(config, options)));
 
 const context = Command.make('context').pipe(
   Command.withDescription('Compile task-oriented agent context'),
-  Command.withSubcommands([contextBrief, contextHealth, contextCheck]),
+  Command.withSubcommands([contextBrief, contextHealth, contextHealthRepair, contextCheck]),
 );
 const valueReport = makeValueReportCommand(
   options => withRuntimeEffect(config => runValueReport(config, options)),
@@ -1706,27 +1714,10 @@ const shareConflict = Command.make('conflict').pipe(
   Command.withSubcommands([conflictShow, conflictResolve]),
 );
 
-const publishFlags = {
-  dryRun: boolean('dry-run', 'Print actions without running them'),
-  message: optionalString('message', 'Commit message override'),
-  preview: boolean('preview', 'Print exact shared bytes without writing or committing'),
-  push: negatedBoolean('push', 'Skip the push step'),
-  redact: boolean('redact', 'Redact soft leaks; credentials still block'),
-  team: optionalString('team', 'Team name'),
-} as const;
-
-const sharePublish = Command.make(
-  'publish',
-  {
-    ...publishFlags,
-    allowUncitedPendingCodeRefs: boolean(
-      'allow-uncited-pending-code-refs',
-      'Publish without pending code citations and discard the private pending intent',
-    ),
-    uri: argument('resource-uri', 'Personal threadnote:// memory URI'),
-  },
-  ({uri, ...options}) => withRuntimeEffect(config => runSharePublish(config, uri, options)),
-).pipe(Command.withDescription('Move a personal memory into the shared team namespace, commit and push'));
+const {sharePropose, sharePublish} = makeShareMemoryCommands(
+  (uri, options) => withRuntimeEffect(config => runSharePublish(config, uri, options)),
+  options => withRuntimeEffect(config => runKnowledgeDeltaGitProposalExport(config, options)),
+);
 
 const artifactFlags = {
   dryRun: publishFlags.dryRun,
@@ -1840,6 +1831,7 @@ const share = Command.make('share').pipe(
     shareSync,
     shareConflicts,
     shareConflict,
+    sharePropose,
     sharePublish,
     sharePublishArtifact,
     sharePublishBundle,

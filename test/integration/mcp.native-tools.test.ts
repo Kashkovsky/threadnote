@@ -83,6 +83,7 @@ const CORE_TOOL_NAMES = [
   'apply_memory_candidates',
   'obsidian_publish',
   'threadnote_guide',
+  'share_propose',
   'share_publish',
 ];
 
@@ -95,6 +96,8 @@ const ADVANCED_TOOL_NAMES = [
   'archive_context',
   'compact_context',
   'context_health',
+  'context_health_repair_preview',
+  'context_health_repair_apply',
   'recall_feedback',
   'forget',
   'add_resource',
@@ -4031,6 +4034,17 @@ describe('Threadnote MCP toolsets', () => {
             },
           });
         }
+        expect(tools.tools.find(tool => tool.name === 'share_propose')).toMatchObject({
+          annotations: {destructiveHint: false, readOnlyHint: true},
+          inputSchema: {
+            properties: {
+              approved: {type: 'boolean'},
+              candidateIds: expect.any(Object),
+              reviewId: {type: 'string'},
+              revision: {type: 'integer'},
+            },
+          },
+        });
       },
       {toolset: 'full'},
     );
@@ -4056,6 +4070,26 @@ describe('Threadnote MCP toolsets', () => {
             expect.objectContaining({text: expect.stringContaining('Context health for threadnote')}),
           ]),
         );
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('previews structured context-health repairs without writing state', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const result = await client.callTool({
+          arguments: {callerCwd: fixture.root, project: 'threadnote'},
+          name: 'context_health_repair_preview',
+        });
+
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          project: 'threadnote',
+          proposals: [],
+          version: 1,
+        });
+        await expect(readFile(join(fixture.home, 'threadnote', 'context-health-repairs'), 'utf8')).rejects.toThrow();
       },
       {toolset: 'full'},
     );
