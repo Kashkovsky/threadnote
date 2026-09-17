@@ -13,10 +13,30 @@ export const MAXIMUM_CONTEXT_CHECK_FINDING_LIMIT = 500 as const;
 
 export type ContextCheckExitClassificationV1 = 'actionable' | 'clean' | 'invalid-or-required-evidence-unavailable';
 export type ContextCheckEvidenceStatusV1 = 'complete' | 'invalid' | 'unavailable';
+export type ContextCheckEvidenceReasonV1 =
+  | 'affected-memory-evidence-unavailable'
+  | 'changed-path-evidence-unavailable'
+  | 'graph-impact-evidence-incomplete'
+  | 'graph-impact-evidence-unavailable'
+  | 'health-report-truncated';
+export type ContextCheckFindingCategoryV1 =
+  | ContextHealthFindingCategoryV1
+  | 'capture-advisory'
+  | 'cited-document-changed'
+  | 'cited-document-missing'
+  | 'cited-document-unknown'
+  | 'graph-impact';
 
 export interface ContextCheckAvailableSelectionV1 {
   readonly affectedMemoryUris: readonly string[];
+  readonly captureAdvisoryIds?: readonly string[];
   readonly changedPaths: readonly string[];
+  readonly citedDocumentCitationUris?: readonly string[];
+  readonly evidenceReason?: Extract<
+    ContextCheckEvidenceReasonV1,
+    'graph-impact-evidence-incomplete' | 'graph-impact-evidence-unavailable'
+  >;
+  readonly graphImpactedMemoryUris?: readonly string[];
   readonly status: 'available';
 }
 
@@ -35,7 +55,7 @@ export interface ContextCheckReportInputV1 {
 
 export interface ContextCheckFindingV1 {
   readonly affectedMemoryCount: number;
-  readonly category: ContextHealthFindingCategoryV1;
+  readonly category: ContextCheckFindingCategoryV1;
   readonly confidence: ContextHealthConfidenceV1;
   readonly fingerprint: string;
   readonly repairability: ContextHealthRepairabilityV1;
@@ -43,7 +63,7 @@ export interface ContextCheckFindingV1 {
 }
 
 export interface ContextCheckReportV1 {
-  readonly evidenceReason?: 'health-report-truncated' | ContextCheckUnavailableSelectionV1['reason'];
+  readonly evidenceReason?: ContextCheckEvidenceReasonV1;
   readonly evidenceStatus: ContextCheckEvidenceStatusV1;
   readonly exitClassification: ContextCheckExitClassificationV1;
   readonly exitCode: 0 | 1 | 2;
@@ -91,19 +111,23 @@ export function buildContextCheckReport(input: ContextCheckReportInputV1): Conte
   }
 
   const selectedUris = new Set(input.selection.affectedMemoryUris);
+  const citedDocumentCitationUris = new Set(input.selection.citedDocumentCitationUris ?? []);
   const findings = uniqueFindings(
-    input.healthReport.findings
-      .map(finding => projectFinding(finding, selectedUris))
-      .filter((finding): finding is ContextCheckFindingV1 => finding !== undefined)
-      .sort(compareFindings),
+    [
+      ...input.healthReport.findings
+        .map(finding => projectFinding(finding, selectedUris, citedDocumentCitationUris))
+        .filter((finding): finding is ContextCheckFindingV1 => finding !== undefined),
+      ...graphImpactFindings(input.selection.graphImpactedMemoryUris ?? []),
+      ...captureAdvisoryFindings(input.selection.captureAdvisoryIds ?? []),
+    ].sort(compareFindings),
   );
   const evidenceStatus: ContextCheckEvidenceStatusV1 =
-    input.healthReport.omittedFindings > 0 ? 'unavailable' : 'complete';
+    input.selection.evidenceReason !== undefined || input.healthReport.omittedFindings > 0 ? 'unavailable' : 'complete';
   return report(
     input.healthReport.project,
     limit,
     evidenceStatus,
-    evidenceStatus === 'unavailable' ? 'health-report-truncated' : undefined,
+    input.selection.evidenceReason ?? (input.healthReport.omittedFindings > 0 ? 'health-report-truncated' : undefined),
     findings.slice(0, limit),
     Math.max(0, findings.length - limit),
     findings,
@@ -140,17 +164,51 @@ export function projectContextCheckReportSarif(report: ContextCheckReportV1): Co
 function projectFinding(
   finding: ContextHealthReportV1['findings'][number],
   selectedUris: ReadonlySet<string>,
+  citedDocumentCitationUris: ReadonlySet<string>,
 ): ContextCheckFindingV1 | undefined {
-  const affectedUris = [...new Set(finding.uris.filter(uri => selectedUris.has(uri)))].sort(compareText);
-  if (affectedUris.length === 0) return undefined;
+  const activeConflict = isActiveConflict(finding.category);
+  const affectedUris = [...new Set(finding.uris.filter(uri => activeConflict || selectedUris.has(uri)))].sort(
+    compareText,
+  );
+  if (!activeConflict && affectedUris.length === 0) return undefined;
+  const category = citedDocumentCategory(finding, citedDocumentCitationUris) ?? finding.category;
   return {
     affectedMemoryCount: affectedUris.length,
-    category: finding.category,
+    category,
     confidence: finding.confidence,
-    fingerprint: fingerprint(finding, affectedUris),
+    fingerprint: fingerprint(
+      category,
+      finding.id,
+      finding.confidence,
+      finding.repairability,
+      finding.severity,
+      affectedUris,
+    ),
     repairability: finding.repairability,
     severity: finding.severity,
   };
+}
+
+function graphImpactFindings(uris: readonly string[]): readonly ContextCheckFindingV1[] {
+  return [...new Set(uris)].sort(compareText).map(uri => ({
+    affectedMemoryCount: 1,
+    category: 'graph-impact',
+    confidence: 'high',
+    fingerprint: fingerprint('graph-impact', uri, 'high', 'manual-review', 'medium', [uri]),
+    repairability: 'manual-review',
+    severity: 'medium',
+  }));
+}
+
+function captureAdvisoryFindings(ids: readonly string[]): readonly ContextCheckFindingV1[] {
+  return [...new Set(ids)].sort(compareText).map(id => ({
+    affectedMemoryCount: 0,
+    category: 'capture-advisory',
+    confidence: 'high',
+    fingerprint: fingerprint('capture-advisory', id, 'high', 'manual-review', 'low', []),
+    repairability: 'manual-review',
+    severity: 'low',
+  }));
 }
 
 function report(
@@ -182,17 +240,42 @@ function report(
   };
 }
 
-function fingerprint(finding: ContextHealthReportV1['findings'][number], affectedUris: readonly string[]): string {
+function fingerprint(
+  category: ContextCheckFindingCategoryV1,
+  identity: string,
+  confidence: ContextHealthConfidenceV1,
+  repairability: ContextHealthRepairabilityV1,
+  severity: ContextHealthSeverityV1,
+  affectedUris: readonly string[],
+): string {
   return sha256HexSync(
     [
       'threadnote-context-check-finding-v1',
-      finding.category,
-      finding.confidence,
-      finding.repairability,
-      finding.severity,
+      category,
+      identity,
+      confidence,
+      repairability,
+      severity,
       ...affectedUris,
     ].join('\u0000'),
   );
+}
+
+function isActiveConflict(category: ContextHealthFindingCategoryV1): boolean {
+  return category === 'candidate-contradiction' || category === 'relation-target-conflicted';
+}
+
+function citedDocumentCategory(
+  finding: ContextHealthReportV1['findings'][number],
+  citedDocumentCitationUris: ReadonlySet<string>,
+): ContextCheckFindingCategoryV1 | undefined {
+  if (finding.repair.targetUri === undefined || !citedDocumentCitationUris.has(finding.repair.targetUri)) {
+    return undefined;
+  }
+  if (finding.category === 'citation-changed') return 'cited-document-changed';
+  if (finding.category === 'citation-missing') return 'cited-document-missing';
+  if (finding.category === 'citation-unknown') return 'cited-document-unknown';
+  return undefined;
 }
 
 function inputProblems(input: ContextCheckReportInputV1): boolean {
@@ -350,7 +433,16 @@ const CONTEXT_HEALTH_CATEGORIES = new Set<unknown>([
   'citation-changed',
   'citation-missing',
   'citation-unknown',
+  'capture-advisory',
+  'cited-document-changed',
+  'cited-document-missing',
+  'cited-document-unknown',
   'exact-duplicate',
+  'graph-impact',
+  'guidance-locally-modified',
+  'guidance-missing-block',
+  'guidance-stale-sources',
+  'guidance-unavailable',
   'relation-target-conflicted',
   'relation-target-inactive',
   'relation-target-missing',
@@ -366,7 +458,9 @@ function validEvidenceReason(value: unknown): boolean {
     value === undefined ||
     value === 'health-report-truncated' ||
     value === 'affected-memory-evidence-unavailable' ||
-    value === 'changed-path-evidence-unavailable'
+    value === 'changed-path-evidence-unavailable' ||
+    value === 'graph-impact-evidence-incomplete' ||
+    value === 'graph-impact-evidence-unavailable'
   );
 }
 

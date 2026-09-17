@@ -1,4 +1,6 @@
 import {Effect} from 'effect';
+import {inspectCodeGraphImpactIsolated} from '../code_graph/isolated_impact_query.js';
+import {CodeGraphQueryService} from '../code_graph/query.js';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {CommandExecutor} from '../effect/command.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
@@ -9,9 +11,8 @@ import {buildContextHealthReport} from '../memory/context_health.js';
 import {collectContextHealth} from '../memory/context_health_commands.js';
 import type {MemoryRecord} from '../memory/document.js';
 import type {RuntimeConfig} from '../types.js';
+import {citedDocumentCitationUris, selectContextCheckGraphImpact} from './graph_impact.js';
 import {buildContextCheckReport, projectContextCheckReportSarif, type ContextCheckReportV1} from './index.js';
-
-const EMPTY_CONTEXT_CHECK_NOW = new Date(0);
 
 export interface ContextCheckOptions {
   readonly base?: string;
@@ -43,7 +44,7 @@ export const runContextCheck = Effect.fn('contextCheck.command')(function* (
       ? JSON.stringify(projectContextCheckReportSarif(report))
       : format === 'json'
         ? JSON.stringify(report)
-        : `Context check: ${report.exitClassification}; ${report.findings.length} finding(s), ${report.omittedFindings} omitted. Scope: direct citations of changed files. Exit ${report.exitCode}.`;
+        : renderContextCheck(report);
   yield* writeFinalCliOutput(output);
   yield* Effect.sync(() => system.setExitCode(report.exitCode));
 });
@@ -56,7 +57,7 @@ const checkRepository = Effect.fn('contextCheck.repository')(function* (
 ) {
   const selection = yield* changedRepositoryPaths(cwd, base).pipe(Effect.option);
   if (selection._tag === 'None') return unavailableReport(project, 'changed-path-evidence-unavailable');
-  const {paths, repositoryId, repoRoot, caseMode} = selection.value;
+  const {baseCommit, paths, repositoryId, repoRoot, caseMode} = selection.value;
   return yield* Effect.gen(function* () {
     const records = yield* readActiveProjectMemoryRecords(config, project);
     // Invalid citation headers cannot prove absence from this change's scope.
@@ -65,24 +66,83 @@ const checkRepository = Effect.fn('contextCheck.repository')(function* (
     }
     const guidanceUris: readonly string[] = yield* guidanceSourceUrisForChangedPaths(config, project, repoRoot, paths);
     const direct = selectAffectedMemories(records, repositoryId, paths, caseMode);
-    const affected = [
+    const directlyAffected = [
       ...new Map(
         [...direct, ...records.filter(record => guidanceUris.includes(record.uri))].map(record => [record.uri, record]),
       ).values(),
     ];
-    const affectedMemoryUris = [...new Set([...affected.map(record => record.uri), ...guidanceUris])].sort();
-    if (affectedMemoryUris.length === 0) {
-      return buildContextCheckReport({
-        healthReport: buildContextHealthReport({now: EMPTY_CONTEXT_CHECK_NOW, project, records: []}),
-        selection: {affectedMemoryUris: [], changedPaths: paths, status: 'available'},
-      });
-    }
+    const directlyAffectedMemoryUris = [
+      ...new Set([...directlyAffected.map(record => record.uri), ...guidanceUris]),
+    ].sort();
+    const graph = yield* CodeGraphQueryService;
+    const graphStatus =
+      paths.length === 0
+        ? undefined
+        : yield* graph
+            .status(config.agentContextHome, repoRoot, {observeWorktree: true, requestMaintenance: false})
+            .pipe(
+              Effect.option,
+              Effect.map(option => (option._tag === 'Some' ? option.value : undefined)),
+            );
+    const impactResult =
+      paths.length === 0
+        ? undefined
+        : graphStatus?.freshness !== 'current' || graphStatus.stale || graphStatus.readySnapshot === undefined
+          ? undefined
+          : yield* inspectCodeGraphImpactIsolated({
+              baseCommit,
+              cwd: repoRoot,
+              depth: 8,
+              edgeLimit: 500,
+              nodeLimit: 200,
+              query: 'changed paths',
+              seedQueries: paths,
+              threadnoteHome: config.agentContextHome,
+            }).pipe(
+              Effect.option,
+              Effect.map(option => (option._tag === 'Some' ? option.value : undefined)),
+            );
+    const finalSelection =
+      paths.length === 0 ? selection : yield* changedRepositoryPaths(cwd, base).pipe(Effect.option);
+    const finalGraphStatus =
+      impactResult === undefined
+        ? undefined
+        : yield* graph
+            .status(config.agentContextHome, repoRoot, {observeWorktree: true, requestMaintenance: false})
+            .pipe(
+              Effect.option,
+              Effect.map(option => (option._tag === 'Some' ? option.value : undefined)),
+            );
+    const impact =
+      paths.length === 0
+        ? ({captureAdvisoryIds: [], impactedMemoryUris: [], status: 'complete'} as const)
+        : impactResult === undefined
+          ? ({reason: 'graph-impact-evidence-unavailable', status: 'unknown'} as const)
+          : !contextCheckReadFenceIntact(
+                selection.value,
+                finalSelection._tag === 'Some' ? finalSelection.value : undefined,
+                impactResult.snapshot.id,
+                finalGraphStatus,
+              )
+            ? ({reason: 'graph-impact-evidence-incomplete', status: 'unknown'} as const)
+            : selectContextCheckGraphImpact(impactResult, records, repositoryId, paths, directlyAffectedMemoryUris);
+    const graphImpactedMemoryUris = impact.status === 'complete' ? impact.impactedMemoryUris : [];
+    const affectedMemoryUris = [...new Set([...directlyAffectedMemoryUris, ...graphImpactedMemoryUris])].sort();
     const healthReport = yield* collectContextHealth(config, project, records, repoRoot, {
+      includeFindingCategories: ['candidate-contradiction', 'relation-target-conflicted'],
       includeFindingUris: affectedMemoryUris,
     });
     return buildContextCheckReport({
       healthReport,
-      selection: {affectedMemoryUris, changedPaths: paths, status: 'available'},
+      selection: {
+        affectedMemoryUris,
+        captureAdvisoryIds: impact.status === 'complete' ? impact.captureAdvisoryIds : [],
+        changedPaths: paths,
+        citedDocumentCitationUris: citedDocumentCitationUris(records, repositoryId, affectedMemoryUris),
+        ...(impact.status === 'unknown' ? {evidenceReason: impact.reason} : {}),
+        graphImpactedMemoryUris,
+        status: 'available',
+      },
     });
   }).pipe(Effect.orElseSucceed(() => unavailableReport(project, 'affected-memory-evidence-unavailable')));
 });
@@ -123,8 +183,75 @@ const changedRepositoryPaths = Effect.fn('contextCheck.changedPaths')(function* 
     {concurrency: 2},
   );
   const paths = [...new Set(`${tracked.stdout}\0${untracked.stdout}`.split('\0').filter(Boolean))].sort();
-  return {paths, repositoryId: repository.repositoryId, repoRoot: repository.repoRoot, caseMode: repository.caseMode};
+  return {
+    baseCommit: commit,
+    paths,
+    repositoryId: repository.repositoryId,
+    repoRoot: repository.repoRoot,
+    caseMode: repository.caseMode,
+  };
 });
+
+export function sameChangedPathSelection(
+  left: {
+    readonly baseCommit: string;
+    readonly caseMode: 'insensitive' | 'sensitive';
+    readonly paths: readonly string[];
+    readonly repositoryId: string;
+    readonly repoRoot: string;
+  },
+  right: {
+    readonly baseCommit: string;
+    readonly caseMode: 'insensitive' | 'sensitive';
+    readonly paths: readonly string[];
+    readonly repositoryId: string;
+    readonly repoRoot: string;
+  },
+): boolean {
+  return (
+    left.baseCommit === right.baseCommit &&
+    left.caseMode === right.caseMode &&
+    left.repositoryId === right.repositoryId &&
+    left.repoRoot === right.repoRoot &&
+    left.paths.length === right.paths.length &&
+    left.paths.every((path, index) => path === right.paths[index])
+  );
+}
+
+export function contextCheckReadFenceIntact(
+  initial: Parameters<typeof sameChangedPathSelection>[0],
+  finalSelection: Parameters<typeof sameChangedPathSelection>[1] | undefined,
+  impactSnapshotId: string,
+  finalGraphStatus:
+    | {
+        readonly freshness: 'current' | 'deferred' | 'stale';
+        readonly readySnapshot?: {readonly id: string};
+        readonly stale: boolean;
+      }
+    | undefined,
+): boolean {
+  return (
+    finalSelection !== undefined &&
+    sameChangedPathSelection(initial, finalSelection) &&
+    finalGraphStatus?.freshness === 'current' &&
+    !finalGraphStatus.stale &&
+    finalGraphStatus.readySnapshot?.id === impactSnapshotId
+  );
+}
+
+function renderContextCheck(report: ContextCheckReportV1): string {
+  const lines = [
+    `Context check: ${report.exitClassification}; ${report.findings.length} finding(s), ${report.omittedFindings} omitted.`,
+    ...report.findings.map(
+      finding =>
+        `- ${finding.severity} ${finding.category}: ${finding.affectedMemoryCount} affected memory record(s) ` +
+        `[${finding.fingerprint}]`,
+    ),
+  ];
+  if (report.evidenceReason !== undefined) lines.push(`Evidence: ${report.evidenceReason}.`);
+  lines.push(`Exit ${report.exitCode}.`);
+  return lines.join('\n');
+}
 
 function unavailableReport(
   project: string,

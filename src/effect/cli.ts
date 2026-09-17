@@ -160,7 +160,7 @@ import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';
 import {runImageProjectionCommand} from '../image_projection/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
 import * as valueReportCommands from '../value_report/commands.js';
-import {runKnowledgeDeltaGitProposalExport} from '../git_proposal/commands.js';
+import {runKnowledgeDeltaGitProposalExport, runKnowledgeDeltaGitProposalMaterialize} from '../git_proposal/commands.js';
 import {makeShareMemoryCommands, publishFlags} from './share_memory_cli.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
 import {
@@ -1719,9 +1719,10 @@ const shareConflict = Command.make('conflict').pipe(
   Command.withSubcommands([conflictShow, conflictResolve]),
 );
 
-const {sharePropose, sharePublish} = makeShareMemoryCommands(
+const {shareMaterialize, sharePropose, sharePublish} = makeShareMemoryCommands(
   (uri, options) => withRuntimeEffect(config => runSharePublish(config, uri, options)),
   options => withRuntimeEffect(config => runKnowledgeDeltaGitProposalExport(config, options)),
+  options => withRuntimeEffect(config => runKnowledgeDeltaGitProposalMaterialize(config, options)),
 );
 
 const artifactFlags = {
@@ -1837,6 +1838,7 @@ const share = Command.make('share').pipe(
     shareConflicts,
     shareConflict,
     sharePropose,
+    shareMaterialize,
     sharePublish,
     sharePublishArtifact,
     sharePublishBundle,

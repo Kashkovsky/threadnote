@@ -16,14 +16,19 @@ afterEach(async () => {
 });
 
 describe('context check CLI', () => {
-  it('returns clean JSON for an empty diff and uncited changes without creating memory state', async () => {
+  it('returns clean JSON for an empty diff and unknown for uncited changes without current graph evidence', async () => {
     const {home, repository} = await fixture();
-    for (const changed of [false, true]) {
-      if (changed) await writeFile(join(repository, 'new-file.ts'), 'export const added = true;');
-      const result = await runCli(['context', 'check', '--project', 'cli-test', '--json'], home, repository);
-      expect(result.code).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({exitCode: 0, evidenceStatus: 'complete', findings: []});
-    }
+    const clean = await runCli(['context', 'check', '--project', 'cli-test', '--json'], home, repository);
+    expect(clean.code).toBe(0);
+    expect(JSON.parse(clean.stdout)).toMatchObject({exitCode: 0, evidenceStatus: 'complete', findings: []});
+    await writeFile(join(repository, 'new-file.ts'), 'export const added = true;');
+    const changed = await runCli(['context', 'check', '--project', 'cli-test', '--json'], home, repository);
+    expect(changed.code).toBe(2);
+    expect(JSON.parse(changed.stdout)).toMatchObject({
+      evidenceReason: expect.stringMatching(/^graph-impact-evidence-/u),
+      exitCode: 2,
+      findings: [],
+    });
     await expect(readFile(join(home, 'data'), 'utf8')).rejects.toThrow();
   });
 
@@ -95,7 +100,7 @@ describe('context check CLI', () => {
       2,
     );
     expect((await runCli(['context', 'health'], home, repository)).code).toBe(1);
-  });
+  }, 90_000);
 
   it('keeps cold-graph citations unknown and includes the deleted side of a rename', async () => {
     const {home, repository} = await fixture();
@@ -172,6 +177,67 @@ describe('context check CLI', () => {
       expect.arrayContaining([expect.objectContaining({category: 'citation-changed'})]),
     );
   }, 60_000);
+
+  it('uses exact-current graph evidence when a distinct ancestor has no stored snapshot', async () => {
+    const {home, repository} = await fixture();
+    await writeFile(join(repository, 'source.ts'), 'export const committed = true;\n');
+    await execute('git', ['add', 'source.ts'], {cwd: repository});
+    await execute(
+      'git',
+      ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'second fixture'],
+      {cwd: repository},
+    );
+    expect((await runCli(['graph', 'index', '--cwd', repository, '--json'], home, repository)).code).toBe(0);
+    await writeFile(join(repository, 'source.ts'), 'export const dirty = true;\n');
+    expect((await runCli(['graph', 'index', '--cwd', repository, '--json'], home, repository)).code).toBe(0);
+
+    const result = await runCli(
+      ['context', 'check', '--project', 'cli-test', '--base', 'HEAD~1', '--json'],
+      home,
+      repository,
+    );
+
+    expect(result.code, result.stdout).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({evidenceStatus: 'complete', exitCode: 1});
+    expect(result.stdout).not.toContain('graph-impact-evidence');
+  }, 90_000);
+
+  it('reports an exact-current indirectly impacted memory from the code graph', async () => {
+    const {home, repository} = await fixture();
+    expect((await runCli(['graph', 'index', '--cwd', repository, '--json'], home, repository)).code).toBe(0);
+    const remember = await runCli(
+      [
+        'remember',
+        '--project',
+        'cli-test',
+        '--topic',
+        'dependent-contract',
+        '--text',
+        'The dependent module relies on the source export.',
+        '--code-ref',
+        'dependent.ts',
+        '--require-current-code-refs',
+      ],
+      home,
+      repository,
+    );
+    expect(remember.code, remember.stderr).toBe(0);
+    await writeFile(join(repository, 'source.ts'), 'export const before = false;\n');
+    expect((await runCli(['graph', 'index', '--cwd', repository, '--json'], home, repository)).code).toBe(0);
+
+    const result = await runCli(['context', 'check', '--project', 'cli-test', '--json'], home, repository);
+
+    expect(result.code, result.stdout).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({evidenceStatus: 'complete', exitCode: 1});
+    expect(JSON.parse(result.stdout).findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({category: 'graph-impact'}),
+        expect.objectContaining({category: 'capture-advisory'}),
+      ]),
+    );
+    expect(result.stdout).not.toContain('dependent.ts');
+    expect(result.stdout).not.toContain('threadnote://');
+  }, 90_000);
 });
 
 async function fixture() {
@@ -186,7 +252,11 @@ async function fixture() {
     cwd: repository,
   });
   await writeFile(join(repository, 'source.ts'), 'export const before = true;\n');
-  await execute('git', ['add', 'source.ts'], {cwd: repository});
+  await writeFile(
+    join(repository, 'dependent.ts'),
+    "import {before} from './source.js';\nexport const dependent = before;\n",
+  );
+  await execute('git', ['add', 'source.ts', 'dependent.ts'], {cwd: repository});
   await execute('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture'], {
     cwd: repository,
   });

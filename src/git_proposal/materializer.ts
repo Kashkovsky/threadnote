@@ -1,0 +1,59 @@
+import {Schema} from 'effect';
+import {sha256HexSync} from '../crypto/sha256.js';
+import {verifyKnowledgeDeltaGitProposalV1, type KnowledgeDeltaGitProposalV1} from './knowledge_delta.js';
+
+export class KnowledgeDeltaGitMaterializerError extends Schema.TaggedError<KnowledgeDeltaGitMaterializerError>()(
+  'KnowledgeDeltaGitMaterializerError',
+  {message: Schema.String},
+) {}
+
+export interface KnowledgeDeltaGitMaterializerStateV1 {
+  readonly baseCommit: string;
+  readonly files: Readonly<Record<string, string | undefined>>;
+  readonly repositoryId: string;
+}
+
+export interface KnowledgeDeltaGitMaterializationPlanV1 {
+  readonly branch: string;
+  readonly commitMessage: string;
+  readonly files: readonly {readonly content: string; readonly path: string}[];
+  readonly proposalHash: string;
+  readonly stateHash: string;
+}
+
+export function planKnowledgeDeltaGitMaterializationV1(
+  proposal: KnowledgeDeltaGitProposalV1,
+  state: KnowledgeDeltaGitMaterializerStateV1,
+): KnowledgeDeltaGitMaterializationPlanV1 {
+  verifyKnowledgeDeltaGitProposalV1(proposal);
+  if (state.repositoryId !== proposal.target.repositoryId) fail('Proposal repository binding changed.');
+  if (state.baseCommit !== proposal.base.expectedCommit) fail('Proposal base commit changed.');
+  for (const file of proposal.files) {
+    const current = state.files[file.path];
+    if (file.targetPrecondition.state === 'absent') {
+      if (current !== undefined) fail(`Proposal target changed: ${file.path}.`);
+    } else if (current === undefined || sha256HexSync(current) !== file.targetPrecondition.expectedContentHash) {
+      fail(`Proposal target changed: ${file.path}.`);
+    }
+  }
+  const files = proposal.files.map(file => ({content: file.content, path: file.path}));
+  const targetState = proposal.files
+    .map(file => {
+      const content = state.files[file.path];
+      return {contentHash: content === undefined ? null : sha256HexSync(content), path: file.path};
+    })
+    .sort((left, right) => left.path.localeCompare(right.path));
+  return {
+    branch: proposal.branch.name,
+    commitMessage: proposal.commit.message,
+    files,
+    proposalHash: proposal.proposalHash,
+    stateHash: sha256HexSync(
+      JSON.stringify({baseCommit: state.baseCommit, files: targetState, repositoryId: state.repositoryId}),
+    ),
+  };
+}
+
+function fail(message: string): never {
+  throw KnowledgeDeltaGitMaterializerError.make({message});
+}
