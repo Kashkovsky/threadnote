@@ -115,6 +115,7 @@ export const ANONYMOUS_TELEMETRY_WAITING_REASONS = [
   'database-writer',
   'disk-capacity',
   'home-builder-cap',
+  'prepared-spool-budget',
   'repository-lock',
   'request-lock',
   'snapshot-build',

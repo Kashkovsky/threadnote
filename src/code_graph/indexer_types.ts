@@ -1,23 +1,43 @@
-import {Crypto, Effect, Option, Path} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import type {SystemInfoShape} from '../effect/system.js';
 import type {BoundedCodeGraphFact} from './fact_budget.js';
 import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import type {CodeGraphIncrementalWork, CodeGraphIncrementalWorkObservation} from './incremental_work.js';
 import type {CodeGraphInventoryOptions} from './inventory.js';
+import type {CodeGraphInventory} from './inventory.js';
+import type {MaterializationStorageTelemetry} from './indexer_materialization.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
+import type {CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
+import type {CodeGraphLayout} from './layout.js';
 import type {CodeGraphBuilderAdmissionClass} from './builder_admission.js';
+import type {CodeGraphEmbeddingIndexShape} from './embedding.js';
 import type {CodeGraphResolutionPublicationAssessment} from './resolution_surface.js';
 import type {CodeGraphMaintenanceCoordinatorShape} from './maintenance_coordinator.js';
-import type {CodeGraphSqliteWriterSettings, CodeGraphSqliteWriterTuning} from './store.js';
+import type {
+  CodeGraphLanguagePackProvenance,
+  CodeGraphSqliteWriterSettings,
+  CodeGraphSqliteWriterTuning,
+  CodeGraphStoreShape,
+} from './store.js';
 import type {
   CodeGraphFileFacts,
   CodeGraphIndexSummary,
   CodeGraphInventoryFile,
   CodeGraphOverlayFallbackAssessment,
   CodeGraphOverlayFallbackReason,
+  CodeGraphProgress,
   CodeGraphSnapshot,
+  RepositoryIdentity,
   RepositoryIdentityExpectation,
 } from './types.js';
+
+export type CodeGraphIndexResourceGate = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | unknown, R>;
+
+export type CodeGraphPreparedSpoolBudgetGate = <A, E, R>(
+  bytes: number,
+  snapshotId: string,
+  effect: Effect.Effect<A, E, R>,
+) => Effect.Effect<A, E | unknown, R>;
 
 export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   /** @internal Home-global builder admission priority. CLI defaults to current-required. */
@@ -72,6 +92,42 @@ export interface DirectPersistentCapacityProtection {
   readonly system: SystemInfoShape;
   readonly temporaryDirectory: string;
   readonly walAutoCheckpointPages: number;
+}
+
+export interface CodeGraphBuildAndActivateInput {
+  readonly activatePointer: boolean;
+  readonly building: CodeGraphSnapshot;
+  readonly capacityProtection: DirectPersistentCapacityProtection;
+  readonly committedBase?: CommittedBaseResult;
+  readonly existing?: CodeGraphSnapshot;
+  readonly embedding: CodeGraphEmbeddingIndexShape;
+  readonly ensureVectors: boolean;
+  readonly force: boolean;
+  readonly sourceVerification?: CodeGraphSourceVerification;
+  readonly fs: FileSystem.FileSystem;
+  readonly identity: RepositoryIdentity;
+  readonly inventory: CodeGraphInventory;
+  readonly incrementalAssessment?: IncrementalOverlayAssessment;
+  readonly incrementalMaterializationStorageTelemetry?: MaterializationStorageTelemetry;
+  readonly incrementalOverlayEnabled?: boolean;
+  readonly incrementalPrepared?: boolean;
+  readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+  readonly legacyBuildAdmission?: CodeGraphIndexResourceGate;
+  readonly layout: CodeGraphLayout;
+  readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
+  readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
+  readonly persistentOwnerToken?: string;
+  readonly preparationGate?: CodeGraphIndexResourceGate;
+  readonly preparedSpoolBudgetGate?: CodeGraphPreparedSpoolBudgetGate;
+  readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
+  readonly sparseProjection?: {
+    readonly packProvenance: readonly CodeGraphLanguagePackProvenance[];
+    readonly totalFiles: number;
+  };
+  readonly startedAt: number;
+  readonly store: CodeGraphStoreShape;
+  readonly threadnoteHome: string;
+  readonly workspace?: CodeGraphWorkspace;
 }
 
 export function codeGraphIndexEnsuresVectors(options: {readonly ensureVectors?: boolean}): boolean {

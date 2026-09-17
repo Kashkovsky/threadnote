@@ -1,4 +1,5 @@
 import type {CodeGraphBuildStatus} from './build_status.js';
+import type {CodeGraphBuildResource} from './build_resources.js';
 import type {CodeGraphBuilderAdmissionQueue} from './builder_admission_scheduler.js';
 import {isBuildStatusRecord, isBuildStatusTimestamp} from './build_status_validation.js';
 import type {CodeGraphProgress} from './types.js';
@@ -18,6 +19,7 @@ export const CODE_GRAPH_BUILD_WAIT_REASONS = [
   'database-writer',
   'disk-capacity',
   'home-builder-cap',
+  'prepared-spool-budget',
   'repository-lock',
   'request-lock',
   'snapshot-build',
@@ -27,7 +29,7 @@ type WaitReason = NonNullable<Extract<CodeGraphProgress, {phase: 'waiting'}>['re
 export interface CodeGraphBuildScheduling {
   readonly admittedAt?: string;
   readonly blocker?: WaitReason;
-  readonly resource?: 'home-builder-slot';
+  readonly resource?: CodeGraphBuildResource;
   readonly queue?: CodeGraphBuilderAdmissionQueue;
   readonly phaseMilliseconds?: Partial<Readonly<Record<CodeGraphProgress['phase'], number>>>;
   readonly waitMilliseconds?: Partial<Readonly<Record<WaitReason, number>>>;
@@ -57,11 +59,17 @@ export function observeCodeGraphBuildAdmission(
       ? {...status.scheduling, queue}
       : {
           ...status.scheduling,
-          admittedAt: new Date(now).toISOString(),
+          admittedAt: status.scheduling?.admittedAt ?? new Date(now).toISOString(),
           blocker: undefined,
-          resource: 'home-builder-slot',
         },
   };
+}
+
+export function observeCodeGraphBuildResource(
+  status: CodeGraphBuildStatus,
+  resource: CodeGraphBuildResource | undefined,
+): CodeGraphBuildStatus {
+  return {...status, scheduling: {...status.scheduling, resource}};
 }
 
 /** Account observed intervals only. Absent legacy telemetry stays unknown. */
@@ -95,7 +103,9 @@ export function parseCodeGraphBuildScheduling(value: unknown): CodeGraphBuildSch
   if (!isBuildStatusRecord(value)) return undefined;
   if (value.admittedAt !== undefined && !isBuildStatusTimestamp(value.admittedAt)) return undefined;
   if (value.blocker !== undefined && !isWaitReason(value.blocker)) return undefined;
-  if (value.resource !== undefined && value.resource !== 'home-builder-slot') return undefined;
+  if (value.resource !== undefined && !isBuildResource(value.resource)) {
+    return undefined;
+  }
   const queue = value.queue;
   if (
     queue !== undefined &&
@@ -115,7 +125,7 @@ export function parseCodeGraphBuildScheduling(value: unknown): CodeGraphBuildSch
   return {
     ...(typeof value.admittedAt === 'string' ? {admittedAt: value.admittedAt} : {}),
     ...(isWaitReason(value.blocker) ? {blocker: value.blocker} : {}),
-    ...(value.resource === 'home-builder-slot' ? {resource: value.resource} : {}),
+    ...(isBuildResource(value.resource) ? {resource: value.resource} : {}),
     ...(isBuildStatusRecord(queue) &&
     (queue.admissionClass === 'background' || queue.admissionClass === 'current-required')
       ? {
@@ -134,6 +144,15 @@ export function parseCodeGraphBuildScheduling(value: unknown): CodeGraphBuildSch
 
 function isWaitReason(value: unknown): value is WaitReason {
   return typeof value === 'string' && CODE_GRAPH_BUILD_WAIT_REASONS.some(reason => reason === value);
+}
+
+function isBuildResource(value: unknown): value is CodeGraphBuildResource {
+  return (
+    value === 'checkout-writer' ||
+    value === 'home-builder-slot' ||
+    value === 'home-preparation-slot' ||
+    value === 'prepared-spool-budget'
+  );
 }
 
 function isCount(value: unknown, maximum = Number.MAX_SAFE_INTEGER): value is number {
