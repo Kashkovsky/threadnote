@@ -58,6 +58,10 @@ checksums but are not OS code-signed.
 
 ## Publishing
 
+For the 5.0 release branch, keep `package.json` at `5.0.0` while reviewed slices accumulate. Every pull request targeting
+`release/5.0.0` must update the cumulative `.github/release-notes/v5.0.0.md`. Do not tag or publish until the reviewed
+release candidate is on the protected publication branch through the normal release process.
+
 For a prerelease, use a full SemVer prerelease such as `4.1.0-beta.1` in `package.json`,
 `.github/release-notes/v4.1.0-beta.1.md`, and the `v4.1.0-beta.1` tag. The publisher detects the hyphenated tag and
 creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
