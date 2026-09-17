@@ -1,5 +1,6 @@
 import {buildCandidateReview, saveCandidateReview, type SessionCloseoutInput} from '../../src/memory/candidate.js';
-import {formatMemoryDocument} from '../../src/memory/document.js';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
+import {canonicalMemoryDocumentContent, formatMemoryDocument} from '../../src/memory/document.js';
 import {execFile} from '../helpers/node-child-process.js';
 import {mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
@@ -80,32 +81,30 @@ describe('Knowledge Delta Git proposal CLI', () => {
       'git-proposal.md',
     );
     await mkdir(join(sourcePath, '..'), {recursive: true});
-    await writeFile(
-      sourcePath,
-      formatMemoryDocument(
-        'MEMORY',
-        {
-          authority: 'user_approved',
-          candidateId: candidate.candidateId,
-          kind: 'durable',
-          memoryId: 'tn_personal_candidate_identity',
-          project: 'threadnote',
-          sourceAgentClient: 'test',
-          status: 'active',
-          timestamp: '2026-09-17T00:00:00.000Z',
-          topic: 'git-proposal',
-          trust: 'approved',
-          visibility: 'personal',
-        },
-        'Updated shared contract.',
-      ),
-      'utf8',
+    const sourceContent = formatMemoryDocument(
+      'MEMORY',
+      {
+        authority: 'user_approved',
+        candidateId: candidate.candidateId,
+        kind: 'durable',
+        memoryId: 'tn_personal_candidate_identity',
+        project: 'threadnote',
+        sourceAgentClient: 'test',
+        status: 'active',
+        timestamp: '2026-09-17T00:00:00.000Z',
+        topic: 'git-proposal',
+        trust: 'approved',
+        visibility: 'personal',
+      },
+      'Updated shared contract.',
     );
+    await writeFile(sourcePath, sourceContent, 'utf8');
     const review = {
       ...draft,
       candidates: [
         {
           ...candidate,
+          applyContentHash: sha256HexSync(canonicalMemoryDocumentContent(sourceContent)),
           applyOperation: 'create' as const,
           applyTargetUri: sourceUri,
           state: 'applied' as const,
@@ -150,6 +149,33 @@ describe('Knowledge Delta Git proposal CLI', () => {
     const output = join(root, 'exports', 'proposal.json');
     await runCli([...args, '--approved', '--output', output], home);
     expect(JSON.parse(await readFile(output, 'utf8'))).toEqual(artifact);
+    expect((await git(worktree, ['rev-parse', 'HEAD'])).trim()).toBe(baseCommit.trim());
+    expect((await git(worktree, ['status', '--short'])).trim()).toBe('');
+
+    await writeFile(sourcePath, sourceContent.replace('Updated shared contract.', 'Changed after approval.'), 'utf8');
+    const changedSource = await runCli([...args, '--approved'], home).catch(error => error as CliFailure);
+    expect(changedSource).toMatchObject({code: 1});
+    expect(changedSource.stderr).toContain('applied source changed after approval');
+
+    await writeFile(sourcePath, sourceContent, 'utf8');
+    const reviewWithoutApplyHash = {
+      ...review,
+      candidates: review.candidates.map(({applyContentHash: _applyContentHash, ...item}) => item),
+    };
+    await run(saveCandidateReview(home, reviewWithoutApplyHash));
+    const missingApplyHash = await runCli([...args, '--approved'], home).catch(error => error as CliFailure);
+    expect(missingApplyHash).toMatchObject({code: 1});
+    expect(missingApplyHash.stderr).toContain('no approved apply content hash');
+    await run(saveCandidateReview(home, review));
+
+    const pendingDirectory = join(home, 'data', 'local', 'user', 'local', 'private', 'deferred-code-anchors', 'v1');
+    await mkdir(pendingDirectory, {recursive: true, mode: 0o700});
+    const pendingPath = join(pendingDirectory, `${sha256HexSync(sourceUri)}.json`);
+    await writeFile(pendingPath, '{}\n', 'utf8');
+    const pendingCitations = await runCli([...args, '--approved'], home).catch(error => error as CliFailure);
+    expect(pendingCitations).toMatchObject({code: 1});
+    expect(pendingCitations.stderr).toContain('code citations are still pending');
+    expect(pendingCitations.stderr).toContain('finalize-code-refs');
     expect((await git(worktree, ['rev-parse', 'HEAD'])).trim()).toBe(baseCommit.trim());
     expect((await git(worktree, ['status', '--short'])).trim()).toBe('');
   });

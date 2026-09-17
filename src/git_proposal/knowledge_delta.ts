@@ -4,6 +4,10 @@ import {canonicalJson} from '../code_graph/checkpoint/canonical_json.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {uriSegment} from '../manifest.js';
 import {canonicalMemoryDocumentContent, parseMemoryDocument, type MemoryRelation} from '../memory/document.js';
+import {
+  memoryCodeCitationContentSharingBlocker,
+  memoryCodeCitationSharingBlockerMessage,
+} from '../memory/code_citation_policy.js';
 import {memoryIdFromIdentityAlias, isMemoryId} from '../memory/identity_alias.js';
 import type {KnowledgeDeltaItemV1, KnowledgeDeltaV1} from '../memory/knowledge_delta.js';
 import {
@@ -221,6 +225,12 @@ function proposalFile(
   }
   requireShareApproval(delta, mutation);
 
+  const citationBlocker = memoryCodeCitationContentSharingBlocker(mutation.sourceUri, mutation.sourceContent);
+  if (citationBlocker) {
+    invalid(
+      `Candidate ${mutation.candidateId} cannot be shared: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+    );
+  }
   const canonicalSource = canonicalMemoryDocumentContent(mutation.sourceContent);
   const sourceContentHash = sha256HexSync(canonicalSource);
   if (sourceContentHash !== mutation.approval.expectedSourceContentHash) {
@@ -249,7 +259,12 @@ function proposalFile(
   const topic = portableSegment(source.metadata.topic, `candidate ${mutation.candidateId} topic`);
   const path = sharedDurablePath(project, topic);
   const target = buildTargetPrecondition(project, topic, memoryId, mutation);
-  if (relations.some(relation => memoryIdFromIdentityAlias(relation.uri) === target.memoryId)) {
+  if (
+    relations.some(relation => {
+      const relatedMemoryId = memoryIdFromIdentityAlias(relation.uri);
+      return relatedMemoryId === memoryId || relatedMemoryId === target.memoryId;
+    })
+  ) {
     invalid(`Candidate ${mutation.candidateId} shared projection would relate to itself.`);
   }
   const content = setMemoryId(
@@ -387,7 +402,12 @@ function verifyProposalFile(proposal: KnowledgeDeltaGitProposalV1, file: Knowled
     invalid(`Git proposal file ${file.path} does not match its shared memory receipt.`);
   }
   const relations = canonicalRelations(record.metadata.relations ?? [], file.approval.candidateId);
-  if (relations.some(relation => memoryIdFromIdentityAlias(relation.uri) === file.memory.id)) {
+  if (
+    relations.some(relation => {
+      const relatedMemoryId = memoryIdFromIdentityAlias(relation.uri);
+      return relatedMemoryId === file.approval.expectedSourceMemoryId || relatedMemoryId === file.memory.id;
+    })
+  ) {
     invalid(`Git proposal file ${file.path} relates to itself.`);
   }
   if (canonicalJson(relations) !== canonicalJson(file.memory.relations)) {
@@ -395,6 +415,12 @@ function verifyProposalFile(proposal: KnowledgeDeltaGitProposalV1, file: Knowled
   }
   const blocker = scrubberBlocker(file.content);
   if (blocker) invalid(`Git proposal file ${file.path} is blocked by the ${blocker} scrubber.`);
+  const citationBlocker = memoryCodeCitationContentSharingBlocker('threadnote://proposal/file', file.content);
+  if (citationBlocker) {
+    invalid(
+      `Git proposal file ${file.path} cannot be shared: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+    );
+  }
   if (file.operation === 'create' && file.targetPrecondition.state !== 'absent') {
     invalid(`Git proposal create ${file.path} does not require an absent target.`);
   }

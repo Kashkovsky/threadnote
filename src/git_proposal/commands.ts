@@ -2,6 +2,11 @@ import {Console, Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {SystemInfo} from '../effect/system.js';
 import {listCandidateReviews, type CandidateReview} from '../memory/candidate.js';
+import {
+  memoryCodeCitationContentSharingBlocker,
+  memoryCodeCitationSharingBlockerMessage,
+} from '../memory/code_citation_policy.js';
+import {hasDeferredCodeAnchorIntent} from '../memory/deferred_code_anchor.js';
 import {canonicalMemoryDocumentContent, type MemoryRecord} from '../memory/document.js';
 import {projectKnowledgeDeltaV1} from '../memory/knowledge_delta.js';
 import {readMaintenanceMemoryRecords} from '../memory/maintenance_records.js';
@@ -52,7 +57,7 @@ export const buildReviewedKnowledgeDeltaGitProposal = Effect.fn('gitProposal.bui
   if (!baseCommit) return yield* operationError('The configured shared Git worktree has no readable HEAD commit.');
   const records = yield* readMaintenanceMemoryRecords(config);
   const mutations = yield* Effect.forEach(candidateIds, candidateId =>
-    reviewedMutation(review, candidateId, records, team.config.worktree, baseCommit),
+    reviewedMutation(config, review, candidateId, records, team.config.worktree, baseCommit),
   );
   return yield* Effect.try({
     try: () => buildKnowledgeDeltaGitProposalV1({baseCommit, delta, mutations, project: review.project}),
@@ -77,6 +82,7 @@ export const runKnowledgeDeltaGitProposalExport = Effect.fn('gitProposal.exportC
 });
 
 function reviewedMutation(
+  config: RuntimeConfig,
   review: CandidateReview,
   candidateId: string,
   records: readonly MemoryRecord[],
@@ -95,8 +101,30 @@ function reviewedMutation(
     }
     const source = sources[0];
     if (!source) return yield* operationError(`Applied candidate source ${candidate.applyTargetUri} is missing.`);
+    if (!candidate.applyContentHash) {
+      return yield* operationError(
+        `Candidate ${candidateId} has no approved apply content hash. Apply it again before shared Git proposal export.`,
+      );
+    }
+    const currentSourceContentHash = sha256HexSync(canonicalMemoryDocumentContent(source.content));
+    if (currentSourceContentHash !== candidate.applyContentHash) {
+      return yield* operationError(
+        `Candidate ${candidateId} applied source changed after approval. Review and apply it again before shared Git proposal export.`,
+      );
+    }
     if (source.metadata.kind !== 'durable' || source.metadata.status !== 'active') {
       return yield* operationError(`Candidate ${candidateId} is not an active durable memory.`);
+    }
+    if (yield* hasDeferredCodeAnchorIntent(config, source.uri)) {
+      return yield* operationError(
+        `Candidate ${candidateId} code citations are still pending. Prepare the graph, run \`threadnote finalize-code-refs --uri ${source.uri}\`, and retry the export.`,
+      );
+    }
+    const citationBlocker = memoryCodeCitationContentSharingBlocker(source.uri, source.content);
+    if (citationBlocker) {
+      return yield* operationError(
+        `Candidate ${candidateId} cannot be shared: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+      );
     }
     const targetPath = yield* sharedTargetPath(review.project, source.metadata.topic);
     const targetContent = yield* gitFileContent(worktree, baseCommit, targetPath);
@@ -106,7 +134,7 @@ function reviewedMutation(
         : ({content: targetContent, contentHash: sha256HexSync(targetContent), state: 'present'} as const);
     return {
       approval: {
-        expectedSourceContentHash: sha256HexSync(canonicalMemoryDocumentContent(source.content)),
+        expectedSourceContentHash: currentSourceContentHash,
         reviewId: review.reviewId,
         revision: review.revision,
         share: true,

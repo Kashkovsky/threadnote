@@ -162,12 +162,14 @@ threadnote context repair apply \
   --approved
 ```
 
-Only personal durable, handoff, and incident records receive automatic archive proposals. A missing or inactive
-relation target can produce an exact relation-removal proposal. Shared memories, preferences, smoke records, citation
-repairs, guidance drift, and ambiguous findings remain review-only. Apply rechecks project and canonical content hashes,
-preserves stable identity and unrelated relations, and records a private recovery journal so the same revision can be
-retried safely. The full MCP toolset exposes the same split through read-only `context_health_repair_preview` and
-destructive `context_health_repair_apply`; the latter also requires explicit approval.
+Only personal durable, handoff, and incident records receive automatic archive proposals. A relation to a direct
+personal URI proven missing or inactive can produce an exact relation-removal proposal. Shared targets and stable
+identity aliases remain review-only because their liveness is not one local URI precondition; preferences, smoke
+records, citation repairs, guidance drift, and ambiguous findings are also review-only. Apply rechecks project and
+canonical content hashes, preserves stable identity and unrelated relations, and records a private recovery journal so
+the same revision can be retried safely. The full MCP toolset exposes the same split through read-only
+`context_health_repair_preview` and destructive `context_health_repair_apply`; the latter also requires explicit
+approval.
 
 ## Context Check
 

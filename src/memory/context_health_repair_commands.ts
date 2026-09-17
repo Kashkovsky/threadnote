@@ -1,11 +1,18 @@
-import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {Crypto, DateTime, Effect, FileSystem, Option, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withMemoryUriLocks} from '../effect/memory_lock.js';
+import {ResourceStore} from '../effect/resource-store.js';
 import {SystemInfo} from '../effect/system.js';
-import {archiveMemoryForCompact, writeMemoryContentWithExpectedHash} from '../mcp/server/memory.js';
+import {uriSegment} from '../manifest.js';
+import {
+  forgetResourceWithRetry,
+  readMemoryRecordsByUri,
+  resourceStoreLocation,
+  writeMemoryContentWithExpectedHash,
+} from '../mcp/server/memory.js';
 import type {RuntimeConfig} from '../types.js';
-import type {CompactableMemoryKind} from './hygiene.js';
 import {collectContextHealth} from './context_health_commands.js';
 import {
   applyContextHealthRepairProposalV1,
@@ -15,9 +22,16 @@ import {
   type ContextHealthRepairPlanV1,
   type ContextHealthRepairProposalV1,
 } from './context_health_repair.js';
-import {readActiveProjectMemoryRecords, readMaintenanceMemoryRecords} from './maintenance_records.js';
+import {readMaintenanceMemoryRecords} from './maintenance_records.js';
 import {MemoryOperationError} from './migrations.js';
-import type {MemoryRecord} from './document.js';
+import {
+  assertMemoryDocumentSchemaWritable,
+  canonicalMemoryDocumentContent,
+  formatMemoryDocument,
+  memoryArchiveBody,
+  memoryArchiveMetadata,
+  type MemoryRecord,
+} from './document.js';
 
 const REPAIR_JOURNAL_VERSION = 1 as const;
 const MAXIMUM_REPAIR_JOURNAL_BYTES = 512 * 1_024;
@@ -26,7 +40,8 @@ const REPAIR_LOCK_OPTIONS = {
   staleAfterMilliseconds: 5 * 60 * 1_000,
   waitTimeoutMilliseconds: 5_000,
 } as const;
-const ARCHIVED_BODY_PREFIX = 'Archived original Threadnote memory.\n\n';
+
+type RepairArchiveKind = Extract<MemoryRecord['metadata']['kind'], 'durable' | 'handoff' | 'incident'>;
 
 export interface RunContextHealthRepairPreviewOptionsV1 {
   readonly json?: boolean;
@@ -64,11 +79,15 @@ export type ContextHealthRepairApplyCommandResultV1 =
     };
 
 interface ContextHealthRepairJournalV1 {
+  readonly archive?: {
+    readonly contentHash: string;
+    readonly kind: RepairArchiveKind;
+    readonly timestamp: string;
+    readonly uri: string;
+  };
   readonly proposal: ContextHealthRepairProposalV1;
   readonly receipt?: ContextHealthRepairApplyReceiptV1;
   readonly state: 'applied' | 'applying';
-  readonly subjectBodyHash?: string;
-  readonly subjectMemoryId?: string;
   readonly version: typeof REPAIR_JOURNAL_VERSION;
 }
 
@@ -79,8 +98,11 @@ export const previewContextHealthRepairs = Effect.fn('memory.contextHealthRepair
 ) {
   const project = projectInput.trim();
   if (!project) return yield* repairError('Provide --project for scoped context repair.');
-  const records = yield* readActiveProjectMemoryRecords(config, project);
-  const report = yield* collectContextHealth(config, project, records, cwd);
+  const records = yield* readMaintenanceMemoryRecords(config);
+  const activeRecords = records.filter(
+    record => record.metadata.status === 'active' && record.metadata.project === project,
+  );
+  const report = yield* collectContextHealth(config, project, activeRecords, cwd);
   return previewContextHealthRepairPlanV1(report, records);
 });
 
@@ -110,13 +132,15 @@ export const applyContextHealthRepair = Effect.fn('memory.contextHealthRepair.ap
     return yield* repairError('Provide a valid proposal ID from context repair preview.');
   }
   const revision = input.revision.trim();
-  if (!revision) return yield* repairError('Provide the exact proposal revision from context repair preview.');
+  if (!/^[0-9a-f]{64}$/u.test(revision)) {
+    return yield* repairError('Provide a valid exact proposal revision from context repair preview.');
+  }
   if (input.approved !== true) {
     return yield* repairError('Applying a context-health repair requires --approved after explicit review.');
   }
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const journalPath = repairJournalPath(path, config.agentContextHome, proposalId);
+  const journalPath = repairJournalPath(path, config.agentContextHome, proposalId, revision);
   return yield* withExclusiveFileLock(
     fs,
     `${journalPath}.lock`,
@@ -157,7 +181,13 @@ function applyLocked(
         return yield* repairError('The stored repair journal belongs to another project or proposal revision.');
       }
       if (journal.state === 'applied' && journal.receipt) {
-        return publicApplyResult({receipt: journal.receipt, status: 'already-applied'}, proposal);
+        const verified = applyContextHealthRepairProposalV1({
+          expectedRevision: input.revision,
+          proposal,
+          receipt: journal.receipt,
+          records: yield* readMaintenanceMemoryRecords(config),
+        });
+        return publicApplyResult(verified, proposal);
       }
     } else {
       const plan = yield* previewContextHealthRepairs(config, input.project, input.cwd);
@@ -178,18 +208,25 @@ function applyLocked(
         return publicApplyResult(preflight, proposal);
       }
       const subject = mutationSubject(proposal, records);
+      const archiveBlocker = subject === undefined ? undefined : archiveSourceBlocker(subject);
+      if (proposal.mutation.kind === 'archive-memory' && archiveBlocker !== undefined) {
+        return yield* repairError(archiveBlocker);
+      }
+      const archive =
+        proposal.mutation.kind === 'archive-memory' && subject !== undefined
+          ? repairArchiveJournal(config, proposal, subject, DateTime.formatIso(yield* DateTime.now))
+          : undefined;
       journal = {
+        ...(archive === undefined ? {} : {archive}),
         proposal,
         state: 'applying',
-        ...(subject === undefined ? {} : {subjectBodyHash: sha256HexSync(subject.body)}),
-        ...(subject?.metadata.memoryId === undefined ? {} : {subjectMemoryId: subject.metadata.memoryId}),
         version: REPAIR_JOURNAL_VERSION,
       };
       yield* writeRepairJournal(input.journalPath, journal);
     }
 
     const records = yield* readMaintenanceMemoryRecords(config);
-    const recovered = recoveredArchiveReceipt(proposal, journal, records);
+    const recovered = recoveredArchiveReceipt(config, proposal, journal, records);
     if (recovered) {
       yield* writeRepairJournal(input.journalPath, {...journal, receipt: recovered, state: 'applied'});
       return publicApplyResult({receipt: recovered, status: 'already-applied'}, proposal);
@@ -207,7 +244,7 @@ function applyLocked(
       return publicApplyResult(planned, proposal);
     }
 
-    yield* executeRepairMutation(config, proposal, records, planned.records);
+    yield* executeRepairMutation(config, proposal, journal);
     yield* writeRepairJournal(input.journalPath, {...journal, receipt: planned.receipt, state: 'applied'});
     return publicApplyResult(planned, proposal);
   });
@@ -216,64 +253,120 @@ function applyLocked(
 function executeRepairMutation(
   config: RuntimeConfig,
   proposal: ContextHealthRepairProposalV1,
-  before: readonly MemoryRecord[],
-  after: readonly MemoryRecord[],
+  journal: ContextHealthRepairJournalV1,
 ) {
   return Effect.gen(function* () {
     const mutation = proposal.mutation;
     if (mutation.kind === 'review-only') return yield* repairError('Review-only proposals cannot be applied.');
-    const source = before.find(record => record.uri === mutation.subjectUri);
-    if (!source) return yield* repairError(`Repair subject ${mutation.subjectUri} is no longer readable.`);
-    if (source.uri.includes('/memories/shared/')) {
+    if (mutation.subjectUri.includes('/memories/shared/')) {
       return yield* repairError('Context-health repair apply never mutates shared memories.');
     }
+    const fs = yield* FileSystem.FileSystem;
     if (mutation.kind === 'archive-memory') {
-      const kind = compactableKind(source.metadata.kind);
-      if (!kind) return yield* repairError(`Memory kind ${source.metadata.kind} requires manual lifecycle review.`);
-      const result = yield* archiveMemoryForCompact(config, {
-        expectedContent: source.content,
-        kind,
-        project: proposal.project,
-        reason: proposal.summary,
-        sourceUris: proposal.preconditions.map(precondition => precondition.uri),
-        topic: source.metadata.topic,
-        uri: source.uri,
-      });
-      if (result.isError === true) return yield* repairError(callResultText(result));
-      return;
+      const archive = journal.archive;
+      if (!archive || archive.uri !== repairArchiveUri(config, proposal, archive.kind)) {
+        return yield* repairError(
+          'The repair journal does not contain the exact archive destination for this revision.',
+        );
+      }
+      const lockedUris = [...proposal.preconditions.map(precondition => precondition.uri), archive.uri];
+      return yield* withMemoryUriLocks(
+        fs,
+        config.agentContextHome,
+        lockedUris,
+        Effect.gen(function* () {
+          const current = yield* readMemoryRecordsByUri(config, lockedUris);
+          const source = current.find(record => record.uri === mutation.subjectUri);
+          const existingArchive = current.find(record => record.uri === archive.uri);
+          if (!source) {
+            if (existingArchive && memoryContentHash(existingArchive.content) === archive.contentHash) return;
+            return yield* repairError(`Repair subject ${mutation.subjectUri} is no longer readable.`);
+          }
+          if (!isArchiveRepairableKind(source.metadata.kind)) {
+            return yield* repairError(`Memory kind ${source.metadata.kind} requires manual lifecycle review.`);
+          }
+          if (source.metadata.kind !== archive.kind) {
+            return yield* repairError('The repair subject kind changed after the archive journal was created.');
+          }
+          const archiveBlocker = archiveSourceBlocker(source);
+          if (archiveBlocker !== undefined) return yield* repairError(archiveBlocker);
+          const lockedPlan = applyContextHealthRepairProposalV1({
+            expectedRevision: proposal.revision,
+            proposal,
+            records: current,
+          });
+          if (lockedPlan.status !== 'applied') {
+            return yield* repairError('Memory content changed while the approved archive repair was starting.');
+          }
+          const content = repairArchiveContent(proposal, source, archive.timestamp);
+          if (memoryContentHash(content) !== archive.contentHash) {
+            return yield* repairError('The approved archive fingerprint no longer matches its repair journal.');
+          }
+          if (existingArchive && memoryContentHash(existingArchive.content) !== archive.contentHash) {
+            return yield* repairError(`Archive destination ${archive.uri} contains different content.`);
+          }
+          const store = yield* ResourceStore;
+          const location = resourceStoreLocation(config);
+          if (!existingArchive) {
+            yield* store.makeDirectory(location, archive.uri.slice(0, archive.uri.lastIndexOf('/')));
+            yield* store.write(location, archive.uri, content, {mode: 'create'});
+          }
+          const [storedArchive] = yield* readMemoryRecordsByUri(config, [archive.uri]);
+          if (!storedArchive || memoryContentHash(storedArchive.content) !== archive.contentHash) {
+            return yield* repairError(`Archive verification failed for ${archive.uri}.`);
+          }
+          yield* forgetResourceWithRetry(config, source.uri, false, source.content, true);
+          if ((yield* readMemoryRecordsByUri(config, [source.uri])).length > 0) {
+            return yield* repairError(`Archive was stored, but repair subject ${source.uri} could not be removed.`);
+          }
+        }),
+      );
     }
-    const updated = after.find(record => record.uri === mutation.subjectUri);
-    if (!updated) return yield* repairError(`Repair did not produce ${mutation.subjectUri}.`);
-    const result = yield* writeMemoryContentWithExpectedHash(
-      config,
-      'threadnote-native',
-      source.uri,
-      updated.content,
-      source.content,
+    const lockedUris = [...proposal.preconditions.map(precondition => precondition.uri), mutation.targetUri];
+    return yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      lockedUris,
+      Effect.gen(function* () {
+        const current = yield* readMemoryRecordsByUri(config, lockedUris);
+        const lockedPlan = applyContextHealthRepairProposalV1({
+          expectedRevision: proposal.revision,
+          proposal,
+          records: current,
+        });
+        if (lockedPlan.status === 'already-applied') return;
+        if (lockedPlan.status !== 'applied') {
+          return yield* repairError('Memory or relation-target state changed while the approved repair was starting.');
+        }
+        const source = current.find(record => record.uri === mutation.subjectUri);
+        const updated = lockedPlan.records.find(record => record.uri === mutation.subjectUri);
+        if (!source || !updated) return yield* repairError(`Repair did not produce ${mutation.subjectUri}.`);
+        const result = yield* writeMemoryContentWithExpectedHash(
+          config,
+          'threadnote-native',
+          source.uri,
+          updated.content,
+          source.content,
+          {alreadyLocked: true},
+        );
+        if (result.isError === true) return yield* repairError(callResultText(result));
+      }),
     );
-    if (result.isError === true) return yield* repairError(callResultText(result));
   });
 }
 
 function recoveredArchiveReceipt(
+  config: RuntimeConfig,
   proposal: ContextHealthRepairProposalV1,
   journal: ContextHealthRepairJournalV1,
   records: readonly MemoryRecord[],
 ): ContextHealthRepairApplyReceiptV1 | undefined {
-  if (proposal.mutation.kind !== 'archive-memory' || journal.subjectBodyHash === undefined) return undefined;
+  if (proposal.mutation.kind !== 'archive-memory' || journal.archive === undefined) return undefined;
+  if (journal.archive.uri !== repairArchiveUri(config, proposal, journal.archive.kind)) return undefined;
   if (records.some(record => record.uri === proposal.mutation.subjectUri)) return undefined;
-  const matches = records.filter(record => {
-    if (
-      record.metadata.archivedFrom !== proposal.mutation.subjectUri ||
-      record.metadata.project !== proposal.project ||
-      !record.body.startsWith(ARCHIVED_BODY_PREFIX)
-    ) {
-      return false;
-    }
-    if (journal.subjectMemoryId !== undefined && record.metadata.memoryId !== journal.subjectMemoryId) return false;
-    return sha256HexSync(record.body.slice(ARCHIVED_BODY_PREFIX.length)) === journal.subjectBodyHash;
-  });
-  if (matches.length !== 1) return undefined;
+  const archive = records.filter(record => record.uri === journal.archive?.uri);
+  if (archive.length !== 1 || memoryContentHash(archive[0]?.content ?? '') !== journal.archive.contentHash)
+    return undefined;
   const subjectPrecondition = proposal.preconditions.find(item => item.uri === proposal.mutation.subjectUri);
   if (!subjectPrecondition) return undefined;
   return {
@@ -282,6 +375,79 @@ function recoveredArchiveReceipt(
     revision: proposal.revision,
     version: 1,
   };
+}
+
+function repairArchiveJournal(
+  config: RuntimeConfig,
+  proposal: ContextHealthRepairProposalV1,
+  source: MemoryRecord,
+  timestamp: string,
+): NonNullable<ContextHealthRepairJournalV1['archive']> {
+  if (proposal.mutation.kind !== 'archive-memory' || !isArchiveRepairableKind(source.metadata.kind)) {
+    throw new Error('Cannot journal a non-archive health repair.');
+  }
+  const content = repairArchiveContent(proposal, source, timestamp);
+  return {
+    contentHash: memoryContentHash(content),
+    kind: source.metadata.kind,
+    timestamp,
+    uri: repairArchiveUri(config, proposal, source.metadata.kind),
+  };
+}
+
+function repairArchiveContent(
+  proposal: ContextHealthRepairProposalV1,
+  source: MemoryRecord,
+  timestamp: string,
+): string {
+  if (!isArchiveRepairableKind(source.metadata.kind)) throw new Error('Cannot archive this memory kind.');
+  return formatMemoryDocument(
+    'MEMORY',
+    memoryArchiveMetadata(source.metadata, {
+      archivedFrom: source.uri,
+      kind: source.metadata.kind,
+      project: proposal.project,
+      sourceAgentClient: 'threadnote',
+      timestamp,
+      topic: source.metadata.topic,
+    }),
+    memoryArchiveBody(source.body),
+  );
+}
+
+function repairArchiveUri(
+  config: RuntimeConfig,
+  proposal: ContextHealthRepairProposalV1,
+  kind: RepairArchiveKind,
+): string {
+  const base = `threadnote://user/${uriSegment(config.user)}/memories`;
+  const project = uriSegment(proposal.project);
+  const directory =
+    kind === 'durable'
+      ? `${base}/durable/archived/${project}`
+      : `${base}/${kind === 'handoff' ? 'handoffs' : 'incidents'}/archived/${project}`;
+  return `${directory}/${proposal.proposalId}-${proposal.revision}.md`;
+}
+
+function memoryContentHash(content: string): string {
+  return sha256HexSync(canonicalMemoryDocumentContent(content));
+}
+
+function isArchiveRepairableKind(kind: MemoryRecord['metadata']['kind']): kind is RepairArchiveKind {
+  return kind === 'durable' || kind === 'handoff' || kind === 'incident';
+}
+
+function archiveSourceBlocker(record: MemoryRecord): string | undefined {
+  if ((record.metadata.citationErrors?.length ?? 0) > 0) {
+    const reasons = [...new Set(record.metadata.citationErrors?.map(error => error.reason) ?? [])].sort().join(', ');
+    return `Cannot archive ${record.uri}: malformed code citation metadata (${reasons}) must be repaired or recaptured first.`;
+  }
+  try {
+    assertMemoryDocumentSchemaWritable(record.content);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : `Memory ${record.uri} uses an unsupported schema.`;
+  }
 }
 
 function mutationSubject(proposal: ContextHealthRepairProposalV1, records: readonly MemoryRecord[]) {
@@ -329,8 +495,8 @@ export function renderContextHealthRepairApply(result: ContextHealthRepairApplyC
   return `Repair ${result.proposalId} ${result.status === 'applied' ? 'applied' : 'was already applied'} at revision ${result.revision}.`;
 }
 
-function repairJournalPath(path: Path.Path, home: string, proposalId: string): string {
-  return path.join(home, 'threadnote', 'context-health-repairs', 'v1', `${proposalId}.json`);
+function repairJournalPath(path: Path.Path, home: string, proposalId: string, revision: string): string {
+  return path.join(home, 'threadnote', 'context-health-repairs', 'v1', `${proposalId}-${revision}.json`);
 }
 
 const readRepairJournal = Effect.fn('memory.contextHealthRepair.readJournal')(function* (path: string) {
@@ -374,7 +540,17 @@ const writeRepairJournal = Effect.fn('memory.contextHealthRepair.writeJournal')(
 function isRepairJournal(value: unknown): value is ContextHealthRepairJournalV1 {
   if (typeof value !== 'object' || value === null) return false;
   const record = value as Record<string, unknown>;
+  const archive = record.archive;
+  const validArchive =
+    archive === undefined ||
+    (typeof archive === 'object' &&
+      archive !== null &&
+      /^(?:durable|handoff|incident)$/u.test(String((archive as Record<string, unknown>).kind)) &&
+      /^[0-9a-f]{64}$/u.test(String((archive as Record<string, unknown>).contentHash)) &&
+      typeof (archive as Record<string, unknown>).uri === 'string' &&
+      isCanonicalIsoTimestamp((archive as Record<string, unknown>).timestamp));
   return (
+    validArchive &&
     record.version === REPAIR_JOURNAL_VERSION &&
     (record.state === 'applying' || record.state === 'applied') &&
     typeof record.proposal === 'object' &&
@@ -382,8 +558,10 @@ function isRepairJournal(value: unknown): value is ContextHealthRepairJournalV1 
   );
 }
 
-function compactableKind(value: string): CompactableMemoryKind | undefined {
-  return value === 'durable' || value === 'handoff' || value === 'incident' ? value : undefined;
+function isCanonicalIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
 }
 
 function repairError(message: string) {

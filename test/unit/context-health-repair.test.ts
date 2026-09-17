@@ -19,6 +19,7 @@ const NOW = '2026-09-17T12:00:00.000Z';
 
 describe('context health repair proposals', () => {
   it('projects exact bounded mutations and leaves evidence inputs unchanged', () => {
+    const missingUri = 'threadnote://user/me/memories/durable/projects/threadnote/missing.md';
     const expired = record('expired', 'Expired memory.', {
       memoryId: 'tn_expired',
       relations: [{type: 'references', uri: 'threadnote://memory/tn_keep'}],
@@ -29,14 +30,14 @@ describe('context health repair proposals', () => {
     const related = record('related', 'Related memory.', {
       memoryId: 'tn_related',
       relations: [
-        {type: 'depends_on', uri: 'threadnote://memory/tn_missing'},
+        {type: 'depends_on', uri: missingUri},
         {type: 'references', uri: 'threadnote://memory/tn_keep'},
       ],
     });
     const report = healthReport([
       finding('validity-expired', 'archive-memory', expired.uri),
       finding('exact-duplicate', 'deduplicate-memory', duplicate.uri, survivor.uri),
-      finding('relation-target-missing', 'repair-relation', related.uri, 'threadnote://memory/tn_missing'),
+      finding('relation-target-missing', 'repair-relation', related.uri, missingUri),
       finding('citation-changed', 'repair-citation', related.uri, `${related.uri}#tncc_changed`),
     ]);
     const records = [expired, duplicate, survivor, related];
@@ -67,18 +68,17 @@ describe('context health repair proposals', () => {
   });
 
   it('applies a relation repair immutably and recognizes its exact postcondition', () => {
+    const missingUri = 'threadnote://user/me/memories/durable/projects/threadnote/missing.md';
     const source = record('source', 'Body is preserved.', {
       memoryId: 'tn_source',
       relations: [
-        {type: 'depends_on', uri: 'threadnote://memory/tn_missing'},
+        {type: 'depends_on', uri: missingUri},
         {type: 'references', uri: 'threadnote://memory/tn_keep'},
       ],
     });
     const otherProject = record('other', 'Other project.', {project: 'other'});
     const proposal = onlyProposal(
-      healthReport([
-        finding('relation-target-missing', 'repair-relation', source.uri, 'threadnote://memory/tn_missing'),
-      ]),
+      healthReport([finding('relation-target-missing', 'repair-relation', source.uri, missingUri)]),
       [source, otherProject],
     );
     const original = structuredClone([source, otherProject]);
@@ -109,6 +109,65 @@ describe('context health repair proposals', () => {
       records: applied.records,
     });
     expect(repeated).toMatchObject({status: 'already-applied'});
+  });
+
+  it('binds direct relation repairs to exact absent or inactive target state', () => {
+    const missingUri = 'threadnote://user/me/memories/durable/projects/threadnote/missing.md';
+    const missingSource = record('missing-source', 'Missing target.', {
+      relations: [{type: 'depends_on', uri: missingUri}],
+    });
+    const missingProposal = onlyProposal(
+      healthReport([finding('relation-target-missing', 'repair-relation', missingSource.uri, missingUri)]),
+      [missingSource],
+    );
+    expect(missingProposal.mutation).toMatchObject({
+      kind: 'remove-relations',
+      targetPrecondition: {state: 'absent'},
+    });
+    const appeared = record('missing', 'Now active.');
+    expect(appeared.uri).toBe(missingUri);
+    expect(
+      applyContextHealthRepairProposalV1({
+        expectedRevision: missingProposal.revision,
+        proposal: missingProposal,
+        records: [missingSource, appeared],
+      }),
+    ).toMatchObject({conflict: {code: 'precondition-failed'}, status: 'conflict'});
+
+    const inactiveUri = 'threadnote://user/me/memories/durable/archived/threadnote/inactive.md';
+    const inactiveSource = record('inactive-source', 'Inactive target.', {
+      relations: [{type: 'references', uri: inactiveUri}],
+    });
+    const inactive = record('inactive', 'Retired.', {status: 'archived'}, inactiveUri);
+    const inactiveProposal = onlyProposal(
+      healthReport([finding('relation-target-inactive', 'repair-relation', inactiveSource.uri, inactiveUri)]),
+      [inactiveSource, inactive],
+    );
+    expect(inactiveProposal.mutation).toMatchObject({
+      kind: 'remove-relations',
+      targetPrecondition: {state: 'inactive'},
+    });
+    const reactivated = record('inactive', 'Retired.', {status: 'active'}, inactiveUri);
+    expect(
+      applyContextHealthRepairProposalV1({
+        expectedRevision: inactiveProposal.revision,
+        proposal: inactiveProposal,
+        records: [inactiveSource, reactivated],
+      }),
+    ).toMatchObject({conflict: {code: 'precondition-failed'}, status: 'conflict'});
+  });
+
+  it('keeps stable identity aliases review-only because their liveness is not one URI CAS', () => {
+    const alias = 'threadnote://memory/tn_missing';
+    const source = record('alias-source', 'Alias target.', {
+      relations: [{type: 'depends_on', uri: alias}],
+    });
+    const proposal = onlyProposal(
+      healthReport([finding('relation-target-missing', 'repair-relation', source.uri, alias)]),
+      [source],
+    );
+    expect(proposal.mutation).toMatchObject({kind: 'review-only', targetUri: alias});
+    expect(proposal.preconditions).toEqual([]);
   });
 
   it('makes archive replay receipt-idempotent and stale snapshots stable conflicts', () => {
@@ -227,6 +286,14 @@ describe('context health repair proposals', () => {
         }),
       ).toMatchObject({status: 'review-required'});
     }
+
+    const personalDuplicate = record('personal-duplicate', 'Shared memory.');
+    const sharedSurvivorProposal = onlyProposal(
+      healthReport([finding('exact-duplicate', 'deduplicate-memory', personalDuplicate.uri, sharedUri)]),
+      [personalDuplicate, shared],
+    );
+    expect(sharedSurvivorProposal.mutation).toMatchObject({kind: 'review-only'});
+    expect(sharedSurvivorProposal.preconditions).toEqual([]);
   });
 
   it('requires manual lifecycle review before archiving preference or smoke memories', () => {
@@ -245,6 +312,29 @@ describe('context health repair proposals', () => {
         expect(proposal.preconditions).toEqual([]);
       }
     }
+  });
+
+  it('keeps unsupported schemas and malformed citation metadata review-only before archival', () => {
+    const base = record('unsafe-archive', 'Do not rewrite blindly.', {validTo: '2026-09-16T00:00:00.000Z'});
+    const unsupported = parseMemoryDocument(
+      base.uri,
+      base.content.replace('unknown_header: preserved', 'schema_version: 999\nunknown_header: preserved'),
+    );
+    const malformedCitation = parseMemoryDocument(
+      base.uri,
+      base.content.replace('unknown_header: preserved', 'code_citation: {not-json}\nunknown_header: preserved'),
+    );
+    if (!unsupported || !malformedCitation) throw new Error('Expected unsafe memories to remain readable.');
+
+    for (const unsafe of [unsupported, malformedCitation]) {
+      const proposal = onlyProposal(healthReport([finding('validity-expired', 'archive-memory', unsafe.uri)]), [
+        unsafe,
+      ]);
+      expect(proposal.mutation).toMatchObject({kind: 'review-only'});
+      expect(proposal.preconditions).toEqual([]);
+    }
+    expect(unsupported.metadata.schemaVersion).toBe(999);
+    expect(malformedCitation.metadata.citationErrors?.length).toBeGreaterThan(0);
   });
 
   it('keeps proposal identity order-independent and revisions content-sensitive', () => {

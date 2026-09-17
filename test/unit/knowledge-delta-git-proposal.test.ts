@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 
+import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
   buildKnowledgeDeltaGitProposalV1,
@@ -9,6 +10,7 @@ import {
   verifyKnowledgeDeltaGitProposalV1,
   type ReviewedSharedMemoryMutationV1,
 } from '../../src/git_proposal/knowledge_delta.js';
+import {createMemoryCodeCitation, formatMemoryCodeCitationLines} from '../../src/memory/code_citation.js';
 import {canonicalMemoryDocumentContent} from '../../src/memory/document.js';
 import type {KnowledgeDeltaItemV1, KnowledgeDeltaV1} from '../../src/memory/knowledge_delta.js';
 
@@ -192,6 +194,84 @@ describe('Knowledge Delta Git proposals', () => {
     ).toThrow(/non-portable reviewed relation/u);
   });
 
+  it.each([
+    ['dirty', citedSource(true, 'remote'), /dirty worktree cannot be shared/u],
+    ['local', citedSource(false, 'local'), /portable remote repository identity/u],
+    [
+      'malformed',
+      approvedSource(1, 'architecture').replace(
+        'relation: references',
+        'code_citation: {not-json}\nrelation: references',
+      ),
+      /malformed code citation metadata/u,
+    ],
+  ] as const)('rejects %s code citations while building and verifying artifacts', (_label, sourceContent, message) => {
+    const delta = knowledgeDelta([item(1, 'architecture')]);
+    expect(() =>
+      buildKnowledgeDeltaGitProposalV1({
+        baseCommit: BASE_COMMIT,
+        delta,
+        mutations: [createMutation(1, 'architecture', sourceContent)],
+        project: 'threadnote',
+      }),
+    ).toThrow(message);
+
+    const built = buildKnowledgeDeltaGitProposalV1({
+      baseCommit: BASE_COMMIT,
+      delta,
+      mutations: [createMutation(1, 'architecture', approvedSource(1, 'architecture'))],
+      project: 'threadnote',
+    });
+    const file = built.proposal.files[0];
+    expect(file).toBeDefined();
+    if (!file) throw new Error('Expected proposal file.');
+    const blockedContent = setCitationHeader(file.content, sourceContent);
+    const forged = resignProposal({
+      ...built.proposal,
+      files: [{...file, content: blockedContent, contentHash: sha256HexSync(blockedContent)}],
+    });
+    expect(() => verifyKnowledgeDeltaGitProposalV1(forged)).toThrow(message);
+  });
+
+  it('rejects replacement relations to either the personal source or adopted target identity', () => {
+    const sourceContent = approvedSource(1, 'architecture', 'Updated contract.', 'tn_personal_source');
+    const targetContent = sharedTarget('architecture', 'Prior contract.', 'tn_shared_target');
+    const mutation: ReviewedSharedMemoryMutationV1 = {
+      ...createMutation(1, 'architecture', sourceContent),
+      expectedTarget: {
+        content: targetContent,
+        contentHash: sha256HexSync(targetContent),
+        state: 'present',
+      },
+      operation: 'replace',
+    };
+    const delta = knowledgeDelta([item(1, 'architecture')]);
+
+    for (const memoryId of ['tn_personal_source', 'tn_shared_target']) {
+      const selfRelated = sourceContent.replace(
+        'threadnote://memory/tn_platform_contract',
+        `threadnote://memory/${memoryId}`,
+      );
+      expect(() =>
+        buildKnowledgeDeltaGitProposalV1({
+          baseCommit: BASE_COMMIT,
+          delta,
+          mutations: [
+            {
+              ...mutation,
+              approval: {
+                ...mutation.approval,
+                expectedSourceContentHash: sha256HexSync(canonicalMemoryDocumentContent(selfRelated)),
+              },
+              sourceContent: selfRelated,
+            },
+          ],
+          project: 'threadnote',
+        }),
+      ).toThrow(/relate to itself/u);
+    }
+  });
+
   it('detects artifact tampering', () => {
     const built = buildKnowledgeDeltaGitProposalV1({
       baseCommit: BASE_COMMIT,
@@ -298,4 +378,48 @@ function sharedTarget(topic: string, body: string, memoryId = `tn_${topic.replac
     '',
     body,
   ].join('\n');
+}
+
+function citedSource(sourceDirty: boolean, repositoryIdentityKind: 'local' | 'remote'): string {
+  const citation = createMemoryCodeCitation({
+    extractorSet: 'native-code-graph-13',
+    fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
+    path: 'src/git_proposal/knowledge_delta.ts',
+    repositoryId: 'b'.repeat(64),
+    repositoryIdentityKind,
+    sourceCommit: 'c'.repeat(40),
+    sourceDirty,
+    sourceSnapshotId: `cgsn_${'d'.repeat(40)}`,
+    target: {kind: 'file'},
+    version: 1,
+  });
+  const citationLine = formatMemoryCodeCitationLines([citation])[0];
+  if (!citationLine) throw new Error('Expected citation line.');
+  return approvedSource(1, 'architecture').replace('relation: references', `${citationLine}\nrelation: references`);
+}
+
+function setCitationHeader(content: string, citedContent: string): string {
+  const citationLine = citedContent.split('\n').find(line => /^\s*code_citation\s*:/u.test(line));
+  if (!citationLine) throw new Error('Expected citation header.');
+  return content.replace('relation: references', `${citationLine}\nrelation: references`);
+}
+
+function resignProposal(
+  proposal: ReturnType<typeof buildKnowledgeDeltaGitProposalV1>['proposal'],
+): ReturnType<typeof buildKnowledgeDeltaGitProposalV1>['proposal'] {
+  const contentSetHash = sha256HexSync(
+    canonicalJson({
+      baseCommit: proposal.base.expectedCommit,
+      expectedHash: proposal.knowledgeDelta.expectedHash,
+      files: proposal.files,
+      project: proposal.project,
+      reviewId: proposal.knowledgeDelta.reviewId,
+      revision: proposal.knowledgeDelta.expectedRevision,
+    }),
+  );
+  const {proposalHash: _proposalHash, ...unsigned} = {
+    ...proposal,
+    branch: {name: `threadnote/knowledge-delta/${proposal.knowledgeDelta.reviewId}-${contentSetHash.slice(0, 12)}`},
+  };
+  return {...unsigned, proposalHash: sha256HexSync(canonicalJson(unsigned))};
 }
