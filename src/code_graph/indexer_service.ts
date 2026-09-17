@@ -171,6 +171,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               () => resources.releasePreparation,
             ),
           );
+        const extractionPreparationGate: CodeGraphIndexResourceGate = effect =>
+          resources.current.pipe(Effect.flatMap(current => (current.legacyBuilder ? effect : preparationGate(effect))));
         const preparedSpoolBudgetGate: CodeGraphPreparedSpoolBudgetGate = (bytes, snapshotId, effect) =>
           withCodeGraphPreparedSpoolBudget(
             {
@@ -193,7 +195,13 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             Effect.provideService(Path.Path, path),
             Effect.provideService(SystemInfo, system),
           );
-        return {legacyBuildAdmission, preparationGate, preparedSpoolBudgetGate, resources} as const;
+        return {
+          extractionPreparationGate,
+          legacyBuildAdmission,
+          preparationGate,
+          preparedSpoolBudgetGate,
+          resources,
+        } as const;
       });
       const enqueueSharedParserBatch = (
         identity: {readonly headCommit: string; readonly repositoryId: string},
@@ -489,6 +497,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           }),
                         onProgress: options.onProgress,
                         parserPool,
+                        preparationGate: buildResources.extractionPreparationGate,
                         persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
                           capacityProtection,
                           fs,
@@ -536,67 +545,63 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           ),
                         );
                       if (Option.isSome(sparseOverlay)) return sparseOverlay.value;
-                      const rawInventory = yield* buildResources
-                        .preparationGate(
-                          Effect.gen(function* () {
-                            const changedPathCount =
-                              inventoryOverlayObservation.changedPaths.length +
-                              inventoryOverlayObservation.deletedPaths.length;
-                            const reusableInventoryBase =
-                              !bypassCachedFacts &&
-                              !bypassReusableInventoryBase &&
-                              !options.force &&
-                              options.incrementalOverlay !== false &&
-                              changedPathCount > 0 &&
-                              changedPathCount <= 200
-                                ? yield* store.reusableCleanBaseForCommit(
-                                    layout.databasePath,
-                                    identity.repositoryId,
-                                    identity.headCommit,
-                                  )
-                                : undefined;
-                            if (reusableInventoryBase !== undefined) {
-                              const targetedCachedFileKeys = yield* cachedFileKeys(
-                                store,
+                      const rawInventory = yield* Effect.gen(function* () {
+                        const changedPathCount =
+                          inventoryOverlayObservation.changedPaths.length +
+                          inventoryOverlayObservation.deletedPaths.length;
+                        const reusableInventoryBase =
+                          !bypassCachedFacts &&
+                          !bypassReusableInventoryBase &&
+                          !options.force &&
+                          options.incrementalOverlay !== false &&
+                          changedPathCount > 0 &&
+                          changedPathCount <= 200
+                            ? yield* store.reusableCleanBaseForCommit(
                                 layout.databasePath,
-                                languagePacks,
-                                options.onProgress,
-                                inventoryOverlayObservation.files,
-                              );
-                              const reusedInventory = yield* inventoryRepositoryFromReusableCleanBase(
-                                identity,
-                                reusableInventoryBase,
-                                {
-                                  ...options,
-                                  cachedCommittedFileKeys: targetedCachedFileKeys,
-                                  includeOpaqueCorpusAssets: ensureVectors,
-                                  languagePacks,
-                                  overlayObservation: inventoryOverlayObservation,
-                                  onContentBatch: cacheCoalescer.onContentBatch,
-                                  onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
-                                },
-                              );
-                              if (Option.isSome(reusedInventory)) return reusedInventory.value;
-                            }
-                            const cachedCommittedFileKeys =
-                              options.force || bypassCachedFacts
-                                ? new Set<string>()
-                                : yield* cachedFileKeys(store, layout.databasePath, languagePacks, options.onProgress);
-                            return yield* inventoryRepository(identity, {
+                                identity.repositoryId,
+                                identity.headCommit,
+                              )
+                            : undefined;
+                        if (reusableInventoryBase !== undefined) {
+                          const targetedCachedFileKeys = yield* cachedFileKeys(
+                            store,
+                            layout.databasePath,
+                            languagePacks,
+                            options.onProgress,
+                            inventoryOverlayObservation.files,
+                          );
+                          const reusedInventory = yield* inventoryRepositoryFromReusableCleanBase(
+                            identity,
+                            reusableInventoryBase,
+                            {
                               ...options,
-                              cachedCommittedFileKeys,
+                              cachedCommittedFileKeys: targetedCachedFileKeys,
                               includeOpaqueCorpusAssets: ensureVectors,
                               languagePacks,
                               overlayObservation: inventoryOverlayObservation,
                               onContentBatch: cacheCoalescer.onContentBatch,
                               onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
-                            });
-                          }),
-                        )
-                        .pipe(
-                          Effect.tap(() => cacheCoalescer.flush),
-                          Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))),
-                        );
+                            },
+                          );
+                          if (Option.isSome(reusedInventory)) return reusedInventory.value;
+                        }
+                        const cachedCommittedFileKeys =
+                          options.force || bypassCachedFacts
+                            ? new Set<string>()
+                            : yield* cachedFileKeys(store, layout.databasePath, languagePacks, options.onProgress);
+                        return yield* inventoryRepository(identity, {
+                          ...options,
+                          cachedCommittedFileKeys,
+                          includeOpaqueCorpusAssets: ensureVectors,
+                          languagePacks,
+                          overlayObservation: inventoryOverlayObservation,
+                          onContentBatch: cacheCoalescer.onContentBatch,
+                          onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
+                        });
+                      }).pipe(
+                        Effect.tap(() => cacheCoalescer.flush),
+                        Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))),
+                      );
                       if (rawInventory.dirty) {
                         const capturedHashes = new Map(
                           inventoryOverlayObservation.files.map(file => [file.path, file.contentHash]),
@@ -1086,7 +1091,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         persistentMaterializationTransactionBatchLimit:
                           options.persistentMaterializationTransactionBatchLimit,
                         persistentOwnerToken,
-                        preparationGate: buildResources.preparationGate,
+                        preparationGate: buildResources.extractionPreparationGate,
                         preparedSpoolBudgetGate: buildResources.preparedSpoolBudgetGate,
                         requestedOverlay,
                         startedAt,
@@ -1377,6 +1382,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           : group => enqueueSharedParserBatch(identity, options.threadnoteHome, group, producer),
                         onProgress: options.onProgress,
                         parserPool,
+                        preparationGate: buildResources.preparationGate,
                         persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
                           capacityProtection,
                           fs,
@@ -1389,20 +1395,16 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         threadnoteHome: options.threadnoteHome,
                         treeSitter,
                       });
-                      const inventory = yield* buildResources
-                        .preparationGate(
-                          inventoryRepository(identity, {
-                            ...options,
-                            cachedCommittedFileKeys,
-                            includeOverlay: false,
-                            languagePacks,
-                            onContentBatch: cacheCoalescer.onContentBatch,
-                          }),
-                        )
-                        .pipe(
-                          Effect.tap(() => cacheCoalescer.flush),
-                          Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))),
-                        );
+                      const inventory = yield* inventoryRepository(identity, {
+                        ...options,
+                        cachedCommittedFileKeys,
+                        includeOverlay: false,
+                        languagePacks,
+                        onContentBatch: cacheCoalescer.onContentBatch,
+                      }).pipe(
+                        Effect.tap(() => cacheCoalescer.flush),
+                        Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))),
+                      );
                       yield* anonymousTelemetry.observeInventory(inventory);
                       yield* anonymousTelemetry.observeExtractedFactBytes(yield* cacheCoalescer.extractedFactBytes);
                       const committedBase = yield* ensureCommittedBase({
