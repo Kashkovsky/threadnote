@@ -127,6 +127,30 @@ describe('buildContextHealthReport', () => {
       {numRuns: 50},
     );
   });
+
+  it('applies URI scoping before the finding limit while retaining cross-record evidence', () => {
+    fc.assert(
+      fc.property(fc.integer({min: 101, max: 180}), unrelatedCount => {
+        const affected = record('threadnote://user/me/memories/durable/projects/threadnote/affected.md', 'same body');
+        const duplicate = record('threadnote://user/me/memories/durable/projects/threadnote/duplicate.md', 'same body');
+        const unrelated = Array.from({length: unrelatedCount}, (_, index) =>
+          record(`threadnote://user/me/memories/durable/projects/threadnote/unrelated-${index}.md`, `${index}`, {
+            validTo: '2026-09-16T00:00:00.000Z',
+          }),
+        );
+        const report = buildContextHealthReport({
+          includeFindingUris: [affected.uri],
+          now,
+          project: 'threadnote',
+          records: [...unrelated, duplicate, affected],
+        });
+
+        expect(report.findings).toEqual([expect.objectContaining({category: 'exact-duplicate'})]);
+        expect(report.omittedFindings).toBe(0);
+      }),
+      {numRuns: 20},
+    );
+  });
 });
 
 function receipt(

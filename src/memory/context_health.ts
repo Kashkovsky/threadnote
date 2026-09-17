@@ -67,6 +67,7 @@ export interface ContextHealthCandidateEvidenceV1 {
 export interface ContextHealthReportInputV1 {
   readonly candidateEvidence?: readonly ContextHealthCandidateEvidenceV1[];
   readonly citationValidations?: readonly ContextBriefMemoryCitationValidationV2[];
+  readonly includeFindingUris?: readonly string[];
   readonly limit?: number;
   readonly now: Date;
   readonly project: string;
@@ -89,6 +90,7 @@ export function buildContextHealthReport(input: ContextHealthReportInputV1): Con
     .filter(record => record.metadata.status === 'active' && record.metadata.project === input.project)
     .sort(compareRecords);
   const recordUris = new Set(records.map(record => record.uri));
+  const includeFindingUris = input.includeFindingUris === undefined ? undefined : new Set(input.includeFindingUris);
   const findings = deduplicateFindings(
     [
       ...validityFindings(records, input.now),
@@ -98,7 +100,7 @@ export function buildContextHealthReport(input: ContextHealthReportInputV1): Con
       ...duplicateFindings(records, input.project, input.now),
       ...candidateFindings(input.candidateEvidence ?? [], input.project),
     ].sort(compareFindings),
-  );
+  ).filter(finding => includeFindingUris === undefined || finding.uris.some(uri => includeFindingUris.has(uri)));
   const limit = findingLimit(input.limit);
   return {
     findings: findings.slice(0, limit),

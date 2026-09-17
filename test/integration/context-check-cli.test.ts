@@ -27,6 +27,38 @@ describe('context check CLI', () => {
     await expect(readFile(join(home, 'data'), 'utf8')).rejects.toThrow();
   });
 
+  it('does not let unrelated project health truncation block an empty diff', async () => {
+    const {home, repository} = await fixture();
+    const directory = join(home, 'data', 'local', 'user', 'local', 'memories', 'durable', 'projects', 'cli-test');
+    await mkdir(directory, {recursive: true});
+    await Promise.all(
+      Array.from({length: 101}, (_, index) =>
+        writeFile(
+          join(directory, `expired-${index}.md`),
+          formatMemoryDocument(
+            'MEMORY',
+            {
+              kind: 'durable',
+              project: 'cli-test',
+              sourceAgentClient: 'test',
+              status: 'active',
+              timestamp: '2026-09-01T00:00:00.000Z',
+              topic: `expired-${index}`,
+              validTo: '2026-09-16T00:00:00.000Z',
+            },
+            `Expired unrelated memory ${index}.`,
+          ),
+        ),
+      ),
+    );
+
+    const health = await runCli(['context', 'health', '--project', 'cli-test', '--json'], home, repository);
+    expect(JSON.parse(health.stdout).omittedFindings).toBe(1);
+    const result = await runCli(['context', 'check', '--project', 'cli-test', '--format', 'json'], home, repository);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({evidenceStatus: 'complete', exitCode: 0, findings: []});
+  });
+
   it('supports the provider-neutral --format selector and rejects conflicting selectors', async () => {
     const {home, repository} = await fixture();
     const json = await runCli(['context', 'check', '--project', 'cli-test', '--format', 'json'], home, repository);

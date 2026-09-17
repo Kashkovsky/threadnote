@@ -10,6 +10,8 @@ import type {MemoryRecord} from '../memory/document.js';
 import type {RuntimeConfig} from '../types.js';
 import {buildContextCheckReport, projectContextCheckReportSarif, type ContextCheckReportV1} from './index.js';
 
+const EMPTY_CONTEXT_CHECK_NOW = new Date(0);
+
 export interface ContextCheckOptions {
   readonly base?: string;
   readonly format?: 'json' | 'sarif' | 'text';
@@ -61,10 +63,19 @@ const checkRepository = Effect.fn('contextCheck.repository')(function* (
       return unavailableReport(project, 'affected-memory-evidence-unavailable');
     }
     const affected = selectAffectedMemories(records, repositoryId, paths, caseMode);
-    const healthReport = yield* collectContextHealth(config, project, records, repoRoot);
+    if (affected.length === 0) {
+      return buildContextCheckReport({
+        healthReport: buildContextHealthReport({now: EMPTY_CONTEXT_CHECK_NOW, project, records: []}),
+        selection: {affectedMemoryUris: [], changedPaths: paths, status: 'available'},
+      });
+    }
+    const affectedMemoryUris = affected.map(record => record.uri);
+    const healthReport = yield* collectContextHealth(config, project, records, repoRoot, {
+      includeFindingUris: affectedMemoryUris,
+    });
     return buildContextCheckReport({
       healthReport,
-      selection: {affectedMemoryUris: affected.map(record => record.uri), changedPaths: paths, status: 'available'},
+      selection: {affectedMemoryUris, changedPaths: paths, status: 'available'},
     });
   }).pipe(Effect.orElseSucceed(() => unavailableReport(project, 'affected-memory-evidence-unavailable')));
 });

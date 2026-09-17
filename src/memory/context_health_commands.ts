@@ -47,18 +47,22 @@ export const collectContextHealth = Effect.fn('memory.contextHealth.collect')(fu
   project: string,
   records: Parameters<typeof buildContextHealthReport>[0]['records'],
   cwd: string,
+  options: {readonly includeFindingUris?: readonly string[]} = {},
 ) {
   const now = yield* DateTime.nowAsDate;
+  const includedUris = options.includeFindingUris === undefined ? undefined : new Set(options.includeFindingUris);
+  const evidenceRecords = includedUris === undefined ? records : records.filter(record => includedUris.has(record.uri));
   const citationValidations = yield* validateContextBriefMemoryCitations(
     config,
     {callerCwd: cwd, kind: 'repository', project},
-    citationCandidates(records),
+    citationCandidates(evidenceRecords),
   );
-  const relationEvidence = yield* relationStatusEvidence(config, records);
+  const relationEvidence = yield* relationStatusEvidence(config, evidenceRecords);
   const candidateEvidence = yield* candidateStatusEvidence(config, project);
   return buildContextHealthReport({
     candidateEvidence,
     citationValidations,
+    includeFindingUris: options.includeFindingUris,
     now,
     project,
     records,
