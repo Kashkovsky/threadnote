@@ -194,7 +194,13 @@ describe('context health and value report CLI', () => {
 
     expect(report.health.opened).toBeGreaterThan(0);
     expect(report.knowledgeDelta.proposed).toBe(review.candidates.length);
-    expect(report.setup).toEqual({availability: 'unavailable', completed: 0, supportedAgentReuse: 0});
+    expect(report.setup).toEqual({
+      availability: 'unavailable',
+      completed: 0,
+      failed: 0,
+      started: 0,
+      supportedAgentReuse: 0,
+    });
     expect(JSON.stringify(report)).not.toContain('value-events');
     expect(JSON.stringify(report)).not.toContain('context-value-report-cli.test.ts');
   });
