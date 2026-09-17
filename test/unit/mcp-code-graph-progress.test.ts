@@ -489,6 +489,19 @@ describe('MCP code graph indexing progress', () => {
       type: 'code-graph-progress',
       version: 1,
     });
+    const admission = {
+      admissionClass: 'background' as const,
+      enqueuedAt: '2026-09-17T12:00:00.000Z',
+      position: 3,
+      size: 4,
+    };
+    expect(compactCodeGraphMcpProgress({phase: 'waiting', reason: 'home-builder-cap', admission})).toEqual({
+      phase: 'waiting',
+      reason: 'home-builder-cap',
+      admission,
+      type: 'code-graph-progress',
+      version: 1,
+    });
   });
 
   it('keeps required stale-storage reclamation progress concise', () => {

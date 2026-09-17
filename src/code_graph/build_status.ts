@@ -11,6 +11,12 @@ import {
 } from './build_status_coordination.js';
 import {codeGraphProgressTimings} from './build_status_timings.js';
 import {
+  accountCodeGraphBuildScheduling,
+  observeCodeGraphBuildAdmission,
+  type CodeGraphBuildScheduling,
+} from './build_status_scheduling.js';
+import type {CodeGraphBuilderAdmissionQueue} from './builder_admission_scheduler.js';
+import {
   CODE_GRAPH_BUILD_HASH_ID as HASH_ID,
   CODE_GRAPH_BUILD_ID as BUILD_ID,
   CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
@@ -175,6 +181,7 @@ export interface CodeGraphBuildStatus {
     };
   };
   readonly schemaVersion: typeof CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION;
+  readonly scheduling?: CodeGraphBuildScheduling;
   readonly state: CodeGraphBuildState;
   readonly subphase?: string;
   readonly timings?: CodeGraphBuildTimings;
@@ -215,6 +222,7 @@ export interface CodeGraphBuildStatusSelection {
 }
 
 export interface CodeGraphBuildReporter {
+  readonly admission: (queue?: CodeGraphBuilderAdmissionQueue) => Effect.Effect<void, never>;
   readonly complete: (summary: CodeGraphIndexSummary) => Effect.Effect<void, never>;
   readonly completeSnapshot: (snapshot: CodeGraphSnapshot) => Effect.Effect<void, never>;
   readonly fail: (cause: unknown) => Effect.Effect<void, never>;
@@ -228,6 +236,7 @@ export interface CodeGraphBuildReporter {
 export type CodeGraphBuildOwnerStatusCorroboration = 'absent' | 'matches' | 'mismatch';
 
 interface ReporterState {
+  readonly accountedAtMilliseconds: number;
   readonly etaTracker: CodeGraphEtaTracker;
   readonly lastPersistedAtMilliseconds: number;
   readonly status: CodeGraphBuildStatus;
@@ -296,6 +305,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
   let writeSequence = 0;
   const reporterHistoryAuthority = {current: undefined as BuildHistoryDirectoryAuthority | undefined};
   const state = yield* Ref.make<ReporterState>({
+    accountedAtMilliseconds: startedAtMilliseconds,
     etaTracker: makeCodeGraphEtaTracker(),
     lastPersistedAtMilliseconds: 0,
     status: {
@@ -317,6 +327,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
       phase: 'registering',
       ...(request ? {request} : {}),
       schemaVersion: CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
+      scheduling: {phaseMilliseconds: {}, waitMilliseconds: {}},
       state: 'running',
       subphase: 'registration',
       worktreeLockHeld: false,
@@ -340,7 +351,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           const now = yield* Clock.currentTimeMillis;
           const current = yield* Ref.get(state);
           const shouldForce = typeof force === 'function' ? force(current) : force;
-          const next = update(current, now);
+          const next = update(accountCodeGraphBuildScheduling(current, now), now);
           yield* Ref.set(state, next);
           if (
             !shouldForce &&
@@ -401,6 +412,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
             symbols: snapshot.symbolCount,
           },
           state: 'completed',
+          scheduling: {...current.status.scheduling, blocker: undefined, resource: undefined},
           subphase: 'ready',
           timings: undefined,
           timestamps: {
@@ -429,6 +441,14 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
     );
 
   return {
+    admission: (queue?: CodeGraphBuilderAdmissionQueue) =>
+      persist(
+        (current, now) => ({
+          ...current,
+          status: observeCodeGraphBuildAdmission(current.status, queue, now),
+        }),
+        current => queue === undefined || current.status.scheduling?.queue === undefined,
+      ),
     complete: summary =>
       complete(
         summary.snapshot,
@@ -457,6 +477,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
               : undefined,
             resolution: undefined,
             state: 'failed',
+            scheduling: {...current.status.scheduling, blocker: undefined, resource: undefined},
             subphase: 'failed',
             timings: undefined,
             timestamps: {
@@ -801,6 +822,7 @@ function observeProgress(
       registration: progressRegistration(progress),
       resolution: progressResolution(current.status.resolution, progress, timestamp),
       state: progress.phase === 'waiting' ? 'queued' : 'running',
+      scheduling: {...current.status.scheduling, blocker: progress.phase === 'waiting' ? progress.reason : undefined},
       subphase: progressSubphase(progress),
       timings: codeGraphProgressTimings(current.status, progress),
       timestamps: {

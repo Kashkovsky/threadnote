@@ -1290,7 +1290,21 @@ export function compactCodeGraphMcpProgress(progress: CodeGraphProgress | undefi
     case 'registering':
       return {...envelope, phase: progress.phase};
     case 'waiting':
-      return {...envelope, phase: progress.phase, ...(progress.reason === undefined ? {} : {reason: progress.reason})};
+      return {
+        ...envelope,
+        phase: progress.phase,
+        ...(progress.reason === undefined ? {} : {reason: progress.reason}),
+        ...(progress.admission === undefined
+          ? {}
+          : {
+              admission: {
+                admissionClass: progress.admission.admissionClass,
+                enqueuedAt: progress.admission.enqueuedAt,
+                position: progress.admission.position,
+                size: progress.admission.size,
+              },
+            }),
+      };
     case 'scanning':
       return {
         ...envelope,

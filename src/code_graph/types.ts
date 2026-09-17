@@ -418,6 +418,7 @@ export type CodeGraphProgress =
         'applying-deltas' | 'building-local-overlay' | 'discovering-shared-base' | 'downloading-checkpoint';
     }
   | {
+      readonly admission?: import('./builder_admission_scheduler.js').CodeGraphBuilderAdmissionQueue;
       readonly phase: 'waiting';
       readonly reason?:
         | 'database-writer'

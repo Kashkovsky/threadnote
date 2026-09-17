@@ -1,5 +1,6 @@
 import {Clock, Context, Crypto, Effect, Exit, FileSystem, Layer, Option, Path, Schema} from 'effect';
 import * as HttpClient from 'effect/unstable/http/HttpClient';
+import {sha256HexSync} from '../crypto/sha256.js';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {getThreadnoteVersion} from '../release/runtime_version.js';
@@ -1026,6 +1027,25 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             const admittedBuild = withCodeGraphBuilderAdmission(
               {
                 admissionClass: codeGraphBuilderAdmissionClass(options, system.environment()),
+                identity: {
+                  checkoutId: initialIdentity.checkoutId,
+                  worktreeId: initialIdentity.worktreeId,
+                  requestKey,
+                  ...(requestedOverlay.fingerprint
+                    ? {desiredOverlayDigest: sha256HexSync(requestedOverlay.fingerprint)}
+                    : {}),
+                },
+                onQueue: queue =>
+                  reporter
+                    .admission(queue)
+                    .pipe(
+                      Effect.andThen(
+                        options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap', admission: queue}) ??
+                          Effect.void,
+                      ),
+                      Effect.ignore,
+                    ),
+                onAdmitted: reporter.admission().pipe(Effect.andThen(reporter.progress(lastActiveProgress))),
                 onWaiting: (options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap'}) ?? Effect.void).pipe(
                   Effect.ignore,
                 ),
@@ -1324,6 +1344,18 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             const lease = yield* withCodeGraphBuilderAdmission(
               {
                 admissionClass: codeGraphBuilderAdmissionClass(options, system.environment()),
+                identity: {checkoutId: initialIdentity.checkoutId, worktreeId: initialIdentity.worktreeId},
+                onQueue: queue =>
+                  reporter
+                    .admission(queue)
+                    .pipe(
+                      Effect.andThen(
+                        options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap', admission: queue}) ??
+                          Effect.void,
+                      ),
+                      Effect.ignore,
+                    ),
+                onAdmitted: reporter.admission().pipe(Effect.andThen(reporter.progress(lastActiveProgress))),
                 onWaiting: (options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap'}) ?? Effect.void).pipe(
                   Effect.ignore,
                 ),
