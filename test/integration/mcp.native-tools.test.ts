@@ -1350,8 +1350,53 @@ describe('Threadnote MCP toolsets', () => {
         expect(structured.canonicalUri).toBeUndefined();
         expect(JSON.stringify(result)).not.toContain(canonicalUri);
 
+        const replacement = await client.callTool(
+          {
+            arguments: {
+              kind: 'durable',
+              project: 'threadnote',
+              replaceUri: alias,
+              sourceAgentClient: 'integration-test',
+              status: 'active',
+              text: 'Identity alias replacement evidence.',
+              topic: 'identity-alias',
+            },
+            name: 'remember_context',
+          },
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(replacement.isError, JSON.stringify(replacement)).not.toBe(true);
+        expect(replacement.structuredContent).toMatchObject({
+          memoryUri: canonicalUri,
+          replacementCleanupPending: false,
+        });
+        await expect(
+          readFile(
+            join(
+              fixture.home,
+              'data',
+              'local',
+              'user',
+              'test-user',
+              'memories',
+              'durable',
+              'projects',
+              'threadnote',
+              'identity-alias.md',
+            ),
+            'utf8',
+          ),
+        ).resolves.toContain('Identity alias replacement evidence.');
+
         await expect(client.readResource({uri: alias})).resolves.toEqual({
-          contents: [{mimeType: 'text/plain; charset=utf-8', text: content, uri: alias}],
+          contents: [
+            expect.objectContaining({
+              mimeType: 'text/plain; charset=utf-8',
+              text: expect.stringContaining('Identity alias replacement evidence.'),
+              uri: alias,
+            }),
+          ],
         });
 
         const missingAlias = 'threadnote://memory/tn_mcp_identity_missing';

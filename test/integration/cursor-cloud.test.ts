@@ -680,6 +680,18 @@ describe('Cursor Cloud integration', () => {
         expect(handoffAliasOutside).toContain('does not resolve inside the authorized active corpus');
         expect(handoffAliasOutside).not.toContain(privateSentinel);
 
+        const durableAliasReplacementOutside = await callError(client, 'remember_context', {
+          kind: 'durable',
+          project: 'threadnote',
+          replaceUri: privateAlias,
+          text: 'A provider-neutral alias must not bypass the bound share.',
+          topic: 'cursor-cloud-alias-replace-outside',
+        });
+        expect(durableAliasReplacementOutside).toContain(
+          'replaceUri must stay within a configured Personal Cursor Cloud share',
+        );
+        expect(durableAliasReplacementOutside).not.toContain(privateSentinel);
+
         const sharedCitationWithoutReadyGraph = await client.callTool({
           arguments: {
             callerCwd: process.cwd(),
@@ -793,7 +805,7 @@ describe('Cursor Cloud integration', () => {
     } finally {
       await rm(fixture.root, {force: true, recursive: true});
     }
-  });
+  }, 60_000);
 });
 
 interface CloudFixture {

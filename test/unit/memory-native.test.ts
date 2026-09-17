@@ -180,6 +180,34 @@ describe('native memory workflow', () => {
         const aliasRead = yield* captureConsole(runRead(config, memoryIdentityAlias(memoryId!), {}));
         expect(aliasRead.output).toContain('QX7 lease recovery');
 
+        const replacement = yield* captureConsole(
+          runRemember(config, {
+            kind: 'durable',
+            project: 'threadnote',
+            replace: memoryIdentityAlias(memoryId!),
+            sourceAgentClient: 'test',
+            text: 'QX7 lease recovery now retries stale ownership claims.',
+            topic: 'lease-recovery',
+          }),
+        );
+        expect(replacement.output).toContain(`Updated existing memory in place: ${uri}`);
+        expect(
+          yield* fs.readFileString(
+            path.join(
+              home,
+              'data',
+              'local',
+              'user',
+              'tester',
+              'memories',
+              'durable',
+              'projects',
+              'threadnote',
+              'lease-recovery.md',
+            ),
+          ),
+        ).toContain('QX7 lease recovery now retries stale ownership claims.');
+
         const recall = yield* captureConsole(
           runRecall(config, {
             inferScope: false,
@@ -249,6 +277,69 @@ describe('native memory workflow', () => {
           type: 'threadnote-memory-read-recovery',
           version: 1,
         });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('preserves a receipt-witnessed identity when replacing an id-less destination by alias', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* ResourceStore;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-replace-receipt-identity-'});
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        yield* fs.writeFileString(config.manifestPath, 'version: 1\nprojects: []\n');
+        const location = {account: config.account, home, user: config.user};
+        const sourceUri = 'threadnote://user/tester/memories/durable/projects/threadnote/receipt-source.md';
+        const targetUri = 'threadnote://user/tester/memories/durable/projects/threadnote/receipt-target.md';
+        const memoryId = 'tn_receipt_replace_identity';
+        const original = formatMemoryDocument(
+          'MEMORY',
+          {
+            kind: 'durable',
+            memoryId,
+            project: 'threadnote',
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'test',
+            status: 'active',
+            timestamp: '2026-09-18T00:00:00.000Z',
+            topic: 'receipt-target',
+          },
+          'Receipt-witnessed replacement source.',
+        );
+        const missingIdentity = original.replace(`memory_id: ${memoryId}\n`, '');
+        yield* store.write(location, sourceUri, original, {mode: 'create'});
+        yield* store.write(location, targetUri, original, {mode: 'create'});
+        yield* recordMemoryRelocation(config, {
+          fromContent: original,
+          fromUri: sourceUri,
+          toContent: original,
+          toUri: targetUri,
+        });
+        yield* store.remove(location, sourceUri);
+        yield* store.write(location, targetUri, missingIdentity, {mode: 'upsert'});
+        yield* loadRecallIndex(config, {forceRefresh: true, includeInactive: false});
+
+        yield* runRemember(config, {
+          kind: 'durable',
+          project: 'threadnote',
+          replace: memoryIdentityAlias(memoryId),
+          sourceAgentClient: 'test',
+          text: 'Receipt-witnessed replacement keeps its stable identity.',
+          topic: 'receipt-target',
+        });
+
+        const updated = yield* store.read(location, targetUri);
+        expect(parseMemoryDocument(targetUri, updated)?.metadata.memoryId).toBe(memoryId);
+        const aliasRead = yield* captureConsole(runRead(config, memoryIdentityAlias(memoryId), {}));
+        expect(aliasRead.output).toContain('Receipt-witnessed replacement keeps its stable identity.');
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

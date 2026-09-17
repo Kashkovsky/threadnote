@@ -6,6 +6,7 @@ export interface StoreMemoryOptions {
   readonly dryRun: boolean;
   readonly deferredCodeAnchor?: DeferredCodeAnchorWriteRequest;
   readonly expectedReplaceContent?: string;
+  readonly expectedReplaceMemoryId?: string;
   readonly expectedReplaceRawContent?: string;
   readonly expectedSourceContent?: readonly {
     readonly allowedUriScopes?: readonly string[];

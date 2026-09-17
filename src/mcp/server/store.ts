@@ -10,6 +10,7 @@ import {
   memoryCodeCitationSharingBlockerMessage,
 } from '../../memory/code_citation_policy.js';
 import {MAX_MEMORY_RELATIONS, MEMORY_RELATION_TYPES, type MemoryMetadata} from '../../memory/document.js';
+import {resolveLocalMemoryReplacementTarget} from '../../memory/replacement_target.js';
 import {resolveAuthoredMemoryRelations} from '../../memory/relations.js';
 import {
   DEFAULT_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
@@ -185,9 +186,14 @@ export function registerStoreTool(
         if (requestedCodeRefs.length > 0 && !callerCwd) {
           return argumentError(`${name} requires absolute callerCwd when codeRefs are provided.`);
         }
+        const replacement =
+          memoryScope === undefined && checkedReplaceUri.value
+            ? yield* resolveLocalMemoryReplacementTarget(config, checkedReplaceUri.value)
+            : undefined;
+        const replaceUri = replacement?.canonicalUri ?? checkedReplaceUri.value;
         const sharedTarget =
           (memoryScope !== undefined && memoryKind === 'durable') ||
-          (checkedReplaceUri.value !== undefined && isInSharedNamespace(config, checkedReplaceUri.value));
+          (replaceUri !== undefined && isInSharedNamespace(config, replaceUri));
         const effectiveCitationPolicy =
           citationPolicy ??
           (requestedCodeRefs.length > 0 && !sharedTarget && metadata.status === 'active' ? 'defer' : 'require-current');
@@ -215,10 +221,11 @@ export function registerStoreTool(
         const workspaceComponent = callerCwd
           ? yield* resolveWorkspaceComponentContext({cwd: callerCwd, includeProcessCwd: false})
           : undefined;
-        const [replaced] = checkedReplaceUri.value
-          ? yield* readMemoryRecordsByUri(config, [checkedReplaceUri.value])
-          : [];
-        const sharedTeam = checkedReplaceUri.value ? sharedTeamNameForUri(config, checkedReplaceUri.value) : undefined;
+        const replaced = replacement?.record;
+        const [remoteReplaced] =
+          replacement === undefined && replaceUri ? yield* readMemoryRecordsByUri(config, [replaceUri]) : [];
+        const replaceTarget = replaced ?? remoteReplaced;
+        const sharedTeam = replaceUri ? sharedTeamNameForUri(config, replaceUri) : undefined;
         const relationScopes = memoryScope
           ? memoryKind === 'durable'
             ? [selectedShare!.root]
@@ -230,8 +237,8 @@ export function registerStoreTool(
             ];
         const authoredRelations = yield* resolveAuthoredMemoryRelations(config, relations ?? [], {
           allowedUriScopes: relationScopes,
-          sourceMemoryId: replaced?.metadata.memoryId,
-          sourceUri: checkedReplaceUri.value,
+          sourceMemoryId: replaceTarget?.metadata.memoryId,
+          sourceUri: replaceUri,
         });
         const scopedMetadata = {
           ...metadata,
@@ -240,7 +247,8 @@ export function registerStoreTool(
           ...(commonCitationSourceCommit(codeCitations) === undefined
             ? {}
             : {sourceCommit: commonCitationSourceCommit(codeCitations)}),
-          workspaceScope: replaced ? replaced.metadata.workspaceScope : workspaceComponent?.scope,
+          memoryId: replacement?.memoryId ?? replaceTarget?.metadata.memoryId,
+          workspaceScope: replaceTarget ? replaceTarget.metadata.workspaceScope : workspaceComponent?.scope,
         } satisfies MemoryMetadata;
         if (memoryScope && memoryKind === 'durable') {
           const citationBlocker = memoryCodeCitationSharingBlocker(scopedMetadata);
@@ -253,16 +261,16 @@ export function registerStoreTool(
             bodyText: checkedText.value,
             expectedSourceContent: authoredRelations.targets,
             metadata: scopedMetadata,
-            replaceUri: checkedReplaceUri.value,
+            replaceUri,
           });
           return withClearedMemoryRelationReceipt(
-            withClearedCodeCitationReceipt(result, replaced?.metadata.codeCitations?.length, codeCitations.length),
-            replaced?.metadata.relations?.length,
+            withClearedCodeCitationReceipt(result, replaceTarget?.metadata.codeCitations?.length, codeCitations.length),
+            replaceTarget?.metadata.relations?.length,
             authoredRelations.relations?.length ?? 0,
           );
         }
         const enrichedMetadata =
-          memoryScope || (checkedReplaceUri.value && isInSharedNamespace(config, checkedReplaceUri.value))
+          memoryScope || (replaceUri && isInSharedNamespace(config, replaceUri))
             ? scopedMetadata
             : yield* enrichMemoryMetadataWithConfiguredLocalAi(config, scopedMetadata, checkedText.value).pipe(
                 Effect.catch(error =>
@@ -274,9 +282,11 @@ export function registerStoreTool(
         const result = yield* writeDurableMemory(config, {
           bodyText: checkedText.value,
           deferredCodeAnchor,
+          expectedReplaceContent: replacement?.record?.content,
+          expectedReplaceMemoryId: replacement?.memoryId,
           expectedSourceContent: authoredRelations.targets,
           metadata: enrichedMetadata,
-          replaceUri: checkedReplaceUri.value,
+          replaceUri,
         });
         const projectedResult =
           memoryScope && memoryKind === 'handoff'
@@ -295,14 +305,14 @@ export function registerStoreTool(
             : result;
         const relationReceiptResult = withClearedMemoryRelationReceipt(
           projectedResult,
-          replaced?.metadata.relations?.length,
+          replaceTarget?.metadata.relations?.length,
           authoredRelations.relations?.length ?? 0,
         );
         return deferredCodeAnchor
           ? withDeferredCodeAnchorWriteReceipt(relationReceiptResult, deferredCodeAnchor)
           : withClearedCodeCitationReceipt(
               relationReceiptResult,
-              replaced?.metadata.codeCitations?.length,
+              replaceTarget?.metadata.codeCitations?.length,
               codeCitations.length,
             );
       }).pipe(Effect.flatMap(withStaleVersionNotice));
