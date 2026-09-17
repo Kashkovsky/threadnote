@@ -18,7 +18,7 @@ import {
   selectReadySnapshotById,
   selectCurrentLexicalReadySnapshotById,
   selectReadySnapshotForCommit,
-  selectLatestReadySnapshotForRepository,
+  selectRecentReadySnapshotsForRepository,
   selectReusableCleanBase,
   selectReusableOverlayBase,
   selectReusableReexports,
@@ -142,7 +142,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'readySnapshotById'
   | 'currentLexicalReadySnapshotById'
   | 'readySnapshotForCommit'
-  | 'latestReadySnapshotForRepository'
+  | 'recentReadySnapshotsForRepository'
   | 'reusableBaseReceipt'
   | 'reusableFoldForwardBase'
   | 'snapshotPackProvenance'
@@ -753,14 +753,14 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         ),
         Effect.mapError(cause => storeError('load ready code graph snapshot for commit', cause)),
       ),
-    latestReadySnapshotForRepository: (databasePath, repositoryId) =>
+    recentReadySnapshotsForRepository: (databasePath, repositoryId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
           exists
-            ? useReadOnlyDatabase(databasePath, selectLatestReadySnapshotForRepository(repositoryId))
-            : succeedUndefined,
+            ? useReadOnlyDatabase(databasePath, selectRecentReadySnapshotsForRepository(repositoryId))
+            : Effect.succeed([]),
         ),
-        Effect.mapError(cause => storeError('load latest ready code graph snapshot for repository', cause)),
+        Effect.mapError(cause => storeError('load recent ready code graph snapshots for repository', cause)),
       ),
     reusableBaseReceipt: (databasePath, snapshotId, options) =>
       fs.exists(databasePath).pipe(

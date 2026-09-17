@@ -549,10 +549,10 @@ export interface CodeGraphStoreShape {
     commit: string,
     extractorSet?: string,
   ) => Effect.Effect<CodeGraphSnapshot | undefined, CodeGraphStoreFailure>;
-  readonly latestReadySnapshotForRepository: (
+  readonly recentReadySnapshotsForRepository: (
     databasePath: string,
     repositoryId: string,
-  ) => Effect.Effect<CodeGraphSnapshot | undefined, CodeGraphStoreFailure>;
+  ) => Effect.Effect<readonly CodeGraphSnapshot[], CodeGraphStoreFailure>;
   readonly reusableBaseReceipt: (
     databasePath: string,
     snapshotId: string,

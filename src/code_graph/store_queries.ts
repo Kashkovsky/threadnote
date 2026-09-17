@@ -139,15 +139,14 @@ const selectReadySnapshotForCommit = Effect.fn('codeGraph.selectReadySnapshotFor
   return rows[0] ? snapshotFromRow(rows[0]) : undefined;
 });
 
-const selectLatestReadySnapshotForRepository = Effect.fn('codeGraph.selectLatestReadySnapshotForRepository')(function* (
-  repositoryId: string,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  yield* configureConnection(sql);
-  if (!(yield* tableExists(sql, 'snapshots')) || !(yield* tableExists(sql, 'lexical_storage_formats'))) {
-    return undefined;
-  }
-  const rows = yield* sql<SnapshotRow>`
+const selectRecentReadySnapshotsForRepository = Effect.fn('codeGraph.selectRecentReadySnapshotsForRepository')(
+  function* (repositoryId: string) {
+    const sql = yield* SqlClient.SqlClient;
+    yield* configureConnection(sql);
+    if (!(yield* tableExists(sql, 'snapshots')) || !(yield* tableExists(sql, 'lexical_storage_formats'))) {
+      return [];
+    }
+    const rows = yield* sql<SnapshotRow>`
     SELECT *
     FROM snapshots
     WHERE repository_id = ${repositoryId}
@@ -159,10 +158,11 @@ const selectLatestReadySnapshotForRepository = Effect.fn('codeGraph.selectLatest
           AND lexical.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
       )
     ORDER BY completed_at DESC, id
-    LIMIT 1
+    LIMIT 8
   `;
-  return rows[0] ? snapshotFromRow(rows[0]) : undefined;
-});
+    return rows.map(snapshotFromRow);
+  },
+);
 
 const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(function* (
   repositoryId: string,
@@ -1618,7 +1618,7 @@ export {
   selectReadySnapshotById,
   selectCurrentLexicalReadySnapshotById,
   selectReadySnapshotForCommit,
-  selectLatestReadySnapshotForRepository,
+  selectRecentReadySnapshotsForRepository,
   selectReusableCleanBase,
   selectReusableOverlayBase,
   selectReusableReexports,

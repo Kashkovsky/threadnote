@@ -6,14 +6,13 @@ import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {it as effectIt} from '@effect/vitest';
 import {describe, expect} from 'vitest';
-import {CodeGraphDiskCapacityPressureError} from '../../src/code_graph/disk_capacity.js';
 import {extractorSetIdentityFromPackProvenance} from '../../src/code_graph/indexer.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
-import {CodeGraphQueryService} from '../../src/code_graph/query.js';
+import {CodeGraphQueryService, observationFromCodeGraphStatus} from '../../src/code_graph/query.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import type {CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/types.js';
+import {CodeGraphStoreError, type CodeGraphSnapshot, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -23,6 +22,9 @@ import {
 } from '../../src/code_graph/admission_freshness.js';
 
 const fixturePackProvenance = BUILTIN_LANGUAGE_PACK_REGISTRY.activePackProvenance(['main.ts']);
+const incompatiblePackProvenance = fixturePackProvenance.map((pack, index) =>
+  index === 0 ? {...pack, cacheIdentity: 'f'.repeat(64)} : pack,
+);
 
 describe('shared ready view attachment locking', () => {
   effectIt.effect('borrows ready evidence without observing the worktree while its builder holds the target lock', () =>
@@ -149,7 +151,7 @@ describe('shared ready view attachment locking', () => {
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
-  effectIt.effect('protects shared-ready promotion and retries the exact candidate after capacity returns', () =>
+  effectIt.effect('borrows compatible shared-ready evidence when pre-write capacity protection pauses promotion', () =>
     Effect.gen(function* () {
       const root = yield* temporaryRepository();
       const repositoryRoot = join(root, 'repository');
@@ -172,18 +174,30 @@ describe('shared ready view attachment locking', () => {
       const before = yield* graph.statusForIdentity(threadnoteHome, identity);
       let promotionProbes = 0;
 
-      const paused = yield* graph
-        .attachSharedReadySnapshot(threadnoteHome, identity, before, {
-          diskCapacityAvailableBytes: (_target, boundary) =>
-            Effect.sync(() => {
-              if (boundary.operation === 'promote ready code graph snapshot') promotionProbes += 1;
-              return 0;
-            }),
-        })
-        .pipe(Effect.flip);
+      const strict = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before, {
+        diskCapacityAvailableBytes: (_target, boundary) =>
+          Effect.sync(() => {
+            if (boundary.operation === 'promote ready code graph snapshot') promotionProbes += 1;
+            return 0;
+          }),
+      });
       const pointerWhilePaused = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+      const borrowed = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before, {
+        allowBorrowedStale: true,
+        diskCapacityAvailableBytes: (_target, boundary) =>
+          Effect.sync(() => {
+            if (boundary.operation === 'promote ready code graph snapshot') promotionProbes += 1;
+            return 0;
+          }),
+      });
 
-      expect(paused).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
+      expect(strict.readySnapshot).toBeUndefined();
+      expect(strict.stale).toBe(true);
+      expect(borrowed).toMatchObject({
+        freshness: 'stale',
+        readySnapshot: {id: snapshot.id, worktreeId: identity.worktreeId},
+        stale: true,
+      });
       expect(promotionProbes).toBeGreaterThan(0);
       expect(pointerWhilePaused).toBeUndefined();
 
@@ -193,6 +207,152 @@ describe('shared ready view attachment locking', () => {
       const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
       expect(attached.readySnapshot?.id).toBe(snapshot.id);
       expect(pointer?.id).toBe(snapshot.id);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('surfaces an unclassified shared-ready promotion failure', () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryRepository();
+      const repositoryRoot = join(root, 'repository');
+      const peerRoot = join(root, 'unknown-failure-peer');
+      const threadnoteHome = join(root, 'threadnote-home');
+      const path = yield* Path.Path;
+      const graph = yield* CodeGraphQueryService;
+      const store = yield* CodeGraphStore;
+      const sourceIdentity = yield* resolveRepositoryIdentity(repositoryRoot);
+      yield* Effect.sync(() => git(repositoryRoot, ['worktree', 'add', '-b', 'unknown-failure-peer', peerRoot]));
+      const peerIdentity = yield* resolveRepositoryIdentity(peerRoot);
+      const layout = codeGraphLayout(path, threadnoteHome, sourceIdentity.checkoutId, sourceIdentity.worktreeId);
+      const snapshot = readySnapshot(sourceIdentity);
+      yield* store.activate(layout.databasePath, sourceIdentity, snapshot, [], [], [], fixturePackProvenance);
+      yield* recordCodeGraphSnapshotAdmission(
+        layout,
+        snapshot,
+        yield* observeCodeGraphAdmissionEnvironment(sourceIdentity),
+        BUILTIN_LANGUAGE_PACK_REGISTRY,
+        false,
+      );
+      yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
+      const before = yield* graph.statusForIdentity(threadnoteHome, peerIdentity);
+      const injected = CodeGraphStoreError.of('unclassified promotion failure');
+      const mutableStore = store as {-readonly [Key in keyof typeof store]: (typeof store)[Key]};
+      const promote = store.promote;
+      const failure = yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          mutableStore.promote = () => Effect.fail(injected);
+        }),
+        () =>
+          graph
+            .attachSharedReadySnapshot(threadnoteHome, peerIdentity, before, {allowBorrowedStale: true})
+            .pipe(Effect.flip),
+        () =>
+          Effect.sync(() => {
+            mutableStore.promote = promote;
+          }),
+      );
+      expect(failure).toMatchObject({code: 'unknown', operation: 'code graph storage', recovery: 'diagnose'});
+      expect(yield* store.readySnapshot(layout.databasePath, peerIdentity.worktreeId)).toBeUndefined();
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('never borrows a repository-ready snapshot with an incompatible runtime contract', () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryRepository();
+      const repositoryRoot = join(root, 'repository');
+      const peerRoot = join(root, 'peer');
+      const threadnoteHome = join(root, 'threadnote-home');
+      const path = yield* Path.Path;
+      const graph = yield* CodeGraphQueryService;
+      const store = yield* CodeGraphStore;
+      const sourceIdentity = yield* resolveRepositoryIdentity(repositoryRoot);
+      yield* Effect.sync(() => git(repositoryRoot, ['worktree', 'add', '-b', 'incompatible-runtime-peer', peerRoot]));
+      const peerIdentity = yield* resolveRepositoryIdentity(peerRoot);
+      const layout = codeGraphLayout(path, threadnoteHome, sourceIdentity.checkoutId, sourceIdentity.worktreeId);
+      const snapshot = {
+        ...readySnapshot(peerIdentity),
+        id: 'incompatible-active-pointer',
+      };
+      yield* store.activate(layout.databasePath, peerIdentity, snapshot, [], [], [], fixturePackProvenance);
+      yield* store.promote(layout.databasePath, peerIdentity, snapshot.id);
+      const mutableStore = store as {-readonly [Key in keyof typeof store]: (typeof store)[Key]};
+      const snapshotPackProvenance = store.snapshotPackProvenance;
+      const {attached, before} = yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          mutableStore.snapshotPackProvenance = (databasePath, snapshotId) =>
+            snapshotId === snapshot.id
+              ? Effect.succeed(incompatiblePackProvenance)
+              : snapshotPackProvenance(databasePath, snapshotId);
+        }),
+        () =>
+          Effect.gen(function* () {
+            const before = yield* graph.statusForIdentity(threadnoteHome, peerIdentity, {requestMaintenance: false});
+            const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, peerIdentity, before, {
+              allowBorrowedStale: true,
+              requestMaintenance: false,
+            });
+            return {attached, before};
+          }),
+        () =>
+          Effect.sync(() => {
+            mutableStore.snapshotPackProvenance = snapshotPackProvenance;
+          }),
+      );
+
+      expect(before.readySnapshot?.id).toBe(snapshot.id);
+      expect(attached.readySnapshot).toBeUndefined();
+      expect(observationFromCodeGraphStatus(attached)?.borrowedSnapshotId).toBeUndefined();
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('skips an incompatible active pointer and borrows an older compatible repository snapshot', () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryRepository();
+      const repositoryRoot = join(root, 'repository');
+      const peerRoot = join(root, 'peer');
+      const threadnoteHome = join(root, 'threadnote-home');
+      const path = yield* Path.Path;
+      const graph = yield* CodeGraphQueryService;
+      const store = yield* CodeGraphStore;
+      const sourceIdentity = yield* resolveRepositoryIdentity(repositoryRoot);
+      yield* Effect.sync(() => git(repositoryRoot, ['worktree', 'add', '-b', 'compatible-runtime-peer', peerRoot]));
+      const peerIdentity = yield* resolveRepositoryIdentity(peerRoot);
+      const layout = codeGraphLayout(path, threadnoteHome, sourceIdentity.checkoutId, sourceIdentity.worktreeId);
+      const compatible = {...readySnapshot(sourceIdentity), id: 'older-compatible-runtime'};
+      const incompatible = {
+        ...readySnapshot(peerIdentity),
+        completedAt: '2026-08-09T00:00:00.000Z',
+        id: 'newer-incompatible-runtime',
+      };
+      yield* store.activate(layout.databasePath, sourceIdentity, compatible, [], [], [], fixturePackProvenance);
+      yield* store.activate(layout.databasePath, peerIdentity, incompatible, [], [], [], fixturePackProvenance);
+      yield* store.promote(layout.databasePath, peerIdentity, incompatible.id);
+      const mutableStore = store as {-readonly [Key in keyof typeof store]: (typeof store)[Key]};
+      const snapshotPackProvenance = store.snapshotPackProvenance;
+      const {attached, before} = yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          mutableStore.snapshotPackProvenance = (databasePath, snapshotId) =>
+            snapshotId === incompatible.id
+              ? Effect.succeed(incompatiblePackProvenance)
+              : snapshotPackProvenance(databasePath, snapshotId);
+        }),
+        () =>
+          Effect.gen(function* () {
+            const before = yield* graph.statusForIdentity(threadnoteHome, peerIdentity, {requestMaintenance: false});
+            const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, peerIdentity, before, {
+              allowBorrowedStale: true,
+              requestMaintenance: false,
+            });
+            return {attached, before};
+          }),
+        () =>
+          Effect.sync(() => {
+            mutableStore.snapshotPackProvenance = snapshotPackProvenance;
+          }),
+      );
+
+      expect(before.readySnapshot?.id).toBe(incompatible.id);
+      expect(attached.readySnapshot?.id).toBe(compatible.id);
+      expect(observationFromCodeGraphStatus(attached)?.borrowedSnapshotId).toBe(compatible.id);
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
