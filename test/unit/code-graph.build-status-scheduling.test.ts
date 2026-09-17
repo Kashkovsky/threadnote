@@ -14,6 +14,7 @@ import {
   accumulateCodeGraphBuildScheduling,
   CODE_GRAPH_BUILD_PHASES,
   CODE_GRAPH_BUILD_WAIT_REASONS,
+  observeCodeGraphBuildAdmission,
   parseCodeGraphBuildScheduling,
 } from '../../src/code_graph/build_status_scheduling.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
@@ -28,6 +29,17 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 const testLayer = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
 
 describe('bounded persisted build scheduling', () => {
+  it('records the first home admission timestamp without overwriting it on later scoped admissions', () => {
+    const status = {
+      phase: 'waiting',
+      scheduling: {},
+      state: 'running',
+    } as CodeGraphBuildStatus;
+    const first = observeCodeGraphBuildAdmission(status, undefined, Date.parse('2026-09-17T12:00:00.000Z'));
+    const later = observeCodeGraphBuildAdmission(first, undefined, Date.parse('2026-09-17T12:01:00.000Z'));
+    expect(later.scheduling?.admittedAt).toBe('2026-09-17T12:00:00.000Z');
+  });
+
   effectIt.effect('retains queue and cumulative phase/wait durations through completion and JSON projection', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -157,5 +169,14 @@ describe('bounded persisted build scheduling', () => {
       ).toBeUndefined();
     expect(parseCodeGraphBuildScheduling({waitMilliseconds: {'/private/source.ts': 10}})).toBeUndefined();
     expect(parseCodeGraphBuildScheduling({blocker: '/private/source.ts'})).toBeUndefined();
+    for (const resource of [
+      'checkout-writer',
+      'home-builder-slot',
+      'home-preparation-slot',
+      'prepared-spool-budget',
+    ] as const) {
+      expect(parseCodeGraphBuildScheduling({resource})).toEqual({resource});
+    }
+    expect(parseCodeGraphBuildScheduling({resource: '/private/source.ts'})).toBeUndefined();
   });
 });

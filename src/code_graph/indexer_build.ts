@@ -4,8 +4,10 @@ import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {withThreadnoteProcessActivity} from '../process/diagnostics.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
+import type {CodeGraphBuildResourceCoordinator} from './build_resources.js';
 import {canonicalCodeGraphMonikers} from './cross_repository/monikers.js';
 import {isCodeGraphCapacityPause} from './disk_capacity.js';
+import {coordinateCodeGraphBuild} from './indexer_build_coordination.js';
 import type {CodeGraphEmbeddingIndexShape, CodeGraphEmbeddingStatus} from './embedding.js';
 import {finalCodeGraphFactBatches, serializeBoundedCodeGraphFact} from './fact_budget.js';
 import {
@@ -55,7 +57,6 @@ import {
   uniqueById,
   verifyIndexInput,
   withIncrementalMaterializationStorageTelemetry,
-  type MaterializationStorageTelemetry,
 } from './indexer_materialization.js';
 import {type PendingMaterializationBatch, secondaryIndexRestorationReporter} from './indexer_materialization_batch.js';
 import {verifyCommittedIndexInput} from './indexer_input_verification.js';
@@ -81,11 +82,14 @@ import {
 } from './indexer_snapshot_reuse.js';
 import type {
   CodeGraphIndexOptions,
+  CodeGraphBuildAndActivateInput,
   CodeGraphSourceVerification,
   CommittedBaseResult,
   DirectPersistentCapacityProtection,
   IncrementalOverlayAssessment,
   IncrementalOverlayPreassessment,
+  CodeGraphIndexResourceGate,
+  CodeGraphPreparedSpoolBudgetGate,
   ReusableCleanSnapshotAttempt,
 } from './indexer_types.js';
 import {preferredIncrementalBaseCommitGroups} from './incremental_base_selection.js';
@@ -110,7 +114,6 @@ import {
   materializedShardRepositorySemanticEnvelope,
   shardDonorIds,
   type CodeGraphDirectPersistentCapacityProtector,
-  type CodeGraphLanguagePackProvenance,
   type CodeGraphMaterializationSpoolContext,
   type CodeGraphRetiredSnapshotCleanupProgress,
   type CodeGraphReusableCleanBase,
@@ -178,13 +181,20 @@ export function writerSessionOptions(
   layout: CodeGraphLayout,
   options: Pick<CodeGraphIndexOptions, 'onProgress' | 'onSqliteWriterConfigured' | 'sqliteWriterTuning'>,
   resumeProgress: () => Effect.Effect<void, unknown>,
+  resources?: CodeGraphBuildResourceCoordinator,
 ) {
   return {
     cleanupCompletedBuildRows: true,
     ...(options.onSqliteWriterConfigured ? {onSqliteWriterConfigured: options.onSqliteWriterConfigured} : {}),
     onWriterContention: () =>
-      (options.onProgress?.({phase: 'waiting', reason: 'database-writer'}) ?? Effect.void).pipe(Effect.ignore),
-    onWriterAcquired: () => resumeProgress().pipe(Effect.ignore),
+      (resources?.assertWriterMayWait ?? Effect.void).pipe(
+        Effect.orDie,
+        Effect.andThen(options.onProgress?.({phase: 'waiting', reason: 'database-writer'}) ?? Effect.void),
+        Effect.ignore,
+      ),
+    onWriterAcquired: () =>
+      (resources?.acquireWriter ?? Effect.void).pipe(Effect.orDie, Effect.andThen(resumeProgress()), Effect.ignore),
+    onWriterReleased: () => (resources?.releaseWriter ?? Effect.void).pipe(Effect.orDie),
     ...(options.sqliteWriterTuning ? {sqliteWriterTuning: options.sqliteWriterTuning} : {}),
     writerLockPath: layout.databaseWriteLockPath,
   } as const;
@@ -249,10 +259,13 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
   readonly identity: RepositoryIdentity;
   readonly inventory: CodeGraphInventory;
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+  readonly legacyBuildAdmission?: CodeGraphIndexResourceGate;
   readonly layout: CodeGraphLayout;
   readonly logicalSnapshotId: string;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
   readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
+  readonly preparationGate?: CodeGraphIndexResourceGate;
+  readonly preparedSpoolBudgetGate?: CodeGraphPreparedSpoolBudgetGate;
   readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
@@ -359,27 +372,11 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
         owner: input.buildOwner,
       });
       return yield* buildAndActivate({
+        ...input,
         activatePointer: true,
         building,
-        capacityProtection: input.capacityProtection,
-        embedding: input.embedding,
-        ensureVectors: input.ensureVectors,
-        existing: input.existing,
-        force: input.force,
-        sourceVerification: input.sourceVerification,
-        fs: input.fs,
-        identity: input.identity,
         incrementalAssessment: cleanFallbackAssessment,
-        inventory: input.inventory,
-        languagePacks: input.languagePacks,
-        layout: input.layout,
-        onProgress: input.onProgress,
-        persistentMaterializationTransactionBatchLimit: input.persistentMaterializationTransactionBatchLimit,
         persistentOwnerToken: ownerToken,
-        requestedOverlay: input.requestedOverlay,
-        startedAt: input.startedAt,
-        store: input.store,
-        threadnoteHome: input.threadnoteHome,
       }).pipe(
         Effect.onInterrupt(() =>
           settleInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id, ownerToken),
@@ -883,9 +880,12 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
   readonly identity: RepositoryIdentity;
   readonly inventory: CodeGraphInventory;
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+  readonly legacyBuildAdmission?: CodeGraphIndexResourceGate;
   readonly layout: CodeGraphLayout;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
   readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
+  readonly preparationGate?: CodeGraphIndexResourceGate;
+  readonly preparedSpoolBudgetGate?: CodeGraphPreparedSpoolBudgetGate;
   readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
@@ -1025,50 +1025,26 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
     diagnostics: summary.diagnostics,
     leaseToken: Option.none(),
     snapshot: summary.snapshot,
-    // Clean builds now materialize directly into a durable `building`
-    // snapshot. Dirty overlays reuse the ready persisted base instead of a
+    // Clean builds materialize into `building`; dirty overlays reuse the ready persisted base instead of a
     // connection-private full staging graph.
     stagingReusable: false,
     summary,
   } satisfies CommittedBaseResult;
 });
 
-export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (input: {
-  readonly activatePointer: boolean;
-  readonly building: CodeGraphSnapshot;
-  readonly capacityProtection: DirectPersistentCapacityProtection;
-  readonly committedBase?: CommittedBaseResult;
-  readonly existing?: CodeGraphSnapshot;
-  readonly embedding: CodeGraphEmbeddingIndexShape;
-  readonly ensureVectors: boolean;
-  readonly force: boolean;
-  readonly sourceVerification?: CodeGraphSourceVerification;
-  readonly fs: FileSystem.FileSystem;
-  readonly identity: RepositoryIdentity;
-  readonly inventory: CodeGraphInventory;
-  readonly incrementalAssessment?: IncrementalOverlayAssessment;
-  readonly incrementalMaterializationStorageTelemetry?: MaterializationStorageTelemetry;
-  readonly incrementalOverlayEnabled?: boolean;
-  readonly incrementalPrepared?: boolean;
-  readonly languagePacks: CodeGraphLanguagePackRegistryShape;
-  readonly layout: CodeGraphLayout;
-  readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
-  readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
-  readonly persistentOwnerToken?: string;
-  readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
-  readonly sparseProjection?: {
-    readonly packProvenance: readonly CodeGraphLanguagePackProvenance[];
-    readonly totalFiles: number;
-  };
-  readonly startedAt: number;
-  readonly store: CodeGraphStoreShape;
-  readonly threadnoteHome: string;
-  readonly workspace?: CodeGraphWorkspace;
-}) {
+const buildAndActivateInternal = Effect.fn('codeGraph.buildAndActivate')(function* (
+  input: CodeGraphBuildAndActivateInput,
+) {
+  const splitPreparation =
+    input.persistentOwnerToken !== undefined &&
+    input.incrementalPrepared !== true &&
+    input.incrementalAssessment?.mode !== 'eligible';
+  const runPreparation = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    splitPreparation && input.preparationGate ? input.preparationGate(effect) : effect;
   const workspace =
     input.workspace ??
     input.inventory.workspace ??
-    (yield* input.languagePacks.discoverWorkspace(input.inventory.files));
+    (yield* runPreparation(input.languagePacks.discoverWorkspace(input.inventory.files)));
   const directPersistentMaterialization = input.persistentOwnerToken !== undefined;
   const materializationSpoolStoragePath = directPersistentMaterialization
     ? codeGraphMaterializationSpoolPath(yield* Path.Path, input.layout, input.building.id)
@@ -1393,7 +1369,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         const groupByIndex = new Map(group.map(batch => [batch.batchIndex, batch]));
         const transactionStartedAt = yield* Clock.currentTimeMillis;
         if (directPersistentMaterialization) {
-          yield* input.store.stageActivationFactBatches(
+          const append = input.store.stageActivationFactBatches(
             input.layout.databasePath,
             group.map(batch => ({
               batchIndex: batch.batchIndex,
@@ -1408,6 +1384,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
             persistentCapacityGuard,
             materializationSpoolContext,
           );
+          yield* input.preparationGate ? input.preparationGate(append) : append;
         } else {
           for (const batch of group) {
             yield* input.store.stageActivationFacts(
@@ -1506,7 +1483,9 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         materializedShards.facts.size === files.length &&
         materializedShards.materializedShardIdsByPath?.size === files.length;
       const fallbackFiles = materializedShardBatchComplete ? [] : files;
-      const cached = yield* loadCachedFacts(input.store, input.layout.databasePath, fallbackFiles, input.languagePacks);
+      const cached = yield* runPreparation(
+        loadCachedFacts(input.store, input.layout.databasePath, fallbackFiles, input.languagePacks),
+      );
       const materializedShardCacheBatchPlan = codeGraphMaterializedShardCacheBatchPlan(
         materializedShardCacheWriteAdmission,
         materializedShardBatchComplete,
@@ -1559,9 +1538,15 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           ? cached.facts
           : yield* input.sourceVerification.materializeFacts({facts: cached.facts, files: fallbackFiles});
       let flushShardCacheAfterAttribution = false;
-      const attributedFallbackFacts = materializationSubphases.measure('attributionCompute', () =>
-        attributeFacts(
-          fallbackFiles.map(file => input.languagePacks.postprocessFile(file, materializationFacts.get(file.path)!)),
+      const attributedFallbackFacts = yield* runPreparation(
+        Effect.sync(() =>
+          materializationSubphases.measure('attributionCompute', () =>
+            attributeFacts(
+              fallbackFiles.map(file =>
+                input.languagePacks.postprocessFile(file, materializationFacts.get(file.path)!),
+              ),
+            ),
+          ),
         ),
       );
       replayMetrics = addMaterializationReplayMetrics(replayMetrics, {
@@ -1625,7 +1610,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       stageMilliseconds.attributing = attributionMilliseconds;
       if (flushShardCacheAfterAttribution) yield* shardWrites.flushCaches();
       const finalBatchPreparationStartedAt = performance.now();
-      const finalBatches = finalCodeGraphFactBatches(facts);
+      const finalBatches = yield* runPreparation(Effect.sync(() => finalCodeGraphFactBatches(facts)));
       materializationSubphases.add('factBatchPreparation', performance.now() - finalBatchPreparationStartedAt);
       batchesTotal += Math.max(0, finalBatches.length - 1);
       if (extractionDiagnostics.length < 100) {
@@ -1722,6 +1707,16 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     yield* shardWrites.flushAssociations();
     batchesTotal = persistentBatchCursor;
     if (directPersistentMaterialization) {
+      const preparedSpool =
+        materializationSpoolContext && input.preparationGate
+          ? yield* input.store.preparePersistentMaterializationSpool(
+              input.layout.databasePath,
+              persistentBatchCursor,
+              persistentCapacityGuard,
+              materializationSpoolContext,
+              input.preparationGate,
+            )
+          : undefined;
       yield* input.store.finalizePersistentMaterializationPlan(
         input.layout.databasePath,
         persistentBatchCursor,
@@ -1738,6 +1733,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           total: totalFiles,
         }),
         materializationSpoolContext,
+        preparedSpool,
       );
       yield* refreshStorageFiles(true);
     }
@@ -1994,3 +1990,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     snapshot: activatedReady,
   } satisfies CodeGraphIndexSummary;
 });
+
+export function buildAndActivate(input: CodeGraphBuildAndActivateInput) {
+  return coordinateCodeGraphBuild(input, buildAndActivateInternal);
+}
