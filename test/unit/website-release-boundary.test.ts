@@ -650,6 +650,7 @@ describe('website and standalone release boundary', () => {
       ['performance/index.html', '/performance/', 'og.png'],
       ['performance/graphify/index.html', '/performance/graphify/', 'og.png'],
       ['docs/index.html', '/docs/', 'og.png'],
+      ['agents/index.html', '/agents/', 'og.png'],
       ['whats-new/index.html', '/whats-new/', 'og.png'],
       ['pro-tips/index.html', '/pro-tips/', 'og.png'],
       ['manager-demo/index.html', '/manager-demo/', 'og.png'],
