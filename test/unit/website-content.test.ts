@@ -780,6 +780,7 @@ The body remains ordinary **Markdown**.
         'local-ai',
         'sharing-setup',
         'graph-operations',
+        'graph-readiness',
         'graph-analysis',
         'graph-corpus-and-exports',
         'graph-monorepos',

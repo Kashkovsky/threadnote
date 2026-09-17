@@ -345,7 +345,12 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    experiment blocker to investigate; do not weaken the binding. This verifier is deliberately absent from the
    release-publishing workflow.
 
-4. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
+4. Run the Stage 3 code-graph dogfood gate across three linked worktrees and two MCP hosts. Retain evidence that a
+   blocked writer still permits stale query/node/neighbors/explain discovery, while path and impact remain strict;
+   verify shared opaque `cgdq_` tokens, latest-demand convergence, process-kill recovery, and a privacy scan. This gate
+   records observations and bounded retry guidance, not unverified latency claims. The release is not ready until the
+   continuity contract, crash recovery, and strict-current boundaries are all exercised.
+5. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
    graph correctness and performance. The tag starts one separate exact-tag production-large capacity classification
    and, on an admitted runner, one `code-graph-production-large-n1` observation automatically. When the hosted runner
    lacks the governed 120 GiB floor but has at least 20 GiB, it must instead complete the separately governed
@@ -353,16 +358,16 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    a passing fallback does not claim full 73,000-file attainment. Use a separately governed capable environment when
    full-shape evidence is needed. Do not dispatch a duplicate hosted run for a tag; the event SHA must match the
    exact tagged checkout for governed release evidence.
-5. Confirm immutable releases are enabled, the Apple signing secrets below are configured, the protected-main ruleset
+6. Confirm immutable releases are enabled, the Apple signing secrets below are configured, the protected-main ruleset
    still requires signed linear reviewed merges, and an active `v*` tag ruleset forbids tag updates and deletion. The
    workflow can compare the pushed tag, exact checkout, protected-main ancestry, and remote tag peel; repository tag
    protection is what closes the remaining check-to-publication movement window.
-6. Verify that HEAD is the exact reviewed release commit, create the version tag matching both `package.json` and the
+7. Verify that HEAD is the exact reviewed release commit, create the version tag matching both `package.json` and the
    release-notes filename (for example `v4.0.1`) on that commit, and push it immediately. Do not merge or push another
    main-branch commit between the final check and the tag. The publish workflow binds its checkout, every platform
    build, and the reusable publisher to that tag-event Git object and rechecks that the remote tag still peels to the
    same protected-main commit before creating the immutable release.
-7. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
+8. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
    six enabled archives are verified while its bounded production-large observation continues independently.
 
 The main-branch website build hides prepared release notes until a published immutable GitHub Release exists for the

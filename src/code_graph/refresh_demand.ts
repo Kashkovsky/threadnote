@@ -22,6 +22,7 @@ import {
   validCodeGraphRefreshDemand,
   type CodeGraphRefreshDemandState,
 } from './refresh_demand_scheduler.js';
+import type {CodeGraphRefreshContinuity} from './watcher.js';
 
 const MAXIMUM_BYTES = 8 * 1024;
 const LOCK_STALE_MILLISECONDS = 15_000;
@@ -263,6 +264,49 @@ export const recoverCodeGraphBackgroundDemand = Effect.fn('codeGraph.refreshDema
     }),
   );
 });
+
+/**
+ * Reads the bounded sidecar under the same lock used for reconciliation and
+ * projects only opaque, non-capability continuity.  Scheduling and liveness
+ * remain owned by the watcher/build-status paths.
+ */
+export const observeCodeGraphBackgroundDemand = Effect.fn('codeGraph.refreshDemand.observe')(function* (
+  identity: CodeGraphRefreshDemandIdentity,
+) {
+  const now = yield* Clock.currentTimeMillis;
+  return yield* mutate(identity, state =>
+    Effect.sync(() => ({state, value: codeGraphRefreshDemandContinuity(state, now)})),
+  );
+});
+
+export function codeGraphRefreshDemandContinuity(
+  state: CodeGraphRefreshDemandState,
+  now: number,
+): CodeGraphRefreshContinuity {
+  const active = state.active;
+  const desired = state.desired;
+  if (active) {
+    return {
+      type: 'code-graph-refresh-continuity',
+      version: 1,
+      state: 'active',
+      currentTargetToken: active.targetToken,
+      ...(desired === undefined ? {} : {latestDesiredToken: desired.targetToken}),
+    };
+  }
+  if (desired) {
+    const retryAfterMilliseconds = desired.retry === undefined ? undefined : Math.max(0, desired.retry.notBefore - now);
+    return {
+      type: 'code-graph-refresh-continuity',
+      version: 1,
+      state: retryAfterMilliseconds === undefined || retryAfterMilliseconds === 0 ? 'queued' : 'deferred',
+      queueToken: desired.targetToken,
+      latestDesiredToken: desired.targetToken,
+      ...(retryAfterMilliseconds === undefined ? {} : {retryAfterMilliseconds}),
+    };
+  }
+  return {type: 'code-graph-refresh-continuity', version: 1, state: 'idle'};
+}
 
 export function codeGraphRefreshDemandFromEnvironment(environment: NodeJS.ProcessEnv): string | undefined {
   const token = environment.THREADNOTE_CODE_GRAPH_REFRESH_DEMAND_TOKEN;

@@ -10,6 +10,7 @@ import {
   codeGraphInspectionAllowsStaleReady,
   codeGraphInspectionObservesWorktree,
   codeGraphInspectionObservation,
+  codeGraphInspectionRequestsBackgroundRefresh,
   codeGraphInspectionStartsRefresh,
   codeGraphMcpAnalysisBudget,
   codeGraphMcpAnalysisLimits,
@@ -91,6 +92,18 @@ describe('MCP code graph indexing progress', () => {
         ]),
       ),
     ).toEqual({explain: true, impact: false, neighbors: true, node: true, path: false, query: true});
+  });
+
+  it('requests durable background refresh only for compatible stale ready evidence', () => {
+    for (const operation of ['query', 'node', 'neighbors', 'explain', 'path', 'impact'] as const) {
+      expect(codeGraphInspectionRequestsBackgroundRefresh({readySnapshot: {id: 'ready'}, stale: true}, operation)).toBe(
+        codeGraphInspectionAllowsStaleReady(operation),
+      );
+      expect(codeGraphInspectionRequestsBackgroundRefresh({stale: true}, operation)).toBe(false);
+      expect(
+        codeGraphInspectionRequestsBackgroundRefresh({readySnapshot: {id: 'ready'}, stale: false}, operation),
+      ).toBe(false);
+    }
   });
 
   fcProp(
@@ -261,14 +274,41 @@ describe('MCP code graph indexing progress', () => {
     expect(codeGraphResultWithRefreshContinuity(continued, indexingStatus(60_000))).toBe(continued);
   });
 
-  it('labels stale ready evidence when background refresh is intentionally suppressed', () => {
+  it('labels stale ready evidence with bounded background-discovery guidance', () => {
     const result = {...verboseCodeGraphResult(), freshness: 'stale' as const, warnings: []};
     const continued = codeGraphResultWithRefreshContinuity(result, undefined);
 
     expect(continued.warnings).toEqual([
-      'Serving the existing stale ready snapshot without starting a background rebuild. Run `threadnote graph index`, or use `path` or `impact`, when current graph evidence is required.',
+      'Serving the existing stale ready snapshot while background refresh discovery is pending; continue bounded discovery and use `path` or `impact` when current graph evidence is required.',
     ]);
   });
+
+  fcProp(
+    it,
+    'keeps optional refresh continuity deterministic, budgeted, and text-dual equivalent',
+    {
+      state: FC.constantFrom('active' as const, 'queued' as const, 'deferred' as const, 'idle' as const),
+      budgetTokens: FC.integer({min: 300, max: 1_500}),
+    },
+    ({state, budgetTokens}) => {
+      const refresh = {
+        type: 'code-graph-refresh-continuity' as const,
+        version: 1 as const,
+        state,
+        ...(state === 'idle' ? {} : {queueToken: `cgdq_${'a'.repeat(32)}`}),
+        ...(state === 'deferred' ? {retryAfterMilliseconds: 1_000} : {}),
+      };
+      const result = verboseCodeGraphResult();
+      const first = codeGraphMcpResponse(result, budgetTokens, refresh);
+      const second = codeGraphMcpResponse(result, budgetTokens, refresh);
+      expect(first.structuredContent).toEqual(second.structuredContent);
+      expect(first.structuredContent.refresh).toEqual(refresh);
+      const text = formatCodeGraphMcpResponse(first, 'text');
+      expect(JSON.parse((text.content[0] as {readonly text: string}).text)).toEqual(first.structuredContent);
+      expect(measureAgentToolResponse(first).totalBytes).toBeLessThanOrEqual(budgetTokens * 4);
+    },
+    {fastCheck: {numRuns: 50}},
+  );
 
   it('keeps path, impact, and whole-graph analysis strict when refresh is deferred', () => {
     const deferred = deferredStatus('permission');

@@ -779,6 +779,7 @@ export {
   codeGraphInspectionAllowsStaleReady,
   codeGraphInspectionObservesWorktree,
   codeGraphInspectionObservation,
+  codeGraphInspectionRequestsBackgroundRefresh,
   codeGraphInspectionStartsRefresh,
   codeGraphMcpAnalysisBudget,
   codeGraphMcpAnalysisLimits,

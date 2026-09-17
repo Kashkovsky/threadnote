@@ -153,6 +153,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
         refreshOptions.push(options);
         return input.refresh;
       }),
+    request: () => Effect.die('Unexpected graph request.'),
     status: () =>
       Effect.sync(() => {
         watcherStatusCalls += 1;

@@ -12,7 +12,10 @@ then round-trip a stable `cgs_` or `cgr_` ID through `node`, `neighbors`, or `pa
 and `analyze_code_graph` for repository-wide structure. Follow graph evidence with exact path or literal search.
 
 The graph belongs only to the current ephemeral checkout. Named Worksets are unavailable. If indexing is in progress,
-continue safe work and retry after the returned delay. Skip the graph only for a known exact path or symbol, remote
-evidence without a checkout, or visual/binary evidence; use it if scope expands. Memory citations are provenance, not
-proof that current code is unchanged.
+continue bounded discovery with compatible stale/deferred cards and verify exact literals in source. Retry only before
+strict current or relationship claims, or when no usable cards survive; active, queued, and deferred continuity is not a
+reason to poll repeatedly. Skip the graph only for a known exact path or symbol, remote evidence without a checkout,
+or visual/binary evidence; use it if scope expands. Memory citations are provenance, not proof that current code is
+unchanged. Personal Cursor Cloud has no Worksets and must not claim deferred private anchors; cited writes remain
+subject to the available strict memory workflow.
 <!-- END THREADNOTE USER INSTRUCTIONS -->

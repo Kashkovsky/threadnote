@@ -322,8 +322,10 @@ reads and hashing. Generic JSON/JSONC at or above 256 KiB is also excluded, whil
 schema, and configuration inputs remain eligible below their separate 1 MiB safety cap.
 
 A large cold MCP inspection can return `state: "indexing"` with measured phase progress, an optional phase-scoped
-estimate, and adaptive retry timing. Continue useful targeted text or path investigation while it builds, then retry
-the same `inspect_code_graph` call before making relationship-aware graph claims. There is no repository-size admission
+estimate, and adaptive retry timing. When a compatible ready snapshot exists, query, node, neighbors, and explain may
+return stale cards while continuity is `active`, `queued`, or `deferred`; continue bounded discovery and verify exact
+literals in source. Retry only before strict current or relationship claims, or when no usable cards survive—do not
+tight-poll. Path, impact, analyze_code_graph, and exact-current citations remain strict. There is no repository-size admission
 limit and no daemon to start. Nested Maven, Gradle, SwiftPM, and Xcode scopes are detected statically. Dynamic build
 logic and ambiguous dependencies remain syntactic rather than being guessed. Bazel workspaces, packages, targets,
 loads, and labels are also detected statically from `WORKSPACE*`, `MODULE.bazel`, `BUILD*`, `.bzl`, `.axl`, and

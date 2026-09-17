@@ -419,6 +419,7 @@ function registeredTelemetryHarness(tracer: Tracer.Tracer, onWatcherEnsure: () =
       retainedStatuses: 0,
     }),
     refresh: () => Effect.succeed(false),
+    request: () => Effect.die('Unexpected graph request.'),
     status: () => Effect.succeedNone,
     watch: () => Effect.die('Unexpected graph watch.'),
   });

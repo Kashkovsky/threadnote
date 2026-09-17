@@ -10,6 +10,7 @@ import {
   CodeGraphRefreshRetryDeferred,
   codeGraphWatcherSnapshotStale,
   driveCodeGraphBackgroundDemand,
+  handoffCodeGraphPreparedDemand,
   makeCodeGraphWatcher,
   prewarmCandidatesFromRefOutput,
   type CodeGraphWatchOptions,
@@ -108,6 +109,151 @@ function makeDemandDriverHarness(input: {
 }
 
 describe('CodeGraphWatcher', () => {
+  effectIt.effect('consumes a prepared claim with its exact preflight target before reobserving', () =>
+    Effect.gen(function* () {
+      const oldTarget = {requestKey: demandKey('a')};
+      const changedTarget = {requestKey: demandKey('b')};
+      const registration = registerCodeGraphRefreshDemand(
+        emptyCodeGraphRefreshDemand(demandCheckoutId, demandWorktreeId),
+        {now: 1, targetKey: oldTarget.requestKey, token: `cgdq_${'1'.repeat(32)}`},
+      );
+      const observed = yield* Ref.make(0);
+      const ran = yield* Ref.make<string | undefined>(undefined);
+      yield* driveCodeGraphBackgroundDemand({
+        complete: () => Effect.succeed(emptyCodeGraphRefreshDemand(demandCheckoutId, demandWorktreeId)),
+        defer: () => Effect.succeed(emptyCodeGraphRefreshDemand(demandCheckoutId, demandWorktreeId)),
+        fail: () => Effect.succeed(emptyCodeGraphRefreshDemand(demandCheckoutId, demandWorktreeId)),
+        isSuperseded: () => false,
+        observe: Ref.update(observed, count => count + 1).pipe(Effect.as(changedTarget)),
+        onRefreshed: () => Effect.void,
+        prepared: {registration, target: oldTarget},
+        recover: () => Effect.void,
+        register: () => Effect.die('prepared claim must not re-register against a changed observation'),
+        run: target => Ref.set(ran, target.requestKey).pipe(Effect.as({edges: 1, symbols: 1})),
+      });
+      expect(yield* Ref.get(ran)).toBe(oldTarget.requestKey);
+      expect(yield* Ref.get(observed)).toBe(0);
+    }),
+  );
+
+  effectIt.effect('queues a trailing iteration for a newly claimed request while a local loop unwinds', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstStarted = yield* Deferred.make<void>();
+        const releaseFirst = yield* Deferred.make<void>();
+        const secondRan = yield* Deferred.make<void>();
+        const runs = yield* Ref.make(0);
+        const watcher = yield* makeCodeGraphWatcher(
+          () => Effect.never,
+          () =>
+            Ref.updateAndGet(runs, count => count + 1).pipe(
+              Effect.flatMap(count =>
+                count === 1
+                  ? Deferred.succeed(firstStarted, undefined).pipe(Effect.andThen(Deferred.await(releaseFirst)))
+                  : Deferred.succeed(secondRan, undefined),
+              ),
+            ),
+        );
+        yield* watcher.refresh({...options, admissionClass: 'background'});
+        yield* Deferred.await(firstStarted);
+        yield* watcher.refresh({
+          ...options,
+          admissionClass: 'background',
+          refreshDemandPrepared: {
+            registration: {
+              state: emptyCodeGraphRefreshDemand(demandCheckoutId, demandWorktreeId),
+              target: {
+                attachmentCount: 1,
+                claimStartedAt: 1,
+                phase: 'claimed',
+                requestedAt: 1,
+                targetKey: demandKey('c'),
+                targetToken: `cgdq_${'2'.repeat(32)}`,
+                updatedAt: 1,
+              },
+              type: 'claimed',
+            },
+            target: {} as never,
+          },
+        });
+        yield* Deferred.succeed(releaseFirst, undefined);
+        yield* Deferred.await(secondRan);
+        expect(yield* Ref.get(runs)).toBe(2);
+      }),
+    ),
+  );
+
+  effectIt.effect('runs a prepared claim before a later ordinary background refresh without losing either', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstStarted = yield* Deferred.make<void>();
+        const releaseFirst = yield* Deferred.make<void>();
+        const ordinaryCompleted = yield* Deferred.make<void>();
+        const runs = yield* Ref.make<string[]>([]);
+        const prepared = {
+          registration: {
+            state: emptyCodeGraphRefreshDemand(demandCheckoutId, demandWorktreeId),
+            target: {
+              attachmentCount: 1,
+              claimStartedAt: 1,
+              phase: 'claimed' as const,
+              requestedAt: 1,
+              targetKey: demandKey('e'),
+              targetToken: `cgdq_${'3'.repeat(32)}`,
+              updatedAt: 1,
+            },
+            type: 'claimed' as const,
+          },
+          target: {} as never,
+        };
+        const watcher = yield* makeCodeGraphWatcher(
+          () => Effect.never,
+          options =>
+            Ref.updateAndGet(runs, entries => [
+              ...entries,
+              options.refreshDemandPrepared === undefined
+                ? entries.length === 0
+                  ? 'predecessor'
+                  : 'ordinary'
+                : 'prepared',
+            ]).pipe(
+              Effect.flatMap(entries =>
+                entries.length === 1
+                  ? Deferred.succeed(firstStarted, undefined).pipe(Effect.andThen(Deferred.await(releaseFirst)))
+                  : entries.at(-1) === 'ordinary'
+                    ? Deferred.succeed(ordinaryCompleted, undefined)
+                    : Effect.void,
+              ),
+            ),
+        );
+        yield* watcher.refresh({...options, admissionClass: 'background'});
+        yield* Deferred.await(firstStarted);
+        yield* watcher.refresh({...options, admissionClass: 'background', refreshDemandPrepared: prepared});
+        yield* watcher.refresh({...options, admissionClass: 'background'});
+        yield* Deferred.succeed(releaseFirst, undefined);
+        yield* Deferred.await(ordinaryCompleted);
+        expect(yield* Ref.get(runs)).toEqual(['predecessor', 'prepared', 'ordinary']);
+      }),
+    ),
+  );
+
+  effectIt.effect('defers the exact persisted claim if scheduled-driver handoff fails', () =>
+    Effect.gen(function* () {
+      const deferred = yield* Ref.make<string | undefined>(undefined);
+      const receipt = {
+        requestState: 'started' as const,
+        refresh: {state: 'active' as const, type: 'code-graph-refresh-continuity' as const, version: 1 as const},
+      };
+      const result = yield* handoffCodeGraphPreparedDemand({
+        defer: Ref.set(deferred, `cgdq_${'d'.repeat(32)}`),
+        receipt,
+        schedule: Effect.fail(TestError.make({message: 'deterministic scheduling failure'})),
+      }).pipe(Effect.exit);
+      expect(result._tag).toBe('Failure');
+      expect(yield* Ref.get(deferred)).toBe(`cgdq_${'d'.repeat(32)}`);
+    }),
+  );
+
   effectIt.effect('wakes a deferred background target at its persisted retry deadline', () =>
     Effect.scoped(
       Effect.gen(function* () {
