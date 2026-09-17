@@ -1,5 +1,19 @@
 # 4.0 home migration
 
+## Memory schema v5
+
+Threadnote 5 adds optional `owner` and `review_after` maintenance metadata to memory documents. `owner` is an opaque
+person or team label; `review_after` is an ISO calendar date used by context health. These fields do not alter memory
+authority, lifecycle, relations, or code-citation meaning.
+
+Older v4 documents remain readable. The v4-to-v5 migration is deterministic and only upgrades the schema header; it
+never invents an owner or review date. A document without either field remains valid after migration. Downgrading to a
+release that does not understand schema v5 requires preserving the original v4 copy and following that release's
+documented migration path; do not hand-edit a canonical shared record to bypass schema validation.
+
+Review overdue or expired records with `threadnote context health --project <name>` before deciding whether to replace,
+archive, or retain them. Health is a read-only planner and does not silently change records.
+
 Threadnote 4 owns `~/.threadnote`. The legacy 3.x home is input to a one-time, non-destructive migration and is not a
 runtime dependency.
 

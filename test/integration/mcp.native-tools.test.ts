@@ -3422,6 +3422,73 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
+  it('includes the current bounded KnowledgeDeltaV1 in review and decision results', async () => {
+    await withMcpClient(
+      async client => {
+        const review = await client.callTool(
+          {
+            arguments: {
+              decisions: ['Keep the review projection compatible with candidate application.'],
+              evidence: ['test/integration/mcp.native-tools.test.ts'],
+              outcome: 'Projected the reviewed closeout.',
+              project: 'threadnote',
+              sourceAgentClient: 'codex',
+              sourceSessionId: 'knowledge-delta-session',
+              task: 'Project a knowledge delta',
+              topic: 'knowledge-delta-projection',
+            },
+            name: 'review_session_context',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(review.isError, JSON.stringify(review)).not.toBe(true);
+        const reviewStructured = review.structuredContent as {
+          readonly knowledgeDelta?: {
+            readonly items?: readonly {readonly candidateId?: string; readonly type?: string}[];
+            readonly reviewId?: string;
+            readonly revision?: number;
+            readonly type?: string;
+            readonly version?: number;
+          };
+        };
+        expect(reviewStructured.knowledgeDelta).toMatchObject({
+          items: [expect.objectContaining({type: 'decision-or-invariant'})],
+          revision: 1,
+          type: 'knowledge-delta',
+          version: 1,
+        });
+        const delta = reviewStructured.knowledgeDelta;
+        const candidateId = delta?.items?.[0]?.candidateId;
+        expect(candidateId).toBeDefined();
+
+        const deferred = await client.callTool(
+          {
+            arguments: {
+              action: 'defer',
+              candidateId,
+              reviewId: delta?.reviewId,
+              revision: delta?.revision,
+            },
+            name: 'apply_memory_candidates',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(deferred.isError, JSON.stringify(deferred)).not.toBe(true);
+        expect(deferred.structuredContent).toMatchObject({
+          knowledgeDelta: {
+            items: [expect.objectContaining({candidateId, state: 'deferred'})],
+            revision: 2,
+            type: 'knowledge-delta',
+            version: 1,
+          },
+        });
+      },
+      {toolset: 'core'},
+    );
+  });
+
   it('writes an approved candidate only with explicit approval and the current revision', async () => {
     await withMcpClient(
       async client => {
@@ -3446,17 +3513,39 @@ describe('Threadnote MCP toolsets', () => {
           }),
         ).resolves.toContain('approved=true');
 
-        const applied = await callText(client, 'apply_memory_candidates', {
-          action: 'approve',
-          approved: true,
-          candidateId,
-          reviewId,
-          revision: 1,
-        });
+        const editedText =
+          '## Decisions\n- Use a stable candidate review identifier as canonical approved candidates guidance.';
+        const appliedResult = await client.callTool(
+          {
+            arguments: {
+              action: 'approve',
+              approved: true,
+              candidateId,
+              editedText,
+              reviewId,
+              revision: 1,
+            },
+            name: 'apply_memory_candidates',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        const applied = (appliedResult.content as TextContent[]).map(item => item.text).join('\n');
 
+        expect(appliedResult.isError, applied).not.toBe(true);
         expect(applied).toContain(
           'Stored memory: threadnote://user/test-user/memories/durable/projects/threadnote/approved-candidates.md',
         );
+        expect(appliedResult.structuredContent).toMatchObject({
+          knowledgeDelta: {
+            items: [
+              expect.objectContaining({
+                candidateId,
+                mutationPreview: expect.objectContaining({bodyText: editedText}),
+              }),
+            ],
+          },
+        });
 
         const approvedUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/approved-candidates.md';
         const unreviewedUri =

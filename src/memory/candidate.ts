@@ -33,6 +33,7 @@ export interface SessionCloseoutInput {
 
 export interface MemoryCandidate {
   readonly applyApprovedAt?: string;
+  readonly applyBodyText?: string;
   readonly applyContentHash?: string;
   readonly applyOperation?: CandidateApplyOperation;
   readonly applyReplaceUri?: string;
@@ -191,6 +192,7 @@ export function candidateReviewWithApplying(
   review: CandidateReview,
   candidateId: string,
   apply: {
+    readonly bodyText: string;
     readonly contentHash: string;
     readonly operation: CandidateApplyOperation;
     readonly replaceUri?: string;
@@ -206,6 +208,7 @@ export function candidateReviewWithApplying(
           ? {
               ...candidate,
               applyApprovedAt: at,
+              applyBodyText: apply.bodyText,
               applyContentHash: apply.contentHash,
               applyOperation: apply.operation,
               applyReplaceUri: apply.replaceUri,
@@ -385,6 +388,35 @@ export const loadCandidateReview = Effect.fn('candidate.loadReview')(function* (
   });
   yield* syncCandidateAudit(agentContextHome, review.auditEvents);
   return review;
+});
+
+/** Read the bounded private review set for maintenance reporting without mutating retention state. */
+export const listCandidateReviews = Effect.fn('candidate.listReviews')(function* (agentContextHome: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const directory = pathService.join(agentContextHome, 'threadnote', 'candidates', 'v1', 'reviews');
+  const entries = yield* fs.readDirectory(directory).pipe(Effect.option);
+  if (entries._tag === 'None') return [];
+  const reviews = yield* Effect.forEach(
+    entries.value
+      .filter(name => name.endsWith('.json') && !name.startsWith('.'))
+      .sort()
+      .slice(-MAX_CANDIDATE_REVIEWS),
+    name =>
+      Effect.gen(function* () {
+        const raw = yield* fs.readFileString(pathService.join(directory, name));
+        return yield* Effect.try({
+          try: () => parseCandidateReview(JSON.parse(raw)),
+          catch: () => undefined,
+        }).pipe(Effect.orElseSucceed(() => undefined));
+      }),
+    {concurrency: MEMORY_READ_CONCURRENCY},
+  );
+  return reviews
+    .filter((review): review is CandidateReview => review !== undefined)
+    .sort(
+      (left, right) => left.createdAt.localeCompare(right.createdAt) || left.reviewId.localeCompare(right.reviewId),
+    );
 });
 
 export const appendCandidateAudit = Effect.fn('candidate.appendAudit')(function* (

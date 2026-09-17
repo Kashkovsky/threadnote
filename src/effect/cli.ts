@@ -1,3 +1,12 @@
+import {
+  makeCompactCommand,
+  makeContextBriefCommand,
+  makeContextHealthCommand,
+  makeContextCheckCommand,
+  makeValueReportCommand,
+  makeProcedureVerifyCommand,
+  makeProcedureStatusCommand,
+} from './workflow_cli.js';
 import {makeCursorHookCommand, makeInstallHooksCommand, makePreCompactHookCommand} from './hooks_cli.js';
 import {runCursorHook} from '../cursor_hook_runner.js';
 import {Console, Effect, Schema} from 'effect';
@@ -45,6 +54,10 @@ import {
   runRecall,
   runRemember,
 } from '../memory/index.js';
+import {makeCloseoutCommand} from './closeout_cli.js';
+import {runContextHealth} from '../memory/context_health_commands.js';
+import {runContextCheck} from '../context_check/commands.js';
+import {runProcedureStatus, runProcedureVerify} from '../procedure/commands.js';
 import {runMcpInstall} from '../mcp/index.js';
 import {runObsidianInboxScan} from '../obsidian/inbox.js';
 import {runObsidianOpen} from '../obsidian/open.js';
@@ -136,12 +149,9 @@ import {
 import {runProcessDiagnostics} from '../process/diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
 import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';
-import {
-  CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
-  CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
-} from '../context_brief/types.js';
 import {runImageProjectionCommand} from '../image_projection/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
+import {runValueReport} from '../value_report/commands.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
 import {
   cursorCloudRuntimeConfig,
@@ -1410,55 +1420,36 @@ const workset = Command.make('workset').pipe(
   Command.withSubcommands([worksetList, worksetShow, worksetPrepare, worksetStatus]),
 );
 
-const contextBrief = Command.make(
-  'brief',
-  {
-    budgetTokens: optional(
-      describeFlag(
-        integerFlag('budget-tokens').pipe(
-          Flag.withSchema(
-            Schema.Int.check(
-              Schema.isBetween({
-                minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
-                maximum: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
-              }),
-            ),
-          ),
-        ),
-        `Maximum estimated tokens for the combined structured and text response (${CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS}-${CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS})`,
-      ),
-    ),
-    codeRefs: repeatedString(
-      'code-ref',
-      'Canonical graph-indexed repository-relative path (no ./ or ..) or exact cgs_<32 lowercase hex>; cgr_ unsupported; repeat up to eight times',
-      8,
-    ),
-    cwd: optionalString('cwd', 'Absolute repository path, at most 4096 UTF-8 bytes; defaults to the current directory'),
-    json: boolean('json', 'Print the structured Context Brief projection'),
-    mode: defaultChoice('mode', ['brief', 'locate', 'explain', 'trace', 'impact'], 'Evidence-planning mode', 'brief'),
-    project: optionalString('project', 'Optional memory project scope, at most 256 UTF-8 bytes'),
-    task: requiredString('task', 'Engineering task or question, 1-4096 UTF-8 bytes without control characters'),
-    workset: optionalString('workset', 'Prepared workset scope, at most 256 UTF-8 bytes, instead of the repository'),
-  },
-  options => withRuntimeEffect(config => runContextBrief(config, options)),
-).pipe(Command.withDescription('Compile bounded graph, decision, handoff, and freshness evidence for an agent task'));
+const contextBrief = makeContextBriefCommand(options => withRuntimeEffect(config => runContextBrief(config, options)));
+
+const contextHealth = makeContextHealthCommand(options =>
+  withRuntimeEffect(config => runContextHealth(config, options)),
+);
+
+const contextCheck = makeContextCheckCommand(options => withRuntimeEffect(config => runContextCheck(config, options)));
 
 const context = Command.make('context').pipe(
   Command.withDescription('Compile task-oriented agent context'),
-  Command.withSubcommands([contextBrief]),
+  Command.withSubcommands([contextBrief, contextHealth, contextCheck]),
 );
 
-const compact = Command.make(
-  'compact',
-  {
-    apply: boolean('apply', 'Apply the compact plan; without this, prints a dry run'),
-    dryRun: boolean('dry-run', 'Print the compact plan without changing anything'),
-    kind: optionalChoice('kind', ['durable', 'handoff', 'incident'], 'Optional memory kind filter'),
-    project: requiredString('project', 'Project/repo namespace to inspect'),
-    topic: optionalString('topic', 'Stable topic name to inspect'),
-  },
-  options => withRuntimeEffect(config => runCompact(config, options)),
-).pipe(Command.withDescription('Plan or apply scoped memory hygiene for active personal memories'));
+const valueReport = makeValueReportCommand(options => withRuntimeEffect(config => runValueReport(config, options)));
+
+const value = Command.make('value').pipe(
+  Command.withDescription('Inspect local, count-only value signals'),
+  Command.withSubcommands([valueReport]),
+);
+
+const procedureVerify = makeProcedureVerifyCommand(options => withRuntimeEffect(() => runProcedureVerify(options)));
+
+const procedureStatus = makeProcedureStatusCommand(options => withRuntimeEffect(() => runProcedureStatus(options)));
+
+const procedure = Command.make('procedure').pipe(
+  Command.withDescription('Explicit local procedure verification and read-only status'),
+  Command.withSubcommands([procedureVerify, procedureStatus]),
+);
+
+const compact = makeCompactCommand(options => withRuntimeEffect(config => runCompact(config, options)));
 
 const read = Command.make(
   'read',
@@ -1468,6 +1459,12 @@ const read = Command.make(
   },
   ({uri, ...options}) => withRuntimeEffect(config => runRead(config, uri, options)),
 ).pipe(Command.withDescription('Read a canonical or stable-identity threadnote:// pointer'));
+
+const closeout = makeCloseoutCommand(
+  Effect.flatMap(root, options =>
+    getRuntimeConfig(options).pipe(Effect.mapError(cause => applicationError('load runtime configuration', cause))),
+  ),
+);
 
 const list = Command.make(
   'list',
@@ -1963,7 +1960,10 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('recall', recall),
   registerTopLevelCommand('workset', workset),
   registerTopLevelCommand('context', context),
+  registerTopLevelCommand('value', value),
+  registerTopLevelCommand('procedure', procedure, {productionLog: {subcommands: {verify: 'requires-apply'}}}),
   registerTopLevelCommand('compact', compact, {productionLog: {mode: 'requires-apply'}}),
+  registerTopLevelCommand('closeout', closeout, {productionLog: {subcommands: {apply: 'always'}}}),
   registerTopLevelCommand('read', read),
   registerTopLevelCommand('list', list, {aliases: ['ls']}),
   registerTopLevelCommand('handoff', handoff),

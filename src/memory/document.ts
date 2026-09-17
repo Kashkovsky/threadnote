@@ -3,6 +3,7 @@ import {parseResourceId} from '../storage/resource-id.js';
 import {
   assertMemorySchemaWritable,
   formatMemoryCodeCitationLines,
+  isMemoryCodeCitationSchemaVersion,
   MEMORY_CODE_CITATION_HEADER,
   MEMORY_SCHEMA_VERSION,
   parseMemoryCodeCitationHeaders,
@@ -41,7 +42,11 @@ export interface MemoryMetadata {
   readonly keywords?: readonly string[];
   readonly lastReviewed?: string;
   readonly memoryId?: string;
+  /** Opaque maintainer label; it is never an authorization or organization identity. */
+  readonly owner?: string;
   readonly project?: string;
+  /** ISO calendar date for maintenance review. */
+  readonly reviewAfter?: string;
   readonly references?: readonly string[];
   readonly relations?: readonly MemoryRelation[];
   readonly schemaVersion?: number;
@@ -130,8 +135,10 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
       keywords: memoryHeaderValues(header, 'keywords'),
       lastReviewed: memoryHeaderValue(header, 'last_reviewed'),
       memoryId: memoryHeaderValue(header, 'memory_id'),
+      owner: normalizeOptionalMetadata(memoryHeaderValue(header, 'owner')),
       project: normalizeOptionalMetadata(memoryHeaderValue(header, 'project') ?? memoryHeaderValue(header, 'repo')),
       references: canonicalResourceInputs(memoryHeaderValues(header, 'references')),
+      reviewAfter: parseIsoDate(memoryHeaderValue(header, 'review_after')),
       relations: parseMemoryRelations(memoryHeaderValues(header, 'relation')),
       schemaVersion,
       sourceHash: memoryHeaderValue(header, 'source_hash'),
@@ -159,7 +166,11 @@ export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: Memo
   if (metadata.citationErrors && metadata.citationErrors.length > 0) {
     throw new Error('Cannot format memory metadata with unresolved code-citation errors.');
   }
-  if (metadata.codeCitations && metadata.codeCitations.length > 0 && metadata.schemaVersion !== MEMORY_SCHEMA_VERSION) {
+  if (
+    metadata.codeCitations &&
+    metadata.codeCitations.length > 0 &&
+    !isMemoryCodeCitationSchemaVersion(metadata.schemaVersion)
+  ) {
     throw new Error(`Memory code citations require memory schema version ${MEMORY_SCHEMA_VERSION}.`);
   }
   const codeCitationLines = formatMemoryCodeCitationLines(metadata.codeCitations ?? []);
@@ -173,6 +184,7 @@ export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: Memo
     memoryHeaderLine('timestamp', metadata.timestamp),
     metadata.schemaVersion !== undefined ? `schema_version: ${metadata.schemaVersion}` : undefined,
     memoryHeaderLine('memory_id', metadata.memoryId),
+    memoryHeaderLine('owner', normalizeOptionalMetadata(metadata.owner)),
     memoryHeaderLine('created_at', metadata.createdAt),
     memoryHeaderLine('updated_at', metadata.updatedAt),
     memoryHeaderLine('visibility', metadata.visibility),
@@ -182,6 +194,7 @@ export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: Memo
     memoryHeaderLine('valid_from', metadata.validFrom),
     memoryHeaderLine('valid_to', metadata.validTo),
     memoryHeaderLine('last_reviewed', metadata.lastReviewed),
+    reviewAfterHeaderLine(metadata.reviewAfter),
     memoryHeaderLine('source_observed_at', metadata.sourceObservedAt),
     memoryHeaderLine('source_session_id', metadata.sourceSessionId),
     memoryHeaderLine('source_commit', metadata.sourceCommit),
@@ -370,12 +383,14 @@ export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
     keywords: memoryHeaderValues(header, 'keywords'),
     lastReviewed: memoryHeaderValue(header, 'last_reviewed'),
     memoryId: memoryHeaderValue(header, 'memory_id'),
+    owner: normalizeOptionalMetadata(memoryHeaderValue(header, 'owner')),
     project: normalizeOptionalMetadata(
       memoryHeaderValue(header, 'project') ??
         memoryHeaderValue(header, 'repo') ??
         memoryHeaderValue(header, 'repo_path'),
     ),
     references: canonicalResourceInputs(memoryHeaderValues(header, 'references')),
+    reviewAfter: parseIsoDate(memoryHeaderValue(header, 'review_after')),
     relations: parseMemoryRelations(memoryHeaderValues(header, 'relation')),
     schemaVersion,
     sourceHash: memoryHeaderValue(header, 'source_hash'),
@@ -528,6 +543,17 @@ function normalizeOptionalMetadata(value: string | undefined): string | undefine
   return trimmed ? trimmed : undefined;
 }
 
+function parseIsoDate(value: string | undefined): string | undefined {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
+    return undefined;
+  }
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+    ? value
+    : undefined;
+}
+
 function isReviewedCandidateMetadata(metadata: Partial<MemoryMetadata> | undefined): boolean {
   return (
     metadata?.authority === 'user_approved' &&
@@ -546,4 +572,14 @@ function memoryHeaderLine(key: string, value: string | undefined): string | unde
     throw new Error(`Memory metadata ${key} must not contain line breaks.`);
   }
   return `${key}: ${value}`;
+}
+
+function reviewAfterHeaderLine(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (parseIsoDate(value) === undefined) {
+    throw new Error('Memory metadata review_after must be an ISO date.');
+  }
+  return memoryHeaderLine('review_after', value);
 }

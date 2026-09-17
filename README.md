@@ -6,18 +6,22 @@
 
 [![release](https://img.shields.io/github/v/release/Kashkovsky/threadnote?include_prereleases&label=release)](https://github.com/Kashkovsky/threadnote/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kashkovsky/threadnote/ci.yml?branch=main&label=CI)](https://github.com/Kashkovsky/threadnote/actions/workflows/ci.yml) [![downloads](https://img.shields.io/github/downloads/Kashkovsky/threadnote/total?label=downloads)](https://github.com/Kashkovsky/threadnote/releases) [![license](https://img.shields.io/github/license/Kashkovsky/threadnote)](./LICENSE) [![Bun](https://img.shields.io/badge/runtime-Bun%201.3.14-f9f1e1?logo=bun)](https://bun.com/)
 
-> One engineer teaches it once. Every teammate's coding agent can use it.
+> Source-verifiable context for the coding agents your team already uses.
 
-Threadnote is a shared, local-first memory layer for the coding agents your team already uses. Alice's Codex can
-publish a hard-won architecture decision; Bob's Claude Code, Cursor, or Copilot can auto-sync and recall it during the
-next task. No copy-pasted handoff, vendor lock-in, or shared chat window required.
+Threadnote is a shared, local-first context compiler for engineering work. Alice's Codex can review a hard-won
+architecture decision with current code evidence; Bob's Claude Code, Cursor, or Copilot can recall it during the next
+task. No copy-pasted handoff, vendor lock-in, or shared chat window required.
 
 Personal working state stays local. Only curated durable knowledge or reusable artifacts that you explicitly publish
 enter the team's Git-backed memory, with an exact preview, secret scanner, explicit soft-leak redaction, and history.
 Persistence across sessions is the foundation; the differentiator is useful context moving safely between
 **different users and different agents**.
 
-Threadnote 4 is a self-contained native executable with an embedded Bun runtime. Canonical content, local models,
+Threadnote 5 makes the task loop explicit: begin with a cited Context Brief, finish with a reviewable Knowledge Delta,
+then inspect context health before stale or conflicting knowledge reaches the next task. See the [Threadnote 5 context
+workflows](./docs/context-workflows.md) guide for the local commands, bounded report contracts, and trust boundaries.
+
+Threadnote is a self-contained native executable with an embedded Bun runtime. Canonical content, local models,
 indexes, locks, logs, migration receipts, and sharing metadata are owned under `~/.threadnote`—no separately installed
 runtime, Python service, external memory platform, or background daemon required.
 
@@ -53,6 +57,10 @@ Alice + Codex ──publish curated memory──▶ team Git repo
   authority, and feedback produce a confidence level and inspectable ranking reasons.
 - **Routine continuity is automatic.** At meaningful task closeout, agents store normal durable feature knowledge and
   handoffs. Additional extracted candidates still require review before they become durable truth.
+- **Knowledge Delta at closeout.** Review proposed decisions, preferences, handoff state, and context repairs
+  before applying any candidate; previews are non-mutating and revision-checked.
+- **Context health and value.** Inspect stale citations, overdue reviews, contradictions, and duplicate context with a
+  bounded read-only health report, and measure local count-only value without exporting content.
 - **Durable and addressable.** Stable pointers let agents replace one current `project/topic` memory instead of
   accumulating stale notes.
 - **Built for engineering work.** Decisions, invariants, preferences, handoffs, release workflows, and branch state

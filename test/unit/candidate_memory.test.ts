@@ -3,6 +3,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {BunCrypto, BunFileSystem, BunPath} from '@effect/platform-bun';
 import {ByteSize, DateTime, Effect, FileSystem, Layer, Option, Path} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
+import fc from 'fast-check';
 import {
   appendCandidateAudit,
   buildCandidateReview,
@@ -11,10 +12,12 @@ import {
   loadCandidateReview,
   readActiveProjectMemories,
   saveCandidateReview,
+  type CandidateReview,
   type SessionCloseoutInput,
   validateSessionCloseoutInput,
   withCandidateReviewLock,
 } from '../../src/memory/candidate.js';
+import {projectKnowledgeDeltaV1} from '../../src/memory/knowledge_delta.js';
 import type {MemoryRecord} from '../../src/memory/document.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {join, mkdir, mkdtemp, readFile, rm, symlink, writeFile} from '../helpers/effect-filesystem.js';
@@ -52,7 +55,137 @@ function existing(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
   };
 }
 
+function projectedReview(candidates: CandidateReview['candidates']): CandidateReview {
+  return {
+    auditEvents: [],
+    candidates,
+    codeCitations: [],
+    createdAt: '2026-09-17T10:00:00.000Z',
+    outcome: 'Projected reviewed knowledge.',
+    project: 'threadnote',
+    reviewId: 'review-0123456789abcdef',
+    revision: 2,
+    sourceAgentClient: 'codex',
+    task: 'Project a knowledge delta',
+    topic: 'knowledge-delta',
+    version: 2,
+  };
+}
+
+function projectedCandidate(
+  candidateId: string,
+  overrides: Partial<CandidateReview['candidates'][number]> = {},
+): CandidateReview['candidates'][number] {
+  return {
+    candidateId,
+    categories: ['decision'],
+    comparison: 'new',
+    confidence: 0.82,
+    evidence: ['test/candidate-memory.test.ts'],
+    kind: 'durable',
+    project: 'threadnote',
+    proposedText: '## Decisions\n- Keep review output bounded.',
+    reason: 'No active memory with the same stable identity was found.',
+    recommendation: 'create',
+    state: 'pending',
+    topic: 'knowledge-delta',
+    ...overrides,
+  };
+}
+
 describe('candidate-memory formation', () => {
+  it('projects review candidates as a bounded KnowledgeDeltaV1 without mutating the review', () => {
+    const review = projectedReview([
+      projectedCandidate('review-0123456789abcdef-1'),
+      projectedCandidate('review-0123456789abcdef-2', {
+        categories: ['handoff'],
+        kind: 'handoff',
+        proposedText: '## Handoff state\n- Run focused checks.',
+        topic: 'knowledge-delta-handoff',
+      }),
+      projectedCandidate('review-0123456789abcdef-3', {
+        categories: ['preference'],
+        kind: 'preference',
+        proposedText: '## Preferences\n- Keep output concise.',
+        topic: 'knowledge-delta-preference',
+      }),
+    ]);
+    const before = structuredClone(review);
+
+    expect(projectKnowledgeDeltaV1(review)).toEqual({
+      items: [
+        expect.objectContaining({candidateId: 'review-0123456789abcdef-1', type: 'decision-or-invariant'}),
+        expect.objectContaining({candidateId: 'review-0123456789abcdef-2', type: 'handoff-state'}),
+        expect.objectContaining({candidateId: 'review-0123456789abcdef-3', type: 'preference'}),
+      ],
+      noAction: false,
+      reviewId: review.reviewId,
+      revision: review.revision,
+      type: 'knowledge-delta',
+      version: 1,
+    });
+    expect(
+      projectKnowledgeDeltaV1(
+        projectedReview([
+          projectedCandidate('review-0123456789abcdef-4', {
+            comparison: 'replacement',
+            recommendation: 'replace',
+            targetContentHash: 'a'.repeat(64),
+            targetUri: 'threadnote://user/me/memories/durable/projects/threadnote/knowledge-delta.md',
+          }),
+        ]),
+      ),
+    ).toMatchObject({
+      items: [expect.objectContaining({type: 'context-repair-or-retirement'})],
+    });
+    expect(review).toEqual(before);
+  });
+
+  it('projects revision-checked edited and persisted apply bodies without mutating the review', () => {
+    const candidate = projectedCandidate('review-0123456789abcdef-1');
+    const review = projectedReview([candidate]);
+    expect(
+      projectKnowledgeDeltaV1(review, {
+        bodyText: '## Decisions\n- Use the reviewed edit.',
+        candidateId: candidate.candidateId,
+        revision: review.revision,
+      }).items[0]?.mutationPreview.bodyText,
+    ).toContain('reviewed edit');
+    expect(() =>
+      projectKnowledgeDeltaV1(review, {
+        bodyText: 'stale',
+        candidateId: candidate.candidateId,
+        revision: review.revision + 1,
+      }),
+    ).toThrow('revision changed');
+    expect(
+      projectKnowledgeDeltaV1(
+        projectedReview([
+          {...candidate, applyBodyText: '## Decisions\n- Persist the exact applied edit.', state: 'applied'},
+        ]),
+      ).items[0]?.mutationPreview.bodyText,
+    ).toContain('exact applied edit');
+  });
+
+  it('orders KnowledgeDeltaV1 items deterministically by candidate identity', () => {
+    const candidates = [
+      projectedCandidate('review-0123456789abcdef-3'),
+      projectedCandidate('review-0123456789abcdef-1'),
+      projectedCandidate('review-0123456789abcdef-2'),
+    ];
+    fc.assert(
+      fc.property(
+        fc.shuffledSubarray(candidates, {minLength: candidates.length, maxLength: candidates.length}),
+        ordered => {
+          expect(projectKnowledgeDeltaV1(projectedReview(ordered))).toEqual(
+            projectKnowledgeDeltaV1(projectedReview(candidates)),
+          );
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
   it('forms at most three reviewed candidates from a session closeout', async () => {
     const review = await run(buildCandidateReview(input, [], new Date('2026-07-23T10:00:00.000Z')));
 

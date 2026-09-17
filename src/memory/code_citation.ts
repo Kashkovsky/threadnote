@@ -1,7 +1,8 @@
 import {Predicate, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 
-export const MEMORY_SCHEMA_VERSION = 4 as const;
+export const MEMORY_SCHEMA_VERSION = 5 as const;
+export const MEMORY_CODE_CITATION_SCHEMA_VERSION = 4 as const;
 export const MEMORY_CODE_CITATION_VERSION = 1 as const;
 export const MEMORY_CODE_CITATION_HEADER = 'code_citation' as const;
 export const MAX_MEMORY_CODE_CITATIONS = 8 as const;
@@ -161,6 +162,11 @@ export function canWriteMemorySchemaVersion(schemaVersion: number | undefined): 
   );
 }
 
+/** Code-citation v1 remains readable across the additive memory-schema v4→v5 migration. */
+export function isMemoryCodeCitationSchemaVersion(schemaVersion: number | undefined): boolean {
+  return schemaVersion === MEMORY_CODE_CITATION_SCHEMA_VERSION || schemaVersion === MEMORY_SCHEMA_VERSION;
+}
+
 /** Writers call this before reformatting an existing record so future fields cannot be dropped. */
 export function assertMemorySchemaWritable(schemaVersion: number | undefined): void {
   if (schemaVersion !== undefined && (!Number.isSafeInteger(schemaVersion) || schemaVersion <= 0)) {
@@ -298,7 +304,7 @@ export function parseMemoryCodeCitationHeaders(
   if (!values || values.length === 0) return {};
   const citations: MemoryCodeCitationV1[] = [];
   const errors: MemoryCodeCitationError[] = [];
-  if (schemaVersion !== MEMORY_SCHEMA_VERSION) {
+  if (!isMemoryCodeCitationSchemaVersion(schemaVersion)) {
     errors.push({reason: 'schema-version-mismatch'});
   }
   if (values.length > MAX_MEMORY_CODE_CITATIONS) {
