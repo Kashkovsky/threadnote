@@ -111,6 +111,14 @@ user configuration. Private value reports count starts, failures, completions, a
 without storing the task, surface, repository, or path. Specific host documentation remains available where it
 discusses that host.
 
+To bring existing project instructions into the reviewable context loop, use `threadnote guidance import <surface>
+--project <name>` (preview by default; `--apply` creates or reuses a private Knowledge Delta candidate). Project only
+explicitly selected active durable memories with `threadnote guidance project <surface> --project <name> --memory
+<uri>`; projection is deterministic, provenance- and hash-managed, and never overwrites unmanaged text. Use
+`guidance status` to see current, missing, modified, stale, or evidence-unavailable targets, and `guidance remove`
+for preview-first cleanup. Existing AGENTS.md, CLAUDE.md, Cursor rules, and Copilot instructions are
+adapter-declared surfaces, not competing canonical copies; drift feeds context health and Context Check.
+
 To select the Threadnote 4 beta channel on macOS or Linux, pass `--beta`. This inclusive preview channel installs the
 newest immutable release across stable and prerelease builds, so a newer stable release wins when one is available:
 

@@ -43,6 +43,22 @@ describe('CLI production log policy', () => {
       operation: 'setup',
       writeProductionLog: true,
     });
+    for (const action of ['import', 'project', 'remove']) {
+      expect(inspectCliInvocation(['guidance', action, 'codex-cli', '--project', 'threadnote'])).toMatchObject({
+        operation: 'guidance',
+        writeProductionLog: false,
+      });
+      expect(
+        inspectCliInvocation(['guidance', action, 'codex-cli', '--project', 'threadnote', '--apply']),
+      ).toMatchObject({
+        operation: 'guidance',
+        writeProductionLog: true,
+      });
+    }
+    expect(inspectCliInvocation(['guidance', 'status', 'codex-cli', '--project', 'threadnote'])).toMatchObject({
+      operation: 'guidance',
+      writeProductionLog: false,
+    });
     for (const action of ['install', 'repair', 'remove']) {
       expect(inspectCliInvocation(['agents', action, 'gemini-cli'])).toMatchObject({
         operation: 'agents',
