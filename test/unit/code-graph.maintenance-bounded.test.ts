@@ -389,7 +389,10 @@ describe('bounded code graph maintenance', () => {
                 fs,
                 codeGraphWorktreeLockPath(path, home, identity.checkoutId, identity.worktreeId),
                 {
-                  heartbeatIntervalMilliseconds: 20,
+                  // Keep touching the live build lease while the durable state
+                  // is created, so cleanup must release its lock despite a
+                  // trailing heartbeat racing the release read.
+                  heartbeatIntervalMilliseconds: 1,
                   retryIntervalMilliseconds: 5,
                   staleAfterMilliseconds: 100,
                   waitTimeoutMilliseconds: 5_000,

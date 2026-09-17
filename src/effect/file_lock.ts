@@ -379,9 +379,13 @@ function releaseFileLock(fs: FileSystem.FileSystem, lockPath: string, token: str
   }).pipe(Effect.ignore);
 }
 
-function readStableFileLockToken(path: string): Effect.Effect<string | undefined, never> {
+function readStableFileLockToken(path: string, remainingAttempts = 2): Effect.Effect<string | undefined, never> {
   return fromPromise('fileLock.readStableToken', () => runtimeReadBoundedStableRegularFile(path, 4_096)).pipe(
     Effect.map(bytes => new TextDecoder().decode(bytes).trim()),
-    Effect.catch(() => succeedUndefined),
+    Effect.catch(() =>
+      remainingAttempts <= 0
+        ? succeedUndefined
+        : Effect.yieldNow.pipe(Effect.andThen(readStableFileLockToken(path, remainingAttempts - 1))),
+    ),
   );
 }
