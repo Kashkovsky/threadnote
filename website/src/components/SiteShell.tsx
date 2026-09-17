@@ -8,6 +8,7 @@ const navItems: Array<{activePages: readonly SitePage[]; label: string; href: st
   {activePages: ['home'], label: 'Product', href: ''},
   {activePages: ['performance', 'performance-graphify'], label: 'Performance', href: 'performance/'},
   {activePages: ['docs'], label: 'Docs', href: 'docs/'},
+  {activePages: ['agents'], label: 'Agents', href: 'agents/'},
   {activePages: ['whats-new'], label: "What's new", href: 'whats-new/'},
   {activePages: ['pro-tips'], label: 'Pro tips', href: 'pro-tips/'},
   {activePages: ['manager-demo'], label: 'Manager demo', href: 'manager-demo/'},
@@ -105,6 +106,7 @@ export function SiteShell({
         </div>
         <div className="site-footer__links">
           <a href={siteHref('docs/')}>Documentation</a>
+          <a href={siteHref('agents/')}>Supported agents</a>
           <a href={siteHref('performance/')}>Performance</a>
           <a href={siteHref('performance/graphify/')}>Threadnote vs Graphify</a>
           <a href={siteHref('whats-new/')}>What's new</a>

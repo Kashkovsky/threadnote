@@ -5,7 +5,7 @@ import {parseMcpToolset, type McpToolset} from '../mcp/toolset.js';
 import type {AgentClient, ClaudeMcpScope, RuntimeConfig} from '../types.js';
 import {ensureDirectory, errorMessage, readFileIfExists} from '../utils.js';
 
-export const AGENT_INTEGRATION_REGISTRY_VERSION = 1;
+export const AGENT_INTEGRATION_REGISTRY_VERSION = 2;
 export const AGENT_INTEGRATION_ARTIFACT_VERSION = 1;
 export const AGENT_CLIENTS = ['codex', 'claude', 'cursor', 'copilot', 'omp'] as const;
 
@@ -39,8 +39,72 @@ export interface AgentIntegrationHostReceipt {
 
 export interface AgentIntegrationRegistry {
   readonly hosts: Partial<Record<AgentClient, AgentIntegrationHostReceipt>>;
+  readonly surfaces?: Readonly<Record<string, AgentSurfaceReceipt>>;
+  readonly physicalArtifacts?: Readonly<Record<string, readonly string[]>>;
   readonly legacyInstructionsMigrated: boolean;
   readonly version: typeof AGENT_INTEGRATION_REGISTRY_VERSION;
+}
+
+export interface AgentSurfaceReceipt {
+  readonly adapterVersion: 1;
+  readonly surfaceId: string;
+  readonly agentId: string;
+  readonly root: string;
+  readonly skillRoot: string;
+  readonly installedVersion: string;
+  readonly status: 'pending' | 'current';
+  readonly artifacts: Readonly<Record<string, string>>;
+  readonly artifactDescriptors: readonly AgentSurfaceArtifactReceipt[];
+  readonly strategy: {
+    readonly kind: 'json';
+    readonly codec: 'json';
+    readonly container: string;
+  };
+  readonly mcp: {
+    readonly path: string;
+    readonly name: string;
+    readonly hash: string;
+    readonly toolset: McpToolset;
+    readonly createdContainer: boolean;
+    readonly createdFile: boolean;
+  };
+}
+
+export interface AgentSurfaceArtifactReceipt {
+  readonly hash: string;
+  readonly kind: 'block' | 'file';
+  readonly name: string;
+  readonly path: string;
+}
+
+export function migrateAgentIntegrationRegistry(
+  registry: Omit<AgentIntegrationRegistry, 'version'> & {readonly version: 1 | 2},
+): AgentIntegrationRegistry {
+  const physicalArtifacts: Record<string, string[]> = {};
+  for (const [consumer, receipt] of [
+    ...Object.entries(registry.hosts).map(([id, receipt]) => [`legacy:${id}`, receipt] as const),
+    ...Object.entries(registry.surfaces ?? {}).map(([id, receipt]) => [id, receipt] as const),
+  ]) {
+    for (const target of Object.keys(receipt.artifacts)) (physicalArtifacts[target] ??= []).push(consumer);
+  }
+  for (const consumers of Object.values(physicalArtifacts)) consumers.sort();
+  return {
+    ...registry,
+    version: AGENT_INTEGRATION_REGISTRY_VERSION,
+    surfaces: registry.surfaces ?? {},
+    physicalArtifacts,
+  };
+}
+
+export function artifactHasOtherConsumers(
+  registry: AgentIntegrationRegistry,
+  target: string,
+  consumer: string,
+  excludedConsumers: ReadonlySet<string> = new Set(),
+): boolean {
+  return (migrateAgentIntegrationRegistry(registry).physicalArtifacts?.[target] ?? []).some(
+    owner => owner !== consumer && !excludedConsumers.has(owner),
+  );
 }
 
 class AgentIntegrationRegistryError extends Schema.TaggedError<AgentIntegrationRegistryError>()(
@@ -64,7 +128,7 @@ export const readAgentIntegrationRegistry = Effect.fn('agentIntegrations.readReg
   if (!isAgentIntegrationRegistry(parsed)) {
     return yield* AgentIntegrationRegistryError.make({message: `${target} is not a valid agent integration registry.`});
   }
-  return parsed;
+  return migrateAgentIntegrationRegistry(parsed);
 });
 
 export function registeredAgentClients(registry: AgentIntegrationRegistry | undefined): readonly AgentClient[] {
@@ -104,7 +168,9 @@ export const writeAgentIntegrationRegistry = Effect.fn('agentIntegrations.writeR
   const target = yield* agentIntegrationRegistryPath(config);
   const temporary = path.join(path.dirname(target), `.agents.${system.processId}.tmp`);
   yield* ensureDirectory(path.dirname(target), false);
-  yield* fs.writeFileString(temporary, `${JSON.stringify(registry, undefined, 2)}\n`, {mode: 0o600});
+  yield* fs.writeFileString(temporary, `${JSON.stringify(migrateAgentIntegrationRegistry(registry), undefined, 2)}\n`, {
+    mode: 0o600,
+  });
   yield* fs.rename(temporary, target);
 });
 
@@ -127,7 +193,7 @@ export function withAgentIntegrationLock<A, E, R>(
 function isAgentIntegrationRegistry(value: unknown): value is AgentIntegrationRegistry {
   if (
     !Predicate.isObject(value) ||
-    value.version !== AGENT_INTEGRATION_REGISTRY_VERSION ||
+    (value.version !== 1 && value.version !== AGENT_INTEGRATION_REGISTRY_VERSION) ||
     !Predicate.isObject(value.hosts)
   )
     return false;
@@ -135,7 +201,61 @@ function isAgentIntegrationRegistry(value: unknown): value is AgentIntegrationRe
   for (const [agent, receipt] of Object.entries(value.hosts)) {
     if (!isAgentClient(agent) || !isHostReceipt(receipt)) return false;
   }
+  if (value.surfaces !== undefined) {
+    if (!Predicate.isObject(value.surfaces)) return false;
+    for (const [id, receipt] of Object.entries(value.surfaces)) {
+      if (!isSurfaceReceipt(id, receipt)) return false;
+    }
+  }
   return true;
+}
+
+function isSurfaceReceipt(id: string, value: unknown): value is AgentSurfaceReceipt {
+  if (
+    !Predicate.isObject(value) ||
+    value.surfaceId !== id ||
+    value.adapterVersion !== 1 ||
+    typeof value.agentId !== 'string' ||
+    typeof value.root !== 'string' ||
+    !value.root ||
+    typeof value.skillRoot !== 'string' ||
+    !value.skillRoot ||
+    typeof value.installedVersion !== 'string' ||
+    (value.status !== 'pending' && value.status !== 'current') ||
+    !Predicate.isObject(value.artifacts) ||
+    !Array.isArray(value.artifactDescriptors) ||
+    !Predicate.isObject(value.strategy) ||
+    !Predicate.isObject(value.mcp)
+  )
+    return false;
+  const artifacts = value.artifacts as Record<string, unknown>;
+  return (
+    value.strategy.kind === 'json' &&
+    value.strategy.codec === 'json' &&
+    typeof value.strategy.container === 'string' &&
+    value.strategy.container.length > 0 &&
+    typeof value.mcp.path === 'string' &&
+    value.mcp.path.length > 0 &&
+    typeof value.mcp.name === 'string' &&
+    typeof value.mcp.hash === 'string' &&
+    /^[0-9a-f]{64}$/.test(value.mcp.hash) &&
+    (value.mcp.toolset === 'core' || value.mcp.toolset === 'full') &&
+    typeof value.mcp.createdContainer === 'boolean' &&
+    typeof value.mcp.createdFile === 'boolean' &&
+    Object.values(artifacts).every(hash => typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash)) &&
+    value.artifactDescriptors.every(
+      artifact =>
+        Predicate.isObject(artifact) &&
+        typeof artifact.path === 'string' &&
+        artifact.path.length > 0 &&
+        typeof artifact.name === 'string' &&
+        artifact.name.length > 0 &&
+        (artifact.kind === 'block' || artifact.kind === 'file') &&
+        typeof artifact.hash === 'string' &&
+        /^[0-9a-f]{64}$/.test(artifact.hash) &&
+        artifacts[artifact.path] === artifact.hash,
+    )
+  );
 }
 
 function isHostReceipt(value: unknown): value is AgentIntegrationHostReceipt {

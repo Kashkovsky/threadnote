@@ -78,6 +78,7 @@ export default defineConfig({
         performance: `${siteRoot}/performance/index.html`,
         performanceGraphify: `${siteRoot}/performance/graphify/index.html`,
         docs: `${siteRoot}/docs/index.html`,
+        agents: `${siteRoot}/agents/index.html`,
         whatsNew: `${siteRoot}/whats-new/index.html`,
         proTips: `${siteRoot}/pro-tips/index.html`,
         managerDemo: `${siteRoot}/manager-demo/index.html`,
