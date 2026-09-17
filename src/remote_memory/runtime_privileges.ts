@@ -32,6 +32,7 @@ const RUNTIME_GRANTS: readonly RuntimeGrant[] = [
       'uri_aliases',
       'search_documents',
       'durable_memory_proposals',
+      'code_link_backlinks',
     ],
   },
   {
@@ -64,6 +65,7 @@ const RUNTIME_GRANTS: readonly RuntimeGrant[] = [
       'search_documents',
       'projects',
       'durable_memory_proposals',
+      'code_link_backlinks',
     ],
   },
   {
@@ -147,7 +149,7 @@ const RUNTIME_GRANTS: readonly RuntimeGrant[] = [
   },
   {
     privilege: 'DELETE',
-    tables: ['challenge_directory', 'attestation_challenges', 'uri_aliases'],
+    tables: ['challenge_directory', 'attestation_challenges', 'uri_aliases', 'code_link_backlinks'],
   },
 ];
 

@@ -444,6 +444,14 @@ postgresDescribe('remote memory PostgreSQL service', () => {
       code: 'forbidden',
       name: 'RemoteMemoryError',
     });
+    const refreshedPrimary = await control.authorize(
+      claimsFixture('subject-alpha-multi-primary'),
+      SHARE_A_MULTI_MEMBER,
+    );
+    const refreshedMember = await control.authorize(claimsFixture('subject-alpha-member-two'), SHARE_A_MULTI_MEMBER);
+    if (!refreshedPrimary || !refreshedMember) throw new Error('Updated share policy authorization failed.');
+    principalAMultiPrimary = refreshedPrimary;
+    principalAMemberTwo = refreshedMember;
   });
 
   it.each([
