@@ -108,6 +108,7 @@ const MAX_CLOSEOUT_ITEM_CHARACTERS = 2_000;
 const MAX_CLOSEOUT_SCALAR_CHARACTERS = 4_000;
 const MAX_CLOSEOUT_EVIDENCE_POINTERS = 32;
 const MAX_CLOSEOUT_TOTAL_BYTES = 64 * 1_024;
+const MAX_EXACT_DURABLE_CANDIDATE_BYTES = 60 * 1_024;
 const TERMINAL_REVIEW_RETENTION_MILLISECONDS = 30 * 24 * 60 * 60 * 1_000;
 const CANDIDATE_LOCK_STALE_MILLISECONDS = 5 * 60 * 1_000;
 const CANDIDATE_LOCK_RETRY_MILLISECONDS = 25;
@@ -123,6 +124,35 @@ export const buildCandidateReview = Effect.fn('candidate.buildReview')(function*
   existing: readonly MemoryRecord[],
   now: Date,
 ) {
+  return yield* buildCandidateReviewFromDrafts(input, existing, now, candidateDrafts(input));
+});
+
+/** Builds one reviewable durable candidate without normalizing its Markdown body. */
+export const buildExactDurableCandidateReview = Effect.fn('candidate.buildExactDurableReview')(function* (
+  input: SessionCloseoutInput,
+  proposedText: string,
+  existing: readonly MemoryRecord[],
+  now: Date,
+) {
+  const validationError = validateSessionCloseoutInput(input);
+  if (validationError) return yield* CandidateMemoryError.make({message: validationError});
+  const text = proposedText.trim();
+  if (!text) return yield* CandidateMemoryError.make({message: 'Exact durable candidate text is empty.'});
+  if (new TextEncoder().encode(text).byteLength > MAX_EXACT_DURABLE_CANDIDATE_BYTES)
+    return yield* CandidateMemoryError.make({
+      message: `Exact durable candidate exceeds ${MAX_EXACT_DURABLE_CANDIDATE_BYTES} UTF-8 bytes.`,
+    });
+  return yield* buildCandidateReviewFromDrafts(input, existing, now, [
+    {categories: ['invariant'], kind: 'durable', proposedText: text},
+  ]);
+});
+
+const buildCandidateReviewFromDrafts = Effect.fn('candidate.buildReviewFromDrafts')(function* (
+  input: SessionCloseoutInput,
+  existing: readonly MemoryRecord[],
+  now: Date,
+  drafts: readonly CandidateDraft[],
+) {
   const createdAt = now.toISOString();
   const reviewId = `review-${(yield* sha256Hex(
     [input.project, input.topic, input.sourceSessionId ?? '', input.task, createdAt].join('\n'),
@@ -132,7 +162,7 @@ export const buildCandidateReview = Effect.fn('candidate.buildReview')(function*
     evidence.length === 0
       ? []
       : yield* Effect.forEach(
-          candidateDrafts(input).slice(0, 3),
+          drafts.slice(0, 3),
           (draft, index) => compareCandidate(reviewId, index, input, draft, existing, evidence),
           {concurrency: 3},
         );

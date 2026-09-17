@@ -10,6 +10,7 @@ import {
 import {makeCursorHookCommand, makeInstallHooksCommand, makePreCompactHookCommand} from './hooks_cli.js';
 import {agentsCommandMetadata, makeAgentsCommand} from './agents_cli.js';
 import {makeSetupCommand, setupCommandMetadata} from './setup_cli.js';
+import {guidanceCommandMetadata, makeGuidanceCommand} from './guidance_cli.js';
 import {runCursorHook} from '../cursor_hook_runner.js';
 import {Console, Effect, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
@@ -1893,6 +1894,7 @@ const registerTopLevelCommand = <const Name extends string, CommandType>(
 
 const topLevelCommandRegistrations = [
   registerTopLevelCommand('setup', makeSetupCommand(withScopedRuntime), setupCommandMetadata),
+  registerTopLevelCommand('guidance', makeGuidanceCommand(withScopedRuntime), guidanceCommandMetadata),
   registerTopLevelCommand('agents', makeAgentsCommand(withScopedRuntime), agentsCommandMetadata),
   registerTopLevelCommand('manage', manage),
   registerTopLevelCommand('processes', processes, {productionLog: {mode: 'never'}}),
@@ -1992,9 +1994,7 @@ export const threadnoteCommand = root.pipe(
   Command.withDescription('Threadnote shared context workflow for development agents'),
   Command.withSubcommands(topLevelCommandRegistrations.map(registration => registration.command)),
 );
-
 export function inspectCliInvocation(arguments_: readonly string[]): CliInvocationInspection {
   return inspectRegisteredCliInvocation(arguments_);
 }
-
 export {CliError, normalizeCliArguments, type CliInvocationInspection};

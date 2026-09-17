@@ -52,6 +52,15 @@ export interface AgentAdapterStatusContext {
   readonly mcpChecks: readonly DoctorCheck[];
 }
 
+/** Project-local guidance is deliberately adapter-declared, not selected by orchestration brand branches. */
+export interface AgentGuidanceContract {
+  readonly importPaths: readonly string[];
+  readonly projection: {
+    readonly relativePath: string;
+    readonly wrapper?: {readonly prefix: string; readonly suffix: string};
+  };
+}
+
 export interface AgentAdapterActionOptions {
   readonly apply: boolean;
   readonly cwd?: string;
@@ -91,6 +100,7 @@ export interface AgentAdapterDefinition {
     readonly client: AgentClient;
     readonly kind: 'legacy-client';
   };
+  readonly guidance?: AgentGuidanceContract;
   readonly id: string;
   readonly kind: 'catalog' | 'json' | 'legacy';
   readonly legacyClient?: AgentClient;

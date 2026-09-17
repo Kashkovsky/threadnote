@@ -35,6 +35,41 @@ function record(uri: string, body: string, metadata: Partial<MemoryMetadata> = {
 }
 
 describe('buildContextHealthReport', () => {
+  it('projects guidance drift onto source memory URIs without a target path', () => {
+    const source = record('threadnote://user/me/memories/durable/projects/threadnote/guidance.md', 'guidance');
+    const report = buildContextHealthReport({
+      guidanceEvidence: [{sourceUris: [source.uri], state: 'locally-modified'}],
+      now,
+      project: 'threadnote',
+      records: [source],
+    });
+    expect(report.findings).toMatchObject([
+      {category: 'guidance-locally-modified', repair: {kind: 'repair-guidance'}, uris: [source.uri]},
+    ]);
+    expect(JSON.stringify(report)).not.toContain('AGENTS.md');
+  });
+
+  it('keeps stale and unavailable guidance evidence when a source is no longer active', () => {
+    const source = record('threadnote://user/me/memories/durable/projects/threadnote/retired.md', 'retired', {
+      status: 'archived',
+    });
+    const report = buildContextHealthReport({
+      guidanceEvidence: [
+        {sourceUris: [source.uri], state: 'stale-sources'},
+        {sourceUris: [source.uri], state: 'unavailable'},
+      ],
+      includeFindingUris: [source.uri],
+      now,
+      project: 'threadnote',
+      records: [source],
+    });
+    expect(report.findings.map(finding => finding.category)).toEqual([
+      'guidance-unavailable',
+      'guidance-stale-sources',
+    ]);
+    expect(report.findings.every(finding => finding.uris.includes(source.uri))).toBe(true);
+  });
+
   it('reports independently actionable health findings from supplied evidence', () => {
     const expired = record('threadnote://user/me/memories/durable/projects/threadnote/expired.md', 'expired', {
       validTo: '2026-09-16T00:00:00.000Z',

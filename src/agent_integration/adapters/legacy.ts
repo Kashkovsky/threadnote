@@ -6,6 +6,22 @@ import {AgentAdapterActionError, type AgentAdapterActionOptions, type AgentAdapt
 
 export {LEGACY_ARTIFACT_TARGETS} from './legacy_targets.js';
 
+const guidanceByAdapter: Readonly<Record<string, NonNullable<AgentAdapterDefinition['guidance']>>> = {
+  'codex-cli': {importPaths: ['AGENTS.md'], projection: {relativePath: 'AGENTS.md'}},
+  'claude-code': {importPaths: ['CLAUDE.md'], projection: {relativePath: 'CLAUDE.md'}},
+  'cursor-desktop': {
+    importPaths: ['.cursor/rules/threadnote.mdc', '.cursorrules'],
+    projection: {
+      relativePath: '.cursor/rules/threadnote.mdc',
+      wrapper: {prefix: '---\ndescription: Threadnote project guidance\nalwaysApply: true\n---\n\n', suffix: ''},
+    },
+  },
+  'copilot-vscode': {
+    importPaths: ['.github/copilot-instructions.md', '.github/instructions/threadnote.instructions.md'],
+    projection: {relativePath: '.github/instructions/threadnote.instructions.md'},
+  },
+};
+
 function defineLegacyAgentAdapter(id: string, legacyClient: AgentClient): AgentAdapterDefinition {
   const receipt = (options: AgentAdapterActionOptions) => options.registry?.hosts[legacyClient] ?? undefined;
   const install = (config: Parameters<AgentAdapterDefinition['actions']['install']>[0]) =>
@@ -55,6 +71,7 @@ function defineLegacyAgentAdapter(id: string, legacyClient: AgentClient): AgentA
     },
     adapterVersion: 1,
     hooks: {client: legacyClient, kind: 'legacy-client'},
+    guidance: guidanceByAdapter[id],
     id,
     kind: 'legacy',
     legacyClient,

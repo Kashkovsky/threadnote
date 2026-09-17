@@ -17,6 +17,10 @@ export type ContextHealthFindingCategoryV1 =
   | 'citation-missing'
   | 'citation-unknown'
   | 'exact-duplicate'
+  | 'guidance-locally-modified'
+  | 'guidance-missing-block'
+  | 'guidance-stale-sources'
+  | 'guidance-unavailable'
   | 'relation-target-conflicted'
   | 'relation-target-inactive'
   | 'relation-target-missing'
@@ -31,6 +35,7 @@ export interface ContextHealthRepairDescriptorV1 {
   readonly kind:
     | 'archive-memory'
     | 'deduplicate-memory'
+    | 'repair-guidance'
     | 'repair-citation'
     | 'repair-relation'
     | 'review-candidate'
@@ -64,8 +69,14 @@ export interface ContextHealthCandidateEvidenceV1 {
   readonly targetUri?: string;
 }
 
+export interface ContextHealthGuidanceEvidenceV1 {
+  readonly sourceUris: readonly string[];
+  readonly state: 'locally-modified' | 'missing-block' | 'stale-sources' | 'unavailable';
+}
+
 export interface ContextHealthReportInputV1 {
   readonly candidateEvidence?: readonly ContextHealthCandidateEvidenceV1[];
+  readonly guidanceEvidence?: readonly ContextHealthGuidanceEvidenceV1[];
   readonly citationValidations?: readonly ContextBriefMemoryCitationValidationV2[];
   readonly includeFindingUris?: readonly string[];
   readonly limit?: number;
@@ -99,6 +110,7 @@ export function buildContextHealthReport(input: ContextHealthReportInputV1): Con
       ...relationFindings(input.relationEvidence ?? [], records),
       ...duplicateFindings(records, input.project, input.now),
       ...candidateFindings(input.candidateEvidence ?? [], input.project),
+      ...guidanceFindings(input.guidanceEvidence ?? []),
     ].sort(compareFindings),
   ).filter(finding => includeFindingUris === undefined || finding.uris.some(uri => includeFindingUris.has(uri)));
   const limit = findingLimit(input.limit);
@@ -110,6 +122,22 @@ export function buildContextHealthReport(input: ContextHealthReportInputV1): Con
     recordsScanned: records.length,
     version: CONTEXT_HEALTH_REPORT_VERSION,
   };
+}
+
+function guidanceFindings(evidence: readonly ContextHealthGuidanceEvidenceV1[]): readonly ContextHealthFindingV1[] {
+  return evidence.flatMap(item => {
+    const uris = [...new Set(item.sourceUris)].sort(compareText);
+    if (uris.length === 0) return [];
+    return [
+      finding(`guidance-${item.state}`, uris, `project guidance is ${item.state}`, {
+        confidence: 'high',
+        kind: 'repair-guidance',
+        repairability: item.state === 'unavailable' ? 'requires-evidence' : 'reviewable',
+        severity: item.state === 'stale-sources' ? 'medium' : 'high',
+        summary: `Review projected project guidance: ${item.state}.`,
+      }),
+    ];
+  });
 }
 
 function validityFindings(records: readonly MemoryRecord[], now: Date): readonly ContextHealthFindingV1[] {
@@ -331,19 +359,24 @@ function severityRank(severity: ContextHealthSeverityV1): number {
 }
 
 function categoryRank(category: ContextHealthFindingCategoryV1): number {
-  return [
-    'validity-expired',
-    'citation-changed',
-    'citation-missing',
-    'relation-target-missing',
-    'relation-target-inactive',
-    'relation-target-conflicted',
-    'review-overdue',
-    'exact-duplicate',
-    'candidate-contradiction',
-    'candidate-possible-duplicate',
-    'citation-unknown',
-  ].indexOf(category);
+  const rank: Record<ContextHealthFindingCategoryV1, number> = {
+    'validity-expired': 0,
+    'citation-changed': 1,
+    'citation-missing': 2,
+    'relation-target-missing': 3,
+    'relation-target-inactive': 4,
+    'relation-target-conflicted': 5,
+    'guidance-locally-modified': 6,
+    'guidance-missing-block': 7,
+    'guidance-unavailable': 8,
+    'review-overdue': 9,
+    'exact-duplicate': 10,
+    'candidate-contradiction': 11,
+    'candidate-possible-duplicate': 12,
+    'guidance-stale-sources': 13,
+    'citation-unknown': 14,
+  };
+  return rank[category];
 }
 
 function compareRecords(left: MemoryRecord, right: MemoryRecord): number {
