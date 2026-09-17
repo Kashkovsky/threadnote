@@ -28,7 +28,7 @@ import type {
   runValueReportExport,
   runValueReportRetention,
 } from '../value_report/commands.js';
-import type {runProcedureVerify, runProcedureStatus} from '../procedure/commands.js';
+import type {runProcedurePublish, runProcedureStatus, runProcedureVerify} from '../procedure/commands.js';
 import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
@@ -98,6 +98,7 @@ export function makeContextBriefCommand<E, R>(
       json: boolean('json', 'Print the structured Context Brief projection'),
       mode: defaultChoice('mode', ['brief', 'locate', 'explain', 'trace', 'impact'], 'Evidence-planning mode', 'brief'),
       project: optionalString('project', 'Optional memory project scope, at most 256 UTF-8 bytes'),
+      surface: optionalString('surface', 'Agent catalog surface selector used for compatible procedure admission'),
       task: requiredString('task', 'Engineering task or question, 1-4096 UTF-8 bytes without control characters'),
       workset: optionalString('workset', 'Prepared workset scope, at most 256 UTF-8 bytes, instead of the repository'),
     },
@@ -287,4 +288,24 @@ export function makeProcedureStatusCommand<E, R>(
   ).pipe(
     Command.withDescription('Check a receipt, local artifact hash, and declared host compatibility without execution'),
   );
+}
+
+export function makeProcedurePublishCommand<E, R>(
+  handler: (options: Parameters<typeof runProcedurePublish>[1]) => Effect.Effect<void, E, R>,
+) {
+  return Command.make(
+    'publish',
+    {
+      apply: boolean('apply', 'Publish the exact reviewed proposal into the configured team Git share'),
+      approved: boolean('approved', 'Confirm the exact preview proposal has been reviewed'),
+      artifact: requiredString('artifact', 'Exact local artifact file bound by the manifest and receipt'),
+      json: boolean('json', 'Emit the structured publication plan (also the default)'),
+      manifest: argument('manifest', 'Explicit local procedure JSON manifest'),
+      proposalId: optionalString('proposal-id', 'Exact proposal ID emitted by the preview'),
+      push: boolean('push', 'Push the resulting Git commit after publication'),
+      receipt: requiredString('receipt', 'Local verification receipt JSON emitted by procedure verify --apply'),
+      team: optionalString('team', 'Configured shared team; defaults to the default team'),
+    },
+    handler,
+  ).pipe(Command.withDescription('Preview by default; publish verified procedure bytes only after explicit approval'));
 }

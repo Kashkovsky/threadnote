@@ -31,6 +31,9 @@ import {
   type ContextBriefMemoryRetrievalV1,
   type ContextBriefScopeV1,
   type ContextBriefV1,
+  CONTEXT_BRIEF_PROCEDURE_AGENT_VIEW_VERSION,
+  CONTEXT_BRIEF_PROCEDURE_PROJECTOR_VERSION,
+  CONTEXT_BRIEF_PROCEDURE_VERSION,
 } from '../../src/context_brief/index.js';
 import {createCodeMemoryLinkAgentSuiteCorpusV1} from '../../src/evaluation/code-memory-link-agent-suite.js';
 import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
@@ -64,6 +67,26 @@ const SNAPSHOT = {
   repositoryKey: 'threadnote',
   snapshotId: `cgsn_${'d'.repeat(40)}`,
 };
+
+function verifiedProcedureEvidence() {
+  return {
+    artifact: {id: 'team/deploy', semanticVersion: '1.0.0'},
+    dependencies: [],
+    owner: 'platform-team',
+    provenance: {
+      artifactSha256: 'a'.repeat(64),
+      kind: 'verified-procedure-git-share' as const,
+      manifestSha256: 'b'.repeat(64),
+      team: 'default',
+      threadnoteVersion: '5.0.0',
+      verifiedAt: '2026-09-17T12:00:00.000Z',
+      verifier: 'test-verifier',
+    },
+    reviewedOn: '2026-09-17',
+    rollout: {channel: 'stable' as const, percentage: 100},
+    summary: 'Deploy the service using the reviewed workflow.',
+  };
+}
 
 describe('Context Brief compiler', () => {
   it('counts a failed planned compilation as an unsuccessful value attempt', () => {
@@ -134,6 +157,71 @@ describe('Context Brief compiler', () => {
         upstreamRemainingEstimate: 4,
       });
       expectTextCarriesSelectedEvidence(expanded.text, expanded.structuredContent);
+    }),
+  );
+
+  effectIt.effect('admits bounded verified-procedure metadata with distinct Git-share provenance', () =>
+    Effect.gen(function* () {
+      const verifiedProcedure = verifiedProcedureEvidence();
+      const result = yield* compileContextBriefWith(
+        {
+          graphEvidence: () => Effect.succeed(graphEvidence()),
+          memoryEvidence: () => Effect.succeed({...memoryEvidence(), candidates: []}),
+          procedureEvidence: () => Effect.succeed({gaps: [], procedures: [verifiedProcedure]}),
+        },
+        request(1_500),
+      );
+
+      expect(result.structuredContent.verifiedProcedures).toEqual([verifiedProcedure]);
+      expect(result.structuredContent.version).toBe(CONTEXT_BRIEF_PROCEDURE_VERSION);
+      expect(result.structuredContent.output.projectorVersion).toBe(CONTEXT_BRIEF_PROCEDURE_PROJECTOR_VERSION);
+      const agentView = parseContextBriefAgentViewText(result.text);
+      expect(agentView.version).toBe(CONTEXT_BRIEF_PROCEDURE_AGENT_VIEW_VERSION);
+      expect(agentView.verifiedProcedures).toEqual([verifiedProcedure]);
+      expect(JSON.stringify(result.structuredContent.verifiedProcedures)).not.toContain('commands');
+      expect(() =>
+        parseContextBriefV1({
+          ...result.structuredContent,
+          output: {...result.structuredContent.output, projectorVersion: 3},
+          version: 3,
+        }),
+      ).toThrow('legacy projections cannot carry verifiedProcedures');
+      expect(() =>
+        parseContextBriefV1({
+          ...result.structuredContent,
+          verifiedProcedures: [{...verifiedProcedure, commands: [['execute-untrusted']]}],
+        }),
+      ).toThrow('verifiedProcedures contains invalid evidence');
+      expect(() => parseContextBriefV1({...result.structuredContent, verifiedProcedures: undefined})).toThrow(
+        'procedure projection requires verifiedProcedures',
+      );
+      expect(() => parseContextBriefAgentViewText(JSON.stringify({...agentView, version: 1}))).toThrow(
+        'legacy agent views cannot carry verified procedures',
+      );
+    }),
+  );
+
+  effectIt.effect('protects procedure coverage gaps at maximum logical pressure and the minimum budget', () =>
+    Effect.gen(function* () {
+      const result = yield* compileContextBriefWith(
+        {
+          graphEvidence: () =>
+            Effect.succeed({
+              ...minimalGraphEvidence(),
+              gaps: Array.from({length: 24}, (_, index) => `graph-pressure-${index}`),
+            }),
+          memoryEvidence: () => Effect.succeed({...memoryEvidence(), candidates: []}),
+          procedureEvidence: () =>
+            Effect.succeed({
+              gaps: ['procedure-evidence-truncated'],
+              procedures: [verifiedProcedureEvidence()],
+            }),
+        },
+        request(800),
+      );
+
+      expect(result.structuredContent.coverage.gaps[0]).toBe('procedure-evidence-truncated');
+      expect(parseContextBriefAgentViewText(result.text).coverage?.gaps?.[0]).toBe('procedure-evidence-truncated');
     }),
   );
 

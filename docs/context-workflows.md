@@ -268,9 +268,12 @@ retire records explicitly; Threadnote does not silently renew stale knowledge.
 
 ## Verified procedures
 
-Procedures remain versioned shared artifacts, not a new memory kind. A manifest records an artifact ID and semantic
-version, SHA-256, compatible capability/surface IDs, owner and review date, dependencies, verification commands or
-fixtures, and related durable memory IDs. A successful receipt binds verification to the exact manifest hash.
+Procedures remain versioned shared artifacts, not a new memory kind. Manifest schema v2 records an artifact ID and semantic
+version, SHA-256, compatible capability/surface IDs, owner and review date, dependencies, a bounded summary and task
+keywords, a stable or preview rollout percentage, verification commands or fixtures, and related durable memory IDs.
+A successful receipt binds verification to the exact manifest hash. Stable rollouts require stable semantic versions.
+Schema v1 manifests remain valid for local verification and status, but publication and Context Brief admission require
+the reviewed discovery and rollout metadata in v2.
 
 Verify an author-selected local manifest with a preview by default:
 
@@ -298,9 +301,33 @@ threadnote procedure status <manifest> --artifact <file> \
 Status is read-only and reports `current`, `incompatible`, `locally-modified`, `unverified`, or `update-available`.
 Update detection is explicit and local: pass a separately acquired manifest with `--available-manifest`; status never
 downloads or executes it.
-Procedure publication is intentionally absent until the source bytes are cryptographically bound to the verified
-manifest and receipt. Use the existing reviewed artifact/share workflow only after that trust contract is available;
-do not infer publication support from a successful local verification.
+
+Publish only exact current verification evidence into a configured Git share. Preview is the default and is read-only:
+
+```sh
+threadnote procedure publish <manifest> --artifact <file> --receipt <receipt.json>
+threadnote procedure publish <manifest> --artifact <file> --receipt <receipt.json> \
+  --apply --approved --proposal-id <preview-id> --push
+```
+
+Publication rechecks the receipt, manifest, artifact hash, secret/local-path scrubber, selected team, and exact proposal
+under the shared-repository lock. Inputs must be regular, non-symbolic-link, BOM-free, NUL-free strict UTF-8 text: manifests and
+receipts are capped at 256 KiB and the artifact is capped at 1 MiB. It stores the exact text bytes as three immutable
+files under a stable artifact-ID/version path and refuses a same-version content conflict; unrelated Git files and index
+entries are not committed or rewritten. Push is separately explicit. MCP exposes the same boundary as
+`procedure_publish_preview` and `procedure_publish_apply` in the full toolset; the default bounded core toolset uses the
+CLI so adding publication does not inflate every agent's startup schema.
+
+Context Brief can admit at most four task-relevant, currently verified procedures for the active catalog surface. It
+matches only capabilities that the public agent catalog marks managed, applies deterministic cohort rollout, selects
+the highest admitted semantic version, and requires an exact dependency closure. Dependency metadata precedes its
+root procedure. The brief contains only bounded reviewed metadata and `verified-procedure-git-share` provenance—never
+artifact bodies or verification commands—and downloaded procedures are never executed automatically. Use
+`threadnote context brief ... --surface <catalog-selector>` to override the runtime surface explicitly.
+Procedure-bearing briefs use Context Brief response schema v4, projector schema v4, and agent-view schema v2. Older
+wire versions remain readable but reject a procedure field instead of silently dropping it. Bounded discovery records
+`procedure-evidence-unavailable`, `procedure-evidence-truncated`, or `procedure-version-conflict` coverage gaps when it
+cannot establish a complete trustworthy procedure set.
 
 ## Trust boundary
 

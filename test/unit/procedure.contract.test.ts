@@ -26,9 +26,11 @@ const manifest = {
     {artifactId: 'team.example/test', semanticVersion: '2.0.0'},
   ],
   owner: 'owner-opaque-42',
+  presentation: {summary: 'Run the reviewed repository verification workflow.', taskKeywords: ['review', 'verify']},
   relatedDurableMemoryIds: ['tn_abc123', 'tn_def456'],
   reviewedOn: '2026-09-17',
-  schemaVersion: 1,
+  rollout: {channel: 'stable', percentage: 100},
+  schemaVersion: 2,
   verification: {
     commands: [
       {argv: ['bun', 'test', 'test/unit/procedure.contract.test.ts'], id: 'unit'},
@@ -42,6 +44,28 @@ const manifest = {
 } as const;
 
 describe('verified procedure contract', () => {
+  it('keeps schema v1 local verification readable while reserving publication metadata for v2', () => {
+    const {presentation: _presentation, rollout: _rollout, ...legacyFields} = manifest;
+    const legacy = parseProcedureManifest({...legacyFields, schemaVersion: 1});
+    const receipt = createProcedureVerificationReceipt(legacy, {
+      hostVersion: 'host',
+      threadnoteVersion: '5.0.0',
+      verifiedAt: '2026-09-17T12:00:00.000Z',
+      verifier: 'verifier',
+    });
+
+    expect(canonicalProcedureManifest(legacy)).toBe(`${JSON.stringify({...legacyFields, schemaVersion: 1})}\n`);
+    expect(JSON.parse(canonicalProcedureManifest(legacy))).not.toHaveProperty('rollout');
+    expect(
+      procedureStatus(legacy, {
+        capabilities: ['filesystem.read', 'git.read'],
+        localArtifactSha256: legacy.artifact.sha256,
+        receipt,
+        surfaceIds: ['terminal', 'workspace'],
+      }),
+    ).toBe('current');
+  });
+
   it('canonicalizes unordered manifest collections while preserving verification command order', () => {
     const parsed = parseProcedureManifest({
       ...manifest,
@@ -143,6 +167,7 @@ describe('verified procedure contract', () => {
         compatible: {capabilities: [...capabilities].reverse(), surfaceIds: [...surfaceIds].reverse()},
       });
       expect(canonicalProcedureManifest(first)).toBe(canonicalProcedureManifest(second));
+      expect(procedureManifestSha256(first)).toBe(procedureManifestSha256(second));
     },
     {fastCheck: {numRuns: 100}},
   );

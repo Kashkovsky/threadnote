@@ -5,6 +5,8 @@ import {SystemInfo} from '../effect/system.js';
 import {currentPackageVersion} from '../release/index.js';
 import {parseProcedureManifest, type ProcedureManifest} from './contract.js';
 import {ProcedureRuntimeError, procedureRuntimeStatus, verifyLocalProcedure} from './runtime.js';
+import {publishVerifiedProcedure, type ProcedurePublishOptions} from './publication.js';
+import type {RuntimeConfig} from '../types.js';
 
 export interface ProcedureVerifyOptions {
   readonly apply?: boolean;
@@ -25,6 +27,18 @@ export interface ProcedureStatusOptions {
   readonly receipt?: string;
   readonly surface: readonly string[];
 }
+
+export interface ProcedurePublishCommandOptions extends ProcedurePublishOptions {
+  readonly json?: boolean;
+}
+
+export const runProcedurePublish = Effect.fn('procedure.publish.command')(function* (
+  config: RuntimeConfig,
+  options: ProcedurePublishCommandOptions,
+) {
+  const result = yield* publishVerifiedProcedure(config, options);
+  yield* writeFinalCliOutput(JSON.stringify(result));
+});
 
 export const runProcedureVerify = Effect.fn('procedure.verify.command')(function* (options: ProcedureVerifyOptions) {
   const path = yield* Path.Path;

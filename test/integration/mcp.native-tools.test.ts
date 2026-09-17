@@ -115,6 +115,8 @@ const ADVANCED_TOOL_NAMES = [
   'share_bundle',
   'list_shared_skills',
   'install_shared_skill',
+  'procedure_publish_preview',
+  'procedure_publish_apply',
 ];
 
 interface McpFixture {
@@ -2008,6 +2010,7 @@ describe('Threadnote MCP toolsets', () => {
               anyOf: expect.arrayContaining([{type: 'string'}, {items: {type: 'string'}, maxItems: 8, type: 'array'}]),
             },
             mode: {enum: ['brief', 'locate', 'explain', 'trace', 'impact']},
+            surface: {type: 'string'},
             task: {type: 'string'},
             workset: {type: 'string'},
           },
@@ -4054,6 +4057,12 @@ describe('Threadnote MCP toolsets', () => {
               revision: {type: 'integer'},
             },
           },
+        });
+        expect(tools.tools.find(tool => tool.name === 'procedure_publish_preview')).toMatchObject({
+          annotations: {destructiveHint: false, readOnlyHint: true},
+        });
+        expect(tools.tools.find(tool => tool.name === 'procedure_publish_apply')).toMatchObject({
+          annotations: {destructiveHint: true, readOnlyHint: false},
         });
       },
       {toolset: 'full'},

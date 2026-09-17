@@ -8,6 +8,7 @@ import {
   CONTEXT_BRIEF_DEFAULT_PUBLIC_CODE_RELATIONS,
   CONTEXT_BRIEF_MAXIMUM_PUBLIC_CITATION_RECEIPTS,
   CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS,
+  CONTEXT_BRIEF_PROCEDURE_VERSION,
   CONTEXT_BRIEF_VERSION,
   parseContextBriefRequestV1,
   type ContextBriefCitationReceiptV2,
@@ -25,6 +26,7 @@ import {
   type ContextBriefPreciseEvidenceStatus,
   type ContextBriefRequestV1,
 } from './types.js';
+import type {VerifiedProcedureEvidence} from '../procedure/selection.js';
 import {classifyMemoryFreshness, reconcileContextBriefMemoryFreshness} from './memory_evidence.js';
 
 const MAXIMUM_ISSUES = 24;
@@ -63,6 +65,7 @@ export function planContextBrief(input: ContextBriefRequestV1 | unknown): Contex
     mode: request.mode,
     outputBudgetTokens: request.budgetTokens,
     scope: request.scope,
+    ...(request.surface === undefined ? {} : {surface: request.surface}),
     task: request.task,
   };
 }
@@ -72,6 +75,8 @@ export function assembleContextBriefLogicalResult(input: {
   readonly memory: ContextBriefMemoryRetrievalV1;
   readonly observedAt: string;
   readonly plan: ContextBriefPlanV1;
+  readonly verifiedProcedureGaps?: readonly string[];
+  readonly verifiedProcedures?: readonly VerifiedProcedureEvidence[];
 }): ContextBriefLogicalResultV1 {
   const validations = new Map((input.memory.citationValidations ?? []).map(validation => [validation.uri, validation]));
   const memories = input.memory.candidates.flatMap(candidate => {
@@ -129,7 +134,8 @@ export function assembleContextBriefLogicalResult(input: {
   const durableDecisions = stableMemories(memories.filter(memory => memory.kind === 'durable'));
   const handoffs = stableMemories(memories.filter(memory => memory.kind === 'handoff'));
   const issues = contextIssues(memories);
-  const gaps = stableUnique([
+  const procedureGaps = stableUnique(input.verifiedProcedureGaps ?? []);
+  const generalGaps = stableUnique([
     ...input.graph.gaps,
     ...contextBriefGraphWarningGaps(input.graph.warnings),
     ...input.memory.gaps,
@@ -143,7 +149,8 @@ export function assembleContextBriefLogicalResult(input: {
     validatedCodeLinkedMemories === 0
       ? ['code-anchor-selector-matches-unvalidated']
       : []),
-  ]).slice(0, 24);
+  ]).filter(gap => !procedureGaps.includes(gap));
+  const gaps = [...procedureGaps, ...generalGaps].slice(0, MAXIMUM_ISSUES);
   const freshness = scopeFreshness(input.graph);
   return {
     coverage: {
@@ -180,13 +187,19 @@ export function assembleContextBriefLogicalResult(input: {
       requestedRepositories: input.graph.coverage.requestedRepositories,
     },
     task: input.plan.task,
+    verifiedProcedures: input.verifiedProcedures ?? [],
     trust: {
       compiler: {modelsRequired: false, queryPlanExposed: false},
       graph: input.graph.trust,
       memory: input.memory.trust,
     },
     type: 'context-brief',
-    version: input.plan.codeAnchors.codeRefs.length === 0 ? CONTEXT_BRIEF_LEGACY_VERSION : CONTEXT_BRIEF_VERSION,
+    version:
+      (input.verifiedProcedures?.length ?? 0) > 0
+        ? CONTEXT_BRIEF_PROCEDURE_VERSION
+        : input.plan.codeAnchors.codeRefs.length === 0
+          ? CONTEXT_BRIEF_LEGACY_VERSION
+          : CONTEXT_BRIEF_VERSION,
   };
 }
 
