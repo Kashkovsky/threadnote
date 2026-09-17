@@ -76,4 +76,4 @@ Zot ACL admission: smoke-test both registry roles and graph read/contribute usin
 The old Auth0 command names and `THREADNOTE_AUTH0_{GRAPH,REGISTRY,PUBLISHER}_M2M_*` environment names remain aliases.
 Legacy root issuers retain `oauth/token`, `.well-known/jwks.json`, `client_secret_post`, the audience form parameter, and
 `azp`/`client_id` selection. Conflicting generic and legacy values fail closed. When migrating an issuer to the generic
-name, provide its explicit endpoint, authentication, and claim settings. Interactive Auth0 user/device login is unchanged.
+name, provide its explicit endpoint, authentication, and claim settings. Interactive user/device authorization is documented in [OAuth user credentials](oauth-user-credentials.md).

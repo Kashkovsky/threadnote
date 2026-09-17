@@ -27,6 +27,7 @@ export class AccessTokenError extends Schema.TaggedError<AccessTokenError>()('Ac
 }
 
 export interface AccessTokenClaims {
+  readonly clientId?: string;
   readonly expiresAt: number;
   readonly issuer: string;
   readonly scopes: ReadonlySet<string>;
@@ -35,6 +36,8 @@ export interface AccessTokenClaims {
 
 export interface AccessTokenConfig {
   readonly audience: string;
+  readonly clientId?: string;
+  readonly clientIdClaim?: 'azp' | 'client_id' | 'cid' | 'azp-or-client_id';
   readonly issuer: string;
 }
 
@@ -69,6 +72,7 @@ export function createAccessTokenVerifier(key: CryptoKey | JWTVerifyGetKey, conf
     } catch {
       throw AccessTokenError.of('unverifiable');
     }
+    if (!exactAudience(payload.aud, config.audience)) throw AccessTokenError.of('unverifiable');
     if (!payload.iss || !payload.sub) throw AccessTokenError.of('missingIdentity');
     const issuedAt = numericDate(payload.iat);
     const expiresAt = numericDate(payload.exp);
@@ -76,14 +80,68 @@ export function createAccessTokenVerifier(key: CryptoKey | JWTVerifyGetKey, conf
     if (expiresAt <= issuedAt || expiresAt - issuedAt > 605 || notBefore > issuedAt + 5) {
       throw AccessTokenError.of('invalidLifetime');
     }
-    const rawScopes = typeof payload.scope === 'string' ? payload.scope.split(/\s+/) : payload.scp;
-    const scopes = new Set<string>(
-      Array.isArray(rawScopes)
-        ? rawScopes.filter((item): item is string => typeof item === 'string' && item.length > 0)
-        : [],
-    );
-    return {expiresAt, issuer: payload.iss, scopes, subject: payload.sub};
+    const scopes = config.clientIdClaim === undefined ? legacyTokenScopes(payload) : tokenScopes(payload);
+    const clientId = configuredClientId(payload, config);
+    return {
+      ...(clientId === undefined ? {} : {clientId}),
+      expiresAt,
+      issuer: payload.iss,
+      scopes,
+      subject: payload.sub,
+    };
   };
+}
+
+function exactAudience(audience: JWTPayload['aud'], expected: string): boolean {
+  return audience === expected || (Array.isArray(audience) && audience.length === 1 && audience[0] === expected);
+}
+
+function configuredClientId(payload: JWTPayload, config: AccessTokenConfig): string | undefined {
+  if (config.clientId === undefined && config.clientIdClaim === undefined) return undefined;
+  if (config.clientId === undefined || config.clientIdClaim === undefined) throw AccessTokenError.of('unverifiable');
+  let clientId: unknown;
+  if (config.clientIdClaim === 'azp-or-client_id') {
+    if (payload.azp !== undefined && payload.client_id !== undefined && payload.azp !== payload.client_id)
+      throw AccessTokenError.of('unverifiable');
+    clientId = payload.azp ?? payload.client_id;
+  } else {
+    clientId = payload[config.clientIdClaim];
+  }
+  if (typeof clientId !== 'string' || clientId !== config.clientId) throw AccessTokenError.of('unverifiable');
+  return clientId;
+}
+
+function legacyTokenScopes(payload: JWTPayload): ReadonlySet<string> {
+  const rawScopes = typeof payload.scope === 'string' ? payload.scope.split(/\s+/) : payload.scp;
+  return new Set(
+    Array.isArray(rawScopes)
+      ? rawScopes.filter((item): item is string => typeof item === 'string' && item.length > 0)
+      : [],
+  );
+}
+
+function tokenScopes(payload: JWTPayload): ReadonlySet<string> {
+  const scope = payload.scope === undefined ? undefined : scopeList(payload.scope);
+  const scp = payload.scp === undefined ? undefined : scopeList(payload.scp);
+  if (payload.scope !== undefined && scope === undefined) throw AccessTokenError.of('unverifiable');
+  if (payload.scp !== undefined && scp === undefined) throw AccessTokenError.of('unverifiable');
+  if (scope !== undefined && scp !== undefined && !sameSet(scope, scp)) throw AccessTokenError.of('unverifiable');
+  return new Set(scope ?? scp ?? []);
+}
+
+function scopeList(value: unknown): string[] | undefined {
+  const result =
+    typeof value === 'string'
+      ? value.split(/\s+/).filter(Boolean)
+      : Array.isArray(value) && value.every(item => typeof item === 'string' && item.length > 0 && !/\s/u.test(item))
+        ? value
+        : undefined;
+  if (result === undefined || new Set(result).size !== result.length) return undefined;
+  return result;
+}
+
+function sameSet(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every(item => right.includes(item));
 }
 
 function numericDate(value: unknown): number {

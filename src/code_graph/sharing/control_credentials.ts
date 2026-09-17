@@ -5,6 +5,7 @@ import {readBoundedPrivateBytes} from './atomic.js';
 import {sha256Digest, SHA256_DIGEST, SHA256_HEX} from './digest.js';
 import {graphSharingFailure, graphSharingUnavailable} from './errors.js';
 import {graphSharingLayout} from './layout.js';
+import {canonicalOAuthUrl} from './oauth_m2m_config.js';
 
 const Text = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512));
 const Organization = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9._-]{0,63}$/u));
@@ -57,7 +58,7 @@ export const makeGraphControlCredentialLoader = Effect.fn('codeGraph.sharing.con
     Scope,
     STRICT,
   )(input).pipe(Effect.mapError(() => graphSharingFailure('Graph control credential scope is invalid.')));
-  if (!isCanonicalHttpsUrl(scope.coordinatorUrl))
+  if (!canonicalOAuthUrl(scope.coordinatorUrl))
     return yield* graphSharingFailure('Graph control credentials require an exact HTTPS resource.');
   const configPath = path.join(graphSharingLayout(path, home).root, 'control-credentials.json');
   const gate = yield* Semaphore.make(1);
@@ -83,9 +84,9 @@ export const makeGraphControlCredentialLoader = Effect.fn('codeGraph.sharing.con
       if (
         config.bindings.some(
           binding =>
-            !isCanonicalHttpsUrl(binding.coordinatorUrl) ||
-            !isCanonicalHttpsUrl(binding.issuer) ||
-            !isCanonicalHttpsUrl(binding.audience),
+            !canonicalOAuthUrl(binding.coordinatorUrl) ||
+            !canonicalOAuthUrl(binding.issuer) ||
+            !canonicalOAuthUrl(binding.audience),
         ) ||
         new Set(config.bindings.map(binding => JSON.stringify([binding.coordinatorUrl, binding.organization]))).size !==
           config.bindings.length
@@ -102,15 +103,16 @@ export const makeGraphControlCredentialLoader = Effect.fn('codeGraph.sharing.con
       const now = yield* Clock.currentTimeMillis;
       if (cached?.bindingId === bindingId && cached.refreshAt > now) return cached.credential;
       cached = undefined;
-      const helper =
-        binding.helper === 'auth0'
-          ? typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE
-            ? {executable: system.executablePath, args: ['__graph-auth0-helper', 'get']}
-            : {
-                executable: system.executablePath,
-                args: [new URL('../../standalone.ts', import.meta.url).pathname, '__graph-auth0-helper', 'get'],
-              }
-          : {executable: `threadnote-credential-${binding.helper}`, args: ['get']};
+      const isPackagedOAuthUser = binding.helper === 'auth0' || binding.helper === 'oauth';
+      const oauthUserArgument = binding.helper === 'auth0' ? '__graph-auth0-helper' : '__graph-oauth-helper';
+      const helper = isPackagedOAuthUser
+        ? typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE
+          ? {executable: system.executablePath, args: [oauthUserArgument, 'get']}
+          : {
+              executable: system.executablePath,
+              args: [new URL('../../standalone.ts', import.meta.url).pathname, oauthUserArgument, 'get'],
+            }
+        : {executable: `threadnote-credential-${binding.helper}`, args: ['get']};
       const result = yield* command
         .execute(helper.executable, helper.args, {
           allowFailure: true,
@@ -126,13 +128,12 @@ export const makeGraphControlCredentialLoader = Effect.fn('codeGraph.sharing.con
             }) + '\n',
           ),
           maxOutputBytes: 32_768,
-          // The packaged Auth0 helper may need both a token exchange and a cold JWKS fetch.
-          timeoutMs:
-            binding.helper === 'auth0'
-              ? 25_000
-              : binding.helper === 'auth0-m2m' || binding.helper === 'oauth-m2m'
-                ? 10_000
-                : 5_000,
+          // The packaged OAuth helper may need both a token exchange and a cold JWKS fetch.
+          timeoutMs: isPackagedOAuthUser
+            ? 25_000
+            : binding.helper === 'auth0-m2m' || binding.helper === 'oauth-m2m'
+              ? 10_000
+              : 5_000,
         })
         .pipe(Effect.mapError(() => graphSharingUnavailable('Graph control credential helper is unavailable.')));
       if (result.exitCode !== 0)
@@ -169,20 +170,3 @@ export const makeGraphControlCredentialLoader = Effect.fn('codeGraph.sharing.con
     },
   };
 });
-
-function isCanonicalHttpsUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === 'https:' &&
-      url.username === '' &&
-      url.password === '' &&
-      url.search === '' &&
-      url.hash === '' &&
-      (url.href === value || (url.pathname === '/' && url.href === value + '/')) &&
-      /^\/(?:[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*)?\/?$/u.test(url.pathname)
-    );
-  } catch {
-    return false;
-  }
-}

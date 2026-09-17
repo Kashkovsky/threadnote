@@ -32,8 +32,9 @@ const isOAuthM2MRegistryCredentialHelper =
 const isOAuthM2MPublisherRegistryCredentialHelper =
   arguments_[0] === '__credential-registry-auth0-publisher-m2m' ||
   arguments_[0] === '__credential-registry-oauth-publisher-m2m';
-const isGraphAuth0Helper = arguments_[0] === '__graph-auth0-helper';
-const isAuth0UserRegistryCredentialHelper = arguments_[0] === '__credential-registry-auth0-user';
+const isGraphOAuthUserHelper = arguments_[0] === '__graph-auth0-helper' || arguments_[0] === '__graph-oauth-helper';
+const isOAuthUserRegistryCredentialHelper =
+  arguments_[0] === '__credential-registry-auth0-user' || arguments_[0] === '__credential-registry-oauth-user';
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
 const oauthM2MHelperIO = {
   stdin: process.stdin,
@@ -78,10 +79,10 @@ if (
         ? await oauthM2MRegistryCredentialHelperProgram(arguments_.slice(1))
         : isOAuthM2MPublisherRegistryCredentialHelper
           ? await oauthM2MPublisherRegistryCredentialHelperProgram(arguments_.slice(1))
-          : isAuth0UserRegistryCredentialHelper
-            ? await auth0UserRegistryCredentialHelperProgram(arguments_.slice(1))
-            : isGraphAuth0Helper
-              ? await graphAuth0HelperProgram(arguments_.slice(1))
+          : isOAuthUserRegistryCredentialHelper
+            ? await oauthUserRegistryCredentialHelperProgram(arguments_.slice(1))
+            : isGraphOAuthUserHelper
+              ? await graphOAuthHelperProgram(arguments_.slice(1))
               : isRemoteMemoryOperator
                 ? await remoteMemoryOperatorProgram(arguments_.slice(1))
                 : isLocalModelWorker
@@ -97,8 +98,8 @@ if (
       isLocalModelWorker ||
       isCodeGraphParserWorker ||
       isGitWorktreeRegistrationWorker ||
-      isGraphAuth0Helper ||
-      isAuth0UserRegistryCredentialHelper ||
+      isGraphOAuthUserHelper ||
+      isOAuthUserRegistryCredentialHelper ||
       (!isMcpServer && !isMcpBroker),
   });
 }
@@ -142,13 +143,13 @@ async function oauthM2MPublisherRegistryCredentialHelperProgram(arguments_: read
   );
 }
 
-async function graphAuth0HelperProgram(arguments_: readonly string[]) {
+async function graphOAuthHelperProgram(arguments_: readonly string[]) {
   const [helper, command, system] = await Promise.all([
-    import('./code_graph/sharing/auth0_user_helper.js'),
+    import('./code_graph/sharing/oauth_user_helper.js'),
     import('./effect/command.js'),
     import('./effect/system.js'),
   ]);
-  return helper.runGraphAuth0UserHelper(arguments_, oauthM2MHelperIO).pipe(
+  return helper.runGraphOAuthUserHelper(arguments_, oauthM2MHelperIO).pipe(
     Effect.tap(code =>
       Effect.sync(() => {
         process.exitCode = code;
@@ -163,13 +164,13 @@ async function graphAuth0HelperProgram(arguments_: readonly string[]) {
   );
 }
 
-async function auth0UserRegistryCredentialHelperProgram(arguments_: readonly string[]) {
+async function oauthUserRegistryCredentialHelperProgram(arguments_: readonly string[]) {
   const [helper, command, system] = await Promise.all([
-    import('./code_graph/sharing/auth0_user_registry_credential.js'),
+    import('./code_graph/sharing/oauth_user_registry_credential.js'),
     import('./effect/command.js'),
     import('./effect/system.js'),
   ]);
-  return helper.runAuth0UserRegistryCredentialHelper(arguments_, oauthM2MHelperIO).pipe(
+  return helper.runOAuthUserRegistryCredentialHelper(arguments_, oauthM2MHelperIO).pipe(
     Effect.tap(code =>
       Effect.sync(() => {
         process.exitCode = code;

@@ -99,4 +99,4 @@ tokens, and locally modified installs are blocked. Declared pack `pathRewrites` 
 portable install.
 
 Machine-to-machine graph and registry credentials, including Okta custom authorization servers, are described in
-[OAuth machine credentials](oauth-machine-credentials.md).
+[OAuth machine credentials](oauth-machine-credentials.md) and [OAuth user credentials](oauth-user-credentials.md).

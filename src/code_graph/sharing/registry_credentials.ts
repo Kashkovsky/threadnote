@@ -54,7 +54,7 @@ export const makeGraphShareRegistryCredentialLoader = Effect.fn('codeGraph.shari
             input: new TextEncoder().encode(`${target.registry}\n`),
             maxOutputBytes: 16_384,
             timeoutMs:
-              selected === 'threadnote-auth0-user'
+              selected === 'threadnote-auth0-user' || selected === 'threadnote-oauth-user'
                 ? 25_000
                 : selected === 'threadnote-oauth-m2m' ||
                     selected === 'threadnote-oauth-publisher-m2m' ||
@@ -88,6 +88,7 @@ export const makeGraphShareRegistryCredentialLoader = Effect.fn('codeGraph.shari
             `Basic ${Buffer.from(`${credential.Username}:${credential.Secret}`).toString('base64')}`,
           ),
           ...(selected === 'threadnote-auth0-user' ||
+          selected === 'threadnote-oauth-user' ||
           selected === 'threadnote-oauth-m2m' ||
           selected === 'threadnote-oauth-publisher-m2m' ||
           selected === 'threadnote-auth0-m2m' ||
