@@ -324,6 +324,7 @@ describe('agent expansion conformance', () => {
         settings => {
           const original = {...settings, mcp: {other: {command: 'kept'}}} as JsonObject;
           const raw = `// preserved heading\n${JSON.stringify(original, undefined, 2)}\n`;
+          const serializedOriginal = JSON.parse(JSON.stringify(original)) as JsonObject;
           const merged = mergeAgentServer(original, 'mcp', 'threadnote', {type: 'local', command: ['threadnote']});
           const written = writeAgentServer(raw, 'jsonc', 'mcp', 'threadnote', merged);
           expect(parseAgentJson(written, 'jsonc')).toEqual(merged);
@@ -336,7 +337,7 @@ describe('agent expansion conformance', () => {
             'threadnote',
             removeAgentServer(merged, 'mcp', 'threadnote', false),
           );
-          expect(parseAgentJson(removed, 'jsonc')).toEqual(original);
+          expect(parseAgentJson(removed, 'jsonc')).toEqual(serializedOriginal);
           expect(removed).toContain('// preserved heading');
         },
       ),

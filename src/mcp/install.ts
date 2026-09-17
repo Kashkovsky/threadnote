@@ -49,6 +49,7 @@ import {
   readFileIfExists,
   removePathIfExists,
 } from '../utils.js';
+import {withSetupMutationLock} from '../setup/lock.js';
 
 export function isPersonalThreadnoteHome(
   agentContextHome: string,
@@ -65,7 +66,7 @@ const isPersonalThreadnoteHomeEffect = Effect.fn('mcp.isPersonalHome')(function*
 });
 
 export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options: McpInstallOptions) {
-  return Effect.gen(function* () {
+  const operation = Effect.gen(function* () {
     const attach = yield* Effect.try({
       try: () => resolveComposerAttach(options),
       catch: cause =>
@@ -96,6 +97,9 @@ export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options
     });
     return yield* options.apply === true ? withAgentIntegrationLock(config, install) : install;
   });
+  return options.apply !== true || options.setupLockHeld === true
+    ? operation
+    : withSetupMutationLock(config.agentContextHome, operation);
 }
 
 const runMcpInstallInTransaction = Effect.fn('mcp.runInstallInTransaction')(function* (

@@ -38,7 +38,13 @@ describe('value report', () => {
         },
         knowledgeDelta: {proposed: 4, approved: 2, edited: 1, rejected: 1, deferred: 0},
         health: {opened: 2, resolved: 1},
-        setup: {completed: 1, supportedAgentReuse: 1},
+        setup: {
+          completed: 1,
+          failed: 1,
+          started: 2,
+          supportedAgentReuse: 1,
+          timeToFirstEvidenceMillisecondsSamples: [300, 100, 200],
+        },
       },
     };
 
@@ -55,7 +61,14 @@ describe('value report', () => {
         resolvedCodeAnchors: 4,
         timeToFirstSuccessfulMilliseconds: 200,
       },
-      setup: {availability: 'available', completed: 1, supportedAgentReuse: 1},
+      setup: {
+        availability: 'available',
+        completed: 1,
+        failed: 1,
+        started: 2,
+        supportedAgentReuse: 1,
+        timeToFirstEvidenceMilliseconds: 200,
+      },
     });
     expect(JSON.stringify(report)).not.toContain('local-project');
     expect(JSON.stringify(report)).not.toContain('private');
@@ -140,5 +153,51 @@ describe('value report', () => {
       }),
       {numRuns: 40},
     );
+  });
+
+  it('keeps legacy setup completions readable and aggregates content-free lifecycle timing', () => {
+    const events: readonly LocalValueEventV1[] = [
+      {
+        completed: 1,
+        kind: 'setup',
+        supportedAgentReuse: 1,
+        timestamp: '2026-09-03T00:00:00.000Z',
+        version: 1,
+      },
+      {
+        durationMilliseconds: 0,
+        kind: 'setup-lifecycle',
+        phase: 'started',
+        timestamp: '2026-09-03T00:00:00.000Z',
+        version: 1,
+      },
+      {
+        durationMilliseconds: 250,
+        kind: 'setup-lifecycle',
+        phase: 'completed',
+        timeToFirstEvidenceMilliseconds: 250,
+        timestamp: '2026-09-03T00:00:00.250Z',
+        version: 1,
+      },
+    ];
+    const counts = summarizeLocalValueEvents(events, {
+      from: new Date('2026-09-01T00:00:00.000Z'),
+      to: new Date('2026-09-30T00:00:00.000Z'),
+    });
+    expect(counts.setup).toEqual({
+      completed: 1,
+      failed: 0,
+      started: 1,
+      supportedAgentReuse: 1,
+      timeToFirstEvidenceMillisecondsSamples: [250],
+    });
+    expect(aggregateValueReportV1({counts, period: {from: '2026-09-01', to: '2026-09-30'}}).setup).toEqual({
+      availability: 'available',
+      completed: 1,
+      failed: 0,
+      started: 1,
+      supportedAgentReuse: 1,
+      timeToFirstEvidenceMilliseconds: 250,
+    });
   });
 });

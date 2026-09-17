@@ -18,6 +18,7 @@ import {startProgress, withProgressLine} from './cli_ui.js';
 import {commandShimCheck, installCommandShim, removeCommandShim} from './command-shim.js';
 import {sha256FileHex} from './effect/digest.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
+import {withSetupMutationLock} from './setup/lock.js';
 import {hasManagedOmpHooks} from './omp_hooks.js';
 import {localAiDoctorCheck} from './effect/local-ai.js';
 import {SystemInfo} from './effect/system.js';
@@ -653,7 +654,9 @@ export const runUninstall = Effect.fn('lifecycle.uninstall')(function* (
 ) {
   const dryRun = options.dryRun === true;
   const uninstall = runUninstallInTransaction(config, options);
-  yield* dryRun ? uninstall : withAgentIntegrationLock(config, uninstall);
+  yield* dryRun
+    ? uninstall
+    : withSetupMutationLock(config.agentContextHome, withAgentIntegrationLock(config, uninstall));
 });
 
 const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(function* (
@@ -699,14 +702,20 @@ const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(
   }
   yield* removeMcpSnippets(config, dryRun);
   if (yield* hasManagedClaudeHooks()) {
-    yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true});
+    yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true, setupLockHeld: !dryRun});
   }
   if (yield* hasManagedCursorHooks()) {
-    yield* runHooksInstall(config, 'cursor', {apply: !dryRun, dryRun, remove: true});
+    yield* runHooksInstall(config, 'cursor', {apply: !dryRun, dryRun, remove: true, setupLockHeld: !dryRun});
   }
   const ompHostRoot = registry?.hosts.omp?.mcp.hostRoot;
   if (yield* hasManagedOmpHooks(ompHostRoot)) {
-    yield* runHooksInstall(config, 'omp', {apply: !dryRun, dryRun, hostRoot: ompHostRoot, remove: true});
+    yield* runHooksInstall(config, 'omp', {
+      apply: !dryRun,
+      dryRun,
+      hostRoot: ompHostRoot,
+      remove: true,
+      setupLockHeld: !dryRun,
+    });
   }
   yield* removeRegisteredAgentAdaptersInTransaction(config, dryRun, true);
   yield* removeCommandShim(dryRun);

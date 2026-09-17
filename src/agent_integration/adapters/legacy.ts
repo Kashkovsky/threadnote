@@ -24,13 +24,16 @@ function defineLegacyAgentAdapter(id: string, legacyClient: AgentClient): AgentA
         cwd: current.mcp.cwd,
         project: current.mcp.cwd,
         scope: current.mcp.scope,
+        setupLockHeld: options.setupLockHeld,
         toolset: current.mcp.toolset,
       });
     });
   return {
     actions: {
       install: (config, _adapter, options) =>
-        options.apply ? runMcpInstall(config, legacyClient, {apply: true}) : install(config),
+        options.apply
+          ? runMcpInstall(config, legacyClient, {apply: true, setupLockHeld: options.setupLockHeld})
+          : install(config),
       remove: (_config, _adapter, _options) =>
         AgentAdapterActionError.make({
           message: 'Compatibility surfaces use threadnote uninstall for removal; per-surface removal is not available.',
@@ -51,6 +54,7 @@ function defineLegacyAgentAdapter(id: string, legacyClient: AgentClient): AgentA
       },
     },
     adapterVersion: 1,
+    hooks: {client: legacyClient, kind: 'legacy-client'},
     id,
     kind: 'legacy',
     legacyClient,

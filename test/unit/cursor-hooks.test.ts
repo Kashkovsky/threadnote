@@ -4,7 +4,12 @@ import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path, Result} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {hasManagedCursorHooks, runCursorHooksInstall, withCursorHooks} from '../../src/cursor_hooks.js';
+import {
+  cursorHooksAreCurrent,
+  hasManagedCursorHooks,
+  runCursorHooksInstall,
+  withCursorHooks,
+} from '../../src/cursor_hooks.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import type {JsonObject} from '../../src/types.js';
@@ -39,6 +44,8 @@ describe('Cursor hook config', () => {
         ],
       },
     });
+    expect(cursorHooksAreCurrent(withCursorHooks({}, 'desktop'), 'desktop')).toBe(true);
+    expect(cursorHooksAreCurrent(withCursorHooks({}, 'cloud'), 'desktop')).toBe(false);
     const cloud = withCursorHooks(withCursorHooks({}, 'desktop'), 'cloud');
     expect(cloud.hooks).toMatchObject({sessionStart: [], preCompact: [{command: 'threadnote cursor-hook preCompact'}]});
     expect(cloud.hooks).not.toHaveProperty('workspaceOpen');

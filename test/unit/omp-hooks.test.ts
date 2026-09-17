@@ -6,7 +6,7 @@ import {Effect, FileSystem, Layer, Path, Result} from 'effect';
 import {describe, expect} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {hasManagedOmpHooks, runOmpHooksInstall} from '../../src/omp_hooks.js';
+import {hasCurrentOmpHooks, hasManagedOmpHooks, runOmpHooksInstall} from '../../src/omp_hooks.js';
 
 const TestLayer = Layer.mergeAll(BunFileSystem.layer, BunPath.layer, SystemInfo.layer);
 
@@ -42,10 +42,17 @@ describe('omp session hooks', () => {
       expect(installed).toContain("['session-start-hook']");
       expect(installed).toContain("['pre-compact-hook', '--source-agent-client', 'omp']");
       expect(yield* hasManagedOmpHooks().pipe(Effect.provideService(SystemInfo, system))).toBe(true);
+      expect(yield* hasCurrentOmpHooks().pipe(Effect.provideService(SystemInfo, system))).toBe(true);
 
+      yield* fs.writeFileString(hookPath, `${installed}// drift\n`);
+      expect(yield* hasManagedOmpHooks().pipe(Effect.provideService(SystemInfo, system))).toBe(true);
+      expect(yield* hasCurrentOmpHooks().pipe(Effect.provideService(SystemInfo, system))).toBe(false);
+
+      const repaired = yield* run({apply: true});
+      expect(repaired.output).toContain('Updated');
+      expect(yield* fs.readFileString(hookPath)).toBe(installed);
       const second = yield* run({apply: true});
       expect(second.output).toContain('already current');
-      expect(yield* fs.readFileString(hookPath)).toBe(installed);
 
       yield* run({apply: true, remove: true});
       expect(yield* fs.exists(hookPath)).toBe(false);

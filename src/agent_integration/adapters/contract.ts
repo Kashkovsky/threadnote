@@ -54,9 +54,12 @@ export interface AgentAdapterStatusContext {
 
 export interface AgentAdapterActionOptions {
   readonly apply: boolean;
+  readonly cwd?: string;
   readonly excludedConsumers?: ReadonlySet<string>;
   readonly inTransaction?: boolean;
   readonly registry?: AgentIntegrationRegistry;
+  /** @internal The caller already holds the home-wide setup mutation lock. */
+  readonly setupLockHeld?: boolean;
   readonly toolset?: McpToolset;
   readonly scope?: 'user' | 'project' | 'local';
 }
@@ -84,6 +87,10 @@ export interface AgentAdapterActions {
 export interface AgentAdapterDefinition {
   readonly actions: AgentAdapterActions;
   readonly adapterVersion: 1;
+  readonly hooks?: {
+    readonly client: AgentClient;
+    readonly kind: 'legacy-client';
+  };
   readonly id: string;
   readonly kind: 'catalog' | 'json' | 'legacy';
   readonly legacyClient?: AgentClient;

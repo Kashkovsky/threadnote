@@ -1,5 +1,6 @@
 import {Effect} from 'effect';
 import {mcpConfigurationChecks} from '../mcp/install.js';
+import {withSetupMutationLock} from '../setup/lock.js';
 import type {AgentClient, DoctorCheck, RuntimeConfig} from '../types.js';
 import {AGENT_ADAPTERS, getAgentAdapter} from './adapters.js';
 import type {AgentAdapter, AgentAdapterAction, AgentAdapterStatusContext} from './adapters/contract.js';
@@ -28,8 +29,16 @@ export function runAgentAdapterAction(
   action: AgentAdapterAction,
   apply: boolean,
   scope?: 'user' | 'project' | 'local',
+  cwd?: string,
+  setupLockHeld = false,
 ) {
-  return adapter.actions[action](config, adapter, {apply, scope});
+  const operation = adapter.actions[action](config, adapter, {
+    apply,
+    cwd,
+    scope,
+    setupLockHeld: apply,
+  });
+  return !apply || setupLockHeld ? operation : withSetupMutationLock(config.agentContextHome, operation);
 }
 
 export const agentAdapterStatuses = Effect.fn('agentAdapters.statuses')(function* (
@@ -56,11 +65,19 @@ export const repairRegisteredAgentAdapters = Effect.fn('agentAdapters.repairRegi
   config: RuntimeConfig,
   dryRun: boolean,
 ) {
-  const registry = yield* readAgentIntegrationRegistry(config);
-  for (const id of Object.keys(registry?.surfaces ?? {})) {
-    const adapter = getAgentAdapter(id);
-    if (adapter) yield* adapter.actions.repair(config, adapter, {apply: !dryRun, registry});
-  }
+  const operation = Effect.gen(function* () {
+    const registry = yield* readAgentIntegrationRegistry(config);
+    for (const id of Object.keys(registry?.surfaces ?? {})) {
+      const adapter = getAgentAdapter(id);
+      if (adapter)
+        yield* adapter.actions.repair(config, adapter, {
+          apply: !dryRun,
+          registry,
+          setupLockHeld: !dryRun,
+        });
+    }
+  });
+  yield* dryRun ? operation : withSetupMutationLock(config.agentContextHome, operation);
 });
 
 export const removeRegisteredAgentAdaptersInTransaction = Effect.fn('agentAdapters.removeRegistered')(function* (
@@ -82,6 +99,7 @@ export const removeRegisteredAgentAdaptersInTransaction = Effect.fn('agentAdapte
         excludedConsumers,
         inTransaction: true,
         registry,
+        setupLockHeld: !dryRun,
       },
     );
     if (next && !isAgentSetupCompletion(next)) registry = next;

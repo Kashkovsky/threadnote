@@ -85,7 +85,12 @@ function canonicalValueReportExport(bundle: ValueReportExportV1): ValueReportExp
       setup: {
         availability: report.setup.availability,
         completed: report.setup.completed,
+        failed: report.setup.failed,
+        started: report.setup.started,
         supportedAgentReuse: report.setup.supportedAgentReuse,
+        ...(report.setup.timeToFirstEvidenceMilliseconds === undefined
+          ? {}
+          : {timeToFirstEvidenceMilliseconds: report.setup.timeToFirstEvidenceMilliseconds}),
       },
     },
   };

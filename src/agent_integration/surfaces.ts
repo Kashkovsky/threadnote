@@ -322,7 +322,12 @@ const removeAgentSurfaceFromRegistry = Effect.fn('agentSurfaces.removeFromRegist
 
 export function defineJsonAgentAdapter(id: string, json: JsonAgentStrategy): AgentAdapterDefinition {
   const install: AgentAdapterDefinition['actions']['install'] = (config, adapter, options) =>
-    installJsonAgentSurface(config, adapter, {apply: options.apply, toolset: options.toolset, scope: options.scope});
+    installJsonAgentSurface(config, adapter, {
+      apply: options.apply,
+      cwd: options.cwd,
+      toolset: options.toolset,
+      scope: options.scope,
+    });
   return {
     actions: {
       install,

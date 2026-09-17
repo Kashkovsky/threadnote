@@ -102,7 +102,13 @@ describe('agent setup value events', () => {
               project: 'project-filter-does-not-enter-setup-events',
               to: reportPeriod.to,
             }).setup,
-          ).toEqual({completed: 2, supportedAgentReuse: 1});
+          ).toEqual({
+            completed: 2,
+            failed: 0,
+            started: 0,
+            supportedAgentReuse: 1,
+            timeToFirstEvidenceMillisecondsSamples: [],
+          });
         }).pipe(Effect.provideService(SystemInfo, testSystem));
       }),
     ).pipe(TestClock.withLive, provideTestLayer(testLayer)),
