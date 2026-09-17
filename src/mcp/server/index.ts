@@ -322,8 +322,6 @@ function registerTools(
 
   if (toolset === CURSOR_CLOUD_LOCAL_MCP_TOOLSET) registerCursorCloudLocalTools(server, config);
 
-  if (capabilities.memoryPublish) registerKnowledgeDeltaGitProposalTool(server, config);
-
   if (capabilities.memoryPublish)
     server.registerTool(
       'obsidian_publish',
@@ -401,6 +399,8 @@ function registerTools(
       return yield* runThreadnoteGuideTool(config, toolset);
     }),
   );
+
+  if (capabilities.memoryPublish) registerKnowledgeDeltaGitProposalTool(server, config);
 
   if (capabilities.memoryPublish)
     server.registerTool(
