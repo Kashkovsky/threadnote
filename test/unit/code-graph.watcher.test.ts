@@ -1,18 +1,28 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, Logger, Ref, Stream, Schema} from 'effect';
+import {Clock, Deferred, Effect, Fiber, Logger, Ref, Stream, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh,
+  CodeGraphRefreshRetryDeferred,
   codeGraphWatcherSnapshotStale,
+  driveCodeGraphBackgroundDemand,
   makeCodeGraphWatcher,
   prewarmCandidatesFromRefOutput,
   type CodeGraphWatchOptions,
   watchRepository,
 } from '../../src/code_graph/watcher.js';
+import {
+  completeCodeGraphRefreshDemand,
+  deferCodeGraphRefreshDemand,
+  emptyCodeGraphRefreshDemand,
+  enqueueCodeGraphRefreshDemand,
+  failCodeGraphRefreshDemand,
+  registerCodeGraphRefreshDemand,
+} from '../../src/code_graph/refresh_demand_scheduler.js';
 import {
   CodeGraphRuntimeReconnectRequiredError,
   CodeGraphStoreBusyError,
@@ -28,7 +38,350 @@ const options: CodeGraphWatchOptions = {
   threadnoteHome: '/fixture/home',
 };
 
+const demandCheckoutId = 'a'.repeat(64);
+const demandWorktreeId = 'b'.repeat(64);
+const demandKey = (value: string) => value.repeat(64).slice(0, 64);
+
+function makeDemandDriverHarness(input: {
+  readonly initialTarget: string;
+  readonly onRefreshed?: (summary: {readonly edges: number; readonly symbols: number}) => Effect.Effect<void, unknown>;
+  readonly run: (
+    target: {readonly requestKey: string},
+    queue: (targetKey: string) => Effect.Effect<void>,
+  ) => Effect.Effect<{readonly edges: number; readonly symbols: number}, unknown>;
+}) {
+  return Effect.gen(function* () {
+    const currentTarget = yield* Ref.make(input.initialTarget);
+    const state = yield* Ref.make(emptyCodeGraphRefreshDemand(demandCheckoutId, demandWorktreeId));
+    let tokenOrdinal = 0;
+    const nextToken = () => `cgdq_${(++tokenOrdinal).toString(16).padStart(32, '0')}`;
+    const queue = (targetKey: string) =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        yield* Ref.update(
+          state,
+          current => enqueueCodeGraphRefreshDemand(current, {now, targetKey, token: nextToken()}).state,
+        );
+      });
+    const transition = (
+      f: (current: ReturnType<typeof emptyCodeGraphRefreshDemand>) => ReturnType<typeof emptyCodeGraphRefreshDemand>,
+    ) =>
+      Ref.modify(state, current => {
+        const next = f(current);
+        return [next, next];
+      });
+    const driver = driveCodeGraphBackgroundDemand({
+      complete: (target, token) =>
+        transition(current => completeCodeGraphRefreshDemand(current, token, target.requestKey)),
+      defer: (target, token) =>
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap(now =>
+            transition(current => deferCodeGraphRefreshDemand(current, token, target.requestKey, now)),
+          ),
+        ),
+      fail: (target, token) => transition(current => failCodeGraphRefreshDemand(current, token, target.requestKey)),
+      isSuperseded: () => false,
+      observe: Ref.get(currentTarget).pipe(Effect.map(requestKey => ({requestKey}))),
+      onRefreshed: input.onRefreshed ?? (() => Effect.void),
+      recover: () => Effect.void,
+      register: target =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          return yield* Ref.modify(state, current => {
+            const registration = registerCodeGraphRefreshDemand(current, {
+              now,
+              targetKey: target.requestKey,
+              token: nextToken(),
+            });
+            return [registration, registration.state];
+          });
+        }),
+      run: (target, _token) =>
+        input.run(target, targetKey => queue(targetKey).pipe(Effect.andThen(Ref.set(currentTarget, targetKey)))),
+    });
+    return {
+      driver,
+      enqueue: (targetKey: string) => queue(targetKey).pipe(Effect.andThen(Ref.set(currentTarget, targetKey))),
+      state,
+    };
+  });
+}
+
 describe('CodeGraphWatcher', () => {
+  effectIt.effect('wakes a deferred background target at its persisted retry deadline', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstAttempt = yield* Deferred.make<void>();
+        const completed = yield* Deferred.make<void>();
+        const callbacks = yield* Ref.make(0);
+        let attempts = 0;
+        const harness = yield* makeDemandDriverHarness({
+          initialTarget: demandKey('1'),
+          onRefreshed: () =>
+            Ref.update(callbacks, count => count + 1).pipe(
+              Effect.andThen(Deferred.succeed(completed, undefined)),
+              Effect.asVoid,
+            ),
+          run: () => {
+            attempts += 1;
+            return attempts === 1
+              ? Deferred.succeed(firstAttempt, undefined).pipe(
+                  Effect.andThen(Effect.fail(CodeGraphStoreBusyError.of('expected retry'))),
+                )
+              : Effect.succeed({edges: 2, symbols: 1});
+          },
+        });
+        const watcher = yield* makeCodeGraphWatcher(
+          () => Effect.never,
+          () => harness.driver,
+        );
+        yield* watcher.refresh({...options, admissionClass: 'background'});
+        yield* Deferred.await(firstAttempt);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(249);
+        expect(attempts).toBe(1);
+        yield* TestClock.adjust(1);
+        yield* Deferred.await(completed);
+
+        expect(attempts).toBe(2);
+        expect(yield* Ref.get(callbacks)).toBe(1);
+        expect(yield* Ref.get(harness.state)).toMatchObject({active: undefined, desired: undefined});
+      }),
+    ),
+  );
+
+  effectIt.effect('releases an interrupted live-host claim and lets an early caller schedule its retry', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstAttempt = yield* Deferred.make<void>();
+        const completed = yield* Deferred.make<void>();
+        let attempts = 0;
+        const harness = yield* makeDemandDriverHarness({
+          initialTarget: demandKey('2'),
+          onRefreshed: () => Deferred.succeed(completed, undefined).pipe(Effect.asVoid),
+          run: () => {
+            attempts += 1;
+            return attempts === 1
+              ? Deferred.succeed(firstAttempt, undefined).pipe(Effect.andThen(Effect.never))
+              : Effect.succeed({edges: 4, symbols: 3});
+          },
+        });
+        const interrupted = yield* Effect.forkChild(harness.driver);
+        yield* Deferred.await(firstAttempt);
+        yield* Fiber.interrupt(interrupted);
+        const released = yield* Ref.get(harness.state);
+        expect(released.active).toBeUndefined();
+        expect(released.desired?.retry).toMatchObject({attempt: 1, notBefore: 250});
+
+        const watcher = yield* makeCodeGraphWatcher(
+          () => Effect.never,
+          () => harness.driver,
+        );
+        yield* watcher.refresh({...options, admissionClass: 'background'});
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(250);
+        yield* Deferred.await(completed);
+        expect(attempts).toBe(2);
+        expect(yield* Ref.get(harness.state)).toMatchObject({active: undefined, desired: undefined});
+      }),
+    ),
+  );
+
+  effectIt.effect('completes publication before a failing callback and still drives the queued target', () =>
+    Effect.gen(function* () {
+      const runs: string[] = [];
+      let callbacks = 0;
+      const first = demandKey('3');
+      const second = demandKey('4');
+      const harness = yield* makeDemandDriverHarness({
+        initialTarget: first,
+        onRefreshed: () => {
+          callbacks += 1;
+          return callbacks === 1 ? Effect.fail(TestError.make({message: 'expected callback failure'})) : Effect.void;
+        },
+        run: (target, queue) =>
+          Effect.gen(function* () {
+            runs.push(target.requestKey);
+            if (target.requestKey === first) yield* queue(second);
+            return {edges: runs.length * 2, symbols: runs.length};
+          }),
+      });
+      yield* harness.driver;
+
+      expect(runs).toEqual([first, second]);
+      expect(callbacks).toBe(2);
+      expect(yield* Ref.get(harness.state)).toMatchObject({active: undefined, desired: undefined});
+    }),
+  );
+
+  effectIt.effect('records direct latest-target intent before same-key execution deduplication', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const first = demandKey('5');
+        const second = demandKey('6');
+        const latest = demandKey('7');
+        const firstStarted = yield* Deferred.make<void>();
+        const firstRelease = yield* Deferred.make<void>();
+        const latestCompleted = yield* Deferred.make<void>();
+        const requested = yield* Ref.make(first);
+        const runs: string[] = [];
+        const harness = yield* makeDemandDriverHarness({
+          initialTarget: first,
+          onRefreshed: () =>
+            runs.at(-1) === latest ? Deferred.succeed(latestCompleted, undefined).pipe(Effect.asVoid) : Effect.void,
+          run: target =>
+            Effect.gen(function* () {
+              runs.push(target.requestKey);
+              if (target.requestKey === first) {
+                yield* Deferred.succeed(firstStarted, undefined);
+                yield* Deferred.await(firstRelease);
+              }
+              return {edges: runs.length * 2, symbols: runs.length};
+            }),
+        });
+        const watcher = yield* makeCodeGraphWatcher(
+          () => Effect.never,
+          () => harness.driver,
+          {},
+          () => Effect.void,
+          refreshOptions => Ref.get(requested).pipe(Effect.flatMap(harness.enqueue), Effect.as(refreshOptions)),
+        );
+
+        expect(yield* watcher.refresh({...options, admissionClass: 'background'})).toBe(true);
+        yield* Deferred.await(firstStarted);
+        yield* Ref.set(requested, second);
+        expect(yield* watcher.refresh({...options, admissionClass: 'background'})).toBe(false);
+        yield* Ref.set(requested, latest);
+        expect(yield* watcher.refresh({...options, admissionClass: 'background'})).toBe(false);
+        yield* Deferred.succeed(firstRelease, undefined);
+        yield* Deferred.await(latestCompleted);
+
+        expect(runs).toEqual([first, latest]);
+        expect(yield* Ref.get(harness.state)).toMatchObject({active: undefined, desired: undefined});
+      }),
+    ),
+  );
+
+  effectIt.effect('drives queued background intent after an active current-required refresh', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const target = demandKey('8');
+        const currentStarted = yield* Deferred.make<void>();
+        const releaseCurrent = yield* Deferred.make<void>();
+        const backgroundCompleted = yield* Deferred.make<void>();
+        const admissions: Array<CodeGraphWatchOptions['admissionClass']> = [];
+        const harness = yield* makeDemandDriverHarness({
+          initialTarget: target,
+          onRefreshed: () => Deferred.succeed(backgroundCompleted, undefined).pipe(Effect.asVoid),
+          run: () => Effect.succeed({edges: 2, symbols: 1}),
+        });
+        const watcher = yield* makeCodeGraphWatcher(
+          () => Effect.never,
+          refreshOptions => {
+            admissions.push(refreshOptions.admissionClass);
+            return refreshOptions.admissionClass === 'background'
+              ? harness.driver
+              : Deferred.succeed(currentStarted, undefined).pipe(Effect.andThen(Deferred.await(releaseCurrent)));
+          },
+          {},
+          () => Effect.void,
+          refreshOptions =>
+            refreshOptions.admissionClass === 'background'
+              ? harness.enqueue(target).pipe(Effect.as(refreshOptions))
+              : Effect.succeed(refreshOptions),
+        );
+
+        expect(yield* watcher.refresh(options)).toBe(true);
+        yield* Deferred.await(currentStarted);
+        expect(yield* watcher.refresh({...options, admissionClass: 'background'})).toBe(false);
+        yield* Deferred.succeed(releaseCurrent, undefined);
+        yield* Deferred.await(backgroundCompleted);
+
+        expect(admissions).toEqual(['current-required', 'background']);
+        expect(yield* Ref.get(harness.state)).toMatchObject({active: undefined, desired: undefined});
+      }),
+    ),
+  );
+
+  effectIt.effect('keeps a parked background coordinator when a current-required caller joins', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstAttempt = yield* Deferred.make<void>();
+        const completed = yield* Deferred.make<void>();
+        const admissions: Array<CodeGraphWatchOptions['admissionClass']> = [];
+        let attempts = 0;
+        const harness = yield* makeDemandDriverHarness({
+          initialTarget: demandKey('9'),
+          onRefreshed: () => Deferred.succeed(completed, undefined).pipe(Effect.asVoid),
+          run: () => {
+            attempts += 1;
+            return attempts === 1
+              ? Deferred.succeed(firstAttempt, undefined).pipe(
+                  Effect.andThen(Effect.fail(CodeGraphStoreBusyError.of('expected retry'))),
+                )
+              : Effect.succeed({edges: 2, symbols: 1});
+          },
+        });
+        const watcher = yield* makeCodeGraphWatcher(
+          () => Effect.never,
+          refreshOptions => {
+            admissions.push(refreshOptions.admissionClass);
+            return refreshOptions.admissionClass === 'background' ? harness.driver : Effect.void;
+          },
+        );
+
+        expect(yield* watcher.refresh({...options, admissionClass: 'background'})).toBe(true);
+        yield* Deferred.await(firstAttempt);
+        yield* Effect.yieldNow;
+        expect(yield* watcher.refresh(options)).toBe(false);
+        yield* TestClock.adjust(250);
+        yield* Deferred.await(completed);
+
+        expect(admissions).toEqual(['background', 'background']);
+        expect(yield* Ref.get(harness.state)).toMatchObject({active: undefined, desired: undefined});
+      }),
+    ),
+  );
+
+  effectIt.effect('parks retry deadlines outside the two global refresh permits', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstAttempt = yield* Deferred.make<void>();
+        const secondAttempt = yield* Deferred.make<void>();
+        const releaseRetries = yield* Deferred.make<void>();
+        const healthyStarted = yield* Deferred.make<void>();
+        const watcher = yield* makeCodeGraphWatcher(
+          () => Effect.never,
+          refreshOptions => {
+            if (refreshOptions.key === 'retry-a') {
+              return Deferred.succeed(firstAttempt, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseRetries)),
+                Effect.andThen(CodeGraphRefreshRetryDeferred.make({notBefore: 10_000})),
+              );
+            }
+            if (refreshOptions.key === 'retry-b') {
+              return Deferred.succeed(secondAttempt, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseRetries)),
+                Effect.andThen(CodeGraphRefreshRetryDeferred.make({notBefore: 10_000})),
+              );
+            }
+            return Deferred.succeed(healthyStarted, undefined).pipe(Effect.asVoid);
+          },
+        );
+
+        yield* watcher.refresh({...options, admissionClass: 'background', key: 'retry-a'});
+        yield* watcher.refresh({...options, admissionClass: 'background', key: 'retry-b'});
+        yield* Deferred.await(firstAttempt);
+        yield* Deferred.await(secondAttempt);
+        yield* Deferred.succeed(releaseRetries, undefined);
+        yield* watcher.refresh({...options, admissionClass: 'background', key: 'healthy'});
+        yield* Deferred.await(healthyStarted);
+
+        expect(yield* watcher.metrics).toMatchObject({executingRefreshHighWater: 2});
+      }),
+    ),
+  );
+
   it('orders home builder tickets by current-required priority and FIFO within a class (property)', () => {
     fc.assert(
       fc.property(fc.array(fc.constantFrom('background' as const, 'current-required' as const)), classes => {

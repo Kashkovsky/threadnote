@@ -9,6 +9,10 @@ import {SystemInfo} from './effect/system.js';
 import {withProductionLogging} from './effect/production_log.js';
 import {expandPath} from './utils.js';
 import {withAnonymousTelemetry} from './effect/telemetry.js';
+import {
+  CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE,
+  CodeGraphRefreshDemandSuperseded,
+} from './code_graph/refresh_demand.js';
 
 export const cliEffect = (arguments_: readonly string[]) => {
   const failureExitCode = inspectCliInvocation(arguments_).failureExitCode ?? 1;
@@ -48,7 +52,17 @@ export const cliEffect = (arguments_: readonly string[]) => {
         ? Effect.void
         : Console.error(errorMessage(Schema.is(ApplicationError)(error) ? error.cause : error)),
     ),
-    Effect.catch(() => Effect.flatMap(SystemInfo, system => Effect.sync(() => system.setExitCode(failureExitCode)))),
+    Effect.catch(error =>
+      Effect.flatMap(SystemInfo, system =>
+        Effect.sync(() =>
+          system.setExitCode(
+            Schema.is(CodeGraphRefreshDemandSuperseded)(error)
+              ? CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE
+              : failureExitCode,
+          ),
+        ),
+      ),
+    ),
   );
 };
 

@@ -71,6 +71,8 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly observation: CodeGraphOverlayObservation;
+  /** Checked immediately before a sparse route can alter ready/build authority. */
+  readonly beforePublication?: Effect.Effect<void, unknown>;
   readonly onInvalidBaseCache: Effect.Effect<void>;
   readonly options: CodeGraphIndexOptions;
   readonly requestedOverlay: {readonly dirty: boolean; readonly fingerprint?: string};
@@ -186,6 +188,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
   );
   if (reusableReady !== undefined) {
     if (existing?.id !== reusableReady.id) {
+      yield* input.beforePublication ?? Effect.void;
       yield* promoteReadySnapshotWithCapacity(
         {
           capacityProtection: input.capacityProtection,
@@ -323,6 +326,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
       );
       const prepared = preparedMaterialization.result;
       if (!prepared) return Option.none<CodeGraphIndexSummary>();
+      yield* input.beforePublication ?? Effect.void;
       yield* input.store.markBuilding(input.layout.databasePath, input.identity, building);
       if (preassessment.committedWorkspace.fingerprint !== admission.workspace.fingerprint) {
         yield* input.store.stageWorkspaceCatalog(
