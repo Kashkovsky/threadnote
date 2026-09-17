@@ -5,13 +5,13 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Layer, Option, Path} from 'effect';
 import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
 import {SystemInfo} from '../src/effect/system.js';
-import {activeInstalledVersion, installationRoot} from '../src/installations.js';
+import {installationRoot} from '../src/installations.js';
 import {developmentBuildVersion} from './development-runtime.js';
 import {
   CLEAN_GIT_STATUS_ARGUMENTS,
   developmentRuntimeOwnershipConflict,
   developmentSourceCheckoutId,
-  readDevelopmentRuntimeOwner,
+  readDevelopmentRuntimeOwnershipSnapshot,
   type DevelopmentRuntimeOwnershipConflict,
   type DevelopmentRuntimeOwnershipState,
 } from './install-local-standalone.js';
@@ -134,10 +134,7 @@ export const inspectDevelopmentRuntimeStatus = Effect.fn('developmentRuntimeStat
   });
   const sourceCheckoutId = yield* developmentSourceCheckoutId(checkoutRoot);
   const installRoot = path.resolve(installationRoot(path, system));
-  const [activeVersion, owner] = yield* Effect.all([
-    activeInstalledVersion(),
-    readDevelopmentRuntimeOwner(installRoot),
-  ]);
+  const {activeVersion, owner} = yield* readDevelopmentRuntimeOwnershipSnapshot(installRoot);
   const conflict = developmentRuntimeOwnershipConflict(activeVersion, owner, sourceCheckoutId);
   const dirty = status.stdout.length > 0;
   return {
