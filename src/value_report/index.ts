@@ -64,7 +64,14 @@ export interface ValueReportHealthV1 {
 export interface ValueReportSetupV1 {
   readonly availability: 'available' | 'unavailable';
   readonly completed: number;
+  readonly failed: number;
+  readonly started: number;
   readonly supportedAgentReuse: number;
+  readonly timeToFirstEvidenceMilliseconds?: number;
+}
+
+export interface ValueReportSetupInputV1 extends Partial<ValueReportSetupV1> {
+  readonly timeToFirstEvidenceMillisecondsSamples?: readonly number[];
 }
 
 export interface ValueReportV1 {
@@ -96,7 +103,7 @@ export interface ValueReportCountsInputV1 {
   readonly contextBrief?: ValueReportContextBriefInputV1;
   readonly knowledgeDelta?: Partial<ValueReportKnowledgeDeltaV1>;
   readonly health?: Partial<ValueReportHealthV1>;
-  readonly setup?: Partial<ValueReportSetupV1>;
+  readonly setup?: ValueReportSetupInputV1;
 }
 
 export interface ValueReportInputV1 {
@@ -153,7 +160,10 @@ export const ValueReportV1Schema = Schema.Struct({
   setup: Schema.Struct({
     availability: Schema.Literals(['available', 'unavailable']),
     completed: boundedCount,
+    failed: boundedCount,
+    started: boundedCount,
     supportedAgentReuse: boundedCount,
+    timeToFirstEvidenceMilliseconds: Schema.optionalKey(boundedDuration),
   }),
   type: Schema.Literal('value-report'),
   version: Schema.Literal(VALUE_REPORT_VERSION),
@@ -249,11 +259,19 @@ function aggregateHealth(input: Partial<ValueReportHealthV1> | undefined): Value
   return {opened: boundedInputCount(input?.opened), resolved: boundedInputCount(input?.resolved)};
 }
 
-function aggregateSetup(input: Partial<ValueReportSetupV1> | undefined): ValueReportSetupV1 {
+function aggregateSetup(input: ValueReportSetupInputV1 | undefined): ValueReportSetupV1 {
+  const samples = boundedTimingSamples(
+    input?.timeToFirstEvidenceMillisecondsSamples ??
+      (input?.timeToFirstEvidenceMilliseconds === undefined ? [] : [input.timeToFirstEvidenceMilliseconds]),
+  );
+  const median = samples.length === 0 ? undefined : medianOf(samples);
   return {
     availability: input === undefined ? 'unavailable' : 'available',
     completed: boundedInputCount(input?.completed),
+    failed: boundedInputCount(input?.failed),
+    started: boundedInputCount(input?.started),
     supportedAgentReuse: boundedInputCount(input?.supportedAgentReuse),
+    ...(median === undefined ? {} : {timeToFirstEvidenceMilliseconds: median}),
   };
 }
 

@@ -36,7 +36,7 @@ export interface HealthValueEventV1 {
   readonly version: typeof VALUE_EVENT_VERSION;
 }
 
-export interface SetupValueEventV1 {
+export interface SetupCompletionValueEventV1 {
   readonly completed: 1;
   readonly kind: 'setup';
   readonly supportedAgentReuse: 0 | 1;
@@ -44,7 +44,17 @@ export interface SetupValueEventV1 {
   readonly version: typeof VALUE_EVENT_VERSION;
 }
 
-export type LocalValueEventV1 = ContextBriefValueEventV1 | HealthValueEventV1 | SetupValueEventV1;
+export interface SetupLifecycleValueEventV1 {
+  readonly durationMilliseconds: number;
+  readonly kind: 'setup-lifecycle';
+  readonly phase: 'started' | 'completed' | 'failed';
+  readonly timeToFirstEvidenceMilliseconds?: number;
+  readonly timestamp: string;
+  readonly version: typeof VALUE_EVENT_VERSION;
+}
+
+export type LocalValueEventV1 =
+  ContextBriefValueEventV1 | HealthValueEventV1 | SetupCompletionValueEventV1 | SetupLifecycleValueEventV1;
 
 export const recordContextBriefValueEvent = Effect.fn('valueReport.recordContextBrief')(function* (
   agentContextHome: string,
@@ -98,6 +108,22 @@ export const recordSetupCompletionValueEvent = Effect.fn('valueReport.recordSetu
   });
 });
 
+export const recordSetupLifecycleValueEvent = Effect.fn('valueReport.recordSetupLifecycle')(function* (
+  agentContextHome: string,
+  event: Omit<SetupLifecycleValueEventV1, 'kind' | 'version'>,
+) {
+  yield* appendValueEvent(agentContextHome, {
+    durationMilliseconds: boundedDuration(event.durationMilliseconds),
+    kind: 'setup-lifecycle',
+    phase: event.phase,
+    ...(event.timeToFirstEvidenceMilliseconds === undefined
+      ? {}
+      : {timeToFirstEvidenceMilliseconds: boundedDuration(event.timeToFirstEvidenceMilliseconds)}),
+    timestamp: event.timestamp,
+    version: VALUE_EVENT_VERSION,
+  });
+});
+
 export const readLocalValueEvents = Effect.fn('valueReport.readEvents')(function* (agentContextHome: string) {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
@@ -114,8 +140,13 @@ export function summarizeLocalValueEvents(
   const healthEvents = events.filter(
     (event): event is HealthValueEventV1 => event.kind === 'health' && eventMatches(event, options),
   );
-  const setupEvents = events.filter(
-    (event): event is SetupValueEventV1 => event.kind === 'setup' && timestampInPeriod(event.timestamp, options),
+  const setupCompletionEvents = events.filter(
+    (event): event is SetupCompletionValueEventV1 =>
+      event.kind === 'setup' && timestampInPeriod(event.timestamp, options),
+  );
+  const setupLifecycleEvents = events.filter(
+    (event): event is SetupLifecycleValueEventV1 =>
+      event.kind === 'setup-lifecycle' && timestampInPeriod(event.timestamp, options),
   );
   return {
     contextBrief: {
@@ -134,12 +165,19 @@ export function summarizeLocalValueEvents(
       opened: sum(healthEvents.map(event => event.opened)),
       resolved: sum(healthEvents.map(event => event.resolved)),
     },
-    ...(setupEvents.length === 0
+    ...(setupCompletionEvents.length === 0 && setupLifecycleEvents.length === 0
       ? {}
       : {
           setup: {
-            completed: sum(setupEvents.map(event => event.completed)),
-            supportedAgentReuse: sum(setupEvents.map(event => event.supportedAgentReuse)),
+            completed: sum(setupCompletionEvents.map(event => event.completed)),
+            failed: setupLifecycleEvents.filter(event => event.phase === 'failed').length,
+            started: setupLifecycleEvents.filter(event => event.phase === 'started').length,
+            supportedAgentReuse: sum(setupCompletionEvents.map(event => event.supportedAgentReuse)),
+            timeToFirstEvidenceMillisecondsSamples: setupLifecycleEvents.flatMap(event =>
+              event.phase === 'completed' && event.timeToFirstEvidenceMilliseconds !== undefined
+                ? [event.timeToFirstEvidenceMilliseconds]
+                : [],
+            ),
           },
         }),
   };
@@ -283,13 +321,27 @@ function parseValueEvent(line: string): LocalValueEventV1 | undefined {
   }
   if (value.kind === 'setup' && value.project === undefined && value.completed === 1) {
     if (value.supportedAgentReuse === 0 || value.supportedAgentReuse === 1)
-      return value as unknown as SetupValueEventV1;
+      return value as unknown as SetupCompletionValueEventV1;
+  }
+  if (
+    value.kind === 'setup-lifecycle' &&
+    value.project === undefined &&
+    (value.phase === 'started' || value.phase === 'completed' || value.phase === 'failed') &&
+    validCount(value.durationMilliseconds) &&
+    (value.timeToFirstEvidenceMilliseconds === undefined || validCount(value.timeToFirstEvidenceMilliseconds)) &&
+    (value.phase === 'completed') === (value.timeToFirstEvidenceMilliseconds !== undefined)
+  ) {
+    return value as unknown as SetupLifecycleValueEventV1;
   }
   return undefined;
 }
 
 function boundedCount(value: number): number {
   return Number.isSafeInteger(value) && value > 0 ? Math.min(10_000, value) : 0;
+}
+
+function boundedDuration(value: number): number {
+  return Number.isSafeInteger(value) && value > 0 ? Math.min(604_800_000, value) : 0;
 }
 
 function validCount(value: unknown): boolean {

@@ -451,18 +451,23 @@ threadnote doctor`,
       {
         id: 'connect-an-agent',
         title: 'Connect your agent',
-        summary: 'Install the focused local stdio MCP toolset and start a fresh agent session.',
+        summary: 'Preview one resumable local setup plan and verify the first source-backed Context Brief.',
         body: [
           {
             type: 'code',
             language: 'sh',
-            code: `threadnote agents install <surface>
-threadnote agents install <surface> --apply
-threadnote doctor`,
+            code: `threadnote setup <surface>
+threadnote setup <surface> --apply
+threadnote setup <surface> --undo
+threadnote setup <surface> --undo --apply`,
           },
           {
             type: 'paragraph',
-            text: 'MCP runs as a local stdio child process. Applying agents install registers only the selected surface and installs the artifacts declared for that surface. There is no HTTP endpoint, host, token, port, or daemon to configure. Restart the agent after changing its integration.',
+            text: 'Preview prints a deterministic operation plan without writing. Apply initializes the local core, current repository manifest and seed, selected catalog surface and declared hooks, code graph, doctor checks, and a final source-backed Context Brief. A private bounded receipt resumes interrupted work and makes an unchanged completed apply a no-op. Undo is also preview-first and removes only unchanged setup-created artifacts, never pre-existing user configuration. Private value reports count applied starts, failures, completions, and bounded time to the verified brief without storing the task, surface, repository, or path. Organization and team-sharing setup are separate.',
+          },
+          {
+            type: 'paragraph',
+            text: 'MCP runs as a local stdio child process. Setup registers only the selected surface and installs the artifacts declared for that surface. There is no HTTP endpoint, host, token, port, or daemon to configure. Restart the agent after changing its integration.',
           },
           {
             type: 'paragraph',

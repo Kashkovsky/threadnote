@@ -9,8 +9,38 @@ Threadnote 5 is a source-verifiable context compiler for engineering work. Its c
 5. Verified procedures provide reviewed workflows alongside factual decisions.
 
 This release track is local-first and provider-neutral. It does not create an organization account, require an
-organization service, or add agent-brand switches. Organization productization and agent-surface setup/projection are
-separate tracks.
+organization service, or add agent-brand switches. Organization productization remains a separate track.
+
+## One-command local setup
+
+Preview the complete local setup plan for one catalog surface, then apply the same deterministic plan:
+
+```sh
+threadnote setup <surface>
+threadnote setup <surface> --apply
+threadnote setup <surface> --undo
+threadnote setup <surface> --undo --apply
+```
+
+The orchestrator resolves the current Git repository, initializes Threadnote's local core, merges the seed manifest,
+seeds only that project, installs or repairs the selected catalog adapter and its declared hooks, builds a current code
+graph, runs structured doctor checks, and finishes with a real Context Brief. Completion requires fresh, complete graph
+coverage for the one requested repository and at least one returned source-evidence card or contract.
+
+Preview is non-mutating. Apply writes a private `SetupReceiptV1` under `$THREADNOTE_HOME/setup/` with a deterministic
+plan hash, per-operation input hashes and attempts, subsystem receipt references, and bounded recovery IDs. It never
+stores task text, instructions, seed content, Context Brief content, source code, or logs. An interrupted or failed
+plan can be rerun safely: completed operations are retained and only incomplete work resumes. Reapplying a completed
+unchanged plan is a receipt-backed no-op and does not add another setup-completion event.
+
+Undo is preview-first and follows the receipt's reverse dependency order. It removes only unchanged files and managed
+surface artifacts that the setup receipt proves were created by setup; pre-existing manifests, integrations, and user
+customizations are never rollback targets. Interrupted rollback persists its remaining undo IDs and is safe to retry.
+
+Surface selection is explicit and comes only from `threadnote agents list`. Catalog-only surfaces fail with their
+manual guidance instead of being presented as managed. `--scope` is available for managed JSON adapters; compatibility
+adapters retain their established user-scope lifecycle. This command does not configure composer, team sharing, or any
+organization service.
 
 ## Closeout and Knowledge Delta
 
@@ -97,12 +127,17 @@ threadnote value report export --project <project> --period 14 --apply
 ```
 
 `ValueReportV1` summarizes a bounded period of Context Brief attempts, code-anchor coverage, estimated tokens,
-follow-up operations, recall feedback, Knowledge Delta outcomes, health activity, and setup/reuse counters. Project
-filtering affects local aggregation only; the project label is not emitted in the report. The report has `scope: local`.
+follow-up operations, recall feedback, Knowledge Delta outcomes, health activity, and setup activation outcomes. Setup
+metrics include applied starts, terminal failures, completions, supported-agent reuse, and median time to the first
+verified Context Brief. Project filtering affects local aggregation only; the project label is not emitted in the
+report. The report has `scope: local`.
 
-A fresh successful `agents install <surface> --apply` contributes one setup completion. Installing a second distinct
-supported surface also contributes one reuse count. Preview, failed, repair, remove, and idempotent reinstall
-operations do not count, and the local value ledger stores no surface identifier.
+A fresh successful `setup <surface> --apply` or direct `agents install <surface> --apply` contributes one setup
+completion. Each setup apply that enters work contributes one start and then either a failure or a completion timing;
+hard interruption can leave a start without a terminal event. Reusing an already-current supported surface, or
+installing a second distinct supported surface, also contributes one reuse count. Preview, undo, repair, remove, and
+receipt-backed idempotent setup operations do not start a setup attempt, and the local value ledger stores no surface
+identifier.
 
 No query text, memory text, source code, paths, repository names, stable user ID, or raw logs are part of this report.
 Telemetry remains separately disabled by default and follows the consent contract in [Optional anonymous telemetry](telemetry.md).

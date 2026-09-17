@@ -96,14 +96,20 @@ macOS and Linux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
-threadnote agents install <surface>
-threadnote agents install <surface> --apply
-threadnote doctor
+threadnote setup <surface>
+threadnote setup <surface> --apply
+# Optional: preview and apply receipt-owned rollback
+threadnote setup <surface> --undo
+threadnote setup <surface> --undo --apply
 ```
 
-Each applied `agents install` registers only the selected surface and installs only catalog-declared managed artifacts. Read
-the [supported agents matrix](https://threadnote.io/agents/) for the exact surface, tier, capability, scope, setup, and
-caveat before applying. Specific host documentation remains available where it discusses that host.
+`setup` previews a deterministic local plan, then initializes the selected catalog surface, current repository seed,
+code graph, doctor verification, and a final source-backed Context Brief. Its private resumable receipt makes an
+unchanged second apply a no-op. Read the [supported agents matrix](https://threadnote.io/agents/) for the exact surface,
+tier, capability, scope, setup, and caveat before applying. Undo fails closed on drift and never removes pre-existing
+user configuration. Private value reports count starts, failures, completions, and bounded time to the verified brief
+without storing the task, surface, repository, or path. Specific host documentation remains available where it
+discusses that host.
 
 To select the Threadnote 4 beta channel on macOS or Linux, pass `--beta`. This inclusive preview channel installs the
 newest immutable release across stable and prerelease builds, so a newer stable release wins when one is available:
@@ -120,9 +126,8 @@ Windows PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex
-threadnote agents install <surface>
-threadnote agents install <surface> --apply
-threadnote doctor
+threadnote setup <surface>
+threadnote setup <surface> --apply
 ```
 
 Or install a specific release from the
@@ -130,8 +135,7 @@ Or install a specific release from the
 
 ```sh
 threadnote install
-threadnote doctor
-threadnote agents install <surface> --apply
+threadnote setup <surface> --apply
 ```
 
 The downloaded executable embeds the pinned Bun runtime. Users do not need Bun or Node installed. Installers accept

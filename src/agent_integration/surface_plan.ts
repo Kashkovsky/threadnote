@@ -14,6 +14,7 @@ import {AgentSurfaceError} from './surfaces.js';
 
 export interface SurfaceInstallOptions {
   readonly apply?: boolean;
+  readonly cwd?: string;
   readonly toolset?: McpToolset;
   readonly scope?: 'user' | 'project' | 'local';
 }
@@ -37,7 +38,12 @@ export const planAgentSurface = Effect.fn('agentSurfaces.plan')(function* (
     return yield* AgentSurfaceError.make({
       message: `Unsupported or conflicting scope for ${adapter.catalog.id}. Remove the recorded installation before changing scope.`,
     });
-  const cwd = previous?.cwd ?? (scope === 'user' ? undefined : path.resolve(system.currentDirectory()));
+  const requestedCwd = scope === 'user' || options.cwd === undefined ? undefined : path.resolve(options.cwd);
+  if (previous?.cwd !== undefined && requestedCwd !== undefined && previous.cwd !== requestedCwd)
+    return yield* AgentSurfaceError.make({
+      message: `The recorded ${adapter.catalog.id} ${scope} installation belongs to another repository. Remove it before changing repositories.`,
+    });
+  const cwd = previous?.cwd ?? requestedCwd ?? (scope === 'user' ? undefined : path.resolve(system.currentDirectory()));
   const environment = system.environment();
   const configuredRoot = strategy.rootEnvironment === undefined ? undefined : environment[strategy.rootEnvironment];
   if (!previous && scope === 'user' && configuredRoot && !path.isAbsolute(configuredRoot))

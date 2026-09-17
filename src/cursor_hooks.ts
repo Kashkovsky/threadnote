@@ -50,6 +50,10 @@ export function withCursorHooks(input: JsonObject, target: CursorHookTarget, rem
   return next;
 }
 
+export function cursorHooksAreCurrent(input: JsonObject, target: CursorHookTarget): boolean {
+  return JSON.stringify(input) === JSON.stringify(withCursorHooks(input, target));
+}
+
 export const runCursorHooksInstall = Effect.fn('hooks.installCursor')(function* (options: HooksInstallOptions) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -112,4 +116,12 @@ export const hasManagedCursorHooks = Effect.fn('hooks.hasManagedCursorHooks')(fu
     isJsonObject(parsed.hooks) &&
     Object.values(parsed.hooks).some(entries => Array.isArray(entries) && entries.some(isManaged))
   );
+});
+
+export const hasCurrentCursorHooks = Effect.fn('hooks.hasCurrentCursorHooks')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* expandPath('~/.cursor/hooks.json');
+  if (!(yield* fs.exists(path))) return false;
+  const parsed = parseJsonConfigObject(yield* fs.readFileString(path));
+  return parsed !== undefined && cursorHooksAreCurrent(parsed, 'desktop');
 });

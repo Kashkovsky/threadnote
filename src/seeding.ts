@@ -21,6 +21,7 @@ import type {
   SeedOptions,
   SkillCandidate,
 } from './types.js';
+import {withSetupMutationLock} from './setup/lock.js';
 import {
   exists,
   expandPath,
@@ -549,7 +550,7 @@ function writeSeedState(path: string, state: SeedStateFile) {
 }
 
 export function runInitManifest(config: RuntimeConfig, options: InitManifestOptions) {
-  return Effect.gen(function* () {
+  const operation = Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const system = yield* SystemInfo;
@@ -620,6 +621,9 @@ export function runInitManifest(config: RuntimeConfig, options: InitManifestOpti
     yield* log('  threadnote seed --dry-run');
     yield* log('  threadnote seed');
   });
+  return options.dryRun === true || options.setupLockHeld === true
+    ? operation
+    : withSetupMutationLock(config.agentContextHome, operation);
 }
 
 export function runWorksetList(config: RuntimeConfig) {
