@@ -64,6 +64,8 @@ function canonicalValueReportExport(bundle: ValueReportExportV1): ValueReportExp
           : {timeToFirstSuccessfulMilliseconds: report.contextBrief.timeToFirstSuccessfulMilliseconds}),
       },
       feedback: {
+        applied: report.feedback.applied,
+        appliedRate: report.feedback.appliedRate,
         dismiss: report.feedback.dismiss,
         pin: report.feedback.pin,
         useful: report.feedback.useful,

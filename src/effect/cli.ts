@@ -4,7 +4,8 @@ import {
   makeContextHealthCommand,
   makeContextHealthRepairCommand,
   makeContextCheckCommand,
-  makeValueReportCommand,
+  makeRecallFeedbackCommand,
+  makeValueCommand,
   makeProcedureVerifyCommand,
   makeProcedureStatusCommand,
 } from './workflow_cli.js';
@@ -58,6 +59,7 @@ import {
   runRecall,
   runRemember,
 } from '../memory/index.js';
+import {runRecallFeedback} from '../recall/feedback_commands.js';
 import {makeCloseoutCommand} from './closeout_cli.js';
 import {runContextHealth} from '../memory/context_health_commands.js';
 import {runContextHealthRepairApply, runContextHealthRepairPreview} from '../memory/context_health_repair_commands.js';
@@ -156,7 +158,7 @@ import {runContextBrief} from '../context_brief/commands.js';
 import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';
 import {runImageProjectionCommand} from '../image_projection/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
-import {runValueReport, runValueReportExport} from '../value_report/commands.js';
+import * as valueReportCommands from '../value_report/commands.js';
 import {runKnowledgeDeltaGitProposalExport} from '../git_proposal/commands.js';
 import {makeShareMemoryCommands, publishFlags} from './share_memory_cli.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
@@ -1393,6 +1395,10 @@ const recall = Command.make(
   options => withRuntimeEffect(config => runRecall(config, options)),
 ).pipe(Command.withDescription('Search shared Threadnote context'));
 
+const recallFeedback = makeRecallFeedbackCommand(options =>
+  withRuntimeEffect(config => runRecallFeedback(config, options)),
+);
+
 const worksetList = Command.make('list', {}, () => withRuntimeEffect(config => runWorksetList(config))).pipe(
   Command.withDescription('List worksets defined in the seed manifest'),
 );
@@ -1441,14 +1447,11 @@ const context = Command.make('context').pipe(
   Command.withDescription('Compile task-oriented agent context'),
   Command.withSubcommands([contextBrief, contextHealth, contextHealthRepair, contextCheck]),
 );
-const valueReport = makeValueReportCommand(
-  options => withRuntimeEffect(config => runValueReport(config, options)),
-  options => withRuntimeEffect(config => runValueReportExport(config, options)),
-);
-
-const value = Command.make('value').pipe(
-  Command.withDescription('Inspect local, count-only value signals'),
-  Command.withSubcommands([valueReport]),
+const value = makeValueCommand(
+  options => withRuntimeEffect(config => valueReportCommands.runValueReport(config, options)),
+  options => withRuntimeEffect(config => valueReportCommands.runValueReportExport(config, options)),
+  options => withRuntimeEffect(config => valueReportCommands.runValueReportRetention(config, options)),
+  options => withRuntimeEffect(config => valueReportCommands.runValueReportDelete(config, options)),
 );
 const procedureVerify = makeProcedureVerifyCommand(options => withRuntimeEffect(() => runProcedureVerify(options)));
 
@@ -1955,6 +1958,7 @@ const topLevelCommandRegistrations = [
     productionLog: {mode: 'requires-apply'},
   }),
   registerTopLevelCommand('recall', recall),
+  registerTopLevelCommand('recall-feedback', recallFeedback),
   registerTopLevelCommand('workset', workset),
   registerTopLevelCommand('context', context),
   registerTopLevelCommand('value', value, {productionLog: {subcommands: {report: 'requires-apply'}}}),

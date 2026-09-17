@@ -191,6 +191,7 @@ export {runEnrichMemories} from './enrichment.js';
 export interface RecallResult {
   readonly confidence?: RecallConfidence;
   readonly memoryConnections?: RecallMemoryConnectionsResult;
+  readonly project?: string;
   readonly queryExpansions: readonly string[];
   readonly ranked: readonly RecallHit[];
   readonly totalRanked: number;
@@ -701,6 +702,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   return {
     ...(cliProjection.confidence === undefined ? {} : {confidence: cliProjection.confidence}),
     ...(recallSections.memoryConnections ? {memoryConnections: recallSections.memoryConnections} : {}),
+    ...(recallProjectName === undefined ? {} : {project: recallProjectName}),
     queryExpansions: expansionQueries,
     ranked: recallSections.ranked.slice(0, recallLimit),
     totalRanked: recallSections.ranked.length,

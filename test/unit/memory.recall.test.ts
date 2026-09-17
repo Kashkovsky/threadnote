@@ -88,6 +88,8 @@ describe('runRecall native index', () => {
     expect(projected.sections.join('\n')).toContain('threadnote://memory/tn_neighbor');
     expect(projected.sections.join('\n')).not.toContain('explicit-memory-connection');
     expect(projected.sections.join('\n')).not.toContain('Next: threadnote read');
+    expect(projected.sections.join('\n')).toContain('threadnote recall-feedback');
+    expect(projected.sections.join('\n')).toContain('applied');
   });
 
   effectIt.effect('uses the native recall index without a repair subprocess', () =>

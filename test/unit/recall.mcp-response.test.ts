@@ -105,6 +105,12 @@ describe('recall MCP response projection', () => {
     );
   });
 
+  it('surfaces all normal-workflow feedback actions and distinguishes applied', () => {
+    const projected = projectRecallMcpResponse(logical([hit(1)]));
+
+    expect(projected.text).toContain('recall_feedback useful|wrong|pin|dismiss|applied');
+  });
+
   it('fits bounded notices, scope, and degraded-index guidance at the advertised minimum', () => {
     fc.assert(
       fc.property(

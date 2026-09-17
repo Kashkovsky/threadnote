@@ -23,6 +23,7 @@ import {
   runManagerRecall,
   type ManagerContextConnectionsResponse,
   type ManagerContextReadResponse,
+  type ManagerRecallFeedbackResponse,
   type ManagerRecallResponse,
   type ManagerRecallResult,
 } from '../../src/manager/context.js';
@@ -135,6 +136,11 @@ describe('Manager context API adapter', () => {
         requestedUri: read.requestedUri,
         trust: 'relations-are-navigation-evidence-not-entailment',
       } satisfies ManagerContextConnectionsResponse;
+      const feedback = {
+        action: 'applied',
+        recorded: true,
+        uri: read.canonicalUri,
+      } satisfies ManagerRecallFeedbackResponse;
       const calls: string[] = [];
 
       const briefResponse = yield* handleManagerContextRequest({
@@ -181,17 +187,30 @@ describe('Manager context API adapter', () => {
         method: 'POST',
         url: new URL('http://manager.test/api/context/connections'),
       });
+      const feedbackResponse = yield* handleManagerContextRequest({
+        body: Effect.succeed({action: 'applied', query: 'manager context', uri: read.canonicalUri}),
+        config: runtime,
+        feedback: (_config, body) =>
+          Effect.sync(() => {
+            calls.push(`feedback:${String(body.action)}`);
+            return feedback;
+          }),
+        method: 'POST',
+        url: new URL('http://manager.test/api/context/feedback'),
+      });
 
       expect(calls).toEqual([
         'brief:compile',
         'recall:manager context',
         `read:${read.requestedUri}`,
         `connections:${read.requestedUri}`,
+        'feedback:applied',
       ]);
       expect(briefResponse).toEqual({body: projected, status: 200});
       expect(recallResponse).toEqual({body: recalled, status: 200});
       expect(readResponse).toEqual({body: read, status: 200});
       expect(connectionsResponse).toEqual({body: connections, status: 200});
+      expect(feedbackResponse).toEqual({body: feedback, status: 200});
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
@@ -317,6 +336,19 @@ describe('Manager context backends', () => {
   effectIt.effect('runs recall once for one stable bounded and hydrated result set', () =>
     Effect.gen(function* () {
       const fixture = yield* managerContextFixture('recall');
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(
+        fixture.config.manifestPath,
+        [
+          'version: 1',
+          'projects:',
+          '  - name: threadnote',
+          `    path: ${fixture.location.home}`,
+          '    uri: threadnote://resources/repos/threadnote',
+          '    seed: []',
+          '',
+        ].join('\n'),
+      );
       for (let index = 0; index < 10; index += 1) {
         yield* runRemember(fixture.config, {
           kind: 'durable',
@@ -329,14 +361,13 @@ describe('Manager context backends', () => {
 
       const result = yield* runManagerRecall(fixture.config, {
         includeArchived: false,
-        project: 'threadnote',
-        query: 'MGRPAGING9 stable Manager recall contract',
+        query: 'MGRPAGING9 stable threadnote Manager recall contract',
       });
 
+      expect(result.effectiveProject).toBe('threadnote');
       expect(result.request).toEqual({
         includeArchived: false,
-        project: 'threadnote',
-        query: 'MGRPAGING9 stable Manager recall contract',
+        query: 'MGRPAGING9 stable threadnote Manager recall contract',
       });
       expect(result.results.length).toBeGreaterThan(8);
       expect(result.results.map(candidate => candidate.rank)).toEqual(

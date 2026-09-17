@@ -18,6 +18,7 @@ describe('value report', () => {
   it('projects bounded count-only metrics from feedback and explicit inputs', () => {
     const input: ValueReportInputV1 = {
       feedbackEvents: [
+        feedbackEvent('applied', '2026-09-01T12:00:00.000Z'),
         feedbackEvent('useful', '2026-09-01T00:00:00.000Z'),
         feedbackEvent('wrong', '2026-09-02T00:00:00.000Z'),
         feedbackEvent('pin', '2026-08-01T00:00:00.000Z'),
@@ -53,7 +54,7 @@ describe('value report', () => {
       type: 'value-report',
       version: 1,
       scope: 'local',
-      feedback: {useful: 1, wrong: 1, dismiss: 0, pin: 0, total: 2},
+      feedback: {applied: 1, useful: 1, wrong: 1, dismiss: 0, pin: 0, total: 3},
       contextBrief: {
         attempts: 3,
         successful: 2,
@@ -75,9 +76,22 @@ describe('value report', () => {
     expect(parseValueReportV1(report)).toEqual(report);
   });
 
+  it('reads pre-applied ValueReportV1 feedback as zero applied outcomes', () => {
+    const current = aggregateValueReportV1({
+      period: {from: '2026-09-01T00:00:00.000Z', to: '2026-09-30T00:00:00.000Z'},
+    });
+    const legacy = JSON.parse(JSON.stringify(current)) as Record<string, unknown>;
+    const feedback = legacy.feedback as Record<string, unknown>;
+    delete feedback.applied;
+    delete feedback.appliedRate;
+
+    expect(parseValueReportV1(legacy).feedback).toMatchObject({applied: 0, appliedRate: 0});
+  });
+
   it('is deterministic and order invariant for feedback and timing samples', () => {
     const input: ValueReportInputV1 = {
       feedbackEvents: [
+        feedbackEvent('applied', '2026-09-03T00:00:00.000Z'),
         feedbackEvent('useful', '2026-09-01T00:00:00.000Z'),
         feedbackEvent('wrong', '2026-09-02T00:00:00.000Z'),
       ],

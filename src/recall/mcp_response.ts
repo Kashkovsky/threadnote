@@ -201,6 +201,7 @@ export function renderRecallMcpText(response: RecallMcpStructuredContent, notice
     : '';
   return [
     `Recall returned ${count} unread pointer(s)${omitted}. Ranked pointers are not evidence.${next}${budgetRecovery}`,
+    ...(returnedResults > 0 ? ['Feedback: recall_feedback useful|wrong|pin|dismiss|applied.'] : []),
     ...(response.memoryConnections
       ? [
           `Seeded one-hop coverage: ${response.memoryConnections.coverage.resultCount} result(s), ${response.memoryConnections.connections.length} verified connection receipt(s), ${response.memoryConnections.premises.length} premise receipt(s)${response.memoryConnections.coverage.truncated ? '; truncated' : ''}. Relations are navigation evidence, not entailment.`,
