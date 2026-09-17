@@ -22,8 +22,9 @@ export function runAgentAdapterAction(
   adapter: AgentAdapter,
   action: AgentAdapterAction,
   apply: boolean,
+  scope?: 'user' | 'project' | 'local',
 ) {
-  return adapter.actions[action](config, adapter, {apply});
+  return adapter.actions[action](config, adapter, {apply, scope});
 }
 
 export const agentAdapterStatuses = Effect.fn('agentAdapters.statuses')(function* (

@@ -484,24 +484,21 @@
       "displayName": "Cline",
       "tier": "experimental",
       "aliases": [],
-      "scopes": [],
+      "scopes": ["user"],
       "platforms": ["darwin", "linux", "win32"],
       "capabilities": {
         "mcp": {
-          "status": "unsupported",
-          "reason": "Catalog only; managed installation is unavailable."
+          "status": "managed"
         },
         "instructions": {
-          "status": "unsupported",
-          "reason": "Use upstream documentation for manual setup."
+          "status": "managed"
         },
         "skills": {
-          "status": "unsupported",
-          "reason": "No managed skill installation."
+          "status": "managed"
         },
         "hooks": {
           "status": "unsupported",
-          "reason": "Upstream events are not installed or verified by this adapter."
+          "reason": "Threadnote lifecycle payload mappings and host enablement have not been verified; no hooks are installed."
         }
       },
       "officialDocs": [
@@ -511,10 +508,14 @@
       ],
       "lastVerified": "2026-09-17",
       "caveats": [
-        "Catalog only: resolve CLINE_DATA_DIR, current and legacy hook roots, and feature enablement before installation."
+        "Global MCP uses ~/.cline/data/settings/cline_mcp_settings.json; CLINE_DATA_DIR replaces ~/.cline/data for MCP state while rules and skills remain under ~/.cline. Project MCP and lifecycle hooks are not managed.",
+        "Repair and removal retain the recorded roots and exact paths."
       ],
-      "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "setup": [
+        "Preview: threadnote agents install cline",
+        "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
+      ],
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
     },
     {
       "id": "kiro-cli",
@@ -522,24 +523,21 @@
       "displayName": "Kiro CLI",
       "tier": "experimental",
       "aliases": ["kiro"],
-      "scopes": [],
+      "scopes": ["user", "project"],
       "platforms": ["darwin", "linux", "win32"],
       "capabilities": {
         "mcp": {
-          "status": "unsupported",
-          "reason": "Catalog only; managed installation is unavailable."
+          "status": "managed"
         },
         "instructions": {
-          "status": "unsupported",
-          "reason": "Use upstream documentation for manual setup."
+          "status": "managed"
         },
         "skills": {
-          "status": "unsupported",
-          "reason": "No managed skill installation."
+          "status": "managed"
         },
         "hooks": {
           "status": "unsupported",
-          "reason": "Upstream events are not installed or verified by this adapter."
+          "reason": "Threadnote lifecycle payload mappings and host enablement have not been verified; no hooks are installed."
         }
       },
       "officialDocs": [
@@ -548,9 +546,15 @@
         "https://kiro.dev/docs/steering/"
       ],
       "lastVerified": "2026-09-17",
-      "caveats": ["Catalog only: KIRO_HOME and CLI versus IDE scope require fixtures. Amazon Q is a migration source."],
-      "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "caveats": [
+        "Uses ~/.kiro or .kiro with settings/mcp.json, steering and skills. KIRO_HOME replaces the global ~/.kiro root. Amazon Q is a migration source.",
+        "One recorded installation per surface; repair and removal retain the recorded scope, cwd, root and exact paths."
+      ],
+      "setup": [
+        "Preview: threadnote agents install kiro-cli",
+        "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
+      ],
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
     },
     {
       "id": "devin-local",
@@ -558,24 +562,21 @@
       "displayName": "Devin CLI / Local",
       "tier": "experimental",
       "aliases": ["devin"],
-      "scopes": [],
+      "scopes": ["user", "project", "local"],
       "platforms": ["darwin", "linux", "win32"],
       "capabilities": {
         "mcp": {
-          "status": "unsupported",
-          "reason": "Catalog only; managed installation is unavailable."
+          "status": "managed"
         },
         "instructions": {
-          "status": "unsupported",
-          "reason": "Use upstream documentation for manual setup."
+          "status": "managed"
         },
         "skills": {
-          "status": "unsupported",
-          "reason": "No managed skill installation."
+          "status": "managed"
         },
         "hooks": {
           "status": "unsupported",
-          "reason": "Upstream events are not installed or verified by this adapter."
+          "reason": "Threadnote lifecycle payload mappings and host enablement have not been verified; no hooks are installed."
         }
       },
       "officialDocs": [
@@ -584,10 +585,14 @@
       ],
       "lastVerified": "2026-09-17",
       "caveats": [
-        "Catalog only: user/project/local precedence requires fixtures. PostCompaction must not be mapped to pre-compaction."
+        "Requires Devin 3000.3 or later. User config follows XDG on Unix and APPDATA on Windows; project/local use .devin/mcp_config[.local].json. Local scope applies to MCP; rules and skills are project artifacts. Higher-precedence policies require host verification.",
+        "One recorded installation per surface; repair and removal retain the recorded scope, cwd, root and exact paths."
       ],
-      "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "setup": [
+        "Preview: threadnote agents install devin-local",
+        "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
+      ],
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
     },
     {
       "id": "junie-cli",
@@ -595,24 +600,21 @@
       "displayName": "Junie CLI",
       "tier": "experimental",
       "aliases": ["junie"],
-      "scopes": [],
+      "scopes": ["user", "project"],
       "platforms": ["darwin", "linux", "win32"],
       "capabilities": {
         "mcp": {
-          "status": "unsupported",
-          "reason": "Catalog only; managed installation is unavailable."
+          "status": "managed"
         },
         "instructions": {
-          "status": "unsupported",
-          "reason": "Use upstream documentation for manual setup."
+          "status": "managed"
         },
         "skills": {
-          "status": "unsupported",
-          "reason": "No managed skill installation."
+          "status": "managed"
         },
         "hooks": {
           "status": "unsupported",
-          "reason": "Upstream events are not installed or verified by this adapter."
+          "reason": "Threadnote lifecycle payload mappings and host enablement have not been verified; no hooks are installed."
         }
       },
       "officialDocs": [
@@ -620,34 +622,37 @@
         "https://junie.jetbrains.com/docs/agent-skills.html"
       ],
       "lastVerified": "2026-09-17",
-      "caveats": ["Catalog only: user/project guidelines, skills and supported CLI hooks require fixtures."],
-      "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "caveats": [
+        "Uses ~/.junie or .junie with mcp/mcp.json, AGENTS.md and native skills. Lifecycle hooks are not installed.",
+        "One recorded installation per surface; repair and removal retain the recorded scope, cwd, root and exact paths."
+      ],
+      "setup": [
+        "Preview: threadnote agents install junie-cli",
+        "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
+      ],
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
     },
     {
       "id": "zed-native",
       "agentId": "zed",
       "displayName": "Zed native agent",
-      "tier": "experimental",
+      "tier": "core",
       "aliases": ["zed"],
-      "scopes": [],
+      "scopes": ["user"],
       "platforms": ["darwin", "linux", "win32"],
       "capabilities": {
         "mcp": {
-          "status": "unsupported",
-          "reason": "Catalog only; managed installation is unavailable."
+          "status": "managed"
         },
         "instructions": {
-          "status": "unsupported",
-          "reason": "Use upstream documentation for manual setup."
+          "status": "managed"
         },
         "skills": {
-          "status": "unsupported",
-          "reason": "No managed skill installation."
+          "status": "managed"
         },
         "hooks": {
           "status": "unsupported",
-          "reason": "Upstream events are not installed or verified by this adapter."
+          "reason": "Zed exposes no documented native lifecycle hooks."
         }
       },
       "officialDocs": [
@@ -657,35 +662,36 @@
       ],
       "lastVerified": "2026-09-17",
       "caveats": [
-        "Catalog only: settings use context_servers; no documented native lifecycle hooks. External ACP agents own their configuration."
+        "Native Zed settings context_servers only, with comment-preserving JSONC. Global AGENTS.md and shared ~/.agents/skills. External ACP agents own their configuration.",
+        "One recorded installation per surface; repair and removal retain the recorded scope, cwd, root and exact paths."
       ],
-      "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "setup": [
+        "Preview: threadnote agents install zed-native",
+        "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
+      ],
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
     },
     {
       "id": "roo-project",
       "agentId": "roo",
       "displayName": "Roo Code",
-      "tier": "experimental",
+      "tier": "project",
       "aliases": ["roo"],
-      "scopes": [],
+      "scopes": ["project"],
       "platforms": ["darwin", "linux", "win32"],
       "capabilities": {
         "mcp": {
-          "status": "unsupported",
-          "reason": "Catalog only; managed installation is unavailable."
+          "status": "managed"
         },
         "instructions": {
-          "status": "unsupported",
-          "reason": "Use upstream documentation for manual setup."
+          "status": "managed"
         },
         "skills": {
-          "status": "unsupported",
-          "reason": "No managed skill installation."
+          "status": "managed"
         },
         "hooks": {
           "status": "unsupported",
-          "reason": "Upstream events are not installed or verified by this adapter."
+          "reason": "Threadnote lifecycle payload mappings and host enablement have not been verified; no hooks are installed."
         }
       },
       "officialDocs": [
@@ -693,34 +699,38 @@
         "https://roocodeinc.github.io/Roo-Code/features/skills/"
       ],
       "lastVerified": "2026-09-17",
-      "caveats": ["Catalog only: project-first; global extension storage is platform/version dependent."],
-      "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "caveats": [
+        "Project MCP, rules and skills under .roo in the current directory. Global extension storage remains unmanaged because its paths depend on platform and version.",
+        "One recorded installation per surface; repair and removal retain the recorded scope, cwd, root and exact paths."
+      ],
+      "setup": [
+        "Preview: threadnote agents install roo-project --scope project",
+        "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
+      ],
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
     },
     {
       "id": "continue-project",
       "agentId": "continue",
       "displayName": "Continue",
-      "tier": "experimental",
+      "tier": "project",
       "aliases": ["continue"],
-      "scopes": [],
+      "scopes": ["project"],
       "platforms": ["darwin", "linux", "win32"],
       "capabilities": {
         "mcp": {
-          "status": "unsupported",
-          "reason": "Catalog only; managed installation is unavailable."
+          "status": "managed"
         },
         "instructions": {
-          "status": "unsupported",
-          "reason": "Use upstream documentation for manual setup."
+          "status": "managed"
         },
         "skills": {
           "status": "unsupported",
-          "reason": "No managed skill installation."
+          "reason": "No verified native skills discovery contract; project rules provide the bootstrap."
         },
         "hooks": {
           "status": "unsupported",
-          "reason": "Upstream events are not installed or verified by this adapter."
+          "reason": "Threadnote lifecycle payload mappings and host enablement have not been verified; no hooks are installed."
         }
       },
       "officialDocs": [
@@ -729,10 +739,14 @@
       ],
       "lastVerified": "2026-09-17",
       "caveats": [
-        "Catalog only: dedicated .continue/mcpServers/threadnote.json and project rules await fixtures; shared user YAML is not edited."
+        "Dedicated .continue/mcpServers/threadnote.json plus .continue/rules/threadnote.md. Shared user YAML is not edited.",
+        "One recorded installation per surface; repair and removal retain the recorded scope, cwd, root and exact paths."
       ],
-      "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "setup": [
+        "Preview: threadnote agents install continue-project --scope project",
+        "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
+      ],
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
     },
     {
       "id": "antigravity-cli",
@@ -740,31 +754,35 @@
       "displayName": "Antigravity CLI",
       "tier": "experimental",
       "aliases": [],
-      "scopes": [],
+      "scopes": ["user"],
       "platforms": ["darwin", "linux", "win32"],
       "capabilities": {
         "mcp": {
-          "status": "unsupported",
-          "reason": "Catalog only; managed installation is unavailable."
+          "status": "managed"
         },
         "instructions": {
           "status": "unsupported",
-          "reason": "Use upstream documentation for manual setup."
+          "reason": "Automatic global instruction discovery is not verified for the CLI; use the managed skills."
         },
         "skills": {
-          "status": "unsupported",
-          "reason": "No managed skill installation."
+          "status": "managed"
         },
         "hooks": {
           "status": "unsupported",
-          "reason": "Upstream events are not installed or verified by this adapter."
+          "reason": "Threadnote lifecycle payload mappings and host enablement have not been verified; no hooks are installed."
         }
       },
       "officialDocs": ["https://antigravity.google/docs/cli/plugins/", "https://antigravity.google/docs/hooks"],
       "lastVerified": "2026-09-17",
-      "caveats": ["Catalog only: CLI contract is separate from the IDE; requires version and root fixtures."],
-      "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "caveats": [
+        "Documented CLI v1.2.0 MCP at ~/.gemini/config/mcp_config.json, shared with the IDE through consumer receipts. Skills are flat Markdown files in ~/.gemini/antigravity-cli/skills. Plugins and project scope are not managed.",
+        "One recorded installation per surface; repair and removal retain the recorded scope, cwd, root and exact paths."
+      ],
+      "setup": [
+        "Preview: threadnote agents install antigravity-cli",
+        "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
+      ],
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
     },
     {
       "id": "antigravity-ide",
@@ -772,31 +790,34 @@
       "displayName": "Antigravity IDE",
       "tier": "experimental",
       "aliases": [],
-      "scopes": [],
+      "scopes": ["user"],
       "platforms": ["darwin", "linux", "win32"],
       "capabilities": {
         "mcp": {
-          "status": "unsupported",
-          "reason": "Catalog only; managed installation is unavailable."
+          "status": "managed"
         },
         "instructions": {
-          "status": "unsupported",
-          "reason": "Use upstream documentation for manual setup."
+          "status": "managed"
         },
         "skills": {
-          "status": "unsupported",
-          "reason": "No managed skill installation."
+          "status": "managed"
         },
         "hooks": {
           "status": "unsupported",
-          "reason": "Upstream events are not installed or verified by this adapter."
+          "reason": "Threadnote lifecycle payload mappings and host enablement have not been verified; no hooks are installed."
         }
       },
       "officialDocs": ["https://antigravity.google/docs/ide-mcp", "https://antigravity.google/docs/rules-workflows"],
       "lastVerified": "2026-09-17",
-      "caveats": ["Catalog only: IDE contract is separate from the CLI; requires version and root fixtures."],
-      "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "caveats": [
+        "Documented Antigravity 2.0 v2.14.0 MCP at ~/.gemini/config/mcp_config.json, shared with the CLI through consumer receipts. Rules use ~/.gemini/GEMINI.md; skills use ~/.gemini/config/skills. Project scope and IDE extensions are not managed.",
+        "One recorded installation per surface; repair and removal retain the recorded scope, cwd, root and exact paths."
+      ],
+      "setup": [
+        "Preview: threadnote agents install antigravity-ide",
+        "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
+      ],
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
     },
     {
       "id": "kilo",
@@ -804,31 +825,35 @@
       "displayName": "Kilo Code",
       "tier": "experimental",
       "aliases": [],
-      "scopes": [],
+      "scopes": ["user"],
       "platforms": ["darwin", "linux", "win32"],
       "capabilities": {
         "mcp": {
-          "status": "unsupported",
-          "reason": "Catalog only; managed installation is unavailable."
+          "status": "managed"
         },
         "instructions": {
           "status": "unsupported",
-          "reason": "Use upstream documentation for manual setup."
+          "reason": "Rules require instructions-array registration; ownership of that separate array is not yet implemented."
         },
         "skills": {
-          "status": "unsupported",
-          "reason": "No managed skill installation."
+          "status": "managed"
         },
         "hooks": {
           "status": "unsupported",
-          "reason": "Upstream events are not installed or verified by this adapter."
+          "reason": "Threadnote lifecycle payload mappings and host enablement have not been verified; no hooks are installed."
         }
       },
       "officialDocs": ["https://kilo.ai/docs/automate/mcp/using-in-kilo-code", "https://kilo.ai/docs/customize/skills"],
       "lastVerified": "2026-09-17",
-      "caveats": ["Catalog only: evolving JSONC MCP schema requires version fixtures."],
-      "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "caveats": [
+        "Uses ~/.config/kilo/kilo.jsonc with comment-preserving edits, top-level mcp and local command arrays. Skills use ~/.kilo/skills. Project config variants and plugins are not managed.",
+        "One recorded installation per surface; repair and removal retain the recorded scope, cwd, root and exact paths."
+      ],
+      "setup": [
+        "Preview: threadnote agents install kilo",
+        "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
+      ],
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
     },
     {
       "id": "aider",
@@ -868,31 +893,34 @@
       "displayName": "Windsurf Cascade (legacy)",
       "tier": "manual",
       "aliases": [],
-      "scopes": [],
+      "scopes": ["user"],
       "platforms": ["darwin", "linux", "win32"],
       "capabilities": {
         "mcp": {
-          "status": "unsupported",
-          "reason": "Catalog only; managed installation is unavailable."
+          "status": "managed"
         },
         "instructions": {
-          "status": "unsupported",
-          "reason": "Use upstream documentation for manual setup."
+          "status": "managed"
         },
         "skills": {
-          "status": "unsupported",
-          "reason": "No managed skill installation."
+          "status": "managed"
         },
         "hooks": {
           "status": "unsupported",
-          "reason": "Upstream events are not installed or verified by this adapter."
+          "reason": "Threadnote lifecycle payload mappings and host enablement have not been verified; no hooks are installed."
         }
       },
       "officialDocs": ["https://docs.windsurf.com/windsurf/cascade/mcp"],
       "lastVerified": "2026-09-17",
-      "caveats": ["Migration compatibility only; prefer the current Devin Local surface."],
-      "setup": ["Follow the official documentation; this catalog entry does not install configuration."],
-      "verification": "Research only; installation not verified."
+      "caveats": [
+        "Managed migration compatibility for legacy Cascade at ~/.codeium/windsurf/mcp_config.json, global rules and skills. Prefer current Devin Local for new installations.",
+        "One recorded installation per surface; repair and removal retain the recorded scope, cwd, root and exact paths."
+      ],
+      "setup": [
+        "Preview: threadnote agents install windsurf-legacy",
+        "Add --apply to install; restart the host. Use agents status, agents repair and agents remove for lifecycle management."
+      ],
+      "verification": "Official documentation checked 2026-09-17; local adapter conformance fixtures verify filesystem behavior. Host application execution is not verified."
     },
     {
       "id": "amazon-q-legacy",
