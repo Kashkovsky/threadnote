@@ -8,8 +8,13 @@ import {
   codeGraphFileBlobCapacityBytes,
 } from '../../src/code_graph/cache_capacity.js';
 import {codeGraphBlobReuseCacheKey} from '../../src/code_graph/blob_reuse.js';
+import {
+  EMPTY_CODE_GRAPH_BUILD_RESOURCE_STATE,
+  makeCodeGraphBuildResourceCoordinator,
+} from '../../src/code_graph/build_resources.js';
 import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
 import {cacheContentBatch, type CodeGraphCacheExtractedRow} from '../../src/code_graph/indexer.js';
+import type {CodeGraphIndexResourceGate} from '../../src/code_graph/indexer_types.js';
 import type {CodeGraphContentBatchContext} from '../../src/code_graph/inventory.js';
 import type {CodeGraphLanguagePackRegistryShape} from '../../src/code_graph/languages/registry.js';
 import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schemas/extractor.js';
@@ -178,6 +183,109 @@ describe('code graph parser cache coalescer', () => {
         expect(persistenceProgress[index + 1]?.completed).toBe(persistenceProgress[index + 1]?.total);
       }
     }),
+  );
+
+  effectIt.effect('releases preparation before a threshold-triggered cache writer acquisition', () =>
+    Effect.gen(function* () {
+      const resources = yield* makeCodeGraphBuildResourceCoordinator(() => Effect.void);
+      const preparationGate: CodeGraphIndexResourceGate = effect =>
+        Effect.acquireUseRelease(
+          resources.acquirePreparation,
+          () => effect,
+          () => resources.releasePreparation,
+        );
+      const files = Array.from({length: CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows + 1}, (_, index) =>
+        cacheFile(index, 'src/resource-order'),
+      );
+      const harness = coalescerHarness({
+        capacity: 8,
+        facts: file =>
+          resources.current.pipe(
+            Effect.tap(state => Effect.sync(() => expect(state.preparation).toBe(true))),
+            Effect.as({degraded: false, facts: emptyFacts(file.path), parseMilliseconds: 0}),
+          ),
+        onCache: () =>
+          resources.assertWriterMayWait.pipe(
+            Effect.andThen(
+              Effect.acquireUseRelease(
+                resources.acquireWriter,
+                () => Effect.void,
+                () => resources.releaseWriter,
+              ),
+            ),
+          ),
+        preparationGate,
+      });
+
+      for (let offset = 0; offset < files.length; offset += 128) {
+        const batch = files.slice(offset, offset + 128);
+        yield* harness.run(batch, cacheContext(batch.length));
+      }
+
+      expect(harness.calls).toHaveLength(1);
+      expect(harness.calls[0]?.files).toHaveLength(CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows);
+      expect(yield* resources.current).toEqual(EMPTY_CODE_GRAPH_BUILD_RESOURCE_STATE);
+      yield* harness.flush;
+      expect(harness.calls).toHaveLength(2);
+      expect(yield* resources.current).toEqual(EMPTY_CODE_GRAPH_BUILD_RESOURCE_STATE);
+    }),
+  );
+
+  effectIt.effect(
+    'accepts each bounded extraction window before admitting the next window',
+    () =>
+      Effect.gen(function* () {
+        const resources = yield* makeCodeGraphBuildResourceCoordinator(() => Effect.void);
+        const diagnostic = '界'.repeat(1_500_000);
+        let admissions = 0;
+        let writes = 0;
+        const preparationGate: CodeGraphIndexResourceGate = effect =>
+          Effect.sync(() => {
+            admissions += 1;
+            if (admissions > 1) expect(writes).toBeGreaterThan(0);
+          }).pipe(
+            Effect.andThen(
+              Effect.acquireUseRelease(
+                resources.acquirePreparation,
+                () => effect,
+                () => resources.releasePreparation,
+              ),
+            ),
+          );
+        const harness = coalescerHarness({
+          capacity: 1,
+          facts: file => ({
+            degraded: false,
+            facts: {...emptyFacts(file.path), diagnostics: [diagnostic]},
+            parseMilliseconds: 0,
+          }),
+          onCache: () =>
+            resources.assertWriterMayWait.pipe(
+              Effect.andThen(
+                Effect.acquireUseRelease(
+                  resources.acquireWriter,
+                  () =>
+                    Effect.sync(() => {
+                      writes += 1;
+                    }),
+                  () => resources.releaseWriter,
+                ),
+              ),
+            ),
+          preparationGate,
+        });
+        const files = Array.from({length: 9}, (_, index) => cacheFile(index, 'src/window-boundary'));
+
+        yield* harness.run(files, cacheContext(files.length));
+
+        expect(admissions).toBe(2);
+        expect(writes).toBe(1);
+        expect(harness.calls[0]?.files.length).toBeLessThanOrEqual(8);
+        expect(yield* resources.current).toEqual(EMPTY_CODE_GRAPH_BUILD_RESOURCE_STATE);
+        yield* harness.flush;
+        expect(harness.calls.reduce((total, call) => total + call.files.length, 0)).toBe(files.length);
+      }),
+    30_000,
   );
 
   effectIt.effect(
@@ -501,9 +609,10 @@ function coalescerHarness(options: {
   readonly facts?: (
     file: CodeGraphInventoryFile,
   ) => CodeGraphParserResult | Effect.Effect<CodeGraphParserResult, never>;
-  readonly onCache?: (call: CacheCall) => Effect.Effect<void, never>;
+  readonly onCache?: (call: CacheCall) => Effect.Effect<void, unknown>;
   readonly onSource?: Parameters<typeof cacheContentBatch>[0]['onSourceParserBatch'];
   readonly onProgress?: Parameters<typeof cacheContentBatch>[0]['onProgress'];
+  readonly preparationGate?: CodeGraphIndexResourceGate;
 }) {
   const calls: CacheCall[] = [];
   const parserPool = {
@@ -546,6 +655,7 @@ function coalescerHarness(options: {
     onProgress: options.onProgress,
     onSourceParserBatch: options.onSource,
     parserPool,
+    preparationGate: options.preparationGate,
     persistentCapacityProtector: unprotectedCacheWrite,
     store,
     threadnoteHome: '/bounded/home',

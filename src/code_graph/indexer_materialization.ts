@@ -33,6 +33,7 @@ import {
   codeGraphExtractorSetIdentityFromPackProvenance,
 } from './graph_identity.js';
 import {CodeGraphIndexOperationError, sameOverlayState, WorktreeChangedDuringIndex} from './indexer_shared.js';
+import type {CodeGraphIndexResourceGate} from './indexer_types.js';
 import type {DirectPersistentCapacityProtection, IncrementalOverlayAssessment} from './indexer_types.js';
 import {
   worktreeBuildRequestState,
@@ -214,12 +215,14 @@ export function cacheContentBatch(options: {
   }) => Effect.Effect<void, unknown>;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
   readonly parserPool: CodeGraphParserPoolShape;
+  readonly preparationGate?: CodeGraphIndexResourceGate;
   readonly persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector;
   readonly store: CodeGraphStoreShape;
   readonly threadnoteHome: string;
   readonly treeSitter: TreeSitterRuntimeShape;
 }): CodeGraphCacheContentCoalescer {
-  const windowSize = codeGraphExtractionWindowSize(options.parserPool.capacity);
+  const parserCapacity = options.parserPool.capacity;
+  const windowSize = codeGraphExtractionWindowSize(parserCapacity);
   const extractionCostModel = createCodeGraphExtractionCostModel<ExtractionReuseGroup>();
   let extractionMilliseconds = 0;
   let extractionFactsBytesCompleted = 0;
@@ -459,43 +462,85 @@ export function cacheContentBatch(options: {
           reusableExtractionUses.set(key, uses);
         }
       };
-      let remainingGroups: readonly ExtractionReuseGroup[] = extractionReuseGroups(orderedFiles, options.languagePacks);
+      let remainingGroups = extractionReuseGroups(orderedFiles, options.languagePacks);
       while (remainingGroups.length > 0) {
-        const lane = planCodeGraphExtractionLanes(remainingGroups, options.parserPool.capacity, extractionCostModel)[0];
+        const lane = planCodeGraphExtractionLanes(remainingGroups, parserCapacity, extractionCostModel)[0];
         const [groupWindow, rest] = takeCodeGraphExtractionWindow(lane.groups, windowSize);
         remainingGroups = rest;
         const window = groupWindow
           .flatMap(group => group.files)
           .sort((left, right) => compareCodeUnits(left.path, right.path));
-        let windowCompleted = 0;
-        const extractGroup = (group: ExtractionReuseGroup) =>
-          Effect.forEach(
-            group.files,
-            file =>
-              Effect.gen(function* () {
-                const reuseKey = group.reuseKey;
-                yield* emitContentProgress(
-                  options.onProgress,
-                  cumulativeContext,
-                  {
-                    batchCompleted: parsedCompleted,
-                    batchTotal: files.length,
-                    bytes: file.size,
-                    ...codeGraphFileProgressDimensions(file, options.languagePacks),
-                    language: file.language,
-                    path: file.path,
-                    stage: 'extracting',
-                  },
-                  extractionMilliseconds,
-                  persistenceMilliseconds,
-                  serializationMilliseconds,
-                  currentScanningMetrics(),
-                );
-                const donor = reuseKey === undefined ? undefined : reusableExtractions.get(reuseKey);
-                const relocation = donor === undefined ? undefined : relocateSerializedParserResult(file, donor);
-                const reused = relocation?.result;
-                serializationMilliseconds += relocation?.serializationMilliseconds ?? 0;
-                if (reused !== undefined) {
+        const extraction = Effect.gen(function* () {
+          let windowCompleted = 0;
+          const extractGroup = (group: ExtractionReuseGroup) =>
+            Effect.forEach(
+              group.files,
+              file =>
+                Effect.gen(function* () {
+                  const reuseKey = group.reuseKey;
+                  yield* emitContentProgress(
+                    options.onProgress,
+                    cumulativeContext,
+                    {
+                      batchCompleted: parsedCompleted,
+                      batchTotal: files.length,
+                      bytes: file.size,
+                      ...codeGraphFileProgressDimensions(file, options.languagePacks),
+                      language: file.language,
+                      path: file.path,
+                      stage: 'extracting',
+                    },
+                    extractionMilliseconds,
+                    persistenceMilliseconds,
+                    serializationMilliseconds,
+                    currentScanningMetrics(),
+                  );
+                  const donor = reuseKey === undefined ? undefined : reusableExtractions.get(reuseKey);
+                  const relocation = donor === undefined ? undefined : relocateSerializedParserResult(file, donor);
+                  const reused = relocation?.result;
+                  serializationMilliseconds += relocation?.serializationMilliseconds ?? 0;
+                  if (reused !== undefined) {
+                    finishReuseAttempt(reuseKey);
+                    windowCompleted += 1;
+                    yield* emitContentProgress(
+                      options.onProgress,
+                      cumulativeContext,
+                      {
+                        batchCompleted: parsedCompleted + windowCompleted,
+                        batchTotal: files.length,
+                        bytes: file.size,
+                        ...codeGraphFileProgressDimensions(file, options.languagePacks),
+                        degraded: false,
+                        factsBytes: reused.cacheFact.bytes,
+                        language: file.language,
+                        parseMilliseconds: 0,
+                        path: file.path,
+                        relations: reused.facts.edges.length,
+                        stage: 'extracting',
+                        symbols: reused.facts.symbols.length,
+                      },
+                      extractionMilliseconds,
+                      persistenceMilliseconds,
+                      serializationMilliseconds,
+                      completeExtractionMetrics(file, reused.cacheFact.bytes),
+                    );
+                    return {file, requestMilliseconds: 0, result: reused, reused: true};
+                  }
+                  const requestStartedAt = performance.now();
+                  const parsed = yield* extractParserFacts(file, options);
+                  const requestMilliseconds = Math.max(0, performance.now() - requestStartedAt);
+                  const freshSerializationStartedAt = performance.now();
+                  const cacheFact = serializeBoundedCodeGraphFact(parsed.facts);
+                  serializationMilliseconds += Math.max(0, performance.now() - freshSerializationStartedAt);
+                  const result = {
+                    ...parsed,
+                    cacheFact,
+                    facts: cacheFact.facts,
+                  } satisfies CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact};
+                  if (result.degraded) extractionDegradedFiles += 1;
+                  if (!result.degraded && reuseKey !== undefined && expectedReuseCount(reuseKey) > 1) {
+                    reusableExtractions.set(reuseKey, result);
+                  }
                   finishReuseAttempt(reuseKey);
                   windowCompleted += 1;
                   yield* emitContentProgress(
@@ -506,97 +551,61 @@ export function cacheContentBatch(options: {
                       batchTotal: files.length,
                       bytes: file.size,
                       ...codeGraphFileProgressDimensions(file, options.languagePacks),
-                      degraded: false,
-                      factsBytes: reused.cacheFact.bytes,
+                      degraded: result.degraded,
+                      ...(result.degradationReason === undefined ? {} : {degradationReason: result.degradationReason}),
+                      factsBytes: result.cacheFact.bytes,
                       language: file.language,
-                      parseMilliseconds: 0,
+                      parseMilliseconds: result.parseMilliseconds,
                       path: file.path,
-                      relations: reused.facts.edges.length,
+                      relations: result.facts.edges.length,
                       stage: 'extracting',
-                      symbols: reused.facts.symbols.length,
+                      symbols: result.facts.symbols.length,
                     },
-                    extractionMilliseconds,
+                    extractionMilliseconds + result.parseMilliseconds,
                     persistenceMilliseconds,
                     serializationMilliseconds,
-                    completeExtractionMetrics(file, reused.cacheFact.bytes),
+                    completeExtractionMetrics(file, result.cacheFact.bytes),
                   );
-                  return {file, requestMilliseconds: 0, result: reused, reused: true};
-                }
-                const requestStartedAt = performance.now();
-                const parsed = yield* extractParserFacts(file, options);
-                const requestMilliseconds = Math.max(0, performance.now() - requestStartedAt);
-                const freshSerializationStartedAt = performance.now();
-                const cacheFact = serializeBoundedCodeGraphFact(parsed.facts);
-                serializationMilliseconds += Math.max(0, performance.now() - freshSerializationStartedAt);
-                const result = {
-                  ...parsed,
-                  cacheFact,
-                  facts: cacheFact.facts,
-                } satisfies CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact};
-                if (result.degraded) extractionDegradedFiles += 1;
-                if (!result.degraded && reuseKey !== undefined && expectedReuseCount(reuseKey) > 1) {
-                  reusableExtractions.set(reuseKey, result);
-                }
-                finishReuseAttempt(reuseKey);
-                windowCompleted += 1;
-                yield* emitContentProgress(
-                  options.onProgress,
-                  cumulativeContext,
-                  {
-                    batchCompleted: parsedCompleted + windowCompleted,
-                    batchTotal: files.length,
-                    bytes: file.size,
-                    ...codeGraphFileProgressDimensions(file, options.languagePacks),
-                    degraded: result.degraded,
-                    ...(result.degradationReason === undefined ? {} : {degradationReason: result.degradationReason}),
-                    factsBytes: result.cacheFact.bytes,
-                    language: file.language,
-                    parseMilliseconds: result.parseMilliseconds,
-                    path: file.path,
-                    relations: result.facts.edges.length,
-                    stage: 'extracting',
-                    symbols: result.facts.symbols.length,
-                  },
-                  extractionMilliseconds + result.parseMilliseconds,
-                  persistenceMilliseconds,
-                  serializationMilliseconds,
-                  completeExtractionMetrics(file, result.cacheFact.bytes),
-                );
-                return {file, requestMilliseconds, result, reused: false};
-              }),
-            {concurrency: 1},
-          );
-        const groupedResults = yield* Effect.forEach(groupWindow, extractGroup, {concurrency: lane.concurrency});
-        const results = groupedResults.flat();
-        for (const observed of [...results].sort((left, right) => compareCodeUnits(left.file.path, right.file.path))) {
-          if (observed.reused) continue;
-          extractionCostModel.observe(observed.file, {
-            factsBytes: observed.result.cacheFact.bytes,
-            requestMilliseconds: observed.requestMilliseconds,
-          });
-        }
-        extractionMilliseconds += results.reduce((total, result) => total + result.result.parseMilliseconds, 0);
-        parsedCompleted += results.length;
-        const resultsByPath = new Map(results.map(result => [result.file.path, result.result]));
-        const extractedRows: CodeGraphCacheExtractedRow[] = [];
-        for (const group of groupFilesByCacheIdentity(window, options.languagePacks)) {
-          const durableFiles = group.files.filter(file => !resultsByPath.get(file.path)!.degraded);
-          const degradedFiles = group.files.filter(file => resultsByPath.get(file.path)!.degraded);
-          for (const [degraded, cacheFiles] of [
-            [false, durableFiles],
-            [true, degradedFiles],
-          ] as const) {
-            for (const file of cacheFiles) {
-              extractedRows.push({
-                cacheFact: resultsByPath.get(file.path)!.cacheFact,
-                cacheIdentity: group.cacheIdentity,
-                degraded,
-                file,
-              });
+                  return {file, requestMilliseconds, result, reused: false};
+                }),
+              {concurrency: 1},
+            );
+          const groupedResults = yield* Effect.forEach(groupWindow, extractGroup, {concurrency: lane.concurrency});
+          const results = groupedResults.flat();
+          for (const observed of [...results].sort((left, right) =>
+            compareCodeUnits(left.file.path, right.file.path),
+          )) {
+            if (observed.reused) continue;
+            extractionCostModel.observe(observed.file, {
+              factsBytes: observed.result.cacheFact.bytes,
+              requestMilliseconds: observed.requestMilliseconds,
+            });
+          }
+          extractionMilliseconds += results.reduce((total, result) => total + result.result.parseMilliseconds, 0);
+          parsedCompleted += results.length;
+          const resultsByPath = new Map(results.map(result => [result.file.path, result.result]));
+          const extractedRows: CodeGraphCacheExtractedRow[] = [];
+          for (const group of groupFilesByCacheIdentity(window, options.languagePacks)) {
+            const durableFiles = group.files.filter(file => !resultsByPath.get(file.path)!.degraded);
+            const degradedFiles = group.files.filter(file => resultsByPath.get(file.path)!.degraded);
+            for (const [degraded, cacheFiles] of [
+              [false, durableFiles],
+              [true, degradedFiles],
+            ] as const) {
+              for (const file of cacheFiles) {
+                extractedRows.push({
+                  cacheFact: resultsByPath.get(file.path)!.cacheFact,
+                  cacheIdentity: group.cacheIdentity,
+                  degraded,
+                  file,
+                });
+              }
             }
           }
-        }
-        yield* acceptExtracted(extractedRows, cumulativeContext);
+          return extractedRows;
+        });
+        const admittedExtraction = options.preparationGate ? options.preparationGate(extraction) : extraction;
+        yield* acceptExtracted(yield* admittedExtraction, cumulativeContext);
       }
     });
   return {
