@@ -24,8 +24,9 @@ GRANT SELECT ON
   remote_memory.outbox_events,
   remote_memory.rate_limit_windows,
   remote_memory.uri_aliases,
-  remote_memory.search_documents
-  ,remote_memory.durable_memory_proposals
+  remote_memory.search_documents,
+  remote_memory.durable_memory_proposals,
+  remote_memory.code_link_backlinks
 TO threadnote_remote_runtime;
 
 GRANT SELECT (id, status) ON remote_memory.tenants TO threadnote_remote_runtime;
@@ -44,8 +45,9 @@ GRANT INSERT ON
   remote_memory.audit_events,
   remote_memory.rate_limit_windows,
   remote_memory.search_documents,
-  remote_memory.projects
-  ,remote_memory.durable_memory_proposals
+  remote_memory.projects,
+  remote_memory.durable_memory_proposals,
+  remote_memory.code_link_backlinks
 TO threadnote_remote_runtime;
 
 GRANT UPDATE (share_generation, indexed_generation, git_ingest_snapshot_commit, git_ingest_cursor, git_ingest_rejected_path) ON remote_memory.shares TO threadnote_remote_runtime;
@@ -71,5 +73,6 @@ GRANT UPDATE (status, payload, payload_purged_at, decision_kind, decision_operat
 GRANT DELETE ON
   remote_memory.challenge_directory,
   remote_memory.attestation_challenges,
-  remote_memory.uri_aliases
+  remote_memory.uri_aliases,
+  remote_memory.code_link_backlinks
 TO threadnote_remote_runtime;

@@ -58,6 +58,10 @@ import {
   type RemoteMemoryRequestExecution,
 } from './request_execution.js';
 import {acquireRemoteRelationAdmissionTransactionLock, remoteRelationAdmissionLockKey} from './relation_admission.js';
+import {replaceRemoteCodeLinkBacklinks} from './code_link_backlinks.js';
+import type {RemoteContextBriefInputV1} from './context_brief.js';
+import {compileRemoteContextBrief, type RemoteMemoryContextBriefResult} from './context_brief_repository.js';
+import {remoteMemoryExcerpt, remoteRecallTextMatches} from './recall_text.js';
 import {
   claimStoredRemoteMemoryProposalReview,
   finishStoredRemoteMemoryProposalDecision,
@@ -104,7 +108,6 @@ interface RecallRow extends HeadRow {
   readonly generation: string | number;
   readonly score: string | number;
 }
-
 interface IdempotencyRecordRow {
   readonly outcome: unknown | null;
   readonly outcome_expires_at: Date;
@@ -562,12 +565,12 @@ export class PostgresRemoteMemoryRepository {
       if (
         row.git_commit &&
         row.markdown_body === '' &&
-        !recallTextMatches(`${row.project} ${row.topic} ${body}`, input.query)
+        !remoteRecallTextMatches(`${row.project} ${row.topic} ${body}`, input.query)
       ) {
         continue;
       }
       results.push({
-        excerpt: memoryExcerpt(body, input.query),
+        excerpt: remoteMemoryExcerpt(body, input.query),
         kind: row.kind,
         project: row.project,
         revision: row.current_revision_id,
@@ -584,6 +587,23 @@ export class PostgresRemoteMemoryRepository {
       }),
       results,
     };
+  }
+
+  async contextBrief(
+    principal: AuthorizedRemotePrincipal,
+    input: RemoteContextBriefInputV1,
+    requestId: string,
+    execution?: RemoteMemoryRequestExecution,
+  ): Promise<RemoteMemoryContextBriefResult> {
+    assertGitMemoryBinding(this.gitStore?.binding, principal);
+    requirePrincipalProject(principal, input.project);
+    return compileRemoteContextBrief(principal, input, {
+      gitStoreConfigured: this.gitStore !== undefined,
+      makeReceipt: state => receipt(principal, state, requestId),
+      recall: recallInput => this.recall(principal, recallInput, requestId, execution),
+      revisionBody: head => this.revisionBody(head),
+      withTenant: use => this.withTenant(principal.tenantId, use, execution),
+    });
   }
 
   async remember(
@@ -1013,13 +1033,14 @@ export class PostgresRemoteMemoryRepository {
   ): Promise<{readonly ingested: number; readonly skipped: number}> {
     assertGitMemoryBinding(this.gitStore?.binding, principal);
     if (!this.gitStore) throw remoteMemoryError('invalid_request', 'Git share ingest requires a git canonical store.');
-    return ingestGitShare({
+    const result = await ingestGitShare({
       gitStore: this.gitStore,
       principal,
       requestId,
       now,
       withTenant: use => this.withTenant(principal.tenantId, use),
     });
+    return result;
   }
 
   private async revisionBody(head: Pick<HeadRow, 'git_commit' | 'git_path' | 'markdown_body'>): Promise<string> {
@@ -1178,7 +1199,7 @@ export class PostgresRemoteMemoryRepository {
   private async commitRememberRevision(input: {
     readonly attestation?: CursorWorkloadAttestation;
     readonly canonicalUri: string;
-    readonly document: {readonly contentHash: string};
+    readonly document: {readonly content: string; readonly contentHash: string};
     readonly execution?: RemoteMemoryRequestExecution;
     readonly expectedRevision?: string;
     readonly fingerprint: string;
@@ -1304,7 +1325,7 @@ export class PostgresRemoteMemoryRepository {
     input: {
       readonly attestation?: CursorWorkloadAttestation;
       readonly canonicalUri: string;
-      readonly document: {readonly contentHash: string};
+      readonly document: {readonly content: string; readonly contentHash: string};
       readonly fingerprint: string;
       readonly input: RemoteRememberInputV1;
       readonly now: Date;
@@ -1348,6 +1369,15 @@ export class PostgresRemoteMemoryRepository {
         ${input.input.operationId}
       )
     `;
+    const parsed = parseMemoryDocument(input.canonicalUri, input.document.content);
+    if (!parsed) throw remoteMemoryError('service_unavailable', 'The rendered remote memory document is invalid.');
+    await replaceRemoteCodeLinkBacklinks(transaction, {
+      citations: parsed.metadata.codeCitations ?? [],
+      headId,
+      revisionId: input.proposedRevision,
+      shareId: input.principal.shareId,
+      tenantId: input.principal.tenantId,
+    });
     await transaction`
       UPDATE remote_memory.memory_heads SET
         current_revision_id = ${input.proposedRevision}, status = ${status},
@@ -1403,7 +1433,7 @@ export class PostgresRemoteMemoryRepository {
   private async commitHandoffRevision(input: {
     readonly address: {readonly project: string; readonly topic: string};
     readonly attestation?: CursorWorkloadAttestation;
-    readonly document: {readonly contentHash: string};
+    readonly document: {readonly content: string; readonly contentHash: string};
     readonly execution?: RemoteMemoryRequestExecution;
     readonly fingerprint: string;
     readonly input: RemoteHandoffTransitionInput;
@@ -1487,6 +1517,15 @@ export class PostgresRemoteMemoryRepository {
             ${input.principal.principalId}, ${input.attestation?.attestationId ?? null}, ${input.input.operationId}
           )
         `;
+        const parsed = parseMemoryDocument(current.canonical_uri, input.document.content);
+        if (!parsed) throw remoteMemoryError('service_unavailable', 'The rendered remote handoff document is invalid.');
+        await replaceRemoteCodeLinkBacklinks(transaction, {
+          citations: parsed.metadata.codeCitations ?? [],
+          headId: current.head_id,
+          revisionId: input.planned.proposedRevision,
+          shareId: input.principal.shareId,
+          tenantId: input.principal.tenantId,
+        });
         await transaction`
           UPDATE remote_memory.memory_heads
           SET current_revision_id = ${input.planned.proposedRevision}, status = ${input.planned.status},
@@ -1937,30 +1976,6 @@ function makeLifecycleDocument(
     content: inspected.canonicalContent,
     contentHash: sha256HexSync(inspected.canonicalContent),
   };
-}
-
-function memoryExcerpt(content: string, query: string): string {
-  const record = parseMemoryDocument('threadnote://share/excerpt/memories/durable/project/topic.md', content);
-  const body = (record?.body ?? content).replace(/\s+/g, ' ').trim();
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const lower = body.toLowerCase();
-  const first =
-    terms
-      .map(term => lower.indexOf(term))
-      .filter(index => index >= 0)
-      .sort((a, b) => a - b)[0] ?? 0;
-  const start = Math.max(0, first - 120);
-  const excerpt = body.slice(start, start + 600);
-  return `${start > 0 ? '…' : ''}${excerpt}${start + 600 < body.length ? '…' : ''}`;
-}
-
-function recallTextMatches(content: string, query: string): boolean {
-  const haystack = content.toLowerCase();
-  return query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean)
-    .every(term => haystack.includes(term));
 }
 
 function numeric(value: string | number): number {

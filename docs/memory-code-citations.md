@@ -6,6 +6,26 @@ against an already-ready current graph and returns a disposable validation recei
 
 Code citations are optional. Existing uncited memories remain recallable after upgrading.
 
+## Organization remote Context Brief v1
+
+The organization HTTP composer has a deployment-scoped, read-only `context_brief` v1 projection. It is not a
+replacement for the repository-local Context Brief. It accepts a task, authorized project, and an optional list of up
+to eight canonical `{repositoryId, path}` anchors. The remote service converts each anchor into an opaque selector and
+uses it only to rank already-authorized memories in the same share and project.
+
+Remote links are capture-time provenance. The service does not inspect or clone the caller checkout and never reports
+that a citation is current, exact, or relocated. Read the returned canonical memory, then validate its graph reference
+with `threadnote-local inspect_code_graph` or a local Context Brief before relying on it. The result reports supplied
+anchor coverage and gaps, keeps durable memories separate from active handoffs, and keeps the complete response within
+the 800–1,500 token Context Brief budget.
+
+The PostgreSQL backlink table is a private, rebuildable current-head index of selector digests. It excludes repository
+IDs, paths, graph IDs, commits, hashes, and citation bodies. Canonical memory revisions remain authoritative: a direct
+match is projected only after the service rereads the exact PostgreSQL body or Git revision and confirms the indexed
+selector still occurs there. Upgrade repair uses the bounded, resumable outbox worker rather than scanning a whole
+share on request or at startup. While repair is pending, the response marks unverified anchors as unresolved instead
+of reporting them as unmatched; a completed bounded selector search is required before the service reports absence.
+
 ## Capture citations
 
 The CLI accepts repeatable `--code-ref` flags on `remember` and `handoff`. Run the command from the checkout whose

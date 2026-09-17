@@ -91,6 +91,136 @@ postgresDescribe('git-backed remote memory composer', () => {
     if (gitFixture) await rm(gitFixture.root, {force: true, recursive: true});
   });
 
+  it('rereads exact Git revisions for graph-linked remote Context Brief matches', async () => {
+    const metadata = {...richRemoteMemoryMetadata(), project: PROJECT, topic: 'context-brief-git'};
+    const citation = metadata.codeCitations![0];
+    await gitStore.commit({
+      content: formatMemoryDocument('MEMORY', metadata, 'Canonical Git Context Brief evidence.'),
+      message: 'seed git context brief',
+      path: gitCanonicalSharePath('durable', PROJECT, metadata.topic),
+    });
+    await repository.ingestGitShare(principal, 'context-brief-git-ingest');
+
+    const input = {
+      anchors: [{path: citation.path, repositoryId: citation.repositoryId}],
+      budgetTokens: 1_250,
+      project: PROJECT,
+      task: 'Canonical Git Context Brief evidence.',
+      version: 1 as const,
+    };
+    const result = await repository.contextBrief(principal, input, 'context-brief-git-read');
+    expect(result).toMatchObject({directSearchTruncated: false, matchedAnchorOrdinals: [0]});
+    expect(result.results).toEqual([
+      expect.objectContaining({anchorOrdinals: [0], evidence: 'anchor', topic: metadata.topic}),
+    ]);
+    const bodies = await withTenant(
+      fixture.migratorSql,
+      TENANT,
+      transaction => transaction<{markdown_body: string}[]>`
+        SELECT r.markdown_body FROM remote_memory.memory_heads h
+        JOIN remote_memory.memory_revisions r
+          ON r.tenant_id = h.tenant_id AND r.share_id = h.share_id AND r.id = h.current_revision_id
+        WHERE h.tenant_id = ${TENANT} AND h.share_id = ${SHARE} AND h.topic = ${metadata.topic}
+      `,
+    );
+    expect(bodies).toEqual([{markdown_body: ''}]);
+
+    class FailingReadStore extends GitCanonicalMemoryStore {
+      override read(_input: Parameters<GitCanonicalMemoryStore['read']>[0]): Promise<string> {
+        return Promise.reject(new Error('injected exact Git revision read failure'));
+      }
+    }
+    const failingRepository = new PostgresRemoteMemoryRepository(fixture.sql, {
+      gitStore: new FailingReadStore({
+        binding: {tenantId: TENANT, shareId: SHARE},
+        worktree: gitFixture.worktree,
+        worktreeLock: testGitWorktreeLock,
+      }),
+    });
+    await expect(failingRepository.contextBrief(principal, input, 'context-brief-git-read-failed')).rejects.toThrow(
+      'injected exact Git revision read failure',
+    );
+  });
+
+  it('does not let stale Git hydration restore an obsolete backlink projection', async () => {
+    expect(await indexer.runPass({batchSize: 1_000, ingest: false})).toMatchObject({failed: 0});
+    const metadata = {...richRemoteMemoryMetadata(), project: PROJECT, topic: 'context-brief-stale-hydration'};
+    const citation = metadata.codeCitations![0];
+    await gitStore.commit({
+      content: formatMemoryDocument('MEMORY', metadata, 'Old cited revision.'),
+      message: 'seed stale hydration revision',
+      path: gitCanonicalSharePath('durable', PROJECT, metadata.topic),
+    });
+    await repository.ingestGitShare(principal, 'context-brief-stale-hydration-ingest');
+    const uri = formatRemoteMemoryUri({kind: 'durable', project: PROJECT, shareId: SHARE, topic: metadata.topic});
+    const first = await repository.read(principal, {uri, version: 1}, 'context-brief-stale-hydration-read');
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    class DelayedReadStore extends GitCanonicalMemoryStore {
+      override async read(input: Parameters<GitCanonicalMemoryStore['read']>[0]): Promise<string> {
+        entered.resolve();
+        await release.promise;
+        return super.read(input);
+      }
+    }
+    const staleIndexer = new RemoteMemoryIndexer(
+      fixture.sql,
+      new DelayedReadStore({
+        binding: {tenantId: TENANT, shareId: SHARE},
+        worktree: gitFixture.worktree,
+        worktreeLock: testGitWorktreeLock,
+      }),
+    );
+    const stalePass = staleIndexer.runPass({batchSize: 1, ingest: false});
+    await entered.promise;
+    try {
+      await repository.remember(
+        principal,
+        {
+          ...rememberInput({
+            baseRevision: first.receipt.revision!,
+            operationId: 'context-brief-clear-stale-hydration',
+            text: 'Current revision has no code citation.',
+            topic: metadata.topic,
+          }),
+          citationSources: [],
+        },
+        'context-brief-clear-stale-hydration',
+      );
+      expect(await new RemoteMemoryIndexer(fixture.sql, gitStore).runPass({batchSize: 1, ingest: false})).toEqual({
+        failed: 0,
+        processed: 1,
+      });
+    } finally {
+      release.resolve();
+    }
+    await expect(stalePass).resolves.toEqual({failed: 0, processed: 1});
+
+    const result = await repository.contextBrief(
+      principal,
+      {
+        anchors: [{path: citation.path, repositoryId: citation.repositoryId}],
+        budgetTokens: 1_250,
+        project: PROJECT,
+        task: 'obsolete selector should not return',
+        version: 1,
+      },
+      'context-brief-stale-hydration-verify',
+    );
+    expect(result.results.some(candidate => candidate.uri === uri)).toBe(false);
+    const backlinks = await withTenant(
+      fixture.migratorSql,
+      TENANT,
+      transaction => transaction<{count: string | number}[]>`
+        SELECT count(*) AS count FROM remote_memory.code_link_backlinks b
+        JOIN remote_memory.memory_heads h
+          ON h.tenant_id = b.tenant_id AND h.share_id = b.share_id AND h.id = b.head_id
+        WHERE b.tenant_id = ${TENANT} AND b.share_id = ${SHARE} AND h.canonical_uri = ${uri}
+      `,
+    );
+    expect(Number(backlinks[0]?.count)).toBe(0);
+  });
+
   it('copies canonical citations with preserve/clear semantics, exact replay, and one database connection', async () => {
     const metadata = {...richRemoteMemoryMetadata(), project: PROJECT, topic: 'citation-donor'};
     const citation = metadata.codeCitations![0];

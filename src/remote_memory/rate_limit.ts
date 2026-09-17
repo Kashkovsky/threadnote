@@ -10,6 +10,7 @@ import {
 
 export const REMOTE_MEMORY_RATE_LIMIT_OPERATIONS = [
   'begin_cursor_attestation',
+  'context_brief',
   'list_context',
   'memory_status',
   'list_memory_proposals',

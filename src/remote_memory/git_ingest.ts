@@ -3,6 +3,8 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {randomUuidV4} from '../crypto/uuid.js';
 import {formatRemoteMemoryUri} from '../memory_domain/address.js';
 import {formatRemoteMemoryLogicalKey, REMOTE_MEMORY_REVISION_VERSION} from '../memory_domain/revisions.js';
+import {parseMemoryDocument} from '../memory/document.js';
+import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
 import type {AuthorizedRemotePrincipal} from './authorization.js';
 import {remoteMemoryError} from './errors.js';
 import {
@@ -14,6 +16,7 @@ import {
 import {classifyGitIngestDocument, type GitIngestRejection, type GitIngestStatus} from './git_ingest_document.js';
 import {principalAllows, principalAllowsProject, requireActiveProject, requireShareState} from './repository_policy.js';
 import {acquireRemoteRelationAdmissionTransactionLock} from './relation_admission.js';
+import {replaceRemoteCodeLinkBacklinks} from './code_link_backlinks.js';
 
 const CANDIDATE_LIMIT = 256;
 type WithTenant = <A>(use: (transaction: TransactionSql) => Promise<A>) => Promise<A>;
@@ -45,6 +48,7 @@ interface Candidate {
   readonly current?: Head;
 }
 interface Mutation {
+  readonly citations: readonly MemoryCodeCitationV1[];
   readonly contentHash: string;
   readonly gitCommit: string;
   readonly status: GitIngestStatus;
@@ -183,7 +187,21 @@ export async function ingestGitShare(input: {
             candidate.current.status !== status ||
             priorBlob === undefined
           ) {
-            plan = {mutation: {contentHash, gitCommit: snapshot.gitCommit, status}};
+            const canonicalUri = formatRemoteMemoryUri({
+              kind: candidate.kind,
+              project: candidate.project,
+              shareId: principal.shareId,
+              topic: candidate.topic,
+            });
+            const record = parseMemoryDocument(canonicalUri, content);
+            plan = {
+              mutation: {
+                citations: record?.metadata.codeCitations ?? [],
+                contentHash,
+                gitCommit: snapshot.gitCommit,
+                status,
+              },
+            };
           }
         }
       } else if (!candidate.path && priorBlob !== undefined) {
@@ -248,6 +266,7 @@ function canIngest(principal: AuthorizedRemotePrincipal, candidate: Candidate): 
 function preservedMutation(current: Head | undefined, presenceChanged: boolean): Mutation | undefined {
   if (!current?.git_commit || (current.status !== 'active' && !presenceChanged)) return undefined;
   return {
+    citations: [],
     contentHash: current.content_hash,
     gitCommit: current.git_commit,
     status: current.status === 'active' ? 'archived' : current.status,
@@ -356,6 +375,13 @@ async function applyPlan(input: {
         ${`git-ingest:${input.snapshotCommit}:${candidate.gitPath}`}
       )
     `;
+    await replaceRemoteCodeLinkBacklinks(transaction, {
+      citations: plan.mutation.citations,
+      headId,
+      revisionId,
+      shareId: principal.shareId,
+      tenantId: principal.tenantId,
+    });
     await transaction`
       UPDATE remote_memory.memory_heads SET current_revision_id = ${revisionId}, status = ${plan.mutation.status}, updated_at = ${input.now.toISOString()}
       WHERE tenant_id = ${principal.tenantId} AND share_id = ${principal.shareId} AND id = ${headId}

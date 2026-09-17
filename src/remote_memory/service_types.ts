@@ -20,6 +20,8 @@ import type {
   RemoteMemoryRecallResult,
   RemoteMemoryStatusResult,
 } from './postgres_repository.js';
+import type {RemoteMemoryContextBriefResult} from './context_brief_repository.js';
+import type {RemoteContextBriefInputV1} from './context_brief.js';
 
 export interface RemoteMemoryListInput {
   readonly afterUri?: string;
@@ -40,6 +42,12 @@ export interface RemoteHandoffTransitionInput {
 
 /** Promise-native storage boundary used by the official MCP SDK handlers. */
 export interface RemoteMemoryServiceRepository {
+  readonly contextBrief: (
+    principal: AuthorizedRemotePrincipal,
+    input: RemoteContextBriefInputV1,
+    requestId: string,
+    execution?: RemoteMemoryRequestExecution,
+  ) => Promise<RemoteMemoryContextBriefResult>;
   readonly listProposals: (
     principal: AuthorizedRemotePrincipal,
     input: RemoteMemoryProposalListInputV1,

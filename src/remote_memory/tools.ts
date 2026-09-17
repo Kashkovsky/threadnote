@@ -37,8 +37,18 @@ import {
   RemoteRecallProjectionError,
 } from './recall_projection.js';
 import {MAX_MEMORY_RELATIONS, MEMORY_RELATION_TYPES} from '../memory/document.js';
+import {
+  projectRemoteContextBrief,
+  REMOTE_CONTEXT_BRIEF_DEFAULT_BUDGET_TOKENS,
+  REMOTE_CONTEXT_BRIEF_MAXIMUM_BUDGET_TOKENS,
+  REMOTE_CONTEXT_BRIEF_MINIMUM_BUDGET_TOKENS,
+  RemoteContextBriefAnchorSchemaV1,
+  normalizeRemoteContextBriefAnchors,
+  type RemoteContextBriefAnchorV1,
+} from './context_brief.js';
 
 export const REMOTE_MEMORY_TOOL_NAMES = [
+  'context_brief',
   'recall_context',
   'read_context',
   'list_context',
@@ -148,6 +158,37 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
     'threadnote://share/{shareId}/memories/handoffs/active/{project}/{topic}.md',
     dependencies,
     requestContext,
+  );
+
+  tools.register(
+    'context_brief',
+    {
+      annotations: {readOnlyHint: true},
+      description:
+        'Return a task-oriented brief from authorized remote memories. Optional repositoryId/path anchors match capture-time citation provenance only; validate graph references on threadnote-local before relying on them.',
+      inputSchema: Schema.Struct({
+        anchors: Schema.optionalKey(Schema.Array(RemoteContextBriefAnchorSchemaV1).check(Schema.isMaxLength(8))),
+        budgetTokens: Schema.optionalKey(
+          Schema.Int.check(
+            Schema.isBetween({
+              minimum: REMOTE_CONTEXT_BRIEF_MINIMUM_BUDGET_TOKENS,
+              maximum: REMOTE_CONTEXT_BRIEF_MAXIMUM_BUDGET_TOKENS,
+            }),
+          ),
+        ),
+        project: PortableSegment,
+        task: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4_096)),
+        version: Version,
+      }),
+    },
+    input =>
+      invokeRemoteContextBriefTool(requestContext, dependencies, {
+        anchors: normalizeRemoteContextBriefAnchors(input.anchors),
+        budgetTokens: input.budgetTokens ?? REMOTE_CONTEXT_BRIEF_DEFAULT_BUDGET_TOKENS,
+        project: input.project,
+        task: input.task,
+        version: 1,
+      }),
   );
 
   tools.register(
@@ -511,6 +552,65 @@ interface RemoteRecallToolInput {
   readonly project: string;
   readonly query: string;
   readonly version: 1;
+}
+
+interface RemoteContextBriefToolInput {
+  readonly anchors?: readonly RemoteContextBriefAnchorV1[];
+  readonly budgetTokens: number;
+  readonly project: string;
+  readonly task: string;
+  readonly version: 1;
+}
+
+async function invokeRemoteContextBriefTool(
+  context: RemoteMcpRequestContext,
+  dependencies: RemoteMemoryServiceDependencies,
+  input: RemoteContextBriefToolInput,
+): Promise<CallToolResult> {
+  try {
+    await withRequestDeadline(context, () =>
+      dependencies.rateLimits.consume(context.principal, 'context_brief', requestExecution(context)),
+    );
+    return await withRequestDeadline(context, async () => {
+      const principal = context.principal;
+      requireRemoteScope(principal, 'memory:read');
+      requireAuthorizedProject(principal, input.project);
+      const result = await dependencies.repository.contextBrief(
+        principal,
+        input,
+        context.requestId,
+        requestExecution(context),
+      );
+      assertReceipt(result.receipt, principal, context.requestId);
+      for (const item of result.results) {
+        requireAuthorizedProject(principal, item.project);
+        if (item.project !== input.project)
+          throw remoteMemoryError('forbidden', 'Context Brief returned another project.');
+        assertUriBelongsToAuthorizedShare(principal, item.uri);
+      }
+      const anchors = input.anchors ?? [];
+      let projected;
+      try {
+        projected = projectRemoteContextBrief({
+          ...result,
+          anchors,
+          budgetTokens: input.budgetTokens,
+          task: input.task,
+        });
+      } catch (cause) {
+        if (cause instanceof TypeError) throw remoteMemoryError('invalid_request', cause.message);
+        throw cause;
+      }
+      return {
+        _meta: {'threadnote/receipt': result.receipt},
+        content: [{type: 'text', text: projected.text}],
+        structuredContent: projected.structuredContent,
+      };
+    });
+  } catch (cause) {
+    const error = publicRemoteMemoryError(cause);
+    return remoteToolError(error, context.requestId);
+  }
 }
 
 async function invokeRemoteRecallTool(

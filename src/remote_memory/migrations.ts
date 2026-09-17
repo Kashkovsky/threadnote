@@ -33,6 +33,7 @@ const MIGRATIONS = [
   {name: '002_git_canonical_pointers.sql', version: 2},
   {name: '003_git_ingest_observations.sql', version: 3},
   {name: '004_durable_memory_proposals.sql', version: 4},
+  {name: '005_code_link_backlinks.sql', version: 5},
 ] as const;
 const MIGRATION_LOCK = 7_427_190_041;
 
