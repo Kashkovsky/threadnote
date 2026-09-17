@@ -46,7 +46,7 @@ const questions = [
   {
     question: 'Which agents can use it?',
     answer:
-      'Any agent that can connect a local stdio MCP server or invoke the CLI can use Threadnote. The installer includes guided MCP setup for Codex, Claude, Cursor, and Copilot, and the underlying contract is tool-neutral.',
+      'Any agent that can connect a local stdio MCP server or invoke the CLI can use Threadnote. The installer’s exact managed, manual, and experimental boundaries are listed on the supported agents page; the underlying contract is tool-neutral.',
   },
   {
     question: 'Does every memory get shared with my team?',
@@ -123,7 +123,15 @@ export default function FaqPage() {
                 <strong>{item.question}</strong>
                 <i aria-hidden="true" />
               </summary>
-              <p>{item.answer}</p>
+              <p>
+                {item.answer}
+                {item.question === 'Which agents can use it?' && (
+                  <>
+                    {' '}
+                    <a href={siteHref('agents/')}>View supported agents.</a>
+                  </>
+                )}
+              </p>
             </details>
           ))}
         </div>

@@ -32,6 +32,7 @@ import {
   renderWebsiteReleaseSocialImageSvg,
 } from '../../scripts/site-release-social-image.js';
 import {assertExternalPerformanceEvidence} from '../../scripts/benchmark-code-graph.js';
+import {agentIntegrations, tierLabels} from '../../website/src/content/agentIntegrations.js';
 import {cliCommands, docsSections, mcpTools} from '../../website/src/content/docs.js';
 import {
   ManagerOperationsVisual,
@@ -421,6 +422,7 @@ describe('Threadnote 4 website content', () => {
       'performance/index.html',
       'performance/graphify/index.html',
       'docs/index.html',
+      'agents/index.html',
       'whats-new/index.html',
       'pro-tips/index.html',
       'manager-demo/index.html',
@@ -429,7 +431,16 @@ describe('Threadnote 4 website content', () => {
 
     await Promise.all(routes.map(route => access(join(root, 'website', route))));
     const config = await readFile(join(root, 'website', 'vite.config.ts'), 'utf8');
-    for (const route of ['performance', 'performanceGraphify', 'docs', 'whatsNew', 'proTips', 'managerDemo', 'faq']) {
+    for (const route of [
+      'performance',
+      'performanceGraphify',
+      'docs',
+      'agents',
+      'whatsNew',
+      'proTips',
+      'managerDemo',
+      'faq',
+    ]) {
       expect(config).toContain(`${route}:`);
     }
   });
@@ -442,6 +453,7 @@ describe('Threadnote 4 website content', () => {
         'pages/PerformancePage.tsx',
         'pages/GraphifyPerformancePage.tsx',
         'pages/DocsPage.tsx',
+        'pages/AgentsPage.tsx',
         'pages/WhatsNewPage.tsx',
         'pages/ProTipsPage.tsx',
         'pages/ManagerDemoPage.tsx',
@@ -777,8 +789,44 @@ The body remains ordinary **Markdown**.
         'cli-reference',
         'mcp-reference',
         'architecture',
+        'agent-integrations',
       ]),
     );
+  });
+
+  it('derives supported-agent content from the canonical catalog without broad public enumerations', async () => {
+    const [catalog, agentsPage, landingPage, faqPage, readme, shell, sitemap] = await Promise.all([
+      readFile(join(root, 'config', 'agent-integrations.json'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'pages', 'AgentsPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
+      readFile(join(root, 'README.md'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'components', 'SiteShell.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'public', 'sitemap.xml'), 'utf8'),
+    ]);
+    const agentDocs = docsSections
+      .flatMap(section => section.articles)
+      .filter(article => agentIntegrations.some(integration => article.id === `agent-${integration.id}`));
+
+    expect(agentIntegrations.length).toBeGreaterThan(0);
+    expect(Object.keys(tierLabels).sort()).toEqual(['core', 'experimental', 'full', 'manual', 'project']);
+    expect(JSON.parse(catalog)).toMatchObject({version: 1});
+    expect(agentDocs).toHaveLength(agentIntegrations.length);
+    expect(agentsPage).toContain('agentIntegrations.map');
+    expect(agentsPage).toContain('officialDocs');
+    expect(agentsPage).toContain('lastVerified');
+    expect(agentsPage).toContain('capabilities');
+    expect(shell).toContain("label: 'Agents'");
+    expect(sitemap).toContain('<loc>https://threadnote.io/agents/</loc>');
+
+    for (const source of [landingPage, faqPage]) {
+      expect(source).toContain("siteHref('agents/')");
+      expect(source).not.toMatch(/Codex, Claude(?: Code)?, Cursor, (?:and )?Copilot/i);
+      expect(source).not.toMatch(/claude\s*\/\s*cursor\s*\/\s*copilot/i);
+    }
+    expect(readme).toContain('https://threadnote.io/agents/');
+    expect(readme).not.toMatch(/Codex, Claude(?: Code)?, Cursor, (?:and )?Copilot/i);
+    expect(readme).not.toMatch(/claude\s*\/\s*cursor\s*\/\s*copilot/i);
   });
 
   it('documents Manager project and Workset operations with accessible motion-safe illustrations', async () => {
@@ -1274,6 +1322,7 @@ The body remains ordinary **Markdown**.
       ['performance', 'performance'],
       ['performance/graphify', 'performance-graphify'],
       ['docs', 'docs'],
+      ['agents', 'agents'],
       ['whats-new', 'whats-new'],
       ['pro-tips', 'pro-tips'],
       ['manager-demo', 'manager-demo'],
@@ -1658,7 +1707,17 @@ Measure the system before changing its implementation language.
     });
     const loaders = Object.fromEntries(
       (
-        ['home', 'performance', 'performance-graphify', 'docs', 'whats-new', 'pro-tips', 'manager-demo', 'faq'] as const
+        [
+          'home',
+          'performance',
+          'performance-graphify',
+          'docs',
+          'agents',
+          'whats-new',
+          'pro-tips',
+          'manager-demo',
+          'faq',
+        ] as const
       ).map(page => [page, page === 'docs' ? () => deferredDocs : async () => page]),
     ) as Record<SitePage, () => Promise<string>>;
     const cache = createSitePageModuleCache(loaders);

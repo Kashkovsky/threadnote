@@ -8,9 +8,9 @@
 
 > One engineer teaches it once. Every teammate's coding agent can use it.
 
-Threadnote is a shared, local-first memory layer for the coding agents your team already uses. Alice's Codex can
-publish a hard-won architecture decision; Bob's Claude Code, Cursor, or Copilot can auto-sync and recall it during the
-next task. No copy-pasted handoff, vendor lock-in, or shared chat window required.
+Threadnote is a shared, local-first memory layer for the coding agents your team already uses. One teammate can
+publish a hard-won architecture decision; another can auto-sync and recall it during the next task from a [supported agent](https://threadnote.io/agents/).
+No copy-pasted handoff, vendor lock-in, or shared chat window required.
 
 Personal working state stays local. Only curated durable knowledge or reusable artifacts that you explicitly publish
 enter the team's Git-backed memory, with an exact preview, secret scanner, explicit soft-leak redaction, and history.
@@ -27,14 +27,16 @@ runtime, Python service, external memory platform, or background daemon required
 
 **Documentation:** https://threadnote.io/docs/
 
+**Supported agents:** https://threadnote.io/agents/
+
 ## The Value
 
 ```text
-Alice + Codex ──publish curated memory──▶ team Git repo
-                                              │
-                                      auto-sync on recall
-                                              ▼
-                              Bob + Claude Code / Cursor / Copilot
+One supported agent ──publish curated memory──▶ team Git repo
+                                                   │
+                                           auto-sync on recall
+                                                   ▼
+                                      another supported agent
 ```
 
 - **Cross-user and cross-agent.** Teammates share one knowledge layer without standardizing on one AI vendor.
@@ -86,16 +88,14 @@ macOS and Linux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
-threadnote mcp-install codex --apply # or claude / cursor / copilot / omp
+threadnote agents install <surface>
+threadnote agents install <surface> --apply
 threadnote doctor
 ```
 
-Each applied `mcp-install` registers only the selected host and installs its MCP configuration, compact user-level
-bootstrap, and progressively loaded Threadnote skills. Cursor uses its supported user rule and skill directories; the
-Marketplace plugin remains an optional alternative instruction provider. Threadnote never writes to Cursor's
-local-plugin directory. See the [Cursor plugin guide](./docs/cursor-plugin.md) for the alternative provider and
-publishing workflow. omp uses its native `~/.omp/agent/mcp.json`, `~/.omp/agent/AGENTS.md`, and `~/.omp/agent/skills`
-locations; `threadnote install-hooks omp --apply` adds its session-start and pre-compaction hooks.
+Each applied `agents install` registers only the selected surface and installs only catalog-declared managed artifacts. Read
+the [supported agents matrix](https://threadnote.io/agents/) for the exact surface, tier, capability, scope, setup, and
+caveat before applying. Specific host documentation remains available where it discusses that host.
 
 To select the Threadnote 4 beta channel on macOS or Linux, pass `--beta`. This inclusive preview channel installs the
 newest immutable release across stable and prerelease builds, so a newer stable release wins when one is available:
@@ -112,7 +112,8 @@ Windows PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex
-threadnote mcp-install codex --apply # or claude / cursor / copilot / omp
+threadnote agents install <surface>
+threadnote agents install <surface> --apply
 threadnote doctor
 ```
 
@@ -122,7 +123,7 @@ Or install a specific release from the
 ```sh
 threadnote install
 threadnote doctor
-threadnote mcp-install codex --apply
+threadnote agents install <surface> --apply
 ```
 
 The downloaded executable embeds the pinned Bun runtime. Users do not need Bun or Node installed. Installers accept
