@@ -33,3 +33,4 @@ bun run dev:install-global -- --take-over-global-runtime --terminate-superseded
 - Dirty/non-HEAD: fix the tree, do not bypass the installer.
 - Ownership conflict without `--take-over-global-runtime`: do not invent `--force`. Ask the owning agent or the user.
 - Another worktree owns the runtime: do not take over until that owner confirms, unless the user explicitly assigned this checkout.
+- Ownership changed after take-over authorization: another installer won after the handoff. Confirm the current owner has finished and rerun from the start to obtain a fresh handoff.

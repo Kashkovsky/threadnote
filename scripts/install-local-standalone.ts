@@ -46,8 +46,10 @@ const ROOT_URL = new URL('..', import.meta.url);
 const GIT_COMMIT_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const COMMAND_TIMEOUT_MILLISECONDS = 30 * 60_000;
 const DEVELOPMENT_RUNTIME_OWNER_FILE = 'development-runtime-owner.json';
-const DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION = 1 as const;
+const DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION_V1 = 1 as const;
+const DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION = 2 as const;
 const DEVELOPMENT_RUNTIME_OWNER_MAX_BYTES = 16 * 1024;
+const DEVELOPMENT_RUNTIME_OWNERSHIP_REVISION_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 export const CLEAN_GIT_STATUS_ARGUMENTS = [
   '-c',
@@ -91,22 +93,40 @@ export interface LocalStandaloneActivationInput {
   readonly canonicalVersionsRoot: string;
   readonly commit: string;
   readonly executableName: string;
+  readonly ownershipAuthorization?: DevelopmentRuntimeTakeoverAuthorization;
   readonly releaseRoot: string;
   readonly reused: boolean;
   readonly sourceCheckoutId: string;
   readonly stagedRoot: Option.Option<string>;
-  readonly takeOverGlobalRuntime: boolean;
   readonly terminateSuperseded: boolean;
   readonly version: string;
 }
 
 export interface DevelopmentRuntimeOwnerV1 {
+  readonly schemaVersion: typeof DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION_V1;
+  readonly sourceCheckoutId: string;
+  readonly version: string;
+}
+
+export interface DevelopmentRuntimeOwnerV2 {
+  readonly ownershipRevision: string;
   readonly schemaVersion: typeof DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION;
   readonly sourceCheckoutId: string;
   readonly version: string;
 }
 
-export type DevelopmentRuntimeOwnershipState = DevelopmentRuntimeOwnerV1 | 'absent' | 'invalid';
+export type DevelopmentRuntimeOwner = DevelopmentRuntimeOwnerV1 | DevelopmentRuntimeOwnerV2;
+
+export type DevelopmentRuntimeOwnershipState = DevelopmentRuntimeOwner | 'absent' | 'invalid';
+
+export interface DevelopmentRuntimeOwnershipSnapshot {
+  readonly activeVersion: string | undefined;
+  readonly owner: DevelopmentRuntimeOwnershipState;
+}
+
+export interface DevelopmentRuntimeTakeoverAuthorization extends DevelopmentRuntimeOwnershipSnapshot {
+  readonly requestedSourceCheckoutId: string;
+}
 
 export type DevelopmentRuntimeOwnershipConflict =
   'different-source-checkout' | 'invalid-ownership-record' | 'untracked-development-activation';
@@ -130,7 +150,8 @@ export function developmentRuntimeOwnershipConflict(
   owner: DevelopmentRuntimeOwnershipState,
   requestedSourceCheckoutId: string,
 ): DevelopmentRuntimeOwnershipConflict | undefined {
-  if (activeVersion === undefined || !isDevelopmentBuildVersion(activeVersion) || owner === 'absent') return undefined;
+  if (activeVersion === undefined || !isDevelopmentBuildVersion(activeVersion)) return undefined;
+  if (owner === 'absent') return 'untracked-development-activation';
   if (owner === 'invalid') return 'invalid-ownership-record';
   if (owner.version !== activeVersion) return 'untracked-development-activation';
   return owner.sourceCheckoutId === requestedSourceCheckoutId ? undefined : 'different-source-checkout';
@@ -171,7 +192,11 @@ export const installLocalStandalone = Effect.fn('developmentInstall.run')(functi
   const version = developmentBuildVersion(manifest.version, commit);
   const roots = yield* prepareCanonicalDevelopmentInstallRoots(installationRoot(path, system));
   const sourceCheckoutId = yield* developmentSourceCheckoutId(sourceRoot);
-  yield* requireDevelopmentRuntimeOwnership(roots.installRoot, sourceCheckoutId, options.takeOverGlobalRuntime);
+  const ownershipAuthorization = yield* prepareDevelopmentRuntimeOwnershipAuthorization(
+    roots.installRoot,
+    sourceCheckoutId,
+    options.takeOverGlobalRuntime,
+  );
   const releaseRoot = path.join(roots.versionsRoot, version);
   const executableName = system.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
   const releaseExists = yield* fs.exists(releaseRoot);
@@ -203,11 +228,11 @@ export const installLocalStandalone = Effect.fn('developmentInstall.run')(functi
     canonicalVersionsRoot: roots.versionsRoot,
     commit,
     executableName,
+    ownershipAuthorization,
     releaseRoot,
     reused: releaseExists,
     sourceCheckoutId,
     stagedRoot,
-    takeOverGlobalRuntime: options.takeOverGlobalRuntime,
     terminateSuperseded: options.terminateSuperseded,
     version,
   });
@@ -272,31 +297,126 @@ export const developmentSourceCheckoutId = Effect.fn('developmentInstall.sourceC
   return yield* sha256Hex(`threadnote-development-source-checkout-v1\0${normalizedSourceRoot}`);
 });
 
-const requireDevelopmentRuntimeOwnership = Effect.fn('developmentInstall.requireRuntimeOwnership')(function* (
-  installRoot: string,
-  requestedSourceCheckoutId: string,
-  takeOverGlobalRuntime: boolean,
-) {
-  if (!SHA256_PATTERN.test(requestedSourceCheckoutId)) {
-    return yield* ScriptError.make({message: 'The development source checkout identity is invalid.'});
-  }
+function ownershipConflictMessage(conflict: DevelopmentRuntimeOwnershipConflict): string {
+  return conflict === 'different-source-checkout'
+    ? 'another source checkout owns the active global development runtime'
+    : conflict === 'untracked-development-activation'
+      ? 'the active global development runtime changed outside its owning installer'
+      : 'the active global development runtime ownership record is invalid';
+}
+
+function ownershipStatesEqual(
+  left: DevelopmentRuntimeOwnershipState,
+  right: DevelopmentRuntimeOwnershipState,
+): boolean {
+  if (typeof left === 'string' || typeof right === 'string') return left === right;
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    left.sourceCheckoutId === right.sourceCheckoutId &&
+    left.version === right.version &&
+    (left.schemaVersion === DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION_V1 ||
+      (right.schemaVersion === DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION &&
+        left.ownershipRevision === right.ownershipRevision))
+  );
+}
+
+export function developmentRuntimeTakeoverAuthorizationMatches(
+  authorization: DevelopmentRuntimeTakeoverAuthorization,
+  snapshot: DevelopmentRuntimeOwnershipSnapshot,
+): boolean {
+  return (
+    authorization.activeVersion === snapshot.activeVersion && ownershipStatesEqual(authorization.owner, snapshot.owner)
+  );
+}
+
+const readDevelopmentRuntimeOwnershipSnapshotUnlocked = Effect.fn(
+  'developmentInstall.readRuntimeOwnershipSnapshotUnlocked',
+)(function* (installRoot: string) {
   const [activeVersion, owner] = yield* Effect.all([
     activeInstalledVersion(),
     readDevelopmentRuntimeOwner(installRoot),
   ]);
-  const conflict = developmentRuntimeOwnershipConflict(activeVersion, owner, requestedSourceCheckoutId);
-  if (conflict === undefined || takeOverGlobalRuntime) return;
-  const reason =
-    conflict === 'different-source-checkout'
-      ? 'another source checkout owns the active global development runtime'
-      : conflict === 'untracked-development-activation'
-        ? 'the active global development runtime changed outside its owning installer'
-        : 'the active global development runtime ownership record is invalid';
-  return yield* ScriptError.make({
+  return {activeVersion, owner} satisfies DevelopmentRuntimeOwnershipSnapshot;
+});
+
+export const readDevelopmentRuntimeOwnershipSnapshot = Effect.fn('developmentInstall.readRuntimeOwnershipSnapshot')(
+  function* (installRoot: string) {
+    return yield* withStandaloneInstallationLock(readDevelopmentRuntimeOwnershipSnapshotUnlocked(installRoot));
+  },
+);
+
+function validateRequestedSourceCheckoutId(requestedSourceCheckoutId: string) {
+  return SHA256_PATTERN.test(requestedSourceCheckoutId)
+    ? Effect.void
+    : Effect.fail(ScriptError.make({message: 'The development source checkout identity is invalid.'}));
+}
+
+function refuseOwnershipConflict(conflict: DevelopmentRuntimeOwnershipConflict) {
+  return ScriptError.make({
     message:
-      `Refusing to replace the global Threadnote runtime because ${reason}. ` +
+      `Refusing to replace the global Threadnote runtime because ${ownershipConflictMessage(conflict)}. ` +
       'Rerun with --take-over-global-runtime only after confirming the other development task has finished.',
   });
+}
+
+export const prepareDevelopmentRuntimeOwnershipAuthorization = Effect.fn(
+  'developmentInstall.prepareRuntimeOwnershipAuthorization',
+)(function* (installRoot: string, requestedSourceCheckoutId: string, takeOverGlobalRuntime: boolean) {
+  yield* validateRequestedSourceCheckoutId(requestedSourceCheckoutId);
+  const snapshot = yield* withStandaloneInstallationLock(
+    Effect.gen(function* () {
+      const current = yield* readDevelopmentRuntimeOwnershipSnapshotUnlocked(installRoot);
+      const conflict = developmentRuntimeOwnershipConflict(
+        current.activeVersion,
+        current.owner,
+        requestedSourceCheckoutId,
+      );
+      if (conflict !== undefined && !takeOverGlobalRuntime) return yield* refuseOwnershipConflict(conflict);
+      if (
+        takeOverGlobalRuntime &&
+        typeof current.owner !== 'string' &&
+        current.owner.schemaVersion === DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION_V1 &&
+        current.owner.version === current.activeVersion
+      ) {
+        return {
+          activeVersion: current.activeVersion,
+          owner: yield* writeDevelopmentRuntimeOwner(installRoot, current.owner),
+        } satisfies DevelopmentRuntimeOwnershipSnapshot;
+      }
+      return current;
+    }),
+  );
+  return takeOverGlobalRuntime
+    ? ({...snapshot, requestedSourceCheckoutId} satisfies DevelopmentRuntimeTakeoverAuthorization)
+    : undefined;
+});
+
+const requireDevelopmentRuntimeOwnership = Effect.fn('developmentInstall.requireRuntimeOwnership')(function* (
+  installRoot: string,
+  requestedSourceCheckoutId: string,
+  authorization: DevelopmentRuntimeTakeoverAuthorization | undefined,
+) {
+  yield* validateRequestedSourceCheckoutId(requestedSourceCheckoutId);
+  const snapshot = yield* readDevelopmentRuntimeOwnershipSnapshotUnlocked(installRoot);
+  if (authorization !== undefined) {
+    if (
+      authorization.requestedSourceCheckoutId !== requestedSourceCheckoutId ||
+      !developmentRuntimeTakeoverAuthorizationMatches(authorization, snapshot)
+    ) {
+      return yield* ScriptError.make({
+        message:
+          'Refusing to replace the global Threadnote runtime because ownership changed after takeover authorization. ' +
+          'Confirm the current owner has finished, then rerun to obtain a fresh handoff.',
+      });
+    }
+    return;
+  }
+  const conflict = developmentRuntimeOwnershipConflict(
+    snapshot.activeVersion,
+    snapshot.owner,
+    requestedSourceCheckoutId,
+  );
+  if (conflict !== undefined) return yield* refuseOwnershipConflict(conflict);
 });
 
 export const readDevelopmentRuntimeOwner = Effect.fn('developmentInstall.readRuntimeOwner')(function* (
@@ -331,29 +451,47 @@ export const readDevelopmentRuntimeOwner = Effect.fn('developmentInstall.readRun
 
 function parseDevelopmentRuntimeOwner(value: unknown): DevelopmentRuntimeOwnershipState {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'invalid';
-  const candidate = value as Partial<DevelopmentRuntimeOwnerV1>;
-  return candidate.schemaVersion === DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION &&
+  const candidate = value as {
+    readonly ownershipRevision?: unknown;
+    readonly schemaVersion?: unknown;
+    readonly sourceCheckoutId?: unknown;
+    readonly version?: unknown;
+  };
+  const commonValid =
     typeof candidate.sourceCheckoutId === 'string' &&
     SHA256_PATTERN.test(candidate.sourceCheckoutId) &&
     typeof candidate.version === 'string' &&
-    isDevelopmentBuildVersion(candidate.version)
-    ? (candidate as DevelopmentRuntimeOwnerV1)
+    isDevelopmentBuildVersion(candidate.version);
+  if (!commonValid) return 'invalid';
+  if (candidate.schemaVersion === DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION_V1) {
+    return candidate as DevelopmentRuntimeOwnerV1;
+  }
+  return candidate.schemaVersion === DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION &&
+    typeof candidate.ownershipRevision === 'string' &&
+    DEVELOPMENT_RUNTIME_OWNERSHIP_REVISION_PATTERN.test(candidate.ownershipRevision)
+    ? (candidate as DevelopmentRuntimeOwnerV2)
     : 'invalid';
 }
 
 const writeDevelopmentRuntimeOwner = Effect.fn('developmentInstall.writeRuntimeOwner')(function* (
   installRoot: string,
-  owner: DevelopmentRuntimeOwnerV1,
+  owner: Pick<DevelopmentRuntimeOwnerV2, 'sourceCheckoutId' | 'version'>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
   const file = path.join(installRoot, DEVELOPMENT_RUNTIME_OWNER_FILE);
   const temporary = path.join(installRoot, `.${DEVELOPMENT_RUNTIME_OWNER_FILE}.${yield* crypto.randomUUIDv4}.tmp`);
+  const nextOwner: DevelopmentRuntimeOwnerV2 = {
+    ...owner,
+    ownershipRevision: yield* crypto.randomUUIDv4,
+    schemaVersion: DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION,
+  };
   yield* Effect.gen(function* () {
-    yield* fs.writeFileString(temporary, `${JSON.stringify(owner, undefined, 2)}\n`, {flag: 'wx', mode: 0o600});
+    yield* fs.writeFileString(temporary, `${JSON.stringify(nextOwner, undefined, 2)}\n`, {flag: 'wx', mode: 0o600});
     yield* fs.rename(temporary, file);
   }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
+  return nextOwner;
 });
 
 /**
@@ -379,7 +517,7 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
       input.stagedRoot,
     );
     const installRoot = roots.installRoot;
-    yield* requireDevelopmentRuntimeOwnership(installRoot, input.sourceCheckoutId, input.takeOverGlobalRuntime);
+    yield* requireDevelopmentRuntimeOwnership(installRoot, input.sourceCheckoutId, input.ownershipAuthorization);
     let reused = input.reused;
     let promotedByThisInstall = false;
     if (Option.isSome(input.stagedRoot)) {
@@ -475,7 +613,6 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
       yield* installCommandShim(false, input.releaseRoot);
       yield* verifyLaunchers(fs, input.releaseRoot, input.version);
       yield* writeDevelopmentRuntimeOwner(installRoot, {
-        schemaVersion: DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION,
         sourceCheckoutId: input.sourceCheckoutId,
         version: input.version,
       });
