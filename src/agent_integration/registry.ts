@@ -51,16 +51,19 @@ export interface AgentSurfaceReceipt {
   readonly agentId: string;
   readonly root: string;
   readonly skillRoot: string;
+  readonly scope?: 'user' | 'project' | 'local';
+  readonly cwd?: string;
   readonly installedVersion: string;
   readonly status: 'pending' | 'current';
   readonly artifacts: Readonly<Record<string, string>>;
   readonly artifactDescriptors: readonly AgentSurfaceArtifactReceipt[];
   readonly strategy: {
     readonly kind: 'json';
-    readonly codec: 'json';
+    readonly codec: 'json' | 'jsonc';
     readonly container: string;
   };
   readonly mcp: {
+    readonly root?: string;
     readonly path: string;
     readonly name: string;
     readonly hash: string;
@@ -231,11 +234,15 @@ function isSurfaceReceipt(id: string, value: unknown): value is AgentSurfaceRece
   const artifacts = value.artifacts as Record<string, unknown>;
   return (
     value.strategy.kind === 'json' &&
-    value.strategy.codec === 'json' &&
+    (value.strategy.codec === 'json' || value.strategy.codec === 'jsonc') &&
+    (value.scope === undefined || value.scope === 'user' || value.scope === 'project' || value.scope === 'local') &&
+    (value.cwd === undefined || (typeof value.cwd === 'string' && value.cwd.length > 0)) &&
+    ((value.scope !== 'project' && value.scope !== 'local') || typeof value.cwd === 'string') &&
     typeof value.strategy.container === 'string' &&
     value.strategy.container.length > 0 &&
     typeof value.mcp.path === 'string' &&
     value.mcp.path.length > 0 &&
+    (value.mcp.root === undefined || (typeof value.mcp.root === 'string' && value.mcp.root.length > 0)) &&
     typeof value.mcp.name === 'string' &&
     typeof value.mcp.hash === 'string' &&
     /^[0-9a-f]{64}$/.test(value.mcp.hash) &&

@@ -153,6 +153,7 @@
     "fflate": "0.8.3",
     "jose": "6.2.10",
     "js-yaml": "^5.4.1",
+    "jsonc-parser": "3.3.1",
     "node-llama-cpp": "3.20.0",
     "postgres": "3.4.9",
     "pxpipe-proxy": "0.13.2",

@@ -1,4 +1,4 @@
-import {access, mkdtemp, readFile, rm} from '../helpers/node-fs-promises.js';
+import {access, mkdir, mkdtemp, readFile, realpath, rm} from '../helpers/node-fs-promises.js';
 import {execFile} from '../helpers/node-child-process.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
@@ -13,6 +13,41 @@ afterEach(async () => {
 });
 
 describe('agents CLI', () => {
+  it('installs project surfaces and repairs/removes using the receipt from another cwd', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-agents-project-')));
+    temporaryDirectories.push(root);
+    const user = join(root, 'user');
+    const project = join(root, 'project');
+    const elsewhere = join(root, 'elsewhere');
+    await Promise.all([mkdir(project), mkdir(elsewhere)]);
+    const environment = {
+      HOME: user,
+      USERPROFILE: user,
+      THREADNOTE_HOME: join(user, '.threadnote'),
+      THREADNOTE_BIN_DIR: join(root, 'bin'),
+      THREADNOTE_INSTALL_ROOT: join(root, 'install'),
+    };
+    const settings = join(project, '.roo', 'mcp.json');
+    const preview = await runCli(['agents', 'install', 'roo', '--scope', 'project'], environment, project);
+    expect(preview.stdout).toContain(settings);
+    await expect(access(settings)).rejects.toMatchObject({code: 'ENOENT'});
+    await runCli(['agents', 'install', 'roo', '--scope', 'project', '--apply'], environment, project);
+    const registry = JSON.parse(await readFile(join(user, '.threadnote', 'integrations', 'agents.json'), 'utf8'));
+    expect(registry.surfaces['roo-project']).toMatchObject({
+      scope: 'project',
+      cwd: project,
+      root: join(project, '.roo'),
+      mcp: {path: settings},
+    });
+    const instructions = join(project, '.roo', 'rules', 'threadnote.md');
+    await rm(instructions);
+    await runCli(['agents', 'repair', 'roo', '--apply'], environment, elsewhere);
+    await access(instructions);
+    await expect(access(join(elsewhere, '.roo'))).rejects.toMatchObject({code: 'ENOENT'});
+    await runCli(['agents', 'remove', 'roo', '--apply'], environment, elsewhere);
+    await expect(access(settings)).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
   it('registers the command grammar and preserves preview/apply boundaries', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-agents-cli-'));
     temporaryDirectories.push(root);
@@ -83,8 +118,9 @@ describe('agents CLI', () => {
   });
 });
 
-function runCli(args: readonly string[], environment: NodeJS.ProcessEnv) {
+function runCli(args: readonly string[], environment: NodeJS.ProcessEnv, cwd?: string) {
   return execFilePromise(process.execPath, [join(process.cwd(), 'src', 'standalone.ts'), ...args], {
     env: {...process.env, ...environment, NO_COLOR: '1'},
+    cwd,
   });
 }

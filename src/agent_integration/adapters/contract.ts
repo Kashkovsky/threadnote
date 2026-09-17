@@ -13,12 +13,28 @@ export class AgentAdapterActionError extends Schema.TaggedError<AgentAdapterActi
 
 export interface JsonAgentStrategy {
   readonly root: string;
+  readonly rootEnvironment?: string;
   readonly xdg?: boolean;
+  readonly windowsAppData?: boolean;
+  readonly windowsRoot?: string;
+  readonly defaultScope?: 'user' | 'project';
+  readonly projectRoot?: string;
+  readonly projectMcpFile?: string;
+  readonly localMcpFile?: string;
+  readonly codec?: 'json' | 'jsonc';
+  readonly commandArray?: boolean;
+  readonly mcpRoot?: string;
+  readonly mcpRootEnvironment?: string;
   readonly mcpFile: string;
   readonly container: string;
-  readonly instructionFile: string;
-  readonly skillRoot: 'native' | 'shared';
-  readonly entryType?: 'stdio';
+  readonly instructionFile?: string;
+  readonly projectInstructionFile?: string;
+  readonly instructionPrefix?: string;
+  readonly instructionContent?: string;
+  readonly projectInstructionPrefix?: string;
+  readonly skillRoot: 'native' | 'shared' | 'none' | {readonly user: string; readonly project: string};
+  readonly skillLayout?: 'flat';
+  readonly entryType?: 'stdio' | 'local';
   readonly policyGlobs?: boolean;
   readonly unverifiedPolicyFile?: string;
 }
@@ -42,6 +58,7 @@ export interface AgentAdapterActionOptions {
   readonly inTransaction?: boolean;
   readonly registry?: AgentIntegrationRegistry;
   readonly toolset?: McpToolset;
+  readonly scope?: 'user' | 'project' | 'local';
 }
 
 export type AgentAdapterRuntimeServices =
