@@ -156,7 +156,7 @@ const candidateStatusEvidence = Effect.fn('memory.contextHealth.candidateEvidenc
     );
 });
 
-function renderContextHealth(report: ReturnType<typeof buildContextHealthReport>): string {
+export function renderContextHealth(report: ReturnType<typeof buildContextHealthReport>): string {
   const lines = [
     `Context health for ${report.project}: ${report.recordsScanned} active record${report.recordsScanned === 1 ? '' : 's'}, ${report.findings.length} finding${report.findings.length === 1 ? '' : 's'}.`,
     ...report.findings.map(finding => `- ${finding.severity} ${finding.category}: ${finding.summary}`),

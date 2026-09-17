@@ -1,10 +1,16 @@
-import {Console, Effect} from 'effect';
+import {Clock, Console, DateTime, Effect} from 'effect';
 import {Argument, Command} from 'effect/unstable/cli';
 import {AGENT_ADAPTERS, getAgentAdapter} from '../agent_integration/adapters.js';
-import {agentAdapterStatuses, runAgentAdapterAction} from '../agent_integration/adapter_actions.js';
+import {
+  agentAdapterStatuses,
+  registeredAgentAdapterIds,
+  runAgentAdapterAction,
+} from '../agent_integration/adapter_actions.js';
+import type {AgentAdapter, AgentAdapterAction} from '../agent_integration/adapters/contract.js';
 import {AGENT_CATALOG} from '../agent_integration/catalog.js';
 import {AgentSurfaceError} from '../agent_integration/surfaces.js';
 import type {RuntimeConfig} from '../types.js';
+import {recordSetupCompletionValueEvent} from '../value_report/events.js';
 import {boolean} from './cli_flags.js';
 
 export const agentsCommandMetadata = {
@@ -18,6 +24,34 @@ export const agentsCommandMetadata = {
     },
   },
 } as const;
+
+export function setupCompletionForRegistration(
+  registeredBefore: readonly string[],
+  registeredAfter: readonly string[],
+  installedAdapterId: string,
+): {readonly supportedAgentReuse: boolean} | undefined {
+  const before = new Set(registeredBefore);
+  if (before.has(installedAdapterId) || !new Set(registeredAfter).has(installedAdapterId)) return undefined;
+  return {supportedAgentReuse: before.size > 0};
+}
+
+export const runAgentCliAction = Effect.fn('agents.cliAction')(function* (
+  config: RuntimeConfig,
+  adapter: AgentAdapter,
+  action: AgentAdapterAction,
+  apply: boolean,
+) {
+  if (action !== 'install' || !apply) return yield* runAgentAdapterAction(config, adapter, action, apply);
+  const registeredBefore = yield* registeredAgentAdapterIds(config);
+  const result = yield* runAgentAdapterAction(config, adapter, action, apply);
+  const registeredAfter = yield* registeredAgentAdapterIds(config);
+  const completion = setupCompletionForRegistration(registeredBefore, registeredAfter, adapter.catalog.id);
+  if (completion !== undefined) {
+    const timestamp = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+    yield* recordSetupCompletionValueEvent(config.agentContextHome, {...completion, timestamp}).pipe(Effect.ignore);
+  }
+  return result;
+});
 
 export function makeAgentsCommand(
   withRuntime: <E, R>(body: (config: RuntimeConfig) => Effect.Effect<void, E, R>) => Effect.Effect<void, E, R>,
@@ -58,7 +92,7 @@ export function makeAgentsCommand(
               return yield* AgentSurfaceError.make({
                 message: `Unknown surface ${surface}; run threadnote agents list.`,
               });
-            yield* runAgentAdapterAction(config, adapter, action, apply);
+            yield* runAgentCliAction(config, adapter, action, apply);
           }),
         ),
     ),

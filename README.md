@@ -165,7 +165,7 @@ services and adapters.
 Contributors need Bun `1.3.14`. Run `bun install --frozen-lockfile`, then `bun run typecheck && bun run test`.
 
 See the [contribution guide](CONTRIBUTION.md), [evaluation contract](test/evaluation/README.md),
-[migration guide](docs/migration.md), [Obsidian bridge](docs/obsidian.md), [sharing guide](docs/share.md),
+[migration guide](docs/migration.md), [Context CI guide](docs/context-ci.md), [Obsidian bridge](docs/obsidian.md), [sharing guide](docs/share.md),
 [release signing guide](docs/releasing.md), [website guide](docs/website.md), and
 [troubleshooting guide](docs/troubleshooting.md).
 

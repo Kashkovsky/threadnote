@@ -16,7 +16,7 @@ import type {runContextBrief} from '../context_brief/commands.js';
 import type {runCompact} from '../memory/commands.js';
 import type {runContextHealth} from '../memory/context_health_commands.js';
 import type {runContextCheck} from '../context_check/commands.js';
-import type {runValueReport} from '../value_report/commands.js';
+import type {runValueReport, runValueReportExport} from '../value_report/commands.js';
 import type {runProcedureVerify, runProcedureStatus} from '../procedure/commands.js';
 import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
@@ -102,6 +102,7 @@ export function makeContextCheckCommand<E, R>(
         'base',
         'Git commit/ref to compare with the working tree, including untracked files (default HEAD)',
       ),
+      format: optionalChoice('format', ['text', 'json', 'sarif'], 'Output format (default text)'),
       json: boolean('json', 'Emit privacy-safe ContextCheckReportV1 JSON'),
       project: requiredString('project', 'Project/repo namespace to inspect'),
       sarif: boolean('sarif', 'Emit SARIF 2.1.0 instead of JSON; excludes paths and memory bodies'),
@@ -114,7 +115,26 @@ export function makeContextCheckCommand<E, R>(
 
 export function makeValueReportCommand<E, R>(
   handler: (options: Parameters<typeof runValueReport>[1]) => Effect.Effect<void, E, R>,
+  exportHandler: (options: Parameters<typeof runValueReportExport>[1]) => Effect.Effect<void, E, R>,
 ) {
+  const exportCommand = Command.make(
+    'export',
+    {
+      apply: boolean('apply', 'Write the bounded bundle under the private Threadnote home'),
+      period: optional(
+        describeFlag(
+          integerFlag('period').pipe(Flag.withSchema(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)))),
+          'Include local inputs from this many whole days (default 30)',
+        ),
+      ),
+      project: optionalString(
+        'project',
+        'Restrict local aggregation without including the project label in the bundle',
+      ),
+    },
+    exportHandler,
+  ).pipe(Command.withDescription('Preview or explicitly write a redacted design-partner bundle'));
+
   return Command.make(
     'report',
     {
@@ -128,7 +148,10 @@ export function makeValueReportCommand<E, R>(
       project: optionalString('project', 'Restrict local recall-feedback aggregation to one project'),
     },
     handler,
-  ).pipe(Command.withDescription('Summarize bounded local value inputs without exporting telemetry'));
+  ).pipe(
+    Command.withDescription('Summarize bounded local value inputs without exporting telemetry'),
+    Command.withSubcommands([exportCommand]),
+  );
 }
 
 export function makeProcedureVerifyCommand<E, R>(

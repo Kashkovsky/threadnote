@@ -152,7 +152,7 @@ import {runContextBrief} from '../context_brief/commands.js';
 import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';
 import {runImageProjectionCommand} from '../image_projection/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
-import {runValueReport} from '../value_report/commands.js';
+import {runValueReport, runValueReportExport} from '../value_report/commands.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
 import {
   cursorCloudRuntimeConfig,
@@ -1433,14 +1433,15 @@ const context = Command.make('context').pipe(
   Command.withDescription('Compile task-oriented agent context'),
   Command.withSubcommands([contextBrief, contextHealth, contextCheck]),
 );
-
-const valueReport = makeValueReportCommand(options => withRuntimeEffect(config => runValueReport(config, options)));
+const valueReport = makeValueReportCommand(
+  options => withRuntimeEffect(config => runValueReport(config, options)),
+  options => withRuntimeEffect(config => runValueReportExport(config, options)),
+);
 
 const value = Command.make('value').pipe(
   Command.withDescription('Inspect local, count-only value signals'),
   Command.withSubcommands([valueReport]),
 );
-
 const procedureVerify = makeProcedureVerifyCommand(options => withRuntimeEffect(() => runProcedureVerify(options)));
 
 const procedureStatus = makeProcedureStatusCommand(options => withRuntimeEffect(() => runProcedureStatus(options)));
@@ -1962,7 +1963,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('recall', recall),
   registerTopLevelCommand('workset', workset),
   registerTopLevelCommand('context', context),
-  registerTopLevelCommand('value', value),
+  registerTopLevelCommand('value', value, {productionLog: {subcommands: {report: 'requires-apply'}}}),
   registerTopLevelCommand('procedure', procedure, {productionLog: {subcommands: {verify: 'requires-apply'}}}),
   registerTopLevelCommand('compact', compact, {productionLog: {mode: 'requires-apply'}}),
   registerTopLevelCommand('closeout', closeout, {productionLog: {subcommands: {apply: 'always'}}}),

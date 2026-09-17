@@ -12,6 +12,7 @@ import {buildContextCheckReport, projectContextCheckReportSarif, type ContextChe
 
 export interface ContextCheckOptions {
   readonly base?: string;
+  readonly format?: 'json' | 'sarif' | 'text';
   readonly json?: boolean;
   readonly project: string;
   readonly sarif?: boolean;
@@ -24,15 +25,22 @@ export const runContextCheck = Effect.fn('contextCheck.command')(function* (
 ) {
   const system = yield* SystemInfo;
   const project = options.project.trim();
-  const invalid = project.length === 0 || (options.json === true && options.sarif === true);
+  const formats = new Set([
+    ...(options.format === undefined ? [] : [options.format]),
+    ...(options.json === true ? (['json'] as const) : []),
+    ...(options.sarif === true ? (['sarif'] as const) : []),
+  ]);
+  const format = formats.size === 0 ? 'text' : [...formats][0];
+  const invalid = project.length === 0 || formats.size > 1;
   const report = invalid
     ? unavailableReport(project, 'invalid')
     : yield* checkRepository(config, project, options.base ?? 'HEAD', system.currentDirectory());
-  const output = options.sarif
-    ? JSON.stringify(projectContextCheckReportSarif(report))
-    : options.json
-      ? JSON.stringify(report)
-      : `Context check: ${report.exitClassification}; ${report.findings.length} finding(s), ${report.omittedFindings} omitted. Scope: direct citations of changed files. Exit ${report.exitCode}.`;
+  const output =
+    format === 'sarif'
+      ? JSON.stringify(projectContextCheckReportSarif(report))
+      : format === 'json'
+        ? JSON.stringify(report)
+        : `Context check: ${report.exitClassification}; ${report.findings.length} finding(s), ${report.omittedFindings} omitted. Scope: direct citations of changed files. Exit ${report.exitCode}.`;
   yield* writeFinalCliOutput(output);
   yield* Effect.sync(() => system.setExitCode(report.exitCode));
 });

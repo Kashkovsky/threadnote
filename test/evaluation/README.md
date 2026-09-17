@@ -3,6 +3,9 @@
 This directory is the release-quality contract for Threadnote retrieval. It is intentionally independent of a
 developer home, network access, local canonical data, and model-generated relevance scores.
 
+The [Threadnote 5 task-loop fixture](fixtures/threadnote-5-task-loop-v1/README.md) freezes offline release gates for
+activation, closeout usefulness, stale citations, contradiction triage, projection drift, and output budgets.
+
 ## Memory read token-efficiency baseline v1
 
 `baselines/memory-read-token-efficiency-v1/baseline.json` records the unchanged dual-channel `read_context`

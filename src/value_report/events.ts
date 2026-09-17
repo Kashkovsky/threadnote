@@ -36,7 +36,15 @@ export interface HealthValueEventV1 {
   readonly version: typeof VALUE_EVENT_VERSION;
 }
 
-export type LocalValueEventV1 = ContextBriefValueEventV1 | HealthValueEventV1;
+export interface SetupValueEventV1 {
+  readonly completed: 1;
+  readonly kind: 'setup';
+  readonly supportedAgentReuse: 0 | 1;
+  readonly timestamp: string;
+  readonly version: typeof VALUE_EVENT_VERSION;
+}
+
+export type LocalValueEventV1 = ContextBriefValueEventV1 | HealthValueEventV1 | SetupValueEventV1;
 
 export const recordContextBriefValueEvent = Effect.fn('valueReport.recordContextBrief')(function* (
   agentContextHome: string,
@@ -77,6 +85,19 @@ export const recordHealthValueSnapshot = Effect.fn('valueReport.recordHealthSnap
   );
 });
 
+export const recordSetupCompletionValueEvent = Effect.fn('valueReport.recordSetupCompletion')(function* (
+  agentContextHome: string,
+  input: {readonly supportedAgentReuse: boolean; readonly timestamp: string},
+) {
+  yield* appendValueEvent(agentContextHome, {
+    completed: 1,
+    kind: 'setup',
+    supportedAgentReuse: input.supportedAgentReuse ? 1 : 0,
+    timestamp: input.timestamp,
+    version: VALUE_EVENT_VERSION,
+  });
+});
+
 export const readLocalValueEvents = Effect.fn('valueReport.readEvents')(function* (agentContextHome: string) {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
@@ -92,6 +113,9 @@ export function summarizeLocalValueEvents(
   );
   const healthEvents = events.filter(
     (event): event is HealthValueEventV1 => event.kind === 'health' && eventMatches(event, options),
+  );
+  const setupEvents = events.filter(
+    (event): event is SetupValueEventV1 => event.kind === 'setup' && timestampInPeriod(event.timestamp, options),
   );
   return {
     contextBrief: {
@@ -110,6 +134,14 @@ export function summarizeLocalValueEvents(
       opened: sum(healthEvents.map(event => event.opened)),
       resolved: sum(healthEvents.map(event => event.resolved)),
     },
+    ...(setupEvents.length === 0
+      ? {}
+      : {
+          setup: {
+            completed: sum(setupEvents.map(event => event.completed)),
+            supportedAgentReuse: sum(setupEvents.map(event => event.supportedAgentReuse)),
+          },
+        }),
   };
 }
 
@@ -164,8 +196,9 @@ function eventMatches(
   event: LocalValueEventV1,
   options: {readonly from: Date; readonly project?: string; readonly to: Date},
 ): boolean {
+  const eventProject = 'project' in event ? event.project : undefined;
   return (
-    (options.project === undefined || event.project === options.project) && timestampInPeriod(event.timestamp, options)
+    (options.project === undefined || eventProject === options.project) && timestampInPeriod(event.timestamp, options)
   );
 }
 
@@ -247,6 +280,10 @@ function parseValueEvent(line: string): LocalValueEventV1 | undefined {
     validCount(value.resolved)
   ) {
     return value as unknown as HealthValueEventV1;
+  }
+  if (value.kind === 'setup' && value.project === undefined && value.completed === 1) {
+    if (value.supportedAgentReuse === 0 || value.supportedAgentReuse === 1)
+      return value as unknown as SetupValueEventV1;
   }
   return undefined;
 }

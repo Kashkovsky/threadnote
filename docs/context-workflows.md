@@ -47,6 +47,9 @@ threadnote context health --project <project>
 threadnote context health --project <project> --json
 ```
 
+Agents using the full MCP toolset can request the same bounded report with `context_health`, passing the project and
+an absolute `callerCwd`. The MCP adapter is read-only and does not prepare a graph or record a local value event.
+
 The `ContextHealthReportV1` planner reports expired validity, overdue `review_after`, changed/missing/unknown code
 citations, missing or inactive relation targets, exact duplicates, and contradictions or possible duplicates in pending
 candidates. Severity, confidence, and repairability are separate fields. Findings are deterministic and bounded.
@@ -61,8 +64,8 @@ Run the provider-neutral, read-only check for one project. `--base` is optional 
 
 ```sh
 threadnote context check --project <name>
-threadnote context check --project <name> --base <ref> --json
-threadnote context check --project <name> --base <ref> --sarif
+threadnote context check --project <name> --base <ref> --format json
+threadnote context check --project <name> --base <ref> --format sarif
 ```
 
 The versioned `ContextCheckReportV1` projection filters a health report to memories directly cited by changed tracked
@@ -80,6 +83,8 @@ JSON contains categories, severities, repairability, and stable fingerprints; SA
 fingerprints. Neither format contains memory bodies, source fragments, paths, queries, or repository identities. Do not
 treat a partial or unavailable evidence result as a clean check.
 
+See [Context CI](context-ci.md) for the provider-neutral job pattern and a minimal GitHub Actions example.
+
 ## Value report
 
 The local value report is count-only and works independently of telemetry:
@@ -87,14 +92,26 @@ The local value report is count-only and works independently of telemetry:
 ```sh
 threadnote value report
 threadnote value report --project <project> --period 14 --json
+threadnote value report export --project <project> --period 14
+threadnote value report export --project <project> --period 14 --apply
 ```
 
 `ValueReportV1` summarizes a bounded period of Context Brief attempts, code-anchor coverage, estimated tokens,
 follow-up operations, recall feedback, Knowledge Delta outcomes, health activity, and setup/reuse counters. Project
 filtering affects local aggregation only; the project label is not emitted in the report. The report has `scope: local`.
 
+A fresh successful `agents install <surface> --apply` contributes one setup completion. Installing a second distinct
+supported surface also contributes one reuse count. Preview, failed, repair, remove, and idempotent reinstall
+operations do not count, and the local value ledger stores no surface identifier.
+
 No query text, memory text, source code, paths, repository names, stable user ID, or raw logs are part of this report.
 Telemetry remains separately disabled by default and follows the consent contract in [Optional anonymous telemetry](telemetry.md).
+
+`value report export` prints the exact closed `threadnote.value-report-export.v1` design-partner bundle by default and
+writes nothing. `--apply` stores the same bounded field set as a private, content-addressed JSON file under
+`$THREADNOTE_HOME/exports/value-reports/` and prints its local path. The bundle wraps only `ValueReportV1` aggregate
+fields plus its export schema, type, and version; project filters affect selection but never appear in its content or
+filename.
 
 ## Memory schema v5 maintenance metadata
 

@@ -94,6 +94,7 @@ const ADVANCED_TOOL_NAMES = [
   'archive',
   'archive_context',
   'compact_context',
+  'context_health',
   'recall_feedback',
   'forget',
   'add_resource',
@@ -4030,6 +4031,31 @@ describe('Threadnote MCP toolsets', () => {
             },
           });
         }
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('returns read-only structured context health from the full toolset', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const result = await client.callTool({
+          arguments: {callerCwd: fixture.root, project: 'threadnote'},
+          name: 'context_health',
+        });
+
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          findings: [],
+          project: 'threadnote',
+          recordsScanned: 0,
+          version: 1,
+        });
+        expect(result.content).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({text: expect.stringContaining('Context health for threadnote')}),
+          ]),
+        );
       },
       {toolset: 'full'},
     );

@@ -27,6 +27,19 @@ describe('context check CLI', () => {
     await expect(readFile(join(home, 'data'), 'utf8')).rejects.toThrow();
   });
 
+  it('supports the provider-neutral --format selector and rejects conflicting selectors', async () => {
+    const {home, repository} = await fixture();
+    const json = await runCli(['context', 'check', '--project', 'cli-test', '--format', 'json'], home, repository);
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.stdout)).toMatchObject({exitCode: 0, evidenceStatus: 'complete'});
+    const conflicting = await runCli(
+      ['context', 'check', '--project', 'cli-test', '--format', 'text', '--sarif'],
+      home,
+      repository,
+    );
+    expect(conflicting.code).toBe(2);
+  });
+
   it('returns exit 2 and sanitized JSON/SARIF when Git evidence is unavailable', async () => {
     const {home, repository} = await fixture();
     for (const format of ['--json', '--sarif']) {

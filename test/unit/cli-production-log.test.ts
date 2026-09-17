@@ -45,6 +45,18 @@ describe('CLI production log policy', () => {
       operation: 'agents',
       writeProductionLog: false,
     });
+    expect(inspectCliInvocation(['value', 'report', '--json'])).toMatchObject({
+      operation: 'value',
+      writeProductionLog: false,
+    });
+    expect(inspectCliInvocation(['value', 'report', 'export'])).toMatchObject({
+      operation: 'value',
+      writeProductionLog: false,
+    });
+    expect(inspectCliInvocation(['value', 'report', 'export', '--apply'])).toMatchObject({
+      operation: 'value',
+      writeProductionLog: true,
+    });
     expect(inspectCliInvocation(['remember', '--dry-run', '--text', 'preview'])).toMatchObject({
       operation: 'remember',
       writeProductionLog: false,
