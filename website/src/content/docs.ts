@@ -12,6 +12,7 @@ import {
 } from './docsMemoryCitationReference.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
 import {optionalImageProjectionCliCommand, optionalImageProjectionDocsArticle} from './docsImageProjection.js';
+import {projectGuidanceDocsArticle} from './docsGuidance.js';
 import {localAiDocsArticle} from './docsLocalAi.js';
 import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
 import type {CliCommandReference, DocsSection, McpToolReference} from './docsTypes.js';
@@ -39,6 +40,17 @@ export const cliCommands: CliCommandReference[] = [
     command: 'mcp-install',
     summary: 'Preview or install one host-specific MCP configuration, compact bootstrap, and Threadnote skill bundle.',
     examples: ['threadnote mcp-install codex --apply', 'threadnote mcp-install claude --toolset full --apply'],
+  },
+  {
+    command: 'guidance import / project / status / remove',
+    summary:
+      'Review existing project guidance and project explicitly selected durable knowledge into native agent instructions.',
+    examples: [
+      'threadnote guidance import <surface> --project <name>',
+      'threadnote guidance project <surface> --project <name> --memory <uri> --apply',
+      'threadnote guidance status <surface> --project <name> --json',
+      'threadnote guidance remove <surface> --project <name> --apply',
+    ],
   },
   {
     command: 'recall',
@@ -488,6 +500,7 @@ threadnote setup <surface> --undo --apply`,
           },
         ],
       },
+      projectGuidanceDocsArticle,
       {
         id: 'agent-instructions-and-hooks',
         title: 'Agent instructions and hooks',

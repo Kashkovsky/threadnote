@@ -15,6 +15,8 @@ export interface AgentIntegration {
   readonly capabilities: Readonly<
     Record<AgentCapabilityName, Readonly<{status: AgentCapabilityStatus; reason?: string}>>
   >;
+  readonly projectGuidance:
+    Readonly<{status: 'managed'; targetPath: string}> | Readonly<{status: 'unsupported'; reason: string}>;
   readonly officialDocs: readonly string[];
   readonly lastVerified: string;
   readonly caveats: readonly string[];

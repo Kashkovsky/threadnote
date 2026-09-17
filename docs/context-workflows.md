@@ -42,6 +42,50 @@ manual guidance instead of being presented as managed. `--scope` is available fo
 adapters retain their established user-scope lifecycle. This command does not configure composer, team sharing, or any
 organization service.
 
+## Project guidance into agent surfaces
+
+Threadnote can import existing repository guidance for review, then project approved durable knowledge into an
+agent's native project instructions. Verified targets and explicit safety holds are declared by the canonical agent
+catalog, so support stays aligned with the adapters that implement it. Native instructions remain authoritative for
+the host, while Threadnote avoids creating a second canonical copy.
+
+Preview an import and, only when explicitly applied, create or reuse a private Knowledge Delta candidate review:
+
+```sh
+threadnote guidance import <surface> --project <name> [--cwd <path>] [--apply] [--json]
+```
+
+Import never approves or publishes a candidate. Project explicitly selected active durable memories into the
+adapter-declared project target with a managed block and provenance:
+
+```sh
+threadnote guidance project <surface> --project <name> \
+  --memory <uri> [--memory <uri> ...] [--cwd <path>] [--apply] [--force] [--json]
+```
+
+Projection is preview-first and deterministic: source memories are ordered stably, and the managed block records
+provenance and hashes. A conflict requires `--force`; even forced projection never overwrites unmanaged text.
+Receipts belong to the physical project target, so agents that share `AGENTS.md` also share one block and one receipt.
+Projection status distinguishes `current`, `missing`, `modified`, `stale`, and `evidence-unavailable`:
+
+```sh
+threadnote guidance status <surface> --project <name> [--cwd <path>] [--json]
+```
+
+`threadnote agents list` exposes the project-guidance status and target for each catalog entry, or the catalog's
+specific reason that safe automated projection is not yet available.
+
+Remove is also preview-first and preserves unmanaged content. `--force` is required only when resolving a managed
+target conflict:
+
+```sh
+threadnote guidance remove <surface> --project <name> [--cwd <path>] [--apply] [--force] [--json]
+```
+
+Guidance drift is included in context health and Context Check, so modified or stale projections remain visible rather
+than silently becoming agent instructions. A second agent surface can consume the same approved Threadnote knowledge
+without maintaining separate canonical copies.
+
 ## Closeout and Knowledge Delta
 
 The existing MCP tools remain the compatibility surface: `review_session_context` creates a review and

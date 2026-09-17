@@ -52,6 +52,32 @@ export interface AgentAdapterStatusContext {
   readonly mcpChecks: readonly DoctorCheck[];
 }
 
+/** Project-local guidance is deliberately adapter-declared, not selected by orchestration brand branches. */
+export interface AgentGuidanceContract {
+  /** Some hosts combine every source; others load only the first existing path in precedence order. */
+  readonly importMode?: 'all-existing' | 'first-existing';
+  readonly importPaths: readonly string[];
+  readonly importDirectories?: readonly {
+    readonly extensions: readonly string[];
+    readonly relativePath: string;
+  }[];
+  /** Exact legacy files loaded only when no file was discovered in importDirectories. */
+  readonly directoryFallbackPaths?: readonly string[];
+  /** Threadnote-owned envelopes removed when their managed payload is stripped during import. */
+  readonly importWrappers?: readonly {readonly prefix: string; readonly suffix: string}[];
+  /** Maximum Unicode characters accepted by this host for the complete projected file. */
+  readonly maxProjectionCharacters?: number;
+  readonly projection: {
+    readonly activeFallbackBlocker?: {
+      readonly inactiveWhenImportDirectoryHasFiles?: boolean;
+      readonly reason: string;
+      readonly relativePath: string;
+    };
+    readonly relativePath: string;
+    readonly wrapper?: {readonly prefix: string; readonly required?: boolean; readonly suffix: string};
+  };
+}
+
 export interface AgentAdapterActionOptions {
   readonly apply: boolean;
   readonly cwd?: string;
@@ -91,6 +117,7 @@ export interface AgentAdapterDefinition {
     readonly client: AgentClient;
     readonly kind: 'legacy-client';
   };
+  readonly guidance?: AgentGuidanceContract;
   readonly id: string;
   readonly kind: 'catalog' | 'json' | 'legacy';
   readonly legacyClient?: AgentClient;

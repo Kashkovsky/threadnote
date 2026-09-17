@@ -43,13 +43,21 @@ export const runAgentCliAction = Effect.fn('agents.cliAction')(function* (
 export function makeAgentsCommand(
   withRuntime: <E, R>(body: (config: RuntimeConfig) => Effect.Effect<void, E, R>) => Effect.Effect<void, E, R>,
 ) {
+  const catalog = AGENT_CATALOG;
   const list = Command.make('list', {json: boolean('json', 'Print the canonical support catalog as JSON')}, ({json}) =>
     Console.log(
       json
-        ? JSON.stringify({version: 1, agents: AGENT_CATALOG}, undefined, 2)
-        : AGENT_CATALOG.map(
-            entry => `${entry.id}\t${entry.tier}\t${entry.displayName}\n  ${entry.setup.join(' ')}`,
-          ).join('\n'),
+        ? JSON.stringify({version: 1, agents: catalog}, undefined, 2)
+        : catalog
+            .map(
+              entry =>
+                `${entry.id}\t${entry.tier}\t${entry.displayName}\n  ${entry.setup.join(' ')}\n  Project guidance: ${
+                  entry.projectGuidance.status === 'managed'
+                    ? entry.projectGuidance.targetPath
+                    : entry.projectGuidance.reason
+                }`,
+            )
+            .join('\n'),
     ),
   );
   const status = Command.make('status', {json: boolean('json', 'Print installed surface status as JSON')}, ({json}) =>

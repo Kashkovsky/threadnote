@@ -16,6 +16,7 @@ import {
 import {readActiveProjectMemoryRecords, readMaintenanceMemoryRecords} from './maintenance_records.js';
 import {memoryIdFromIdentityAlias} from './identity_alias.js';
 import {MemoryOperationError} from './migrations.js';
+import {guidanceHealthEvidence} from '../guidance/index.js';
 
 export interface RunContextHealthOptionsV1 {
   readonly json?: boolean;
@@ -59,8 +60,10 @@ export const collectContextHealth = Effect.fn('memory.contextHealth.collect')(fu
   );
   const relationEvidence = yield* relationStatusEvidence(config, evidenceRecords);
   const candidateEvidence = yield* candidateStatusEvidence(config, project);
+  const guidanceEvidence = yield* guidanceHealthEvidence(config, project, cwd);
   return buildContextHealthReport({
     candidateEvidence,
+    guidanceEvidence,
     citationValidations,
     includeFindingUris: options.includeFindingUris,
     now,

@@ -3,6 +3,7 @@ import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {CommandExecutor} from '../effect/command.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {SystemInfo} from '../effect/system.js';
+import {guidanceSourceUrisForChangedPaths} from '../guidance/index.js';
 import {readActiveProjectMemoryRecords} from '../memory/maintenance_records.js';
 import {buildContextHealthReport} from '../memory/context_health.js';
 import {collectContextHealth} from '../memory/context_health_commands.js';
@@ -62,14 +63,20 @@ const checkRepository = Effect.fn('contextCheck.repository')(function* (
     if (paths.length > 0 && records.some(record => (record.metadata.citationErrors?.length ?? 0) > 0)) {
       return unavailableReport(project, 'affected-memory-evidence-unavailable');
     }
-    const affected = selectAffectedMemories(records, repositoryId, paths, caseMode);
-    if (affected.length === 0) {
+    const guidanceUris: readonly string[] = yield* guidanceSourceUrisForChangedPaths(config, project, repoRoot, paths);
+    const direct = selectAffectedMemories(records, repositoryId, paths, caseMode);
+    const affected = [
+      ...new Map(
+        [...direct, ...records.filter(record => guidanceUris.includes(record.uri))].map(record => [record.uri, record]),
+      ).values(),
+    ];
+    const affectedMemoryUris = [...new Set([...affected.map(record => record.uri), ...guidanceUris])].sort();
+    if (affectedMemoryUris.length === 0) {
       return buildContextCheckReport({
         healthReport: buildContextHealthReport({now: EMPTY_CONTEXT_CHECK_NOW, project, records: []}),
         selection: {affectedMemoryUris: [], changedPaths: paths, status: 'available'},
       });
     }
-    const affectedMemoryUris = affected.map(record => record.uri);
     const healthReport = yield* collectContextHealth(config, project, records, repoRoot, {
       includeFindingUris: affectedMemoryUris,
     });

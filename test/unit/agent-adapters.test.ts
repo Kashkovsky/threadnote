@@ -55,6 +55,18 @@ describe('agent catalog and adapter contracts', () => {
       expect(Object.keys(adapter.actions).sort()).toEqual(['install', 'remove', 'repair', 'status']);
       for (const action of Object.values(adapter.actions)) expect(action).toBeTypeOf('function');
       expect(adapter.catalog.capabilities.mcp.status === 'managed').toBe(Boolean(adapter.json || adapter.legacyClient));
+      if (adapter.catalog.projectGuidance.status === 'managed') {
+        expect(
+          adapter.guidance,
+          `${adapter.catalog.id} must declare its managed project-guidance contract`,
+        ).toBeDefined();
+        expect(adapter.guidance?.projection.relativePath).toBe(adapter.catalog.projectGuidance.targetPath);
+      } else {
+        expect(
+          adapter.guidance,
+          `${adapter.catalog.id} must not exceed its catalog project-guidance claim`,
+        ).toBeUndefined();
+      }
     }
     expect(() => validateAgentCatalog({version: 1, agents: [AGENT_CATALOG[0], AGENT_CATALOG[0]]})).toThrow();
   });
