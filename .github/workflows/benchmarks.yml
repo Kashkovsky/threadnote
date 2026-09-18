@@ -461,6 +461,12 @@ jobs:
           --candidate-commit "${{ github.sha }}"
           --output artifacts/memory-connections-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json
 
+      - name: Replay the completed Memory Connections artifact
+        run: >-
+          bun run verify:memory-connections-scale-artifact --
+          --artifact artifacts/memory-connections-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json
+          --candidate-commit "${{ github.sha }}"
+
       - uses: actions/upload-artifact@v7
         if: always()
         with:

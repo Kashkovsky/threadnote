@@ -27,6 +27,7 @@ jobs:
     outputs:
       actions: ${{ steps.scopes.outputs.actions }}
       code: ${{ steps.scopes.outputs.code }}
+      guidance: ${{ steps.scopes.outputs.guidance }}
       long_test_groups: ${{ steps.scopes.outputs.long_test_groups }}
       quality: ${{ steps.scopes.outputs.quality }}
       release: ${{ steps.scopes.outputs.release }}
@@ -126,6 +127,25 @@ jobs:
         env:
           THREADNOTE_VITEST_STANDARD_SHARD: ${{ matrix.shard }}
 
+  agent_instructions:
+    name: Agent instructions and packaged skills
+    needs: changes
+    if: needs.changes.outputs.guidance == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+      - run: bun --bun vitest run test/unit/agent-instructions.test.ts
+      - run: >-
+          bun --bun vitest run test/unit/cursor-plugin.test.ts
+          -t "matches Cursor manifest anatomy and the canonical Threadnote instructions"
+
   long_tests:
     name: Tests · long · ${{ matrix.group }}
     needs: changes
@@ -190,7 +210,7 @@ jobs:
 
   test:
     name: Unit and integration tests
-    needs: [changes, quality, standard_tests, long_tests, remote_memory_postgres]
+    needs: [changes, quality, agent_instructions, standard_tests, long_tests, remote_memory_postgres]
     if: always()
     runs-on: ubuntu-latest
 
@@ -200,12 +220,17 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          GUIDANCE_CHANGED: ${{ needs.changes.outputs.guidance }}
+          AGENT_INSTRUCTIONS_RESULT: ${{ needs.agent_instructions.result }}
           STANDARD_RESULT: ${{ needs.standard_tests.result }}
           LONG_RESULT: ${{ needs.long_tests.result }}
           REMOTE_MEMORY_POSTGRES_RESULT: ${{ needs.remote_memory_postgres.result }}
         run: |
           test "$CHANGES_RESULT" = success
           test "$QUALITY_RESULT" = success
+          if [ "$GUIDANCE_CHANGED" = true ]; then
+            test "$AGENT_INSTRUCTIONS_RESULT" = success
+          fi
           if [ "$CODE_CHANGED" = true ]; then
             test "$STANDARD_RESULT" = success
             test "$LONG_RESULT" = success
