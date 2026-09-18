@@ -112,12 +112,14 @@ export interface ContextHealthSchedulePlanV1 {
 }
 
 export function aggregateContextHealthReportsV1(input: {
-  readonly personal: ContextHealthAggregateSourceV1;
+  readonly personal?: ContextHealthAggregateSourceV1;
   readonly project: string;
   readonly teams: readonly ContextHealthAggregateSourceV1[];
 }): ContextHealthAggregateV1 {
   const project = canonicalContextHealthProjectV1(input.project);
-  if (input.personal.scope !== 'personal') fail('The personal aggregate source must use personal scope.');
+  if (input.personal !== undefined && input.personal.scope !== 'personal') {
+    fail('The personal aggregate source must use personal scope.');
+  }
   if (input.teams.length > MAXIMUM_TEAM_SOURCES) {
     fail(`Context health aggregation supports at most ${MAXIMUM_TEAM_SOURCES} team sources.`);
   }
@@ -129,7 +131,10 @@ export function aggregateContextHealthReportsV1(input: {
   });
   const teamKeys = teams.map(source => source.sourceKey);
   if (new Set(teamKeys).size !== teamKeys.length) fail('Context health aggregate contains a duplicate team source.');
-  const sources = [canonicalSource(input.personal, project), ...teams].sort(compareSource);
+  const sources = [...(input.personal === undefined ? [] : [canonicalSource(input.personal, project)]), ...teams].sort(
+    compareSource,
+  );
+  if (sources.length === 0) fail('Context health aggregation requires at least one evidence source.');
   const findings = sources
     .flatMap(source =>
       source.state === 'complete' ? source.findingIds.map(findingId => ({findingId, sourceKey: source.sourceKey})) : [],
