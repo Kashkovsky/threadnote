@@ -102,7 +102,7 @@ export function SiteShell({
       <footer className="site-footer">
         <div>
           <ThreadnoteMark />
-          <p>Source-verifiable engineering context across agent vendors.</p>
+          <p>Shared, reviewable context for the coding agents your team uses.</p>
         </div>
         <div className="site-footer__links">
           <a href={siteHref('docs/')}>Documentation</a>

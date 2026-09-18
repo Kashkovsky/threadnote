@@ -1,12 +1,20 @@
 import {lazy, Suspense, useState} from 'react';
 import articles from 'virtual:threadnote-articles';
+import latestRelease from 'virtual:threadnote-latest-release';
 import {AgentTrace} from '../components/AgentTrace';
 import {CodeBlock} from '../components/CodeBlock';
 import {Icon, type IconName} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
 import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../content/landing';
 import {performanceEvidence} from '../content/performanceEvidence';
-import {docsArticleHref, githubUrl, setDocumentMeta, siteHref, whatsNewArticleHref} from '../lib/site';
+import {
+  docsArticleHref,
+  githubUrl,
+  setDocumentMeta,
+  siteHref,
+  whatsNewArticleHref,
+  whatsNewReleaseHref,
+} from '../lib/site';
 
 const ThreadScene = lazy(() => import('../visuals/ThreadScene'));
 
@@ -29,82 +37,82 @@ const features: Array<{
     icon: 'memory',
     accent: 'teal',
     label: 'Context Brief',
-    title: 'Start with the smallest trustworthy evidence set.',
-    body: 'Bring reviewed decisions, active handoffs, compatible procedures, and current code evidence into one bounded brief with provenance, freshness, and visible gaps.',
-    detail: 'Bounded · cited · source-aware',
+    title: 'Give the agent a useful briefing before it starts.',
+    body: 'A Context Brief is a short, cited summary of the decisions, open work, and code related to the task. It also shows what may be missing or out of date.',
+    detail: 'Short · cited · current',
   },
   {
     icon: 'local',
     accent: 'teal',
     label: 'Knowledge Delta',
-    title: 'Finish with reviewed knowledge, not a transcript.',
-    body: 'Review decisions and rationale, constraints, verification, invalidated knowledge, and unresolved risks before any proposal becomes durable.',
-    detail: 'Approve · edit · defer · reject',
+    title: 'Save the useful lesson, not the whole chat.',
+    body: 'A Knowledge Delta is a short list of new decisions, checks, outdated notes, and open risks. You approve, edit, defer, or reject every item.',
+    detail: 'You stay in control',
   },
   {
     icon: 'team',
     accent: 'blue',
     label: 'Cross-agent sharing',
-    title: 'Move approved context through the Git policy you already trust.',
-    body: 'Publish one reviewed decision directly or materialize a provider-neutral branch and commit for normal team review. Private handoffs stay local.',
-    detail: 'Git-backed · policy-aware · portable',
+    title: 'Reuse approved decisions in another coding agent.',
+    body: 'Keep decisions private or share selected ones through Git. Your normal branch review and CODEOWNERS rules still apply.',
+    detail: 'Git-backed · portable',
   },
   {
     icon: 'graph',
     accent: 'violet',
     label: 'Continuous health',
-    title: 'Know when context changed, expired, drifted, or became uncertain.',
-    body: 'Review dates, citations, relations, guidance drift, contradictions, and Context CI keep maintenance in the same lifecycle as retrieval.',
-    detail: 'Detect · review · repair · retire',
+    title: 'See when saved context may no longer be true.',
+    body: 'Threadnote checks code links, review dates, conflicting notes, and changed guidance. Repairs are previewed before anything is updated.',
+    detail: 'Find · review · repair',
   },
   {
     icon: 'manager',
     accent: 'magenta',
     label: 'Verified procedures',
-    title: 'Reuse workflows only when their exact evidence is current.',
-    body: 'Bind reviewed procedures to versions, owners, dependencies, compatible catalog surfaces, rollout policy, fixtures, and exact verification receipts.',
-    detail: 'Preview-first · compatible · never auto-run',
+    title: 'Reuse team workflows without running mystery automation.',
+    body: 'Procedures show their owner, version, dependencies, compatible agents, and verification. Threadnote previews them and never runs downloaded steps automatically.',
+    detail: 'Reviewed · compatible · explicit',
   },
   {
     icon: 'obsidian',
     accent: 'amber',
-    label: 'Visible value',
-    title: 'Measure applied reuse without collecting the work.',
-    body: 'Inspect local counts for activation, first evidence, second-agent reuse, Knowledge Delta outcomes, feedback, and health resolution.',
-    detail: 'Content-free · local · consent-exported',
+    label: 'Private by default',
+    title: 'Keep your code and saved context on your machine.',
+    body: 'Threadnote stores local files, indexes, models, and code maps under your control. Only the decisions you explicitly share leave the machine.',
+    detail: 'Local · offline-capable · explicit sharing',
   },
 ];
 
 const workflow = [
   {
     number: '01',
-    title: 'Connect catalog-supported surfaces',
-    body: 'Preview each managed setup and finish the first one with a real, cited Context Brief.',
+    title: 'Connect one coding agent',
+    body: 'Preview the setup, prepare the current repository, and verify the connection with a real Context Brief.',
   },
   {
     number: '02',
-    title: 'Import existing guidance for review',
-    body: 'Bring selected project instructions and ADRs into a candidate review without silently making them canonical.',
+    title: 'Start with a short briefing',
+    body: 'Let Threadnote find the decisions, task state, and current code that matter for the work.',
   },
   {
     number: '03',
-    title: 'Work from cited context and exact local code',
-    body: 'Use the brief to start informed, then verify consequential claims in the current worktree.',
+    title: 'Work in the repository as usual',
+    body: 'The agent uses the brief as a guide and checks important claims against your current local files.',
   },
   {
     number: '04',
-    title: 'Review the Knowledge Delta',
-    body: 'Approve only the decisions, constraints, verification, invalidations, and risks worth carrying forward.',
+    title: 'Review what the task learned',
+    body: 'Keep only the new decisions, checks, outdated notes, and risks that will help future work.',
   },
   {
     number: '05',
-    title: 'Publish or propose through Git',
-    body: 'Keep the personal-to-team boundary explicit and let normal review policy govern shared context.',
+    title: 'Share only what the team needs',
+    body: 'Keep the result private or send selected decisions through your normal Git review process.',
   },
   {
     number: '06',
-    title: 'Reuse it, then keep it healthy',
-    body: 'Retrieve the approved decision from another surface, inspect local value, and repair decay without silent deletion.',
+    title: 'Reuse it next time',
+    body: 'The same agent—or a different supported agent—can find the decision, with its source and freshness still visible.',
   },
 ];
 
@@ -327,8 +335,8 @@ function GraphSearchShowcase() {
 export default function LandingPage() {
   const latestArticle = articles[0];
   setDocumentMeta(
-    'Source-verifiable context across coding agents',
-    'Start engineering tasks with reviewed decisions and current code evidence, then leave a reviewed Knowledge Delta for the next agent.',
+    'Shared context for coding agents',
+    'Give coding agents the decisions and current code they need, then review what they leave for the next task.',
   );
 
   return (
@@ -344,9 +352,9 @@ export default function LandingPage() {
             <span>Leave it better for the next agent.</span>
           </h1>
           <p className="hero__lede">
-            Threadnote is the source-verifiable context lifecycle for engineering work. Give{' '}
-            <a href={siteHref('agents/')}>supported agents</a> reviewed decisions and current code evidence across
-            vendors, then close the task with a Knowledge Delta a person can approve.
+            Threadnote helps <a href={siteHref('agents/')}>coding agents</a> understand why your code is the way it is.
+            Before a task, they get a short briefing with relevant decisions and current code. After the task, you
+            choose which new lessons are worth keeping.
           </p>
           <div className="hero__actions">
             <a className="button" href={docsArticleHref('installation')}>
@@ -354,7 +362,7 @@ export default function LandingPage() {
               <Icon name="arrow" aria-hidden="true" />
             </a>
             <a className="button button--ghost" href={docsArticleHref('threadnote-5-journey')}>
-              Follow the complete journey
+              See how it works
             </a>
           </div>
           <div className="hero__install">
@@ -367,16 +375,16 @@ export default function LandingPage() {
             <ThreadScene />
           </Suspense>
           <div className="hero-node hero-node--memory">
-            <span>reviewed decision</span>
-            <strong>auth-contract · current</strong>
+            <span>why it was built this way</span>
+            <strong>reviewed decision</strong>
           </div>
           <div className="hero-node hero-node--graph">
-            <span>current evidence</span>
-            <strong>exact local worktree</strong>
+            <span>what the code does now</span>
+            <strong>current local files</strong>
           </div>
           <div className="hero-node hero-node--share">
-            <span>closeout</span>
-            <strong>reviewed Knowledge Delta</strong>
+            <span>what this task learned</span>
+            <strong>your review</strong>
           </div>
           <div className="hero__caption">
             <span>Reviewed context</span>
@@ -386,47 +394,66 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {latestArticle ? (
-        <a className="home-update-banner" href={whatsNewArticleHref(latestArticle.slug)}>
-          <span className="home-update-banner__label">Latest · What&apos;s new</span>
-          <div>
-            <strong>{latestArticle.title}</strong>
-            <p>{latestArticle.summary}</p>
-          </div>
-          <span className="home-update-banner__action">
-            Read what&apos;s new
-            <Icon name="arrow" aria-hidden="true" />
-          </span>
-        </a>
+      {latestRelease || latestArticle ? (
+        <div className="home-update-banners" aria-label="Latest Threadnote updates">
+          {latestRelease ? (
+            <a
+              className="home-update-banner home-update-banner--release"
+              href={whatsNewReleaseHref(latestRelease.version)}
+            >
+              <span className="home-update-banner__label">Latest release</span>
+              <div>
+                <strong>Threadnote {latestRelease.version.replace(/^v/, '')}</strong>
+                <p>{latestRelease.headline}</p>
+              </div>
+              <span className="home-update-banner__action">
+                Read release notes
+                <Icon name="arrow" aria-hidden="true" />
+              </span>
+            </a>
+          ) : null}
+          {latestArticle ? (
+            <a className="home-update-banner" href={whatsNewArticleHref(latestArticle.slug)}>
+              <span className="home-update-banner__label">Latest article</span>
+              <div>
+                <strong>{latestArticle.title}</strong>
+                <p>{latestArticle.summary}</p>
+              </div>
+              <span className="home-update-banner__action">
+                Read article
+                <Icon name="arrow" aria-hidden="true" />
+              </span>
+            </a>
+          ) : null}
+        </div>
       ) : null}
 
       <section className="trust-strip" aria-label="Threadnote runtime guarantees">
         <div>
-          <strong>Cross-vendor</strong>
-          <span>Catalog-driven agent surfaces</span>
+          <strong>Works across agents</strong>
+          <span>One source of approved context</span>
         </div>
         <div>
-          <strong>Source-verifiable</strong>
-          <span>Provenance, freshness, and honest gaps</span>
+          <strong>Shows its sources</strong>
+          <span>See where a decision came from</span>
         </div>
         <div>
-          <strong>Review-first</strong>
-          <span>No silent import, apply, or publication</span>
+          <strong>You approve changes</strong>
+          <span>Nothing is silently saved or shared</span>
         </div>
         <div>
-          <strong>Local/offline floor</strong>
-          <span>No hosted organization service required</span>
+          <strong>Local by default</strong>
+          <span>No Threadnote cloud account required</span>
         </div>
       </section>
 
       <section className="content-section content-section--trace">
         <header className="section-heading">
-          <span className="eyebrow">One bounded starting point</span>
-          <h2>Reviewed decisions and current code—together, but never confused.</h2>
+          <span className="eyebrow">Meet the Context Brief</span>
+          <h2>A short, useful briefing before the agent starts.</h2>
           <p>
-            A Context Brief compiles only the relevant decisions, handoffs, verified procedures, and current-source
-            evidence for the task. Provenance stays attached, the local worktree remains authoritative, and incomplete
-            evidence stays unknown instead of becoming a confident answer.
+            A Context Brief brings together the decisions, unfinished work, and current code that matter for one task.
+            Every important claim keeps a link to its source, and missing information stays clearly marked as unknown.
           </p>
         </header>
         <AgentTrace scenario={heroScenario} />
@@ -435,12 +462,12 @@ export default function LandingPage() {
       <section className="content-section" id="features">
         <header className="section-heading section-heading--split">
           <div>
-            <span className="eyebrow">The context lifecycle</span>
-            <h2>From first evidence to reviewed reuse.</h2>
+            <span className="eyebrow">What Threadnote does</span>
+            <h2>Useful context before the task. Better context after it.</h2>
           </div>
           <p>
-            Threadnote keeps capture, review, sharing, health, and reuse connected—without replacing repositories, Git
-            review, or the agent surfaces your team already chose.
+            Threadnote does not replace your repository, Git review, or coding agent. It connects them with context that
+            stays cited, reviewable, and reusable.
           </p>
         </header>
         <div className="feature-grid">
@@ -461,11 +488,11 @@ export default function LandingPage() {
 
       <section className="architecture-band">
         <div className="architecture-band__copy">
-          <span className="eyebrow">Private by architecture</span>
-          <h2>Your machine is the default trust boundary.</h2>
+          <span className="eyebrow">Private by default</span>
+          <h2>Your context stays on your machine.</h2>
           <p>
-            Canonical Markdown, SQLite indexes, models, graph snapshots, and share metadata live under{' '}
-            <code>~/.threadnote</code>. Derived indexes can be rebuilt. Sharing is an explicit previewed action.
+            Saved decisions, indexes, local models, and code maps live under <code>~/.threadnote</code>. Threadnote
+            shows you a preview before anything is shared.
           </p>
           <a className="text-link" href={docsArticleHref('architecture')}>
             Read the architecture
@@ -504,8 +531,8 @@ export default function LandingPage() {
 
       <section className="content-section">
         <header className="section-heading">
-          <span className="eyebrow">One cross-agent workflow</span>
-          <h2>Start informed. Finish with context the next engineer can trust.</h2>
+          <span className="eyebrow">How it works</span>
+          <h2>From a first briefing to a decision the next agent can reuse.</h2>
         </header>
         <ol className="workflow-list">
           {workflow.map(item => (
@@ -525,10 +552,10 @@ export default function LandingPage() {
       <section className="manager-teaser">
         <div className="manager-teaser__copy">
           <span className="eyebrow">Threadnote Manager</span>
-          <h2>Health and value stay inspectable.</h2>
+          <h2>See what Threadnote knows and when it needs attention.</h2>
           <p>
-            Follow reviewed knowledge through its lifecycle, inspect share and guidance health, walk current code
-            evidence, and see content-free activation, reuse, Knowledge Delta, feedback, and repair outcomes.
+            Browse saved decisions, check team shares and agent guidance, explore the current code map, and see which
+            context is current, outdated, or waiting for review.
           </p>
           <a className="button button--light" href={siteHref('manager-demo/')}>
             Open interactive demo
@@ -602,8 +629,8 @@ export default function LandingPage() {
 
       <section className="content-section content-section--cta">
         <div className="cta-panel">
-          <span className="eyebrow">Keep the context lifecycle moving</span>
-          <h2>Give the next agent reviewed decisions and current evidence—not another transcript.</h2>
+          <span className="eyebrow">Try Threadnote</span>
+          <h2>Stop explaining the same project decisions to every new coding agent.</h2>
           <CodeBlock
             label="macOS & Linux"
             code="curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh"

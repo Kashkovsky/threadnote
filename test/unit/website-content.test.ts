@@ -776,9 +776,14 @@ The body remains ordinary **Markdown**.
     expect(latest?.body).not.toContain('SetupReceiptV1');
     expect(latest?.body).not.toMatch(/Codex, Claude(?: Code)?, Cursor, (?:and )?Copilot/i);
     expect(landingSource).toContain("import articles from 'virtual:threadnote-articles'");
+    expect(landingSource).toContain("import latestRelease from 'virtual:threadnote-latest-release'");
     expect(landingSource).toContain('whatsNewArticleHref(latestArticle.slug)');
+    expect(landingSource).toContain('whatsNewReleaseHref(latestRelease.version)');
+    expect(landingSource).toContain('Latest release');
+    expect(landingSource).toContain('Read release notes');
     expect(landingSource).toContain('home-update-banner');
-    expect(landingSource).toContain('Read what&apos;s new');
+    expect(landingSource).toContain('Latest article');
+    expect(landingSource).toContain('Read article');
     expect(landingSource).not.toContain('Read the 5.0 story');
   });
 
@@ -820,6 +825,7 @@ The body remains ordinary **Markdown**.
     expect(articleIds).toEqual(
       expect.arrayContaining([
         'installation',
+        'upgrade-from-4',
         'connect-an-agent',
         'threadnote-5-journey',
         'context-lifecycle',
@@ -848,6 +854,39 @@ The body remains ordinary **Markdown**.
         'agent-integrations',
       ]),
     );
+  });
+
+  it('explains the first-agent setup and the optional two-agent journey in plain language', () => {
+    const articles = docsSections.flatMap(section => section.articles);
+    const connectAgent = JSON.stringify(articles.find(article => article.id === 'connect-an-agent'));
+    const journey = JSON.stringify(articles.find(article => article.id === 'threadnote-5-journey'));
+
+    expect(connectAgent).toContain('What setup does');
+    expect(connectAgent).toContain('Why not install only the MCP connection?');
+    expect(connectAgent).toContain('Neither command prepares the current repository');
+    expect(connectAgent).toContain('A hand-written MCP entry');
+    expect(journey).toContain('A Context Brief is the short, cited briefing');
+    expect(journey).toContain('A Knowledge Delta is the short, reviewable list');
+    expect(journey).toContain('You do not need two agents or a team share to get started');
+    expect(journey).toContain('a “surface” simply means a coding agent or agent environment');
+    expect(journey).toContain('It is not required for normal use');
+  });
+
+  it('gives existing 4.x users a safe, optional path into the 5.0 workflow', () => {
+    const article = docsSections
+      .flatMap(section => section.articles)
+      .find(candidate => candidate.id === 'upgrade-from-4');
+    const content = JSON.stringify(article);
+
+    expect(article?.title).toBe('Upgrade from Threadnote 4');
+    expect(content).toContain('Threadnote 5 is an in-place upgrade for 4.x users');
+    expect(content).toContain('threadnote update --check');
+    expect(content).toContain('threadnote doctor');
+    expect(content).toContain('Do not run `threadnote migrate`');
+    expect(content).toContain('Setup is optional for existing users');
+    expect(content).toContain('Context Brief: a short, cited briefing');
+    expect(content).toContain('Review a Knowledge Delta');
+    expect(content).toContain('The optional two-agent journey is still optional');
   });
 
   it('keeps the schema-v5 metadata walkthrough aligned with the shipped CAS contract', () => {
@@ -1162,15 +1201,15 @@ The body remains ordinary **Markdown**.
     const docs = JSON.stringify(docsSections);
     const tips = JSON.stringify(proTips);
 
-    expect(landingSource).toContain('source-verifiable context lifecycle');
+    expect(landingSource).toContain('coding agents</a> understand why your code is the way it is');
     expect(landingSource).toContain('Knowledge Delta');
-    expect(landingSource).toContain('No hosted organization service required');
-    expect(landingSource).toContain('home-update-banner');
+    expect(landingSource).toContain('No Threadnote cloud account required');
+    expect(landingSource).toContain('home-update-banners');
     expect(docs).toContain('A Context Brief is the bounded starting package for one task');
     expect(docs).toContain('A Knowledge Delta is a reviewable summary of what the task learned');
     expect(docs).toContain('Schema v5 is the compatibility foundation for the Threadnote 5 lifecycle');
-    expect(docs).toContain('provider-neutral Git proposal');
-    expect(docs).toContain('Retrieve the approved decision from the second surface');
+    expect(docs).toContain('review and merge the local proposal');
+    expect(docs).toContain('second agent retrieves the shared decision itself');
     expect(docs).toContain('stable Threadnote 5 operator surface');
     expect(docs).not.toContain('stable 4.1 operator surface');
     expect(tips).toContain('codeRefs');
@@ -1263,13 +1302,13 @@ The body remains ordinary **Markdown**.
   it('ranks documentation headings, content, keywords, prefixes, and small typos', () => {
     const index = createDocsSearchIndex(docsSections);
     const graphResultIds = searchDocs(index, 'polyglot current worktree impact').map(result => result.article.id);
-    const headingResults = searchDocs(index, 'memory current source evidence');
+    const headingResults = searchDocs(index, 'saved decisions current code');
     const typoResults = searchDocs(index, 'archtecture analysis');
     const commandResults = searchDocs(index, 'inspect code graph');
 
     expect(graphResultIds.slice(0, 4)).toContain('what-is-threadnote');
     expect(headingResults[0]).toMatchObject({article: {id: 'what-is-threadnote'}});
-    expect(headingResults[0]?.matchLabel).toContain('Memory and current-source evidence stay separate');
+    expect(headingResults[0]?.matchLabel).toContain('Saved decisions and current code stay separate');
     expect(typoResults.map(result => result.article.id)).toContain('graph-analysis');
     expect(commandResults.map(result => result.article.id)).toContain('graph-operations');
     expect(commandResults.some(result => result.snippet !== result.article.summary)).toBe(true);
