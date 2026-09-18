@@ -15,7 +15,27 @@ import {
 } from '../../src/context_check/index.js';
 
 function healthReport(findings: readonly ContextHealthFindingV1[], omittedFindings = 0): ContextHealthReportV1 {
-  return {findings, limit: 100, omittedFindings, project: 'threadnote', recordsScanned: 4, version: 1};
+  return {
+    findings,
+    limit: 100,
+    omittedFindings,
+    project: 'threadnote',
+    recordsScanned: 4,
+    semanticCompleteness: {
+      analyzedRecords: 4,
+      claimsAnalyzed: 4,
+      contradictionCount: 0,
+      eligibleRecords: 4,
+      omittedContradictions: 0,
+      pairsCompared: 6,
+      state: 'complete',
+      unknownReasons: [],
+      unknownRecords: 0,
+      version: 1,
+    },
+    status: findings.length > 0 || omittedFindings > 0 ? 'findings' : 'clean',
+    version: 1,
+  };
 }
 
 function finding(category: ContextHealthFindingV1['category'], uris: readonly string[]): ContextHealthFindingV1 {
@@ -88,6 +108,67 @@ describe('buildContextCheckReport', () => {
         selection: {affectedMemoryUris: [], changedPaths: [], status: 'available'},
       }),
     ).toMatchObject({evidenceReason: 'health-report-truncated', exitCode: 2});
+  });
+
+  it('does not let incomplete semantic evidence claim clean', () => {
+    const report = healthReport([]);
+    expect(
+      buildContextCheckReport({
+        healthReport: {
+          ...report,
+          semanticCompleteness: {
+            ...report.semanticCompleteness,
+            analyzedRecords: 3,
+            state: 'partial',
+            unknownReasons: [{count: 1, reason: 'no-claims'}],
+            unknownRecords: 1,
+          },
+          status: 'unknown',
+        },
+        selection: {affectedMemoryUris: [], changedPaths: ['src/changed.ts'], status: 'available'},
+      }),
+    ).toMatchObject({evidenceReason: 'health-report-incomplete', evidenceStatus: 'unavailable', exitCode: 2});
+  });
+
+  it('does not let an empty filtered health report claim clean when semantic evidence is complete', () => {
+    const filtered = buildContextHealthReport({
+      includeFindingUris: ['threadnote://memory/not-present'],
+      now: new Date('2026-09-17T00:00:00.000Z'),
+      project: 'threadnote',
+      records: [duplicateRecord('only-record')],
+    });
+    expect(filtered).toMatchObject({semanticCompleteness: {state: 'complete'}, status: 'unknown'});
+
+    expect(
+      buildContextCheckReport({
+        healthReport: filtered,
+        selection: {affectedMemoryUris: [], changedPaths: ['src/changed.ts'], status: 'available'},
+      }),
+    ).toMatchObject({evidenceReason: 'health-report-incomplete', evidenceStatus: 'unavailable', exitCode: 2});
+  });
+
+  it('keeps actionable findings when semantic evidence is incomplete instead of claiming clean', () => {
+    const report = healthReport([finding('citation-changed', ['threadnote://memory/changed'])]);
+    expect(
+      buildContextCheckReport({
+        healthReport: {
+          ...report,
+          semanticCompleteness: {
+            ...report.semanticCompleteness,
+            analyzedRecords: 0,
+            state: 'unavailable',
+            unknownReasons: [{count: 1, reason: 'no-claims'}],
+            unknownRecords: 1,
+          },
+          status: 'unknown',
+        },
+        selection: {
+          affectedMemoryUris: ['threadnote://memory/changed'],
+          changedPaths: ['src/changed.ts'],
+          status: 'available',
+        },
+      }),
+    ).toMatchObject({evidenceStatus: 'complete', exitCode: 1});
   });
 
   it('isolates findings to explicitly affected memories and preserves unknown evidence', () => {

@@ -272,6 +272,16 @@ export function contextHealthReportRevisionV1(report: ContextHealthReportV1): st
             targetUri: finding.repair.targetUri ?? null,
           },
           repairability: finding.repairability,
+          semanticEvidence:
+            finding.semanticEvidence === undefined
+              ? null
+              : {
+                  basisFingerprint: finding.semanticEvidence.basisFingerprint,
+                  contradictionId: finding.semanticEvidence.contradictionId,
+                  left: finding.semanticEvidence.left,
+                  right: finding.semanticEvidence.right,
+                  similarityMilli: finding.semanticEvidence.similarityMilli,
+                },
           severity: finding.severity,
           summary: finding.summary,
           uris: [...finding.uris].sort(compareText),
@@ -280,6 +290,13 @@ export function contextHealthReportRevisionV1(report: ContextHealthReportV1): st
       omittedFindings: report.omittedFindings,
       project: report.project,
       recordsScanned: report.recordsScanned,
+      semanticCompleteness: {
+        ...report.semanticCompleteness,
+        unknownReasons: [...report.semanticCompleteness.unknownReasons].sort((left, right) =>
+          compareText(left.reason, right.reason),
+        ),
+      },
+      status: report.status,
       version: report.version,
     }),
   );

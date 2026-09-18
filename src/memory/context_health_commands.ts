@@ -172,9 +172,17 @@ const candidateStatusEvidence = Effect.fn('memory.contextHealth.candidateEvidenc
 
 export function renderContextHealth(report: ReturnType<typeof buildContextHealthReport>): string {
   const lines = [
-    `Context health for ${report.project}: ${report.recordsScanned} active record${report.recordsScanned === 1 ? '' : 's'}, ${report.findings.length} finding${report.findings.length === 1 ? '' : 's'}.`,
+    `Context health for ${report.project}: ${report.status}; ${report.recordsScanned} active record${report.recordsScanned === 1 ? '' : 's'}, ${report.findings.length} finding${report.findings.length === 1 ? '' : 's'}.`,
+    `Semantic evidence: ${report.semanticCompleteness.state}; ${report.semanticCompleteness.analyzedRecords}/${report.semanticCompleteness.eligibleRecords} durable record(s) analyzed, ${report.semanticCompleteness.unknownRecords} unknown.`,
     ...report.findings.map(finding => `- ${finding.severity} ${finding.category}: ${finding.summary}`),
   ];
+  if (report.semanticCompleteness.unknownReasons.length > 0) {
+    lines.push(
+      `- Semantic unknown evidence: ${report.semanticCompleteness.unknownReasons
+        .map(item => `${item.reason}=${item.count}`)
+        .join(', ')}.`,
+    );
+  }
   if (report.omittedFindings > 0) lines.push(`- ${report.omittedFindings} additional finding(s) omitted by the limit.`);
   return lines.join('\n');
 }
