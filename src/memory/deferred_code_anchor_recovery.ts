@@ -43,17 +43,15 @@ const healAnchorsForRoute = Effect.fn('memoryCodeAnchor.healForRoute')(function*
   yield* withCodeAnchorFinalizationAnonymousTelemetry(
     trigger,
     Effect.gen(function* () {
-      const attemptedUris: string[] = [];
+      const finalizedUris: string[] = [];
       const receipt = yield* finalizeDeferredCodeAnchorsForRoute(config, route, {
         limit: AUTOMATIC_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
-        onAttemptedUri: uri => {
-          attemptedUris.push(uri);
-        },
+        onFinalizedUri: uri => finalizedUris.push(uri),
         passTimeoutMilliseconds: AUTOMATIC_DEFERRED_CODE_ANCHOR_PASS_TIMEOUT_MILLISECONDS,
         waitTimeoutMilliseconds: trigger === 'graph-index' ? 2_000 : 0,
       });
-      if (attemptedUris.length > 0) {
-        yield* refreshRecallDerivedIndexesFromSelection(config, attemptedUris);
+      if (finalizedUris.length > 0) {
+        yield* refreshRecallDerivedIndexesFromSelection(config, finalizedUris);
       }
       return receipt;
     }),

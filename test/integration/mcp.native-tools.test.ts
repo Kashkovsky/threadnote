@@ -3127,6 +3127,7 @@ describe('Threadnote MCP toolsets', () => {
           pendingCount: 0,
           scannedCount: 0,
         });
+        expect(idempotent.structuredContent).not.toHaveProperty('derivedIndexes');
       },
       {toolset: 'full'},
     );

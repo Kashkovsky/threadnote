@@ -21,6 +21,9 @@ interface McpRecallRefreshConfig {
 
 export type McpRecallBackgroundRefreshSchedule = 'coalesced' | 'scheduled';
 
+export type DerivedIndexRefreshOutcome =
+  {readonly state: 'current'} | {readonly repair: string; readonly state: 'deferred'} | {readonly state: 'unavailable'};
+
 interface ActiveMcpRecallRefresh {
   config: McpRecallRefreshConfig;
   manifest: LocalModelManifest;
@@ -128,20 +131,32 @@ export const refreshRecallDerivedIndexesFromSelection = Effect.fn('recall.refres
             Effect.catchCause(() => Effect.succeed(true)),
           );
     const index = yield* refreshRecallLexicalIndex(config, forceRefresh);
-    yield* Effect.gen(function* () {
+    return yield* Effect.gen(function* () {
       const selection = yield* readModelSelection(config.agentContextHome);
       const modelId = selection.roles.embedding;
-      if (modelId === undefined) return;
+      if (modelId === undefined) return {state: 'unavailable' as const};
       const catalog = yield* LocalModelCatalog;
       const manifest = yield* catalog.get(modelId);
-      if (manifest.role !== 'embedding') return;
+      if (manifest.role !== 'embedding') return {state: 'unavailable' as const};
       const store = yield* LocalModelStore;
       const installed = yield* store.status(config.agentContextHome, manifest);
-      if (!installed.installed) return;
+      if (!installed.installed) return {state: 'unavailable' as const};
       const vectorStatus = yield* vectorIndexStatus(config.agentContextHome, manifest);
-      if (!vectorStatus.ready && vectorStatus.reason === 'not built') return;
+      if (!vectorStatus.ready && vectorStatus.reason === 'not built') return {state: 'unavailable' as const};
       yield* refreshRecallVectorIndex(config, manifest, index);
-    }).pipe(Effect.ignoreCause);
+      const readiness = yield* vectorIndexGenerationReadiness(config.agentContextHome, manifest, index.generation);
+      if (readiness !== 'current') {
+        return {
+          repair: 'Run `threadnote repair` to retry derived-index refresh.',
+          state: 'deferred' as const,
+        };
+      }
+      return {state: 'current' as const};
+    }).pipe(
+      Effect.catchCause(() =>
+        Effect.succeed({repair: 'Run `threadnote repair` to retry derived-index refresh.', state: 'deferred' as const}),
+      ),
+    );
   },
 );
 

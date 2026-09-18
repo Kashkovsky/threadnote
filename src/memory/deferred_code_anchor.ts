@@ -8,7 +8,7 @@ import {ResourceStore} from '../effect/resource-store.js';
 import {fileSystemModeIsPrivate, runtimePlatform, runtimeTextDirectoryNamePage} from '../effect/system.js';
 import {uriSegment} from '../manifest.js';
 import {parseResourceId, validatePortableSegment} from '../storage/resource-id.js';
-import type {DoctorCheck, RuntimeConfig} from '../types.js';
+import type {RuntimeConfig} from '../types.js';
 import {
   captureMemoryCodeCitations,
   type MemoryCodeCitationCaptureRecoveryV1,
@@ -52,12 +52,14 @@ import {
 import {formatMemoryDocument, parseMemoryDocument, type MemoryMetadata} from './document.js';
 
 export {deferredCodeAnchorFinalizationVerified, type DeferredMemoryObservation} from './deferred_code_anchor_memory.js';
+export {deferredCodeAnchorDoctorCheck} from './deferred_code_anchor_doctor.js';
 
 export const DEFERRED_CODE_ANCHOR_INTENT_VERSION = 1 as const;
 export const DEFERRED_CODE_ANCHOR_FINALIZATION_VERSION = 1 as const;
 export const DEFERRED_CODE_ANCHOR_ROUTE_FINALIZATION_VERSION = 1 as const;
 export const DEFAULT_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT = 25;
 export const MAX_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT = 100;
+const DEFERRED_CODE_ANCHOR_FINALIZATION_CONCURRENCY = 4;
 const MAX_DEFERRED_CODE_ANCHOR_INTENT_BYTES = 128 * 1024;
 const DEFERRED_CODE_ANCHOR_SCAN_CURSOR_NAME = 'scan-cursor-v1';
 const DEFERRED_CODE_ANCHOR_ROUTE_SCAN_CURSOR_PREFIX = 'route-scan-cursor-v1-';
@@ -189,7 +191,7 @@ export interface DeferredCodeAnchorRouteFinalizationOptions {
   readonly waitTimeoutMilliseconds?: number;
 }
 
-interface StoredDeferredCodeAnchorIntent {
+export interface StoredDeferredCodeAnchorIntent {
   readonly kind: 'valid';
   readonly intent: DeferredCodeAnchorIntentV1;
   readonly markerPath?: string;
@@ -464,28 +466,32 @@ export const finalizeDeferredCodeAnchors = Effect.fn('memoryCodeAnchor.finalize'
     requestedUris.size === 0
       ? yield* selectDeferredCodeAnchorFinalizationWindow(config, matching, limit)
       : matching.slice(0, limit);
-  const items: DeferredCodeAnchorFinalizeItemV1[] = [];
-  for (const entry of stored) {
-    if (entry.kind === 'invalid') {
-      items.push({
-        code: 'invalid-intent',
-        reason: 'Private deferred code-anchor intent is unreadable or malformed.',
-        state: 'failed',
-      });
-      continue;
-    }
-    const finalized = yield* finalizeDeferredCodeAnchor(config, entry).pipe(Effect.result);
-    items.push(
-      Result.isSuccess(finalized)
-        ? finalized.success
-        : {
-            code: 'finalization-error',
-            memoryUri: entry.intent.memoryUri,
-            reason: 'Deferred code-anchor finalization failed safely; retry or run threadnote doctor --dry-run.',
-            state: 'failed',
-          },
-    );
-  }
+  const items = yield* Effect.forEach(
+    stored,
+    entry => {
+      if (entry.kind === 'invalid') {
+        return Effect.succeed<DeferredCodeAnchorFinalizeItemV1>({
+          code: 'invalid-intent',
+          reason: 'Private deferred code-anchor intent is unreadable or malformed.',
+          state: 'failed' as const,
+        } satisfies DeferredCodeAnchorFinalizeItemV1);
+      }
+      return finalizeDeferredCodeAnchor(config, entry).pipe(
+        Effect.result,
+        Effect.map((finalized): DeferredCodeAnchorFinalizeItemV1 =>
+          Result.isSuccess(finalized)
+            ? finalized.success
+            : ({
+                code: 'finalization-error',
+                memoryUri: entry.intent.memoryUri,
+                reason: 'Deferred code-anchor finalization failed safely; retry or run threadnote doctor --dry-run.',
+                state: 'failed' as const,
+              } satisfies DeferredCodeAnchorFinalizeItemV1),
+        ),
+      );
+    },
+    {concurrency: DEFERRED_CODE_ANCHOR_FINALIZATION_CONCURRENCY},
+  );
   return {
     conflictCount: items.filter(item => item.state === 'conflict').length,
     failedCount: items.filter(item => item.state === 'failed').length,
@@ -572,25 +578,32 @@ export const finalizeDeferredCodeAnchorsForRoute = Effect.fn('memoryCodeAnchor.f
             0,
             limit,
           ) as readonly StoredDeferredCodeAnchorIntent[];
-          for (const entry of selected) {
-            if (options.onAttemptedUri)
-              safelyNotifyDeferredCodeAnchorUri(options.onAttemptedUri, entry.intent.memoryUri);
-            const finalized = yield* finalizeDeferredCodeAnchor(config, entry).pipe(Effect.result);
-            const item = Result.isSuccess(finalized)
-              ? finalized.success
-              : {
-                  code: 'finalization-error',
-                  memoryUri: entry.intent.memoryUri,
-                  reason: 'Deferred code-anchor finalization failed safely; retry or run threadnote doctor --dry-run.',
-                  state: 'failed' as const,
-                };
-            observedItems.push(item);
-            if (item.state === 'pending' || item.state === 'failed') {
-              yield* rotateDeferredCodeAnchorRouteMarker(entry);
-            } else if (item.state === 'finalized' && options.onFinalizedUri !== undefined) {
-              safelyNotifyDeferredCodeAnchorUri(options.onFinalizedUri, entry.intent.memoryUri);
-            }
-          }
+          const items = yield* Effect.forEach(
+            selected,
+            entry =>
+              Effect.gen(function* () {
+                if (options.onAttemptedUri)
+                  safelyNotifyDeferredCodeAnchorUri(options.onAttemptedUri, entry.intent.memoryUri);
+                const finalized = yield* finalizeDeferredCodeAnchor(config, entry).pipe(Effect.result);
+                const item: DeferredCodeAnchorFinalizeItemV1 = Result.isSuccess(finalized)
+                  ? finalized.success
+                  : ({
+                      code: 'finalization-error',
+                      memoryUri: entry.intent.memoryUri,
+                      reason:
+                        'Deferred code-anchor finalization failed safely; retry or run threadnote doctor --dry-run.',
+                      state: 'failed' as const,
+                    } satisfies DeferredCodeAnchorFinalizeItemV1);
+                if (item.state === 'pending' || item.state === 'failed') {
+                  yield* rotateDeferredCodeAnchorRouteMarker(entry);
+                } else if (item.state === 'finalized' && options.onFinalizedUri !== undefined) {
+                  safelyNotifyDeferredCodeAnchorUri(options.onFinalizedUri, entry.intent.memoryUri);
+                }
+                return item;
+              }),
+            {concurrency: DEFERRED_CODE_ANCHOR_FINALIZATION_CONCURRENCY},
+          );
+          observedItems.push(...items);
           if (matching.length > selected.length) {
             const unprocessed = matching.find(entry => !selected.includes(entry));
             if (unprocessed !== undefined) yield* retainDeferredCodeAnchorRouteMarkerLane(unprocessed);
@@ -629,32 +642,6 @@ export function deferredCodeAnchorIntentMatchesFinalizationRoute(
     intent.codeRefs.some(ref => DEFERRED_CODE_ANCHOR_QUALIFIED_REF.test(ref))
   );
 }
-
-export const deferredCodeAnchorDoctorCheck = Effect.fn('memoryCodeAnchor.doctorCheck')(function* (
-  config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>,
-) {
-  const entries = yield* listDeferredCodeAnchorIntents(config);
-  const invalid = entries.filter(entry => entry.kind === 'invalid').length;
-  if (invalid > 0) {
-    return {
-      detail: `${invalid} malformed or unreadable private intent(s); run \`threadnote finalize-code-refs\` for a bounded failure receipt`,
-      name: 'deferred code anchors',
-      status: 'fail',
-    } satisfies DoctorCheck;
-  }
-  if (entries.length > 0) {
-    return {
-      detail: `${entries.length} private code-anchor intent(s) are pending finalization`,
-      name: 'deferred code anchors',
-      status: 'warn',
-    } satisfies DoctorCheck;
-  }
-  return {
-    detail: 'no pending private code-anchor intents',
-    name: 'deferred code anchors',
-    status: 'ok',
-  } satisfies DoctorCheck;
-});
 
 const finalizeDeferredCodeAnchor = Effect.fn('memoryCodeAnchor.finalizeOne')(function* (
   config: RuntimeConfig,

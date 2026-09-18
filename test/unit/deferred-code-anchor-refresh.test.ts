@@ -104,10 +104,11 @@ describe('deferred code-anchor workspace refresh', () => {
           parseMemoryDocument(MISSING_URI, yield* store.read(location, MISSING_URI))?.metadata.codeCitations?.length ??
             0,
         ).toBe(0);
-        expect(yield* deferredCodeAnchorDoctorCheck(fixture.config)).toMatchObject({
-          detail: '1 private code-anchor intent(s) are pending finalization',
-          status: 'warn',
-        });
+        const doctor = yield* deferredCodeAnchorDoctorCheck(fixture.config);
+        expect(doctor.status).toBe('warn');
+        expect(doctor.detail).toMatch(
+          /^1 private code-anchor intent\(s\) are pending finalization across 1 worktree\(s\): [a-f0-9]{12} present matching$/,
+        );
       }),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );

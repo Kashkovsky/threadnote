@@ -14,9 +14,9 @@ import {resolveLocalMemoryReplacementTarget} from '../../memory/replacement_targ
 import {resolveAuthoredMemoryRelations} from '../../memory/relations.js';
 import {
   DEFAULT_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
-  finalizeDeferredCodeAnchors,
   type DeferredCodeAnchorWriteRequest,
 } from '../../memory/deferred_code_anchor.js';
+import {finalizeDeferredCodeAnchorsWithDerivedIndexes} from '../../memory/deferred_code_anchor_finalization.js';
 import {
   cursorCloudScopeRoots,
   cursorCloudScopeTeams,
@@ -337,13 +337,18 @@ export function registerFinalizeCodeRefsTool(server: EffectMcpServerAdapter, con
         if (!checkedUri.ok) return checkedUri.error;
         const receipt = yield* withCodeAnchorFinalizationAnonymousTelemetry(
           'explicit',
-          finalizeDeferredCodeAnchors(config, {
+          finalizeDeferredCodeAnchorsWithDerivedIndexes(config, {
             limit: DEFAULT_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
             ...(checkedUri.value === undefined ? {} : {uris: [checkedUri.value]}),
           }),
         );
         const summary = [
           `Deferred code anchors: ${receipt.finalizedCount} finalized, ${receipt.pendingCount} pending, ${receipt.conflictCount} conflict, ${receipt.failedCount} failed.`,
+          ...(receipt.derivedIndexes
+            ? [
+                `Derived indexes: ${receipt.derivedIndexes.state}${receipt.derivedIndexes.state === 'deferred' ? ' · repair needed' : ''}.`,
+              ]
+            : []),
           ...receipt.items.map(
             item =>
               `- ${item.memoryUri ?? 'invalid intent'}: ${item.state}` +
