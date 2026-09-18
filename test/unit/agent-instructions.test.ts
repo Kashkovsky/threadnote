@@ -84,6 +84,7 @@ describe('agent instructions', () => {
     const skillFiles = await agentSkills();
     const skills = skillFiles.join('\n').replace(/\s+/g, ' ');
     const [context, graph, memory] = skillFiles;
+    const normalizedContext = context.replace(/\s+/g, ' ');
     expect(context.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(400);
     expect(graph.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(300);
     expect(memory.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(500);
@@ -148,6 +149,7 @@ describe('agent instructions', () => {
       expect(skills).toContain(requiredText);
     }
     expect(context).not.toContain('unread pointers, not evidence');
+    expect(normalizedContext).toContain('mode (`brief`, `locate`, `trace`, `impact`, or `explain`)');
     for (const retiredDetail of [
       '`responseFormat`',
       '`offsetBytes`',

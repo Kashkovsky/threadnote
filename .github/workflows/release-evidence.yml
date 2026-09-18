@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v4.*'
+      - 'v5.*'
 
 permissions:
   contents: read
