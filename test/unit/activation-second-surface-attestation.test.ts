@@ -14,17 +14,32 @@ import {SystemInfo} from '../../src/effect/system.js';
 import {MCP_TOOLSET_ENV} from '../../src/mcp/toolset.js';
 import {canonicalMemoryDocumentContent, parseMemoryDocument} from '../../src/memory/document.js';
 import {loadRecallIndexData} from '../../src/recall/index.js';
+import {createActivationPlanV1} from '../../src/activation/planner.js';
 import {
   observeCurrentActivationSurfaceV1,
   type CurrentActivationSurfaceV1,
 } from '../../src/activation/production_evidence.js';
+import {
+  bindActivationApprovalV1,
+  createActivationReceiptV1,
+  recordActivationOutcomeV1,
+} from '../../src/activation/receipt.js';
+import {
+  completeSecondSurfaceProofV1,
+  type SecondSurfaceProofContextV1,
+  type SecondSurfaceReadObservationV1,
+  type SecondSurfaceRecallObservationV1,
+} from '../../src/activation/second_surface.js';
 import {produceSecondSurfaceProofV1} from '../../src/activation/second_surface_producer.js';
 import {
+  completeSecondSurfaceProofChallengeV1,
   issueSecondSurfaceProofChallengeV1,
   secondSurfaceChallengeIdV1,
   verifySecondSurfaceProofAttestationV1,
 } from '../../src/activation/second_surface_store.js';
-import type {SecondSurfaceProofContextV1} from '../../src/activation/second_surface.js';
+import {initializeActivationStateV1} from '../../src/activation/store.js';
+import {reconcileActivationValueEventsV1} from '../../src/activation/value.js';
+import {captureThreadnote5ActivationTrialV1} from '../../src/evaluation/threadnote-5-release-readiness-receipts.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
@@ -39,6 +54,79 @@ describe('transport-attested second-surface proof', () => {
       {numRuns: 32},
     );
   });
+
+  effectIt.effect('captures a completed activation through a real HMAC-backed challenge', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-activation-hmac-capture-'});
+        const config = {agentContextHome: home};
+        const plan = createActivationPlanV1({
+          catalogSnapshotHash: 'a'.repeat(64),
+          primarySurfaceId: 'gemini-cli',
+          publicationMode: 'direct',
+          repositoryIdentityHash: 'b'.repeat(64),
+          secondarySurfaceId: 'qwen-code',
+          selectedSourceSetHash: 'c'.repeat(64),
+          taskHash: 'd'.repeat(64),
+          teamId: 'default',
+          teamShareStateHash: 'e'.repeat(64),
+          threadnoteVersion: '5.0.0-test',
+        });
+        const activation = activationBeforeSecondSurface(plan);
+        const publicationReceiptHash = activation.receipt.operations.find(
+          operation => operation.kind === 'decision.publish',
+        )!.subsystemReceiptHash!;
+        const context = proofContext(surface(plan.primarySurfaceId), surface(plan.secondarySurfaceId), {
+          activationId: plan.activationId,
+          activationReceiptRevision: activation.receipt.revision,
+          publicationReceiptHash,
+          repositoryIdentityHash: plan.repositoryIdentityHash,
+          startedAt: activation.receipt.updatedAt,
+        });
+        const challenge = yield* issueSecondSurfaceProofChallengeV1(config, context);
+        const observations = proofObservations(context);
+        const proofResult = completeSecondSurfaceProofV1(context, observations.recall, observations.read);
+        if (proofResult.status !== 'verified') throw new Error(`Proof fixture failed: ${proofResult.code}`);
+        const attestation = yield* completeSecondSurfaceProofChallengeV1(config, {
+          challengeId: challenge.challengeId,
+          proof: proofResult.receipt,
+          runtimeFingerprint: context.secondary.mcpServerFingerprint!,
+          surfaceId: context.secondary.surfaceId,
+        });
+        const finalTransition = recordActivationOutcomeV1({
+          now: isoAfter(activation.receipt.updatedAt, 3_000),
+          operationId: plan.operations.at(-1)!.id,
+          outcome: {
+            ownership: 'preexisting',
+            status: 'verified',
+            subsystemReceiptHash: proofResult.receipt.proofHash,
+            undoEligible: false,
+          },
+          plan,
+          receipt: activation.receipt,
+        });
+        if (finalTransition.status !== 'updated') throw new Error('Final activation transition failed.');
+        const receiptChain = [...activation.receiptChain, finalTransition.receipt];
+        yield* initializeActivationStateV1(config, plan, finalTransition.receipt);
+        yield* reconcileActivationValueEventsV1(config, {plan, receipt: finalTransition.receipt});
+
+        const capture = yield* captureThreadnote5ActivationTrialV1(config, {
+          activationId: plan.activationId,
+          approvals: activation.approvals,
+          challengeId: challenge.challengeId,
+          receiptChain,
+        });
+        expect(capture.authorityTrial).toMatchObject({
+          activationId: plan.activationId,
+          attestationDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+          finalReceiptRevision: finalTransition.receipt.revision,
+        });
+        expect(capture.trial.events).toHaveLength(4);
+        expect(capture.trial.secondSurface?.challenge.receipt).toEqual(attestation);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   effectIt.effect('rejects wrong transports and accepts the real managed-surface producer exactly once', () =>
     Effect.scoped(
@@ -185,18 +273,23 @@ function proofContext(
   primary: CurrentActivationSurfaceV1,
   secondary: CurrentActivationSurfaceV1,
   overrides: Partial<SecondSurfaceProofContextV1['decision']> &
-    Partial<Pick<SecondSurfaceProofContextV1, 'repositoryIdentityHash' | 'startedAt'>> = {},
+    Partial<
+      Pick<
+        SecondSurfaceProofContextV1,
+        'activationId' | 'activationReceiptRevision' | 'repositoryIdentityHash' | 'startedAt'
+      >
+    > = {},
 ): SecondSurfaceProofContextV1 {
   return {
-    activationId: 'a'.repeat(64),
-    activationReceiptRevision: 'b'.repeat(64),
+    activationId: overrides.activationId ?? 'a'.repeat(64),
+    activationReceiptRevision: overrides.activationReceiptRevision ?? 'b'.repeat(64),
     catalogRevision: 'agent-catalog-v1-test',
     catalogSnapshotHash: 'c'.repeat(64),
     decision: {
       canonicalUri: 'threadnote://user/tester/memories/shared/default/durable/projects/threadnote/activation.md',
       contentHash: overrides.contentHash ?? 'd'.repeat(64),
       memoryId: 'tn_activation_attested',
-      publicationReceiptHash: 'e'.repeat(64),
+      publicationReceiptHash: overrides.publicationReceiptHash ?? 'e'.repeat(64),
     },
     primary: primary.snapshot,
     queryFingerprint: sha256HexSync(
@@ -209,6 +302,94 @@ function proofContext(
     teamId: 'default',
     teamShareStateHash: '2'.repeat(64),
   };
+}
+
+function activationBeforeSecondSurface(plan: ReturnType<typeof createActivationPlanV1>) {
+  let receipt = createActivationReceiptV1(plan, '2026-09-18T08:00:00.000Z');
+  const approvals: NonNullable<Parameters<typeof recordActivationOutcomeV1>[0]['approval']>[] = [];
+  const receiptChain = [receipt];
+  for (const [index, operation] of plan.operations.slice(0, -1).entries()) {
+    const approval =
+      operation.approvalKind === undefined
+        ? undefined
+        : bindActivationApprovalV1(plan, receipt, operation.id, 'f'.repeat(64));
+    if (approval !== undefined) approvals.push(approval);
+    const transition = recordActivationOutcomeV1({
+      approval,
+      now: isoAfter(receipt.updatedAt, 1_000),
+      operationId: operation.id,
+      outcome: {
+        ownership: operation.reversible ? 'activation-created' : 'preexisting',
+        status: operation.expectedOutcome,
+        subsystemReceiptHash: (index + 1).toString(16).padStart(64, '0'),
+        undoEligible: operation.reversible,
+      },
+      plan,
+      receipt,
+    });
+    if (transition.status !== 'updated') throw new Error('Activation fixture transition failed.');
+    receipt = transition.receipt;
+    receiptChain.push(receipt);
+  }
+  return {approvals, receipt, receiptChain};
+}
+
+function proofObservations(context: SecondSurfaceProofContextV1): {
+  readonly read: SecondSurfaceReadObservationV1;
+  readonly recall: SecondSurfaceRecallObservationV1;
+} {
+  const common = {
+    activationReceiptRevision: context.activationReceiptRevision,
+    capabilitiesFingerprint: context.secondary.capabilitiesFingerprint,
+    catalogRevision: context.catalogRevision,
+    catalogSnapshotHash: context.catalogSnapshotHash,
+    mcpConfigFingerprint: context.secondary.mcpConfigFingerprint!,
+    mcpReceiptFingerprint: context.secondary.mcpReceiptFingerprint!,
+    mcpServerFingerprint: context.secondary.mcpServerFingerprint!,
+    repositoryIdentityHash: context.repositoryIdentityHash,
+    surfaceId: context.secondary.surfaceId,
+    teamShareStateHash: context.teamShareStateHash,
+  };
+  const recall: SecondSurfaceRecallObservationV1 = {
+    ...common,
+    complete: true,
+    invocationId: '1'.repeat(64),
+    observedAt: isoAfter(context.startedAt, 1_000),
+    queryFingerprint: context.queryFingerprint,
+    responseFingerprint: '2'.repeat(64),
+    results: [
+      {
+        canonicalUri: context.decision.canonicalUri,
+        identityConflict: false,
+        memoryId: context.decision.memoryId,
+      },
+    ],
+    returnedResults: 1,
+    totalResults: 1,
+    truncated: false,
+  };
+  return {
+    read: {
+      ...common,
+      canonicalUri: context.decision.canonicalUri,
+      complete: true,
+      contentHash: context.decision.contentHash,
+      invocationId: '3'.repeat(64),
+      memoryId: context.decision.memoryId,
+      observedAt: isoAfter(context.startedAt, 2_000),
+      readable: true,
+      recallResponseFingerprint: recall.responseFingerprint,
+      requestedMemoryId: context.decision.memoryId,
+      requestedUri: context.decision.canonicalUri,
+      resourceCount: 1,
+      responseFingerprint: '4'.repeat(64),
+    },
+    recall,
+  };
+}
+
+function isoAfter(value: string, milliseconds: number): string {
+  return new Date(Date.parse(value) + milliseconds).toISOString();
 }
 
 function surface(id: string): CurrentActivationSurfaceV1 {

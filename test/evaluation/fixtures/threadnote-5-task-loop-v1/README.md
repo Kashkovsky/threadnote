@@ -75,6 +75,8 @@ source artifacts are bounded, tied to the exact candidate and scenario, and redu
 the verifier rejects copied transcript claims that it cannot independently rederive. Provider-call, proposal-approval,
 and procedure-execution assertions additionally require the separately trusted authority manifest.
 
-Activation/second-surface linkage and scheduled/team health aggregation remain explicit pending seams until their final
-production receipt APIs land. Their dependent scenarios and metrics therefore stay unknown and cannot admit a release.
-The adapter must never infer or synthesize a passed assertion.
+Activation trials now replay the production receipt chain and approval transitions, bind the final completed state to
+transport-attested second-surface retrieval, and correlate the exact receipt with raw local value events. Scheduled and
+team health aggregation remains an explicit pending seam until its final production receipt adapter lands. Its dependent
+scenario and metrics therefore stay unknown and cannot admit a release. The adapter must never infer or synthesize a
+passed assertion.

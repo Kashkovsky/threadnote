@@ -1,6 +1,8 @@
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
+  threadnote5ActivationAttestationDigest,
+  threadnote5ActivationOfflineObservationDigest,
   threadnote5ApplyAuditDigest,
   threadnote5ApprovedSourceUriHash,
   threadnote5LocalAuthorityManifestHash,
@@ -31,6 +33,28 @@ import {canonicalMemoryDocumentContent} from '../../src/memory/document.js';
 import {projectKnowledgeDeltaV1} from '../../src/memory/knowledge_delta.js';
 import {createProcedureVerificationReceipt, parseProcedureManifest} from '../../src/procedure/contract.js';
 import {aggregateValueReportV1} from '../../src/value_report/index.js';
+import {activationValueEventsV1} from '../../src/activation/value.js';
+import {
+  activationReceiptRevisionV1,
+  activationReceiptStatusV1,
+  type ActivationReceiptV1,
+} from '../../src/activation/contract.js';
+import {createActivationPlanV1} from '../../src/activation/planner.js';
+import {
+  bindActivationApprovalV1,
+  createActivationReceiptV1,
+  recordActivationOutcomeV1,
+} from '../../src/activation/receipt.js';
+import {
+  completeSecondSurfaceProofV1,
+  secondSurfaceProofHashV1,
+  secondSurfaceProofContextHashV1,
+  type SecondSurfaceProofContextV1,
+  type SecondSurfaceReadObservationV1,
+  type SecondSurfaceRecallObservationV1,
+} from '../../src/activation/second_surface.js';
+import {secondSurfaceChallengeIdV1} from '../../src/activation/second_surface_store.js';
+import {summarizeLocalValueEvents} from '../../src/value_report/events.js';
 import {renderManagedGuidanceBlock} from '../../src/guidance/index.js';
 import {parseContextBriefV1, renderContextBriefText} from '../../src/context_brief/projector.js';
 import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
@@ -188,24 +212,20 @@ describe('Threadnote 5 source-native receipt verification', () => {
     });
   });
 
-  it('derives ValueReport reuse/count lanes but keeps pending activation linkage unknown', () => {
+  it('derives ValueReport reuse/count lanes but keeps unlinked activation evidence unknown', () => {
     const record = valueReportRecord();
     const observation = observed(
       record,
-      ['two-surfaces-connected', 'second-surface-reused-decision', 'activation-receipt-reused-by-value-report'],
+      ['two-surfaces-connected', 'second-surface-reused-decision'],
       [
         {eligibleCount: 10, id: 'wrong-memory-rate', positiveCount: 0},
         {eligibleCount: 10, id: 'second-agent-reuse-rate', positiveCount: 10},
-      ],
-      [
-        {digest: 'a'.repeat(64), kind: 'activation'},
-        {digest: 'b'.repeat(64), kind: 'recall'},
       ],
     );
     expect(verify([observation], [record])).toMatchObject({reason: 'verifier-incomplete', state: 'unknown'});
     expect(verify([observation], [record]).scenarios).toEqual([
       {
-        missingKinds: ['activation', 'activation-value-linkage', 'recall'],
+        missingKinds: ['activation', 'activation-value-linkage', 'cross-record-correlation'],
         scenario: 'two-agent',
         state: 'unknown',
         verifiedKinds: ['value-report'],
@@ -227,6 +247,366 @@ describe('Threadnote 5 source-native receipt verification', () => {
       reason: 'records-invalid',
       state: 'unknown',
     });
+  });
+
+  it('correlates the activation proof, second-surface recall, and raw value events', () => {
+    const journey = activationJourneyFixture();
+    const activation = makeRecord('two-agent', 'activation', {trials: [journey.activationTrial]});
+    const recall = makeRecord('two-agent', 'recall', {trials: [{proof: journey.proof}]});
+    const value = makeRecord('two-agent', 'value-report', activationValueArtifact(journey.plan, journey.finalReceipt));
+    const assertions = [
+      'two-surfaces-connected',
+      'second-surface-reused-decision',
+      'activation-receipt-reused-by-value-report',
+    ];
+    const measurements = [
+      {eligibleCount: 1, id: 'wrong-memory-rate', positiveCount: 0},
+      {eligibleCount: 1, id: 'second-agent-reuse-rate', positiveCount: 1},
+    ] as const;
+    const receipts = [
+      {digest: recall.digest, kind: recall.kind},
+      {digest: value.digest, kind: value.kind},
+    ];
+    const observation = observed(activation, assertions, measurements, receipts);
+    const records = [activation, recall, value];
+    expect(verify([observation], records)).toMatchObject({receiptCount: 3, state: 'verified'});
+
+    const authority = authorityManifestFor(records);
+    const activationAuthority = authority.entries.find(entry => entry.type === 'activation-verification');
+    if (activationAuthority?.type !== 'activation-verification') throw new Error('Expected activation authority.');
+    const wrongAuthority: Threadnote5LocalAuthorityManifestV1 = {
+      ...authority,
+      entries: [
+        {
+          ...activationAuthority,
+          trials: activationAuthority.trials.map(trial => ({...trial, attestationDigest: '0'.repeat(64)})),
+        },
+      ],
+    };
+    expect(verify([observation], records, wrongAuthority)).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+
+    const {proofHash: _, ...proofBody} = journey.proof;
+    const unrelatedBody = {...proofBody, activationId: 'c'.repeat(64)};
+    const unrelatedProof = {...unrelatedBody, proofHash: secondSurfaceProofHashV1(unrelatedBody)};
+    const unrelatedRecall = makeRecord('two-agent', 'recall', {trials: [{proof: unrelatedProof}]});
+    const uncorrelatedObservation = observed(activation, assertions, measurements, [
+      {digest: unrelatedRecall.digest, kind: unrelatedRecall.kind},
+      {digest: value.digest, kind: value.kind},
+    ]);
+    expect(verify([uncorrelatedObservation], [activation, unrelatedRecall, value]).scenarios).toEqual([
+      {
+        missingKinds: ['cross-record-correlation'],
+        scenario: 'two-agent',
+        state: 'unknown',
+        verifiedKinds: ['activation', 'recall', 'value-report'],
+      },
+    ]);
+
+    const valueArtifact = value.artifact as {
+      readonly activationTrials: readonly Record<string, unknown>[];
+      readonly captures: readonly unknown[];
+    };
+    const activationTrial = valueArtifact.activationTrials[0];
+    const events = activationTrial.events as readonly Record<string, unknown>[];
+    const tamperedValue = resealRecord(value, {
+      activationTrials: [
+        {
+          ...activationTrial,
+          events: events.map((event, index) => (index === 0 ? {...event, durationMilliseconds: 1} : event)),
+        },
+      ],
+      captures: valueArtifact.captures,
+    });
+    const tamperedObservation = observed(activation, assertions, measurements, [
+      {digest: recall.digest, kind: recall.kind},
+      {digest: tamperedValue.digest, kind: tamperedValue.kind},
+    ]);
+    expect(verify([tamperedObservation], [activation, recall, tamperedValue])).toMatchObject({
+      reason: 'records-invalid',
+      state: 'unknown',
+    });
+
+    const forgedReceipt = {
+      ...journey.finalReceipt,
+      operations: journey.finalReceipt.operations.map((operation, index) =>
+        index === 0 ? {...operation, subsystemReceiptHash: '0'.repeat(64)} : operation,
+      ),
+    };
+    const forgedValue = makeRecord('two-agent', 'value-report', activationValueArtifact(journey.plan, forgedReceipt));
+    const forgedValueObservation = observed(activation, assertions, measurements, [
+      {digest: recall.digest, kind: recall.kind},
+      {digest: forgedValue.digest, kind: forgedValue.kind},
+    ]);
+    expect(verify([forgedValueObservation], [activation, recall, forgedValue])).toMatchObject({
+      reason: 'records-invalid',
+      state: 'unknown',
+    });
+
+    const unrelatedJourney = activationJourneyFixture('c'.repeat(64));
+    const unrelatedValue = makeRecord(
+      'two-agent',
+      'value-report',
+      activationValueArtifact(unrelatedJourney.plan, unrelatedJourney.finalReceipt),
+    );
+    const unrelatedValueObservation = observed(activation, assertions, measurements, [
+      {digest: recall.digest, kind: recall.kind},
+      {digest: unrelatedValue.digest, kind: unrelatedValue.kind},
+    ]);
+    expect(verify([unrelatedValueObservation], [activation, recall, unrelatedValue]).scenarios).toEqual([
+      {
+        missingKinds: ['cross-record-correlation'],
+        scenario: 'two-agent',
+        state: 'unknown',
+        verifiedKinds: ['activation', 'recall', 'value-report'],
+      },
+    ]);
+  });
+
+  it('correlates a Git publication receipt with the retrieved shared decision', () => {
+    const journey = activationJourneyFixture();
+    const sharing = makeRecord('git-shared', 'sharing', {
+      trials: [{decision: journey.decision, plan: journey.plan, receipt: journey.publicationReceipt}],
+    });
+    const recall = makeRecord('git-shared', 'recall', {trials: [{proof: journey.proof}]});
+    const observation = observed(
+      sharing,
+      ['git-shared-decision-retrieved'],
+      [],
+      [{digest: recall.digest, kind: recall.kind}],
+    );
+    expect(verify([observation], [sharing, recall])).toMatchObject({receiptCount: 2, state: 'verified'});
+
+    const {proofHash: _, ...proofBody} = journey.proof;
+    const unrelatedBody = {...proofBody, decisionContentHash: '0'.repeat(64)};
+    const unrelatedProof = {...unrelatedBody, proofHash: secondSurfaceProofHashV1(unrelatedBody)};
+    const unrelatedRecall = makeRecord('git-shared', 'recall', {trials: [{proof: unrelatedProof}]});
+    const uncorrelated = observed(
+      sharing,
+      ['git-shared-decision-retrieved'],
+      [],
+      [{digest: unrelatedRecall.digest, kind: unrelatedRecall.kind}],
+    );
+    expect(verify([uncorrelated], [sharing, unrelatedRecall]).scenarios).toEqual([
+      {
+        missingKinds: ['cross-record-correlation'],
+        scenario: 'git-shared',
+        state: 'unknown',
+        verifiedKinds: ['recall', 'sharing'],
+      },
+    ]);
+  });
+
+  it('requires independently bound zero-network evidence for offline activation', () => {
+    const artifact = activationSoloArtifact();
+    const trial = artifact.trials[0];
+    const first = trial.receiptChain[0];
+    const last = trial.receiptChain.at(-1);
+    if (last === undefined) throw new Error('Expected the activation fixture to contain a receipt.');
+    const offlineObservation = {
+      afterAttemptCount: 0,
+      afterRevision: last.revision,
+      beforeAttemptCount: 0,
+      beforeRevision: first.revision,
+    };
+    const record = makeRecord('offline', 'activation', {
+      trials: [{...trial, offlineObservation}],
+    });
+    const observation = observed(record, ['local-flow-complete', 'network-attempts-zero']);
+    expect(verify([observation], [record])).toMatchObject({state: 'verified'});
+
+    const tampered = resealRecord(record, {
+      trials: [{...trial, offlineObservation: {...offlineObservation, afterAttemptCount: 1}}],
+    });
+    expect(verify([observed(tampered, observationAssertions(observation))], [tampered])).toMatchObject({
+      reason: 'records-invalid',
+      state: 'unknown',
+    });
+
+    const pendingPlan = createActivationPlanV1({
+      catalogSnapshotHash: 'a'.repeat(64),
+      primarySurfaceId: 'codex-cli',
+      publicationMode: 'direct',
+      repositoryIdentityHash: '3'.repeat(64),
+      secondarySurfaceId: 'claude-code',
+      selectedSourceSetHash: 'c'.repeat(64),
+      taskHash: 'd'.repeat(64),
+      teamId: 'default',
+      teamShareStateHash: 'e'.repeat(64),
+      threadnoteVersion: '5.0.0-test',
+    });
+    const pendingReceipt = createActivationReceiptV1(pendingPlan, '2026-09-18T09:00:00.000Z');
+    const pending = makeRecord('offline', 'activation', {
+      trials: [
+        {
+          approvals: [],
+          offlineObservation: {
+            afterAttemptCount: 0,
+            afterRevision: pendingReceipt.revision,
+            beforeAttemptCount: 0,
+            beforeRevision: pendingReceipt.revision,
+          },
+          receiptChain: [pendingReceipt],
+          state: {plan: pendingPlan, receipt: pendingReceipt},
+        },
+      ],
+    });
+    expect(verify([observed(pending, ['local-flow-complete', 'network-attempts-zero'])], [pending])).toMatchObject({
+      reason: 'records-invalid',
+      state: 'unknown',
+    });
+  });
+
+  it('requires an intermediate retained receipt as the interrupted-resume boundary', () => {
+    const artifact = activationSoloArtifact();
+    const trial = artifact.trials[0];
+    const boundary = trial.receiptChain[Math.floor(trial.receiptChain.length / 2)];
+    const record = makeRecord('interrupted-resumed', 'activation', {
+      trials: [{...trial, resumeBoundaryRevision: boundary.revision}],
+    });
+    const observation = observed(record, ['completed-step-not-repeated', 'resume-receipt-accepted']);
+    expect(verify([observation], [record])).toMatchObject({state: 'verified'});
+
+    const initialBoundary = resealRecord(record, {
+      trials: [{...trial, resumeBoundaryRevision: trial.receiptChain[0].revision}],
+    });
+    expect(verify([observed(initialBoundary, observationAssertions(observation))], [initialBoundary])).toMatchObject({
+      reason: 'records-invalid',
+      state: 'unknown',
+    });
+  });
+
+  it('requires the complete activation receipt chain rather than trusting a terminal receipt', () => {
+    const artifact = activationSoloArtifact();
+    const record = makeRecord('solo', 'activation', artifact);
+    const observation = observed(
+      record,
+      ['local-setup-complete'],
+      [{eligibleCount: 1, id: 'setup-success-rate', positiveCount: 1}],
+    );
+    expect(verify([observation], [record])).toMatchObject({state: 'verified'});
+
+    const chain = artifact.trials[0].receiptChain;
+    fc.assert(
+      fc.property(fc.integer({min: 1, max: chain.length - 2}), omitted => {
+        const tampered = resealRecord(record, {
+          trials: [
+            {
+              ...artifact.trials[0],
+              receiptChain: chain.filter((_receipt, index) => index !== omitted),
+            },
+          ],
+        });
+        expect(
+          verify(
+            [
+              observed(
+                tampered,
+                ['local-setup-complete'],
+                [{eligibleCount: 1, id: 'setup-success-rate', positiveCount: 1}],
+              ),
+            ],
+            [tampered],
+          ),
+        ).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+      }),
+      {numRuns: 20},
+    );
+
+    const trial = artifact.trials[0];
+    const approval = trial.approvals[0];
+    const invalidApproval = resealRecord(record, {
+      trials: [{...trial, approvals: [{...approval, reviewRevisionHash: '0'.repeat(64)}, ...trial.approvals.slice(1)]}],
+    });
+    expect(
+      verify(
+        [
+          observed(
+            invalidApproval,
+            ['local-setup-complete'],
+            [{eligibleCount: 1, id: 'setup-success-rate', positiveCount: 1}],
+          ),
+        ],
+        [invalidApproval],
+      ),
+    ).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+
+    const initial = trial.receiptChain[0];
+    const {revision: _, ...initialBody} = initial;
+    const impossibleInitialBody = {
+      ...initialBody,
+      updatedAt: new Date(Date.parse(initial.updatedAt) + 1_000).toISOString(),
+    };
+    const impossibleInitial = {
+      ...impossibleInitialBody,
+      revision: activationReceiptRevisionV1(impossibleInitialBody),
+    };
+    const forgedInitial = resealRecord(record, {
+      trials: [
+        {
+          approvals: [],
+          receiptChain: [impossibleInitial],
+          state: {plan: trial.state.plan, receipt: impossibleInitial},
+        },
+      ],
+    });
+    expect(
+      verify(
+        [
+          observed(
+            forgedInitial,
+            ['local-setup-complete'],
+            [{eligibleCount: 1, id: 'setup-success-rate', positiveCount: 1}],
+          ),
+        ],
+        [forgedInitial],
+      ),
+    ).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+
+    fc.assert(
+      fc.property(fc.integer({min: 1, max: chain.length - 2}), operationIndex => {
+        const initial = chain[0];
+        const source = chain[operationIndex + 1];
+        const operations = initial.operations.map((operation, index) =>
+          index === operationIndex ? source.operations[index] : operation,
+        );
+        const body: Omit<ActivationReceiptV1, 'revision'> = {
+          activationId: initial.activationId,
+          generation: 1,
+          operations,
+          planHash: initial.planHash,
+          previousRevision: initial.revision,
+          startedAt: initial.startedAt,
+          status: activationReceiptStatusV1(operations),
+          type: initial.type,
+          updatedAt: source.updatedAt,
+          version: initial.version,
+          ...(source.firstBrief === undefined ? {} : {firstBrief: source.firstBrief}),
+        };
+        const forged = {...body, revision: activationReceiptRevisionV1(body)};
+        const tampered = resealRecord(record, {
+          trials: [
+            {
+              approvals: [],
+              receiptChain: [initial, forged],
+              state: {plan: artifact.trials[0].state.plan, receipt: forged},
+            },
+          ],
+        });
+        expect(
+          verify(
+            [
+              observed(
+                tampered,
+                ['local-setup-complete'],
+                [{eligibleCount: 1, id: 'setup-success-rate', positiveCount: 1}],
+              ),
+            ],
+            [tampered],
+          ),
+        ).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+      }),
+      {numRuns: 20},
+    );
   });
 
   it('rebuilds context-health findings from source inputs and detects report tampering', () => {
@@ -669,6 +1049,33 @@ function authorityManifestFor(
   const uniqueRecords = [...new Map(records.map(record => [record.digest, record] as const)).values()];
   const entries: Threadnote5LocalAuthorityEntryV1[] = [];
   for (const record of uniqueRecords) {
+    if (record.kind === 'activation' && record.scenario !== 'solo') {
+      const trials = (record.artifact as {readonly trials: readonly Record<string, unknown>[]}).trials;
+      entries.push({
+        recordDigest: record.digest,
+        trials: trials.map(trial => {
+          const state = trial.state as {
+            readonly plan: {readonly activationId: string};
+            readonly receipt: {readonly revision: string};
+          };
+          const challenge = (trial.secondSurface as {readonly challenge?: unknown} | undefined)?.challenge;
+          const offlineObservation = trial.offlineObservation;
+          return {
+            activationId: state.plan.activationId,
+            attestationDigest: challenge === undefined ? null : threadnote5ActivationAttestationDigest(challenge),
+            finalReceiptRevision: state.receipt.revision,
+            offlineObservationDigest:
+              offlineObservation === undefined
+                ? null
+                : threadnote5ActivationOfflineObservationDigest(offlineObservation),
+            resumeBoundaryRevision:
+              typeof trial.resumeBoundaryRevision === 'string' ? trial.resumeBoundaryRevision : null,
+          };
+        }),
+        type: 'activation-verification',
+      });
+      continue;
+    }
     if (record.kind === 'procedure') {
       const attempts = (record.artifact as {readonly attempts?: readonly Record<string, unknown>[]}).attempts;
       const attempt = attempts?.[0];
@@ -803,6 +1210,237 @@ function closeoutRecord(): Threadnote5LocalSubsystemReceiptRecordV1 {
   return makeRecord('structured-closeout', 'closeout', {
     reviews: Array.from({length: 10}, (_value, index) => review(index + 1)),
   });
+}
+
+function activationSoloArtifact() {
+  const {approvals, plan, receipt, receiptChain} = activationChainBeforeSecondSurface();
+  const operation = plan.operations.at(-1)!;
+  const result = recordSuccessfulActivationOperation(plan, receipt, operation, 'a'.repeat(64), approvals);
+  return {trials: [{approvals, receiptChain: [...receiptChain, result], state: {plan, receipt: result}}]};
+}
+
+function activationJourneyFixture(repositoryIdentityHash = 'b'.repeat(64)) {
+  const {
+    approvals,
+    plan,
+    receipt: publicationReceipt,
+    receiptChain,
+  } = activationChainBeforeSecondSurface(repositoryIdentityHash);
+  const publicationReceiptHash = publicationReceipt.operations.find(
+    operation => operation.kind === 'decision.publish',
+  )!.subsystemReceiptHash!;
+  const decision = {
+    canonicalUri: 'threadnote://user/test/memories/shared/default/durable/projects/threadnote/activation.md',
+    contentHash: 'd'.repeat(64),
+    memoryId: 'tn_activation_decision',
+    publicationReceiptHash,
+  };
+  const context: SecondSurfaceProofContextV1 = {
+    activationId: plan.activationId,
+    activationReceiptRevision: publicationReceipt.revision,
+    catalogRevision: 'catalog-v1',
+    catalogSnapshotHash: plan.catalogSnapshotHash,
+    decision,
+    primary: {
+      access: 'local-stdio',
+      capabilitiesFingerprint: '1'.repeat(64),
+      configurationState: 'current',
+      mcpCapability: 'managed',
+      mcpConfigFingerprint: '2'.repeat(64),
+      mcpReceiptFingerprint: '3'.repeat(64),
+      mcpServerFingerprint: '9'.repeat(64),
+      surfaceId: plan.primarySurfaceId,
+    },
+    queryFingerprint: '5'.repeat(64),
+    repositoryIdentityHash: plan.repositoryIdentityHash,
+    repositoryState: 'clean',
+    secondary: {
+      access: 'local-stdio',
+      capabilitiesFingerprint: '6'.repeat(64),
+      configurationState: 'current',
+      mcpCapability: 'managed',
+      mcpConfigFingerprint: '7'.repeat(64),
+      mcpReceiptFingerprint: '8'.repeat(64),
+      mcpServerFingerprint: '9'.repeat(64),
+      surfaceId: plan.secondarySurfaceId,
+    },
+    startedAt: publicationReceipt.updatedAt,
+    teamId: plan.teamId,
+    teamShareStateHash: plan.teamShareStateHash,
+  };
+  const commonObservation = {
+    activationReceiptRevision: context.activationReceiptRevision,
+    capabilitiesFingerprint: context.secondary.capabilitiesFingerprint,
+    catalogRevision: context.catalogRevision,
+    catalogSnapshotHash: context.catalogSnapshotHash,
+    mcpConfigFingerprint: context.secondary.mcpConfigFingerprint!,
+    mcpReceiptFingerprint: context.secondary.mcpReceiptFingerprint!,
+    mcpServerFingerprint: context.secondary.mcpServerFingerprint!,
+    repositoryIdentityHash: context.repositoryIdentityHash,
+    surfaceId: context.secondary.surfaceId,
+    teamShareStateHash: context.teamShareStateHash,
+  };
+  const recall: SecondSurfaceRecallObservationV1 = {
+    ...commonObservation,
+    complete: true,
+    invocationId: 'a'.repeat(64),
+    observedAt: new Date(Date.parse(context.startedAt) + 1_000).toISOString(),
+    queryFingerprint: context.queryFingerprint,
+    responseFingerprint: 'b'.repeat(64),
+    results: [{canonicalUri: decision.canonicalUri, identityConflict: false, memoryId: decision.memoryId}],
+    returnedResults: 1,
+    totalResults: 1,
+    truncated: false,
+  };
+  const read: SecondSurfaceReadObservationV1 = {
+    ...commonObservation,
+    canonicalUri: decision.canonicalUri,
+    complete: true,
+    contentHash: decision.contentHash,
+    invocationId: 'c'.repeat(64),
+    memoryId: decision.memoryId,
+    observedAt: new Date(Date.parse(context.startedAt) + 2_000).toISOString(),
+    readable: true,
+    recallResponseFingerprint: recall.responseFingerprint,
+    requestedMemoryId: decision.memoryId,
+    requestedUri: decision.canonicalUri,
+    resourceCount: 1,
+    responseFingerprint: 'd'.repeat(64),
+  };
+  const proofResult = completeSecondSurfaceProofV1(context, recall, read);
+  if (proofResult.status !== 'verified') {
+    throw new Error(`Second-surface fixture proof was rejected: ${proofResult.code}.`);
+  }
+  const proof = proofResult.receipt;
+  const finalReceipt = recordSuccessfulActivationOperation(
+    plan,
+    publicationReceipt,
+    plan.operations.at(-1)!,
+    proof.proofHash,
+    approvals,
+  );
+  const challengeId = secondSurfaceChallengeIdV1(context);
+  const contextHash = secondSurfaceProofContextHashV1(context);
+  const nonceHash = 'e'.repeat(64);
+  const challenge = {
+    challengeId,
+    context,
+    contextHash,
+    issuedAt: context.startedAt,
+    nonceHash,
+    receipt: {
+      attestationHash: 'f'.repeat(64),
+      challengeId,
+      contextHash,
+      nonceHash,
+      proof,
+      runtimeFingerprint: context.secondary.mcpServerFingerprint!,
+      surfaceId: context.secondary.surfaceId,
+      transport: 'stdio' as const,
+      type: 'threadnote-second-surface-transport-attestation' as const,
+      version: 1 as const,
+    },
+    type: 'threadnote-second-surface-challenge' as const,
+    version: 1 as const,
+  };
+  return {
+    activationTrial: {
+      approvals,
+      events: activationValueEventsV1(finalReceipt),
+      receiptChain: [...receiptChain, finalReceipt],
+      secondSurface: {challenge},
+      state: {plan, receipt: finalReceipt},
+    },
+    challenge,
+    decision,
+    finalReceipt,
+    plan,
+    proof,
+    publicationReceipt,
+  };
+}
+
+function activationValueArtifact(plan: ReturnType<typeof createActivationPlanV1>, receipt: ActivationReceiptV1) {
+  const events = activationValueEventsV1(receipt);
+  const from = new Date(Date.parse(receipt.startedAt) - 1_000).toISOString();
+  const to = new Date(Date.parse(receipt.updatedAt) + 1_000).toISOString();
+  const input = {
+    counts: summarizeLocalValueEvents(events, {from: new Date(from), to: new Date(to)}),
+    feedbackEvents: [
+      {
+        action: 'useful' as const,
+        queryFingerprint: sha256HexSync(`activation-value-${receipt.activationId}`),
+        rankerVersion: 'hybrid-v1',
+        timestamp: from,
+        uri: 'threadnote://user/test/memories/shared/default/durable/projects/threadnote/activation.md',
+        version: 1 as const,
+      },
+    ],
+    period: {from, to},
+  };
+  const report = aggregateValueReportV1(input);
+  return {
+    activationTrials: [{events, input, report, state: {plan, receipt}}],
+    captures: [{input, report}],
+  };
+}
+
+function activationChainBeforeSecondSurface(repositoryIdentityHash = 'b'.repeat(64)) {
+  const plan = createActivationPlanV1({
+    catalogSnapshotHash: 'a'.repeat(64),
+    primarySurfaceId: 'codex-cli',
+    publicationMode: 'direct',
+    repositoryIdentityHash,
+    secondarySurfaceId: 'claude-code',
+    selectedSourceSetHash: 'c'.repeat(64),
+    taskHash: 'd'.repeat(64),
+    teamId: 'default',
+    teamShareStateHash: 'e'.repeat(64),
+    threadnoteVersion: '5.0.0-test',
+  });
+  let receipt = createActivationReceiptV1(plan, '2026-09-18T08:00:00.000Z');
+  const approvals: NonNullable<Parameters<typeof recordActivationOutcomeV1>[0]['approval']>[] = [];
+  const receiptChain: ActivationReceiptV1[] = [receipt];
+  for (const [index, operation] of plan.operations.slice(0, -1).entries()) {
+    receipt = recordSuccessfulActivationOperation(
+      plan,
+      receipt,
+      operation,
+      (index + 1).toString(16).padStart(64, '0'),
+      approvals,
+    );
+    receiptChain.push(receipt);
+  }
+  return {approvals, plan, receipt, receiptChain};
+}
+
+function recordSuccessfulActivationOperation(
+  plan: ReturnType<typeof createActivationPlanV1>,
+  receipt: ActivationReceiptV1,
+  operation: ReturnType<typeof createActivationPlanV1>['operations'][number],
+  subsystemReceiptHash: string,
+  approvals?: NonNullable<Parameters<typeof recordActivationOutcomeV1>[0]['approval']>[],
+): ActivationReceiptV1 {
+  const approval =
+    operation.approvalKind === undefined
+      ? undefined
+      : bindActivationApprovalV1(plan, receipt, operation.id, 'f'.repeat(64));
+  if (approval !== undefined) approvals?.push(approval);
+  const result = recordActivationOutcomeV1({
+    approval,
+    now: new Date(Date.parse(receipt.updatedAt) + 1_000).toISOString(),
+    operationId: operation.id,
+    outcome: {
+      ownership: operation.reversible ? 'activation-created' : 'preexisting',
+      status: operation.expectedOutcome,
+      subsystemReceiptHash,
+      undoEligible: operation.reversible,
+    },
+    plan,
+    receipt,
+  });
+  if (result.status !== 'updated') throw new Error('Activation fixture transition was rejected.');
+  return result.receipt;
 }
 
 function review(

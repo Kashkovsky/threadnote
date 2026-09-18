@@ -10,11 +10,65 @@ import {
 } from '../../src/activation/receipt.js';
 import type {ActivationReceiptV1} from '../../src/activation/contract.js';
 import {reconcileActivationValueEventsV1} from '../../src/activation/value.js';
+import {initializeActivationStateV1} from '../../src/activation/store.js';
+import {captureThreadnote5ActivationTrialV1} from '../../src/evaluation/threadnote-5-release-readiness-receipts.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {readLocalValueEvents, summarizeLocalValueEvents} from '../../src/value_report/events.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 describe('activation value events', () => {
+  effectIt.effect('captures a completed production chain and zero-attempt offline observer for readiness replay', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-activation-capture-'});
+        const plan = createActivationPlanV1({
+          catalogSnapshotHash: 'a'.repeat(64),
+          primarySurfaceId: 'codex-cli',
+          publicationMode: 'direct',
+          repositoryIdentityHash: 'b'.repeat(64),
+          secondarySurfaceId: 'claude-code',
+          selectedSourceSetHash: 'c'.repeat(64),
+          taskHash: 'd'.repeat(64),
+          teamId: 'default',
+          teamShareStateHash: 'e'.repeat(64),
+          threadnoteVersion: '5.0.0-test',
+        });
+        const {approvals, receipt, receiptChain} = completedActivation(plan);
+        yield* initializeActivationStateV1({agentContextHome: home}, plan, receipt);
+        yield* reconcileActivationValueEventsV1({agentContextHome: home}, {plan, receipt});
+        const capture = yield* captureThreadnote5ActivationTrialV1(
+          {agentContextHome: home},
+          {
+            activationId: plan.activationId,
+            approvals,
+            offlineObserver: {attemptedNetworkActivityCount: () => 0},
+            receiptChain,
+          },
+        );
+        expect(capture).toMatchObject({
+          authorityTrial: {
+            activationId: plan.activationId,
+            attestationDigest: null,
+            finalReceiptRevision: receipt.revision,
+            offlineObservationDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+            resumeBoundaryRevision: null,
+          },
+          trial: {
+            offlineObservation: {
+              afterAttemptCount: 0,
+              afterRevision: receipt.revision,
+              beforeAttemptCount: 0,
+              beforeRevision: receiptChain[0].revision,
+            },
+            state: {plan, receipt},
+          },
+        });
+        expect(capture.trial.events).toHaveLength(4);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('derives four content-free events once across replay and concurrent resume', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -32,7 +86,7 @@ describe('activation value events', () => {
           teamShareStateHash: 'e'.repeat(64),
           threadnoteVersion: '5.0.0-test',
         });
-        const receipt = completedReceipt(plan);
+        const receipt = completedActivation(plan).receipt;
         const state = {plan, receipt};
         yield* TestClock.withLive(
           Effect.all(
@@ -71,13 +125,20 @@ describe('activation value events', () => {
   );
 });
 
-function completedReceipt(plan: ReturnType<typeof createActivationPlanV1>): ActivationReceiptV1 {
+function completedActivation(plan: ReturnType<typeof createActivationPlanV1>): {
+  readonly approvals: readonly NonNullable<Parameters<typeof recordActivationOutcomeV1>[0]['approval']>[];
+  readonly receipt: ActivationReceiptV1;
+  readonly receiptChain: readonly ActivationReceiptV1[];
+} {
   let receipt = createActivationReceiptV1(plan, '2026-09-18T08:00:00.000Z');
+  const approvals: NonNullable<Parameters<typeof recordActivationOutcomeV1>[0]['approval']>[] = [];
+  const receiptChain = [receipt];
   for (const [index, operation] of plan.operations.entries()) {
     const approval =
       operation.approvalKind === undefined
         ? undefined
         : bindActivationApprovalV1(plan, receipt, operation.id, 'f'.repeat(64));
+    if (approval !== undefined) approvals.push(approval);
     const transition = recordActivationOutcomeV1({
       approval,
       now: new Date(Date.parse(receipt.updatedAt) + 1_000).toISOString(),
@@ -93,6 +154,7 @@ function completedReceipt(plan: ReturnType<typeof createActivationPlanV1>): Acti
     });
     if (transition.status === 'conflict') throw new Error(`Could not build activation receipt: ${transition.code}`);
     receipt = transition.receipt;
+    receiptChain.push(receipt);
   }
-  return receipt;
+  return {approvals, receipt, receiptChain};
 }

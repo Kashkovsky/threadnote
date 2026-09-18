@@ -221,6 +221,15 @@ function parseChallenge(value: unknown, expectedId: string): SecondSurfaceProofC
   return challenge;
 }
 
+export function parseSecondSurfaceProofChallengeV1(value: unknown): SecondSurfaceProofChallengeV1 {
+  const raw = Schema.decodeUnknownSync(ChallengeSchema, STRICT)(value);
+  return parseChallenge(value, raw.challengeId);
+}
+
+export function parseSecondSurfaceProofAttestationV1(value: unknown): SecondSurfaceProofAttestationV1 {
+  return parseAttestation(value);
+}
+
 function parseAttestation(value: unknown): SecondSurfaceProofAttestationV1 {
   const raw = Schema.decodeUnknownSync(AttestationSchema, STRICT)(value);
   return {...raw, proof: parseSecondSurfaceProofReceiptV1(raw.proof)};

@@ -119,8 +119,70 @@ export function recordActivationOutcomeV1(input: RecordActivationOutcomeInputV1)
   if (approvalHash === 'required' || approvalHash === 'mismatch') {
     return {code: approvalHash === 'required' ? 'approval-required' : 'approval-mismatch', status: 'conflict'};
   }
+  return recordActivationOutcomeWithApprovalHashV1({
+    approvalHash,
+    now: input.now,
+    operationId: input.operationId,
+    outcome: input.outcome,
+    plan,
+    receipt,
+  });
+}
+
+/** Replays one persisted transition with the same production state machine that created it. */
+export function activationReceiptTransitionMatchesV1(
+  suppliedPlan: ActivationPlanV1,
+  suppliedPrevious: ActivationReceiptV1,
+  suppliedNext: ActivationReceiptV1,
+  suppliedApproval?: ActivationApprovalV1,
+): boolean {
+  try {
+    const plan = parseActivationPlanV1(suppliedPlan);
+    const previous = parseActivationReceiptV1(suppliedPrevious);
+    const next = parseActivationReceiptV1(suppliedNext);
+    const resume = previewActivationResumeV1(plan, previous);
+    if (resume.status === 'completed' || resume.status === 'drifted') return false;
+    const operationId = resume.operationId;
+    const plannedOperation = plan.operations.find(operation => operation.id === operationId);
+    const nextOperation = next.operations.find(operation => operation.id === operationId);
+    if (plannedOperation === undefined || nextOperation === undefined) return false;
+    const outcome = activationOutcomeFromReceiptOperation(nextOperation);
+    if (outcome === undefined) return false;
+    const replay = recordActivationOutcomeV1({
+      approval: suppliedApproval,
+      now: next.updatedAt,
+      operationId,
+      outcome,
+      plan,
+      receipt: previous,
+    });
+    return replay.status === 'updated' && canonicalJson(replay.receipt) === canonicalJson(next);
+  } catch {
+    return false;
+  }
+}
+
+function recordActivationOutcomeWithApprovalHashV1(input: {
+  readonly approvalHash: string | undefined;
+  readonly now: string;
+  readonly operationId: string;
+  readonly outcome: ActivationOperationOutcomeV1;
+  readonly plan: ActivationPlanV1;
+  readonly receipt: ActivationReceiptV1;
+}): ActivationTransitionResultV1 {
+  const {approvalHash, plan, receipt} = input;
+  const plannedOperation = plan.operations.find(operation => operation.id === input.operationId);
+  const receiptOperation = receipt.operations.find(operation => operation.id === input.operationId);
+  if (
+    plannedOperation === undefined ||
+    receiptOperation === undefined ||
+    operationIsComplete(receiptOperation.status)
+  ) {
+    return {code: 'operation-not-ready', status: 'conflict'};
+  }
   const outcomeHash = activationOutcomeHashV1(plannedOperation.inputHash, input.outcome, approvalHash);
-  if (resume.status === 'completed' || resume.operationId !== input.operationId) {
+  const resume = previewActivationResumeV1(plan, receipt);
+  if (resume.status === 'completed' || resume.status === 'drifted' || resume.operationId !== input.operationId) {
     return {code: 'operation-not-ready', status: 'conflict'};
   }
   if (!outcomeMatchesPlan(plannedOperation.expectedOutcome, input.outcome)) {
@@ -264,6 +326,28 @@ function receiptOperationWithOutcome(
         subsystemReceiptHash: outcome.subsystemReceiptHash,
         undoEligible: outcome.undoEligible,
       };
+}
+
+function activationOutcomeFromReceiptOperation(
+  operation: ActivationReceiptOperationV1,
+): ActivationOperationOutcomeV1 | undefined {
+  if (operation.status === 'failed') {
+    return operation.failureCode === undefined ? undefined : {failureCode: operation.failureCode, status: 'failed'};
+  }
+  if (
+    operation.status === 'pending' ||
+    operation.ownership === undefined ||
+    operation.subsystemReceiptHash === undefined ||
+    operation.undoEligible === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    ownership: operation.ownership,
+    status: operation.status,
+    subsystemReceiptHash: operation.subsystemReceiptHash,
+    undoEligible: operation.undoEligible,
+  };
 }
 
 function firstBriefTiming(
