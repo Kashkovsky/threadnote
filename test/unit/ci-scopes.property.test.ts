@@ -1,7 +1,13 @@
 import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'fast-check';
-import {ciScopeKeys, classifyCiScopes, type CiScopeKey} from '../ci/ci-scopes.js';
+import {
+  ciScopeKeys,
+  classifyCiScopes,
+  selectCiTestPlan,
+  selectCiTestPlanForClassification,
+  type CiScopeKey,
+} from '../ci/ci-scopes.js';
 
 const pathSegment = FC.stringMatching(/^[a-z][a-z0-9_-]{0,20}$/u);
 const websitePath = FC.array(pathSegment, {maxLength: 5, minLength: 1}).map(parts => `website/${parts.join('/')}.tsx`);
@@ -27,12 +33,241 @@ const knownPath = FC.oneof(
   FC.constantFrom('README.md', 'package.json', '.github/workflows/pages.yml', '.github/workflows/ci.yml'),
 );
 
+const fixedLongGroupNames = [
+  'lifecycle-alpha',
+  'lifecycle-beta',
+  'lifecycle-gamma',
+  'lifecycle-delta',
+  'project-closure',
+  'incremental-property',
+  'load-evidence',
+  'os-contention',
+  'heavy-integration',
+  'heavy-state',
+] as const;
+type FixedLongGroupName = (typeof fixedLongGroupNames)[number];
+
+const fixedRequiredLongGroupNames = fixedLongGroupNames.filter(group => group !== 'load-evidence');
+
+const fixedLongGroupModel: Readonly<Record<FixedLongGroupName, readonly string[]>> = {
+  'lifecycle-alpha': ['test/integration/code-graph.lifecycle.test.ts'],
+  'lifecycle-beta': ['test/integration/code-graph.lifecycle.test.ts'],
+  'lifecycle-gamma': ['test/integration/code-graph.lifecycle.test.ts'],
+  'lifecycle-delta': ['test/integration/code-graph.lifecycle.test.ts'],
+  'project-closure': ['test/integration/code-graph.project-closure.test.ts'],
+  'incremental-property': [
+    'test/integration/code-graph.barrel-incremental.property.test.ts',
+    'test/integration/code-graph.incremental.property.test.ts',
+    'test/unit/code-graph.analysis-summary.property.test.ts',
+    'test/unit/code-graph.resolution-summary.property.test.ts',
+    'test/unit/code-graph.store-query.property.test.ts',
+  ],
+  'load-evidence': [
+    'test/integration/code-graph.removed-view-cleanup-load.test.ts',
+    'test/integration/code-graph.vector-retirement-load.test.ts',
+    'test/integration/code-graph.cache-capacity-load.test.ts',
+  ],
+  'os-contention': [
+    'test/integration/code-graph.repair-signal.test.ts',
+    'test/integration/code-graph.read-bootstrap.test.ts',
+    'test/integration/code-graph.view-attach-lock.test.ts',
+    'test/integration/code-graph.vector-retirement-os.test.ts',
+    'test/integration/code-graph.removed-view-cleanup-os.test.ts',
+    'test/integration/code-graph.cache-capacity-os.test.ts',
+    'test/integration/code-graph.disk-reservation.test.ts',
+    'test/unit/code-graph.maintenance-residual-live.test.ts',
+  ],
+  'heavy-integration': [
+    'test/integration/cli.effect.test.ts',
+    'test/integration/mcp.native-tools.test.ts',
+    'test/integration/code-graph.performance-evidence.test.ts',
+    'test/integration/code-graph.snapshot-repair.property.test.ts',
+    'test/integration/code-graph.cross-session-incremental.test.ts',
+    'test/integration/code-graph.session.test.ts',
+    'test/integration/code-graph.benchmark-preflight.test.ts',
+    'test/unit/code-graph.tree-sitter-identity.property.test.ts',
+    'test/unit/code-graph.languages.property.test.ts',
+    'test/unit/code-graph.languages.test.ts',
+  ],
+  'heavy-state': [
+    'test/unit/code-graph.workset-catalog-projection.test.ts',
+    'test/unit/code-graph.removed-view-cleanup.property.test.ts',
+    'test/unit/code-graph.view-removal.property.test.ts',
+    'test/unit/code-graph.worktree-reconciliation.test.ts',
+    'test/unit/code-graph.vector-retirement-schema.test.ts',
+    'test/unit/code-graph.vector-retirement-ordinary.test.ts',
+    'test/unit/code-graph.vector-maintenance.test.ts',
+    'test/unit/code-graph.materialization-store.test.ts',
+    'test/unit/evaluation.recall-v2.test.ts',
+    'test/unit/code-graph.project-closure-store.test.ts',
+    'test/unit/code-graph.snapshot-retention.test.ts',
+    'test/integration/share.sync.test.ts',
+    'test/unit/code-graph.cache-coalescer.test.ts',
+  ],
+};
+
+const ordinaryCiTestCorpus = [
+  ...new Set([
+    'test/unit/utils.test.ts',
+    'test/integration/remote-memory-postgres.test.ts',
+    ...Object.values(fixedLongGroupModel).flat(),
+  ]),
+].sort((left, right) => left.localeCompare(right));
+const dedicatedOnlyTestCorpus = ['test/unit/agent-instructions.test.ts', 'test/unit/website-content.test.ts'];
+const nonOrdinaryCodeCorpus = [
+  'test/unit/helper.ts',
+  'config/agent-instructions.md',
+  'src/runtime.ts',
+  'unclassified/payload.bin',
+  '',
+];
+const ciPlanCorpus = [...ordinaryCiTestCorpus, ...dedicatedOnlyTestCorpus, ...nonOrdinaryCodeCorpus];
+const ordinaryCiTests = FC.array(FC.constantFrom(...ordinaryCiTestCorpus), {maxLength: 30, minLength: 1});
+
+function expectedContainingGroups(paths: readonly string[]): readonly FixedLongGroupName[] {
+  const changed = new Set(paths);
+  return fixedLongGroupNames.filter(group => fixedLongGroupModel[group].some(path => changed.has(path)));
+}
+
 function enabledScopes(paths: readonly string[]): readonly CiScopeKey[] {
   const classification = classifyCiScopes(paths);
   return ciScopeKeys.filter(key => classification.scopes[key]);
 }
 
 describe('CI changed-path scope properties', () => {
+  it('selects only changed ordinary tests and their long groups', () => {
+    const plan = selectCiTestPlan([
+      'test/unit/utils.test.ts',
+      'test/integration/code-graph.cache-capacity-load.test.ts',
+      'test/integration/remote-memory-postgres.test.ts',
+      'test/unit/utils.test.ts',
+    ]);
+
+    expect(plan.standard).toEqual({
+      mode: 'selected',
+      paths: ['test/integration/remote-memory-postgres.test.ts', 'test/unit/utils.test.ts'],
+    });
+    expect(plan.long).toEqual({mode: 'selected', groups: ['load-evidence']});
+    expect(plan.postgres).toEqual({mode: 'selected', paths: ['test/integration/remote-memory-postgres.test.ts']});
+  });
+
+  it('keeps lifecycle and scheduled load groups explicit in the test model', () => {
+    expect(expectedContainingGroups(['test/integration/code-graph.lifecycle.test.ts'])).toEqual([
+      'lifecycle-alpha',
+      'lifecycle-beta',
+      'lifecycle-gamma',
+      'lifecycle-delta',
+    ]);
+    expect(expectedContainingGroups(['test/integration/code-graph.cache-capacity-load.test.ts'])).toEqual([
+      'load-evidence',
+    ]);
+  });
+
+  it('plans a classified invalid path as a full suite', () => {
+    expect(
+      selectCiTestPlanForClassification({
+        changedCount: 1,
+        invalidPath: true,
+        paths: ['test/unit/utils.test.ts'],
+        scopes: {
+          actions: true,
+          code: true,
+          guidance: true,
+          quality: true,
+          release: true,
+          site_build: true,
+          site_check: true,
+          windows: true,
+        },
+      }),
+    ).toEqual({
+      standard: {mode: 'full', paths: []},
+      long: {mode: 'full', groups: fixedRequiredLongGroupNames},
+      postgres: {mode: 'full', paths: []},
+    });
+  });
+
+  it('keeps special test paths out of the ordinary plan', () => {
+    expect(selectCiTestPlan(['test/unit/website-content.test.ts'])).toMatchObject({
+      standard: {mode: 'none'},
+      long: {mode: 'none'},
+      postgres: {mode: 'none'},
+    });
+  });
+
+  fcProp(
+    it,
+    'keeps the independent ordinary-test model deterministic and selects exact containing long groups',
+    {
+      paths: ordinaryCiTests,
+    },
+    ({paths}) => {
+      const expectedPaths = [...new Set(paths)].sort((left, right) => left.localeCompare(right));
+      const expectedGroups = expectedContainingGroups(expectedPaths);
+      const longPaths = new Set<string>(expectedGroups.flatMap(group => fixedLongGroupModel[group]));
+      const plan = selectCiTestPlan(paths);
+
+      expect(selectCiTestPlan([...paths, ...paths].reverse())).toEqual(plan);
+      expect(plan.long.groups).toEqual(expectedGroups);
+      expect(plan.standard.paths).toEqual(expectedPaths.filter(path => !longPaths.has(path)));
+      expect(plan.postgres.paths).toEqual(
+        expectedPaths.filter(path => /^test\/integration\/remote-memory-[A-Za-z0-9._-]+\.test\.ts$/u.test(path)),
+      );
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
+  fcProp(
+    it,
+    'keeps every selected lane monotonic when ordinary tests are added',
+    {paths: ordinaryCiTests, extra: FC.constantFrom(...ordinaryCiTestCorpus)},
+    ({paths, extra}) => {
+      const before = selectCiTestPlan(paths);
+      const after = selectCiTestPlan([...paths, extra]);
+      for (const path of before.standard.paths) expect(after.standard.paths).toContain(path);
+      const selectedGroups = new Set<string>(after.long.groups);
+      for (const path of before.long.groups) expect(selectedGroups.has(path)).toBe(true);
+      for (const path of before.postgres.paths) expect(after.postgres.paths).toContain(path);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
+  fcProp(
+    it,
+    'falls back to full suites for every inventory that mixes an ordinary test with a non-ordinary path',
+    {
+      ordinary: FC.constantFrom(...ordinaryCiTestCorpus),
+      nonOrdinary: FC.constantFrom(...dedicatedOnlyTestCorpus, ...nonOrdinaryCodeCorpus),
+      rest: FC.array(FC.constantFrom(...ciPlanCorpus), {maxLength: 12}),
+    },
+    ({ordinary, nonOrdinary, rest}) => {
+      const plan = selectCiTestPlan([ordinary, nonOrdinary, ...rest]);
+      expect(plan).toEqual({
+        standard: {mode: 'full', paths: []},
+        long: {mode: 'full', groups: fixedRequiredLongGroupNames},
+        postgres: {mode: 'full', paths: []},
+      });
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
+  it('fails safe to full suites for mixed, invalid, and unknown changes', () => {
+    for (const paths of [
+      ['test/unit/utils.test.ts', 'src/utils.ts'],
+      ['test/unit/utils.test.ts', 'test/unit/helper.ts'],
+      ['test/unit/utils.test.ts', 'test/unit/agent-instructions.test.ts'],
+      ['test/unit/utils.test.ts', 'test/unit/website-content.test.ts'],
+      ['', 'test/unit/utils.test.ts'],
+      [''],
+      ['unclassified/payload.bin'],
+    ]) {
+      expect(selectCiTestPlan(paths)).toMatchObject({
+        standard: {mode: 'full'},
+        long: {mode: 'full', groups: fixedRequiredLongGroupNames},
+        postgres: {mode: 'full'},
+      });
+    }
+  });
   fcProp(
     it,
     'is invariant to path order and duplicates',

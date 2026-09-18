@@ -12,6 +12,7 @@ import {
   withCodeGraphReportedMaintenanceIntent,
 } from './maintenance_gate.js';
 import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from './types.js';
+import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES} from './store_session.js';
 import {
   CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT,
   readCodeGraphStorageSemanticAttribution,
@@ -328,6 +329,8 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
     readonly dryRun: boolean;
     readonly force?: boolean;
     readonly interlock?: CodeGraphCompactionInterlock;
+    /** Automatic sidecar candidates must never promote structural slack to VACUUM. */
+    readonly operation?: 'automatic-journal';
     readonly onProgress?: (phase: 'compacting' | 'inspecting' | 'waiting-builders') => Effect.Effect<void, unknown>;
   },
 ) {
@@ -384,7 +387,14 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
               message: 'Code graph page storage could not be inspected under its lock.',
             });
           }
-          if (!options.force && !before.pageStorage.threshold.recommended) {
+          // Explicit requests retain the established force semantics, while
+          // automatic callers only ever reach this path for freelist-backed
+          // candidates. Manual structural recommendations remain VACUUM work.
+          const vacuumRecommended =
+            options.operation !== 'automatic-journal' &&
+            (options.force === true || before.pageStorage.threshold.recommended);
+          const walReclamationRecommended = before.walBytes > CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES;
+          if (!vacuumRecommended && !walReclamationRecommended) {
             return {
               action: 'not-needed',
               before,
@@ -405,13 +415,25 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
               checkoutId,
               databasePath,
               dryRun: true,
-              reclaimedBytes: before.pageStorage.compactionOpportunityBytes ?? before.pageStorage.reclaimableBytes,
+              reclaimedBytes: vacuumRecommended
+                ? (before.pageStorage.compactionOpportunityBytes ?? before.pageStorage.reclaimableBytes)
+                : Math.max(0, before.walBytes - CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES),
             } satisfies CodeGraphCompactionSummary;
           }
-          yield* verifyCompactionDiskHeadroom(system, path.dirname(databasePath), before);
           yield* options.onProgress?.('compacting') ?? Effect.void;
           yield* reportMaintenance({completed: 3, phase: 'retiring-and-cleaning', total: 3});
-          yield* vacuumDatabase(databasePath);
+          if (vacuumRecommended) {
+            yield* verifyCompactionDiskHeadroom(system, path.dirname(databasePath), before);
+            yield* vacuumDatabase(databasePath);
+          } else {
+            yield* reclaimWalStorage(databasePath);
+            const afterJournalIdentity = yield* requireRegularFileIdentity(fs, databasePath);
+            if (!sameRegularFileTarget(identity, afterJournalIdentity)) {
+              return yield* CodeGraphStorageOperationError.make({
+                message: 'Code graph database changed during WAL reclamation; retry after current work finishes.',
+              });
+            }
+          }
           const afterReceipt = yield* readCompactionReceipt(databasePath);
           if (!sameCompactionReceipt(receipt, afterReceipt)) {
             return yield* CodeGraphStorageOperationError.make({
@@ -431,7 +453,7 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
             checkoutId,
             databasePath,
             dryRun: false,
-            reclaimedBytes: Math.max(0, before.databaseBytes - after.databaseBytes),
+            reclaimedBytes: Math.max(0, before.filesystemBytes - after.filesystemBytes),
           } satisfies CodeGraphCompactionSummary;
           yield* recordCodeGraphAutomaticCompactionAttempt(
             threadnoteHome,
@@ -779,6 +801,33 @@ function vacuumDatabase(databasePath: string): Effect.Effect<void, Error> {
   });
 }
 
+/**
+ * Reclaim retained WAL allocation without VACUUM's replacement-database
+ * headroom. A zero busy timeout turns active readers or writers into a safe
+ * failure instead of queueing maintenance behind them.
+ */
+function reclaimWalStorage(databasePath: string): Effect.Effect<void, Error> {
+  return Effect.try({
+    try: () => {
+      const database = new Database(databasePath, {create: false, strict: true});
+      try {
+        database.exec('PRAGMA busy_timeout = 0');
+        database.exec(`PRAGMA journal_size_limit = ${CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES}`);
+        const checkpoint = database.query<{readonly busy?: number}, []>('PRAGMA wal_checkpoint(TRUNCATE)').get();
+        if (Number(checkpoint?.busy ?? 0) !== 0) {
+          throw CodeGraphStorageOperationError.make({message: 'active SQLite readers prevented WAL reclamation'});
+        }
+      } finally {
+        database.close(false);
+      }
+    },
+    catch: cause =>
+      CodeGraphStorageOperationError.make({
+        message: `Code graph WAL reclamation failed safely: ${errorText(cause)}`,
+      }),
+  });
+}
+
 function pragmaNumber(database: Database, pragma: 'freelist_count' | 'page_count' | 'page_size'): number {
   const row = database.query<Record<string, bigint | number>, []>(`PRAGMA ${pragma}`).get();
   return safeCount(row?.[pragma] ?? 0, pragma);
@@ -849,6 +898,11 @@ function sameFileIdentity(left: CodeGraphFileIdentity, right: CodeGraphFileIdent
     left.modifiedAtMilliseconds === right.modifiedAtMilliseconds &&
     left.size === right.size
   );
+}
+
+/** Journal reclamation may update mtime but must never swap the database target. */
+function sameRegularFileTarget(left: CodeGraphFileIdentity, right: CodeGraphFileIdentity): boolean {
+  return left.birthtimeMilliseconds === right.birthtimeMilliseconds && left.dev === right.dev && left.ino === right.ino;
 }
 
 function sameCompactionReceipt(left: CodeGraphCompactionReceipt, right: CodeGraphCompactionReceipt): boolean {

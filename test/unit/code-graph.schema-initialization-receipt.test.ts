@@ -1,4 +1,5 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Exit, FileSystem, Path} from 'effect';
@@ -16,9 +17,104 @@ import {
 import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store_schema_metadata.js';
 import {REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY} from '../../src/code_graph/store_removed_view_schema_contracts.js';
 import {CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_REVISION} from '../../src/code_graph/store/schema_revision.js';
+import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES, configureConnection} from '../../src/code_graph/store_session.js';
+import {compactCodeGraphStorage, inspectCodeGraphStorage} from '../../src/code_graph/storage.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 
 describe('code graph schema initialization receipt', () => {
+  effectIt.effect('sets the WAL retention limit on each writable connection', () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* configureConnection(sql);
+      const rows = yield* sql.unsafe<{readonly journal_size_limit: number}>('PRAGMA journal_size_limit');
+      expect(rows[0]?.journal_size_limit).toBe(CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES);
+    }).pipe(provideTestLayer(SqliteClient.layer({filename: ':memory:', disableWAL: true}))),
+  );
+
+  effectIt.effect('reclaims an oversized dormant WAL through the locked production storage path', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-dormant-wal-'});
+        const checkoutId = 'f'.repeat(64);
+        const databasePath = path.join(
+          home,
+          'indexes',
+          'code-graph',
+          'repositories',
+          checkoutId,
+          `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+        );
+        yield* fs.makeDirectory(path.dirname(databasePath), {recursive: true});
+        // Keep a connection open but idle: closing SQLite's final connection is
+        // allowed to clean up the WAL before the production path can inspect it.
+        const _idleReader = yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const writer = new Database(databasePath, {create: true, strict: true});
+            const reader = new Database(databasePath, {readonly: true, strict: true});
+            try {
+              writer.exec(`
+              PRAGMA journal_mode = WAL;
+              PRAGMA wal_autocheckpoint = 0;
+              CREATE TABLE schema_metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+              INSERT INTO schema_metadata (key, value) VALUES ('schema_version', '${CODE_GRAPH_SCHEMA_VERSION}');
+              CREATE TABLE snapshots (state TEXT NOT NULL);
+              INSERT INTO snapshots (state) VALUES ('ready');
+              CREATE TABLE active_snapshots (snapshot_id TEXT NOT NULL);
+              INSERT INTO active_snapshots (snapshot_id) VALUES ('ready-snapshot');
+              CREATE TABLE payload (id INTEGER PRIMARY KEY, value BLOB NOT NULL);
+            `);
+              reader.exec('BEGIN');
+              // Establish the reader snapshot before the writer grows the WAL;
+              // closing the writer must therefore leave a dormant sidecar.
+              reader.query('SELECT COUNT(*) AS count FROM payload').get();
+              const insert = writer.prepare('INSERT INTO payload (id, value) VALUES (?, ?)');
+              const payload = new Uint8Array(256 * 1024).fill(37);
+              writer.transaction(() => {
+                for (let index = 0; index < 320; index += 1) insert.run(index, payload);
+              })();
+              writer.close(false);
+              reader.exec('COMMIT');
+              return reader;
+            } catch (cause) {
+              try {
+                writer.close(false);
+              } catch {
+                // A failed fixture setup may have already closed the writer.
+              }
+              reader.close(false);
+              throw cause;
+            }
+          }),
+          reader => Effect.sync(() => reader.close(false)),
+        );
+        const before = yield* inspectCodeGraphStorage(home, checkoutId);
+        expect(before).toMatchObject({pageStorage: {freelistPages: 0, state: 'available'}, state: 'available'});
+        if (before.state !== 'available') throw new Error('expected dormant code graph storage');
+        expect(before.walBytes).toBeGreaterThan(CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES);
+
+        const compacted = yield* compactCodeGraphStorage(home, checkoutId, {dryRun: false});
+        expect(compacted).toMatchObject({action: 'compacted', reclaimedBytes: expect.any(Number)});
+        const after = yield* inspectCodeGraphStorage(home, checkoutId);
+        if (after.state !== 'available') throw new Error('expected reclaimed code graph storage');
+        expect(after.walBytes).toBeLessThanOrEqual(CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES);
+        expect(after.journalBytes).toBeLessThanOrEqual(CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES);
+        expect(compacted.reclaimedBytes).toBeGreaterThan(0);
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {readonly: true, strict: true});
+          try {
+            expect(database.query('SELECT COUNT(*) AS count FROM payload').get()).toEqual({count: 320});
+            expect(database.query('PRAGMA quick_check').get()).toEqual({quick_check: 'ok'});
+          } finally {
+            database.close(false);
+          }
+        });
+      }).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
   it('admits only an exact receipt across arbitrary schema-cookie observations', () => {
     fc.assert(
       fc.property(
