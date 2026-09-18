@@ -64,9 +64,9 @@ describe('dependency-aware CI workflow', () => {
     const classifier = changes.steps?.find(step => step.id === 'scopes');
 
     expect(Object.keys(changes.outputs ?? {})).toEqual([
-      ...ciScopeKeys.slice(0, 2),
+      ...ciScopeKeys.slice(0, 3),
       'long_test_groups',
-      ...ciScopeKeys.slice(2),
+      ...ciScopeKeys.slice(3),
     ]);
     expect(checkout?.with?.['fetch-depth']).toBe(0);
     expect(classifier?.run).toBe('bun test/ci/ci-scopes.ts --base "$BASE_SHA" --head "$HEAD_SHA"');
@@ -89,7 +89,14 @@ describe('dependency-aware CI workflow', () => {
         'docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667',
     );
 
-    expect(primary.needs).toEqual(['changes', 'quality', 'standard_tests', 'long_tests', 'remote_memory_postgres']);
+    expect(primary.needs).toEqual([
+      'changes',
+      'quality',
+      'agent_instructions',
+      'standard_tests',
+      'long_tests',
+      'remote_memory_postgres',
+    ]);
     expect(primary.if).toBe('always()');
     expect(primary.steps?.some(step => step.name === 'Require every applicable test shard')).toBe(true);
 
@@ -137,8 +144,22 @@ describe('dependency-aware CI workflow', () => {
       THREADNOTE_TEST_POSTGRES_URL: 'postgres://postgres:postgres@127.0.0.1:5432/threadnote_ci',
     });
     expect(primary.steps?.[0]?.env).toMatchObject({
+      AGENT_INSTRUCTIONS_RESULT: '${{ needs.agent_instructions.result }}',
       REMOTE_MEMORY_POSTGRES_RESULT: '${{ needs.remote_memory_postgres.result }}',
     });
+    expect(ci.jobs.agent_instructions).toMatchObject({
+      needs: 'changes',
+      if: "needs.changes.outputs.guidance == 'true'",
+    });
+    expect(
+      stepForRun(ci.jobs.agent_instructions, 'bun --bun vitest run test/unit/agent-instructions.test.ts'),
+    ).toBeDefined();
+    expect(
+      stepForRun(
+        ci.jobs.agent_instructions,
+        'bun --bun vitest run test/unit/cursor-plugin.test.ts -t "matches Cursor manifest anatomy and the canonical Threadnote instructions"',
+      ),
+    ).toBeDefined();
   });
 
   it('keeps the quota-aware long-test plan bounded and non-overlapping', () => {
@@ -209,8 +230,21 @@ describe('dependency-aware CI workflow', () => {
     const ci = workflow('.github/workflows/ci.yml');
     const pages = workflow('.github/workflows/pages.yml');
     const benchmarks = workflow('.github/workflows/benchmarks.yml');
+    const gateway = workflow('.github/workflows/telemetry-gateway.yml');
     const pagePaths = pages.on.push?.paths ?? [];
     const benchmarkPaths = benchmarks.on.pull_request?.paths ?? [];
+    const gatewayPaths = gateway.on.pull_request?.paths ?? [];
+    const gatewayPushPaths = gateway.on.push?.paths ?? [];
+    const gatewayCanonicalPaths = [
+      '.dockerignore',
+      'fly.toml',
+      '.github/workflows/telemetry-delivery-canary.yml',
+      '.github/workflows/telemetry-gateway.yml',
+      'docs/operations/telemetry-production.md',
+      'docs/telemetry.md',
+      'infra/telemetry-gateway/**',
+      'test/unit/telemetry-gateway-*.test.ts',
+    ];
 
     expect(ci.on.push?.['paths-ignore']).toEqual(
       expect.arrayContaining(['.github/release-notes/**', '*.md', 'LICENSE', 'docs/**', 'website/**']),
@@ -229,5 +263,9 @@ describe('dependency-aware CI workflow', () => {
     );
     expect(pagePaths).not.toContain('src/**');
     expect(benchmarkPaths.some(path => path === 'website/**' || path.startsWith('website/'))).toBe(false);
+    expect(gatewayPaths).toEqual(gatewayCanonicalPaths);
+    expect(gatewayPushPaths).toEqual(gatewayPaths);
+    expect(gatewayPaths).not.toContain('website/**');
+    expect(gatewayPaths).not.toContain('config/agent-skills/**');
   });
 });
