@@ -10,7 +10,7 @@ open an issue first so the intended contract can be agreed before substantial im
 
 You need:
 
-- Bun `1.3.14`.
+- The exact Bun version pinned by the `packageManager` field in [`package.json`](./package.json).
 
 Install dependencies and run the fast validation set:
 
