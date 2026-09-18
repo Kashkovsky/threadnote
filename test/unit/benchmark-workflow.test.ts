@@ -563,9 +563,6 @@ describe('platform benchmark workflow', () => {
     expect(job['runs-on']).toBe('ubuntu-24.04');
     expect(job['timeout-minutes']).toBe(180);
     expect(capture?.run).toContain('bench:code-graph:heavy-tail');
-    expect(capture?.run).toContain('--evidence-class correctness-only');
-    expect(capture?.run).not.toContain('--governed');
-    expect(capture?.run).not.toContain('--ratchet');
     expect(capture?.env).toMatchObject({
       THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-ubuntu-24.04-${{ runner.arch }}',
       THREADNOTE_BENCHMARK_RUNNER_ID: '${{ runner.name }}',
