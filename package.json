@@ -151,7 +151,7 @@
     "@modelcontextprotocol/sdk": "1.30.0",
     "effect": "4.0.0-rc.115",
     "fflate": "0.8.3",
-    "jose": "6.2.10",
+    "jose": "6.2.12",
     "js-yaml": "^5.4.1",
     "node-llama-cpp": "3.20.0",
     "postgres": "3.4.9",
