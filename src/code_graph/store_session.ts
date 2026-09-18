@@ -94,6 +94,7 @@ export function useDatabaseDirect<A, E, R>(
 export const configureConnection = Effect.fn('codeGraph.configureConnection')(function* (sql: SqlClient.SqlClient) {
   yield* sql.unsafe('PRAGMA foreign_keys = ON');
   yield* sql.unsafe('PRAGMA busy_timeout = 5000');
+  yield* sql.unsafe(`PRAGMA journal_size_limit = ${CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES}`);
 });
 
 export const configureReadConnection = Effect.fn('codeGraph.configureReadConnection')(function* (
@@ -108,6 +109,7 @@ export const configureReadConnection = Effect.fn('codeGraph.configureReadConnect
 // the smallest screened setting with a material cold-build win, while staying
 // bounded independently of repository size and leaving read sessions small.
 export const CODE_GRAPH_WRITER_MAIN_CACHE_KIB = 32 * 1_024;
+export const CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES = 64 * 1_024 * 1_024;
 const CODE_GRAPH_SQLITE_WRITER_CACHE_KIB_MAXIMUM = 4 * 1_024 * 1_024;
 const CODE_GRAPH_SQLITE_WRITER_MMAP_BYTES_MAXIMUM = 64 * 1_024 * 1_024 * 1_024;
 const CODE_GRAPH_SQLITE_WRITER_WAL_CHECKPOINT_PAGES_MAXIMUM = 1_000_000;

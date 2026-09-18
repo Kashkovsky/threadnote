@@ -1,6 +1,6 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref, Schema} from 'effect';
+import {Clock, Deferred, Duration, Effect, Fiber, FileSystem, Layer, Path, Ref, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -16,6 +16,7 @@ import {
   decodeAutomaticCompactionWorkerResponse,
   listCodeGraphAutomaticCompactionCheckoutIds,
   recordCodeGraphAutomaticCompactionAttempt,
+  runCodeGraphAutomaticCompactionSchedulerWith,
   runCodeGraphAutomaticCompactionLoopWith,
   runCodeGraphAutomaticCompactionPassWith,
   selectCodeGraphAutomaticCompactionCandidate,
@@ -25,6 +26,7 @@ import {
 import {codeGraphRepositoriesRoot, codeGraphRepositoryRoot} from '../../src/code_graph/layout.js';
 import {managerGraphStorageStatusCheckoutIds, managerGraphStorageSummary} from '../../src/code_graph/manager_status.js';
 import {compactCodeGraphStorage, type CodeGraphActiveStorage} from '../../src/code_graph/storage.js';
+import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES} from '../../src/code_graph/store_session.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from '../../src/code_graph/types.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -50,20 +52,24 @@ function availableStorage(
   options: {
     readonly availableBytes?: number;
     readonly opportunityBytes: number;
+    readonly journalBytes?: number;
     readonly reason?: 'freelist' | 'freelist-and-fragmentation';
     readonly reclaimableBytes?: number;
     readonly recommended?: boolean;
+    readonly walBytes?: number;
   },
 ): CodeGraphActiveStorage {
   const databaseBytes = 4 * GIB;
   const reclaimableBytes = options.reclaimableBytes ?? options.opportunityBytes;
+  const walBytes = options.walBytes ?? 0;
+  const journalBytes = options.journalBytes ?? 0;
   return {
     ...(options.availableBytes === undefined ? {} : {availableBytes: options.availableBytes}),
     checkoutId,
     databaseBytes,
     databasePath: `/redacted/${checkoutId}`,
-    filesystemBytes: databaseBytes,
-    journalBytes: 0,
+    filesystemBytes: databaseBytes + walBytes + journalBytes,
+    journalBytes,
     pageStorage: {
       compactionOpportunityBytes: options.opportunityBytes,
       compactionOpportunityRatio: options.opportunityBytes / databaseBytes,
@@ -83,8 +89,8 @@ function availableStorage(
     shmBytes: 0,
     state: 'available',
     temporaryBytes: 0,
-    totalBytes: databaseBytes,
-    walBytes: 0,
+    totalBytes: databaseBytes + walBytes + journalBytes,
+    walBytes,
   };
 }
 
@@ -193,6 +199,67 @@ describe('automatic code graph compaction', () => {
         yield* fs.symlink(external, codeGraphRepositoryRoot(path, home, checkoutId));
 
         expect(yield* listCodeGraphAutomaticCompactionCheckoutIds(home)).toEqual([]);
+      }),
+    );
+
+    it.effect('selects a sidecar checkpoint over structural-only VACUUM work without disk headroom', () =>
+      Effect.gen(function* () {
+        const checkoutId = 'e'.repeat(64);
+        const compacted = yield* Ref.make<readonly {readonly checkoutId: string; readonly operation: string}[]>([]);
+        const result = yield* runCodeGraphAutomaticCompactionPassWith(
+          {
+            compact: (_home, candidate, options) =>
+              Ref.update(compacted, current => [
+                ...current,
+                {checkoutId: candidate, operation: options?.operation ?? 'none'},
+              ]).pipe(Effect.as(compactedSummary(candidate))),
+            inspect: () =>
+              Effect.succeed(
+                availableStorage(checkoutId, {
+                  availableBytes: 0,
+                  opportunityBytes: GIB,
+                  reason: 'freelist-and-fragmentation',
+                  reclaimableBytes: 0,
+                  walBytes: CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES + 1_024,
+                }),
+              ),
+            listCheckoutIds: () => Effect.succeed([checkoutId]),
+          },
+          '/threadnote-home',
+        );
+
+        expect(result).toMatchObject({
+          candidate: {checkoutId, operation: 'journal', opportunityBytes: 1_024},
+          result: {action: 'compacted'},
+          state: 'attempted',
+        });
+        expect(yield* Ref.get(compacted)).toEqual([{checkoutId, operation: 'journal'}]);
+      }),
+    );
+
+    it.effect('does not select a rollback journal that checkpoint-only maintenance cannot shrink', () =>
+      Effect.gen(function* () {
+        const checkoutId = 'f'.repeat(64);
+        const compacted = yield* Ref.make(false);
+        const result = yield* runCodeGraphAutomaticCompactionPassWith(
+          {
+            compact: () => Ref.set(compacted, true).pipe(Effect.as(compactedSummary(checkoutId))),
+            inspect: () =>
+              Effect.succeed(
+                availableStorage(checkoutId, {
+                  availableBytes: 0,
+                  journalBytes: CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES + 1_024,
+                  opportunityBytes: 0,
+                  recommended: false,
+                }),
+              ),
+            listCheckoutIds: () => Effect.succeed([checkoutId]),
+          },
+          '/threadnote-home',
+        );
+
+        expect(result).toMatchObject({state: 'no-candidate'});
+        expect(yield* Ref.get(compacted)).toBe(false);
       }),
     );
 
@@ -407,6 +474,12 @@ describe('automatic code graph compaction', () => {
         });
         expect((yield* Ref.get(observed))?.environment).not.toHaveProperty('ARBITRARY_PARENT_VALUE');
         expect((yield* Ref.get(observed))?.environment).not.toHaveProperty('THREADNOTE_TEST_SECRET');
+
+        yield* compactCodeGraphStorageIsolated('/threadnote-home', checkoutId, {operation: 'journal'}).pipe(
+          Effect.provideService(CommandExecutor, command),
+          Effect.provideService(SystemInfo, system),
+        );
+        expect((yield* Ref.get(observed))?.request).toMatchObject({force: false, operation: 'journal'});
       }),
     );
   });
@@ -618,6 +691,17 @@ describe('automatic code graph compaction', () => {
       protocol: 1,
       threadnoteHome: '/threadnote-home',
     });
+    expect(
+      decodeAutomaticCompactionWorkerRequest(
+        JSON.stringify({
+          checkoutId,
+          force: false,
+          operation: 'journal',
+          protocol: 1,
+          threadnoteHome: '/threadnote-home',
+        }),
+      ),
+    ).toMatchObject({operation: 'journal'});
     expect(decodeAutomaticCompactionWorkerRequest('{')).toBeUndefined();
     expect(
       decodeAutomaticCompactionWorkerRequest(
@@ -719,6 +803,99 @@ describe('automatic code graph compaction', () => {
       expect(yield* Ref.get(cancelled)).toBe(true);
     }),
   );
+
+  effectIt.layer(AutomaticCompactionReceiptTestLayer)(it => {
+    it.effect('elects one inventory leader and lets a waiting host take over after it exits', () =>
+      Effect.gen(function* () {
+        const checkoutId = 'c'.repeat(64);
+        const home = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
+          prefix: 'threadnote-automatic-compaction-scheduler-',
+        });
+        const inventories = yield* Ref.make<string[]>([]);
+        const firstOwner = yield* Deferred.make<string>();
+        const secondOwner = yield* Deferred.make<string>();
+        const contenderSleepScheduled = yield* Deferred.make<void>();
+        const owners = yield* Ref.make<string[]>([]);
+        const dependencies = (owner: string) => ({
+          compact: () =>
+            Effect.gen(function* () {
+              const observed = yield* Ref.updateAndGet(owners, current => [...current, owner]);
+              yield* Deferred.succeed(observed.length === 1 ? firstOwner : secondOwner, owner);
+              return yield* Effect.never;
+            }),
+          inspect: () =>
+            Effect.succeed(availableStorage(checkoutId, {availableBytes: 16 * GIB, opportunityBytes: 2 * GIB})),
+          listCheckoutIds: () => Ref.update(inventories, current => [...current, owner]).pipe(Effect.as([checkoutId])),
+        });
+        const timing = {initialDelayMilliseconds: 0, intervalMilliseconds: 1, leadershipRetryMilliseconds: 1};
+        const nativeClock = yield* Clock.Clock;
+        const contenderClock: Clock.Clock = {
+          ...nativeClock,
+          sleep: duration =>
+            Duration.toMillis(duration) === timing.leadershipRetryMilliseconds
+              ? Effect.gen(function* () {
+                  const sleep = yield* nativeClock.sleep(duration).pipe(Effect.forkChild({startImmediately: true}));
+                  yield* Deferred.succeed(contenderSleepScheduled, undefined);
+                  return yield* Fiber.join(sleep);
+                })
+              : nativeClock.sleep(duration),
+        };
+        const first = yield* runCodeGraphAutomaticCompactionSchedulerWith(
+          dependencies('first'),
+          home,
+          () => Effect.void,
+          timing,
+        ).pipe(Effect.forkChild({startImmediately: true}));
+        const owner = yield* Deferred.await(firstOwner);
+        expect(owner).toBe('first');
+        expect(yield* Ref.get(inventories)).toEqual([owner]);
+        const second = yield* runCodeGraphAutomaticCompactionSchedulerWith(
+          dependencies('second'),
+          home,
+          () => Effect.void,
+          timing,
+        ).pipe(Effect.provideService(Clock.Clock, contenderClock), Effect.forkChild({startImmediately: true}));
+
+        // The failed acquisition is asynchronous. Wait until its retry sleep
+        // is registered before advancing TestClock past the retry deadline.
+        yield* Deferred.await(contenderSleepScheduled);
+        yield* Fiber.interrupt(first);
+        yield* TestClock.adjust(1);
+        expect(yield* Deferred.await(secondOwner)).toBe('second');
+        expect(yield* Ref.get(inventories)).toHaveLength(2);
+        yield* Fiber.interrupt(second);
+      }),
+    );
+
+    it.effect('retries a deferred active build after its five-minute receipt cooldown', () =>
+      Effect.gen(function* () {
+        const checkoutId = 'd'.repeat(64);
+        const {home} = yield* makeCompactionReceiptFixture(checkoutId);
+        const candidate = compactionCandidate(checkoutId);
+        yield* recordCodeGraphAutomaticCompactionAttempt(home, candidate, {
+          action: 'deferred',
+          reclaimedBytes: 0,
+        });
+        const dependencies = {
+          candidateAllowed: codeGraphAutomaticCompactionCandidateAllowed,
+          claimCandidate: claimCodeGraphAutomaticCompactionCandidate,
+          compact: () => Effect.succeed(compactedSummary(checkoutId)),
+          inspect: () =>
+            Effect.succeed(availableStorage(checkoutId, {availableBytes: 16 * GIB, opportunityBytes: 2 * GIB})),
+          listCheckoutIds: () => Effect.succeed([checkoutId]),
+          recordAttempt: recordCodeGraphAutomaticCompactionAttempt,
+        };
+        expect(yield* runCodeGraphAutomaticCompactionPassWith(dependencies, home)).toMatchObject({
+          state: 'no-candidate',
+        });
+        yield* TestClock.adjust('5 minutes');
+        expect(yield* runCodeGraphAutomaticCompactionPassWith(dependencies, home)).toMatchObject({
+          result: {action: 'compacted', checkoutId},
+          state: 'attempted',
+        });
+      }),
+    );
+  });
 
   effectIt.effect('retains the failed candidate so Manager can render a human repository label', () =>
     Effect.gen(function* () {
