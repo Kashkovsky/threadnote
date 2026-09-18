@@ -126,7 +126,9 @@ project projection is withheld.
 Use `threadnote context repair preview --project <name>` to inspect deterministic repairs and `context repair apply`
 with the exact proposal revision plus `--approved` to apply one personal-memory repair. Use `threadnote share propose`
 with an applied candidate and exact review revision to print canonical provider-neutral Git proposal JSON; `--output`
-is an explicit local artifact write only.
+is an explicit local artifact write only. Semantic contradictions remain review-only: when exact personal records can
+be bound safely, rerun preview with the prior contradiction ID and report revision plus explicit `--stale-uri` and
+`--current-uri`; the resulting Knowledge Delta supersede suggestion preserves stable identity and history.
 
 To select the Threadnote 4 beta channel on macOS or Linux, pass `--beta`. This inclusive preview channel installs the
 newest immutable release across stable and prerelease builds, so a newer stable release wins when one is available:

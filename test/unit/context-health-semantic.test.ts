@@ -118,6 +118,31 @@ describe('context health semantic contradictions', () => {
     ]);
   });
 
+  it('never treats lexical contradiction ordering as stale/current direction', () => {
+    const lexicallyFirstCurrent = record('a-current', 'Agents must reuse verified context.', {
+      memoryId: 'tn_current',
+    });
+    const lexicallyLastStale = record('z-stale', 'Agents must not reuse verified context.', {
+      memoryId: 'tn_stale',
+    });
+
+    for (const records of [
+      [lexicallyFirstCurrent, lexicallyLastStale],
+      [lexicallyLastStale, lexicallyFirstCurrent],
+    ]) {
+      const report = buildContextHealthReport({now, project: 'threadnote', records});
+      expect(report.findings[0]?.repair).toEqual({
+        kind: 'review-memory',
+        summary: 'Review both durable claims, designate which assertion is stale, then supersede or correct it.',
+      });
+      const proposal = previewContextHealthRepairPlanV1(report, records).proposals[0];
+      expect(proposal?.mutation).toMatchObject({kind: 'review-only'});
+      if (proposal?.mutation.kind !== 'review-only') throw new Error('expected neutral review-only proposal');
+      expect(proposal.mutation.suggestedMutation).toBeUndefined();
+      expect(proposal.preconditions).toEqual([]);
+    }
+  });
+
   it('is deterministic, order-invariant, and does not mutate records', () => {
     fc.assert(
       fc.property(

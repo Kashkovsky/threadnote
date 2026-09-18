@@ -2,6 +2,7 @@ import {Schema} from 'effect';
 
 import {canonicalJson} from '../code_graph/checkpoint/canonical_json.js';
 import {sha256HexSync} from '../crypto/sha256.js';
+import {validatePortableSegment} from '../storage/resource-id.js';
 import {MAXIMUM_CONTEXT_HEALTH_FINDING_LIMIT, type ContextHealthReportV1} from './context_health.js';
 import {
   CONTEXT_HEALTH_SEMANTIC_ANALYZER_VERSION,
@@ -28,7 +29,14 @@ export class ContextHealthScheduleError extends Schema.TaggedError<ContextHealth
 ) {}
 
 export type ContextHealthAggregateUnknownReasonV1 =
-  'evidence-incomplete' | 'snapshot-missing' | 'snapshot-raced' | 'snapshot-unreadable' | 'team-not-configured';
+  | 'citation-evidence-unavailable'
+  | 'configured-teams-invalid'
+  | 'evidence-incomplete'
+  | 'snapshot-dirty'
+  | 'snapshot-missing'
+  | 'snapshot-raced'
+  | 'snapshot-unreadable'
+  | 'team-not-configured';
 
 interface ContextHealthAggregatePersonalSourceV1 {
   readonly scope: 'personal';
@@ -39,13 +47,21 @@ interface ContextHealthAggregateTeamSourceV1 {
   readonly team: string;
 }
 
+interface ContextHealthAggregateTeamSelectionSourceV1 {
+  readonly scope: 'team-selection';
+}
+
 export type ContextHealthAggregateSourceV1 =
   | ((ContextHealthAggregatePersonalSourceV1 | ContextHealthAggregateTeamSourceV1) & {
       readonly evidenceRevision: string;
       readonly report: ContextHealthReportV1;
       readonly state: 'complete';
     })
-  | ((ContextHealthAggregatePersonalSourceV1 | ContextHealthAggregateTeamSourceV1) & {
+  | ((
+      | ContextHealthAggregatePersonalSourceV1
+      | ContextHealthAggregateTeamSourceV1
+      | ContextHealthAggregateTeamSelectionSourceV1
+    ) & {
       readonly evidenceRevision?: string;
       readonly reason: ContextHealthAggregateUnknownReasonV1;
       readonly state: 'unknown';
@@ -100,13 +116,15 @@ export function aggregateContextHealthReportsV1(input: {
   readonly project: string;
   readonly teams: readonly ContextHealthAggregateSourceV1[];
 }): ContextHealthAggregateV1 {
-  const project = boundedProject(input.project);
+  const project = canonicalContextHealthProjectV1(input.project);
   if (input.personal.scope !== 'personal') fail('The personal aggregate source must use personal scope.');
   if (input.teams.length > MAXIMUM_TEAM_SOURCES) {
     fail(`Context health aggregation supports at most ${MAXIMUM_TEAM_SOURCES} team sources.`);
   }
   const teams = input.teams.map(source => {
-    if (source.scope !== 'team') fail('Every team aggregate source must use team scope.');
+    if (source.scope !== 'team' && source.scope !== 'team-selection') {
+      fail('Every team aggregate source must use team or team-selection scope.');
+    }
     return canonicalSource(source, project);
   });
   const teamKeys = teams.map(source => source.sourceKey);
@@ -159,7 +177,7 @@ export function buildContextHealthSchedulePlanV1(input: {
   readonly project: string;
   readonly teams?: readonly string[];
 }): ContextHealthSchedulePlanV1 {
-  const project = boundedProject(input.project);
+  const project = canonicalContextHealthProjectV1(input.project);
   if (
     !Number.isSafeInteger(input.cadenceMinutes) ||
     input.cadenceMinutes < MINIMUM_CADENCE_MINUTES ||
@@ -169,11 +187,7 @@ export function buildContextHealthSchedulePlanV1(input: {
       `Context health cadence must be an integer from ${MINIMUM_CADENCE_MINUTES} to ${MAXIMUM_CADENCE_MINUTES} minutes.`,
     );
   }
-  const rawTeams = input.teams ?? [];
-  if (rawTeams.length > MAXIMUM_TEAM_SOURCES) {
-    fail(`Context health schedules support at most ${MAXIMUM_TEAM_SOURCES} teams.`);
-  }
-  const teams = [...new Set(rawTeams.map(canonicalTeam))].sort(compareText);
+  const teams = canonicalContextHealthTeamsV1(input.teams ?? []);
   const argv = [
     'context',
     'health',
@@ -195,6 +209,32 @@ export function buildContextHealthSchedulePlanV1(input: {
   return {...unsigned, scheduleId: `context-health-${sha256HexSync(canonicalJson(unsigned)).slice(0, 40)}`};
 }
 
+export function canonicalContextHealthTeamsV1(input: readonly string[]): readonly string[] {
+  if (input.length > MAXIMUM_TEAM_SOURCES) {
+    fail(`Context health schedules support at most ${MAXIMUM_TEAM_SOURCES} teams.`);
+  }
+  return [...new Set(input.map(canonicalTeam))].sort(compareText);
+}
+
+export function renderContextHealthAggregate(aggregate: ContextHealthAggregateV1): string {
+  return [
+    `Context health aggregate for ${aggregate.project}: ${aggregate.status}; ${aggregate.completeSources} complete source(s), ${aggregate.unknownSources} unknown source(s), ${aggregate.knownFindings} known finding(s).`,
+    ...aggregate.sources.map(source =>
+      source.state === 'complete'
+        ? `- ${source.sourceKey}: complete; ${source.recordsScanned} record(s), ${source.findingCount} finding(s), revision ${source.evidenceRevision}.`
+        : `- ${source.sourceKey}: unknown (${source.reason})${source.evidenceRevision === undefined ? '.' : `, revision ${source.evidenceRevision}.`}`,
+    ),
+  ].join('\n');
+}
+
+export function renderContextHealthSchedulePlan(plan: ContextHealthSchedulePlanV1): string {
+  return [
+    `Context health schedule for ${plan.project}: every ${plan.cadenceMinutes} minute(s); read-only, network disabled.`,
+    `Command argv: ${JSON.stringify(['threadnote', ...plan.argv])}`,
+    `Exit policy: clean=${plan.resultPolicy.clean}, findings=${plan.resultPolicy.findings}, unknown=${plan.resultPolicy.unknown}.`,
+  ].join('\n');
+}
+
 type CanonicalSource =
   | {
       readonly evidenceRevision: string;
@@ -212,7 +252,12 @@ type CanonicalSource =
     };
 
 function canonicalSource(source: ContextHealthAggregateSourceV1, project: string): CanonicalSource {
-  const sourceKey = source.scope === 'personal' ? 'personal' : `team:${canonicalTeam(source.team)}`;
+  const sourceKey =
+    source.scope === 'personal'
+      ? 'personal'
+      : source.scope === 'team-selection'
+        ? 'team-selection'
+        : `team:${canonicalTeam(source.team)}`;
   if (source.state === 'unknown') {
     if (source.evidenceRevision !== undefined && !SHA256.test(source.evidenceRevision)) {
       fail(`Context health source ${sourceKey} has an invalid evidence revision.`);
@@ -249,7 +294,7 @@ function canonicalSource(source: ContextHealthAggregateSourceV1, project: string
   };
 }
 
-function boundedProject(input: string): string {
+export function canonicalContextHealthProjectV1(input: string): string {
   const project = input.trim();
   if (
     !project ||
@@ -259,7 +304,11 @@ function boundedProject(input: string): string {
   ) {
     fail('Context health project must be non-empty, control-free, and at most 256 UTF-8 bytes.');
   }
-  return project;
+  try {
+    return validatePortableSegment(project, input);
+  } catch {
+    return fail('Context health project must be one portable project identity segment.');
+  }
 }
 
 function hasControlCharacter(value: string): boolean {
@@ -267,6 +316,13 @@ function hasControlCharacter(value: string): boolean {
     const code = character.codePointAt(0);
     return code !== undefined && (code <= 0x1f || code === 0x7f);
   });
+}
+
+function hasUnexpectedFindingIdControlCharacter(value: string): boolean {
+  return (
+    ![...value].some(character => character !== '\0') ||
+    [...value].some(character => character !== '\0' && hasControlCharacter(character))
+  );
 }
 
 function canonicalTeam(input: string): string {
@@ -313,7 +369,7 @@ function validateReport(report: ContextHealthReportV1, project: string, sourceKe
       typeof candidate.id !== 'string' ||
       candidate.id.length === 0 ||
       new TextEncoder().encode(candidate.id).byteLength > MAXIMUM_FINDING_ID_BYTES ||
-      hasControlCharacter(candidate.id)
+      hasUnexpectedFindingIdControlCharacter(candidate.id)
     ) {
       fail(`Context health source ${sourceKey} has an invalid finding ID.`);
     }

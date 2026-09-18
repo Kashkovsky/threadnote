@@ -60,6 +60,7 @@ import {
 import {runRecallFeedback} from '../recall/feedback_commands.js';
 import {makeCloseoutCommand} from './closeout_cli.js';
 import {makeContextMetadataCommand} from './maintenance_metadata_cli.js';
+import {runContextHealthAggregate, runContextHealthSchedule} from '../memory/context_health_aggregate_commands.js';
 import {runContextHealth} from '../memory/context_health_commands.js';
 import {runContextHealthRepairApply, runContextHealthRepairPreview} from '../memory/context_health_repair_commands.js';
 import {runMaintenanceMetadataApply, runMaintenanceMetadataPreview} from '../memory/maintenance_metadata_commands.js';
@@ -1432,8 +1433,10 @@ const workset = Command.make('workset').pipe(
   Command.withSubcommands([worksetList, worksetShow, worksetPrepare, worksetStatus]),
 );
 const contextBrief = makeContextBriefCommand(options => withRuntimeEffect(config => runContextBrief(config, options)));
-const contextHealth = makeContextHealthCommand(options =>
-  withRuntimeEffect(config => runContextHealth(config, options)),
+const contextHealth = makeContextHealthCommand(
+  options => withRuntimeEffect(config => runContextHealth(config, options)),
+  options => withRuntimeEffect(config => runContextHealthAggregate(config, options)),
+  options => runContextHealthSchedule(options),
 );
 const contextHealthRepair = makeContextHealthRepairCommand(
   options => withRuntimeEffect(config => runContextHealthRepairPreview(config, options)),

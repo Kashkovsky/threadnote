@@ -15,13 +15,17 @@ export function registerContextHealthRepairTools(server: EffectMcpServerAdapter,
     {
       annotations: {destructiveHint: false, readOnlyHint: true},
       description:
-        'Preview bounded, exact context-health repairs. Personal archive and broken-relation repairs carry content-hash preconditions; every other finding remains review-only.',
+        'Preview bounded, exact context-health repairs. Semantic supersede suggestions require an explicit contradiction ID, report revision, stale URI, and current URI from a prior preview.',
       inputSchema: {
         callerCwd: McpInput.string('Required absolute repository or worktree path'),
+        contradictionId: McpInput.string('Optional analyzer contradiction ID; supply all semantic direction fields'),
+        currentUri: McpInput.string('Optional reviewed current memory URI; supply all semantic direction fields'),
         project: McpInput.string('Required project/repo namespace'),
+        reportRevision: McpInput.string('Optional exact health report revision; supply all semantic direction fields'),
+        staleUri: McpInput.string('Optional reviewed stale memory URI; supply all semantic direction fields'),
       },
     },
-    ({callerCwd, project}) => {
+    ({callerCwd, contradictionId, currentUri, project, reportRevision, staleUri}) => {
       const checked = repairToolScope('context_health_repair_preview', callerCwd, project);
       if (!checked.ok) return checked.error;
       return Effect.gen(function* () {
@@ -29,7 +33,12 @@ export function registerContextHealthRepairTools(server: EffectMcpServerAdapter,
         if (!path.isAbsolute(checked.cwd)) {
           return argumentError('context health repair callerCwd must be an absolute repository or worktree path.');
         }
-        const plan = yield* previewContextHealthRepairs(config, checked.project, checked.cwd);
+        const plan = yield* previewContextHealthRepairs(config, checked.project, checked.cwd, {
+          contradictionId,
+          currentUri,
+          reportRevision,
+          staleUri,
+        });
         return {
           content: [{type: 'text' as const, text: renderContextHealthRepairPlan(plan)}],
           structuredContent: plan,

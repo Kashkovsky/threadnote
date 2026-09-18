@@ -51,6 +51,7 @@ export const collectContextHealth = Effect.fn('memory.contextHealth.collect')(fu
   options: {
     readonly includeFindingCategories?: Parameters<typeof buildContextHealthReport>[0]['includeFindingCategories'];
     readonly includeFindingUris?: readonly string[];
+    readonly relationCorpus?: Parameters<typeof buildContextHealthReport>[0]['records'];
   } = {},
 ) {
   const now = yield* DateTime.nowAsDate;
@@ -64,6 +65,7 @@ export const collectContextHealth = Effect.fn('memory.contextHealth.collect')(fu
   const relationEvidence = yield* relationStatusEvidence(
     config,
     options.includeFindingCategories?.includes('relation-target-conflicted') === true ? records : evidenceRecords,
+    options.relationCorpus,
   );
   const candidateEvidence = yield* candidateStatusEvidence(config, project);
   const guidanceEvidence = yield* guidanceHealthEvidence(config, project, cwd);
@@ -103,9 +105,9 @@ function citationCandidates(
 const relationStatusEvidence = Effect.fn('memory.contextHealth.relationEvidence')(function* (
   config: RuntimeConfig,
   records: Parameters<typeof buildContextHealthReport>[0]['records'],
+  selectedCorpus?: Parameters<typeof buildContextHealthReport>[0]['records'],
 ) {
-  const corpus = yield* readMaintenanceMemoryRecords(config);
-  const byUri = new Map(corpus.map(record => [record.uri, record]));
+  const corpus = selectedCorpus ?? (yield* readMaintenanceMemoryRecords(config));
   const identityCandidates = corpus.map(record => ({
     memoryId: record.metadata.memoryId,
     status: record.metadata.status,
@@ -119,11 +121,21 @@ const relationStatusEvidence = Effect.fn('memory.contextHealth.relationEvidence'
         memoryId === undefined
           ? undefined
           : classifyMemoryIdentityCandidates(identityCandidates, memoryId, allowedScopes);
+      const directMatches =
+        memoryId === undefined
+          ? corpus.filter(
+              candidate =>
+                candidate.uri === relation.uri ||
+                (candidate.metadata.status !== 'active' && candidate.metadata.archivedFrom === relation.uri),
+            )
+          : undefined;
       const target =
         resolution?.state === 'resolved'
-          ? byUri.get(resolution.uri)
+          ? corpus.find(candidate => candidate.uri === resolution.uri)
           : memoryId === undefined
-            ? byUri.get(relation.uri)
+            ? directMatches?.length === 1
+              ? directMatches[0]
+              : undefined
             : undefined;
       const inactiveIdentityMatches =
         memoryId === undefined
@@ -134,7 +146,7 @@ const relationStatusEvidence = Effect.fn('memory.contextHealth.relationEvidence'
       return {
         sourceUri: record.uri,
         status:
-          resolution?.state === 'ambiguous'
+          resolution?.state === 'ambiguous' || (directMatches !== undefined && directMatches.length > 1)
             ? 'conflicted'
             : target?.metadata.status === 'active'
               ? 'active'

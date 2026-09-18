@@ -145,6 +145,26 @@ describe('context health aggregation and schedule contract', () => {
     expect(() =>
       aggregateContextHealthReportsV1({
         personal: completePersonal({
+          ...report(1),
+          findings: [{...duplicateFinding, id: 'unsafe\nfinding'}],
+        }),
+        project: PROJECT,
+        teams: [],
+      }),
+    ).toThrow(/finding/i);
+    expect(() =>
+      aggregateContextHealthReportsV1({
+        personal: completePersonal({
+          ...report(1),
+          findings: [{...duplicateFinding, id: '\0\0'}],
+        }),
+        project: PROJECT,
+        teams: [],
+      }),
+    ).toThrow(/finding/i);
+    expect(() =>
+      aggregateContextHealthReportsV1({
+        personal: completePersonal({
           ...report(),
           findings: [null] as unknown as ContextHealthReportV1['findings'],
         }),
@@ -215,6 +235,24 @@ describe('context health aggregation and schedule contract', () => {
     expect(() =>
       buildContextHealthSchedulePlanV1({cadenceMinutes: 60, project: PROJECT, teams: [`a${'b'.repeat(128)}`]}),
     ).toThrow(/team/i);
+    expect(() => buildContextHealthSchedulePlanV1({cadenceMinutes: 60, project: 'threadnote/other'})).toThrow(
+      /project/i,
+    );
+  });
+
+  it('represents an invalid configured-team selection as an unambiguous unknown source', () => {
+    const aggregate = aggregateContextHealthReportsV1({
+      personal: completePersonal(report()),
+      project: PROJECT,
+      teams: [{reason: 'configured-teams-invalid', scope: 'team-selection', state: 'unknown'}],
+    });
+
+    expect(aggregate).toMatchObject({exitCode: 2, status: 'unknown', unknownSources: 1});
+    expect(aggregate.sources).toContainEqual({
+      reason: 'configured-teams-invalid',
+      sourceKey: 'team-selection',
+      state: 'unknown',
+    });
   });
 
   it('is invariant to team/source ordering and sensitive to evidence revisions', () => {

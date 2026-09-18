@@ -45,6 +45,37 @@ describe('context health and value report CLI', () => {
     await expect(readFile(join(home, 'data'), 'utf8')).rejects.toThrow();
   });
 
+  it('exposes aggregate and provider-neutral schedule subcommands without installing or syncing', async () => {
+    const home = await makeHome();
+
+    const aggregate = JSON.parse(
+      (await runCli(['context', 'health', 'aggregate', '--project', 'project-a', '--json'], home)).stdout,
+    );
+    expect(aggregate).toMatchObject({
+      completeSources: 1,
+      exitCode: 0,
+      sources: [expect.objectContaining({sourceKey: 'personal', state: 'complete'})],
+      status: 'clean',
+      unknownSources: 0,
+    });
+
+    const schedule = JSON.parse(
+      (
+        await runCli(
+          ['context', 'health', 'schedule', '--project', 'project-a', '--cadence-minutes', '60', '--json'],
+          home,
+        )
+      ).stdout,
+    );
+    expect(schedule).toMatchObject({
+      argv: ['context', 'health', 'aggregate', '--project', 'project-a', '--json'],
+      cadenceMinutes: 60,
+      execution: {network: 'disabled', readOnly: true},
+      teams: [],
+    });
+    await expect(readFile(join(home, 'share'), 'utf8')).rejects.toThrow();
+  });
+
   it('reads only the requested project records and does not rewrite them', async () => {
     const home = await makeHome();
     const projectAPath = await storedMemory(home, 'project-a', 'expired.md', {validTo: '2026-09-16T00:00:00.000Z'});
@@ -151,6 +182,79 @@ describe('context health and value report CLI', () => {
     expect(JSON.parse(result.stdout).findings).toEqual(
       expect.arrayContaining([expect.objectContaining({category: 'candidate-contradiction'})]),
     );
+  });
+
+  it('requires a report-bound reviewer direction before proposing semantic supersession', async () => {
+    const home = await makeHome();
+    const stalePath = await storedMemory(
+      home,
+      'project-a',
+      'stale-policy.md',
+      {memoryId: 'tn_cli_stale_policy'},
+      'Agents must never reuse verified context.',
+    );
+    const currentPath = await storedMemory(
+      home,
+      'project-a',
+      'current-policy.md',
+      {memoryId: 'tn_cli_current_policy'},
+      'Agents must reuse verified context.',
+    );
+    const staleUri = memoryUriForPath(home, stalePath);
+    const currentUri = memoryUriForPath(home, currentPath);
+    const health = JSON.parse((await runCli(['context', 'health', '--project', 'project-a', '--json'], home)).stdout);
+    const finding = health.findings.find(
+      (item: {readonly category: string}) => item.category === 'semantic-contradiction',
+    );
+    expect(finding?.semanticEvidence?.contradictionId).toMatch(/^[0-9a-f]{64}$/u);
+
+    const neutral = JSON.parse(
+      (await runCli(['context', 'repair', 'preview', '--project', 'project-a', '--json'], home)).stdout,
+    );
+    const neutralProposal = neutral.proposals.find(
+      (proposal: {readonly findingId: string}) => proposal.findingId === finding.id,
+    );
+    expect(neutralProposal.mutation.suggestedMutation).toBeUndefined();
+
+    const directed = JSON.parse(
+      (
+        await runCli(
+          [
+            'context',
+            'repair',
+            'preview',
+            '--project',
+            'project-a',
+            '--contradiction-id',
+            finding.semanticEvidence.contradictionId,
+            '--report-revision',
+            neutral.reportRevision,
+            '--stale-uri',
+            staleUri,
+            '--current-uri',
+            currentUri,
+            '--json',
+          ],
+          home,
+        )
+      ).stdout,
+    );
+    const directedProposal = directed.proposals.find(
+      (proposal: {readonly findingId: string}) => proposal.findingId === finding.id,
+    );
+    expect(directedProposal.mutation.suggestedMutation).toMatchObject({
+      designation: {
+        contradictionId: finding.semanticEvidence.contradictionId,
+        currentUri,
+        reportRevision: neutral.reportRevision,
+        staleUri,
+        type: 'context-health-semantic-direction',
+        version: 1,
+      },
+      kind: 'supersede-memory',
+      subjectUri: staleUri,
+      supersededByUri: currentUri,
+    });
   });
 
   it('aggregates only selected-project local feedback and leaves it unchanged', async () => {

@@ -101,6 +101,8 @@ const ADVANCED_TOOL_NAMES = [
   'archive_context',
   'compact_context',
   'context_health',
+  'context_health_aggregate',
+  'context_health_schedule',
   'context_health_repair_preview',
   'context_health_repair_apply',
   'context_metadata_preview',
@@ -4255,6 +4257,67 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
+  it('returns read-only aggregate health and a provider-neutral schedule plan from the full toolset', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const aggregate = await client.callTool({
+          arguments: {callerCwd: fixture.root, project: 'threadnote'},
+          name: 'context_health_aggregate',
+        });
+        expect(aggregate.isError).not.toBe(true);
+        expect(aggregate.structuredContent).toMatchObject({
+          completeSources: 1,
+          exitCode: 0,
+          project: 'threadnote',
+          status: 'clean',
+        });
+
+        const shareDirectory = join(fixture.home, 'share');
+        await mkdir(shareDirectory, {recursive: true});
+        await writeFile(
+          join(shareDirectory, 'teams.json'),
+          `${JSON.stringify({teams: {platform: {remote: 'https://example.test/platform.git'}}, version: 1})}\n`,
+          'utf8',
+        );
+        const emptyTeamSelection = await client.callTool({
+          arguments: {callerCwd: fixture.root, project: 'threadnote', team: []},
+          name: 'context_health_aggregate',
+        });
+        expect(emptyTeamSelection.isError).not.toBe(true);
+        expect(emptyTeamSelection.structuredContent).toMatchObject({
+          exitCode: 2,
+          sources: expect.arrayContaining([
+            expect.objectContaining({reason: 'snapshot-missing', sourceKey: 'team:platform', state: 'unknown'}),
+          ]),
+          status: 'unknown',
+        });
+
+        const schedule = await client.callTool({
+          arguments: {cadenceMinutes: 60, project: 'threadnote', team: ['runtime', 'platform']},
+          name: 'context_health_schedule',
+        });
+        expect(schedule.isError).not.toBe(true);
+        expect(schedule.structuredContent).toMatchObject({
+          argv: [
+            'context',
+            'health',
+            'aggregate',
+            '--project',
+            'threadnote',
+            '--json',
+            '--team',
+            'platform',
+            '--team',
+            'runtime',
+          ],
+          execution: {network: 'disabled', readOnly: true},
+          teams: ['platform', 'runtime'],
+        });
+      },
+      {toolset: 'full'},
+    );
+  });
+
   it('previews structured context-health repairs without writing state', async () => {
     await withMcpClient(
       async (client, fixture) => {
@@ -4265,6 +4328,14 @@ describe('Threadnote MCP toolsets', () => {
 
         expect(result.isError).not.toBe(true);
         expect(result.structuredContent).toMatchObject({
+          knowledgeDelta: {
+            items: [],
+            noAction: true,
+            reviewId: expect.stringMatching(/^review-[0-9a-f]{16}$/u),
+            revision: 1,
+            type: 'knowledge-delta',
+            version: 1,
+          },
           project: 'threadnote',
           proposals: [],
           version: 1,
