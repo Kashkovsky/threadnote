@@ -13,7 +13,7 @@ import {worktreeBuildRequestState} from '../code_graph/inventory.js';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {compileContextBrief} from '../context_brief/index.js';
 import {hasCurrentCursorHooks, hasManagedCursorHooks} from '../cursor_hooks.js';
-import {CLAUDE_SETTINGS_PATH} from '../constants.js';
+import {CLAUDE_SETTINGS_PATH, USER_MANIFEST_NAME} from '../constants.js';
 import type {ProjectedContextBriefV1} from '../context_brief/types.js';
 import {sha256Hex} from '../effect/digest.js';
 import {SystemInfo} from '../effect/system.js';
@@ -63,6 +63,16 @@ export const productionSetupDependencies: SetupOrchestratorDependencies<Producti
   removeSurface: (config, adapter, projectRoot, scope) => removeSurface(config, adapter, projectRoot, scope),
   seedProject: (config, projectRoot, apply) => seedSetupProject(config, projectRoot, apply),
 };
+
+export const resolveSetupRuntimeConfig = Effect.fn('setup.resolveRuntimeConfig')(function* (config: RuntimeConfig) {
+  if (config.manifestSource !== 'bundled-example') return config;
+  const path = yield* Path.Path;
+  return {
+    ...config,
+    manifestPath: path.join(config.agentContextHome, USER_MANIFEST_NAME),
+    manifestSource: 'user' as const,
+  };
+});
 
 const inspectReversible = Effect.fn('setup.inspectReversible')(function* (
   config: RuntimeConfig,
@@ -166,7 +176,13 @@ export const seedSetupProject = Effect.fn('setup.seedProject')(function* (
     return {ownership: 'setup-created', status: 'applied'} satisfies SetupOperationOutcome;
   }
   const manifest = yield* readSeedManifest(config.manifestPath);
-  const project = manifest.projects.find(candidate => path.resolve(candidate.path) === path.resolve(projectRoot));
+  const resolvedProjectRoot = path.resolve(yield* expandPath(projectRoot));
+  let project: (typeof manifest.projects)[number] | undefined;
+  for (const candidate of manifest.projects) {
+    if (path.resolve(yield* expandPath(candidate.path)) !== resolvedProjectRoot) continue;
+    project = candidate;
+    break;
+  }
   if (!project && !apply) {
     yield* Console.log('Would seed curated project context after merging the repository into the manifest.');
     return {ownership: 'preexisting', status: 'applied'} satisfies SetupOperationOutcome;

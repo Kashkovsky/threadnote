@@ -10,6 +10,7 @@ import {captureConsole} from '../../src/effect/console.js';
 import {sha256Hex} from '../../src/effect/digest.js';
 import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
 import {getThreadnoteVersion} from '../../src/release/runtime_version.js';
+import {getRuntimeConfig} from '../../src/runtime.js';
 import {runInitManifest} from '../../src/seeding.js';
 import {
   parseSetupReceiptV1,
@@ -28,6 +29,7 @@ import {withSetupMutationLock} from '../../src/setup/lock.js';
 import {
   agentSurfaceTargetMatches,
   productionSetupDependencies,
+  resolveSetupRuntimeConfig,
   seedSetupProject,
   setupBriefIsSourceVerified,
   setupRepositorySourceHash,
@@ -170,6 +172,23 @@ describe('setup contracts', () => {
 });
 
 describe('setup orchestration', () => {
+  effectIt.effect('uses the user manifest for setup unless a manifest override is explicit', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-setup-runtime-'});
+        const home = `${root}/home`;
+        const explicitManifest = `${root}/explicit.yaml`;
+
+        const implicit = yield* getRuntimeConfig({home});
+        expect(implicit.manifestSource).toBe('bundled-example');
+        expect((yield* resolveSetupRuntimeConfig(implicit)).manifestPath).toBe(`${home}/seed-manifest.yaml`);
+        const explicit = yield* getRuntimeConfig({home, manifest: explicitManifest});
+        expect((yield* resolveSetupRuntimeConfig(explicit)).manifestPath).toBe(explicitManifest);
+      }),
+    ).pipe(run),
+  );
+
   effectIt.effect('serializes direct manifest mutation with setup ownership inspection', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -336,6 +355,35 @@ describe('setup orchestration', () => {
           ),
         );
         expect(preview.output).toContain('after merging the repository into the manifest');
+      }),
+    ).pipe(run),
+  );
+
+  effectIt.effect('expands manifest project paths before selecting the setup project', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-setup-project-path-'});
+        const repository = `${root}/repository`;
+        const home = `${root}/threadnote-home`;
+        const manifestPath = `${home}/seed-manifest.yaml`;
+        const system = SystemInfo.of({...baseSystem, homeDirectory: root});
+        yield* fs.makeDirectory(repository, {recursive: true});
+        yield* fs.makeDirectory(home, {recursive: true});
+        yield* fs.writeFileString(
+          manifestPath,
+          'version: 1\nprojects:\n  - name: repository\n    path: ~/repository\n' +
+            '    uri: threadnote://resources/repos/repository\n    seed: []\n',
+        );
+
+        const result = yield* seedSetupProject(
+          {account: 'local', agentContextHome: home, agentId: 'threadnote', manifestPath, user: 'tester'},
+          repository,
+          true,
+        ).pipe(Effect.provideService(SystemInfo, system));
+
+        expect(result.status).toBe('applied');
       }),
     ).pipe(run),
   );

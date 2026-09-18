@@ -7,6 +7,7 @@ export type CommandStatus = 'fail' | 'ok' | 'warn';
 export type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
 export type MemoryStatus = 'active' | 'archived' | 'expired' | 'superseded';
 export type RuntimeIdentitySource = 'cursor-cloud-command' | 'cursor-cloud-profile' | 'environment' | 'system';
+export type RuntimeManifestSource = 'bundled-example' | 'configured' | 'user';
 
 export interface RuntimeConfig {
   readonly account: string;
@@ -14,6 +15,7 @@ export interface RuntimeConfig {
   readonly agentId: string;
   readonly agentIdSource?: RuntimeIdentitySource;
   readonly manifestPath: string;
+  readonly manifestSource?: RuntimeManifestSource;
   readonly user: string;
   readonly userSource?: RuntimeIdentitySource;
 }
