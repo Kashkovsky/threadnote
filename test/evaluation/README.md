@@ -3,8 +3,26 @@
 This directory is the release-quality contract for Threadnote retrieval. It is intentionally independent of a
 developer home, network access, local canonical data, and model-generated relevance scores.
 
-The [Threadnote 5 task-loop fixture](fixtures/threadnote-5-task-loop-v1/README.md) freezes offline release gates for
-activation, closeout usefulness, stale citations, contradiction triage, projection drift, and output budgets.
+The [Threadnote 5 release-readiness fixture](fixtures/threadnote-5-task-loop-v1/README.md) freezes an executable,
+content-free replay contract for solo, two-agent, Git-shared, offline, dirty-worktree, interrupted/resumed,
+upgrade/downgrade, provider-neutral proposal, and health-maintenance scenarios. It independently validates exact source
+bindings and receipt hashes, retains the structured-closeout, stale-citation, contradiction, projection, and output-budget
+gates, then derives the preregistered 4.7.x-versus-5.0 metrics without treating an absent baseline as improvement:
+
+```sh
+bun run eval:threadnote-5-release-readiness -- \
+  --candidate-commit <exact-40-character-sha> \
+  --candidate-executable-sha256 <64-lowercase-hex> \
+  --capture-manifest-sha256 <independently-reviewed-64-lowercase-hex> \
+  --evidence <content-free-evidence.json>
+```
+
+This is an on-demand release evidence tool, not a CI requirement. Sealed replay proves evaluator behavior only; release
+admission remains unknown until the production verifier resolves the manifest's activation, closeout, health, value,
+and proposal receipt digests from the exact installed candidate. An available 4.7.x baseline is compared only when its
+version, commit, and executable hash are supplied independently at the evaluator boundary. Each scenario/metric lane
+requires at least ten eligible trials; undersized lanes stay unknown. The setup gate retains the activation contract of
+at least 9 successful attempts out of 10.
 
 ## Memory read token-efficiency baseline v1
 
