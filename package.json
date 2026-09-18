@@ -50,6 +50,7 @@
     "doctor": "bun src/standalone.ts doctor",
     "eval:recall": "bun scripts/evaluate-recall.ts",
     "eval:memory-read-token-efficiency": "bun scripts/evaluate-memory-read-token-efficiency.ts",
+    "eval:threadnote-5-release-readiness": "bun scripts/evaluate-threadnote-5-release-readiness.ts",
     "eval:recall:baseline": "bun scripts/capture-recall-baseline.ts",
     "eval:recall:baseline:v2": "bun scripts/capture-recall-v2-baseline.ts",
     "eval:recall:v2": "bun scripts/evaluate-recall-v2.ts",
