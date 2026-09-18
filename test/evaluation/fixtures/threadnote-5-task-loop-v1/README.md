@@ -26,19 +26,21 @@ unknown; a migration receipt by itself is never execution proof.
 Each external authority entry is content-free, bound to one exact source record and candidate, and rejected when coverage
 is missing, surplus, or mislabeled.
 
-The seven metrics are time and estimated tokens to the first cited correct plan, setup success, wrong-memory rate,
-second-agent reuse, Knowledge Delta completion, and health resolution. Thresholds, scenario-to-metric attribution, and
-required outcome assertions are source-reviewed constants; changing JSON alone cannot weaken them. Every measured
-scenario requires at least ten eligible trials for each attributed metric. In particular, activation setup requires at
-least 9 successes across 10 eligible solo attempts. Smaller samples remain unknown even when their apparent value would
-pass a threshold.
+The seven candidate metrics are time and estimated tokens to the first cited correct plan, setup success,
+wrong-memory rate, second-agent reuse, Knowledge Delta completion, and health resolution. The comparison policy is
+separate: the exact 4.7.8 baseline contributes only the two Context Brief measurements and raw wrong-memory feedback
+counts. The four workflows introduced for 5.0 are explicit `not-applicable` baseline lanes. Thresholds,
+scenario-to-metric attribution, comparison applicability, and required outcome assertions are source-reviewed
+constants; changing JSON alone cannot weaken them. Every measured candidate scenario requires at least ten eligible
+trials for each attributed metric. In particular, activation setup requires at least 9 successes across 10 eligible
+solo attempts. Smaller samples remain unknown even when their apparent value would pass a threshold.
 
 Evidence contains only exact source versions and commits, executable hashes, bounded counts, categorical outcomes, and
 deterministic receipt hashes. Every scenario transcript is chained, names its subsystem receipt digests, and records
 matching pre/post runtime identity. A reviewed capture-manifest hash supplied outside the evidence file binds those
 transcripts; the adapter label alone has no authority. Unknown, failed, missing, tampered, duplicate, runtime-drifting,
-or scenario-mislabeled observations fail closed. A missing or untrusted 4.7.x identity produces an explicit unknown
-comparison, never an improvement.
+or scenario-mislabeled observations fail closed. A missing or untrusted 4.7.8 identity, executable, or ledger produces
+an explicit unknown for comparable metrics, never an improvement. Metrics absent from 4.7.8 remain not applicable.
 
 Proposal/provider-call and procedure-execution claims additionally require a separate content-free authority manifest
 from the supervising review/execution surface. Its independently supplied hash binds exact apply-audit digests,
@@ -54,14 +56,19 @@ bun run eval:threadnote-5-release-readiness -- \
   --capture-manifest-sha256 <independently-reviewed-64-lowercase-hex> \
   --authority-manifest <reviewed-content-free-authority.json> \
   --authority-manifest-sha256 <independently-reviewed-64-lowercase-hex> \
+  --baseline-version 4.7.8 \
+  --baseline-commit 80ca4acdb7347a4d00b0381f3757a5ac984d9fbf \
+  --baseline-executable-sha256 <4.7.8-platform-executable-sha256> \
+  --baseline-trial-ledger <baseline-trial-ledger.json> \
+  --baseline-trial-ledger-sha256 <independently-reviewed-ledger-hash> \
   --evidence <content-free-evidence.json> \
   --output <scored-result.json>
 ```
 
-To enable 4.7.x comparisons, also provide the independently verified baseline identity as
-`--baseline-version <4.7.x>`, `--baseline-commit <exact-40-character-sha>`, and
-`--baseline-executable-sha256 <64-lowercase-hex>`. All three are required together. Evidence cannot nominate its own
-trusted baseline.
+The release gate uses only Threadnote 4.7.8 at commit
+`80ca4acdb7347a4d00b0381f3757a5ac984d9fbf`. Provide that version and commit together with the independently verified
+platform executable hash, comparison ledger, and independently reviewed ledger hash. All five inputs are required as
+one trust boundary. Evidence and the ledger cannot nominate their own authority.
 
 The command reads local files only. It never invokes an agent, product API, provider API, or network operation. A sealed
 fixture replay can validate the evaluator but remains release status unknown; only
