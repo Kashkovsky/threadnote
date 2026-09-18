@@ -614,6 +614,61 @@ describe('bounded code graph maintenance', () => {
     await expect(Bun.file(lockPath).exists()).resolves.toBe(false);
   });
 
+  effectIt.effect('reports a ready snapshot while maintenance is deferred by a live worktree build', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-doctor-live-builder-'});
+        const identity = legacyRepositoryIdentity(home, 'd');
+        const databasePath = path.join(
+          home,
+          'indexes',
+          'code-graph',
+          'repositories',
+          identity.checkoutId,
+          `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+        );
+        const snapshot = legacyReadySnapshot(identity, 'd');
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* store.promote(databasePath, identity, snapshot.id);
+        const before = yield* fs.readFile(databasePath);
+        const acquired = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const builder = yield* Effect.forkScoped(
+          withExclusiveFileLock(
+            fs,
+            codeGraphWorktreeLockPath(path, home, identity.checkoutId, identity.worktreeId),
+            {
+              heartbeatIntervalMilliseconds: 20,
+              onAcquired: () => Deferred.succeed(acquired, undefined).pipe(Effect.asVoid),
+              retryIntervalMilliseconds: 5,
+              staleAfterMilliseconds: 100,
+              waitTimeoutMilliseconds: 5_000,
+            },
+            Deferred.await(release),
+          ),
+        );
+        yield* Deferred.await(acquired);
+        const progress: string[] = [];
+
+        const doctor = yield* codeGraphDoctorCheck(home, state =>
+          Effect.sync(() => progress.push(`${state.phase}:${state.reason ?? 'none'}`)),
+        );
+
+        expect(doctor).toMatchObject({status: 'warn'});
+        expect(doctor.detail).toContain('1 ready snapshot(s)');
+        expect(doctor.detail).toContain('1 database maintenance check(s) deferred');
+        expect(progress).toEqual(['checking:none', 'deferred:active-build']);
+        expect(yield* fs.readFile(databasePath)).toEqual(before);
+
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(builder);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   effectIt.effect('reports revision-8 cleanup authority drift as incompatible without mutating it', () =>
     Effect.gen(function* () {
       const cases = [

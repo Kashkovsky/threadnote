@@ -479,7 +479,7 @@ describe('platform benchmark workflow', () => {
     const releaseCommand = release.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
 
     expect(evidence.needs).toBeUndefined();
-    expect(releaseEvidence.on.push?.tags).toEqual(['v4.*']);
+    expect(releaseEvidence.on.push?.tags).toEqual(['v4.*', 'v5.*']);
     expect(evidence.uses).toBe('./.github/workflows/production-large-evidence.yml');
     expect(evidence.with).toMatchObject({
       release_ref: '${{ github.ref }}',
