@@ -1,4 +1,5 @@
 import {DateTime, Effect} from 'effect';
+import {shellQuote} from '../effect/command.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {SystemInfo} from '../effect/system.js';
 import {validateContextBriefMemoryCitations} from '../context_brief/citation_validation.js';
@@ -183,11 +184,34 @@ const candidateStatusEvidence = Effect.fn('memory.contextHealth.candidateEvidenc
 });
 
 export function renderContextHealth(report: ReturnType<typeof buildContextHealthReport>): string {
+  const shownFindings = report.findings.length;
+  const totalFindings = shownFindings + report.omittedFindings;
   const lines = [
-    `Context health for ${report.project}: ${report.status}; ${report.recordsScanned} active record${report.recordsScanned === 1 ? '' : 's'}, ${report.findings.length} finding${report.findings.length === 1 ? '' : 's'}.`,
+    `Context health for ${report.project}: status=${report.status}; ${report.recordsScanned} active record${report.recordsScanned === 1 ? '' : 's'}; ${totalFindings} total finding${totalFindings === 1 ? '' : 's'} (${shownFindings} shown${report.omittedFindings > 0 ? `, ${report.omittedFindings} omitted` : ''}).`,
     `Semantic evidence: ${report.semanticCompleteness.state}; ${report.semanticCompleteness.analyzedRecords}/${report.semanticCompleteness.eligibleRecords} durable record(s) analyzed, ${report.semanticCompleteness.unknownRecords} unknown.`,
-    ...report.findings.map(finding => `- ${finding.severity} ${finding.category}: ${finding.summary}`),
   ];
+  if (report.findings.length <= 12) {
+    lines.push(
+      ...report.findings.flatMap(finding => [
+        `- ${finding.severity} ${finding.category}: ${finding.summary}`,
+        ...(findingOwner(finding) === undefined ? [] : [`  owner: ${findingOwner(finding)}`]),
+      ]),
+    );
+  } else {
+    lines.push('Shown findings grouped by severity and category:');
+    for (const group of findingGroups(report.findings)) {
+      const owners = [...new Set(group.findings.flatMap(finding => findingOwner(finding) ?? []))];
+      lines.push(
+        `- ${group.findings.length} ${group.severity} ${group.category} finding${group.findings.length === 1 ? '' : 's'} across ${owners.length} owning memor${owners.length === 1 ? 'y' : 'ies'}.`,
+      );
+      lines.push(
+        ...group.findings.slice(0, 2).map(finding => {
+          const owner = findingOwner(finding);
+          return `  example: ${finding.summary}${owner === undefined ? '' : ` (owner: ${owner})`}`;
+        }),
+      );
+    }
+  }
   if (report.semanticCompleteness.unknownReasons.length > 0) {
     lines.push(
       `- Semantic unknown evidence: ${report.semanticCompleteness.unknownReasons
@@ -195,6 +219,53 @@ export function renderContextHealth(report: ReturnType<typeof buildContextHealth
         .join(', ')}.`,
     );
   }
-  if (report.omittedFindings > 0) lines.push(`- ${report.omittedFindings} additional finding(s) omitted by the limit.`);
+  if (report.findings.length > 0) {
+    const reviewable = report.findings.filter(finding => finding.repairability === 'reviewable').length;
+    const manualReview = report.findings.filter(finding => finding.repairability === 'manual-review').length;
+    const requiresEvidence = report.findings.filter(finding => finding.repairability === 'requires-evidence').length;
+    const project = shellQuote(report.project);
+    lines.push('Next steps for the shown findings:');
+    if (reviewable > 0) {
+      lines.push(
+        `- Preview ${reviewable} reviewable finding${reviewable === 1 ? '' : 's'} with owner metadata: threadnote context repair preview --project ${project} --json`,
+      );
+    }
+    if (manualReview > 0) {
+      lines.push(`- Manually review ${manualReview} finding${manualReview === 1 ? '' : 's'} before choosing a repair.`);
+    }
+    if (requiresEvidence > 0) {
+      lines.push(
+        `- Restore evidence for ${requiresEvidence} finding${requiresEvidence === 1 ? '' : 's'}: read an owner memory, run threadnote graph status in its cited repository/worktree, then rerun this command.`,
+      );
+    }
+    lines.push(
+      `- Inspect structured details for the shown findings: threadnote context health --project ${project} --json`,
+    );
+  }
   return lines.join('\n');
+}
+
+function findingOwner(finding: ReturnType<typeof buildContextHealthReport>['findings'][number]): string | undefined {
+  return finding.repair.subjectUri ?? finding.uris[0];
+}
+
+function findingGroups(findings: ReturnType<typeof buildContextHealthReport>['findings']) {
+  const groups = new Map<
+    string,
+    {
+      readonly category: (typeof findings)[number]['category'];
+      readonly findings: (typeof findings)[number][];
+      readonly severity: (typeof findings)[number]['severity'];
+    }
+  >();
+  for (const finding of findings) {
+    const key = `${finding.severity}\u0000${finding.category}`;
+    const group = groups.get(key);
+    if (group === undefined) {
+      groups.set(key, {category: finding.category, findings: [finding], severity: finding.severity});
+    } else {
+      group.findings.push(finding);
+    }
+  }
+  return [...groups.values()];
 }
