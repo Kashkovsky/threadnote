@@ -38,6 +38,18 @@ export interface Threadnote5ProcedureAuthorityV1 {
   readonly type: 'procedure-verification';
 }
 
+export interface Threadnote5ActivationVerificationAuthorityV1 {
+  readonly recordDigest: string;
+  readonly trials: readonly {
+    readonly activationId: string;
+    readonly attestationDigest: string | null;
+    readonly finalReceiptRevision: string;
+    readonly offlineObservationDigest: string | null;
+    readonly resumeBoundaryRevision: string | null;
+  }[];
+  readonly type: 'activation-verification';
+}
+
 export interface Threadnote5ExternalReceiptAuthorityV1 {
   readonly assertions: readonly string[];
   readonly recordDigest: string;
@@ -49,7 +61,10 @@ export interface Threadnote5ExternalReceiptAuthorityV1 {
 }
 
 export type Threadnote5LocalAuthorityEntryV1 =
-  Threadnote5GitProposalAuthorityV1 | Threadnote5ProcedureAuthorityV1 | Threadnote5ExternalReceiptAuthorityV1;
+  | Threadnote5ActivationVerificationAuthorityV1
+  | Threadnote5GitProposalAuthorityV1
+  | Threadnote5ProcedureAuthorityV1
+  | Threadnote5ExternalReceiptAuthorityV1;
 
 export interface Threadnote5LocalAuthorityManifestV1 {
   readonly candidate: Threadnote5SourceV1;
@@ -76,6 +91,14 @@ export function threadnote5ProcedureVerificationReceiptDigest(value: unknown): s
   return sha256HexSync(`threadnote-5-procedure-verification-receipt-v1\0${canonicalJson(value)}`);
 }
 
+export function threadnote5ActivationAttestationDigest(value: unknown): string {
+  return sha256HexSync(`threadnote-5-activation-attestation-v1\0${canonicalJson(value)}`);
+}
+
+export function threadnote5ActivationOfflineObservationDigest(value: unknown): string {
+  return sha256HexSync(`threadnote-5-activation-offline-observation-v1\0${canonicalJson(value)}`);
+}
+
 export function parseThreadnote5LocalAuthorityManifestV1(value: unknown): Threadnote5LocalAuthorityManifestV1 {
   const source = exactObject(value, ['candidate', 'entries', 'version'], 'local authority manifest');
   if (source.version !== 1 || !Array.isArray(source.entries) || source.entries.length > MAX_AUTHORITY_ENTRIES) {
@@ -96,6 +119,24 @@ export function parseThreadnote5LocalAuthorityManifestV1(value: unknown): Thread
 
 function parseEntry(value: unknown): Threadnote5LocalAuthorityEntryV1 {
   const source = object(value, 'local authority entry');
+  if (source.type === 'activation-verification') {
+    exactKeys(source, ['recordDigest', 'trials', 'type'], 'activation verification authority');
+    if (!Array.isArray(source.trials) || source.trials.length < 1 || source.trials.length > MAX_AUTHORITY_ENTRIES) {
+      throw new Error('Activation verification authority trials are out of bounds.');
+    }
+    const trials = source.trials
+      .map(parseActivationVerificationTrial)
+      .sort((left, right) => left.activationId.localeCompare(right.activationId));
+    unique(
+      trials.map(trial => trial.activationId),
+      'activation verification authority activation IDs',
+    );
+    return {
+      recordDigest: hash(source.recordDigest, 'authority record digest'),
+      trials,
+      type: 'activation-verification',
+    };
+  }
   if (source.type === 'git-proposal-review') {
     exactKeys(source, ['recordDigest', 'trials', 'type'], 'Git proposal authority');
     if (!Array.isArray(source.trials) || source.trials.length < 1 || source.trials.length > MAX_AUTHORITY_ENTRIES) {
@@ -181,6 +222,23 @@ function parseEntry(value: unknown): Threadnote5LocalAuthorityEntryV1 {
     };
   }
   throw new Error('Local authority entry type is unsupported.');
+}
+
+function parseActivationVerificationTrial(
+  value: unknown,
+): Threadnote5ActivationVerificationAuthorityV1['trials'][number] {
+  const source = exactObject(
+    value,
+    ['activationId', 'attestationDigest', 'finalReceiptRevision', 'offlineObservationDigest', 'resumeBoundaryRevision'],
+    'activation verification authority trial',
+  );
+  return {
+    activationId: hash(source.activationId, 'activation ID'),
+    attestationDigest: nullableHash(source.attestationDigest, 'activation attestation digest'),
+    finalReceiptRevision: hash(source.finalReceiptRevision, 'activation final receipt revision'),
+    offlineObservationDigest: nullableHash(source.offlineObservationDigest, 'activation offline observation digest'),
+    resumeBoundaryRevision: nullableHash(source.resumeBoundaryRevision, 'activation resume boundary revision'),
+  };
 }
 
 function parseGitProposalTrial(value: unknown): Threadnote5GitProposalAuthorityV1['trials'][number] {
@@ -271,6 +329,10 @@ function matching(value: unknown, pattern: RegExp, label: string): string {
 
 function hash(value: unknown, label: string): string {
   return matching(value, /^[0-9a-f]{64}$/u, label);
+}
+
+function nullableHash(value: unknown, label: string): string | null {
+  return value === null ? null : hash(value, label);
 }
 
 function unique(values: readonly string[], label: string): void {

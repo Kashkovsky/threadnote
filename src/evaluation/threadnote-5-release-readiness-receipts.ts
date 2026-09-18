@@ -1,5 +1,31 @@
 import {canonicalJson} from '../code_graph/checkpoint/canonical_json.js';
 import {sha256HexSync} from '../crypto/sha256.js';
+import {Effect} from 'effect';
+import type {RuntimeConfig} from '../types.js';
+import {
+  activationReceiptRevisionV1,
+  parseActivationPlanV1,
+  parseActivationReceiptV1,
+  type ActivationApprovalV1,
+  type ActivationPlanV1,
+  type ActivationReceiptV1,
+} from '../activation/contract.js';
+import {activationReceiptTransitionMatchesV1, createActivationReceiptV1} from '../activation/receipt.js';
+import {previewActivationResumeV1} from '../activation/planner.js';
+import {
+  parseSecondSurfaceProofReceiptV1,
+  secondSurfaceProofMatchesContextV1,
+  type SecondSurfaceProofReceiptV1,
+} from '../activation/second_surface.js';
+import {activationValueEventsV1} from '../activation/value.js';
+import {readActivationStateV1} from '../activation/store.js';
+import {
+  parseSecondSurfaceProofAttestationV1,
+  parseSecondSurfaceProofChallengeV1,
+  readSecondSurfaceProofChallengeV1,
+  verifySecondSurfaceProofAttestationV1,
+} from '../activation/second_surface_store.js';
+import {readLocalValueEvents, summarizeLocalValueEvents, type LocalValueEventV1} from '../value_report/events.js';
 import {
   buildKnowledgeDeltaGitProposalV1,
   type KnowledgeDeltaGitProposalInputV1,
@@ -44,6 +70,8 @@ import {
 import {measureAgentToolResponse} from './agent-response.js';
 import {
   parseThreadnote5LocalAuthorityManifestV1,
+  threadnote5ActivationAttestationDigest,
+  threadnote5ActivationOfflineObservationDigest,
   threadnote5ApplyAuditDigest,
   threadnote5ApprovedSourceUriHash,
   threadnote5LocalAuthorityManifestHash,
@@ -58,6 +86,7 @@ const MAX_RECORD_BYTES = 1024 * 1024;
 const MAX_RECORD_SET_BYTES = 8 * 1024 * 1024;
 const MAX_ATTEMPTS = 64;
 const SOURCE_KINDS = [
+  'activation',
   'closeout',
   'context-brief',
   'context-check',
@@ -66,6 +95,8 @@ const SOURCE_KINDS = [
   'guidance',
   'migration',
   'procedure',
+  'recall',
+  'sharing',
   'value-report',
 ] as const;
 
@@ -83,6 +114,89 @@ export interface Threadnote5LocalSubsystemReceiptRecordV1 {
   readonly scenario: Threadnote5ReleaseScenario;
   readonly version: typeof THREADNOTE_5_LOCAL_SUBSYSTEM_RECEIPT_VERSION;
 }
+
+/** A narrow observer supplied by the offline harness around the production activation flow. */
+export interface Threadnote5OfflineNetworkObserverV1 {
+  readonly attemptedNetworkActivityCount: () => number;
+}
+
+/**
+ * Captures only replayable activation evidence from the production stores. The receipt history
+ * is supplied by the harness because the production store deliberately retains just its latest
+ * receipt; the helper verifies the live final state, local value events, and (when present)
+ * the private HMAC challenge before returning a serializable capture.
+ */
+export const captureThreadnote5ActivationTrialV1 = Effect.fn('releaseReadiness.captureActivationTrial')(function* (
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+  input: {
+    readonly activationId: string;
+    readonly approvals?: readonly ActivationApprovalV1[];
+    readonly challengeId?: string;
+    readonly receiptChain: readonly unknown[];
+    readonly offlineObserver?: Threadnote5OfflineNetworkObserverV1;
+    readonly resumeBoundaryRevision?: string;
+  },
+) {
+  const beforeAttempts = input.offlineObserver?.attemptedNetworkActivityCount();
+  const state = yield* readActivationStateV1(config, input.activationId);
+  if (state === undefined) throw new Error('Activation capture requires retained production state.');
+  const receiptChain = input.receiptChain.map(parseActivationReceiptV1);
+  if (canonicalJson(receiptChain.at(-1)) !== canonicalJson(state.receipt)) {
+    throw new Error('Activation capture chain does not end at the live production state.');
+  }
+  const approvals = input.approvals ?? [];
+  verifyActivationReceiptChain(state.plan, receiptChain, approvals);
+  const eventIds = new Set(activationValueEventsV1(state.receipt).map(event => event.eventId));
+  const events = (yield* readLocalValueEvents(config.agentContextHome)).filter(
+    (event): event is Extract<LocalValueEventV1, {readonly kind: 'activation'}> =>
+      event.kind === 'activation' && eventIds.has(event.eventId),
+  );
+  const afterAttempts = input.offlineObserver?.attemptedNetworkActivityCount();
+  if (beforeAttempts !== undefined && (beforeAttempts !== 0 || afterAttempts !== 0)) {
+    throw new Error('Offline activation capture observed network activity.');
+  }
+  if (
+    input.resumeBoundaryRevision !== undefined &&
+    !resumeBoundaryIsVerified(receiptChain, input.resumeBoundaryRevision)
+  ) {
+    throw new Error('Activation capture resume boundary is not an intermediate retained receipt.');
+  }
+  const challenge =
+    input.challengeId === undefined ? undefined : yield* readSecondSurfaceProofChallengeV1(config, input.challengeId);
+  if (challenge !== undefined) {
+    if (challenge.receipt === undefined) throw new Error('Second-surface capture requires a completed live challenge.');
+    yield* verifySecondSurfaceProofAttestationV1(config, challenge, challenge.receipt);
+  }
+  const offlineObservation =
+    beforeAttempts === undefined
+      ? undefined
+      : {
+          afterAttemptCount: afterAttempts!,
+          afterRevision: state.receipt.revision,
+          beforeAttemptCount: beforeAttempts,
+          beforeRevision: receiptChain[0].revision,
+        };
+  const trial = {
+    approvals,
+    events,
+    ...(offlineObservation === undefined ? {} : {offlineObservation}),
+    receiptChain,
+    ...(input.resumeBoundaryRevision === undefined ? {} : {resumeBoundaryRevision: input.resumeBoundaryRevision}),
+    state,
+    ...(challenge === undefined ? {} : {secondSurface: {challenge}}),
+  };
+  return {
+    authorityTrial: {
+      activationId: state.plan.activationId,
+      attestationDigest: challenge?.receipt === undefined ? null : threadnote5ActivationAttestationDigest(challenge),
+      finalReceiptRevision: state.receipt.revision,
+      offlineObservationDigest:
+        offlineObservation === undefined ? null : threadnote5ActivationOfflineObservationDigest(offlineObservation),
+      resumeBoundaryRevision: input.resumeBoundaryRevision ?? null,
+    },
+    trial,
+  };
+});
 
 export interface Threadnote5ScenarioReceiptVerificationV1 {
   readonly missingKinds: readonly string[];
@@ -107,11 +221,43 @@ export type Threadnote5LocalReceiptVerificationV1 =
 
 interface DerivedClaims {
   readonly assertions: readonly string[];
+  readonly correlations?: Threadnote5DerivedCorrelationsV1;
   readonly measurements: readonly Threadnote5MeasurementV1[];
   readonly missingKinds?: readonly string[];
 }
 
+interface Threadnote5ActivationValueLinkV1 {
+  readonly activationId: string;
+  readonly finalReceiptRevision: string;
+}
+
+interface Threadnote5SecondSurfaceLinkV1 {
+  readonly activationId: string;
+  readonly activationReceiptRevision: string;
+  readonly decisionCanonicalUri: string;
+  readonly decisionContentHash: string;
+  readonly decisionMemoryId: string;
+  readonly proofHash: string;
+  readonly publicationReceiptHash: string;
+}
+
+interface Threadnote5SharedDecisionLinkV1 {
+  readonly activationId: string;
+  readonly activationReceiptRevision: string;
+  readonly decisionCanonicalUri: string;
+  readonly decisionContentHash: string;
+  readonly decisionMemoryId: string;
+  readonly publicationReceiptHash: string;
+}
+
+interface Threadnote5DerivedCorrelationsV1 {
+  readonly activationValues?: readonly Threadnote5ActivationValueLinkV1[];
+  readonly secondSurfaceProofs?: readonly Threadnote5SecondSurfaceLinkV1[];
+  readonly sharedDecisions?: readonly Threadnote5SharedDecisionLinkV1[];
+}
+
 type Threadnote5AuthorityRequirementV1 =
+  | 'activation-live-verification-authority'
   | 'context-brief-plan-citation-authority'
   | 'context-check-read-fence-authority'
   | 'guidance-stale-precondition-rejection-authority'
@@ -257,6 +403,7 @@ function verifyObservation(
   const missingKinds: string[] = [];
   const assertions = new Set<string>();
   const measurements: Threadnote5MeasurementV1[] = [];
+  const correlationsByKind = new Map<Threadnote5LocalSourceKindV1, Threadnote5DerivedCorrelationsV1>();
   for (const receipt of observation.attestation.subsystemReceipts) {
     if (!isSourceKind(receipt.kind)) {
       missingKinds.push(receipt.kind);
@@ -269,9 +416,13 @@ function verifyObservation(
     }
     verifiedKinds.push(receipt.kind);
     for (const assertion of derived.assertions) assertions.add(assertion);
+    if (derived.correlations !== undefined) correlationsByKind.set(receipt.kind, derived.correlations);
     measurements.push(...derived.measurements);
     missingKinds.push(...(derived.missingKinds ?? []));
   }
+  const correlated = correlateScenarioClaims(observation.scenario, correlationsByKind);
+  for (const assertion of correlated.assertions) assertions.add(assertion);
+  missingKinds.push(...correlated.missingKinds);
   if (!unique(measurements.map(measurement => measurement.id))) {
     return {
       claimsMismatch: true,
@@ -297,6 +448,46 @@ function verifyObservation(
   };
 }
 
+function correlateScenarioClaims(
+  scenario: Threadnote5ReleaseScenario,
+  correlations: ReadonlyMap<Threadnote5LocalSourceKindV1, Threadnote5DerivedCorrelationsV1>,
+): {readonly assertions: readonly string[]; readonly missingKinds: readonly string[]} {
+  if (scenario === 'two-agent') {
+    const activation = correlations.get('activation');
+    const recall = correlations.get('recall');
+    const value = correlations.get('value-report');
+    if (
+      !sameCorrelationSet(activation?.secondSurfaceProofs, recall?.secondSurfaceProofs) ||
+      !sameCorrelationSet(activation?.activationValues, value?.activationValues)
+    ) {
+      return {assertions: [], missingKinds: ['cross-record-correlation']};
+    }
+    return {
+      assertions: ['second-surface-reused-decision', 'activation-receipt-reused-by-value-report'],
+      missingKinds: [],
+    };
+  }
+  if (scenario === 'git-shared') {
+    const sharing = correlations.get('sharing')?.sharedDecisions;
+    const recall = correlations.get('recall')?.secondSurfaceProofs?.map(sharedDecisionLink);
+    return sameCorrelationSet(sharing, recall)
+      ? {assertions: ['git-shared-decision-retrieved'], missingKinds: []}
+      : {assertions: [], missingKinds: ['cross-record-correlation']};
+  }
+  return {assertions: [], missingKinds: []};
+}
+
+function sameCorrelationSet<T>(left: readonly T[] | undefined, right: readonly T[] | undefined): boolean {
+  if (left === undefined || right === undefined || left.length === 0 || left.length !== right.length) return false;
+  const canonical = (values: readonly T[]) => values.map(value => canonicalJson(value)).sort(compareText);
+  return canonicalJson(canonical(left)) === canonicalJson(canonical(right));
+}
+
+function sharedDecisionLink(proof: Threadnote5SecondSurfaceLinkV1): Threadnote5SharedDecisionLinkV1 {
+  const {proofHash: _, ...link} = proof;
+  return link;
+}
+
 function scenarioVerification(
   scenario: Threadnote5ReleaseScenario,
   verifiedKinds: readonly string[],
@@ -312,6 +503,13 @@ function scenarioVerification(
 }
 
 const LOCAL_RECEIPT_ADAPTERS: readonly Threadnote5LocalReceiptAdapterV1[] = [
+  {
+    acceptedScenarios: ['solo', 'two-agent', 'offline', 'interrupted-resumed'],
+    authorityType: record => (record.scenario === 'solo' ? undefined : 'activation-verification'),
+    derive: (record, authority) => deriveActivation(record.scenario, record.artifact, authority),
+    kind: 'activation',
+    requiredAuthority: ['activation-live-verification-authority'],
+  },
   {
     acceptedScenarios: ['structured-closeout', 'interrupted-resumed', 'output-budgets'],
     derive: record => deriveCloseout(record.scenario, record.artifact, record.candidate),
@@ -364,8 +562,20 @@ const LOCAL_RECEIPT_ADAPTERS: readonly Threadnote5LocalReceiptAdapterV1[] = [
   },
   {
     acceptedScenarios: ['solo', 'two-agent', 'git-shared'],
-    derive: record => deriveValueReport(record.artifact),
+    derive: record => deriveValueReport(record.scenario, record.artifact),
     kind: 'value-report',
+    requiredAuthority: [],
+  },
+  {
+    acceptedScenarios: ['two-agent', 'git-shared'],
+    derive: record => deriveRecall(record.scenario, record.artifact),
+    kind: 'recall',
+    requiredAuthority: [],
+  },
+  {
+    acceptedScenarios: ['git-shared'],
+    derive: record => deriveSharing(record.artifact),
+    kind: 'sharing',
     requiredAuthority: [],
   },
   {
@@ -395,6 +605,330 @@ function deriveClaims(
     throw new Error('Subsystem receipt adapter does not accept this scenario.');
   }
   return adapter.derive(record, authority);
+}
+
+/**
+ * Replays the retained activation state rather than accepting a terminal receipt as proof.
+ * A receipt update can complete exactly one planned operation, so a skipped, repeated, or
+ * disconnected revision is rejected before it can contribute a readiness claim.
+ */
+function deriveActivation(
+  scenario: Threadnote5ReleaseScenario,
+  value: unknown,
+  authority: Threadnote5LocalAuthorityEntryV1 | undefined,
+): DerivedClaims {
+  const source = exactObject(value, ['trials'], 'activation capture');
+  const trialValues = boundedArray(source.trials, 'activation trials', 1, MAX_ATTEMPTS);
+  const authorityTrials = authority?.type === 'activation-verification' ? authority.trials : [];
+  if (scenario !== 'solo' && authority?.type !== 'activation-verification') {
+    return {assertions: [], measurements: [], missingKinds: ['activation-live-verification-authority']};
+  }
+  if (authorityTrials.length !== (scenario === 'solo' ? 0 : trialValues.length)) {
+    throw new Error('Activation authority must exactly cover its captured trials.');
+  }
+  const trials = trialValues.map(trial => {
+    const activationId = object(object(trial, 'activation trial').state, 'activation state').plan;
+    const plan = parseActivationPlanV1(activationId);
+    return parseActivationTrial(
+      trial,
+      scenario,
+      authorityTrials.find(candidate => candidate.activationId === plan.activationId),
+    );
+  });
+  if (!unique(trials.map(trial => trial.plan.activationId))) throw new Error('Activation trials must be unique.');
+  const completed = trials.filter(trial => trial.finalReceipt.status === 'completed').length;
+  if (scenario === 'solo') {
+    return {
+      assertions: trials.every(trial => trial.finalReceipt.firstBrief !== undefined) ? ['local-setup-complete'] : [],
+      measurements: [{eligibleCount: trials.length, id: 'setup-success-rate', positiveCount: completed}],
+    };
+  }
+  if (scenario === 'two-agent') {
+    if (trials.some(trial => !trial.secondSurfaceVerified)) {
+      throw new Error('Two-agent activation trial lacks a bound second-surface proof.');
+    }
+    return {
+      assertions: ['two-surfaces-connected'],
+      correlations: {
+        activationValues: trials.map(activationValueLink),
+        secondSurfaceProofs: trials.map(trial => trial.secondSurfaceLink!),
+      },
+      measurements: [],
+    };
+  }
+  if (scenario === 'offline') {
+    if (trials.some(trial => !trial.offlineObserved || trial.finalReceipt.status !== 'completed')) {
+      throw new Error('Offline activation trial is incomplete or lacks a zero-attempt network observer.');
+    }
+    return {assertions: ['local-flow-complete', 'network-attempts-zero'], measurements: []};
+  }
+  if (trials.some(trial => !trial.interruptionVerified)) {
+    throw new Error('Interrupted activation trial lacks a retained pre-resume receipt.');
+  }
+  return {
+    assertions: ['completed-step-not-repeated', 'resume-receipt-accepted'],
+    measurements: [],
+  };
+}
+
+interface ParsedActivationTrialV1 {
+  readonly finalReceipt: ActivationReceiptV1;
+  readonly interruptionVerified: boolean;
+  readonly offlineObserved: boolean;
+  readonly plan: ActivationPlanV1;
+  readonly secondSurfaceLink?: Threadnote5SecondSurfaceLinkV1;
+  readonly secondSurfaceVerified: boolean;
+}
+
+function parseActivationTrial(
+  value: unknown,
+  scenario: Threadnote5ReleaseScenario,
+  authority:
+    Extract<Threadnote5LocalAuthorityEntryV1, {readonly type: 'activation-verification'}>['trials'][number] | undefined,
+): ParsedActivationTrialV1 {
+  const trial = object(value, 'activation trial');
+  if (
+    !allowedKeys(trial, [
+      'approvals',
+      'events',
+      'offlineObservation',
+      'receiptChain',
+      'resumeBoundaryRevision',
+      'secondSurface',
+      'state',
+    ])
+  ) {
+    throw new Error('Activation trial has unsupported fields.');
+  }
+  const state = exactObject(trial.state, ['plan', 'receipt'], 'activation state');
+  const plan = parseActivationPlanV1(state.plan);
+  const finalReceipt = parseActivationReceiptV1(state.receipt);
+  const chain = boundedArray(trial.receiptChain, 'activation receipt chain', 1, 16).map(parseActivationReceiptV1);
+  const approvals = boundedArray(trial.approvals, 'activation approvals', 0, 16).map(parseActivationApproval);
+  if (canonicalJson(chain.at(-1)) !== canonicalJson(finalReceipt)) {
+    throw new Error('Activation receipt chain does not end at the retained state.');
+  }
+  verifyActivationReceiptChain(plan, chain, approvals);
+  if (
+    scenario !== 'solo' &&
+    (authority === undefined ||
+      authority.finalReceiptRevision !== finalReceipt.revision ||
+      authority.activationId !== plan.activationId)
+  ) {
+    throw new Error('Activation trial is not covered by its independent authority.');
+  }
+  const secondSurfaceLink =
+    scenario === 'two-agent' && trial.secondSurface !== undefined
+      ? verifySecondSurfaceCapture(trial.secondSurface, plan, chain, finalReceipt, authority?.attestationDigest ?? null)
+      : undefined;
+  const secondSurfaceVerified = secondSurfaceLink !== undefined;
+  const offlineObserved =
+    scenario === 'offline' && trial.offlineObservation !== undefined
+      ? verifyOfflineObservation(trial.offlineObservation, chain, authority?.offlineObservationDigest ?? null)
+      : false;
+  const interruptionVerified =
+    scenario === 'interrupted-resumed' &&
+    typeof trial.resumeBoundaryRevision === 'string' &&
+    authority?.resumeBoundaryRevision === trial.resumeBoundaryRevision &&
+    resumeBoundaryIsVerified(chain, trial.resumeBoundaryRevision);
+  if (scenario === 'two-agent' && !secondSurfaceVerified)
+    throw new Error('Activation second-surface evidence is absent.');
+  if (scenario === 'offline' && !offlineObserved) throw new Error('Activation offline observer is absent.');
+  if (scenario === 'interrupted-resumed' && !interruptionVerified) {
+    throw new Error('Activation resume evidence is absent.');
+  }
+  return {finalReceipt, interruptionVerified, offlineObserved, plan, secondSurfaceLink, secondSurfaceVerified};
+}
+
+function verifyActivationReceiptChain(
+  plan: ActivationPlanV1,
+  chain: readonly ActivationReceiptV1[],
+  approvals: readonly ActivationApprovalV1[],
+): void {
+  const initial = chain[0];
+  if (canonicalJson(initial) !== canonicalJson(createActivationReceiptV1(plan, initial.startedAt))) {
+    throw new Error('Activation receipt chain must begin with the initial persisted receipt.');
+  }
+  const approvalsByHash = new Map(approvals.map(approval => [approval.approvalHash, approval] as const));
+  if (approvalsByHash.size !== approvals.length) throw new Error('Activation approvals must be unique.');
+  const usedApprovals = new Set<string>();
+  for (let index = 0; index < chain.length; index += 1) {
+    const receipt = chain[index];
+    if (
+      receipt.activationId !== plan.activationId ||
+      receipt.planHash !== plan.planHash ||
+      activationReceiptRevisionV1(receipt) !== receipt.revision ||
+      receipt.operations.length !== plan.operations.length ||
+      receipt.operations.some(
+        (operation, operationIndex) =>
+          operation.id !== plan.operations[operationIndex]?.id ||
+          operation.kind !== plan.operations[operationIndex]?.kind ||
+          operation.inputHash !== plan.operations[operationIndex]?.inputHash,
+      )
+    ) {
+      throw new Error('Activation receipt does not bind to the parsed plan.');
+    }
+    if (index === 0) continue;
+    const previous = chain[index - 1];
+    const resume = previewActivationResumeV1(plan, previous);
+    const operation =
+      resume.status === 'completed' || resume.status === 'drifted'
+        ? undefined
+        : receipt.operations.find(candidate => candidate.id === resume.operationId);
+    const approvalHash = operation?.approvalHash;
+    const approval = approvalHash === undefined ? undefined : approvalsByHash.get(approvalHash);
+    if (!activationReceiptTransitionMatchesV1(plan, previous, receipt, approval)) {
+      throw new Error('Activation receipt update is not a production-valid transition.');
+    }
+    if (approvalHash !== undefined) usedApprovals.add(approvalHash);
+  }
+  if (usedApprovals.size !== approvals.length) throw new Error('Activation approval evidence is unused.');
+}
+
+function parseActivationApproval(value: unknown): ActivationApprovalV1 {
+  return exactObject(
+    value,
+    [
+      'approvalHash',
+      'approved',
+      'kind',
+      'operationId',
+      'planHash',
+      'receiptRevision',
+      'reviewRevisionHash',
+      'type',
+      'version',
+    ],
+    'activation approval',
+  ) as unknown as ActivationApprovalV1;
+}
+
+function verifySecondSurfaceCapture(
+  value: unknown,
+  plan: ActivationPlanV1,
+  chain: readonly ActivationReceiptV1[],
+  receipt: ActivationReceiptV1,
+  authorityDigest: string | null,
+): Threadnote5SecondSurfaceLinkV1 | undefined {
+  const capture = exactObject(value, ['challenge'], 'second-surface capture');
+  const challenge = parseSecondSurfaceProofChallengeV1(capture.challenge);
+  if (challenge.receipt === undefined || authorityDigest !== threadnote5ActivationAttestationDigest(challenge)) {
+    return undefined;
+  }
+  const attestation = parseSecondSurfaceProofAttestationV1(challenge.receipt);
+  const proof = parseSecondSurfaceProofReceiptV1(attestation.proof);
+  if (!secondSurfaceProofMatchesContextV1(challenge.context, proof)) return undefined;
+  const proofTransition = chain.findIndex(receipt =>
+    receipt.operations.some(operation => operation.kind === 'secondary.prove' && operation.status === 'verified'),
+  );
+  const proofPrevious = proofTransition > 0 ? chain[proofTransition - 1] : undefined;
+  if (
+    challenge.context.activationId !== plan.activationId ||
+    challenge.context.activationReceiptRevision !== proofPrevious?.revision ||
+    receipt.operations.find(operation => operation.kind === 'secondary.prove')?.subsystemReceiptHash !== proof.proofHash
+  ) {
+    return undefined;
+  }
+  return secondSurfaceLink(proof);
+}
+
+function verifyOfflineObservation(
+  value: unknown,
+  chain: readonly ActivationReceiptV1[],
+  authorityDigest: string | null,
+): boolean {
+  const observation = exactObject(
+    value,
+    ['afterAttemptCount', 'afterRevision', 'beforeAttemptCount', 'beforeRevision'],
+    'offline network observation',
+  );
+  return (
+    observation.beforeAttemptCount === 0 &&
+    observation.afterAttemptCount === 0 &&
+    observation.beforeRevision === chain[0]?.revision &&
+    observation.afterRevision === chain.at(-1)?.revision &&
+    authorityDigest === threadnote5ActivationOfflineObservationDigest(observation)
+  );
+}
+
+function resumeBoundaryIsVerified(chain: readonly ActivationReceiptV1[], boundaryRevision: string): boolean {
+  const boundaryIndex = chain.findIndex(receipt => receipt.revision === boundaryRevision);
+  return boundaryIndex > 0 && boundaryIndex < chain.length - 1;
+}
+
+function deriveRecall(_scenario: Threadnote5ReleaseScenario, value: unknown): DerivedClaims {
+  const source = exactObject(value, ['trials'], 'recall capture');
+  const trials = boundedArray(source.trials, 'recall trials', 1, MAX_ATTEMPTS).map(trial => {
+    const item = exactObject(trial, ['proof'], 'recall trial');
+    return parseSecondSurfaceProofReceiptV1(item.proof);
+  });
+  if (!unique(trials.map(trial => trial.proofHash))) throw new Error('Recall trials must be unique.');
+  return {
+    assertions: [],
+    correlations: {secondSurfaceProofs: trials.map(secondSurfaceLink)},
+    measurements: [],
+  };
+}
+
+function deriveSharing(value: unknown): DerivedClaims {
+  const source = exactObject(value, ['trials'], 'sharing capture');
+  const links = boundedArray(source.trials, 'sharing trials', 1, MAX_ATTEMPTS).map(trial => {
+    const item = exactObject(trial, ['decision', 'plan', 'receipt'], 'sharing trial');
+    const plan = parseActivationPlanV1(item.plan);
+    const receipt = parseActivationReceiptV1(item.receipt);
+    const publication = receipt.operations.find(
+      operation => operation.kind === 'decision.publish' || operation.kind === 'decision.propose',
+    );
+    const next = previewActivationResumeV1(plan, receipt);
+    const decision = exactObject(
+      item.decision,
+      ['canonicalUri', 'contentHash', 'memoryId', 'publicationReceiptHash'],
+      'shared decision',
+    );
+    if (
+      receipt.planHash !== plan.planHash ||
+      publication === undefined ||
+      (publication.status !== 'applied' && publication.status !== 'already-current') ||
+      publication.subsystemReceiptHash !== decision.publicationReceiptHash ||
+      next.status === 'completed' ||
+      next.status === 'drifted' ||
+      next.operationId !== 'secondary-proof' ||
+      !hash(decision.contentHash) ||
+      !hash(decision.publicationReceiptHash) ||
+      !nonEmptyText(decision.canonicalUri, 1_024) ||
+      !nonEmptyText(decision.memoryId, 160)
+    ) {
+      throw new Error('Sharing capture has no completed activation publication receipt.');
+    }
+    return {
+      activationId: plan.activationId,
+      activationReceiptRevision: receipt.revision,
+      decisionCanonicalUri: decision.canonicalUri,
+      decisionContentHash: decision.contentHash,
+      decisionMemoryId: decision.memoryId,
+      publicationReceiptHash: decision.publicationReceiptHash,
+    };
+  });
+  if (!unique(links.map(link => `${link.activationId}\0${link.activationReceiptRevision}`))) {
+    throw new Error('Sharing trials must be unique.');
+  }
+  return {assertions: [], correlations: {sharedDecisions: links}, measurements: []};
+}
+
+function activationValueLink(trial: ParsedActivationTrialV1): Threadnote5ActivationValueLinkV1 {
+  return {activationId: trial.plan.activationId, finalReceiptRevision: trial.finalReceipt.revision};
+}
+
+function secondSurfaceLink(proof: SecondSurfaceProofReceiptV1): Threadnote5SecondSurfaceLinkV1 {
+  return {
+    activationId: proof.activationId,
+    activationReceiptRevision: proof.activationReceiptRevision,
+    decisionCanonicalUri: proof.decisionCanonicalUri,
+    decisionContentHash: proof.decisionContentHash,
+    decisionMemoryId: proof.decisionMemoryId,
+    proofHash: proof.proofHash,
+    publicationReceiptHash: proof.publicationReceiptHash,
+  };
 }
 
 /**
@@ -820,8 +1354,11 @@ function deriveProcedure(
   };
 }
 
-function deriveValueReport(value: unknown): DerivedClaims {
-  const source = exactObject(value, ['captures'], 'value-report artifact');
+function deriveValueReport(scenario: Threadnote5ReleaseScenario, value: unknown): DerivedClaims {
+  const source = object(value, 'value-report artifact');
+  if (!allowedKeys(source, ['activationTrials', 'captures']) || !Array.isArray(source.captures)) {
+    throw new Error('Value-report artifact has unsupported fields.');
+  }
   const reports = boundedArray(source.captures, 'value-report captures', 1, MAX_ATTEMPTS).map(parseValueReportCapture);
   if (!unique(reports.map(report => `${report.period.from}\0${report.period.to}`))) {
     throw new Error('Value-report capture periods must be unique.');
@@ -833,17 +1370,84 @@ function deriveValueReport(value: unknown): DerivedClaims {
   if (reports.some(report => report.setup.supportedAgentReuse > report.setup.started)) {
     throw new Error('Value report reuse cannot exceed setup attempts.');
   }
+  const activationLinks =
+    source.activationTrials === undefined
+      ? undefined
+      : activationValueTrials(boundedArray(source.activationTrials, 'activation value trials', 1, MAX_ATTEMPTS));
   return {
-    assertions: [
-      ...(eligibleReuse > 0 ? ['two-surfaces-connected'] : []),
-      ...(reuse > 0 ? ['second-surface-reused-decision'] : []),
-    ],
+    assertions: [],
+    ...(activationLinks === undefined ? {} : {correlations: {activationValues: activationLinks}}),
     measurements: [
       {eligibleCount: eligibleWrong, id: 'wrong-memory-rate', positiveCount: wrong},
       {eligibleCount: eligibleReuse, id: 'second-agent-reuse-rate', positiveCount: reuse},
     ],
-    missingKinds: ['activation', 'recall', 'activation-value-linkage'],
+    ...(scenario === 'two-agent' && activationLinks === undefined
+      ? {missingKinds: ['activation', 'activation-value-linkage']}
+      : {}),
   };
+}
+
+function activationValueTrials(trials: readonly unknown[]): readonly Threadnote5ActivationValueLinkV1[] {
+  const links: Threadnote5ActivationValueLinkV1[] = [];
+  for (const value of trials) {
+    const trial = exactObject(value, ['events', 'input', 'report', 'state'], 'activation value trial');
+    const state = exactObject(trial.state, ['plan', 'receipt'], 'activation value state');
+    const plan = parseActivationPlanV1(state.plan);
+    const receipt = parseActivationReceiptV1(state.receipt);
+    if (
+      receipt.activationId !== plan.activationId ||
+      receipt.planHash !== plan.planHash ||
+      activationReceiptRevisionV1(receipt) !== receipt.revision
+    ) {
+      throw new Error('Activation value trial state does not match its plan.');
+    }
+    if (!Array.isArray(trial.events)) throw new Error('Activation value trial events are invalid.');
+    const events = trial.events.map(parseLocalValueEvent);
+    const expected = activationValueEventsV1(receipt);
+    if (
+      events.length !== expected.length ||
+      !unique(events.map(event => event.eventId)) ||
+      !unique(expected.map(event => event.eventId))
+    ) {
+      throw new Error('Activation value trial events are incomplete or duplicated.');
+    }
+    for (const event of expected) {
+      const actual = events.find(candidate => candidate.kind === 'activation' && candidate.eventId === event.eventId);
+      if (canonicalJson(actual) !== canonicalJson(event)) {
+        throw new Error('Activation value trial event does not match the production projection.');
+      }
+    }
+    const input = object(trial.input, 'activation value report input');
+    const report = aggregateValueReportV1({
+      ...(input as unknown as ValueReportInputV1),
+      counts: summarizeLocalValueEvents(events, {
+        from: new Date(text(object(input.period, 'activation value period').from, 'activation value period from', 64)),
+        to: new Date(text(object(input.period, 'activation value period').to, 'activation value period to', 64)),
+      }),
+    });
+    if (canonicalJson(report) !== canonicalJson(trial.report)) {
+      throw new Error('Activation value trial report does not match its raw events.');
+    }
+    links.push({activationId: plan.activationId, finalReceiptRevision: receipt.revision});
+  }
+  if (!unique(links.map(link => link.activationId))) throw new Error('Activation value trials must be unique.');
+  return links;
+}
+
+function parseLocalValueEvent(value: unknown): Extract<LocalValueEventV1, {readonly kind: 'activation'}> {
+  const event = object(value, 'local value event');
+  if (
+    event.kind !== 'activation' ||
+    event.version !== 1 ||
+    !hash(event.eventId) ||
+    !integerIn(event.durationMilliseconds, 0, 7 * 24 * 60 * 60 * 1_000) ||
+    !isoInstant(event.timestamp) ||
+    !['started', 'first-evidence', 'completed', 'second-surface-proof'].includes(event.phase as string) ||
+    !allowedKeys(event, ['durationMilliseconds', 'eventId', 'kind', 'phase', 'timestamp', 'version'])
+  ) {
+    throw new Error('Activation value event is invalid.');
+  }
+  return event as unknown as Extract<LocalValueEventV1, {readonly kind: 'activation'}>;
 }
 
 function parseValueReportCapture(value: unknown): ValueReportV1 {
