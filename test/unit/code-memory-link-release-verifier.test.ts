@@ -1,6 +1,8 @@
 import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Layer, Path} from 'effect';
+import {CodeMemoryLinkScaleProvenanceVerifier} from '../../scripts/code-memory-link-scale-provenance.js';
+import {ScriptError} from '../../scripts/effect/errors.js';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect} from 'vitest';
@@ -9,6 +11,7 @@ import {
   loadCodeMemoryLinkReleaseDescriptorAtHead,
   loadCodeMemoryLinkRetainedBundleAtHead,
   loadCodeMemoryLinkScaleArtifactAtHead,
+  loadCodeMemoryLinkScaleCandidateBindingAtCommit,
   resolveGovernedCodeMemoryLinkRelease,
   verifyApprovalCheckout,
   verifyFinalEvidenceApproval,
@@ -22,7 +25,7 @@ import {
 import type {DevelopmentRuntimeEvidence} from '../../scripts/development-runtime.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {ApplicationLayer, StandaloneBrokerLayer} from '../../src/effect/runtime.js';
 import {
   CODE_MEMORY_LINK_RETAINED_BUNDLE_ROOT,
   createCodeMemoryLinkRetainedBundleV1,
@@ -31,8 +34,12 @@ import {
 import {
   CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET,
   CODE_MEMORY_LINK_SCALE_APPROVED_FIXTURE_HASH,
+  CODE_MEMORY_LINK_SCALE_GITHUB_JOB,
+  CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY,
+  CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID,
   CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS,
   CODE_MEMORY_LINK_SCALE_SCENARIOS,
+  codeMemoryLinkScaleCandidateBindingV1,
   codeMemoryLinkScaleArtifactPath,
   codeMemoryLinkScaleExpectedTruncatedSelectorCount,
   codeMemoryLinkScaleExpectedUris,
@@ -64,8 +71,45 @@ const arbitraryHash = fc
   .map(characters => characters.join(''))
   .filter(hash => hash !== EXTERNAL_HASH && hash !== DOGFOOD_HASH);
 const arbitraryMismatchedScaleHash = arbitraryHash.filter(hash => hash !== SCALE_ARTIFACT_HASH);
+const ScaleVerifierTestLayer = Layer.merge(
+  ApplicationLayer,
+  Layer.succeed(CodeMemoryLinkScaleProvenanceVerifier, {
+    verify: (_subject, identity) => Effect.succeed(scaleRunnerBinding(identity.candidateCommit)),
+  }),
+);
 
 describe('Code Memory Link release governance verifier', () => {
+  effectIt.effect('derives identity from candidate Git objects and rejects malformed or oversized manifests', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-scale-candidate-binding-'});
+      const manifest = path.join(root, 'package.json');
+      yield* git(root, ['init', '--quiet']);
+      yield* fs.writeFileString(manifest, JSON.stringify({version: '4.6.0', packageManager: 'bun@1.4.2'}));
+      const candidate = yield* commit(root, 'candidate package');
+      yield* fs.writeFileString(manifest, JSON.stringify({version: '9.0.0', packageManager: 'bun@9.0.0'}));
+      yield* commit(root, 'governance package differs');
+      expect(yield* loadCodeMemoryLinkScaleCandidateBindingAtCommit(root, candidate)).toEqual(
+        scaleCandidateBinding(candidate),
+      );
+      yield* fs.writeFileString(manifest, '{malformed');
+      const malformed = yield* commit(root, 'malformed manifest');
+      const malformedFailure = yield* loadCodeMemoryLinkScaleCandidateBindingAtCommit(root, malformed).pipe(
+        Effect.flip,
+      );
+      expect(String(malformedFailure)).toContain('Could not derive');
+      yield* fs.writeFileString(
+        manifest,
+        JSON.stringify({version: '4.6.0', packageManager: 'bun@1.4.2', padding: 'x'.repeat(128 * 1024)}),
+      );
+      const oversized = yield* commit(root, 'oversized manifest');
+      const oversizedFailure = yield* loadCodeMemoryLinkScaleCandidateBindingAtCommit(root, oversized).pipe(
+        Effect.flip,
+      );
+      expect(oversizedFailure._tag).toBe('CommandOutputLimitExceeded');
+    }).pipe(provideTestLayer(StandaloneBrokerLayer), TestClock.withLive),
+  );
   effectIt.effect('loads only a hash-named complete bundle from exact tracked HEAD blobs', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -133,7 +177,7 @@ describe('Code Memory Link release governance verifier', () => {
         artifactHash,
         candidate,
         SCALE_BUILT_TARGET_HASH,
-        RELEASE_TAG.slice(1),
+        scaleCandidateBinding(candidate),
       );
       expect(loaded.artifact.gate).toEqual({failures: [], passed: true});
       expect(loaded.artifact.identity).toMatchObject({candidateCommit: candidate, dirty: false});
@@ -145,10 +189,41 @@ describe('Code Memory Link release governance verifier', () => {
         artifactHash,
         candidate,
         '0'.repeat(64),
-        RELEASE_TAG.slice(1),
+        scaleCandidateBinding(candidate),
       ).pipe(Effect.flip);
       expect(String(digestFailure)).toContain('independently rebuilt target');
-    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+      const missingRunner = yield* loadCodeMemoryLinkScaleArtifactAtHead(
+        root,
+        head,
+        repositoryPath,
+        artifactHash,
+        candidate,
+        SCALE_BUILT_TARGET_HASH,
+        scaleCandidateBinding(candidate),
+      ).pipe(
+        Effect.provideService(CodeMemoryLinkScaleProvenanceVerifier, {
+          verify: () => Effect.fail(ScriptError.make({message: 'No signed GitHub attestation'})),
+        }),
+        Effect.flip,
+      );
+      expect(String(missingRunner)).toContain('No signed GitHub attestation');
+      const anotherRun = scaleRunnerBinding(candidate);
+      const mismatchedRunner = yield* loadCodeMemoryLinkScaleArtifactAtHead(
+        root,
+        head,
+        repositoryPath,
+        artifactHash,
+        candidate,
+        SCALE_BUILT_TARGET_HASH,
+        scaleCandidateBinding(candidate),
+      ).pipe(
+        Effect.provideService(CodeMemoryLinkScaleProvenanceVerifier, {
+          verify: () => Effect.succeed({...anotherRun, github: {...anotherRun.github, runId: 2}}),
+        }),
+        Effect.flip,
+      );
+      expect(String(mismatchedRunner)).toContain('failed release-scale gate');
+    }).pipe(provideTestLayer(ScaleVerifierTestLayer), TestClock.withLive),
   );
 
   effectIt.effect('rejects an executable-mode tracked scale artifact', () =>
@@ -174,10 +249,10 @@ describe('Code Memory Link release governance verifier', () => {
         artifactHash,
         candidate,
         SCALE_BUILT_TARGET_HASH,
-        RELEASE_TAG.slice(1),
+        scaleCandidateBinding(candidate),
       ).pipe(Effect.flip);
       expect(String(failure)).toContain('one exact non-executable regular Git blob');
-    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ScaleVerifierTestLayer), TestClock.withLive),
   );
 
   effectIt.effect('accepts the exact candidate, manifest approval, and final-governance chronology', () =>
@@ -747,18 +822,39 @@ function releaseScaleArtifact(candidateCommit: string, builtArtifactSha256: stri
     architecture: 'arm64',
     builtArtifactSha256,
     candidateCommit,
-    cpu: 'reviewed-cpu',
+    candidateVersion: RELEASE_TAG.slice(1),
+    cpu: 'Apple M1',
     dirty: false,
+    gitStatusObserved: true,
+    github: {
+      actions: true,
+      eventName: 'workflow_dispatch',
+      job: CODE_MEMORY_LINK_SCALE_GITHUB_JOB,
+      ref: 'refs/heads/release/4.6.0',
+      repository: CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY,
+      repositoryId: CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID,
+      runAttempt: 1,
+      runId: 1,
+      sha: candidateCommit,
+      workflowRef: `${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY}/.github/workflows/benchmarks.yml@refs/heads/release/4.6.0`,
+      workflowSha: candidateCommit,
+    },
     invocationMode: 'release-scale',
     memoryBytes: 64 * 1024 * 1024 * 1024,
     observedCommit: candidateCommit,
-    operatingSystem: 'reviewed-os',
+    operatingSystem: 'macOS 15.0',
+    packageManager: 'bun@1.4.2',
     runnerClass: CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS,
-    runtime: 'bun/1.3.14',
+    runnerArchitecture: 'ARM64',
+    runnerEnvironment: 'github-hosted',
+    runnerOperatingSystem: 'macOS',
+    runtime: 'bun/1.4.2',
     sourceVersion: `threadnote-${RELEASE_TAG.slice(1)}`,
   };
   return evaluateCodeMemoryLinkScaleCapture({
     budget: CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET,
+    candidateBinding: scaleCandidateBinding(candidateCommit),
+    runnerBinding: scaleRunnerBinding(candidateCommit),
     capture: {
       corpus: {
         corpusBytes: 32 * 1024 * 1024,
@@ -789,6 +885,35 @@ function releaseScaleArtifact(candidateCommit: string, builtArtifactSha256: stri
     createdAt: '2026-08-29T00:00:00.000Z',
     identity,
   });
+}
+
+function scaleCandidateBinding(candidateCommit: string) {
+  return codeMemoryLinkScaleCandidateBindingV1(candidateCommit, {
+    packageManager: 'bun@1.4.2',
+    version: RELEASE_TAG.slice(1),
+  });
+}
+
+function scaleRunnerBinding(candidateCommit: string) {
+  return {
+    github: {
+      actions: true,
+      eventName: 'workflow_dispatch',
+      job: CODE_MEMORY_LINK_SCALE_GITHUB_JOB,
+      ref: 'refs/heads/release/4.6.0',
+      repository: CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY,
+      repositoryId: CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID,
+      runAttempt: 1,
+      runId: 1,
+      sha: candidateCommit,
+      workflowRef: `${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY}/.github/workflows/benchmarks.yml@refs/heads/release/4.6.0`,
+      workflowSha: candidateCommit,
+    },
+    runnerClass: CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS,
+    runnerArchitecture: 'ARM64',
+    runnerEnvironment: 'github-hosted',
+    runnerOperatingSystem: 'macOS',
+  };
 }
 
 const CANDIDATE_RUNTIME_FIELDS = [

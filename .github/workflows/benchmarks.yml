@@ -16,6 +16,8 @@ on:
       - 'scripts/benchmark-context-brief-citations-target.ts'
       - 'scripts/benchmark-code-memory-link-scale.ts'
       - 'scripts/benchmark-code-memory-link-scale-target.ts'
+      - 'scripts/code-memory-link-scale-provenance.ts'
+      - 'scripts/verify-code-memory-link-scale-provenance.ts'
       - 'scripts/benchmark-memory-connections-scale.ts'
       - 'scripts/benchmark-memory-connections-scale-target.ts'
       - 'scripts/evaluate-memory-connections-retrieval.ts'
@@ -391,6 +393,12 @@ jobs:
     if: github.event_name == 'schedule' || inputs.include_code_memory_link_scale
     runs-on: macos-15
     timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
 
     steps:
       - uses: actions/checkout@v7
@@ -409,6 +417,20 @@ jobs:
           THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-macos-15-ARM64
         run: >-
           bun run bench:code-memory-link-scale --
+          --candidate-commit "${{ github.sha }}"
+          --output "${{ runner.temp }}/code-memory-link-capture.json"
+
+      - name: Attest the inverse-selector capture
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ runner.temp }}/code-memory-link-capture.json.subject.json
+
+      - name: Verify signed provenance and derive release-scale evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          bun scripts/verify-code-memory-link-scale-provenance.ts
+          --capture "${{ runner.temp }}/code-memory-link-capture.json"
           --candidate-commit "${{ github.sha }}"
           --output artifacts/code-memory-link-inverse-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json
 

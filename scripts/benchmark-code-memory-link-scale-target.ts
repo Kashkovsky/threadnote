@@ -6,8 +6,12 @@ import {ApplicationLayer} from '../src/effect/runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
 import {
   CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET,
+  CODE_MEMORY_LINK_SCALE_DEVELOPMENT_MAXIMUM_SAMPLES,
+  CODE_MEMORY_LINK_SCALE_DEVELOPMENT_MAXIMUM_WARMUPS,
+  codeMemoryLinkScaleCandidateBindingV1,
+  codeMemoryLinkScaleAttestationSubjectV1,
+  codeMemoryLinkScaleReleaseClaimFailures,
   evaluateCodeMemoryLinkScaleCapture,
-  parseCodeMemoryLinkScaleArtifactV1,
   parseCodeMemoryLinkScaleBudgetV1,
 } from '../src/evaluation/code-memory-link-scale-contract.js';
 import {runCodeMemoryLinkScaleWorkload} from '../src/evaluation/code-memory-link-scale.js';
@@ -46,9 +50,17 @@ export interface CodeMemoryLinkScaleTargetOptions {
 const program = Effect.scoped(
   Effect.gen(function* () {
     const options = parseCodeMemoryLinkScaleTargetArguments(yield* scriptArguments());
+    if (!options.developmentSmoke && options.outputPath === undefined) {
+      return yield* ScriptError.make({
+        message:
+          'Release capture requires --output; it must be signed and independently verified before release-scale promotion.',
+      });
+    }
     const budget = parseCodeMemoryLinkScaleBudgetV1(yield* readJsonFile(options.budgetPath));
-    const observedCommit = gitText(['rev-parse', 'HEAD']);
-    const dirty = gitText(CONFIG_NEUTRAL_GIT_STATUS_ARGUMENTS).length > 0;
+    const observedCommitResult = gitResult(['rev-parse', 'HEAD']);
+    const statusResult = gitResult(CONFIG_NEUTRAL_GIT_STATUS_ARGUMENTS);
+    const observedCommit = observedCommitResult.text;
+    const dirty = !statusResult.success || statusResult.text.length > 0;
     if (observedCommit.length !== 40) {
       return yield* ScriptError.make({message: 'Could not resolve the exact benchmark source commit.'});
     }
@@ -65,39 +77,57 @@ const program = Effect.scoped(
     if (!options.developmentSmoke && !/^[0-9a-f]{64}$/u.test(options.builtArtifactSha256)) {
       return yield* ScriptError.make({message: 'Release-scale evidence requires the built target SHA-256 digest.'});
     }
+    const system = yield* SystemInfo;
+    const [hardware, sourceVersion] = yield* Effect.all([system.hardwareInfo, getThreadnoteVersion()]);
+    const candidateBinding = readCandidateBinding(options.candidateCommit);
+    if (!options.developmentSmoke && candidateBinding === undefined) {
+      return yield* ScriptError.make({
+        message: 'Release-scale evidence requires the exact candidate package manifest to be readable from Git.',
+      });
+    }
+    const identity = identityFromEnvironment({
+      builtArtifactSha256: options.builtArtifactSha256,
+      candidateBinding,
+      candidateCommit: options.candidateCommit,
+      dirty,
+      gitStatusObserved: statusResult.success,
+      invocationMode: options.developmentSmoke ? 'development-smoke' : 'release-scale',
+      observedCommit,
+      sourceVersion,
+      system,
+      hardware,
+    });
+    if (!options.developmentSmoke) {
+      const provenanceFailures = codeMemoryLinkScaleReleaseClaimFailures(identity, candidateBinding);
+      if (provenanceFailures.length > 0) {
+        return yield* ScriptError.make({message: provenanceFailures.join('\n')});
+      }
+    }
     const capture = yield* runCodeMemoryLinkScaleWorkload({
       memoryCandidates: options.memoryCandidates,
       samples: options.samples,
       warmups: options.warmups,
     });
-    const system = yield* SystemInfo;
-    const [hardware, sourceVersion] = yield* Effect.all([system.hardwareInfo, getThreadnoteVersion()]);
     const artifact = evaluateCodeMemoryLinkScaleCapture({
       budget,
+      ...(candidateBinding === undefined ? {} : {candidateBinding}),
       capture,
       createdAt: DateTime.formatIso(yield* DateTime.now),
-      identity: {
-        architecture: system.architecture,
-        builtArtifactSha256: options.builtArtifactSha256,
-        candidateCommit: options.candidateCommit,
-        cpu: hardware.cpuModel,
-        dirty,
-        invocationMode: options.developmentSmoke ? 'development-smoke' : 'release-scale',
-        memoryBytes: hardware.memoryBytes,
-        observedCommit,
-        operatingSystem: hardware.operatingSystem,
-        runnerClass: system.environment().THREADNOTE_BENCHMARK_RUNNER_CLASS ?? 'local-unpinned',
-        runtime: `bun/${system.runtimeVersion}`,
-        sourceVersion: `threadnote-${sourceVersion}`,
-      },
+      identity,
     });
-    const verified = parseCodeMemoryLinkScaleArtifactV1(artifact, budget);
     if (options.outputPath !== undefined) {
-      yield* atomicWrite(options.outputPath, `${JSON.stringify(verified, undefined, 2)}\n`);
+      yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
+      if (!options.developmentSmoke)
+        yield* atomicWrite(`${options.outputPath}.subject.json`, codeMemoryLinkScaleAttestationSubjectV1(artifact));
     }
-    yield* printJson(verified);
-    if (!options.developmentSmoke && !verified.gate.passed) {
-      return yield* ScriptError.make({message: verified.gate.failures.join('\n')});
+    yield* printJson(artifact);
+    const captureFailures = artifact.gate.failures.filter(
+      failure =>
+        failure !== 'artifact is a development smoke, not release-scale evidence' &&
+        failure !== 'release-scale evidence requires an independently supplied runner binding',
+    );
+    if (!options.developmentSmoke && captureFailures.length > 0) {
+      return yield* ScriptError.make({message: captureFailures.join('\n')});
     }
   }),
 );
@@ -129,6 +159,12 @@ export function parseCodeMemoryLinkScaleTargetArguments(args: readonly string[])
       message: '--memory-candidates, --samples, and --warmups require --development-smoke; release scale is fixed.',
     });
   }
+  if (
+    (samples ?? 0) > CODE_MEMORY_LINK_SCALE_DEVELOPMENT_MAXIMUM_SAMPLES ||
+    (warmups ?? 0) > CODE_MEMORY_LINK_SCALE_DEVELOPMENT_MAXIMUM_WARMUPS
+  ) {
+    throw ScriptError.make({message: 'Development observation maximum is 25 samples and 5 warmups.'});
+  }
   return {
     budgetPath,
     builtArtifactSha256,
@@ -142,9 +178,91 @@ export function parseCodeMemoryLinkScaleTargetArguments(args: readonly string[])
   };
 }
 
-function gitText(args: readonly string[]): string {
+function readCandidateBinding(candidateCommit: string) {
+  const manifest = gitResult(['show', `${candidateCommit}:package.json`]);
+  if (!manifest.success) return undefined;
+  try {
+    return codeMemoryLinkScaleCandidateBindingV1(candidateCommit, JSON.parse(manifest.text) as unknown);
+  } catch {
+    return undefined;
+  }
+}
+
+export function identityFromEnvironment(input: {
+  readonly builtArtifactSha256: string;
+  readonly candidateBinding: ReturnType<typeof readCandidateBinding>;
+  readonly candidateCommit: string;
+  readonly dirty: boolean;
+  readonly gitStatusObserved: boolean;
+  readonly hardware: {readonly cpuModel: string; readonly memoryBytes: number; readonly operatingSystem: string};
+  readonly invocationMode: 'development-smoke' | 'release-scale';
+  readonly observedCommit: string;
+  readonly sourceVersion: string;
+  readonly system: {
+    readonly architecture: string;
+    readonly environment: () => Record<string, string | undefined>;
+    readonly platform: string;
+    readonly runtimeVersion: string;
+  };
+}) {
+  const environment = input.system.environment();
+  const smoke = input.invocationMode === 'development-smoke';
+  const fallbackCommit = /^[0-9a-f]{40}$/u.test(input.observedCommit) ? input.observedCommit : input.candidateCommit;
+  const candidateVersion = input.candidateBinding?.candidateVersion ?? input.sourceVersion;
+  return {
+    architecture: input.system.architecture,
+    builtArtifactSha256: input.builtArtifactSha256,
+    candidateCommit: input.candidateCommit,
+    candidateVersion,
+    cpu: input.hardware.cpuModel,
+    dirty: input.dirty,
+    gitStatusObserved: input.gitStatusObserved,
+    github: {
+      actions: environment.GITHUB_ACTIONS === 'true',
+      eventName: environment.GITHUB_EVENT_NAME?.trim() || 'local',
+      job: environment.GITHUB_JOB?.trim() || 'local',
+      ref: environment.GITHUB_REF?.trim() || 'local',
+      repository: environment.GITHUB_REPOSITORY?.trim() || 'local',
+      repositoryId: environment.GITHUB_REPOSITORY_ID?.trim() || 'local',
+      runAttempt: environmentInteger(environment.GITHUB_RUN_ATTEMPT, 'GITHUB_RUN_ATTEMPT', smoke),
+      runId: environmentInteger(environment.GITHUB_RUN_ID, 'GITHUB_RUN_ID', smoke),
+      sha: environmentCommit(environment.GITHUB_SHA, 'GITHUB_SHA', smoke, fallbackCommit),
+      workflowRef: environment.GITHUB_WORKFLOW_REF?.trim() || 'local',
+      workflowSha: environmentCommit(environment.GITHUB_WORKFLOW_SHA, 'GITHUB_WORKFLOW_SHA', smoke, fallbackCommit),
+    },
+    invocationMode: input.invocationMode,
+    memoryBytes: input.hardware.memoryBytes,
+    observedCommit: input.observedCommit,
+    operatingSystem: input.hardware.operatingSystem,
+    packageManager: input.candidateBinding?.packageManager ?? 'bun@local',
+    runnerArchitecture: environment.RUNNER_ARCH?.trim() || input.system.architecture,
+    runnerClass: environment.THREADNOTE_BENCHMARK_RUNNER_CLASS?.trim() || 'local-unpinned',
+    runnerEnvironment: environment.RUNNER_ENVIRONMENT?.trim() || 'local',
+    runnerOperatingSystem: environment.RUNNER_OS?.trim() || input.system.platform,
+    runtime: `bun/${input.system.runtimeVersion}`,
+    sourceVersion: `threadnote-${input.sourceVersion}`,
+  };
+}
+
+function environmentInteger(value: string | undefined, name: string, smoke: boolean): number {
+  const parsed = Number(value);
+  if (value !== undefined && /^[1-9]\d*$/u.test(value) && Number.isSafeInteger(parsed)) return parsed;
+  if (smoke) return 1;
+  throw ScriptError.make({message: `Release scale requires a valid raw ${name} positive integer.`});
+}
+
+function environmentCommit(value: string | undefined, name: string, smoke: boolean, fallback: string): string {
+  if (value !== undefined && /^[0-9a-f]{40}$/u.test(value)) return value;
+  if (smoke) return fallback;
+  throw ScriptError.make({message: `Release scale requires a valid raw ${name} commit SHA.`});
+}
+
+function gitResult(args: readonly string[]): {readonly success: boolean; readonly text: string} {
   const result = Bun.spawnSync({cmd: ['git', ...args], stderr: 'ignore', stdout: 'pipe'});
-  return result.exitCode === 0 && result.stdout ? new TextDecoder().decode(result.stdout).trim() : '';
+  return {
+    success: result.exitCode === 0,
+    text: result.exitCode === 0 && result.stdout ? new TextDecoder().decode(result.stdout).trim() : '',
+  };
 }
 
 function commit(value: string | undefined, option: string): string {
