@@ -234,3 +234,122 @@ remote and laptop share configuration and leave local stdio enabled. A fresh lap
 with `threadnote share init <knowledge-remote> --team pilot --read-only` and `threadnote share sync --team pilot --no-push`.
 Do not switch to PostgreSQL canonical bodies or create another writable authority during recovery. Resume hosted reads
 only after the Git binding, current grant, ingest freshness, and acceptance drill pass again.
+
+## Hosted Context Health (O3)
+
+Hosted health is a read-only observer over three versioned inputs: an immutable repository commit, the canonical Git
+memory snapshot revision, and an immutable health policy. A trusted evaluator signs the existing Context Health
+aggregate and content-free signal counts with an audience-bound worker key. The signature also binds the database claim
+token and generation, schedule and policy, both snapshot identities, and observation time. An unsigned or altered clean
+result is rejected. It never reads a developer checkout, claims that a dirty worktree is current, or applies a repair.
+PostgreSQL stores schedules, policy versions, and content-free receipts; it does not become a memory-body authority.
+
+Apply migration 8, remove health permissions from the general runtime with
+`deploy/remote-memory/grants/001-runtime.sql`, and provision a distinct login named
+`threadnote_context_health_worker`. Revoke its existing database privileges, grant plain `CONNECT` on the service
+database without grant option, then apply
+`deploy/remote-memory/grants/002-context-health-worker.sql` as the schema owner. Store its database URL separately from
+the runtime and operator URLs. `health-run` and `health-cycle` must receive the dedicated worker URL through
+`THREADNOTE_REMOTE_DATABASE_URL`; schedule registration, pause, and resume continue to use the operator URL. Prepare a
+schedule input without credentials, memory content, repository names, paths, or raw human identities:
+
+```json
+{
+  "cadenceMinutes": 60,
+  "nextDueAt": "2026-09-18T12:00:00.000Z",
+  "policy": {
+    "backlogAlertCount": 20,
+    "persistentStaleRuns": 2,
+    "policyVersion": "pilot-health-v1",
+    "schedulerLagMinutes": 15,
+    "supportOwner": "pilot-support-primary",
+    "workerHeartbeatMinutes": 5
+  },
+  "project": "threadnote",
+  "shareId": "pilot-memory",
+  "tenantId": "pilot-organization"
+}
+```
+
+Generate the deterministic schedule, review it, and apply it. Output files are exclusive-create so an old review cannot
+be overwritten silently:
+
+```sh
+threadnote remote-memory-operator health-schedule-plan \
+  --input pilot-health-request.json --output pilot-health-plan.json
+threadnote remote-memory-operator health-schedule \
+  --input pilot-health-plan.json --receipt pilot-health-schedule.receipt.json
+```
+
+The hosted snapshot adapter must build each run input from the database claim's exact admitted Git commit, canonical
+memory-share revision digest, due revision, backlog, persistent-stale state, and versioned policy. The worker re-derives
+those identifiers from the Git-ingest admission and current shared-memory heads while holding lifecycle locks before it
+commits a receipt. The fixed `SECURITY DEFINER` routine locks the active tenant/share/project/schedule and the exact
+active memory heads/current revisions, so the worker needs no memory-table update privilege; caller-supplied identifiers
+never establish evidence authority. Give only this evaluator and worker
+the `THREADNOTE_CONTEXT_HEALTH_EVALUATION_KEY` secret (at least 32 bytes), rotate it through the platform secret store,
+and never place it in an input artifact, database row, receipt, or log. It rejects observations outside the
+five-minute database-clock skew window and derives retry, next-due, heartbeat, lag, and backlog state from PostgreSQL
+time. `signals` contains counts only: current, changed, missing, and unknown citations; unindexed scope; stale handoffs;
+policy drift; and failed checks. Do not put finding summaries, URIs, paths, repository names, memory bodies, raw
+identities, or logs into the run artifact.
+
+Run one bounded cycle from the platform scheduler. `concurrency` is limited to 64. PostgreSQL discovers due work,
+rotates the persisted tenant cursor before taking a second job from any tenant, and claims each due revision with a
+five-minute lease. Replica-safe generations prevent a slow worker from overwriting newer worker health. Malformed or
+failed evaluations are settled and backed off independently, so one tenant cannot stop another. A selected row whose
+authoritative Git or shared-memory evidence is unavailable is atomically backed off before the bounded scan continues;
+it cannot repeatedly occupy the front of the queue and starve healthy work. An empty evaluation
+batch is healthy only when the authoritative queue proves that no work is due. Replaying an identical admitted input
+returns the existing receipt and does not advance failure state twice.
+
+```sh
+threadnote remote-memory-operator health-cycle \
+  --input pilot-health-cycle.json --receipt pilot-health-cycle.receipt.json
+```
+
+Each target receipt contains opaque tenant/share/project labels, snapshot and policy digests, bounded counts, outcome,
+and five alert states. Every firing alert includes the named support role, a safe first action, and rollback guidance:
+persistent stale evidence opens review without applying a repair; failed checks verify immutable inputs; heartbeat
+alerts restart the worker; backlog and scheduler-lag alerts inspect capacity and can pause intake. Preserve these
+receipts and the last-success/last-failure pointers. Do not preserve the input aggregate or raw worker output as
+telemetry.
+
+### Start, stop, and rollback
+
+Start by applying the migration and both grant contracts, registering one schedule per tenant/share/project with the
+operator credential, and running a single synthetic clean cycle with the dedicated worker credential. The general
+runtime and worker role cannot create policies, register or replace schedules, pause or resume them, or rewrite cadence
+and policy bindings. `health-run` and `health-cycle` perform an exact privilege preflight before claiming work and reject
+schema owners, migrators, operators, the general remote-memory runtime role, grant options, PUBLIC routine access, or a
+drifted lifecycle-lock routine. The worker can read only the columns needed for admitted Git/shared-memory identity and
+content-free health state. It can claim due work, insert receipt columns, and update bounded
+schedule/backoff/worker-state fields. It cannot insert or update memory heads or revisions, change share generations,
+provision tenants or grants, or register, pause, resume, or rewrite schedule policy and cadence. Verify one receipt, its
+opaque labels, `memoryMutation: "none"`, the worker heartbeat, and the unchanged canonical Git revision before enabling
+the platform timer.
+
+Stop new work first:
+
+```sh
+threadnote remote-memory-operator health-pause \
+  --input pilot-health-target.json --receipt pilot-health-pause.receipt.json
+```
+
+Allow an in-flight immutable evaluation to finish or terminate it at the platform deadline; it has no memory-write
+capability. Resume with `health-resume` only after the current Git snapshot, policy digest, worker heartbeat, and backlog
+are verified. For rollback, pause every schedule, stop the platform timer, and retain existing content-free receipts.
+Leave hosted memory read access and the canonical Git share unchanged. Restore the previous versioned health policy by
+creating and reviewing a new schedule rather than editing an existing policy version. If health processing remains
+unavailable, keep local stdio Context Health available and do not widen any OAuth or memory grant.
+
+## Operations and recovery (O5a)
+
+Use the [operations runbook](org-operations.md) to prepare a provider-neutral backup/PITR, recovery, rotation and rollback
+manifest, produce an explicitly pending drill checklist, and verify content-free operator evidence and receipts. These
+offline file commands require no database credentials and perform no provider actions. The reviewed manifest expires
+at its evidence-age limit, requires distinct deployment and owner IDs, and covers 22 alerts including auth, recall,
+read/write, CAS, Git synchronization, registry publication, database saturation, and canaries. Each alert requires
+named ownership, escalation, safe action, rollback, and delivery proof. Rotation evidence must cover approved
+overlap/handoff and uninterrupted authenticated service and reads. The real isolated restore and
+rotation/rollback drills remain required before O5 acceptance; passing contract tests does not complete that gate.

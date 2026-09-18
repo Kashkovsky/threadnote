@@ -982,10 +982,10 @@ The body remains ordinary **Markdown**.
     expect(article).toBeDefined();
     expect(example?.type).toBe('code');
     if (!example || example.type !== 'code') throw TestError.make({message: 'Metadata example is missing.'});
-    expect(example.code).toContain('--review-after 2026-12-31T00:00:00.000Z');
+    expect(example.code).toContain('--review-after 2026-12-31');
     expect(example.code.match(/--uri <threadnote-uri>/g)).toHaveLength(2);
     expect(example.code.match(/--owner platform-team/g)).toHaveLength(2);
-    expect(example.code.match(/--review-after 2026-12-31T00:00:00\.000Z/g)).toHaveLength(2);
+    expect(example.code.match(/--review-after 2026-12-31/g)).toHaveLength(2);
     expect(example.code).toContain('--content-hash <content-hash>');
     expect(example.code).toContain('--proposal-id <proposal-id>');
     expect(example.code).toContain('--revision <revision>');
@@ -1469,15 +1469,21 @@ The body remains ordinary **Markdown**.
     expect(worksetArticle).toBeDefined();
     expect(mcpExample?.type).toBe('code');
     if (!mcpExample || mcpExample.type !== 'code') throw TestError.make({message: 'Missing workset MCP example.'});
-    expect(content).toContain('threadnote workset status checkout');
-    expect(content).toContain('threadnote workset prepare checkout --concurrency 4');
+    expect(content).toContain('threadnote workset status checkout-platform');
+    expect(content).toContain('threadnote workset prepare checkout-platform --concurrency 4');
+    expect(content).toContain('threadnote workset create checkout');
+    expect(content).toContain('threadnote workset update checkout --name checkout-platform');
+    expect(content).toContain('threadnote workset delete checkout-platform --confirm --json');
+    expect(content).toContain('Advanced/manual option: define repository projects and the Workset together.');
+    expect(content).toContain('docs/adr/**/*.md');
+    expect(content).toContain('threadnote://resources/repos/checkout-api');
     expect(content).toContain('threadnote graph query');
-    expect(content).toContain('--workset checkout');
+    expect(content).toContain('--workset checkout-platform');
     expect(JSON.parse(mcpExample.code)).toMatchObject({
       budgetTokens: 1250,
       callerCwd: '/workspace/checkout-api',
       operation: 'query',
-      workset: 'checkout',
+      workset: 'checkout-platform',
     });
     expect(content).not.toContain('At most eight members');
     expect(content).toContain('no eight-repository admission cap');

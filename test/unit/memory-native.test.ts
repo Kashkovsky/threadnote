@@ -387,6 +387,34 @@ describe('native memory workflow', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  it.effect('skips handoffs in forced batch enrichment previews', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-enrichment-handoff-'});
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        yield* runRemember(config, {
+          kind: 'handoff',
+          project: 'threadnote',
+          sourceAgentClient: 'test',
+          text: 'Handoff facts remain authoritative without generated search aliases.',
+          topic: 'handoff-enrichment',
+        });
+
+        const preview = yield* captureConsole(runEnrichMemories(config, {apply: false, force: true}));
+        expect(preview.output).toContain('Memory enrichment: 0 would be processed');
+        expect(preview.output).toContain('1 handoff/smoke memory record(s) skipped');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it.effect('refuses replacement when raw schema headers are unsafe or duplicated', () =>
     Effect.scoped(
       Effect.gen(function* () {

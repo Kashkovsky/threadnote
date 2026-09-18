@@ -350,6 +350,10 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    verify shared opaque `cgdq_` tokens, latest-demand convergence, process-kill recovery, and a privacy scan. This gate
    records observations and bounded retry guidance, not unverified latency claims. The release is not ready until the
    continuity contract, crash recovery, and strict-current boundaries are all exercised.
+   Use [`bun run gate:code-graph:stage3`](code-graph-readiness.md#stage-3-release-gate) from the exact clean candidate
+   checkout with its verified managed development runtime. `--mode plan` is a non-executing preview; only
+   `--mode execute` creates the disposable fixtures, launches the candidate MCP hosts, and writes passing evidence.
+   Keep the new output file outside source control. The harness accepts no caller-supplied observations.
 5. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
    graph correctness and performance. The tag starts one separate exact-tag production-large capacity classification
    and, on an admitted runner, one `code-graph-production-large-n1` observation automatically. When the hosted runner

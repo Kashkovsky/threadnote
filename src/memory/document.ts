@@ -543,17 +543,19 @@ function normalizeOptionalMetadata(value: string | undefined): string | undefine
   return trimmed ? trimmed : undefined;
 }
 
-function parseIsoDate(value: string | undefined): string | undefined {
-  if (!value) return undefined;
+export function isIsoDateOrCanonicalIsoInstant(value: string): boolean {
   if (/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
     const [year, month, day] = value.split('-').map(Number);
-    const date = new Date(Date.UTC(year, month - 1, day));
-    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
-      ? value
-      : undefined;
+    const date = new Date(0);
+    date.setUTCFullYear(year, month - 1, day);
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
   }
   const parsed = Date.parse(value);
-  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? value : undefined;
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function parseIsoDate(value: string | undefined): string | undefined {
+  return value !== undefined && isIsoDateOrCanonicalIsoInstant(value) ? value : undefined;
 }
 
 function isReviewedCandidateMetadata(metadata: Partial<MemoryMetadata> | undefined): boolean {

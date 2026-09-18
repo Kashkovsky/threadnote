@@ -1,4 +1,15 @@
 import {Schema} from 'effect';
+import type {
+  HostedContextHealthReceiptV1,
+  HostedContextHealthRunInputV1,
+  HostedContextHealthScheduleReceiptV1,
+  HostedContextHealthScheduleV1,
+} from './hosted_context_health.js';
+import type {
+  HostedContextHealthClaimBatchV1,
+  HostedContextHealthClaimV1,
+  HostedContextHealthCycleCompletionV1,
+} from './hosted_context_health_postgres.js';
 import type {RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
 import {
   planRemoteMemoryProvisioning,
@@ -28,7 +39,13 @@ import {
 export const REMOTE_MEMORY_OPERATOR_CONTRACT_VERSION = 1 as const;
 
 export type RemoteMemoryOperatorCapability =
-  'apply_git_beta_import' | 'export_records' | 'inspect_records' | 'migrate_schema' | 'provision_control_plane';
+  | 'apply_git_beta_import'
+  | 'export_records'
+  | 'inspect_records'
+  | 'manage_context_ci'
+  | 'manage_context_health'
+  | 'migrate_schema'
+  | 'provision_control_plane';
 
 export interface RemoteMemoryOperatorCapabilitiesV1 {
   readonly available: readonly RemoteMemoryOperatorCapability[];
@@ -62,6 +79,7 @@ export interface GitBetaImportVerificationV1 {
 }
 
 export interface RemoteMemoryOperatorAdapter {
+  readonly controlContextCi?: (input: unknown, webhookKey?: string) => Promise<unknown>;
   readonly applyProvisioningPlan?: (
     plan: RemoteMemoryProvisioningPlanV1,
     receipt: RemoteMemoryProvisioningReceiptV1,
@@ -79,8 +97,91 @@ export interface RemoteMemoryOperatorAdapter {
   readonly inspectProvisioningState?: (
     input: RemoteMemoryProvisioningRequestV1,
   ) => Promise<RemoteMemoryProvisioningStateV1>;
+  readonly claimContextHealthJobs?: (concurrency: number) => Promise<HostedContextHealthClaimBatchV1>;
+  readonly assertContextHealthWorkerPrivileges?: () => Promise<void>;
+  readonly completeContextHealthCycle?: (input: {
+    readonly failed: boolean;
+    readonly generation: number;
+  }) => Promise<HostedContextHealthCycleCompletionV1>;
+  readonly failContextHealthClaim?: (claim: HostedContextHealthClaimV1) => Promise<void>;
+  readonly registerContextHealthSchedule?: (
+    schedule: HostedContextHealthScheduleV1,
+    nextDueAt: string,
+  ) => Promise<HostedContextHealthScheduleReceiptV1>;
+  readonly recordContextHealthRun?: (
+    claim: HostedContextHealthClaimV1,
+    input: HostedContextHealthRunInputV1,
+  ) => Promise<HostedContextHealthReceiptV1>;
+  readonly setContextHealthScheduleStatus?: (input: {
+    readonly project: string;
+    readonly shareId: string;
+    readonly status: 'active' | 'paused';
+    readonly tenantId: string;
+  }) => Promise<{
+    readonly changed: boolean;
+    readonly labels: {readonly project: string; readonly share: string; readonly tenant: string};
+    readonly status: 'active' | 'paused';
+    readonly version: 1;
+  }>;
   readonly migrateSchema?: () => Promise<RemoteMemoryMigrationResultV1>;
   readonly provisionControlPlane?: (input: RemoteMemoryProvisioningInput) => Promise<void>;
+}
+
+export function assertHostedContextHealthWorkerPrivileges(adapter: RemoteMemoryOperatorAdapter): Promise<void> {
+  return requireCapability(adapter, 'manage_context_health', adapter.assertContextHealthWorkerPrivileges)();
+}
+
+export function registerHostedContextHealthOperator(
+  adapter: RemoteMemoryOperatorAdapter,
+  schedule: HostedContextHealthScheduleV1,
+  nextDueAt: string,
+): Promise<HostedContextHealthScheduleReceiptV1> {
+  return requireCapability(
+    adapter,
+    'manage_context_health',
+    adapter.registerContextHealthSchedule,
+  )(schedule, nextDueAt);
+}
+
+export function recordHostedContextHealthOperator(
+  adapter: RemoteMemoryOperatorAdapter,
+  claim: HostedContextHealthClaimV1,
+  input: HostedContextHealthRunInputV1,
+): Promise<HostedContextHealthReceiptV1> {
+  return requireCapability(adapter, 'manage_context_health', adapter.recordContextHealthRun)(claim, input);
+}
+
+export function claimHostedContextHealthOperator(
+  adapter: RemoteMemoryOperatorAdapter,
+  concurrency: number,
+): Promise<HostedContextHealthClaimBatchV1> {
+  return requireCapability(adapter, 'manage_context_health', adapter.claimContextHealthJobs)(concurrency);
+}
+
+export function failHostedContextHealthOperatorClaim(
+  adapter: RemoteMemoryOperatorAdapter,
+  claim: HostedContextHealthClaimV1,
+): Promise<void> {
+  return requireCapability(adapter, 'manage_context_health', adapter.failContextHealthClaim)(claim);
+}
+
+export function completeHostedContextHealthOperatorCycle(
+  adapter: RemoteMemoryOperatorAdapter,
+  input: {readonly failed: boolean; readonly generation: number},
+): Promise<HostedContextHealthCycleCompletionV1> {
+  return requireCapability(adapter, 'manage_context_health', adapter.completeContextHealthCycle)(input);
+}
+
+export function setHostedContextHealthOperatorStatus(
+  adapter: RemoteMemoryOperatorAdapter,
+  input: {
+    readonly project: string;
+    readonly shareId: string;
+    readonly status: 'active' | 'paused';
+    readonly tenantId: string;
+  },
+) {
+  return requireCapability(adapter, 'manage_context_health', adapter.setContextHealthScheduleStatus)(input);
 }
 
 export class RemoteMemoryOperatorError extends Schema.TaggedError<RemoteMemoryOperatorError>()(

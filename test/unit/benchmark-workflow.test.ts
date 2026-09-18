@@ -252,6 +252,8 @@ describe('platform benchmark workflow', () => {
         'src/utils.ts',
         'src/worker_protocol.ts',
         'test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json',
+        'test/evaluation/fixtures/code-graph-v1/**',
+        'test/unit/benchmark-workflow.test.ts',
         'test/unit/code-graph.production-ratchet-scope.property.test.ts',
       ]),
     );
@@ -261,9 +263,9 @@ describe('platform benchmark workflow', () => {
     expect(job['timeout-minutes']).toBe(40);
     expect(job.needs).toBe('classify');
     expect(job.if).toBe('always()');
-    expect(classifier.outputs?.release_metadata_only).toBe('${{ steps.scope.outputs.release_metadata_only }}');
+    expect(classifier.outputs?.run_benchmark).toBe('${{ steps.scope.outputs.run_benchmark }}');
     expect(classifier.steps?.find(step => step.id === 'scope')).toMatchObject({
-      name: 'Skip only a strict release-metadata diff',
+      name: 'Classify the production-ratchet diff',
       run: 'bun test/ci/code-graph-production-ratchet-scope.ts --base "$BASE_SHA" --head "$HEAD_SHA"',
     });
     const guardedSteps = job.steps?.filter(
@@ -276,9 +278,7 @@ describe('platform benchmark workflow', () => {
     );
     expect(guardedSteps).toHaveLength(5);
     for (const step of guardedSteps ?? []) {
-      expect(step.if).toBe(
-        "needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'",
-      );
+      expect(step.if).toBe("needs.classify.result != 'success' || needs.classify.outputs.run_benchmark != 'false'");
     }
     expect(job.steps?.find(step => step.uses === 'actions/checkout@v7')?.with).toMatchObject({'fetch-depth': '0'});
     const candidateMeasurement = job.steps?.find(
@@ -316,7 +316,7 @@ describe('platform benchmark workflow', () => {
     expect(pairedGate?.run).toContain('--initial-candidate artifacts/code-graph-production-ratchet-Linux-');
     expect(job.steps?.indexOf(pairedCandidateMeasurement!)).toBeLessThan(job.steps?.indexOf(pairedGate!) ?? 0);
     expect(job.steps?.find(step => step.uses === 'actions/upload-artifact@v7')?.if).toContain(
-      "needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'",
+      "needs.classify.result != 'success' || needs.classify.outputs.run_benchmark != 'false'",
     );
     expect(command.match(/--samples 1/g)).toHaveLength(3);
     expect(command.match(/--profile production-large/g)).toHaveLength(3);

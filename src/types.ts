@@ -306,6 +306,10 @@ export interface HandoffOptions {
 }
 
 export interface ArchiveOptions {
+  /** Internal composite-mutation option; the caller must refresh recall indexes from the final state. */
+  readonly deferRecallIndexRefresh?: boolean;
+  /** Internal accumulator for the archive URI created by a composite mutation. */
+  readonly invalidatedUris?: string[];
   readonly dryRun?: boolean;
   /** Internal optimistic-concurrency guard used by hygiene apply. */
   readonly expectedContent?: string;
