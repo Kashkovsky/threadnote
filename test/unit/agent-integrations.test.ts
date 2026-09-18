@@ -7,12 +7,13 @@ import {describe, expect} from 'vitest';
 import {
   agentIntegrationDoctorChecks,
   installAgentIntegration,
+  installCursorCloudAgentIntegration,
   migrateLegacyAgentIntegrations,
   readAgentIntegrationRegistry,
   removeAgentIntegrations,
   repairAgentIntegrations,
 } from '../../src/agent_integration/index.js';
-import {repairableAgentClients} from '../../src/agent_integration/registry.js';
+import {repairableAgentClients, writeAgentIntegrationRegistry} from '../../src/agent_integration/registry.js';
 import {USER_INSTRUCTIONS_END_MARKER, USER_INSTRUCTIONS_START_MARKER} from '../../src/constants.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -515,6 +516,54 @@ describe('agent integrations', () => {
         expect(yield* fs.readFileString(instructions)).toBe('Keep this user instruction.\n');
         expect(yield* fs.exists(skill)).toBe(false);
         expect(yield* readAgentIntegrationRegistry(config(threadnoteHome))).toBeUndefined();
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('removes an obsolete Personal Cursor Cloud graph skill recorded by a prior release', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-agent-cloud-upgrade-removal-'});
+        const userHome = path.join(root, 'user');
+        const threadnoteHome = path.join(userHome, '.threadnote');
+        const graphSkill = path.join(userHome, '.cursor', 'skills', 'threadnote-code-graph', 'SKILL.md');
+        const testSystem = SystemInfo.of({...system, homeDirectory: userHome});
+
+        yield* installCursorCloudAgentIntegration(config(threadnoteHome), false).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        yield* fs.makeDirectory(path.dirname(graphSkill), {recursive: true});
+        yield* fs.writeFileString(
+          graphSkill,
+          yield* fs.readFileString(
+            path.join(process.cwd(), 'config', 'agent-skills', 'threadnote-code-graph', 'SKILL.md'),
+          ),
+        );
+        const registry = (yield* readAgentIntegrationRegistry(config(threadnoteHome)))!;
+        const cursor = registry.hosts.cursor!;
+        yield* writeAgentIntegrationRegistry(config(threadnoteHome), {
+          ...registry,
+          hosts: {
+            ...registry.hosts,
+            cursor: {
+              ...cursor,
+              artifacts: {...cursor.artifacts, [graphSkill]: Object.values(cursor.artifacts)[0]},
+            },
+          },
+        }).pipe(Effect.provideService(SystemInfo, testSystem));
+
+        yield* removeAgentIntegrations(config(threadnoteHome), true).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(yield* fs.exists(graphSkill)).toBe(true);
+
+        yield* removeAgentIntegrations(config(threadnoteHome), false).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(yield* fs.exists(graphSkill)).toBe(false);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
