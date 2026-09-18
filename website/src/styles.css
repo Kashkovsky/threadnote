@@ -754,6 +754,12 @@ p {
   border-color: rgba(146, 125, 255, 0.38);
 }
 
+.home-update-banner--hero {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin: 8px 0 0;
+}
+
 .home-update-banner:hover {
   border-color: rgba(103, 232, 199, 0.7);
   transform: translateY(-2px);
@@ -1192,6 +1198,44 @@ p {
 
 .graph-showcase__heading {
   margin-bottom: 44px;
+}
+
+.graph-showcase__verification {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 28px;
+  align-items: center;
+  margin-bottom: 48px;
+  padding: 24px 28px;
+  background: linear-gradient(110deg, rgba(103, 232, 199, 0.08), rgba(146, 125, 255, 0.06));
+  border: 1px solid var(--line);
+}
+
+.graph-showcase__verification ol {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.graph-showcase__verification li {
+  color: var(--text-soft);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.graph-showcase__verification li span {
+  margin-right: 10px;
+  color: var(--teal);
+  font:
+    var(--font-size-min)/1.4 'JetBrains Mono Variable',
+    monospace;
+}
+
+.graph-showcase__verification > div {
+  display: grid;
+  gap: 10px;
 }
 
 .graph-showcase__tool-switcher {
@@ -6647,6 +6691,11 @@ p {
   .graph-showcase {
     padding-top: 88px;
     padding-bottom: 88px;
+  }
+
+  .graph-showcase__verification {
+    grid-template-columns: 1fr;
+    padding: 20px;
   }
 
   .graph-showcase__tool-switcher,

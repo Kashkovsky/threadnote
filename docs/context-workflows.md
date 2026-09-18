@@ -1,4 +1,6 @@
-# Threadnote 5 context workflows
+# Threadnote 5 context workflows reference
+
+This is the technical reference for Threadnote 5’s context lifecycle. For a first task, install Threadnote, connect one catalog-supported coding-agent environment, ask for a Context Brief, work from exact local code, and review the Knowledge Delta at closeout. Git sharing and a second-agent proof are optional team steps after that journey.
 
 Threadnote 5 is a source-verifiable context compiler for engineering work. Its core loop is deliberately small:
 
@@ -38,7 +40,7 @@ Undo is preview-first and follows the receipt's reverse dependency order. It rem
 surface artifacts that the setup receipt proves were created by setup; pre-existing manifests, integrations, and user
 customizations are never rollback targets. Interrupted rollback persists its remaining undo IDs and is safe to retry.
 
-Surface selection is explicit and comes only from `threadnote agents list`. Catalog-only surfaces fail with their
+Choose one coding-agent environment from `threadnote agents list`; the catalog calls its declared integration a surface. Catalog-only surfaces fail with their
 manual guidance instead of being presented as managed. `--scope` is available for managed JSON adapters; compatibility
 adapters retain their established user-scope lifecycle. This command does not configure composer, team sharing, or any
 organization service.

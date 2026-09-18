@@ -13,7 +13,7 @@ import {
 } from './docsMemoryCitationReference.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
 import {optionalImageProjectionCliCommand, optionalImageProjectionDocsArticle} from './docsImageProjection.js';
-import {connectAgentDocsArticle} from './docsGettingStarted.js';
+import {connectAgentDocsArticle, firstWorkflowDocsArticle} from './docsGettingStarted.js';
 import {projectGuidanceDocsArticle} from './docsGuidance.js';
 import {
   contextLifecycleConceptDocsArticle,
@@ -375,7 +375,8 @@ export const docsSections: DocsSection[] = [
   {
     id: 'getting-started',
     title: 'Getting started',
-    description: 'Set up Threadnote, understand the core workflow, and connect the coding agents you use.',
+    description:
+      'Start one task with local setup, a cited brief, exact code, and a reviewed closeout. Team reuse is optional.',
     articles: [
       threadnote5JourneyDocsArticle,
       {
@@ -393,7 +394,7 @@ export const docsSections: DocsSection[] = [
         body: [
           {
             type: 'paragraph',
-            text: 'Threadnote gives [supported coding agents](/agents/) a shared source of project context. Before a task, it finds the reviewed decisions, unfinished work, and current code that matter. After the task, it asks you which new lessons are worth keeping. Private work and code indexes stay local; selected decisions can be shared through Git and reused in another agent.',
+            text: 'Threadnote gives [supported coding-agent environments](/agents/) a shared source of project context. A coding-agent environment is the editor, CLI, or hosted integration where an agent works; the catalog calls that declared integration a surface. Before a task, Threadnote finds the reviewed decisions, unfinished work, and current code that matter. After the task, it asks which new lessons are worth keeping. Private work and code indexes stay local; Git-backed team reuse is optional.',
           },
           {
             type: 'list',
@@ -471,6 +472,7 @@ threadnote doctor`,
       },
       upgradeFromThreadnote4DocsArticle,
       connectAgentDocsArticle,
+      firstWorkflowDocsArticle,
       projectGuidanceDocsArticle,
       {
         id: 'agent-instructions-and-hooks',
@@ -585,48 +587,6 @@ bun run check:self-contained`,
           {
             type: 'note',
             text: 'Cursor requires Marketplace plugins to use a permissive open-source license. The distributable plugin paths are MIT-licensed; the Threadnote runtime and the rest of the repository remain AGPL-3.0-or-later.',
-          },
-        ],
-      },
-      {
-        id: 'first-workflow',
-        title: 'Work one task with evidence',
-        summary: 'Start with a Context Brief, verify exact local evidence, and close with reviewed knowledge.',
-        body: [
-          {
-            type: 'heading',
-            text: 'Start the task',
-          },
-          {
-            type: 'list',
-            items: [
-              'Ask for a Context Brief with the task, stable project, absolute callerCwd, and any known current-code anchors.',
-              'Read selected `threadnote://` pointers before relying on them; a ranked pointer is not evidence by itself.',
-              'Use exact files and `inspect_code_graph` for current-source claims. The local worktree wins over historical context.',
-              'At closeout, write the required handoff and review the Knowledge Delta before applying reusable durable knowledge.',
-            ],
-          },
-          {
-            type: 'heading',
-            text: 'A compact CLI version',
-          },
-          {
-            type: 'code',
-            language: 'sh',
-            code: `threadnote context brief \\
-  --task "Continue the mobile auth rollout" \\
-  --project mobile \\
-  --budget-tokens 1250
-threadnote graph query --query "refresh token boundary"
-threadnote handoff --project mobile --topic auth-rollout \\
-  --task "Finish refresh-token rollout" \\
-  --tests "bun test auth" \\
-  --next-step "Update the iOS caller"
-threadnote closeout preview --review-id <review-id>`,
-          },
-          {
-            type: 'note',
-            text: 'Use a stable project/topic pair and replace the existing active record. Timestamped duplicates make currentness harder to judge and should be reserved for historical records.',
           },
         ],
       },

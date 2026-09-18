@@ -14,7 +14,7 @@ export const threadnote5JourneyDocsArticle: DocsArticle = {
   body: [
     {
       type: 'paragraph',
-      text: 'Coding agents can read your code, but they do not automatically know why earlier decisions were made, what another agent already tried, or which notes are still current. Threadnote gives them a short, cited briefing before they work and lets you review the useful lessons they leave behind.',
+      text: 'Coding agents can read your code, but they do not automatically know why earlier decisions were made, what another agent already tried, or which notes are still current. A coding-agent environment is the editor, CLI, or hosted integration where an agent works; the catalog calls that declared integration a surface. Start with one environment: Threadnote gives it a short, cited briefing before work and lets you review the useful lessons it leaves behind.',
     },
     {
       type: 'heading',
@@ -44,8 +44,7 @@ export const threadnote5JourneyDocsArticle: DocsArticle = {
         'Start a task with a Context Brief. The agent gets only the decisions and current code evidence that look useful for that task.',
         'Work normally. The repository and your current local files remain the source of truth.',
         'At the end, review the Knowledge Delta. Approve, edit, defer, or reject each suggested lesson.',
-        'Keep approved decisions private or share selected ones through your team’s normal Git review process.',
-        'Later, the same agent—or another supported agent—can find the decision instead of asking you to explain it again.',
+        'Keep approved decisions local and review their citations, dates, and contradictions as the project changes.',
       ],
     },
     {
@@ -65,7 +64,19 @@ threadnote setup <surface> --apply`,
     },
     {
       type: 'heading',
-      text: 'Why try the two-agent journey?',
+      text: 'Optional: share the proof with a team',
+    },
+    {
+      type: 'list',
+      items: [
+        'Import selected repository guidance or ADRs into review; imported text never becomes trusted knowledge automatically.',
+        'Keep approved context private, publish one reviewed decision, or materialize a provider-neutral Git proposal for normal team review.',
+        'Retrieve the approved decision from a second coding-agent environment only when you want to prove portable reuse.',
+      ],
+    },
+    {
+      type: 'heading',
+      text: 'Optional: try the guided two-agent journey',
     },
     {
       type: 'paragraph',
@@ -117,6 +128,16 @@ export const contextLifecycleConceptDocsArticle: DocsArticle = {
       rows: [
         ['Repository and worktree', 'Current implementation, tests, and local changes', 'Exact local files win'],
         [
+          'Imported guidance',
+          'Repository instructions and ADRs proposed for review',
+          'Never durable knowledge until reviewed',
+        ],
+        [
+          'Guidance projection',
+          'Approved knowledge rendered into catalog-declared agent instructions',
+          'Repository guidance remains authoritative',
+        ],
+        [
           'Durable memory',
           'Reviewed decisions, rationale, contracts, and constraints',
           'Canonical Markdown or reviewed team Git',
@@ -133,9 +154,24 @@ export const contextLifecycleConceptDocsArticle: DocsArticle = {
           'Not authoritative until explicitly reviewed and applied',
         ],
         [
+          'Git proposal',
+          'An approved Knowledge Delta prepared for normal team review',
+          'Not shared until its Git review is accepted',
+        ],
+        [
+          'Health finding',
+          'Evidence that saved context may be stale, conflicting, expired, or disconnected',
+          'A review prompt, never a silent mutation',
+        ],
+        [
           'Derived index or graph',
           'Fast retrieval and current-source relationships',
           'Disposable evidence with snapshot and coverage receipts',
+        ],
+        [
+          'Local value evidence',
+          'Content-free activation, review, reuse, feedback, and repair counts',
+          'Private aggregate signals, not source or memory content',
         ],
       ],
     },
