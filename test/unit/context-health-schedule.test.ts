@@ -13,6 +13,19 @@ const PERSONAL_REVISION = '1'.repeat(64);
 const TEAM_REVISION = '2'.repeat(64);
 
 describe('context health aggregation and schedule contract', () => {
+  it('supports a canonical shared-only aggregate without a personal source', () => {
+    const aggregate = aggregateContextHealthReportsV1({
+      project: PROJECT,
+      teams: [completeTeam('canonical', report(), TEAM_REVISION)],
+    });
+
+    expect(aggregate).toMatchObject({completeSources: 1, status: 'clean', unknownSources: 0});
+    expect(aggregate.sources.map(source => source.sourceKey)).toEqual(['team:canonical']);
+    expect(() => aggregateContextHealthReportsV1({project: PROJECT, teams: []})).toThrow(
+      /at least one evidence source/i,
+    );
+  });
+
   it('returns clean only when every selected local source has complete evidence', () => {
     const aggregate = aggregateContextHealthReportsV1({
       personal: completePersonal(report()),
