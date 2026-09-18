@@ -10,6 +10,7 @@ import {captureConsole} from '../../src/effect/console.js';
 import {sha256Hex} from '../../src/effect/digest.js';
 import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
 import {getThreadnoteVersion} from '../../src/release/runtime_version.js';
+import {recallIndexStatus} from '../../src/recall/index.js';
 import {getRuntimeConfig} from '../../src/runtime.js';
 import {runInitManifest} from '../../src/seeding.js';
 import {
@@ -384,6 +385,9 @@ describe('setup orchestration', () => {
         ).pipe(Effect.provideService(SystemInfo, system));
 
         expect(result.status).toBe('applied');
+        expect(
+          (yield* recallIndexStatus({account: 'local', agentContextHome: home, user: 'tester'}, false)).ready,
+        ).toBe(true);
       }),
     ).pipe(run),
   );

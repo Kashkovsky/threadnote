@@ -21,6 +21,7 @@ import {hasCurrentClaudeHooks, hasManagedClaudeHooks, runHooksInstall} from '../
 import {collectDoctorChecks, runInstall} from '../lifecycle.js';
 import {readSeedManifest} from '../manifest.js';
 import {hasCurrentOmpHooks, hasManagedOmpHooks} from '../omp_hooks.js';
+import {refreshRecallDerivedIndexesFromSelection} from '../recall/mcp_refresh.js';
 import {runInitManifest, runSeed} from '../seeding.js';
 import type {DoctorCheck, RuntimeConfig} from '../types.js';
 import {expandPath, readFileIfExists} from '../utils.js';
@@ -190,6 +191,7 @@ export const seedSetupProject = Effect.fn('setup.seedProject')(function* (
   if (!project)
     return yield* SetupOperationError.make({message: 'The setup project is absent from the seed manifest.'});
   yield* runSeed(config, {dryRun: !apply, only: [project.name]});
+  if (apply) yield* refreshRecallDerivedIndexesFromSelection(config, []);
   return {ownership: 'preexisting', status: 'applied'} satisfies SetupOperationOutcome;
 });
 
