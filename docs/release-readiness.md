@@ -13,6 +13,15 @@ kind, and artifact. Every observation must bind the exact
 outside the evidence file.
 
 ```sh
+bun run capture:threadnote-5-release-readiness -- \
+  --candidate candidate-runtime.json \
+  --runtime-boundaries scenario-runtime-boundaries.json \
+  --retained-subsystem-receipts private-source-records.json \
+  --authority-manifest reviewed-authority.json \
+  --authority-manifest-sha256 <independently-reviewed-64-hex-sha256> \
+  --evidence-output candidate-evidence.json \
+  --canonical-receipts-output retained-receipts.json
+
 bun run verify:threadnote-5-release-readiness-receipts -- \
   --evidence candidate-evidence.json \
   --retained-subsystem-receipts retained-receipts.json \
@@ -30,6 +39,12 @@ bun run eval:threadnote-5-release-readiness -- \
   --evidence candidate-evidence.json
 ```
 
+The capture command accepts exactly the 15 preregistered scenario boundaries and 24 source-native records. It replays
+the same adapters as the verifier, derives the transcripts instead of accepting claimed outcomes, and writes records in
+canonical order. Input order cannot change the evidence or manifest hashes. Missing, extra, duplicated, oversized,
+mislabeled, under-sampled, cross-scenario, or pre/post runtime-drifting inputs stop capture without producing a passing
+artifact. Review the printed capture-manifest hash independently before using it as evaluator authority.
+
 The authority manifest is a separate content-free review boundary. Capture it from the supervising
 execution/review surface, not from the proposal or procedure artifact being evaluated. It binds
 candidate-review apply events, provider-call counts, procedure command exit receipts, and automatic
@@ -45,10 +60,13 @@ The local adapter registry independently parses and rederives shipped structured
 proposal, procedure, health, Context Brief, Context Check, guidance, and migration artifacts. It rejects duplicate, extra, oversized, stale-candidate,
 or unreferenced records and compares derived assertions and measurements exactly with the sealed
 transcript. Proposal approval and procedure execution are checked against the independently trusted
-authority manifest rather than proposal/receipt labels. Health-maintenance captures replay the production schedule plan
-and aggregate from bounded personal/team sources, then require a record-bound authority entry proving zero writes/network
-activity and stable pre/post HEAD, index, and worktree digests for every selected configured team. Unknown aggregate
-results remain valid read-only outcomes. Pending verifier seams leave only their dependent scenarios and metrics unknown;
+authority manifest rather than proposal/receipt labels. Activation, Context Brief, and ValueReport records are joined by
+the exact first-brief receipt or second-surface proof, and each counted feedback event is bound to that exact scenario
+trial. Offline activation and ValueReport trials both require separately hash-bound zero-network observations. Scheduled
+health captures replay the production schedule plan and aggregate from bounded personal/team sources, then require a
+record-bound authority entry proving zero writes/network activity and stable pre/post HEAD, index, and worktree digests
+for every selected configured team. Unknown aggregate results remain valid read-only outcomes. Missing source-native
+records or external authority leave only their dependent scenarios and metrics unknown;
 tampered or mismatched evidence is a quality failure.
 
 Context Brief captures strictly reparse the production request/result, require a requested cap from 800–1,500 estimated
@@ -67,9 +85,11 @@ auto-execute, activation receipt reuse in ValueReport, provider-neutral Git prop
 read-only scheduling plus configured Git-team read-only health aggregation. Organization-hosted
 scheduling is outside this procedure. Measured lanes retain the ten-eligible-sample minimum.
 
-## Compare 4.7.x
+## Compare with the last 4.x release
 
-Capture 4.7 evidence in a separate local artifact and supply its identity outside that artifact:
+The baseline is fixed to Threadnote 4.7.8 at commit
+`80ca4acdb7347a4d00b0381f3757a5ac984d9fbf`. Capture its evidence in a separate local artifact, then independently
+record the executable hash for the exact platform binary that produced it:
 
 ```sh
 bun run capture:threadnote-5-baseline-ledger -- \
@@ -82,16 +102,25 @@ bun run eval:threadnote-5-release-readiness -- \
   --capture-manifest-sha256 <reviewed-manifest-sha256> \
   --authority-manifest reviewed-authority.json \
   --authority-manifest-sha256 <independently-reviewed-64-hex-sha256> \
-  --baseline-version 4.7.9 \
-  --baseline-commit <4.7-commit> \
-  --baseline-executable-sha256 <4.7-executable-sha256> \
+  --baseline-version 4.7.8 \
+  --baseline-commit 80ca4acdb7347a4d00b0381f3757a5ac984d9fbf \
+  --baseline-executable-sha256 <4.7.8-platform-executable-sha256> \
   --baseline-trial-ledger baseline-trial-ledger.json \
   --baseline-trial-ledger-sha256 <independently-reviewed-ledger-hash> \
   --retained-subsystem-receipts retained-receipts.json \
   --evidence candidate-evidence.json
 ```
 
-Do not treat a baseline artifact as its own authority. The evaluator accepts a comparison only
-when the independently supplied version, commit, and executable hash exactly match its retained
-baseline observations. For a downgrade, run the same fixture after restoring 4.7.x; retain a
-safe-refusal result instead of forcing a destructive downgrade.
+Do not treat the baseline artifact as its own authority. Version, commit, executable hash, ledger, and the ledger hash
+reviewed outside that ledger are one mandatory trust boundary; omitting or mismatching any part keeps the comparison
+unknown and cannot admit a release.
+
+Only measurements that both releases genuinely share are compared: time and estimated tokens to the first cited correct
+Context Brief plan, plus the raw eligible/wrong feedback counts used to calculate wrong-memory rate. Setup success,
+second-agent reuse, Knowledge Delta completion, and health resolution were introduced for the 5.0 workflow. Their
+4.7.8 values and deltas are therefore reported as `not-applicable`, never as zero, passed, improved, regressed, or
+unknown. Candidate evidence and thresholds remain independent release gates, so a candidate failure still fails the
+release even when a baseline comparison is unavailable or not applicable.
+
+For a downgrade, run the same fixture after restoring 4.7.8; retain a safe-refusal result instead of forcing a
+destructive downgrade.

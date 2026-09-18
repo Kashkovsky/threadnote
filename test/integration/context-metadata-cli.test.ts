@@ -15,12 +15,28 @@ afterEach(async () => {
 });
 
 describe('context metadata CLI', () => {
-  it('previews and applies an approved metadata-only CAS update', async () => {
+  it('previews and applies an approved metadata-only CAS update with a calendar review date', async () => {
     const home = await makeHome();
     const path = await storedMemory(home);
     const before = await readFile(path, 'utf8');
     const preview = JSON.parse(
-      (await runCli(['context', 'metadata', 'preview', '--uri', URI, '--owner', 'maintainer', '--json'], home)).stdout,
+      (
+        await runCli(
+          [
+            'context',
+            'metadata',
+            'preview',
+            '--uri',
+            URI,
+            '--owner',
+            'maintainer',
+            '--review-after',
+            '2026-12-31',
+            '--json',
+          ],
+          home,
+        )
+      ).stdout,
     );
     expect(preview).toMatchObject({status: 'preview', proposal: {targetUri: URI}});
     expect(await readFile(path, 'utf8')).toBe(before);
@@ -35,6 +51,8 @@ describe('context metadata CLI', () => {
             URI,
             '--owner',
             'maintainer',
+            '--review-after',
+            '2026-12-31',
             '--proposal-id',
             preview.proposal.proposalId,
             '--revision',
@@ -51,6 +69,7 @@ describe('context metadata CLI', () => {
     expect(applied).toMatchObject({status: 'applied'});
     const updated = parseMemoryDocument(URI, await readFile(path, 'utf8'));
     expect(updated?.metadata.owner).toBe('maintainer');
+    expect(updated?.metadata.reviewAfter).toBe('2026-12-31');
     expect(updated?.body).toBe('Body is preserved.');
   });
 });

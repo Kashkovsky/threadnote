@@ -26,7 +26,10 @@ import {
   upsertGuidanceBlock,
 } from '../../src/guidance/index.js';
 import {listCandidateReviews} from '../../src/memory/candidate.js';
+import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {runRemember} from '../../src/memory/index.js';
+import {localMemoryPathForUri} from '../../src/memory/migrations.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runCommand} from '../../src/utils.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -980,7 +983,7 @@ describe('project guidance blocks', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('counts host limits in Unicode characters and applies the strictest shared-target limit', () =>
+  effectIt.effect('counts host limits in Unicode characters', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const unicodeFixture = yield* makeGuidanceFixture('é'.repeat(10_000));
@@ -993,7 +996,13 @@ describe('project guidance blocks', () => {
             project: 'threadnote',
           }),
         ).toMatchObject({mode: 'preview'});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
+  effectIt.effect('applies the strictest shared-target limit', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
         const sharedFixture = yield* makeGuidanceFixture('x'.repeat(80_000));
         const failure = yield* runGuidanceProject(sharedFixture.config, getAgentAdapter('codex-cli')!, {
           apply: false,
@@ -1003,7 +1012,13 @@ describe('project guidance blocks', () => {
           project: 'threadnote',
         }).pipe(Effect.flip);
         expect(String(failure)).toContain('80000-character file limit');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
+  effectIt.effect('reports oversized shared-target status and health', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
         const statusFixture = yield* makeGuidanceFixture('Small shared guidance.');
         yield* runGuidanceProject(statusFixture.config, getAgentAdapter('codex-cli')!, {
           apply: true,
@@ -1141,6 +1156,13 @@ describe('project guidance blocks', () => {
         }).pipe(
           Effect.provideService(SystemInfo, SystemInfo.of({...system, currentDirectory: () => fixture.repository})),
         );
+        const memoryPath = yield* localMemoryPathForUri(fixture.config, fixture.memoryUri);
+        if (memoryPath === undefined) {
+          throw new Error(`Unable to resolve fixture memory URI: ${fixture.memoryUri}`);
+        }
+        expect(
+          parseMemoryDocument(fixture.memoryUri, yield* fixture.fs.readFileString(memoryPath))?.metadata.memoryId,
+        ).toBe('tn_guidance');
         const preview = yield* runGuidanceProject(fixture.config, adapter, {...options, apply: false});
         const pendingReceipt = {
           ...preview.receipt,
@@ -1207,7 +1229,6 @@ describe('project guidance blocks', () => {
 const makeGuidanceFixture = Effect.fn('test.guidanceFixture')(function* (memoryText?: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const system = yield* SystemInfo;
   const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-guidance-'});
   const repository = path.join(root, 'repository');
   const home = path.join(root, 'home');
@@ -1222,14 +1243,28 @@ const makeGuidanceFixture = Effect.fn('test.guidanceFixture')(function* (memoryT
   };
   const memoryUri = 'threadnote://user/tester/memories/durable/projects/threadnote/guidance.md';
   if (memoryText !== undefined) {
-    const repositorySystem = SystemInfo.of({...system, currentDirectory: () => repository});
-    yield* runRemember(config, {
-      kind: 'durable',
-      project: 'threadnote',
-      sourceAgentClient: 'test',
-      text: memoryText,
-      topic: 'guidance',
-    }).pipe(Effect.provideService(SystemInfo, repositorySystem));
+    const memoryPath = yield* localMemoryPathForUri(config, memoryUri);
+    if (memoryPath === undefined) {
+      throw new Error(`Unable to resolve fixture memory URI: ${memoryUri}`);
+    }
+    yield* fs.makeDirectory(path.dirname(memoryPath), {recursive: true});
+    yield* fs.writeFileString(
+      memoryPath,
+      formatMemoryDocument(
+        'MEMORY',
+        {
+          kind: 'durable',
+          memoryId: 'tn_guidance',
+          project: 'threadnote',
+          schemaVersion: MEMORY_SCHEMA_VERSION,
+          sourceAgentClient: 'test',
+          status: 'active',
+          timestamp: '2024-01-01T00:00:00.000Z',
+          topic: 'guidance',
+        },
+        memoryText,
+      ),
+    );
   }
   return {config, fs, home, memoryUri, path, repository, root};
 });

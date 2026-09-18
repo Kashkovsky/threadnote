@@ -49,3 +49,20 @@ pooled and latest-four-run quantiles and the four-versus-five upper-tail boundar
 the old 256-observation protocol ceiling. The correction derives capacity from the three-profile, 100-sample release
 contract, rejects oversized schedules before setup, and reports child failure immediately; it changes no evidence
 budget and requires a fresh complete prospective artifact.
+
+## Reviewed fixture identity
+
+Release-scale evidence is bound to the reviewed semantic identity SHA-256
+`d325379ad9c717b38c28d58cedc712921128c2b9cfaf9923caf48853dc75cded`. The verifier derives that bounded identity
+from the canonical scale budget and the exact 100-sample, 5-warmup schedule: the three profiles are normalized into
+reviewed order, each run creates the profile's selected-memory count (24/16/24) of sentinel records, and the remaining
+86,880 of 100,000 indexed documents are legacy noise. The identity also binds the independent schedule dimensions,
+per-profile repository/citation/allocation shape, and versioned record, schema, path, fixed-instant, and extractor-set
+contracts. It rejects release artifacts whose indexed, requested, or legacy-memory counts differ from that identity.
+
+This check intentionally does not construct repositories, SQLite indexes, or the 100,000-memory corpus. Construction
+is benchmark setup and would turn artifact verification into another benchmark. The artifact's existing `fixture.hash`
+remains dynamic provenance because it includes generated graph state and the run count; it is structurally retained but
+cannot be boundedly rederived. The approved semantic hash is updated only after review of the complete fixture
+contract; the bounded verifier then makes retained-artifact shape tampering and a non-reviewed fixture fail closed
+without rerunning the release benchmark.

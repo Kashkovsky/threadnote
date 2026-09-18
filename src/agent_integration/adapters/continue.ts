@@ -10,7 +10,7 @@ export const continueAdapter = defineJsonAgentAdapter(
     instructionFile: 'rules/threadnote.md',
     instructionPrefix: '---\nname: Threadnote\nalwaysApply: true\n---\n\n',
     instructionContent:
-      'Use Threadnote MCP for non-trivial work: recall_context with the project and absolute callerCwd, then read useful threadnote:// pointers with read_context. Inspect the code graph before broad source search. Repository instructions remain authoritative. Store a concise handoff before ending meaningful work. Never store secrets, credentials, customer data or raw production logs. Confirm with the user before publishing durable memory.',
+      'Use `context_brief` with task + absolute `callerCwd` for non-trivial local repo work (`recall_context` + `read_context` is the memory-focused alternative). Use `inspect_code_graph`/`analyze_code_graph`, then verify exact source. Repository instructions remain authoritative. End with required private `remember_context(kind=handoff)`. Optionally call `review_session_context` for a five-field Knowledge Delta, then `apply_memory_candidates` only after `approve` (optional `editedText`), `defer`, or `reject`. Never auto-apply or auto-share proposals; confirm durable sharing. Prefer MCP, with CLI fallback. Never store secrets, credentials, customer data, or raw production logs.',
     skillRoot: 'none',
   },
   {

@@ -1,9 +1,13 @@
-# 4.0 home migration
+# Upgrade to Threadnote 5
+
+If you already use Threadnote 4, follow the website’s [Upgrade from Threadnote 4](https://threadnote.io/docs/upgrade-from-4/) guide: update in place with `threadnote update --check`, `threadnote update`, then `threadnote doctor`. This preserves `~/.threadnote`, existing memories, verified models, and registered integrations; do not delete your home, rewrite v4 memories, or reinstall MCP by hand. Run `threadnote setup <surface> --apply` later only when you want to adopt or verify a repository.
+
+For Threadnote 3/OpenViking homes, use the legacy migration below. The website’s stable [Upgrade from 3.x](https://threadnote.io/docs/upgrade-from-3/) path remains the user migration guide.
 
 ## Memory schema v5
 
 Threadnote 5 adds optional `owner` and `review_after` maintenance metadata to memory documents. `owner` is an opaque
-person or team label; `review_after` is an ISO calendar date used by context health. These fields do not alter memory
+person or team label; `review_after` is an ISO calendar date or canonical ISO instant used by context health. These fields do not alter memory
 authority, lifecycle, relations, or code-citation meaning.
 
 Older v4 documents remain readable. The v4-to-v5 migration is deterministic and only upgrades the schema header; it
@@ -13,6 +17,8 @@ documented migration path; do not hand-edit a canonical shared record to bypass 
 
 Review overdue or expired records with `threadnote context health --project <name>` before deciding whether to replace,
 archive, or retain them. Health is a read-only planner and does not silently change records.
+
+## Legacy 3.x home migration
 
 Threadnote 4 owns `~/.threadnote`. The legacy 3.x home is input to a one-time, non-destructive migration and is not a
 runtime dependency.
@@ -100,9 +106,9 @@ Lexical and vector recall are immediately available after install or repair comp
 under `~/.threadnote/indexes/`; canonical memories and resources remain ordinary files under
 `~/.threadnote/data/<account>`.
 
-## 4.7 to 5.0 release-evidence comparison
+## Release-engineering reference: 4.7 to 5.0 evidence comparison
 
-The optional local release-readiness procedure preserves a separate 4.7 capture and requires the
+This section is release-engineering reference, not a user migration procedure. The optional local release-readiness procedure preserves a separate 4.7 capture and requires the
 baseline version, commit, and executable hash outside that artifact. A generic receipt wrapper can
 never admit a release: final evidence needs independently parsed source-native receipts. The v5
 matrix includes the exact five-field closeout, verified procedures, activation/ValueReport reuse,

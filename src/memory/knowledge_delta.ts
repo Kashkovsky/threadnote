@@ -1,10 +1,13 @@
-import type {
-  CandidateComparison,
-  CandidateRecommendation,
-  CandidateReview,
-  CandidateReviewState,
-  MemoryCandidate,
-  StructuredCloseoutV1,
+import {
+  assessReplacementSafety,
+  replacementSafetyReviewRequiredWarning,
+  type CandidateComparison,
+  type CandidateRecommendation,
+  type CandidateReview,
+  type CandidateReviewState,
+  type MemoryCandidate,
+  type ReplacementSafetyAssessmentV1,
+  type StructuredCloseoutV1,
 } from './candidate.js';
 
 export const KNOWLEDGE_DELTA_V1_MAX_ITEMS = 3;
@@ -25,9 +28,26 @@ export interface KnowledgeDeltaMutationPreviewV1 {
   readonly bodyText: string;
   readonly expectedTargetContentHash?: string;
   readonly operation: 'create' | 'no_action' | 'replace' | 'requires_explicit_operation';
+  readonly replacementSafety?: KnowledgeDeltaReplacementSafetyV1;
   readonly replaceUri?: string;
   readonly truncated: boolean;
 }
+
+export type KnowledgeDeltaReplacementSafetyV1 =
+  | (ReplacementSafetyAssessmentV1 & {
+      readonly acknowledged: boolean;
+      readonly classification: 'destructive-loss-risk' | 'preserving';
+      readonly requiresExplicitApproval: boolean;
+      readonly sectionListTruncated: boolean;
+      readonly warning?: string;
+    })
+  | {
+      readonly acknowledged: false;
+      readonly classification: 'review-required';
+      readonly requiresExplicitApproval: true;
+      readonly sectionListTruncated: false;
+      readonly warning: string;
+    };
 
 export interface KnowledgeDeltaItemV1 {
   readonly candidateId: string;
@@ -113,6 +133,17 @@ function projectKnowledgeDeltaItemV1(candidate: MemoryCandidate, previewBodyText
   const targetUri = candidate.targetUri ? boundedText(candidate.targetUri) : undefined;
   const topic = boundedText(candidate.topic);
   const sourceEvidence = candidate.evidence.slice(0, KNOWLEDGE_DELTA_V1_MAX_SOURCE_EVIDENCE).map(boundedText);
+  const replacementSafety = candidate.replacementSafetyBaseline
+    ? projectReplacementSafety(candidate, candidate.replacementSafetyBaseline, bodyText.text)
+    : replacementSafetyRequiresFreshReview(candidate)
+      ? {
+          acknowledged: false as const,
+          classification: 'review-required' as const,
+          requiresExplicitApproval: true as const,
+          sectionListTruncated: false as const,
+          warning: replacementSafetyReviewRequiredWarning(candidate),
+        }
+      : undefined;
   return {
     candidateId: candidateId.text,
     comparison: candidate.comparison,
@@ -122,6 +153,7 @@ function projectKnowledgeDeltaItemV1(candidate: MemoryCandidate, previewBodyText
       bodyText: bodyText.text,
       ...(targetContentHash ? {expectedTargetContentHash: targetContentHash.text} : {}),
       operation: mutationOperation(candidate),
+      ...(replacementSafety ? {replacementSafety} : {}),
       ...(targetUri ? {replaceUri: targetUri.text} : {}),
       truncated: bodyText.truncated || (targetContentHash?.truncated ?? false) || (targetUri?.truncated ?? false),
     },
@@ -146,6 +178,45 @@ function projectKnowledgeDeltaItemV1(candidate: MemoryCandidate, previewBodyText
       sourceEvidence.some(evidence => evidence.truncated),
     type: knowledgeDeltaItemType(candidate),
   };
+}
+
+function projectReplacementSafety(
+  candidate: MemoryCandidate,
+  baseline: NonNullable<MemoryCandidate['replacementSafetyBaseline']>,
+  bodyText: string,
+): KnowledgeDeltaReplacementSafetyV1 {
+  const assessment = assessReplacementSafety(candidate.kind, baseline, bodyText);
+  const acknowledged = candidate.applyAllowDestructiveReplacement === true;
+  return {
+    ...assessment,
+    acknowledged,
+    classification: assessment.destructiveLossRisk ? 'destructive-loss-risk' : 'preserving',
+    requiresExplicitApproval: assessment.destructiveLossRisk && !acknowledged,
+    sectionListTruncated: baseline.sectionListTruncated,
+    ...(assessment.destructiveLossRisk ? {warning: replacementSafetyWarning(assessment)} : {}),
+  };
+}
+
+export function replacementSafetyWarning(assessment: ReplacementSafetyAssessmentV1): string {
+  const missingSections =
+    assessment.missingSections.length === 0
+      ? ''
+      : ` Missing current sections: ${assessment.missingSections.join(', ')}.`;
+  return (
+    `Destructive replacement risk: proposed body has ${assessment.proposedBodyCharacters} characters and ` +
+    `${assessment.proposedNonEmptyLines} non-empty lines; the current target has ` +
+    `${assessment.targetBodyCharacters} characters and ${assessment.targetNonEmptyLines} non-empty lines.` +
+    `${missingSections} Merge continuity-critical detail into the replacement, or explicitly approve destructive loss ` +
+    'after reading the current target.'
+  );
+}
+
+function replacementSafetyRequiresFreshReview(candidate: MemoryCandidate): boolean {
+  return (
+    candidate.recommendation !== 'no_action' &&
+    candidate.targetContentHash !== undefined &&
+    candidate.targetUri !== undefined
+  );
 }
 
 function knowledgeDeltaItemType(candidate: MemoryCandidate): KnowledgeDeltaItemType {

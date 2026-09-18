@@ -160,6 +160,23 @@ export const refreshRecallDerivedIndexesFromSelection = Effect.fn('recall.refres
   },
 );
 
+/** Canonical memory commits are durable even when optional derived-index repair fails. */
+export const refreshRecallDerivedIndexesAfterCanonicalMutation = Effect.fn(
+  'recall.refreshDerivedIndexesAfterCanonicalMutation',
+)(function* (config: McpRecallRefreshConfig, invalidatedUris: readonly string[]) {
+  const outcome = yield* refreshRecallDerivedIndexesFromSelection(config, invalidatedUris).pipe(
+    Effect.catchCause(() =>
+      Effect.succeed({repair: 'Run `threadnote repair` to retry derived-index refresh.', state: 'deferred' as const}),
+    ),
+  );
+  if (outcome.state === 'deferred') {
+    yield* Effect.logWarning(
+      'Canonical memory was committed, but derived recall indexes could not be refreshed. Run threadnote repair.',
+    );
+  }
+  return outcome;
+});
+
 const refreshRecallLexicalIndex = Effect.fn('recall.refreshDerivedLexicalIndex')(function* (
   config: McpRecallRefreshConfig,
   forceRefresh = false,
