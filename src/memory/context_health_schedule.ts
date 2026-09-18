@@ -3,6 +3,12 @@ import {Schema} from 'effect';
 import {canonicalJson} from '../code_graph/checkpoint/canonical_json.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {MAXIMUM_CONTEXT_HEALTH_FINDING_LIMIT, type ContextHealthReportV1} from './context_health.js';
+import {
+  CONTEXT_HEALTH_SEMANTIC_ANALYZER_VERSION,
+  MAXIMUM_CONTEXT_HEALTH_SEMANTIC_CLAIMS,
+  type ContextHealthSemanticCompletenessV1,
+  type ContextHealthSemanticUnknownReasonV1,
+} from './context_health_semantic.js';
 
 export const CONTEXT_HEALTH_AGGREGATE_VERSION = 1 as const;
 export const CONTEXT_HEALTH_SCHEDULE_VERSION = 1 as const;
@@ -40,6 +46,7 @@ export type ContextHealthAggregateSourceV1 =
       readonly state: 'complete';
     })
   | ((ContextHealthAggregatePersonalSourceV1 | ContextHealthAggregateTeamSourceV1) & {
+      readonly evidenceRevision?: string;
       readonly reason: ContextHealthAggregateUnknownReasonV1;
       readonly state: 'unknown';
     });
@@ -71,6 +78,7 @@ export type ContextHealthAggregateSourceSummaryV1 =
       readonly state: 'complete';
     }
   | {
+      readonly evidenceRevision?: string;
       readonly reason: ContextHealthAggregateUnknownReasonV1;
       readonly sourceKey: string;
       readonly state: 'unknown';
@@ -118,7 +126,12 @@ export function aggregateContextHealthReportsV1(input: {
           sourceKey: source.sourceKey,
           state: 'complete',
         }
-      : {reason: source.reason, sourceKey: source.sourceKey, state: 'unknown'},
+      : {
+          ...(source.evidenceRevision === undefined ? {} : {evidenceRevision: source.evidenceRevision}),
+          reason: source.reason,
+          sourceKey: source.sourceKey,
+          state: 'unknown',
+        },
   );
   const unknownSources = sourceSummaries.filter(source => source.state === 'unknown').length;
   const knownFindings = sources.reduce(
@@ -192,6 +205,7 @@ type CanonicalSource =
       readonly state: 'complete';
     }
   | {
+      readonly evidenceRevision?: string;
       readonly reason: ContextHealthAggregateUnknownReasonV1;
       readonly sourceKey: string;
       readonly state: 'unknown';
@@ -199,10 +213,28 @@ type CanonicalSource =
 
 function canonicalSource(source: ContextHealthAggregateSourceV1, project: string): CanonicalSource {
   const sourceKey = source.scope === 'personal' ? 'personal' : `team:${canonicalTeam(source.team)}`;
-  if (source.state === 'unknown') return {reason: source.reason, sourceKey, state: 'unknown'};
+  if (source.state === 'unknown') {
+    if (source.evidenceRevision !== undefined && !SHA256.test(source.evidenceRevision)) {
+      fail(`Context health source ${sourceKey} has an invalid evidence revision.`);
+    }
+    return {
+      ...(source.evidenceRevision === undefined ? {} : {evidenceRevision: source.evidenceRevision}),
+      reason: source.reason,
+      sourceKey,
+      state: 'unknown',
+    };
+  }
   if (!SHA256.test(source.evidenceRevision))
     fail(`Context health source ${sourceKey} has an invalid evidence revision.`);
   validateReport(source.report, project, sourceKey);
+  if (source.report.status === 'unknown') {
+    return {
+      evidenceRevision: source.evidenceRevision,
+      reason: 'evidence-incomplete',
+      sourceKey,
+      state: 'unknown',
+    };
+  }
   const findingIds = source.report.findings.map(finding => finding.id).sort(compareText);
   if (new Set(findingIds).size !== findingIds.length) {
     fail(`Context health source ${sourceKey} contains a duplicate finding ID.`);
@@ -285,6 +317,94 @@ function validateReport(report: ContextHealthReportV1, project: string, sourceKe
     ) {
       fail(`Context health source ${sourceKey} has an invalid finding ID.`);
     }
+  }
+  validateSemanticCompleteness(report.semanticCompleteness, report.recordsScanned, sourceKey);
+  const findingCount = report.findings.length + report.omittedFindings;
+  const semanticComplete = report.semanticCompleteness.state === 'complete';
+  if (
+    (report.status === 'clean' && (!semanticComplete || findingCount !== 0)) ||
+    (report.status === 'findings' && (!semanticComplete || findingCount === 0)) ||
+    (report.status === 'unknown' && semanticComplete && findingCount !== 0) ||
+    (report.status !== 'clean' && report.status !== 'findings' && report.status !== 'unknown')
+  ) {
+    fail(`Context health source ${sourceKey} has an inconsistent report status.`);
+  }
+}
+
+const SEMANTIC_UNKNOWN_REASONS = new Set<ContextHealthSemanticUnknownReasonV1>([
+  'body-limit',
+  'claim-budget',
+  'claim-limit',
+  'claim-too-large',
+  'contradiction-limit',
+  'no-claims',
+  'record-limit',
+]);
+
+function validateSemanticCompleteness(
+  completeness: ContextHealthSemanticCompletenessV1,
+  recordsScanned: number,
+  sourceKey: string,
+): void {
+  const candidate: unknown = completeness;
+  if (typeof candidate !== 'object' || candidate === null) {
+    fail(`Context health source ${sourceKey} has invalid semantic completeness.`);
+  }
+  const boundedCounts = [
+    completeness.analyzedRecords,
+    completeness.claimsAnalyzed,
+    completeness.contradictionCount,
+    completeness.eligibleRecords,
+    completeness.omittedContradictions,
+    completeness.pairsCompared,
+    completeness.unknownRecords,
+  ];
+  if (boundedCounts.some(count => !Number.isSafeInteger(count) || count < 0 || count > MAXIMUM_REPORT_RECORDS)) {
+    fail(`Context health source ${sourceKey} has invalid semantic completeness counts.`);
+  }
+  const maximumPairs = (completeness.claimsAnalyzed * (completeness.claimsAnalyzed - 1)) / 2;
+  if (
+    completeness.version !== CONTEXT_HEALTH_SEMANTIC_ANALYZER_VERSION ||
+    completeness.eligibleRecords > recordsScanned ||
+    completeness.analyzedRecords + completeness.unknownRecords !== completeness.eligibleRecords ||
+    completeness.claimsAnalyzed > MAXIMUM_CONTEXT_HEALTH_SEMANTIC_CLAIMS ||
+    completeness.pairsCompared > maximumPairs ||
+    completeness.contradictionCount > completeness.pairsCompared ||
+    completeness.omittedContradictions > completeness.contradictionCount ||
+    !Array.isArray(completeness.unknownReasons) ||
+    completeness.unknownReasons.length > SEMANTIC_UNKNOWN_REASONS.size
+  ) {
+    fail(`Context health source ${sourceKey} has invalid semantic completeness.`);
+  }
+  const seenReasons = new Set<ContextHealthSemanticUnknownReasonV1>();
+  for (const entry of completeness.unknownReasons) {
+    if (
+      typeof entry !== 'object' ||
+      entry === null ||
+      !SEMANTIC_UNKNOWN_REASONS.has(entry.reason) ||
+      seenReasons.has(entry.reason) ||
+      !Number.isSafeInteger(entry.count) ||
+      entry.count <= 0 ||
+      entry.count > MAXIMUM_REPORT_RECORDS
+    ) {
+      fail(`Context health source ${sourceKey} has invalid semantic unknown reasons.`);
+    }
+    seenReasons.add(entry.reason);
+  }
+  if (
+    completeness.omittedContradictions > 0 !== seenReasons.has('contradiction-limit') ||
+    (completeness.state === 'complete' &&
+      (completeness.unknownRecords !== 0 || completeness.omittedContradictions !== 0 || seenReasons.size !== 0)) ||
+    (completeness.state === 'unavailable' &&
+      (completeness.eligibleRecords === 0 ||
+        completeness.analyzedRecords !== 0 ||
+        completeness.unknownRecords === 0)) ||
+    (completeness.state === 'partial' &&
+      completeness.unknownRecords === 0 &&
+      completeness.omittedContradictions === 0) ||
+    (completeness.state !== 'complete' && completeness.state !== 'partial' && completeness.state !== 'unavailable')
+  ) {
+    fail(`Context health source ${sourceKey} has an inconsistent semantic completeness state.`);
   }
 }
 

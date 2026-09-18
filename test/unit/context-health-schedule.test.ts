@@ -59,6 +59,33 @@ describe('context health aggregation and schedule contract', () => {
     ]);
   });
 
+  it('treats a successfully read but evidence-incomplete report as unknown and preserves its revision', () => {
+    const incomplete = report();
+    const aggregate = aggregateContextHealthReportsV1({
+      personal: completePersonal({
+        ...incomplete,
+        semanticCompleteness: {
+          ...incomplete.semanticCompleteness,
+          analyzedRecords: 0,
+          claimsAnalyzed: 0,
+          eligibleRecords: 2,
+          pairsCompared: 0,
+          state: 'unavailable',
+          unknownReasons: [{count: 2, reason: 'no-claims'}],
+          unknownRecords: 2,
+        },
+        status: 'unknown',
+      }),
+      project: PROJECT,
+      teams: [],
+    });
+
+    expect(aggregate).toMatchObject({exitCode: 2, status: 'unknown', unknownSources: 1});
+    expect(aggregate.sources).toEqual([
+      {evidenceRevision: PERSONAL_REVISION, reason: 'evidence-incomplete', sourceKey: 'personal', state: 'unknown'},
+    ]);
+  });
+
   it('returns findings only after all selected sources are complete', () => {
     const aggregate = aggregateContextHealthReportsV1({
       personal: completePersonal(report()),
@@ -110,7 +137,7 @@ describe('context health aggregation and schedule contract', () => {
     if (duplicateFinding === undefined) throw new Error('expected one health finding');
     expect(() =>
       aggregateContextHealthReportsV1({
-        personal: completePersonal({...report(), findings: [duplicateFinding, duplicateFinding]}),
+        personal: completePersonal({...report(), findings: [duplicateFinding, duplicateFinding], status: 'findings'}),
         project: PROJECT,
         teams: [],
       }),
@@ -125,6 +152,23 @@ describe('context health aggregation and schedule contract', () => {
         teams: [],
       }),
     ).toThrow(/finding/i);
+    expect(() =>
+      aggregateContextHealthReportsV1({
+        personal: completePersonal({...report(1), status: 'clean'}),
+        project: PROJECT,
+        teams: [],
+      }),
+    ).toThrow(/report status/i);
+    expect(() =>
+      aggregateContextHealthReportsV1({
+        personal: completePersonal({
+          ...report(),
+          semanticCompleteness: {...report().semanticCompleteness, analyzedRecords: 1},
+        }),
+        project: PROJECT,
+        teams: [],
+      }),
+    ).toThrow(/semantic completeness/i);
   });
 
   it('builds an idempotent provider-neutral read-only invocation plan', () => {
@@ -250,6 +294,19 @@ function report(findingCount = 0): ContextHealthReportV1 {
     omittedFindings: 0,
     project: PROJECT,
     recordsScanned: 2,
+    semanticCompleteness: {
+      analyzedRecords: 2,
+      claimsAnalyzed: 2,
+      contradictionCount: 0,
+      eligibleRecords: 2,
+      omittedContradictions: 0,
+      pairsCompared: 1,
+      state: 'complete',
+      unknownReasons: [],
+      unknownRecords: 0,
+      version: 1,
+    },
+    status: findingCount > 0 ? 'findings' : 'clean',
     version: 1,
   };
 }
