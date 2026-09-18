@@ -631,10 +631,10 @@ function contextCheckRecord() {
 
 function migrationRecord() {
   const baseline = {
-    commit: '3'.repeat(40),
+    commit: '80ca4acdb7347a4d00b0381f3757a5ac984d9fbf',
     executableSha256: '4'.repeat(64),
     id: 'threadnote-4.7.x' as const,
-    version: '4.7.9',
+    version: '4.7.8',
   };
   const execution = (from: Threadnote5SourceV1, to: Threadnote5SourceV1, outcome: 'readable' | 'safe-refusal') => ({
     afterDigest: 'a'.repeat(64),
