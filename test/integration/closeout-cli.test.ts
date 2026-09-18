@@ -241,6 +241,49 @@ describe('closeout CLI', () => {
     });
   });
 
+  it('requires a fresh review before applying a legacy replacement without a safety baseline', async () => {
+    const {candidateId, home, reviewId, reviewPath, targetPath, targetUri} =
+      await storedReplacementReview('legacy-replacement-safety');
+    const before = await readFile(targetPath, 'utf8');
+    const persisted = JSON.parse(await readFile(reviewPath, 'utf8')) as {
+      candidates: Array<{replacementSafetyBaseline?: unknown}>;
+    };
+    delete persisted.candidates[0]?.replacementSafetyBaseline;
+    await writeFile(reviewPath, `${JSON.stringify(persisted, undefined, 2)}\n`, 'utf8');
+
+    const preview = await runCli(['closeout', 'preview', '--review-id', reviewId, '--json'], home);
+    expect(JSON.parse(preview.stdout).items[0].mutationPreview.replacementSafety).toMatchObject({
+      classification: 'review-required',
+      requiresExplicitApproval: true,
+      warning: expect.stringContaining('Run review_session_context again'),
+    });
+
+    const blocked = await runCli(
+      [
+        'closeout',
+        'apply',
+        '--action',
+        'approve',
+        '--approved',
+        '--allow-destructive-replacement',
+        '--review-id',
+        reviewId,
+        '--candidate-id',
+        candidateId,
+        '--revision',
+        '1',
+        '--operation',
+        'replace',
+        '--replace-uri',
+        targetUri,
+      ],
+      home,
+    ).catch(error => error as CliFailure);
+    expect(blocked).toMatchObject({code: 1});
+    expect(blocked.stderr).toContain('Run review_session_context again');
+    expect(await readFile(targetPath, 'utf8')).toBe(before);
+  });
+
   it('allows an edited replacement that preserves the detailed handoff', async () => {
     const {candidateId, home, reviewId, targetPath, targetUri} = await storedReplacementReview('preserving-handoff');
     const editedText = `${detailedHandoffBody}\n- Continue coordinated release work after checks finish.`;
@@ -363,6 +406,7 @@ async function storedReplacementReview(topic: string) {
     home,
     proposedText,
     reviewId: review.reviewId,
+    reviewPath: join(home, 'threadnote', 'candidates', 'v1', 'reviews', `${review.reviewId}.json`),
     targetPath,
     targetUri,
   };

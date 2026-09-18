@@ -6,11 +6,14 @@ import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import fc from 'fast-check';
 import {
   appendCandidateAudit,
+  assessReplacementSafety,
   buildCandidateReview,
   candidateReviewWithAuditEvent,
+  candidateReviewWithApplying,
   candidateReviewWithState,
   loadCandidateReview,
   readActiveProjectMemories,
+  replacementSafetyBaseline,
   saveCandidateReview,
   type CandidateReview,
   type SessionCloseoutInput,
@@ -330,24 +333,24 @@ describe('candidate-memory formation', () => {
     });
   });
 
-  it('warns when a handoff replacement would erase most multi-section continuity state', async () => {
-    const targetBody = [
-      '## Current state',
-      '- Release branch and exact head are recorded for the next agent.',
-      '- Runtime ownership and active branch coordination are recorded here.',
-      '- Pull request status still needs a fresh remote check.',
-      '',
-      '## Verification evidence',
-      '- Focused tests, typecheck, lint, and exact-head smoke passed.',
-      '- The retained safety artifact and recovery path are documented.',
-      '',
-      '## Ordered next steps',
-      '- Refresh remote checks before merging.',
-      '- Transfer runtime ownership before the next install.',
-      '- Run final admission only after every slice is complete.',
-    ].join('\n');
-    const review = await run(
-      buildCandidateReview(
+  effectIt.effect('warns when a handoff replacement would erase most multi-section continuity state', () =>
+    Effect.gen(function* () {
+      const targetBody = [
+        '## Current state',
+        '- Release branch and exact head are recorded for the next agent.',
+        '- Runtime ownership and active branch coordination are recorded here.',
+        '- Pull request status still needs a fresh remote check.',
+        '',
+        '## Verification evidence',
+        '- Focused tests, typecheck, lint, and exact-head smoke passed.',
+        '- The retained safety artifact and recovery path are documented.',
+        '',
+        '## Ordered next steps',
+        '- Refresh remote checks before merging.',
+        '- Transfer runtime ownership before the next install.',
+        '- Run final admission only after every slice is complete.',
+      ].join('\n');
+      const review = yield* buildCandidateReview(
         {
           ...input,
           decisions: [],
@@ -362,30 +365,89 @@ describe('candidate-memory formation', () => {
             uri: 'threadnote://user/me/memories/handoffs/active/threadnote/recall-memory-formation.md',
           }),
         ],
-        new Date('2026-07-23T10:00:00.000Z'),
-      ),
+        DateTime.toDateUtc(DateTime.makeUnsafe('2026-07-23T10:00:00.000Z')),
+      );
+
+      const projected = projectKnowledgeDeltaV1(review).items[0]?.mutationPreview.replacementSafety;
+      expect(projected).toMatchObject({
+        acknowledged: false,
+        classification: 'destructive-loss-risk',
+        destructiveLossRisk: true,
+        missingSections: ['Current state', 'Verification evidence', 'Ordered next steps'],
+        requiresExplicitApproval: true,
+        targetNonEmptyLines: 11,
+      });
+      expect(projected?.warning).toContain('Merge continuity-critical detail');
+
+      const edited = projectKnowledgeDeltaV1(review, {
+        bodyText: `${targetBody}\n- Continue release coordination after the remaining checks finish.`,
+        candidateId: review.candidates[0]?.candidateId ?? '',
+        revision: review.revision,
+      }).items[0]?.mutationPreview.replacementSafety;
+      expect(edited).toMatchObject({
+        classification: 'preserving',
+        destructiveLossRisk: false,
+        requiresExplicitApproval: false,
+      });
+    }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, SystemInfo.layer))),
+  );
+
+  it('flags material character and line loss at compact boundaries monotonically', () => {
+    const compactLines = Array.from({length: 8}, (_unused, index) => `line-${index}`).join('\n');
+    expect(assessReplacementSafety('handoff', replacementSafetyBaseline(compactLines), 'line-0')).toMatchObject({
+      destructiveLossRisk: true,
+      targetBodyCharacters: compactLines.length,
+      targetNonEmptyLines: 8,
+    });
+
+    const characterTarget = 'x'.repeat(256);
+    expect(
+      assessReplacementSafety('handoff', replacementSafetyBaseline(characterTarget), 'x'.repeat(179)),
+    ).toMatchObject({
+      destructiveLossRisk: true,
+      retainedCharacterRatio: 179 / 256,
+    });
+    expect(assessReplacementSafety('handoff', replacementSafetyBaseline('x'.repeat(255)), 'x'.repeat(1))).toMatchObject(
+      {destructiveLossRisk: false},
     );
 
-    const projected = projectKnowledgeDeltaV1(review).items[0]?.mutationPreview.replacementSafety;
-    expect(projected).toMatchObject({
-      acknowledged: false,
-      classification: 'destructive-loss-risk',
-      destructiveLossRisk: true,
-      missingSections: ['Current state', 'Verification evidence', 'Ordered next steps'],
-      requiresExplicitApproval: true,
-      targetNonEmptyLines: 11,
-    });
-    expect(projected?.warning).toContain('Merge continuity-critical detail');
+    fc.assert(
+      fc.property(fc.integer({min: 0, max: 8}), fc.integer({min: 0, max: 8}), (left, right) => {
+        const moreRetained = Math.max(left, right);
+        const lessRetained = Math.min(left, right);
+        const moreResult = assessReplacementSafety(
+          'handoff',
+          replacementSafetyBaseline(compactLines),
+          Array.from({length: moreRetained}, (_unused, index) => `line-${index}`).join('\n'),
+        );
+        const lessResult = assessReplacementSafety(
+          'handoff',
+          replacementSafetyBaseline(compactLines),
+          Array.from({length: lessRetained}, (_unused, index) => `line-${index}`).join('\n'),
+        );
+        if (moreResult.destructiveLossRisk) {
+          expect(lessResult.destructiveLossRisk).toBe(true);
+        }
+      }),
+      {numRuns: 40},
+    );
+  });
 
-    const edited = projectKnowledgeDeltaV1(review, {
-      bodyText: `${targetBody}\n- Continue release coordination after the remaining checks finish.`,
-      candidateId: review.candidates[0]?.candidateId ?? '',
-      revision: review.revision,
-    }).items[0]?.mutationPreview.replacementSafety;
-    expect(edited).toMatchObject({
-      classification: 'preserving',
-      destructiveLossRisk: false,
-      requiresExplicitApproval: false,
+  it('requires a fresh review when a legacy replacement has no safety baseline', () => {
+    const review = projectedReview([
+      projectedCandidate('review-0123456789abcdef-1', {
+        comparison: 'replacement',
+        recommendation: 'replace',
+        targetContentHash: 'a'.repeat(64),
+        targetUri: 'threadnote://user/me/memories/handoffs/active/threadnote/legacy.md',
+      }),
+    ]);
+
+    expect(projectKnowledgeDeltaV1(review).items[0]?.mutationPreview.replacementSafety).toMatchObject({
+      acknowledged: false,
+      classification: 'review-required',
+      requiresExplicitApproval: true,
+      warning: expect.stringContaining('Run review_session_context again'),
     });
   });
 
@@ -615,6 +677,55 @@ describe('candidate review persistence', () => {
         reviewId: review.reviewId,
         version: 2,
       });
+    }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, SystemInfo.layer))),
+  );
+
+  effectIt.effect('retains destructive replacement approval in review and aggregate audit events', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const temporaryDirectory = yield* Effect.acquireRelease(
+        fs.makeTempDirectory({prefix: 'threadnote-candidate-audit-'}),
+        candidateDirectory => fs.remove(candidateDirectory, {force: true, recursive: true}).pipe(Effect.ignore),
+      );
+      const review = yield* buildCandidateReview(
+        input,
+        [],
+        DateTime.toDateUtc(DateTime.makeUnsafe('2026-07-23T10:00:00.000Z')),
+      );
+      const candidateId = review.candidates[0]?.candidateId ?? '';
+      const applying = candidateReviewWithApplying(
+        review,
+        candidateId,
+        {
+          allowDestructiveReplacement: true,
+          bodyText: '## Decisions\n- Keep the explicitly approved replacement.',
+          contentHash: 'a'.repeat(64),
+          operation: 'replace',
+          replaceUri: 'threadnote://user/me/memories/durable/projects/threadnote/old.md',
+          targetUri: 'threadnote://user/me/memories/durable/projects/threadnote/new.md',
+        },
+        '2026-07-23T10:01:00.000Z',
+      );
+      const applied = candidateReviewWithState(applying, candidateId, 'applied', {
+        action: 'apply',
+        allowDestructiveReplacement: true,
+        at: '2026-07-23T10:02:00.000Z',
+        memoryUri: 'threadnote://user/me/memories/durable/projects/threadnote/new.md',
+      });
+      yield* saveCandidateReview(temporaryDirectory, applied);
+
+      const loaded = yield* loadCandidateReview(temporaryDirectory, review.reviewId);
+      expect(loaded.auditEvents.filter(event => event.action === 'begin_apply' || event.action === 'apply')).toEqual([
+        expect.objectContaining({action: 'begin_apply', allowDestructiveReplacement: true}),
+        expect.objectContaining({action: 'apply', allowDestructiveReplacement: true}),
+      ]);
+      const auditPath = path.join(temporaryDirectory, 'threadnote', 'candidates', 'v1', 'audit.jsonl');
+      const auditEvents = (yield* fs.readFileString(auditPath))
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line) as {readonly allowDestructiveReplacement?: boolean});
+      expect(auditEvents.filter(event => event.allowDestructiveReplacement === true)).toHaveLength(2);
     }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, SystemInfo.layer))),
   );
 

@@ -16,6 +16,7 @@ import {
   MEMORY_SCHEMA_VERSION,
 } from '../../src/memory/code_citation.js';
 import {
+  canonicalMemoryDocumentContent,
   formatMemoryDocument,
   MAX_MEMORY_RELATIONS,
   MEMORY_RELATION_TYPES,
@@ -3816,6 +3817,149 @@ describe('Threadnote MCP toolsets', () => {
           candidates: Array<{state?: string}>;
         };
         expect(conflicted.candidates[0]?.state).toBe('conflict');
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('requires explicit destructive approval before legacy cross-URI cleanup', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const topic = 'candidate-recovery-destructive';
+        const replacementUri =
+          'threadnote://user/test-user/memories/handoffs/active/threadnote/legacy-recovery-source.md';
+        const replacementPath = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'handoffs',
+          'active',
+          'threadnote',
+          'legacy-recovery-source.md',
+        );
+        const detailedBody = Array.from(
+          {length: 12},
+          (_unused, index) => `- Continuity detail ${index} remains required for release recovery.`,
+        ).join('\n');
+        await mkdir(join(replacementPath, '..'), {recursive: true});
+        await writeFile(
+          replacementPath,
+          formatMemoryDocument(
+            'HANDOFF',
+            {
+              kind: 'handoff',
+              project: 'threadnote',
+              sourceAgentClient: 'codex',
+              status: 'active',
+              timestamp: '2026-07-22T10:00:00.000Z',
+              topic,
+            },
+            `## Current state\n${detailedBody}`,
+          ),
+          'utf8',
+        );
+
+        const reviewText = await callText(client, 'review_session_context', {
+          evidence: ['test/integration/mcp.native-tools.test.ts'],
+          handoff: ['Continue after the remaining release check.'],
+          outcome: 'Prepared the next release recovery step.',
+          project: 'threadnote',
+          sourceAgentClient: 'codex',
+          task: 'Recover an interrupted cross-URI replacement',
+          topic,
+        });
+        const reviewId = /Review (review-[a-f0-9]+)/.exec(reviewText)?.[1];
+        const candidateId = /candidate: (review-[a-f0-9]+-1)/.exec(reviewText)?.[1];
+        expect(reviewId).toBeDefined();
+        expect(candidateId).toBeDefined();
+        const reviewPath = join(fixture.home, 'threadnote', 'candidates', 'v1', 'reviews', `${reviewId}.json`);
+        const review = JSON.parse(await readFile(reviewPath, 'utf8')) as {
+          candidates: Array<Record<string, unknown>>;
+        };
+        const candidate = review.candidates[0];
+        if (!candidate) {
+          throw TestError.make({message: 'Expected the replacement candidate review fixture.'});
+        }
+        expect(candidate).toMatchObject({targetUri: replacementUri});
+        const destinationUri = `threadnote://user/test-user/memories/handoffs/active/threadnote/${topic}.md`;
+        const destinationPath = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'handoffs',
+          'active',
+          'threadnote',
+          `${topic}.md`,
+        );
+        const approvedAt = '2026-07-23T10:00:00.000Z';
+        const approvedBody = String(candidate?.proposedText ?? '');
+        const destinationContent = formatMemoryDocument(
+          'HANDOFF',
+          {
+            candidateId,
+            kind: 'handoff',
+            project: 'threadnote',
+            sourceAgentClient: 'codex',
+            status: 'active',
+            timestamp: approvedAt,
+            topic,
+          },
+          approvedBody,
+        );
+        await writeFile(destinationPath, destinationContent, 'utf8');
+        review.candidates[0] = {
+          ...candidate,
+          applyApprovedAt: approvedAt,
+          applyBodyText: approvedBody,
+          applyContentHash: createHash('sha256')
+            .update(canonicalMemoryDocumentContent(destinationContent))
+            .digest('hex'),
+          applyOperation: 'replace',
+          applyReplaceUri: replacementUri,
+          applyStage: 'written',
+          applyTargetUri: destinationUri,
+          state: 'applying',
+        };
+        await writeFile(reviewPath, `${JSON.stringify(review, undefined, 2)}\n`, 'utf8');
+
+        await expect(
+          callErrorText(client, 'apply_memory_candidates', {
+            action: 'approve',
+            approved: true,
+            candidateId,
+            reviewId,
+            revision: 1,
+          }),
+        ).resolves.toContain('allowDestructiveReplacement=true');
+        expect(existsSync(replacementPath)).toBe(true);
+        expect(existsSync(destinationPath)).toBe(true);
+
+        const recovered = await client.callTool(
+          {
+            arguments: {
+              action: 'approve',
+              allowDestructiveReplacement: true,
+              approved: true,
+              candidateId,
+              reviewId,
+              revision: 1,
+            },
+            name: 'apply_memory_candidates',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(recovered.isError, JSON.stringify(recovered)).not.toBe(true);
+        expect(existsSync(replacementPath)).toBe(false);
+        expect(existsSync(destinationPath)).toBe(true);
+        const audit = await readFile(join(fixture.home, 'threadnote', 'candidates', 'v1', 'audit.jsonl'), 'utf8');
+        expect(audit).toContain('"allowDestructiveReplacement":true');
       },
       {toolset: 'core'},
     );

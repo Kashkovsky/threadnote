@@ -1,5 +1,6 @@
 import {
   assessReplacementSafety,
+  replacementSafetyReviewRequiredWarning,
   type CandidateComparison,
   type CandidateRecommendation,
   type CandidateReview,
@@ -32,13 +33,21 @@ export interface KnowledgeDeltaMutationPreviewV1 {
   readonly truncated: boolean;
 }
 
-export interface KnowledgeDeltaReplacementSafetyV1 extends ReplacementSafetyAssessmentV1 {
-  readonly acknowledged: boolean;
-  readonly classification: 'destructive-loss-risk' | 'preserving';
-  readonly requiresExplicitApproval: boolean;
-  readonly sectionListTruncated: boolean;
-  readonly warning?: string;
-}
+export type KnowledgeDeltaReplacementSafetyV1 =
+  | (ReplacementSafetyAssessmentV1 & {
+      readonly acknowledged: boolean;
+      readonly classification: 'destructive-loss-risk' | 'preserving';
+      readonly requiresExplicitApproval: boolean;
+      readonly sectionListTruncated: boolean;
+      readonly warning?: string;
+    })
+  | {
+      readonly acknowledged: false;
+      readonly classification: 'review-required';
+      readonly requiresExplicitApproval: true;
+      readonly sectionListTruncated: false;
+      readonly warning: string;
+    };
 
 export interface KnowledgeDeltaItemV1 {
   readonly candidateId: string;
@@ -126,7 +135,15 @@ function projectKnowledgeDeltaItemV1(candidate: MemoryCandidate, previewBodyText
   const sourceEvidence = candidate.evidence.slice(0, KNOWLEDGE_DELTA_V1_MAX_SOURCE_EVIDENCE).map(boundedText);
   const replacementSafety = candidate.replacementSafetyBaseline
     ? projectReplacementSafety(candidate, candidate.replacementSafetyBaseline, bodyText.text)
-    : undefined;
+    : replacementSafetyRequiresFreshReview(candidate)
+      ? {
+          acknowledged: false as const,
+          classification: 'review-required' as const,
+          requiresExplicitApproval: true as const,
+          sectionListTruncated: false as const,
+          warning: replacementSafetyReviewRequiredWarning(candidate),
+        }
+      : undefined;
   return {
     candidateId: candidateId.text,
     comparison: candidate.comparison,
@@ -191,6 +208,14 @@ export function replacementSafetyWarning(assessment: ReplacementSafetyAssessment
     `${assessment.targetBodyCharacters} characters and ${assessment.targetNonEmptyLines} non-empty lines.` +
     `${missingSections} Merge continuity-critical detail into the replacement, or explicitly approve destructive loss ` +
     'after reading the current target.'
+  );
+}
+
+function replacementSafetyRequiresFreshReview(candidate: MemoryCandidate): boolean {
+  return (
+    candidate.recommendation !== 'no_action' &&
+    candidate.targetContentHash !== undefined &&
+    candidate.targetUri !== undefined
   );
 }
 

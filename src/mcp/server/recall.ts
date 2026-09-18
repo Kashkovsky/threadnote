@@ -56,6 +56,8 @@ import {
   candidateReviewWithState,
   loadCandidateReview,
   readActiveProjectMemories,
+  prepareCandidateReplacementRecovery,
+  replacementSafetyReviewRequiredWarning,
   replacementSafetyBaseline,
   saveCandidateReview,
   type CandidateReview,
@@ -441,17 +443,49 @@ export function applyMemoryCandidate(
               `Candidate ${candidate.candidateId} found mismatched content at ${candidate.applyTargetUri}. The partial apply is recorded as a conflict.`,
             );
           }
-          const cleanup = yield* reconcileCandidateReplacementCleanup(config, candidate);
+          const cleanupTargetUri =
+            candidate.applyReplaceUri !== candidate.applyTargetUri ? candidate.applyReplaceUri : undefined;
+          const [cleanupTarget] = cleanupTargetUri ? yield* readMemoryRecordsByUri(config, [cleanupTargetUri]) : [];
+          const cleanupTargetHash = cleanupTarget
+            ? yield* sha256Hex(canonicalMemoryDocumentContent(cleanupTarget.content))
+            : undefined;
+          const recovery = prepareCandidateReplacementRecovery(
+            review,
+            candidate.candidateId,
+            allowDestructiveReplacement === true,
+            candidate.applyApprovedAt ?? appliedRecord.metadata.timestamp,
+            cleanupTarget?.body,
+            cleanupTargetHash,
+          );
+          if (recovery.status === 'unavailable') {
+            return argumentError(
+              `Candidate ${candidate.candidateId} cannot safely recover replacement cleanup because its approved body or target hash is missing. Review both memories before continuing.`,
+            );
+          }
+          if (recovery.status === 'destructive-approval-required') {
+            return argumentError(
+              `${replacementSafetyWarning(recovery.assessment)} Read ${candidate.applyReplaceUri}, then retry with allowDestructiveReplacement=true after explicit approval.`,
+            );
+          }
+          const {candidate: recoveryCandidate, review: recoveryReview} = recovery;
+          if (recoveryReview !== review) {
+            yield* saveCandidateReview(config.agentContextHome, recoveryReview);
+          }
+          const cleanup = yield* reconcileCandidateReplacementCleanup(config, recoveryCandidate);
           if (cleanup === 'conflict') {
             return yield* persistCandidateConflict(
               config,
-              review,
-              candidate,
+              recoveryReview,
+              recoveryCandidate,
               `Candidate ${candidate.candidateId} was written at ${candidate.applyTargetUri}, but its reviewed replacement target changed before cleanup. The partial apply is recorded as a conflict; review both memories before continuing.`,
             );
           }
           if (cleanup === 'pending') {
-            const pendingCleanup = candidateReviewWithApplyStage(review, candidate.candidateId, 'cleanup_pending');
+            const pendingCleanup = candidateReviewWithApplyStage(
+              recoveryReview,
+              recoveryCandidate.candidateId,
+              'cleanup_pending',
+            );
             yield* saveCandidateReview(config.agentContextHome, pendingCleanup);
             return {
               content: [
@@ -470,18 +504,20 @@ export function applyMemoryCandidate(
               }),
             };
           }
-          const withBeginAudit = candidateReviewWithAuditEvent(review, {
+          const withBeginAudit = candidateReviewWithAuditEvent(recoveryReview, {
             action: 'begin_apply',
+            ...(recoveryCandidate.applyAllowDestructiveReplacement ? {allowDestructiveReplacement: true} : {}),
             at: appliedRecord.metadata.timestamp,
-            candidateId: candidate.candidateId,
-            memoryUri: candidate.applyTargetUri,
-            reviewId: review.reviewId,
-            revision: review.revision,
+            candidateId: recoveryCandidate.candidateId,
+            memoryUri: recoveryCandidate.applyTargetUri,
+            reviewId: recoveryReview.reviewId,
+            revision: recoveryReview.revision,
           });
-          const recovered = candidateReviewWithState(withBeginAudit, candidate.candidateId, 'applied', {
+          const recovered = candidateReviewWithState(withBeginAudit, recoveryCandidate.candidateId, 'applied', {
             action: 'apply',
+            ...(recoveryCandidate.applyAllowDestructiveReplacement ? {allowDestructiveReplacement: true} : {}),
             at: appliedRecord.metadata.timestamp,
-            memoryUri: candidate.applyTargetUri,
+            memoryUri: recoveryCandidate.applyTargetUri,
           });
           yield* saveCandidateReview(config.agentContextHome, recovered);
           return {
@@ -650,6 +686,9 @@ export function applyMemoryCandidate(
       const destructiveReplacementApproved =
         candidate.applyAllowDestructiveReplacement === true || allowDestructiveReplacement === true;
       if (targetUri && candidate.targetContentHash) {
+        if (!candidate.replacementSafetyBaseline) {
+          return argumentError(replacementSafetyReviewRequiredWarning(candidate));
+        }
         const [currentTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
         const currentTargetHash = currentTarget
           ? yield* sha256Hex(canonicalMemoryDocumentContent(currentTarget.content))
@@ -757,6 +796,7 @@ export function applyMemoryCandidate(
       const memoryUri = storedMemoryUri(result) ?? intendedMemoryUri;
       const updated = candidateReviewWithState(applying, candidate.candidateId, 'applied', {
         action: 'apply',
+        ...(destructiveReplacementApproved ? {allowDestructiveReplacement: true} : {}),
         at,
         memoryUri,
       });

@@ -113,6 +113,7 @@ export interface CandidateReview {
 
 export interface CandidateAuditEvent {
   readonly action: 'apply' | 'begin_apply' | 'conflict' | 'create_review' | 'defer' | 'reject';
+  readonly allowDestructiveReplacement?: boolean;
   readonly at: string;
   readonly candidateId?: string;
   readonly memoryUri?: string;
@@ -128,6 +129,7 @@ interface CandidateDraft {
 
 interface CandidateAuditTransition {
   readonly action: CandidateAuditEvent['action'];
+  readonly allowDestructiveReplacement?: boolean;
   readonly at: string;
   readonly memoryUri?: string;
 }
@@ -296,6 +298,7 @@ export function candidateReviewWithApplying(
     },
     {
       action: 'begin_apply',
+      ...(apply.allowDestructiveReplacement ? {allowDestructiveReplacement: true} : {}),
       at,
       candidateId,
       memoryUri: apply.targetUri,
@@ -303,6 +306,80 @@ export function candidateReviewWithApplying(
       revision: review.revision,
     },
   );
+}
+
+function candidateReviewWithRecoveryApproval(
+  review: CandidateReview,
+  candidateId: string,
+  allowDestructiveReplacement: boolean,
+  at: string,
+): {readonly candidate: MemoryCandidate; readonly review: CandidateReview} | undefined {
+  const candidate = review.candidates.find(item => item.candidateId === candidateId);
+  if (!candidate) return undefined;
+  if (!allowDestructiveReplacement || candidate.applyAllowDestructiveReplacement === true) {
+    return {candidate, review};
+  }
+  if (
+    !candidate.applyBodyText ||
+    !candidate.applyContentHash ||
+    !candidate.applyOperation ||
+    !candidate.applyTargetUri
+  ) {
+    return undefined;
+  }
+  const updated = candidateReviewWithApplying(
+    review,
+    candidateId,
+    {
+      allowDestructiveReplacement: true,
+      bodyText: candidate.applyBodyText,
+      contentHash: candidate.applyContentHash,
+      operation: candidate.applyOperation,
+      replaceUri: candidate.applyReplaceUri,
+      targetUri: candidate.applyTargetUri,
+    },
+    at,
+  );
+  return {
+    candidate: updated.candidates.find(item => item.candidateId === candidateId) ?? candidate,
+    review: updated,
+  };
+}
+
+export type CandidateReplacementRecoveryPreparation =
+  | {
+      readonly assessment: ReplacementSafetyAssessmentV1;
+      readonly status: 'destructive-approval-required';
+    }
+  | {readonly status: 'unavailable'}
+  | {
+      readonly candidate: MemoryCandidate;
+      readonly review: CandidateReview;
+      readonly status: 'ready';
+    };
+
+export function prepareCandidateReplacementRecovery(
+  review: CandidateReview,
+  candidateId: string,
+  allowDestructiveReplacement: boolean,
+  at: string,
+  currentTargetBody: string | undefined,
+  currentTargetHash: string | undefined,
+): CandidateReplacementRecoveryPreparation {
+  const candidate = review.candidates.find(item => item.candidateId === candidateId);
+  if (!candidate) return {status: 'unavailable'};
+  if (allowDestructiveReplacement && candidate.applyOperation !== 'replace') return {status: 'unavailable'};
+  const assessment = assessInterruptedReplacementSafety(candidate, currentTargetBody, currentTargetHash);
+  if (assessment === 'unavailable') return {status: 'unavailable'};
+  if (
+    assessment?.destructiveLossRisk &&
+    candidate.applyAllowDestructiveReplacement !== true &&
+    !allowDestructiveReplacement
+  ) {
+    return {assessment, status: 'destructive-approval-required'};
+  }
+  const recovery = candidateReviewWithRecoveryApproval(review, candidateId, allowDestructiveReplacement, at);
+  return recovery ? {...recovery, status: 'ready'} : {status: 'unavailable'};
 }
 
 export function candidateReviewWithApplyStage(
@@ -416,6 +493,7 @@ export function candidateReviewWithAuditEvent(review: CandidateReview, event: Ca
   const duplicate = review.auditEvents.some(
     item =>
       item.action === event.action &&
+      item.allowDestructiveReplacement === event.allowDestructiveReplacement &&
       item.candidateId === event.candidateId &&
       item.reviewId === event.reviewId &&
       item.revision === event.revision,
@@ -595,7 +673,13 @@ const syncCandidateAudit = Effect.fn('candidate.syncAudit')(function* (
 });
 
 function candidateAuditEventKey(event: CandidateAuditEvent): string {
-  return [event.action, event.candidateId ?? '', event.reviewId, event.revision].join('\n');
+  return [
+    event.action,
+    event.allowDestructiveReplacement === true ? 'destructive-approved' : '',
+    event.candidateId ?? '',
+    event.reviewId,
+    event.revision,
+  ].join('\n');
 }
 
 function candidateAuditTimestamp(event: CandidateAuditEvent): number {
@@ -714,6 +798,13 @@ export function replacementSafetyBaseline(body: string): ReplacementSafetyBaseli
   };
 }
 
+export function replacementSafetyReviewRequiredWarning(candidate: MemoryCandidate): string {
+  return (
+    `Replacement safety is unavailable for legacy candidate ${candidate.candidateId}. ` +
+    'Run review_session_context again before replacing the current target.'
+  );
+}
+
 export function assessReplacementSafety(
   kind: MemoryCandidate['kind'],
   target: ReplacementSafetyBaselineV1,
@@ -728,14 +819,16 @@ export function assessReplacementSafety(
   );
   const ratioThreshold = kind === 'handoff' ? 0.7 : 0.5;
   const removedCharacters = Math.max(0, target.bodyCharacters - proposed.bodyCharacters);
-  const materialTarget = target.bodyCharacters >= 256 || target.nonEmptyLines >= 8;
-  const materialLoss = removedCharacters >= 256;
   const losesMostCharacters = retainedCharacterRatio < ratioThreshold;
   const losesMostLines = target.nonEmptyLines >= 8 && retainedLineRatio < ratioThreshold;
-  const losesMultipleSections = target.sectionHeadings.length >= 2 && missingSections.length >= 2 && materialLoss;
+  const losesMaterialCharacters = target.bodyCharacters >= 256 && losesMostCharacters;
+  const losesMaterialLines = target.nonEmptyLines >= 8 && losesMostLines;
+  const losesMultipleSections =
+    target.sectionHeadings.length >= 2 &&
+    missingSections.length >= 2 &&
+    (removedCharacters >= 256 || losesMaterialCharacters || losesMaterialLines);
   return {
-    destructiveLossRisk:
-      materialTarget && materialLoss && (losesMostCharacters || losesMostLines || losesMultipleSections),
+    destructiveLossRisk: losesMaterialCharacters || losesMaterialLines || losesMultipleSections,
     missingSections,
     proposedBodyCharacters: proposed.bodyCharacters,
     proposedNonEmptyLines: proposed.nonEmptyLines,
@@ -744,6 +837,25 @@ export function assessReplacementSafety(
     targetBodyCharacters: target.bodyCharacters,
     targetNonEmptyLines: target.nonEmptyLines,
   };
+}
+
+function assessInterruptedReplacementSafety(
+  candidate: MemoryCandidate,
+  currentTargetBody: string | undefined,
+  currentTargetHash: string | undefined,
+): ReplacementSafetyAssessmentV1 | 'unavailable' | undefined {
+  if (
+    candidate.applyOperation !== 'replace' ||
+    !candidate.applyReplaceUri ||
+    !candidate.applyTargetUri ||
+    candidate.applyReplaceUri === candidate.applyTargetUri ||
+    currentTargetBody === undefined
+  ) {
+    return undefined;
+  }
+  if (!candidate.applyBodyText || !candidate.targetContentHash) return 'unavailable';
+  if (currentTargetHash !== candidate.targetContentHash) return undefined;
+  return assessReplacementSafety(candidate.kind, replacementSafetyBaseline(currentTargetBody), candidate.applyBodyText);
 }
 
 function retainedRatio(proposed: number, target: number): number {
@@ -1091,6 +1203,7 @@ function candidateAuditEventIsValid(value: unknown): value is CandidateAuditEven
       value.action === 'create_review' ||
       value.action === 'defer' ||
       value.action === 'reject') &&
+    (!('allowDestructiveReplacement' in value) || typeof value.allowDestructiveReplacement === 'boolean') &&
     'at' in value &&
     typeof value.at === 'string' &&
     'reviewId' in value &&
