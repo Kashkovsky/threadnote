@@ -1,5 +1,5 @@
 import {readFileSync} from '../helpers/node-fs.js';
-import {load} from 'js-yaml';
+import {JSON_SCHEMA, load} from 'js-yaml';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
@@ -25,6 +25,7 @@ import {
   type CodeGraphBenchmarkMeasurementRatchetV1,
 } from '../../scripts/benchmark-code-graph.js';
 import {PRODUCTION_LARGE_CODE_GRAPH_PROFILE} from '../../scripts/code-graph-fixture.js';
+import {CODE_GRAPH_HEAVY_TAIL_PROFILE} from '../../scripts/code-graph-heavy-tail-fixture.js';
 import {benchmarkMeasurement, type BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
 import {CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM} from '../../src/code_graph/materialized_shard_cache_admission.js';
 import {
@@ -37,6 +38,29 @@ const POLYGLOT_BUDGETS = 'test/evaluation/baselines/code-graph-polyglot-v1/budge
 const BETA30_STAGING_EVIDENCE = 'test/evaluation/baselines/code-graph-v1/beta30-staging-development.json';
 
 describe('code graph release evidence', () => {
+  it('keeps the production-shaped release target immutable while classifying hosted heavy-tail runs as correctness-only', () => {
+    expect(PRODUCTION_LARGE_CODE_GRAPH_PROFILE).toMatchObject({
+      targetRepositoryFiles: 73_000,
+      targetEligibleFiles: 59_936,
+      targetGraphSymbols: 2_200_000,
+      targetGraphEdges: 4_340_000,
+      targetLexicalTermRows: 32_250_000,
+      workspaceCount: 995,
+    });
+    expect(CODE_GRAPH_HEAVY_TAIL_PROFILE).toMatchObject({
+      id: 'large-monorepo-heavy-tail',
+      parallelWorkers: 4,
+      textlessSvgFiles: 4_000,
+    });
+    const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
+      schema: JSON_SCHEMA,
+    }) as BenchmarkWorkflow;
+    const capture = workflow.jobs['code-graph-heavy-tail'].steps?.find(step =>
+      step.run?.includes('bench:code-graph:heavy-tail'),
+    );
+    expect(capture?.run).toContain('--evidence-class correctness-only');
+    expect(capture?.run).not.toContain('--ratchet');
+  });
   it('retains the maximum cumulative inventory subphase timings', () => {
     fc.assert(
       fc.property(

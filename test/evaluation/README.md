@@ -826,9 +826,19 @@ graph must have the same normalized digest. The resumed run must reuse the inter
 textless SVG files must remain excluded; TypeScript imports, exports, and tail declarations must survive. Each run
 retains parent-observed parser-request active wall time, summed request time, average/peak concurrency, per-language
 parse/request/fact-byte totals, RSS, and cache bytes. Governed v3 artifacts additionally bind exact clean source/runtime
-provenance, internal solid-state storage and filesystem, at least 120 GiB free, and a declared runner identity. The
-checked `heavy-tail-scheduler-ratchet.json` is generated from three same-commit governed artifacts and independently
-binds all 254 scheduler, resource, language, resume, cache, and graph metrics. `heavy-tail-scheduler-development.json`
+provenance, internal solid-state storage and filesystem, at least 120 GiB free, and explicit non-fallback
+`THREADNOTE_BENCHMARK_RUNNER_CLASS=apple-m1-max-64g-internal` and
+`THREADNOTE_BENCHMARK_RUNNER_ID=local-apple-m1-max` capture bindings. The checked
+`heavy-tail-scheduler-ratchet.json` is generated from exactly three same-commit governed artifacts and independently
+binds all 254 scheduler, resource, language, resume, cache, and graph metrics. Every release capture and the generator
+must load that checked ratchet; all three source runs must pass it and no generated numeric bound may be weaker.
+Hosted GitHub Actions heavy-tail artifacts are explicitly `correctness-only` and are never performance evidence; final
+release performance evidence must be freshly replayable from those three governed runs on the matching local release
+runner and exact frozen candidate. Generator admission independently receives the expected runner class and identity
+plus a not-before time, observation time, maximum evidence age, maximum three-run span, and bounded future skew. Those
+freshness values are retained in output metadata. The strict release parser cross-binds outer timestamps, source and
+runner identity, runtime, storage, profile, assertions, managed exact-HEAD provenance, evidence class, and threshold
+policy to the embedded benchmark artifact. `heavy-tail-scheduler-development.json`
 retains the controlled scheduler comparison and the exact APFS/internal-SSD baseline used to generate that ratchet.
 Nonzero millisecond metrics use the larger of 15% relative headroom and 5 ms absolute scheduler-noise headroom; exact
 zero timers remain exact-zero gates. Counts, graph shape, cache reuse, and source-byte metrics retain their stricter
