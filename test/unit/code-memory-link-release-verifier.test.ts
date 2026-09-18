@@ -580,6 +580,17 @@ describe('Code Memory Link release governance verifier', () => {
       ),
     {fastCheck: {numRuns: 8}},
   );
+
+  effectIt.effect('cleans up idempotently when the release verifier fixture root disappears before finalization', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const {root} = yield* fixtureRepository();
+
+      yield* fs.remove(root, {force: true, recursive: true});
+
+      expect(yield* fs.exists(root)).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 });
 
 function fixtureRepository(
@@ -602,7 +613,10 @@ function fixtureRepository(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-memory-release-verifier-'});
+    const root = yield* Effect.acquireRelease(
+      fs.makeTempDirectory({prefix: 'threadnote-code-memory-release-verifier-'}),
+      root => fs.remove(root, {force: true, recursive: true}).pipe(Effect.orDie),
+    );
     const approvalsPath = path.join(root, 'src/evaluation/code-memory-link-approvals.json');
     const approvalsLoaderPath = path.join(root, 'src/evaluation/code-memory-link-approvals.ts');
     const packagePath = path.join(root, 'package.json');
