@@ -285,23 +285,31 @@ describe('Threadnote MCP toolsets', () => {
         expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(640);
         expect(instructions).toContain('callerCwd');
         expect(instructions).toContain('threadnote://');
-        expect(instructions).toContain('durable');
         expect(instructions).toContain('handoff');
-        expect(instructions).toContain('`project` excludes others');
-        expect(instructions).toContain('omit it for global recall');
-        expect(instructions).toContain('Nested cwd prefers its package');
-        expect(instructions).toContain('repo-wide/sibling evidence remains eligible');
-        expect(instructions).toContain('user-approved candidates');
-        expect(instructions).toContain('Do not store');
-        expect(instructions).toContain('Results are unread `threadnote://` pointers, not evidence');
-        expect(instructions).toContain('read them via `read_context`');
-        expect(instructions).toContain('`inspect_code_graph` before broad search');
-        expect(instructions).toContain('`analyze_code_graph` for architecture');
-        expect(instructions).toContain('exact search remains useful');
-        expect(instructions).toContain('Retry indexing when advised');
+        expect(instructions).toContain(
+          'For non-trivial local repo work, call `context_brief` with task + absolute `callerCwd`',
+        );
+        expect(instructions).toContain('`recall_context` + `read_context` is the memory alternative');
+        expect(instructions.indexOf('context_brief')).toBeLessThan(instructions.indexOf('recall_context'));
+        expect(instructions).toContain('CLI fallback if unavailable');
+        expect(instructions).toContain('`threadnote://` pointers are unread, not evidence');
+        expect(instructions).toContain('Use `inspect_code_graph`/`analyze_code_graph`, then exact source');
+        expect(instructions).toContain('Close with private `remember_context(kind=handoff)`');
+        expect(instructions).toContain('Optional five-field KD: `review_session_context`');
+        expect(instructions).toContain(
+          '`apply_memory_candidates` with `approve` (optional `editedText`), `defer`, or `reject`',
+        );
+        expect(instructions).toContain('Never auto-apply/share');
+        expect(instructions).toContain('No sensitive data; confirm publishes; never publish handoffs/preferences');
+        expect(instructions).not.toContain('Start with `recall_context`');
+        expect(instructions).not.toContain(
+          'Store durable knowledge; `review_session_context` adds approved candidates',
+        );
         const reviewTool = (await client.listTools()).tools.find(tool => tool.name === 'review_session_context');
-        expect(reviewTool?.description).toContain('After routine durable and handoff writes');
-        expect(reviewTool?.description).toContain('additional reviewable');
+        expect(reviewTool?.description).toContain('five-field Knowledge Delta');
+        expect(reviewTool?.description).toContain('handoff is separate and required');
+        expect(reviewTool?.description).toContain('explicit approval is required');
+        expect(reviewTool?.description).not.toContain('After routine durable and handoff writes');
       },
       {toolset: 'core'},
     );
@@ -312,7 +320,9 @@ describe('Threadnote MCP toolsets', () => {
       async client => {
         const tools = await client.listTools();
         expect(tools.tools.map(tool => tool.name)).toEqual(CORE_TOOL_NAMES);
-        expect(Buffer.byteLength(JSON.stringify(tools.tools))).toBeLessThanOrEqual(17_500);
+        const serializedToolsBytes = Buffer.byteLength(JSON.stringify(tools.tools));
+        // Bound metadata growth without penalizing future concise descriptions.
+        expect(serializedToolsBytes).toBeLessThanOrEqual(17_650);
         expect(tools.tools.find(tool => tool.name === 'recall_context')?.description).toContain(
           'unread threadnote:// pointers, not evidence',
         );
