@@ -1610,7 +1610,7 @@ export class PostgresRemoteMemoryRepository {
           s.feature_flags
         FROM remote_memory.shares s
         JOIN remote_memory.share_grants g
-          ON g.tenant_id = s.tenant_id AND g.share_id = s.id AND g.status = 'active'
+          ON g.tenant_id = s.tenant_id AND g.share_id = s.id AND g.status = 'active' AND (g.expires_at IS NULL OR g.expires_at > now())
         JOIN remote_memory.principals p
           ON p.tenant_id = g.tenant_id AND p.id = g.principal_id AND p.status = 'active'
         JOIN remote_memory.tenant_memberships m

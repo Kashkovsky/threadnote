@@ -236,7 +236,8 @@ export class RemoteHandoffRetentionWorker {
           JOIN remote_memory.share_grants g
             ON g.tenant_id = h.tenant_id AND g.share_id = h.share_id
             AND g.principal_id = ${remoteRetentionPrincipalId(share.tenant_id)}
-            AND g.status = 'active' AND 'memory:admin' = ANY(g.capabilities)
+            AND g.status = 'active' AND (g.expires_at IS NULL OR g.expires_at > now())
+            AND 'memory:admin' = ANY(g.capabilities)
           WHERE h.tenant_id = ${share.tenant_id} AND h.share_id = ${share.share_id}
             AND h.kind = 'handoff' AND h.status = 'active'
             AND h.expires_at IS NOT NULL AND h.expires_at <= ${now.toISOString()}

@@ -35,6 +35,7 @@ export async function requireShareState(
     JOIN remote_memory.share_grants g
       ON g.tenant_id = s.tenant_id AND g.share_id = s.id
       AND g.principal_id = m.principal_id AND g.status = 'active'
+      AND (g.expires_at IS NULL OR g.expires_at > now())
     JOIN remote_memory.principals p
       ON p.tenant_id = m.tenant_id AND p.id = m.principal_id AND p.status = 'active'
     WHERE s.tenant_id = ${principal.tenantId} AND s.id = ${principal.shareId} AND s.status = 'active'

@@ -1,4 +1,5 @@
 import postgres, {type JSONValue, type Sql, type TransactionSql} from 'postgres';
+import {canonicalJson} from '../code_graph/checkpoint/canonical_json.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {randomUuidV4} from '../crypto/uuid.js';
 import type {
@@ -26,6 +27,11 @@ import {
   withRemoteMemoryRequestCancellation,
 } from './request_execution.js';
 import {acquireRemoteRelationAdmissionTransactionLock} from './relation_admission.js';
+import type {
+  RemoteMemoryProvisioningPlanV1,
+  RemoteMemoryProvisioningReceiptV1,
+  RemoteMemoryProvisioningStateV1,
+} from './provisioning.js';
 
 const DATABASE_TIMEOUT_MILLISECONDS = 5_000;
 export const STORED_SHARE_POLICY_MAX_BYTES = 4 * 1024 * 1024;
@@ -87,6 +93,7 @@ type JsonObject = Readonly<Record<string, JSONValue | undefined>>;
 export interface RemoteMemoryProvisioningInput {
   readonly allowedProjects?: readonly string[];
   readonly capabilities: readonly RemoteMemoryScope[];
+  readonly clientId?: string;
   readonly cursorAttestationRequired?: boolean;
   readonly cursorOwnerIds?: readonly string[];
   readonly cursorSubjects?: readonly string[];
@@ -95,6 +102,7 @@ export interface RemoteMemoryProvisioningInput {
   readonly expectedCurrentPolicyVersion?: string;
   readonly expectedCurrentSharePolicyVersion?: string;
   readonly featureFlags?: readonly RemoteMemoryFeatureFlag[];
+  readonly grantExpiresAt?: string;
   readonly issuer: string;
   readonly policyVersion: string;
   readonly principalId: string;
@@ -108,6 +116,11 @@ export interface RemoteMemoryProvisioningInput {
   readonly tenantId: string;
 }
 
+interface RemoteMemoryProvisioningApplication {
+  readonly plan: RemoteMemoryProvisioningPlanV1;
+  readonly receipt: RemoteMemoryProvisioningReceiptV1;
+}
+
 export function createRemoteMemorySql(databaseUrl: string): Sql {
   return postgres(databaseUrl, {
     connect_timeout: 10,
@@ -119,7 +132,10 @@ export function createRemoteMemorySql(databaseUrl: string): Sql {
 }
 
 export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, CursorAttestationStore {
-  constructor(readonly sql: Sql) {}
+  constructor(
+    readonly sql: Sql,
+    readonly options: {readonly legacyClientIdCompatibilityUntil?: string} = {},
+  ) {}
 
   async authorize(
     claims: OAuthPrincipalClaims,
@@ -161,6 +177,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
           ON m.principal_id = p.id AND m.tenant_id = ${tenantId} AND m.status = 'active'
         JOIN remote_memory.share_grants g
           ON g.principal_id = p.id AND g.tenant_id = m.tenant_id AND g.status = 'active'
+          AND (g.expires_at IS NULL OR g.expires_at > now())
         JOIN remote_memory.shares s
           ON s.tenant_id = g.tenant_id AND s.id = g.share_id AND s.status = 'active'
         LEFT JOIN LATERAL (
@@ -172,6 +189,20 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
         ) b ON true
         WHERE e.issuer = ${claims.issuer}
           AND e.subject = ${claims.subject}
+          AND (
+            e.client_id = ${claims.clientId ?? ''}
+            OR (
+              e.client_id = ''
+              AND ${this.options.legacyClientIdCompatibilityUntil ?? null}::timestamptz > now()
+              AND NOT EXISTS (
+                SELECT 1 FROM remote_memory.external_identities exact_identity
+                WHERE exact_identity.tenant_id = e.tenant_id
+                  AND exact_identity.issuer = e.issuer
+                  AND exact_identity.subject = e.subject
+                  AND exact_identity.client_id = ${claims.clientId ?? ''}
+              )
+            )
+          )
           AND e.tenant_id = ${tenantId}
           AND s.id = ${requestedShareId}
         GROUP BY g.allowed_projects, g.capabilities, g.cursor_attestation_required,
@@ -233,6 +264,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
         JOIN remote_memory.share_grants g
           ON g.principal_id = p.id AND g.tenant_id = c.tenant_id
           AND g.share_id = c.share_id AND g.status = 'active'
+          AND (g.expires_at IS NULL OR g.expires_at > now())
         JOIN remote_memory.shares s
           ON s.tenant_id = c.tenant_id AND s.id = c.share_id AND s.status = 'active'
         LEFT JOIN LATERAL (
@@ -382,13 +414,42 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
     );
   }
 
-  async provision(input: RemoteMemoryProvisioningInput): Promise<void> {
+  async provision(input: RemoteMemoryProvisioningInput): Promise<void>;
+  async provision(
+    input: RemoteMemoryProvisioningInput,
+    application: RemoteMemoryProvisioningApplication,
+  ): Promise<RemoteMemoryProvisioningReceiptV1>;
+  async provision(
+    input: RemoteMemoryProvisioningInput,
+    application?: RemoteMemoryProvisioningApplication,
+  ): Promise<RemoteMemoryProvisioningReceiptV1 | void> {
     validateRemoteMemoryProvisioningInput(input);
     const retentionPrincipalId = remoteRetentionPrincipalId(input.tenantId);
     const retentionPolicy = internalRetentionPolicy();
-    await this.sql.begin(async transaction => {
+    return await this.sql.begin(async transaction => {
       await setTenant(transaction, input.tenantId);
       await acquireRemoteRelationAdmissionTransactionLock(transaction, input.tenantId, input.shareId);
+      if (application) {
+        const existing = await transaction<{outcome_json: string; plan_digest: string}[]>`
+          SELECT plan_digest, outcome::text AS outcome_json
+          FROM remote_memory.provisioning_receipts
+          WHERE tenant_id = ${input.tenantId} AND plan_id = ${application.plan.planId}
+          FOR UPDATE
+        `;
+        if (existing[0]) {
+          if (
+            existing[0].plan_digest !== application.plan.planDigest ||
+            canonicalJson(JSON.parse(existing[0].outcome_json)) !== canonicalJson(application.receipt)
+          ) {
+            throw remoteMemoryError('conflict', 'The provisioning plan id is already bound to another outcome.');
+          }
+          return application.receipt;
+        }
+        const current = await this.inspectProvisioningStateTransaction(transaction, input);
+        if (canonicalJson(current) !== canonicalJson(application.plan.observed)) {
+          throw remoteMemoryError('conflict', 'Provisioning state changed after planning. Create a new apply plan.');
+        }
+      }
       await transaction`
         INSERT INTO remote_memory.tenants(id, region, status)
         VALUES (${input.tenantId}, ${input.region}, 'active')
@@ -418,13 +479,14 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
         throw remoteMemoryError('conflict', 'A provisioning principal is disabled or unavailable.');
       }
       await transaction`
-        INSERT INTO remote_memory.external_identities(tenant_id, issuer, subject, principal_id)
-        VALUES (${input.tenantId}, ${input.issuer}, ${input.subject}, ${input.principalId})
-        ON CONFLICT (tenant_id, issuer, subject) DO NOTHING
+        INSERT INTO remote_memory.external_identities(tenant_id, issuer, subject, client_id, principal_id)
+        VALUES (${input.tenantId}, ${input.issuer}, ${input.subject}, ${input.clientId ?? ''}, ${input.principalId})
+        ON CONFLICT (tenant_id, issuer, subject, client_id) DO NOTHING
       `;
       const identity = await transaction<{principal_id: string}[]>`
         SELECT principal_id FROM remote_memory.external_identities
         WHERE tenant_id = ${input.tenantId} AND issuer = ${input.issuer} AND subject = ${input.subject}
+          AND client_id = ${input.clientId ?? ''}
       `;
       if (identity[0]?.principal_id !== input.principalId) {
         throw remoteMemoryError('conflict', 'The external identity is already bound to another principal.');
@@ -443,9 +505,17 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
       await transaction`
         INSERT INTO remote_memory.tenant_memberships(tenant_id, principal_id, status)
         VALUES (${input.tenantId}, ${input.principalId}, 'active')
-        ON CONFLICT (tenant_id, principal_id) DO UPDATE SET status = 'active'
+        ON CONFLICT (tenant_id, principal_id) DO NOTHING
       `;
-      const desiredPolicy = provisioningPolicy(input);
+      const memberships = await transaction<{status: 'active' | 'revoked'}[]>`
+        SELECT status FROM remote_memory.tenant_memberships
+        WHERE tenant_id = ${input.tenantId} AND principal_id = ${input.principalId}
+        FOR UPDATE
+      `;
+      if (memberships[0]?.status !== 'active') {
+        throw remoteMemoryError('conflict', 'The pilot membership is suspended or revoked.');
+      }
+      const desiredPolicy = remoteMemoryProvisioningPolicy(input);
       const currentShares = await transaction<SharePolicyRow[]>`
         SELECT s.policy_version, s.policy_digest, s.status,
           CASE WHEN jsonb_typeof(v.policy_document) = 'object'
@@ -472,7 +542,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
       const desiredSharePolicy =
         retainedSharePolicy && currentShare
           ? {digest: currentShare.policy_digest, document: retainedSharePolicy}
-          : provisioningSharePolicy(input);
+          : remoteMemoryProvisioningSharePolicy(input);
       const sharePolicyVersion = input.sharePolicyVersion ?? currentShare?.policy_version ?? input.policyVersion;
       let replaceSharePolicy = currentShare === undefined;
       if (currentShare) {
@@ -501,8 +571,10 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
           );
         }
       }
-      const currentPolicies = await transaction<{policy_digest: string | null; policy_version: string}[]>`
-        SELECT g.policy_version, v.policy_digest
+      const currentPolicies = await transaction<
+        {policy_digest: string | null; policy_version: string; status: 'active' | 'revoked'}[]
+      >`
+        SELECT g.policy_version, g.status, v.policy_digest
         FROM remote_memory.share_grants g
         LEFT JOIN remote_memory.grant_policy_versions v
           ON v.tenant_id = g.tenant_id AND v.share_id = g.share_id
@@ -513,6 +585,9 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
       `;
       const currentPolicy = currentPolicies[0];
       if (currentPolicy) {
+        if (currentPolicy.status !== 'active') {
+          throw remoteMemoryError('conflict', 'The existing pilot grant is suspended or revoked.');
+        }
         if (
           input.expectedCurrentPolicyVersion !== undefined &&
           input.expectedCurrentPolicyVersion !== currentPolicy.policy_version
@@ -608,14 +683,15 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
       await transaction`
         INSERT INTO remote_memory.share_grants(
           tenant_id, share_id, principal_id, status, capabilities, allowed_projects,
-          cursor_owner_ids, cursor_subjects, cursor_attestation_required, policy_version, policy_digest
+          cursor_owner_ids, cursor_subjects, cursor_attestation_required, expires_at, policy_version, policy_digest
         ) VALUES (
           ${input.tenantId}, ${input.shareId}, ${input.principalId}, 'active',
           ${transaction.array([...input.capabilities])},
           ${input.allowedProjects ? transaction.array([...input.allowedProjects]) : null},
           ${transaction.array([...(input.cursorOwnerIds ?? [])])},
           ${transaction.array([...(input.cursorSubjects ?? [])])},
-          ${input.cursorAttestationRequired ?? true}, ${input.policyVersion}, ${desiredPolicy.digest}
+          ${input.cursorAttestationRequired ?? true}, ${input.grantExpiresAt ?? null}, ${input.policyVersion},
+          ${desiredPolicy.digest}
         ) ON CONFLICT (tenant_id, share_id, principal_id) DO UPDATE SET
           status = 'active',
           capabilities = EXCLUDED.capabilities,
@@ -623,22 +699,23 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
           cursor_owner_ids = EXCLUDED.cursor_owner_ids,
           cursor_subjects = EXCLUDED.cursor_subjects,
           cursor_attestation_required = EXCLUDED.cursor_attestation_required,
+          expires_at = EXCLUDED.expires_at,
           policy_version = EXCLUDED.policy_version,
           policy_digest = EXCLUDED.policy_digest
       `;
       await transaction`
         INSERT INTO remote_memory.share_grants(
           tenant_id, share_id, principal_id, status, capabilities, allowed_projects,
-          cursor_owner_ids, cursor_subjects, cursor_attestation_required, policy_version, policy_digest
+          cursor_owner_ids, cursor_subjects, cursor_attestation_required, expires_at, policy_version, policy_digest
         ) VALUES (
           ${input.tenantId}, ${input.shareId}, ${retentionPrincipalId}, 'active',
           ${transaction.array(['memory:admin'])}, NULL,
-          ${transaction.array([])}, ${transaction.array([])}, false, 'retention-v1',
+          ${transaction.array([])}, ${transaction.array([])}, false, NULL, 'retention-v1',
           ${retentionPolicy.digest}
         ) ON CONFLICT (tenant_id, share_id, principal_id) DO UPDATE SET
           status = 'active', capabilities = EXCLUDED.capabilities, allowed_projects = NULL,
           cursor_owner_ids = EXCLUDED.cursor_owner_ids, cursor_subjects = EXCLUDED.cursor_subjects,
-          cursor_attestation_required = false
+          cursor_attestation_required = false, expires_at = NULL
       `;
       await provisionGitIngestPrincipal(transaction, input);
       if (replaceSharePolicy) {
@@ -691,7 +768,112 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
           throw remoteMemoryError('conflict', 'The grant references a project outside the active share catalog.');
         }
       }
+      if (application) {
+        await transaction`
+          INSERT INTO remote_memory.provisioning_receipts(tenant_id, plan_id, plan_digest, outcome)
+          VALUES (
+            ${input.tenantId}, ${application.plan.planId}, ${application.plan.planDigest},
+            ${transaction.json(application.receipt as unknown as JSONValue)}
+          )
+        `;
+        return application.receipt;
+      }
     });
+  }
+
+  async inspectProvisioningState(
+    input: Pick<
+      RemoteMemoryProvisioningInput,
+      'clientId' | 'issuer' | 'principalId' | 'shareId' | 'subject' | 'tenantId'
+    >,
+  ): Promise<RemoteMemoryProvisioningStateV1> {
+    return this.sql.begin(async transaction => {
+      await setTenant(transaction, input.tenantId);
+      return this.inspectProvisioningStateTransaction(transaction, input);
+    });
+  }
+
+  private async inspectProvisioningStateTransaction(
+    transaction: TransactionSql,
+    input: Pick<
+      RemoteMemoryProvisioningInput,
+      'clientId' | 'issuer' | 'principalId' | 'shareId' | 'subject' | 'tenantId'
+    >,
+  ): Promise<RemoteMemoryProvisioningStateV1> {
+    const tenants = await transaction<{region: string; status: 'active' | 'deleted' | 'disabled'}[]>`
+      SELECT region, status FROM remote_memory.tenants WHERE id = ${input.tenantId} FOR UPDATE
+    `;
+    const principals = await transaction<{status: 'active' | 'disabled'}[]>`
+      SELECT status FROM remote_memory.principals
+      WHERE tenant_id = ${input.tenantId} AND id = ${input.principalId}
+      FOR UPDATE
+    `;
+    const identities = await transaction<{principal_id: string}[]>`
+      SELECT principal_id FROM remote_memory.external_identities
+      WHERE tenant_id = ${input.tenantId} AND issuer = ${input.issuer} AND subject = ${input.subject}
+        AND client_id = ${input.clientId ?? ''}
+      FOR UPDATE
+    `;
+    const memberships = await transaction<{status: 'active' | 'revoked'}[]>`
+      SELECT status FROM remote_memory.tenant_memberships
+      WHERE tenant_id = ${input.tenantId} AND principal_id = ${input.principalId}
+      FOR UPDATE
+    `;
+    const shares = await transaction<
+      {
+        feature_flags: RemoteMemoryFeatureFlag[];
+        policy_digest: string;
+        policy_version: string;
+        status: 'active' | 'deleted' | 'revoked';
+      }[]
+    >`
+      SELECT feature_flags, policy_digest, policy_version, status FROM remote_memory.shares
+      WHERE tenant_id = ${input.tenantId} AND id = ${input.shareId}
+      FOR UPDATE
+    `;
+    const grants = await transaction<
+      {
+        expires_at: Date | null;
+        policy_digest: string;
+        policy_version: string;
+        status: 'active' | 'revoked';
+      }[]
+    >`
+      SELECT expires_at, policy_digest, policy_version, status FROM remote_memory.share_grants
+      WHERE tenant_id = ${input.tenantId} AND share_id = ${input.shareId}
+        AND principal_id = ${input.principalId}
+      FOR UPDATE
+    `;
+    const tenant = tenants[0];
+    const share = shares[0];
+    const grant = grants[0];
+    return {
+      ...(grant
+        ? {
+            grant: {
+              ...(grant.expires_at ? {expiresAt: grant.expires_at.toISOString()} : {}),
+              policyDigest: grant.policy_digest,
+              policyVersion: grant.policy_version,
+              status: grant.status,
+            },
+          }
+        : {}),
+      ...(identities[0] ? {identityPrincipalId: identities[0].principal_id} : {}),
+      ...(memberships[0] ? {membershipStatus: memberships[0].status} : {}),
+      ...(principals[0] ? {principalStatus: principals[0].status} : {}),
+      ...(share
+        ? {
+            share: {
+              featureFlags: share.feature_flags,
+              policyDigest: share.policy_digest,
+              policyVersion: share.policy_version,
+              status: share.status,
+            },
+          }
+        : {}),
+      ...(tenant ? {tenant: {region: tenant.region, status: tenant.status}} : {}),
+      version: 1,
+    };
   }
 
   async tenantForShare(shareId: string, execution?: RemoteMemoryRequestExecution): Promise<string | undefined> {
@@ -708,6 +890,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
   async tenantForIdentity(
     input: {
       readonly issuer: string;
+      readonly clientId?: string;
       readonly requestedShareId: string;
       readonly subject: string;
     },
@@ -721,6 +904,20 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
         const rows = await transaction<{tenant_id: string}[]>`
         SELECT tenant_id FROM remote_memory.external_identities
         WHERE tenant_id = ${tenantId} AND issuer = ${input.issuer} AND subject = ${input.subject}
+          AND (
+            client_id = ${input.clientId ?? ''}
+            OR (
+              client_id = ''
+              AND ${this.options.legacyClientIdCompatibilityUntil ?? null}::timestamptz > now()
+              AND NOT EXISTS (
+                SELECT 1 FROM remote_memory.external_identities exact_identity
+                WHERE exact_identity.tenant_id = ${tenantId}
+                  AND exact_identity.issuer = ${input.issuer}
+                  AND exact_identity.subject = ${input.subject}
+                  AND exact_identity.client_id = ${input.clientId ?? ''}
+              )
+            )
+          )
         LIMIT 1
       `;
         return rows[0]?.tenant_id;
@@ -796,6 +993,14 @@ export function validateRemoteMemoryProvisioningInput(input: RemoteMemoryProvisi
     throw remoteMemoryError('invalid_request', 'Provisioning display name or region is invalid.');
   }
   validateProvisioningIdentity(input.issuer, input.subject);
+  if (input.clientId !== undefined) validateProvisioningClientId(input.clientId);
+  if (
+    input.grantExpiresAt !== undefined &&
+    (!Number.isFinite(Date.parse(input.grantExpiresAt)) ||
+      new Date(Date.parse(input.grantExpiresAt)).toISOString() !== input.grantExpiresAt)
+  ) {
+    throw remoteMemoryError('invalid_request', 'Provisioning grant expiry must be an exact ISO timestamp.');
+  }
   if (input.capabilities.length === 0 || input.capabilities.some(value => !isRemoteMemoryScope(value))) {
     throw remoteMemoryError('invalid_request', 'Provisioning capabilities are invalid.');
   }
@@ -865,16 +1070,28 @@ function validateProvisioningIdentity(issuer: string, subject: string): void {
   }
 }
 
-function provisioningPolicy(input: RemoteMemoryProvisioningInput): {
+function validateProvisioningClientId(clientId: string): void {
+  const hasControlCharacter = [...clientId].some(character => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+  if (!clientId.trim() || clientId !== clientId.trim() || clientId.length > 512 || hasControlCharacter) {
+    throw remoteMemoryError('invalid_request', 'Provisioning OAuth client id is invalid.');
+  }
+}
+
+export function remoteMemoryProvisioningPolicy(input: RemoteMemoryProvisioningInput): {
   readonly digest: string;
   readonly document: JsonObject;
 } {
   const document = {
     allowedProjects: input.allowedProjects ? [...new Set(input.allowedProjects)].sort() : 'all',
     capabilities: [...new Set(input.capabilities)].sort(),
+    ...(input.clientId === undefined ? {} : {clientId: input.clientId}),
     cursorAttestationRequired: input.cursorAttestationRequired ?? true,
     cursorOwnerIds: [...new Set(input.cursorOwnerIds ?? [])].sort(),
     cursorSubjects: [...new Set(input.cursorSubjects ?? [])].sort(),
+    ...(input.grantExpiresAt === undefined ? {} : {grantExpiresAt: input.grantExpiresAt}),
   };
   return {
     digest: sha256HexSync(JSON.stringify(document)),
@@ -890,7 +1107,7 @@ function internalRetentionPolicy(): {
   return {digest: sha256HexSync(JSON.stringify(document)), document};
 }
 
-function provisioningSharePolicy(input: RemoteMemoryProvisioningInput): {
+export function remoteMemoryProvisioningSharePolicy(input: RemoteMemoryProvisioningInput): {
   readonly digest: string;
   readonly document: JsonObject;
 } {

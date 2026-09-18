@@ -116,6 +116,41 @@ describe('remote memory service configuration', () => {
     expect(config.globallyEnabled).toBe(true);
   });
 
+  it('accepts an explicit provider-neutral OAuth client claim mapping', () => {
+    const config = remoteMemoryConfigFromEnvironment({
+      ...productionEnvironment,
+      THREADNOTE_REMOTE_OAUTH_CLIENT_ID_CLAIM: 'cid',
+    });
+    expect(config.accessTokenClientIdClaim).toBe('cid');
+    expect(redactedRemoteMemoryConfig(config)).toMatchObject({accessTokenClientIdClaim: 'cid'});
+  });
+
+  it('bounds the explicit legacy client-binding transition window', () => {
+    const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const config = remoteMemoryConfigFromEnvironment({
+      ...productionEnvironment,
+      THREADNOTE_REMOTE_OAUTH_CLIENT_ID_CLAIM: 'cid',
+      THREADNOTE_REMOTE_OAUTH_LEGACY_CLIENT_ID_COMPATIBILITY_UNTIL: until,
+    });
+    expect(config.legacyClientIdCompatibilityUntil).toBe(until);
+    expect(redactedRemoteMemoryConfig(config)).toMatchObject({legacyClientIdCompatibilityUntil: until});
+    expect(() =>
+      remoteMemoryConfigFromEnvironment({
+        ...productionEnvironment,
+        THREADNOTE_REMOTE_OAUTH_LEGACY_CLIENT_ID_COMPATIBILITY_UNTIL: until,
+      }),
+    ).toThrow('requires a client-id claim mapping');
+    expect(() =>
+      remoteMemoryConfigFromEnvironment({
+        ...productionEnvironment,
+        THREADNOTE_REMOTE_OAUTH_CLIENT_ID_CLAIM: 'cid',
+        THREADNOTE_REMOTE_OAUTH_LEGACY_CLIENT_ID_COMPATIBILITY_UNTIL: new Date(
+          Date.now() + 32 * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+      }),
+    ).toThrow('within 31 days');
+  });
+
   it.each([
     [{...productionEnvironment, THREADNOTE_REMOTE_PUBLIC_URL: 'http://memory.example.test'}, 'HTTPS'],
     [{...productionEnvironment, THREADNOTE_REMOTE_PUBLIC_URL: 'ftp://localhost/threadnote'}, 'HTTPS'],
@@ -143,6 +178,7 @@ describe('remote memory service configuration', () => {
     ],
     [{...productionEnvironment, THREADNOTE_REMOTE_OAUTH_JWKS_URL: 'http://identity.example.test/jwks'}, 'HTTPS'],
     [{...productionEnvironment, THREADNOTE_REMOTE_CURSOR_JWKS_URL: 'http://api.cursor.com/jwks'}, 'HTTPS'],
+    [{...productionEnvironment, THREADNOTE_REMOTE_OAUTH_CLIENT_ID_CLAIM: 'client'}, 'CLIENT_ID_CLAIM'],
     [{...productionEnvironment, THREADNOTE_REMOTE_PUBLIC_URL: 'https://memory.example.test/path'}, 'origin'],
   ])('rejects an unsafe network configuration %#', (environment, expectedMessage) => {
     expect(() => remoteMemoryConfigFromEnvironment(environment)).toThrow(expectedMessage);

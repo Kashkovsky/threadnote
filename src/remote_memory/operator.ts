@@ -1,6 +1,15 @@
 import {Schema} from 'effect';
 import type {RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
 import {
+  planRemoteMemoryProvisioning,
+  remoteMemoryProvisioningReceipt,
+  verifyRemoteMemoryProvisioningPlan,
+  type RemoteMemoryProvisioningPlanV1,
+  type RemoteMemoryProvisioningReceiptV1,
+  type RemoteMemoryProvisioningRequestV1,
+  type RemoteMemoryProvisioningStateV1,
+} from './provisioning.js';
+import {
   finalizeGitBetaCutover,
   materializeGitBetaImport,
   planGitBetaImport,
@@ -53,6 +62,10 @@ export interface GitBetaImportVerificationV1 {
 }
 
 export interface RemoteMemoryOperatorAdapter {
+  readonly applyProvisioningPlan?: (
+    plan: RemoteMemoryProvisioningPlanV1,
+    receipt: RemoteMemoryProvisioningReceiptV1,
+  ) => Promise<RemoteMemoryProvisioningReceiptV1>;
   readonly applyGitBetaImport?: (input: {
     readonly aliasCompatibilityEndsAt: string;
     readonly planDigest: string;
@@ -63,6 +76,9 @@ export interface RemoteMemoryOperatorAdapter {
   readonly capabilities: RemoteMemoryOperatorCapabilitiesV1;
   readonly exportRecords?: (shareId: string) => Promise<readonly RemoteMemoryPortableRecordV1[]>;
   readonly inspectRecords?: (shareId: string) => Promise<readonly RemoteMemoryExistingRecordV1[]>;
+  readonly inspectProvisioningState?: (
+    input: RemoteMemoryProvisioningRequestV1,
+  ) => Promise<RemoteMemoryProvisioningStateV1>;
   readonly migrateSchema?: () => Promise<RemoteMemoryMigrationResultV1>;
   readonly provisionControlPlane?: (input: RemoteMemoryProvisioningInput) => Promise<void>;
 }
@@ -111,6 +127,44 @@ export async function provisionRemoteMemoryOperator(
     tenantId: input.tenantId,
     version: REMOTE_MEMORY_OPERATOR_CONTRACT_VERSION,
   };
+}
+
+export async function planRemoteMemoryProvisioningOperator(
+  adapter: RemoteMemoryOperatorAdapter,
+  input: {
+    readonly apply: boolean;
+    readonly plannedAt?: string;
+    readonly request: RemoteMemoryProvisioningRequestV1;
+  },
+): Promise<RemoteMemoryProvisioningPlanV1> {
+  const inspect = requireCapability(adapter, 'provision_control_plane', adapter.inspectProvisioningState);
+  return planRemoteMemoryProvisioning({
+    apply: input.apply,
+    plannedAt: input.plannedAt ?? new Date().toISOString(),
+    request: input.request,
+    state: await inspect(input.request),
+  });
+}
+
+export async function applyRemoteMemoryProvisioningOperator(
+  adapter: RemoteMemoryOperatorAdapter,
+  plan: RemoteMemoryProvisioningPlanV1,
+): Promise<RemoteMemoryProvisioningReceiptV1> {
+  verifyRemoteMemoryProvisioningPlan(plan);
+  if (plan.dryRun) {
+    throw RemoteMemoryOperatorError.of(
+      'invalid_input',
+      'A preview provisioning plan cannot be applied. Create a plan with --for-apply.',
+    );
+  }
+  if (plan.input.grantExpiresAt !== undefined && Date.parse(plan.input.grantExpiresAt) <= Date.now()) {
+    throw RemoteMemoryOperatorError.of(
+      'blocked_plan',
+      'The provisioning grant expired before apply. Create a new plan.',
+    );
+  }
+  const apply = requireCapability(adapter, 'provision_control_plane', adapter.applyProvisioningPlan);
+  return apply(plan, remoteMemoryProvisioningReceipt(plan));
 }
 
 export async function planGitBetaImportOperator(

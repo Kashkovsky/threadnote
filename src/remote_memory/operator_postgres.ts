@@ -1,4 +1,5 @@
 import type {Sql, TransactionSql} from 'postgres';
+import {Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {randomUuidV4} from '../crypto/uuid.js';
 import {parseRemoteShareAddress} from '../memory_domain/address.js';
@@ -6,10 +7,17 @@ import {parseRemoteCanonicalMemoryDocument} from '../memory_domain/content.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import {migrateRemoteMemoryDatabase, remoteMemoryMigrationVersions} from './migrations.js';
 import {replaceRemoteCodeLinkBacklinks} from './code_link_backlinks.js';
+import {RemoteMemoryError} from './errors.js';
 import {PostgresRemoteControlPlane, type RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
+import type {
+  RemoteMemoryProvisioningPlanV1,
+  RemoteMemoryProvisioningReceiptV1,
+  RemoteMemoryProvisioningRequestV1,
+} from './provisioning.js';
 import {
   REMOTE_MEMORY_OPERATOR_CONTRACT_VERSION,
   remoteMemoryOperatorCapabilities,
+  RemoteMemoryOperatorError,
   type RemoteMemoryOperatorAdapter,
 } from './operator.js';
 import {
@@ -69,6 +77,23 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
   readonly provisionControlPlane = async (input: RemoteMemoryProvisioningInput): Promise<void> => {
     await this.controlPlane.provision(input);
   };
+
+  readonly applyProvisioningPlan = async (
+    plan: RemoteMemoryProvisioningPlanV1,
+    receipt: RemoteMemoryProvisioningReceiptV1,
+  ) => {
+    try {
+      return await this.controlPlane.provision(plan.input, {plan, receipt});
+    } catch (cause) {
+      if (Schema.is(RemoteMemoryError)(cause) && cause.code === 'conflict') {
+        throw RemoteMemoryOperatorError.of('blocked_plan', cause.message);
+      }
+      throw cause;
+    }
+  };
+
+  readonly inspectProvisioningState = async (input: RemoteMemoryProvisioningRequestV1) =>
+    this.controlPlane.inspectProvisioningState(input);
 
   readonly applyGitBetaImport = async (input: {
     readonly aliasCompatibilityEndsAt: string;
