@@ -203,16 +203,6 @@ const checkSelfContained = Effect.gen(function* () {
         'agent-profiles',
         'cursor-cloud-personal',
         'agent-skills',
-        'threadnote-code-graph',
-        'SKILL.md',
-      ),
-      path.join(
-        root,
-        'dist',
-        'config',
-        'agent-profiles',
-        'cursor-cloud-personal',
-        'agent-skills',
         'threadnote-memory',
         'SKILL.md',
       ),
@@ -235,6 +225,21 @@ const checkSelfContained = Effect.gen(function* () {
       if (!(yield* fs.exists(required))) {
         failures.push(`standalone build output is missing: ${normalizePath(path.relative(root, required))}`);
       }
+    }
+    const personalCursorGraphSkill = path.join(
+      root,
+      'dist',
+      'config',
+      'agent-profiles',
+      'cursor-cloud-personal',
+      'agent-skills',
+      'threadnote-code-graph',
+      'SKILL.md',
+    );
+    if (yield* fs.exists(personalCursorGraphSkill)) {
+      failures.push(
+        `standalone build output must not contain: ${normalizePath(path.relative(root, personalCursorGraphSkill))}`,
+      );
     }
     if (process.platform === 'darwin') {
       const keychainLibrary = path.join(root, 'dist', 'runtime', 'graph-keychain.dylib');
