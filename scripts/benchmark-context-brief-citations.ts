@@ -7,7 +7,7 @@ import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
 import {sha256Hex} from '../src/effect/digest.js';
 import {SystemInfo} from '../src/effect/system.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
-import {scriptArguments} from './effect/script.js';
+import {hasScriptHelpFlag, scriptArguments} from './effect/script.js';
 
 const TARGET = new URL('./benchmark-context-brief-citations-target.ts', import.meta.url);
 
@@ -18,6 +18,10 @@ const program = Effect.scoped(
     const path = yield* Path.Path;
     const system = yield* SystemInfo;
     const args = yield* scriptArguments();
+    if (hasScriptHelpFlag(args)) {
+      yield* Console.log(usage());
+      return;
+    }
     if (args.includes('--built-artifact-sha256')) {
       return yield* ScriptError.make({message: '--built-artifact-sha256 is reserved for the benchmark wrapper.'});
     }
@@ -69,5 +73,16 @@ const program = Effect.scoped(
 const systemLayer = SystemInfo.layer;
 const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
 const wrapperLayer = Layer.mergeAll(systemLayer, commandLayer).pipe(Layer.provideMerge(BunServices.layer));
+
+function usage(): string {
+  return [
+    'Usage: bun run bench:context-brief-citations -- [options]',
+    '',
+    'Builds and runs the Context Brief citation scale benchmark.',
+    'Options: --candidate-commit <40-hex> --output <json> --budget <json> --fail-on-budget',
+    '  --profiles <local-100k,workset-50,workset-128> --memory-candidates <count>',
+    '  --samples <count> --warmups <count>',
+  ].join('\n');
+}
 
 if (import.meta.main) BunRuntime.runMain(provideScriptLayer(program, wrapperLayer));

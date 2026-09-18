@@ -22,6 +22,36 @@ const RELEASE_TOOL_SCRIPTS = [
   },
 ] as const;
 
+const FOLLOW_UP_RELEASE_TOOL_SCRIPTS = [
+  {
+    name: 'Threadnote 5 release-readiness receipt verification',
+    path: 'scripts/verify-threadnote-5-release-readiness-receipts.ts',
+    usage: 'Usage: bun run verify:threadnote-5-release-readiness-receipts -- [options]',
+  },
+  {
+    name: 'Code-graph heavy-tail benchmark',
+    path: 'scripts/benchmark-code-graph-heavy-tail.ts',
+    usage: 'Usage: bun run bench:code-graph:heavy-tail -- [options]',
+  },
+  {
+    name: 'Context Brief citation benchmark',
+    path: 'scripts/benchmark-context-brief-citations.ts',
+    usage: 'Usage: bun run bench:context-brief-citations -- [options]',
+  },
+  {
+    name: 'Code-memory-link scale benchmark',
+    path: 'scripts/benchmark-code-memory-link-scale.ts',
+    usage: 'Usage: bun run bench:code-memory-link-scale -- [options]',
+  },
+  {
+    name: 'Memory-connections scale benchmark',
+    path: 'scripts/benchmark-memory-connections-scale.ts',
+    usage: 'Usage: bun run bench:memory-connections-scale -- [options]',
+  },
+] as const;
+
+const HELP_FLAGS = ['--help', '-h'] as const;
+
 describe('release tooling CLI help contract', () => {
   it.each(RELEASE_TOOL_SCRIPTS)('$name prints bounded help without running the operation', async script => {
     const result = await execFilePromise(process.execPath, [script.path, '--help', '--not-an-operation-option'], {
@@ -33,6 +63,18 @@ describe('release tooling CLI help contract', () => {
     expect(result.stderr).toBe('');
   });
 
+  it.each(FOLLOW_UP_RELEASE_TOOL_SCRIPTS)('$name prints bounded help without running the operation', async script => {
+    for (const helpFlag of HELP_FLAGS) {
+      const result = await execFilePromise(process.execPath, [script.path, helpFlag, '--not-an-operation-option'], {
+        cwd: process.cwd(),
+      });
+      expect(result.stdout).toContain(script.usage);
+      expect(result.stdout.length).toBeLessThanOrEqual(4_096);
+      expect(result.stdout).not.toMatch(/(?:failed|refused|unknown option|Error|Stack trace)/iu);
+      expect(result.stderr).toBe('');
+    }
+  });
+
   it('enumerates the evaluator-only optional options', async () => {
     const result = await execFilePromise(
       process.execPath,
@@ -42,5 +84,14 @@ describe('release tooling CLI help contract', () => {
     expect(result.stdout).toContain('--retained-subsystem-receipts <json>');
     expect(result.stdout).toContain('--baseline-trial-ledger-sha256 <64-hex>');
     expect(result.stdout).toContain('--authority-manifest-sha256 <64-hex>');
+  });
+
+  it('documents the heavy-tail child output option', async () => {
+    const result = await execFilePromise(process.execPath, ['scripts/benchmark-code-graph-heavy-tail.ts', '--help'], {
+      cwd: process.cwd(),
+    });
+    expect(result.stdout).toContain(
+      'Child options: --child --repository <path> --home <path> --profile-file <json> --output <json>',
+    );
   });
 });

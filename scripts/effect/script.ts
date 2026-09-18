@@ -8,6 +8,8 @@ export const scriptArguments = Effect.fn('script.arguments')(function* () {
   return system.processArguments.slice(2);
 });
 
+export const hasScriptHelpFlag = (args: readonly string[]): boolean => args.includes('--help') || args.includes('-h');
+
 export const resolveScriptPath = Effect.fn('script.resolvePath')(function* (value: string) {
   const path = yield* Path.Path;
   return path.resolve(value);

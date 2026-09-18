@@ -1,7 +1,7 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
-import {DateTime, Effect, Exit, FileSystem, Path, Schema} from 'effect';
+import {Console, DateTime, Effect, Exit, FileSystem, Path, Schema} from 'effect';
 import {sha256HexSync} from '../src/crypto/sha256.js';
 import {canonicalJson} from '../src/code_graph/checkpoint/canonical_json.js';
 import {codeGraphLayout} from '../src/code_graph/layout.js';
@@ -23,7 +23,7 @@ import {
   parseBenchmarkArtifactV1,
   type BenchmarkArtifactV1,
 } from '../src/evaluation/benchmark.js';
-import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
+import {atomicWrite, hasScriptHelpFlag, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 import {
   enforceCodeGraphBenchmarkRatchet,
   validateCodeGraphBenchmarkRatchet,
@@ -189,7 +189,12 @@ const HEAVY_TAIL_OUTER_ARTIFACT_SHA256_METADATA = 'outerArtifactSha256';
 
 const benchmark = Effect.scoped(
   Effect.gen(function* () {
-    const args = parseCodeGraphHeavyTailBenchmarkArguments(yield* scriptArguments());
+    const input = yield* scriptArguments();
+    if (hasScriptHelpFlag(input)) {
+      yield* Console.log(usage());
+      return;
+    }
+    const args = parseCodeGraphHeavyTailBenchmarkArguments(input);
     if (args.child) return yield* runChild(args);
     return yield* runParent(args);
   }),
@@ -1599,6 +1604,19 @@ function integer(
 function required(value: string | undefined, option: string): string {
   if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value.`});
   return value;
+}
+
+function usage(): string {
+  return [
+    'Usage: bun run bench:code-graph:heavy-tail -- [options]',
+    '',
+    'Runs the code-graph heavy-tail benchmark and optionally retains governed release evidence.',
+    'Parent options: --smoke --governed --output <json> --ratchet <json>',
+    '  --candidate-commit <40-hex> --evidence-class <correctness-only|governed-performance>',
+    '  --minimum-free-gib <count>',
+    'Child options: --child --repository <path> --home <path> --profile-file <json> --output <json>',
+    '  --workers <1-8> --interrupt-after-files <count>',
+  ].join('\n');
 }
 
 function positiveInteger(value: unknown): value is number {
