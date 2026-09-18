@@ -1,5 +1,7 @@
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
+import fc from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 
@@ -11,6 +13,7 @@ import {
 } from '../../src/memory/context_health_aggregate_commands.js';
 import {aggregateContextHealthReportsV1} from '../../src/memory/context_health_schedule.js';
 import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
+import {readPersonalProjectMemoryRecords} from '../../src/memory/maintenance_records.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
@@ -69,6 +72,127 @@ describe('context health aggregate runtime', () => {
         expect((yield* git(platformWorktree, ['status', '--porcelain=v1'])).stdout).toBe(statusBefore);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('reads supported personal lifecycle snapshots with more than one thousand files', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture([]);
+        const topics = Array.from({length: 1_001}, (_, index) => `scale-${String(index).padStart(4, '0')}`);
+        const handoffDirectory = personalProjectDirectory(fixture, 'handoff', 'threadnote');
+        yield* Effect.forEach(
+          topics,
+          topic =>
+            writePersonalRawAt(
+              fixture,
+              handoffDirectory,
+              `${topic}.md`,
+              handoffMemory(topic, `${topic} synthetic scale metadata.`),
+            ),
+          {concurrency: 64, discard: true},
+        );
+        const snapshot = yield* readPersonalProjectMemoryRecords(fixture.config, 'threadnote');
+        expect(snapshot).toHaveLength(topics.length);
+
+        const aggregate = yield* collectContextHealthAggregate(fixture.config, {
+          callerCwd: fixture.repository,
+          project: 'threadnote',
+        }).pipe(TestClock.withLive);
+
+        expect(aggregate).toMatchObject({completeSources: 1, exitCode: 0, status: 'clean', unknownSources: 0});
+        expect(aggregate.sources[0]).toMatchObject({recordsScanned: topics.length, state: 'complete'});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('fails closed before reading personal contents when the finite snapshot bound is exceeded', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture([]);
+        const durableDirectory = personalProjectDirectory(fixture, 'durable', 'threadnote');
+        const handoffDirectory = personalProjectDirectory(fixture, 'handoff', 'threadnote');
+        yield* fixture.fs.makeDirectory(durableDirectory, {recursive: true});
+        yield* fixture.fs.makeDirectory(handoffDirectory, {recursive: true});
+        let selectedFileOpens = 0;
+        let selectedFileStats = 0;
+        const oversizedFileSystem = FileSystem.FileSystem.of({
+          ...fixture.fs,
+          open: (file, options) => {
+            if (file.endsWith('.md')) selectedFileOpens += 1;
+            return fixture.fs.open(file, options);
+          },
+          readDirectory: directory =>
+            directory === durableDirectory
+              ? Effect.succeed(Array.from({length: 6_000}, (_, index) => `durable-overflow-${index}.md`))
+              : directory === handoffDirectory
+                ? Effect.succeed(Array.from({length: 4_001}, (_, index) => `handoff-overflow-${index}.md`))
+                : fixture.fs.readDirectory(directory),
+          stat: file => {
+            if (file.endsWith('.md')) selectedFileStats += 1;
+            return fixture.fs.stat(file);
+          },
+        });
+
+        const aggregate = yield* collectContextHealthAggregate(fixture.config, {
+          callerCwd: fixture.repository,
+          project: 'threadnote',
+        }).pipe(Effect.provideService(FileSystem.FileSystem, oversizedFileSystem), TestClock.withLive);
+
+        expect(aggregate).toMatchObject({completeSources: 0, exitCode: 2, status: 'unknown', unknownSources: 1});
+        expect(aggregate.sources[0]).toMatchObject({reason: 'snapshot-unreadable', state: 'unknown'});
+        expect(selectedFileOpens).toBe(0);
+        expect(selectedFileStats).toBe(0);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  fcEffectProp(
+    effectIt,
+    'preflights the total personal file bound before reads for every two-directory partition',
+    {firstDirectoryCount: fc.integer({max: 10_000, min: 1})},
+    ({firstDirectoryCount}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* makeFixture([]);
+          const durableDirectory = personalProjectDirectory(fixture, 'durable', 'threadnote');
+          const handoffDirectory = personalProjectDirectory(fixture, 'handoff', 'threadnote');
+          yield* fixture.fs.makeDirectory(durableDirectory, {recursive: true});
+          yield* fixture.fs.makeDirectory(handoffDirectory, {recursive: true});
+          let selectedFileOpens = 0;
+          let selectedFileStats = 0;
+          const oversizedFileSystem = FileSystem.FileSystem.of({
+            ...fixture.fs,
+            open: (file, options) => {
+              if (file.endsWith('.md')) selectedFileOpens += 1;
+              return fixture.fs.open(file, options);
+            },
+            readDirectory: directory =>
+              directory === durableDirectory
+                ? Effect.succeed(
+                    Array.from({length: firstDirectoryCount}, (_, index) => `durable-overflow-${index}.md`),
+                  )
+                : directory === handoffDirectory
+                  ? Effect.succeed(
+                      Array.from({length: 10_001 - firstDirectoryCount}, (_, index) => `handoff-overflow-${index}.md`),
+                    )
+                  : fixture.fs.readDirectory(directory),
+            stat: file => {
+              if (file.endsWith('.md')) selectedFileStats += 1;
+              return fixture.fs.stat(file);
+            },
+          });
+
+          const result = yield* readPersonalProjectMemoryRecords(fixture.config, 'threadnote').pipe(
+            Effect.provideService(FileSystem.FileSystem, oversizedFileSystem),
+            Effect.result,
+          );
+
+          expect(result._tag).toBe('Failure');
+          expect(selectedFileOpens).toBe(0);
+          expect(selectedFileStats).toBe(0);
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    {fastCheck: {numRuns: 20}},
   );
 
   effectIt.effect('fails closed for unconfigured, dirty, and citation-unverifiable selected teams', () =>
