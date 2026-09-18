@@ -1,6 +1,6 @@
 import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
-import {ByteSize, Effect, FileSystem, Path} from 'effect';
+import {ByteSize, Effect, FileSystem, Path, Result} from 'effect';
 import fc from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
@@ -13,7 +13,11 @@ import {
 } from '../../src/memory/context_health_aggregate_commands.js';
 import {aggregateContextHealthReportsV1} from '../../src/memory/context_health_schedule.js';
 import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
-import {readPersonalProjectMemoryRecords} from '../../src/memory/maintenance_records.js';
+import {
+  admitPersonalProjectBytes,
+  admitPersonalProjectFileCount,
+  readPersonalProjectMemoryRecords,
+} from '../../src/memory/maintenance_records.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
@@ -235,6 +239,22 @@ describe('context health aggregate runtime', () => {
         expect(selectedFileOpens).toBe(0);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('accepts exact personal snapshot admission ceilings', () =>
+    Effect.sync(() => {
+      const exactFileCount = admitPersonalProjectFileCount(10_000 - 1);
+      expect(Result.isSuccess(exactFileCount)).toBe(true);
+      if (Result.isSuccess(exactFileCount)) expect(exactFileCount.success).toBe(10_000);
+
+      const exactFileBytes = admitPersonalProjectBytes(0, 8 * 1_024 * 1_024);
+      expect(Result.isSuccess(exactFileBytes)).toBe(true);
+      if (Result.isSuccess(exactFileBytes)) expect(exactFileBytes.success).toBe(8 * 1_024 * 1_024);
+
+      const exactTotalBytes = admitPersonalProjectBytes(120 * 1_024 * 1_024, 8 * 1_024 * 1_024);
+      expect(Result.isSuccess(exactTotalBytes)).toBe(true);
+      if (Result.isSuccess(exactTotalBytes)) expect(exactTotalBytes.success).toBe(128 * 1_024 * 1_024);
+    }),
   );
 
   fcEffectProp(

@@ -71,12 +71,11 @@ export const readPersonalProjectMemoryRecords = Effect.fn('memory.readPersonalPr
     if (before === undefined) {
       continue;
     }
-    const memoryNames = before.filter(name => name.endsWith('.md'));
-    filesRead += memoryNames.length;
-    if (filesRead > PERSONAL_PROJECT_FILE_LIMIT) {
-      return yield* personalProjectReadError('Personal project memory file limit exceeded.');
-    }
-    for (const name of memoryNames) {
+    for (const name of before) {
+      if (!name.endsWith('.md')) continue;
+      const nextFilesRead = admitPersonalProjectFileCount(filesRead);
+      if (Result.isFailure(nextFilesRead)) return yield* personalProjectReadError(nextFilesRead.failure);
+      filesRead = nextFilesRead.success;
       const relative = [...location.relativeDirectory, name].join('/');
       selectedEntries.push({location, name, relative});
     }
@@ -86,13 +85,9 @@ export const readPersonalProjectMemoryRecords = Effect.fn('memory.readPersonalPr
   }
   for (const selected of selectedEntries) {
     const inspected = yield* inspectContainedStableRegularFile(fs, path, canonicalRoot!, selected.relative);
-    if (inspected.size > PERSONAL_PROJECT_FILE_BYTE_LIMIT) {
-      return yield* personalProjectReadError('Personal project memory file byte limit exceeded.');
-    }
-    inspectedBytes += inspected.size;
-    if (inspectedBytes > PERSONAL_PROJECT_TOTAL_BYTE_LIMIT) {
-      return yield* personalProjectReadError('Personal project memory byte limit exceeded.');
-    }
+    const nextInspectedBytes = admitPersonalProjectBytes(inspectedBytes, inspected.size);
+    if (Result.isFailure(nextInspectedBytes)) return yield* personalProjectReadError(nextInspectedBytes.failure);
+    inspectedBytes = nextInspectedBytes.success;
     admittedEntries.push({...selected, size: inspected.size});
   }
   for (const selected of admittedEntries) {
@@ -311,4 +306,21 @@ function compareText(left: string, right: string): number {
 
 function personalProjectReadError(message: string, cause?: unknown): PersonalProjectReadError {
   return PersonalProjectReadError.make({message, ...(cause === undefined ? {} : {cause})});
+}
+
+export function admitPersonalProjectFileCount(filesRead: number): Result.Result<number, string> {
+  const nextFilesRead = filesRead + 1;
+  return nextFilesRead > PERSONAL_PROJECT_FILE_LIMIT
+    ? Result.fail('Personal project memory file limit exceeded.')
+    : Result.succeed(nextFilesRead);
+}
+
+export function admitPersonalProjectBytes(inspectedBytes: number, size: number): Result.Result<number, string> {
+  if (size > PERSONAL_PROJECT_FILE_BYTE_LIMIT) {
+    return Result.fail('Personal project memory file byte limit exceeded.');
+  }
+  const nextInspectedBytes = inspectedBytes + size;
+  return nextInspectedBytes > PERSONAL_PROJECT_TOTAL_BYTE_LIMIT
+    ? Result.fail('Personal project memory byte limit exceeded.')
+    : Result.succeed(nextInspectedBytes);
 }
