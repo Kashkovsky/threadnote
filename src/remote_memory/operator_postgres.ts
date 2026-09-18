@@ -8,6 +8,17 @@ import {parseResourceId} from '../storage/resource-id.js';
 import {migrateRemoteMemoryDatabase, remoteMemoryMigrationVersions} from './migrations.js';
 import {replaceRemoteCodeLinkBacklinks} from './code_link_backlinks.js';
 import {RemoteMemoryError} from './errors.js';
+import {
+  claimHostedContextHealthJobs,
+  completeHostedContextHealthCycle,
+  failHostedContextHealthClaim,
+  recordHostedContextHealthRun,
+  registerHostedContextHealthSchedule,
+  setHostedContextHealthScheduleStatus,
+} from './hosted_context_health_postgres.js';
+import type {HostedContextHealthClaimV1} from './hosted_context_health_postgres.js';
+import type {HostedContextHealthRunInputV1, HostedContextHealthScheduleV1} from './hosted_context_health.js';
+import {assertHostedContextHealthWorkerPrivileges} from './runtime_privileges.js';
 import {PostgresRemoteControlPlane, type RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
 import type {
   RemoteMemoryProvisioningPlanV1,
@@ -46,12 +57,21 @@ const MAX_GIT_BETA_IMPORT_TOTAL_ALIAS_BYTES = 8 * 1024 * 1024;
 const MAX_GIT_BETA_IMPORT_ALIAS_CHARACTERS = 4096;
 const utf8 = new TextEncoder();
 
+function requiredContextHealthEvaluationKey(options: {readonly contextHealthEvaluationKey?: string}): string {
+  const key = options.contextHealthEvaluationKey;
+  if (!key || utf8.encode(key).length < 32) {
+    throw new Error('Hosted context health evaluation key is unavailable or too short.');
+  }
+  return key;
+}
+
 /** Built-in operator adapter with one atomic revision/alias/import-receipt transaction. */
 export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperatorAdapter {
   readonly capabilities = remoteMemoryOperatorCapabilities([
     'apply_git_beta_import',
     'export_records',
     'inspect_records',
+    'manage_context_health',
     'migrate_schema',
     'provision_control_plane',
   ]);
@@ -60,7 +80,7 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
 
   constructor(
     readonly sql: Sql,
-    readonly options: {readonly executablePath?: string} = {},
+    readonly options: {readonly contextHealthEvaluationKey?: string; readonly executablePath?: string} = {},
   ) {
     this.controlPlane = new PostgresRemoteControlPlane(sql);
   }
@@ -94,6 +114,29 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
 
   readonly inspectProvisioningState = async (input: RemoteMemoryProvisioningRequestV1) =>
     this.controlPlane.inspectProvisioningState(input);
+
+  readonly registerContextHealthSchedule = (schedule: HostedContextHealthScheduleV1, nextDueAt: string) =>
+    registerHostedContextHealthSchedule(this.sql, schedule, nextDueAt);
+
+  readonly claimContextHealthJobs = (concurrency: number) => claimHostedContextHealthJobs(this.sql, concurrency);
+
+  readonly assertContextHealthWorkerPrivileges = () => assertHostedContextHealthWorkerPrivileges(this.sql);
+
+  readonly completeContextHealthCycle = (input: {readonly failed: boolean; readonly generation: number}) =>
+    completeHostedContextHealthCycle(this.sql, input);
+
+  readonly failContextHealthClaim = (claim: HostedContextHealthClaimV1) =>
+    failHostedContextHealthClaim(this.sql, claim);
+
+  readonly recordContextHealthRun = (claim: HostedContextHealthClaimV1, input: HostedContextHealthRunInputV1) =>
+    recordHostedContextHealthRun(this.sql, claim, input, requiredContextHealthEvaluationKey(this.options));
+
+  readonly setContextHealthScheduleStatus = (input: {
+    readonly project: string;
+    readonly shareId: string;
+    readonly status: 'active' | 'paused';
+    readonly tenantId: string;
+  }) => setHostedContextHealthScheduleStatus(this.sql, input);
 
   readonly applyGitBetaImport = async (input: {
     readonly aliasCompatibilityEndsAt: string;
