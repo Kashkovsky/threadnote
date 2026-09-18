@@ -30,6 +30,7 @@ import {
 import {localAiDocsArticle} from './docsLocalAi.js';
 import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
 import type {CliCommandReference, DocsSection, McpToolReference} from './docsTypes.js';
+import {upgradeFromThreadnote4DocsArticle} from './docsUpgradeV5.js';
 export type {
   CliCommandReference,
   DocsArticle,
@@ -468,6 +469,7 @@ threadnote doctor`,
           },
         ],
       },
+      upgradeFromThreadnote4DocsArticle,
       connectAgentDocsArticle,
       projectGuidanceDocsArticle,
       {
@@ -635,7 +637,7 @@ threadnote closeout preview --review-id <review-id>`,
         body: [
           {
             type: 'paragraph',
-            text: 'The stable `/docs/upgrade-from-3/` route remains the migration guide for existing links. Threadnote 3 cannot cross the standalone-runtime boundary with `threadnote update`; install Threadnote 5 with the bootstrap installer, then run the one-time, non-destructive migration from the legacy ~/.openviking home. Users already on Threadnote 4 should use [Updates and channels](updates/) instead.',
+            text: 'The stable `/docs/upgrade-from-3/` route remains the migration guide for existing links. Threadnote 3 cannot cross the standalone-runtime boundary with `threadnote update`; install Threadnote 5 with the bootstrap installer, then run the one-time, non-destructive migration from the legacy ~/.openviking home. Users already on Threadnote 4 should follow [Upgrade from Threadnote 4](upgrade-from-4/) instead.',
           },
           {
             type: 'code',
@@ -1731,7 +1733,7 @@ threadnote update --check`,
           },
           {
             type: 'paragraph',
-            text: "The beta channel is an inclusive preview channel: it selects the newest immutable Threadnote release across stable and prerelease builds, so an invoked update can graduate an older beta to a fresher stable without --stable. After that graduation, ordinary updates follow stable; use --beta to re-enter preview selection. Use --stable to request stable explicitly, even when it is numerically lower than an installed prerelease. Add --json to --check for a versioned machine-readable result. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair Threadnote-owned integrations. Cursor Marketplace plugin updates remain owned by Cursor and the organization's policy.",
+            text: "The beta channel is an inclusive preview channel: it selects the newest immutable Threadnote release across stable and prerelease builds, so an invoked update can graduate an older beta to a fresher stable without --stable. After that graduation, ordinary updates follow stable; use --beta to re-enter preview selection. Use --stable to request stable explicitly, even when it is numerically lower than an installed prerelease. Add --json to --check for a versioned machine-readable result. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair Threadnote-owned integrations. Cursor Marketplace plugin updates remain owned by Cursor and the organization's policy. Existing 4.x users can follow the focused [Threadnote 5 upgrade guide](upgrade-from-4/).",
           },
           {
             type: 'paragraph',

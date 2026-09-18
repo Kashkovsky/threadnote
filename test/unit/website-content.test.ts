@@ -825,6 +825,7 @@ The body remains ordinary **Markdown**.
     expect(articleIds).toEqual(
       expect.arrayContaining([
         'installation',
+        'upgrade-from-4',
         'connect-an-agent',
         'threadnote-5-journey',
         'context-lifecycle',
@@ -869,6 +870,23 @@ The body remains ordinary **Markdown**.
     expect(journey).toContain('You do not need two agents or a team share to get started');
     expect(journey).toContain('a “surface” simply means a coding agent or agent environment');
     expect(journey).toContain('It is not required for normal use');
+  });
+
+  it('gives existing 4.x users a safe, optional path into the 5.0 workflow', () => {
+    const article = docsSections
+      .flatMap(section => section.articles)
+      .find(candidate => candidate.id === 'upgrade-from-4');
+    const content = JSON.stringify(article);
+
+    expect(article?.title).toBe('Upgrade from Threadnote 4');
+    expect(content).toContain('Threadnote 5 is an in-place upgrade for 4.x users');
+    expect(content).toContain('threadnote update --check');
+    expect(content).toContain('threadnote doctor');
+    expect(content).toContain('Do not run `threadnote migrate`');
+    expect(content).toContain('Setup is optional for existing users');
+    expect(content).toContain('Context Brief: a short, cited briefing');
+    expect(content).toContain('Review a Knowledge Delta');
+    expect(content).toContain('The optional two-agent journey is still optional');
   });
 
   it('keeps the schema-v5 metadata walkthrough aligned with the shipped CAS contract', () => {
