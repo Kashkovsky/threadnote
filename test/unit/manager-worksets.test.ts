@@ -406,6 +406,9 @@ describe('Manager Worksets manifest transactions', () => {
           name: 'platform',
         });
         expect(definition.members.map(member => member.project)).toEqual(['api', 'billing']);
+        expect(definition.members).toContainEqual(
+          expect.objectContaining({configured: true, project: 'api', uri: 'threadnote://resources/repos/api'}),
+        );
         expect(raw).toContain('# manifest heading');
         expect(raw).toContain('# project inventory note');
         expect(raw).toContain('worksets:');
