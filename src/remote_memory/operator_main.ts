@@ -38,6 +38,7 @@ import {
   writeRemoteMemoryExportBundle,
 } from './operator_files.js';
 import {PostgresRemoteMemoryOperatorAdapter} from './operator_postgres.js';
+import {runOperationsFileCommand} from './operations_operator.js';
 
 const Identifier = Schema.String.check(
   Schema.isMinLength(1),
@@ -241,6 +242,9 @@ export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(fu
     return 0;
   }
   return yield* Effect.gen(function* () {
+    if (command.startsWith('operations-')) {
+      return yield* runOperationsFileCommand(command, rest);
+    }
     const databaseUrl = operatorDatabaseUrl(environment.THREADNOTE_REMOTE_DATABASE_URL);
     const contextHealthEvaluationKey =
       command === 'health-run' || command === 'health-cycle'
@@ -723,6 +727,10 @@ function operatorHelp(): string {
     'Database credentials are accepted only through THREADNOTE_REMOTE_DATABASE_URL.',
     '  migrate',
     '  capabilities',
+    '  operations-plan --input <draft.json> --output <manifest.json>',
+    '  operations-template --manifest <manifest.json> --drill <opaque-id> --target <opaque-id> --output <evidence.json>',
+    '  operations-verify --manifest <manifest.json> --evidence <evidence.json> --at <ISO timestamp> --receipt <new.json>',
+    '  operations-receipt-verify --manifest <manifest.json> --evidence <evidence.json> --at <ISO timestamp> --receipt <existing.json>',
     '  provision --input <json>',
     '  provision-plan --input <json> --output <plan.json> [--for-apply]',
     '  provision-apply --plan <plan.json> --receipt <receipt.json>',
