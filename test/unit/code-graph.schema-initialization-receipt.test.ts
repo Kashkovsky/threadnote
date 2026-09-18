@@ -48,11 +48,14 @@ describe('code graph schema initialization receipt', () => {
           `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
         );
         yield* fs.makeDirectory(path.dirname(databasePath), {recursive: true});
-        yield* Effect.sync(() => {
-          const writer = new Database(databasePath, {create: true, strict: true});
-          const reader = new Database(databasePath, {readonly: true, strict: true});
-          try {
-            writer.exec(`
+        // Keep a connection open but idle: closing SQLite's final connection is
+        // allowed to clean up the WAL before the production path can inspect it.
+        const _idleReader = yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const writer = new Database(databasePath, {create: true, strict: true});
+            const reader = new Database(databasePath, {readonly: true, strict: true});
+            try {
+              writer.exec(`
               PRAGMA journal_mode = WAL;
               PRAGMA wal_autocheckpoint = 0;
               CREATE TABLE schema_metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
@@ -63,26 +66,30 @@ describe('code graph schema initialization receipt', () => {
               INSERT INTO active_snapshots (snapshot_id) VALUES ('ready-snapshot');
               CREATE TABLE payload (id INTEGER PRIMARY KEY, value BLOB NOT NULL);
             `);
-            reader.exec('BEGIN');
-            // Establish the reader snapshot before the writer grows the WAL;
-            // closing the writer must therefore leave a dormant sidecar.
-            reader.query('SELECT COUNT(*) AS count FROM payload').get();
-            const insert = writer.prepare('INSERT INTO payload (id, value) VALUES (?, ?)');
-            const payload = new Uint8Array(256 * 1024).fill(37);
-            writer.transaction(() => {
-              for (let index = 0; index < 320; index += 1) insert.run(index, payload);
-            })();
-            writer.close(false);
-            reader.exec('COMMIT');
-          } finally {
-            try {
+              reader.exec('BEGIN');
+              // Establish the reader snapshot before the writer grows the WAL;
+              // closing the writer must therefore leave a dormant sidecar.
+              reader.query('SELECT COUNT(*) AS count FROM payload').get();
+              const insert = writer.prepare('INSERT INTO payload (id, value) VALUES (?, ?)');
+              const payload = new Uint8Array(256 * 1024).fill(37);
+              writer.transaction(() => {
+                for (let index = 0; index < 320; index += 1) insert.run(index, payload);
+              })();
               writer.close(false);
-            } catch {
-              // The normal path closes the writer before the reader releases its WAL snapshot.
+              reader.exec('COMMIT');
+              return reader;
+            } catch (cause) {
+              try {
+                writer.close(false);
+              } catch {
+                // A failed fixture setup may have already closed the writer.
+              }
+              reader.close(false);
+              throw cause;
             }
-            reader.close(false);
-          }
-        });
+          }),
+          reader => Effect.sync(() => reader.close(false)),
+        );
         const before = yield* inspectCodeGraphStorage(home, checkoutId);
         expect(before).toMatchObject({pageStorage: {freelistPages: 0, state: 'available'}, state: 'available'});
         if (before.state !== 'available') throw new Error('expected dormant code graph storage');

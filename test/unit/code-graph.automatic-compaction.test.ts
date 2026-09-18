@@ -1,6 +1,6 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref, Schema} from 'effect';
+import {Clock, Deferred, Duration, Effect, Fiber, FileSystem, Layer, Path, Ref, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -814,6 +814,7 @@ describe('automatic code graph compaction', () => {
         const inventories = yield* Ref.make<string[]>([]);
         const firstOwner = yield* Deferred.make<string>();
         const secondOwner = yield* Deferred.make<string>();
+        const contenderSleepScheduled = yield* Deferred.make<void>();
         const owners = yield* Ref.make<string[]>([]);
         const dependencies = (owner: string) => ({
           compact: () =>
@@ -827,26 +828,42 @@ describe('automatic code graph compaction', () => {
           listCheckoutIds: () => Ref.update(inventories, current => [...current, owner]).pipe(Effect.as([checkoutId])),
         });
         const timing = {initialDelayMilliseconds: 0, intervalMilliseconds: 1, leadershipRetryMilliseconds: 1};
+        const nativeClock = yield* Clock.Clock;
+        const contenderClock: Clock.Clock = {
+          ...nativeClock,
+          sleep: duration =>
+            Duration.toMillis(duration) === timing.leadershipRetryMilliseconds
+              ? Effect.gen(function* () {
+                  const sleep = yield* nativeClock.sleep(duration).pipe(Effect.forkChild({startImmediately: true}));
+                  yield* Deferred.succeed(contenderSleepScheduled, undefined);
+                  return yield* Fiber.join(sleep);
+                })
+              : nativeClock.sleep(duration),
+        };
         const first = yield* runCodeGraphAutomaticCompactionSchedulerWith(
           dependencies('first'),
           home,
           () => Effect.void,
           timing,
         ).pipe(Effect.forkChild({startImmediately: true}));
+        const owner = yield* Deferred.await(firstOwner);
+        expect(owner).toBe('first');
+        expect(yield* Ref.get(inventories)).toEqual([owner]);
         const second = yield* runCodeGraphAutomaticCompactionSchedulerWith(
           dependencies('second'),
           home,
           () => Effect.void,
           timing,
-        ).pipe(Effect.forkChild({startImmediately: true}));
+        ).pipe(Effect.provideService(Clock.Clock, contenderClock), Effect.forkChild({startImmediately: true}));
 
-        const owner = yield* Deferred.await(firstOwner);
-        expect(yield* Ref.get(inventories)).toEqual([owner]);
-        yield* Fiber.interrupt(owner === 'first' ? first : second);
+        // The failed acquisition is asynchronous. Wait until its retry sleep
+        // is registered before advancing TestClock past the retry deadline.
+        yield* Deferred.await(contenderSleepScheduled);
+        yield* Fiber.interrupt(first);
         yield* TestClock.adjust(1);
-        expect(yield* Deferred.await(secondOwner)).not.toBe(owner);
+        expect(yield* Deferred.await(secondOwner)).toBe('second');
         expect(yield* Ref.get(inventories)).toHaveLength(2);
-        yield* Fiber.interrupt(owner === 'first' ? second : first);
+        yield* Fiber.interrupt(second);
       }),
     );
 
