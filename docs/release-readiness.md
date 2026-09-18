@@ -1,0 +1,95 @@
+# Local release-readiness evidence
+
+The v5 release-readiness evaluator is an on-demand local procedure. It does not invoke an agent,
+contact a provider, schedule work with an organization service, or enable CI enforcement.
+
+## Capture and verify a candidate
+
+Collect bounded content-free scenario transcripts from the shipped local task loop and provide the
+source-native subsystem artifacts to the local verifier as short-lived private input. Every record
+must name its scenario and exact candidate identity; its digest covers the candidate, scenario,
+kind, and artifact. Every observation must bind the exact
+`5.0.0-local.g<commit>` runtime before and after the scenario; a capture manifest hash is reviewed
+outside the evidence file.
+
+```sh
+bun run verify:threadnote-5-release-readiness-receipts -- \
+  --evidence candidate-evidence.json \
+  --retained-subsystem-receipts retained-receipts.json \
+  --authority-manifest reviewed-authority.json \
+  --authority-manifest-sha256 <independently-reviewed-64-hex-sha256> \
+  --output receipt-verification.json
+
+bun run eval:threadnote-5-release-readiness -- \
+  --candidate-commit <40-hex-commit> \
+  --candidate-executable-sha256 <64-hex-sha256> \
+  --capture-manifest-sha256 <independently-reviewed-64-hex-sha256> \
+  --authority-manifest reviewed-authority.json \
+  --authority-manifest-sha256 <independently-reviewed-64-hex-sha256> \
+  --retained-subsystem-receipts retained-receipts.json \
+  --evidence candidate-evidence.json
+```
+
+The authority manifest is a separate content-free review boundary. Capture it from the supervising
+execution/review surface, not from the proposal or procedure artifact being evaluated. It binds
+candidate-review apply events, provider-call counts, procedure command exit receipts, and automatic
+execution counts to exact source-record digests. Review its hash out of band before supplying it;
+the manifest cannot nominate its own trust. Without this independently supplied authority,
+provider-call, proposal-approval, and procedure-execution assertions remain unknown.
+
+The verification output retains only content-free receipt-set hashes and scenario states; it never
+includes source paths or private artifact bodies. Delete or otherwise handle the private input under
+the repository's normal local-data policy after producing and reviewing that output.
+
+The local adapter registry independently parses and rederives shipped structured-closeout, ValueReport,
+proposal, procedure, health, Context Brief, Context Check, guidance, and migration artifacts. It rejects duplicate, extra, oversized, stale-candidate,
+or unreferenced records and compares derived assertions and measurements exactly with the sealed
+transcript. Proposal approval and procedure execution are checked against the independently trusted
+authority manifest rather than proposal/receipt labels. Activation/ValueReport linkage and scheduled/team health remain typed
+pending inputs. Pending verifier seams leave only their dependent scenarios and metrics unknown;
+tampered or mismatched evidence is a quality failure.
+
+Context Brief captures strictly reparse the production request/result, require a requested cap from 800–1,500 estimated
+tokens, and verify that the measured response stays at or below that cap, including valid shorter responses.
+They cannot infer first-plan correctness or citations without a separately hash-bound external authority entry. Context Check captures require a
+parsed report plus repository, graph, and read-fence evidence before proving dirty evidence is non-current and its outcome
+unknown and an authority entry bound to the receipt. Guidance captures replay bounded source and before/after bytes through
+the production projection functions; stale-precondition rejection requires external authority. Migration captures bind
+4.7.x and 5.0 runtime identities and protected-state digests, but a HomeMigrationReceipt alone cannot prove execution
+and remains unknown without execution authority. Authority entries have exact record coverage: surplus or mislabeled
+entries are rejected.
+
+The matrix requires exact five-field closeout output (decisions and rationale, constraints,
+verification, invalidations, unresolved risks), current compatible verified procedures that never
+auto-execute, activation receipt reuse in ValueReport, provider-neutral Git proposals, and local
+read-only scheduling plus configured Git-team read-only health aggregation. Organization-hosted
+scheduling is outside this procedure. Measured lanes retain the ten-eligible-sample minimum.
+
+## Compare 4.7.x
+
+Capture 4.7 evidence in a separate local artifact and supply its identity outside that artifact:
+
+```sh
+bun run capture:threadnote-5-baseline-ledger -- \
+  --evidence baseline-evidence.json \
+  --output baseline-trial-ledger.json
+
+bun run eval:threadnote-5-release-readiness -- \
+  --candidate-commit <5.0-commit> \
+  --candidate-executable-sha256 <5.0-executable-sha256> \
+  --capture-manifest-sha256 <reviewed-manifest-sha256> \
+  --authority-manifest reviewed-authority.json \
+  --authority-manifest-sha256 <independently-reviewed-64-hex-sha256> \
+  --baseline-version 4.7.9 \
+  --baseline-commit <4.7-commit> \
+  --baseline-executable-sha256 <4.7-executable-sha256> \
+  --baseline-trial-ledger baseline-trial-ledger.json \
+  --baseline-trial-ledger-sha256 <independently-reviewed-ledger-hash> \
+  --retained-subsystem-receipts retained-receipts.json \
+  --evidence candidate-evidence.json
+```
+
+Do not treat a baseline artifact as its own authority. The evaluator accepts a comparison only
+when the independently supplied version, commit, and executable hash exactly match its retained
+baseline observations. For a downgrade, run the same fixture after restoring 4.7.x; retain a
+safe-refusal result instead of forcing a destructive downgrade.

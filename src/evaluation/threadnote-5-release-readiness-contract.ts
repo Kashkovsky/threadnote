@@ -15,6 +15,7 @@ export const THREADNOTE_5_RELEASE_SCENARIOS = [
   'interrupted-resumed',
   'upgrade-downgrade',
   'provider-neutral-proposal',
+  'verified-procedures',
   'health-maintenance',
   'structured-closeout',
   'stale-citation',
@@ -42,8 +43,10 @@ export const THREADNOTE_5_RELEASE_SUBSYSTEMS = [
   'git-proposal',
   'guidance',
   'migration',
+  'procedure',
   'recall',
   'sharing',
+  'value-report',
 ] as const;
 
 export type Threadnote5ReleaseScenario = (typeof THREADNOTE_5_RELEASE_SCENARIOS)[number];
@@ -265,8 +268,12 @@ export const APPROVED_THREADNOTE_5_SCENARIOS: readonly Threadnote5ScenarioContra
       {id: 'wrong-memory-rate', minimumEligibleCount: 10},
       {id: 'second-agent-reuse-rate', minimumEligibleCount: 10},
     ],
-    requiredAssertions: ['two-surfaces-connected', 'second-surface-reused-decision'],
-    subsystems: ['activation', 'recall'],
+    requiredAssertions: [
+      'two-surfaces-connected',
+      'second-surface-reused-decision',
+      'activation-receipt-reused-by-value-report',
+    ],
+    subsystems: ['activation', 'recall', 'value-report'],
   },
   {
     id: 'git-shared',
@@ -311,17 +318,39 @@ export const APPROVED_THREADNOTE_5_SCENARIOS: readonly Threadnote5ScenarioContra
     subsystems: ['git-proposal'],
   },
   {
+    id: 'verified-procedures',
+    metricIds: [],
+    metricMinimums: [],
+    requiredAssertions: [
+      'procedure-receipt-current',
+      'procedure-dependencies-compatible',
+      'procedure-never-auto-executed',
+    ],
+    subsystems: ['procedure'],
+  },
+  {
     id: 'health-maintenance',
     metricIds: ['health-resolution-rate'],
     metricMinimums: [{id: 'health-resolution-rate', minimumEligibleCount: 10}],
-    requiredAssertions: ['health-issue-detected', 'health-resolution-recorded'],
+    requiredAssertions: [
+      'health-issue-detected',
+      'health-resolution-recorded',
+      'local-scheduled-invocation-read-only',
+      'configured-git-team-aggregation-read-only',
+    ],
     subsystems: ['context-health'],
   },
   {
     id: 'structured-closeout',
     metricIds: ['knowledge-delta-completion-rate'],
     metricMinimums: [{id: 'knowledge-delta-completion-rate', minimumEligibleCount: 10}],
-    requiredAssertions: ['durable-candidates-at-most-three', 'explicit-apply-required', 'handoff-state-present'],
+    requiredAssertions: [
+      'decisions-rationale-present',
+      'constraints-present',
+      'verification-present',
+      'invalidations-present',
+      'unresolved-risks-present',
+    ],
     subsystems: ['closeout'],
   },
   {

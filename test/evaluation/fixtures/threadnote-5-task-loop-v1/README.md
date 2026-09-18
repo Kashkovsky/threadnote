@@ -10,11 +10,21 @@ requires one content-free receipt for each bounded scenario:
 - dirty-worktree fail-closed behavior;
 - interrupted/resumed operation without duplicate effects;
 - upgrade readability and readable-or-safe-refusal downgrade behavior;
-- reviewed, provider-neutral Git proposal generation; and
-- health issue detection and resolution.
+- reviewed, provider-neutral Git proposal generation;
+- verified, compatible procedures that never auto-execute; and
+- health issue detection, read-only local scheduling, and configured Git-team aggregation.
 
-The same executable matrix retains the earlier static gates for structured closeout, stale citations, contradiction
+The same executable matrix requires exact five-field structured closeout output and retains the earlier static gates for stale citations, contradiction
 triage, projection drift, and Context Brief/Knowledge Delta output budgets; those contracts were expanded, not replaced.
+
+Source-native adapter records are selected by a typed registry, not a capture label. Context Brief records reparse the
+production request/result, accept only a requested 800–1,500 estimated-token cap, and permit shorter responses that stay
+within it; first-plan correctness and citations need external authority. Dirty-worktree records require a parsed Context Check report plus repository, graph, and read-fence
+boundaries. Guidance records reparse sources and preview/before/after/current receipts, and migration records bind both
+runtime identities and protected-state digests. Missing external stale-precondition or migration-execution authority stays
+unknown; a migration receipt by itself is never execution proof.
+Each external authority entry is content-free, bound to one exact source record and candidate, and rejected when coverage
+is missing, surplus, or mislabeled.
 
 The seven metrics are time and estimated tokens to the first cited correct plan, setup success, wrong-memory rate,
 second-agent reuse, Knowledge Delta completion, and health resolution. Thresholds, scenario-to-metric attribution, and
@@ -30,6 +40,11 @@ transcripts; the adapter label alone has no authority. Unknown, failed, missing,
 or scenario-mislabeled observations fail closed. A missing or untrusted 4.7.x identity produces an explicit unknown
 comparison, never an improvement.
 
+Proposal/provider-call and procedure-execution claims additionally require a separate content-free authority manifest
+from the supervising review/execution surface. Its independently supplied hash binds exact apply-audit digests,
+provider-call counts, command exit receipts, and automatic-execution counts to source-record digests. The proposal or
+procedure artifact cannot self-authorize this manifest.
+
 ## Run the evaluator
 
 ```sh
@@ -37,6 +52,8 @@ bun run eval:threadnote-5-release-readiness -- \
   --candidate-commit <exact-40-character-sha> \
   --candidate-executable-sha256 <64-lowercase-hex> \
   --capture-manifest-sha256 <independently-reviewed-64-lowercase-hex> \
+  --authority-manifest <reviewed-content-free-authority.json> \
+  --authority-manifest-sha256 <independently-reviewed-64-lowercase-hex> \
   --evidence <content-free-evidence.json> \
   --output <scored-result.json>
 ```
@@ -50,12 +67,14 @@ The command reads local files only. It never invokes an agent, product API, prov
 fixture replay can validate the evaluator but remains release status unknown; only
 threadnote-5-local-task-loop-adapter-v1 evidence may claim release-candidate status.
 
-## Remaining adapter seam
+## Remaining adapter seams
 
-The independent contract and replay evaluator are complete. The production adapter must translate the final shipped
-activation, structured closeout, health, value, and proposal receipts into this schema while binding the exact installed
-5.0.0-local.g<commit> executable. The current evaluator replays a reviewed manifest, derives assertions and metrics from
-its bounded content-free transcripts, and verifies transcript chaining plus subsystem digests and pre/post identity. The
-remaining production adapter verifier must resolve each subsystem digest against the corresponding real receipt rather
-than trust the adapter label. The adapter must not infer or synthesize a passed assertion. Until those APIs land and both
-sides of that seam are implemented, release evidence cannot pass.
+The independent contract, replay evaluator, and source-native local verifiers for structured closeout, ValueReport,
+provider-neutral Git proposals, verified procedures, and existing context-health reports/repairs are complete. Private
+source artifacts are bounded, tied to the exact candidate and scenario, and reduced to content-free verification hashes;
+the verifier rejects copied transcript claims that it cannot independently rederive. Provider-call, proposal-approval,
+and procedure-execution assertions additionally require the separately trusted authority manifest.
+
+Activation/second-surface linkage and scheduled/team health aggregation remain explicit pending seams until their final
+production receipt APIs land. Their dependent scenarios and metrics therefore stay unknown and cannot admit a release.
+The adapter must never infer or synthesize a passed assertion.

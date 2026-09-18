@@ -99,3 +99,13 @@ threadnote index status
 Lexical and vector recall are immediately available after install or repair completes. Both indexes are derived data
 under `~/.threadnote/indexes/`; canonical memories and resources remain ordinary files under
 `~/.threadnote/data/<account>`.
+
+## 4.7 to 5.0 release-evidence comparison
+
+The optional local release-readiness procedure preserves a separate 4.7 capture and requires the
+baseline version, commit, and executable hash outside that artifact. A generic receipt wrapper can
+never admit a release: final evidence needs independently parsed source-native receipts. The v5
+matrix includes the exact five-field closeout, verified procedures, activation/ValueReport reuse,
+provider-neutral proposals, and read-only local scheduling plus configured Git-team health
+aggregation. A downgrade is safe only when the same fixture records readable data or an explicit
+safe refusal. See [`docs/release-readiness.md`](release-readiness.md) for commands.
