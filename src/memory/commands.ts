@@ -54,11 +54,11 @@ import {
   discardDeferredCodeAnchorIntent,
   discardDeferredCodeAnchorIntentsWithin,
   discardOtherDeferredCodeAnchorIntents,
-  finalizeDeferredCodeAnchors,
   stageDeferredCodeAnchorIntent,
   type DeferredCodeAnchorWriteRequest,
   withDeferredCodeAnchorMutationLocks,
 } from './deferred_code_anchor.js';
+import {finalizeDeferredCodeAnchorsWithDerivedIndexes} from './deferred_code_anchor_finalization.js';
 import {
   assertCurrentReplacementRawContent,
   assertCurrentReplacementWritable,
@@ -1292,7 +1292,7 @@ export const runFinalizeCodeRefs = Effect.fn('runFinalizeCodeRefs')(function* (
     : undefined;
   const receipt = yield* withCodeAnchorFinalizationAnonymousTelemetry(
     'explicit',
-    finalizeDeferredCodeAnchors(config, {limit, uris: options.uris}),
+    finalizeDeferredCodeAnchorsWithDerivedIndexes(config, {limit, uris: options.uris}),
   );
   yield* writeFinalCliOutput(JSON.stringify(receipt, undefined, 2));
 });

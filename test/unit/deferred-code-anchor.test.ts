@@ -1,6 +1,8 @@
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {Deferred, Effect, Fiber, FileSystem, Path, PlatformError} from 'effect';
 import {TestClock} from 'effect/testing';
+import {fcProp} from '../helpers/fast-check-property.js';
+import fc from 'fast-check';
 import {describe, expect} from 'vitest';
 import {codeGraphCommittedFileContentHash} from '../../src/code_graph/content_identity.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
@@ -31,6 +33,7 @@ import {
   writePrivateDeferredCodeAnchorFile,
 } from '../../src/memory/deferred_code_anchor_private_fs.js';
 import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {finalizedDeferredCodeAnchorUris} from '../../src/memory/deferred_code_anchor_finalization.js';
 import {formatMemoryDocument, parseMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -39,6 +42,42 @@ const MEMORY_URI = 'threadnote://user/tester/memories/durable/projects/threadnot
 const TEST_ROUTE_PASS_TIMEOUT_MILLISECONDS = 5_000;
 
 describe('deferred code-anchor outbox', () => {
+  fcProp(
+    effectIt,
+    'selects each finalized URI once in receipt order for one derived-index refresh',
+    {
+      items: fc.array(
+        fc.record({
+          memoryUri: fc.option(
+            fc.constantFrom(
+              'threadnote://user/tester/memories/a.md',
+              'threadnote://user/tester/memories/b.md',
+              'threadnote://user/tester/memories/c.md',
+            ),
+            {nil: undefined},
+          ),
+          state: fc.constantFrom('conflict' as const, 'failed' as const, 'finalized' as const, 'pending' as const),
+        }),
+        {maxLength: 80},
+      ),
+    },
+    ({items}) => {
+      const selected = finalizedDeferredCodeAnchorUris(items);
+      expect(new Set(selected).size).toBe(selected.length);
+      expect(selected.every(uri => items.some(item => item.state === 'finalized' && item.memoryUri === uri))).toBe(
+        true,
+      );
+      expect(finalizedDeferredCodeAnchorUris(items)).toEqual(selected);
+      for (const [index, uri] of selected.entries()) {
+        if (index === selected.length - 1) break;
+        expect(items.findIndex(item => item.state === 'finalized' && item.memoryUri === uri)).toBeLessThan(
+          items.findIndex(item => item.state === 'finalized' && item.memoryUri === selected[index + 1]),
+        );
+      }
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
   effectIt.effect('serializes canonical user aliases behind parent intent cleanup', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -138,8 +177,10 @@ describe('deferred code-anchor outbox', () => {
         expect(first.intentId).not.toBe(second.intentId);
         const stagedPaths = yield* fixtureIntentPaths(fixture);
         expect(stagedPaths).toHaveLength(2);
-        expect(yield* deferredCodeAnchorDoctorCheck(fixture.config)).toEqual({
-          detail: '2 private code-anchor intent(s) are pending finalization',
+        expect(yield* deferredCodeAnchorDoctorCheck(fixture.config)).toMatchObject({
+          detail: expect.stringMatching(
+            /^2 private code-anchor intent\(s\) are pending finalization across 1 worktree\(s\): [0-9a-f]{12} present matching$/u,
+          ),
           name: 'deferred code anchors',
           status: 'warn',
         });
@@ -1212,6 +1253,44 @@ describe('deferred code-anchor outbox', () => {
         expect(yield* deferredCodeAnchorDoctorCheck(fixture.config)).toMatchObject({
           detail: 'no pending private code-anchor intents',
           status: 'ok',
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('keeps doctor attribution warning-only when caller checkout observation fails', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Pending inaccessible worktree revision.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/inaccessible-worktree.ts']),
+        });
+        const unavailableCheckoutFs = FileSystem.FileSystem.of({
+          ...fixture.fs,
+          exists: target =>
+            target === fixture.repository
+              ? Effect.fail(
+                  PlatformError.systemError({
+                    _tag: 'PermissionDenied',
+                    description: 'permission denied',
+                    method: 'exists',
+                    module: 'FileSystem',
+                    pathOrDescriptor: target,
+                  }),
+                )
+              : fixture.fs.exists(target),
+        });
+
+        expect(
+          yield* deferredCodeAnchorDoctorCheck(fixture.config).pipe(
+            Effect.provideService(FileSystem.FileSystem, unavailableCheckoutFs),
+          ),
+        ).toMatchObject({
+          detail: expect.stringMatching(/checkout unobserved\/read failure$/),
+          status: 'warn',
         });
       }),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),

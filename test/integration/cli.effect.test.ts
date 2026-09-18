@@ -241,6 +241,23 @@ describe('Effect CLI', () => {
     }
   });
 
+  it('omits derived-index status when finalize-code-refs finalizes nothing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-finalize-empty-'));
+    try {
+      const result = await runCli(['finalize-code-refs'], {THREADNOTE_HOME: root});
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        conflictCount: 0,
+        failedCount: 0,
+        finalizedCount: 0,
+        pendingCount: 0,
+        scannedCount: 0,
+      });
+      expect(JSON.parse(result.stdout)).not.toHaveProperty('derivedIndexes');
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
   it('keeps exact-current citation capture available as an explicit fail-before-write policy', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-require-current-'));
     try {
