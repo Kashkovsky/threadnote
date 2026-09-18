@@ -308,6 +308,34 @@ describe('context health and value report CLI', () => {
     expect(stored).not.toContain(query);
   });
 
+  it('includes projectless non-pin feedback in a project-filtered report', async () => {
+    const home = await makeHome();
+    const feedbackPath = join(home, 'feedback', 'recall-events-v1.jsonl');
+
+    const recorded = await runCli(
+      [
+        'recall-feedback',
+        'threadnote://user/local/memories/global.md',
+        '--action',
+        'applied',
+        '--query',
+        'global query',
+      ],
+      home,
+    );
+    expect(recorded.stdout).toContain('Recorded applied feedback');
+    const beforeReport = await readFile(feedbackPath, 'utf8');
+
+    const result = await runCli(['value', 'report', '--project', 'project-a', '--period', '365', '--json'], home);
+    const report = JSON.parse(result.stdout);
+
+    expect(report.feedback).toMatchObject({applied: 1, total: 1});
+    expect(JSON.stringify(report)).not.toContain('global');
+    expect(JSON.stringify(report)).not.toContain('query');
+    expect(JSON.stringify(report)).not.toContain('threadnote://');
+    expect(await readFile(feedbackPath, 'utf8')).toBe(beforeReport);
+  });
+
   it('reports locally observed health and Knowledge Delta activity while setup remains explicitly unavailable', async () => {
     const home = await makeHome();
     await storedMemory(home, 'project-a', 'expired.md', {validTo: '2026-09-16T00:00:00.000Z'});
