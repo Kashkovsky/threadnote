@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {buildContextHealthReport} from '../../src/memory/context_health.js';
+import {buildContextHealthReport, type ContextHealthFindingV1} from '../../src/memory/context_health.js';
 import {renderContextHealth} from '../../src/memory/context_health_commands.js';
 import {
   analyzeContextHealthSemantics,
@@ -74,6 +74,55 @@ describe('context health semantic contradictions', () => {
       unknownRecords: 3,
     });
     expect(partial.semanticCompleteness.unknownReasons).toContainEqual({count: 3, reason: 'record-limit'});
+  });
+
+  it('groups large text reports with total counts, owning memories, and actionable next steps', () => {
+    const base = buildContextHealthReport({now, project: 'threadnote', records: []});
+    const owners = ['threadnote://memory/tn_owner_a', 'threadnote://memory/tn_owner_b'];
+    const findings: ContextHealthFindingV1[] = Array.from({length: 100}, (_, index) => {
+      const owner = owners[index % owners.length];
+      const citationId = `tncc_${index.toString(16).padStart(40, '0')}`;
+      return {
+        category: 'citation-changed',
+        confidence: 'high',
+        id: `finding-${index}`,
+        repair: {
+          kind: 'repair-citation',
+          subjectUri: owner,
+          summary: `Review and recapture citation ${citationId}.`,
+          targetUri: `${owner}#${citationId}`,
+        },
+        repairability: 'reviewable',
+        severity: 'high',
+        summary: `citation ${citationId} no longer matches current source`,
+        uris: [owner],
+      };
+    });
+
+    const rendered = renderContextHealth({
+      ...base,
+      findings,
+      omittedFindings: 1_403,
+      recordsScanned: 1_912,
+      semanticCompleteness: {
+        ...base.semanticCompleteness,
+        analyzedRecords: 14,
+        eligibleRecords: 297,
+        state: 'partial',
+        unknownReasons: [{count: 283, reason: 'record-limit'}],
+        unknownRecords: 283,
+      },
+      status: 'unknown',
+    });
+
+    expect(rendered).toContain(
+      'Context health for threadnote: status=unknown; 1912 active records; 1503 total findings (100 shown, 1403 omitted).',
+    );
+    expect(rendered).toContain('100 high citation-changed findings across 2 owning memories.');
+    expect(rendered).toContain(`owner: ${owners[0]}`);
+    expect(rendered).toContain('Preview 100 reviewable findings with owner metadata:');
+    expect(rendered).toContain('threadnote context repair preview --project threadnote --json');
+    expect(rendered.split('\n').length).toBeLessThan(20);
   });
 
   it('preserves project, lifecycle, and durable-kind isolation', () => {
