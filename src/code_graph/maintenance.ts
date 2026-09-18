@@ -251,10 +251,10 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
   for (const [index, database] of databases.entries()) {
     yield* onProgress?.({current: index + 1, phase: 'checking', total: databases.length}) ?? Effect.void;
     const repositoryId = path.basename(path.dirname(database));
-    if (
+    const maintenanceDeferred =
       (yield* codeGraphRepositoryLockActive(threadnoteHome, repositoryId)) ||
-      (yield* codeGraphWorktreeBuildActive(threadnoteHome, repositoryId))
-    ) {
+      (yield* codeGraphWorktreeBuildActive(threadnoteHome, repositoryId));
+    if (maintenanceDeferred) {
       deferred += 1;
       yield* onProgress?.({
         current: index + 1,
@@ -262,7 +262,6 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
         reason: 'active-build',
         total: databases.length,
       }) ?? Effect.void;
-      continue;
     }
     const checked = yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(
       Effect.map(health => ({health, state: 'checked'})),
