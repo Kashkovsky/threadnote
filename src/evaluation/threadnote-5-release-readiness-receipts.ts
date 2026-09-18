@@ -31,17 +31,7 @@ import {
   type KnowledgeDeltaGitProposalInputV1,
 } from '../git_proposal/knowledge_delta.js';
 import {parseCandidateReview, type CandidateReview, type MemoryCandidate} from '../memory/candidate.js';
-import {
-  buildContextHealthReport,
-  type ContextHealthReportInputV1,
-  type ContextHealthReportV1,
-} from '../memory/context_health.js';
-import {
-  applyContextHealthRepairProposalV1,
-  contextHealthRepairProposalRevisionV1,
-  contextHealthReportRevisionV1,
-  previewContextHealthRepairPlanV1,
-} from '../memory/context_health_repair.js';
+import {deriveThreadnote5HealthClaimsV1} from './threadnote-5-release-readiness-health.js';
 import {projectKnowledgeDeltaV1} from '../memory/knowledge_delta.js';
 import {
   parseProcedureManifest,
@@ -260,6 +250,8 @@ type Threadnote5AuthorityRequirementV1 =
   | 'activation-live-verification-authority'
   | 'context-brief-plan-citation-authority'
   | 'context-check-read-fence-authority'
+  | 'context-health-schedule-authority'
+  | 'context-health-team-aggregate-authority'
   | 'guidance-stale-precondition-rejection-authority'
   | 'migration-execution-authority'
   | 'git-proposal-review-authority'
@@ -532,9 +524,10 @@ const LOCAL_RECEIPT_ADAPTERS: readonly Threadnote5LocalReceiptAdapterV1[] = [
   },
   {
     acceptedScenarios: ['stale-citation', 'contradiction-triage', 'health-maintenance'],
-    derive: record => deriveHealth(record.scenario, record.artifact),
+    authorityType: record => (record.scenario === 'health-maintenance' ? 'context-health-read-only' : undefined),
+    derive: (record, authority) => deriveThreadnote5HealthClaimsV1(record.scenario, record.artifact, authority),
     kind: 'context-health',
-    requiredAuthority: [],
+    requiredAuthority: ['context-health-schedule-authority', 'context-health-team-aggregate-authority'],
   },
   {
     acceptedScenarios: ['projection-drift'],
@@ -1457,108 +1450,6 @@ function parseValueReportCapture(value: unknown): ValueReportV1 {
     throw new Error('Value report does not match its source events and counts.');
   }
   return rebuilt;
-}
-
-function deriveHealth(scenario: Threadnote5ReleaseScenario, value: unknown): DerivedClaims {
-  const source = exactObject(value, ['repairs', 'reports'], 'context-health artifact');
-  const reports = boundedArray(source.reports, 'context-health reports', 0, MAX_ATTEMPTS).map(parseHealthReportCapture);
-  const repairs = boundedArray(source.repairs, 'context-health repairs', 0, MAX_ATTEMPTS).map(parseHealthRepairCapture);
-  if (!unique(reports.map(contextHealthReportRevisionV1))) throw new Error('Context-health reports must be unique.');
-  if (!unique(repairs.map(repair => repair.proposalId)))
-    throw new Error('Context-health repair trials must be unique.');
-  if (scenario === 'stale-citation') {
-    const categories = new Set(reports.flatMap(report => report.findings.map(finding => finding.category)));
-    return {
-      assertions: [
-        ...(categories.has('citation-changed') ? ['changed-never-current'] : []),
-        ...(categories.has('citation-missing') ? ['missing-never-current'] : []),
-        ...(categories.has('citation-unknown') ? ['unknown-remains-distinct'] : []),
-      ],
-      measurements: [],
-    };
-  }
-  if (scenario === 'contradiction-triage') {
-    const findings = reports.flatMap(report => report.findings);
-    const categories = new Set(findings.map(finding => finding.category));
-    return {
-      assertions: [
-        ...(categories.has('candidate-contradiction') ? ['contradiction-category-observed'] : []),
-        ...(categories.has('candidate-possible-duplicate') ? ['possible-duplicate-category-observed'] : []),
-        ...(findings.some(finding => finding.repairability === 'manual-review') ? ['manual-review-required'] : []),
-        'ordering-stable',
-      ],
-      measurements: [],
-    };
-  }
-  if (scenario === 'health-maintenance') {
-    const resolved = repairs.filter(repair => repair.resolved).length;
-    return {
-      assertions: [
-        ...(repairs.length > 0 ? ['health-issue-detected'] : []),
-        ...(resolved === repairs.length && repairs.length > 0 ? ['health-resolution-recorded'] : []),
-      ],
-      measurements: [{eligibleCount: repairs.length, id: 'health-resolution-rate', positiveCount: resolved}],
-      missingKinds: ['context-health-schedule', 'context-health-team-aggregate'],
-    };
-  }
-  throw new Error(`Context-health evidence is unsupported for ${scenario}.`);
-}
-
-function parseHealthReportCapture(value: unknown): ContextHealthReportV1 {
-  const capture = exactObject(value, ['input', 'report'], 'context-health report capture');
-  const input = healthInput(capture.input);
-  const rebuilt = buildContextHealthReport(input);
-  if (canonicalJson(rebuilt) !== canonicalJson(capture.report)) {
-    throw new Error('Context-health report does not match its source inputs.');
-  }
-  contextHealthReportRevisionV1(rebuilt);
-  return rebuilt;
-}
-
-function parseHealthRepairCapture(value: unknown): {readonly proposalId: string; readonly resolved: boolean} {
-  const capture = exactObject(
-    value,
-    ['input', 'plan', 'proposal', 'receipt', 'report'],
-    'context-health repair capture',
-  );
-  const input = healthInput(capture.input);
-  const report = buildContextHealthReport(input);
-  if (canonicalJson(report) !== canonicalJson(capture.report)) {
-    throw new Error('Context-health repair report does not match its source inputs.');
-  }
-  const plan = previewContextHealthRepairPlanV1(report, input.records);
-  if (canonicalJson(plan) !== canonicalJson(capture.plan)) throw new Error('Context-health repair plan changed.');
-  const proposal = plan.proposals.find(
-    item => item.proposalId === object(capture.proposal, 'context-health proposal').proposalId,
-  );
-  if (proposal === undefined || contextHealthRepairProposalRevisionV1(proposal) !== proposal.revision) {
-    throw new Error('Context-health repair proposal is not part of the current plan.');
-  }
-  if (canonicalJson(proposal) !== canonicalJson(capture.proposal)) {
-    throw new Error('Context-health repair proposal differs from the current plan.');
-  }
-  const applied = applyContextHealthRepairProposalV1({
-    expectedRevision: proposal.revision,
-    proposal,
-    records: input.records,
-  });
-  if (applied.status !== 'applied' || canonicalJson(applied.receipt) !== canonicalJson(capture.receipt)) {
-    throw new Error('Context-health repair receipt cannot be reproduced.');
-  }
-  const postReport = buildContextHealthReport({...input, records: applied.records});
-  return {
-    proposalId: proposal.proposalId,
-    resolved: !postReport.findings.some(finding => finding.id === proposal.findingId),
-  };
-}
-
-function healthInput(value: unknown): ContextHealthReportInputV1 {
-  const source = object(value, 'context-health input');
-  const now = source.now instanceof Date ? source.now : new Date(String(source.now));
-  if (!Number.isFinite(now.getTime()) || !Array.isArray(source.records) || typeof source.project !== 'string') {
-    throw new Error('Context-health input is invalid.');
-  }
-  return {...(source as unknown as ContextHealthReportInputV1), now};
 }
 
 function strictCandidateReview(value: unknown, candidate: Threadnote5SourceV1): CandidateReview {

@@ -45,8 +45,10 @@ The local adapter registry independently parses and rederives shipped structured
 proposal, procedure, health, Context Brief, Context Check, guidance, and migration artifacts. It rejects duplicate, extra, oversized, stale-candidate,
 or unreferenced records and compares derived assertions and measurements exactly with the sealed
 transcript. Proposal approval and procedure execution are checked against the independently trusted
-authority manifest rather than proposal/receipt labels. Activation/ValueReport linkage and scheduled/team health remain typed
-pending inputs. Pending verifier seams leave only their dependent scenarios and metrics unknown;
+authority manifest rather than proposal/receipt labels. Health-maintenance captures replay the production schedule plan
+and aggregate from bounded personal/team sources, then require a record-bound authority entry proving zero writes/network
+activity and stable pre/post HEAD, index, and worktree digests for every selected configured team. Unknown aggregate
+results remain valid read-only outcomes. Pending verifier seams leave only their dependent scenarios and metrics unknown;
 tampered or mismatched evidence is a quality failure.
 
 Context Brief captures strictly reparse the production request/result, require a requested cap from 800–1,500 estimated

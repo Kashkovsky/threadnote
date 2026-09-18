@@ -52,7 +52,14 @@ export interface ContextHealthScheduleOptionsV1 {
   readonly teams?: readonly string[];
 }
 
-export const collectContextHealthAggregate = Effect.fn('memory.contextHealth.aggregate')(function* (
+/** Bounded production sources retained by local replay evidence before pure aggregation. */
+export interface ContextHealthAggregateSourcesV1 {
+  readonly personal: ContextHealthAggregateSourceV1;
+  readonly project: string;
+  readonly teams: readonly ContextHealthAggregateSourceV1[];
+}
+
+export const collectContextHealthAggregateSources = Effect.fn('memory.contextHealth.aggregateSources')(function* (
   config: RuntimeConfig,
   options: ContextHealthAggregateOptionsV1,
 ) {
@@ -97,7 +104,15 @@ export const collectContextHealthAggregate = Effect.fn('memory.contextHealth.agg
       }
     }
   }
-  return aggregateContextHealthReportsV1({personal, project, teams});
+  return {personal, project, teams} satisfies ContextHealthAggregateSourcesV1;
+});
+
+export const collectContextHealthAggregate = Effect.fn('memory.contextHealth.aggregate')(function* (
+  config: RuntimeConfig,
+  options: ContextHealthAggregateOptionsV1,
+) {
+  const sources = yield* collectContextHealthAggregateSources(config, options);
+  return aggregateContextHealthReportsV1(sources);
 });
 
 export const runContextHealthAggregate = Effect.fn('memory.contextHealth.aggregateCommand')(function* (
