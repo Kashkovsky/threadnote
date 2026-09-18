@@ -1,15 +1,29 @@
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
+import * as FC from 'fast-check';
 import {describe, expect} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
-import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
+import {LocalModelRuntime, type LocalModelRuntimeShape} from '../../src/effect/ai/local-model-runtime.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {runDevelopmentInstallRepair, runRepair} from '../../src/lifecycle.js';
+import {
+  recallIndexMaintenanceShouldRetry,
+  RECALL_INDEX_MAINTENANCE_GENERATION_RETRY_LIMIT,
+  runDevelopmentInstallRepair,
+  runRepair,
+  verifyRecallIndexMaintenanceReadiness,
+} from '../../src/lifecycle.js';
 import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models/builtin.js';
 import {LocalModelStore} from '../../src/models/store.js';
+import {
+  currentRecallCorpusGeneration,
+  expireRecallIndexValidation,
+  type RecallIndexStatus,
+} from '../../src/recall/index.js';
+import {VectorCorpusGenerationChanged, vectorIndexMatchesGeneration} from '../../src/search/vector-index.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 
 const embeddingManifest = BUILTIN_MODEL_MANIFESTS.find(model => model.id === CORE_EMBEDDING_MODEL_ID)!;
@@ -80,23 +94,216 @@ const fixture = Effect.gen(function* () {
     status: () => Effect.succeed(installation),
     verify: () => Effect.succeed(installation),
   });
-  const runtime = LocalModelRuntime.of({
-    diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
-    embedMany: ({inputs, manifest}) =>
-      Effect.succeed(inputs.map(() => [1, ...new Array<number>((manifest.dimensions ?? 1) - 1).fill(0)])),
-    generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
-    rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
-  });
-  const provide = <A, E, R>(program: Effect.Effect<A, E, R>) =>
+  const runtimeContext = yield* Effect.context<FileSystem.FileSystem | Path.Path | SystemInfo>();
+  const embeddingRuntime = (
+    beforeEmbedding: () => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path | SystemInfo> = () =>
+      Effect.void,
+  ): LocalModelRuntimeShape =>
+    LocalModelRuntime.of({
+      diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+      embedMany: ({inputs, manifest}) =>
+        beforeEmbedding().pipe(
+          Effect.provide(runtimeContext),
+          Effect.orDie,
+          Effect.as(inputs.map(() => [1, ...new Array<number>((manifest.dimensions ?? 1) - 1).fill(0)])),
+        ),
+      generate: () => Effect.die(TestError.make({message: 'Unexpected generation'})),
+      rerank: () => Effect.die(TestError.make({message: 'Unexpected reranking'})),
+    });
+  const provideWithRuntime = <A, E, R>(program: Effect.Effect<A, E, R>, runtime: LocalModelRuntimeShape) =>
     program.pipe(
       Effect.provideService(SystemInfo, testSystem),
       Effect.provideService(LocalModelStore, store),
       Effect.provideService(LocalModelRuntime, runtime),
     );
-  return {config, fs, home, instruction, installRoot, path, pointer, provide, registry, registryContent};
+  const provide = <A, E, R>(program: Effect.Effect<A, E, R>) => provideWithRuntime(program, embeddingRuntime());
+  return {
+    config,
+    embeddingRuntime,
+    fs,
+    home,
+    instruction,
+    installRoot,
+    path,
+    pointer,
+    provide,
+    provideWithRuntime,
+    registry,
+    registryContent,
+  };
 });
 
 describe('development installer repair isolation', () => {
+  effectIt.effect('makes the lexical status the final readiness fence after observing the vector generation', () =>
+    Effect.gen(function* () {
+      const requestedGeneration = 'requested-generation';
+      const observations: string[] = [];
+      let lexicalStatus: RecallIndexStatus = {
+        databasePath: '/fixture/lexical.sqlite',
+        documentCount: 1,
+        generation: requestedGeneration,
+        ready: true,
+      };
+      const error = yield* verifyRecallIndexMaintenanceReadiness({
+        manifestId: embeddingManifest.id,
+        readLexicalStatus: () =>
+          Effect.sync(() => {
+            observations.push('lexical');
+            return lexicalStatus;
+          }),
+        readVectorReadiness: () =>
+          Effect.sync(() => {
+            observations.push('vector');
+            lexicalStatus = {
+              databasePath: '/fixture/lexical.sqlite',
+              documentCount: 1,
+              generation: requestedGeneration,
+              ready: false,
+              reason: 'canonical documents changed; run `threadnote repair`',
+            };
+            return 'current' as const;
+          }),
+        requestedGeneration,
+      }).pipe(Effect.flip);
+
+      expect(observations).toEqual(['vector', 'lexical']);
+      expect(error).toBeInstanceOf(VectorCorpusGenerationChanged);
+      expect(recallIndexMaintenanceShouldRetry(error, 0)).toBe(true);
+    }),
+  );
+
+  fcEffectProp(
+    effectIt,
+    'fails non-current vector readiness without reclassifying it as retryable corpus churn',
+    {
+      readiness: FC.constantFrom('corrupt' as const, 'missing' as const, 'stale' as const),
+    },
+    ({readiness}) =>
+      Effect.gen(function* () {
+        let lexicalReads = 0;
+        const error = yield* verifyRecallIndexMaintenanceReadiness({
+          manifestId: embeddingManifest.id,
+          readLexicalStatus: () =>
+            Effect.sync(() => {
+              lexicalReads += 1;
+              return {
+                databasePath: '/fixture/lexical.sqlite',
+                documentCount: 1,
+                generation: 'requested-generation',
+                ready: true,
+              } satisfies RecallIndexStatus;
+            }),
+          readVectorReadiness: () => Effect.succeed(readiness),
+          requestedGeneration: 'requested-generation',
+        }).pipe(Effect.flip);
+
+        expect(error).toMatchObject({_tag: 'LifecycleOperationError'});
+        expect(recallIndexMaintenanceShouldRetry(error, 0)).toBe(false);
+        expect(lexicalReads).toBe(0);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  fcEffectProp(
+    effectIt,
+    'retries only bounded lexical corpus generation changes',
+    {
+      completedRetries: FC.integer({max: RECALL_INDEX_MAINTENANCE_GENERATION_RETRY_LIMIT + 3, min: -2}),
+      generationChanged: FC.boolean(),
+    },
+    ({completedRetries, generationChanged}) =>
+      Effect.sync(() => {
+        const error = generationChanged
+          ? VectorCorpusGenerationChanged.make({
+              message: 'The lexical recall corpus changed while vector work was in progress.',
+              modelId: embeddingManifest.id,
+              requestedGeneration: 'fixture-generation',
+            })
+          : new Error('unrelated repair failure');
+        expect(recallIndexMaintenanceShouldRetry(error, completedRetries)).toBe(
+          generationChanged &&
+            completedRetries >= 0 &&
+            completedRetries < RECALL_INDEX_MAINTENANCE_GENERATION_RETRY_LIMIT,
+        );
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  effectIt.effect('retries an exact-current recall repair when a concurrent canonical write changes the corpus', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        const uri = 'threadnote://user/tester/memories/handoffs/active/threadnote/install-repair.md';
+        const memoryRoot = f.path.join(f.home, 'data', 'local', 'user', 'tester', 'memories', 'handoffs', 'active');
+        const memoryPath = f.path.join(memoryRoot, 'threadnote', 'install-repair.md');
+        yield* f.fs.makeDirectory(f.path.dirname(memoryPath), {recursive: true});
+        yield* f.fs.writeFileString(memoryPath, handoffDocument('Initial handoff body.'));
+        let embeddingAttempts = 0;
+        const runtime = f.embeddingRuntime(() =>
+          Effect.gen(function* () {
+            embeddingAttempts += 1;
+            if (embeddingAttempts !== 1) return;
+            yield* f.fs.writeFileString(memoryPath, handoffDocument('Concurrent handoff body.'));
+            yield* expireRecallIndexValidation(f.home, false, [uri]);
+          }),
+        );
+
+        const result = yield* f.provideWithRuntime(
+          captureConsole(runDevelopmentInstallRepair(f.config, version)),
+          runtime,
+        );
+        const corpusGeneration = yield* currentRecallCorpusGeneration(f.config);
+
+        expect(result.output).toContain('Rebuilt recall indexes for 1 document(s)');
+        expect(embeddingAttempts).toBe(2);
+        expect(corpusGeneration._tag).toBe('Some');
+        if (corpusGeneration._tag === 'Some') {
+          expect(yield* vectorIndexMatchesGeneration(f.home, embeddingManifest, corpusGeneration.value)).toBe(true);
+        }
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('fails after a bounded number of recall repair attempts under persistent canonical writes', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        const uri = 'threadnote://user/tester/memories/handoffs/active/threadnote/install-repair.md';
+        const memoryPath = f.path.join(
+          f.home,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'handoffs',
+          'active',
+          'threadnote',
+          'install-repair.md',
+        );
+        yield* f.fs.makeDirectory(f.path.dirname(memoryPath), {recursive: true});
+        yield* f.fs.writeFileString(memoryPath, handoffDocument('Initial handoff body.'));
+        let embeddingAttempts = 0;
+        const runtime = f.embeddingRuntime(() =>
+          Effect.gen(function* () {
+            embeddingAttempts += 1;
+            yield* f.fs.writeFileString(memoryPath, handoffDocument(`Concurrent handoff body ${embeddingAttempts}.`));
+            yield* expireRecallIndexValidation(f.home, false, [uri]);
+          }),
+        );
+
+        const error = yield* f
+          .provideWithRuntime(runDevelopmentInstallRepair(f.config, version), runtime)
+          .pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          message: expect.stringContaining('lexical recall corpus changed while vector work was in progress'),
+        });
+        expect(embeddingAttempts).toBe(3);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('repairs core indexes while preserving unmanaged host instructions and integration receipts', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -159,3 +366,17 @@ describe('development installer repair isolation', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
+
+function handoffDocument(body: string): string {
+  return [
+    'HANDOFF',
+    'kind: handoff',
+    'status: active',
+    'project: threadnote',
+    'topic: install-repair',
+    'source_agent_client: codex',
+    'timestamp: 2026-09-18T08:00:00.000Z',
+    '',
+    body,
+  ].join('\n');
+}

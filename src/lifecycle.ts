@@ -66,6 +66,9 @@ import {LocalModelStore} from './models/store.js';
 import {
   ensureVectorIndex,
   type VectorIndexProgress,
+  VectorCorpusGenerationChanged,
+  type VectorIndexGenerationReadiness,
+  vectorIndexGenerationReadiness,
   vectorIndexMatchesGeneration,
   vectorIndexStatus,
 } from './search/vector-index.js';
@@ -107,6 +110,48 @@ class LifecycleOperationError extends Schema.TaggedError<LifecycleOperationError
 }) {}
 
 const LAYOUT_RECEIPT = 'layout.json';
+export const RECALL_INDEX_MAINTENANCE_GENERATION_RETRY_LIMIT = 2;
+
+export function recallIndexMaintenanceShouldRetry(error: unknown, completedRetries: number): boolean {
+  return (
+    Number.isSafeInteger(completedRetries) &&
+    completedRetries >= 0 &&
+    completedRetries < RECALL_INDEX_MAINTENANCE_GENERATION_RETRY_LIMIT &&
+    Schema.is(VectorCorpusGenerationChanged)(error)
+  );
+}
+
+export const verifyRecallIndexMaintenanceReadiness = Effect.fn('lifecycle.verifyRecallIndexMaintenanceReadiness')(
+  function* <VectorError, VectorRequirements, LexicalError, LexicalRequirements>(input: {
+    readonly manifestId: string;
+    readonly readLexicalStatus: () => Effect.Effect<RecallIndexStatus, LexicalError, LexicalRequirements>;
+    readonly readVectorReadiness: () => Effect.Effect<VectorIndexGenerationReadiness, VectorError, VectorRequirements>;
+    readonly requestedGeneration: string;
+  }) {
+    const vectorReadiness = yield* input.readVectorReadiness();
+    if (vectorReadiness !== 'current') {
+      return yield* LifecycleOperationError.make({
+        message: `The vector recall index is ${vectorReadiness} after maintenance.`,
+      });
+    }
+    const lexicalStatus = yield* input.readLexicalStatus();
+    if (lexicalStatus.ready && lexicalStatus.generation === input.requestedGeneration) return;
+    if (
+      lexicalStatus.reason === 'canonical documents changed; run `threadnote repair`' ||
+      (lexicalStatus.ready && lexicalStatus.generation !== input.requestedGeneration)
+    ) {
+      return yield* VectorCorpusGenerationChanged.make({
+        message: 'The lexical recall corpus changed while vector work was in progress.',
+        modelId: input.manifestId,
+        requestedGeneration: input.requestedGeneration,
+      });
+    }
+    return yield* LifecycleOperationError.make({
+      message: `The lexical recall index is not ready after maintenance: ${lexicalStatus.reason ?? 'unknown state'}.`,
+    });
+  },
+);
+
 interface RunInstallOptions extends InstallOptions {
   readonly skipRecallIndexes?: boolean;
   readonly skipReleaseLifecycle?: boolean;
@@ -562,20 +607,41 @@ const maintainRecallIndexes = Effect.fn('lifecycle.maintainRecallIndexes')(funct
     progress =>
       Effect.gen(function* () {
         const updateProgress = (message: string) => progress.update(message).pipe(Effect.ignore);
-        const index = yield* loadRecallIndexData(config, {
-          forceRefresh,
-          includeInactive: false,
-          onProgress: state => updateProgress(recallProgressMessage(state)),
-        });
-        yield* updateProgress(
-          `Preparing vector recall index for ${index.candidates.length} lexical document(s) with ${manifest.id}.`,
-        );
-        const vectors = yield* ensureVectorIndex(config, manifest, index.candidates, {
-          corpusGeneration: index.generation,
-          currentCorpusGeneration: () => currentRecallCorpusGeneration(config),
-          onProgress: state => updateProgress(vectorProgressMessage(state)),
-        });
-        return {documentCount: index.candidates.length, vectors};
+        for (
+          let completedRetries = 0;
+          completedRetries <= RECALL_INDEX_MAINTENANCE_GENERATION_RETRY_LIMIT;
+          completedRetries += 1
+        ) {
+          const attempt = yield* Effect.gen(function* () {
+            const index = yield* loadRecallIndexData(config, {
+              forceRefresh,
+              includeInactive: false,
+              onProgress: state => updateProgress(recallProgressMessage(state)),
+            });
+            yield* updateProgress(
+              `Preparing vector recall index for ${index.candidates.length} lexical document(s) with ${manifest.id}.`,
+            );
+            const vectors = yield* ensureVectorIndex(config, manifest, index.candidates, {
+              corpusGeneration: index.generation,
+              currentCorpusGeneration: () => currentRecallCorpusGeneration(config),
+              onProgress: state => updateProgress(vectorProgressMessage(state)),
+            });
+            yield* verifyRecallIndexMaintenanceReadiness({
+              manifestId: manifest.id,
+              readLexicalStatus: () => recallIndexStatus(config, false),
+              readVectorReadiness: () =>
+                vectorIndexGenerationReadiness(config.agentContextHome, manifest, index.generation),
+              requestedGeneration: index.generation,
+            });
+            return {documentCount: index.candidates.length, vectors};
+          }).pipe(Effect.result);
+          if (Result.isSuccess(attempt)) return attempt.success;
+          if (!recallIndexMaintenanceShouldRetry(attempt.failure, completedRetries)) {
+            return yield* Effect.fail(attempt.failure);
+          }
+          yield* updateProgress('Canonical documents changed during vector work; rebuilding current recall indexes.');
+        }
+        return yield* Effect.die(new Error('Recall index maintenance retry loop exhausted without a result.'));
       }),
     progress => progress.stop,
   );
