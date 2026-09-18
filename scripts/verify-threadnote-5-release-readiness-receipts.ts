@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Effect, Path} from 'effect';
+import {Console, Effect, Path} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {
   parseThreadnote5ReleaseEvidenceV1,
@@ -11,14 +11,19 @@ import {
   threadnote5LocalReceiptVerificationArtifact,
   verifyThreadnote5LocalSubsystemReceipts,
 } from '../src/evaluation/threadnote-5-release-readiness-receipts.js';
-import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
+import {atomicWrite, hasScriptHelpFlag, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 
 const DEFAULT_FIXTURE = new URL('../test/evaluation/fixtures/threadnote-5-task-loop-v1/fixture.json', import.meta.url);
 
 const program = Effect.gen(function* () {
   const path = yield* Path.Path;
-  const options = parseArguments(yield* scriptArguments());
+  const args = yield* scriptArguments();
+  if (hasScriptHelpFlag(args)) {
+    yield* Console.log(usage());
+    return;
+  }
+  const options = parseArguments(args);
   const fixturePath = options.fixturePath ?? (yield* path.fromFileUrl(DEFAULT_FIXTURE));
   const [fixtureValue, evidenceValue, retainedRecords, authorityManifest] = yield* Effect.all(
     [
@@ -102,6 +107,17 @@ function parseArguments(args: readonly string[]): {
 function required(value: string | undefined, option: string): string {
   if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
+}
+
+function usage(): string {
+  return [
+    'Usage: bun run verify:threadnote-5-release-readiness-receipts -- [options]',
+    '',
+    'Verifies local subsystem receipts against Threadnote 5 release-readiness evidence.',
+    'Required: --evidence <json> --retained-subsystem-receipts <json>',
+    'Optional: --fixture <json> --output <json>',
+    'Authority verification: --authority-manifest <json> --authority-manifest-sha256 <64-hex>',
+  ].join('\n');
 }
 
 if (import.meta.main) BunRuntime.runMain(provideScriptLayer(program, ApplicationLayer));
