@@ -46,6 +46,10 @@ threadnote setup <surface> --apply`,
       text: 'Setup is resumable. If it is interrupted, run the same command again. If everything is already current, it does nothing.',
     },
     {
+      type: 'note',
+      text: 'You do not need `--task` for setup. Threadnote uses a built-in repository-orientation task for its final verification brief. Add `--task "..."` only when you want to customize that one-time check; it does not start or configure later agent tasks.',
+    },
+    {
       type: 'heading',
       text: 'Why not install only the MCP connection?',
     },
@@ -121,7 +125,8 @@ threadnote setup <surface> --undo --apply`,
 export const firstWorkflowDocsArticle: DocsArticle = {
   id: 'first-workflow',
   title: 'Work one task with evidence',
-  summary: 'Start with a Context Brief, verify exact local evidence, and close with reviewed knowledge.',
+  summary:
+    'Let the connected agent load relevant context, verify exact local evidence, and close with reviewed knowledge.',
   body: [
     {
       type: 'heading',
@@ -130,15 +135,15 @@ export const firstWorkflowDocsArticle: DocsArticle = {
     {
       type: 'list',
       items: [
-        'Ask for a Context Brief with the task, stable project, absolute callerCwd, and any known current-code anchors.',
+        'Give the connected agent a normal engineering task. Its installed Threadnote instructions and skills automatically compile a Context Brief with the task, stable project, absolute callerCwd, and any known current-code anchors.',
         'Read selected `threadnote://` pointers before relying on them; a ranked pointer is not evidence by itself.',
         'Use exact files and `inspect_code_graph` for current-source claims. The graph is the current-code verification engine, and the local worktree wins over historical context.',
-        'At closeout, write the required handoff and review the Knowledge Delta before applying reusable durable knowledge.',
+        'At meaningful closeout, the agent writes the required private handoff and, when the task produced reusable knowledge, presents an optional Knowledge Delta. Review it before any durable knowledge is applied.',
       ],
     },
     {
       type: 'heading',
-      text: 'A compact CLI version',
+      text: 'The manual CLI equivalent',
     },
     {
       type: 'code',
@@ -155,7 +160,7 @@ threadnote handoff --project mobile --topic auth-rollout \\
     },
     {
       type: 'paragraph',
-      text: 'Then create a review from the coding-agent integration. The result creates the review ID and revision used by the following closeout preview.',
+      text: 'The installed agent skill normally creates this review at meaningful closeout. For scripting or troubleshooting, create the same review through the coding-agent integration; the result supplies the review ID and revision used by the following closeout preview.',
     },
     {
       type: 'code',

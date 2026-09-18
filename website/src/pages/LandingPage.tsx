@@ -84,7 +84,7 @@ const workflow = [
   {
     number: '02',
     title: 'Start with a Context Brief',
-    body: 'Ask one real task question and begin from a bounded brief with citations, freshness, and visible gaps.',
+    body: 'Give the connected agent a real task; its installed guidance automatically compiles a bounded brief with citations, freshness, and visible gaps.',
   },
   {
     number: '03',
@@ -94,7 +94,7 @@ const workflow = [
   {
     number: '04',
     title: 'Review the Knowledge Delta',
-    body: 'Approve only the decisions, constraints, verification, invalidations, and risks worth carrying forward.',
+    body: 'At meaningful closeout, the agent writes a private handoff and, when there is reusable knowledge, presents proposed decisions, constraints, verification, invalidations, and risks for your review.',
   },
   {
     number: '05',
@@ -174,7 +174,8 @@ export default function LandingPage() {
             Threadnote is a source-verifiable context lifecycle that helps coding agents understand why your code is the
             way it is. A coding-agent environment is the editor, CLI, or other{' '}
             <a href={siteHref('agents/')}>supported catalog integration</a> where an agent works; Threadnote calls it a
-            surface. Connect one, start with a cited Context Brief, and end with a Knowledge Delta you can review.
+            surface. Connect one, then work normally: its installed guidance starts with a cited Context Brief and ends
+            meaningful work with a Knowledge Delta you can review.
           </p>
           <div className="hero__actions">
             <a className="button" href={docsArticleHref('installation')}>

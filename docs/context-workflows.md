@@ -1,11 +1,15 @@
 # Threadnote 5 context workflows reference
 
-This is the technical reference for Threadnote 5’s context lifecycle. For a first task, install Threadnote, connect one catalog-supported coding-agent environment, ask for a Context Brief, work from exact local code, and review the Knowledge Delta at closeout. Git sharing and a second-agent proof are optional team steps after that journey.
+This is the technical reference for Threadnote 5’s context lifecycle. For a first task, install Threadnote, connect one
+catalog-supported coding-agent environment, and give it a normal engineering task. The installed instructions and
+skills automatically start with a Context Brief and prepare closeout; you verify exact local code and review the
+Knowledge Delta the agent presents. Git sharing and a second-agent proof are optional team steps after that journey.
 
 Threadnote 5 is a source-verifiable context compiler for engineering work. Its core loop is deliberately small:
 
-1. An agent starts with a bounded Context Brief and cited current-code evidence.
-2. At task closeout, the session produces a reviewable Knowledge Delta.
+1. An agent automatically starts non-trivial work with a bounded Context Brief and cited current-code evidence.
+2. At meaningful task closeout, the agent writes a private handoff and, when the task produced reusable knowledge,
+   prepares an optional Knowledge Delta for review.
 3. A person approves, edits, defers, or rejects each proposed change.
 4. Context health and Context Check make stale or conflicting knowledge visible before it misleads another task.
 5. Verified procedures provide reviewed workflows alongside factual decisions.
@@ -51,6 +55,9 @@ seeds only that project, installs or repairs the selected catalog adapter and it
 graph, runs structured doctor checks, and finishes with a real Context Brief. Completion requires fresh, complete graph
 coverage for the one requested repository and at least one source-evidence card or contract accounted for by projection,
 whether returned or reported in the nonnegative projection-omission counts.
+
+Setup uses a general repository-orientation task for that final verification brief. `--task "..."` is optional and
+only replaces that one-time verification task; it is not needed to start normal work after the agent restarts.
 
 Preview is non-mutating. Apply writes a private `SetupReceiptV1` under `$THREADNOTE_HOME/setup/` with a deterministic
 plan hash, per-operation input hashes and attempts, subsystem receipt references, and bounded recovery IDs. It never
@@ -112,6 +119,10 @@ than silently becoming agent instructions. A second agent surface can consume th
 without maintaining separate canonical copies.
 
 ## Closeout and Knowledge Delta
+
+Installed agent skills perform this closeout lifecycle without a special user command: the agent writes the required
+private handoff, prepares the optional Knowledge Delta, and asks you to decide its candidates. The commands below are
+the lower-level inspection and scripting interface.
 
 The existing MCP tools remain the compatibility surface: `review_session_context` creates a review and
 `apply_memory_candidates` applies one explicit decision. Their structured results now include a bounded

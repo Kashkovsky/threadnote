@@ -14,7 +14,7 @@ export const threadnote5JourneyDocsArticle: DocsArticle = {
   body: [
     {
       type: 'paragraph',
-      text: 'Coding agents can read your code, but they do not automatically know why earlier decisions were made, what another agent already tried, or which notes are still current. A coding-agent environment is the editor, CLI, or hosted integration where an agent works; the catalog calls that declared integration a surface. Start with one environment: Threadnote gives it a short, cited briefing before work and lets you review the useful lessons it leaves behind.',
+      text: 'Coding agents can read your code, but they do not automatically know why earlier decisions were made, what another agent already tried, or which notes are still current. A coding-agent environment is the editor, CLI, or hosted integration where an agent works; the catalog calls that declared integration a surface. Start with one environment: Threadnote installs concise lifecycle guidance so the agent loads a short, cited briefing before work and lets you review the useful lessons it leaves behind.',
     },
     {
       type: 'heading',
@@ -41,9 +41,9 @@ export const threadnote5JourneyDocsArticle: DocsArticle = {
       type: 'list',
       items: [
         'Connect one [supported coding agent](/agents/) to the repository.',
-        'Start a task with a Context Brief. The agent gets only the decisions and current code evidence that look useful for that task.',
+        'Give the connected agent a normal task. Its installed Threadnote guidance automatically compiles a Context Brief with only the decisions and current code evidence that look useful.',
         'Work normally. The repository and your current local files remain the source of truth.',
-        'At the end, review the Knowledge Delta. Approve, edit, defer, or reject each suggested lesson.',
+        'At meaningful closeout, the agent writes a private handoff and, when the task produced reusable knowledge, presents an optional Knowledge Delta. Approve, edit, defer, or reject each suggested lesson.',
         'Keep approved decisions local and review their citations, dates, and contradictions as the project changes.',
       ],
     },
@@ -53,7 +53,7 @@ export const threadnote5JourneyDocsArticle: DocsArticle = {
     },
     {
       type: 'paragraph',
-      text: 'You do not need two agents or a team share to get started. [Connect your first agent](/docs/connect-an-agent/) and Threadnote will prepare the current repository, build its code map, check the installation, and produce a real Context Brief. On a new project, the first brief may contain mostly current code and repository guidance. Its value grows as you approve decisions and handoffs over time.',
+      text: 'You do not need two agents or a team share to get started. [Connect your first agent](/docs/connect-an-agent/) and Threadnote will prepare the current repository, build its code map, check the installation, and produce a real Context Brief. After restart, just give the agent a normal task; the installed lifecycle guidance handles the brief and closeout. On a new project, the first brief may contain mostly current code and repository guidance. Its value grows as you approve decisions and handoffs over time.',
     },
     {
       type: 'code',
@@ -181,7 +181,7 @@ export const contextLifecycleConceptDocsArticle: DocsArticle = {
     },
     {
       type: 'paragraph',
-      text: 'A Context Brief is the bounded starting package for one task. It selects only relevant graph evidence, decisions, handoffs, freshness results, and compatible verified procedures. Gaps and incomplete evidence remain visible; Threadnote does not turn unavailable evidence into a clean result.',
+      text: 'A Context Brief is the bounded starting package for one task. The installed agent guidance compiles it automatically for non-trivial work, selecting only relevant graph evidence, decisions, handoffs, freshness results, and compatible verified procedures. Gaps and incomplete evidence remain visible; Threadnote does not turn unavailable evidence into a clean result.',
     },
     {
       type: 'heading',
@@ -189,7 +189,7 @@ export const contextLifecycleConceptDocsArticle: DocsArticle = {
     },
     {
       type: 'paragraph',
-      text: 'A Knowledge Delta is a reviewable summary of what the task learned: decisions and rationale, constraints, verification performed, knowledge invalidated, and unresolved risks. It is deliberately smaller than the transcript. Review changes before applying them, then cross the personal-to-team boundary separately.',
+      text: 'A Knowledge Delta is a reviewable summary of what the task learned: decisions and rationale, constraints, verification performed, knowledge invalidated, and unresolved risks. At meaningful closeout the installed agent guidance prepares it, when there is reusable knowledge, alongside a separate private handoff. It is deliberately smaller than the transcript. You review changes before applying them, then cross the personal-to-team boundary separately.',
     },
     {
       type: 'heading',
@@ -273,7 +273,7 @@ export const contextLifecycleDocsSection: DocsSection = {
       body: [
         {
           type: 'paragraph',
-          text: 'Use a Context Brief at the start of a non-trivial task. It combines ready graph evidence, relevant durable decisions, active handoffs, freshness results, and compatible verified procedures inside an 800–1,500 estimated-token budget. It returns provenance and coverage so the agent knows what was established and what still needs exact local inspection.',
+          text: 'Installed Threadnote guidance tells the agent to compile a Context Brief automatically at the start of non-trivial work. It combines ready graph evidence, relevant durable decisions, active handoffs, freshness results, and compatible verified procedures inside an 800–1,500 estimated-token budget. It returns provenance and coverage so the agent knows what was established and what still needs exact local inspection. The CLI below is the manual equivalent for scripting or troubleshooting.',
         },
         {
           type: 'code',
@@ -304,7 +304,7 @@ export const contextLifecycleDocsSection: DocsSection = {
       body: [
         {
           type: 'paragraph',
-          text: 'At closeout, keep the required handoff separate from reusable knowledge. The reviewed Knowledge Delta contains at most three proposed changes and shows source evidence, comparison state, confidence, destination, recommendation, and the exact mutation preview.',
+          text: 'At meaningful closeout, installed Threadnote guidance tells the agent to write the required private handoff and, when the task produced reusable knowledge, prepare it for review. The optional Knowledge Delta contains at most three proposed changes and shows source evidence, comparison state, confidence, destination, recommendation, and the exact mutation preview. You decide what, if anything, is applied.',
         },
         {
           type: 'list',
@@ -318,7 +318,7 @@ export const contextLifecycleDocsSection: DocsSection = {
         },
         {
           type: 'paragraph',
-          text: 'Create the candidate review first with `review_session_context`. The required inputs are the task, outcome, a stable project or absolute callerCwd, and at least one evidence pointer when proposing reusable knowledge. Add the five closeout fields when they apply: decisions, constraints, verification performed, knowledge invalidated, and unresolved risks.',
+          text: 'The installed agent skill creates the candidate review with `review_session_context`; call it manually only for scripting or troubleshooting. The required inputs are the task, outcome, a stable project or absolute callerCwd, and at least one evidence pointer when proposing reusable knowledge. Add the five closeout fields when they apply: decisions, constraints, verification performed, knowledge invalidated, and unresolved risks.',
         },
         {
           type: 'code',
