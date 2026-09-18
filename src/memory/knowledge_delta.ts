@@ -4,6 +4,7 @@ import type {
   CandidateReview,
   CandidateReviewState,
   MemoryCandidate,
+  StructuredCloseoutV1,
 } from './candidate.js';
 
 export const KNOWLEDGE_DELTA_V1_MAX_ITEMS = 3;
@@ -52,6 +53,7 @@ export interface KnowledgeDeltaV1 {
   readonly noAction: boolean;
   readonly reviewId: string;
   readonly revision: number;
+  readonly structuredCloseout?: StructuredCloseoutV1;
   readonly type: 'knowledge-delta';
   readonly version: 1;
 }
@@ -84,8 +86,21 @@ export function projectKnowledgeDeltaV1(
     noAction: items.every(item => item.recommendation === 'no_action'),
     reviewId: review.reviewId,
     revision: review.revision,
+    ...(review.structuredCloseout ? {structuredCloseout: projectStructuredCloseout(review.structuredCloseout)} : {}),
     type: 'knowledge-delta',
     version: 1,
+  };
+}
+
+function projectStructuredCloseout(value: StructuredCloseoutV1): StructuredCloseoutV1 {
+  return {
+    type: 'structured-closeout',
+    version: 1,
+    rationale: boundedText(value.rationale).text,
+    constraints: value.constraints.slice(0, 32).map(item => boundedText(item).text),
+    verificationPerformed: value.verificationPerformed.slice(0, 32).map(item => boundedText(item).text),
+    knowledgeInvalidated: value.knowledgeInvalidated.slice(0, 32).map(item => boundedText(item).text),
+    unresolvedRisks: value.unresolvedRisks.slice(0, 32).map(item => boundedText(item).text),
   };
 }
 

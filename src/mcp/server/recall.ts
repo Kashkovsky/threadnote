@@ -60,6 +60,7 @@ import {
   type CandidateApplyOperation,
   type MemoryCandidate,
   type SessionCloseoutInput,
+  structuredCloseoutFromInput,
   validateSessionCloseoutInput,
   withCandidateReviewLock,
 } from '../../memory/candidate.js';
@@ -148,13 +149,18 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
     {
       annotations: {readOnlyHint: false, destructiveHint: false},
       description:
-        'After routine durable and handoff writes, form up to three additional reviewable candidates; persists pending review only.',
+        'After routine durable and handoff writes, form up to three additional reviewable candidates, optionally with structured closeout context; persists pending review only.',
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd'),
         codeRefs: McpInput.stringOrStrings(
           `Graph-indexed repository-relative path/cgs_/cgr_; max ${MAX_MEMORY_CODE_CITATIONS}`,
           {maximumItems: MAX_MEMORY_CODE_CITATIONS},
         ),
+        rationale: McpInput.string('Why the decision or change was made'),
+        constraints: McpInput.stringOrStrings('Constraints learned during the task'),
+        verificationPerformed: McpInput.stringOrStrings('Verification performed before closeout'),
+        knowledgeInvalidated: McpInput.stringOrStrings('Prior knowledge invalidated by the change'),
+        unresolvedRisks: McpInput.stringOrStrings('Risks that remain unresolved'),
         decisions: McpInput.stringOrStrings('Decisions'),
         evidence: McpInput.stringOrStrings('Evidence pointers'),
         handoff: McpInput.stringOrStrings('Handoff'),
@@ -172,6 +178,11 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
     ({
       callerCwd,
       codeRefs,
+      rationale,
+      constraints,
+      verificationPerformed,
+      knowledgeInvalidated,
+      unresolvedRisks,
       decisions,
       evidence,
       handoff,
@@ -231,10 +242,20 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
         const codeCitations = captured.citations;
         const rawCloseout: SessionCloseoutInput = {
           ...(codeCitations.length === 0 ? {} : {codeCitations}),
+          ...(candidatePolicy === 'handoff-only' || rationale === undefined ? {} : {rationale}),
+          ...(candidatePolicy === 'handoff-only' || constraints === undefined
+            ? {}
+            : {constraints: stringList(constraints)}),
           decisions: candidatePolicy === 'handoff-only' ? [] : stringList(decisions),
           evidence: stringList(evidence),
           handoff: stringList(handoff),
           invariants: candidatePolicy === 'handoff-only' ? [] : stringList(invariants),
+          ...(candidatePolicy === 'handoff-only' || verificationPerformed === undefined
+            ? {}
+            : {verificationPerformed: stringList(verificationPerformed)}),
+          ...(candidatePolicy === 'handoff-only' || knowledgeInvalidated === undefined
+            ? {}
+            : {knowledgeInvalidated: stringList(knowledgeInvalidated)}),
           outcome: checkedOutcome.value,
           preferences: candidatePolicy === 'handoff-only' ? [] : stringList(preferences),
           project: inferredProject,
@@ -243,6 +264,9 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
           sourceSessionId: normalizeOptionalMetadata(sourceSessionId),
           task: checkedTask.value,
           topic: normalizeOptionalMetadata(topic) ?? uriSegment(checkedTask.value),
+          ...(candidatePolicy === 'handoff-only' || unresolvedRisks === undefined
+            ? {}
+            : {unresolvedRisks: stringList(unresolvedRisks)}),
         };
         const closeoutSizeError = validateSessionCloseoutInput(rawCloseout);
         if (closeoutSizeError) {
@@ -1464,7 +1488,10 @@ function canonicalReadMetadata(result: CallToolResult):
 }
 
 function sessionCloseoutHasCandidateMaterial(input: SessionCloseoutInput): boolean {
-  return [input.decisions, input.handoff, input.invariants, input.preferences].some(items => (items?.length ?? 0) > 0);
+  return (
+    [input.decisions, input.handoff, input.invariants, input.preferences].some(items => (items?.length ?? 0) > 0) ||
+    structuredCloseoutFromInput(input) !== undefined
+  );
 }
 
 function sessionCloseoutHasEvidence(input: SessionCloseoutInput): boolean {
@@ -1499,6 +1526,7 @@ function scrubSessionCloseout(
     ['sourceAgentClient', input.sourceAgentClient],
     ['sourceCommit', input.sourceCommit],
     ['sourceSessionId', input.sourceSessionId],
+    ['rationale', input.rationale],
   ] as const;
   const scrubbedScalars = new Map<string, string | undefined>();
   for (const [key, value] of scalarValues) {
@@ -1530,6 +1558,7 @@ function scrubSessionCloseout(
     const outcome = scrubbedScalars.get('outcome');
     const project = scrubbedScalars.get('project');
     const sourceAgentClient = scrubbedScalars.get('sourceAgentClient');
+    const rationale = scrubbedScalars.get('rationale');
     const task = scrubbedScalars.get('task');
     const topic = scrubbedScalars.get('topic');
     if (!outcome || !project || !sourceAgentClient || !task || !topic) {
@@ -1538,10 +1567,13 @@ function scrubSessionCloseout(
     return {
       input: {
         codeCitations: input.codeCitations,
+        ...(rationale === undefined ? {} : {rationale}),
+        constraints: scrubList('constraints', input.constraints),
         decisions: scrubList('decisions', input.decisions),
         evidence: scrubList('evidence', input.evidence),
         handoff: scrubList('handoff', input.handoff),
         invariants: scrubList('invariants', input.invariants),
+        knowledgeInvalidated: scrubList('knowledgeInvalidated', input.knowledgeInvalidated),
         outcome,
         preferences: scrubList('preferences', input.preferences),
         project,
@@ -1550,6 +1582,8 @@ function scrubSessionCloseout(
         sourceSessionId: scrubbedScalars.get('sourceSessionId'),
         task,
         topic,
+        unresolvedRisks: scrubList('unresolvedRisks', input.unresolvedRisks),
+        verificationPerformed: scrubList('verificationPerformed', input.verificationPerformed),
       },
       ok: true,
     };

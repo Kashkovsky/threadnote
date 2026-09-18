@@ -14,6 +14,7 @@ import {
   saveCandidateReview,
   type CandidateReview,
   type SessionCloseoutInput,
+  type StructuredCloseoutV1,
   validateSessionCloseoutInput,
   withCandidateReviewLock,
 } from '../../src/memory/candidate.js';
@@ -71,6 +72,16 @@ function projectedReview(candidates: CandidateReview['candidates']): CandidateRe
     version: 2,
   };
 }
+
+const structuredCloseout: StructuredCloseoutV1 = {
+  type: 'structured-closeout',
+  version: 1,
+  rationale: 'Keep reviewed context explicit.',
+  constraints: ['Private by default.'],
+  verificationPerformed: ['Focused unit tests passed.'],
+  knowledgeInvalidated: ['The unbounded closeout draft.'],
+  unresolvedRisks: ['A follow-up review may be needed.'],
+};
 
 function projectedCandidate(
   candidateId: string,
@@ -186,6 +197,37 @@ describe('candidate-memory formation', () => {
     );
   });
 
+  it('projects structured closeout context without mutation', () => {
+    const review = {...projectedReview([projectedCandidate('review-0123456789abcdef-1')]), structuredCloseout};
+    const before = structuredClone(review);
+    expect(projectKnowledgeDeltaV1(review).structuredCloseout).toEqual(structuredCloseout);
+    expect(review).toEqual(before);
+  });
+
+  it('keeps structured closeout projection deterministic across field ordering', () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          rationale: fc.string({maxLength: 30}),
+          constraints: fc.array(fc.string({maxLength: 30}), {maxLength: 4}),
+          verificationPerformed: fc.array(fc.string({maxLength: 30}), {maxLength: 4}),
+          knowledgeInvalidated: fc.array(fc.string({maxLength: 30}), {maxLength: 4}),
+          unresolvedRisks: fc.array(fc.string({maxLength: 30}), {maxLength: 4}),
+        }),
+        fields => {
+          const review = {
+            ...projectedReview([projectedCandidate('review-0123456789abcdef-1')]),
+            structuredCloseout: {type: 'structured-closeout' as const, version: 1 as const, ...fields},
+          };
+          const before = structuredClone(review);
+          expect(projectKnowledgeDeltaV1(review).structuredCloseout).toEqual(review.structuredCloseout);
+          expect(review).toEqual(before);
+        },
+      ),
+      {numRuns: 20},
+    );
+  });
+
   it('forms at most three reviewed candidates from a session closeout', async () => {
     const review = await run(buildCandidateReview(input, [], new Date('2026-07-23T10:00:00.000Z')));
 
@@ -195,6 +237,61 @@ describe('candidate-memory formation', () => {
     expect(review.candidates[0]?.proposedText).toContain('## Decisions');
     expect(review.candidates[0]?.proposedText).toContain('## Invariants');
   });
+
+  effectIt.effect('carries structured closeout into the durable candidate body', () =>
+    Effect.gen(function* () {
+      const review = yield* buildCandidateReview(
+        {
+          ...input,
+          decisions: [],
+          invariants: [],
+          preferences: [],
+          handoff: [],
+          rationale: 'Explain why this contract is safe.',
+          constraints: ['Keep writes private.'],
+          verificationPerformed: ['Focused checks passed.'],
+          knowledgeInvalidated: ['The old draft.'],
+          unresolvedRisks: ['Follow-up review may refine this.'],
+        },
+        [],
+        DateTime.toDateUtc(DateTime.makeUnsafe('2026-07-23T10:00:00.000Z')),
+      );
+      expect(review.structuredCloseout).toEqual({
+        type: 'structured-closeout',
+        version: 1,
+        rationale: 'Explain why this contract is safe.',
+        constraints: ['Keep writes private.'],
+        verificationPerformed: ['Focused checks passed.'],
+        knowledgeInvalidated: ['The old draft.'],
+        unresolvedRisks: ['Follow-up review may refine this.'],
+      });
+      expect(review.candidates[0]?.proposedText).toContain('## Verification performed\n- Focused checks passed.');
+      expect(review.candidates[0]?.proposedText).toContain('## Unresolved risks\n- Follow-up review may refine this.');
+    }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, SystemInfo.layer))),
+  );
+
+  effectIt.effect('omits an all-empty structured closeout instead of creating an empty durable candidate', () =>
+    Effect.gen(function* () {
+      const review = yield* buildCandidateReview(
+        {
+          ...input,
+          decisions: [],
+          invariants: [],
+          preferences: [],
+          handoff: [],
+          rationale: '   ',
+          constraints: [],
+          verificationPerformed: ['  '],
+          knowledgeInvalidated: [],
+          unresolvedRisks: [],
+        },
+        [],
+        DateTime.toDateUtc(DateTime.makeUnsafe('2026-07-23T10:00:00.000Z')),
+      );
+      expect(review.structuredCloseout).toBeUndefined();
+      expect(review.candidates).toEqual([]);
+    }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, SystemInfo.layer))),
+  );
 
   it('recommends no action for a duplicate stable memory', async () => {
     const draft = await run(
