@@ -1651,7 +1651,9 @@ function deriveProjectionFromEvidence(
     return {
       associatedStep: associated.step,
       associatedTokens: associated.total.totalTokens,
-      beforeQualifyingAction: action !== null && checkpoint.ordinal < action.startOrdinal,
+      // With no qualifying action, a Context Brief call has not occurred after one. Keep
+      // retrieval timing independent of whether the agent eventually takes a useful action.
+      beforeQualifyingAction: action === null || checkpoint.ordinal < action.startOrdinal,
       callIdDigest: checkpoint.itemIdDigest,
       goldCitationCount: matchingGold.length,
       goldCitationMatched: matchingGold.length > 0,
