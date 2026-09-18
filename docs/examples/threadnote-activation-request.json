@@ -1,0 +1,27 @@
+{
+  "type": "threadnote-activation-request",
+  "version": 1,
+  "repositoryRoot": "/absolute/path/to/repository",
+  "project": "example-project",
+  "task": "Adopt the reviewed caching decision across two local agents.",
+  "topic": "caching-decision",
+  "primarySurfaceId": "codex-cli",
+  "secondarySurfaceId": "claude-code",
+  "scope": "user",
+  "adrPaths": ["docs/adr/0001-caching.md"],
+  "decision": {
+    "decision": "Use bounded local caching for repeatable reads.",
+    "rationale": "It reduces repeat work while preserving inspectable source evidence.",
+    "constraints": ["Stay local and offline.", "Do not cache credentials or raw logs."],
+    "verification": ["Focused cache tests passed."],
+    "invalidated": ["Every read must bypass the local cache."],
+    "unresolvedRisks": ["Large repositories may need a lower cache bound."]
+  },
+  "publicationMode": "direct",
+  "team": {
+    "name": "default",
+    "remotePath": "/absolute/path/to/local-team-git-repository",
+    "push": false,
+    "setDefault": true
+  }
+}

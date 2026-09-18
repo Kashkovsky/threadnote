@@ -77,3 +77,6 @@ const previewEdit = Effect.fn('memory.closeout.previewEdit')(function* (options:
 
 export const runCloseoutApply = (config: RuntimeConfig, input: ApplyMemoryCandidateInput) =>
   applyMemoryCandidate(config, input);
+
+export const runCloseoutApplyWithReviewLockHeld = (config: RuntimeConfig, input: ApplyMemoryCandidateInput) =>
+  applyMemoryCandidate(config, input, {reviewLockHeld: true});

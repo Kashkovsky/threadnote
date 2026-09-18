@@ -1,5 +1,6 @@
 import {Effect, FileSystem, Option, Path} from 'effect';
-import {SystemInfo} from '../effect/system.js';
+import {fromPromise} from '../effect/errors.js';
+import {runtimeFileDescriptorStatSync, runtimeLstat, SystemInfo, type RuntimeBigIntStats} from '../effect/system.js';
 import {createCodeGraphCommittedFileContentHasher} from './content_identity.js';
 import {decodeUtf8} from './inventory_content.js';
 import {CodeGraphInventoryError} from './inventory_error.js';
@@ -16,6 +17,7 @@ export const readOptionalText = Effect.fn('codeGraph.readOptionalText')(function
 interface StableRegularFile {
   readonly bytes: Uint8Array;
   readonly identity: FileSystem.File.Info;
+  readonly nativeIdentity: RuntimeBigIntStats;
   readonly openedPath: Option.Option<string>;
 }
 
@@ -28,6 +30,7 @@ function readStableRegularFile(
   fs: FileSystem.FileSystem,
   target: string,
   interlock?: ContainedReadInterlock,
+  maximumBytes?: number,
 ): Effect.Effect<StableRegularFile, Error, SystemInfo> {
   return Effect.gen(function* () {
     const linkTarget = yield* fs.readLink(target).pipe(
@@ -38,9 +41,10 @@ function readStableRegularFile(
       return yield* CodeGraphInventoryError.make({message: `Refusing to read a symbolic repository file: ${target}`});
     }
     const pathInfoBefore = yield* fs.stat(target);
-    if (pathInfoBefore.type !== 'File') {
+    const nativePathBefore = yield* nativePathInfo(target);
+    if (pathInfoBefore.type !== 'File' || (maximumBytes !== undefined && pathInfoBefore.size > BigInt(maximumBytes))) {
       return yield* CodeGraphInventoryError.make({
-        message: `Refusing to read a non-regular repository file: ${target}`,
+        message: `Refusing to read a non-regular or oversized repository file: ${target}`,
       });
     }
     yield* interlock?.beforeOpen ?? Effect.void;
@@ -49,31 +53,42 @@ function readStableRegularFile(
         const file = yield* fs.open(target, {flag: 'r'});
         yield* interlock?.afterOpen ?? Effect.void;
         const openedInfoBefore = yield* file.stat;
+        const nativeOpenedBefore = yield* nativeOpenedFileInfo(file);
         const openedPath = yield* openedFilePath(fs, file);
         const pathInfoOpened = yield* fs.stat(target);
-        if (!sameRegularFile(pathInfoBefore, pathInfoOpened, openedInfoBefore)) {
+        const nativePathOpened = yield* nativePathInfo(target);
+        if (
+          !sameRegularFile(pathInfoBefore, pathInfoOpened, openedInfoBefore) ||
+          !sameNativeRegularFile(nativePathBefore, nativePathOpened) ||
+          !sameNativeRegularFile(nativePathBefore, nativeOpenedBefore)
+        ) {
           return yield* CodeGraphInventoryError.make({
             message: `Repository file changed while it was opened: ${target}`,
           });
         }
         const byteLength = Number(openedInfoBefore.size);
-        if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
+        if (
+          !Number.isSafeInteger(byteLength) ||
+          byteLength < 0 ||
+          (maximumBytes !== undefined && byteLength > maximumBytes)
+        ) {
           return yield* CodeGraphInventoryError.make({
             message: `Repository file size cannot be represented safely: ${target}`,
           });
         }
-        const bytes = new Uint8Array(byteLength);
+        const bytes = new Uint8Array(byteLength + 1);
         let offset = 0;
         while (offset < bytes.byteLength) {
           const read = Number(yield* file.read(bytes.subarray(offset)));
-          if (read <= 0) {
+          if (read === 0) break;
+          if (!Number.isSafeInteger(read) || read < 0 || read > bytes.byteLength - offset)
             return yield* CodeGraphInventoryError.make({
-              message: `Repository file ended while it was being read: ${target}`,
+              message: `Repository file returned an invalid read: ${target}`,
             });
-          }
           offset += read;
         }
         const openedInfoAfter = yield* file.stat;
+        const nativeOpenedAfter = yield* nativeOpenedFileInfo(file);
         const linkTargetAfter = yield* fs.readLink(target).pipe(
           Effect.asSome,
           Effect.orElseSucceed(() => Option.none<string>()),
@@ -84,15 +99,25 @@ function readStableRegularFile(
           });
         }
         const pathInfoAfter = yield* fs.stat(target);
+        const nativePathAfter = yield* nativePathInfo(target);
         if (
           !sameRegularFile(pathInfoBefore, pathInfoAfter, openedInfoAfter) ||
-          openedInfoBefore.size !== openedInfoAfter.size
+          !sameRegularFile(pathInfoBefore, openedInfoBefore, openedInfoAfter) ||
+          !sameNativeRegularFile(nativePathBefore, nativePathAfter) ||
+          !sameNativeRegularFile(nativePathBefore, nativeOpenedAfter) ||
+          openedInfoBefore.size !== openedInfoAfter.size ||
+          offset !== byteLength
         ) {
           return yield* CodeGraphInventoryError.make({
             message: `Repository file changed while it was being read: ${target}`,
           });
         }
-        return {bytes, identity: openedInfoAfter, openedPath};
+        return {
+          bytes: bytes.slice(0, offset),
+          identity: openedInfoAfter,
+          nativeIdentity: nativeOpenedAfter,
+          openedPath,
+        };
       }),
     );
   }).pipe(
@@ -109,6 +134,30 @@ export function readContainedStableRegularFile(
   relative: string,
   interlock?: ContainedReadInterlock,
 ): Effect.Effect<Uint8Array, Error, SystemInfo> {
+  return readContainedStableRegularFileInternal(fs, path, repositoryRoot, relative, interlock);
+}
+
+export function readBoundedContainedStableRegularFile(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  repositoryRoot: string,
+  relative: string,
+  maximumBytes: number,
+  interlock?: ContainedReadInterlock,
+): Effect.Effect<Uint8Array, Error, SystemInfo> {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes >= Number.MAX_SAFE_INTEGER)
+    return CodeGraphInventoryError.make({message: 'Contained repository read bound is invalid.'});
+  return readContainedStableRegularFileInternal(fs, path, repositoryRoot, relative, interlock, maximumBytes);
+}
+
+function readContainedStableRegularFileInternal(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  repositoryRoot: string,
+  relative: string,
+  interlock?: ContainedReadInterlock,
+  maximumBytes?: number,
+): Effect.Effect<Uint8Array, Error, SystemInfo> {
   const target = path.join(repositoryRoot, ...relative.split('/'));
   return Effect.gen(function* () {
     yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
@@ -116,19 +165,23 @@ export function readContainedStableRegularFile(
     if (!isContainedPath(path, repositoryRoot, canonicalBefore)) {
       return yield* CodeGraphInventoryError.make({message: `Repository file resolves outside its root: ${relative}`});
     }
-    const opened = yield* readStableRegularFile(fs, target, interlock);
+    const opened = yield* readStableRegularFile(fs, target, interlock, maximumBytes);
     if (Option.isSome(opened.openedPath) && !isContainedPath(path, repositoryRoot, opened.openedPath.value)) {
       return yield* CodeGraphInventoryError.make({message: `Opened repository file is outside its root: ${relative}`});
     }
     yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
     const canonicalAfter = yield* fs.realPath(target);
     const finalInfo = yield* fs.stat(target);
+    const nativeFinalInfo = yield* nativePathInfo(target);
     if (!isContainedPath(path, repositoryRoot, canonicalAfter)) {
       return yield* CodeGraphInventoryError.make({
         message: `Repository file escaped its root while reading: ${relative}`,
       });
     }
-    if (!sameRegularFile(opened.identity, finalInfo, opened.identity)) {
+    if (
+      !sameRegularFile(opened.identity, finalInfo, opened.identity) ||
+      !sameNativeRegularFile(opened.nativeIdentity, nativeFinalInfo)
+    ) {
       return yield* CodeGraphInventoryError.make({
         message: `Repository path no longer identifies the opened file: ${relative}`,
       });
@@ -365,6 +418,9 @@ function sameRegularFile(
   const beforeInode = Option.getOrUndefined(before.ino);
   const currentInode = Option.getOrUndefined(current.ino);
   const openedInode = Option.getOrUndefined(opened.ino);
+  const beforeModified = Option.getOrUndefined(before.mtime)?.getTime();
+  const currentModified = Option.getOrUndefined(current.mtime)?.getTime();
+  const openedModified = Option.getOrUndefined(opened.mtime)?.getTime();
   return (
     before.type === 'File' &&
     current.type === 'File' &&
@@ -375,18 +431,67 @@ function sameRegularFile(
     currentInode !== undefined &&
     openedInode !== undefined &&
     beforeInode === currentInode &&
-    currentInode === openedInode
+    currentInode === openedInode &&
+    before.mode === current.mode &&
+    current.mode === opened.mode &&
+    before.size === current.size &&
+    current.size === opened.size &&
+    beforeModified !== undefined &&
+    currentModified !== undefined &&
+    openedModified !== undefined &&
+    beforeModified === currentModified &&
+    currentModified === openedModified
   );
+}
+
+function nativePathInfo(target: string): Effect.Effect<RuntimeBigIntStats, CodeGraphInventoryError> {
+  return fromPromise('codeGraph.inventory.lstat', () => runtimeLstat(target)).pipe(
+    Effect.mapError(cause =>
+      CodeGraphInventoryError.make({cause, message: `Could not inspect repository path: ${target}`}),
+    ),
+  );
+}
+
+function nativeOpenedFileInfo(file: FileSystem.File): Effect.Effect<RuntimeBigIntStats, CodeGraphInventoryError> {
+  const descriptor = fileDescriptor(file);
+  if (descriptor === undefined)
+    return CodeGraphInventoryError.make({message: 'Opened repository file descriptor is unavailable.'});
+  return Effect.try({
+    try: () => runtimeFileDescriptorStatSync(descriptor) as unknown as RuntimeBigIntStats,
+    catch: cause => CodeGraphInventoryError.make({cause, message: 'Could not inspect opened repository file.'}),
+  });
+}
+
+function sameNativeRegularFile(left: RuntimeBigIntStats, right: RuntimeBigIntStats): boolean {
+  return (
+    left.isFile() &&
+    right.isFile() &&
+    !left.isSymbolicLink() &&
+    !right.isSymbolicLink() &&
+    left.dev !== 0n &&
+    right.dev !== 0n &&
+    left.ino !== 0n &&
+    right.ino !== 0n &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function fileDescriptor(file: FileSystem.File): number | undefined {
+  const descriptor = (file as FileSystem.File & {readonly fd?: unknown}).fd;
+  return typeof descriptor === 'number' && Number.isSafeInteger(descriptor) && descriptor >= 0 ? descriptor : undefined;
 }
 
 function openedFilePath(
   fs: FileSystem.FileSystem,
   file: FileSystem.File,
 ): Effect.Effect<Option.Option<string>, never, SystemInfo> {
-  const descriptor = (file as FileSystem.File & {readonly fd?: unknown}).fd;
-  if (typeof descriptor !== 'number' || !Number.isSafeInteger(descriptor) || descriptor < 0) {
-    return Effect.succeedNone;
-  }
+  const descriptor = fileDescriptor(file);
+  if (descriptor === undefined) return Effect.succeedNone;
   return Effect.gen(function* () {
     const system = yield* SystemInfo;
     const descriptorPath =

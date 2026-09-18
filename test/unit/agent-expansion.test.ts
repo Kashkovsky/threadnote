@@ -301,7 +301,7 @@ describe('agent expansion conformance', () => {
             ).toBe('Failure');
             yield* second.actions.install(config, second, {apply: true});
             const plan = yield* planAgentSurface(config, first);
-            expect((yield* agentAdapterStatus(config, first)).state).toBe('current');
+            expect((yield* agentAdapterStatus(config, first)).state).toBe('stale');
             expect((yield* agentAdapterStatus(config, second)).state).toBe('current');
             yield* first.actions.remove(config, first, {apply: true});
             expect(yield* fs.exists(plan.mcpPath)).toBe(true);

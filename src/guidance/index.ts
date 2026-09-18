@@ -1,5 +1,6 @@
 import {DateTime, Effect, FileSystem, Path, Schema} from 'effect';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
+import {readBoundedContainedStableRegularFile} from '../code_graph/inventory_contained_file.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {
   atomicAgentWrite,
@@ -62,6 +63,12 @@ export interface GuidanceSourceV1 {
   readonly contentHash: string;
   readonly text: string;
   readonly uri: string;
+}
+
+export interface CollectedGuidanceImportSourceV1 {
+  readonly contentHash: string;
+  readonly relativePath: string;
+  readonly text: string;
 }
 
 export interface GuidanceReceiptV2 {
@@ -228,25 +235,13 @@ export function stripThreadnoteManagedGuidance(content: string): string {
   return before.endsWith('\n') && after.startsWith('\n') ? `${before}${after.slice(1)}` : `${before}${after}`;
 }
 
-function stripImportedGuidance(content: string, contract: AgentGuidanceContract): string {
-  const containedManagedContent =
-    content.includes(GUIDANCE_BLOCK_START) || content.includes(USER_INSTRUCTIONS_START_MARKER);
-  const stripped = stripThreadnoteManagedGuidance(content);
-  if (!containedManagedContent) return stripped;
-  const wrappers = [
-    ...(contract.importWrappers ?? []),
-    ...(contract.projection.wrapper === undefined ? [] : [contract.projection.wrapper]),
-  ];
-  return wrappers.some(wrapper => stripped.trim() === `${wrapper.prefix}${wrapper.suffix}`.trim()) ? '' : stripped;
-}
-
-export const runGuidanceImport = Effect.fn('guidance.import')(function* (
-  config: RuntimeConfig,
+export const collectGuidanceImportSourcesAtRoot = Effect.fn('guidance.collectImportSourcesAtRoot')(function* (
   adapter: AgentAdapter,
-  options: GuidanceImportOptions,
+  selectedRoot: string,
 ) {
+  const fs = yield* FileSystem.FileSystem;
+  const root = yield* fs.realPath(selectedRoot);
   const contract = guidanceContract(adapter);
-  const root = yield* projectRoot(options.cwd);
   const selectedDeclared: {readonly content: string | undefined; readonly relative: string}[] = [];
   for (const relative of contract.importPaths) {
     const content = yield* readGuidanceTarget(root, relative);
@@ -273,13 +268,43 @@ export const runGuidanceImport = Effect.fn('guidance.import')(function* (
     return yield* GuidanceError.make({
       message: 'Threadnote-managed guidance markers are incomplete, reversed, or duplicated; import refused.',
     });
-  const imported = selectedContents
-    .map(([, content]) => stripImportedGuidance(content, contract))
-    .map(value => value.trim())
-    .filter(Boolean)
-    .join('\n\n');
+  const sources = selectedContents.flatMap(([relativePath, content]) => {
+    const text = stripImportedGuidance(content, contract).trim();
+    return text.length === 0
+      ? []
+      : [{contentHash: sha256HexSync(content), relativePath, text} satisfies CollectedGuidanceImportSourceV1];
+  });
+  const imported = sources.map(source => source.text).join('\n\n');
   if (new TextEncoder().encode(imported).byteLength > MAX_IMPORT_BYTES)
     return yield* GuidanceError.make({message: `Imported guidance exceeds ${MAX_IMPORT_BYTES} bytes.`});
+  return sources;
+});
+
+export const collectGuidanceImportSources = Effect.fn('guidance.collectImportSources')(function* (
+  adapter: AgentAdapter,
+  cwd?: string,
+) {
+  return yield* collectGuidanceImportSourcesAtRoot(adapter, yield* projectRoot(cwd));
+});
+
+function stripImportedGuidance(content: string, contract: AgentGuidanceContract): string {
+  const containedManagedContent =
+    content.includes(GUIDANCE_BLOCK_START) || content.includes(USER_INSTRUCTIONS_START_MARKER);
+  const stripped = stripThreadnoteManagedGuidance(content);
+  if (!containedManagedContent) return stripped;
+  const wrappers = [
+    ...(contract.importWrappers ?? []),
+    ...(contract.projection.wrapper === undefined ? [] : [contract.projection.wrapper]),
+  ];
+  return wrappers.some(wrapper => stripped.trim() === `${wrapper.prefix}${wrapper.suffix}`.trim()) ? '' : stripped;
+}
+
+export const runGuidanceImport = Effect.fn('guidance.import')(function* (
+  config: RuntimeConfig,
+  adapter: AgentAdapter,
+  options: GuidanceImportOptions,
+) {
+  const imported = (yield* collectGuidanceImportSources(adapter, options.cwd)).map(source => source.text).join('\n\n');
   const blocker = credentialScrubberBlocker(imported);
   if (blocker)
     return yield* GuidanceError.make({message: `Imported guidance contains ${blocker}; it was not persisted.`});
@@ -736,8 +761,9 @@ const projectStatusFromEvidence = Effect.fn('guidance.projectStatusFromEvidence'
 
 const projectRoot = Effect.fn('guidance.projectRoot')(function* (cwd?: string) {
   const path = yield* Path.Path;
+  if (cwd !== undefined) return path.resolve(cwd);
   const system = yield* SystemInfo;
-  return path.resolve(cwd ?? system.currentDirectory());
+  return path.resolve(system.currentDirectory());
 });
 
 const safeTarget = Effect.fn('guidance.safeTarget')(function* (root: string, relativePath: string) {
@@ -752,6 +778,7 @@ const safeTarget = Effect.fn('guidance.safeTarget')(function* (root: string, rel
 
 const readGuidanceTarget = Effect.fn('guidance.readTarget')(function* (root: string, relativePath: string) {
   const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const target = yield* safeTarget(root, relativePath);
   yield* assertGuidanceTarget(root, target);
   if (!(yield* fs.exists(target))) return undefined;
@@ -759,7 +786,9 @@ const readGuidanceTarget = Effect.fn('guidance.readTarget')(function* (root: str
   if (info.type === 'Directory') return undefined;
   if (info.type !== 'File' || info.size > BigInt(MAX_IMPORT_BYTES))
     return yield* GuidanceError.make({message: `Imported guidance exceeds ${MAX_IMPORT_BYTES} bytes.`});
-  return yield* fs.readFileString(target);
+  return yield* readBoundedContainedStableRegularFile(fs, path, root, relativePath, MAX_IMPORT_BYTES).pipe(
+    Effect.flatMap(readExactImportText),
+  );
 });
 
 const readGuidanceDirectories = Effect.fn('guidance.readDirectories')(function* (
@@ -800,7 +829,13 @@ const readGuidanceDirectories = Effect.fn('guidance.readDirectories')(function* 
         return yield* GuidanceError.make({message: 'Project guidance import contains too many files.'});
       if (info.size > BigInt(MAX_IMPORT_BYTES))
         return yield* GuidanceError.make({message: `Imported guidance exceeds ${MAX_IMPORT_BYTES} bytes.`});
-      const content = yield* fs.readFileString(current.absolute);
+      const content = yield* readBoundedContainedStableRegularFile(
+        fs,
+        path,
+        root,
+        normalizeGuidanceImportPath(relative),
+        MAX_IMPORT_BYTES,
+      ).pipe(Effect.flatMap(readExactImportText));
       totalBytes += utf8Bytes(content);
       if (totalBytes > MAX_IMPORT_BYTES)
         return yield* GuidanceError.make({message: `Imported guidance exceeds ${MAX_IMPORT_BYTES} bytes.`});
@@ -809,6 +844,22 @@ const readGuidanceDirectories = Effect.fn('guidance.readDirectories')(function* 
   }
   return discovered.sort((left, right) => compareText(left.relative, right.relative));
 });
+
+const readExactImportText = Effect.fn('guidance.readExactImportText')(function* (bytes: Uint8Array) {
+  if (bytes.byteLength > MAX_IMPORT_BYTES)
+    return yield* GuidanceError.make({message: `Imported guidance exceeds ${MAX_IMPORT_BYTES} bytes.`});
+  const text = yield* Effect.try({
+    try: () => new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes),
+    catch: () => GuidanceError.make({message: 'Imported guidance must be strict UTF-8 text.'}),
+  });
+  if (text.includes('\u0000') || !bytesEqual(bytes, new TextEncoder().encode(text)))
+    return yield* GuidanceError.make({message: 'Imported guidance must be exact, NUL-free UTF-8 text.'});
+  return text;
+});
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  return left.byteLength === right.byteLength && left.every((value, index) => value === right[index]);
+}
 
 const assertProjectionFallbackInactive = Effect.fn('guidance.assertProjectionFallbackInactive')(function* (
   root: string,

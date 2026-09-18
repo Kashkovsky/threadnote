@@ -75,6 +75,7 @@ const COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS = 10_000;
 const COLD_BUILD_RESPONSE_BUDGET_TOKENS = 400;
 
 const CORE_TOOL_NAMES = [
+  'complete_activation_retrieval_proof',
   'recall_context',
   'inspect_code_graph',
   'analyze_code_graph',
@@ -308,7 +309,7 @@ describe('Threadnote MCP toolsets', () => {
       async client => {
         const tools = await client.listTools();
         expect(tools.tools.map(tool => tool.name)).toEqual(CORE_TOOL_NAMES);
-        expect(Buffer.byteLength(JSON.stringify(tools.tools))).toBeLessThanOrEqual(16_500);
+        expect(Buffer.byteLength(JSON.stringify(tools.tools))).toBeLessThanOrEqual(17_500);
         expect(tools.tools.find(tool => tool.name === 'recall_context')?.description).toContain(
           'unread threadnote:// pointers, not evidence',
         );

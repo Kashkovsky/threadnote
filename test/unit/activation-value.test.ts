@@ -1,0 +1,98 @@
+import {it as effectIt} from '@effect/vitest';
+import {DateTime, Effect, FileSystem} from 'effect';
+import {TestClock} from 'effect/testing';
+import {describe, expect} from 'vitest';
+import {createActivationPlanV1} from '../../src/activation/planner.js';
+import {
+  bindActivationApprovalV1,
+  createActivationReceiptV1,
+  recordActivationOutcomeV1,
+} from '../../src/activation/receipt.js';
+import type {ActivationReceiptV1} from '../../src/activation/contract.js';
+import {reconcileActivationValueEventsV1} from '../../src/activation/value.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {readLocalValueEvents, summarizeLocalValueEvents} from '../../src/value_report/events.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+
+describe('activation value events', () => {
+  effectIt.effect('derives four content-free events once across replay and concurrent resume', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-activation-value-'});
+        const plan = createActivationPlanV1({
+          catalogSnapshotHash: 'a'.repeat(64),
+          primarySurfaceId: 'codex-cli',
+          publicationMode: 'direct',
+          repositoryIdentityHash: 'b'.repeat(64),
+          secondarySurfaceId: 'claude-code',
+          selectedSourceSetHash: 'c'.repeat(64),
+          taskHash: 'd'.repeat(64),
+          teamId: 'default',
+          teamShareStateHash: 'e'.repeat(64),
+          threadnoteVersion: '5.0.0-test',
+        });
+        const receipt = completedReceipt(plan);
+        const state = {plan, receipt};
+        yield* TestClock.withLive(
+          Effect.all(
+            Array.from({length: 8}, () => reconcileActivationValueEventsV1({agentContextHome: home}, state)),
+            {concurrency: 'unbounded'},
+          ),
+        );
+        yield* reconcileActivationValueEventsV1({agentContextHome: home}, state);
+        const events = yield* readLocalValueEvents(home);
+        expect(events).toHaveLength(4);
+        expect(events.map(event => (event.kind === 'activation' ? event.phase : 'unexpected')).sort()).toEqual([
+          'completed',
+          'first-evidence',
+          'second-surface-proof',
+          'started',
+        ]);
+        expect(
+          summarizeLocalValueEvents(events, {
+            from: DateTime.toDateUtc(DateTime.makeUnsafe('2026-09-18T00:00:00.000Z')),
+            to: DateTime.toDateUtc(DateTime.makeUnsafe('2026-09-19T00:00:00.000Z')),
+          }).setup,
+        ).toEqual({
+          completed: 1,
+          failed: 0,
+          started: 1,
+          supportedAgentReuse: 1,
+          timeToFirstEvidenceMillisecondsSamples: [6_000],
+        });
+        const serialized = JSON.stringify(events);
+        expect(serialized).not.toContain(plan.activationId);
+        expect(serialized).not.toContain('private task');
+        expect(serialized).not.toContain('/private/repository');
+        expect(serialized).not.toContain('memory body');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+});
+
+function completedReceipt(plan: ReturnType<typeof createActivationPlanV1>): ActivationReceiptV1 {
+  let receipt = createActivationReceiptV1(plan, '2026-09-18T08:00:00.000Z');
+  for (const [index, operation] of plan.operations.entries()) {
+    const approval =
+      operation.approvalKind === undefined
+        ? undefined
+        : bindActivationApprovalV1(plan, receipt, operation.id, 'f'.repeat(64));
+    const transition = recordActivationOutcomeV1({
+      approval,
+      now: new Date(Date.parse(receipt.updatedAt) + 1_000).toISOString(),
+      operationId: operation.id,
+      outcome: {
+        ownership: operation.reversible ? 'activation-created' : 'preexisting',
+        status: operation.expectedOutcome,
+        subsystemReceiptHash: (index + 1).toString(16).padStart(64, '0'),
+        undoEligible: operation.reversible,
+      },
+      plan,
+      receipt,
+    });
+    if (transition.status === 'conflict') throw new Error(`Could not build activation receipt: ${transition.code}`);
+    receipt = transition.receipt;
+  }
+  return receipt;
+}

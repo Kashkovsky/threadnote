@@ -74,6 +74,7 @@ import {registerContextHealthRepairTools} from './context_health_repair.js';
 import {registerMaintenanceMetadataTools} from './maintenance_metadata.js';
 import {registerKnowledgeDeltaGitProposalTool} from './git_proposal.js';
 import {registerProcedurePublicationTools} from './procedure.js';
+import {registerActivationProofTool} from './activation.js';
 import {
   runInstallSharedSkillTool,
   runListSharedSkillsTool,
@@ -264,6 +265,7 @@ function registerTools(
 ): void {
   const capabilities = mcpToolCapabilities(toolset);
   if (capabilities.memoryRead) {
+    registerActivationProofTool(server, config);
     registerSearchTool(
       server,
       config,

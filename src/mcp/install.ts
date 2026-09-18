@@ -14,7 +14,7 @@ import {
   withAgentIntegrationLock,
 } from '../agent_integration/registry.js';
 import {commandLauncherPath} from '../command-shim.js';
-import {THREADNOTE_MCP_CLIENT_ENV, THREADNOTE_MCP_NAME} from '../constants.js';
+import {THREADNOTE_MCP_CLIENT_ENV, THREADNOTE_MCP_NAME, THREADNOTE_MCP_SURFACE_ENV} from '../constants.js';
 import {maybeRunEffect, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {relocateManagedOmpHook} from '../omp_hooks.js';
@@ -1006,6 +1006,7 @@ function mcpEnvironment(config: RuntimeConfig, toolset: McpToolset, client: Agen
     `THREADNOTE_AGENT_ID=${config.agentId}`,
     `${MCP_TOOLSET_ENV}=${toolset}`,
     `${THREADNOTE_MCP_CLIENT_ENV}=${client}`,
+    `${THREADNOTE_MCP_SURFACE_ENV}=${legacyMcpSurfaceId(client)}`,
   ];
 }
 
@@ -1015,9 +1016,20 @@ function mcpEnvironmentObject(config: RuntimeConfig, toolset: McpToolset, client
     THREADNOTE_AGENT_ID: config.agentId,
     THREADNOTE_HOME: config.agentContextHome,
     [THREADNOTE_MCP_CLIENT_ENV]: client,
+    [THREADNOTE_MCP_SURFACE_ENV]: legacyMcpSurfaceId(client),
     [MCP_TOOLSET_ENV]: toolset,
     THREADNOTE_USER: config.user,
   };
+}
+
+function legacyMcpSurfaceId(client: AgentClient): string {
+  return {
+    claude: 'claude-code',
+    codex: 'codex-cli',
+    copilot: 'copilot-vscode',
+    cursor: 'cursor-desktop',
+    omp: 'omp-agent',
+  }[client];
 }
 
 const buildCursorMcpServerConfig = Effect.fn('mcp.buildCursorServerConfig')(function* (

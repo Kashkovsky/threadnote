@@ -1067,6 +1067,8 @@ export interface RecallHit {
   readonly contextType: string;
   readonly equivalentUris?: readonly string[];
   readonly identityConflict?: boolean;
+  /** Stable memory identity retained for internal consumers that must prove semantic discovery before exact read. */
+  readonly memoryId?: string;
   /**
    * Query terms this document matched exactly (lexically) via grep. Present when
    * an exact-match pass corroborates a semantic hit, or when the document was
@@ -1708,6 +1710,7 @@ function hybridRankRecallHits(
               ...hit,
               equivalentUris: ranked.candidate.equivalentUris,
               identityConflict: ranked.candidate.identityConflict,
+              memoryId: ranked.candidate.memoryId,
               finalScore: ranked.finalScore,
               rankReasons: ranked.reasons,
               rankSignals: ranked.signals,
