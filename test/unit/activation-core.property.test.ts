@@ -4,6 +4,8 @@ import {
   bindActivationApprovalV1,
   createActivationPlanV1,
   createActivationReceiptV1,
+  parseActivationPlanV1,
+  parseActivationReceiptV1,
   previewActivationResumeV1,
   recordActivationOutcomeV1,
 } from '../../src/activation/index.js';
@@ -104,6 +106,21 @@ describe('activation core properties', () => {
           receipt = transition.receipt;
         }
         expect(previewActivationResumeV1(plan, receipt).status).toBe('completed');
+      }),
+      {numRuns: 50},
+    );
+  });
+
+  it('keeps a persisted plan and receipt resume frontier deterministic across JSON round trips', () => {
+    fc.assert(
+      fc.property(inputArbitrary, input => {
+        const plan = createActivationPlanV1(input);
+        const receipt = createActivationReceiptV1(plan, '2026-09-18T08:00:00.000Z');
+        const restoredPlan = parseActivationPlanV1(JSON.parse(JSON.stringify(plan)));
+        const restoredReceipt = parseActivationReceiptV1(JSON.parse(JSON.stringify(receipt)));
+        expect(previewActivationResumeV1(restoredPlan, restoredReceipt)).toEqual(
+          previewActivationResumeV1(plan, receipt),
+        );
       }),
       {numRuns: 50},
     );

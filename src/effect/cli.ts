@@ -6,9 +6,6 @@ import {
   makeContextCheckCommand,
   makeRecallFeedbackCommand,
   makeValueCommand,
-  makeProcedureVerifyCommand,
-  makeProcedureStatusCommand,
-  makeProcedurePublishCommand,
 } from './workflow_cli.js';
 import {makeCursorHookCommand, makeInstallHooksCommand, makePreCompactHookCommand} from './hooks_cli.js';
 import {agentsCommandMetadata, makeAgentsCommand} from './agents_cli.js';
@@ -151,6 +148,8 @@ import {
   runCodeGraphCheckpointVerify,
 } from '../code_graph/checkpoint/commands.js';
 import {makeComposerCommands} from './composer_cli.js';
+import {makeActivationCommand, runUnavailableActivationCli} from './activation_cli.js';
+import {makeProcedureCommand} from './procedure_cli.js';
 import {makeGraphSharingCommands} from '../code_graph/sharing/cli.js';
 import {
   CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS,
@@ -1455,14 +1454,10 @@ const value = makeValueCommand(
   options => withRuntimeEffect(config => valueReportCommands.runValueReportRetention(config, options)),
   options => withRuntimeEffect(config => valueReportCommands.runValueReportDelete(config, options)),
 );
-const procedureVerify = makeProcedureVerifyCommand(options => withRuntimeEffect(() => runProcedureVerify(options)));
-const procedureStatus = makeProcedureStatusCommand(options => withRuntimeEffect(() => runProcedureStatus(options)));
-const procedurePublish = makeProcedurePublishCommand(options =>
-  withRuntimeEffect(config => runProcedurePublish(config, options)),
-);
-const procedure = Command.make('procedure').pipe(
-  Command.withDescription('Verify, inspect, and publish reviewed procedures'),
-  Command.withSubcommands([procedureVerify, procedureStatus, procedurePublish]),
+const procedure = makeProcedureCommand(
+  options => withRuntimeEffect(() => runProcedureVerify(options)),
+  options => withRuntimeEffect(() => runProcedureStatus(options)),
+  options => withRuntimeEffect(config => runProcedurePublish(config, options)),
 );
 
 const compact = makeCompactCommand(options => withRuntimeEffect(config => runCompact(config, options)));
@@ -1892,6 +1887,7 @@ const registerTopLevelCommand = <const Name extends string, CommandType>(
 
 const topLevelCommandRegistrations = [
   registerTopLevelCommand('setup', makeSetupCommand(withScopedRuntime), setupCommandMetadata),
+  registerTopLevelCommand('activate', makeActivationCommand(runUnavailableActivationCli)),
   registerTopLevelCommand('guidance', makeGuidanceCommand(withScopedRuntime), guidanceCommandMetadata),
   registerTopLevelCommand('agents', makeAgentsCommand(withScopedRuntime), agentsCommandMetadata),
   registerTopLevelCommand('manage', manage),
