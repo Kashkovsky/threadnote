@@ -68,7 +68,10 @@ prerelease only when that tag targets the exact current remote `release/5.0.0` t
 creating the immutable release. Activate the no-bypass `Threadnote 5.0 beta publication freeze` ruleset after the final
 candidate merge and before tagging; it targets only `release/5.0.0` and uses the `update` rule with fetch-and-merge disabled.
 Keep it active until immutable-release verification completes, then disable it. The workflow fails closed if it cannot inspect
-that active ruleset. It rejects unnumbered, zero-padded,
+that active ruleset. On a non-fork repository, GitHub may omit the update-rule parameters when
+`update_allows_fetch_and_merge` is false; the workflow accepts that omission only after confirming `fork` is false, and
+rejects an explicit `true`. It also rejects any `ref_name.exclude`, because an exclusion overrides the exact release-branch
+include. It rejects unnumbered, zero-padded,
 other-channel, and other-version prerelease tags. Stable tags
 remain restricted to commits already present on protected `main`.
 
@@ -356,6 +359,10 @@ remain restricted to commits already present on protected `main`.
    verify shared opaque `cgdq_` tokens, latest-demand convergence, process-kill recovery, and a privacy scan. This gate
    records observations and bounded retry guidance, not unverified latency claims. The release is not ready until the
    continuity contract, crash recovery, and strict-current boundaries are all exercised.
+   Use [`bun run gate:code-graph:stage3`](code-graph-readiness.md#stage-3-release-gate) from the exact clean candidate
+   checkout with its verified managed development runtime. `--mode plan` is a non-executing preview; only
+   `--mode execute` creates the disposable fixtures, launches the candidate MCP hosts, and writes passing evidence.
+   Keep the new output file outside source control. The harness accepts no caller-supplied observations.
 5. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
    graph correctness and performance. The tag starts one separate exact-tag production-large capacity classification
    and, on an admitted runner, one `code-graph-production-large-n1` observation automatically. When the hosted runner
@@ -373,7 +380,10 @@ remain restricted to commits already present on protected `main`.
    `release/5.0.0` against all merges and pushes while a beta publish workflow is running with a separately named
    `Threadnote 5.0 beta publication freeze` ruleset: active enforcement, exact branch target, no bypass actors, and an
    `update` rule whose `update_allows_fetch_and_merge` is false. Enable it after the final candidate merge and before
-   tagging; disable it only after immutable-release verification completes. The release workflow uses the coordinator token
+   tagging; disable it only after immutable-release verification completes. On a non-fork repository, GitHub can omit the
+   update-rule parameters for that false setting; the workflow accepts the omitted form only after it verifies `fork` is
+   false, and rejects an explicit `true`. The freeze predicate also rejects every `ref_name.exclude`, since excludes
+   override the exact release-branch include. The release workflow uses the coordinator token
    to inspect that ruleset immediately before release creation and fails closed if the API permission is unavailable; the
    release coordinator must preflight the API access and manually verify the freeze in GitHub when a run cannot begin. The
    workflow compares the pushed tag, exact checkout, eligible

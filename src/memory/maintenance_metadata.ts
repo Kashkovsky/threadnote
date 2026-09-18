@@ -1,4 +1,5 @@
 import {sha256HexSync} from '../crypto/sha256.js';
+import {MEMORY_SCHEMA_VERSION} from './code_citation.js';
 import {
   canonicalMemoryDocumentContent,
   isIsoDateOrCanonicalIsoInstant,
@@ -6,6 +7,7 @@ import {
   type MemoryRecord,
 } from './document.js';
 import {memoryIdFromIdentityAlias} from './identity_alias.js';
+import {migrateMemoryDocumentV4ToV5} from './migrations.js';
 
 export const MAINTENANCE_METADATA_VERSION = 1 as const;
 const OWNER_MAXIMUM_CHARACTERS = 128;
@@ -26,6 +28,7 @@ export interface MaintenanceMetadataProposalV1 {
   readonly patch: MaintenanceMetadataPatchV1;
   readonly proposalId: string;
   readonly revision: string;
+  readonly schemaVersion: typeof MEMORY_SCHEMA_VERSION;
   readonly targetUri: string;
   readonly version: typeof MAINTENANCE_METADATA_VERSION;
 }
@@ -65,6 +68,7 @@ export function previewMaintenanceMetadataV1(
     proposalId: '',
     targetUri: target.uri,
     version: MAINTENANCE_METADATA_VERSION,
+    schemaVersion: MEMORY_SCHEMA_VERSION,
   } satisfies Omit<MaintenanceMetadataProposalV1, 'revision'>;
   const withId = {...base, proposalId: proposalId(base)};
   return {proposal: {...withId, revision: proposalRevision(withId)}, status: 'preview'};
@@ -84,6 +88,8 @@ export function applyMaintenanceMetadataV1(input: {
     return conflict('approval-required', 'Metadata apply requires approved=true after preview.');
   if (proposalId(proposal) !== proposal.proposalId || proposalRevision(proposal) !== proposal.revision)
     return conflict('invalid-proposal', 'The metadata proposal identity or revision is invalid.');
+  if (proposal.schemaVersion !== MEMORY_SCHEMA_VERSION)
+    return conflict('invalid-proposal', 'The metadata proposal does not target the current memory schema.');
   if (input.expectedRevision !== proposal.revision)
     return conflict('revision-mismatch', 'The metadata proposal revision is not the previewed revision.');
   if (input.expectedContentHash !== proposal.expectedContentHash)
@@ -114,7 +120,7 @@ export function rewriteMaintenanceMetadata(
   patch: MaintenanceMetadataPatchV1,
   updatedAt: string,
 ): string {
-  const canonical = canonicalMemoryDocumentContent(content).replace(/\r\n?/gu, '\n');
+  const canonical = migrateMemoryDocumentV4ToV5(canonicalMemoryDocumentContent(content)).replace(/\r\n?/gu, '\n');
   const separator = canonical.indexOf('\n\n');
   const header = separator === -1 ? canonical : canonical.slice(0, separator);
   const body = separator === -1 ? '' : canonical.slice(separator + 2);

@@ -241,7 +241,11 @@ describe('standalone release workflows', () => {
         expect(publisher.match(/verify_release_source/g)).toHaveLength(3);
         expect(publisher).toContain('final practical gate');
         expect(publisher).toContain('Threadnote 5.0 beta publication freeze');
-        expect(publisher).toContain('update_allows_fetch_and_merge === false');
+        expect(publisher).toContain('repository_is_fork');
+        expect(publisher).toContain("--jq '.fork'");
+        expect(publisher).toContain('ruleset.conditions?.ref_name?.exclude?.length === 0');
+        expect(publisher).toContain('update_allows_fetch_and_merge !== true');
+        expect(publisher).toContain('GitHub omits update parameters when false');
         expect(publisher).toContain('bypass_actors?.length === 0');
       }),
   );
