@@ -31,6 +31,17 @@ import {
   type Threadnote5ReleaseScenario,
   type Threadnote5SourceV1,
 } from './threadnote-5-release-readiness-contract.js';
+import {parseContextBriefRequestV1} from '../context_brief/types.js';
+import {parseContextBriefV1, renderContextBriefText} from '../context_brief/projector.js';
+import {parseContextCheckReportJson} from '../context_check/index.js';
+import {
+  guidanceBlock,
+  parseGuidanceReceiptV2,
+  renderManagedGuidanceBlock,
+  stripThreadnoteManagedGuidance,
+  upsertGuidanceBlock,
+} from '../guidance/index.js';
+import {measureAgentToolResponse} from './agent-response.js';
 import {
   parseThreadnote5LocalAuthorityManifestV1,
   threadnote5ApplyAuditDigest,
@@ -46,7 +57,17 @@ const MAX_RECORDS = 64;
 const MAX_RECORD_BYTES = 1024 * 1024;
 const MAX_RECORD_SET_BYTES = 8 * 1024 * 1024;
 const MAX_ATTEMPTS = 64;
-const SOURCE_KINDS = ['closeout', 'context-health', 'git-proposal', 'procedure', 'value-report'] as const;
+const SOURCE_KINDS = [
+  'closeout',
+  'context-brief',
+  'context-check',
+  'context-health',
+  'git-proposal',
+  'guidance',
+  'migration',
+  'procedure',
+  'value-report',
+] as const;
 
 export type Threadnote5LocalSourceKindV1 = (typeof SOURCE_KINDS)[number];
 
@@ -88,6 +109,27 @@ interface DerivedClaims {
   readonly assertions: readonly string[];
   readonly measurements: readonly Threadnote5MeasurementV1[];
   readonly missingKinds?: readonly string[];
+}
+
+type Threadnote5AuthorityRequirementV1 =
+  | 'context-brief-plan-citation-authority'
+  | 'context-check-read-fence-authority'
+  | 'guidance-stale-precondition-rejection-authority'
+  | 'migration-execution-authority'
+  | 'git-proposal-review-authority'
+  | 'procedure-execution-authority';
+
+interface Threadnote5LocalReceiptAdapterV1 {
+  readonly acceptedScenarios: readonly Threadnote5ReleaseScenario[];
+  readonly kind: Threadnote5LocalSourceKindV1;
+  readonly requiredAuthority: readonly Threadnote5AuthorityRequirementV1[];
+  readonly authorityType?: (
+    record: Threadnote5LocalSubsystemReceiptRecordV1,
+  ) => Threadnote5LocalAuthorityEntryV1['type'] | undefined;
+  readonly derive: (
+    record: Threadnote5LocalSubsystemReceiptRecordV1,
+    authority: Threadnote5LocalAuthorityEntryV1 | undefined,
+  ) => DerivedClaims;
 }
 
 export function threadnote5LocalSubsystemReceiptDigest(
@@ -269,22 +311,329 @@ function scenarioVerification(
   };
 }
 
+const LOCAL_RECEIPT_ADAPTERS: readonly Threadnote5LocalReceiptAdapterV1[] = [
+  {
+    acceptedScenarios: ['structured-closeout', 'interrupted-resumed', 'output-budgets'],
+    derive: record => deriveCloseout(record.scenario, record.artifact, record.candidate),
+    kind: 'closeout',
+    requiredAuthority: [],
+  },
+  {
+    acceptedScenarios: ['solo', 'output-budgets'],
+    derive: (record, authority) => deriveContextBrief(record.scenario, record.artifact, record.candidate, authority),
+    kind: 'context-brief',
+    requiredAuthority: ['context-brief-plan-citation-authority'],
+    authorityType: record => (record.scenario === 'solo' ? 'context-brief-plan-citation' : undefined),
+  },
+  {
+    acceptedScenarios: ['dirty-worktree'],
+    derive: (record, authority) => deriveContextCheck(record.artifact, record.candidate, authority),
+    kind: 'context-check',
+    requiredAuthority: ['context-check-read-fence-authority'],
+    authorityType: () => 'context-check-read-fence',
+  },
+  {
+    acceptedScenarios: ['stale-citation', 'contradiction-triage', 'health-maintenance'],
+    derive: record => deriveHealth(record.scenario, record.artifact),
+    kind: 'context-health',
+    requiredAuthority: [],
+  },
+  {
+    acceptedScenarios: ['projection-drift'],
+    derive: (record, authority) => deriveGuidance(record.artifact, record.candidate, authority),
+    kind: 'guidance',
+    requiredAuthority: ['guidance-stale-precondition-rejection-authority'],
+    authorityType: record =>
+      object(record.artifact, 'guidance capture').stalePrecondition === true
+        ? 'guidance-stale-precondition-rejection'
+        : undefined,
+  },
+  {
+    acceptedScenarios: ['upgrade-downgrade'],
+    derive: (record, authority) => deriveMigration(record.artifact, record.candidate, authority),
+    kind: 'migration',
+    requiredAuthority: ['migration-execution-authority'],
+    authorityType: () => 'migration-execution',
+  },
+  {
+    acceptedScenarios: ['verified-procedures'],
+    derive: (record, authority) => deriveProcedure(record.artifact, record.candidate, authority),
+    kind: 'procedure',
+    requiredAuthority: ['procedure-execution-authority'],
+    authorityType: () => 'procedure-verification',
+  },
+  {
+    acceptedScenarios: ['solo', 'two-agent', 'git-shared'],
+    derive: record => deriveValueReport(record.artifact),
+    kind: 'value-report',
+    requiredAuthority: [],
+  },
+  {
+    acceptedScenarios: ['provider-neutral-proposal'],
+    derive: (record, authority) => deriveProposal(record.artifact, record.candidate, authority),
+    kind: 'git-proposal',
+    requiredAuthority: ['git-proposal-review-authority'],
+    authorityType: () => 'git-proposal-review',
+  },
+];
+
+const LOCAL_RECEIPT_ADAPTER_BY_KIND = new Map(LOCAL_RECEIPT_ADAPTERS.map(adapter => [adapter.kind, adapter] as const));
+
+/** Adapter declarations are exported so capture tooling can reject a mislabeled source before persistence. */
+export const THREADNOTE_5_LOCAL_RECEIPT_ADAPTERS = LOCAL_RECEIPT_ADAPTERS.map(adapter => ({
+  acceptedScenarios: [...adapter.acceptedScenarios],
+  kind: adapter.kind,
+  requiredAuthority: [...adapter.requiredAuthority],
+}));
+
 function deriveClaims(
   record: Threadnote5LocalSubsystemReceiptRecordV1,
   authority: Threadnote5LocalAuthorityEntryV1 | undefined,
 ): DerivedClaims {
-  switch (record.kind) {
-    case 'closeout':
-      return deriveCloseout(record.scenario, record.artifact, record.candidate);
-    case 'git-proposal':
-      return deriveProposal(record.artifact, record.candidate, authority);
-    case 'procedure':
-      return deriveProcedure(record.artifact, record.candidate, authority);
-    case 'value-report':
-      return deriveValueReport(record.artifact);
-    case 'context-health':
-      return deriveHealth(record.scenario, record.artifact);
+  const adapter = LOCAL_RECEIPT_ADAPTER_BY_KIND.get(record.kind);
+  if (adapter === undefined || !adapter.acceptedScenarios.includes(record.scenario)) {
+    throw new Error('Subsystem receipt adapter does not accept this scenario.');
   }
+  return adapter.derive(record, authority);
+}
+
+/**
+ * This is intentionally a capture boundary, not an agent runner. The production request and
+ * result are reparsed; the event only carries the exact candidate identity and requested budget.
+ */
+function deriveContextBrief(
+  scenario: Threadnote5ReleaseScenario,
+  value: unknown,
+  candidate: Threadnote5SourceV1,
+  authority: Threadnote5LocalAuthorityEntryV1 | undefined,
+): DerivedClaims {
+  const source = exactObject(value, ['attempts'], 'Context Brief capture');
+  const attempts = boundedArray(source.attempts, 'Context Brief attempts', 1, MAX_ATTEMPTS);
+  const estimatedTokens = attempts.map(attempt => contextBriefAttemptTokens(attempt, candidate));
+  if (scenario === 'output-budgets') {
+    return {assertions: ['context-brief-800-to-1500-estimated-tokens'], measurements: []};
+  }
+  if (authority?.type !== 'context-brief-plan-citation' || !authority.assertions.includes('first-plan-source-cited')) {
+    return {assertions: [], measurements: [], missingKinds: ['context-brief-plan-citation-authority']};
+  }
+  return {
+    assertions: ['first-plan-source-cited', 'first-plan-correct'],
+    measurements: [
+      {
+        id: 'estimated-tokens-to-first-cited-correct-plan',
+        sampleCount: attempts.length,
+        total: estimatedTokens.reduce((sum, value) => sum + value, 0),
+      },
+    ],
+  };
+}
+
+function contextBriefAttemptTokens(value: unknown, candidate: Threadnote5SourceV1): number {
+  const capture = exactObject(value, ['event', 'request', 'result'], 'Context Brief attempt');
+  const request = parseContextBriefRequestV1(capture.request);
+  const result = exactObject(capture.result, ['structuredContent', 'text'], 'Context Brief result');
+  const structuredContent = parseContextBriefV1(result.structuredContent);
+  const textResult = text(result.text, 'Context Brief result text', 256 * 1024);
+  if (textResult !== renderContextBriefText(structuredContent))
+    throw new Error('Context Brief text projection does not replay.');
+  const measurement = measureAgentToolResponse({structuredContent, text: textResult});
+  const event = exactObject(capture.event, ['candidate'], 'Context Brief capture event');
+  if (
+    !sameSource(parseThreadnote5TrustedSourceV1(event.candidate, 'candidate'), candidate) ||
+    measurement.estimatedTokens > request.budgetTokens
+  ) {
+    throw new Error('Context Brief attempt candidate or budget binding is invalid.');
+  }
+  return measurement.estimatedTokens;
+}
+
+function deriveContextCheck(
+  value: unknown,
+  candidate: Threadnote5SourceV1,
+  authority: Threadnote5LocalAuthorityEntryV1 | undefined,
+): DerivedClaims {
+  const capture = exactObject(
+    value,
+    ['graphEvidence', 'readFence', 'reportJson', 'repositoryEvidence'],
+    'Context Check capture',
+  );
+  const report = parseContextCheckReportJson(text(capture.reportJson, 'Context Check report JSON', 256 * 1024));
+  const repository = captureBoundary(capture.repositoryEvidence, candidate, 'repository evidence', ['dirty']);
+  const graph = captureBoundary(capture.graphEvidence, candidate, 'graph evidence', ['state']);
+  const fence = captureBoundary(capture.readFence, candidate, 'Context Check read fence', ['state']);
+  if (
+    repository.dirty !== true ||
+    graph.state !== 'incomplete' ||
+    fence.state !== 'unknown' ||
+    report.evidenceStatus !== 'unavailable' ||
+    report.exitClassification !== 'invalid-or-required-evidence-unavailable' ||
+    report.exitCode !== 2
+  ) {
+    throw new Error('Context Check capture does not prove dirty evidence is non-current and the outcome is unknown.');
+  }
+  if (authority?.type !== 'context-check-read-fence' || !authority.assertions.includes('dirty-evidence-not-current')) {
+    return {assertions: [], measurements: [], missingKinds: ['context-check-read-fence-authority']};
+  }
+  return {assertions: ['dirty-evidence-not-current', 'outcome-unknown'], measurements: []};
+}
+
+function deriveGuidance(
+  value: unknown,
+  candidate: Threadnote5SourceV1,
+  authority: Threadnote5LocalAuthorityEntryV1 | undefined,
+): DerivedClaims {
+  const capture = exactObject(
+    value,
+    ['after', 'afterText', 'before', 'beforeText', 'candidate', 'current', 'preview', 'sources', 'stalePrecondition'],
+    'guidance capture',
+  );
+  if (!sameSource(parseThreadnote5TrustedSourceV1(capture.candidate, 'candidate'), candidate)) {
+    throw new Error('Guidance capture candidate identity is mismatched.');
+  }
+  const current = guidanceReceipt(capture.current, 'current GuidanceReceiptV2');
+  const expected = {
+    project: current.project,
+    repositoryId: current.repositoryId,
+    targetIdentity: current.targetIdentity,
+    targetPath: current.targetPath,
+  };
+  const before = parseGuidanceReceiptV2(capture.before, expected);
+  const after = parseGuidanceReceiptV2(capture.after, expected);
+  const preview = parseGuidanceReceiptV2(capture.preview, expected);
+  if (!Array.isArray(capture.sources) || capture.sources.length === 0 || capture.sources.length > 64) {
+    throw new Error('Guidance capture must retain bounded source receipts.');
+  }
+  const sources = capture.sources.map(source => {
+    const entry = exactObject(source, ['contentHash', 'text', 'uri'], 'guidance source');
+    const contentHash = text(entry.contentHash, 'guidance source hash', 64);
+    const sourceText = text(entry.text, 'guidance source text', 60 * 1024);
+    if (!hash(contentHash) || sha256HexSync(sourceText) !== contentHash)
+      throw new Error('Guidance source content hash is invalid.');
+    return {contentHash, text: sourceText, uri: text(entry.uri, 'guidance source URI', 4_096)};
+  });
+  if (!unique(sources.map(source => source.uri))) throw new Error('Guidance capture source URIs must be unique.');
+  const beforeText = text(capture.beforeText, 'guidance before text', 256 * 1024);
+  const capturedAfterText = text(capture.afterText, 'guidance after text', 256 * 1024);
+  const block = renderManagedGuidanceBlock(sources);
+  const afterText = upsertGuidanceBlock(beforeText, block);
+  const beforeBlock = guidanceBlock(beforeText);
+  const projectedSources = [...sources]
+    .sort((left, right) => compareText(left.uri, right.uri))
+    .map(({contentHash, uri}) => ({contentHash, uri}));
+  if (
+    beforeBlock === undefined ||
+    stripThreadnoteManagedGuidance(beforeText) !== stripThreadnoteManagedGuidance(afterText) ||
+    capturedAfterText !== afterText ||
+    sha256HexSync(beforeBlock) !== before.expectedManagedBlockHash ||
+    sha256HexSync(block) !== after.expectedManagedBlockHash ||
+    canonicalJson(projectedSources) !== canonicalJson(after.sources)
+  ) {
+    throw new Error('Guidance capture does not prove preservation and managed-block preconditions.');
+  }
+  if (
+    canonicalJson(before) !== canonicalJson(current) ||
+    canonicalJson(preview) !== canonicalJson(after) ||
+    before.state !== 'current' ||
+    after.state !== 'current' ||
+    typeof capture.stalePrecondition !== 'boolean'
+  ) {
+    throw new Error('Guidance capture cannot replay its source, preview, and receipt transition.');
+  }
+  const staleMissing =
+    capture.stalePrecondition &&
+    (authority?.type !== 'guidance-stale-precondition-rejection' ||
+      !authority.assertions.includes('stale-precondition-rejected'));
+  return {
+    assertions: ['unmanaged-text-preserved', 'apply-previewed', 'content-precondition-checked'],
+    measurements: [],
+    ...(staleMissing ? {missingKinds: ['guidance-stale-precondition-rejection-authority']} : {}),
+  };
+}
+
+function deriveMigration(
+  value: unknown,
+  candidate: Threadnote5SourceV1,
+  authority: Threadnote5LocalAuthorityEntryV1 | undefined,
+): DerivedClaims {
+  const capture = exactObject(value, ['baseline', 'candidate', 'downgrade', 'upgrade'], 'migration capture');
+  const baseline = parseThreadnote5TrustedSourceV1(capture.baseline, 'baseline');
+  const capturedCandidate = parseThreadnote5TrustedSourceV1(capture.candidate, 'candidate');
+  if (!sameSource(capturedCandidate, candidate)) throw new Error('Migration capture candidate identity is mismatched.');
+  const upgrade = migrationExecution(capture.upgrade, baseline, candidate, 'upgrade');
+  const downgrade = migrationExecution(capture.downgrade, candidate, baseline, 'downgrade');
+  if (authority?.type !== 'migration-execution' || !authority.assertions.includes('migration-runtime-executed')) {
+    return {assertions: [], measurements: [], missingKinds: ['migration-execution-authority']};
+  }
+  const assertions = [
+    ...(upgrade.outcome === 'readable' ? ['upgrade-readable'] : []),
+    ...(downgrade.outcome === 'readable' || downgrade.outcome === 'safe-refusal'
+      ? ['downgrade-readable-or-safe-refusal']
+      : []),
+    ...(upgrade.protectedWriteCount === 0 && downgrade.protectedWriteCount === 0 ? ['destructive-mutations-zero'] : []),
+  ];
+  return {assertions, measurements: []};
+}
+
+function guidanceReceipt(value: unknown, label: string) {
+  const raw = object(value, label);
+  return parseGuidanceReceiptV2(value, {
+    project: text(raw.project, `${label} project`, 256),
+    repositoryId: text(raw.repositoryId, `${label} repository id`, 4_096),
+    targetIdentity: text(raw.targetIdentity, `${label} target identity`, 4_096),
+    targetPath: text(raw.targetPath, `${label} target path`, 1_024),
+  });
+}
+
+function captureBoundary(
+  value: unknown,
+  candidate: Threadnote5SourceV1,
+  label: string,
+  required: readonly string[],
+): Record<string, unknown> {
+  const boundary = object(value, label);
+  if (
+    !allowedKeys(boundary, ['candidate', 'digest', ...required]) ||
+    Object.keys(boundary).length !== required.length + 2
+  ) {
+    throw new Error(`${label} has unsupported or missing fields.`);
+  }
+  if (
+    !hash(boundary.digest) ||
+    !sameSource(parseThreadnote5TrustedSourceV1(boundary.candidate, 'candidate'), candidate)
+  ) {
+    throw new Error(`${label} is not bound to the candidate.`);
+  }
+  return boundary;
+}
+
+function migrationExecution(
+  value: unknown,
+  from: Threadnote5SourceV1,
+  to: Threadnote5SourceV1,
+  label: string,
+): {readonly outcome: 'readable' | 'safe-refusal'; readonly protectedWriteCount: number} {
+  const execution = exactObject(
+    value,
+    ['afterDigest', 'beforeDigest', 'from', 'outcome', 'protectedWriteCount', 'to'],
+    `${label} migration execution`,
+  );
+  if (
+    !hash(execution.beforeDigest) ||
+    !hash(execution.afterDigest) ||
+    !sameSource(
+      parseThreadnote5TrustedSourceV1(execution.from, from.id === 'threadnote-4.7.x' ? 'baseline' : 'candidate'),
+      from,
+    ) ||
+    !sameSource(
+      parseThreadnote5TrustedSourceV1(execution.to, to.id === 'threadnote-4.7.x' ? 'baseline' : 'candidate'),
+      to,
+    ) ||
+    !integerIn(execution.protectedWriteCount, 0, MAX_ATTEMPTS) ||
+    (execution.outcome !== 'readable' && execution.outcome !== 'safe-refusal')
+  ) {
+    throw new Error(`${label} migration execution is invalid.`);
+  }
+  return {outcome: execution.outcome, protectedWriteCount: execution.protectedWriteCount};
 }
 
 function deriveCloseout(
@@ -838,22 +1187,26 @@ function resolveAuthority(
   if (manifestHash !== expectedHash || !sameSource(manifest.candidate, candidate)) {
     throw new Error('Local authority manifest does not match its trusted hash or exact candidate.');
   }
-  const authorityRecords = records.filter(record => record.kind === 'git-proposal' || record.kind === 'procedure');
+  const authorityRecords = records.filter(record => authorityTypeForRecord(record) !== undefined);
   if (manifest.entries.length !== authorityRecords.length) {
     throw new Error('Local authority manifest must exactly cover authority-dependent source records.');
   }
   const byRecordDigest = new Map(manifest.entries.map(entry => [entry.recordDigest, entry] as const));
   for (const record of authorityRecords) {
     const entry = byRecordDigest.get(record.digest);
-    if (
-      entry === undefined ||
-      (record.kind === 'git-proposal' && entry.type !== 'git-proposal-review') ||
-      (record.kind === 'procedure' && entry.type !== 'procedure-verification')
-    ) {
+    if (entry === undefined || entry.type !== authorityTypeForRecord(record)) {
       throw new Error('Local authority entry is missing or mislabeled for its source record.');
     }
   }
   return {byRecordDigest, manifestHash};
+}
+
+function authorityTypeForRecord(
+  record: Threadnote5LocalSubsystemReceiptRecordV1,
+): Threadnote5LocalAuthorityEntryV1['type'] | undefined {
+  const adapter = LOCAL_RECEIPT_ADAPTER_BY_KIND.get(record.kind);
+  if (adapter === undefined || !adapter.acceptedScenarios.includes(record.scenario)) return undefined;
+  return adapter.authorityType?.(record);
 }
 
 function parseRecord(value: unknown): Threadnote5LocalSubsystemReceiptRecordV1 {
@@ -959,6 +1312,15 @@ function hash(value: unknown): value is string {
 
 function nonEmptyText(value: unknown, maximum: number): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= maximum;
+}
+
+function text(value: unknown, label: string, maximum: number): string {
+  if (!nonEmptyText(value, maximum)) throw new Error(`${label} must be bounded non-empty text.`);
+  return value;
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function isoInstant(value: unknown): value is string {

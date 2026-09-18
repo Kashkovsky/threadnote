@@ -24,7 +24,10 @@ import {
   threadnote5BaselineTrialLedger,
   threadnote5BaselineTrialLedgerHash,
 } from '../../src/evaluation/threadnote-5-release-readiness-baseline-ledger.js';
-import {verifyThreadnote5LocalSubsystemReceipts} from '../../src/evaluation/threadnote-5-release-readiness-receipts.js';
+import {
+  THREADNOTE_5_LOCAL_RECEIPT_ADAPTERS,
+  verifyThreadnote5LocalSubsystemReceipts,
+} from '../../src/evaluation/threadnote-5-release-readiness-receipts.js';
 import * as fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import fixtureJson from '../evaluation/fixtures/threadnote-5-task-loop-v1/fixture.json' with {type: 'json'};
@@ -44,6 +47,32 @@ const BASELINE: Threadnote5SourceV1 = {
 };
 
 describe('Threadnote 5 release-readiness evidence', () => {
+  it('declares Group 1 source adapters and their fail-closed external authority seams', () => {
+    expect(THREADNOTE_5_LOCAL_RECEIPT_ADAPTERS).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          acceptedScenarios: ['solo', 'output-budgets'],
+          kind: 'context-brief',
+          requiredAuthority: ['context-brief-plan-citation-authority'],
+        }),
+        expect.objectContaining({acceptedScenarios: ['dirty-worktree'], kind: 'context-check'}),
+        expect.objectContaining({
+          acceptedScenarios: ['projection-drift'],
+          kind: 'guidance',
+          requiredAuthority: ['guidance-stale-precondition-rejection-authority'],
+        }),
+        expect.objectContaining({
+          acceptedScenarios: ['upgrade-downgrade'],
+          kind: 'migration',
+          requiredAuthority: ['migration-execution-authority'],
+        }),
+      ]),
+    );
+    expect(new Set(THREADNOTE_5_LOCAL_RECEIPT_ADAPTERS.map(adapter => adapter.kind)).size).toBe(
+      THREADNOTE_5_LOCAL_RECEIPT_ADAPTERS.length,
+    );
+  });
+
   it('freezes the complete offline scenario, subsystem, and metric contract', () => {
     expect(fixture.networkAllowed).toBe(false);
     expect(fixture.scenarios).toEqual(APPROVED_THREADNOTE_5_SCENARIOS);

@@ -38,7 +38,18 @@ export interface Threadnote5ProcedureAuthorityV1 {
   readonly type: 'procedure-verification';
 }
 
-export type Threadnote5LocalAuthorityEntryV1 = Threadnote5GitProposalAuthorityV1 | Threadnote5ProcedureAuthorityV1;
+export interface Threadnote5ExternalReceiptAuthorityV1 {
+  readonly assertions: readonly string[];
+  readonly recordDigest: string;
+  readonly type:
+    | 'context-brief-plan-citation'
+    | 'context-check-read-fence'
+    | 'guidance-stale-precondition-rejection'
+    | 'migration-execution';
+}
+
+export type Threadnote5LocalAuthorityEntryV1 =
+  Threadnote5GitProposalAuthorityV1 | Threadnote5ProcedureAuthorityV1 | Threadnote5ExternalReceiptAuthorityV1;
 
 export interface Threadnote5LocalAuthorityManifestV1 {
   readonly candidate: Threadnote5SourceV1;
@@ -138,6 +149,35 @@ function parseEntry(value: unknown): Threadnote5LocalAuthorityEntryV1 {
       recordDigest: hash(source.recordDigest, 'authority record digest'),
       semanticVersion: boundedText(source.semanticVersion, 'procedure semantic version', 128),
       type: 'procedure-verification',
+    };
+  }
+  if (
+    source.type === 'context-brief-plan-citation' ||
+    source.type === 'context-check-read-fence' ||
+    source.type === 'guidance-stale-precondition-rejection' ||
+    source.type === 'migration-execution'
+  ) {
+    exactKeys(source, ['assertions', 'recordDigest', 'type'], 'external receipt authority');
+    if (!Array.isArray(source.assertions) || source.assertions.length < 1 || source.assertions.length > 8) {
+      throw new Error('External receipt authority assertions are out of bounds.');
+    }
+    const assertions = source.assertions.map(value =>
+      matching(value, /^[a-z0-9][a-z0-9-]{0,95}$/u, 'authority assertion'),
+    );
+    unique(assertions, 'external receipt authority assertions');
+    const expectedAssertions = {
+      'context-brief-plan-citation': ['first-plan-correct', 'first-plan-source-cited'],
+      'context-check-read-fence': ['dirty-evidence-not-current', 'outcome-unknown'],
+      'guidance-stale-precondition-rejection': ['stale-precondition-rejected'],
+      'migration-execution': ['migration-runtime-executed'],
+    } as const;
+    if (canonicalJson([...assertions].sort()) !== canonicalJson(expectedAssertions[source.type])) {
+      throw new Error('External receipt authority assertions are invalid for its type.');
+    }
+    return {
+      assertions: [...assertions].sort(),
+      recordDigest: hash(source.recordDigest, 'authority record digest'),
+      type: source.type,
     };
   }
   throw new Error('Local authority entry type is unsupported.');

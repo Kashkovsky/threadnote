@@ -31,6 +31,9 @@ import {canonicalMemoryDocumentContent} from '../../src/memory/document.js';
 import {projectKnowledgeDeltaV1} from '../../src/memory/knowledge_delta.js';
 import {createProcedureVerificationReceipt, parseProcedureManifest} from '../../src/procedure/contract.js';
 import {aggregateValueReportV1} from '../../src/value_report/index.js';
+import {renderManagedGuidanceBlock} from '../../src/guidance/index.js';
+import {parseContextBriefV1, renderContextBriefText} from '../../src/context_brief/projector.js';
+import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
 import * as fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 
@@ -311,6 +314,320 @@ describe('Threadnote 5 source-native receipt verification', () => {
     expect(Object.keys(artifact).sort()).toEqual(['verification', 'verificationHash', 'version']);
     expect(canonicalJson(artifact)).not.toContain('/Users/');
     expect(canonicalJson(artifact)).not.toContain('artifactText');
+  });
+
+  it('canonicalizes external authority entries independently of input order and rejects surplus coverage', () => {
+    const entries: Threadnote5LocalAuthorityEntryV1[] = [
+      {assertions: ['migration-runtime-executed'], recordDigest: 'a'.repeat(64), type: 'migration-execution'},
+      {
+        assertions: ['first-plan-correct', 'first-plan-source-cited'],
+        recordDigest: 'b'.repeat(64),
+        type: 'context-brief-plan-citation',
+      },
+    ];
+    fc.assert(
+      fc.property(fc.boolean(), reverse => {
+        const manifest = {
+          candidate: CANDIDATE,
+          entries: reverse ? [...entries].reverse() : entries,
+          version: 1 as const,
+        };
+        const reversed = {candidate: CANDIDATE, entries: [...manifest.entries].reverse(), version: 1 as const};
+        expect(threadnote5LocalAuthorityManifestHash(manifest)).toBe(threadnote5LocalAuthorityManifestHash(reversed));
+      }),
+      {numRuns: 25},
+    );
+    expect(() =>
+      threadnote5LocalAuthorityManifestHash({
+        candidate: CANDIDATE,
+        entries: [
+          ...entries,
+          {
+            assertions: ['dirty-evidence-not-current', 'outcome-unknown'],
+            recordDigest: 'a'.repeat(64),
+            type: 'context-check-read-fence',
+          },
+        ],
+        version: 1,
+      }),
+    ).toThrow();
+  });
+
+  it('keeps dirty Context Check evidence unknown without its bound authority and rejects mislabeled coverage', () => {
+    const boundary = (extra: Record<string, unknown>) => ({candidate: CANDIDATE, digest: 'c'.repeat(64), ...extra});
+    const record = makeRecord('dirty-worktree', 'context-check', {
+      graphEvidence: boundary({state: 'incomplete'}),
+      readFence: boundary({state: 'unknown'}),
+      repositoryEvidence: boundary({dirty: true}),
+      reportJson: JSON.stringify({
+        evidenceReason: 'graph-impact-evidence-unavailable',
+        evidenceStatus: 'unavailable',
+        exitClassification: 'invalid-or-required-evidence-unavailable',
+        exitCode: 2,
+        findings: [],
+        limit: 100,
+        omittedFindings: 0,
+        project: 'threadnote',
+        version: 1,
+      }),
+    });
+    const observation = observed(record, ['dirty-evidence-not-current', 'outcome-unknown']);
+    expect(
+      verifyThreadnote5LocalSubsystemReceipts({
+        candidate: CANDIDATE,
+        observations: [observation],
+        retainedRecords: [record],
+      }),
+    ).toMatchObject({reason: 'verifier-incomplete', state: 'unknown'});
+    const authority: Threadnote5LocalAuthorityManifestV1 = {
+      candidate: CANDIDATE,
+      entries: [
+        {
+          assertions: ['dirty-evidence-not-current', 'outcome-unknown'],
+          recordDigest: record.digest,
+          type: 'context-check-read-fence',
+        },
+      ],
+      version: 1 as const,
+    };
+    expect(verify([observation], [record], authority)).toMatchObject({state: 'verified'});
+    expect(
+      verify([observation], [record], {
+        ...authority,
+        entries: [
+          {assertions: ['migration-runtime-executed'], recordDigest: record.digest, type: 'migration-execution'},
+        ],
+      }),
+    ).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+  });
+
+  it('requires external runtime execution authority for migration receipts', () => {
+    const baseline = {
+      commit: '3'.repeat(40),
+      executableSha256: '4'.repeat(64),
+      id: 'threadnote-4.7.x',
+      version: '4.7.9',
+    } as const;
+    const execution = (from: Threadnote5SourceV1, to: Threadnote5SourceV1, outcome: 'readable' | 'safe-refusal') => ({
+      afterDigest: 'a'.repeat(64),
+      beforeDigest: 'b'.repeat(64),
+      from,
+      outcome,
+      protectedWriteCount: 0,
+      to,
+    });
+    const record = makeRecord('upgrade-downgrade', 'migration', {
+      baseline,
+      candidate: CANDIDATE,
+      downgrade: execution(CANDIDATE, baseline, 'safe-refusal'),
+      upgrade: execution(baseline, CANDIDATE, 'readable'),
+    });
+    const observation = observed(record, [
+      'upgrade-readable',
+      'downgrade-readable-or-safe-refusal',
+      'destructive-mutations-zero',
+    ]);
+    expect(
+      verifyThreadnote5LocalSubsystemReceipts({
+        candidate: CANDIDATE,
+        observations: [observation],
+        retainedRecords: [record],
+      }),
+    ).toMatchObject({reason: 'verifier-incomplete'});
+    const authority: Threadnote5LocalAuthorityManifestV1 = {
+      candidate: CANDIDATE,
+      entries: [{assertions: ['migration-runtime-executed'], recordDigest: record.digest, type: 'migration-execution'}],
+      version: 1 as const,
+    };
+    expect(verify([observation], [record], authority)).toMatchObject({state: 'verified'});
+    const tampered = resealRecord(record, {
+      ...(record.artifact as Record<string, unknown>),
+      upgrade: execution(baseline, CANDIDATE, 'safe-refusal'),
+    });
+    expect(verify([observed(tampered, observationAssertions(observation))], [tampered], authority)).toMatchObject({
+      reason: 'records-invalid',
+    });
+  });
+
+  it('replays guidance bytes and requires authority only for stale-precondition rejection', () => {
+    const previousSource = {
+      contentHash: sha256HexSync('Previous rule.'),
+      text: 'Previous rule.',
+      uri: 'threadnote://user/test/memories/durable/projects/threadnote/previous-guidance.md',
+    };
+    const source = {
+      contentHash: sha256HexSync('Rule.'),
+      text: 'Rule.',
+      uri: 'threadnote://user/test/memories/durable/projects/threadnote/Z-guidance.md',
+    };
+    const secondSource = {
+      contentHash: sha256HexSync('Second rule.'),
+      text: 'Second rule.',
+      uri: 'threadnote://user/test/memories/durable/projects/threadnote/a-guidance.md',
+    };
+    const previousBlock = renderManagedGuidanceBlock([previousSource]);
+    const sources = [secondSource, source];
+    const block = renderManagedGuidanceBlock(sources);
+    const receipt = (receiptSources: readonly (typeof source)[], expectedManagedBlockHash: string) => ({
+      expectedManagedBlockHash,
+      previousManagedBlockHash: null,
+      project: 'threadnote',
+      removeTargetWhenEmpty: false,
+      repositoryId: 'e'.repeat(64),
+      sources: [...receiptSources]
+        .sort((left, right) => (left.uri < right.uri ? -1 : left.uri > right.uri ? 1 : 0))
+        .map(({contentHash, uri}) => ({contentHash, uri})),
+      state: 'current' as const,
+      targetIdentity: 'f'.repeat(64),
+      targetPath: 'AGENTS.md',
+      version: 2 as const,
+      wrapperOwned: false,
+    });
+    const before = receipt([previousSource], sha256HexSync(previousBlock));
+    const after = receipt(sources, sha256HexSync(block));
+    const beforeText = `Unmanaged\n${previousBlock}`;
+    const afterText = `Unmanaged\n${block}`;
+    const artifact = {
+      after,
+      afterText,
+      before,
+      beforeText,
+      candidate: CANDIDATE,
+      current: before,
+      preview: after,
+      sources,
+      stalePrecondition: true,
+    };
+    const record = makeRecord('projection-drift', 'guidance', artifact);
+    const observation = observed(record, [
+      'unmanaged-text-preserved',
+      'apply-previewed',
+      'content-precondition-checked',
+    ]);
+    expect(
+      verifyThreadnote5LocalSubsystemReceipts({
+        candidate: CANDIDATE,
+        observations: [observation],
+        retainedRecords: [record],
+      }),
+    ).toMatchObject({reason: 'verifier-incomplete'});
+    const authority: Threadnote5LocalAuthorityManifestV1 = {
+      candidate: CANDIDATE,
+      entries: [
+        {
+          assertions: ['stale-precondition-rejected'],
+          recordDigest: record.digest,
+          type: 'guidance-stale-precondition-rejection',
+        },
+      ],
+      version: 1 as const,
+    };
+    expect(verify([observation], [record], authority)).toMatchObject({state: 'verified'});
+    const tampered = resealRecord(record, {...artifact, afterText: `${afterText}\ntampered`});
+    const tamperedAuthority: Threadnote5LocalAuthorityManifestV1 = {
+      candidate: CANDIDATE,
+      entries: [
+        {
+          assertions: ['stale-precondition-rejected'],
+          recordDigest: tampered.digest,
+          type: 'guidance-stale-precondition-rejection',
+        },
+      ],
+      version: 1,
+    };
+    expect(
+      verify([observed(tampered, observationAssertions(observation))], [tampered], tamperedAuthority),
+    ).toMatchObject({reason: 'records-invalid'});
+    const sourceMismatch = resealRecord(record, {
+      ...artifact,
+      after: {...after, sources: [{contentHash: previousSource.contentHash, uri: previousSource.uri}]},
+      preview: {...after, sources: [{contentHash: previousSource.contentHash, uri: previousSource.uri}]},
+    });
+    const sourceMismatchAuthority: Threadnote5LocalAuthorityManifestV1 = {
+      candidate: CANDIDATE,
+      entries: [
+        {
+          assertions: ['stale-precondition-rejected'],
+          recordDigest: sourceMismatch.digest,
+          type: 'guidance-stale-precondition-rejection',
+        },
+      ],
+      version: 1,
+    };
+    expect(
+      verify([observed(sourceMismatch, observationAssertions(observation))], [sourceMismatch], sourceMismatchAuthority),
+    ).toMatchObject({reason: 'records-invalid'});
+  });
+
+  it('replays ten measured Context Brief attempts with authority-gated solo claims and local output budgets', () => {
+    const structuredContent = parseContextBriefV1({
+      activeHandoffs: [],
+      coverage: {
+        gaps: [],
+        memory: {},
+        omissions: {
+          activeHandoffs: 0,
+          coverageGaps: 0,
+          durableDecisions: 0,
+          graphCards: 0,
+          graphContracts: 0,
+          recommendedFollowUps: 0,
+          stalenessAndConflicts: 0,
+        },
+      },
+      durableDecisions: [],
+      graph: {cards: [], contracts: []},
+      mode: 'brief',
+      output: {omittedItems: 0, projectorVersion: 2, returnedItems: 0, truncated: false},
+      recommendedFollowUps: [],
+      scope: {},
+      stalenessAndConflicts: [],
+      task: {summary: 'x', truncated: false},
+      trust: {},
+      type: 'context-brief',
+      version: 2,
+    });
+    const attempt = {
+      event: {candidate: CANDIDATE},
+      request: {budgetTokens: 1_500, mode: 'brief', scope: {callerCwd: '/repo', kind: 'repository'}, task: 'x'},
+      result: {structuredContent, text: renderContextBriefText(structuredContent)},
+    };
+    const tokens = measureAgentToolResponse(attempt.result).estimatedTokens;
+    expect(tokens).toBeLessThan(800);
+    const solo = makeRecord('solo', 'context-brief', {attempts: Array.from({length: 10}, () => attempt)});
+    const soloObservation = observed(
+      solo,
+      ['first-plan-source-cited', 'first-plan-correct'],
+      [{id: 'estimated-tokens-to-first-cited-correct-plan', sampleCount: 10, total: 10 * tokens}],
+    );
+    expect(
+      verifyThreadnote5LocalSubsystemReceipts({
+        candidate: CANDIDATE,
+        observations: [soloObservation],
+        retainedRecords: [solo],
+      }),
+    ).toMatchObject({reason: 'verifier-incomplete'});
+    const authority: Threadnote5LocalAuthorityManifestV1 = {
+      candidate: CANDIDATE,
+      entries: [
+        {
+          assertions: ['first-plan-correct', 'first-plan-source-cited'],
+          recordDigest: solo.digest,
+          type: 'context-brief-plan-citation',
+        },
+      ],
+      version: 1 as const,
+    };
+    const verified = verify([soloObservation], [solo], authority);
+    expect(verified).toMatchObject({state: 'verified'});
+    const output = makeRecord('output-budgets', 'context-brief', {attempts: [attempt]});
+    expect(verify([observed(output, ['context-brief-800-to-1500-estimated-tokens'])], [output])).toMatchObject({
+      state: 'verified',
+    });
+    const bad = resealRecord(output, {attempts: [{...attempt, result: {...attempt.result, text: 'tampered'}}]});
+    expect(verify([observed(bad, ['context-brief-800-to-1500-estimated-tokens'])], [bad])).toMatchObject({
+      reason: 'records-invalid',
+    });
   });
 });
 

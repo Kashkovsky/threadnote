@@ -41,13 +41,23 @@ The verification output retains only content-free receipt-set hashes and scenari
 includes source paths or private artifact bodies. Delete or otherwise handle the private input under
 the repository's normal local-data policy after producing and reviewing that output.
 
-The local adapter independently parses and rederives shipped structured-closeout, ValueReport,
-proposal, procedure, and health artifacts. It rejects duplicate, extra, oversized, stale-candidate,
+The local adapter registry independently parses and rederives shipped structured-closeout, ValueReport,
+proposal, procedure, health, Context Brief, Context Check, guidance, and migration artifacts. It rejects duplicate, extra, oversized, stale-candidate,
 or unreferenced records and compares derived assertions and measurements exactly with the sealed
 transcript. Proposal approval and procedure execution are checked against the independently trusted
 authority manifest rather than proposal/receipt labels. Activation/ValueReport linkage and scheduled/team health remain typed
 pending inputs. Pending verifier seams leave only their dependent scenarios and metrics unknown;
 tampered or mismatched evidence is a quality failure.
+
+Context Brief captures strictly reparse the production request/result, require a requested cap from 800–1,500 estimated
+tokens, and verify that the measured response stays at or below that cap, including valid shorter responses.
+They cannot infer first-plan correctness or citations without a separately hash-bound external authority entry. Context Check captures require a
+parsed report plus repository, graph, and read-fence evidence before proving dirty evidence is non-current and its outcome
+unknown and an authority entry bound to the receipt. Guidance captures replay bounded source and before/after bytes through
+the production projection functions; stale-precondition rejection requires external authority. Migration captures bind
+4.7.x and 5.0 runtime identities and protected-state digests, but a HomeMigrationReceipt alone cannot prove execution
+and remains unknown without execution authority. Authority entries have exact record coverage: surplus or mislabeled
+entries are rejected.
 
 The matrix requires exact five-field closeout output (decisions and rationale, constraints,
 verification, invalidations, unresolved risks), current compatible verified procedures that never

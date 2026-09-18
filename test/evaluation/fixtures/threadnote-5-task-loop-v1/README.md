@@ -17,6 +17,15 @@ requires one content-free receipt for each bounded scenario:
 The same executable matrix requires exact five-field structured closeout output and retains the earlier static gates for stale citations, contradiction
 triage, projection drift, and Context Brief/Knowledge Delta output budgets; those contracts were expanded, not replaced.
 
+Source-native adapter records are selected by a typed registry, not a capture label. Context Brief records reparse the
+production request/result, accept only a requested 800–1,500 estimated-token cap, and permit shorter responses that stay
+within it; first-plan correctness and citations need external authority. Dirty-worktree records require a parsed Context Check report plus repository, graph, and read-fence
+boundaries. Guidance records reparse sources and preview/before/after/current receipts, and migration records bind both
+runtime identities and protected-state digests. Missing external stale-precondition or migration-execution authority stays
+unknown; a migration receipt by itself is never execution proof.
+Each external authority entry is content-free, bound to one exact source record and candidate, and rejected when coverage
+is missing, surplus, or mislabeled.
+
 The seven metrics are time and estimated tokens to the first cited correct plan, setup success, wrong-memory rate,
 second-agent reuse, Knowledge Delta completion, and health resolution. Thresholds, scenario-to-metric attribution, and
 required outcome assertions are source-reviewed constants; changing JSON alone cannot weaken them. Every measured
