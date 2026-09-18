@@ -6,7 +6,9 @@ import {ApplicationLayer} from '../src/effect/runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
 import {
   evaluateMemoryConnectionsScaleCapture,
+  memoryConnectionsScaleCandidateBinding,
   MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
+  parseMemoryConnectionsScaleArtifactV1,
   parseMemoryConnectionsScaleBudgetV1,
 } from '../src/evaluation/memory-connections-scale-contract.js';
 import {runMemoryConnectionsScaleWorkload} from '../src/evaluation/memory-connections-scale.js';
@@ -19,9 +21,14 @@ const GIT_STATUS_ARGS = [
   'core.fsmonitor=false',
   '-c',
   'core.untrackedCache=false',
+  '-c',
+  'status.showUntrackedFiles=all',
+  '-c',
+  'diff.ignoreSubmodules=none',
   'status',
   '--porcelain=v1',
   '--untracked-files=all',
+  '--ignore-submodules=none',
   '--no-renames',
 ] as const;
 
@@ -40,31 +47,51 @@ const program = Effect.scoped(
   Effect.gen(function* () {
     const options = parseMemoryConnectionsScaleTargetArguments(yield* scriptArguments());
     const budget = parseMemoryConnectionsScaleBudgetV1(yield* readJsonFile(options.budgetPath));
-    const observedCommit = gitText(['rev-parse', 'HEAD']);
-    const dirty = gitText(GIT_STATUS_ARGS).length > 0;
+    const commitObservation = gitObservation(['rev-parse', 'HEAD']);
+    const statusObservation = gitObservation(GIT_STATUS_ARGS);
+    const observedCommit = commitObservation.text;
+    const dirty = !statusObservation.success || statusObservation.text.length > 0;
+    if (!commitObservation.success || !/^[0-9a-f]{40}$/u.test(observedCommit)) {
+      return yield* ScriptError.make({message: 'Could not resolve the exact benchmark source commit.'});
+    }
     if (!options.developmentSmoke && (observedCommit !== options.candidateCommit || dirty)) {
       return yield* ScriptError.make({message: 'Release-scale evidence requires the exact clean candidate checkout.'});
     }
+    const candidate = yield* readCandidateBinding(options.candidateCommit);
     const capture = yield* runMemoryConnectionsScaleWorkload({
       memoryCandidates: options.memoryCandidates,
       samples: options.samples,
       warmups: options.warmups,
     });
     const system = yield* SystemInfo;
-    const artifact = evaluateMemoryConnectionsScaleCapture({
+    const hardware = yield* system.hardwareInfo;
+    const environment = system.environment();
+    const evaluated = evaluateMemoryConnectionsScaleCapture({
       budget,
+      candidate,
       capture,
       createdAt: DateTime.formatIso(yield* DateTime.now),
       identity: {
+        architecture: system.architecture,
         builtArtifactSha256: options.builtArtifactSha256,
         candidateCommit: options.candidateCommit,
+        cpu: hardware.cpuModel,
         dirty,
+        gitStatusObserved: statusObservation.success,
+        githubActions: environment.GITHUB_ACTIONS === 'true',
         invocationMode: options.developmentSmoke ? 'development-smoke' : 'release-scale',
         observedCommit,
-        runnerClass: system.environment().THREADNOTE_BENCHMARK_RUNNER_CLASS ?? 'local-unpinned',
+        operatingSystem: hardware.operatingSystem,
+        packageManager: candidate.packageManager,
+        runnerArchitecture: environment.RUNNER_ARCH ?? system.architecture,
+        runnerClass: environment.THREADNOTE_BENCHMARK_RUNNER_CLASS ?? 'local-unpinned',
+        runnerEnvironment: environment.RUNNER_ENVIRONMENT ?? 'local',
+        runnerOperatingSystem: environment.RUNNER_OS ?? system.platform,
         runtime: `bun/${system.runtimeVersion}`,
+        sourceVersion: candidate.sourceVersion,
       },
     });
+    const artifact = parseMemoryConnectionsScaleArtifactV1(evaluated, budget, candidate);
     if (options.outputPath !== undefined) {
       yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
     }
@@ -115,10 +142,24 @@ export function parseMemoryConnectionsScaleTargetArguments(
   };
 }
 
-function gitText(args: readonly string[]): string {
+function gitObservation(args: readonly string[]): {readonly success: boolean; readonly text: string} {
   const result = Bun.spawnSync({cmd: ['git', ...args], stderr: 'ignore', stdout: 'pipe'});
-  return result.exitCode === 0 && result.stdout ? new TextDecoder().decode(result.stdout).trim() : '';
+  return {
+    success: result.exitCode === 0,
+    text: result.stdout ? new TextDecoder().decode(result.stdout).trim() : '',
+  };
 }
+
+const readCandidateBinding = Effect.fn('memoryConnectionsScale.readCandidate')(function* (candidateCommit: string) {
+  const manifest = gitObservation(['show', `${candidateCommit}:package.json`]);
+  if (!manifest.success) {
+    return yield* ScriptError.make({message: 'Could not read package.json from the exact release candidate.'});
+  }
+  return yield* Effect.try({
+    try: () => memoryConnectionsScaleCandidateBinding(candidateCommit, JSON.parse(manifest.text) as unknown),
+    catch: cause => ScriptError.make({message: 'Could not validate the candidate package and Bun versions.', cause}),
+  });
+});
 
 function commit(value: string | undefined, option: string): string {
   const parsed = required(value, option);
