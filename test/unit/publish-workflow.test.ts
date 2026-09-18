@@ -189,40 +189,65 @@ describe('standalone release workflows', () => {
 
       expect(notes.trimStart()).toMatch(/^## What's new\s/);
       expect(workflow).toContain('Verify versioned release notes');
-      expect(workflow).toContain('.github/release-notes/${{ github.ref_name }}.md');
+      expect(workflow).toContain('.github/release-notes/${RELEASE_TAG}.md');
       expect(publisher).toContain('release_flags=(--verify-tag --generate-notes)');
       expect(publisher).toContain('--notes "$release_notes"');
     }),
   );
 
-  it.effect('builds every release payload from the exact protected-main tag commit without experiment gating', () =>
-    Effect.gen(function* () {
-      const workflow = yield* readProjectFile('.github/workflows/publish.yml');
-      const publisher = yield* readProjectFile('.github/workflows/publish-release-assets.yml');
-      const verifyJob = workflow.slice(workflow.indexOf('  verify:'), workflow.indexOf('\n  linux:'));
-      const resolveRelease = verifyJob.indexOf('Resolve exact release source');
-      const releaseSmokes = verifyJob.indexOf('Run release contract smokes');
+  it.effect(
+    'builds from either a protected-main stable tag or the exact protected release-branch beta tip without experiment gating',
+    () =>
+      Effect.gen(function* () {
+        const workflow = yield* readProjectFile('.github/workflows/publish.yml');
+        const publisher = yield* readProjectFile('.github/workflows/publish-release-assets.yml');
+        const verifyJob = workflow.slice(workflow.indexOf('  verify:'), workflow.indexOf('\n  linux:'));
+        const resolveRelease = verifyJob.indexOf('Resolve exact release source');
+        const releaseSmokes = verifyJob.indexOf('Run release contract smokes');
 
-      expect(verifyJob).toContain('runs-on: ubuntu-latest');
-      expect(verifyJob).toContain('release_commit: ${{ steps.release_source.outputs.release_commit }}');
-      expect(verifyJob).toContain('refs/tags/${release_tag}^{commit}');
-      expect(verifyJob).toContain('git merge-base --is-ancestor "$head_commit" refs/remotes/origin/main');
-      expect(verifyJob).toContain('printf \'release_commit=%s\\n\' "$head_commit"');
-      expect(verifyJob).not.toContain('code-memory-link');
-      expect(verifyJob).not.toContain('CANDIDATE_COMMIT');
-      expect(resolveRelease).toBeGreaterThan(0);
-      expect(releaseSmokes).toBeGreaterThan(resolveRelease);
-      expect(workflow.match(/needs: verify/g)).toHaveLength(3);
-      expect(workflow.match(/name: Select exact verified release source/g)).toHaveLength(3);
-      expect(workflow.match(/RELEASE_COMMIT: \$\{\{ needs\.verify\.outputs\.release_commit \}\}/g)).toHaveLength(3);
-      expect(workflow.match(/ref: \$\{\{ github\.sha \}\}/g)).toHaveLength(5);
-      expect(workflow.match(/persist-credentials: false/g)).toHaveLength(5);
-      expect(workflow).toContain('release_sha: ${{ github.sha }}');
-      expect(publisher).toContain('ref: ${{ inputs.release_sha }}');
-      expect(publisher).toContain('persist-credentials: false');
-      expect(publisher).toContain('refs/tags/${RELEASE_TAG}:refs/threadnote-release-tag');
-      expect(publisher).toContain('remote_tag_commit');
-    }),
+        expect(verifyJob).toContain('runs-on: ubuntu-latest');
+        expect(verifyJob).toContain('release_commit: ${{ steps.release_source.outputs.release_commit }}');
+        expect(verifyJob).toContain('RELEASE_TAG: ${{ github.ref_name }}');
+        expect(verifyJob).toContain('name: Validate release tag syntax');
+        expect(verifyJob).toContain('refs/tags/${RELEASE_TAG}^{commit}');
+        expect(verifyJob).toContain('git merge-base --is-ancestor "$head_commit" refs/remotes/origin/main');
+        expect(verifyJob).toContain('^v5\\.0\\.0-beta\\.[1-9][0-9]*$');
+        expect(verifyJob).toContain('Number.isSafeInteger(Number(component))');
+        expect(verifyJob).toContain('canonical safe-integer stable vX.Y.Z');
+        expect(verifyJob).toContain('refs/heads/release/5.0.0:refs/remotes/origin/release/5.0.0');
+        expect(verifyJob).toContain('A v5.0.0-beta.N tag must target the exact current origin/release/5.0.0 tip.');
+        expect(verifyJob).toContain('canonical safe-integer stable vX.Y.Z or numbered v5.0.0-beta.N.');
+        expect(verifyJob).toContain('printf \'release_commit=%s\\n\' "$head_commit"');
+        expect(verifyJob).not.toContain('code-memory-link');
+        expect(verifyJob).not.toContain('CANDIDATE_COMMIT');
+        expect(resolveRelease).toBeGreaterThan(0);
+        expect(releaseSmokes).toBeGreaterThan(resolveRelease);
+        expect(verifyJob.indexOf('Validate release tag syntax')).toBeLessThan(
+          verifyJob.indexOf('Verify release tag matches package version'),
+        );
+        expect(verifyJob).not.toContain('release_tag="${{ github.ref_name }}"');
+        expect(verifyJob).not.toContain('.github/release-notes/${{ github.ref_name }}.md');
+        expect(workflow.match(/needs: verify/g)).toHaveLength(3);
+        expect(workflow.match(/name: Select exact verified release source/g)).toHaveLength(3);
+        expect(workflow.match(/RELEASE_COMMIT: \$\{\{ needs\.verify\.outputs\.release_commit \}\}/g)).toHaveLength(3);
+        expect(workflow.match(/ref: \$\{\{ github\.sha \}\}/g)).toHaveLength(5);
+        expect(workflow.match(/persist-credentials: false/g)).toHaveLength(5);
+        expect(workflow).toContain('release_sha: ${{ github.sha }}');
+        expect(publisher).toContain('ref: ${{ inputs.release_sha }}');
+        expect(publisher).toContain('persist-credentials: false');
+        expect(publisher).toContain('refs/tags/${RELEASE_TAG}:refs/threadnote-release-tag');
+        expect(publisher).toContain('remote_tag_commit');
+        expect(publisher).toContain('origin/release/5.0.0 moved after beta verification; refusing publication.');
+        expect(publisher.match(/verify_release_source/g)).toHaveLength(3);
+        expect(publisher).toContain('final practical gate');
+        expect(publisher).toContain('Threadnote 5.0 beta publication freeze');
+        expect(publisher).toContain('repository_is_fork');
+        expect(publisher).toContain("--jq '.fork'");
+        expect(publisher).toContain('ruleset.conditions?.ref_name?.exclude?.length === 0');
+        expect(publisher).toContain('update_allows_fetch_and_merge !== true');
+        expect(publisher).toContain('GitHub omits update parameters when false');
+        expect(publisher).toContain('bypass_actors?.length === 0');
+      }),
   );
 
   it.effect('produces a real embedding on every native release runner before signing or archiving', () =>

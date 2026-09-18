@@ -3,7 +3,7 @@ name: publish-release
 description: Prepare a Threadnote patch release (version bump, curated notes, PR, then tag after merge). Use when cutting 4.6.x, writing .github/release-notes, running release:prepare, or publishing a standalone release.
 ---
 
-# Publish a patch release
+# Publish a release
 
 Authority: `docs/releasing.md`. This skill is the mechanical path only.
 
@@ -22,6 +22,21 @@ bun run release:prepare -- --version X.Y.Z --json
 ```
 
 `--patch` increments the checked-in `package.json` patch. The script refuses missing/invalid notes and does not commit, push, merge, or tag. 3. Commit notes + `package.json` on the release PR. Let CI run the full suite.
+
+## Numbered Threadnote 5 beta
+
+The only supported prerelease is `5.0.0-beta.N` with `N >= 1`; write its matching notes first, then run:
+
+```sh
+bun run release:prepare -- --version 5.0.0-beta.N --dry-run --json
+bun run release:prepare -- --version 5.0.0-beta.N --json
+```
+
+Merge through the protected `release/5.0.0` branch. Immediately before tagging, confirm the reviewed commit is the exact
+current `origin/release/5.0.0` tip, activate the no-bypass `Threadnote 5.0 beta publication freeze` ruleset, then push
+`v5.0.0-beta.N`. Its exact branch target must use the `update` rule with fetch-and-merge disabled. Leave it active until
+the workflow verifies the immutable release, then disable it. The publisher fails closed if it cannot inspect the ruleset
+and rechecks the branch tip immediately before release creation. Never use this path for a stable tag.
 
 ## After merge
 
