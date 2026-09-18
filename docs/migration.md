@@ -7,7 +7,7 @@ For Threadnote 3/OpenViking homes, use the legacy migration below. The websiteâ€
 ## Memory schema v5
 
 Threadnote 5 adds optional `owner` and `review_after` maintenance metadata to memory documents. `owner` is an opaque
-person or team label; `review_after` is an ISO calendar date used by context health. These fields do not alter memory
+person or team label; `review_after` is an ISO calendar date or canonical ISO instant used by context health. These fields do not alter memory
 authority, lifecycle, relations, or code-citation meaning.
 
 Older v4 documents remain readable. The v4-to-v5 migration is deterministic and only upgrades the schema header; it

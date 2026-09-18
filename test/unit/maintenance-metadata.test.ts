@@ -18,7 +18,7 @@ describe('maintenance metadata proposals', () => {
     const target = parseMemoryDocument(URI, original)!;
     const preview = previewMaintenanceMetadataV1([target], URI, {
       owner: null,
-      reviewAfter: '2026-12-01T00:00:00.000Z',
+      reviewAfter: '2026-12-01',
     });
     expect(preview.status).toBe('preview');
     if (preview.status !== 'preview') throw new Error('expected preview');
@@ -35,7 +35,7 @@ describe('maintenance metadata proposals', () => {
     const updated = parseMemoryDocument(URI, applied.content)!;
     expect(updated.body).toBe(target.body);
     expect(updated.metadata.owner).toBeUndefined();
-    expect(updated.content).toContain('review_after: 2026-12-01T00:00:00.000Z');
+    expect(updated.content).toContain('review_after: 2026-12-01');
     expect(updated.content).toContain('valid_to: 2026-11-01T00:00:00.000Z');
     expect(updated.content).toContain('unknown_header: preserved');
     expect(updated.metadata.memoryId).toBe('tn_topic');
@@ -57,8 +57,13 @@ describe('maintenance metadata proposals', () => {
         updatedAt: NOW,
       }),
     ).toMatchObject({code: 'content-changed', status: 'conflict'});
-    expect(previewMaintenanceMetadataV1([source], URI, {reviewAfter: '2026-10-01'})).toMatchObject({
+    expect(previewMaintenanceMetadataV1([source], URI, {reviewAfter: '2026-02-30'})).toMatchObject({
       code: 'invalid-date',
+      message: 'review_after must be an ISO calendar date or canonical ISO instant.',
+    });
+    expect(previewMaintenanceMetadataV1([source], URI, {validTo: '2026-10-01'})).toMatchObject({
+      code: 'invalid-date',
+      message: 'valid_to must be a canonical ISO instant.',
     });
     expect(previewMaintenanceMetadataV1([source], URI, {owner: 'token=super-secret'})).toMatchObject({
       code: 'invalid-owner',
@@ -75,11 +80,23 @@ describe('maintenance metadata proposals', () => {
     });
   });
 
+  it('accepts valid calendar years 0000 and 0099 while rejecting invalid leap days', () => {
+    const source = record();
+    for (const reviewAfter of ['0000-02-29', '0099-12-31']) {
+      expect(previewMaintenanceMetadataV1([source], URI, {reviewAfter})).toMatchObject({status: 'preview'});
+    }
+    for (const reviewAfter of ['0000-02-30', '0099-02-29', '0100-02-29']) {
+      expect(previewMaintenanceMetadataV1([source], URI, {reviewAfter})).toMatchObject({
+        code: 'invalid-date',
+      });
+    }
+  });
+
   it('is deterministically previewed, idempotent after apply, and preserves unrelated metadata for bounded patches', () => {
     fc.assert(
       fc.property(
         fc.option(fc.stringMatching(/^[A-Za-z][A-Za-z0-9 _-]{0,15}$/u), {nil: undefined}),
-        fc.constantFrom<undefined | null | string>(undefined, null, '2026-12-01T00:00:00.000Z'),
+        fc.constantFrom<undefined | null | string>(undefined, null, '2026-12-01', '2026-12-01T00:00:00.000Z'),
         fc.constantFrom<undefined | null | string>(undefined, null, '2027-01-01T00:00:00.000Z'),
         (owner, reviewAfter, validTo) => {
           const source = record({

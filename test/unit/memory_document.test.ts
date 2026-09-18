@@ -7,6 +7,7 @@ import {
   formatMemoryDocument,
   formatMemoryDocumentWithKeywords,
   inferMemoryMetadata,
+  isIsoDateOrCanonicalIsoInstant,
   parseMemoryDocument,
   type MemoryMetadata,
 } from '../../src/memory/document.js';
@@ -294,6 +295,14 @@ describe('memory document contract', () => {
         ['MEMORY', 'kind: durable', 'status: active', 'review_after: 2026-02-30', '', 'Body'].join('\n'),
       )?.metadata.reviewAfter,
     ).toBeUndefined();
+  });
+
+  it('validates four-digit ISO calendar years without Date.UTC century coercion', () => {
+    expect(isIsoDateOrCanonicalIsoInstant('0000-02-29')).toBe(true);
+    expect(isIsoDateOrCanonicalIsoInstant('0099-12-31')).toBe(true);
+    expect(isIsoDateOrCanonicalIsoInstant('0000-02-30')).toBe(false);
+    expect(isIsoDateOrCanonicalIsoInstant('0099-02-29')).toBe(false);
+    expect(isIsoDateOrCanonicalIsoInstant('0100-02-29')).toBe(false);
   });
 
   it('preserves closed errors for malformed, unsupported, and non-canonical schema-v4 citation lines', () => {

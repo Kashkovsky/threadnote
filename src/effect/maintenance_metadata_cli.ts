@@ -19,7 +19,7 @@ export function makeContextMetadataCommand<E, R>(
     clearValidTo: clearFlag('clear-valid-to', 'Explicitly clear valid_to'),
     memoryId: optionalString('memory-id', 'Stable tn_ memory ID; provide exactly one of this or --uri'),
     owner: optionalString('owner', 'Opaque owner label'),
-    reviewAfter: optionalString('review-after', 'Canonical ISO instant'),
+    reviewAfter: optionalString('review-after', 'ISO calendar date or canonical ISO instant'),
     uri: optionalString('uri', 'Canonical memory URI; provide exactly one of this or --memory-id'),
     validTo: optionalString('valid-to', 'Canonical ISO instant'),
   };

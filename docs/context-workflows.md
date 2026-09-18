@@ -286,7 +286,8 @@ owner: platform-team
 review_after: 2026-12-31
 ```
 
-`owner` is an opaque person or team label, not an organization identity. `review_after` is an ISO calendar date. The
+`owner` is an opaque person or team label, not an organization identity. `review_after` is an ISO calendar date or
+canonical ISO instant. The
 fields support health triage; they do not change authority, lifecycle, relation, or code-citation semantics. Existing
 v4 memories remain readable and can be migrated deterministically to v5 without inventing either field. Review or
 retire records explicitly; Threadnote does not silently renew stale knowledge.
