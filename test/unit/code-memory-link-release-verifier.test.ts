@@ -40,6 +40,7 @@ import {
   type CodeMemoryLinkScaleIdentityV1,
 } from '../../src/evaluation/code-memory-link-scale-contract.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {makeIdempotentFixtureTempDirectoryScoped} from '../helpers/fixture-temp-directory.js';
 
 const MANIFEST_HASH = 'a'.repeat(64);
 const EXTERNAL_HASH = 'b'.repeat(64);
@@ -613,10 +614,7 @@ function fixtureRepository(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const root = yield* Effect.acquireRelease(
-      fs.makeTempDirectory({prefix: 'threadnote-code-memory-release-verifier-'}),
-      root => fs.remove(root, {force: true, recursive: true}).pipe(Effect.orDie),
-    );
+    const root = yield* makeIdempotentFixtureTempDirectoryScoped(fs, 'threadnote-code-memory-release-verifier-');
     const approvalsPath = path.join(root, 'src/evaluation/code-memory-link-approvals.json');
     const approvalsLoaderPath = path.join(root, 'src/evaluation/code-memory-link-approvals.ts');
     const packagePath = path.join(root, 'package.json');
