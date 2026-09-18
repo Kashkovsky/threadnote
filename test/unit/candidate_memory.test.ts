@@ -330,6 +330,65 @@ describe('candidate-memory formation', () => {
     });
   });
 
+  it('warns when a handoff replacement would erase most multi-section continuity state', async () => {
+    const targetBody = [
+      '## Current state',
+      '- Release branch and exact head are recorded for the next agent.',
+      '- Runtime ownership and active branch coordination are recorded here.',
+      '- Pull request status still needs a fresh remote check.',
+      '',
+      '## Verification evidence',
+      '- Focused tests, typecheck, lint, and exact-head smoke passed.',
+      '- The retained safety artifact and recovery path are documented.',
+      '',
+      '## Ordered next steps',
+      '- Refresh remote checks before merging.',
+      '- Transfer runtime ownership before the next install.',
+      '- Run final admission only after every slice is complete.',
+    ].join('\n');
+    const review = await run(
+      buildCandidateReview(
+        {
+          ...input,
+          decisions: [],
+          handoff: ['Continue release coordination after the remaining checks finish.'],
+          invariants: [],
+          preferences: [],
+        },
+        [
+          existing({
+            body: targetBody,
+            metadata: {...existing().metadata, kind: 'handoff'},
+            uri: 'threadnote://user/me/memories/handoffs/active/threadnote/recall-memory-formation.md',
+          }),
+        ],
+        new Date('2026-07-23T10:00:00.000Z'),
+      ),
+    );
+
+    const projected = projectKnowledgeDeltaV1(review).items[0]?.mutationPreview.replacementSafety;
+    expect(projected).toMatchObject({
+      acknowledged: false,
+      classification: 'destructive-loss-risk',
+      destructiveLossRisk: true,
+      missingSections: ['Current state', 'Verification evidence', 'Ordered next steps'],
+      requiresExplicitApproval: true,
+      targetNonEmptyLines: 11,
+    });
+    expect(projected?.warning).toContain('Merge continuity-critical detail');
+
+    const edited = projectKnowledgeDeltaV1(review, {
+      bodyText: `${targetBody}\n- Continue release coordination after the remaining checks finish.`,
+      candidateId: review.candidates[0]?.candidateId ?? '',
+      revision: review.revision,
+    }).items[0]?.mutationPreview.replacementSafety;
+    expect(edited).toMatchObject({
+      classification: 'preserving',
+      destructiveLossRisk: false,
+      requiresExplicitApproval: false,
+    });
+  });
+
   it('does not form durable candidates without an evidence pointer', async () => {
     const review = await run(
       buildCandidateReview(

@@ -36,6 +36,10 @@ export function makeCloseoutCommand<E, R>(config: Effect.Effect<RuntimeConfig, E
     'apply',
     {
       action: requiredChoice('action', ['approve', 'defer', 'reject'], 'Explicit candidate decision'),
+      allowDestructiveReplacement: boolean(
+        'allow-destructive-replacement',
+        'Confirm explicit approval to discard substantial current target content',
+      ),
       approved: boolean('approved', 'Confirm explicit user approval before a write'),
       candidateId: requiredString('candidate-id', 'Candidate ID from the review'),
       editedText: optionalString('edited-text', 'Replacement text approved by the user'),

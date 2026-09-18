@@ -49,12 +49,14 @@ import {
 } from '../../memory/read_projection.js';
 import {
   buildCandidateReview,
+  assessReplacementSafety,
   candidateReviewWithAuditEvent,
   candidateReviewWithApplyStage,
   candidateReviewWithApplying,
   candidateReviewWithState,
   loadCandidateReview,
   readActiveProjectMemories,
+  replacementSafetyBaseline,
   saveCandidateReview,
   type CandidateReview,
   type CandidateApplyOperation,
@@ -64,7 +66,7 @@ import {
   validateSessionCloseoutInput,
   withCandidateReviewLock,
 } from '../../memory/candidate.js';
-import {projectKnowledgeDeltaV1} from '../../memory/knowledge_delta.js';
+import {projectKnowledgeDeltaV1, replacementSafetyWarning} from '../../memory/knowledge_delta.js';
 import {recordRecallFeedback} from '../../recall/feedback.js';
 import {AgentResponseBudgetTooSmallError} from '../../evaluation/agent-response.js';
 import {
@@ -295,6 +297,9 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
       description: 'Apply an explicit user decision to one pending candidate with revision checking.',
       inputSchema: {
         action: McpInput.literals(['approve', 'defer', 'reject'], 'User decision'),
+        allowDestructiveReplacement: McpInput.boolean(
+          'Required true only to approve a replacement flagged as destructive content loss',
+        ),
         approved: McpInput.boolean('Required true for approved writes'),
         candidateId: McpInput.string('Candidate ID from review'),
         editedText: McpInput.string('User-edited memory text'),
@@ -304,9 +309,20 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
         revision: McpInput.integer('Review revision', {minimum: 1}),
       },
     },
-    ({action, approved, candidateId, editedText, operation, replaceUri, reviewId, revision}) =>
+    ({
+      action,
+      allowDestructiveReplacement,
+      approved,
+      candidateId,
+      editedText,
+      operation,
+      replaceUri,
+      reviewId,
+      revision,
+    }) =>
       applyMemoryCandidate(config, {
         action,
+        allowDestructiveReplacement,
         approved,
         candidateId,
         editedText,
@@ -320,6 +336,7 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
 
 export interface ApplyMemoryCandidateInput {
   readonly action?: 'approve' | 'defer' | 'reject';
+  readonly allowDestructiveReplacement?: boolean;
   readonly approved?: boolean;
   readonly candidateId?: string;
   readonly editedText?: string;
@@ -335,7 +352,17 @@ interface ApplyMemoryCandidateOptions {
 
 export function applyMemoryCandidate(
   config: RuntimeConfig,
-  {action, approved, candidateId, editedText, operation, replaceUri, reviewId, revision}: ApplyMemoryCandidateInput,
+  {
+    action,
+    allowDestructiveReplacement,
+    approved,
+    candidateId,
+    editedText,
+    operation,
+    replaceUri,
+    reviewId,
+    revision,
+  }: ApplyMemoryCandidateInput,
   options: ApplyMemoryCandidateOptions = {},
 ) {
   const checkedReviewId = requiredText(reviewId, 'apply_memory_candidates', 'reviewId', {
@@ -604,6 +631,11 @@ export function applyMemoryCandidate(
       if (effectiveOperation !== 'replace' && effectiveReplaceUri !== undefined) {
         return argumentError(`Candidate ${candidate.candidateId} cannot use replaceUri without operation=replace.`);
       }
+      if (allowDestructiveReplacement === true && effectiveOperation !== 'replace') {
+        return argumentError(
+          `Candidate ${candidate.candidateId} cannot allow a destructive replacement without operation=replace.`,
+        );
+      }
       const targetUri = effectiveOperation === 'replace' ? reviewedTargetUri : undefined;
       if (targetUri && isSharedMemoryUri(targetUri)) {
         return argumentError(
@@ -613,6 +645,30 @@ export function applyMemoryCandidate(
       if (targetUri) {
         if (!candidate.targetContentHash) {
           return argumentError(`Candidate ${candidate.candidateId} has no reviewed content hash for ${targetUri}.`);
+        }
+      }
+      const destructiveReplacementApproved =
+        candidate.applyAllowDestructiveReplacement === true || allowDestructiveReplacement === true;
+      if (targetUri && candidate.targetContentHash) {
+        const [currentTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
+        const currentTargetHash = currentTarget
+          ? yield* sha256Hex(canonicalMemoryDocumentContent(currentTarget.content))
+          : undefined;
+        if (!currentTarget || currentTargetHash !== candidate.targetContentHash) {
+          return argumentError(
+            `Candidate ${candidate.candidateId} replacement target changed or disappeared after review. Review it again before applying.`,
+          );
+        }
+        const replacementSafety = assessReplacementSafety(
+          candidate.kind,
+          replacementSafetyBaseline(currentTarget.body),
+          scrub.cleaned,
+        );
+        if (replacementSafety.destructiveLossRisk && !destructiveReplacementApproved) {
+          return argumentError(
+            `${replacementSafetyWarning(replacementSafety)} Read ${targetUri}, then either supply editedText that preserves ` +
+              'the needed state or retry with allowDestructiveReplacement=true after explicit approval.',
+          );
         }
       }
       const approvedOperation: CandidateApplyOperation = effectiveOperation ?? 'create';
@@ -640,6 +696,7 @@ export function applyMemoryCandidate(
               review,
               candidate.candidateId,
               {
+                allowDestructiveReplacement: destructiveReplacementApproved,
                 bodyText: scrub.cleaned,
                 contentHash: approvedContentHash,
                 operation: approvedOperation,
@@ -1608,6 +1665,11 @@ function scrubSessionCloseout(
 
 function candidateReviewResult(review: CandidateReview): CallToolResult {
   const actionable = review.candidates.filter(candidate => candidate.recommendation !== 'no_action');
+  const replacementWarnings = new Map(
+    projectKnowledgeDeltaV1(review)
+      .items.filter(item => item.mutationPreview.replacementSafety?.warning)
+      .map(item => [item.candidateId, item.mutationPreview.replacementSafety?.warning]),
+  );
   const lines =
     review.candidates.length === 0
       ? ['No additional memory candidates found in this task closeout. No candidate memory was written.']
@@ -1621,6 +1683,9 @@ function candidateReviewResult(review: CandidateReview): CallToolResult {
                 `${index + 1}. [${candidate.recommendation}] ${candidate.kind}/${candidate.topic} · ${candidate.reason}\n` +
                 `   candidate: ${candidate.candidateId}` +
                 (candidate.targetUri ? `\n   target: ${candidate.targetUri}` : '') +
+                (replacementWarnings.get(candidate.candidateId)
+                  ? `\n   WARNING: ${replacementWarnings.get(candidate.candidateId)}`
+                  : '') +
                 `\n${candidate.proposedText
                   .split('\n')
                   .map(line => `   ${line}`)

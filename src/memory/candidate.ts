@@ -49,6 +49,7 @@ export interface StructuredCloseoutV1 {
 }
 
 export interface MemoryCandidate {
+  readonly applyAllowDestructiveReplacement?: boolean;
   readonly applyApprovedAt?: string;
   readonly applyBodyText?: string;
   readonly applyContentHash?: string;
@@ -66,10 +67,30 @@ export interface MemoryCandidate {
   readonly proposedText: string;
   readonly reason: string;
   readonly recommendation: CandidateRecommendation;
+  readonly replacementSafetyBaseline?: ReplacementSafetyBaselineV1;
   readonly state: CandidateReviewState;
   readonly targetContentHash?: string;
   readonly targetUri?: string;
   readonly topic: string;
+}
+
+export interface ReplacementSafetyBaselineV1 {
+  readonly bodyCharacters: number;
+  readonly nonEmptyLines: number;
+  readonly sectionHeadings: readonly string[];
+  readonly sectionListTruncated: boolean;
+  readonly version: 1;
+}
+
+export interface ReplacementSafetyAssessmentV1 {
+  readonly destructiveLossRisk: boolean;
+  readonly missingSections: readonly string[];
+  readonly proposedBodyCharacters: number;
+  readonly proposedNonEmptyLines: number;
+  readonly retainedCharacterRatio: number;
+  readonly retainedLineRatio: number;
+  readonly targetBodyCharacters: number;
+  readonly targetNonEmptyLines: number;
 }
 
 export interface CandidateReview {
@@ -128,6 +149,7 @@ const MAX_CLOSEOUT_EVIDENCE_POINTERS = 32;
 const MAX_CLOSEOUT_TOTAL_BYTES = 64 * 1_024;
 const MAX_STRUCTURED_CLOSEOUT_ITEMS = MAX_CLOSEOUT_ITEMS_PER_FIELD;
 const MAX_EXACT_DURABLE_CANDIDATE_BYTES = 60 * 1_024;
+const MAX_REPLACEMENT_BASELINE_SECTIONS = 32;
 const TERMINAL_REVIEW_RETENTION_MILLISECONDS = 30 * 24 * 60 * 60 * 1_000;
 const CANDIDATE_LOCK_STALE_MILLISECONDS = 5 * 60 * 1_000;
 const CANDIDATE_LOCK_RETRY_MILLISECONDS = 25;
@@ -243,6 +265,7 @@ export function candidateReviewWithApplying(
   review: CandidateReview,
   candidateId: string,
   apply: {
+    readonly allowDestructiveReplacement: boolean;
     readonly bodyText: string;
     readonly contentHash: string;
     readonly operation: CandidateApplyOperation;
@@ -258,6 +281,7 @@ export function candidateReviewWithApplying(
         candidate.candidateId === candidateId
           ? {
               ...candidate,
+              ...(apply.allowDestructiveReplacement ? {applyAllowDestructiveReplacement: true} : {}),
               applyApprovedAt: at,
               applyBodyText: apply.bodyText,
               applyContentHash: apply.contentHash,
@@ -670,12 +694,86 @@ const compareCandidate = Effect.fn('candidate.compare')(function* (
     proposedText: draft.proposedText,
     reason: comparisonReason(comparison),
     recommendation,
+    ...(target ? {replacementSafetyBaseline: replacementSafetyBaseline(target.body)} : {}),
     state: 'pending',
     targetContentHash: target ? yield* sha256Hex(canonicalMemoryDocumentContent(target.content)) : undefined,
     targetUri: target?.uri,
     topic: input.topic,
   } satisfies MemoryCandidate;
 });
+
+export function replacementSafetyBaseline(body: string): ReplacementSafetyBaselineV1 {
+  const normalizedBody = body.trim();
+  const sections = sectionHeadings(normalizedBody);
+  return {
+    bodyCharacters: normalizedBody.length,
+    nonEmptyLines: nonEmptyLineCount(normalizedBody),
+    sectionHeadings: sections.slice(0, MAX_REPLACEMENT_BASELINE_SECTIONS),
+    sectionListTruncated: sections.length > MAX_REPLACEMENT_BASELINE_SECTIONS,
+    version: 1,
+  };
+}
+
+export function assessReplacementSafety(
+  kind: MemoryCandidate['kind'],
+  target: ReplacementSafetyBaselineV1,
+  proposedBody: string,
+): ReplacementSafetyAssessmentV1 {
+  const proposed = replacementSafetyBaseline(proposedBody);
+  const retainedCharacterRatio = retainedRatio(proposed.bodyCharacters, target.bodyCharacters);
+  const retainedLineRatio = retainedRatio(proposed.nonEmptyLines, target.nonEmptyLines);
+  const proposedSections = new Set(proposed.sectionHeadings.map(normalizedSectionKey));
+  const missingSections = target.sectionHeadings.filter(
+    section => !proposedSections.has(normalizedSectionKey(section)),
+  );
+  const ratioThreshold = kind === 'handoff' ? 0.7 : 0.5;
+  const removedCharacters = Math.max(0, target.bodyCharacters - proposed.bodyCharacters);
+  const materialTarget = target.bodyCharacters >= 256 || target.nonEmptyLines >= 8;
+  const materialLoss = removedCharacters >= 256;
+  const losesMostCharacters = retainedCharacterRatio < ratioThreshold;
+  const losesMostLines = target.nonEmptyLines >= 8 && retainedLineRatio < ratioThreshold;
+  const losesMultipleSections = target.sectionHeadings.length >= 2 && missingSections.length >= 2 && materialLoss;
+  return {
+    destructiveLossRisk:
+      materialTarget && materialLoss && (losesMostCharacters || losesMostLines || losesMultipleSections),
+    missingSections,
+    proposedBodyCharacters: proposed.bodyCharacters,
+    proposedNonEmptyLines: proposed.nonEmptyLines,
+    retainedCharacterRatio,
+    retainedLineRatio,
+    targetBodyCharacters: target.bodyCharacters,
+    targetNonEmptyLines: target.nonEmptyLines,
+  };
+}
+
+function retainedRatio(proposed: number, target: number): number {
+  return target === 0 ? 1 : Math.min(1, proposed / target);
+}
+
+function sectionHeadings(body: string): readonly string[] {
+  const seen = new Set<string>();
+  const sections: string[] = [];
+  for (const line of body.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    const section =
+      /^#{1,6}\s+(.+?)\s*#*\s*$/u.exec(trimmed)?.[1]?.trim() ??
+      (/^[^\s].{0,118}:$/u.test(trimmed) && !/^[-*+]\s/u.test(trimmed) ? trimmed.slice(0, -1).trim() : undefined);
+    if (!section) continue;
+    const key = normalizedSectionKey(section);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sections.push(section);
+  }
+  return sections;
+}
+
+function normalizedSectionKey(section: string): string {
+  return section.replace(/\s+/gu, ' ').trim().toLocaleLowerCase('en-US');
+}
+
+function nonEmptyLineCount(body: string): number {
+  return body.split(/\r?\n/u).filter(line => line.trim().length > 0).length;
+}
 
 function classifyComparison(
   proposedText: string,
