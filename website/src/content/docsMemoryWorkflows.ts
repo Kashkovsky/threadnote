@@ -250,7 +250,7 @@ threadnote seed`,
       body: [
         {
           type: 'paragraph',
-          text: 'A workset is a named list of projects from ~/.threadnote/seed-manifest.yaml. Recall searches durable memories and seeded guidance across that scope. Workset Search 2.0 searches current source differently: it routes normal task text through one disposable catalog derived from exact per-repository ready snapshots, globally ranks candidates, and opens only the strongest repository graphs for bounded deep reads.',
+          text: 'A workset is a named list of configured projects. Use the CLI for the ordinary definition lifecycle; recall searches durable memories and seeded guidance across that scope. Workset Search 2.0 searches current source differently: it routes normal task text through one disposable catalog derived from exact per-repository ready snapshots, globally ranks candidates, and opens only the strongest repository graphs for bounded deep reads.',
         },
         {
           type: 'note',
@@ -258,35 +258,50 @@ threadnote seed`,
         },
         {
           type: 'heading',
-          text: '1. Define and verify the workset',
-        },
-        {
-          type: 'code',
-          language: 'yaml',
-          code: `version: 1
-projects:
-  - name: checkout-api
-    path: ~/src/checkout-api
-    uri: threadnote://resources/repos/checkout-api
-    seed: []
-  - name: checkout-web
-    path: ~/src/checkout-web
-    uri: threadnote://resources/repos/checkout-web
-    seed: []
-worksets:
-  - name: checkout
-    description: Checkout API and client
-    projects: [checkout-api, checkout-web]`,
+          text: '1. Create and maintain the workset',
         },
         {
           type: 'code',
           language: 'sh',
-          code: `threadnote workset list
-threadnote workset show checkout`,
+          code: `threadnote workset create checkout \\
+  --project checkout-api \\
+  --project checkout-web \\
+  --description "Checkout API and client"
+threadnote workset list --json
+threadnote workset show checkout --json
+
+# Omitted update fields are preserved; repeated --project replaces membership.
+threadnote workset update checkout --name checkout-platform \\
+  --description "Checkout platform" \\
+  --project checkout-api --project checkout-web --json
+
+threadnote workset prepare checkout-platform --json
+threadnote workset status checkout-platform --json`,
+        },
+        {
+          type: 'code',
+          language: 'yaml',
+          code: `# Advanced/manual option: define repository projects and the Workset together.
+version: 1
+projects:
+  - name: checkout-api
+    path: ~/src/checkout-api
+    uri: threadnote://resources/repos/checkout-api
+    seed:
+      - docs/adr/**/*.md
+  - name: checkout-web
+    path: ~/src/checkout-web
+    uri: threadnote://resources/repos/checkout-web
+    seed:
+      - AGENTS.md
+worksets:
+  - name: checkout-platform
+    description: Checkout platform
+    projects: [checkout-api, checkout-web]`,
         },
         {
           type: 'paragraph',
-          text: 'Each workset member names a top-level project. Matching is case-insensitive. Unknown project names remain explicit unresolved members, so use workset show before preparation and treat its resolved membership as the intended scope.',
+          text: 'Configure repository projects first in Manager or the seed manifest; the YAML block above is a complete manual alternative to the CLI sequence. Each Workset member names one of those top-level projects. Matching is case-insensitive. Unknown project names remain explicit unresolved members, so use workset show before preparation and treat its resolved membership as the intended scope. Use --clear-description to remove a description. Every definition command also accepts --json for automation.',
         },
         {
           type: 'heading',
@@ -297,12 +312,12 @@ threadnote workset show checkout`,
           language: 'sh',
           code: `# Read-only: compare the manifest, current ready snapshots, catalog generation,
 # and cross-repository bridge receipt. This never starts indexing.
-threadnote workset status checkout
-threadnote workset status checkout --json
+threadnote workset status checkout-platform
+threadnote workset status checkout-platform --json
 
 # Explicit cold-build and refresh path. Default concurrency is 2; maximum is 8.
-threadnote workset prepare checkout --concurrency 4
-threadnote workset prepare checkout --json`,
+threadnote workset prepare checkout-platform --concurrency 4
+threadnote workset prepare checkout-platform --json`,
         },
         {
           type: 'warning',
@@ -328,11 +343,11 @@ threadnote workset prepare checkout --json`,
           type: 'code',
           language: 'sh',
           code: `# Historical decisions, handoffs, and seeded guidance across the workset.
-threadnote recall --query "payment retry contract" --workset checkout
+threadnote recall --query "payment retry contract" --workset checkout-platform
 
 # Current-source evidence, globally ranked across the published generation.
 threadnote graph query \\
-  --workset checkout \\
+  --workset checkout-platform \\
   --query "payment retry contract" \\
   --budget-tokens 1250 \\
   --node-limit 20 \\
@@ -340,7 +355,7 @@ threadnote graph query \\
 
 # JSON includes the V2 evidence cards, coverage receipt, generation, and cursor.
 threadnote graph query \\
-  --workset checkout \\
+  --workset checkout-platform \\
   --query "payment retry contract" \\
   --budget-tokens 1250 \\
   --json`,
@@ -371,7 +386,7 @@ threadnote graph query \\
           code: `{
   "operation": "query",
   "callerCwd": "/workspace/checkout-api",
-  "workset": "checkout",
+  "workset": "checkout-platform",
   "query": "payment retry contract",
   "budgetTokens": 1250,
   "nodeLimit": 20,
@@ -449,7 +464,7 @@ threadnote graph query \\
           language: 'sh',
           code: `# Continue the persisted globally ranked sequence. No query is required.
 threadnote graph query \\
-  --workset checkout \\
+  --workset checkout-platform \\
   --cursor cgwc_… \\
   --budget-tokens 1250 \\
   --json
@@ -523,7 +538,7 @@ threadnote graph neighbors \\
           language: 'sh',
           code: `# Symbol endpoints come from workset query cards.
 threadnote graph path \\
-  --workset checkout \\
+  --workset checkout-platform \\
   --from cgr_… \\
   --to cgr_… \\
   --depth 6 \\
@@ -532,7 +547,7 @@ threadnote graph path \\
 
 # Reverse impact starts from a repository-qualified symbol or component.
 threadnote graph impact \\
-  --workset checkout \\
+  --workset checkout-platform \\
   --query cgr_… \\
   --depth 6 \\
   --edge-limit 100 \\
@@ -540,12 +555,12 @@ threadnote graph impact \\
 
 # An npm package component endpoint uses <repository-key>:<component-id>.
 threadnote graph impact \\
-  --workset checkout \\
+  --workset checkout-platform \\
   --query checkout-api:cgp_… \\
   --json
 
 # Bounded repository/package topology for the complete published bridge set.
-threadnote graph topology --workset checkout --json`,
+threadnote graph topology --workset checkout-platform --json`,
         },
         {
           type: 'code',
@@ -553,7 +568,7 @@ threadnote graph topology --workset checkout --json`,
           code: `{
   "operation": "path",
   "callerCwd": "/workspace/checkout-api",
-  "workset": "checkout",
+  "workset": "checkout-platform",
   "from": "cgr_…",
   "to": "cgr_…",
   "depth": 6,
@@ -566,7 +581,7 @@ threadnote graph topology --workset checkout --json`,
           code: `{
   "operation": "impact",
   "callerCwd": "/workspace/checkout-api",
-  "workset": "checkout",
+  "workset": "checkout-platform",
   "query": "checkout-api:cgp_…",
   "depth": 6,
   "edgeLimit": 100
@@ -578,7 +593,7 @@ threadnote graph topology --workset checkout --json`,
           code: `{
   "operation": "topology",
   "callerCwd": "/workspace/checkout-api",
-  "workset": "checkout",
+  "workset": "checkout-platform",
   "nodeLimit": 128,
   "edgeLimit": 256
 }`,
@@ -620,7 +635,7 @@ threadnote context brief \\
 # Prepared workset scope.
 threadnote context brief \\
   --task "Trace checkout retries across the API, client, and shared contracts" \\
-  --workset checkout \\
+  --workset checkout-platform \\
   --mode trace \\
   --budget-tokens 1250 \\
   --json`,
@@ -708,7 +723,21 @@ threadnote context brief \\
         },
         {
           type: 'heading',
-          text: '11. Troubleshooting',
+          text: '11. Remove the definition when it is no longer needed',
+        },
+        {
+          type: 'code',
+          language: 'sh',
+          code: `# Deletion is explicit and removes only the Workset definition.
+threadnote workset delete checkout-platform --confirm --json`,
+        },
+        {
+          type: 'paragraph',
+          text: 'Deleting a Workset does not delete repository graphs, canonical memories, or project definitions. Omit this cleanup step when the team will keep using the Workset.',
+        },
+        {
+          type: 'heading',
+          text: '12. Troubleshooting',
         },
         {
           type: 'table',

@@ -2,6 +2,7 @@ import {DateTime, Effect, FileSystem} from 'effect';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {readMemoryRecordsByUri, writeMemoryContentWithExpectedHash} from '../mcp/server/memory.js';
+import {refreshRecallDerivedIndexesAfterCanonicalMutation} from '../recall/mcp_refresh.js';
 import type {RuntimeConfig} from '../types.js';
 import {readMaintenanceMemoryRecords} from './maintenance_records.js';
 import {
@@ -48,7 +49,7 @@ export const applyMaintenanceMetadata = Effect.fn('memory.maintenanceMetadata.ap
     };
   }
   const fs = yield* FileSystem.FileSystem;
-  return yield* withMemoryUriLocks(
+  const result = yield* withMemoryUriLocks(
     fs,
     config.agentContextHome,
     [preview.proposal.targetUri],
@@ -81,6 +82,10 @@ export const applyMaintenanceMetadata = Effect.fn('memory.maintenanceMetadata.ap
       return result;
     }),
   );
+  if (result.status === 'applied') {
+    yield* refreshRecallDerivedIndexesAfterCanonicalMutation(config, [preview.proposal.targetUri]);
+  }
+  return result;
 });
 
 export const runMaintenanceMetadataPreview = Effect.fn('memory.maintenanceMetadata.previewCommand')(function* (
