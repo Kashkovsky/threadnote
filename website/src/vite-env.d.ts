@@ -10,6 +10,11 @@ declare module 'virtual:threadnote-release-notes' {
   export default releases;
 }
 
+declare module 'virtual:threadnote-latest-release' {
+  const release: Pick<import('../../scripts/site-release-notes').WebsiteRelease, 'headline' | 'version'> | undefined;
+  export default release;
+}
+
 declare module 'virtual:threadnote-articles' {
   const articles: readonly import('./content/websiteArticles').WebsiteArticle[];
   export default articles;
