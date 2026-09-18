@@ -87,11 +87,9 @@ describe('release tooling CLI help contract', () => {
   });
 
   it('documents the heavy-tail child output option', async () => {
-    const result = await execFilePromise(
-      process.execPath,
-      ['scripts/benchmark-code-graph-heavy-tail.ts', '--help'],
-      {cwd: process.cwd()},
-    );
+    const result = await execFilePromise(process.execPath, ['scripts/benchmark-code-graph-heavy-tail.ts', '--help'], {
+      cwd: process.cwd(),
+    });
     expect(result.stdout).toContain(
       'Child options: --child --repository <path> --home <path> --profile-file <json> --output <json>',
     );
