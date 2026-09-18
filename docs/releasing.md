@@ -358,6 +358,49 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    a passing fallback does not claim full 73,000-file attainment. Use a separately governed capable environment when
    full-shape evidence is needed. Do not dispatch a duplicate hosted run for a tag; the event SHA must match the
    exact tagged checkout for governed release evidence.
+   Hosted GitHub Actions heavy-tail artifacts are explicitly `correctness-only`; they must never be treated as
+   performance evidence. Final release readiness additionally requires a fresh, exactly three-run governed heavy-tail
+   ratchet on the matching local release runner, with every run from the same clean frozen candidate **C** and the
+   checked numeric thresholds unchanged. Bind the capture to an explicit non-fallback runner class and stable local
+   runner identity; `local-unclassified` and `local` are release-ineligible. The independently chosen release window
+   below admits evidence at the exact not-before, maximum-age, maximum-span, and future-skew boundaries, and the output
+   retains all five policy values. Generate it only after the three runs complete and retain the inputs for replay:
+
+   ```sh
+   export THREADNOTE_BENCHMARK_RUNNER_CLASS=apple-m1-max-64g-internal
+   export THREADNOTE_BENCHMARK_RUNNER_ID=local-apple-m1-max
+   RELEASE_NOT_BEFORE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+   for run in 1 2 3; do
+     bun run bench:code-graph:heavy-tail -- --governed \
+       --candidate-commit <candidate-sha> \
+       --evidence-class governed-performance \
+       --ratchet test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json \
+       --output artifacts/heavy-tail-<candidate-sha>-$run.json
+   done
+   RELEASE_OBSERVED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+   bun run bench:code-graph:heavy-tail:ratchet -- \
+     --candidate-commit <candidate-sha> \
+     --runner-class "$THREADNOTE_BENCHMARK_RUNNER_CLASS" \
+     --runner-identity "$THREADNOTE_BENCHMARK_RUNNER_ID" \
+     --ratchet test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json \
+     --release-not-before "$RELEASE_NOT_BEFORE" \
+     --release-observed-at "$RELEASE_OBSERVED_AT" \
+     --maximum-evidence-age-ms 86400000 \
+     --maximum-run-span-ms 21600000 \
+     --future-skew-ms 300000 \
+     --output artifacts/heavy-tail-ratchet-<candidate-sha>.json \
+     artifacts/heavy-tail-<candidate-sha>-1.json \
+     artifacts/heavy-tail-<candidate-sha>-2.json \
+     artifacts/heavy-tail-<candidate-sha>-3.json
+   ```
+
+   The generator strictly validates the outer assertions, storage, managed exact-HEAD runtime provenance, and every
+   duplicated embedded binding before admission. It enforces every source run against the checked ratchet and rejects
+   a generated numeric bound that is weaker than the checked bound. A hosted run, a correctness-only artifact, a
+   fourth sample, a mismatched candidate or runner identity, an out-of-window timestamp, or a changed threshold policy
+   is release-ineligible. This ratchet covers parser/cache heavy-tail behavior only; production-scale materialization
+   still requires the unchanged 73,000-file / 59,936-eligible production-large shape contract below.
+
 6. Confirm immutable releases are enabled, the Apple signing secrets below are configured, the protected-main ruleset
    still requires signed linear reviewed merges, and an active `v*` tag ruleset forbids tag updates and deletion. The
    workflow can compare the pushed tag, exact checkout, protected-main ancestry, and remote tag peel; repository tag
