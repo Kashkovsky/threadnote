@@ -38,6 +38,7 @@ import {
   writeRemoteMemoryExportBundle,
 } from './operator_files.js';
 import {PostgresRemoteMemoryOperatorAdapter} from './operator_postgres.js';
+import {runOperationsFileCommand} from './operations_operator.js';
 
 const Identifier = Schema.String.check(
   Schema.isMinLength(1),
@@ -241,6 +242,9 @@ export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(fu
     return 0;
   }
   return yield* Effect.gen(function* () {
+    if (command.startsWith('operations-')) {
+      return yield* runOperationsFileCommand(command, rest);
+    }
     const databaseUrl = operatorDatabaseUrl(environment.THREADNOTE_REMOTE_DATABASE_URL);
     const contextHealthEvaluationKey =
       command === 'health-run' || command === 'health-cycle'
@@ -372,6 +376,21 @@ export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(fu
               JSON.stringify({bundleDigest: plan.bundleDigest, files: plan.files.length, version: plan.version}),
             );
             return 0;
+          }
+          if (command === 'ci-control') {
+            rejectOptions(options, ['input', 'receipt']);
+            if (!adapter.capabilities.available.includes('manage_context_ci') || !adapter.controlContextCi) {
+              return yield* operatorInvocationError('Hosted Context CI control is unavailable.');
+            }
+            const input = yield* readOperatorJson<unknown>(requiredOption(options, 'input'));
+            const receipt = yield* operatorPromise(() =>
+              adapter.controlContextCi!(input, environment.THREADNOTE_CONTEXT_CI_WEBHOOK_KEY),
+            );
+            yield* writeOperatorJsonExclusive(requiredOption(options, 'receipt'), receipt);
+            yield* Console.log(JSON.stringify(receipt));
+            return isJsonRecord(receipt) && ['denied', 'queue-full', 'rate-limited'].includes(String(receipt.status))
+              ? 2
+              : 0;
           }
           if (command === 'health-schedule') {
             rejectOptions(options, ['input', 'receipt']);
@@ -708,6 +727,10 @@ function operatorHelp(): string {
     'Database credentials are accepted only through THREADNOTE_REMOTE_DATABASE_URL.',
     '  migrate',
     '  capabilities',
+    '  operations-plan --input <draft.json> --output <manifest.json>',
+    '  operations-template --manifest <manifest.json> --drill <opaque-id> --target <opaque-id> --output <evidence.json>',
+    '  operations-verify --manifest <manifest.json> --evidence <evidence.json> --at <ISO timestamp> --receipt <new.json>',
+    '  operations-receipt-verify --manifest <manifest.json> --evidence <evidence.json> --at <ISO timestamp> --receipt <existing.json>',
     '  provision --input <json>',
     '  provision-plan --input <json> --output <plan.json> [--for-apply]',
     '  provision-apply --plan <plan.json> --receipt <receipt.json>',
@@ -715,6 +738,7 @@ function operatorHelp(): string {
     '    --alias-compatibility-ends-at <ISO timestamp> --output <plan.json> [--projects <csv>] [--for-apply]',
     '  import-apply --source <git-share> --user <id> --team <team> --plan <plan.json> --receipt <json>',
     '  export --share <id> --output <new-directory>',
+    '  ci-control --input <action.json> --receipt <receipt.json>',
     '  health-schedule-plan --input <json> --output <plan.json>',
     '  health-schedule --input <json> --receipt <receipt.json>',
     '  health-run --input <immutable-evidence.json> --receipt <receipt.json>',

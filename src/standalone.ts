@@ -457,7 +457,14 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
     import('./effect/cli.js'),
     import('./threadnote.js'),
   ]);
-  const cliOperation = inspectCliInvocation(arguments_).operation;
+  const invocation = inspectCliInvocation(arguments_);
+  if (invocation.offline === true) {
+    const {withPilotDiagnostics} = await import('./value_report/pilot_commands.js');
+    return Effect.scoped(withCliOutputConsole(withPilotDiagnostics(cliEffect(arguments_)))).pipe(
+      Effect.provide(runtime.ApplicationLayer),
+    );
+  }
+  const cliOperation = invocation.operation;
   const processRole = cliOperation === 'manage' ? 'manager' : 'cli';
   const processOperation = cliOperation === 'manage' ? 'manager-ui' : cliOperation;
   const isStaticVersionRequest = arguments_.length === 1 && (arguments_[0] === '--version' || arguments_[0] === '-v');

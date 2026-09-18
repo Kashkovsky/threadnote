@@ -72,7 +72,7 @@ postgresDescribe('remote runtime database privilege preflight', () => {
       new PostgresRemoteMemoryOperatorAdapter(fixture.sql).assertContextHealthWorkerPrivileges(),
     ).rejects.toMatchObject({details: {reason: 'unsafe_context_health_worker_database_role'}});
     const receipt = await new PostgresRemoteMemoryOperatorAdapter(fixture.migratorSql).migrateSchema();
-    expect(receipt.readyVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(receipt.readyVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
   it('rejects the schema owner and the bootstrap superuser', async () => {
