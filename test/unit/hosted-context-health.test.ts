@@ -209,11 +209,18 @@ describe('hosted organization context health', () => {
   it('cryptographically binds results and counts to one claim and audience', () => {
     const input = runInput();
     expect(() => verifyHostedContextHealthEvaluationV1(input, evaluationKey)).not.toThrow();
+    expect(() =>
+      verifyHostedContextHealthEvaluationV1({...input, signals: {...input.signals, citationCurrent: 3}}, evaluationKey),
+    ).not.toThrow();
     fc.assert(
       fc.property(
-        fc.constantFrom(...(Object.keys(input.signals) as (keyof typeof input.signals)[])),
-        fc.integer({min: 1, max: 10_000}),
-        (signal, count) => {
+        fc.constantFrom(...(Object.keys(input.signals) as (keyof typeof input.signals)[])).chain(signal =>
+          fc
+            .integer({min: 0, max: 10_000})
+            .filter(count => count !== input.signals[signal])
+            .map(count => [signal, count] as const),
+        ),
+        ([signal, count]) => {
           expect(() =>
             verifyHostedContextHealthEvaluationV1(
               {...input, signals: {...input.signals, [signal]: count}},
