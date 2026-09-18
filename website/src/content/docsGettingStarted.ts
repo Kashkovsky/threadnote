@@ -24,7 +24,7 @@ threadnote setup <surface> --apply`,
     },
     {
       type: 'paragraph',
-      text: 'Choose a surface from `threadnote agents list`. A surface is simply a coding agent or agent environment. Run setup from the repository you want Threadnote to understand. The first command is a read-only preview; `--apply` performs that plan.',
+      text: 'A coding-agent environment is the editor, CLI, or hosted integration where an agent works; the catalog calls that declared integration a surface. Choose one from `threadnote agents list`, then run setup from the repository you want Threadnote to understand. The first command is a read-only preview; `--apply` performs that plan.',
     },
     {
       type: 'heading',
@@ -114,6 +114,71 @@ threadnote setup <surface> --undo --apply`,
     {
       type: 'note',
       text: 'For individual use, see [Personal Cursor Cloud setup](personal-cursor-cloud/): one personal stdio MCP can expose one or more private Git memory shares and bootstrap installs Cloud-specific Cursor skills.',
+    },
+  ],
+};
+
+export const firstWorkflowDocsArticle: DocsArticle = {
+  id: 'first-workflow',
+  title: 'Work one task with evidence',
+  summary: 'Start with a Context Brief, verify exact local evidence, and close with reviewed knowledge.',
+  body: [
+    {
+      type: 'heading',
+      text: 'Start the task',
+    },
+    {
+      type: 'list',
+      items: [
+        'Ask for a Context Brief with the task, stable project, absolute callerCwd, and any known current-code anchors.',
+        'Read selected `threadnote://` pointers before relying on them; a ranked pointer is not evidence by itself.',
+        'Use exact files and `inspect_code_graph` for current-source claims. The graph is the current-code verification engine, and the local worktree wins over historical context.',
+        'At closeout, write the required handoff and review the Knowledge Delta before applying reusable durable knowledge.',
+      ],
+    },
+    {
+      type: 'heading',
+      text: 'A compact CLI version',
+    },
+    {
+      type: 'code',
+      language: 'sh',
+      code: `threadnote context brief \\
+  --task "Continue the mobile auth rollout" \\
+  --project mobile \\
+  --budget-tokens 1250
+threadnote graph query --query "refresh token boundary"
+threadnote handoff --project mobile --topic auth-rollout \\
+  --task "Finish refresh-token rollout" \\
+  --tests "bun test auth" \\
+  --next-step "Update the iOS caller"`,
+    },
+    {
+      type: 'paragraph',
+      text: 'Then create a review from the coding-agent integration. The result creates the review ID and revision used by the following closeout preview.',
+    },
+    {
+      type: 'code',
+      language: 'json',
+      code: `{
+  "tool": "review_session_context",
+  "arguments": {
+    "task": "Finish refresh-token rollout",
+    "outcome": "Completed the current task and recorded its checks.",
+    "project": "mobile",
+    "evidence": ["focused auth tests passed"]
+  }
+}`,
+    },
+    {
+      type: 'code',
+      language: 'sh',
+      code: `# Copy review ID and revision from the review result.
+threadnote closeout preview --review-id <review-id>`,
+    },
+    {
+      type: 'note',
+      text: 'Use a stable project/topic pair and replace the existing active record. Timestamped duplicates make currentness harder to judge and should be reserved for historical records.',
     },
   ],
 };
