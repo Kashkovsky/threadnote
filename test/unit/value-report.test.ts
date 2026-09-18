@@ -2,7 +2,7 @@ import {describe, expect, it} from 'vitest';
 import * as FC from 'fast-check';
 import {aggregateValueReportV1, parseValueReportV1, type ValueReportInputV1} from '../../src/value_report/index.js';
 import {summarizeLocalValueEvents, type LocalValueEventV1} from '../../src/value_report/events.js';
-import type {RecallFeedbackEvent} from '../../src/recall/feedback.js';
+import {summarizeRecallFeedback, type RecallFeedbackEvent} from '../../src/recall/feedback.js';
 
 const feedbackEvent = (action: RecallFeedbackEvent['action'], timestamp: string): RecallFeedbackEvent => ({
   action,
@@ -166,6 +166,61 @@ describe('value report', () => {
         );
       }),
       {numRuns: 40},
+    );
+  });
+
+  it('selects feedback by project and inclusive period boundaries', () => {
+    const from = new Date('2026-09-10T00:00:00.000Z');
+    const to = new Date('2026-09-20T00:00:00.000Z');
+    const actions = ['applied', 'dismiss', 'pin', 'useful', 'wrong'] as const;
+    const projects = [undefined, 'local-project', 'other-project'] as const;
+    const timestamps = [
+      '2026-09-09T23:59:59.999Z',
+      from.toISOString(),
+      '2026-09-15T00:00:00.000Z',
+      to.toISOString(),
+      '2026-09-20T00:00:00.001Z',
+    ] as const;
+
+    FC.assert(
+      FC.property(
+        FC.array(
+          FC.record({
+            action: FC.constantFrom(...actions),
+            project: FC.constantFrom(...projects),
+            timestamp: FC.constantFrom(...timestamps),
+          }),
+          {maxLength: 40},
+        ),
+        selections => {
+          const events = selections.map((selection, index): RecallFeedbackEvent => ({
+            ...selection,
+            queryFingerprint: 'a'.repeat(64),
+            rankerVersion: 'test',
+            uri: `threadnote://private/${index}`,
+            version: 1,
+          }));
+          const expected = Object.fromEntries(actions.map(action => [action, 0])) as Record<
+            (typeof actions)[number],
+            number
+          >;
+          for (const event of events) {
+            const timestamp = Date.parse(event.timestamp);
+            const projectMatches =
+              event.action === 'pin'
+                ? event.project === 'local-project'
+                : event.project === undefined || event.project === 'local-project';
+            if (projectMatches && timestamp >= from.getTime() && timestamp <= to.getTime()) {
+              expected[event.action] += 1;
+            }
+          }
+          return (
+            JSON.stringify(summarizeRecallFeedback(events, {from, project: 'local-project', to})) ===
+            JSON.stringify(expected)
+          );
+        },
+      ),
+      {numRuns: 50},
     );
   });
 

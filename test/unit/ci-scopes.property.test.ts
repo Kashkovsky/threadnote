@@ -9,10 +9,19 @@ const documentationPath = FC.oneof(
   FC.array(pathSegment, {maxLength: 5, minLength: 1}).map(parts => `docs/${parts.join('/')}.md`),
   pathSegment.map(segment => `${segment}.md`),
 );
+const guidancePath = FC.oneof(
+  FC.constantFrom('config/agent-instructions.md', 'docs/agent-instructions.md', 'test/unit/agent-instructions.test.ts'),
+  FC.constantFrom('threadnote-context', 'threadnote-code-graph', 'threadnote-memory').map(
+    skill => `config/agent-skills/${skill}/SKILL.md`,
+  ),
+  FC.constantFrom('cursor-cloud-personal').map(profile => `config/agent-profiles/${profile}/agent-instructions.md`),
+);
+const runtimePath = pathSegment.map(segment => `src/${segment}.ts`);
 const knownPath = FC.oneof(
   websitePath,
   documentationPath,
-  pathSegment.map(segment => `src/${segment}.ts`),
+  guidancePath,
+  runtimePath,
   pathSegment.map(segment => `test/unit/${segment}.test.ts`),
   pathSegment.map(segment => `scripts/${segment}.ts`),
   FC.constantFrom('README.md', 'package.json', '.github/workflows/pages.yml', '.github/workflows/ci.yml'),
@@ -41,7 +50,17 @@ describe('CI changed-path scope properties', () => {
 
   fcProp(
     it,
-    'never disables a scope when another changed path is added',
+    'isolates pure guidance changes from runtime, release, Windows, and quality work',
+    {paths: FC.array(guidancePath, {maxLength: 30, minLength: 1})},
+    ({paths}) => {
+      expect(enabledScopes(paths)).toEqual(['guidance']);
+    },
+    {fastCheck: {numRuns: 250}},
+  );
+
+  fcProp(
+    it,
+    'keeps coverage monotonic when a runtime or cross-cutting path is added',
     {paths: FC.array(knownPath, {maxLength: 30, minLength: 1}), extra: knownPath},
     ({paths, extra}) => {
       const before = classifyCiScopes(paths).scopes;
@@ -52,6 +71,20 @@ describe('CI changed-path scope properties', () => {
       }
     },
     {fastCheck: {numRuns: 300}},
+  );
+
+  fcProp(
+    it,
+    'escalates guidance-only changes when a runtime path is added',
+    {guidance: FC.array(guidancePath, {maxLength: 30, minLength: 1}), runtime: runtimePath},
+    ({guidance, runtime}) => {
+      const before = classifyCiScopes(guidance).scopes;
+      const after = classifyCiScopes([...guidance, runtime]).scopes;
+
+      expect(before.guidance).toBe(true);
+      expect(after).toMatchObject({code: true, guidance: true, release: true, windows: true});
+    },
+    {fastCheck: {numRuns: 250}},
   );
 
   fcProp(
@@ -91,6 +124,12 @@ describe('CI changed-path scope properties', () => {
   });
 
   it('maps representative repository paths to the expected expensive scopes', () => {
+    expect(enabledScopes(['config/agent-skills/threadnote-context/SKILL.md'])).toEqual(['guidance']);
+    expect(enabledScopes(['test/unit/agent-instructions.test.ts'])).toEqual(['guidance']);
+    expect(enabledScopes(['test/unit/cursor-plugin.test.ts'])).toEqual(['code']);
+    expect(
+      enabledScopes(['config/agent-skills/threadnote-context/SKILL.md', 'test/unit/agent-instructions.test.ts']),
+    ).toEqual(['guidance']);
     expect(enabledScopes(['test/unit/utils.test.ts'])).toEqual(['code']);
     expect(enabledScopes(['test/unit/command-shim.test.ts'])).toEqual(['code', 'release', 'windows']);
     expect(enabledScopes(['src/installations.ts'])).toEqual(['code', 'release', 'windows']);
@@ -103,6 +142,8 @@ describe('CI changed-path scope properties', () => {
     ]);
     expect(enabledScopes(['src/memory/code_citation_capture.ts'])).toEqual(['code', 'quality', 'release', 'windows']);
     expect(enabledScopes(['.github/workflows/pages.yml'])).toEqual(['actions', 'site_check', 'site_build']);
+    expect(enabledScopes(['test/unit/website-content.test.ts'])).toEqual(['site_check', 'site_build']);
+    expect(enabledScopes(['test/unit/website-site-meta.test.ts'])).toEqual(['site_check', 'site_build']);
     expect(enabledScopes(['README.md'])).toEqual(['site_check']);
     expect(enabledScopes(['test/ci/ci-scopes.ts'])).toEqual(ciScopeKeys);
     expect(enabledScopes(['scripts/benchmark-worktree-readiness.ts'])).toEqual(['code', 'quality']);

@@ -14,8 +14,11 @@ const virtualEvidenceId = 'virtual:threadnote-performance-evidence';
 const resolvedVirtualEvidenceId = `\0${virtualEvidenceId}`;
 const virtualReleaseNotesId = 'virtual:threadnote-release-notes';
 const resolvedVirtualReleaseNotesId = `\0${virtualReleaseNotesId}`;
+const virtualLatestReleaseId = 'virtual:threadnote-latest-release';
+const resolvedVirtualLatestReleaseId = `\0${virtualLatestReleaseId}`;
 const virtualArticlesId = 'virtual:threadnote-articles';
 const resolvedVirtualArticlesId = `\0${virtualArticlesId}`;
+let cachedWebsiteReleases: ReturnType<typeof loadLatestMajorWebsiteReleases> | undefined;
 
 const performanceEvidencePlugin: Plugin = {
   name: 'threadnote-performance-evidence',
@@ -42,12 +45,20 @@ const performanceEvidencePlugin: Plugin = {
 const releaseNotesPlugin: Plugin = {
   name: 'threadnote-release-notes',
   resolveId(id: string) {
-    return id === virtualReleaseNotesId ? resolvedVirtualReleaseNotesId : undefined;
+    if (id === virtualReleaseNotesId) return resolvedVirtualReleaseNotesId;
+    if (id === virtualLatestReleaseId) return resolvedVirtualLatestReleaseId;
+    return undefined;
   },
   load(id: string) {
-    if (id !== resolvedVirtualReleaseNotesId) return undefined;
-    const releases = loadLatestMajorWebsiteReleases(repositoryRoot);
-    return `export default ${JSON.stringify(releases)};`;
+    if (id !== resolvedVirtualReleaseNotesId && id !== resolvedVirtualLatestReleaseId) return undefined;
+    const releases = cachedWebsiteReleases ?? (cachedWebsiteReleases = loadLatestMajorWebsiteReleases(repositoryRoot));
+    if (id === resolvedVirtualReleaseNotesId) return `export default ${JSON.stringify(releases)};`;
+    if (id === resolvedVirtualLatestReleaseId) {
+      const latest = releases[0];
+      const banner = latest === undefined ? undefined : {headline: latest.headline, version: latest.version};
+      return `export default ${JSON.stringify(banner)};`;
+    }
+    return undefined;
   },
 };
 

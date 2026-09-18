@@ -86,7 +86,8 @@ import {
   runObsidianSourceSync,
 } from '../obsidian/source.js';
 import {getRuntimeConfig} from '../runtime.js';
-import {runInitManifest, runSeed, runSeedSkills, runWorksetList, runWorksetShow} from '../seeding.js';
+import {runInitManifest, runSeed, runSeedSkills} from '../seeding.js';
+import {makeWorksetCommand} from './workset_cli.js';
 import {
   runShareConflictResolve,
   runShareConflicts,
@@ -138,8 +139,6 @@ import {
   runCodeGraphReport,
   runCodeGraphStatus,
   runCodeGraphWatch,
-  runCodeGraphWorksetPrepare,
-  runCodeGraphWorksetStatus,
   runCodeGraphWorksetTopology,
 } from '../code_graph/commands.js';
 import {
@@ -1399,39 +1398,7 @@ const recallFeedback = makeRecallFeedbackCommand(options =>
   withRuntimeEffect(config => runRecallFeedback(config, options)),
 );
 
-const worksetList = Command.make('list', {}, () => withRuntimeEffect(config => runWorksetList(config))).pipe(
-  Command.withDescription('List worksets defined in the seed manifest'),
-);
-
-const worksetShow = Command.make('show', {name: argument('name', 'Workset name')}, ({name}) =>
-  withRuntimeEffect(config => runWorksetShow(config, name)),
-).pipe(Command.withDescription('Show the member projects of a workset'));
-
-const worksetPrepare = Command.make(
-  'prepare',
-  {
-    concurrency: optional(
-      describeFlag(
-        integerFlag('concurrency'),
-        'Maximum repositories to index and project concurrently (default 2, maximum 8)',
-      ),
-    ),
-    json: boolean('json', 'Print a machine-readable preparation receipt'),
-    name: argument('name', 'Workset name'),
-  },
-  options => withRuntimeEffect(config => runCodeGraphWorksetPrepare(config, options)),
-).pipe(Command.withDescription('Build member snapshots explicitly and atomically publish the routing catalog'));
-
-const worksetStatus = Command.make(
-  'status',
-  {json: boolean('json', 'Print a machine-readable workset coverage receipt'), name: argument('name', 'Workset name')},
-  options => withRuntimeEffect(config => runCodeGraphWorksetStatus(config, options)),
-).pipe(Command.withDescription('Compare the workset manifest, ready snapshots, and published routing catalog'));
-
-const workset = Command.make('workset').pipe(
-  Command.withDescription('Inspect and prepare named sets of related repos'),
-  Command.withSubcommands([worksetList, worksetShow, worksetPrepare, worksetStatus]),
-);
+const workset = makeWorksetCommand(withScopedRuntime);
 const contextBrief = makeContextBriefCommand(options => withRuntimeEffect(config => runContextBrief(config, options)));
 const contextHealth = makeContextHealthCommand(
   options => withRuntimeEffect(config => runContextHealth(config, options)),

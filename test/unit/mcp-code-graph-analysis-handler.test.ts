@@ -22,6 +22,21 @@ import {analysisSnapshot, pagedAnalysisStore} from '../helpers/code-graph-analys
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 describe('registered analyze_code_graph snapshot resolution', () => {
+  effectIt.effect('rejects missing operation at the adapter boundary for both code-graph tools', () => {
+    const ready = codeGraphStatus({ready: true, stale: false});
+    const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [ready]});
+
+    return Effect.gen(function* () {
+      const analyzeResult = yield* harness.invoke({callerCwd: ready.identity.repoRoot});
+      const inspectResult = yield* harness.invokeInspect({callerCwd: ready.identity.repoRoot});
+
+      expect(analyzeResult.isError).toBe(true);
+      expect(inspectResult.isError).toBe(true);
+      expect(harness.observation.analysisCalls).toBe(0);
+      expect(harness.observation.statusOptions).toHaveLength(0);
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
   effectIt.effect('keeps a hot ready analysis on watcher-owned maintenance', () => {
     const ready = codeGraphStatus({ready: true, stale: false});
     const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [ready]});
@@ -172,10 +187,12 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
   registerCodeGraphTool(server, runtimeConfig());
   type AddedTool = Parameters<EffectMcpServer['addTool']>[0];
   let analyzeHandle: AddedTool['handle'] | undefined;
+  let inspectHandle: AddedTool['handle'] | undefined;
   const mcpLayer = Layer.succeed(McpServer.McpServer, {
     addTool: (options: AddedTool) =>
       Effect.sync(() => {
         if (options.tool.name === 'analyze_code_graph') analyzeHandle = options.handle;
+        if (options.tool.name === 'inspect_code_graph') inspectHandle = options.handle;
       }),
   } as unknown as EffectMcpServer);
   const applicationLayer = Layer.mergeAll(
@@ -201,6 +218,12 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
       Effect.suspend(() => {
         const handle = analyzeHandle;
         if (handle === undefined) return Effect.die('analyze_code_graph was not registered.');
+        return handle(arguments_).pipe(Effect.provideService(McpSchema.McpServerClient, mcpServerClient()));
+      }),
+    invokeInspect: (arguments_: Record<string, unknown>) =>
+      Effect.suspend(() => {
+        const handle = inspectHandle;
+        if (handle === undefined) return Effect.die('inspect_code_graph was not registered.');
         return handle(arguments_).pipe(Effect.provideService(McpSchema.McpServerClient, mcpServerClient()));
       }),
     layer,

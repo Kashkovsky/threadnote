@@ -1,4 +1,6 @@
-# Threadnote 5 context workflows
+# Threadnote 5 context workflows reference
+
+This is the technical reference for Threadnote 5’s context lifecycle. For a first task, install Threadnote, connect one catalog-supported coding-agent environment, ask for a Context Brief, work from exact local code, and review the Knowledge Delta at closeout. Git sharing and a second-agent proof are optional team steps after that journey.
 
 Threadnote 5 is a source-verifiable context compiler for engineering work. Its core loop is deliberately small:
 
@@ -10,6 +12,28 @@ Threadnote 5 is a source-verifiable context compiler for engineering work. Its c
 
 This release track is local-first and provider-neutral. It does not create an organization account, require an
 organization service, or add agent-brand switches. Organization productization remains a separate track.
+
+## Workset lifecycle
+
+Use the CLI for the normal definition lifecycle. Definitions are explicit and do not build graphs; use `prepare` when
+you want to publish repository evidence.
+
+```sh
+threadnote workset create checkout --project checkout-api --project checkout-web \
+  --description "Checkout API and client"
+threadnote workset list --json
+threadnote workset show checkout --json
+threadnote workset update checkout --name checkout-platform --description "Checkout platform" \
+  --project checkout-api --project checkout-web --json
+threadnote workset prepare checkout-platform --json
+threadnote workset status checkout-platform --json
+threadnote workset delete checkout-platform --confirm --json
+```
+
+Use `--clear-description` when removing a description. JSON is useful for scripts and contains the same bounded
+definition, preparation, or status receipt as the human-readable command. A definition change does not build a graph;
+prepare is the only lifecycle command that indexes or refreshes repositories. The seed manifest remains available for
+advanced/manual workflows, but it is not needed for ordinary Workset creation and maintenance.
 
 ## One-command local setup
 
@@ -25,7 +49,8 @@ threadnote setup <surface> --undo --apply
 The orchestrator resolves the current Git repository, initializes Threadnote's local core, merges the seed manifest,
 seeds only that project, installs or repairs the selected catalog adapter and its declared hooks, builds a current code
 graph, runs structured doctor checks, and finishes with a real Context Brief. Completion requires fresh, complete graph
-coverage for the one requested repository and at least one returned source-evidence card or contract.
+coverage for the one requested repository and at least one source-evidence card or contract accounted for by projection,
+whether returned or reported in the nonnegative projection-omission counts.
 
 Preview is non-mutating. Apply writes a private `SetupReceiptV1` under `$THREADNOTE_HOME/setup/` with a deterministic
 plan hash, per-operation input hashes and attempts, subsystem receipt references, and bounded recovery IDs. It never
@@ -37,7 +62,7 @@ Undo is preview-first and follows the receipt's reverse dependency order. It rem
 surface artifacts that the setup receipt proves were created by setup; pre-existing manifests, integrations, and user
 customizations are never rollback targets. Interrupted rollback persists its remaining undo IDs and is safe to retry.
 
-Surface selection is explicit and comes only from `threadnote agents list`. Catalog-only surfaces fail with their
+Choose one coding-agent environment from `threadnote agents list`; the catalog calls its declared integration a surface. Catalog-only surfaces fail with their
 manual guidance instead of being presented as managed. `--scope` is available for managed JSON adapters; compatibility
 adapters retain their established user-scope lifecycle. This command does not configure composer, team sharing, or any
 organization service.
@@ -283,7 +308,8 @@ owner: platform-team
 review_after: 2026-12-31
 ```
 
-`owner` is an opaque person or team label, not an organization identity. `review_after` is an ISO calendar date. The
+`owner` is an opaque person or team label, not an organization identity. `review_after` is an ISO calendar date or
+canonical ISO instant. The
 fields support health triage; they do not change authority, lifecycle, relation, or code-citation semantics. Existing
 v4 memories remain readable and can be migrated deterministically to v5 without inventing either field. Review or
 retire records explicitly; Threadnote does not silently renew stale knowledge.

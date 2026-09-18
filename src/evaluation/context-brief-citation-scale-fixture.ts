@@ -24,13 +24,21 @@ import {loadRecallIndexData, recallIndexStatus} from '../recall/index.js';
 import type {ProjectManifest, ResolvedWorkset, RuntimeConfig} from '../types.js';
 import type {
   ContextBriefCitationScaleBudgetV1,
+  ContextBriefCitationScaleFixturePlanProfileV2,
   ContextBriefCitationScaleProfileId,
   ContextBriefCitationScaleProfileV1,
 } from './context-brief-citation-scale-contract.js';
+import {
+  CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2,
+  contextBriefCitationScaleFixtureCitationRepositoryOrdinal,
+  contextBriefCitationScaleFixturePlan,
+} from './context-brief-citation-scale-contract.js';
 
-const PROJECT = 'threadnote-scale';
-const EXTRACTOR_SET = extractorSetIdentityFromPackProvenance([]);
-const FIXED_INSTANT = '2026-08-26T00:00:00.000Z';
+const PROJECT = CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.project;
+const EXTRACTOR_SET = extractorSetIdentityFromPackProvenance(
+  CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.extractorSet.languagePackProvenance,
+);
+const FIXED_INSTANT = CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.fixedInstant;
 
 class ContextBriefCitationScaleFixtureError extends Data.TaggedError('ContextBriefCitationScaleFixtureError')<{
   readonly message: string;
@@ -70,6 +78,8 @@ export interface ContextBriefCitationScaleFixtureOptions {
   readonly memoryCandidates: number;
   readonly profileIds: readonly ContextBriefCitationScaleProfileId[];
   readonly runCount: number;
+  readonly samples: number;
+  readonly warmups: number;
 }
 
 /**
@@ -83,19 +93,32 @@ export const prepareContextBriefCitationScaleFixture = Effect.fn('evaluation.pre
     const path = yield* Path.Path;
     const home = path.join(root, 'threadnote-home');
     const manifestPath = path.join(root, 'manifest.json');
+    const plan = contextBriefCitationScaleFixturePlan(
+      options.budget,
+      options.memoryCandidates,
+      options.profileIds,
+      options.samples,
+      options.warmups,
+    );
+    if (options.runCount !== plan.schedule.runCount) {
+      return yield* new ContextBriefCitationScaleFixtureError({
+        message: `Scale fixture run count ${options.runCount} disagrees with its ${plan.schedule.samples}/${plan.schedule.warmups} schedule.`,
+      });
+    }
     yield* fs.makeDirectory(home, {recursive: true});
     const preparedProfiles = new Map<ContextBriefCitationScaleProfileId, ContextBriefCitationScalePreparedProfile>();
     const projects: ProjectManifest[] = [];
     const worksets: Array<{readonly name: string; readonly projects: readonly string[]}> = [];
     const readyGraphSetupStarted = yield* Clock.currentTimeNanos;
-    for (const profile of options.budget.profiles) {
+    for (const profilePlan of plan.profiles) {
+      const profile = profileFromPlan(options.budget, profilePlan);
       const repositories = yield* prepareContextBriefCitationScaleRepositories(
         fs,
         path,
         home,
         root,
         profile,
-        options.runCount,
+        plan.schedule.runCount,
       );
       projects.push(...repositories.map(repositoryProject));
       if (profile.id === 'local-100k') {
@@ -182,27 +205,32 @@ export const prepareContextBriefCitationScaleFixture = Effect.fn('evaluation.pre
       });
       preparedProfiles.set(profileId, {...prepared, generation: {digest: staged.digest, id: staged.id}});
     }
-    const selectedRecords = options.profileIds.flatMap(profileId => {
+    const selectedRecords = plan.selectedProfiles.flatMap(profileId => {
       const prepared = preparedProfiles.get(profileId)!;
-      return Array.from({length: options.runCount}, (_, ordinal) =>
+      return Array.from({length: plan.schedule.runCount}, (_, ordinal) =>
         selectedMemoryRecords(path, home, prepared, ordinal),
       ).flat();
     });
-    if (selectedRecords.length > options.memoryCandidates) {
+    if (selectedRecords.length !== plan.counts.selectedMemoryCandidates) {
+      return yield* new ContextBriefCitationScaleFixtureError({
+        message: `Scale selected-record count ${selectedRecords.length} disagrees with the normalized fixture plan.`,
+      });
+    }
+    if (selectedRecords.length > plan.counts.requestedMemoryCandidates) {
       return yield* new ContextBriefCitationScaleFixtureError({
         message: `Scale corpus requires at least ${selectedRecords.length} documents for the selected profiles and samples.`,
       });
     }
     yield* writeRecords(fs, selectedRecords);
-    const legacyV1MemoryCandidates = options.memoryCandidates - selectedRecords.length;
+    const legacyV1MemoryCandidates = plan.counts.legacyV1MemoryCandidates;
     yield* writeLegacyNoise(fs, path, home, legacyV1MemoryCandidates);
     const buildStarted = yield* Clock.currentTimeNanos;
     yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false, limit: 0, query: ''});
     const buildFinished = yield* Clock.currentTimeNanos;
     const status = yield* recallIndexStatus(config);
-    if (!status.ready || status.documentCount !== options.memoryCandidates) {
+    if (!status.ready || status.documentCount !== plan.counts.indexedMemoryCandidates) {
       return yield* new ContextBriefCitationScaleFixtureError({
-        message: `Scale recall index contains ${status.documentCount}/${options.memoryCandidates} memory candidates.`,
+        message: `Scale recall index contains ${status.documentCount}/${plan.counts.indexedMemoryCandidates} memory candidates.`,
       });
     }
     const fixtureHash = contextBriefCitationScaleFixtureHash(
@@ -213,6 +241,7 @@ export const prepareContextBriefCitationScaleFixture = Effect.fn('evaluation.pre
       selectedRecords,
       legacyV1MemoryCandidates,
       status.documentCount,
+      plan,
     );
     return {
       config,
@@ -333,6 +362,23 @@ export function prepareContextBriefCitationScaleRepositories(
   });
 }
 
+function profileFromPlan(
+  budget: ContextBriefCitationScaleBudgetV1,
+  plan: ContextBriefCitationScaleFixturePlanProfileV2,
+): ContextBriefCitationScaleProfileV1 {
+  const profile = budget.profiles.find(candidate => candidate.id === plan.id);
+  if (!profile) throw new Error(`Missing scale profile ${plan.id}.`);
+  if (
+    profile.citationCount !== plan.citationCount ||
+    profile.citedRepositories !== plan.citedRepositories ||
+    profile.selectedMemories !== plan.selectedMemories ||
+    profile.worksetMembers !== plan.worksetMembers
+  ) {
+    throw new Error(`Scale profile ${plan.id} disagrees with the normalized fixture plan.`);
+  }
+  return profile;
+}
+
 function repositorySourcePaths(
   profile: ContextBriefCitationScaleProfileV1,
   repositoryOrdinal: number,
@@ -375,14 +421,14 @@ function selectedMemoryRecords(
 ): readonly {readonly content: string; readonly path: string}[] {
   const token = runToken(prepared.profile.id, ordinal);
   const citationsPerMemory = prepared.profile.citationCount / prepared.profile.selectedMemories;
-  if (!Number.isInteger(citationsPerMemory) || citationsPerMemory > 8) {
-    throw new Error(`Invalid citation allocation for ${prepared.profile.id}.`);
-  }
   const root = path.join(home, 'data', 'local', 'user', 'benchmark', 'memories', 'durable', 'projects', PROJECT);
   return Array.from({length: prepared.profile.selectedMemories}, (_, memoryOrdinal) => {
     const citations = Array.from({length: citationsPerMemory}, (_, citationOrdinal) => {
       const index = memoryOrdinal * citationsPerMemory + citationOrdinal;
-      const repository = prepared.repositories[index % prepared.profile.citedRepositories];
+      const repository =
+        prepared.repositories[
+          contextBriefCitationScaleFixtureCitationRepositoryOrdinal(index, prepared.profile.citedRepositories)
+        ];
       const repositoryPath = citationRepositoryPath(prepared.profile.id, token, index);
       return createMemoryCodeCitation({
         extractorSet: EXTRACTOR_SET,
@@ -398,7 +444,14 @@ function selectedMemoryRecords(
         version: 1,
       });
     });
-    const topic = `${prepared.profile.id}-${token}-${String(memoryOrdinal).padStart(2, '0')}`;
+    const topic = [
+      prepared.profile.id,
+      token,
+      String(memoryOrdinal).padStart(
+        CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.selectedMemory.memoryOrdinalWidth,
+        '0',
+      ),
+    ].join(CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.selectedMemory.topicSeparator);
     const content = [
       'MEMORY',
       'kind: durable',
@@ -407,12 +460,20 @@ function selectedMemoryRecords(
       `topic: ${topic}`,
       'source_agent_client: benchmark',
       `timestamp: ${FIXED_INSTANT}`,
-      'schema_version: 4',
+      `schema_version: ${CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.selectedMemory.schemaVersion}`,
       ...formatMemoryCodeCitationLines(citations),
       '',
-      `Context Brief citation scale sentinel ${token} preserves bounded ready-graph evidence.`,
+      CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.selectedMemory.body.replace('<run-token>', token),
     ].join('\n');
-    return {content, path: path.join(root, prepared.profile.id, token, `${topic}.md`)};
+    return {
+      content,
+      path: path.join(
+        root,
+        prepared.profile.id,
+        token,
+        `${topic}${CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.selectedMemory.extension}`,
+      ),
+    };
   });
 }
 
@@ -441,17 +502,27 @@ function writeLegacyNoise(fs: FileSystem.FileSystem, path: Path.Path, home: stri
     'durable',
     'projects',
     PROJECT,
-    'noise',
+    CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.legacyNoise.directory,
   );
   const content = legacyNoiseContent();
   return Effect.gen(function* () {
-    for (let offset = 0; offset < count; offset += 1_000) {
-      const end = Math.min(count, offset + 1_000);
+    for (
+      let offset = 0;
+      offset < count;
+      offset += CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.legacyNoise.shardSize
+    ) {
+      const end = Math.min(count, offset + CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.legacyNoise.shardSize);
       yield* Effect.forEach(
         Array.from({length: end - offset}, (_, index) => offset + index),
         index => {
-          const shard = String(Math.floor(index / 1_000)).padStart(3, '0');
-          const file = path.join(root, shard, `${String(index).padStart(6, '0')}.md`);
+          const shard = String(
+            Math.floor(index / CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.legacyNoise.shardSize),
+          ).padStart(CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.legacyNoise.shardWidth, '0');
+          const file = path.join(
+            root,
+            shard,
+            `${String(index).padStart(CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.legacyNoise.ordinalWidth, '0')}${CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.legacyNoise.extension}`,
+          );
           return fs
             .makeDirectory(path.dirname(file), {recursive: true})
             .pipe(Effect.andThen(fs.writeFileString(file, content)));
@@ -468,12 +539,12 @@ function legacyNoiseContent(): string {
     'kind: durable',
     'status: active',
     `project: ${PROJECT}`,
-    'topic: legacy-scale-noise',
+    `topic: ${CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.legacyNoise.topic}`,
     'source_agent_client: benchmark',
     `timestamp: ${FIXED_INSTANT}`,
-    'schema_version: 1',
+    `schema_version: ${CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.legacyNoise.schemaVersion}`,
     '',
-    'Unrelated legacy memory fixture about ceramic glazing and coastal weather.',
+    CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.legacyNoise.body,
   ].join('\n');
 }
 
@@ -485,19 +556,21 @@ function contextBriefCitationScaleFixtureHash(
   selectedRecords: readonly {readonly content: string; readonly path: string}[],
   legacyV1MemoryCandidates: number,
   indexedMemoryCandidates: number,
+  plan: ReturnType<typeof contextBriefCitationScaleFixturePlan>,
 ): string {
   return sha256HexSync(
     JSON.stringify({
-      budget: options.budget,
+      plan,
       extractorSet: EXTRACTOR_SET,
       fixedInstant: FIXED_INSTANT,
       indexedMemoryCandidates,
       legacyNoise: {
         contentHash: sha256HexSync(legacyNoiseContent()),
         count: legacyV1MemoryCandidates,
-        pathContract: 'noise/<thousand-shard>/<six-digit-ordinal>.md',
+        pathContract: CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.legacyNoise.pathContract,
       },
-      profiles: options.budget.profiles.map(profile => {
+      profiles: plan.profiles.map(profilePlan => {
+        const profile = profileFromPlan(options.budget, profilePlan);
         const prepared = preparedProfiles.get(profile.id)!;
         return {
           id: profile.id,
@@ -507,17 +580,17 @@ function contextBriefCitationScaleFixtureHash(
             name: repository.name,
             repositoryId: repository.repositoryId,
             snapshotId: repository.snapshotId,
-            sourcePathsHash: sha256HexSync(repositorySourcePaths(profile, ordinal, options.runCount).join('\0')),
+            sourcePathsHash: sha256HexSync(repositorySourcePaths(profile, ordinal, plan.schedule.runCount).join('\0')),
           })),
         };
       }),
-      requestedMemoryCandidates: options.memoryCandidates,
-      runCount: options.runCount,
+      requestedMemoryCandidates: plan.counts.requestedMemoryCandidates,
+      runCount: plan.schedule.runCount,
       selectedRecords: selectedRecords.map(record => ({
         contentHash: sha256HexSync(record.content),
         path: path.relative(home, record.path).split(path.sep).join('/'),
       })),
-      selectedProfiles: options.profileIds,
+      selectedProfiles: plan.selectedProfiles,
       version: 2,
     }),
   );
@@ -528,7 +601,7 @@ function runToken(profile: ContextBriefCitationScaleProfileId, ordinal: number):
 }
 
 function citationRepositoryPath(profile: ContextBriefCitationScaleProfileId, token: string, index: number): string {
-  return `src/context-brief-scale/${profile}/${token}/${String(index).padStart(3, '0')}.ts`;
+  return `${CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.repositorySource.directory}/${profile}/${token}/${String(index).padStart(3, '0')}${CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2.repositorySource.extension}`;
 }
 
 export function contextBriefCitationScaleProject(): string {

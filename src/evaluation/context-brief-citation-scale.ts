@@ -168,6 +168,8 @@ export const evaluateContextBriefCitationScale = Effect.fn('evaluation.contextBr
     memoryCandidates: options.memoryCandidates,
     profileIds: options.profileIds,
     runCount: options.warmups + options.samples * 2,
+    samples: options.samples,
+    warmups: options.warmups,
   });
   const failures: string[] = [];
   if (options.invocationMode !== 'release-scale') {

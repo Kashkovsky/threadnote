@@ -1,4 +1,5 @@
 import {benchmarkMeasurement, type BenchmarkMeasurementV1} from './benchmark.js';
+import {sha256HexSync} from '../crypto/sha256.js';
 import {Predicate} from 'effect';
 
 export const CONTEXT_BRIEF_CITATION_SCALE_VERSION = 1 as const;
@@ -9,6 +10,46 @@ export const CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SOURCE_VERSION = 'threadnote-4
 export const CONTEXT_BRIEF_CITATION_SCALE_ARTIFACT_SUITE = 'context-brief-citations-scale-v2' as const;
 export const CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES = 100 as const;
 export const CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS = 5 as const;
+export const CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2 = {
+  extractorSet: {
+    id: 'empty-language-pack-provenance-v1',
+    languagePackProvenance: [],
+  },
+  fixedInstant: '2026-08-26T00:00:00.000Z',
+  legacyNoise: {
+    body: 'Unrelated legacy memory fixture about ceramic glazing and coastal weather.',
+    directory: 'noise',
+    extension: '.md',
+    ordinalWidth: 6,
+    pathContract: 'noise/<thousand-shard>/<six-digit-ordinal>.md',
+    schemaVersion: 1,
+    shardSize: 1_000,
+    shardWidth: 3,
+    topic: 'legacy-scale-noise',
+  },
+  project: 'threadnote-scale',
+  repositorySource: {
+    contentContract: 'repository-relative-source-path-v1',
+    directory: 'src/context-brief-scale',
+    extension: '.ts',
+    pathContract: 'src/context-brief-scale/<profile>/<run-token>/<citation-ordinal>.ts',
+  },
+  selectedMemory: {
+    body: 'Context Brief citation scale sentinel <run-token> preserves bounded ready-graph evidence.',
+    citationAllocation: 'round-robin-citation-index-v1',
+    extension: '.md',
+    memoryOrdinalWidth: 2,
+    pathContract: '<profile>/<run-token>/<topic>.md',
+    schemaVersion: 4,
+    topicSeparator: '-',
+    topicContract: '<profile>-<run-token>-<two-digit-memory-ordinal>',
+  },
+} as const;
+/**
+ * Changing this requires review of the complete fixture contract, not a benchmark rerun during verification.
+ */
+export const CONTEXT_BRIEF_CITATION_SCALE_REVIEWED_FIXTURE_IDENTITY_HASH =
+  'd325379ad9c717b38c28d58cedc712921128c2b9cfaf9923caf48853dc75cded' as const;
 const CANDIDATE_PACKAGE_VERSION =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 export const CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE = 'absolute-monotonic-deadline-v1' as const;
@@ -267,6 +308,132 @@ export interface ContextBriefCitationScaleFixtureV2 {
   readonly worksetRepositoryIdentities: readonly [50, 128];
 }
 
+export interface ContextBriefCitationScaleFixturePlanProfileV2 {
+  readonly citationCount: number;
+  readonly citedRepositories: number;
+  readonly citationsPerMemory: number;
+  readonly id: ContextBriefCitationScaleProfileId;
+  readonly selectedMemories: number;
+  readonly selectedRecordsPerRun: number;
+  readonly worksetMembers: number;
+}
+
+/** Bounded release-fixture shape derived from the reviewed budget and exact measurement schedule. */
+export interface ContextBriefCitationScaleReviewedFixturePlanV2 {
+  readonly contracts: typeof CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2;
+  readonly counts: {
+    readonly indexedMemoryCandidates: number;
+    readonly legacyV1MemoryCandidates: number;
+    readonly requestedMemoryCandidates: number;
+    readonly selectedMemoryCandidates: number;
+  };
+  readonly profiles: readonly ContextBriefCitationScaleFixturePlanProfileV2[];
+  readonly schedule: {
+    readonly runCount: number;
+    readonly samples: number;
+    readonly warmups: number;
+  };
+  readonly selectedProfiles: readonly ContextBriefCitationScaleProfileId[];
+  readonly version: 2;
+}
+
+export interface ContextBriefCitationScaleReviewedFixtureIdentityV2 extends ContextBriefCitationScaleReviewedFixturePlanV2 {
+  readonly hash: string;
+}
+
+export function contextBriefCitationScaleFixturePlan(
+  budget: Pick<ContextBriefCitationScaleBudgetV1, 'corpusMemoryCandidates' | 'profiles'>,
+  memoryCandidates: number,
+  profileIds: readonly ContextBriefCitationScaleProfileId[],
+  samples: number,
+  warmups: number,
+): ContextBriefCitationScaleReviewedFixturePlanV2 {
+  const measuredSamples = positiveInteger(samples, 'reviewed fixture samples');
+  const measuredWarmups = nonNegativeSafeInteger(warmups, 'reviewed fixture warmups');
+  const requestedMemoryCandidates = positiveInteger(memoryCandidates, 'reviewed fixture memory candidates');
+  const runsPerProfile = measuredWarmups + measuredSamples * 2;
+  if (!Number.isSafeInteger(runsPerProfile)) invalid('reviewed fixture run count must be a safe integer');
+  const profilesById = new Map(budget.profiles.map(profile => [profile.id, profile]));
+  if (profilesById.size !== CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS.length) {
+    invalid('reviewed fixture profiles must have unique ids');
+  }
+  const selectedProfileIds = new Set(profileIds);
+  if (selectedProfileIds.size !== profileIds.length) invalid('reviewed fixture selected profiles must be unique');
+  const selectedProfiles = CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS.filter(profileId =>
+    selectedProfileIds.has(profileId),
+  );
+  if (selectedProfiles.length !== profileIds.length) invalid('reviewed fixture selected profile is unknown');
+  const profiles = CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS.map(profileId => {
+    const profile = profilesById.get(profileId);
+    if (!profile) invalid(`reviewed fixture is missing ${profileId}`);
+    const citationCount = positiveInteger(profile.citationCount, `${profileId} citation count`);
+    const citedRepositories = positiveInteger(profile.citedRepositories, `${profileId} cited repositories`);
+    const selectedMemories = positiveInteger(profile.selectedMemories, `${profileId} selected memories`);
+    const worksetMembers = positiveInteger(profile.worksetMembers, `${profileId} workset members`);
+    const citationsPerMemory = citationCount / selectedMemories;
+    if (!Number.isInteger(citationsPerMemory) || citationsPerMemory > 8) {
+      invalid(`Invalid citation allocation for ${profileId}.`);
+    }
+    if (citedRepositories > worksetMembers) invalid(`${profileId} cited repositories exceed workset members`);
+    return {
+      citationCount,
+      citedRepositories,
+      citationsPerMemory,
+      id: profileId,
+      selectedMemories,
+      selectedRecordsPerRun: selectedMemories,
+      worksetMembers,
+    };
+  });
+  const selectedMemoryCandidates = profiles
+    .filter(profile => selectedProfileIds.has(profile.id))
+    .reduce((total, profile) => total + profile.selectedRecordsPerRun * runsPerProfile, 0);
+  if (!Number.isSafeInteger(selectedMemoryCandidates) || selectedMemoryCandidates > requestedMemoryCandidates) {
+    invalid('reviewed fixture selected memories exceed the reviewed corpus');
+  }
+  return {
+    contracts: CONTEXT_BRIEF_CITATION_SCALE_FIXTURE_CONTRACT_V2,
+    counts: {
+      indexedMemoryCandidates: requestedMemoryCandidates,
+      legacyV1MemoryCandidates: requestedMemoryCandidates - selectedMemoryCandidates,
+      requestedMemoryCandidates,
+      selectedMemoryCandidates,
+    },
+    profiles,
+    schedule: {runCount: runsPerProfile, samples: measuredSamples, warmups: measuredWarmups},
+    selectedProfiles,
+    version: 2,
+  };
+}
+
+export function contextBriefCitationScaleFixturePlanHash(plan: ContextBriefCitationScaleReviewedFixturePlanV2): string {
+  return sha256HexSync(`${JSON.stringify(plan)}\n`);
+}
+
+export function contextBriefCitationScaleFixtureCitationRepositoryOrdinal(
+  citationOrdinal: number,
+  citedRepositories: number,
+): number {
+  return citationOrdinal % citedRepositories;
+}
+
+/** Normalize the approved budget and schedule into the release fixture's complete semantic identity. */
+export function contextBriefCitationScaleReviewedFixtureIdentity(
+  budgetInput: ContextBriefCitationScaleBudgetV1 | unknown,
+  samples: number,
+  warmups: number,
+): ContextBriefCitationScaleReviewedFixtureIdentityV2 {
+  const budget = parseContextBriefCitationScaleBudgetV1(budgetInput);
+  const normalized = contextBriefCitationScaleFixturePlan(
+    budget,
+    budget.corpusMemoryCandidates,
+    CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS,
+    samples,
+    warmups,
+  );
+  return {...normalized, hash: contextBriefCitationScaleFixturePlanHash(normalized)};
+}
+
 export interface ContextBriefCitationScaleMemoryObserverV2 {
   readonly finalSample: {
     readonly processCount: number;
@@ -513,6 +680,21 @@ export function parseContextBriefCitationScaleArtifactV2(
   const memoryObserver = parseArtifactMemoryObserver(artifact.memoryObserver);
   const samples = positiveInteger(artifact.samples, 'artifact samples');
   const warmups = nonNegativeSafeInteger(artifact.warmups, 'artifact warmups');
+  if (evidenceClass === 'release-scale') {
+    const reviewedFixture = contextBriefCitationScaleReviewedFixtureIdentity(budget, samples, warmups);
+    if (reviewedFixture.hash !== CONTEXT_BRIEF_CITATION_SCALE_REVIEWED_FIXTURE_IDENTITY_HASH) {
+      invalid('reviewed fixture identity does not match the approved contract');
+    }
+    if (fixture.indexedMemoryCandidates !== reviewedFixture.counts.indexedMemoryCandidates) {
+      invalid('release artifact indexed memory candidates do not match the reviewed fixture');
+    }
+    if (fixture.requestedMemoryCandidates !== reviewedFixture.counts.requestedMemoryCandidates) {
+      invalid('release artifact requested memory candidates do not match the reviewed fixture');
+    }
+    if (fixture.legacyV1MemoryCandidates !== reviewedFixture.counts.legacyV1MemoryCandidates) {
+      invalid('release artifact legacy memory candidates do not match the reviewed fixture');
+    }
+  }
   if (!Array.isArray(artifact.profiles) || artifact.profiles.length === 0 || artifact.profiles.length > 3) {
     invalid('artifact profiles must contain between one and three profiles');
   }

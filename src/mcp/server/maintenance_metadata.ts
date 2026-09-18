@@ -44,7 +44,7 @@ function metadataInputSchema() {
     clearValidTo: McpInput.boolean('Clear valid_to explicitly; cannot be combined with validTo'),
     memoryId: McpInput.string('Optional stable tn_ memory ID; provide exactly one of memoryId or uri'),
     owner: McpInput.string('Optional opaque owner label'),
-    reviewAfter: McpInput.string('Optional canonical ISO instant'),
+    reviewAfter: McpInput.string('Optional ISO calendar date or canonical ISO instant'),
     uri: McpInput.string('Optional canonical threadnote URI; provide exactly one of uri or memoryId'),
     validTo: McpInput.string('Optional canonical ISO instant'),
   };
@@ -76,11 +76,11 @@ function parseInput(
   const memoryId = typeof input.memoryId === 'string' && input.memoryId.trim() ? input.memoryId.trim() : undefined;
   if ((uri.value === undefined) === (memoryId === undefined))
     return {ok: false, error: argumentError(`${name} requires exactly one uri or memoryId.`)};
-  const patch = patchField(name, input, 'owner', 'clearOwner');
+  const patch = patchField(name, input, 'owner', 'clearOwner', true);
   if (!patch.ok) return patch;
-  const reviewAfter = patchField(name, input, 'reviewAfter', 'clearReviewAfter');
+  const reviewAfter = patchField(name, input, 'reviewAfter', 'clearReviewAfter', false);
   if (!reviewAfter.ok) return reviewAfter;
-  const validTo = patchField(name, input, 'validTo', 'clearValidTo');
+  const validTo = patchField(name, input, 'validTo', 'clearValidTo', false);
   if (!validTo.ok) return validTo;
   const value: Record<string, unknown> = {
     ...(uri.value === undefined ? {} : {uri: uri.value}),
@@ -126,10 +126,12 @@ function patchField(
   input: Record<string, unknown>,
   valueName: string,
   clearName: string,
+  normalize: boolean,
 ):
   | {readonly ok: true; readonly value: string | null | undefined}
   | {readonly ok: false; readonly error: ReturnType<typeof argumentError>} {
-  const value = typeof input[valueName] === 'string' && input[valueName].trim() ? input[valueName].trim() : undefined;
+  const rawValue = typeof input[valueName] === 'string' ? input[valueName] : undefined;
+  const value = rawValue === undefined ? undefined : normalize ? rawValue.trim() || undefined : rawValue;
   if (input[clearName] === true && value !== undefined)
     return {ok: false, error: argumentError(`${name} cannot combine ${valueName} with ${clearName}=true.`)};
   return {ok: true, value: input[clearName] === true ? null : value};
