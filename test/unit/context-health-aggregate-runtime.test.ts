@@ -532,13 +532,13 @@ describe('context health aggregate runtime', () => {
         );
         yield* git(fixture.worktrees.platform, ['add', '.']);
         yield* git(fixture.worktrees.platform, ['commit', '--quiet', '--message', 'mismatched status']);
-        const mismatchedStatus = yield* collectContextHealthAggregate(fixture.config, {
+        const inactiveTeamRecord = yield* collectContextHealthAggregate(fixture.config, {
           callerCwd: fixture.repository,
           project: 'threadnote',
           teams: ['platform'],
         }).pipe(TestClock.withLive);
-        expect(mismatchedStatus).toMatchObject({exitCode: 2, status: 'unknown'});
-        expect(mismatchedStatus.sources[1]).toMatchObject({reason: 'snapshot-unreadable', state: 'unknown'});
+        expect(inactiveTeamRecord).toMatchObject({exitCode: 0, status: 'clean'});
+        expect(inactiveTeamRecord.sources[1]).toMatchObject({recordsScanned: 0, state: 'complete'});
 
         yield* fixture.fs.writeFileString(
           target,
@@ -560,13 +560,77 @@ describe('context health aggregate runtime', () => {
         );
         yield* git(fixture.worktrees.platform, ['add', '.']);
         yield* git(fixture.worktrees.platform, ['commit', '--quiet', '--message', 'mismatched visibility']);
-        const mismatchedVisibility = yield* collectContextHealthAggregate(fixture.config, {
+        const personalVisibility = yield* collectContextHealthAggregate(fixture.config, {
           callerCwd: fixture.repository,
           project: 'threadnote',
           teams: ['platform'],
         }).pipe(TestClock.withLive);
-        expect(mismatchedVisibility).toMatchObject({exitCode: 2, status: 'unknown'});
-        expect(mismatchedVisibility.sources[1]).toMatchObject({reason: 'snapshot-unreadable', state: 'unknown'});
+        expect(personalVisibility).toMatchObject({exitCode: 0, status: 'clean'});
+        expect(personalVisibility.sources[1]).toMatchObject({recordsScanned: 1, state: 'complete'});
+
+        yield* fixture.fs.writeFileString(
+          target,
+          memory('broken', 'Team snapshots reject external visibility.').replace(
+            'visibility: shared',
+            'visibility: external',
+          ),
+        );
+        yield* git(fixture.worktrees.platform, ['add', '.']);
+        yield* git(fixture.worktrees.platform, ['commit', '--quiet', '--message', 'external visibility']);
+        const externalVisibility = yield* collectContextHealthAggregate(fixture.config, {
+          callerCwd: fixture.repository,
+          project: 'threadnote',
+          teams: ['platform'],
+        }).pipe(TestClock.withLive);
+        expect(externalVisibility).toMatchObject({exitCode: 2, status: 'unknown'});
+        expect(externalVisibility.sources[1]).toMatchObject({reason: 'snapshot-unreadable', state: 'unknown'});
+
+        yield* fixture.fs.writeFileString(
+          target,
+          memory('broken', 'Team snapshots reject unknown visibility.').replace(
+            'visibility: shared',
+            'visibility: unknown',
+          ),
+        );
+        yield* git(fixture.worktrees.platform, ['add', '.']);
+        yield* git(fixture.worktrees.platform, ['commit', '--quiet', '--message', 'unknown visibility']);
+        const unknownVisibility = yield* collectContextHealthAggregate(fixture.config, {
+          callerCwd: fixture.repository,
+          project: 'threadnote',
+          teams: ['platform'],
+        }).pipe(TestClock.withLive);
+        expect(unknownVisibility).toMatchObject({exitCode: 2, status: 'unknown'});
+        expect(unknownVisibility.sources[1]).toMatchObject({reason: 'snapshot-unreadable', state: 'unknown'});
+
+        yield* fixture.fs.writeFileString(
+          target,
+          memory('broken', 'visibility: external').replace('\nvisibility: shared', '').replaceAll('\n', '\r\n'),
+        );
+        yield* git(fixture.worktrees.platform, ['add', '.']);
+        yield* git(fixture.worktrees.platform, ['commit', '--quiet', '--message', 'body visibility']);
+        const bodyVisibility = yield* collectContextHealthAggregate(fixture.config, {
+          callerCwd: fixture.repository,
+          project: 'threadnote',
+          teams: ['platform'],
+        }).pipe(TestClock.withLive);
+        expect(bodyVisibility).toMatchObject({exitCode: 0, status: 'clean'});
+        expect(bodyVisibility.sources[1]).toMatchObject({recordsScanned: 1, state: 'complete'});
+
+        yield* fixture.fs.writeFileString(
+          target,
+          memory('broken', 'Team snapshots reject CR-only external visibility.')
+            .replace('visibility: shared', 'visibility: external')
+            .replaceAll('\n', '\r'),
+        );
+        yield* git(fixture.worktrees.platform, ['add', '.']);
+        yield* git(fixture.worktrees.platform, ['commit', '--quiet', '--message', 'cr-only visibility']);
+        const crOnlyExternalVisibility = yield* collectContextHealthAggregate(fixture.config, {
+          callerCwd: fixture.repository,
+          project: 'threadnote',
+          teams: ['platform'],
+        }).pipe(TestClock.withLive);
+        expect(crOnlyExternalVisibility).toMatchObject({exitCode: 2, status: 'unknown'});
+        expect(crOnlyExternalVisibility.sources[1]).toMatchObject({reason: 'snapshot-unreadable', state: 'unknown'});
 
         yield* fixture.fs.writeFileString(
           target,
@@ -581,6 +645,46 @@ describe('context health aggregate runtime', () => {
         }).pipe(TestClock.withLive);
         expect(oversized).toMatchObject({exitCode: 2, status: 'unknown'});
         expect(oversized.sources[1]).toMatchObject({reason: 'snapshot-unreadable', state: 'unknown'});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('accepts legacy team visibility and retains inactive records for relation classification', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture(['platform']);
+        const active = yield* teamMemoryPath(fixture, 'platform', 'active');
+        const archived = yield* teamMemoryPath(fixture, 'platform', 'archived');
+        yield* fixture.fs.writeFileString(
+          active,
+          memory('active', 'Active records may depend on archived team knowledge.').replace(
+            'visibility: shared',
+            'relation: depends_on threadnote://memory/tn_archived\n',
+          ),
+        );
+        yield* fixture.fs.writeFileString(
+          archived,
+          memory('archived', 'Archived team knowledge remains relation evidence.').replace(
+            'status: active',
+            'status: archived',
+          ),
+        );
+        const legacyVisibility = yield* teamMemoryPath(fixture, 'platform', 'legacy-visibility');
+        yield* fixture.fs.writeFileString(
+          legacyVisibility,
+          memory('legacy-visibility', 'Legacy team records may omit visibility.').replace('\nvisibility: shared', ''),
+        );
+        yield* commitTeams(fixture);
+
+        const aggregate = yield* collectContextHealthAggregate(fixture.config, {
+          callerCwd: fixture.repository,
+          project: 'threadnote',
+          teams: ['platform'],
+        }).pipe(TestClock.withLive);
+
+        expect(aggregate).toMatchObject({exitCode: 1, knownFindings: 1, status: 'findings'});
+        expect(aggregate.sources[1]).toMatchObject({recordsScanned: 2, state: 'complete'});
+        expect(aggregate.findings[0]?.findingId).toMatch(/^relation-target-inactive\0/u);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
