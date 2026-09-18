@@ -1,5 +1,10 @@
 import {sha256HexSync} from '../crypto/sha256.js';
-import {canonicalMemoryDocumentContent, isSharedMemoryUri, type MemoryRecord} from './document.js';
+import {
+  canonicalMemoryDocumentContent,
+  isIsoDateOrCanonicalIsoInstant,
+  isSharedMemoryUri,
+  type MemoryRecord,
+} from './document.js';
 import {memoryIdFromIdentityAlias} from './identity_alias.js';
 
 export const MAINTENANCE_METADATA_VERSION = 1 as const;
@@ -8,7 +13,7 @@ const OWNER_MAXIMUM_CHARACTERS = 128;
 export interface MaintenanceMetadataPatchV1 {
   /** undefined preserves; null clears. */
   readonly owner?: string | null;
-  /** undefined preserves; null clears; strings are canonical ISO instants. */
+  /** undefined preserves; null clears; strings are ISO calendar dates or canonical ISO instants. */
   readonly reviewAfter?: string | null;
   /** undefined preserves; null clears; strings are canonical ISO instants. */
   readonly validTo?: string | null;
@@ -168,17 +173,25 @@ function metadataDatesAreCanonical(record: MemoryRecord): boolean {
     if (values.length > 1) return false;
     const value = values[0];
     if (value === undefined) return true;
-    return key === 'owner' ? validOwner(value) : isCanonicalIsoInstant(value);
+    return key === 'owner'
+      ? validOwner(value)
+      : key === 'review_after'
+        ? isIsoDateOrCanonicalIsoInstant(value)
+        : isCanonicalIsoInstant(value);
   });
 }
 
 function validatePatch(patch: MaintenanceMetadataPatchV1): MaintenanceMetadataPreviewV1 | undefined {
   if (patch.owner !== undefined && patch.owner !== null && !validOwner(patch.owner))
     return conflict('invalid-owner', 'owner must be bounded opaque text without controls or credential-like content.');
-  for (const value of [patch.reviewAfter, patch.validTo]) {
-    if (value !== undefined && value !== null && !isCanonicalIsoInstant(value))
-      return conflict('invalid-date', 'review_after and valid_to must be canonical ISO instants.');
-  }
+  if (
+    patch.reviewAfter !== undefined &&
+    patch.reviewAfter !== null &&
+    !isIsoDateOrCanonicalIsoInstant(patch.reviewAfter)
+  )
+    return conflict('invalid-date', 'review_after must be an ISO calendar date or canonical ISO instant.');
+  if (patch.validTo !== undefined && patch.validTo !== null && !isCanonicalIsoInstant(patch.validTo))
+    return conflict('invalid-date', 'valid_to must be a canonical ISO instant.');
   return undefined;
 }
 
