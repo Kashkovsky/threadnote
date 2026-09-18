@@ -1,4 +1,4 @@
-import {DateTime, Effect, FileSystem, Path, Schema} from 'effect';
+import {DateTime, Effect, Path, Schema} from 'effect';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {sha256Hex} from '../effect/digest.js';
 import {listCandidateReviews} from '../memory/candidate.js';
@@ -8,6 +8,7 @@ import {buildValueReportExportV1, serializeValueReportExportV1, type ValueReport
 import {aggregateValueReportV1, type ValueReportV1} from './index.js';
 import {readLocalValueEvents, summarizeCandidateReviewValue, summarizeLocalValueEvents} from './events.js';
 import {deleteValueReportData, pruneValueReportData, VALUE_REPORT_EXPORT_DIRECTORY} from './storage.js';
+import {ValueArtifactError, writeValueArtifact} from './artifact.js';
 
 export const DEFAULT_VALUE_REPORT_PERIOD_DAYS = 30 as const;
 export const DEFAULT_VALUE_REPORT_RETENTION_DAYS = 365 as const;
@@ -25,6 +26,8 @@ export interface RunValueReportOptionsV1 {
 }
 
 export interface RunValueReportExportOptionsV1 {
+  readonly from?: string;
+  readonly to?: string;
   readonly apply?: boolean;
   readonly period?: number;
   readonly project?: string;
@@ -128,44 +131,19 @@ export const writeValueReportExport = Effect.fn('valueReport.export.write')(func
   agentContextHome: string,
   bundle: ValueReportExportV1,
 ) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const serialized = `${serializeValueReportExportV1(bundle)}\n`;
-  const outputPath = yield* valueReportExportPath(agentContextHome, serialized);
-  const outputDirectory = path.dirname(outputPath);
-  if (yield* fs.exists(outputPath)) {
-    const current = yield* fs.readFileString(outputPath);
-    if (current !== serialized) {
-      return yield* ValueReportCommandError.make({
+  return yield* writeValueArtifact(agentContextHome, serialized, 'threadnote-value-report-export-v1').pipe(
+    Effect.catchIf(Schema.is(ValueArtifactError), () =>
+      ValueReportCommandError.make({
         message: 'Refusing to replace a value-report export whose content does not match its digest path.',
-      });
-    }
-    yield* fs.chmod(outputDirectory, 0o700);
-    yield* fs.chmod(outputPath, 0o600);
-    return outputPath;
-  }
-  yield* fs.makeDirectory(outputDirectory, {recursive: true, mode: 0o700});
-  yield* fs.chmod(outputDirectory, 0o700);
-  const temporary = yield* fs.makeTempFile({
-    directory: outputDirectory,
-    prefix: '.threadnote-value-report-export-',
-    suffix: '.tmp',
-  });
-  yield* Effect.gen(function* () {
-    yield* fs.writeFileString(temporary, serialized, {mode: 0o600});
-    yield* fs.chmod(temporary, 0o600);
-    const renamed = yield* fs.rename(temporary, outputPath).pipe(Effect.result);
-    if (renamed._tag === 'Success') return;
-    if ((yield* fs.exists(outputPath)) && (yield* fs.readFileString(outputPath)) === serialized) return;
-    return yield* renamed.failure;
-  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
-  yield* fs.chmod(outputPath, 0o600);
-  return outputPath;
+      }),
+    ),
+  );
 });
 
 export const buildLocalValueReport = Effect.fn('valueReport.buildLocal')(function* (
   config: RuntimeConfig,
-  options: Pick<RunValueReportOptionsV1, 'period' | 'project'>,
+  options: Pick<RunValueReportExportOptionsV1, 'period' | 'project' | 'from' | 'to'>,
 ) {
   const periodDays = options.period ?? DEFAULT_VALUE_REPORT_PERIOD_DAYS;
   if (!Number.isSafeInteger(periodDays) || periodDays < 1) {
@@ -174,6 +152,8 @@ export const buildLocalValueReport = Effect.fn('valueReport.buildLocal')(functio
     });
   }
   const now = yield* DateTime.now;
+  const absolute = options.from !== undefined || options.to !== undefined;
+  const window = absolute ? yield* absoluteWindow(options) : undefined;
   const [feedbackEvents, valueEvents, candidateReviews] = yield* Effect.all(
     [
       readRecallFeedbackEvents(config.agentContextHome),
@@ -183,16 +163,21 @@ export const buildLocalValueReport = Effect.fn('valueReport.buildLocal')(functio
     {concurrency: 3},
   );
   const project = options.project?.trim();
-  const from = DateTime.makeUnsafe(DateTime.toDateUtc(now).getTime() - periodDays * 86_400_000);
-  const period = {from: DateTime.formatIso(from), to: DateTime.formatIso(now)};
-  const range = {from: DateTime.toDateUtc(from), ...(project ? {project} : {}), to: DateTime.toDateUtc(now)};
+  const from = window?.from ?? DateTime.toEpochMillis(now) - periodDays * 86_400_000;
+  const to = window?.to ?? DateTime.toEpochMillis(now);
+  const period = {from: DateTime.formatIso(DateTime.makeUnsafe(from)), to: DateTime.formatIso(DateTime.makeUnsafe(to))};
+  const range = {
+    from: DateTime.toDateUtc(DateTime.makeUnsafe(from)),
+    ...(project ? {project} : {}),
+    to: DateTime.toDateUtc(DateTime.makeUnsafe(absolute ? to - 1 : to)),
+  };
   const eventCounts = summarizeLocalValueEvents(valueEvents, range);
   const report = aggregateValueReportV1({
     counts: {
       ...eventCounts,
       knowledgeDelta: summarizeCandidateReviewValue(candidateReviews, range),
     },
-    feedbackEvents,
+    feedbackEvents: absolute ? feedbackEvents.filter(event => Date.parse(event.timestamp) < to) : feedbackEvents,
     period,
     ...(project ? {project} : {}),
   });
@@ -208,4 +193,25 @@ function renderValueReport(report: ValueReportV1): string {
     `Knowledge Delta: ${report.knowledgeDelta.proposed} proposed, ${report.knowledgeDelta.approved} approved, ${report.knowledgeDelta.edited} edited, ${report.knowledgeDelta.rejected} rejected, ${report.knowledgeDelta.deferred} deferred.`,
     `Health: ${report.health.opened} opened, ${report.health.resolved} resolved.`,
   ].join('\n');
+}
+
+function absoluteWindow(options: Pick<RunValueReportExportOptionsV1, 'from' | 'to' | 'period'>) {
+  return Effect.try({
+    try: () => {
+      const date = (value: string | undefined) => {
+        if (value === undefined || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) throw new Error();
+        const parsed = Date.parse(`${value}T00:00:00.000Z`);
+        if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== value) throw new Error();
+        return parsed;
+      };
+      const from = date(options.from);
+      const to = date(options.to);
+      if (options.period !== undefined || from >= to) throw new Error();
+      return {from, to};
+    },
+    catch: () =>
+      ValueReportCommandError.make({
+        message: 'Absolute export windows require ordered --from and --to UTC dates (YYYY-MM-DD), without --period.',
+      }),
+  });
 }

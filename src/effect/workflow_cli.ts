@@ -30,6 +30,7 @@ import type {
   runValueReportRetention,
 } from '../value_report/commands.js';
 import type {runProcedurePublish, runProcedureStatus, runProcedureVerify} from '../procedure/commands.js';
+import type {runPilotCommand} from '../value_report/pilot_commands.js';
 import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
@@ -208,11 +209,29 @@ export function makeValueCommand<E, R>(
   exportHandler: (options: Parameters<typeof runValueReportExport>[1]) => Effect.Effect<void, E, R>,
   retentionHandler: (options: Parameters<typeof runValueReportRetention>[1]) => Effect.Effect<void, E, R>,
   deleteHandler: (options: Parameters<typeof runValueReportDelete>[1]) => Effect.Effect<void, E, R>,
+  pilotHandler: (options: Parameters<typeof runPilotCommand>[1]) => Effect.Effect<void, E, R>,
 ) {
+  const pilotCommand = Command.make(
+    'pilot',
+    {
+      action: defaultChoice(
+        'action',
+        ['report', 'export', 'retention', 'reset'] as const,
+        'Offline pilot report, explicit export, retention, or reset',
+        'report',
+      ),
+      input: optionalString('input', 'Strict content-free pilot input JSON; correlation is never stored'),
+      selectionDigest: optionalString('selection-digest', 'Required preview selection digest for reset apply'),
+      apply: boolean('apply', 'Explicitly write or delete managed pilot exports'),
+    },
+    pilotHandler,
+  ).pipe(Command.withDescription('Aggregate one deployment and window without network telemetry'));
   const exportCommand = Command.make(
     'export',
     {
       apply: boolean('apply', 'Write the bounded bundle under the private Threadnote home'),
+      from: optionalString('from', 'Absolute inclusive UTC date YYYY-MM-DD; requires --to and excludes --period'),
+      to: optionalString('to', 'Absolute exclusive UTC date YYYY-MM-DD; requires --from'),
       period: optional(
         describeFlag(
           integerFlag('period').pipe(Flag.withSchema(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)))),
@@ -272,7 +291,7 @@ export function makeValueCommand<E, R>(
   );
   return Command.make('value').pipe(
     Command.withDescription('Inspect local, count-only value signals'),
-    Command.withSubcommands([reportCommand]),
+    Command.withSubcommands([reportCommand, pilotCommand]),
   );
 }
 
