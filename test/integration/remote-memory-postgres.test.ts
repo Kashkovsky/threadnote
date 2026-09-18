@@ -14,7 +14,7 @@ import {
 } from '../../src/remote_memory/authorization.js';
 import {RemoteHandoffRetentionWorker} from '../../src/remote_memory/handoff_retention.js';
 import {RemoteMemoryIndexer} from '../../src/remote_memory/indexer.js';
-import {migrateRemoteMemoryDatabase} from '../../src/remote_memory/migrations.js';
+import {migrateRemoteMemoryDatabase, remoteMemoryMigrationVersions} from '../../src/remote_memory/migrations.js';
 import type {OAuthPrincipalClaims} from '../../src/remote_memory/oauth.js';
 import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator_postgres.js';
 import {
@@ -164,7 +164,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
     const before = await fixture.migratorSql<{checksum: string; version: number}[]>`
       SELECT version, checksum FROM remote_memory.schema_migrations ORDER BY version
     `;
-    expect(before).toHaveLength(7);
+    expect(before.map(migration => migration.version)).toEqual(remoteMemoryMigrationVersions());
     expect(before[0]?.checksum).toMatch(/^[a-f0-9]{64}$/u);
 
     await migrateRemoteMemoryDatabase(fixture.migratorSql);
