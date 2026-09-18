@@ -8,6 +8,8 @@ import {parseStableReleaseVersion, releaseHeadlineFromSummary, summarizeReleaseN
 
 const ROOT_URL = new URL('..', import.meta.url);
 const RELEASE_NOTES_HEADING = "## What's new";
+const CANONICAL_STABLE_RELEASE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const THREADNOTE_5_BETA_VERSION = /^5\.0\.0-beta\.[1-9]\d*$/;
 
 export interface PrepareReleaseOptions {
   readonly dryRun: boolean;
@@ -25,6 +27,17 @@ export interface PreparedReleasePlan {
   readonly wrotePackageVersion: boolean;
 }
 
+export function isSupportedReleaseVersion(version: string): boolean {
+  return (
+    (CANONICAL_STABLE_RELEASE_VERSION.test(version) && parseStableReleaseVersion(`v${version}`) !== undefined) ||
+    THREADNOTE_5_BETA_VERSION.test(version)
+  );
+}
+
+function releaseVersionExpectation(): string {
+  return 'a stable X.Y.Z or the numbered Threadnote 5 prerelease 5.0.0-beta.N (N >= 1)';
+}
+
 export function parsePrepareReleaseArguments(arguments_: readonly string[]): PrepareReleaseOptions {
   let dryRun = false;
   let json = false;
@@ -39,14 +52,14 @@ export function parsePrepareReleaseArguments(arguments_: readonly string[]): Pre
     else if (argument === '--version') {
       const value = arguments_[index + 1];
       if (value === undefined || value.startsWith('--')) {
-        throw ScriptError.make({message: '--version requires a stable SemVer like 4.6.7.'});
+        throw ScriptError.make({message: `--version requires ${releaseVersionExpectation()}.`});
       }
       version = value;
       index += 1;
     } else throw ScriptError.make({message: `Unknown prepare-release option: ${argument}`});
   }
   if (patch === (version !== undefined)) {
-    throw ScriptError.make({message: 'Pass exactly one of --patch or --version <X.Y.Z>.'});
+    throw ScriptError.make({message: 'Pass exactly one of --patch or --version <X.Y.Z | 5.0.0-beta.N>.'});
   }
   return {dryRun, json, patch, version};
 }
@@ -79,9 +92,8 @@ export function validateReleaseNotes(
   markdown: string,
   version: string,
 ): {readonly headline: string; readonly summary: string} {
-  const parsed = parseStableReleaseVersion(`v${version}`);
-  if (parsed === undefined) {
-    throw ScriptError.make({message: `Release version must be stable SemVer X.Y.Z, got ${version}.`});
+  if (!isSupportedReleaseVersion(version)) {
+    throw ScriptError.make({message: `Release version must be ${releaseVersionExpectation()}, got ${version}.`});
   }
   const normalized = markdown.replace(/\r\n?/g, '\n');
   if (!normalized.startsWith(`${RELEASE_NOTES_HEADING}\n`)) {
@@ -117,10 +129,12 @@ export const prepareRelease = Effect.fn('prepareRelease.run')(function* (
   }
   const version = options.patch ? nextPatchVersion(manifest.version) : options.version;
   if (version === undefined) {
-    return yield* ScriptError.make({message: 'Pass exactly one of --patch or --version <X.Y.Z>.'});
+    return yield* ScriptError.make({message: 'Pass exactly one of --patch or --version <X.Y.Z | 5.0.0-beta.N>.'});
   }
-  if (parseStableReleaseVersion(`v${version}`) === undefined) {
-    return yield* ScriptError.make({message: `Release version must be stable SemVer X.Y.Z, got ${version}.`});
+  if (!isSupportedReleaseVersion(version)) {
+    return yield* ScriptError.make({
+      message: `Release version must be ${releaseVersionExpectation()}, got ${version}.`,
+    });
   }
   const notesPath = releaseNotesPathForVersion(version);
   const notesFile = path.join(root, notesPath);
@@ -145,7 +159,11 @@ export const prepareRelease = Effect.fn('prepareRelease.run')(function* (
     nextSteps: [
       'Commit package.json and the release notes on the release PR.',
       'Open or update the PR and let CI run the full suite.',
-      'After merge onto protected main, tag v' + version + ' on that exact commit and push the tag immediately.',
+      THREADNOTE_5_BETA_VERSION.test(version)
+        ? 'After merge onto protected release/5.0.0, tag v' +
+          version +
+          ' only on its exact current remote tip and push the tag immediately.'
+        : 'After merge onto protected main, tag v' + version + ' on that exact commit and push the tag immediately.',
       'Do not create the GitHub Release manually; wait for Publish standalone release.',
     ],
     previousVersion: manifest.version,

@@ -62,9 +62,15 @@ For the 5.0 release branch, keep `package.json` at `5.0.0` while reviewed slices
 `release/5.0.0` must update the cumulative `.github/release-notes/v5.0.0.md`. Do not tag or publish until the reviewed
 release candidate is on the protected publication branch through the normal release process.
 
-For a prerelease, use a full SemVer prerelease such as `4.1.0-beta.1` in `package.json`,
-`.github/release-notes/v4.1.0-beta.1.md`, and the `v4.1.0-beta.1` tag. The publisher detects the hyphenated tag and
-creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
+The only currently supported prerelease is a numbered Threadnote 5 beta: use `5.0.0-beta.N` (with `N >= 1`) in
+`package.json`, `.github/release-notes/v5.0.0-beta.N.md`, and the `v5.0.0-beta.N` tag. The publisher creates a GitHub
+prerelease only when that tag targets the exact current remote `release/5.0.0` tip, and rechecks that tip immediately before
+creating the immutable release. Activate the no-bypass `Threadnote 5.0 beta publication freeze` ruleset after the final
+candidate merge and before tagging; it targets only `release/5.0.0` and uses the `update` rule with fetch-and-merge disabled.
+Keep it active until immutable-release verification completes, then disable it. The workflow fails closed if it cannot inspect
+that active ruleset. It rejects unnumbered, zero-padded,
+other-channel, and other-version prerelease tags. Stable tags
+remain restricted to commits already present on protected `main`.
 
 1. Add `.github/release-notes/vX.Y.Z.md` for the exact version being released. Begin with `## What's new`, then open
    with one sentence (at most 240 characters after the `Threadnote X.Y.Z` prefix) that states the release's main
@@ -358,15 +364,26 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    a passing fallback does not claim full 73,000-file attainment. Use a separately governed capable environment when
    full-shape evidence is needed. Do not dispatch a duplicate hosted run for a tag; the event SHA must match the
    exact tagged checkout for governed release evidence.
-6. Confirm immutable releases are enabled, the Apple signing secrets below are configured, the protected-main ruleset
-   still requires signed linear reviewed merges, and an active `v*` tag ruleset forbids tag updates and deletion. The
-   workflow can compare the pushed tag, exact checkout, protected-main ancestry, and remote tag peel; repository tag
-   protection is what closes the remaining check-to-publication movement window.
+6. Confirm immutable releases are enabled, the Apple signing secrets below are configured, and an active `v*` tag ruleset
+   forbids tag updates and deletion. Stable publication additionally requires the protected-main ruleset to require signed
+   linear reviewed merges. Before any `v5.0.0-beta.N` publication, mirror that ruleset onto the exact `release/5.0.0`
+   branch: signed commits, linear history, the same pull-request/code-owner approval policy, and the same strict required
+   Gateway check. Preserve any reviewed maintainer bypass from the main ruleset only if it remains necessary for the
+   one-maintainer repository, and document it in the ruleset rather than treating the beta path as a bypass. Freeze
+   `release/5.0.0` against all merges and pushes while a beta publish workflow is running with a separately named
+   `Threadnote 5.0 beta publication freeze` ruleset: active enforcement, exact branch target, no bypass actors, and an
+   `update` rule whose `update_allows_fetch_and_merge` is false. Enable it after the final candidate merge and before
+   tagging; disable it only after immutable-release verification completes. The release workflow uses the coordinator token
+   to inspect that ruleset immediately before release creation and fails closed if the API permission is unavailable; the
+   release coordinator must preflight the API access and manually verify the freeze in GitHub when a run cannot begin. The
+   workflow compares the pushed tag, exact checkout, eligible
+   branch condition, and remote tag peel; tag protection closes the remaining check-to-publication movement window.
 7. Verify that HEAD is the exact reviewed release commit, create the version tag matching both `package.json` and the
-   release-notes filename (for example `v4.0.1`) on that commit, and push it immediately. Do not merge or push another
-   main-branch commit between the final check and the tag. The publish workflow binds its checkout, every platform
-   build, and the reusable publisher to that tag-event Git object and rechecks that the remote tag still peels to the
-   same protected-main commit before creating the immutable release.
+   release-notes filename (for example `v4.0.1`) on that commit, and push it immediately. For stable releases, do not
+   merge or push another main-branch commit between the final check and the tag. For `v5.0.0-beta.N`, HEAD must instead
+   equal the exact current remote `release/5.0.0` tip; do not push the branch between that check and tagging. The publish
+   workflow binds its checkout, every platform build, and the reusable publisher to that tag-event Git object and rechecks
+   the remote tag peel plus the applicable branch condition before creating the immutable release.
 8. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
    six enabled archives are verified while its bounded production-large observation continues independently.
 
