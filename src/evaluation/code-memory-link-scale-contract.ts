@@ -6,6 +6,15 @@ export const CODE_MEMORY_LINK_SCALE_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_SCALE_ID = 'code-memory-link-inverse-scale-v1' as const;
 export const CODE_MEMORY_LINK_SCALE_ARTIFACT_ROOT = 'test/evaluation/retained/code-memory-link-scale' as const;
 export const CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS = 'github-hosted-macos-15-ARM64' as const;
+export const CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY = 'Kashkovsky/threadnote' as const;
+export const CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID = '1230070449' as const;
+export const CODE_MEMORY_LINK_SCALE_GITHUB_JOB = 'code-memory-link-inverse-scale' as const;
+export const CODE_MEMORY_LINK_SCALE_GITHUB_JOB_NAME =
+  'Code-to-memory inverse selector · 100,000 memories · release macOS class' as const;
+export const CODE_MEMORY_LINK_SCALE_CAPTURE_STEP =
+  'Build and gate the production inverse-selector path at 100,000 memories' as const;
+export const CODE_MEMORY_LINK_SCALE_ATTEST_STEP = 'Attest the inverse-selector capture' as const;
+export const CODE_MEMORY_LINK_SCALE_GITHUB_WORKFLOW_PATH = '.github/workflows/benchmarks.yml' as const;
 export const CODE_MEMORY_LINK_SCALE_SCENARIOS = [
   'file-backlinks',
   'symbol-backlink',
@@ -105,6 +114,10 @@ export const CODE_MEMORY_LINK_SCALE_EXECUTION = Object.freeze({
   sampling: 'cold-then-sequential-warmups-and-measured-samples',
 } as const);
 
+/** Smoke runs may use fewer observations, but never unbounded statistical padding. */
+export const CODE_MEMORY_LINK_SCALE_DEVELOPMENT_MAXIMUM_SAMPLES = 25;
+export const CODE_MEMORY_LINK_SCALE_DEVELOPMENT_MAXIMUM_WARMUPS = 5;
+
 export interface CodeMemoryLinkScaleLookupObservationV1 {
   readonly canonicalMismatchCount: number;
   readonly milliseconds: number;
@@ -148,15 +161,93 @@ export interface CodeMemoryLinkScaleIdentityV1 {
   readonly architecture: string;
   readonly builtArtifactSha256: string;
   readonly candidateCommit: string;
+  readonly candidateVersion: string;
   readonly cpu: string;
   readonly dirty: boolean;
+  readonly gitStatusObserved: boolean;
+  readonly github: CodeMemoryLinkScaleGithubProvenanceV1;
   readonly memoryBytes: number;
   readonly invocationMode: CodeMemoryLinkScaleEvidenceClass;
   readonly observedCommit: string;
   readonly operatingSystem: string;
+  readonly packageManager: string;
   readonly runnerClass: string;
+  readonly runnerArchitecture: string;
+  readonly runnerEnvironment: string;
+  readonly runnerOperatingSystem: string;
   readonly runtime: string;
   readonly sourceVersion: string;
+}
+
+/** Captured claims; release proof additionally requires independent candidate and runner bindings. */
+export interface CodeMemoryLinkScaleGithubProvenanceV1 {
+  readonly actions: boolean;
+  readonly eventName: string;
+  readonly job: string;
+  readonly ref: string;
+  readonly repository: string;
+  readonly repositoryId: string;
+  readonly runAttempt: number;
+  readonly runId: number;
+  readonly sha: string;
+  readonly workflowRef: string;
+  readonly workflowSha: string;
+}
+
+/** External candidate facts read from `git show C:package.json`, never from the retained artifact. */
+export interface CodeMemoryLinkScaleCandidateBindingV1 {
+  readonly candidateCommit: string;
+  readonly candidateVersion: string;
+  readonly packageManager: string;
+  readonly runtime: string;
+  readonly sourceVersion: string;
+}
+
+/** Trusted verifier input from the actual GitHub run/context, supplied separately from retained evidence.
+ * The caller must authenticate its source; copying identity fields from the artifact is not a binding.
+ */
+export interface CodeMemoryLinkScaleRunnerBindingV1 {
+  readonly github: CodeMemoryLinkScaleGithubProvenanceV1;
+  readonly runnerClass: string;
+  readonly runnerArchitecture: string;
+  readonly runnerEnvironment: string;
+  readonly runnerOperatingSystem: string;
+}
+
+export function parseCodeMemoryLinkScaleRunnerBindingV1(value: unknown): CodeMemoryLinkScaleRunnerBindingV1 {
+  const binding = record(value, 'trusted runner binding');
+  exactKeys(binding, ['github', 'runnerClass', 'runnerArchitecture', 'runnerEnvironment', 'runnerOperatingSystem']);
+  return {
+    github: parseGithubProvenance(binding.github),
+    runnerClass: nonEmptyString(binding.runnerClass, 'trusted runner class'),
+    runnerArchitecture: nonEmptyString(binding.runnerArchitecture, 'trusted runner architecture'),
+    runnerEnvironment: nonEmptyString(binding.runnerEnvironment, 'trusted runner environment'),
+    runnerOperatingSystem: nonEmptyString(binding.runnerOperatingSystem, 'trusted runner operating system'),
+  };
+}
+
+const PACKAGE_VERSION =
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
+
+export function codeMemoryLinkScaleCandidateBindingV1(
+  candidateCommit: string,
+  packageManifest: unknown,
+): CodeMemoryLinkScaleCandidateBindingV1 {
+  const normalizedCommit = lowercaseHex(candidateCommit, 40, 'candidate binding commit');
+  const manifest = record(packageManifest, 'candidate package manifest');
+  const candidateVersion = nonEmptyString(manifest.version, 'candidate package version');
+  if (!PACKAGE_VERSION.test(candidateVersion)) invalid('candidate package version must be an explicit SemVer');
+  const packageManager = nonEmptyString(manifest.packageManager, 'candidate package manager');
+  if (!packageManager.startsWith('bun@') || !PACKAGE_VERSION.test(packageManager.slice('bun@'.length))) {
+    invalid('candidate package manager must pin an explicit Bun version');
+  }
+  return {
+    candidateCommit: normalizedCommit,
+    candidateVersion,
+    packageManager,
+    runtime: `bun/${packageManager.slice('bun@'.length)}`,
+    sourceVersion: `threadnote-${candidateVersion}`,
+  };
 }
 
 export interface CodeMemoryLinkScaleMetricsV1 {
@@ -231,31 +322,40 @@ export function parseCodeMemoryLinkScaleBudgetV1(value: unknown): CodeMemoryLink
 /** Compute all correctness/resource metrics and derive release eligibility rather than trusting a label. */
 export function evaluateCodeMemoryLinkScaleCapture(input: {
   readonly budget: CodeMemoryLinkScaleBudgetV1 | unknown;
+  readonly candidateBinding?: CodeMemoryLinkScaleCandidateBindingV1;
+  readonly runnerBinding?: CodeMemoryLinkScaleRunnerBindingV1;
   readonly capture: CodeMemoryLinkScaleRuntimeCaptureV1 | unknown;
   readonly createdAt: string;
   readonly identity: CodeMemoryLinkScaleIdentityV1 | unknown;
 }): CodeMemoryLinkScaleArtifactV1 {
   const budget = parseCodeMemoryLinkScaleBudgetV1(input.budget);
-  const capture = parseCapture(input.capture);
   const identity = parseIdentity(input.identity);
+  const capture = parseCapture(input.capture, identity.invocationMode);
   const createdAt = isoInstant(input.createdAt, 'createdAt');
   const fixtureHash = codeMemoryLinkScaleFixtureHash();
   const releaseShape =
     identity.invocationMode === 'release-scale' &&
-    identity.runnerClass === CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS &&
-    identity.candidateCommit === identity.observedCommit &&
-    !identity.dirty &&
+    codeMemoryLinkScaleReleaseIdentityFailures(identity, input.candidateBinding, input.runnerBinding).length === 0 &&
     /^[0-9a-f]{64}$/u.test(identity.builtArtifactSha256) &&
     capture.fixtureHash === CODE_MEMORY_LINK_SCALE_APPROVED_FIXTURE_HASH &&
     capture.fixtureHash === fixtureHash &&
     capture.corpus.materializedMemoryCount === budget.corpusMemoryCount &&
     capture.corpus.indexedMemoryCount === budget.corpusMemoryCount &&
     capture.scenarios.every(
-      scenario => scenario.warmups.length >= budget.minimumWarmups && scenario.samples.length >= budget.minimumSamples,
+      scenario =>
+        scenario.warmups.length === budget.minimumWarmups && scenario.samples.length === budget.minimumSamples,
     );
   const evidenceClass: CodeMemoryLinkScaleEvidenceClass = releaseShape ? 'release-scale' : 'development-smoke';
   const metrics = computeMetrics(capture, budget.queryLimit);
-  const failures = gateFailures(budget, capture, identity, metrics, evidenceClass).sort(compareText);
+  const failures = gateFailures(
+    budget,
+    capture,
+    identity,
+    metrics,
+    evidenceClass,
+    input.candidateBinding,
+    input.runnerBinding,
+  ).sort(compareText);
   return {
     budgetHash: codeMemoryLinkScaleBudgetHash(budget),
     capture,
@@ -274,6 +374,8 @@ export function evaluateCodeMemoryLinkScaleCapture(input: {
 export function parseCodeMemoryLinkScaleArtifactV1(
   value: unknown,
   budgetInput: CodeMemoryLinkScaleBudgetV1 | unknown,
+  candidateBinding?: CodeMemoryLinkScaleCandidateBindingV1,
+  runnerBinding?: CodeMemoryLinkScaleRunnerBindingV1,
 ): CodeMemoryLinkScaleArtifactV1 {
   const artifact = record(value, 'artifact');
   exactKeys(artifact, [
@@ -290,8 +392,20 @@ export function parseCodeMemoryLinkScaleArtifactV1(
   ]);
   if (artifact.version !== CODE_MEMORY_LINK_SCALE_VERSION) invalid('artifact version must be 1');
   if (artifact.suite !== CODE_MEMORY_LINK_SCALE_ID) invalid(`artifact suite must be ${CODE_MEMORY_LINK_SCALE_ID}`);
+  const claimedIdentity = parseIdentity(artifact.identity);
+  if (claimedIdentity.invocationMode === 'release-scale' && candidateBinding === undefined) {
+    invalid('release-scale artifacts require an independently derived candidate binding');
+  }
+  if (claimedIdentity.invocationMode === 'release-scale') {
+    if (runnerBinding === undefined)
+      invalid('release-scale artifacts require an independently supplied runner binding');
+    const failures = runnerBindingFailures(claimedIdentity, runnerBinding);
+    if (failures.length > 0) invalid(failures.join('; '));
+  }
   const expected = evaluateCodeMemoryLinkScaleCapture({
     budget: budgetInput,
+    ...(candidateBinding === undefined ? {} : {candidateBinding}),
+    ...(runnerBinding === undefined ? {} : {runnerBinding}),
     capture: artifact.capture,
     createdAt: stringValue(artifact.createdAt, 'artifact createdAt'),
     identity: artifact.identity,
@@ -308,6 +422,32 @@ export function parseCodeMemoryLinkScaleArtifactV1(
     invalid('artifact gate does not match the retained observations');
   }
   return expected;
+}
+
+/** The immutable attestation subject excludes derived metrics, class and gate.
+ * Reconstruct these exact bytes from retained evidence, then verify its signature before promotion.
+ */
+export function codeMemoryLinkScaleAttestationSubjectV1(value: unknown): string {
+  const artifact = record(value, 'capture artifact');
+  const normalized = evaluateCodeMemoryLinkScaleCapture({
+    budget: CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET,
+    capture: artifact.capture,
+    createdAt: stringValue(artifact.createdAt, 'capture createdAt'),
+    identity: artifact.identity,
+  });
+  return `${JSON.stringify(
+    {
+      budgetHash: normalized.budgetHash,
+      capture: normalized.capture,
+      createdAt: normalized.createdAt,
+      execution: normalized.execution,
+      identity: normalized.identity,
+      suite: normalized.suite,
+      version: normalized.version,
+    },
+    undefined,
+    2,
+  )}\n`;
 }
 
 function computeMetrics(
@@ -387,20 +527,19 @@ function gateFailures(
   identity: CodeMemoryLinkScaleIdentityV1,
   metrics: CodeMemoryLinkScaleMetricsV1,
   evidenceClass: CodeMemoryLinkScaleEvidenceClass,
+  candidateBinding?: CodeMemoryLinkScaleCandidateBindingV1,
+  runnerBinding?: CodeMemoryLinkScaleRunnerBindingV1,
 ): string[] {
   const failures: string[] = [];
   if (evidenceClass !== 'release-scale') failures.push('artifact is a development smoke, not release-scale evidence');
   if (identity.invocationMode !== 'release-scale') failures.push('invocation mode is development-smoke');
-  if (
-    identity.invocationMode === 'release-scale' &&
-    identity.runnerClass !== CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS
-  ) {
-    failures.push(`runner class ${identity.runnerClass}; required ${CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS}`);
-  }
   if (identity.candidateCommit !== identity.observedCommit) {
     failures.push(`observed commit ${identity.observedCommit}; required candidate ${identity.candidateCommit}`);
   }
   if (identity.dirty) failures.push('candidate checkout is dirty; required dirty=false');
+  if (identity.invocationMode === 'release-scale') {
+    failures.push(...codeMemoryLinkScaleReleaseIdentityFailures(identity, candidateBinding, runnerBinding));
+  }
   if (!/^[0-9a-f]{64}$/u.test(identity.builtArtifactSha256)) {
     failures.push('built benchmark artifact digest is missing or malformed');
   }
@@ -517,7 +656,7 @@ function gateFailures(
   return failures;
 }
 
-function parseCapture(value: unknown): CodeMemoryLinkScaleRuntimeCaptureV1 {
+function parseCapture(value: unknown, mode: CodeMemoryLinkScaleEvidenceClass): CodeMemoryLinkScaleRuntimeCaptureV1 {
   const capture = record(value, 'capture');
   exactKeys(capture, ['corpus', 'fixtureHash', 'resources', 'scenarios']);
   const corpus = record(capture.corpus, 'capture corpus');
@@ -542,7 +681,7 @@ function parseCapture(value: unknown): CodeMemoryLinkScaleRuntimeCaptureV1 {
   ]);
   if (!Array.isArray(capture.scenarios)) invalid('capture scenarios must be an array');
   if (capture.scenarios.length === 0) invalid('capture scenarios must be non-empty');
-  const scenarios = capture.scenarios.map(parseScenario);
+  const scenarios = capture.scenarios.map(value => parseScenario(value, mode));
   assertUnique(
     scenarios.map(scenario => scenario.id),
     'scenario ids',
@@ -574,7 +713,7 @@ function parseCapture(value: unknown): CodeMemoryLinkScaleRuntimeCaptureV1 {
   };
 }
 
-function parseScenario(value: unknown): CodeMemoryLinkScaleScenarioCaptureV1 {
+function parseScenario(value: unknown, mode: CodeMemoryLinkScaleEvidenceClass): CodeMemoryLinkScaleScenarioCaptureV1 {
   const scenario = record(value, 'scenario');
   exactKeys(scenario, ['cold', 'expectedTruncatedSelectorCount', 'expectedUris', 'id', 'samples', 'warmups']);
   if (!isCodeMemoryLinkScaleScenarioId(scenario.id)) {
@@ -584,6 +723,19 @@ function parseScenario(value: unknown): CodeMemoryLinkScaleScenarioCaptureV1 {
   if (!Array.isArray(scenario.samples)) invalid('scenario samples must be an array');
   if (scenario.samples.length === 0) invalid('scenario samples must be non-empty');
   if (!Array.isArray(scenario.warmups)) invalid('scenario warmups must be an array');
+  if (mode === 'release-scale') {
+    if (
+      scenario.samples.length !== CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET.minimumSamples ||
+      scenario.warmups.length !== CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET.minimumWarmups
+    ) {
+      invalid('release observation count must be exactly 25 samples and 5 warmups per scenario');
+    }
+  } else if (
+    scenario.samples.length > CODE_MEMORY_LINK_SCALE_DEVELOPMENT_MAXIMUM_SAMPLES ||
+    scenario.warmups.length > CODE_MEMORY_LINK_SCALE_DEVELOPMENT_MAXIMUM_WARMUPS
+  ) {
+    invalid('development observation count exceeds the maximum 25 samples or 5 warmups');
+  }
   const expectedUris = scenario.expectedUris.map((uri, index) => nonEmptyString(uri, `expectedUris[${index}]`));
   assertUnique(expectedUris, 'expected URIs');
   return {
@@ -617,17 +769,25 @@ function parseIdentity(value: unknown): CodeMemoryLinkScaleIdentityV1 {
     'architecture',
     'builtArtifactSha256',
     'candidateCommit',
+    'candidateVersion',
     'cpu',
     'dirty',
+    'gitStatusObserved',
+    'github',
     'invocationMode',
     'memoryBytes',
     'observedCommit',
     'operatingSystem',
+    'packageManager',
     'runnerClass',
+    'runnerArchitecture',
+    'runnerEnvironment',
+    'runnerOperatingSystem',
     'runtime',
     'sourceVersion',
   ]);
   if (typeof identity.dirty !== 'boolean') invalid('identity dirty must be boolean');
+  if (typeof identity.gitStatusObserved !== 'boolean') invalid('identity gitStatusObserved must be boolean');
   if (identity.invocationMode !== 'development-smoke' && identity.invocationMode !== 'release-scale') {
     invalid('identity invocationMode must be development-smoke or release-scale');
   }
@@ -635,16 +795,151 @@ function parseIdentity(value: unknown): CodeMemoryLinkScaleIdentityV1 {
     architecture: nonEmptyString(identity.architecture, 'identity architecture'),
     builtArtifactSha256: stringValue(identity.builtArtifactSha256, 'built artifact digest'),
     candidateCommit: lowercaseHex(identity.candidateCommit, 40, 'candidate commit'),
+    candidateVersion: nonEmptyString(identity.candidateVersion, 'candidate version'),
     cpu: nonEmptyString(identity.cpu, 'identity cpu'),
     dirty: identity.dirty,
+    gitStatusObserved: identity.gitStatusObserved,
+    github: parseGithubProvenance(identity.github),
     invocationMode: identity.invocationMode,
     memoryBytes: positiveInteger(identity.memoryBytes, 'identity memory bytes'),
     observedCommit: lowercaseHex(identity.observedCommit, 40, 'observed commit'),
     operatingSystem: nonEmptyString(identity.operatingSystem, 'identity operating system'),
+    packageManager: nonEmptyString(identity.packageManager, 'identity package manager'),
     runnerClass: nonEmptyString(identity.runnerClass, 'identity runner class'),
+    runnerArchitecture: nonEmptyString(identity.runnerArchitecture, 'identity runner architecture'),
+    runnerEnvironment: nonEmptyString(identity.runnerEnvironment, 'identity runner environment'),
+    runnerOperatingSystem: nonEmptyString(identity.runnerOperatingSystem, 'identity runner operating system'),
     runtime: nonEmptyString(identity.runtime, 'identity runtime'),
     sourceVersion: nonEmptyString(identity.sourceVersion, 'identity source version'),
   };
+}
+
+function parseGithubProvenance(value: unknown): CodeMemoryLinkScaleGithubProvenanceV1 {
+  const github = record(value, 'identity GitHub provenance');
+  exactKeys(github, [
+    'actions',
+    'eventName',
+    'job',
+    'ref',
+    'repository',
+    'repositoryId',
+    'runAttempt',
+    'runId',
+    'sha',
+    'workflowRef',
+    'workflowSha',
+  ]);
+  if (typeof github.actions !== 'boolean') invalid('identity GitHub actions must be boolean');
+  return {
+    actions: github.actions,
+    eventName: nonEmptyString(github.eventName, 'identity GitHub event name'),
+    job: nonEmptyString(github.job, 'identity GitHub job'),
+    ref: nonEmptyString(github.ref, 'identity GitHub ref'),
+    repository: nonEmptyString(github.repository, 'identity GitHub repository'),
+    repositoryId: nonEmptyString(github.repositoryId, 'identity GitHub repository ID'),
+    runAttempt: positiveInteger(github.runAttempt, 'identity GitHub run attempt'),
+    runId: positiveInteger(github.runId, 'identity GitHub run ID'),
+    sha: lowercaseHex(github.sha, 40, 'identity GitHub SHA'),
+    workflowRef: nonEmptyString(github.workflowRef, 'identity GitHub workflow ref'),
+    workflowSha: lowercaseHex(github.workflowSha, 40, 'identity GitHub workflow SHA'),
+  };
+}
+
+/** Reject release provenance that is missing, self-attested, or detached from the exact GitHub Actions candidate. */
+export function codeMemoryLinkScaleReleaseIdentityFailures(
+  identity: CodeMemoryLinkScaleIdentityV1,
+  candidate?: CodeMemoryLinkScaleCandidateBindingV1,
+  runner?: CodeMemoryLinkScaleRunnerBindingV1,
+): readonly string[] {
+  return [...runnerBindingFailures(identity, runner), ...codeMemoryLinkScaleReleaseClaimFailures(identity, candidate)];
+}
+
+/** Producer preflight only: these self-reported claims do not establish provenance. */
+export function codeMemoryLinkScaleReleaseClaimFailures(
+  identity: CodeMemoryLinkScaleIdentityV1,
+  candidate?: CodeMemoryLinkScaleCandidateBindingV1,
+): readonly string[] {
+  const github = identity.github;
+  return [
+    candidate === undefined ? 'release-scale evidence requires an independently derived candidate binding' : '',
+    candidate === undefined || identity.candidateCommit === candidate.candidateCommit
+      ? ''
+      : `claimed candidate ${identity.candidateCommit}; required reviewed candidate ${candidate.candidateCommit}`,
+    candidate === undefined || identity.candidateVersion === candidate.candidateVersion
+      ? ''
+      : `candidate version ${identity.candidateVersion}; required ${candidate.candidateVersion}`,
+    candidate === undefined || identity.packageManager === candidate.packageManager
+      ? ''
+      : `package manager ${identity.packageManager}; required ${candidate.packageManager}`,
+    candidate === undefined || identity.runtime === candidate.runtime
+      ? ''
+      : `runtime ${identity.runtime}; required ${candidate.runtime}`,
+    candidate === undefined || identity.sourceVersion === candidate.sourceVersion
+      ? ''
+      : `source version ${identity.sourceVersion}; required ${candidate.sourceVersion}`,
+    identity.observedCommit === identity.candidateCommit
+      ? ''
+      : `observed commit ${identity.observedCommit}; required candidate ${identity.candidateCommit}`,
+    identity.dirty ? 'candidate checkout is dirty; required dirty=false' : '',
+    identity.gitStatusObserved ? '' : 'candidate Git status could not be observed',
+    github.actions ? '' : 'release evidence was not produced by GitHub Actions',
+    github.repository === CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY
+      ? ''
+      : `GitHub repository ${github.repository}; required ${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY}`,
+    github.repositoryId === CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID
+      ? ''
+      : `GitHub repository ID ${github.repositoryId}; required ${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID}`,
+    github.job === CODE_MEMORY_LINK_SCALE_GITHUB_JOB
+      ? ''
+      : `GitHub job ${github.job}; required ${CODE_MEMORY_LINK_SCALE_GITHUB_JOB}`,
+    github.eventName === 'schedule' || github.eventName === 'workflow_dispatch'
+      ? ''
+      : `GitHub event ${github.eventName}; required schedule or workflow_dispatch`,
+    github.sha === identity.candidateCommit
+      ? ''
+      : `GitHub SHA ${github.sha}; required candidate ${identity.candidateCommit}`,
+    github.workflowSha === identity.candidateCommit
+      ? ''
+      : `GitHub workflow SHA ${github.workflowSha}; required candidate ${identity.candidateCommit}`,
+    github.workflowRef ===
+    `${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY}/${CODE_MEMORY_LINK_SCALE_GITHUB_WORKFLOW_PATH}@${github.ref}`
+      ? ''
+      : 'GitHub workflow ref does not identify the governed benchmarks workflow at the claimed ref',
+    identity.runnerClass === CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS
+      ? ''
+      : `runner class ${identity.runnerClass}; required ${CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS}`,
+    identity.runnerArchitecture === 'ARM64'
+      ? ''
+      : `runner architecture label ${identity.runnerArchitecture}; required ARM64`,
+    identity.runnerEnvironment === 'github-hosted'
+      ? ''
+      : `runner environment ${identity.runnerEnvironment}; required github-hosted`,
+    identity.runnerOperatingSystem === 'macOS'
+      ? ''
+      : `runner operating system label ${identity.runnerOperatingSystem}; required macOS`,
+    identity.architecture === 'arm64' ? '' : `runner architecture ${identity.architecture}; required arm64`,
+    /^Apple M1(?:$|\s)/u.test(identity.cpu) ? '' : `runner CPU ${identity.cpu}; required Apple M1 class`,
+    identity.operatingSystem.startsWith('macOS ')
+      ? ''
+      : `runner operating system ${identity.operatingSystem}; required macOS`,
+  ].filter(Boolean);
+}
+
+function runnerBindingFailures(
+  identity: CodeMemoryLinkScaleIdentityV1,
+  runner?: CodeMemoryLinkScaleRunnerBindingV1,
+): string[] {
+  if (runner === undefined) return ['release-scale evidence requires an independently supplied runner binding'];
+  const expected = parseCodeMemoryLinkScaleRunnerBindingV1(runner);
+  const failures: string[] = [];
+  for (const key of Object.keys(expected.github) as (keyof CodeMemoryLinkScaleGithubProvenanceV1)[]) {
+    if (identity.github[key] !== expected.github[key])
+      failures.push(`GitHub ${key} differs from the trusted runner binding`);
+  }
+  for (const key of ['runnerClass', 'runnerArchitecture', 'runnerEnvironment', 'runnerOperatingSystem'] as const) {
+    if (identity[key] !== expected[key]) failures.push(`${key} differs from the trusted runner binding`);
+  }
+  return failures;
 }
 
 function exactCount(failures: string[], label: string, actual: number, expected: number): void {

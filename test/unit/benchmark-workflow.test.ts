@@ -56,6 +56,30 @@ interface BenchmarkWorkflow {
 }
 
 describe('platform benchmark workflow', () => {
+  it('signs the inverse scale capture before independently verifying and retaining release evidence', () => {
+    const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
+      schema: JSON_SCHEMA,
+    }) as BenchmarkWorkflow;
+    const job = workflow.jobs['code-memory-link-inverse-scale'];
+    const steps = job.steps ?? [];
+    const capture = steps.findIndex(step => step.run?.includes('bench:code-memory-link-scale'));
+    const attest = steps.findIndex(step => step.uses?.startsWith('actions/attest@'));
+    const verify = steps.findIndex(step => step.run?.includes('verify-code-memory-link-scale-provenance.ts'));
+    const stage = steps.findIndex(step => step.name === 'Stage the exact content-addressed G artifact');
+    expect(job.permissions).toMatchObject({
+      'id-token': 'write',
+      attestations: 'write',
+      actions: 'read',
+      contents: 'read',
+    });
+    expect(attest).toBeGreaterThan(capture);
+    expect(verify).toBeGreaterThan(attest);
+    expect(stage).toBeGreaterThan(verify);
+    expect(steps[attest].with?.['subject-path']).toContain('.subject.json');
+    expect(steps[verify].env?.GH_TOKEN).toBe('${{ github.token }}');
+    expect(steps[verify].run).toContain('--candidate-commit');
+    expect(steps.map(step => step.run ?? '').join('\n')).not.toContain('--runner-binding');
+  });
   it('runs only bounded lexical scale gates for graph and runtime pull requests', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
       schema: JSON_SCHEMA,

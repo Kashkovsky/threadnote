@@ -14,8 +14,12 @@ import {
   CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNNER_CLASS,
   CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
   CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
+  CONTEXT_BRIEF_CITATION_SCALE_REVIEWED_FIXTURE_IDENTITY_HASH,
   contextBriefCitationScaleGate,
   contextBriefCitationScaleCandidateBinding,
+  contextBriefCitationScaleFixturePlan,
+  contextBriefCitationScaleFixturePlanHash,
+  contextBriefCitationScaleReviewedFixtureIdentity,
   contextBriefCitationRssSampleGapFailures,
   contextBriefCitationRssSampleGapSummary,
   contextBriefCitationScaleReleaseIdentityFailures,
@@ -245,6 +249,74 @@ describe('Context Brief citation scale benchmark', () => {
     expect(
       parseContextBriefCitationScaleBenchmarkArguments(['--profiles', 'local-100k', '--samples', '300']),
     ).toMatchObject({profileIds: ['local-100k'], samples: 300});
+  });
+
+  it('builds the reviewed release fixture identity deterministically and rejects non-reviewed fixture evidence', () => {
+    const first = contextBriefCitationScaleReviewedFixtureIdentity(
+      budget,
+      CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+      CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
+    );
+    const second = contextBriefCitationScaleReviewedFixtureIdentity(
+      {...budget, profiles: [...budget.profiles].reverse()},
+      CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+      CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
+    );
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({
+      hash: CONTEXT_BRIEF_CITATION_SCALE_REVIEWED_FIXTURE_IDENTITY_HASH,
+      counts: {
+        indexedMemoryCandidates: 100_000,
+        legacyV1MemoryCandidates: 86_880,
+        requestedMemoryCandidates: 100_000,
+        selectedMemoryCandidates: 13_120,
+      },
+      schedule: {runCount: 205, samples: 100, warmups: 5},
+    });
+    expect(contextBriefCitationScaleReviewedFixtureIdentity(budget, 99, 7).hash).not.toBe(first.hash);
+    const shapePreservingPlan = contextBriefCitationScaleFixturePlan(
+      {
+        ...budget,
+        profiles: budget.profiles.map(profile =>
+          profile.id === 'workset-50' ? {...profile, citedRepositories: 17} : profile,
+        ),
+      },
+      budget.corpusMemoryCandidates,
+      CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS,
+      CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+      CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
+    );
+    expect(shapePreservingPlan.counts).toEqual(first.counts);
+    expect(contextBriefCitationScaleFixturePlanHash(shapePreservingPlan)).not.toBe(first.hash);
+    expect(() =>
+      contextBriefCitationScaleReviewedFixtureIdentity({...budget, corpusMemoryCandidates: 99_999}, 100, 5),
+    ).toThrow(/corpusMemoryCandidates/u);
+    expect(() =>
+      contextBriefCitationScaleReviewedFixtureIdentity(
+        {
+          ...budget,
+          profiles: budget.profiles.map(profile =>
+            profile.id === 'workset-50' ? {...profile, selectedMemories: 15} : profile,
+          ),
+        },
+        100,
+        5,
+      ),
+    ).toThrow(/selectedMemories/u);
+
+    const candidate = contextBriefCitationScaleCandidateBinding('a'.repeat(40), {
+      packageManager: 'bun@1.4.2',
+      version: '4.6.8',
+    });
+    const artifact = releaseScaleArtifact(candidate.sourceVersion, candidate.runtime);
+    expect(parseContextBriefCitationScaleArtifactV2(artifact, budget, candidate)).toEqual(artifact);
+    expect(() =>
+      parseContextBriefCitationScaleArtifactV2(
+        {...artifact, fixture: {...artifact.fixture, legacyV1MemoryCandidates: 86_879}},
+        budget,
+        candidate,
+      ),
+    ).toThrow(/legacy memory candidates do not match the reviewed fixture/u);
   });
 
   it('accepts exactly the unique-profile schedules that fit the 300-observation capacity', () => {
@@ -1037,7 +1109,12 @@ function releaseScaleArtifact(sourceVersion: string, runtime = 'bun/1.3.14'): Co
       sourceVersion,
     },
     evidenceClass: 'release-scale',
-    fixture: {...base.fixture, indexedMemoryCandidates: 100_000, requestedMemoryCandidates: 100_000},
+    fixture: {
+      ...base.fixture,
+      indexedMemoryCandidates: 100_000,
+      legacyV1MemoryCandidates: 86_880,
+      requestedMemoryCandidates: 100_000,
+    },
     gate: {passed: true, failures: []},
     memoryObserver: {
       ...base.memoryObserver,

@@ -2297,6 +2297,7 @@ describe('Threadnote MCP toolsets', () => {
         );
         expect(graphTool?.inputSchema).toMatchObject({
           additionalProperties: false,
+          required: ['operation'],
           properties: {
             base: {type: 'string'},
             budgetTokens: {maximum: 1_500, minimum: 1, type: 'integer'},
@@ -2321,6 +2322,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(analysisTool?.description).toContain('separate from inspect_code_graph');
         expect(analysisTool?.inputSchema).toMatchObject({
           additionalProperties: false,
+          required: ['operation'],
           properties: {
             callerCwd: {type: 'string'},
             communityId: {type: 'string'},
