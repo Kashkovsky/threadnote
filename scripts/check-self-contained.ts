@@ -14,7 +14,7 @@ interface PackageManifest {
 const ROOT_URL = new URL('..', import.meta.url);
 const EXPECTED_BUN_VERSION = '1.4.2';
 const EXPECTED_EFFECT_VERSION = '4.0.0-rc.115';
-const EXPECTED_NODE_LLAMA_CPP_VERSION = '3.20.0';
+const EXPECTED_NODE_LLAMA_CPP_VERSION = '3.21.1';
 const EXPECTED_TYPESCRIPT_COMPILER_VERSION = 'npm:typescript@5.9.3';
 const EXPECTED_WEB_TREE_SITTER_VERSION = '0.27.0';
 const EXPECTED_VSCODE_TREE_SITTER_WASM_VERSION = '0.3.1';
@@ -28,7 +28,7 @@ const EXPECTED_TREE_SITTER_GRAMMAR_PACKAGE_VERSIONS = {
   'tree-sitter-julia': '0.23.1',
   'tree-sitter-objc': '3.0.2',
   'tree-sitter-scala': '0.24.0',
-  'tree-sitter-systemverilog': '0.4.0',
+  'tree-sitter-systemverilog': '0.4.1',
 } as const;
 const FORBIDDEN_LEGACY_FILES = [
   '.nvmrc',
