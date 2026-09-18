@@ -45,7 +45,7 @@ export interface MemoryMetadata {
   /** Opaque maintainer label; it is never an authorization or organization identity. */
   readonly owner?: string;
   readonly project?: string;
-  /** ISO calendar date for maintenance review. */
+  /** Canonical ISO calendar date (legacy) or instant for maintenance review. */
   readonly reviewAfter?: string;
   readonly references?: readonly string[];
   readonly relations?: readonly MemoryRelation[];
@@ -544,14 +544,16 @@ function normalizeOptionalMetadata(value: string | undefined): string | undefine
 }
 
 function parseIsoDate(value: string | undefined): string | undefined {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
-    return undefined;
+  if (!value) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
+    const [year, month, day] = value.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+      ? value
+      : undefined;
   }
-  const [year, month, day] = value.split('-').map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
-    ? value
-    : undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? value : undefined;
 }
 
 function isReviewedCandidateMetadata(metadata: Partial<MemoryMetadata> | undefined): boolean {
@@ -579,7 +581,7 @@ function reviewAfterHeaderLine(value: string | undefined): string | undefined {
     return undefined;
   }
   if (parseIsoDate(value) === undefined) {
-    throw new Error('Memory metadata review_after must be an ISO date.');
+    throw new Error('Memory metadata review_after must be an ISO date or canonical ISO instant.');
   }
   return memoryHeaderLine('review_after', value);
 }

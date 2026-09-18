@@ -62,8 +62,10 @@ import {
 } from '../memory/index.js';
 import {runRecallFeedback} from '../recall/feedback_commands.js';
 import {makeCloseoutCommand} from './closeout_cli.js';
+import {makeContextMetadataCommand} from './maintenance_metadata_cli.js';
 import {runContextHealth} from '../memory/context_health_commands.js';
 import {runContextHealthRepairApply, runContextHealthRepairPreview} from '../memory/context_health_repair_commands.js';
+import {runMaintenanceMetadataApply, runMaintenanceMetadataPreview} from '../memory/maintenance_metadata_commands.js';
 import {runContextCheck} from '../context_check/commands.js';
 import {runProcedurePublish, runProcedureStatus, runProcedureVerify} from '../procedure/commands.js';
 import {runMcpInstall} from '../mcp/index.js';
@@ -210,7 +212,6 @@ const root = Command.make('threadnote').pipe(
     manifest: optionalString('manifest', 'Override THREADNOTE_MANIFEST for this invocation'),
   }),
 );
-
 const withRuntimeEffect = <E, R>(
   effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
   manifestOverride?: string,
@@ -221,7 +222,6 @@ const withRuntimeEffect = <E, R>(
       Effect.flatMap(effect),
     ),
   );
-
 const manage = Command.make(
   'manage',
   {
@@ -235,7 +235,6 @@ const manage = Command.make(
   },
   options => withRuntimeEffect(config => runManage(config, options)),
 ).pipe(Command.withDescription('Open the local Threadnote web manager'));
-
 const processes = Command.make(
   'processes',
   {
@@ -245,7 +244,6 @@ const processes = Command.make(
 ).pipe(
   Command.withDescription('Show privacy-safe roles, relationships, age, operations, and memory for live processes'),
 );
-
 const doctor = Command.make(
   'doctor',
   {
@@ -1433,7 +1431,6 @@ const workset = Command.make('workset').pipe(
   Command.withDescription('Inspect and prepare named sets of related repos'),
   Command.withSubcommands([worksetList, worksetShow, worksetPrepare, worksetStatus]),
 );
-
 const contextBrief = makeContextBriefCommand(options => withRuntimeEffect(config => runContextBrief(config, options)));
 const contextHealth = makeContextHealthCommand(options =>
   withRuntimeEffect(config => runContextHealth(config, options)),
@@ -1442,11 +1439,14 @@ const contextHealthRepair = makeContextHealthRepairCommand(
   options => withRuntimeEffect(config => runContextHealthRepairPreview(config, options)),
   options => withRuntimeEffect(config => runContextHealthRepairApply(config, options)),
 );
+const contextMetadata = makeContextMetadataCommand(
+  options => withRuntimeEffect(config => runMaintenanceMetadataPreview(config, options)),
+  options => withRuntimeEffect(config => runMaintenanceMetadataApply(config, options)),
+);
 const contextCheck = makeContextCheckCommand(options => withRuntimeEffect(config => runContextCheck(config, options)));
-
 const context = Command.make('context').pipe(
   Command.withDescription('Compile task-oriented agent context'),
-  Command.withSubcommands([contextBrief, contextHealth, contextHealthRepair, contextCheck]),
+  Command.withSubcommands([contextBrief, contextHealth, contextHealthRepair, contextMetadata, contextCheck]),
 );
 const value = makeValueCommand(
   options => withRuntimeEffect(config => valueReportCommands.runValueReport(config, options)),
