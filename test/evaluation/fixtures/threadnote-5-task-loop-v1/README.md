@@ -1,7 +1,7 @@
 # Threadnote 5 release-readiness contract
 
-This fixture preregisters the deterministic, offline evidence contract for the local 5.0 task loop. The evaluator
-requires one content-free receipt for each bounded scenario:
+This fixture preregisters the deterministic, offline evidence contract for the local 5.0 task loop. The production
+capture requires exactly 15 content-free observations backed by exactly 24 source-native records:
 
 - solo use and first cited correct plan;
 - two-agent reuse through a second surface;
@@ -19,7 +19,11 @@ triage, projection drift, and Context Brief/Knowledge Delta output budgets; thos
 
 Source-native adapter records are selected by a typed registry, not a capture label. Context Brief records reparse the
 production request/result, accept only a requested 800–1,500 estimated-token cap, and permit shorter responses that stay
-within it; first-plan correctness and citations need external authority. Dirty-worktree records require a parsed Context Check report plus repository, graph, and read-fence
+within it; first-plan correctness and citations need external authority. Solo Context Brief attempts must identify the
+exact activation first-brief receipt, so elapsed plan time comes from the production activation transition rather than a
+self-reported timer. ValueReport records for solo, two-agent, Git-shared, and offline trials retain the exact raw feedback
+event and bind it to the corresponding first-brief or second-surface lane. Offline activation and ValueReport capture
+each require a separately hash-bound zero-network observation. Dirty-worktree records require a parsed Context Check report plus repository, graph, and read-fence
 boundaries. Guidance records reparse sources and preview/before/after/current receipts, and migration records bind both
 runtime identities and protected-state digests. Missing external stale-precondition or migration-execution authority stays
 unknown; a migration receipt by itself is never execution proof.
@@ -34,7 +38,9 @@ least 9 successes across 10 eligible solo attempts. Smaller samples remain unkno
 pass a threshold.
 
 Evidence contains only exact source versions and commits, executable hashes, bounded counts, categorical outcomes, and
-deterministic receipt hashes. Every scenario transcript is chained, names its subsystem receipt digests, and records
+deterministic receipt hashes. The production capture derives every transcript through the same adapters as verification,
+canonicalizes record and runtime-boundary order, and refuses missing, surplus, duplicate, oversized, mislabeled,
+under-sampled, correlation-broken, or runtime-drifting inputs. Every scenario transcript is chained, names its subsystem receipt digests, and records
 matching pre/post runtime identity. A reviewed capture-manifest hash supplied outside the evidence file binds those
 transcripts; the adapter label alone has no authority. Unknown, failed, missing, tampered, duplicate, runtime-drifting,
 or scenario-mislabeled observations fail closed. A missing or untrusted 4.7.x identity produces an explicit unknown

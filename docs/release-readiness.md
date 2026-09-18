@@ -13,6 +13,15 @@ kind, and artifact. Every observation must bind the exact
 outside the evidence file.
 
 ```sh
+bun run capture:threadnote-5-release-readiness -- \
+  --candidate candidate-runtime.json \
+  --runtime-boundaries scenario-runtime-boundaries.json \
+  --retained-subsystem-receipts private-source-records.json \
+  --authority-manifest reviewed-authority.json \
+  --authority-manifest-sha256 <independently-reviewed-64-hex-sha256> \
+  --evidence-output candidate-evidence.json \
+  --canonical-receipts-output retained-receipts.json
+
 bun run verify:threadnote-5-release-readiness-receipts -- \
   --evidence candidate-evidence.json \
   --retained-subsystem-receipts retained-receipts.json \
@@ -30,6 +39,12 @@ bun run eval:threadnote-5-release-readiness -- \
   --evidence candidate-evidence.json
 ```
 
+The capture command accepts exactly the 15 preregistered scenario boundaries and 24 source-native records. It replays
+the same adapters as the verifier, derives the transcripts instead of accepting claimed outcomes, and writes records in
+canonical order. Input order cannot change the evidence or manifest hashes. Missing, extra, duplicated, oversized,
+mislabeled, under-sampled, cross-scenario, or pre/post runtime-drifting inputs stop capture without producing a passing
+artifact. Review the printed capture-manifest hash independently before using it as evaluator authority.
+
 The authority manifest is a separate content-free review boundary. Capture it from the supervising
 execution/review surface, not from the proposal or procedure artifact being evaluated. It binds
 candidate-review apply events, provider-call counts, procedure command exit receipts, and automatic
@@ -45,10 +60,13 @@ The local adapter registry independently parses and rederives shipped structured
 proposal, procedure, health, Context Brief, Context Check, guidance, and migration artifacts. It rejects duplicate, extra, oversized, stale-candidate,
 or unreferenced records and compares derived assertions and measurements exactly with the sealed
 transcript. Proposal approval and procedure execution are checked against the independently trusted
-authority manifest rather than proposal/receipt labels. Health-maintenance captures replay the production schedule plan
-and aggregate from bounded personal/team sources, then require a record-bound authority entry proving zero writes/network
-activity and stable pre/post HEAD, index, and worktree digests for every selected configured team. Unknown aggregate
-results remain valid read-only outcomes. Pending verifier seams leave only their dependent scenarios and metrics unknown;
+authority manifest rather than proposal/receipt labels. Activation, Context Brief, and ValueReport records are joined by
+the exact first-brief receipt or second-surface proof, and each counted feedback event is bound to that exact scenario
+trial. Offline activation and ValueReport trials both require separately hash-bound zero-network observations. Scheduled
+health captures replay the production schedule plan and aggregate from bounded personal/team sources, then require a
+record-bound authority entry proving zero writes/network activity and stable pre/post HEAD, index, and worktree digests
+for every selected configured team. Unknown aggregate results remain valid read-only outcomes. Missing source-native
+records or external authority leave only their dependent scenarios and metrics unknown;
 tampered or mismatched evidence is a quality failure.
 
 Context Brief captures strictly reparse the production request/result, require a requested cap from 800–1,500 estimated

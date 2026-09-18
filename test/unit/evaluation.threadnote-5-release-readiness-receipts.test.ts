@@ -5,8 +5,11 @@ import {
   threadnote5ActivationOfflineObservationDigest,
   threadnote5ApplyAuditDigest,
   threadnote5ApprovedSourceUriHash,
+  threadnote5ContextBriefAttemptDigest,
   threadnote5LocalAuthorityManifestHash,
   threadnote5ProcedureVerificationReceiptDigest,
+  threadnote5RecallFeedbackEventDigest,
+  threadnote5ValueReportOfflineObservationDigest,
   type Threadnote5LocalAuthorityEntryV1,
   type Threadnote5LocalAuthorityManifestV1,
 } from '../../src/evaluation/threadnote-5-release-readiness-authority.js';
@@ -20,6 +23,7 @@ import {
   type Threadnote5SourceV1,
 } from '../../src/evaluation/threadnote-5-release-readiness-contract.js';
 import {
+  deriveThreadnote5LocalScenarioClaims,
   threadnote5LocalReceiptVerificationArtifact,
   threadnote5LocalSubsystemReceiptDigest,
   verifyThreadnote5LocalSubsystemReceipts,
@@ -253,11 +257,81 @@ describe('Threadnote 5 source-native receipt verification', () => {
     });
   });
 
+  it('rejects ValueReport feedback trials filtered by timestamp or project scope', () => {
+    const record = valueReportRecord();
+    const artifact = record.artifact as {
+      readonly captures: readonly {readonly input: Record<string, unknown>; readonly report: unknown}[];
+      readonly feedbackTrials: readonly {
+        readonly event: Record<string, unknown>;
+        readonly laneId: string;
+        readonly offlineObservation: null;
+      }[];
+    };
+    const firstInput = artifact.captures[0].input as {
+      readonly feedbackEvents: readonly Record<string, unknown>[];
+      readonly period: unknown;
+    };
+    const timestampInput = {
+      ...firstInput,
+      feedbackEvents: [{...firstInput.feedbackEvents[0], timestamp: '2026-09-18T00:00:00.000Z'}],
+    };
+    const timestampFiltered = resealRecord(record, {
+      ...artifact,
+      captures: [
+        {
+          input: timestampInput,
+          report: aggregateValueReportV1(timestampInput as unknown as Parameters<typeof aggregateValueReportV1>[0]),
+        },
+        ...artifact.captures.slice(1),
+      ],
+      feedbackTrials: [
+        {...artifact.feedbackTrials[0], event: timestampInput.feedbackEvents[0]},
+        ...artifact.feedbackTrials.slice(1),
+      ],
+    });
+    expect(
+      verify(
+        [observed(timestampFiltered, ['two-surfaces-connected', 'second-surface-reused-decision'])],
+        [timestampFiltered],
+      ),
+    ).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+
+    const projectInput = {
+      ...firstInput,
+      feedbackEvents: [{...firstInput.feedbackEvents[0], project: 'other-project'}],
+      project: 'threadnote',
+    };
+    const projectFiltered = resealRecord(record, {
+      ...artifact,
+      captures: [
+        {
+          input: projectInput,
+          report: aggregateValueReportV1(projectInput as unknown as Parameters<typeof aggregateValueReportV1>[0]),
+        },
+        ...artifact.captures.slice(1),
+      ],
+      feedbackTrials: [
+        {...artifact.feedbackTrials[0], event: projectInput.feedbackEvents[0]},
+        ...artifact.feedbackTrials.slice(1),
+      ],
+    });
+    expect(
+      verify(
+        [observed(projectFiltered, ['two-surfaces-connected', 'second-surface-reused-decision'])],
+        [projectFiltered],
+      ),
+    ).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+  });
+
   it('correlates the activation proof, second-surface recall, and raw value events', () => {
     const journey = activationJourneyFixture();
     const activation = makeRecord('two-agent', 'activation', {trials: [journey.activationTrial]});
     const recall = makeRecord('two-agent', 'recall', {trials: [{proof: journey.proof}]});
-    const value = makeRecord('two-agent', 'value-report', activationValueArtifact(journey.plan, journey.finalReceipt));
+    const value = makeRecord(
+      'two-agent',
+      'value-report',
+      activationValueArtifact(journey.plan, journey.finalReceipt, journey.proof.proofHash),
+    );
     const assertions = [
       'two-surfaces-connected',
       'second-surface-reused-decision',
@@ -336,7 +410,11 @@ describe('Threadnote 5 source-native receipt verification', () => {
         index === 0 ? {...operation, subsystemReceiptHash: '0'.repeat(64)} : operation,
       ),
     };
-    const forgedValue = makeRecord('two-agent', 'value-report', activationValueArtifact(journey.plan, forgedReceipt));
+    const forgedValue = makeRecord(
+      'two-agent',
+      'value-report',
+      activationValueArtifact(journey.plan, forgedReceipt, journey.proof.proofHash),
+    );
     const forgedValueObservation = observed(activation, assertions, measurements, [
       {digest: recall.digest, kind: recall.kind},
       {digest: forgedValue.digest, kind: forgedValue.kind},
@@ -350,7 +428,7 @@ describe('Threadnote 5 source-native receipt verification', () => {
     const unrelatedValue = makeRecord(
       'two-agent',
       'value-report',
-      activationValueArtifact(unrelatedJourney.plan, unrelatedJourney.finalReceipt),
+      activationValueArtifact(unrelatedJourney.plan, unrelatedJourney.finalReceipt, unrelatedJourney.proof.proofHash),
     );
     const unrelatedValueObservation = observed(activation, assertions, measurements, [
       {digest: recall.digest, kind: recall.kind},
@@ -477,6 +555,33 @@ describe('Threadnote 5 source-native receipt verification', () => {
       reason: 'records-invalid',
       state: 'unknown',
     });
+  });
+
+  it('keeps static safety sources singular beside measured scenario sources', () => {
+    const artifact = activationSoloArtifact();
+    const trial = artifact.trials[0];
+    const boundary = trial.receiptChain[Math.floor(trial.receiptChain.length / 2)];
+    const activation = makeRecord('interrupted-resumed', 'activation', {
+      trials: [{...trial, resumeBoundaryRevision: boundary.revision}],
+    });
+    const closeout = makeRecord('interrupted-resumed', 'closeout', {
+      reviews: Array.from({length: 10}, (_value, index) => review(index + 30)),
+    });
+    const authorityManifest = authorityManifestFor([activation, closeout]);
+    const derived = deriveThreadnote5LocalScenarioClaims({
+      authorityManifest,
+      candidate: CANDIDATE,
+      expectedAuthorityManifestSha256: threadnote5LocalAuthorityManifestHash(authorityManifest),
+      retainedRecords: [closeout, activation],
+    });
+
+    expect(derived.scenarios).toMatchObject([
+      {
+        metricContributingKinds: ['closeout'],
+        missingKinds: [],
+        scenario: 'interrupted-resumed',
+      },
+    ]);
   });
 
   it('requires the complete activation receipt chain rather than trusting a terminal receipt', () => {
@@ -888,8 +993,8 @@ describe('Threadnote 5 source-native receipt verification', () => {
     const entries: Threadnote5LocalAuthorityEntryV1[] = [
       {assertions: ['migration-runtime-executed'], recordDigest: 'a'.repeat(64), type: 'migration-execution'},
       {
-        assertions: ['first-plan-correct', 'first-plan-source-cited'],
         recordDigest: 'b'.repeat(64),
+        trials: [{attemptDigest: 'c'.repeat(64), firstPlanCorrect: true, firstPlanSourceCited: true}],
         type: 'context-brief-plan-citation',
       },
     ];
@@ -1162,7 +1267,16 @@ describe('Threadnote 5 source-native receipt verification', () => {
     };
     const tokens = measureAgentToolResponse(attempt.result).estimatedTokens;
     expect(tokens).toBeLessThan(800);
-    const solo = makeRecord('solo', 'context-brief', {attempts: Array.from({length: 10}, () => attempt)});
+    const soloAttempts = Array.from({length: 10}, (_value, index) => ({
+      ...attempt,
+      event: {
+        activationId: sha256HexSync(`context-brief-activation-${index}`),
+        activationReceiptRevision: sha256HexSync(`context-brief-receipt-${index}`),
+        candidate: CANDIDATE,
+        completedAt: new Date(Date.UTC(2026, 8, 17, 0, index)).toISOString(),
+      },
+    }));
+    const solo = makeRecord('solo', 'context-brief', {attempts: soloAttempts});
     const soloObservation = observed(
       solo,
       ['first-plan-source-cited', 'first-plan-correct'],
@@ -1175,23 +1289,21 @@ describe('Threadnote 5 source-native receipt verification', () => {
         retainedRecords: [solo],
       }),
     ).toMatchObject({reason: 'verifier-incomplete'});
-    const authority: Threadnote5LocalAuthorityManifestV1 = {
-      candidate: CANDIDATE,
-      entries: [
-        {
-          assertions: ['first-plan-correct', 'first-plan-source-cited'],
-          recordDigest: solo.digest,
-          type: 'context-brief-plan-citation',
-        },
-      ],
-      version: 1 as const,
-    };
+    const authority = authorityManifestFor([solo]);
     const verified = verify([soloObservation], [solo], authority);
     expect(verified).toMatchObject({state: 'verified'});
     const output = makeRecord('output-budgets', 'context-brief', {attempts: [attempt]});
     expect(verify([observed(output, ['context-brief-800-to-1500-estimated-tokens'])], [output])).toMatchObject({
       state: 'verified',
     });
+    const closeout = makeRecord('output-budgets', 'closeout', {reviews: [review(99)]});
+    const outputWithCloseout = observed(
+      closeout,
+      ['context-brief-800-to-1500-estimated-tokens', 'knowledge-delta-items-at-most-three'],
+      [],
+      [{digest: output.digest, kind: output.kind}],
+    );
+    expect(verify([outputWithCloseout], [closeout, output])).toMatchObject({state: 'verified'});
     const bad = resealRecord(output, {attempts: [{...attempt, result: {...attempt.result, text: 'tampered'}}]});
     expect(verify([observed(bad, ['context-brief-800-to-1500-estimated-tokens'])], [bad])).toMatchObject({
       reason: 'records-invalid',
@@ -1237,7 +1349,7 @@ function authorityManifestFor(
   const uniqueRecords = [...new Map(records.map(record => [record.digest, record] as const)).values()];
   const entries: Threadnote5LocalAuthorityEntryV1[] = [];
   for (const record of uniqueRecords) {
-    if (record.kind === 'activation' && record.scenario !== 'solo') {
+    if (record.kind === 'activation') {
       const trials = (record.artifact as {readonly trials: readonly Record<string, unknown>[]}).trials;
       entries.push({
         recordDigest: record.digest,
@@ -1261,6 +1373,44 @@ function authorityManifestFor(
           };
         }),
         type: 'activation-verification',
+      });
+      continue;
+    }
+    if (record.kind === 'context-brief' && record.scenario === 'solo') {
+      const attempts = (record.artifact as {readonly attempts: readonly unknown[]}).attempts;
+      entries.push({
+        recordDigest: record.digest,
+        trials: attempts.map(attempt => ({
+          attemptDigest: threadnote5ContextBriefAttemptDigest(attempt),
+          firstPlanCorrect: true,
+          firstPlanSourceCited: true,
+        })),
+        type: 'context-brief-plan-citation',
+      });
+      continue;
+    }
+    if (record.kind === 'value-report') {
+      const trials = (
+        record.artifact as {
+          readonly feedbackTrials?: readonly {
+            readonly event: unknown;
+            readonly laneId: string;
+            readonly offlineObservation: unknown | null;
+          }[];
+        }
+      ).feedbackTrials;
+      if (trials === undefined) continue;
+      entries.push({
+        recordDigest: record.digest,
+        trials: trials.map(trial => ({
+          feedbackEventDigest: threadnote5RecallFeedbackEventDigest(trial.event),
+          laneId: trial.laneId,
+          offlineObservationDigest:
+            trial.offlineObservation === null
+              ? null
+              : threadnote5ValueReportOfflineObservationDigest(trial.offlineObservation),
+        })),
+        type: 'value-report-verification',
       });
       continue;
     }
@@ -1583,7 +1733,11 @@ function activationJourneyFixture(repositoryIdentityHash = 'b'.repeat(64)) {
   };
 }
 
-function activationValueArtifact(plan: ReturnType<typeof createActivationPlanV1>, receipt: ActivationReceiptV1) {
+function activationValueArtifact(
+  plan: ReturnType<typeof createActivationPlanV1>,
+  receipt: ActivationReceiptV1,
+  laneId: string,
+) {
   const events = activationValueEventsV1(receipt);
   const from = new Date(Date.parse(receipt.startedAt) - 1_000).toISOString();
   const to = new Date(Date.parse(receipt.updatedAt) + 1_000).toISOString();
@@ -1605,6 +1759,7 @@ function activationValueArtifact(plan: ReturnType<typeof createActivationPlanV1>
   return {
     activationTrials: [{events, input, report, state: {plan, receipt}}],
     captures: [{input, report}],
+    feedbackTrials: [{event: input.feedbackEvents[0], laneId, offlineObservation: null}],
   };
 }
 
@@ -1803,7 +1958,14 @@ function valueReportRecord(): Threadnote5LocalSubsystemReceiptRecordV1 {
     };
     return {input, report: aggregateValueReportV1(input)};
   });
-  return makeRecord('two-agent', 'value-report', {captures});
+  return makeRecord('two-agent', 'value-report', {
+    captures,
+    feedbackTrials: captures.map((capture, index) => ({
+      event: capture.input.feedbackEvents[0],
+      laneId: sha256HexSync(`value-report-lane-${index}`),
+      offlineObservation: null,
+    })),
+  });
 }
 
 function contextHealthRecord(): Threadnote5LocalSubsystemReceiptRecordV1 {
