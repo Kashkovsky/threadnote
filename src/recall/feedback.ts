@@ -148,10 +148,7 @@ export const aggregateRecallFeedback = Effect.fn('recall.aggregateFeedback')(fun
   const queryFingerprint = yield* recallQueryFingerprint(input.query);
   const scores = new Map<string, number>();
   for (const event of events) {
-    const projectMatches =
-      event.action === 'pin'
-        ? event.project !== undefined && event.project === input.project
-        : event.project === undefined || event.project === input.project;
+    const projectMatches = feedbackProjectMatchesForRanking(event, input.project);
     const queryMatches = event.queryFingerprint === queryFingerprint;
     if (!projectMatches || (!queryMatches && event.action !== 'pin')) {
       continue;
@@ -175,7 +172,7 @@ export function summarizeRecallFeedback(
 ): Readonly<Record<RecallFeedbackAction, number>> {
   const counts: Record<RecallFeedbackAction, number> = {applied: 0, dismiss: 0, pin: 0, useful: 0, wrong: 0};
   for (const event of events) {
-    if (options.project !== undefined && event.project !== options.project) continue;
+    if (options.project !== undefined && !feedbackProjectMatches(event, options.project)) continue;
     const timestamp = Date.parse(event.timestamp);
     if (!Number.isFinite(timestamp)) continue;
     if (options.from !== undefined && timestamp < options.from.getTime()) continue;
@@ -183,6 +180,17 @@ export function summarizeRecallFeedback(
     counts[event.action] += 1;
   }
   return counts;
+}
+
+function feedbackProjectMatchesForRanking(event: RecallFeedbackEvent, project: string | undefined): boolean {
+  if (project === undefined) return event.action !== 'pin' && event.project === undefined;
+  return feedbackProjectMatches(event, project);
+}
+
+function feedbackProjectMatches(event: RecallFeedbackEvent, project: string): boolean {
+  return event.action === 'pin'
+    ? event.project !== undefined && event.project === project
+    : event.project === undefined || event.project === project;
 }
 
 export const recallQueryFingerprint = Effect.fn('recall.queryFingerprint')((query: string) =>
