@@ -20,6 +20,11 @@ import {
   type Threadnote5SourceV1,
 } from '../../src/evaluation/threadnote-5-release-readiness-contract.js';
 import {evaluateThreadnote5ReleaseReadiness} from '../../src/evaluation/threadnote-5-release-readiness.js';
+import {
+  threadnote5BaselineTrialLedger,
+  threadnote5BaselineTrialLedgerHash,
+} from '../../src/evaluation/threadnote-5-release-readiness-baseline-ledger.js';
+import {verifyThreadnote5LocalSubsystemReceipts} from '../../src/evaluation/threadnote-5-release-readiness-receipts.js';
 import * as fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import fixtureJson from '../evaluation/fixtures/threadnote-5-task-loop-v1/fixture.json' with {type: 'json'};
@@ -52,6 +57,7 @@ describe('Threadnote 5 release-readiness evidence', () => {
       'interrupted-resumed',
       'upgrade-downgrade',
       'provider-neutral-proposal',
+      'verified-procedures',
       'health-maintenance',
       'structured-closeout',
       'stale-citation',
@@ -87,11 +93,11 @@ describe('Threadnote 5 release-readiness evidence', () => {
       source: BASELINE,
       state: 'available',
     };
-    const evidence = evidenceBundle({baseline, mode: 'release-candidate'});
+    const evidence = evidenceBundle({baseline, mode: 'fixture-replay'});
     const result = evaluate(evidence, BASELINE);
 
     expect(result.gate).toEqual({
-      insufficiencies: ['production subsystem receipt verification is not implemented'],
+      insufficiencies: ['sealed fixture replay is not production release evidence'],
       qualityFailures: [],
       status: 'unknown',
     });
@@ -110,6 +116,31 @@ describe('Threadnote 5 release-readiness evidence', () => {
       ['knowledge-delta-completion-rate', 'observed', 'improved'],
       ['health-resolution-rate', 'observed', 'improved'],
     ]);
+  });
+
+  it('keeps malformed retained receipt inputs unknown', () => {
+    const baseline: Threadnote5BaselineV1 = {
+      observations: observationsFor(BASELINE, 'baseline'),
+      source: BASELINE,
+      state: 'available',
+    };
+    const evidence = evidenceBundle({baseline, mode: 'release-candidate'});
+    const records = [{}];
+    const result = evaluateWithManifest(evidence, evidence.capture.manifestHash, BASELINE, records);
+
+    expect(result.gate).toMatchObject({
+      insufficiencies: ['production subsystem receipt verification is records-invalid'],
+      status: 'failed',
+    });
+    expect(result.evidence.productionReceiptVerification).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+
+    expect(
+      verifyThreadnote5LocalSubsystemReceipts({
+        candidate: CANDIDATE,
+        observations: evidence.candidateObservations,
+        retainedRecords: [...records].reverse(),
+      }),
+    ).toMatchObject({reason: 'records-invalid', state: 'unknown'});
   });
 
   it('requires at least 9 successful activation attempts out of the 10-attempt minimum', () => {
@@ -214,7 +245,7 @@ describe('Threadnote 5 release-readiness evidence', () => {
       state: 'available',
     };
     const evidence = rewriteBaselineScenarioMeasurements(
-      evidenceBundle({baseline, mode: 'release-candidate'}),
+      evidenceBundle({baseline, mode: 'fixture-replay'}),
       'solo',
       measurement =>
         measurement.id === 'setup-success-rate' && 'eligibleCount' in measurement
@@ -254,6 +285,49 @@ describe('Threadnote 5 release-readiness evidence', () => {
       ).toBe(true);
       expect(result.gate.insufficiencies).toContain('4.7.x baseline does not match a trusted expected source identity');
     }
+  });
+
+  it('requires an independently supplied 4.7 trial-ledger hash when a ledger is requested', () => {
+    const baseline: Threadnote5BaselineV1 = {
+      observations: observationsFor(BASELINE, 'baseline'),
+      source: BASELINE,
+      state: 'available',
+    };
+    const evidence = evidenceBundle({baseline, mode: 'fixture-replay'});
+    const ledger = threadnote5BaselineTrialLedger(baseline.source, baseline.observations);
+    const trusted = evaluateThreadnote5ReleaseReadiness({
+      baselineTrialLedger: ledger,
+      evidence,
+      expectedBaselineSource: BASELINE,
+      expectedBaselineTrialLedgerSha256: threadnote5BaselineTrialLedgerHash(ledger),
+      expectedCandidateCommit: CANDIDATE.commit,
+      expectedCandidateExecutableSha256: CANDIDATE.executableSha256,
+      expectedCaptureManifestSha256: evidence.capture.manifestHash,
+      fixture,
+    });
+    expect(trusted.metrics.every(metric => metric.baseline.state === 'observed')).toBe(true);
+
+    const missing = evaluateThreadnote5ReleaseReadiness({
+      evidence,
+      expectedBaselineSource: BASELINE,
+      expectedCandidateCommit: CANDIDATE.commit,
+      expectedCandidateExecutableSha256: CANDIDATE.executableSha256,
+      expectedCaptureManifestSha256: evidence.capture.manifestHash,
+      fixture,
+    });
+    expect(missing.metrics.every(metric => metric.baseline.state === 'unknown')).toBe(true);
+
+    const untrusted = evaluateThreadnote5ReleaseReadiness({
+      baselineTrialLedger: ledger,
+      evidence,
+      expectedBaselineSource: BASELINE,
+      expectedBaselineTrialLedgerSha256: 'f'.repeat(64),
+      expectedCandidateCommit: CANDIDATE.commit,
+      expectedCandidateExecutableSha256: CANDIDATE.executableSha256,
+      expectedCaptureManifestSha256: evidence.capture.manifestHash,
+      fixture,
+    });
+    expect(untrusted.metrics.every(metric => metric.baseline.state === 'unknown')).toBe(true);
   });
 
   it('fails closed when a candidate scenario is missing', () => {
@@ -427,14 +501,26 @@ function evaluateWithManifest(
   evidence: Threadnote5ReleaseEvidenceV1,
   expectedCaptureManifestSha256: string,
   expectedBaselineSource?: unknown,
+  retainedSubsystemReceiptRecords?: unknown,
 ) {
+  const baselineLedger =
+    evidence.baseline.state === 'available'
+      ? threadnote5BaselineTrialLedger(evidence.baseline.source, evidence.baseline.observations)
+      : undefined;
   return evaluateThreadnote5ReleaseReadiness({
+    ...(baselineLedger === undefined
+      ? {}
+      : {
+          baselineTrialLedger: baselineLedger,
+          expectedBaselineTrialLedgerSha256: threadnote5BaselineTrialLedgerHash(baselineLedger),
+        }),
     evidence,
     expectedBaselineSource,
     expectedCandidateCommit: CANDIDATE.commit,
     expectedCandidateExecutableSha256: CANDIDATE.executableSha256,
     expectedCaptureManifestSha256,
     fixture,
+    retainedSubsystemReceiptRecords,
   });
 }
 

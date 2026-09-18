@@ -4,6 +4,7 @@ import {
   parseThreadnote5TrustedSourceV1,
   threadnote5ReleaseReadinessFixtureHash,
   type Threadnote5MeasurementV1,
+  type Threadnote5BaselineV1,
   type Threadnote5MetricDefinitionV1,
   type Threadnote5ObservationV1,
   type Threadnote5ReleaseMetric,
@@ -12,6 +13,15 @@ import {
   type Threadnote5ScenarioContractV1,
   type Threadnote5SourceV1,
 } from './threadnote-5-release-readiness-contract.js';
+import {canonicalJson} from '../code_graph/checkpoint/canonical_json.js';
+import {
+  verifyThreadnote5LocalSubsystemReceipts,
+  type Threadnote5LocalReceiptVerificationV1,
+} from './threadnote-5-release-readiness-receipts.js';
+import {
+  parseThreadnote5BaselineTrialLedger,
+  threadnote5BaselineTrialLedgerHash,
+} from './threadnote-5-release-readiness-baseline-ledger.js';
 
 export interface Threadnote5ObservedMetricV1 {
   readonly sourceVersion: string;
@@ -54,6 +64,7 @@ export interface Threadnote5ReleaseReadinessResultV1 {
     readonly captureManifestTrusted: boolean;
     readonly captureMode: 'fixture-replay' | 'release-candidate';
     readonly hash: string;
+    readonly productionReceiptVerification: Threadnote5LocalReceiptVerificationV1 | null;
   };
   readonly fixture: {readonly hash: string; readonly scenarioCount: number};
   readonly gate: {
@@ -73,10 +84,15 @@ export interface Threadnote5ReleaseReadinessResultV1 {
 export function evaluateThreadnote5ReleaseReadiness(input: {
   readonly evidence: unknown;
   readonly expectedBaselineSource?: unknown;
+  readonly expectedBaselineTrialLedgerSha256?: string;
   readonly expectedCandidateCommit: string;
   readonly expectedCandidateExecutableSha256: string;
   readonly expectedCaptureManifestSha256: string;
+  readonly expectedLocalAuthorityManifestSha256?: string;
   readonly fixture: unknown;
+  readonly baselineTrialLedger?: unknown;
+  readonly localAuthorityManifest?: unknown;
+  readonly retainedSubsystemReceiptRecords?: unknown;
 }): Threadnote5ReleaseReadinessResultV1 {
   const fixture = parseThreadnote5ReleaseReadinessFixtureV1(input.fixture);
   const evidence = parseThreadnote5ReleaseEvidenceV1(input.evidence, fixture);
@@ -86,26 +102,66 @@ export function evaluateThreadnote5ReleaseReadiness(input: {
   const insufficiencies: string[] = [];
   const captureTrusted = evidence.capture.manifestHash === input.expectedCaptureManifestSha256;
   if (!captureTrusted) qualityFailures.push('capture manifest does not match the trusted expected hash');
+  const productionReceiptVerification =
+    evidence.capture.manifest.mode === 'release-candidate'
+      ? verifyThreadnote5LocalSubsystemReceipts({
+          authorityManifest: input.localAuthorityManifest,
+          candidate: evidence.candidate,
+          expectedAuthorityManifestSha256: input.expectedLocalAuthorityManifestSha256,
+          observations: evidence.candidateObservations,
+          retainedRecords: input.retainedSubsystemReceiptRecords,
+        })
+      : null;
+  const verifiedCandidateScenarios =
+    productionReceiptVerification === null
+      ? undefined
+      : new Set(
+          productionReceiptVerification.scenarios
+            .filter(scenario => scenario.state === 'verified')
+            .map(scenario => scenario.scenario),
+        );
+  const verifierIncomplete =
+    productionReceiptVerification?.state === 'unknown' &&
+    productionReceiptVerification.reason === 'verifier-incomplete';
   const scenarios = fixture.scenarios.map(contract => {
     const observation = evidence.candidateObservations.find(item => item.scenario === contract.id);
     const state: 'failed' | 'missing' | 'passed' | 'unknown' = captureTrusted
-      ? observationState(contract, observation)
+      ? verifiedCandidateScenarios === undefined || verifiedCandidateScenarios.has(contract.id)
+        ? observationState(contract, observation)
+        : 'unknown'
       : 'unknown';
-    if (state !== 'passed') qualityFailures.push(`candidate scenario ${contract.id} is ${state}`);
+    if (state !== 'passed') {
+      if (state === 'unknown' && verifierIncomplete && !verifiedCandidateScenarios?.has(contract.id)) {
+        insufficiencies.push(`candidate scenario ${contract.id} lacks a complete source verifier`);
+      } else {
+        qualityFailures.push(`candidate scenario ${contract.id} is ${state}`);
+      }
+    }
     return {id: contract.id, observationReceiptHash: observation?.receiptHash ?? null, state};
   });
 
   const candidateMetrics = captureTrusted
-    ? aggregateMetrics(fixture, evidence.candidate, evidence.candidateObservations)
+    ? aggregateMetrics(fixture, evidence.candidate, evidence.candidateObservations, verifiedCandidateScenarios)
     : unknownMetrics(fixture, evidence.candidate.version, 'capture-untrusted');
   const expectedBaseline =
     input.expectedBaselineSource === undefined
       ? undefined
       : parseThreadnote5TrustedSourceV1(input.expectedBaselineSource, 'baseline');
+  const baselineLedgerTrusted =
+    input.expectedBaselineTrialLedgerSha256 !== undefined &&
+    input.baselineTrialLedger !== undefined &&
+    threadnote5BaselineTrialLedgerHash(baselineLedgerValue(input.baselineTrialLedger)) ===
+      input.expectedBaselineTrialLedgerSha256 &&
+    evidence.baseline.state === 'available' &&
+    canonicalBaselineLedgerMatches(
+      parseThreadnote5BaselineTrialLedger(baselineLedgerValue(input.baselineTrialLedger)),
+      evidence.baseline,
+    );
   const baselineTrusted =
     evidence.baseline.state === 'available' &&
     expectedBaseline !== undefined &&
-    sameSource(evidence.baseline.source, expectedBaseline);
+    sameSource(evidence.baseline.source, expectedBaseline) &&
+    baselineLedgerTrusted;
   const baselineMetrics =
     evidence.baseline.state === 'unavailable'
       ? unknownMetrics(fixture, '4.7.x', 'baseline-unavailable')
@@ -117,11 +173,20 @@ export function evaluateThreadnote5ReleaseReadiness(input: {
     const baseline = baselineMetrics.get(definition.id)!;
     const thresholdPassed = candidate.state === 'observed' ? passesThreshold(definition, candidate.value) : null;
     if (thresholdPassed !== true) {
-      qualityFailures.push(
-        thresholdPassed === false
-          ? `candidate metric ${definition.id} misses its ${definition.thresholdKind} threshold`
-          : `candidate metric ${definition.id} is unknown`,
-      );
+      const dependsOnIncompleteVerifier =
+        verifierIncomplete &&
+        fixture.scenarios
+          .filter(scenario => scenario.metricIds.includes(definition.id))
+          .some(scenario => !verifiedCandidateScenarios?.has(scenario.id));
+      if (thresholdPassed === null && dependsOnIncompleteVerifier) {
+        insufficiencies.push(`candidate metric ${definition.id} lacks a complete source verifier`);
+      } else {
+        qualityFailures.push(
+          thresholdPassed === false
+            ? `candidate metric ${definition.id} misses its ${definition.thresholdKind} threshold`
+            : `candidate metric ${definition.id} is unknown`,
+        );
+      }
     }
     return {
       baseline,
@@ -138,8 +203,12 @@ export function evaluateThreadnote5ReleaseReadiness(input: {
 
   if (evidence.capture.manifest.mode !== 'release-candidate') {
     insufficiencies.push('sealed fixture replay is not production release evidence');
-  } else {
-    insufficiencies.push('production subsystem receipt verification is not implemented');
+  } else if (productionReceiptVerification?.state !== 'verified') {
+    insufficiencies.push(
+      `production subsystem receipt verification is ${
+        productionReceiptVerification === null ? 'records-unavailable' : productionReceiptVerification.reason
+      }`,
+    );
   }
   if (evidence.baseline.state === 'unavailable') {
     insufficiencies.push(`4.7.x baseline is unavailable: ${evidence.baseline.reason}`);
@@ -158,6 +227,7 @@ export function evaluateThreadnote5ReleaseReadiness(input: {
       captureManifestTrusted: captureTrusted,
       captureMode: evidence.capture.manifest.mode,
       hash: evidence.evidenceHash,
+      productionReceiptVerification,
     },
     fixture: {hash: threadnote5ReleaseReadinessFixtureHash(fixture), scenarioCount: fixture.scenarios.length},
     gate: {
@@ -175,6 +245,7 @@ function aggregateMetrics(
   fixture: Threadnote5ReleaseReadinessFixtureV1,
   source: Threadnote5SourceV1,
   observations: readonly Threadnote5ObservationV1[],
+  verifiedScenarios?: ReadonlySet<Threadnote5ReleaseScenario>,
 ): ReadonlyMap<Threadnote5ReleaseMetric, Threadnote5MetricValueV1> {
   return new Map(
     fixture.metrics.map(definition => {
@@ -184,6 +255,7 @@ function aggregateMetrics(
         observation: observations.find(item => item.scenario === contract.id),
       }));
       const measurements = selected.map(({contract, observation}) => {
+        if (verifiedScenarios !== undefined && !verifiedScenarios.has(contract.id)) return undefined;
         if (observation?.transcript.outcome !== 'passed') return undefined;
         const measurement = observation.transcript.measurements.find(item => item.id === definition.id);
         const minimum = contract.metricMinimums.find(item => item.id === definition.id);
@@ -321,4 +393,31 @@ function sameSource(left: Threadnote5SourceV1, right: Threadnote5SourceV1): bool
     left.id === right.id &&
     left.version === right.version
   );
+}
+
+function canonicalBaselineLedgerMatches(
+  ledger: ReturnType<typeof parseThreadnote5BaselineTrialLedger>,
+  baseline: Extract<Threadnote5BaselineV1, {readonly state: 'available'}>,
+): boolean {
+  return (
+    sameSource(ledger.source, baseline.source) &&
+    canonicalJson(ledger.observations) ===
+      canonicalJson(
+        baseline.observations
+          .map(observation => ({
+            measurements: observation.transcript.measurements,
+            outcome: observation.transcript.outcome,
+            receiptHash: observation.receiptHash,
+            scenario: observation.scenario,
+            transcriptDigest: observation.attestation.transcriptDigest,
+          }))
+          .sort((left, right) => left.scenario.localeCompare(right.scenario)),
+      )
+  );
+}
+
+function baselineLedgerValue(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  const source = value as Record<string, unknown>;
+  return source.ledger === undefined ? value : source.ledger;
 }

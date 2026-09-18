@@ -908,7 +908,7 @@ function candidateReviewRetentionPriority(review: CandidateReview | undefined): 
   return 2;
 }
 
-function parseCandidateReview(value: unknown): CandidateReview {
+export function parseCandidateReview(value: unknown): CandidateReview {
   if (
     typeof value !== 'object' ||
     value === null ||
