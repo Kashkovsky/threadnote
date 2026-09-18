@@ -172,6 +172,27 @@ the same revision can be retried safely. The full MCP toolset exposes the same s
 `context_health_repair_preview` and destructive `context_health_repair_apply`; the latter also requires explicit
 approval.
 
+Semantic analysis reports the two opposing records without inferring which one is stale: its left/right order is only
+canonical ordering. First preview without a direction, then explicitly bind a reviewed direction to that exact report:
+
+```sh
+threadnote context repair preview \
+  --project <project> \
+  --contradiction-id <semantic-contradiction-id> \
+  --report-revision <report-revision> \
+  --stale-uri <canonical-personal-uri> \
+  --current-uri <canonical-personal-uri> \
+  --json
+```
+
+All four direction fields are required together. They must identify the two analyzer records in the same canonical
+personal scope; omission or a stale report revision never counts as approval. Preview can then include a review-only
+`supersede-memory` suggestion only when both exact personal durable records carry valid stable memory IDs. The plan
+binds the direction, selected proposal IDs, proposal revisions, and both record hashes into the Knowledge Delta
+approval tuple; it does not apply the semantic judgment. A downstream reviewed lifecycle operation must keep the stale
+record's memory ID in `status: superseded` history with `archived_from` provenance instead of silently deleting or
+overwriting it.
+
 ## Context Check
 
 Run the provider-neutral, read-only check for one project. `--base` is optional and selects the comparison base:

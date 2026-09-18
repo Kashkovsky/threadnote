@@ -346,6 +346,169 @@ describe('context health repair proposals', () => {
     expect(malformedCitation.metadata.citationErrors?.length).toBeGreaterThan(0);
   });
 
+  it('projects an explicitly directed semantic supersede review through Knowledge Delta without mutating history', () => {
+    const stale = record('stale-policy', 'Agents must never reuse verified context.', {memoryId: 'tn_stale_policy'});
+    const current = record('current-policy', 'Agents must reuse verified context.', {memoryId: 'tn_current_policy'});
+    const report = healthReport([semanticFinding(stale.uri, current.uri)]);
+    const semanticDirection = directionFor(report, stale.uri, current.uri);
+
+    const plan = previewContextHealthRepairPlanV1(report, [stale, current], {semanticDirection});
+    const proposal = plan.proposals[0];
+    expect(proposal).toBeDefined();
+    if (!proposal) throw new Error('expected semantic supersede proposal');
+    expect(proposal.mutation).toMatchObject({
+      kind: 'review-only',
+      suggestedMutation: {
+        archivedFrom: stale.uri,
+        designation: semanticDirection,
+        kind: 'supersede-memory',
+        preservedMemoryId: 'tn_stale_policy',
+        status: 'superseded',
+        subjectUri: stale.uri,
+        supersededByMemoryId: 'tn_current_policy',
+        supersededByUri: current.uri,
+      },
+    });
+    expect(proposal.preconditions.map(precondition => precondition.uri)).toEqual([current.uri, stale.uri].sort());
+    expect(plan.knowledgeDelta).toMatchObject({
+      noAction: false,
+      type: 'knowledge-delta',
+      version: 1,
+    });
+    expect(plan.knowledgeDelta.reviewId).toMatch(/^review-[0-9a-f]{16}$/u);
+    expect(Number.isSafeInteger(plan.knowledgeDelta.revision) && plan.knowledgeDelta.revision > 0).toBe(true);
+    expect(plan.knowledgeDelta.items).toHaveLength(1);
+    const item = plan.knowledgeDelta.items[0];
+    expect(item).toMatchObject({
+      candidateId: `${plan.knowledgeDelta.reviewId}-1`,
+      comparison: 'contradiction',
+      mutationPreview: {
+        operation: 'requires_explicit_operation',
+        replaceUri: stale.uri,
+      },
+      recommendation: 'manual_review',
+      type: 'context-repair-or-retirement',
+    });
+    expect(item?.mutationPreview.expectedTargetContentHash).toMatch(/^[0-9a-f]{64}$/u);
+    expect(item?.sourceEvidence.some(evidence => evidence.includes(proposal.proposalId))).toBe(true);
+    expect(item?.sourceEvidence.some(evidence => evidence.includes(proposal.revision))).toBe(true);
+    expect(
+      applyContextHealthRepairProposalV1({
+        expectedRevision: proposal.revision,
+        proposal,
+        records: [stale, current],
+      }),
+    ).toEqual({records: [stale, current], status: 'review-required'});
+
+    const changedCurrent = record('current-policy', 'Agents should reuse verified context.', current.metadata);
+    const changedPlan = previewContextHealthRepairPlanV1(report, [stale, changedCurrent], {semanticDirection});
+    const changed = changedPlan.proposals[0];
+    if (!changed) throw new Error('expected changed semantic supersede proposal');
+    expect(changed.proposalId).toBe(proposal.proposalId);
+    expect(changed.revision).not.toBe(proposal.revision);
+    expect([changedPlan.knowledgeDelta.reviewId, changedPlan.knowledgeDelta.revision]).not.toEqual([
+      plan.knowledgeDelta.reviewId,
+      plan.knowledgeDelta.revision,
+    ]);
+    expect(changedPlan.knowledgeDelta.items[0]?.candidateId).not.toBe(plan.knowledgeDelta.items[0]?.candidateId);
+  });
+
+  it.each([
+    ['missing subject identity', undefined, 'tn_current_policy'],
+    ['invalid subject identity', 'invalid', 'tn_current_policy'],
+    ['missing target identity', 'tn_stale_policy', undefined],
+    ['invalid target identity', 'tn_stale_policy', 'invalid'],
+  ])('keeps an explicit semantic direction generic when it has a %s', (_label, subjectId, targetId) => {
+    const stale = record('stale-policy', 'Agents must never reuse verified context.', {
+      ...(subjectId === undefined ? {} : {memoryId: subjectId}),
+    });
+    const current = record('current-policy', 'Agents must reuse verified context.', {
+      ...(targetId === undefined ? {} : {memoryId: targetId}),
+    });
+    const report = healthReport([semanticFinding(stale.uri, current.uri)]);
+    const proposal = previewContextHealthRepairPlanV1(report, [stale, current], {
+      semanticDirection: directionFor(report, stale.uri, current.uri),
+    }).proposals[0];
+    if (!proposal) throw new Error('expected semantic review proposal');
+
+    expect(proposal.mutation).toMatchObject({kind: 'review-only'});
+    if (proposal.mutation.kind !== 'review-only') throw new Error('expected review-only mutation');
+    expect(proposal.mutation.suggestedMutation).toBeUndefined();
+    expect(proposal.preconditions).toEqual([]);
+  });
+
+  it('requires explicit report-bound analyzer direction before suggesting supersession', () => {
+    const stale = record('stale-policy', 'Agents must never reuse verified context.', {memoryId: 'tn_stale_policy'});
+    const current = record('current-policy', 'Agents must reuse verified context.', {memoryId: 'tn_current_policy'});
+    const report = healthReport([semanticFinding(stale.uri, current.uri)]);
+
+    const neutral = onlyProposal(report, [stale, current]);
+    expect(neutral.mutation).toMatchObject({kind: 'review-only'});
+    if (neutral.mutation.kind !== 'review-only') throw new Error('expected review-only mutation');
+    expect(neutral.mutation.suggestedMutation).toBeUndefined();
+    expect(neutral.preconditions).toEqual([]);
+
+    const direction = directionFor(report, stale.uri, current.uri);
+    expect(() =>
+      previewContextHealthRepairPlanV1(report, [stale, current], {
+        semanticDirection: {...direction, reportRevision: '0'.repeat(64)},
+      }),
+    ).toThrow(/another context-health report revision/u);
+    expect(() =>
+      previewContextHealthRepairPlanV1(report, [stale, current], {
+        semanticDirection: {...direction, contradictionId: 'f'.repeat(64)},
+      }),
+    ).toThrow(/exactly one analyzer contradiction/u);
+    expect(() =>
+      previewContextHealthRepairPlanV1(report, [stale, current], {
+        semanticDirection: {...direction, currentUri: current.uri.replace('/user/me/', '/user/other/')},
+      }),
+    ).toThrow(/same personal scope/u);
+  });
+
+  it('changes the Knowledge Delta approval tuple when the selected proposal set changes', () => {
+    const first = record('first-expired', 'First.', {
+      memoryId: 'tn_first_expired',
+      validTo: '2026-09-16T00:00:00.000Z',
+    });
+    const second = record('second-expired', 'Second.', {
+      memoryId: 'tn_second_expired',
+      validTo: '2026-09-16T00:00:00.000Z',
+    });
+    const oneFinding = healthReport([finding('validity-expired', 'archive-memory', first.uri)]);
+    const twoFindings = healthReport([
+      finding('validity-expired', 'archive-memory', first.uri),
+      finding('validity-expired', 'archive-memory', second.uri),
+    ]);
+
+    const one = previewContextHealthRepairPlanV1(oneFinding, [first]);
+    const two = previewContextHealthRepairPlanV1(twoFindings, [first, second]);
+
+    expect([two.knowledgeDelta.reviewId, two.knowledgeDelta.revision]).not.toEqual([
+      one.knowledgeDelta.reviewId,
+      one.knowledgeDelta.revision,
+    ]);
+  });
+
+  it('does not offer local supersede mutations for shared semantic evidence', () => {
+    const shared = record(
+      'shared-policy',
+      'Agents must reuse shared context.',
+      {memoryId: 'tn_shared_policy'},
+      'threadnote://user/me/memories/shared/default/durable/projects/threadnote/shared-policy.md',
+    );
+    const personal = record('personal-policy', 'Agents must not reuse shared context.');
+    const proposal = onlyProposal(
+      healthReport([finding('semantic-contradiction', 'review-memory', shared.uri, personal.uri)]),
+      [shared, personal],
+    );
+
+    expect(proposal.mutation).toMatchObject({kind: 'review-only'});
+    if (proposal.mutation.kind !== 'review-only') throw new Error('expected review-only mutation');
+    expect(proposal.mutation.suggestedMutation).toBeUndefined();
+    expect(proposal.preconditions).toEqual([]);
+  });
+
   it('keeps proposal identity order-independent and revisions content-sensitive', () => {
     fc.assert(
       fc.property(fc.uniqueArray(fc.stringMatching(/^[a-z]{1,12}$/u), {maxLength: 30}), values => {
@@ -458,6 +621,45 @@ function healthReport(findings: readonly ContextHealthFindingV1[]): ContextHealt
     },
     status: findings.length > 0 ? 'findings' : 'clean',
     version: 1,
+  };
+}
+
+function semanticFinding(staleUri: string, currentUri: string): ContextHealthFindingV1 {
+  const base = finding('semantic-contradiction', 'review-memory', staleUri, currentUri);
+  return {
+    ...base,
+    repair: {
+      kind: 'review-memory',
+      summary: 'Review both durable claims and explicitly designate stale and current memories.',
+    },
+    semanticEvidence: {
+      basisFingerprint: 'b'.repeat(64),
+      contradictionId: 'c'.repeat(64),
+      left: {
+        claimFingerprint: 'd'.repeat(64),
+        claimId: `tnclaim_${'e'.repeat(32)}`,
+        recordUri: staleUri,
+      },
+      right: {
+        claimFingerprint: 'f'.repeat(64),
+        claimId: `tnclaim_${'a'.repeat(32)}`,
+        recordUri: currentUri,
+      },
+      similarityMilli: 900,
+    },
+  };
+}
+
+function directionFor(report: ContextHealthReportV1, staleUri: string, currentUri: string) {
+  const contradictionId = report.findings[0]?.semanticEvidence?.contradictionId;
+  if (!contradictionId) throw new Error('expected semantic contradiction evidence');
+  return {
+    contradictionId,
+    currentUri,
+    reportRevision: contextHealthReportRevisionV1(report),
+    staleUri,
+    type: 'context-health-semantic-direction' as const,
+    version: 1 as const,
   };
 }
 

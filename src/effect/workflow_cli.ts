@@ -17,6 +17,7 @@ import type {runContextBrief} from '../context_brief/commands.js';
 import type {runCompact} from '../memory/commands.js';
 import type {runRecallFeedback} from '../recall/feedback_commands.js';
 import type {runContextHealth} from '../memory/context_health_commands.js';
+import type {runContextHealthAggregate, runContextHealthSchedule} from '../memory/context_health_aggregate_commands.js';
 import type {
   runContextHealthRepairApply,
   runContextHealthRepairPreview,
@@ -108,7 +109,28 @@ export function makeContextBriefCommand<E, R>(
 
 export function makeContextHealthCommand<E, R>(
   handler: (options: Parameters<typeof runContextHealth>[1]) => Effect.Effect<void, E, R>,
+  aggregateHandler: (options: Parameters<typeof runContextHealthAggregate>[1]) => Effect.Effect<void, E, R>,
+  scheduleHandler: (options: Parameters<typeof runContextHealthSchedule>[0]) => Effect.Effect<void, E, R>,
 ) {
+  const aggregate = Command.make(
+    'aggregate',
+    {
+      json: boolean('json', 'Emit the bounded ContextHealthAggregateV1 as JSON'),
+      project: requiredString('project', 'Project/repo namespace to inspect'),
+      teams: repeatedString('team', 'Configured Git team snapshot to include; repeat for multiple', 32),
+    },
+    aggregateHandler,
+  ).pipe(Command.withDescription('Aggregate personal and selected local Git-team health without syncing'));
+  const schedule = Command.make(
+    'schedule',
+    {
+      cadenceMinutes: integerFlag('cadence-minutes'),
+      json: boolean('json', 'Emit the provider-neutral ContextHealthSchedulePlanV1 as JSON'),
+      project: requiredString('project', 'Project/repo namespace to inspect'),
+      teams: repeatedString('team', 'Configured Git team snapshot to include; repeat for multiple', 32),
+    },
+    scheduleHandler,
+  ).pipe(Command.withDescription('Render a read-only, network-disabled scheduled invocation contract'));
   return Command.make(
     'health',
     {
@@ -116,7 +138,10 @@ export function makeContextHealthCommand<E, R>(
       project: requiredString('project', 'Project/repo namespace to inspect'),
     },
     handler,
-  ).pipe(Command.withDescription('Inspect active project memories and report read-only hygiene findings'));
+  ).pipe(
+    Command.withDescription('Inspect active project memories and report read-only hygiene findings'),
+    Command.withSubcommands([aggregate, schedule]),
+  );
 }
 
 export function makeContextHealthRepairCommand<E, R>(
@@ -126,8 +151,15 @@ export function makeContextHealthRepairCommand<E, R>(
   const preview = Command.make(
     'preview',
     {
+      contradictionId: optionalString(
+        'contradiction-id',
+        'Analyzer contradiction ID being explicitly directed; requires the other semantic direction flags',
+      ),
+      currentUri: optionalString('current-uri', 'Reviewed current memory URI for the selected contradiction'),
       json: boolean('json', 'Emit the bounded ContextHealthRepairPlanV1 as JSON'),
       project: requiredString('project', 'Project/repo namespace to inspect'),
+      reportRevision: optionalString('report-revision', 'Exact health report revision being reviewed'),
+      staleUri: optionalString('stale-uri', 'Reviewed stale memory URI for the selected contradiction'),
     },
     previewHandler,
   ).pipe(Command.withDescription('Preview exact, bounded repairs without changing memory'));

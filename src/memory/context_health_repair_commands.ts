@@ -23,6 +23,7 @@ import {
   type ContextHealthRepairConflictV1,
   type ContextHealthRepairPlanV1,
   type ContextHealthRepairProposalV1,
+  type ContextHealthSemanticDirectionV1,
 } from './context_health_repair.js';
 import {readMaintenanceMemoryRecords} from './maintenance_records.js';
 import {MemoryOperationError} from './migrations.js';
@@ -46,8 +47,12 @@ const REPAIR_LOCK_OPTIONS = {
 type RepairArchiveKind = Extract<MemoryRecord['metadata']['kind'], 'durable' | 'handoff' | 'incident'>;
 
 export interface RunContextHealthRepairPreviewOptionsV1 {
+  readonly contradictionId?: string;
+  readonly currentUri?: string;
   readonly json?: boolean;
   readonly project: string;
+  readonly reportRevision?: string;
+  readonly staleUri?: string;
 }
 
 export interface RunContextHealthRepairApplyOptionsV1 {
@@ -97,6 +102,7 @@ export const previewContextHealthRepairs = Effect.fn('memory.contextHealthRepair
   config: RuntimeConfig,
   projectInput: string,
   cwd: string,
+  directionInput: Omit<RunContextHealthRepairPreviewOptionsV1, 'json' | 'project'> = {},
 ) {
   const project = projectInput.trim();
   if (!project) return yield* repairError('Provide --project for scoped context repair.');
@@ -116,7 +122,11 @@ export const previewContextHealthRepairs = Effect.fn('memory.contextHealthRepair
         : [],
     ),
   );
-  return previewContextHealthRepairPlanV1(report, records, {absentTargetUris});
+  const semanticDirection = semanticDirectionFromInput(directionInput);
+  return previewContextHealthRepairPlanV1(report, records, {
+    absentTargetUris,
+    ...(semanticDirection === undefined ? {} : {semanticDirection}),
+  });
 });
 
 export const runContextHealthRepairPreview = Effect.fn('memory.contextHealthRepair.previewCommand')(function* (
@@ -124,9 +134,33 @@ export const runContextHealthRepairPreview = Effect.fn('memory.contextHealthRepa
   options: RunContextHealthRepairPreviewOptionsV1,
 ) {
   const cwd = (yield* SystemInfo).currentDirectory();
-  const plan = yield* previewContextHealthRepairs(config, options.project, cwd);
+  const plan = yield* previewContextHealthRepairs(config, options.project, cwd, options);
   yield* writeFinalCliOutput(options.json ? JSON.stringify(plan) : renderContextHealthRepairPlan(plan));
 });
+
+function semanticDirectionFromInput(
+  input: Omit<RunContextHealthRepairPreviewOptionsV1, 'json' | 'project'>,
+): ContextHealthSemanticDirectionV1 | undefined {
+  const contradictionId = input.contradictionId?.trim();
+  const currentUri = input.currentUri?.trim();
+  const reportRevision = input.reportRevision?.trim();
+  const staleUri = input.staleUri?.trim();
+  const supplied = [contradictionId, currentUri, reportRevision, staleUri].filter(value => value !== undefined);
+  if (supplied.length === 0) return undefined;
+  if (!contradictionId || !currentUri || !reportRevision || !staleUri) {
+    throw MemoryOperationError.make({
+      message: 'Semantic direction requires contradiction ID, report revision, stale URI, and current URI together.',
+    });
+  }
+  return {
+    contradictionId,
+    currentUri,
+    reportRevision,
+    staleUri,
+    type: 'context-health-semantic-direction',
+    version: 1,
+  };
+}
 
 export const applyContextHealthRepair = Effect.fn('memory.contextHealthRepair.apply')(function* (
   config: RuntimeConfig,
@@ -512,10 +546,14 @@ function publicApplyResult(
 export function renderContextHealthRepairPlan(plan: ContextHealthRepairPlanV1): string {
   const lines = [
     `Context repair preview for ${plan.project}: ${plan.proposals.length} proposal${plan.proposals.length === 1 ? '' : 's'}.`,
-    ...plan.proposals.map(
-      proposal =>
-        `- ${proposal.proposalId} ${proposal.mutation.kind}: ${proposal.summary}\n  revision: ${proposal.revision}`,
-    ),
+    ...plan.proposals.map(proposal => {
+      const suggested =
+        proposal.mutation.kind === 'review-only' && proposal.mutation.suggestedMutation?.kind === 'supersede-memory'
+          ? `\n  suggested: supersede ${proposal.mutation.suggestedMutation.subjectUri} with ${proposal.mutation.suggestedMutation.supersededByUri}`
+          : '';
+      return `- ${proposal.proposalId} ${proposal.mutation.kind}: ${proposal.summary}${suggested}\n  revision: ${proposal.revision}`;
+    }),
+    `Knowledge Delta: ${plan.knowledgeDelta.reviewId} revision ${plan.knowledgeDelta.revision}; ${plan.knowledgeDelta.items.length} item(s).`,
   ];
   if (plan.omittedProposals > 0) lines.push(`- ${plan.omittedProposals} additional proposal(s) omitted.`);
   return lines.join('\n');

@@ -13,8 +13,9 @@ import type {
   ContextHealthRepairDescriptorV1,
   ContextHealthReportV1,
 } from './context_health.js';
-import {memoryIdFromIdentityAlias} from './identity_alias.js';
+import {isMemoryId, memoryIdFromIdentityAlias} from './identity_alias.js';
 import {parseResourceId} from '../storage/resource-id.js';
+import {KNOWLEDGE_DELTA_V1_MAX_ITEMS, type KnowledgeDeltaItemV1, type KnowledgeDeltaV1} from './knowledge_delta.js';
 
 export const CONTEXT_HEALTH_REPAIR_VERSION = 1 as const;
 export const DEFAULT_CONTEXT_HEALTH_REPAIR_PROPOSAL_LIMIT = 100 as const;
@@ -46,9 +47,31 @@ export type ContextHealthRepairMutationV1 =
       readonly kind: 'review-only';
       readonly reason: string;
       readonly repairKind: ContextHealthRepairDescriptorV1['kind'];
+      readonly suggestedMutation?: ContextHealthSupersedeReviewV1;
       readonly subjectUri?: string;
       readonly targetUri?: string;
     };
+
+export interface ContextHealthSupersedeReviewV1 {
+  readonly archivedFrom: string;
+  readonly designation: ContextHealthSemanticDirectionV1;
+  readonly kind: 'supersede-memory';
+  readonly preservedMemoryId: string;
+  readonly status: 'superseded';
+  readonly subjectUri: string;
+  readonly supersededByMemoryId: string;
+  readonly supersededByUri: string;
+}
+
+/** Explicit reviewer direction for one exact semantic contradiction report revision. */
+export interface ContextHealthSemanticDirectionV1 {
+  readonly contradictionId: string;
+  readonly currentUri: string;
+  readonly reportRevision: string;
+  readonly staleUri: string;
+  readonly type: 'context-health-semantic-direction';
+  readonly version: 1;
+}
 
 export interface ContextHealthRepairProposalV1 {
   readonly category: ContextHealthFindingCategoryV1;
@@ -64,6 +87,7 @@ export interface ContextHealthRepairProposalV1 {
 }
 
 export interface ContextHealthRepairPlanV1 {
+  readonly knowledgeDelta: KnowledgeDeltaV1;
   readonly omittedProposals: number;
   readonly project: string;
   readonly proposals: readonly ContextHealthRepairProposalV1[];
@@ -130,20 +154,28 @@ export interface ApplyContextHealthRepairProposalInputV1 {
 export function previewContextHealthRepairPlanV1(
   report: ContextHealthReportV1,
   records: readonly MemoryRecord[],
-  options: {readonly absentTargetUris?: readonly string[]; readonly limit?: number} = {},
+  options: {
+    readonly absentTargetUris?: readonly string[];
+    readonly limit?: number;
+    readonly semanticDirection?: ContextHealthSemanticDirectionV1;
+  } = {},
 ): ContextHealthRepairPlanV1 {
   const recordsByUri = uniqueRecordsByUri(records);
   const absentTargetUris = new Set(options.absentTargetUris ?? []);
+  const reportRevision = contextHealthReportRevisionV1(report);
+  const semanticDirection = validateSemanticDirection(report, reportRevision, options.semanticDirection);
   const proposals = [...report.findings]
     .sort((left, right) => compareText(left.id, right.id))
-    .map(finding => proposalForFinding(report.project, finding, recordsByUri, absentTargetUris))
+    .map(finding => proposalForFinding(report.project, finding, recordsByUri, absentTargetUris, semanticDirection))
     .sort((left, right) => compareText(left.proposalId, right.proposalId));
   const limit = proposalLimit(options.limit);
+  const selected = proposals.slice(0, limit);
   return {
+    knowledgeDelta: projectContextHealthRepairKnowledgeDeltaV1(reportRevision, selected, recordsByUri),
     omittedProposals: Math.max(0, proposals.length - limit),
     project: report.project,
-    proposals: proposals.slice(0, limit),
-    reportRevision: contextHealthReportRevisionV1(report),
+    proposals: selected,
+    reportRevision,
     sourceOmittedFindings: report.omittedFindings,
     version: CONTEXT_HEALTH_REPAIR_VERSION,
   };
@@ -302,6 +334,55 @@ export function contextHealthReportRevisionV1(report: ContextHealthReportV1): st
   );
 }
 
+function validateSemanticDirection(
+  report: ContextHealthReportV1,
+  reportRevision: string,
+  direction: ContextHealthSemanticDirectionV1 | undefined,
+): ContextHealthSemanticDirectionV1 | undefined {
+  if (direction === undefined) return undefined;
+  if (
+    direction.type !== 'context-health-semantic-direction' ||
+    direction.version !== 1 ||
+    !/^[0-9a-f]{64}$/u.test(direction.contradictionId) ||
+    !/^[0-9a-f]{64}$/u.test(direction.reportRevision)
+  ) {
+    throw new Error('Semantic direction has an invalid type, version, contradiction ID, or report revision.');
+  }
+  if (direction.reportRevision !== reportRevision) {
+    throw new Error('Semantic direction belongs to another context-health report revision.');
+  }
+  const matching = report.findings.filter(
+    finding =>
+      finding.category === 'semantic-contradiction' &&
+      finding.repair.kind === 'review-memory' &&
+      finding.semanticEvidence?.contradictionId === direction.contradictionId,
+  );
+  if (matching.length !== 1) {
+    throw new Error('Semantic direction must identify exactly one analyzer contradiction in the current report.');
+  }
+  const evidence = matching[0]?.semanticEvidence;
+  if (evidence === undefined) {
+    throw new Error('Semantic direction requires analyzer evidence from the current report.');
+  }
+  if (
+    direction.staleUri === direction.currentUri ||
+    !isCanonicalPersonalMemoryUri(direction.staleUri) ||
+    !isCanonicalPersonalMemoryUri(direction.currentUri) ||
+    !isSamePersonalMemoryScope(direction.staleUri, direction.currentUri)
+  ) {
+    throw new Error('Semantic direction requires two distinct canonical memories in the same personal scope.');
+  }
+  const expectedUris = [evidence.left.recordUri, evidence.right.recordUri].sort(compareText);
+  const directedUris = [direction.staleUri, direction.currentUri].sort(compareText);
+  if (
+    compareText(expectedUris[0] ?? '', directedUris[0] ?? '') !== 0 ||
+    compareText(expectedUris[1] ?? '', directedUris[1] ?? '') !== 0
+  ) {
+    throw new Error('Semantic direction URIs do not match the selected analyzer contradiction.');
+  }
+  return direction;
+}
+
 export function contextHealthRepairProposalRevisionV1(
   proposal: Omit<ContextHealthRepairProposalV1, 'revision'> | ContextHealthRepairProposalV1,
 ): string {
@@ -313,8 +394,9 @@ function proposalForFinding(
   finding: ContextHealthFindingV1,
   recordsByUri: ReadonlyMap<string, MemoryRecord | undefined>,
   absentTargetUris: ReadonlySet<string>,
+  semanticDirection: ContextHealthSemanticDirectionV1 | undefined,
 ): ContextHealthRepairProposalV1 {
-  const mutation = mutationForFinding(project, finding, recordsByUri, absentTargetUris);
+  const mutation = mutationForFinding(project, finding, recordsByUri, absentTargetUris, semanticDirection);
   const preconditions = mutationPreconditions(project, mutation, recordsByUri);
   const base = {
     category: finding.category,
@@ -335,10 +417,16 @@ function mutationForFinding(
   finding: ContextHealthFindingV1,
   recordsByUri: ReadonlyMap<string, MemoryRecord | undefined>,
   absentTargetUris: ReadonlySet<string>,
+  semanticDirection: ContextHealthSemanticDirectionV1 | undefined,
 ): ContextHealthRepairMutationV1 {
-  const subjectUri = finding.repair.subjectUri;
-  const targetUri = finding.repair.targetUri;
+  const directedFinding =
+    finding.semanticEvidence?.contradictionId === semanticDirection?.contradictionId ? semanticDirection : undefined;
+  const subjectUri = directedFinding?.staleUri ?? finding.repair.subjectUri;
+  const targetUri = directedFinding?.currentUri ?? finding.repair.targetUri;
   const subject = subjectUri === undefined ? undefined : recordsByUri.get(subjectUri);
+  const target = targetUri === undefined ? undefined : recordsByUri.get(targetUri);
+  const subjectMemoryId = subject?.metadata.memoryId;
+  const targetMemoryId = target?.metadata.memoryId;
   if (subjectUri !== undefined && isSharedMemoryUri(subjectUri)) {
     return {
       kind: 'review-only',
@@ -346,6 +434,47 @@ function mutationForFinding(
       repairKind: finding.repair.kind,
       subjectUri,
       ...(targetUri === undefined ? {} : {targetUri}),
+    };
+  }
+  if (
+    finding.category === 'semantic-contradiction' &&
+    finding.repair.kind === 'review-memory' &&
+    directedFinding !== undefined &&
+    subjectUri !== undefined &&
+    targetUri !== undefined &&
+    subjectUri !== targetUri &&
+    subject?.metadata.kind === 'durable' &&
+    target?.metadata.kind === 'durable' &&
+    subject.metadata.project === project &&
+    target.metadata.project === project &&
+    subject.metadata.status === 'active' &&
+    target.metadata.status === 'active' &&
+    !isSharedMemoryUri(subjectUri) &&
+    !isSharedMemoryUri(targetUri) &&
+    subjectMemoryId !== undefined &&
+    targetMemoryId !== undefined &&
+    isMemoryId(subjectMemoryId) &&
+    isMemoryId(targetMemoryId) &&
+    archiveRewriteBlocker(subject) === undefined &&
+    archiveRewriteBlocker(target) === undefined
+  ) {
+    return {
+      kind: 'review-only',
+      reason:
+        'The explicit stale/current designation is revision-bound and review-only; applying it must preserve the stale identity in superseded history.',
+      repairKind: finding.repair.kind,
+      suggestedMutation: {
+        archivedFrom: subjectUri,
+        designation: directedFinding,
+        kind: 'supersede-memory',
+        preservedMemoryId: subjectMemoryId,
+        status: 'superseded',
+        subjectUri,
+        supersededByMemoryId: targetMemoryId,
+        supersededByUri: targetUri,
+      },
+      subjectUri,
+      targetUri,
     };
   }
   if (
@@ -467,7 +596,17 @@ function mutationPreconditions(
   mutation: ContextHealthRepairMutationV1,
   recordsByUri: ReadonlyMap<string, MemoryRecord | undefined>,
 ): readonly ContextHealthRepairRecordPreconditionV1[] {
-  if (mutation.kind === 'review-only') return [];
+  if (mutation.kind === 'review-only') {
+    if (mutation.suggestedMutation?.kind !== 'supersede-memory') return [];
+    return [mutation.suggestedMutation.subjectUri, mutation.suggestedMutation.supersededByUri]
+      .flatMap(uri => {
+        const record = recordsByUri.get(uri);
+        return record === undefined
+          ? []
+          : [{expectedContentHash: memoryContentHash(record.content), expectedProject: project, uri}];
+      })
+      .sort((left, right) => compareText(left.uri, right.uri));
+  }
   const uris =
     mutation.kind === 'archive-memory' && mutation.survivorUri !== undefined
       ? [mutation.subjectUri, mutation.survivorUri]
@@ -531,6 +670,7 @@ function contextHealthRepairProposalIdV1(
           ? {
               kind: mutation.kind,
               repairKind: mutation.repairKind,
+              suggestedMutation: mutation.suggestedMutation ?? null,
               subjectUri: mutation.subjectUri ?? null,
               targetUri: mutation.targetUri ?? null,
             }
@@ -589,8 +729,86 @@ function canonicalMutation(mutation: ContextHealthRepairMutationV1) {
     kind: mutation.kind,
     reason: mutation.reason,
     repairKind: mutation.repairKind,
+    suggestedMutation: mutation.suggestedMutation ?? null,
     subjectUri: mutation.subjectUri ?? null,
     targetUri: mutation.targetUri ?? null,
+  };
+}
+
+function projectContextHealthRepairKnowledgeDeltaV1(
+  reportRevision: string,
+  proposals: readonly ContextHealthRepairProposalV1[],
+  recordsByUri: ReadonlyMap<string, MemoryRecord | undefined>,
+): KnowledgeDeltaV1 {
+  const selected = [...proposals]
+    .sort((left, right) => compareText(left.proposalId, right.proposalId))
+    .slice(0, KNOWLEDGE_DELTA_V1_MAX_ITEMS);
+  const authorizationHash = sha256HexSync(
+    JSON.stringify({
+      proposals: selected.map(proposal => ({
+        preconditions: [...proposal.preconditions]
+          .sort((left, right) => compareText(left.uri, right.uri))
+          .map(precondition => ({
+            expectedContentHash: precondition.expectedContentHash,
+            expectedProject: precondition.expectedProject,
+            uri: precondition.uri,
+          })),
+        proposalId: proposal.proposalId,
+        revision: proposal.revision,
+      })),
+      reportRevision,
+      version: CONTEXT_HEALTH_REPAIR_VERSION,
+    }),
+  );
+  const reviewId = `review-${authorizationHash.slice(0, 16)}`;
+  const revision = selected.length === 0 ? 1 : Number.parseInt(authorizationHash.slice(16, 28), 16) + 1;
+  const items: readonly KnowledgeDeltaItemV1[] = selected.map((proposal, index) => {
+    const subjectUri = proposal.mutation.subjectUri;
+    const subject = subjectUri === undefined ? undefined : recordsByUri.get(subjectUri);
+    const expectedTargetContentHash = proposal.preconditions.find(item => item.uri === subjectUri)?.expectedContentHash;
+    const supersede = proposal.mutation.kind === 'review-only' ? proposal.mutation.suggestedMutation : undefined;
+    return {
+      candidateId: `${reviewId}-${index + 1}`,
+      comparison:
+        proposal.category === 'semantic-contradiction' ? ('contradiction' as const) : ('replacement' as const),
+      comparisonReason: proposal.summary,
+      confidence: proposal.category === 'semantic-contradiction' ? 0.65 : 0.9,
+      mutationPreview: {
+        bodyText:
+          supersede?.kind === 'supersede-memory'
+            ? `Supersede ${supersede.subjectUri} (${supersede.preservedMemoryId}) with ${supersede.supersededByUri} (${supersede.supersededByMemoryId}); preserve the stale identity in status=superseded history with archived_from=${supersede.archivedFrom}.`
+            : proposal.summary,
+        ...(expectedTargetContentHash === undefined ? {} : {expectedTargetContentHash}),
+        operation: 'requires_explicit_operation' as const,
+        ...(subjectUri === undefined ? {} : {replaceUri: subjectUri}),
+        truncated: false,
+      },
+      proposedDestination: {
+        kind:
+          subject?.metadata.kind === 'handoff' || subject?.metadata.kind === 'preference'
+            ? subject.metadata.kind
+            : 'durable',
+        project: proposal.project,
+        ...(subjectUri === undefined ? {} : {targetUri: subjectUri}),
+        topic: subject?.metadata.topic ?? 'context-health-review',
+      },
+      recommendation: 'manual_review' as const,
+      sourceEvidence: [
+        `health-finding:${sha256HexSync(proposal.findingId)}`,
+        `health-proposal:${proposal.proposalId}@${proposal.revision}`,
+      ],
+      state: 'pending' as const,
+      truncated: false,
+      type: 'context-repair-or-retirement' as const,
+    };
+  });
+  return {
+    items,
+    noAction: items.length === 0,
+    reviewId,
+    revision,
+    type: 'knowledge-delta',
+    version: 1,
   };
 }
 
@@ -686,6 +904,21 @@ function isSamePersonalMemoryScope(subjectUri: string, targetUri: string): boole
       subject.segments[0] === target.segments[0] &&
       subject.segments[1] === 'memories' &&
       target.segments[1] === 'memories'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isCanonicalPersonalMemoryUri(uri: string): boolean {
+  try {
+    const resource = parseResourceId(uri);
+    return (
+      resource.canonicalUri === uri &&
+      resource.anchor === undefined &&
+      resource.namespace === 'user' &&
+      resource.segments[1] === 'memories' &&
+      resource.segments[2] !== 'shared'
     );
   } catch {
     return false;
