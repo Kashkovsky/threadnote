@@ -160,7 +160,7 @@ describe('MCP recall background vector refresh', () => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-recall-generation-rerun-'});
+        const home = yield* makeDetachedRefreshFixtureHome(fs, 'threadnote-mcp-recall-generation-rerun-');
         const config = {account: 'local', agentContextHome: home, user: 'tester'};
         const resource = path.join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'rerun.md');
         const uri = 'threadnote://resources/repos/threadnote/rerun.md';
@@ -222,12 +222,7 @@ describe('MCP recall background vector refresh', () => {
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          // The refresh runs on a detached fiber. Keep this fixture's cleanup
-          // idempotent if its home disappears before the property scope closes.
-          const home = yield* Effect.acquireRelease(
-            fs.makeTempDirectory({prefix: 'threadnote-mcp-recall-refresh-'}),
-            directory => fs.remove(directory, {force: true, recursive: true}).pipe(Effect.orDie),
-          );
+          const home = yield* makeDetachedRefreshFixtureHome(fs, 'threadnote-mcp-recall-refresh-');
           const config = {account: 'local', agentContextHome: home, user: 'tester'};
           const resource = path.join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'refresh.md');
           const uri = 'threadnote://resources/repos/threadnote/refresh.md';
@@ -311,7 +306,7 @@ describe('MCP recall background vector refresh', () => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-recall-first-use-'});
+        const home = yield* makeDetachedRefreshFixtureHome(fs, 'threadnote-mcp-recall-first-use-');
         const config = {account: 'local', agentContextHome: home, user: 'tester'};
         const resource = path.join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'first-use.md');
         yield* fs.makeDirectory(path.dirname(resource), {recursive: true});
@@ -351,7 +346,7 @@ describe('MCP recall background vector refresh', () => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-recall-retry-'});
+        const home = yield* makeDetachedRefreshFixtureHome(fs, 'threadnote-mcp-recall-retry-');
         const config = {account: 'local', agentContextHome: home, user: 'tester'};
         const resource = path.join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'retry.md');
         yield* fs.makeDirectory(path.dirname(resource), {recursive: true});
@@ -489,6 +484,12 @@ function installedModelStore(home: string): LocalModelStoreShape {
     status: () => Effect.succeed(installation),
     verify: () => Effect.succeed(installation),
   });
+}
+
+function makeDetachedRefreshFixtureHome(fs: FileSystem.FileSystem, prefix: string) {
+  return Effect.acquireRelease(fs.makeTempDirectory({prefix}), directory =>
+    fs.remove(directory, {force: true, recursive: true}).pipe(Effect.orDie),
+  );
 }
 
 function unitVector(dimensions: number): readonly number[] {
