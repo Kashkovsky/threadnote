@@ -567,11 +567,24 @@ describe('shared ready view attachment locking', () => {
       expect(observed.pointer?.id).toBe(observed.snapshot.id);
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
+
+  effectIt.effect('cleans up idempotently when the fixture root disappears before finalization', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* temporaryRepository();
+
+      yield* fs.remove(root, {force: true, recursive: true});
+
+      expect(yield* fs.exists(root)).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 });
 
 const temporaryRepository = Effect.fn('test.temporaryViewAttachRepository')(function* () {
   const fs = yield* FileSystem.FileSystem;
-  const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-view-attach-lock-'});
+  const root = yield* Effect.acquireRelease(fs.makeTempDirectory({prefix: 'threadnote-view-attach-lock-'}), directory =>
+    fs.remove(directory, {force: true, recursive: true}).pipe(Effect.orDie),
+  );
   const repositoryRoot = join(root, 'repository');
   execFileSync('git', ['init', repositoryRoot], {stdio: 'ignore'});
   execFileSync('git', ['-C', repositoryRoot, 'config', 'user.email', 'threadnote-test@example.invalid']);
