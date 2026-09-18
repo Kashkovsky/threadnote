@@ -148,7 +148,7 @@ import {
   runCodeGraphCheckpointVerify,
 } from '../code_graph/checkpoint/commands.js';
 import {makeComposerCommands} from './composer_cli.js';
-import {makeActivationCommand, runUnavailableActivationCli} from './activation_cli.js';
+import {makeActivationCommand} from './activation_cli.js';
 import {makeProcedureCommand} from './procedure_cli.js';
 import {makeGraphSharingCommands} from '../code_graph/sharing/cli.js';
 import {
@@ -1887,7 +1887,7 @@ const registerTopLevelCommand = <const Name extends string, CommandType>(
 
 const topLevelCommandRegistrations = [
   registerTopLevelCommand('setup', makeSetupCommand(withScopedRuntime), setupCommandMetadata),
-  registerTopLevelCommand('activate', makeActivationCommand(runUnavailableActivationCli)),
+  registerTopLevelCommand('activate', makeActivationCommand(withScopedRuntime)),
   registerTopLevelCommand('guidance', makeGuidanceCommand(withScopedRuntime), guidanceCommandMetadata),
   registerTopLevelCommand('agents', makeAgentsCommand(withScopedRuntime), agentsCommandMetadata),
   registerTopLevelCommand('manage', manage),

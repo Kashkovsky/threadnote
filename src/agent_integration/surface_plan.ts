@@ -1,5 +1,10 @@
 import {Effect, FileSystem, Path} from 'effect';
-import {USER_INSTRUCTIONS_START_MARKER, USER_INSTRUCTIONS_END_MARKER, THREADNOTE_MCP_CLIENT_ENV} from '../constants.js';
+import {
+  USER_INSTRUCTIONS_START_MARKER,
+  USER_INSTRUCTIONS_END_MARKER,
+  THREADNOTE_MCP_CLIENT_ENV,
+  THREADNOTE_MCP_SURFACE_ENV,
+} from '../constants.js';
 import {sha256Hex} from '../effect/digest.js';
 import {SystemInfo} from '../effect/system.js';
 import {mcpAdapterCommand} from '../mcp/install.js';
@@ -162,6 +167,7 @@ export const planAgentSurface = Effect.fn('agentSurfaces.plan')(function* (
       THREADNOTE_HOME: config.agentContextHome,
       THREADNOTE_USER: config.user,
       [THREADNOTE_MCP_CLIENT_ENV]: adapter.catalog.agentId,
+      [THREADNOTE_MCP_SURFACE_ENV]: adapter.catalog.id,
       [MCP_TOOLSET_ENV]: toolset,
     },
   };

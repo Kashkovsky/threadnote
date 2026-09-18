@@ -27,11 +27,16 @@ export class ActivationOperationExecutionError extends Schema.TaggedError<Activa
   {message: Schema.String},
 ) {}
 
+export class ActivationOperationPause extends Schema.TaggedError<ActivationOperationPause>()(
+  'ActivationOperationPause',
+  {message: Schema.String},
+) {}
+
 /** Adapter boundary for setup/share/import/brief/candidate/proof subsystems. Raw content stays outside activation state. */
 export interface ActivationOperationExecutorV1<R = never> {
   readonly execute: (
     input: ActivationOperationExecutionV1,
-  ) => Effect.Effect<ActivationOperationOutcomeV1, ActivationOperationExecutionError, R>;
+  ) => Effect.Effect<ActivationOperationOutcomeV1, ActivationOperationExecutionError | ActivationOperationPause, R>;
 }
 
 export type ActivationContinuationV1 =
@@ -55,12 +60,17 @@ export const continueActivationV1 = Effect.fn('activation.continue')(function* <
   executor: ActivationOperationExecutorV1<R>,
 ) {
   const suppliedPlan = createActivationPlanV1(input.plan);
-  let state = yield* initializeActivationStateV1(
-    config,
-    suppliedPlan,
-    createActivationReceiptV1(suppliedPlan, input.now()),
-  );
-  if (!input.apply) return {state, status: 'preview'} satisfies ActivationContinuationV1;
+  const initialReceipt = createActivationReceiptV1(suppliedPlan, input.now());
+  if (!input.apply) {
+    const existing = yield* readActivationStateV1(config, suppliedPlan.activationId);
+    const state = existing ?? {plan: suppliedPlan, receipt: initialReceipt};
+    const resume = previewActivationResumeV1(suppliedPlan, state.receipt);
+    return {
+      state,
+      status: resume.status === 'drifted' ? 'drifted' : resume.status === 'completed' ? 'completed' : 'preview',
+    } satisfies ActivationContinuationV1;
+  }
+  let state = yield* initializeActivationStateV1(config, suppliedPlan, initialReceipt);
   let usedApproval = false;
   for (;;) {
     const resume = previewActivationResumeV1(state.plan, state.receipt);

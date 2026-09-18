@@ -1,5 +1,6 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {Deferred, Effect, Fiber, FileSystem, Option, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {
   activationPlanHashV1,
@@ -14,6 +15,7 @@ import {
   planActivationUndoV1,
   previewActivationResumeV1,
   recordActivationOutcomeV1,
+  withActivationLifecycleLock,
   withActivationReceiptLock,
 } from '../../src/activation/index.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -324,5 +326,35 @@ describe('activation receipt lock', () => {
         expect(yield* fs.exists(observed)).toBe(false);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('serializes continue and undo lifecycle mutations for one activation', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-activation-lifecycle-lock-'});
+        const plan = createActivationPlanV1(planInput);
+        const firstEntered = yield* Deferred.make<void>();
+        const releaseFirst = yield* Deferred.make<void>();
+        const secondEntered = yield* Deferred.make<void>();
+        const first = yield* Effect.forkScoped(
+          withActivationLifecycleLock(
+            home,
+            plan.activationId,
+            Deferred.succeed(firstEntered, undefined).pipe(Effect.andThen(Deferred.await(releaseFirst))),
+          ),
+        );
+        yield* Deferred.await(firstEntered);
+        const second = yield* Effect.forkScoped(
+          withActivationLifecycleLock(home, plan.activationId, Deferred.succeed(secondEntered, undefined)),
+        );
+        yield* Effect.sleep(25);
+        expect(Option.isNone(yield* Deferred.poll(secondEntered))).toBe(true);
+        yield* Deferred.succeed(releaseFirst, undefined);
+        yield* Fiber.join(first);
+        yield* Deferred.await(secondEntered);
+        yield* Fiber.join(second);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 });

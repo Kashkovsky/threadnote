@@ -126,7 +126,7 @@ export const runKnowledgeDeltaGitProposalMaterialize = Effect.fn('gitProposal.ma
   const existing = yield* materializedBranchCommit(read, branchRef);
   if (existing !== undefined) {
     yield* verifyMaterializedBranch(read, branchRef, existing, base, plan);
-    return yield* Console.log(
+    yield* Console.log(
       JSON.stringify({
         branch: plan.branch,
         commit: existing,
@@ -134,10 +134,11 @@ export const runKnowledgeDeltaGitProposalMaterialize = Effect.fn('gitProposal.ma
         proposalHash: plan.proposalHash,
       }),
     );
+    return {branch: plan.branch, commit: existing, materialized: true, proposalHash: plan.proposalHash} as const;
   }
   if (repository.headCommit !== base) return yield* operationError('Proposal base commit changed.');
   if (options.apply !== true) {
-    return yield* Console.log(
+    yield* Console.log(
       JSON.stringify({
         branch: plan.branch,
         files: plan.files.map(file => file.path),
@@ -145,6 +146,7 @@ export const runKnowledgeDeltaGitProposalMaterialize = Effect.fn('gitProposal.ma
         proposalHash: plan.proposalHash,
       }),
     );
+    return {branch: plan.branch, materialized: false, proposalHash: plan.proposalHash} as const;
   }
   const commit = yield* createMaterializedBranch(fs, yield* Path.Path, run, read, branchRef, base, plan);
   yield* Console.log(
@@ -155,6 +157,7 @@ export const runKnowledgeDeltaGitProposalMaterialize = Effect.fn('gitProposal.ma
       proposalHash: plan.proposalHash,
     }),
   );
+  return {branch: plan.branch, commit: commit.commit, materialized: true, proposalHash: plan.proposalHash} as const;
 });
 
 const materializedBranchCommit = Effect.fn('gitProposal.materializedBranchCommit')(function* (

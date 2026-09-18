@@ -499,6 +499,51 @@ export function parseSecondSurfaceProofReceiptV1(value: unknown): SecondSurfaceP
   return receipt;
 }
 
+export function parseSecondSurfaceProofContextV1(value: unknown): SecondSurfaceProofContextV1 {
+  return Schema.decodeUnknownSync(SecondSurfaceProofContextV1Schema, STRICT_PARSE_OPTIONS)(value);
+}
+
+export function secondSurfaceProofContextHashV1(context: SecondSurfaceProofContextV1): string {
+  return sha256HexSync(canonicalJson(parseSecondSurfaceProofContextV1(context)));
+}
+
+export function secondSurfaceProofMatchesContextV1(
+  context: SecondSurfaceProofContextV1,
+  receipt: SecondSurfaceProofReceiptV1,
+): boolean {
+  const parsedContext = parseSecondSurfaceProofContextV1(context);
+  const parsedReceipt = parseSecondSurfaceProofReceiptV1(receipt);
+  return (
+    parsedReceipt.activationId === parsedContext.activationId &&
+    parsedReceipt.activationReceiptRevision === parsedContext.activationReceiptRevision &&
+    parsedReceipt.catalogRevision === parsedContext.catalogRevision &&
+    parsedReceipt.catalogSnapshotHash === parsedContext.catalogSnapshotHash &&
+    parsedReceipt.decisionCanonicalUri === parsedContext.decision.canonicalUri &&
+    parsedReceipt.decisionContentHash === parsedContext.decision.contentHash &&
+    parsedReceipt.decisionMemoryId === parsedContext.decision.memoryId &&
+    parsedReceipt.publicationReceiptHash === parsedContext.decision.publicationReceiptHash &&
+    parsedReceipt.primaryAccess === parsedContext.primary.access &&
+    parsedReceipt.primarySurfaceId === parsedContext.primary.surfaceId &&
+    parsedReceipt.primaryCapabilitiesFingerprint === parsedContext.primary.capabilitiesFingerprint &&
+    parsedReceipt.primaryMcpCapability === parsedContext.primary.mcpCapability &&
+    parsedReceipt.primaryMcpConfigFingerprint === parsedContext.primary.mcpConfigFingerprint &&
+    parsedReceipt.primaryMcpReceiptFingerprint === parsedContext.primary.mcpReceiptFingerprint &&
+    parsedReceipt.queryFingerprint === parsedContext.queryFingerprint &&
+    parsedReceipt.repositoryIdentityHash === parsedContext.repositoryIdentityHash &&
+    parsedReceipt.repositoryState === parsedContext.repositoryState &&
+    parsedReceipt.secondaryAccess === parsedContext.secondary.access &&
+    parsedReceipt.secondarySurfaceId === parsedContext.secondary.surfaceId &&
+    parsedReceipt.secondaryCapabilitiesFingerprint === parsedContext.secondary.capabilitiesFingerprint &&
+    parsedReceipt.secondaryMcpCapability === parsedContext.secondary.mcpCapability &&
+    parsedReceipt.secondaryMcpConfigFingerprint === parsedContext.secondary.mcpConfigFingerprint &&
+    parsedReceipt.secondaryMcpReceiptFingerprint === parsedContext.secondary.mcpReceiptFingerprint &&
+    parsedReceipt.mcpServerFingerprint === parsedContext.secondary.mcpServerFingerprint &&
+    parsedReceipt.startedAt === parsedContext.startedAt &&
+    parsedReceipt.teamId === parsedContext.teamId &&
+    parsedReceipt.teamShareStateHash === parsedContext.teamShareStateHash
+  );
+}
+
 export function secondSurfaceProofHashV1(
   receipt: Omit<SecondSurfaceProofReceiptV1, 'proofHash'> | SecondSurfaceProofReceiptV1,
 ): string {

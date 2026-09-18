@@ -1,50 +1,53 @@
-import {Console, Effect, Schema} from 'effect';
+import {Effect} from 'effect';
 import {Command} from 'effect/unstable/cli';
-import {boolean, requiredString} from './cli_flags.js';
+import {runActivationProductionCommandV1, type ActivationProductionCommandV1} from '../activation/production.js';
+import type {RuntimeConfig} from '../types.js';
+import {boolean, optionalString, requiredString} from './cli_flags.js';
 
-export interface ActivationCliRequest {
-  readonly activationId?: string;
-  readonly apply: boolean;
-  readonly command: 'start' | 'continue' | 'status' | 'undo';
-}
+const apply = boolean('apply', 'Apply work until the next explicit review boundary');
+const approved = boolean('approved', 'Confirm explicit approval of the exact current preview');
+const approval = optionalString('approval', 'Exact SHA-256 approval token emitted by the current preview');
+const request = requiredString('request', 'Bounded activation request JSON re-observed on every continuation');
 
-export class ActivationCliError extends Schema.TaggedError<ActivationCliError>()('ActivationCliError', {
-  message: Schema.String,
-}) {}
-
-export type ActivationCliRunner<R = never> = (
-  request: ActivationCliRequest,
-) => Effect.Effect<void, ActivationCliError, R>;
-
-const apply = boolean('apply', 'Apply only the next explicitly permitted activation work');
-const approved = boolean('approved', 'Apply the previewed undo plan');
-
-/** Small registration shell. Product adapters own raw input observation and print bounded next-action identifiers. */
-export function makeActivationCommand<R>(run: ActivationCliRunner<R>) {
-  const start = Command.make('start', {apply}, ({apply}) => run({apply, command: 'start'}));
+export function makeActivationCommand(
+  withRuntime: <E, R>(body: (config: RuntimeConfig) => Effect.Effect<void, E, R>) => Effect.Effect<void, E, R>,
+) {
+  const run = (command: ActivationProductionCommandV1) =>
+    withRuntime(config => runActivationProductionCommandV1(config, command));
+  const start = Command.make('start', {apply, request}, ({apply, request}) =>
+    run({apply, approved: false, command: 'start', requestFile: request}),
+  ).pipe(Command.withDescription('Preview or begin a bounded two-surface activation request'));
   const continue_ = Command.make(
     'continue',
-    {activationId: requiredString('activation-id', 'Exact activation ID returned by activate start'), apply},
-    ({activationId, apply}) => run({activationId, apply, command: 'continue'}),
-  );
+    {
+      activationId: requiredString('activation-id', 'Exact activation ID returned by activate start'),
+      apply,
+      approval,
+      approved,
+      request,
+    },
+    ({activationId, apply, approval, approved, request}) =>
+      run({activationId, apply, approval, approved, command: 'continue', requestFile: request}),
+  ).pipe(Command.withDescription('Re-observe live inputs and resume to the next review boundary'));
   const status = Command.make(
     'status',
     {activationId: requiredString('activation-id', 'Exact activation ID returned by activate start')},
-    ({activationId}) => run({activationId, apply: false, command: 'status'}),
-  );
+    ({activationId}) => run({activationId, apply: false, approved: false, command: 'status'}),
+  ).pipe(Command.withDescription('Show content-free activation receipt state and the next operation'));
   const undo = Command.make(
     'undo',
-    {activationId: requiredString('activation-id', 'Exact activation ID returned by activate start'), approved},
-    ({activationId, approved}) => run({activationId, apply: approved, command: 'undo'}),
-  );
+    {
+      activationId: requiredString('activation-id', 'Exact activation ID returned by activate start'),
+      apply,
+      approval,
+      approved,
+      request,
+    },
+    ({activationId, apply, approval, approved, request}) =>
+      run({activationId, apply, approval, approved, command: 'undo', requestFile: request}),
+  ).pipe(Command.withDescription('Preview or apply receipt-owned local activation cleanup'));
   return Command.make('activate').pipe(
-    Command.withDescription('Preview and resume a two-surface guided activation'),
+    Command.withDescription('Preview and resume a two-surface local guided activation'),
     Command.withSubcommands([start, continue_, status, undo]),
   );
 }
-
-/** Temporary production adapter until catalog/import/proof adapters are wired; it deliberately performs no hidden work. */
-export const runUnavailableActivationCli = (_request: ActivationCliRequest) =>
-  Console.error(
-    'Guided activation requires the installed catalog/import/proof adapters. No activation state or external changes were made.',
-  ).pipe(Effect.andThen(ActivationCliError.make({message: 'Activation capability unavailable.'})));

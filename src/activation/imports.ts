@@ -71,13 +71,16 @@ const collectActivationImportPreviewEffect = Effect.fn('activation.imports.colle
   const adrPaths = yield* checked(() => validateAdrPaths(options.adrPaths));
   const adapters = yield* checked(() => validateSurfaceIds(options.surfaceIds));
   const guidance = yield* Effect.forEach(adapters, adapter =>
-    collectGuidanceImportSourcesAtRoot(adapter, root).pipe(
-      Effect.map(sources =>
-        sources.map(
-          source => ({...source, kind: 'guidance' as const, surfaceId: adapter.catalog.id}) satisfies ImportObservation,
+    adapter.guidance === undefined
+      ? Effect.succeed([])
+      : collectGuidanceImportSourcesAtRoot(adapter, root).pipe(
+          Effect.map(sources =>
+            sources.map(
+              source =>
+                ({...source, kind: 'guidance' as const, surfaceId: adapter.catalog.id}) satisfies ImportObservation,
+            ),
+          ),
         ),
-      ),
-    ),
   );
   const adrs = yield* Effect.forEach(adrPaths, relativePath => readAdr(fs, path, root, relativePath));
   const merged = yield* checked(() => mergeObservations([...guidance.flat(), ...adrs]));
@@ -148,8 +151,6 @@ function validateSurfaceIds(selectors: readonly string[]) {
   const adapters = selectors.map(selector => {
     const adapter = getAgentAdapter(selector);
     if (!adapter) throw activationImportFailure(`Unknown agent surface: ${selector}`);
-    if (!adapter.guidance)
-      throw activationImportFailure(`${adapter.catalog.id} does not declare project guidance support.`);
     return adapter;
   });
   const ids = adapters.map(adapter => adapter.catalog.id);

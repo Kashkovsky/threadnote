@@ -1,4 +1,4 @@
-import {Console, DateTime, Effect, FileSystem, Option, Result} from 'effect';
+import {Console, DateTime, Effect, FileSystem, Option, Path, Result} from 'effect';
 
 import {uriSegment} from '../manifest.js';
 
@@ -147,6 +147,100 @@ export const runShareInit = Effect.fn('share.runShareInit')(function* (
     const ingested = yield* ingestWorktreeFiles(config, newConfig, 'create');
     yield* Console.log(`Ingested ${ingested} shared file(s) into native canonical store.`);
   }
+});
+
+export const recoverShareInit = Effect.fn('share.recoverShareInit')(function* (
+  config: ShareRuntime,
+  remoteUrl: string,
+  options: Pick<ShareInitOptions, 'push' | 'setDefault' | 'team'>,
+) {
+  const teamName = normalizeTeamName(options.team);
+  const teamsFile = yield* readTeamsFile(config);
+  if (teamsFile.teams[teamName] !== undefined) return false;
+  const worktree = yield* teamWorktreePath(config, teamName);
+  const gitdir = yield* teamGitdirPath(config, teamName);
+  const worktreeExists = yield* exists(worktree);
+  const gitdirExists = yield* exists(gitdir);
+  if (!worktreeExists && !gitdirExists) return false;
+  if (!worktreeExists || !gitdirExists) {
+    throw ShareOperationError.make({message: `Partial shared checkout for team "${teamName}" is incomplete.`});
+  }
+  const git = yield* requiredExecutable('git');
+  const actualGitdir = yield* runCommand(git, ['-C', worktree, 'rev-parse', '--absolute-git-dir'], {
+    allowFailure: true,
+  });
+  const remote = yield* runCommand(git, ['-C', worktree, 'remote', 'get-url', DEFAULT_GIT_REMOTE_NAME], {
+    allowFailure: true,
+  });
+  const status = yield* runCommand(git, ['-C', worktree, 'status', '--porcelain=v1', '--untracked-files=all'], {
+    allowFailure: true,
+  });
+  const divergence = yield* runCommand(git, ['-C', worktree, 'rev-list', '--count', 'HEAD...@{upstream}'], {
+    allowFailure: true,
+  });
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const [expectedGitdir, observedGitdir] = yield* Effect.all([
+    fs.realPath(gitdir),
+    actualGitdir.exitCode === 0 ? fs.realPath(actualGitdir.stdout.trim()) : Effect.succeed(''),
+  ]);
+  const observedRemote = remote.stdout.trim();
+  const observedRemotePath = observedRemote.startsWith('file://')
+    ? yield* Effect.try({
+        catch: () => '',
+        try: () => decodeURIComponent(new URL(observedRemote).pathname),
+      })
+    : observedRemote;
+  const requestedRemotePath = remoteUrl.startsWith('file://')
+    ? yield* Effect.try({
+        catch: () => '',
+        try: () => decodeURIComponent(new URL(remoteUrl).pathname),
+      })
+    : remoteUrl;
+  const remoteMatches =
+    observedRemote === remoteUrl ||
+    (path.isAbsolute(observedRemotePath) && path.isAbsolute(requestedRemotePath)
+      ? yield* Effect.all([fs.realPath(observedRemotePath), fs.realPath(requestedRemotePath)]).pipe(
+          Effect.map(([left, right]) => left === right),
+          Effect.orElseSucceed(() => false),
+        )
+      : false);
+  if (
+    actualGitdir.exitCode !== 0 ||
+    expectedGitdir !== observedGitdir ||
+    remote.exitCode !== 0 ||
+    !remoteMatches ||
+    status.exitCode !== 0 ||
+    status.stdout.length > 0 ||
+    divergence.exitCode !== 0 ||
+    divergence.stdout.trim() !== '0'
+  ) {
+    const mismatches = [
+      ...(actualGitdir.exitCode !== 0 || expectedGitdir !== observedGitdir ? ['gitdir'] : []),
+      ...(remote.exitCode !== 0 || !remoteMatches ? ['remote'] : []),
+      ...(status.exitCode !== 0 || status.stdout.length > 0 ? ['worktree'] : []),
+      ...(divergence.exitCode !== 0 || divergence.stdout.trim() !== '0' ? ['upstream'] : []),
+    ];
+    throw ShareOperationError.make({
+      message: `Existing shared checkout for team "${teamName}" does not exactly match the interrupted initialization (${mismatches.join(', ')}).`,
+    });
+  }
+  const newConfig: ShareTeamConfig = {
+    addedAt: DateTime.formatIso(yield* DateTime.now),
+    gitdir,
+    name: teamName,
+    remote: remoteUrl,
+    worktree,
+  };
+  yield* writeTeamsFile(config, {
+    defaultTeam: shouldSetDefault(options, teamsFile) ? teamName : (teamsFile.defaultTeam ?? teamName),
+    teams: {...teamsFile.teams, [teamName]: newConfig},
+    version: TEAMS_FILE_VERSION,
+  });
+  yield* ensureSharedGitignore(worktree, git, options.push !== false);
+  const ingested = yield* ingestWorktreeFiles(config, newConfig, 'create');
+  yield* Console.log(`Recovered shared team "${teamName}" and ingested ${ingested} shared file(s).`);
+  return true;
 });
 
 export const runShareStatus = Effect.fn('share.runShareStatus')(function* (

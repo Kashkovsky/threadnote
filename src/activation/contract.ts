@@ -423,7 +423,7 @@ export function activationOperationDefinitionsV1(
       expectedOutcome: 'verified',
       id: 'imports-review',
       kind: 'imports.review',
-      reversible: false,
+      reversible: true,
     },
     {expectedOutcome: 'verified', id: 'first-brief', kind: 'brief.verify', reversible: false},
     {expectedOutcome: 'verified', id: 'decision-review', kind: 'decision.review', reversible: false},

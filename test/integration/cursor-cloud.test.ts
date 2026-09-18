@@ -10,6 +10,7 @@ import {describe, expect, it} from 'vitest';
 
 const execFilePromise = promisify(execFile);
 const CLOUD_TOOL_NAMES = [
+  'complete_activation_retrieval_proof',
   'recall_context',
   'inspect_code_graph',
   'analyze_code_graph',

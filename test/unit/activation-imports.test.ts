@@ -92,13 +92,31 @@ describe('guided activation imports', () => {
           {adrPaths: ['./ADR.md'], surfaceIds: ['codex-cli']},
           {adrPaths: ['ADR.md', 'ADR.md'], surfaceIds: ['codex-cli']},
           {adrPaths: [], surfaceIds: ['codex-cli', 'codex']},
-          {adrPaths: [], surfaceIds: ['junie-cli']},
         ]) {
           const failure = yield* collectActivationImportPreview({...input, repositoryRoot: fixture.root}).pipe(
             Effect.flip,
           );
           expect(failure).toMatchObject({message: expect.any(String)});
         }
+      }),
+    ).pipe(provideTestLayer(stableReadLayer)),
+  );
+
+  effectIt.effect('keeps ADR imports for managed MCP surfaces without project guidance', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        yield* fixture.fs.writeFileString(fixture.path.join(fixture.root, 'AGENTS.md'), 'User-level guidance.\n');
+        yield* fixture.fs.writeFileString(fixture.path.join(fixture.root, 'decision.md'), 'Portable decision.\n');
+        const preview = yield* collectActivationImportPreview({
+          adrPaths: ['decision.md'],
+          repositoryRoot: fixture.root,
+          surfaceIds: ['junie-cli'],
+        });
+        expect(preview.sources).toEqual([
+          expect.objectContaining({kinds: ['adr'], relativePath: 'decision.md', surfaceIds: []}),
+        ]);
+        expect(preview.candidates).toEqual([expect.objectContaining({proposedText: 'Portable decision.'})]);
       }),
     ).pipe(provideTestLayer(stableReadLayer)),
   );

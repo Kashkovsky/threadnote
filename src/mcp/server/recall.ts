@@ -329,9 +329,14 @@ export interface ApplyMemoryCandidateInput {
   readonly revision?: number;
 }
 
+interface ApplyMemoryCandidateOptions {
+  readonly reviewLockHeld?: boolean;
+}
+
 export function applyMemoryCandidate(
   config: RuntimeConfig,
   {action, approved, candidateId, editedText, operation, replaceUri, reviewId, revision}: ApplyMemoryCandidateInput,
+  options: ApplyMemoryCandidateOptions = {},
 ) {
   const checkedReviewId = requiredText(reviewId, 'apply_memory_candidates', 'reviewId', {
     reviewId: 'review-0123456789abcdef',
@@ -358,9 +363,10 @@ export function applyMemoryCandidate(
   if (action === 'approve' && approved !== true) {
     return Effect.succeed(argumentError('approve requires approved=true after explicit user approval.'));
   }
-  return withCandidateReviewLock(
+  return withOptionalCandidateReviewLock(
     config.agentContextHome,
     checkedReviewId.value,
+    options.reviewLockHeld === true,
     Effect.gen(function* () {
       const review = yield* loadCandidateReview(config.agentContextHome, checkedReviewId.value);
       const candidate = review.candidates.find(item => item.candidateId === checkedCandidateId.value);
@@ -710,6 +716,16 @@ export function applyMemoryCandidate(
       };
     }),
   ).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
+}
+
+function withOptionalCandidateReviewLock<A, E, R>(
+  agentContextHome: string,
+  reviewId: string,
+  lockHeld: boolean,
+  effect: Effect.Effect<A, E, R>,
+) {
+  const locked = withCandidateReviewLock(agentContextHome, reviewId, effect);
+  return lockHeld ? (effect as typeof locked) : locked;
 }
 
 export function registerSearchTool(

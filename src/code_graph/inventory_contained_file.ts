@@ -1,4 +1,5 @@
 import {Effect, FileSystem, Option, Path} from 'effect';
+import {fromPromise} from '../effect/errors.js';
 import {runtimeFileDescriptorStatSync, runtimeLstat, SystemInfo, type RuntimeBigIntStats} from '../effect/system.js';
 import {createCodeGraphCommittedFileContentHasher} from './content_identity.js';
 import {decodeUtf8} from './inventory_content.js';
@@ -444,10 +445,11 @@ function sameRegularFile(
 }
 
 function nativePathInfo(target: string): Effect.Effect<RuntimeBigIntStats, CodeGraphInventoryError> {
-  return Effect.tryPromise({
-    try: () => runtimeLstat(target),
-    catch: cause => CodeGraphInventoryError.make({cause, message: `Could not inspect repository path: ${target}`}),
-  });
+  return fromPromise('codeGraph.inventory.lstat', () => runtimeLstat(target)).pipe(
+    Effect.mapError(cause =>
+      CodeGraphInventoryError.make({cause, message: `Could not inspect repository path: ${target}`}),
+    ),
+  );
 }
 
 function nativeOpenedFileInfo(file: FileSystem.File): Effect.Effect<RuntimeBigIntStats, CodeGraphInventoryError> {

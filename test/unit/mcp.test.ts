@@ -249,6 +249,7 @@ describe('JSON MCP host configuration', () => {
                     THREADNOTE_MCP_TOOLSET: 'core',
                     THREADNOTE_HOME: testRuntime.agentContextHome,
                     THREADNOTE_MCP_CLIENT: agent,
+                    THREADNOTE_MCP_SURFACE: agent === 'cursor' ? 'cursor-desktop' : 'copilot-vscode',
                     THREADNOTE_AGENT_ID: 'threadnote',
                     THREADNOTE_ACCOUNT: 'local',
                     USER_EXTENSION: 'preserved',
@@ -1002,6 +1003,7 @@ describe('MCP agent executable resolution', () => {
         THREADNOTE_AGENT_ID: 'threadnote',
         THREADNOTE_HOME: testRuntime.agentContextHome,
         THREADNOTE_MCP_CLIENT: agent,
+        THREADNOTE_MCP_SURFACE: agent === 'codex' ? 'codex-cli' : 'claude-code',
         THREADNOTE_MCP_TOOLSET: 'core',
         THREADNOTE_USER: 'test-user',
       };

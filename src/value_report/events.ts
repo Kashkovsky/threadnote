@@ -55,8 +55,33 @@ export interface SetupLifecycleValueEventV1 {
   readonly version: typeof VALUE_EVENT_VERSION;
 }
 
+export interface ActivationValueEventV1 {
+  readonly durationMilliseconds: number;
+  readonly eventId: string;
+  readonly kind: 'activation';
+  readonly phase: 'started' | 'first-evidence' | 'completed' | 'second-surface-proof';
+  readonly timestamp: string;
+  readonly version: typeof VALUE_EVENT_VERSION;
+}
+
 export type LocalValueEventV1 =
-  ContextBriefValueEventV1 | HealthValueEventV1 | SetupCompletionValueEventV1 | SetupLifecycleValueEventV1;
+  | ActivationValueEventV1
+  | ContextBriefValueEventV1
+  | HealthValueEventV1
+  | SetupCompletionValueEventV1
+  | SetupLifecycleValueEventV1;
+
+export const recordActivationValueEvent = Effect.fn('valueReport.recordActivation')(function* (
+  agentContextHome: string,
+  event: Omit<ActivationValueEventV1, 'kind' | 'version'>,
+) {
+  yield* appendValueEvent(agentContextHome, {
+    ...event,
+    durationMilliseconds: boundedDuration(event.durationMilliseconds),
+    kind: 'activation',
+    version: VALUE_EVENT_VERSION,
+  });
+});
 
 export const recordContextBriefValueEvent = Effect.fn('valueReport.recordContextBrief')(function* (
   agentContextHome: string,
@@ -177,6 +202,10 @@ export function summarizeLocalValueEvents(
     (event): event is SetupLifecycleValueEventV1 =>
       event.kind === 'setup-lifecycle' && timestampInPeriod(event.timestamp, options),
   );
+  const activationEvents = events.filter(
+    (event): event is ActivationValueEventV1 =>
+      event.kind === 'activation' && timestampInPeriod(event.timestamp, options),
+  );
   return {
     contextBrief: {
       attempts: contextBriefEvents.length,
@@ -194,19 +223,32 @@ export function summarizeLocalValueEvents(
       opened: sum(healthEvents.map(event => event.opened)),
       resolved: sum(healthEvents.map(event => event.resolved)),
     },
-    ...(setupCompletionEvents.length === 0 && setupLifecycleEvents.length === 0
+    ...(setupCompletionEvents.length === 0 && setupLifecycleEvents.length === 0 && activationEvents.length === 0
       ? {}
       : {
           setup: {
-            completed: sum(setupCompletionEvents.map(event => event.completed)),
+            completed: sum([
+              ...setupCompletionEvents.map(event => event.completed),
+              ...activationEvents.filter(event => event.phase === 'completed').map(() => 1),
+            ]),
             failed: setupLifecycleEvents.filter(event => event.phase === 'failed').length,
-            started: setupLifecycleEvents.filter(event => event.phase === 'started').length,
-            supportedAgentReuse: sum(setupCompletionEvents.map(event => event.supportedAgentReuse)),
-            timeToFirstEvidenceMillisecondsSamples: setupLifecycleEvents.flatMap(event =>
-              event.phase === 'completed' && event.timeToFirstEvidenceMilliseconds !== undefined
-                ? [event.timeToFirstEvidenceMilliseconds]
-                : [],
-            ),
+            started:
+              setupLifecycleEvents.filter(event => event.phase === 'started').length +
+              activationEvents.filter(event => event.phase === 'started').length,
+            supportedAgentReuse: sum([
+              ...setupCompletionEvents.map(event => event.supportedAgentReuse),
+              ...activationEvents.filter(event => event.phase === 'second-surface-proof').map(() => 1),
+            ]),
+            timeToFirstEvidenceMillisecondsSamples: [
+              ...setupLifecycleEvents.flatMap(event =>
+                event.phase === 'completed' && event.timeToFirstEvidenceMilliseconds !== undefined
+                  ? [event.timeToFirstEvidenceMilliseconds]
+                  : [],
+              ),
+              ...activationEvents
+                .filter(event => event.phase === 'first-evidence')
+                .map(event => event.durationMilliseconds),
+            ],
           },
         }),
   };
@@ -254,6 +296,12 @@ const appendValueEvent = Effect.fn('valueReport.appendEvent')(function* (
     LOCK_OPTIONS,
     Effect.gen(function* () {
       const existing = yield* readValueEvents(fs, path);
+      if (
+        'eventId' in event &&
+        existing.some(candidate => 'eventId' in candidate && candidate.eventId === event.eventId)
+      ) {
+        return;
+      }
       yield* writeValueEvents(fs, path, retainEvents([...existing, event], event.timestamp));
     }),
   );
@@ -345,6 +393,18 @@ function parseValueEvent(line: string): LocalValueEventV1 | undefined {
     (value.project !== undefined && typeof value.project !== 'string')
   )
     return undefined;
+  if (
+    value.kind === 'activation' &&
+    typeof value.eventId === 'string' &&
+    /^[0-9a-f]{64}$/u.test(value.eventId) &&
+    (value.phase === 'started' ||
+      value.phase === 'first-evidence' ||
+      value.phase === 'completed' ||
+      value.phase === 'second-surface-proof') &&
+    validCount(value.durationMilliseconds)
+  ) {
+    return value as unknown as ActivationValueEventV1;
+  }
   if (
     value.kind === 'context-brief' &&
     typeof value.successful === 'boolean' &&

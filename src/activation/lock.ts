@@ -9,6 +9,8 @@ const ACTIVATION_RECEIPT_LOCK_OPTIONS = {
 
 type ActivationReceiptLockOptions = Pick<ExclusiveFileLockOptions, 'onAcquired' | 'onCompleted' | 'onContention'>;
 
+type ActivationLifecycleLockOptions = ActivationReceiptLockOptions;
+
 export function withActivationReceiptLock<A, E, R>(
   agentContextHome: string,
   activationId: string,
@@ -20,6 +22,21 @@ export function withActivationReceiptLock<A, E, R>(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const lockPath = path.join(path.resolve(agentContextHome), 'activation', 'locks', `${activationId}.lock`);
+    return yield* withExclusiveFileLock(fs, lockPath, {...ACTIVATION_RECEIPT_LOCK_OPTIONS, ...options}, effect);
+  });
+}
+
+export function withActivationLifecycleLock<A, E, R>(
+  agentContextHome: string,
+  activationId: string,
+  effect: Effect.Effect<A, E, R>,
+  options: ActivationLifecycleLockOptions = {},
+) {
+  if (!/^[0-9a-f]{64}$/u.test(activationId)) throw new Error('Activation lock requires a SHA-256 activation ID.');
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const lockPath = path.join(path.resolve(agentContextHome), 'activation', 'lifecycle-locks', `${activationId}.lock`);
     return yield* withExclusiveFileLock(fs, lockPath, {...ACTIVATION_RECEIPT_LOCK_OPTIONS, ...options}, effect);
   });
 }
