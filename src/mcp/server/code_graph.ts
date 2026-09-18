@@ -197,7 +197,7 @@ export function registerCodeGraphTool(
           minimum: 1,
           maximum: MCP_CODE_GRAPH_MAXIMUM_NODE_LIMIT,
         }),
-        operation: McpInput.literals(
+        operation: McpInput.requiredLiterals(
           ['query', 'node', 'neighbors', 'explain', 'path', 'impact', 'topology'],
           'Graph operation',
         ),
@@ -625,7 +625,7 @@ export function registerCodeGraphTool(
           minimum: 0,
           maximum: MCP_CODE_GRAPH_ANALYSIS_MAXIMUM_COMMUNITY_MEMBERS,
         }),
-        operation: McpInput.literals(
+        operation: McpInput.requiredLiterals(
           ['stats', 'communities', 'community', 'groups', 'hubs', 'surprises', 'confidence', 'full'],
           'Required whole-graph analysis operation',
         ),
