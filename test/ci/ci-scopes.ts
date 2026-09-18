@@ -1,6 +1,15 @@
 import {ciRequiredLongRunningTestGroupNames} from './vitest-plan.js';
 
-export const ciScopeKeys = ['actions', 'code', 'quality', 'release', 'site_check', 'site_build', 'windows'] as const;
+export const ciScopeKeys = [
+  'actions',
+  'code',
+  'guidance',
+  'quality',
+  'release',
+  'site_check',
+  'site_build',
+  'windows',
+] as const;
 
 export type CiScopeKey = (typeof ciScopeKeys)[number];
 export type CiScopes = Readonly<Record<CiScopeKey, boolean>>;
@@ -14,6 +23,7 @@ export interface CiScopeClassification {
 const noScopes = (): Record<CiScopeKey, boolean> => ({
   actions: false,
   code: false,
+  guidance: false,
   quality: false,
   release: false,
   site_build: false,
@@ -24,6 +34,7 @@ const noScopes = (): Record<CiScopeKey, boolean> => ({
 const allScopes = (): Record<CiScopeKey, boolean> => ({
   actions: true,
   code: true,
+  guidance: true,
   quality: true,
   release: true,
   site_build: true,
@@ -64,6 +75,16 @@ function isDocumentationOnlyPath(path: string): boolean {
     path.startsWith('docs/') ||
     path.startsWith('.github/release-notes/') ||
     (/^[^/]+\.md$/u.test(path) && path !== 'README.md')
+  );
+}
+
+function isGuidancePath(path: string): boolean {
+  return (
+    path === 'config/agent-instructions.md' ||
+    path === 'docs/agent-instructions.md' ||
+    path.startsWith('config/agent-skills/') ||
+    path.startsWith('config/agent-profiles/') ||
+    path === 'test/unit/agent-instructions.test.ts'
   );
 }
 
@@ -153,8 +174,12 @@ function scopesForScript(path: string): CiScopes {
 
 function scopesForPath(path: string): CiScopes {
   if (path.startsWith('website/')) return selectedScopes('site_check', 'site_build');
-  if (path === 'test/unit/website-content.test.ts' || path === 'test/unit/website-release-boundary.test.ts') {
-    return selectedScopes('code', 'site_check');
+  if (
+    path === 'test/unit/website-content.test.ts' ||
+    path === 'test/unit/website-release-boundary.test.ts' ||
+    path === 'test/unit/website-site-meta.test.ts'
+  ) {
+    return selectedScopes('site_check', 'site_build');
   }
   if (
     /^test\/evaluation\/candidates\/threadnote-4\.0\.[01]\/benchmarks\/darwin-arm64-m1-max\/(?:code-graph-(?:intellij-(?:analysis-summary|query)|lexical-production-100k|worktree-readiness)-.*\.json)$/u.test(
@@ -164,6 +189,7 @@ function scopesForPath(path: string): CiScopes {
     return selectedScopes('site_check', 'site_build');
   }
   if (path === 'README.md') return selectedScopes('site_check');
+  if (isGuidancePath(path)) return selectedScopes('guidance');
   if (isDocumentationOnlyPath(path)) return noScopes();
 
   if (path.startsWith('.github/workflows/')) return scopesForWorkflow(path);
