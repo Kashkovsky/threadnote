@@ -1,4 +1,5 @@
 import type {TraceScenario} from '../components/AgentTrace.js';
+import {lifecycleProTips} from './proTipsLifecycle.js';
 
 export type ProTip = {
   id: string;
@@ -11,10 +12,10 @@ export type ProTip = {
   scenario: TraceScenario;
 };
 
-export const proTips: ProTip[] = [
+const establishedProTips: ProTip[] = [
   {
     id: 'share-before-pr',
-    number: '01',
+    number: '06',
     category: 'team',
     title: 'Share the feature memory before the PR.',
     summary: 'Give reviewers the design constraints and trade-offs that cannot fit cleanly in the diff.',
@@ -85,7 +86,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'parallel-team',
-    number: '02',
+    number: '07',
     category: 'team',
     title: 'Work in parallel without losing the shared edge.',
     summary: 'Publish reusable decisions while keeping branch-specific handoffs local to each teammate.',
@@ -149,7 +150,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'orchestrated-worktrees',
-    number: '03',
+    number: '08',
     category: 'continuity',
     title: 'Give every parallel agent its own worktree.',
     summary: 'Share local memory while keeping each agent’s dirty source graph isolated to its checkout.',
@@ -211,7 +212,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'on-call',
-    number: '04',
+    number: '09',
     category: 'operations',
     title: 'Turn an incident into the next on-caller’s head start.',
     summary: 'Preserve the privacy-safe diagnosis, signals, mitigations, and follow-up—not the production transcript.',
@@ -288,7 +289,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'switch-agents',
-    number: '05',
+    number: '10',
     category: 'continuity',
     title: 'Start in one agent. Continue in another.',
     summary: 'A concise handoff carries exact status, checks, blockers, and next steps across agent boundaries.',
@@ -340,7 +341,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'resume-later',
-    number: '06',
+    number: '11',
     category: 'continuity',
     title: 'Resume a feature a month later.',
     summary:
@@ -383,7 +384,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'graph-operations',
-    number: '07',
+    number: '12',
     category: 'graph',
     title: 'Choose the graph operation that matches the question.',
     summary:
@@ -438,7 +439,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'memory-plus-graph',
-    number: '08',
+    number: '13',
     category: 'graph',
     title: 'Cite the code behind consequential memory.',
     summary:
@@ -513,7 +514,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'portable-graph-checkpoints',
-    number: '09',
+    number: '14',
     category: 'graph',
     title: 'Carry a verified graph across machines.',
     summary:
@@ -588,3 +589,5 @@ export const proTips: ProTip[] = [
     },
   },
 ];
+
+export const proTips: ProTip[] = [...lifecycleProTips, ...establishedProTips];

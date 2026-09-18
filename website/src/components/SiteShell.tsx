@@ -102,7 +102,7 @@ export function SiteShell({
       <footer className="site-footer">
         <div>
           <ThreadnoteMark />
-          <p>Durable context for people and their agents.</p>
+          <p>Source-verifiable engineering context across agent vendors.</p>
         </div>
         <div className="site-footer__links">
           <a href={siteHref('docs/')}>Documentation</a>
@@ -117,7 +117,7 @@ export function SiteShell({
           <a href={`${githubUrl}/issues`}>Issues</a>
         </div>
         <p className="site-footer__meta">
-          © Denys Kashkovskyi 2026 · AGPL-3.0 · Local-first · Built for the long thread
+          © Denys Kashkovskyi 2026 · AGPL-3.0 · Local-first · Built for reviewed reuse
         </p>
       </footer>
     </>

@@ -1,11 +1,12 @@
 import {lazy, Suspense, useState} from 'react';
+import articles from 'virtual:threadnote-articles';
 import {AgentTrace} from '../components/AgentTrace';
 import {CodeBlock} from '../components/CodeBlock';
 import {Icon, type IconName} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
 import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../content/landing';
 import {performanceEvidence} from '../content/performanceEvidence';
-import {docsArticleHref, githubUrl, setDocumentMeta, siteHref} from '../lib/site';
+import {docsArticleHref, githubUrl, setDocumentMeta, siteHref, whatsNewArticleHref} from '../lib/site';
 
 const ThreadScene = lazy(() => import('../visuals/ThreadScene'));
 
@@ -27,73 +28,83 @@ const features: Array<{
   {
     icon: 'memory',
     accent: 'teal',
-    label: 'Durable memory',
-    title: 'The useful part survives—and can check its sources.',
-    body: 'Decisions, handoffs, workflows, and lessons become scoped Markdown with stable URIs. Important claims can cite exact files or symbols, while older uncited memories stay recallable.',
-    detail: 'Optional citations · stale-link warnings · legacy recall',
+    label: 'Context Brief',
+    title: 'Start with the smallest trustworthy evidence set.',
+    body: 'Bring reviewed decisions, active handoffs, compatible procedures, and current code evidence into one bounded brief with provenance, freshness, and visible gaps.',
+    detail: 'Bounded · cited · source-aware',
   },
   {
     icon: 'local',
     accent: 'teal',
-    label: 'Local AI',
-    title: 'Core recall works out of the box.',
-    body: 'A verified embedding model installs by default. A supervised local worker adds semantic recall while lexical search stays ready to fail open.',
-    detail: 'No Python · no daemon · no OpenViking',
+    label: 'Knowledge Delta',
+    title: 'Finish with reviewed knowledge, not a transcript.',
+    body: 'Review decisions and rationale, constraints, verification, invalidated knowledge, and unresolved risks before any proposal becomes durable.',
+    detail: 'Approve · edit · defer · reject',
   },
   {
     icon: 'team',
     accent: 'blue',
-    label: 'Cross-team sharing',
-    title: 'Share the conclusion, not the private session.',
-    body: 'Preview, scan, and publish selected durable memory through a Git-backed team store. Teammates sync it into local Threadnote, then recall it from any compatible agent.',
-    detail: 'Explicit boundary · conflict-safe · auditable',
+    label: 'Cross-agent sharing',
+    title: 'Move approved context through the Git policy you already trust.',
+    body: 'Publish one reviewed decision directly or materialize a provider-neutral branch and commit for normal team review. Private handoffs stay local.',
+    detail: 'Git-backed · policy-aware · portable',
   },
   {
     icon: 'graph',
     accent: 'violet',
-    label: 'Polyglot code graph',
-    title: 'Ask about the code as it exists now.',
-    body: 'Inspect paths and impact, then drill into communities, structural groups, hubs, confidence, and surprising links across broad bundled language packs, schemas, and project documents—even in large nested monorepos.',
-    detail: 'Inspect · analyze · drill down · report · export',
+    label: 'Continuous health',
+    title: 'Know when context changed, expired, drifted, or became uncertain.',
+    body: 'Review dates, citations, relations, guidance drift, contradictions, and Context CI keep maintenance in the same lifecycle as retrieval.',
+    detail: 'Detect · review · repair · retire',
   },
   {
     icon: 'manager',
     accent: 'magenta',
-    label: 'Manager',
-    title: 'See the system, not just its output.',
-    body: 'Explore graph topology, memory health, shares, models, tools, and diagnostics in a focused local control plane.',
-    detail: 'Three.js graph · inspectable evidence',
+    label: 'Verified procedures',
+    title: 'Reuse workflows only when their exact evidence is current.',
+    body: 'Bind reviewed procedures to versions, owners, dependencies, compatible catalog surfaces, rollout policy, fixtures, and exact verification receipts.',
+    detail: 'Preview-first · compatible · never auto-run',
   },
   {
     icon: 'obsidian',
     accent: 'amber',
-    label: 'Obsidian bridge',
-    title: 'Human notes and agent memory can meet safely.',
-    body: 'Allowlist vault notes for recall or publish selected memories into a drift-protected generated view. No plugin required.',
-    detail: 'Explicit imports · one-way projections',
+    label: 'Visible value',
+    title: 'Measure applied reuse without collecting the work.',
+    body: 'Inspect local counts for activation, first evidence, second-agent reuse, Knowledge Delta outcomes, feedback, and health resolution.',
+    detail: 'Content-free · local · consent-exported',
   },
 ];
 
 const workflow = [
   {
     number: '01',
-    title: 'Recall what was learned',
-    body: 'Threadnote ranks scoped memories—including older uncited records—and returns small, explainable pointers.',
+    title: 'Connect catalog-supported surfaces',
+    body: 'Preview each managed setup and finish the first one with a real, cited Context Brief.',
   },
   {
     number: '02',
-    title: 'Check the current evidence',
-    body: 'Context Brief validates optional citations while the graph answers current-source questions; neither rewrites the memory.',
+    title: 'Import existing guidance for review',
+    body: 'Bring selected project instructions and ADRs into a candidate review without silently making them canonical.',
   },
   {
     number: '03',
-    title: 'Do the work',
-    body: 'The agent starts with the decisions, files, tests, blockers, and next step already in view.',
+    title: 'Work from cited context and exact local code',
+    body: 'Use the brief to start informed, then verify consequential claims in the current worktree.',
   },
   {
     number: '04',
-    title: 'Preserve the outcome',
-    body: 'Update stable memory, cite consequential source claims when useful, leave a concise handoff, and optionally publish the reusable part.',
+    title: 'Review the Knowledge Delta',
+    body: 'Approve only the decisions, constraints, verification, invalidations, and risks worth carrying forward.',
+  },
+  {
+    number: '05',
+    title: 'Publish or propose through Git',
+    body: 'Keep the personal-to-team boundary explicit and let normal review policy govern shared context.',
+  },
+  {
+    number: '06',
+    title: 'Reuse it, then keep it healthy',
+    body: 'Retrieve the approved decision from another surface, inspect local value, and repair decay without silent deletion.',
   },
 ];
 
@@ -210,7 +221,7 @@ function GraphSearchShowcase() {
 
       <a className="graph-showcase__performance-cta" href={siteHref('performance/')}>
         <div>
-          <span className="eyebrow">4.4 graph pipeline · large repositories · fast worktrees</span>
+          <span className="eyebrow">Current-code evidence · large repositories · fast worktrees</span>
           <h3>Inspect the exact-release evidence behind proportional graph updates.</h3>
         </div>
         <p>
@@ -314,9 +325,10 @@ function GraphSearchShowcase() {
 }
 
 export default function LandingPage() {
+  const latestArticle = articles[0];
   setDocumentMeta(
-    'Your team remembers',
-    'Local-first engineering memory with optional code citations, honest freshness warnings, and large-scale polyglot graph search for every coding agent.',
+    'Source-verifiable context across coding agents',
+    'Start engineering tasks with reviewed decisions and current code evidence, then leave a reviewed Knowledge Delta for the next agent.',
   );
 
   return (
@@ -325,24 +337,24 @@ export default function LandingPage() {
         <div className="hero__copy">
           <div className="hero__version">
             <span className="status-dot" />
-            Threadnote 4.4 · self-contained
+            Threadnote 5.0 · local and Git-backed
           </div>
           <h1>
-            Your team remembers.
-            <span>Every coding agent can use it.</span>
+            Start with the right context.
+            <span>Leave it better for the next agent.</span>
           </h1>
           <p className="hero__lede">
-            Local-first engineering memory that can cite current code and warn when evidence moves or changes, plus
-            large-scale polyglot graph search for <a href={siteHref('agents/')}>supported agents</a> and the next agent
-            you try.
+            Threadnote is the source-verifiable context lifecycle for engineering work. Give{' '}
+            <a href={siteHref('agents/')}>supported agents</a> reviewed decisions and current code evidence across
+            vendors, then close the task with a Knowledge Delta a person can approve.
           </p>
           <div className="hero__actions">
             <a className="button" href={docsArticleHref('installation')}>
               Install Threadnote
               <Icon name="arrow" aria-hidden="true" />
             </a>
-            <a className="button button--ghost" href="#graph-search">
-              Explore graph search
+            <a className="button button--ghost" href={docsArticleHref('threadnote-5-journey')}>
+              Follow the complete journey
             </a>
           </div>
           <div className="hero__install">
@@ -355,69 +367,80 @@ export default function LandingPage() {
             <ThreadScene />
           </Suspense>
           <div className="hero-node hero-node--memory">
-            <span>memory</span>
-            <strong>auth-contract.md</strong>
+            <span>reviewed decision</span>
+            <strong>auth-contract · current</strong>
           </div>
           <div className="hero-node hero-node--graph">
-            <span>code graph</span>
-            <strong>inspect + analyze · current worktree</strong>
+            <span>current evidence</span>
+            <strong>exact local worktree</strong>
           </div>
           <div className="hero-node hero-node--share">
-            <span>team share</span>
-            <strong>mobile-platform</strong>
+            <span>closeout</span>
+            <strong>reviewed Knowledge Delta</strong>
           </div>
           <div className="hero__caption">
-            <span>Historical knowledge</span>
+            <span>Reviewed context</span>
             <i />
-            <span>Current source</span>
+            <span>Current evidence</span>
           </div>
         </div>
       </section>
 
+      {latestArticle ? (
+        <a className="home-update-banner" href={whatsNewArticleHref(latestArticle.slug)}>
+          <span className="home-update-banner__label">Latest · What&apos;s new</span>
+          <div>
+            <strong>{latestArticle.title}</strong>
+            <p>{latestArticle.summary}</p>
+          </div>
+          <span className="home-update-banner__action">
+            Read what&apos;s new
+            <Icon name="arrow" aria-hidden="true" />
+          </span>
+        </a>
+      ) : null}
+
       <section className="trust-strip" aria-label="Threadnote runtime guarantees">
         <div>
-          <strong>Standalone installation</strong>
-          <span>Executable and pinned native runtime</span>
+          <strong>Cross-vendor</strong>
+          <span>Catalog-driven agent surfaces</span>
         </div>
         <div>
-          <strong>Private by default</strong>
-          <span>Canonical home at ~/.threadnote</span>
+          <strong>Source-verifiable</strong>
+          <span>Provenance, freshness, and honest gaps</span>
         </div>
         <div>
-          <strong>Core model installed automatically</strong>
-          <span>Verified BGE Small embeddings</span>
+          <strong>Review-first</strong>
+          <span>No silent import, apply, or publication</span>
         </div>
         <div>
-          <strong>No service to babysit</strong>
-          <span>No Python, daemon, or external server</span>
+          <strong>Local/offline floor</strong>
+          <span>No hosted organization service required</span>
         </div>
       </section>
 
       <section className="content-section content-section--trace">
         <header className="section-heading">
-          <span className="eyebrow">Context that can check its sources</span>
-          <h2>One prompt. Memory, current code, and honest freshness.</h2>
+          <span className="eyebrow">One bounded starting point</span>
+          <h2>Reviewed decisions and current code—together, but never confused.</h2>
           <p>
-            Memory explains what people learned and decided. The graph explains what the current worktree contains.
-            Optional citations let Context Brief distinguish evidence that moved unchanged from evidence that changed,
-            disappeared, or could not be verified. A stale-link warning means the evidence moved—not that the memory
-            became stale—and older uncited memories still participate in recall.
+            A Context Brief compiles only the relevant decisions, handoffs, verified procedures, and current-source
+            evidence for the task. Provenance stays attached, the local worktree remains authoritative, and incomplete
+            evidence stays unknown instead of becoming a confident answer.
           </p>
         </header>
         <AgentTrace scenario={heroScenario} />
       </section>
 
-      <GraphSearchShowcase />
-
       <section className="content-section" id="features">
         <header className="section-heading section-heading--split">
           <div>
-            <span className="eyebrow">A durable context layer</span>
-            <h2>Built for the whole engineering thread.</h2>
+            <span className="eyebrow">The context lifecycle</span>
+            <h2>From first evidence to reviewed reuse.</h2>
           </div>
           <p>
-            Threadnote sits between your repositories, local tools, team knowledge, and coding agents—without trying to
-            replace any of them.
+            Threadnote keeps capture, review, sharing, health, and reuse connected—without replacing repositories, Git
+            review, or the agent surfaces your team already chose.
           </p>
         </header>
         <div className="feature-grid">
@@ -481,8 +504,8 @@ export default function LandingPage() {
 
       <section className="content-section">
         <header className="section-heading">
-          <span className="eyebrow">The daily loop</span>
-          <h2>Start informed. Finish with a clean thread.</h2>
+          <span className="eyebrow">One cross-agent workflow</span>
+          <h2>Start informed. Finish with context the next engineer can trust.</h2>
         </header>
         <ol className="workflow-list">
           {workflow.map(item => (
@@ -497,13 +520,15 @@ export default function LandingPage() {
         </ol>
       </section>
 
+      <GraphSearchShowcase />
+
       <section className="manager-teaser">
         <div className="manager-teaser__copy">
           <span className="eyebrow">Threadnote Manager</span>
-          <h2>Your context, visible.</h2>
+          <h2>Health and value stay inspectable.</h2>
           <p>
-            Walk a polyglot dependency graph, inspect topology signals, follow a memory’s lifecycle, check share health,
-            and verify local AI—without leaving the local runtime.
+            Follow reviewed knowledge through its lifecycle, inspect share and guidance health, walk current code
+            evidence, and see content-free activation, reuse, Knowledge Delta, feedback, and repair outcomes.
           </p>
           <a className="button button--light" href={siteHref('manager-demo/')}>
             Open interactive demo
@@ -577,8 +602,8 @@ export default function LandingPage() {
 
       <section className="content-section content-section--cta">
         <div className="cta-panel">
-          <span className="eyebrow">Keep the long thread</span>
-          <h2>Give your next agent the context your last one earned.</h2>
+          <span className="eyebrow">Keep the context lifecycle moving</span>
+          <h2>Give the next agent reviewed decisions and current evidence—not another transcript.</h2>
           <CodeBlock
             label="macOS & Linux"
             code="curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh"

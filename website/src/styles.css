@@ -726,6 +726,70 @@ p {
   border-bottom: 1px solid var(--line);
 }
 
+.home-update-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: center;
+  width: min(calc(100% - 48px), var(--content));
+  margin: 0 auto 34px;
+  padding: 22px 24px;
+  color: var(--text);
+  background: linear-gradient(110deg, rgba(103, 232, 199, 0.11), rgba(146, 125, 255, 0.08)), var(--panel);
+  border: 1px solid rgba(103, 232, 199, 0.35);
+  border-radius: 9px;
+  transition:
+    border-color 160ms ease,
+    transform 160ms ease;
+}
+
+.home-update-banner:hover {
+  border-color: rgba(103, 232, 199, 0.7);
+  transform: translateY(-2px);
+}
+
+.home-update-banner__label,
+.home-update-banner__action {
+  color: var(--teal);
+  font:
+    var(--font-size-min)/1.45 'JetBrains Mono Variable',
+    monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.home-update-banner > div {
+  min-width: 0;
+  padding-left: 24px;
+  border-left: 1px solid var(--line);
+}
+
+.home-update-banner strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 18px;
+  font-weight: 590;
+}
+
+.home-update-banner p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.home-update-banner__action {
+  display: inline-flex;
+  gap: 9px;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.home-update-banner__action svg {
+  width: 17px;
+  height: 17px;
+}
+
 .trust-strip > div {
   padding: 24px clamp(20px, 3vw, 42px);
   border-right: 1px solid var(--line);
@@ -6009,6 +6073,19 @@ p {
 }
 
 @media (max-width: 980px) {
+  .home-update-banner {
+    grid-template-columns: 1fr auto;
+  }
+
+  .home-update-banner__label {
+    grid-column: 1 / -1;
+  }
+
+  .home-update-banner > div {
+    padding-left: 0;
+    border-left: 0;
+  }
+
   .site-header__inner {
     width: min(calc(100% - 32px), var(--content));
   }
@@ -6379,6 +6456,16 @@ p {
 }
 
 @media (max-width: 680px) {
+  .home-update-banner {
+    grid-template-columns: 1fr;
+    width: min(calc(100% - 32px), var(--content));
+    padding: 19px;
+  }
+
+  .home-update-banner__action {
+    white-space: normal;
+  }
+
   .section-grid,
   .content-section,
   .manager-teaser,

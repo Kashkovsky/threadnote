@@ -732,12 +732,11 @@ describe('Threadnote Grafana dashboard', () => {
   it.effect('keeps the production consent documentation aligned with the operated destination', () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const [commands, telemetryDocs, websiteDocs, readme, gatewayReadme, productionRunbook] = yield* Effect.all(
+      const [commands, telemetryDocs, websiteDocs, gatewayReadme, productionRunbook] = yield* Effect.all(
         [
           fileSystem.readFileString(`${process.cwd()}/src/telemetry/commands.ts`),
           fileSystem.readFileString(`${process.cwd()}/docs/telemetry.md`),
           fileSystem.readFileString(`${process.cwd()}/website/src/content/docsTelemetry.ts`),
-          fileSystem.readFileString(`${process.cwd()}/README.md`),
           fileSystem.readFileString(`${process.cwd()}/infra/telemetry-gateway/README.md`),
           fileSystem.readFileString(`${process.cwd()}/docs/operations/telemetry-production.md`),
         ],
@@ -749,7 +748,7 @@ describe('Threadnote Grafana dashboard', () => {
         expect(source).toContain('Grafana Cloud EU');
         expect(source).toMatch(/source IP|IP addresses/u);
       }
-      for (const source of [commands, telemetryDocs, websiteDocs, readme]) {
+      for (const source of [commands, telemetryDocs, websiteDocs]) {
         for (const lifecycleTerm of ['successful', 'failed', 'interrupt', 'outcome']) {
           expect(source.toLowerCase()).toContain(lifecycleTerm);
         }

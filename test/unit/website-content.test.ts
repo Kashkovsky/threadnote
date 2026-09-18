@@ -135,6 +135,27 @@ const toolKeys = {
     'text',
     'topic',
   ]),
+  review_session_context: new Set([
+    'callerCwd',
+    'codeRefs',
+    'constraints',
+    'decisions',
+    'evidence',
+    'handoff',
+    'invariants',
+    'knowledgeInvalidated',
+    'outcome',
+    'preferences',
+    'project',
+    'rationale',
+    'sourceAgentClient',
+    'sourceCommit',
+    'sourceSessionId',
+    'task',
+    'topic',
+    'unresolvedRisks',
+    'verificationPerformed',
+  ]),
   share_publish: new Set(['message', 'preview', 'push', 'redact', 'team', 'uri']),
 } as const;
 
@@ -415,7 +436,7 @@ function fixtureBinding(
   };
 }
 
-describe('Threadnote 4 website content', () => {
+describe('Threadnote website content', () => {
   it('ships real entry documents for every root page', async () => {
     const routes = [
       'index.html',
@@ -737,6 +758,30 @@ The body remains ordinary **Markdown**.
     expect(source).not.toMatch(/\b(?:TODO|TBD)\b|publication placeholder|\{\{[^}]+}}|<insert\b/i);
   });
 
+  it('publishes Threadnote 5.0.0 as the latest workflow-oriented article', async () => {
+    const articles = await loadWebsiteArticles(root);
+    const latest = articles[0];
+    const landingSource = await readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8');
+
+    expect(latest).toMatchObject({
+      publishedAt: '2026-09-18T08:00:00Z',
+      slug: 'threadnote-5-context-lifecycle',
+      title: 'Threadnote 5.0.0 — Context that keeps up with the work',
+    });
+    expect(latest?.summary).toContain('source-verifiable context lifecycle across vendors');
+    expect(latest?.body).toContain('## Start with a bounded, cited brief');
+    expect(latest?.body).toContain('## End the task with a Knowledge Delta');
+    expect(latest?.body).toContain('## Keep context healthy after it is shared');
+    expect(latest?.body).toContain('Git sharing, second-surface reuse, health, and local value evidence');
+    expect(latest?.body).not.toContain('SetupReceiptV1');
+    expect(latest?.body).not.toMatch(/Codex, Claude(?: Code)?, Cursor, (?:and )?Copilot/i);
+    expect(landingSource).toContain("import articles from 'virtual:threadnote-articles'");
+    expect(landingSource).toContain('whatsNewArticleHref(latestArticle.slug)');
+    expect(landingSource).toContain('home-update-banner');
+    expect(landingSource).toContain('Read what&apos;s new');
+    expect(landingSource).not.toContain('Read the 5.0 story');
+  });
+
   it('orders release and article updates deterministically without mutating the input', () => {
     fc.assert(
       fc.property(
@@ -765,7 +810,7 @@ The body remains ordinary **Markdown**.
     );
   });
 
-  it('covers the complete 4.0 documentation map with unique article anchors', () => {
+  it('covers the complete 5.0 documentation map with unique article anchors', () => {
     const articles = docsSections.flatMap(section => section.articles);
     const articleIds = articles.map(article => article.id);
 
@@ -776,6 +821,16 @@ The body remains ordinary **Markdown**.
       expect.arrayContaining([
         'installation',
         'connect-an-agent',
+        'threadnote-5-journey',
+        'context-lifecycle',
+        'memory-schema-v5',
+        'context-brief-workflow',
+        'knowledge-delta',
+        'context-git-review',
+        'continuous-context-health',
+        'context-ci',
+        'verified-procedures',
+        'visible-value',
         'memory-lifecycle',
         'local-ai',
         'sharing-setup',
@@ -793,6 +848,69 @@ The body remains ordinary **Markdown**.
         'agent-integrations',
       ]),
     );
+  });
+
+  it('keeps the schema-v5 metadata walkthrough aligned with the shipped CAS contract', () => {
+    const article = docsSections
+      .flatMap(section => section.articles)
+      .find(candidate => candidate.id === 'memory-schema-v5');
+    const example = article?.body.find(
+      block => block.type === 'code' && block.code.includes('threadnote context metadata preview'),
+    );
+    const metadataTools = mcpTools.find(reference => reference.name.includes('context_metadata_apply'));
+
+    expect(article).toBeDefined();
+    expect(example?.type).toBe('code');
+    if (!example || example.type !== 'code') throw TestError.make({message: 'Metadata example is missing.'});
+    expect(example.code).toContain('--review-after 2026-12-31T00:00:00.000Z');
+    expect(example.code.match(/--uri <threadnote-uri>/g)).toHaveLength(2);
+    expect(example.code.match(/--owner platform-team/g)).toHaveLength(2);
+    expect(example.code.match(/--review-after 2026-12-31T00:00:00\.000Z/g)).toHaveLength(2);
+    expect(example.code).toContain('--content-hash <content-hash>');
+    expect(example.code).toContain('--proposal-id <proposal-id>');
+    expect(example.code).toContain('--revision <revision>');
+    expect(example.code).toContain('--approved');
+    expect(metadataTools?.keyInputs).toContain('expectedContentHash (apply)');
+  });
+
+  it('shows how closeout creates a Knowledge Delta review before consuming its ID', () => {
+    const article = docsSections
+      .flatMap(section => section.articles)
+      .find(candidate => candidate.id === 'knowledge-delta');
+    const content = JSON.stringify(article);
+    const tips = JSON.stringify(proTips);
+    const reviewCall = article?.body.find(
+      block => block.type === 'code' && block.code.includes('review_session_context'),
+    );
+
+    expect(content).toContain('review_session_context');
+    expect(reviewCall?.type).toBe('code');
+    if (!reviewCall || reviewCall.type !== 'code') throw TestError.make({message: 'Review call is missing.'});
+    expect(reviewCall.code).toContain('"task"');
+    expect(reviewCall.code).toContain('"outcome"');
+    expect(reviewCall.code).toContain('"evidence"');
+    expect(reviewCall.code).toContain('"decisions"');
+    expect(reviewCall.code).toContain('"constraints"');
+    expect(reviewCall.code).toContain('"verificationPerformed"');
+    expect(reviewCall.code).toContain('"knowledgeInvalidated"');
+    expect(reviewCall.code).toContain('"unresolvedRisks"');
+    expect(content).toContain('returns the review ID, revision');
+    expect(tips).toContain('review_session_context');
+    expect(tips).toContain('review review-a1b2c3 · revision 4');
+  });
+
+  it('distinguishes user-level Threadnote bootstrap from repository-scoped project guidance', () => {
+    const article = docsSections
+      .flatMap(section => section.articles)
+      .find(candidate => candidate.id === 'project-guidance');
+    const content = JSON.stringify(article);
+
+    expect(content).toContain('generic user-level bootstrap');
+    expect(content).toContain('repository- or worktree-scoped');
+    expect(content).toContain('Repository files remain authoritative');
+    expect(content).toContain('Reviewed and versioned with the project');
+    expect(content).toContain('ownership receipts');
+    expect(content).toContain('canonical agent catalog');
   });
 
   it('derives supported-agent content from the canonical catalog without broad public enumerations', async () => {
@@ -879,6 +997,11 @@ The body remains ordinary **Markdown**.
 
     expect(ids).toEqual(
       expect.arrayContaining([
+        'start-with-context-brief',
+        'review-knowledge-delta',
+        'prove-cross-agent-reuse',
+        'repair-context-decay',
+        'admit-verified-procedure',
         'share-before-pr',
         'parallel-team',
         'on-call',
@@ -892,7 +1015,10 @@ The body remains ordinary **Markdown**.
     expect(operations.some(operation => operation.includes('recall_context'))).toBe(true);
     expect(operations.some(operation => operation.includes('inspect_code_graph'))).toBe(true);
     expect(operations.some(operation => operation.includes('context_brief'))).toBe(true);
+    expect(operations.some(operation => operation.includes('review_session_context'))).toBe(true);
     expect(operations.some(operation => operation.includes('share_publish'))).toBe(true);
+    expect(JSON.stringify(proTips)).toContain('Knowledge Delta');
+    expect(JSON.stringify(proTips)).toContain('Applied');
     expect(JSON.stringify(proTips)).toContain('stale-link');
     expect(JSON.stringify(proTips)).toContain('no Workset required');
     expect(JSON.stringify(proTips)).toContain('threadnote graph checkpoint export');
@@ -1027,7 +1153,7 @@ The body remains ordinary **Markdown**.
     expect(landingSource).toContain("docsArticleHref('graph-checkpoints')");
   });
 
-  it('explains the 4.4 citation contract across Home, Pro Tips, and FAQ', async () => {
+  it('explains the Threadnote 5 context lifecycle across Home, Docs, Pro Tips, and FAQ', async () => {
     const [landingSource, proTipsSource, faqSource] = await Promise.all([
       readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8'),
       readFile(join(root, 'website', 'src', 'pages', 'ProTipsPage.tsx'), 'utf8'),
@@ -1036,18 +1162,27 @@ The body remains ordinary **Markdown**.
     const docs = JSON.stringify(docsSections);
     const tips = JSON.stringify(proTips);
 
-    expect(landingSource).toContain('Optional citations · stale-link warnings · legacy recall');
-    expect(landingSource).toContain('older uncited memories stay recallable');
-    expect(landingSource).toContain('A stale-link warning means the evidence moved—not that the memory');
+    expect(landingSource).toContain('source-verifiable context lifecycle');
+    expect(landingSource).toContain('Knowledge Delta');
+    expect(landingSource).toContain('No hosted organization service required');
+    expect(landingSource).toContain('home-update-banner');
+    expect(docs).toContain('A Context Brief is the bounded starting package for one task');
+    expect(docs).toContain('A Knowledge Delta is a reviewable summary of what the task learned');
+    expect(docs).toContain('Schema v5 is the compatibility foundation for the Threadnote 5 lifecycle');
+    expect(docs).toContain('provider-neutral Git proposal');
+    expect(docs).toContain('Retrieve the approved decision from the second surface');
+    expect(docs).toContain('stable Threadnote 5 operator surface');
+    expect(docs).not.toContain('stable 4.1 operator surface');
     expect(tips).toContain('codeRefs');
     expect(docs).toContain('graph-indexed repository-relative path');
     expect(docs).toContain('Tracked files outside the exact-current graph inventory');
     expect(tips).toContain('Memory fresh · citation relocated · warning stale-link');
     expect(tips).toContain('stale-link warns about the locator, not the memory');
-    expect(proTipsSource).toContain('source-aware memory');
-    expect(proTipsSource).toContain('same memory, citation, and graph-search');
-    expect(faqSource).toContain('Will my existing memories disappear after upgrading to 4.4?');
-    expect(faqSource).toContain('v1 and other uncited memories stay recallable');
+    expect(proTipsSource).toContain('source-verifiable context lifecycle');
+    expect(proTipsSource).toContain('bounded Context Brief');
+    expect(faqSource).toContain('Will my existing memories disappear after upgrading to 5.0?');
+    expect(faqSource).toContain('What is a Knowledge Delta?');
+    expect(faqSource).toContain('Existing v4, v1, and other uncited memories stay readable and recallable');
     expect(faqSource).toContain('Can an agent start with code and find related memory?');
     expect(faqSource).toContain('up to eight canonical graph-indexed repository-relative paths');
     expect(faqSource).toContain('cgr_ handles are argument errors');
@@ -1057,14 +1192,14 @@ The body remains ordinary **Markdown**.
     expect(faqSource).toContain('never fan out cold graph builds');
   });
 
-  it('surfaces the shipped 4.4 graph isolation contract across Home, Pro Tips, and FAQ', async () => {
+  it('retains the shipped graph isolation contract across Home, Pro Tips, and FAQ', async () => {
     const [landingSource, faqSource] = await Promise.all([
       readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8'),
       readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
     ]);
     const tips = JSON.stringify(proTips);
 
-    expect(landingSource).toContain('Threadnote 4.4 · self-contained');
+    expect(landingSource).toContain('Threadnote 5.0 · local and Git-backed');
     expect(landingSource).toContain('Manager-launched indexing and Workset preparation run in isolated processes');
     expect(tips).toContain('Manager-triggered indexing and Workset preparation run in isolated processes');
     expect(tips).toContain('repository members prepared at bounded concurrency');
@@ -1158,7 +1293,7 @@ The body remains ordinary **Markdown**.
     expect(searchDocs(index, 'inspect code graph')[0]?.article.id).toBe('graph-operations');
     expect(searchDocs(index, 'cross repository graph workset')[0]?.article.id).toBe('worksets');
     expect(searchDocs(index, 'workset prepare status')[0]?.article.id).toBe('worksets');
-    expect(searchDocs(index, 'context brief')[0]?.article.id).toBe('worksets');
+    expect(searchDocs(index, 'context brief')[0]?.article.id).toBe('context-brief-workflow');
     expect(searchDocs(index, 'share memory team')[0]?.article.id).toBe('publish-memory');
     expect(searchDocs(index, 'architecture analysis')[0]?.article.id).toBe('graph-analysis');
     expect(searchDocs(index, 'memory enrichment generation model')[0]?.article.id).toBe('local-ai');
