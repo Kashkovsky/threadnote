@@ -98,7 +98,7 @@ threadnote setup <surface> --apply`,
       rows: [
         [
           'Search memory after the agent gets stuck',
-          'Start with a Context Brief: a short, cited briefing with relevant decisions, task state, and current-code evidence.',
+          'The installed agent guidance automatically starts non-trivial work with a Context Brief: a short, cited briefing with relevant decisions, task state, and current-code evidence.',
         ],
         [
           'Save useful notes directly after a task',
@@ -126,9 +126,9 @@ threadnote setup <surface> --apply`,
       type: 'list',
       items: [
         'Open a fresh agent chat so refreshed instructions and skills are easy to see.',
-        'Ask for a Context Brief for one real task. Current repository files still win over remembered context.',
+        'Give the agent one real task. Its refreshed instructions and skills automatically compile the Context Brief; current repository files still win over remembered context.',
         'Work normally with your existing recall and code-graph tools.',
-        'At closeout, review the Knowledge Delta and keep only the lessons that will help a later task.',
+        'At meaningful closeout, review the Knowledge Delta the agent presents and keep only the lessons that will help a later task.',
         'Run context health later when you want to review older saved knowledge; it is not required before your first task.',
       ],
     },
