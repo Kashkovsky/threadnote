@@ -1,0 +1,251 @@
+{
+  "version": 1,
+  "deploymentId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "plannedAt": "2026-09-18T00:00:00.000Z",
+  "maxEvidenceAgeSeconds": 86400,
+  "owners": {
+    "operator": "11111111111111111111111111111111",
+    "support": "22222222222222222222222222222222",
+    "escalation": "33333333333333333333333333333333"
+  },
+  "ownerRosterDigest": "7777777777777777777777777777777777777777777777777777777777777777",
+  "authority": "git",
+  "backup": {
+    "method": "snapshot-and-pitr",
+    "scheduleSeconds": 3600,
+    "retentionSeconds": 604800,
+    "rpoSeconds": 300,
+    "rtoSeconds": 1800
+  },
+  "baseline": {
+    "gitAuthorityDigest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "databaseCheckpointDigest": "2222222222222222222222222222222222222222222222222222222222222222",
+    "aliasCatalogDigest": "3333333333333333333333333333333333333333333333333333333333333333",
+    "grantPolicyDigest": "4444444444444444444444444444444444444444444444444444444444444444",
+    "runtimeArtifactDigest": "5555555555555555555555555555555555555555555555555555555555555555",
+    "rollbackArtifactDigest": "6666666666666666666666666666666666666666666666666666666666666666",
+    "expectedRecords": 1
+  },
+  "alerts": [
+    {
+      "kind": "auth",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "withdraw-route",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "recall",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "withdraw-route",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "read",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "withdraw-route",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "write",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "disable-writes",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "cas",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "disable-writes",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "git-synchronization",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "disable-writes",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "registry-publication",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "disable-writes",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "database-saturation",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "disable-writes",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "canary",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "withdraw-route",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "backup-overdue",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "retain-isolation",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "restore-failed",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "retain-isolation",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "reconciliation-drift",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "retain-isolation",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "identity-recovery",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "disable-writes",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "credential-rotation",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "disable-writes",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "readiness",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "disable-writes",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "write-disable",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "disable-writes",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "rollback",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "disable-writes",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "backlog",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "pause-worker",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "failed-checks",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "pause-worker",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "persistent-stale-evidence",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "pause-worker",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "scheduler-lag",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "pause-worker",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    },
+    {
+      "kind": "worker-heartbeat",
+      "owners": {
+        "operator": "11111111111111111111111111111111",
+        "support": "22222222222222222222222222222222",
+        "escalation": "33333333333333333333333333333333"
+      },
+      "safeFirstAction": "pause-worker",
+      "rollback": "keep-writes-disabled-restore-reviewed-baseline"
+    }
+  ]
+}

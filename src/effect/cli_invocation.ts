@@ -13,6 +13,7 @@ interface CliCommandRegistration {
 }
 
 export interface CliInvocationInspection {
+  readonly offline?: true;
   /** CI reserves exit 1 for actionable findings, including when parsing fails before its handler. */
   readonly failureExitCode?: 2;
   readonly homeOverride?: string;
@@ -57,6 +58,7 @@ export function makeCliInvocationInspector(registrations: readonly CliCommandReg
     const scanned = scanCliArguments(arguments_);
     const selectedName = scanned.positionals[0];
     const operation = selectedName === undefined ? undefined : (operationByName.get(selectedName) ?? 'unknown');
+    const offlinePilot = operation === 'value' && scanned.positionals[1] === 'pilot';
     const telemetryOperation =
       operation === undefined
         ? undefined
@@ -76,8 +78,13 @@ export function makeCliInvocationInspector(registrations: readonly CliCommandReg
       !(mode === 'requires-apply' && scanned.booleanValues.get('--apply') !== true) &&
       !(mode === 'skips-on-preview' && scanned.booleanValues.get('--preview') === true);
     const writeAnonymousTelemetry =
-      operation !== undefined && operation !== 'telemetry' && !scanned.flags.has('--help') && !scanned.flags.has('-h');
+      !offlinePilot &&
+      operation !== undefined &&
+      operation !== 'telemetry' &&
+      !scanned.flags.has('--help') &&
+      !scanned.flags.has('-h');
     return {
+      ...(offlinePilot ? {offline: true as const} : {}),
       ...(operation === 'context' && scanned.positionals[1] === 'check' ? {failureExitCode: 2 as const} : {}),
       ...(scanned.homeOverride === undefined ? {} : {homeOverride: scanned.homeOverride}),
       ...(operation === undefined ? {} : {operation}),

@@ -1,4 +1,5 @@
 import {Effect, FileSystem, Path} from 'effect';
+import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {
   clearRecallFeedbackEvents,
   pruneRecallFeedbackEvents,
@@ -9,7 +10,10 @@ import {clearLocalValueEvents, pruneLocalValueEvents, type LocalValueEventStorag
 export const VALUE_REPORT_STORAGE_VERSION = 1 as const;
 export const VALUE_REPORT_STORAGE_DELETE_BATCH_SIZE = 10_000 as const;
 export const VALUE_REPORT_EXPORT_DIRECTORY = 'exports/value-reports' as const;
-const VALUE_REPORT_EXPORT_FILENAME = /^threadnote-value-report-export-v1-[0-9a-f]{24}\.json$/u;
+export const VALUE_REPORT_STAGING_FILENAME =
+  /^\.threadnote-value-(?:report-export|pilot-report)-v1-[0-9a-f]{24}\.staging$/u;
+export const PILOT_REPORT_STAGING_FILENAME = /^\.threadnote-value-pilot-report-v1-[0-9a-f]{24}\.staging$/u;
+const VALUE_REPORT_EXPORT_FILENAME = /^threadnote-value-(?:report-export|pilot-report)-v1-[0-9a-f]{24}\.json$/u;
 
 export interface ValueReportRetentionReceiptV1 {
   readonly applied: boolean;
@@ -37,6 +41,7 @@ export const pruneValueReportData = Effect.fn('valueReport.pruneData')(function*
     [pruneRecallFeedbackEvents(agentContextHome, input), pruneLocalValueEvents(agentContextHome, input)],
     {concurrency: 2},
   );
+  if (input.apply) yield* withValueReportStorageLock(agentContextHome, removeStaleValueReportStaging(agentContextHome));
   return {
     applied: input.apply,
     feedback,
@@ -78,27 +83,61 @@ export const deleteValueReportData = Effect.fn('valueReport.deleteData')(functio
   } satisfies ValueReportDeletionReceiptV1;
 });
 
-const deleteValueReportExports = Effect.fn('valueReport.deleteExports')(function* (
-  agentContextHome: string,
-  apply: boolean,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const directory = path.join(agentContextHome, ...VALUE_REPORT_EXPORT_DIRECTORY.split('/'));
-  if (!(yield* fs.exists(directory))) return 0;
-  const names = selectValueReportExportNames(yield* fs.readDirectory(directory));
-  if (apply) {
-    for (let offset = 0; offset < names.length; offset += VALUE_REPORT_STORAGE_DELETE_BATCH_SIZE) {
-      yield* Effect.forEach(
-        names.slice(offset, offset + VALUE_REPORT_STORAGE_DELETE_BATCH_SIZE),
-        name => fs.remove(path.join(directory, name), {force: true}),
-        {concurrency: 16, discard: true},
-      );
+const deleteValueReportExports = Effect.fn('valueReport.deleteExports')((agentContextHome: string, apply: boolean) => {
+  const operation = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = path.join(agentContextHome, ...VALUE_REPORT_EXPORT_DIRECTORY.split('/'));
+    if (!(yield* fs.exists(directory))) return 0;
+    const names = selectValueReportExportNames(yield* fs.readDirectory(directory));
+    if (apply) {
+      for (let offset = 0; offset < names.length; offset += VALUE_REPORT_STORAGE_DELETE_BATCH_SIZE) {
+        yield* Effect.forEach(
+          names.slice(offset, offset + VALUE_REPORT_STORAGE_DELETE_BATCH_SIZE),
+          name => fs.remove(path.join(directory, name), {force: true, recursive: true}),
+          {concurrency: 16, discard: true},
+        );
+      }
     }
-  }
-  return names.length;
+    return names.length;
+  });
+  return apply ? withValueReportStorageLock(agentContextHome, operation) : operation;
 });
 
 export function selectValueReportExportNames(names: readonly string[]): readonly string[] {
-  return names.filter(name => VALUE_REPORT_EXPORT_FILENAME.test(name)).sort();
+  return names
+    .filter(name => VALUE_REPORT_EXPORT_FILENAME.test(name) || VALUE_REPORT_STAGING_FILENAME.test(name))
+    .sort();
 }
+
+export function withValueReportStorageLock<A, E, R>(home: string, operation: Effect.Effect<A, E, R>) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    return yield* withExclusiveFileLock(
+      fs,
+      path.join(home, 'value', 'export.lock'),
+      {
+        retryIntervalMilliseconds: 25,
+        staleAfterMilliseconds: 300_000,
+        waitTimeoutMilliseconds: 5_000,
+      },
+      operation,
+    );
+  });
+}
+
+// Every artifact writer holds the same lock, so staging seen inside it has no active writer.
+export const removeStaleValueReportStaging = Effect.fn('valueReport.removeStaleStaging')(function* (
+  home: string,
+  pilotOnly = false,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const directory = path.join(home, ...VALUE_REPORT_EXPORT_DIRECTORY.split('/'));
+  if (!(yield* fs.exists(directory))) return;
+  const pattern = pilotOnly ? PILOT_REPORT_STAGING_FILENAME : VALUE_REPORT_STAGING_FILENAME;
+  for (const name of yield* fs.readDirectory(directory)) {
+    if (pattern.test(name)) yield* fs.remove(path.join(directory, name), {force: true, recursive: true});
+  }
+});
