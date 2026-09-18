@@ -25,7 +25,8 @@ threadnote setup <surface> --undo --apply
 The orchestrator resolves the current Git repository, initializes Threadnote's local core, merges the seed manifest,
 seeds only that project, installs or repairs the selected catalog adapter and its declared hooks, builds a current code
 graph, runs structured doctor checks, and finishes with a real Context Brief. Completion requires fresh, complete graph
-coverage for the one requested repository and at least one returned source-evidence card or contract.
+coverage for the one requested repository and at least one source-evidence card or contract accounted for by projection,
+whether returned or reported in the nonnegative projection-omission counts.
 
 Preview is non-mutating. Apply writes a private `SetupReceiptV1` under `$THREADNOTE_HOME/setup/` with a deterministic
 plan hash, per-operation input hashes and attempts, subsystem receipt references, and bounded recovery IDs. It never
