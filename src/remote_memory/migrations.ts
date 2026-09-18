@@ -36,6 +36,7 @@ const MIGRATIONS = [
   {name: '005_code_link_backlinks.sql', version: 5},
   {name: '006_identity_client_grant_expiry.sql', version: 6},
   {name: '007_cloud_admission_profile.sql', version: 7},
+  {name: '008_hosted_context_health.sql', version: 8},
 ] as const;
 const MIGRATION_LOCK = 7_427_190_041;
 
