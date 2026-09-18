@@ -29,6 +29,10 @@ import {
 import {buildKnowledgeDeltaGitProposalV1} from '../../src/git_proposal/knowledge_delta.js';
 import {type CandidateReview} from '../../src/memory/candidate.js';
 import {buildContextHealthReport} from '../../src/memory/context_health.js';
+import {
+  aggregateContextHealthReportsV1,
+  buildContextHealthSchedulePlanV1,
+} from '../../src/memory/context_health_schedule.js';
 import {canonicalMemoryDocumentContent} from '../../src/memory/document.js';
 import {projectKnowledgeDeltaV1} from '../../src/memory/knowledge_delta.js';
 import {createProcedureVerificationReceipt, parseProcedureManifest} from '../../src/procedure/contract.js';
@@ -632,6 +636,190 @@ describe('Threadnote 5 source-native receipt verification', () => {
     });
   });
 
+  it('replays read-only scheduled configured-team health evidence only with its bound authority', () => {
+    const record = healthMaintenanceRecord();
+    const assertions = ['local-scheduled-invocation-read-only', 'configured-git-team-aggregation-read-only'];
+    const observation = observed(record, assertions, [
+      {eligibleCount: 0, id: 'health-resolution-rate', positiveCount: 0},
+    ]);
+    const authority = authorityManifestFor([record]);
+    const before = canonicalJson({authority, artifact: record.artifact});
+    expect(verify([observation], [record], authority)).toMatchObject({receiptCount: 1, state: 'verified'});
+    expect(canonicalJson({authority, artifact: record.artifact})).toBe(before);
+    expect(
+      verifyThreadnote5LocalSubsystemReceipts({
+        candidate: CANDIDATE,
+        observations: [observation],
+        retainedRecords: [record],
+      }),
+    ).toMatchObject({reason: 'verifier-incomplete', state: 'unknown'});
+
+    const healthAuthority = authority.entries[0];
+    if (healthAuthority?.type !== 'context-health-read-only') throw new Error('Expected context health authority.');
+    expect(
+      verify([observation], [record], {
+        ...authority,
+        entries: [
+          {
+            ...healthAuthority,
+            aggregate: {...healthAuthority.aggregate, writeActivityCount: 1},
+          },
+        ],
+      }),
+    ).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+
+    const artifact = record.artifact as {
+      readonly aggregate: unknown;
+      readonly repairs: readonly unknown[];
+      readonly reports: readonly unknown[];
+      readonly schedule: {readonly input: unknown; readonly observedArgv: readonly string[]; readonly plan: unknown};
+    };
+    const argvTampered = resealRecord(record, {
+      ...artifact,
+      schedule: {...artifact.schedule, observedArgv: [...artifact.schedule.observedArgv, '--team', 'forged']},
+    });
+    expect(
+      verify(
+        [observed(argvTampered, assertions, [{eligibleCount: 0, id: 'health-resolution-rate', positiveCount: 0}])],
+        [argvTampered],
+      ),
+    ).toMatchObject({
+      reason: 'records-invalid',
+      state: 'unknown',
+    });
+
+    const aggregateTampered = resealRecord(record, {
+      ...artifact,
+      aggregate: {
+        ...(artifact.aggregate as {readonly input: Record<string, unknown>}),
+        input: {
+          ...(artifact.aggregate as {readonly input: Record<string, unknown>}).input,
+          personal: {
+            ...(artifact.aggregate as {readonly input: {readonly personal: Record<string, unknown>}}).input.personal,
+            forged: true,
+          },
+        },
+      },
+    });
+    expect(
+      verify(
+        [observed(aggregateTampered, assertions, [{eligibleCount: 0, id: 'health-resolution-rate', positiveCount: 0}])],
+        [aggregateTampered],
+      ),
+    ).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+
+    for (const scheduleInput of [
+      {cadenceMinutes: 60, project: 'threadnote', teams: ['platform']},
+      {cadenceMinutes: 60, project: 'other-project', teams: []},
+    ]) {
+      const plan = buildContextHealthSchedulePlanV1(scheduleInput);
+      const mismatched = resealRecord(record, {
+        ...artifact,
+        schedule: {input: scheduleInput, observedArgv: ['threadnote', ...plan.argv], plan},
+      });
+      expect(
+        verify(
+          [observed(mismatched, assertions, [{eligibleCount: 0, id: 'health-resolution-rate', positiveCount: 0}])],
+          [mismatched],
+        ),
+      ).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+    }
+
+    const firstSnapshot = healthAuthority.aggregate.teamSnapshots[0];
+    if (firstSnapshot === undefined) throw new Error('Expected a context health team snapshot.');
+    for (const teamSnapshots of [
+      healthAuthority.aggregate.teamSnapshots.slice(1),
+      [...healthAuthority.aggregate.teamSnapshots, {...firstSnapshot, team: 'surplus'}],
+    ]) {
+      const modifiedAuthority = {
+        ...authority,
+        entries: [
+          {
+            ...healthAuthority,
+            aggregate: {...healthAuthority.aggregate, teamSnapshots},
+          },
+        ],
+      };
+      expect(
+        verify([observation], [record], modifiedAuthority, threadnote5LocalAuthorityManifestHash(modifiedAuthority)),
+      ).toMatchObject({reason: 'records-invalid', state: 'unknown'});
+    }
+    const duplicateAuthority = {
+      ...authority,
+      entries: [
+        {
+          ...healthAuthority,
+          aggregate: {
+            ...healthAuthority.aggregate,
+            teamSnapshots: [...healthAuthority.aggregate.teamSnapshots, firstSnapshot],
+          },
+        },
+      ],
+    };
+    expect(() => threadnote5LocalAuthorityManifestHash(duplicateAuthority)).toThrow(/teams must be unique/u);
+    expect(verify([observation], [record], duplicateAuthority, '0'.repeat(64))).toMatchObject({
+      reason: 'records-invalid',
+      state: 'unknown',
+    });
+
+    fc.assert(
+      fc.property(fc.boolean(), fc.boolean(), (reverse, tamper) => {
+        const entries = healthAuthority.aggregate.teamSnapshots;
+        const snapshots = reverse ? [...entries].reverse() : entries;
+        const reordered = {
+          ...authority,
+          entries: [
+            {
+              ...healthAuthority,
+              aggregate: {
+                ...healthAuthority.aggregate,
+                teamSnapshots: tamper
+                  ? snapshots.map((snapshot, index) =>
+                      index === 0 ? {...snapshot, postWorktreeDigest: 'f'.repeat(64)} : snapshot,
+                    )
+                  : snapshots,
+              },
+            },
+          ],
+        };
+        if (tamper) {
+          expect(verify([observation], [record], reordered)).toMatchObject({
+            reason: 'records-invalid',
+            state: 'unknown',
+          });
+        } else {
+          expect(threadnote5LocalAuthorityManifestHash(reordered)).toBe(
+            threadnote5LocalAuthorityManifestHash(authority),
+          );
+          expect(verify([observation], [record], reordered)).toMatchObject({state: 'verified'});
+        }
+      }),
+      {numRuns: 25},
+    );
+  });
+
+  it('preserves an unreadable configured-team selection as unknown evidence', () => {
+    const record = healthMaintenanceTeamSelectionUnknownRecord();
+    const observation = observed(
+      record,
+      ['local-scheduled-invocation-read-only'],
+      [{eligibleCount: 0, id: 'health-resolution-rate', positiveCount: 0}],
+    );
+
+    expect(verify([observation], [record])).toMatchObject({
+      reason: 'verifier-incomplete',
+      scenarios: [
+        {
+          missingKinds: ['context-health-team-selection-evidence'],
+          scenario: 'health-maintenance',
+          state: 'unknown',
+          verifiedKinds: ['context-health'],
+        },
+      ],
+      state: 'unknown',
+    });
+  });
+
   it('binds every source artifact to the exact candidate and exact bounded record set', () => {
     const record = procedureRecord();
     const observation = observed(record, observationAssertionsForProcedure());
@@ -1133,6 +1321,41 @@ function authorityManifestFor(
         type: 'git-proposal-review',
       });
     }
+    if (record.kind === 'context-health' && record.scenario === 'health-maintenance') {
+      const artifact = record.artifact as {
+        readonly aggregate: {
+          readonly input: {
+            readonly teams: readonly (
+              {readonly scope: 'team'; readonly team: string} | {readonly scope: 'team-selection'}
+            )[];
+          };
+        };
+      };
+      entries.push({
+        aggregate: {
+          networkActivityCount: 0,
+          teamSnapshots: artifact.aggregate.input.teams.flatMap((source, index) =>
+            source.scope === 'team'
+              ? [
+                  {
+                    postHead: String(index + 1).repeat(40),
+                    postIndexDigest: String(index + 3).repeat(64),
+                    postWorktreeDigest: String(index + 5).repeat(64),
+                    preHead: String(index + 1).repeat(40),
+                    preIndexDigest: String(index + 3).repeat(64),
+                    preWorktreeDigest: String(index + 5).repeat(64),
+                    team: source.team,
+                  },
+                ]
+              : [],
+          ),
+          writeActivityCount: 0,
+        },
+        recordDigest: record.digest,
+        schedule: {networkActivityCount: 0, writeActivityCount: 0},
+        type: 'context-health-read-only',
+      });
+    }
   }
   return {candidate: CANDIDATE, entries, version: 1};
 }
@@ -1597,5 +1820,46 @@ function contextHealthRecord(): Threadnote5LocalSubsystemReceiptRecordV1 {
   return makeRecord('contradiction-triage', 'context-health', {
     repairs: [],
     reports: [{input: {...input, now: input.now.toISOString()}, report}],
+  });
+}
+
+function healthMaintenanceRecord(): Threadnote5LocalSubsystemReceiptRecordV1 {
+  const scheduleInput = {cadenceMinutes: 60, project: 'threadnote', teams: []};
+  const aggregateInput = {
+    personal: {reason: 'snapshot-unreadable' as const, scope: 'personal' as const, state: 'unknown' as const},
+    project: 'threadnote',
+    teams: [
+      {reason: 'snapshot-unreadable' as const, scope: 'team' as const, state: 'unknown' as const, team: 'platform'},
+      {reason: 'snapshot-unreadable' as const, scope: 'team' as const, state: 'unknown' as const, team: 'runtime'},
+    ],
+  };
+  const plan = buildContextHealthSchedulePlanV1(scheduleInput);
+  return makeRecord('health-maintenance', 'context-health', {
+    aggregate: {aggregate: aggregateContextHealthReportsV1(aggregateInput), input: aggregateInput},
+    repairs: [],
+    reports: [],
+    schedule: {input: scheduleInput, observedArgv: ['threadnote', ...plan.argv], plan},
+  });
+}
+
+function healthMaintenanceTeamSelectionUnknownRecord(): Threadnote5LocalSubsystemReceiptRecordV1 {
+  const scheduleInput = {cadenceMinutes: 60, project: 'threadnote', teams: []};
+  const aggregateInput = {
+    personal: {reason: 'snapshot-unreadable' as const, scope: 'personal' as const, state: 'unknown' as const},
+    project: 'threadnote',
+    teams: [
+      {
+        reason: 'snapshot-unreadable' as const,
+        scope: 'team-selection' as const,
+        state: 'unknown' as const,
+      },
+    ],
+  };
+  const plan = buildContextHealthSchedulePlanV1(scheduleInput);
+  return makeRecord('health-maintenance', 'context-health', {
+    aggregate: {aggregate: aggregateContextHealthReportsV1(aggregateInput), input: aggregateInput},
+    repairs: [],
+    reports: [],
+    schedule: {input: scheduleInput, observedArgv: ['threadnote', ...plan.argv], plan},
   });
 }

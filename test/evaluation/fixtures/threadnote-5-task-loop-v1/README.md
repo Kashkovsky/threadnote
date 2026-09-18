@@ -76,7 +76,7 @@ the verifier rejects copied transcript claims that it cannot independently reder
 and procedure-execution assertions additionally require the separately trusted authority manifest.
 
 Activation trials now replay the production receipt chain and approval transitions, bind the final completed state to
-transport-attested second-surface retrieval, and correlate the exact receipt with raw local value events. Scheduled and
-team health aggregation remains an explicit pending seam until its final production receipt adapter lands. Its dependent
-scenario and metrics therefore stay unknown and cannot admit a release. The adapter must never infer or synthesize a
-passed assertion.
+transport-attested second-surface retrieval, and correlate the exact receipt with raw local value events. Health-maintenance
+captures replay the shipped schedule plan and observed argv plus bounded personal/configured-team aggregate, while a separately supplied
+record-bound authority proves zero writes/network activity and stable pre/post team snapshots. Unknown
+aggregate outcomes remain valid evidence of the read-only boundary. The adapter never infers or synthesizes a passed assertion.

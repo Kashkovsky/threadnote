@@ -5,7 +5,11 @@ import {describe, expect} from 'vitest';
 
 import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {collectContextHealthAggregate} from '../../src/memory/context_health_aggregate_commands.js';
+import {
+  collectContextHealthAggregate,
+  collectContextHealthAggregateSources,
+} from '../../src/memory/context_health_aggregate_commands.js';
+import {aggregateContextHealthReportsV1} from '../../src/memory/context_health_schedule.js';
 import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -37,10 +41,11 @@ describe('context health aggregate runtime', () => {
         yield* fixture.fs.writeFileString(unrelatedDirty, 'unrelated dirty evidence');
         const statusBefore = (yield* git(platformWorktree, ['status', '--porcelain=v1'])).stdout;
 
-        const aggregate = yield* collectContextHealthAggregate(fixture.config, {
+        const sources = yield* collectContextHealthAggregateSources(fixture.config, {
           callerCwd: fixture.repository,
           project: 'threadnote',
         }).pipe(TestClock.withLive);
+        const aggregate = aggregateContextHealthReportsV1(sources);
 
         expect(aggregate).toMatchObject({
           completeSources: 3,
@@ -55,6 +60,12 @@ describe('context health aggregate runtime', () => {
           'team:runtime',
         ]);
         expect(aggregate.sources[0]).toMatchObject({recordsScanned: 1});
+        expect(aggregate).toEqual(
+          yield* collectContextHealthAggregate(fixture.config, {
+            callerCwd: fixture.repository,
+            project: 'threadnote',
+          }).pipe(TestClock.withLive),
+        );
         expect((yield* git(platformWorktree, ['status', '--porcelain=v1'])).stdout).toBe(statusBefore);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),

@@ -60,8 +60,31 @@ export interface Threadnote5ExternalReceiptAuthorityV1 {
     | 'migration-execution';
 }
 
+export interface Threadnote5ContextHealthReadOnlyAuthorityV1 {
+  readonly aggregate: {
+    readonly networkActivityCount: number;
+    readonly teamSnapshots: readonly {
+      readonly postHead: string;
+      readonly postIndexDigest: string;
+      readonly postWorktreeDigest: string;
+      readonly preHead: string;
+      readonly preIndexDigest: string;
+      readonly preWorktreeDigest: string;
+      readonly team: string;
+    }[];
+    readonly writeActivityCount: number;
+  };
+  readonly recordDigest: string;
+  readonly schedule: {
+    readonly networkActivityCount: number;
+    readonly writeActivityCount: number;
+  };
+  readonly type: 'context-health-read-only';
+}
+
 export type Threadnote5LocalAuthorityEntryV1 =
   | Threadnote5ActivationVerificationAuthorityV1
+  | Threadnote5ContextHealthReadOnlyAuthorityV1
   | Threadnote5GitProposalAuthorityV1
   | Threadnote5ProcedureAuthorityV1
   | Threadnote5ExternalReceiptAuthorityV1;
@@ -119,6 +142,15 @@ export function parseThreadnote5LocalAuthorityManifestV1(value: unknown): Thread
 
 function parseEntry(value: unknown): Threadnote5LocalAuthorityEntryV1 {
   const source = object(value, 'local authority entry');
+  if (source.type === 'context-health-read-only') {
+    exactKeys(source, ['aggregate', 'recordDigest', 'schedule', 'type'], 'context health read-only authority');
+    return {
+      aggregate: parseHealthAggregateAuthority(source.aggregate),
+      recordDigest: hash(source.recordDigest, 'authority record digest'),
+      schedule: parseHealthExecutionAuthority(source.schedule, 'context health schedule authority'),
+      type: 'context-health-read-only',
+    };
+  }
   if (source.type === 'activation-verification') {
     exactKeys(source, ['recordDigest', 'trials', 'type'], 'activation verification authority');
     if (!Array.isArray(source.trials) || source.trials.length < 1 || source.trials.length > MAX_AUTHORITY_ENTRIES) {
@@ -222,6 +254,69 @@ function parseEntry(value: unknown): Threadnote5LocalAuthorityEntryV1 {
     };
   }
   throw new Error('Local authority entry type is unsupported.');
+}
+
+function parseHealthAggregateAuthority(value: unknown): Threadnote5ContextHealthReadOnlyAuthorityV1['aggregate'] {
+  const source = exactObject(
+    value,
+    ['networkActivityCount', 'teamSnapshots', 'writeActivityCount'],
+    'context health aggregate authority',
+  );
+  if (!Array.isArray(source.teamSnapshots) || source.teamSnapshots.length > MAX_AUTHORITY_ENTRIES) {
+    throw new Error('Context health aggregate authority team snapshots are out of bounds.');
+  }
+  const teamSnapshots = source.teamSnapshots
+    .map(parseHealthTeamSnapshot)
+    .sort((left, right) => left.team.localeCompare(right.team));
+  unique(
+    teamSnapshots.map(snapshot => snapshot.team),
+    'context health authority teams',
+  );
+  return {
+    networkActivityCount: boundedInteger(
+      source.networkActivityCount,
+      'context health network activity count',
+      0,
+      1_000_000,
+    ),
+    teamSnapshots,
+    writeActivityCount: boundedInteger(source.writeActivityCount, 'context health write activity count', 0, 1_000_000),
+  };
+}
+
+function parseHealthExecutionAuthority(
+  value: unknown,
+  label: string,
+): Threadnote5ContextHealthReadOnlyAuthorityV1['schedule'] {
+  const source = exactObject(value, ['networkActivityCount', 'writeActivityCount'], label);
+  return {
+    networkActivityCount: boundedInteger(
+      source.networkActivityCount,
+      'context health network activity count',
+      0,
+      1_000_000,
+    ),
+    writeActivityCount: boundedInteger(source.writeActivityCount, 'context health write activity count', 0, 1_000_000),
+  };
+}
+
+function parseHealthTeamSnapshot(
+  value: unknown,
+): Threadnote5ContextHealthReadOnlyAuthorityV1['aggregate']['teamSnapshots'][number] {
+  const source = exactObject(
+    value,
+    ['postHead', 'postIndexDigest', 'postWorktreeDigest', 'preHead', 'preIndexDigest', 'preWorktreeDigest', 'team'],
+    'context health team snapshot',
+  );
+  return {
+    postHead: gitCommit(source.postHead, 'context health post HEAD'),
+    postIndexDigest: hash(source.postIndexDigest, 'context health post index digest'),
+    postWorktreeDigest: hash(source.postWorktreeDigest, 'context health post worktree digest'),
+    preHead: gitCommit(source.preHead, 'context health pre HEAD'),
+    preIndexDigest: hash(source.preIndexDigest, 'context health pre index digest'),
+    preWorktreeDigest: hash(source.preWorktreeDigest, 'context health pre worktree digest'),
+    team: matching(source.team, /^[a-z0-9][a-z0-9._-]*$/u, 'context health team'),
+  };
 }
 
 function parseActivationVerificationTrial(
@@ -329,6 +424,10 @@ function matching(value: unknown, pattern: RegExp, label: string): string {
 
 function hash(value: unknown, label: string): string {
   return matching(value, /^[0-9a-f]{64}$/u, label);
+}
+
+function gitCommit(value: unknown, label: string): string {
+  return matching(value, /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u, label);
 }
 
 function nullableHash(value: unknown, label: string): string | null {
