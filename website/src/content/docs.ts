@@ -477,7 +477,8 @@ threadnote doctor`,
       {
         id: 'agent-instructions-and-hooks',
         title: 'Agent instructions and hooks',
-        summary: 'Teach agents when to recall, inspect the graph, store a handoff, and ask before publishing.',
+        summary:
+          'Teach agents when to compile a brief, inspect the graph, write a handoff, and propose reviewed knowledge.',
         body: [
           {
             type: 'paragraph',
@@ -486,11 +487,11 @@ threadnote doctor`,
           {
             type: 'list',
             items: [
-              'Recall historical context with project and absolute callerCwd at the start of non-trivial work.',
+              'Start non-trivial work with Context Brief using the task and absolute callerCwd; use recall_context plus read_context as the memory-only alternative.',
               'Use context_brief codeRefs to round-trip from current code to citing memories and from memory citations back to verified current code.',
               'Use inspect_code_graph separately, before broad text search, for current source relationships.',
               'Use analyze_code_graph for repository-wide statistics, structural communities, hubs, and surprising links.',
-              'Store normal durable feature knowledge and a concise handoff at meaningful closeout.',
+              'Write the required private handoff at meaningful closeout and propose the optional five-field Knowledge Delta for review; never apply it automatically.',
               'Ask before publishing durable memory; never publish handoffs or preferences.',
               'If Threadnote fails, show a privacy-safe issue preview and create it only after explicit approval.',
             ],

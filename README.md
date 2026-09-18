@@ -26,12 +26,14 @@ store.
 
 ## The Threadnote 5 workflow
 
-1. **Start with a Context Brief.** Give an agent a bounded set of relevant decisions, active handoffs, compatible
-   procedures, and current-code evidence with provenance, freshness, and visible gaps.
+1. **Start with a Context Brief.** The installed agent guidance automatically loads a bounded set of relevant
+   decisions, active handoffs, compatible procedures, and current-code evidence with provenance, freshness, and
+   visible gaps.
 2. **Verify the live code.** Use exact local files and Threadnote’s code graph for current relationships; historical
    context never overrides the worktree.
-3. **Review the Knowledge Delta.** At closeout, inspect proposed decisions, constraints, verification, invalidated
-   knowledge, and unresolved risks. Approve, edit, defer, or reject each candidate.
+3. **Review the Knowledge Delta.** At meaningful closeout, the agent writes a private handoff and proposes decisions,
+   constraints, verification, invalidated knowledge, and unresolved risks. Approve, edit, defer, or reject each
+   candidate.
 4. **Share deliberately.** Publish approved knowledge directly or materialize a provider-neutral Git proposal for the
    team’s normal review policy. Private handoffs and preferences stay local.
 5. **Keep context healthy.** Review ownership and expiry, changed citations, contradictions, guidance drift, Context
@@ -60,19 +62,18 @@ and apply the same plan:
 ```sh
 cd /path/to/repository
 threadnote agents list
-threadnote setup <surface> --task "Trace checkout retries"
-threadnote setup <surface> --task "Trace checkout retries" --apply
+threadnote setup <surface>
+threadnote setup <surface> --apply
 ```
 
 Setup initializes the local core, repository seed, selected catalog integration and declared hooks, current code graph,
 doctor checks, and a real source-backed Context Brief. Preview does not write; interrupted apply is resumable; undo is
-also preview-first and removes only unchanged setup-owned artifacts.
+also preview-first and removes only unchanged setup-owned artifacts. The optional `--task` flag only customizes this
+one-time verification brief; everyday agent tasks do not require it.
 
-Once your agent restarts, try:
-
-- “Use Threadnote to start this task with a Context Brief, then verify the consequential claims in the current code.”
-- “Close out this task, keep the handoff local, and show me the Knowledge Delta before applying anything durable.”
-- “What can I do with Threadnote?” for the state-aware guided tour.
+Once your agent restarts, give it a normal engineering task. The installed instructions and skills make Context Brief
+and closeout part of the agent's normal lifecycle, so you do not need a special Threadnote prompt. Ask “What can I do
+with Threadnote?” only when you want the optional state-aware guided tour.
 
 For the complete cross-agent path, see [Threadnote 5 context workflows](./docs/context-workflows.md) and [guided
 two-agent activation](./docs/guided-activation.md). Team setup is covered by the [sharing guide](./docs/share.md).

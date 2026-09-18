@@ -9,7 +9,7 @@ export const lifecycleProTips: ProTip[] = [
     summary: 'Compile only the reviewed decisions, current evidence, handoff, and procedures relevant to this task.',
     why: 'A bounded brief reduces rediscovery without asking the agent to treat every old note—or every graph result—as equally authoritative.',
     practice: [
-      'Name the engineering task and stable project; pass the absolute worktree path.',
+      'Give the connected agent a normal engineering task; its installed skill supplies the stable project and absolute worktree path to Context Brief.',
       'Add a small set of current-code anchors when you already know the likely surface.',
       'Read selected memory pointers and verify consequential claims in exact local files.',
       'Treat incomplete coverage as unknown, never as proof that no dependency or conflict exists.',
@@ -52,7 +52,7 @@ export const lifecycleProTips: ProTip[] = [
     summary: 'Keep decisions, constraints, checks, invalidations, and risks—leave the private session behind.',
     why: 'A reviewed delta is small enough to inspect and precise enough for the next engineer to reuse without inheriting unreviewed narration.',
     practice: [
-      'Write the required handoff separately from durable candidates.',
+      'Let the installed agent skill write the required private handoff separately from durable candidates.',
       'Check the source evidence and exact mutation preview for every candidate.',
       'Approve, edit, defer, or reject at the current review revision.',
       'Cross the personal-to-team publication boundary only after candidate approval.',
@@ -65,7 +65,7 @@ export const lifecycleProTips: ProTip[] = [
         {
           kind: 'user',
           actor: 'You',
-          text: 'Close out the retry change and show me exactly what should survive.',
+          text: 'The retry change is implemented and the focused tests pass; canary verification remains.',
         },
         {
           kind: 'tool',
