@@ -1,13 +1,13 @@
 import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path, Schema} from 'effect';
 import {CommandExecutor, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
-import {readExclusiveFileLockOwner} from '../effect/file_lock.js';
 import {
   codeGraphDirectPersistentCapacityProtector,
   CodeGraphIndexer,
   type DirectPersistentCapacityProtection,
 } from './indexer.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
+import {currentCodeGraphBuildStatus} from './build_status.js';
 import {worktreeOverlayState} from './inventory.js';
 import type {CodeGraphCliPurgeProgress} from './cli_progress.js';
 import {CodeGraphLanguagePackRegistry, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
@@ -73,6 +73,7 @@ import {
   CodeGraphRepositoryError,
   CodeGraphSnapshotUnavailable,
   CodeGraphStoreBusyError,
+  CodeGraphStoreTransientIoError,
   type CodeGraphEdge,
   type CodeGraphProgress,
   type CodeGraphProvenance,
@@ -188,6 +189,19 @@ export class CodeGraphQueryService extends Context.Service<
           writerLockPath: layout.databaseWriteLockPath,
         });
       };
+      const hasLiveWorktreeBuilder = (layout: CodeGraphLayout) =>
+        currentCodeGraphBuildStatus(layout, layout.worktreeId).pipe(
+          Effect.map(status => status?.coordination?.lockVerified === true && status.coordination.role === 'owner'),
+          Effect.orElseSucceed(() => false),
+        );
+      const readReadySnapshotWhileBuilderStarts = <A, E>(layout: CodeGraphLayout, read: Effect.Effect<A, E>) =>
+        read.pipe(
+          Effect.catchIf(Schema.is(CodeGraphStoreTransientIoError), error =>
+            hasLiveWorktreeBuilder(layout).pipe(
+              Effect.flatMap(liveBuilder => (liveBuilder ? Effect.void : Effect.fail(error))),
+            ),
+          ),
+        );
       const statusForIdentity = (
         threadnoteHome: string,
         identity: RepositoryIdentity,
@@ -198,7 +212,10 @@ export class CodeGraphQueryService extends Context.Service<
         Effect.gen(function* () {
           if (!identityAlreadyObserved) yield* recordVerifiedCodeGraphLocalAssociation(threadnoteHome, identity);
           const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
-          const readySnapshot = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+          const readySnapshot = yield* readReadySnapshotWhileBuilderStarts(
+            layout,
+            store.readySnapshot(layout.databasePath, identity.worktreeId),
+          );
           const runtimeCurrent = readySnapshot
             ? yield* codeGraphSnapshotRuntimeCurrent(
                 store,
@@ -285,10 +302,9 @@ export class CodeGraphQueryService extends Context.Service<
               'fallback',
             ));
           if (overlay.dirty) return status;
-          const candidate = yield* store.readySnapshotForCommit(
-            layout.databasePath,
-            identity.repositoryId,
-            identity.headCommit,
+          const candidate = yield* readReadySnapshotWhileBuilderStarts(
+            layout,
+            store.readySnapshotForCommit(layout.databasePath, identity.repositoryId, identity.headCommit),
           );
           const candidateRuntimeCurrent = candidate
             ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, candidate, languagePacks, {
@@ -334,10 +350,9 @@ export class CodeGraphQueryService extends Context.Service<
               }
               const lockedOverlay = observationFromCodeGraphStatus(lockedStatus)?.overlay;
               if (lockedOverlay?.dirty !== false) return lockedStatus;
-              const lockedCandidate = yield* store.readySnapshotForCommit(
-                layout.databasePath,
-                identity.repositoryId,
-                identity.headCommit,
+              const lockedCandidate = yield* readReadySnapshotWhileBuilderStarts(
+                layout,
+                store.readySnapshotForCommit(layout.databasePath, identity.repositoryId, identity.headCommit),
               );
               const lockedCandidateRuntimeCurrent = lockedCandidate
                 ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, lockedCandidate, languagePacks, {
@@ -462,7 +477,11 @@ export class CodeGraphQueryService extends Context.Service<
           status.readySnapshot.repositoryId === identity.repositoryId &&
           (yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, status.readySnapshot, languagePacks));
         if (statusSnapshotRuntimeCurrent) return status;
-        const candidates = yield* store.recentReadySnapshotsForRepository(layout.databasePath, identity.repositoryId);
+        const candidates =
+          (yield* readReadySnapshotWhileBuilderStarts(
+            layout,
+            store.recentReadySnapshotsForRepository(layout.databasePath, identity.repositoryId),
+          )) ?? [];
         let candidate: CodeGraphSnapshot | undefined;
         for (const recent of candidates) {
           if (
@@ -504,13 +523,7 @@ export class CodeGraphQueryService extends Context.Service<
         return Effect.gen(function* () {
           if (observedStatus && !observedStatus.readySnapshot) {
             const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
-            const owner = yield* readExclusiveFileLockOwner(fs, layout.lockPath);
-            const liveOwner = Option.isSome(owner) && system.isProcessRunning(owner.value.processId);
-            const matchingOwnerIdentity =
-              liveOwner && owner.value.processStartIdentity
-                ? (yield* system.processStartIdentity(owner.value.processId)) === owner.value.processStartIdentity
-                : false;
-            const lockAge = matchingOwnerIdentity
+            const lockAge = (yield* hasLiveWorktreeBuilder(layout))
               ? yield* fs.stat(layout.lockPath).pipe(
                   Effect.map(info => Option.getOrUndefined(info.mtime)?.getTime()),
                   Effect.orElseSucceed(() => undefined as number | undefined),
