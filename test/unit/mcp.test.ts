@@ -154,10 +154,10 @@ describe('MCP toolsets', () => {
     );
   });
 
-  it('gives Cursor Cloud shared writes without review, publishing, maintenance, or worksets', () => {
+  it('gives Personal Cursor Cloud shared writes without graph, review, publishing, maintenance, or worksets', () => {
     expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud-personal'))).toEqual({
       contextBrief: false,
-      graphLocal: true,
+      graphLocal: false,
       graphWorkset: false,
       maintenance: false,
       memoryPublish: false,
@@ -165,12 +165,8 @@ describe('MCP toolsets', () => {
       memoryReview: false,
       memoryWrite: true,
     });
-    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud-git-beta'))).toEqual(
-      mcpToolCapabilities(parseMcpToolset('cursor-cloud-personal')),
-    );
-    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud'))).toEqual(
-      mcpToolCapabilities(parseMcpToolset('cursor-cloud-personal')),
-    );
+    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud-git-beta')).graphLocal).toBe(false);
+    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud')).graphLocal).toBe(false);
   });
 
   it('keeps the Cursor Cloud local toolset graph-only', () => {

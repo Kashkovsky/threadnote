@@ -122,7 +122,7 @@ export const mcpServerEffect = withAnonymousTelemetry(
           : undefined;
         setMcpStartupVersion(yield* currentPackageVersion().pipe(Effect.orElseSucceed(() => undefined)));
         const instructions = memoryScope
-          ? `Personal Cursor Cloud uses one MCP bounded to these Git memory shares: ${memoryScope.shares.map(share => `${share.team} (${share.root})`).join(', ')}. Call recall_context with an absolute callerCwd; optionally pass team to narrow recall. Results are unread pointers, not evidence, so read relevant threadnote:// URIs with read_context. With multiple shares, durable remember_context writes require team; writes are committed and pushed only to that share. Memory tools reject URIs outside the configured share set. Use inspect_code_graph and analyze_code_graph only for the local checkout; worksets are disabled.`
+          ? `Personal Cursor Cloud uses one MCP bounded to these Git memory shares: ${memoryScope.shares.map(share => `${share.team} (${share.root})`).join(', ')}. Call recall_context with an absolute callerCwd; optionally pass team to narrow recall. Results are unread pointers, not evidence, so read relevant threadnote:// URIs with read_context. With multiple shares, durable remember_context writes require team; writes are committed and pushed only to that share. Memory tools reject URIs outside the configured share set.`
           : toolset === CURSOR_CLOUD_LOCAL_MCP_TOOLSET
             ? 'Cursor Cloud remote-hybrid mode uses this local server only for checkout-specific code graph evidence, diagnostics, and workload attestation. All historical memory reads and writes belong to the managed threadnote-memory HTTP server. Never fall back to local personal memory or a Git memory share.'
             : 'Call `recall_context` with absolute `callerCwd`. `project` excludes others; omit it for global recall. Nested cwd prefers its package; repo-wide/sibling evidence remains eligible. Results are unread `threadnote://` pointers, not evidence; read them via `read_context`. Use `inspect_code_graph` before broad search and `analyze_code_graph` for architecture. Retry indexing when advised; exact search remains useful. Store durable knowledge/handoffs under project/topic; replace duplicates. `review_session_context` only adds user-approved candidates. Do not store sensitive data. Confirm publishes; never publish handoffs/preferences.';
@@ -285,7 +285,7 @@ function registerTools(
     );
   }
 
-  registerCodeGraphTool(server, config, {allowWorkset: capabilities.graphWorkset});
+  if (capabilities.graphLocal) registerCodeGraphTool(server, config, {allowWorkset: capabilities.graphWorkset});
   if (capabilities.contextBrief) registerContextBriefTool(server, config);
 
   if (capabilities.memoryRead) {

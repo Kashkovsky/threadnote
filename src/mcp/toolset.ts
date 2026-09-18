@@ -28,7 +28,7 @@ const TOOLSET_CAPABILITIES = {
   },
   'cursor-cloud': {
     contextBrief: false,
-    graphLocal: true,
+    graphLocal: false,
     graphWorkset: false,
     maintenance: false,
     memoryPublish: false,
@@ -38,7 +38,7 @@ const TOOLSET_CAPABILITIES = {
   },
   'cursor-cloud-git-beta': {
     contextBrief: false,
-    graphLocal: true,
+    graphLocal: false,
     graphWorkset: false,
     maintenance: false,
     memoryPublish: false,
@@ -58,7 +58,7 @@ const TOOLSET_CAPABILITIES = {
   },
   'cursor-cloud-personal': {
     contextBrief: false,
-    graphLocal: true,
+    graphLocal: false,
     graphWorkset: false,
     maintenance: false,
     memoryPublish: false,

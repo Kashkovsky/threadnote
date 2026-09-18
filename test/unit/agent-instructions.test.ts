@@ -3,6 +3,7 @@ import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from 'vitest';
 
 const skillNames = ['threadnote-context', 'threadnote-code-graph', 'threadnote-memory'] as const;
+const personalCursorCloudSkillNames = ['threadnote-context', 'threadnote-memory'] as const;
 
 async function agentInstructions(): Promise<string> {
   return readFile(join(process.cwd(), 'config', 'agent-instructions.md'), 'utf8');
@@ -18,7 +19,7 @@ async function personalCursorCloudArtifacts(): Promise<readonly string[]> {
   const root = join(process.cwd(), 'config', 'agent-profiles', 'cursor-cloud-personal');
   return Promise.all([
     readFile(join(root, 'agent-instructions.md'), 'utf8'),
-    ...skillNames.map(skill => readFile(join(root, 'agent-skills', skill, 'SKILL.md'), 'utf8')),
+    ...personalCursorCloudSkillNames.map(skill => readFile(join(root, 'agent-skills', skill, 'SKILL.md'), 'utf8')),
   ]);
 }
 
@@ -43,15 +44,15 @@ describe('agent instructions', () => {
       '`remember_context`',
       'commits and pushes',
       'VM-local',
-      '`inspect_code_graph`',
-      '`analyze_code_graph`',
-      'Named Worksets are unavailable',
       'Never store secrets, credentials, customer data, or raw production logs',
     ]) {
       expect(artifacts).toContain(requiredText);
     }
     expect(artifacts).not.toContain('Call `context_brief`');
     expect(artifacts).not.toContain('Git beta');
+    expect(artifacts).not.toContain('`inspect_code_graph`');
+    expect(artifacts).not.toContain('`analyze_code_graph`');
+    expect(artifacts).not.toContain('local code graph');
   });
 
   it('keeps the always-loaded bootstrap compact and routes detailed work to skills', async () => {

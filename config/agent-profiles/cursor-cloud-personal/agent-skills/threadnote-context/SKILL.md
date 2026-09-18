@@ -17,7 +17,7 @@ larger memories refuse with an outline. Explicitly page one URI with `offsetByte
 `nextOffsetBytes` and `sourceHash` until `complete=true`. For browsing, call `list_context` with `team` or
 with an exact URI inside one share; when several shares are configured, do not assume a default share.
 
-Treat memory as historical context. Verify claims about current behavior against the current checkout and code graph.
+Treat memory as historical context. Verify claims about current behavior against the current checkout.
 If a share cannot synchronize, report the bounded warning; do not fall back to VM-local personal memory or an
 unconfigured share.
 <!-- END THREADNOTE USER INSTRUCTIONS -->

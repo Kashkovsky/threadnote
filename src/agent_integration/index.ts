@@ -8,6 +8,7 @@ import {
   readAgentIntegrationRegistry,
   registeredAgentClients,
   repairableAgentClients,
+  type AgentIntegrationRegistry,
   type AgentIntegrationHostReceipt,
   type AgentIntegrationMcpReceipt,
   withAgentIntegrationHost,
@@ -30,6 +31,7 @@ import {resolveAgentHostPaths} from './host_paths.js';
 import {LEGACY_ARTIFACT_TARGETS as HOST_TARGETS} from './adapters/legacy_targets.js';
 
 const AGENT_SKILLS = ['threadnote-context', 'threadnote-code-graph', 'threadnote-memory'] as const;
+const CURSOR_CLOUD_PERSONAL_AGENT_SKILLS = ['threadnote-context', 'threadnote-memory'] as const;
 
 interface InstallAgentIntegrationOptions {
   readonly cwd?: string;
@@ -222,6 +224,13 @@ export const removeAgentIntegrationsInTransaction = Effect.fn('agentIntegrations
         continue;
       yield* removeArtifact(artifact, dryRun);
     }
+    yield* removeObsoleteCursorCloudPersonalGraphSkill(
+      plan,
+      receipt?.mcp.artifactProfile,
+      dryRun,
+      registry,
+      `legacy:${agent}`,
+    );
   }
   for (const legacyPath of LEGACY_CURSOR_INSTRUCTION_PATHS) {
     const target = yield* expandPath(legacyPath);
@@ -273,6 +282,13 @@ export const installAgentIntegrationInTransaction = Effect.fn('agentIntegrations
       );
     }
     for (const artifact of plan.artifacts) yield* logArtifactPlan(artifact);
+    yield* removeObsoleteCursorCloudPersonalGraphSkill(
+      plan,
+      mcp.artifactProfile,
+      true,
+      currentRegistry,
+      `legacy:${agent}`,
+    );
     yield* Console.log(`Would register ${agent} agent integration in ${yield* agentIntegrationRegistryPath(config)}.`);
     return;
   }
@@ -283,6 +299,13 @@ export const installAgentIntegrationInTransaction = Effect.fn('agentIntegrations
         yield* removeArtifact(artifact, false);
     }
   }
+  yield* removeObsoleteCursorCloudPersonalGraphSkill(
+    plan,
+    mcp.artifactProfile,
+    false,
+    currentRegistry,
+    `legacy:${agent}`,
+  );
   yield* writeAgentIntegrationRegistry(config, withAgentIntegrationHost(currentRegistry, agent, receipt));
   if (agent === 'cursor' && !plan.artifacts.some(artifact => artifact.name === 'instructions')) {
     yield* removeManagedPath(
@@ -300,6 +323,24 @@ export const installAgentIntegrationInTransaction = Effect.fn('agentIntegrations
   );
   yield* Console.log(`Registered ${agent} agent integration.`);
 });
+
+function removeObsoleteCursorCloudPersonalGraphSkill(
+  plan: AgentArtifactPlan,
+  profile: AgentArtifactProfile | undefined,
+  dryRun: boolean,
+  registry: AgentIntegrationRegistry | undefined,
+  consumer: string,
+) {
+  return Effect.gen(function* () {
+    if (profile !== 'cursor-cloud-personal') return;
+    const contextSkill = plan.artifacts.find(artifact => artifact.name === 'skill threadnote-context');
+    if (contextSkill === undefined) return;
+    const path = yield* Path.Path;
+    const target = path.join(path.dirname(path.dirname(contextSkill.path)), 'threadnote-code-graph', 'SKILL.md');
+    if (registry !== undefined && artifactHasOtherConsumers(registry, target, consumer)) return;
+    yield* removeManagedPath(target, 'obsolete Personal Cursor Cloud graph skill', dryRun, true);
+  });
+}
 
 function agentArtifacts(agent: AgentClient, requestedProfile?: AgentArtifactProfile, hostRoot?: string) {
   return Effect.gen(function* () {
@@ -330,7 +371,8 @@ function agentArtifacts(agent: AgentClient, requestedProfile?: AgentArtifactProf
           },
         ];
     const skillRoot = ompPaths?.skillRoot ?? (yield* expandPath(host!.skillRoot));
-    for (const skill of AGENT_SKILLS) {
+    const skills = profile === 'cursor-cloud-personal' ? CURSOR_CLOUD_PERSONAL_AGENT_SKILLS : AGENT_SKILLS;
+    for (const skill of skills) {
       const content = `${(yield* (yield* FileSystem.FileSystem).readFileString(
         path.join(profileRoot, 'agent-skills', skill, 'SKILL.md'),
       )).trim()}\n`;

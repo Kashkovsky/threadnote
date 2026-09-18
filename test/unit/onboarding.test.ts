@@ -51,6 +51,8 @@ describe('buildOnboardingGuide', () => {
     expect(guide).toContain('kind=handoff write stays local');
     expect(guide).toContain('all other personal/local memory kinds stay inaccessible');
     expect(guide).not.toContain('share_publish(');
+    expect(guide).not.toContain('inspect_code_graph');
+    expect(guide).not.toContain('analyze_code_graph');
   });
 
   it('keeps the Cursor remote-hybrid local guide free of memory fallback', () => {
@@ -62,6 +64,8 @@ describe('buildOnboardingGuide', () => {
     expect(guide).toContain('Never fall back');
     expect(guide).not.toContain('remember_context(');
     expect(guide).not.toContain('recall_context(');
+    expect(guide).toContain('inspect_code_graph');
+    expect(guide).toContain('analyze_code_graph');
   });
 
   it('nudges first-time team setup when no team is configured', () => {

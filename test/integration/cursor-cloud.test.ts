@@ -12,8 +12,6 @@ const execFilePromise = promisify(execFile);
 const CLOUD_TOOL_NAMES = [
   'complete_activation_retrieval_proof',
   'recall_context',
-  'inspect_code_graph',
-  'analyze_code_graph',
   'read_context',
   'list_context',
   'remember_context',
@@ -39,10 +37,16 @@ describe('Cursor Cloud integration', () => {
     const fixture = await cloudFixture();
     try {
       const existingSkillPath = join(fixture.userHome, '.cursor', 'skills', 'threadnote-context', 'SKILL.md');
+      const obsoleteGraphSkillPath = join(fixture.userHome, '.cursor', 'skills', 'threadnote-code-graph', 'SKILL.md');
       await mkdir(join(fixture.userHome, '.cursor', 'skills', 'threadnote-context'), {recursive: true});
       await writeFile(
         existingSkillPath,
         await readFile(join(process.cwd(), 'config', 'agent-skills', 'threadnote-context', 'SKILL.md'), 'utf8'),
+      );
+      await mkdir(join(fixture.userHome, '.cursor', 'skills', 'threadnote-code-graph'), {recursive: true});
+      await writeFile(
+        obsoleteGraphSkillPath,
+        await readFile(join(process.cwd(), 'config', 'agent-skills', 'threadnote-code-graph', 'SKILL.md'), 'utf8'),
       );
       const firstConfig = await runCli([
         'cloud',
@@ -156,6 +160,7 @@ describe('Cursor Cloud integration', () => {
       );
       expect(cloudMemorySkill).toContain('pass `team`');
       expect(cloudMemorySkill).not.toContain('Git beta');
+      await expect(access(obsoleteGraphSkillPath)).rejects.toThrow();
 
       const verified = await runCli([
         'cloud',
@@ -638,14 +643,6 @@ describe('Cursor Cloud integration', () => {
         });
         expect(JSON.stringify(referencedRecall)).toContain(referencedSourceUri);
         expect(JSON.stringify(referencedRecall)).not.toContain(privateUri);
-        await expect(
-          callError(client, 'inspect_code_graph', {
-            callerCwd: process.cwd(),
-            operation: 'query',
-            query: 'memory scope',
-            workset: 'all-repositories',
-          }),
-        ).resolves.toContain('workset operations are unavailable');
         await expect(
           callError(client, 'remember_context', {
             kind: 'preference',
