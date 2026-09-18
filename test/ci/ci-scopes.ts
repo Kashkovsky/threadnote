@@ -1,4 +1,8 @@
-import {ciRequiredLongRunningTestGroupNames} from './vitest-plan.js';
+import {
+  ciLongRunningTestGroups,
+  ciRequiredLongRunningTestGroupNames,
+  type CiLongRunningTestGroupName,
+} from './vitest-plan.js';
 
 export const ciScopeKeys = [
   'actions',
@@ -16,8 +20,17 @@ export type CiScopes = Readonly<Record<CiScopeKey, boolean>>;
 
 export interface CiScopeClassification {
   readonly changedCount: number;
+  readonly invalidPath: boolean;
   readonly paths: readonly string[];
   readonly scopes: CiScopes;
+}
+
+export type CiTestSelectionMode = 'full' | 'none' | 'selected';
+
+export interface CiTestPlan {
+  readonly standard: {readonly mode: CiTestSelectionMode; readonly paths: readonly string[]};
+  readonly long: {readonly mode: CiTestSelectionMode; readonly groups: readonly CiLongRunningTestGroupName[]};
+  readonly postgres: {readonly mode: CiTestSelectionMode; readonly paths: readonly string[]};
 }
 
 const noScopes = (): Record<CiScopeKey, boolean> => ({
@@ -256,10 +269,65 @@ export function classifyCiScopes(paths: Iterable<string>): CiScopeClassification
 
   const sortedPaths = [...normalizedPaths].sort((left, right) => left.localeCompare(right));
   if (invalidPath || sortedPaths.length === 0)
-    return {changedCount: sortedPaths.length, paths: sortedPaths, scopes: allScopes()};
+    return {changedCount: sortedPaths.length, invalidPath, paths: sortedPaths, scopes: allScopes()};
 
   for (const path of sortedPaths) mergeScopes(scopes, scopesForPath(path));
-  return {changedCount: sortedPaths.length, paths: sortedPaths, scopes};
+  return {changedCount: sortedPaths.length, invalidPath, paths: sortedPaths, scopes};
+}
+
+export function isOrdinaryCiTestPath(path: string): boolean {
+  return /^test\/(?:unit|integration)\/[A-Za-z0-9._-]+\.test\.ts$/u.test(path);
+}
+
+function isPostgresTestPath(path: string): boolean {
+  return /^test\/integration\/remote-memory-[^/]+\.test\.ts$/u.test(path);
+}
+
+function selectedLongGroups(paths: readonly string[]): readonly CiLongRunningTestGroupName[] {
+  const changed = new Set(paths);
+  return (Object.keys(ciLongRunningTestGroups) as CiLongRunningTestGroupName[]).filter(group =>
+    ciLongRunningTestGroups[group].some(path => changed.has(path)),
+  );
+}
+
+export function selectCiTestPlanForClassification(classification: CiScopeClassification): CiTestPlan {
+  const none: CiTestPlan = {
+    standard: {mode: 'none', paths: []},
+    long: {mode: 'none', groups: []},
+    postgres: {mode: 'none', paths: []},
+  };
+  if (!classification.scopes.code) return none;
+
+  const isSelective =
+    !classification.invalidPath &&
+    classification.paths.length > 0 &&
+    classification.paths.every(path => {
+      const normalized = normalizeGitPath(path);
+      return Boolean(normalized && isOrdinaryCiTestPath(normalized) && scopesForPath(normalized).code);
+    });
+  if (!isSelective) {
+    return {
+      standard: {mode: 'full', paths: []},
+      long: {mode: 'full', groups: ciRequiredLongRunningTestGroupNames},
+      postgres: {mode: 'full', paths: []},
+    };
+  }
+
+  const longGroups = selectedLongGroups(classification.paths);
+  const longPaths = new Set<string>();
+  for (const group of longGroups) for (const path of ciLongRunningTestGroups[group]) longPaths.add(path);
+  const postgresPaths = classification.paths.filter(isPostgresTestPath);
+  const standardPaths = classification.paths.filter(path => !longPaths.has(path));
+  return {
+    standard: standardPaths.length > 0 ? {mode: 'selected', paths: standardPaths} : {mode: 'none', paths: []},
+    long: longGroups.length > 0 ? {mode: 'selected', groups: longGroups} : {mode: 'none', groups: []},
+    postgres: postgresPaths.length > 0 ? {mode: 'selected', paths: postgresPaths} : {mode: 'none', paths: []},
+  };
+}
+
+export function selectCiTestPlan(paths: Iterable<string>): CiTestPlan {
+  const inputPaths = [...paths];
+  return selectCiTestPlanForClassification(classifyCiScopes(inputPaths));
 }
 
 function commitArgument(name: '--base' | '--head'): string | undefined {
@@ -294,11 +362,17 @@ function classifyCurrentDiff(
 }
 
 async function writeGitHubOutputs(classification: CiScopeClassification, reason: string): Promise<void> {
+  const testPlan = selectCiTestPlanForClassification(classification);
   const outputPath = process.env.GITHUB_OUTPUT;
   if (outputPath) {
     const lines = [
       ...ciScopeKeys.map(key => `${key}=${String(classification.scopes[key])}`),
-      `long_test_groups=${JSON.stringify(ciRequiredLongRunningTestGroupNames)}`,
+      `long_test_groups=${JSON.stringify(testPlan.long.groups)}`,
+      `long_test_mode=${testPlan.long.mode}`,
+      `standard_test_mode=${testPlan.standard.mode}`,
+      `standard_test_paths=${JSON.stringify(testPlan.standard.paths)}`,
+      `postgres_test_mode=${testPlan.postgres.mode}`,
+      `postgres_test_paths=${JSON.stringify(testPlan.postgres.paths)}`,
       `changed_count=${classification.changedCount}`,
       `reason=${reason}`,
     ];
