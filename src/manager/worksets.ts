@@ -64,6 +64,8 @@ export interface ManagerWorksetDefinitionMember {
   readonly folder?: string;
   readonly path?: string;
   readonly project: string;
+  /** Present for configured members; sourced from the definition manifest snapshot. */
+  readonly uri?: string;
 }
 
 export interface ManagerWorksetProjectSummary {
@@ -404,14 +406,21 @@ export const readManagerWorksetDefinition = Effect.fn('managerWorksets.readDefin
   const observedByName = new Map(observed.map(project => [project.name.toLowerCase(), project]));
   const members = workset.projects.map(project => {
     const configured = observedByName.get(project.toLowerCase());
+    const manifestProject = projects.get(project.toLowerCase());
     return {
       ...(configured !== undefined && 'branch' in configured && configured.branch !== undefined
         ? {branch: configured.branch}
         : {}),
       branchState: configured?.branchState ?? 'missing',
       configured: configured !== undefined,
-      ...(configured === undefined ? {} : {folder: configured.folder, path: configured.path}),
-      project: safeLabel(project),
+      ...(configured === undefined
+        ? {}
+        : {
+            folder: configured.folder,
+            path: configured.path,
+            ...(manifestProject === undefined ? {} : {uri: manifestProject.uri}),
+          }),
+      project: configured?.name ?? safeLabel(project),
     };
   });
   return {
@@ -673,11 +682,11 @@ function routeManagerWorksetRequest(request: ManagerWorksetApiRequest) {
       return response(200, yield* readManagerWorksetCatalog(config));
     }
     if (method === 'GET' && url.pathname === '/api/worksets/status') {
-      const workset = yield* requireKnownManagerWorkset(config, requiredQuery(url, 'workset'));
+      const workset = yield* requireKnownManagerWorkset(config, requiredManagerWorksetQuery(url));
       return response(200, yield* inspectCodeGraphWorksetStatus(config, workset));
     }
     if (method === 'GET' && url.pathname === '/api/worksets/definition') {
-      return response(200, yield* readManagerWorksetDefinition(config, requiredQuery(url, 'workset')));
+      return response(200, yield* readManagerWorksetDefinition(config, requiredManagerWorksetQuery(url)));
     }
     if (method === 'GET' && url.pathname === '/api/worksets/project') {
       return response(200, yield* readManagerManifestProject(config, requiredQuery(url, 'project')));
@@ -744,10 +753,7 @@ export function managerWorksetJobSummary(job: ManagerWorksetPrepareJob): Manager
 
 function runManagerWorksetQuery(config: RuntimeConfig, body: Record<string, unknown>) {
   return Effect.gen(function* () {
-    const worksetName = yield* requireKnownManagerWorkset(
-      config,
-      requiredText(body.workset, 'workset', MANAGER_WORKSET_NAME_BYTES_MAXIMUM),
-    );
+    const worksetName = yield* requireKnownManagerWorkset(config, requiredManagerWorksetName(body.workset));
     return yield* queryCodeGraphWorksetV2(config, {
       ...optionalBoundedInteger(body.deadlineMilliseconds, 'deadlineMilliseconds', 1, 60_000),
       ...optionalBoundedInteger(body.depth, 'depth', 0, 16),
@@ -823,10 +829,7 @@ function runManagerWorksetContextBrief(config: RuntimeConfig, body: Record<strin
 
 function startManagerWorksetPrepare(request: ManagerWorksetApiRequest, body: Record<string, unknown>) {
   return Effect.gen(function* () {
-    const workset = yield* requireKnownManagerWorkset(
-      request.config,
-      requiredText(body.workset, 'workset', MANAGER_WORKSET_NAME_BYTES_MAXIMUM),
-    );
+    const workset = yield* requireKnownManagerWorkset(request.config, requiredManagerWorksetName(body.workset));
     const concurrency = optionalIntegerValue(
       body.concurrency,
       'concurrency',
@@ -992,7 +995,7 @@ function definitionMutationFromBody(body: Record<string, unknown>): ManagerWorks
     return {
       ...optionalDescription(body.description),
       expectedRevision,
-      name: requiredText(body.name, 'name', MANAGER_WORKSET_NAME_BYTES_MAXIMUM),
+      name: requiredManagerWorksetName(body.name, 'name'),
       operation: 'create',
       projects: requiredTextArray(body.projects, 'projects', MANAGER_WORKSET_MEMBER_MAXIMUM),
     };
@@ -1001,10 +1004,10 @@ function definitionMutationFromBody(body: Record<string, unknown>): ManagerWorks
     return {
       ...optionalDescription(body.description),
       expectedRevision,
-      name: requiredText(body.name, 'name', MANAGER_WORKSET_NAME_BYTES_MAXIMUM),
+      name: requiredManagerWorksetName(body.name, 'name'),
       operation: 'update',
       projects: requiredTextArray(body.projects, 'projects', MANAGER_WORKSET_MEMBER_MAXIMUM),
-      workset: requiredText(body.workset, 'workset', MANAGER_WORKSET_NAME_BYTES_MAXIMUM),
+      workset: requiredManagerWorksetName(body.workset),
     };
   }
   if (body.operation === 'delete') {
@@ -1014,7 +1017,7 @@ function definitionMutationFromBody(body: Record<string, unknown>): ManagerWorks
       confirm: true,
       expectedRevision,
       operation: 'delete',
-      workset: requiredText(body.workset, 'workset', MANAGER_WORKSET_NAME_BYTES_MAXIMUM),
+      workset: requiredManagerWorksetName(body.workset),
     };
   }
   throw ManagerWorksetApiError.of('invalid-input', 'Workset definition operation is invalid.', 400);
@@ -1350,7 +1353,7 @@ function validatedDefinition(
   projectValues: readonly string[],
   allowedUnknownProjects: readonly string[] = [],
 ): WorksetManifest {
-  const name = normalizedText(nameValue, 'name', MANAGER_WORKSET_NAME_BYTES_MAXIMUM);
+  const name = normalizeManagerWorksetName(nameValue, 'name');
   const description =
     descriptionValue === undefined
       ? undefined
@@ -1565,7 +1568,7 @@ function requireKnownManagerWorkset(config: RuntimeConfig, requested: string) {
 }
 
 function knownWorksetFromBody(config: RuntimeConfig, body: Record<string, unknown>) {
-  return requireKnownManagerWorkset(config, requiredText(body.workset, 'workset', MANAGER_WORKSET_NAME_BYTES_MAXIMUM));
+  return requireKnownManagerWorkset(config, requiredManagerWorksetName(body.workset));
 }
 
 function registryFor(key: object): ManagerWorksetJobRegistry {
@@ -1688,6 +1691,19 @@ function optionalDescription(value: unknown): {readonly description?: string} {
 function requiredText(value: unknown, name: string, maximumBytes: number): string {
   if (typeof value !== 'string') throw ManagerWorksetApiError.of('invalid-input', `Provide ${name}.`, 400);
   return normalizedText(value, name, maximumBytes);
+}
+
+/**
+ * Canonical Manager validator for every workset-name boundary, including CLI callers.
+ * Keep the optional field label only for backwards-compatible HTTP error messages.
+ */
+export function normalizeManagerWorksetName(value: string, field = 'workset'): string {
+  return normalizedText(value, field, MANAGER_WORKSET_NAME_BYTES_MAXIMUM);
+}
+
+function requiredManagerWorksetName(value: unknown, field = 'workset'): string {
+  if (typeof value !== 'string') throw ManagerWorksetApiError.of('invalid-input', `Provide ${field}.`, 400);
+  return normalizeManagerWorksetName(value, field);
 }
 
 function normalizedText(value: string, name: string, maximumBytes: number): string {
@@ -1921,6 +1937,12 @@ function requiredQuery(url: URL, name: string): string {
   const value = url.searchParams.get(name);
   if (!value) throw ManagerWorksetApiError.of('invalid-input', `Missing query parameter: ${name}.`, 400);
   return requiredText(value, name, MANAGER_WORKSET_NAME_BYTES_MAXIMUM);
+}
+
+function requiredManagerWorksetQuery(url: URL): string {
+  const value = url.searchParams.get('workset');
+  if (!value) throw ManagerWorksetApiError.of('invalid-input', 'Missing query parameter: workset.', 400);
+  return normalizeManagerWorksetName(value);
 }
 
 function safeLabel(value: string): string {
