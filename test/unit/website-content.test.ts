@@ -1469,15 +1469,21 @@ The body remains ordinary **Markdown**.
     expect(worksetArticle).toBeDefined();
     expect(mcpExample?.type).toBe('code');
     if (!mcpExample || mcpExample.type !== 'code') throw TestError.make({message: 'Missing workset MCP example.'});
-    expect(content).toContain('threadnote workset status checkout');
-    expect(content).toContain('threadnote workset prepare checkout --concurrency 4');
+    expect(content).toContain('threadnote workset status checkout-platform');
+    expect(content).toContain('threadnote workset prepare checkout-platform --concurrency 4');
+    expect(content).toContain('threadnote workset create checkout');
+    expect(content).toContain('threadnote workset update checkout --name checkout-platform');
+    expect(content).toContain('threadnote workset delete checkout-platform --confirm --json');
+    expect(content).toContain('Advanced/manual option: define repository projects and the Workset together.');
+    expect(content).toContain('docs/adr/**/*.md');
+    expect(content).toContain('threadnote://resources/repos/checkout-api');
     expect(content).toContain('threadnote graph query');
-    expect(content).toContain('--workset checkout');
+    expect(content).toContain('--workset checkout-platform');
     expect(JSON.parse(mcpExample.code)).toMatchObject({
       budgetTokens: 1250,
       callerCwd: '/workspace/checkout-api',
       operation: 'query',
-      workset: 'checkout',
+      workset: 'checkout-platform',
     });
     expect(content).not.toContain('At most eight members');
     expect(content).toContain('no eight-repository admission cap');
