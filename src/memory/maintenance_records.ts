@@ -1,5 +1,8 @@
 import {Effect, FileSystem, Path, PlatformError, Result, Schema} from 'effect';
-import {readBoundedContainedStableRegularFile} from '../code_graph/inventory_contained_file.js';
+import {
+  inspectContainedStableRegularFile,
+  readBoundedContainedStableRegularFile,
+} from '../code_graph/inventory_contained_file.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {scanFilesWithinBoundary} from '../effect/safe_scan.js';
 import {uriSegment} from '../manifest.js';
@@ -9,9 +12,9 @@ import {parseMemoryDocument, type MemoryRecord} from './document.js';
 import {localUserMemoriesRoot} from './migrations.js';
 
 const MAINTENANCE_READ_CONCURRENCY = 16;
-const PERSONAL_PROJECT_FILE_LIMIT = 1_000;
-const PERSONAL_PROJECT_FILE_BYTE_LIMIT = 256 * 1_024;
-const PERSONAL_PROJECT_TOTAL_BYTE_LIMIT = 8 * 1_024 * 1_024;
+const PERSONAL_PROJECT_FILE_LIMIT = 10_000;
+const PERSONAL_PROJECT_FILE_BYTE_LIMIT = 8 * 1_024 * 1_024;
+const PERSONAL_PROJECT_TOTAL_BYTE_LIMIT = 128 * 1_024 * 1_024;
 
 class PersonalProjectReadError extends Schema.TaggedError<PersonalProjectReadError>()('PersonalProjectReadError', {
   cause: Schema.optionalKey(Schema.Defect()),
@@ -45,9 +48,21 @@ export const readPersonalProjectMemoryRecords = Effect.fn('memory.readPersonalPr
   const root = yield* localUserMemoriesRoot(config);
   const records: MemoryRecord[] = [];
   const directorySnapshots: Array<{readonly directory: string; readonly entries: readonly string[] | undefined}> = [];
+  const selectedEntries: Array<{
+    readonly location: PersonalProjectLocation;
+    readonly name: string;
+    readonly relative: string;
+  }> = [];
+  const admittedEntries: Array<{
+    readonly location: PersonalProjectLocation;
+    readonly name: string;
+    readonly relative: string;
+    readonly size: number;
+  }> = [];
   const selectedFiles: Array<{readonly contentHash: string; readonly relative: string}> = [];
   let canonicalRoot: string | undefined;
   let filesRead = 0;
+  let inspectedBytes = 0;
   let bytesRead = 0;
   for (const location of personalProjectLocations(uriSegment(project))) {
     const directory = path.join(root, ...location.relativeDirectory);
@@ -58,43 +73,59 @@ export const readPersonalProjectMemoryRecords = Effect.fn('memory.readPersonalPr
     }
     for (const name of before) {
       if (!name.endsWith('.md')) continue;
-      filesRead += 1;
-      if (filesRead > PERSONAL_PROJECT_FILE_LIMIT) {
-        return yield* personalProjectReadError('Personal project memory file limit exceeded.');
-      }
+      const nextFilesRead = admitPersonalProjectFileCount(filesRead);
+      if (Result.isFailure(nextFilesRead)) return yield* personalProjectReadError(nextFilesRead.failure);
+      filesRead = nextFilesRead.success;
       const relative = [...location.relativeDirectory, name].join('/');
-      canonicalRoot ??= yield* fs.realPath(root);
-      const bytes = yield* readBoundedContainedStableRegularFile(
-        fs,
-        path,
-        canonicalRoot,
-        relative,
-        PERSONAL_PROJECT_FILE_BYTE_LIMIT,
-      );
-      selectedFiles.push({contentHash: sha256HexSync(bytes), relative});
-      bytesRead += bytes.byteLength;
-      if (bytesRead > PERSONAL_PROJECT_TOTAL_BYTE_LIMIT) {
-        return yield* personalProjectReadError('Personal project memory byte limit exceeded.');
-      }
-      const content = yield* Effect.try({
-        try: () => new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes),
-        catch: cause => personalProjectReadError('Personal project memory is not valid UTF-8.', cause),
-      });
-      const uri = `threadnote://user/${uriSegment(config.user)}/memories/${relative}`;
-      const record = parseMemoryDocument(uri, content);
-      if (
-        record === undefined ||
-        record.metadata.kind !== location.kind ||
-        record.metadata.project !== project ||
-        record.metadata.status !== location.status ||
-        !location.headerTitles.includes(record.headerTitle) ||
-        record.metadata.visibility !== 'personal' ||
-        !hasCanonicalPersonalFilename(record, name, location.topicBoundFilename)
-      ) {
-        return yield* personalProjectReadError(`Personal project memory path and metadata do not agree: ${relative}`);
-      }
-      records.push(record);
+      selectedEntries.push({location, name, relative});
     }
+  }
+  if (selectedEntries.length > 0) {
+    canonicalRoot = yield* fs.realPath(root);
+  }
+  for (const selected of selectedEntries) {
+    const inspected = yield* inspectContainedStableRegularFile(fs, path, canonicalRoot!, selected.relative);
+    const nextInspectedBytes = admitPersonalProjectBytes(inspectedBytes, inspected.size);
+    if (Result.isFailure(nextInspectedBytes)) return yield* personalProjectReadError(nextInspectedBytes.failure);
+    inspectedBytes = nextInspectedBytes.success;
+    admittedEntries.push({...selected, size: inspected.size});
+  }
+  for (const selected of admittedEntries) {
+    const bytes = yield* readBoundedContainedStableRegularFile(
+      fs,
+      path,
+      canonicalRoot!,
+      selected.relative,
+      PERSONAL_PROJECT_FILE_BYTE_LIMIT,
+    );
+    if (bytes.byteLength !== selected.size) {
+      return yield* personalProjectReadError('Personal project memory content changed during the snapshot read.');
+    }
+    selectedFiles.push({contentHash: sha256HexSync(bytes), relative: selected.relative});
+    bytesRead += bytes.byteLength;
+    if (bytesRead > PERSONAL_PROJECT_TOTAL_BYTE_LIMIT) {
+      return yield* personalProjectReadError('Personal project memory byte limit exceeded.');
+    }
+    const content = yield* Effect.try({
+      try: () => new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes),
+      catch: cause => personalProjectReadError('Personal project memory is not valid UTF-8.', cause),
+    });
+    const uri = `threadnote://user/${uriSegment(config.user)}/memories/${selected.relative}`;
+    const record = parseMemoryDocument(uri, content);
+    if (
+      record === undefined ||
+      record.metadata.kind !== selected.location.kind ||
+      record.metadata.project !== project ||
+      record.metadata.status !== selected.location.status ||
+      !selected.location.headerTitles.includes(record.headerTitle) ||
+      record.metadata.visibility !== 'personal' ||
+      !hasCanonicalPersonalFilename(record, selected.name, selected.location.topicBoundFilename)
+    ) {
+      return yield* personalProjectReadError(
+        `Personal project memory path and metadata do not agree: ${selected.relative}`,
+      );
+    }
+    records.push(record);
   }
   for (const snapshot of directorySnapshots) {
     const after = yield* canonicalDirectoryEntries(fs, snapshot.directory);
@@ -275,4 +306,21 @@ function compareText(left: string, right: string): number {
 
 function personalProjectReadError(message: string, cause?: unknown): PersonalProjectReadError {
   return PersonalProjectReadError.make({message, ...(cause === undefined ? {} : {cause})});
+}
+
+export function admitPersonalProjectFileCount(filesRead: number): Result.Result<number, string> {
+  const nextFilesRead = filesRead + 1;
+  return nextFilesRead > PERSONAL_PROJECT_FILE_LIMIT
+    ? Result.fail('Personal project memory file limit exceeded.')
+    : Result.succeed(nextFilesRead);
+}
+
+export function admitPersonalProjectBytes(inspectedBytes: number, size: number): Result.Result<number, string> {
+  if (size > PERSONAL_PROJECT_FILE_BYTE_LIMIT) {
+    return Result.fail('Personal project memory file byte limit exceeded.');
+  }
+  const nextInspectedBytes = inspectedBytes + size;
+  return nextInspectedBytes > PERSONAL_PROJECT_TOTAL_BYTE_LIMIT
+    ? Result.fail('Personal project memory byte limit exceeded.')
+    : Result.succeed(nextInspectedBytes);
 }
