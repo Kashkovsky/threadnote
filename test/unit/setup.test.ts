@@ -6,6 +6,7 @@ import {describe, expect, it} from 'vitest';
 import {getAgentAdapter} from '../../src/agent_integration/adapters.js';
 import type {AgentAdapter} from '../../src/agent_integration/adapters/contract.js';
 import {planAgentSurface} from '../../src/agent_integration/surfaces.js';
+import {parseContextBriefRequestV1} from '../../src/context_brief/types.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {sha256Hex} from '../../src/effect/digest.js';
 import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
@@ -33,6 +34,7 @@ import {
   resolveSetupRuntimeConfig,
   seedSetupProject,
   setupBriefIsSourceVerified,
+  setupContextBriefRequest,
   setupRepositorySourceHash,
   setupSurfaceAction,
 } from '../../src/setup/runtime.js';
@@ -169,6 +171,12 @@ describe('setup contracts', () => {
     expect(setupBriefIsSourceVerified(brief)).toBe(true);
     expect(setupBriefIsSourceVerified({...brief, graph: {...brief.graph, cards: [], contracts: []}})).toBe(false);
     expect(setupBriefIsSourceVerified({...brief, scope: {...brief.scope, freshness: 'stale'}})).toBe(false);
+  });
+
+  it('keeps the setup verification request within the current Context Brief contract', () => {
+    expect(parseContextBriefRequestV1(setupContextBriefRequest('/repository', 'verify setup')).budgetTokens).toBe(
+      1_500,
+    );
   });
 });
 

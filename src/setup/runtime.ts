@@ -14,7 +14,11 @@ import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {compileContextBrief} from '../context_brief/index.js';
 import {hasCurrentCursorHooks, hasManagedCursorHooks} from '../cursor_hooks.js';
 import {CLAUDE_SETTINGS_PATH, USER_MANIFEST_NAME} from '../constants.js';
-import type {ProjectedContextBriefV1} from '../context_brief/types.js';
+import {
+  CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+  type ContextBriefRequestV1,
+  type ProjectedContextBriefV1,
+} from '../context_brief/types.js';
 import {sha256Hex} from '../effect/digest.js';
 import {SystemInfo} from '../effect/system.js';
 import {hasCurrentClaudeHooks, hasManagedClaudeHooks, runHooksInstall} from '../hooks.js';
@@ -420,12 +424,7 @@ const verifyContextBrief = Effect.fn('setup.verifyContextBrief')(function* (
 ) {
   const startedAt = yield* Clock.currentTimeMillis;
   const sourceHashBefore = yield* setupRepositorySourceHash(projectRoot);
-  const projected = yield* compileContextBrief(config, {
-    budgetTokens: 2_000,
-    mode: 'brief',
-    scope: {callerCwd: projectRoot, kind: 'repository'},
-    task,
-  });
+  const projected = yield* compileContextBrief(config, setupContextBriefRequest(projectRoot, task));
   const completedAt = yield* Clock.currentTimeMillis;
   const sourceHashAfter = yield* setupRepositorySourceHash(projectRoot);
   const brief = projected.structuredContent;
@@ -452,6 +451,15 @@ const verifyContextBrief = Effect.fn('setup.verifyContextBrief')(function* (
     verification,
   } satisfies SetupOperationOutcome;
 });
+
+export function setupContextBriefRequest(projectRoot: string, task: string): ContextBriefRequestV1 {
+  return {
+    budgetTokens: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+    mode: 'brief',
+    scope: {callerCwd: projectRoot, kind: 'repository'},
+    task,
+  };
+}
 
 function operationOutcome(
   ownership: 'setup-created' | 'preexisting',
