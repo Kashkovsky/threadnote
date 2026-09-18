@@ -15,6 +15,7 @@ import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CodeGraphStoreError, type CodeGraphSnapshot, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   observeCodeGraphAdmissionEnvironment,
@@ -49,12 +50,15 @@ describe('shared ready view attachment locking', () => {
 
       const acquired = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
+      const builder = yield* makeCodeGraphBuildReporter(identity, layout);
       const owner = yield* Effect.forkChild(
         withExclusiveFileLock(
           fs,
           layout.lockPath,
           {
-            onAcquired: () => Deferred.succeed(acquired, undefined).pipe(Effect.asVoid),
+            onAcquired: () =>
+              builder.markWorktreeLockHeld(true).pipe(Effect.andThen(Deferred.succeed(acquired, undefined))),
+            onCompleted: () => builder.markWorktreeLockHeld(false),
             retryIntervalMilliseconds: 5,
             staleAfterMilliseconds: 120_000,
             waitTimeoutMilliseconds: 5_000,
