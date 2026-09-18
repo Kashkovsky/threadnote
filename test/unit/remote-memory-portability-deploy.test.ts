@@ -59,7 +59,7 @@ describe('remote memory reference deployment', () => {
     expect(packageJson.dependencies).toMatchObject({
       '@effect/platform-bun': '4.0.0-rc.115',
       effect: '4.0.0-rc.115',
-      'js-yaml': '^5.4.1',
+      'js-yaml': '^5.4.2',
     });
   });
 

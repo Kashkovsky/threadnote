@@ -217,7 +217,7 @@ export const SYSTEMVERILOG_GRAMMAR: VerifiedLanguageAsset = {
   abi: 15,
   developmentRelativePath: 'node_modules/tree-sitter-systemverilog/tree-sitter-systemverilog.wasm',
   relativePath: 'grammars/systemverilog.wasm',
-  sha256: 'e193719c5f0406e87be1ec1d7977f19aae39cf14fabc1d2c7b1e50b4e467a87d',
-  source: 'tree-sitter-systemverilog@0.4.0',
-  version: '0.4.0',
+  sha256: '005dfb42ad39dc7d9673c3867f8dc9eeb4b0271c2c172080a23578c1c3532e02',
+  source: 'tree-sitter-systemverilog@0.4.1',
+  version: '0.4.1',
 };
