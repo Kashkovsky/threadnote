@@ -1,5 +1,6 @@
 import {WebStandardStreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import type {RemoteMemoryServiceConfig} from './config.js';
+import {admitOrgCloudRequest, ORG_CLOUD_REPOSITORY_SET_HEADER} from './cloud_admission.js';
 import {randomUuidV4} from '../crypto/uuid.js';
 import {authorizeRemoteRequest, requestedRemoteShare, type AuthorizedRemotePrincipal} from './authorization.js';
 import {completeCursorAttestation} from './cursor_oidc.js';
@@ -113,7 +114,14 @@ async function handleMcpRequest(
       const response = await withDeadlineUntil(deadlineEpochMilliseconds, controller.signal, () =>
         transport.handleRequest(request, {parsedBody: body}),
       );
-      return withRequestHeaders(response, requestId);
+      const result = withRequestHeaders(response, requestId);
+      const repositorySet = request.headers.get(ORG_CLOUD_REPOSITORY_SET_HEADER);
+      if (repositorySet) {
+        result.headers.set(ORG_CLOUD_REPOSITORY_SET_HEADER, repositorySet);
+        result.headers.set('threadnote-share-id', principal.shareId);
+        result.headers.set('threadnote-memory-authority', 'git');
+      }
+      return result;
     } finally {
       await Promise.allSettled([transport.close(), server.close()]);
     }
@@ -184,7 +192,11 @@ async function authenticateRequest(
     execution,
   );
   assertGitMemoryBinding(options.config.gitBinding, principal);
-  return principal;
+  return admitOrgCloudRequest(
+    request,
+    principal,
+    options.config.canonicalStore === 'git' ? options.config.gitBinding : undefined,
+  );
 }
 
 function validateHost(request: Request, allowedHosts: readonly string[]): void {

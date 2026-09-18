@@ -6,7 +6,7 @@ import {remoteMemoryError} from './errors.js';
 import {randomUuidV4} from '../crypto/uuid.js';
 import {requireGitMemoryBinding, type GitMemoryBinding} from './git_binding.js';
 
-const GIT_TIMEOUT_MILLISECONDS = 30_000;
+export const GIT_REF_UPDATE_TIMEOUT_MILLISECONDS = 30_000;
 const GIT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const COMPOSER_LOCK_NAME = 'threadnote-composer.lock';
 const COMPOSER_NAME = 'Threadnote Composer';
@@ -23,6 +23,8 @@ export interface GitCanonicalMemoryStoreOptions {
 }
 
 export interface GitCanonicalCommitInput {
+  /** Revalidates authority immediately before the canonical branch can change. */
+  readonly authorizeRefUpdate?: (requiredValidityMilliseconds: number) => Promise<void>;
   readonly content: string;
   readonly expectedContentHash?: string;
   readonly expectedSourceHashes?: readonly {readonly path: string; readonly contentHash: string}[];
@@ -276,6 +278,7 @@ export class GitCanonicalMemoryStore {
       const base = await this.headCommit();
       const gitCommit = await this.prepareCommit(base, gitPath, input);
       if (this.push) {
+        await input.authorizeRefUpdate?.(GIT_REF_UPDATE_TIMEOUT_MILLISECONDS);
         await this.git(['push', this.remote, `${gitCommit}:refs/heads/${this.branch}`], true);
         // Fetch also resolves a lost push acknowledgement without exposing an unconfirmed local commit.
         await this.refreshExclusive();
@@ -289,7 +292,9 @@ export class GitCanonicalMemoryStore {
           throw remoteMemoryError('service_unavailable', 'The shared git commit could not be confirmed upstream.');
         }
       } else {
-        await this.fastForward(gitCommit);
+        await this.assertCleanBranch();
+        await input.authorizeRefUpdate?.(GIT_REF_UPDATE_TIMEOUT_MILLISECONDS);
+        await this.mergeFastForward(gitCommit);
       }
       return {contentHash, gitCommit, gitPath};
     });
@@ -369,6 +374,10 @@ export class GitCanonicalMemoryStore {
 
   private async fastForward(commit: string): Promise<void> {
     await this.assertCleanBranch();
+    await this.mergeFastForward(commit);
+  }
+
+  private async mergeFastForward(commit: string): Promise<void> {
     const merged = await this.git(['merge', '--ff-only', '--no-overwrite-ignore', commit], true);
     if (merged.exitCode !== 0) {
       throw remoteMemoryError(
@@ -676,7 +685,7 @@ async function runProcess(
   }
   const timeout = setTimeout(() => {
     child.kill();
-  }, GIT_TIMEOUT_MILLISECONDS);
+  }, GIT_REF_UPDATE_TIMEOUT_MILLISECONDS);
   const stdoutStream = child.stdout;
   const stderrStream = child.stderr;
   if (typeof stdoutStream === 'number' || stdoutStream === undefined) {

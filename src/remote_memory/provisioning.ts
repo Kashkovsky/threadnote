@@ -60,6 +60,7 @@ export interface RemoteMemoryProvisioningReceiptV1 {
   readonly action: RemoteMemoryProvisioningPlanV1['action'];
   readonly bindingDigest: string;
   readonly capabilities: readonly RemoteMemoryScope[];
+  readonly cloudAdmissionRequired: boolean;
   readonly changes: readonly RemoteMemoryProvisioningChangeV1[];
   readonly planDigest: string;
   readonly planId: string;
@@ -193,6 +194,7 @@ export function remoteMemoryProvisioningReceipt(
       canonicalJson({clientId: plan.input.clientId ?? null, issuer: plan.input.issuer, subject: plan.input.subject}),
     ),
     capabilities: sortedUnique(plan.input.capabilities),
+    cloudAdmissionRequired: plan.input.cloudAdmissionRequired ?? false,
     changes: plan.changes,
     planDigest: plan.planDigest,
     planId: plan.planId,

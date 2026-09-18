@@ -153,6 +153,14 @@ describe('preview-first pilot provisioning', () => {
     );
   });
 
+  it('binds the explicit organization Cloud admission profile into grant policy', () => {
+    const desktop = normalizeRemoteMemoryProvisioningRequest(request);
+    const cloud = normalizeRemoteMemoryProvisioningRequest({...request, cloudAdmissionRequired: true});
+    expect(desktop.cloudAdmissionRequired).toBeUndefined();
+    expect(cloud.cloudAdmissionRequired).toBe(true);
+    expect(remoteMemoryProvisioningPolicy(cloud).digest).not.toBe(remoteMemoryProvisioningPolicy(desktop).digest);
+  });
+
   it('reports identity and share-policy mutations instead of calling them unchanged', () => {
     const existingRequest = {...request, sharePolicyVersion: undefined};
     const normalized = normalizeRemoteMemoryProvisioningRequest(existingRequest);

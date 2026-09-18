@@ -33,6 +33,7 @@ function principalFixture(
     allowedProjects: options.allowedProjects ?? new Set(['threadnote']),
     attestationRequiredForWrites: true,
     capabilities: new Set(options.capabilities ?? ['memory:read']),
+    cloudAdmissionRequired: false,
     cursorOwnerIds: new Set(['user-1']),
     cursorSubjects: new Set(['cursor-workload']),
     cursorTeamId: 'team-1',

@@ -11,11 +11,9 @@ import {
 } from './repository_policy.js';
 import {Schema} from 'effect';
 import type {ReservedSql, Sql, TransactionSql} from 'postgres';
-import {sha256HexSync} from '../crypto/sha256.js';
 import {randomUuidV4} from '../crypto/uuid.js';
-import {formatMemoryDocument, parseMemoryDocument, type MemoryRelation} from '../memory/document.js';
+import {parseMemoryDocument, type MemoryRelation} from '../memory/document.js';
 import {formatRemoteMemoryUri, parseRemoteShareAddress} from '../memory_domain/address.js';
-import {inspectRemoteMemoryContent} from '../memory_domain/content.js';
 import type {RemoteReadInputV1, RemoteRecallInputV1, RemoteRememberInputV1} from '../memory_domain/contracts.js';
 import {transitionRemoteHandoffLifecycle, type RemoteHandoffLifecycleOperation} from '../memory_domain/lifecycle.js';
 import {
@@ -25,7 +23,7 @@ import {
   type RemoteMemoryHeadV1,
   type RemoteMutationIntentV1,
 } from '../memory_domain/revisions.js';
-import {REMOTE_MEMORY_RECEIPT_VERSION, type RemoteMemoryReceiptV1} from '../memory_domain/receipts.js';
+import type {RemoteMemoryReceiptV1} from '../memory_domain/receipts.js';
 import {
   assertRemoteRememberReplacementTarget,
   authorizeRemoteRememberRelations,
@@ -35,7 +33,11 @@ import {
 } from './authorization.js';
 import type {CursorWorkloadAttestation} from './cursor_oidc.js';
 import {RemoteMemoryError, remoteMemoryError} from './errors.js';
-import {GitCanonicalMemoryStore, gitCanonicalSharePath} from './git_canonical_store.js';
+import {
+  GIT_REF_UPDATE_TIMEOUT_MILLISECONDS,
+  GitCanonicalMemoryStore,
+  gitCanonicalSharePath,
+} from './git_canonical_store.js';
 import {requireJsonValue} from './json.js';
 import {assertGitMemoryBinding, requireGitMemoryBinding} from './git_binding.js';
 import {remoteGitIngestPrincipalId} from './git_ingest_principal.js';
@@ -87,6 +89,14 @@ import {
   type RemoteMemoryProposalV1,
   type StoredRemoteMemoryProposalRow,
 } from './proposals.js';
+import {
+  lifecycleRequestFingerprint,
+  makeLifecycleDocument,
+  mutationActor,
+  mutationAuthorityValidThrough,
+  numeric,
+  receipt,
+} from './postgres_repository_support.js';
 interface HeadRow {
   readonly canonical_uri: string;
   readonly content_hash: string;
@@ -619,6 +629,10 @@ export class PostgresRemoteMemoryRepository {
     requirePrincipalProject(principal, input.project);
     assertRemoteRememberReplacementTarget(principal, input);
     input = authorizeRemoteRememberRelations(principal, input);
+    const authorityValidThrough = mutationAuthorityValidThrough(
+      execution,
+      this.gitStore ? GIT_REF_UPDATE_TIMEOUT_MILLISECONDS : 0,
+    );
     const authoredRelations = input.relations;
     if (input.lifecycle?.expiresAt && Date.parse(input.lifecycle.expiresAt) <= now.getTime()) {
       throw remoteMemoryError('invalid_request', 'Remote memory expiry must be in the future.');
@@ -664,7 +678,7 @@ export class PostgresRemoteMemoryRepository {
             );
           }
           const share = await requireShareState(transaction, principal);
-          requireFreshAttestationPolicy(principal, share, attestation, input.project);
+          requireFreshAttestationPolicy(principal, share, attestation, input.project, authorityValidThrough);
           const proposedRevision =
             reservation.publicationPlan?.proposedRevision ??
             proposalApproval?.proposal.approval_revision_id ??
@@ -730,7 +744,7 @@ export class PostgresRemoteMemoryRepository {
             async transaction => {
               const share = await requireShareState(transaction, principal);
               await requireActiveProject(transaction, principal, input.project);
-              requireFreshAttestationPolicy(principal, share, attestation, input.project);
+              requireFreshAttestationPolicy(principal, share, attestation, input.project, authorityValidThrough);
               if (authoredRelations?.length) {
                 await this.requireActiveRelationTargets(transaction, principal, authoredRelations);
               }
@@ -788,6 +802,15 @@ export class PostgresRemoteMemoryRepository {
             return replay;
           }
           stored = await this.persistCanonicalBody({
+            authorizeRefUpdate: requiredValidityMilliseconds =>
+              this.requireCurrentMutationAuthority(
+                principal,
+                attestation,
+                input.project,
+                requiredValidityMilliseconds,
+                execution,
+                withTenant,
+              ),
             expectedSourceHashes,
             current: planned.current,
             document,
@@ -801,6 +824,7 @@ export class PostgresRemoteMemoryRepository {
         try {
           return await this.commitRememberRevision({
             attestation,
+            authorityValidThrough,
             canonicalUri: planned.canonicalUri,
             document,
             execution,
@@ -820,6 +844,7 @@ export class PostgresRemoteMemoryRepository {
           if (!gitLanded) throw phase3;
           return await this.commitRememberRevision({
             attestation,
+            authorityValidThrough,
             canonicalUri: planned.canonicalUri,
             document,
             execution,
@@ -862,6 +887,10 @@ export class PostgresRemoteMemoryRepository {
       throw remoteMemoryError('forbidden', 'The handoff URI is outside the authorized share.');
     }
     requirePrincipalProject(principal, address.project);
+    const authorityValidThrough = mutationAuthorityValidThrough(
+      execution,
+      this.gitStore ? GIT_REF_UPDATE_TIMEOUT_MILLISECONDS : 0,
+    );
     const fingerprint = lifecycleRequestFingerprint(principal, input);
     const reservation = await this.reserveOperation(
       principal,
@@ -905,7 +934,7 @@ export class PostgresRemoteMemoryRepository {
           }
           const proposedRevision = randomUuidV4();
           const share = await requireShareState(transaction, principal);
-          requireFreshAttestationPolicy(principal, share, attestation, address.project);
+          requireFreshAttestationPolicy(principal, share, attestation, address.project, authorityValidThrough);
           const decision = planRemoteMutation({
             currentShareGeneration: numeric(share.share_generation),
             head: {
@@ -942,6 +971,14 @@ export class PostgresRemoteMemoryRepository {
         await this.revisionBody(planned.current),
       );
       const stored = await this.persistCanonicalBody({
+        authorizeRefUpdate: requiredValidityMilliseconds =>
+          this.requireCurrentMutationAuthority(
+            principal,
+            attestation,
+            address.project,
+            requiredValidityMilliseconds,
+            execution,
+          ),
         current: planned.current,
         document,
         kind: 'handoff',
@@ -954,6 +991,7 @@ export class PostgresRemoteMemoryRepository {
         return await this.commitHandoffRevision({
           address,
           attestation,
+          authorityValidThrough,
           document,
           execution,
           fingerprint,
@@ -970,6 +1008,7 @@ export class PostgresRemoteMemoryRepository {
         return await this.commitHandoffRevision({
           address,
           attestation,
+          authorityValidThrough,
           document,
           execution,
           fingerprint,
@@ -1054,6 +1093,7 @@ export class PostgresRemoteMemoryRepository {
   }
 
   private async persistCanonicalBody(input: {
+    readonly authorizeRefUpdate?: (requiredValidityMilliseconds: number) => Promise<void>;
     readonly current?: HeadRow;
     readonly document: {readonly content: string; readonly contentHash: string};
     readonly expectedSourceHashes?: readonly {readonly path: string; readonly contentHash: string}[];
@@ -1066,6 +1106,7 @@ export class PostgresRemoteMemoryRepository {
       return {gitCommit: null, gitPath: null, markdownBody: input.document.content};
     }
     const committed = await this.gitStore.commit({
+      ...(input.authorizeRefUpdate === undefined ? {} : {authorizeRefUpdate: input.authorizeRefUpdate}),
       content: input.document.content,
       ...(input.expectedSourceHashes === undefined ? {} : {expectedSourceHashes: input.expectedSourceHashes}),
       ...(input.current ? {expectedContentHash: input.current.content_hash} : {}),
@@ -1198,6 +1239,7 @@ export class PostgresRemoteMemoryRepository {
 
   private async commitRememberRevision(input: {
     readonly attestation?: CursorWorkloadAttestation;
+    readonly authorityValidThrough: number;
     readonly canonicalUri: string;
     readonly document: {readonly content: string; readonly contentHash: string};
     readonly execution?: RemoteMemoryRequestExecution;
@@ -1260,7 +1302,13 @@ export class PostgresRemoteMemoryRepository {
           );
         }
         const share = await requireShareState(transaction, input.principal);
-        requireFreshAttestationPolicy(input.principal, share, input.attestation, input.input.project);
+        requireFreshAttestationPolicy(
+          input.principal,
+          share,
+          input.attestation,
+          input.input.project,
+          input.authorityValidThrough,
+        );
         const headId = current?.head_id ?? randomUuidV4();
         if (!current) {
           await transaction`
@@ -1324,6 +1372,7 @@ export class PostgresRemoteMemoryRepository {
     transaction: TransactionSql,
     input: {
       readonly attestation?: CursorWorkloadAttestation;
+      readonly authorityValidThrough: number;
       readonly canonicalUri: string;
       readonly document: {readonly content: string; readonly contentHash: string};
       readonly fingerprint: string;
@@ -1356,7 +1405,13 @@ export class PostgresRemoteMemoryRepository {
     if (numeric(committed.share_generation) !== numeric(committedGeneration.share_generation)) {
       throw remoteMemoryError('service_unavailable', 'The committed memory generation could not be verified.');
     }
-    requireFreshAttestationPolicy(input.principal, committed, input.attestation, input.input.project);
+    requireFreshAttestationPolicy(
+      input.principal,
+      committed,
+      input.attestation,
+      input.input.project,
+      input.authorityValidThrough,
+    );
     await transaction`
       INSERT INTO remote_memory.memory_revisions(
         tenant_id, share_id, id, head_id, base_revision_id, generation, status,
@@ -1433,6 +1488,7 @@ export class PostgresRemoteMemoryRepository {
   private async commitHandoffRevision(input: {
     readonly address: {readonly project: string; readonly topic: string};
     readonly attestation?: CursorWorkloadAttestation;
+    readonly authorityValidThrough: number;
     readonly document: {readonly content: string; readonly contentHash: string};
     readonly execution?: RemoteMemoryRequestExecution;
     readonly fingerprint: string;
@@ -1505,7 +1561,13 @@ export class PostgresRemoteMemoryRepository {
         if (numeric(committed.share_generation) !== numeric(committedGeneration.share_generation)) {
           throw remoteMemoryError('service_unavailable', 'The committed memory generation could not be verified.');
         }
-        requireFreshAttestationPolicy(input.principal, committed, input.attestation, input.address.project);
+        requireFreshAttestationPolicy(
+          input.principal,
+          committed,
+          input.attestation,
+          input.address.project,
+          input.authorityValidThrough,
+        );
         await transaction`
           INSERT INTO remote_memory.memory_revisions(
             tenant_id, share_id, id, head_id, base_revision_id, generation, status,
@@ -1625,6 +1687,7 @@ export class PostgresRemoteMemoryRepository {
         allowedProjects: row.allowed_projects === null ? 'all' : new Set(row.allowed_projects),
         attestationRequiredForWrites: false,
         capabilities,
+        cloudAdmissionRequired: false,
         cursorOwnerIds: new Set(),
         cursorSubjects: new Set(),
         featureFlags: new Set(row.feature_flags as RemoteMemoryFeatureFlag[]),
@@ -1766,6 +1829,35 @@ export class PostgresRemoteMemoryRepository {
     );
   }
 
+  private async requireCurrentMutationAuthority(
+    principal: AuthorizedRemotePrincipal,
+    attestation: CursorWorkloadAttestation | undefined,
+    project: string,
+    requiredValidityMilliseconds: number,
+    execution?: RemoteMemoryRequestExecution,
+    tenantTransaction?: TenantTransactionRunner,
+  ): Promise<void> {
+    const withTenant: TenantTransactionRunner =
+      tenantTransaction ?? ((tenantId, use, requestExecution) => this.withTenant(tenantId, use, requestExecution));
+    const state = await withTenant(
+      principal.tenantId,
+      async transaction => {
+        const state = await requireShareState(transaction, principal);
+        await requireActiveProject(transaction, principal, project);
+        return state;
+      },
+      execution,
+    );
+    requireActiveRemoteMemoryRequest(execution);
+    requireFreshAttestationPolicy(
+      principal,
+      state,
+      attestation,
+      project,
+      mutationAuthorityValidThrough(execution, requiredValidityMilliseconds),
+    );
+  }
+
   private async withTenant<A>(
     tenantId: string,
     use: (transaction: TransactionSql) => Promise<A>,
@@ -1901,100 +1993,4 @@ async function resolveCanonicalUri(
     throw remoteMemoryError('not_found', 'The remote memory was not found.');
   }
   return canonicalUri;
-}
-
-function receipt(
-  principal: AuthorizedRemotePrincipal,
-  state: ShareStateRow,
-  requestId: string,
-  extra: Partial<Pick<RemoteMemoryReceiptV1, 'actor' | 'revision' | 'uri'>> & {
-    readonly overlayUsed?: boolean;
-  } = {},
-): RemoteMemoryReceiptV1 {
-  const shareGeneration = numeric(state.share_generation);
-  const indexedGeneration = numeric(state.indexed_generation);
-  const {overlayUsed, ...receiptFields} = extra;
-  return {
-    ...receiptFields,
-    consistency:
-      indexedGeneration === shareGeneration
-        ? 'current'
-        : extra.revision || overlayUsed
-          ? 'recent-write-overlay'
-          : 'stale-index',
-    indexedGeneration,
-    policyVersion: principal.policyVersion,
-    sharePolicyVersion: state.policy_version,
-    requestId,
-    shareGeneration,
-    shareId: principal.shareId,
-    tenantId: principal.tenantId,
-    version: REMOTE_MEMORY_RECEIPT_VERSION,
-  };
-}
-
-function lifecycleRequestFingerprint(
-  principal: AuthorizedRemotePrincipal,
-  input: RemoteHandoffTransitionInput,
-): string {
-  return sha256HexSync(
-    JSON.stringify({
-      baseRevision: input.baseRevision,
-      operation: input.operation,
-      operationId: input.operationId,
-      shareId: principal.shareId,
-      uri: input.uri,
-      version: 1,
-    }),
-  );
-}
-
-function makeLifecycleDocument(
-  current: HeadRow,
-  status: 'active' | 'archived' | 'expired' | 'superseded',
-  now: Date,
-  priorBody = current.markdown_body,
-): {readonly content: string; readonly contentHash: string} {
-  const prior = parseMemoryDocument(current.canonical_uri, priorBody);
-  if (!prior || prior.headerTitle !== 'HANDOFF') {
-    throw remoteMemoryError('service_unavailable', 'The stored remote handoff document is invalid.');
-  }
-  const content = formatMemoryDocument(
-    'HANDOFF',
-    {
-      ...prior.metadata,
-      status,
-      updatedAt: now.toISOString(),
-    },
-    prior.body,
-  );
-  const inspected = inspectRemoteMemoryContent(content);
-  if (!inspected.allowed) {
-    throw remoteMemoryError('service_unavailable', 'The stored remote handoff no longer passes content policy.');
-  }
-  return {
-    content: inspected.canonicalContent,
-    contentHash: sha256HexSync(inspected.canonicalContent),
-  };
-}
-
-function numeric(value: string | number): number {
-  const parsed = typeof value === 'number' ? value : Number(value);
-  if (!Number.isSafeInteger(parsed) && !Number.isFinite(parsed))
-    throw remoteMemoryError('service_unavailable', 'A remote memory generation was invalid.');
-  return parsed;
-}
-
-function mutationActor(
-  principal: AuthorizedRemotePrincipal,
-  attestation: CursorWorkloadAttestation | undefined,
-): RemoteMemoryReceiptV1['actor'] {
-  return attestation
-    ? {
-        cloudAgentId: attestation.cloudAgentId,
-        principalId: principal.principalId,
-        provider: 'cursor',
-        ...(attestation.turnId ? {turnId: attestation.turnId} : {}),
-      }
-    : {principalId: principal.principalId};
 }

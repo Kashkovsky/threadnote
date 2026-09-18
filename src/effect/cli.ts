@@ -176,6 +176,7 @@ import {
   makeCursorCloudAttestCommand,
   makeCursorCloudIdentityFlags,
   makeCursorCloudModeFlag,
+  makeCursorCloudRemoteConfigFlags,
 } from './cursor_cloud_cli.js';
 import {
   makeCliInvocationInspector,
@@ -1578,8 +1579,7 @@ const cursorCloudConfig = Command.make(
   'config',
   {
     ...cursorCloudBaseIdentityFlags,
-    clientId: optionalString('client-id', 'Registered public OAuth client ID for the organization composer'),
-    endpoint: optionalString('endpoint', 'Managed remote Streamable HTTP MCP endpoint'),
+    ...makeCursorCloudRemoteConfigFlags(),
     memoryMode: defaultChoice(
       'memory-mode',
       ['shared-read-write'],
@@ -1587,7 +1587,6 @@ const cursorCloudConfig = Command.make(
       'shared-read-write',
     ),
     mode: cursorCloudMode,
-    shareId: optionalString('share-id', 'Opaque managed remote memory share identifier'),
     teams: repeatedString('team', 'Personal Git memory share; repeat to expose several through one MCP'),
   },
   options =>
