@@ -1,5 +1,8 @@
 import {Effect, FileSystem, Path, PlatformError, Result, Schema} from 'effect';
-import {readBoundedContainedStableRegularFile} from '../code_graph/inventory_contained_file.js';
+import {
+  inspectContainedStableRegularFile,
+  readBoundedContainedStableRegularFile,
+} from '../code_graph/inventory_contained_file.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {scanFilesWithinBoundary} from '../effect/safe_scan.js';
 import {uriSegment} from '../manifest.js';
@@ -10,8 +13,8 @@ import {localUserMemoriesRoot} from './migrations.js';
 
 const MAINTENANCE_READ_CONCURRENCY = 16;
 const PERSONAL_PROJECT_FILE_LIMIT = 10_000;
-const PERSONAL_PROJECT_FILE_BYTE_LIMIT = 256 * 1_024;
-const PERSONAL_PROJECT_TOTAL_BYTE_LIMIT = 8 * 1_024 * 1_024;
+const PERSONAL_PROJECT_FILE_BYTE_LIMIT = 8 * 1_024 * 1_024;
+const PERSONAL_PROJECT_TOTAL_BYTE_LIMIT = 128 * 1_024 * 1_024;
 
 class PersonalProjectReadError extends Schema.TaggedError<PersonalProjectReadError>()('PersonalProjectReadError', {
   cause: Schema.optionalKey(Schema.Defect()),
@@ -50,9 +53,16 @@ export const readPersonalProjectMemoryRecords = Effect.fn('memory.readPersonalPr
     readonly name: string;
     readonly relative: string;
   }> = [];
+  const admittedEntries: Array<{
+    readonly location: PersonalProjectLocation;
+    readonly name: string;
+    readonly relative: string;
+    readonly size: number;
+  }> = [];
   const selectedFiles: Array<{readonly contentHash: string; readonly relative: string}> = [];
   let canonicalRoot: string | undefined;
   let filesRead = 0;
+  let inspectedBytes = 0;
   let bytesRead = 0;
   for (const location of personalProjectLocations(uriSegment(project))) {
     const directory = path.join(root, ...location.relativeDirectory);
@@ -75,6 +85,17 @@ export const readPersonalProjectMemoryRecords = Effect.fn('memory.readPersonalPr
     canonicalRoot = yield* fs.realPath(root);
   }
   for (const selected of selectedEntries) {
+    const inspected = yield* inspectContainedStableRegularFile(fs, path, canonicalRoot!, selected.relative);
+    if (inspected.size > PERSONAL_PROJECT_FILE_BYTE_LIMIT) {
+      return yield* personalProjectReadError('Personal project memory file byte limit exceeded.');
+    }
+    inspectedBytes += inspected.size;
+    if (inspectedBytes > PERSONAL_PROJECT_TOTAL_BYTE_LIMIT) {
+      return yield* personalProjectReadError('Personal project memory byte limit exceeded.');
+    }
+    admittedEntries.push({...selected, size: inspected.size});
+  }
+  for (const selected of admittedEntries) {
     const bytes = yield* readBoundedContainedStableRegularFile(
       fs,
       path,
@@ -82,6 +103,9 @@ export const readPersonalProjectMemoryRecords = Effect.fn('memory.readPersonalPr
       selected.relative,
       PERSONAL_PROJECT_FILE_BYTE_LIMIT,
     );
+    if (bytes.byteLength !== selected.size) {
+      return yield* personalProjectReadError('Personal project memory content changed during the snapshot read.');
+    }
     selectedFiles.push({contentHash: sha256HexSync(bytes), relative: selected.relative});
     bytesRead += bytes.byteLength;
     if (bytesRead > PERSONAL_PROJECT_TOTAL_BYTE_LIMIT) {

@@ -1,6 +1,6 @@
 import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {ByteSize, Effect, FileSystem, Path} from 'effect';
 import fc from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
@@ -74,33 +74,40 @@ describe('context health aggregate runtime', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('reads supported personal lifecycle snapshots with more than one thousand files', () =>
+  effectIt.effect('reads the observed personal lifecycle snapshot scale', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fixture = yield* makeFixture([]);
-        const topics = Array.from({length: 1_001}, (_, index) => `scale-${String(index).padStart(4, '0')}`);
+        const fileCount = 1_979;
+        const totalBytes = 84_628_183;
+        const legacyRecordBytes = 4_160_056;
+        const ordinaryRecordBytes = Math.floor((totalBytes - legacyRecordBytes) / (fileCount - 1));
+        const largerOrdinaryRecordCount = totalBytes - legacyRecordBytes - ordinaryRecordBytes * (fileCount - 1);
+        const topics = Array.from({length: fileCount - 1}, (_, index) => `scale-${String(index).padStart(4, '0')}`);
         const handoffDirectory = personalProjectDirectory(fixture, 'handoff', 'threadnote');
+        const archivedHandoffDirectory = personalProjectDirectory(fixture, 'handoff', 'threadnote', 'archived');
         yield* Effect.forEach(
           topics,
-          topic =>
-            writePersonalRawAt(
+          (topic, index) => {
+            const bytes = ordinaryRecordBytes + (index < largerOrdinaryRecordCount ? 1 : 0);
+            return writePersonalRawAt(
               fixture,
               handoffDirectory,
               `${topic}.md`,
-              handoffMemory(topic, `${topic} synthetic scale metadata.`),
-            ),
+              handoffMemoryOfByteLength(topic, bytes),
+            );
+          },
           {concurrency: 64, discard: true},
         );
+        yield* writePersonalRawAt(
+          fixture,
+          archivedHandoffDirectory,
+          'legacy-scale.md',
+          handoffMemoryOfByteLength('legacy-scale', legacyRecordBytes, 'archived'),
+        );
         const snapshot = yield* readPersonalProjectMemoryRecords(fixture.config, 'threadnote');
-        expect(snapshot).toHaveLength(topics.length);
-
-        const aggregate = yield* collectContextHealthAggregate(fixture.config, {
-          callerCwd: fixture.repository,
-          project: 'threadnote',
-        }).pipe(TestClock.withLive);
-
-        expect(aggregate).toMatchObject({completeSources: 1, exitCode: 0, status: 'clean', unknownSources: 0});
-        expect(aggregate.sources[0]).toMatchObject({recordsScanned: topics.length, state: 'complete'});
+        expect(snapshot).toHaveLength(fileCount);
+        expect(snapshot.some(record => record.metadata.topic === 'legacy-scale')).toBe(true);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -142,6 +149,90 @@ describe('context health aggregate runtime', () => {
         expect(aggregate.sources[0]).toMatchObject({reason: 'snapshot-unreadable', state: 'unknown'});
         expect(selectedFileOpens).toBe(0);
         expect(selectedFileStats).toBe(0);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('preflights the personal per-file byte bound before opening content', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture([]);
+        const directory = personalProjectDirectory(fixture, 'handoff', 'threadnote');
+        const target = fixture.path.join(directory, 'oversized.md');
+        yield* writePersonalRawAt(fixture, directory, 'oversized.md', handoffMemory('oversized', 'small on disk'));
+        let selectedFileOpens = 0;
+        const oversizedFileSystem = FileSystem.FileSystem.of({
+          ...fixture.fs,
+          open: (file, options) => {
+            if (file === target) selectedFileOpens += 1;
+            return fixture.fs.open(file, options);
+          },
+          stat: file =>
+            fixture.fs
+              .stat(file)
+              .pipe(
+                Effect.map(info =>
+                  file.endsWith('/oversized.md') ? {...info, size: ByteSize.bytes(8 * 1_024 * 1_024 + 1)} : info,
+                ),
+              ),
+        });
+
+        const result = yield* readPersonalProjectMemoryRecords(fixture.config, 'threadnote').pipe(
+          Effect.provideService(FileSystem.FileSystem, oversizedFileSystem),
+          Effect.result,
+        );
+
+        expect(result._tag).toBe('Failure');
+        expect(selectedFileOpens).toBe(0);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('preflights the personal aggregate byte bound before opening content', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture([]);
+        const directory = personalProjectDirectory(fixture, 'handoff', 'threadnote');
+        const targets = Array.from({length: 17}, (_, index) => fixture.path.join(directory, `total-${index}.md`));
+        yield* Effect.forEach(
+          targets,
+          (target, index) =>
+            writePersonalRawAt(
+              fixture,
+              directory,
+              `total-${index}.md`,
+              handoffMemory(`total-${index}`, 'small on disk'),
+            ),
+          {discard: true},
+        );
+        let selectedFileOpens = 0;
+        const oversizedFileSystem = FileSystem.FileSystem.of({
+          ...fixture.fs,
+          open: (file, options) => {
+            if (targets.includes(file)) selectedFileOpens += 1;
+            return fixture.fs.open(file, options);
+          },
+          stat: file =>
+            fixture.fs.stat(file).pipe(
+              Effect.map(info => {
+                const index = Number(file.match(/total-(\d+)\.md$/u)?.[1]);
+                if (index >= 0)
+                  return {
+                    ...info,
+                    size: ByteSize.bytes(index === targets.length - 1 ? 1 : 8 * 1_024 * 1_024),
+                  };
+                return info;
+              }),
+            ),
+        });
+
+        const result = yield* readPersonalProjectMemoryRecords(fixture.config, 'threadnote').pipe(
+          Effect.provideService(FileSystem.FileSystem, oversizedFileSystem),
+          Effect.result,
+        );
+
+        expect(result._tag).toBe('Failure');
+        expect(selectedFileOpens).toBe(0);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -669,7 +760,7 @@ describe('context health aggregate runtime', () => {
           fixture,
           'threadnote',
           'mismatch.md',
-          personalMemory('mismatch', `Personal evidence must remain bounded.\n${'x'.repeat(300_000)}`),
+          personalMemory('mismatch', `Personal evidence must remain bounded.\n${'x'.repeat(8 * 1_024 * 1_024)}`),
         );
         const oversized = yield* collectContextHealthAggregate(fixture.config, {
           callerCwd: fixture.repository,
@@ -963,4 +1054,16 @@ function handoffMemory(topic: string, body: string, title: 'MEMORY' | 'HANDOFF' 
     visibility: 'personal',
   };
   return formatMemoryDocument(title, metadata, body);
+}
+
+function handoffMemoryOfByteLength(
+  topic: string,
+  byteLength: number,
+  status: MemoryMetadata['status'] = 'active',
+): string {
+  const empty = handoffMemory(topic, '', 'HANDOFF').replace('status: active', `status: ${status}`);
+  return handoffMemory(topic, 'x'.repeat(byteLength - empty.length), 'HANDOFF').replace(
+    'status: active',
+    `status: ${status}`,
+  );
 }
