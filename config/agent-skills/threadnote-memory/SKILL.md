@@ -1,67 +1,39 @@
 ---
 name: threadnote-memory
-description: Preserve reusable Threadnote decisions and concise work handoffs. Use after meaningful work, when a contract changes, or before pausing and transferring a task.
+description: Preserve reusable Threadnote decisions and concise work handoffs after meaningful work or before transfer.
 ---
 
 <!-- BEGIN THREADNOTE USER INSTRUCTIONS -->
 
 # Threadnote memory
 
-Store reusable decisions and contracts with `kind: durable`. Store status, checks, blockers, and next steps with
-`kind: handoff`. Use stable `project` and `topic` identities and update existing memory with `replaceUri` instead of
-creating timestamped duplicates. Use `review_session_context` only for additional candidates that require explicit
-approval.
+At closeout, write the required private `remember_context(kind=handoff)` separately. For optional durable knowledge,
+review a five-field Knowledge Delta (`decisions` + `rationale`, `constraints`, `verificationPerformed`,
+`knowledgeInvalidated`, `unresolvedRisks`) with `review_session_context`; apply candidates only after explicit
+`approve` (optionally with `editedText`), `defer`, or `reject` via `apply_memory_candidates`. Never auto-apply or
+auto-share proposals. Use `kind: durable` for reusable decisions and `kind: handoff` for status, checks, blockers, and
+next steps; stable project/topic identities and `replaceUri` prevent duplicates. Confirm before durable sharing.
+Author `relations` only from memories you read or explicit review evidence; a replacement supplies the complete set, so
+carry forward every still-valid relation when using `replaceUri`.
 
-At task closeout, prefer the reviewed Knowledge Delta from `review_session_context` over an unconditional durable
-write. Inspect each item's source evidence, comparison, recommendation, confidence, and mutation preview; apply only
-the user's explicit approve (optionally with edited text), defer, or reject decision at the reviewed revision. A preview must not mutate
-canonical memory. Keep the required handoff state separate from optional durable candidates, and publish shared
-knowledge only through the existing scrubbed Git share workflow.
+For consequential code claims, cite a few graph-indexed paths or `cgs_`/`cgr_` handles and state observed verification.
+Active personal writes with code refs use MCP `citationPolicy: "defer"` or CLI `--defer-code-refs`; strict/shared writes
+use `citationPolicy: "require-current"` or `--require-current-code-refs`. Finalize the private pending anchor with
+`finalize_code_refs` or `threadnote finalize-code-refs` after a ready graph; unresolved locators require replacing refs.
+Use `share_publish` for ordinary approved durable team publication; use `share_propose` only for an applied reviewed
+delta export. Never share pending anchors.
 
-For maintenance, `threadnote context check --project <name>` evaluates direct citations for changed tracked and
-untracked paths, including deletion and rename source paths; it makes no transitive coverage claim. For procedures,
-`threadnote procedure verify <manifest>` previews by default; execution requires explicit `--apply --artifact <file>`
-and optional repeated `--fixture id=path`, while `--preview` and `--dry-run` override apply. `procedure status` is
-read-only; `--available-manifest <path>` enables explicit local update comparison without downloading or executing it.
-Procedure publication is unavailable until source bytes are cryptographically bound to the verified manifest and
-receipt.
+Maintenance: `threadnote context check --project <name>` checks direct citations for changed, deleted, and renamed paths.
+Inspect health with `context_health`/`context_health_aggregate`; preview and apply repairs or metadata through
+`context_health_repair_preview`/`context_health_repair_apply` and `context_metadata_preview`/`context_metadata_apply`;
+use `context_health_schedule` for recurring checks.
+Record `recall_feedback` as useful/wrong/pin/dismiss/applied; inspect it with `threadnote value report`.
+`procedure_publish_preview` precedes approved `procedure_publish_apply`; verify with
+`threadnote procedure verify <manifest>`. `threadnote guidance import` and `threadnote guidance project` manage CLI
+guidance. Use `complete_activation_retrieval_proof` where applicable. Procedures never auto-execute. Use
+`threadnote_guide` for a state-aware capability/setup tour; follow tool-returned actions for uncommon recovery.
 
-For a durable decision tied to code, add short single-line `Applies to:`, `Invariant:`, and, when useful, `Avoid:` and
-`Verify:` fields near the start of the body. A code-linked Context Brief promotes these as an action card only after
-the cited code validates exact-current. State a verification observation or focused check, not a command to execute
-without examining the repository. Keep the full rationale in the memory body.
+Do not store secrets, credentials, customer data, or raw production logs. Never publish handoffs or preferences,
+overwrite conflicting changes, or force synchronization without explicit approval.
 
-Author `relations` only when the memory content or an explicit review establishes the connection. Use the closed types
-`depends_on`, `evidence_for`, `references`, `related_to`, and `supersedes`, and target a stable memory ID or canonical
-managed-memory URI that you have read in the same authorized memory scope. Never infer a durable edge from topical
-similarity alone or publish a memory merely to make an edge possible. A replacement supplies the complete intended
-relation set, so carry forward relations that remain valid. Keep `replaceUri` as the update mechanism; use a
-`supersedes` relation only for explicit lifecycle lineage, not as a substitute for replacement.
-
-For consequential source claims, attach graph-indexed repository paths or returned `cgs_` and `cgr_` handles as code
-references. Threadnote first attempts capture from a ready exact-current graph and never starts indexing during the
-write. For active personal `remember_context` writes with `codeRefs`, always pass MCP `citationPolicy: "defer"` or CLI
-`--defer-code-refs` so retryable graph-readiness failures store the memory now with a private pending anchor. Finalize
-the private pending anchor after a current graph is ready. Pending anchors are never evidence or shared backlinks.
-Shared and inactive writes remain strict. Use MCP
-`citationPolicy: "require-current"` or CLI `--require-current-code-refs` only when the memory must fail before writing.
-
-Pending locators are not citations or graph-to-memory backlinks and cannot be shared. Prepare the graph explicitly;
-Threadnote then retries matching intents automatically after graph/Workset preparation and during the next local
-code-linked Context Brief. If an intent remains pending, call `finalize_code_refs`, run
-`threadnote finalize-code-refs`, or replace the stored memory using the receipt URI. These anchors power the code-brief
-round trip: future agents can move from memory back to verified current code and from graph evidence to the memories
-that cite it. Prefer a few consequential anchors over broad file lists.
-
-Finalization receipts distinguish retryable graph readiness from a locator absent in an exact-current graph. For
-`code-reference-unresolved` with `recoveryAction: replace-memory-code-refs`, replace the same memory using corrected
-graph-indexed refs; the private locator is intentionally not echoed and its pending intent remains until correction.
-
-When a memory moves during replacement, publication, or unpublication, old `threadnote://` pointers may resolve through
-a private identity-fenced relocation receipt. Follow the `canonicalUri` returned by `read_context`; a relocation is
-pointer continuity, not evidence that the memory's claims are still current.
-
-Never store secrets, credentials, customer data, or raw production logs. Confirm with the user before publishing
-durable memory; never publish handoffs or preferences, overwrite conflicting changes, or force synchronization without
-explicit approval.
 <!-- END THREADNOTE USER INSTRUCTIONS -->

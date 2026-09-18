@@ -152,7 +152,8 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
     'review_session_context',
     {
       annotations: {readOnlyHint: false, destructiveHint: false},
-      description: 'After routine durable and handoff writes, propose additional reviewable candidates.',
+      description:
+        'Review an optional five-field Knowledge Delta (decisions + rationale, constraints, verificationPerformed, knowledgeInvalidated, unresolvedRisks); handoff is separate and required. Preview only; explicit approval is required to apply, and nothing is auto-shared.',
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd'),
         codeRefs: McpInput.stringOrStrings(`Graph-indexed repository-relative path; max ${MAX_MEMORY_CODE_CITATIONS}`, {
