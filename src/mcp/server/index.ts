@@ -24,6 +24,7 @@ import {
   monitorGraphShareContributions,
   monitorGraphShareSignedContributions,
 } from '../../code_graph/sharing/contribution_retry.js';
+import {runCodeGraphAutomaticCompactionScheduler} from '../../code_graph/automatic_compaction.js';
 import {refreshPendingDeferredCodeAnchorWorkspaces} from '../../memory/deferred_code_anchor_refresh.js';
 import {runObsidianProjectionPublish} from '../../obsidian/projection.js';
 import {withProductionLogging} from '../../effect/production_log.js';
@@ -145,6 +146,7 @@ export const mcpServerEffect = withAnonymousTelemetry(
           yield* Effect.forkScoped(monitorSharedRepositories(config));
         }
         if (mcpToolCapabilities(toolset).graphLocal) {
+          yield* Effect.forkScoped(runCodeGraphAutomaticCompactionScheduler(config.agentContextHome));
           yield* Effect.forkScoped(monitorGraphShareContributions(config.agentContextHome));
           yield* Effect.forkScoped(monitorGraphShareSignedContributions(config.agentContextHome));
         }

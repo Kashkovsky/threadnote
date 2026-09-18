@@ -25,6 +25,11 @@ export function codeGraphMaintenanceStatusPath(path: Path.Path, threadnoteHome: 
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'maintenance-status-v1.json');
 }
 
+/** One local host owns the bounded automatic-compaction inventory at a time. */
+export function codeGraphAutomaticCompactionSchedulerLockPath(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'automatic-compaction-scheduler.lock');
+}
+
 /** Home-global receipts coordinate capacity before any checkout writer is acquired. */
 export function codeGraphDiskReservationRoot(path: Path.Path, threadnoteHome: string): string {
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'disk-capacity-reservations');
