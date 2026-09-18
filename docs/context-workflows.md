@@ -13,6 +13,28 @@ Threadnote 5 is a source-verifiable context compiler for engineering work. Its c
 This release track is local-first and provider-neutral. It does not create an organization account, require an
 organization service, or add agent-brand switches. Organization productization remains a separate track.
 
+## Workset lifecycle
+
+Use the CLI for the normal definition lifecycle. Definitions are explicit and do not build graphs; use `prepare` when
+you want to publish repository evidence.
+
+```sh
+threadnote workset create checkout --project checkout-api --project checkout-web \
+  --description "Checkout API and client"
+threadnote workset list --json
+threadnote workset show checkout --json
+threadnote workset update checkout --name checkout-platform --description "Checkout platform" \
+  --project checkout-api --project checkout-web --json
+threadnote workset prepare checkout-platform --json
+threadnote workset status checkout-platform --json
+threadnote workset delete checkout-platform --confirm --json
+```
+
+Use `--clear-description` when removing a description. JSON is useful for scripts and contains the same bounded
+definition, preparation, or status receipt as the human-readable command. A definition change does not build a graph;
+prepare is the only lifecycle command that indexes or refreshes repositories. The seed manifest remains available for
+advanced/manual workflows, but it is not needed for ordinary Workset creation and maintenance.
+
 ## One-command local setup
 
 Preview the complete local setup plan for one catalog surface, then apply the same deterministic plan:

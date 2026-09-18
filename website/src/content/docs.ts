@@ -1383,7 +1383,22 @@ threadnote manage --no-open`,
         body: [
           {
             type: 'paragraph',
-            text: 'Open threadnote manage and choose Worksets, then switch between Projects and Worksets. The seed manifest remains authoritative: Manager can maintain its repository projects and named cross-repository Worksets while preserving unrelated keys and supported YAML comments.',
+            text: 'Open threadnote manage and choose Worksets, then switch between Projects and Worksets. Manager is the visual editor for the authoritative seed manifest, preserving unrelated keys and supported YAML comments. For a CLI-first lifecycle, use workset create/list/show/update/delete; use --confirm for delete and --json for automation.',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote workset create commerce --project api --project billing \\
+  --description "Checkout and billing services"
+threadnote workset list --json
+threadnote workset show commerce --json
+threadnote workset update commerce --name commerce-platform --project api --project billing --json
+threadnote workset show commerce-platform --json
+threadnote workset prepare commerce-platform --json
+threadnote workset status commerce-platform --json
+
+# Optional cleanup after the retained workflow is no longer needed.
+threadnote workset delete commerce-platform --confirm --json`,
           },
           {type: 'visual', visual: 'manager-onboarding'},
           {
@@ -1400,7 +1415,7 @@ projects:
     uri: threadnote://resources/repos/billing
     seed: []
 worksets:
-  - name: commerce
+  - name: commerce-platform
     description: Checkout and billing services
     projects: [api, billing]`,
           },
