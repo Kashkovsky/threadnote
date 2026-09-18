@@ -18,6 +18,7 @@ export type ContextCheckEvidenceReasonV1 =
   | 'changed-path-evidence-unavailable'
   | 'graph-impact-evidence-incomplete'
   | 'graph-impact-evidence-unavailable'
+  | 'health-report-incomplete'
   | 'health-report-truncated';
 export type ContextCheckFindingCategoryV1 =
   | ContextHealthFindingCategoryV1
@@ -121,13 +122,21 @@ export function buildContextCheckReport(input: ContextCheckReportInputV1): Conte
       ...captureAdvisoryFindings(input.selection.captureAdvisoryIds ?? []),
     ].sort(compareFindings),
   );
+  const incompleteHealthEvidence =
+    input.healthReport.status === 'unknown' || input.healthReport.semanticCompleteness?.state !== 'complete';
+  const healthEvidenceReason =
+    input.healthReport.omittedFindings > 0
+      ? ('health-report-truncated' as const)
+      : incompleteHealthEvidence && input.selection.changedPaths.length > 0 && findings.length === 0
+        ? ('health-report-incomplete' as const)
+        : undefined;
   const evidenceStatus: ContextCheckEvidenceStatusV1 =
-    input.selection.evidenceReason !== undefined || input.healthReport.omittedFindings > 0 ? 'unavailable' : 'complete';
+    input.selection.evidenceReason !== undefined || healthEvidenceReason !== undefined ? 'unavailable' : 'complete';
   return report(
     input.healthReport.project,
     limit,
     evidenceStatus,
-    input.selection.evidenceReason ?? (input.healthReport.omittedFindings > 0 ? 'health-report-truncated' : undefined),
+    input.selection.evidenceReason ?? healthEvidenceReason,
     findings.slice(0, limit),
     Math.max(0, findings.length - limit),
     findings,
@@ -262,7 +271,11 @@ function fingerprint(
 }
 
 function isActiveConflict(category: ContextHealthFindingCategoryV1): boolean {
-  return category === 'candidate-contradiction' || category === 'relation-target-conflicted';
+  return (
+    category === 'candidate-contradiction' ||
+    category === 'relation-target-conflicted' ||
+    category === 'semantic-contradiction'
+  );
 }
 
 function citedDocumentCategory(
@@ -447,6 +460,7 @@ const CONTEXT_HEALTH_CATEGORIES = new Set<unknown>([
   'relation-target-inactive',
   'relation-target-missing',
   'review-overdue',
+  'semantic-contradiction',
   'validity-expired',
 ]);
 const CONTEXT_HEALTH_CONFIDENCES = new Set<unknown>(['high', 'low', 'medium']);
@@ -456,6 +470,7 @@ const CONTEXT_HEALTH_SEVERITIES = new Set<unknown>(['critical', 'high', 'low', '
 function validEvidenceReason(value: unknown): boolean {
   return (
     value === undefined ||
+    value === 'health-report-incomplete' ||
     value === 'health-report-truncated' ||
     value === 'affected-memory-evidence-unavailable' ||
     value === 'changed-path-evidence-unavailable' ||

@@ -27,6 +27,19 @@ describe('context health and value report CLI', () => {
       omittedFindings: 0,
       project: 'project-a',
       recordsScanned: 0,
+      semanticCompleteness: {
+        analyzedRecords: 0,
+        claimsAnalyzed: 0,
+        contradictionCount: 0,
+        eligibleRecords: 0,
+        omittedContradictions: 0,
+        pairsCompared: 0,
+        state: 'complete',
+        unknownReasons: [],
+        unknownRecords: 0,
+        version: 1,
+      },
+      status: 'clean',
       version: 1,
     });
     await expect(readFile(join(home, 'data'), 'utf8')).rejects.toThrow();

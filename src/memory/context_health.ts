@@ -5,6 +5,11 @@ import type {
 import {buildCompactPlan} from './hygiene.js';
 import type {CandidateComparison} from './candidate.js';
 import type {MemoryRecord} from './document.js';
+import {
+  analyzeContextHealthSemantics,
+  type ContextHealthSemanticCompletenessV1,
+  type ContextHealthSemanticContradictionV1,
+} from './context_health_semantic.js';
 
 export const CONTEXT_HEALTH_REPORT_VERSION = 1 as const;
 export const DEFAULT_CONTEXT_HEALTH_FINDING_LIMIT = 100 as const;
@@ -25,6 +30,7 @@ export type ContextHealthFindingCategoryV1 =
   | 'relation-target-inactive'
   | 'relation-target-missing'
   | 'review-overdue'
+  | 'semantic-contradiction'
   | 'validity-expired';
 
 export type ContextHealthSeverityV1 = 'critical' | 'high' | 'low' | 'medium';
@@ -51,6 +57,7 @@ export interface ContextHealthFindingV1 {
   readonly id: string;
   readonly repair: ContextHealthRepairDescriptorV1;
   readonly repairability: ContextHealthRepairabilityV1;
+  readonly semanticEvidence?: ContextHealthSemanticContradictionV1;
   readonly severity: ContextHealthSeverityV1;
   readonly summary: string;
   readonly uris: readonly string[];
@@ -93,6 +100,8 @@ export interface ContextHealthReportV1 {
   readonly omittedFindings: number;
   readonly project: string;
   readonly recordsScanned: number;
+  readonly semanticCompleteness: ContextHealthSemanticCompletenessV1;
+  readonly status: 'clean' | 'findings' | 'unknown';
   readonly version: typeof CONTEXT_HEALTH_REPORT_VERSION;
 }
 
@@ -105,6 +114,7 @@ export function buildContextHealthReport(input: ContextHealthReportInputV1): Con
   const includeFindingCategories =
     input.includeFindingCategories === undefined ? undefined : new Set(input.includeFindingCategories);
   const includeFindingUris = input.includeFindingUris === undefined ? undefined : new Set(input.includeFindingUris);
+  const semanticAnalysis = analyzeContextHealthSemantics({project: input.project, records});
   const findings = deduplicateFindings(
     [
       ...validityFindings(records, input.now),
@@ -114,6 +124,7 @@ export function buildContextHealthReport(input: ContextHealthReportInputV1): Con
       ...duplicateFindings(records, input.project, input.now),
       ...candidateFindings(input.candidateEvidence ?? [], input.project),
       ...guidanceFindings(input.guidanceEvidence ?? []),
+      ...semanticFindings(semanticAnalysis.contradictions),
     ].sort(compareFindings),
   ).filter(
     finding =>
@@ -122,14 +133,44 @@ export function buildContextHealthReport(input: ContextHealthReportInputV1): Con
       finding.uris.some(uri => includeFindingUris?.has(uri) === true),
   );
   const limit = findingLimit(input.limit);
+  const filtered = includeFindingUris !== undefined || includeFindingCategories !== undefined;
   return {
     findings: findings.slice(0, limit),
     limit,
     omittedFindings: Math.max(0, findings.length - limit),
     project: input.project,
     recordsScanned: records.length,
+    semanticCompleteness: semanticAnalysis.completeness,
+    status:
+      semanticAnalysis.completeness.state !== 'complete' || (filtered && findings.length === 0)
+        ? 'unknown'
+        : findings.length > 0
+          ? 'findings'
+          : 'clean',
     version: CONTEXT_HEALTH_REPORT_VERSION,
   };
+}
+
+function semanticFindings(
+  contradictions: readonly ContextHealthSemanticContradictionV1[],
+): readonly ContextHealthFindingV1[] {
+  return contradictions.map(semanticEvidence => ({
+    ...finding(
+      'semantic-contradiction',
+      [semanticEvidence.left.recordUri, semanticEvidence.right.recordUri],
+      `claims ${semanticEvidence.left.claimId} and ${semanticEvidence.right.claimId} have opposing assertions`,
+      {
+        confidence: 'medium',
+        kind: 'review-memory',
+        repairability: 'manual-review',
+        severity: 'medium',
+        subjectUri: semanticEvidence.left.recordUri,
+        summary: 'Review both durable claims and explicitly supersede or correct the stale assertion.',
+        targetUri: semanticEvidence.right.recordUri,
+      },
+    ),
+    semanticEvidence,
+  }));
 }
 
 function guidanceFindings(evidence: readonly ContextHealthGuidanceEvidenceV1[]): readonly ContextHealthFindingV1[] {
@@ -380,10 +421,11 @@ function categoryRank(category: ContextHealthFindingCategoryV1): number {
     'guidance-unavailable': 8,
     'review-overdue': 9,
     'exact-duplicate': 10,
-    'candidate-contradiction': 11,
-    'candidate-possible-duplicate': 12,
-    'guidance-stale-sources': 13,
-    'citation-unknown': 14,
+    'semantic-contradiction': 11,
+    'candidate-contradiction': 12,
+    'candidate-possible-duplicate': 13,
+    'guidance-stale-sources': 14,
+    'citation-unknown': 15,
   };
   return rank[category];
 }

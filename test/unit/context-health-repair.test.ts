@@ -2,6 +2,7 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   applyContextHealthRepairProposalV1,
+  contextHealthReportRevisionV1,
   contextHealthRepairProposalRevisionV1,
   previewContextHealthRepairPlanV1,
   type ContextHealthRepairProposalV1,
@@ -372,6 +373,23 @@ describe('context health repair proposals', () => {
     expect(changed.revision).not.toBe(first.revision);
     expect(contextHealthRepairProposalRevisionV1(first)).toBe(first.revision);
   });
+
+  it('binds report revisions to semantic completeness and status', () => {
+    const complete = healthReport([]);
+    const unknown: ContextHealthReportV1 = {
+      ...complete,
+      semanticCompleteness: {
+        ...complete.semanticCompleteness,
+        analyzedRecords: 0,
+        state: 'unavailable',
+        unknownReasons: [{count: 1, reason: 'no-claims'}],
+        unknownRecords: 1,
+      },
+      status: 'unknown',
+    };
+
+    expect(contextHealthReportRevisionV1(unknown)).not.toBe(contextHealthReportRevisionV1(complete));
+  });
 });
 
 function onlyProposal(report: ContextHealthReportV1, records: readonly MemoryRecord[]): ContextHealthRepairProposalV1 {
@@ -426,6 +444,19 @@ function healthReport(findings: readonly ContextHealthFindingV1[]): ContextHealt
     omittedFindings: 0,
     project: PROJECT,
     recordsScanned: findings.length,
+    semanticCompleteness: {
+      analyzedRecords: findings.length,
+      claimsAnalyzed: findings.length,
+      contradictionCount: 0,
+      eligibleRecords: findings.length,
+      omittedContradictions: 0,
+      pairsCompared: 0,
+      state: 'complete',
+      unknownReasons: [],
+      unknownRecords: 0,
+      version: 1,
+    },
+    status: findings.length > 0 ? 'findings' : 'clean',
     version: 1,
   };
 }
