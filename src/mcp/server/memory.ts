@@ -62,6 +62,7 @@ import {
   withDeferredCodeAnchorMutationLocks,
 } from '../../memory/deferred_code_anchor.js';
 import {isMemoryRelocationUri, readMemoryWithRelocations, recordMemoryRelocation} from '../../memory/relocation.js';
+import {resolveLocalMemoryReplacementTarget} from '../../memory/replacement_target.js';
 import {
   canonicalResourceUri,
   parseResourceId,
@@ -451,6 +452,7 @@ export interface WriteDurableMemoryParams {
   readonly deferredCodeAnchor?: DeferredCodeAnchorWriteRequest;
   readonly expectedReplaceContent?: string;
   readonly expectedReplaceContentHash?: string;
+  readonly expectedReplaceMemoryId?: string;
   readonly expectedSourceContent?: readonly {
     readonly allowedUriScopes?: readonly string[];
     readonly content: string;
@@ -472,7 +474,33 @@ interface PreparedPersonalMemoryWrite {
   readonly memoryUri: string;
 }
 
-export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryParams) {
+export function writeDurableMemory(config: RuntimeConfig, inputParams: WriteDurableMemoryParams) {
+  return Effect.gen(function* () {
+    const replacement = inputParams.replaceUri
+      ? yield* resolveLocalMemoryReplacementTarget(config, inputParams.replaceUri)
+      : undefined;
+    const replacementMemoryId =
+      inputParams.expectedReplaceMemoryId ?? replacement?.memoryId ?? inputParams.metadata.memoryId;
+    const params: WriteDurableMemoryParams = {
+      ...inputParams,
+      expectedReplaceContent: inputParams.expectedReplaceContent ?? replacement?.record?.content,
+      expectedReplaceMemoryId: replacementMemoryId,
+      metadata:
+        replacementMemoryId === inputParams.metadata.memoryId
+          ? inputParams.metadata
+          : {...inputParams.metadata, memoryId: replacementMemoryId},
+      replaceUri: replacement?.canonicalUri ?? inputParams.replaceUri,
+    };
+    return yield* writeDurableMemoryResolved(config, params);
+  }).pipe(
+    Effect.catch(error =>
+      Effect.succeed(error instanceof MemoryRelationWriteError ? argumentError(error.message) : mcpErrorResult(error)),
+    ),
+    Effect.map(result => result as CallToolResult),
+  );
+}
+
+function writeDurableMemoryResolved(config: RuntimeConfig, params: WriteDurableMemoryParams) {
   const write = Effect.gen(function* () {
     const prepared = params.prepared ?? (yield* preparePersonalMemoryWrite(config, params));
     const fs = yield* FileSystem.FileSystem;
@@ -635,12 +663,7 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
     params.replaceUri && isInSharedNamespace(config, params.replaceUri)
       ? withSharedRepositoryLock(config, write)
       : write;
-  return serializedWrite.pipe(
-    Effect.catch(error =>
-      Effect.succeed(error instanceof MemoryRelationWriteError ? argumentError(error.message) : mcpErrorResult(error)),
-    ),
-    Effect.map(result => result as CallToolResult),
-  );
+  return serializedWrite;
 }
 
 export function writeCursorCloudSharedMemory(
@@ -780,25 +803,55 @@ export function writeCursorCloudSharedMemory(
  * candidate enters its recoverable `applying` state. The writer consumes this
  * same prepared value so recovery and the actual write cannot disagree.
  */
-export const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMemoryWrite')(function* (
+export function preparePersonalMemoryWrite(
   config: RuntimeConfig,
-  params: Pick<WriteDurableMemoryParams, 'bodyText' | 'metadata' | 'replaceUri'>,
+  inputParams: Pick<
+    WriteDurableMemoryParams,
+    'bodyText' | 'expectedReplaceContent' | 'expectedReplaceMemoryId' | 'metadata' | 'replaceUri'
+  >,
+) {
+  return Effect.gen(function* () {
+    const replacement = inputParams.replaceUri
+      ? yield* resolveLocalMemoryReplacementTarget(config, inputParams.replaceUri)
+      : undefined;
+    const replacementMemoryId =
+      inputParams.expectedReplaceMemoryId ?? replacement?.memoryId ?? inputParams.metadata.memoryId;
+    return yield* preparePersonalMemoryWriteResolved(config, {
+      ...inputParams,
+      expectedReplaceContent: inputParams.expectedReplaceContent ?? replacement?.record?.content,
+      metadata:
+        replacementMemoryId === inputParams.metadata.memoryId
+          ? inputParams.metadata
+          : {...inputParams.metadata, memoryId: replacementMemoryId},
+      replaceUri: replacement?.canonicalUri ?? inputParams.replaceUri,
+    });
+  });
+}
+
+const preparePersonalMemoryWriteResolved = Effect.fn('mcpServer.preparePersonalMemoryWrite')(function* (
+  config: RuntimeConfig,
+  params: Pick<WriteDurableMemoryParams, 'bodyText' | 'expectedReplaceContent' | 'metadata' | 'replaceUri'>,
 ) {
   const [replaced] = params.replaceUri ? yield* readMemoryRecordsByUri(config, [params.replaceUri]) : [];
   if (replaced) {
     const schemaRewriteError = memorySchemaRewriteError(replaced.content);
     if (schemaRewriteError) return yield* Effect.fail(schemaRewriteError);
   }
+  const replacementProof =
+    params.replaceUri && params.expectedReplaceContent
+      ? parseMemoryDocument(params.replaceUri, params.expectedReplaceContent)
+      : undefined;
+  const replacementLifecycle = replacementProof ?? replaced;
   const metadata: MemoryMetadata = {
     ...params.metadata,
     createdAt:
-      replaced?.metadata.createdAt ??
-      replaced?.metadata.timestamp ??
+      replacementLifecycle?.metadata.createdAt ??
+      replacementLifecycle?.metadata.timestamp ??
       params.metadata.createdAt ??
       params.metadata.timestamp,
     memoryId:
-      replaced?.metadata.memoryId ??
       params.metadata.memoryId ??
+      replaced?.metadata.memoryId ??
       `tn_${(yield* sha256Hex(
         params.metadata.candidateId ??
           `${params.metadata.project ?? ''}\n${params.metadata.topic ?? ''}\n${params.bodyText}`,
@@ -822,11 +875,11 @@ export const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMe
   const memoryUri = yield* memoryUriFor(config, candidateMemory, candidateMetadata);
   const isInPlaceUpdate = params.replaceUri !== undefined && params.replaceUri === memoryUri;
   const finalMetadata: MemoryMetadata = isInPlaceUpdate
-    ? {...metadata, supersedes: replaced?.metadata.supersedes}
+    ? {...metadata, supersedes: replacementLifecycle?.metadata.supersedes}
     : candidateMetadata;
   const memory = isInPlaceUpdate ? formatMemoryDocument('MEMORY', finalMetadata, params.bodyText) : candidateMemory;
   return {
-    expectedReplaceContent: replaced?.content,
+    expectedReplaceContent: params.expectedReplaceContent ?? replaced?.content,
     finalMetadata,
     isInPlaceUpdate,
     memory,

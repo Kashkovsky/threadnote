@@ -133,6 +133,11 @@ export const resolveMemoryIdentityAliases = Effect.fn('recall.resolveMemoryIdent
   return resolved;
 });
 
+type MemoryIdentityResolutionRequirements =
+  ReturnType<typeof resolveMemoryIdentityAliases> extends Effect.Effect<unknown, unknown, infer Requirements>
+    ? Requirements
+    : never;
+
 /** Re-check live bytes after index resolution so stale indexes or URI reuse cannot cross identities. */
 export const verifyResolvedMemoryIdentity = Effect.fn('recall.verifyResolvedMemoryIdentity')(function* (
   resolved: ResolvedMemoryIdentityAlias,
@@ -155,3 +160,24 @@ export const verifyResolvedMemoryIdentity = Effect.fn('recall.verifyResolvedMemo
     });
   }
 });
+
+/** Resolve a replacement alias once, then bind its stable identity to the live target bytes. */
+export function resolveMemoryReplacementTarget<Record extends {readonly content: string}, E, R>(
+  config: MemoryIdentityRuntime,
+  requestedUri: string,
+  allowedUriScopes: readonly string[],
+  read: (uri: string) => Effect.Effect<readonly Record[], E, R>,
+): Effect.Effect<
+  ResolvedMemoryIdentityAlias & {readonly record: Record | undefined},
+  unknown,
+  R | MemoryIdentityResolutionRequirements
+> {
+  return Effect.gen(function* () {
+    const [resolved] = yield* resolveMemoryIdentityAliases(config, [requestedUri], allowedUriScopes);
+    const [record] = yield* read(resolved.canonicalUri);
+    if (record) {
+      yield* verifyResolvedMemoryIdentity(resolved, resolved.canonicalUri, record.content);
+    }
+    return {...resolved, record};
+  });
+}

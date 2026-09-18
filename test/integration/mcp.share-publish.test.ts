@@ -324,6 +324,28 @@ describe('Threadnote MCP share_publish', () => {
       expect(replacedContent).toContain('visibility: shared');
       expect(replacedContent).toContain('relation: depends_on threadnote://memory/tn_shared_dependency');
       expect(replacedContent).toContain('Updated shared body with a stable dependency.');
+
+      const aliasReplacement = await client.callTool(
+        {
+          arguments: {
+            kind: 'durable',
+            project: 'foo',
+            replaceUri: 'threadnote://memory/tn_foo_bar',
+            text: 'Updated shared body through its stable identity.',
+            topic: 'bar',
+          },
+          name: 'remember_context',
+        },
+        undefined,
+        {timeout: 30_000},
+      );
+      expect(aliasReplacement.isError, JSON.stringify(aliasReplacement)).not.toBe(true);
+      expect((aliasReplacement.content as TextContent[]).map(item => item.text).join('\n')).toContain(
+        `Updated shared memory: ${targetUri}`,
+      );
+      await expect(readFile(canonicalTargetPath, 'utf8')).resolves.toContain(
+        'Updated shared body through its stable identity.',
+      );
     } finally {
       await client.close().catch(() => undefined);
       await rm(root, {force: true, recursive: true});

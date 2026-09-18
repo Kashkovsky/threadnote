@@ -6,11 +6,141 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {preparePersonalMemoryWrite, writeDurableMemory} from '../../src/mcp/server/memory.js';
 import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
+import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
+import {recordMemoryRelocation} from '../../src/memory/relocation.js';
 import {resolveAuthoredMemoryRelations} from '../../src/memory/relations.js';
+import {loadRecallIndex} from '../../src/recall/index.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 describe('MCP personal-memory schema rewrite guard', () => {
+  it.effect('preserves a receipt-witnessed identity when replacing an id-less destination by alias', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-receipt-replace-'});
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        yield* fs.writeFileString(config.manifestPath, 'version: 1\nprojects: []\n');
+        const sourceUri = 'threadnote://user/tester/memories/durable/projects/threadnote/mcp-receipt-source.md';
+        const targetUri = 'threadnote://user/tester/memories/durable/projects/threadnote/mcp-receipt-target.md';
+        const memoryId = 'tn_mcp_receipt_replace';
+        const metadata: MemoryMetadata = {
+          kind: 'durable',
+          memoryId,
+          project: 'threadnote',
+          schemaVersion: MEMORY_SCHEMA_VERSION,
+          sourceAgentClient: 'mcp',
+          status: 'active',
+          timestamp: '2026-09-18T00:00:00.000Z',
+          topic: 'mcp-receipt-target',
+        };
+        const original = formatMemoryDocument('MEMORY', metadata, 'MCP receipt replacement source.');
+        const missingIdentity = original.replace(`memory_id: ${memoryId}\n`, '');
+        const store = yield* ResourceStore;
+        const location = {account: config.account, home, user: config.user};
+        yield* store.write(location, sourceUri, original, {mode: 'create'});
+        yield* store.write(location, targetUri, original, {mode: 'create'});
+        yield* recordMemoryRelocation(config, {
+          fromContent: original,
+          fromUri: sourceUri,
+          toContent: original,
+          toUri: targetUri,
+        });
+        yield* store.remove(location, sourceUri);
+        yield* store.write(location, targetUri, missingIdentity, {mode: 'upsert'});
+        yield* loadRecallIndex(config, {forceRefresh: true, includeInactive: false});
+
+        const result = yield* writeDurableMemory(config, {
+          bodyText: 'MCP receipt replacement keeps its stable identity.',
+          metadata: {...metadata, memoryId: undefined},
+          replaceUri: memoryIdentityAlias(memoryId),
+        });
+
+        expect(result.isError).not.toBe(true);
+        const updated = yield* store.read(location, targetUri);
+        expect(updated).toContain(`memory_id: ${memoryId}`);
+        expect(updated).toContain('MCP receipt replacement keeps its stable identity.');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('preserves the initial alias identity across path-reuse ABA during preparation', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-alias-race-'});
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        const uri = 'threadnote://user/tester/memories/durable/projects/threadnote/alias-race.md';
+        const metadata: MemoryMetadata = {
+          createdAt: '2026-09-17T00:00:00.000Z',
+          kind: 'durable',
+          memoryId: 'tn_alias_race_original',
+          project: 'threadnote',
+          schemaVersion: MEMORY_SCHEMA_VERSION,
+          sourceAgentClient: 'mcp',
+          status: 'active',
+          supersedes: 'threadnote://user/tester/memories/durable/projects/threadnote/alias-race-original.md',
+          timestamp: '2026-09-18T00:00:00.000Z',
+          topic: 'alias-race',
+        };
+        const original = formatMemoryDocument('MEMORY', metadata, 'Original alias target.');
+        const reused = formatMemoryDocument(
+          'MEMORY',
+          {
+            ...metadata,
+            createdAt: '2026-09-19T00:00:00.000Z',
+            memoryId: 'tn_alias_race_reused',
+            supersedes: 'threadnote://user/tester/memories/durable/projects/threadnote/alias-race-reused.md',
+            timestamp: '2026-09-20T00:00:00.000Z',
+          },
+          'A different identity reused the canonical path.',
+        );
+        const store = yield* ResourceStore;
+        const location = {account: config.account, home, user: config.user};
+        yield* store.write(location, uri, original, {mode: 'create'});
+        const params = {
+          bodyText: 'The alias-authorized replacement must retain its original identity.',
+          expectedReplaceContent: original,
+          expectedReplaceMemoryId: metadata.memoryId,
+          metadata: {...metadata, memoryId: undefined},
+          replaceUri: uri,
+        } as const;
+        yield* store.write(location, uri, reused, {mode: 'replace'});
+        const prepared = yield* preparePersonalMemoryWrite(config, params);
+        expect(prepared.finalMetadata.memoryId).toBe(metadata.memoryId);
+
+        yield* store.write(location, uri, original, {mode: 'replace'});
+        const result = yield* writeDurableMemory(config, {...params, prepared});
+
+        expect(result.isError).not.toBe(true);
+        const stored = yield* store.read(location, uri);
+        expect(stored).toContain(`memory_id: ${metadata.memoryId}`);
+        expect(stored).toContain(`created_at: ${metadata.createdAt}`);
+        expect(stored).toContain(`supersedes: ${metadata.supersedes}`);
+        expect(stored).toContain(`timestamp: ${metadata.timestamp}`);
+        expect(stored).toContain('The alias-authorized replacement must retain its original identity.');
+        expect(stored).not.toContain('tn_alias_race_reused');
+        expect(stored).not.toContain('alias-race-reused.md');
+        expect(stored).not.toContain('2026-09-19T00:00:00.000Z');
+        expect(stored).not.toContain('2026-09-20T00:00:00.000Z');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it.effect('rejects a second writer that upgrades the replace target after preparation', () =>
     Effect.scoped(
       Effect.gen(function* () {
