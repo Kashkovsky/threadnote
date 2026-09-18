@@ -19,6 +19,10 @@ const CONTROL = JSON.stringify({
   expectedPath: 'src/index.ts',
   query: 'indexSymbol',
 });
+const BENCHMARK_CHILD_TIMEOUT_MS = 45_000;
+// Five serial benchmark processes have reached 30 seconds under hosted-runner load. Keep a strict total deadline
+// above that observed tail while each active child remains independently bounded and interruptible.
+const BENCHMARK_PREFLIGHT_TEST_TIMEOUT_MS = 60_000;
 
 describe('external code graph benchmark execution safety', () => {
   effectIt.effect('rejects source and external checkout drift before emitting preflight evidence', () =>
@@ -243,32 +247,38 @@ describe('external code graph benchmark execution safety', () => {
               referenceHome,
               '--retain-homes',
             ] as const;
-            const first = yield* Effect.promise(() =>
-              runBenchmark(script, [...common, '--minimum-free-gib', '1', '--preflight'], publicProofRemote),
+            const first = yield* runBenchmark(
+              script,
+              [...common, '--minimum-free-gib', '1', '--preflight'],
+              publicProofRemote,
             );
             const firstHomesReleased = !(yield* fs.exists(home)) && !(yield* fs.exists(referenceHome));
-            const second = yield* Effect.promise(() =>
-              runBenchmark(script, [...common, '--minimum-free-gib', '1', '--preflight'], publicProofRemote),
+            const second = yield* runBenchmark(
+              script,
+              [...common, '--minimum-free-gib', '1', '--preflight'],
+              publicProofRemote,
             );
             const secondHomesReleased = !(yield* fs.exists(home)) && !(yield* fs.exists(referenceHome));
 
             yield* runCommandEffect('git', ['-C', repository, 'config', 'status.showUntrackedFiles', 'no']);
             yield* fs.writeFileString(path.join(repository, 'hidden-untracked.txt'), 'must still be detected\n');
-            const dirty = yield* Effect.promise(() =>
-              runBenchmark(script, [...common, '--minimum-free-gib', '1', '--preflight'], publicProofRemote),
+            const dirty = yield* runBenchmark(
+              script,
+              [...common, '--minimum-free-gib', '1', '--preflight'],
+              publicProofRemote,
             );
             yield* fs.remove(path.join(repository, 'hidden-untracked.txt'));
 
-            const lowDisk = yield* Effect.promise(() =>
-              runBenchmark(script, [...common, '--minimum-free-gib', '8000000'], publicProofRemote),
+            const lowDisk = yield* runBenchmark(
+              script,
+              [...common, '--minimum-free-gib', '8000000'],
+              publicProofRemote,
             );
             const lowDiskHomesReleased = !(yield* fs.exists(home)) && !(yield* fs.exists(referenceHome));
-            const actual = yield* Effect.promise(() =>
-              runBenchmark(
-                script,
-                [...common, '--minimum-free-gib', '1', '--samples', '1', '--warmups', '0'],
-                publicProofRemote,
-              ),
+            const actual = yield* runBenchmark(
+              script,
+              [...common, '--minimum-free-gib', '1', '--samples', '1', '--warmups', '0'],
+              publicProofRemote,
             );
             const artifactExists = yield* fs.exists(output);
 
@@ -356,7 +366,7 @@ describe('external code graph benchmark execution safety', () => {
           );
         }
       }),
-    30_000,
+    BENCHMARK_PREFLIGHT_TEST_TIMEOUT_MS,
   );
 });
 
@@ -384,12 +394,14 @@ const initializeGitRepository = Effect.fn('benchmarkPreflightTest.initializeGitR
   return (yield* runCommandEffect('git', ['-C', repository, 'rev-parse', 'HEAD'])).stdout.trim();
 });
 
-async function runBenchmark(script: string, args: readonly string[], publicProofRemote: string) {
-  const sourceCommit = Bun.spawnSync({cmd: ['git', 'rev-parse', 'HEAD'], stderr: 'pipe', stdout: 'pipe'})
-    .stdout.toString()
-    .trim();
-  const child = Bun.spawn({
-    cmd: [process.execPath, script, ...args],
+const runBenchmark = Effect.fn('benchmarkPreflightTest.runBenchmark')(function* (
+  script: string,
+  args: readonly string[],
+  publicProofRemote: string,
+) {
+  const sourceCommit = (yield* runCommandEffect('git', ['rev-parse', 'HEAD'], {timeoutMs: 10_000})).stdout.trim();
+  return yield* runCommandEffect(process.execPath, [script, ...args], {
+    allowFailure: true,
     env: {
       ...process.env,
       CI: 'true',
@@ -404,13 +416,6 @@ async function runBenchmark(script: string, args: readonly string[], publicProof
       RUNNER_OS: process.platform === 'darwin' ? 'macOS' : process.platform === 'win32' ? 'Windows' : 'Linux',
       THREADNOTE_BENCHMARK_TEST_PUBLIC_REPOSITORY_REMOTE: publicProofRemote,
     },
-    stderr: 'pipe',
-    stdout: 'pipe',
+    timeoutMs: BENCHMARK_CHILD_TIMEOUT_MS,
   });
-  const [exitCode, stderr, stdout] = await Promise.all([
-    child.exited,
-    new Response(child.stderr).text(),
-    new Response(child.stdout).text(),
-  ]);
-  return {exitCode, stderr, stdout};
-}
+});
