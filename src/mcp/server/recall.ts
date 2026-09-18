@@ -148,19 +148,17 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
     'review_session_context',
     {
       annotations: {readOnlyHint: false, destructiveHint: false},
-      description:
-        'After routine durable and handoff writes, form up to three additional reviewable candidates, optionally with structured closeout context; persists pending review only.',
+      description: 'Propose closeout candidates for review; does not publish.',
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd'),
-        codeRefs: McpInput.stringOrStrings(
-          `Graph-indexed repository-relative path/cgs_/cgr_; max ${MAX_MEMORY_CODE_CITATIONS}`,
-          {maximumItems: MAX_MEMORY_CODE_CITATIONS},
-        ),
-        rationale: McpInput.string('Why the decision or change was made'),
-        constraints: McpInput.stringOrStrings('Constraints learned during the task'),
-        verificationPerformed: McpInput.stringOrStrings('Verification performed before closeout'),
-        knowledgeInvalidated: McpInput.stringOrStrings('Prior knowledge invalidated by the change'),
-        unresolvedRisks: McpInput.stringOrStrings('Risks that remain unresolved'),
+        codeRefs: McpInput.stringOrStrings(`Code path/cgs_/cgr_; max ${MAX_MEMORY_CODE_CITATIONS}`, {
+          maximumItems: MAX_MEMORY_CODE_CITATIONS,
+        }),
+        rationale: McpInput.string('Why'),
+        constraints: McpInput.stringOrStrings('Limits'),
+        verificationPerformed: McpInput.stringOrStrings('Checks'),
+        knowledgeInvalidated: McpInput.stringOrStrings('Invalidated'),
+        unresolvedRisks: McpInput.stringOrStrings('Risks'),
         decisions: McpInput.stringOrStrings('Decisions'),
         evidence: McpInput.stringOrStrings('Evidence pointers'),
         handoff: McpInput.stringOrStrings('Handoff'),
