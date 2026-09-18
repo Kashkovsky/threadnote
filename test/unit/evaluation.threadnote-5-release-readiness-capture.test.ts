@@ -20,11 +20,16 @@ import {
 import {
   deriveThreadnote5LocalScenarioClaims,
   threadnote5LocalSubsystemReceiptDigest,
+  verifyThreadnote5LocalSubsystemReceipts,
   type Threadnote5LocalSubsystemReceiptRecordV1,
 } from '../../src/evaluation/threadnote-5-release-readiness-receipts.js';
 import {parseContextBriefV1, renderContextBriefText} from '../../src/context_brief/projector.js';
 import {createProcedureVerificationReceipt, parseProcedureManifest} from '../../src/procedure/contract.js';
 import fixtureJson from '../evaluation/fixtures/threadnote-5-task-loop-v1/fixture.json' with {type: 'json'};
+import {
+  PRODUCTION_CAPTURE_CANDIDATE,
+  productionCaptureFixture,
+} from '../helpers/threadnote-5-production-capture-fixture.js';
 
 const CANDIDATE: Threadnote5SourceV1 = {
   commit: '1'.repeat(40),
@@ -142,10 +147,61 @@ describe('Threadnote 5 production capture', () => {
       );
     }),
   );
+
+  effectIt.effect('captures and replays the complete production-shaped matrix canonically', () =>
+    Effect.sync(() => {
+      const fixture = productionCaptureFixture();
+      const authorityHash = threadnote5LocalAuthorityManifestHash(fixture.authorityManifest);
+      const boundaries = runtimeBoundaries(PRODUCTION_CAPTURE_CANDIDATE);
+      const input = {
+        authorityManifest: fixture.authorityManifest,
+        candidate: PRODUCTION_CAPTURE_CANDIDATE,
+        expectedAuthorityManifestSha256: authorityHash,
+        fixture: fixtureJson,
+      };
+      const expected = captureThreadnote5ReleaseCandidateV1({
+        ...input,
+        retainedSubsystemReceipts: fixture.records,
+        runtimeBoundaries: boundaries,
+      });
+
+      expect(expected.evidence.candidateObservations).toHaveLength(15);
+      expect(expected.retainedSubsystemReceipts).toHaveLength(24);
+      expect(
+        verifyThreadnote5LocalSubsystemReceipts({
+          authorityManifest: fixture.authorityManifest,
+          candidate: PRODUCTION_CAPTURE_CANDIDATE,
+          expectedAuthorityManifestSha256: authorityHash,
+          observations: expected.evidence.candidateObservations,
+          retainedRecords: expected.retainedSubsystemReceipts,
+        }),
+      ).toMatchObject({receiptCount: 24, state: 'verified'});
+
+      fc.assert(
+        fc.property(
+          fc.shuffledSubarray([...fixture.records], {
+            minLength: fixture.records.length,
+            maxLength: fixture.records.length,
+          }),
+          fc.shuffledSubarray([...boundaries], {minLength: boundaries.length, maxLength: boundaries.length}),
+          (records, runtimeBoundaries) => {
+            expect(
+              captureThreadnote5ReleaseCandidateV1({
+                ...input,
+                retainedSubsystemReceipts: records,
+                runtimeBoundaries,
+              }),
+            ).toEqual(expected);
+          },
+        ),
+        {numRuns: 12},
+      );
+    }),
+  );
 });
 
-function runtimeBoundaries() {
-  const runtime = {executableSha256: CANDIDATE.executableSha256, sourceCommit: CANDIDATE.commit};
+function runtimeBoundaries(candidate: Threadnote5SourceV1 = CANDIDATE) {
+  const runtime = {executableSha256: candidate.executableSha256, sourceCommit: candidate.commit};
   return THREADNOTE_5_RELEASE_SCENARIOS.map(scenario => ({postRuntime: runtime, preRuntime: runtime, scenario}));
 }
 
