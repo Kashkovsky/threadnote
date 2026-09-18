@@ -1193,6 +1193,8 @@ export const McpInput = {
     Schema.optionalKey(numberSchema(description, {...options, integer: true})),
   literals: <const Values extends readonly [string, ...string[]]>(values: Values, description?: string) =>
     Schema.optionalKey(annotate(Schema.Literals(values), description)),
+  requiredLiterals: <const Values extends readonly [string, ...string[]]>(values: Values, description?: string) =>
+    annotate(Schema.Literals(values), description),
   literalsOrLiterals: <const Values extends readonly [string, ...string[]]>(
     values: Values,
     description?: string,

@@ -25,7 +25,7 @@ import {
   readSecondSurfaceProofChallengeV1,
   verifySecondSurfaceProofAttestationV1,
 } from '../activation/second_surface_store.js';
-import {readLocalValueEvents, summarizeLocalValueEvents, type LocalValueEventV1} from '../value_report/events.js';
+import {readLocalValueEvents, type LocalValueEventV1} from '../value_report/events.js';
 import {
   buildKnowledgeDeltaGitProposalV1,
   type KnowledgeDeltaGitProposalInputV1,
@@ -39,16 +39,14 @@ import {
   procedureStatus,
   type ProcedureStatusInput,
 } from '../procedure/contract.js';
-import {aggregateValueReportV1, type ValueReportInputV1, type ValueReportV1} from '../value_report/index.js';
 import {
   parseThreadnote5TrustedSourceV1,
+  THREADNOTE_5_RELEASE_SCENARIOS,
   type Threadnote5MeasurementV1,
   type Threadnote5ObservationV1,
   type Threadnote5ReleaseScenario,
   type Threadnote5SourceV1,
 } from './threadnote-5-release-readiness-contract.js';
-import {parseContextBriefRequestV1} from '../context_brief/types.js';
-import {parseContextBriefV1, renderContextBriefText} from '../context_brief/projector.js';
 import {parseContextCheckReportJson} from '../context_check/index.js';
 import {
   guidanceBlock,
@@ -57,7 +55,6 @@ import {
   stripThreadnoteManagedGuidance,
   upsertGuidanceBlock,
 } from '../guidance/index.js';
-import {measureAgentToolResponse} from './agent-response.js';
 import {
   parseThreadnote5LocalAuthorityManifestV1,
   threadnote5ActivationAttestationDigest,
@@ -68,6 +65,28 @@ import {
   threadnote5ProcedureVerificationReceiptDigest,
   type Threadnote5LocalAuthorityEntryV1,
 } from './threadnote-5-release-readiness-authority.js';
+import {
+  deriveThreadnote5ContextBriefClaims,
+  type Threadnote5FirstBriefLinkV1,
+} from './threadnote-5-release-readiness-context-brief.js';
+import {
+  deriveThreadnote5ValueReportClaims,
+  type Threadnote5ActivationValueLinkV1,
+  type Threadnote5FeedbackTrialLinkV1,
+} from './threadnote-5-release-readiness-value-report.js';
+import {
+  allowedKeys,
+  boundedArray,
+  compareText,
+  exactObject,
+  hash,
+  integerIn,
+  isoInstant,
+  nonEmptyText,
+  object,
+  text,
+  unique,
+} from './threadnote-5-release-readiness-validation.js';
 
 export const THREADNOTE_5_LOCAL_SUBSYSTEM_RECEIPT_VERSION = 1 as const;
 
@@ -209,16 +228,26 @@ export type Threadnote5LocalReceiptVerificationV1 =
       readonly state: 'verified';
     };
 
+export interface Threadnote5DerivedScenarioClaimsV1 {
+  readonly assertions: readonly string[];
+  readonly measurements: readonly Threadnote5MeasurementV1[];
+  readonly metricContributingKinds: readonly Threadnote5LocalSourceKindV1[];
+  readonly missingKinds: readonly string[];
+  readonly scenario: Threadnote5ReleaseScenario;
+  readonly subsystemReceipts: readonly {readonly digest: string; readonly kind: Threadnote5LocalSourceKindV1}[];
+}
+
+export interface Threadnote5DerivedLocalReceiptSetV1 {
+  readonly authorityManifestHash: string;
+  readonly records: readonly Threadnote5LocalSubsystemReceiptRecordV1[];
+  readonly scenarios: readonly Threadnote5DerivedScenarioClaimsV1[];
+}
+
 interface DerivedClaims {
   readonly assertions: readonly string[];
   readonly correlations?: Threadnote5DerivedCorrelationsV1;
   readonly measurements: readonly Threadnote5MeasurementV1[];
   readonly missingKinds?: readonly string[];
-}
-
-interface Threadnote5ActivationValueLinkV1 {
-  readonly activationId: string;
-  readonly finalReceiptRevision: string;
 }
 
 interface Threadnote5SecondSurfaceLinkV1 {
@@ -242,6 +271,8 @@ interface Threadnote5SharedDecisionLinkV1 {
 
 interface Threadnote5DerivedCorrelationsV1 {
   readonly activationValues?: readonly Threadnote5ActivationValueLinkV1[];
+  readonly feedbackTrials?: readonly Threadnote5FeedbackTrialLinkV1[];
+  readonly firstBriefs?: readonly Threadnote5FirstBriefLinkV1[];
   readonly secondSurfaceProofs?: readonly Threadnote5SecondSurfaceLinkV1[];
   readonly sharedDecisions?: readonly Threadnote5SharedDecisionLinkV1[];
 }
@@ -255,7 +286,8 @@ type Threadnote5AuthorityRequirementV1 =
   | 'guidance-stale-precondition-rejection-authority'
   | 'migration-execution-authority'
   | 'git-proposal-review-authority'
-  | 'procedure-execution-authority';
+  | 'procedure-execution-authority'
+  | 'value-report-trial-authority';
 
 interface Threadnote5LocalReceiptAdapterV1 {
   readonly acceptedScenarios: readonly Threadnote5ReleaseScenario[];
@@ -287,6 +319,82 @@ export function threadnote5LocalReceiptVerificationArtifact(verification: Thread
     verificationHash: sha256HexSync(`threadnote-5-local-receipt-verification-v1\0${canonicalJson(verification)}`),
     version: 1,
   };
+}
+
+/** Replays the same source-native adapters as verification and exposes only the claims needed to seal observations. */
+export function deriveThreadnote5LocalScenarioClaims(input: {
+  readonly authorityManifest: unknown;
+  readonly candidate: Threadnote5SourceV1;
+  readonly expectedAuthorityManifestSha256: string;
+  readonly retainedRecords: unknown;
+}): Threadnote5DerivedLocalReceiptSetV1 {
+  const candidate = parseThreadnote5TrustedSourceV1(input.candidate, 'candidate');
+  if (!Array.isArray(input.retainedRecords)) throw new Error('Retained subsystem records must be an array.');
+  if (input.retainedRecords.length > MAX_RECORDS || encodedBytes(input.retainedRecords) > MAX_RECORD_SET_BYTES) {
+    throw new Error('Retained subsystem record set exceeds its bounds.');
+  }
+  const records = input.retainedRecords.map(parseRecord);
+  if (
+    !unique(records.map(record => record.digest)) ||
+    !unique(records.map(record => `${record.scenario}\0${record.kind}`)) ||
+    records.some(record => !sameSource(record.candidate, candidate))
+  ) {
+    throw new Error('Retained subsystem records are duplicated or candidate-mismatched.');
+  }
+  const authority = resolveAuthority(
+    records,
+    candidate,
+    input.authorityManifest,
+    input.expectedAuthorityManifestSha256,
+  );
+  if (authority.manifestHash === null) throw new Error('Production capture requires external authority.');
+  const derivedByDigest = new Map<string, DerivedClaims>();
+  for (const record of records) {
+    if (record.digest !== threadnote5LocalSubsystemReceiptDigest(withoutDigest(record))) {
+      throw new Error('Retained subsystem record digest does not match its source artifact.');
+    }
+    derivedByDigest.set(record.digest, deriveClaims(record, authority.byRecordDigest.get(record.digest)));
+  }
+  const feedbackTrials = [...derivedByDigest.values()].flatMap(claims => claims.correlations?.feedbackTrials ?? []);
+  if (
+    !unique(feedbackTrials.map(trial => trial.feedbackEventDigest)) ||
+    !unique(feedbackTrials.map(trial => trial.laneId))
+  ) {
+    throw new Error('Production capture feedback events and scenario lanes must be globally unique.');
+  }
+  const order = new Map(THREADNOTE_5_RELEASE_SCENARIOS.map((scenario, index) => [scenario, index] as const));
+  const sortedRecords = [...records].sort((left, right) => {
+    const scenarioOrder = order.get(left.scenario)! - order.get(right.scenario)!;
+    return scenarioOrder === 0 ? compareText(left.kind, right.kind) : scenarioOrder;
+  });
+  const scenarios = [...new Set(sortedRecords.map(record => record.scenario))].map(scenario => {
+    const scenarioRecords = sortedRecords.filter(record => record.scenario === scenario);
+    const collected = collectScenarioClaims(
+      scenario,
+      scenarioRecords.map(record => ({digest: record.digest, kind: record.kind})),
+      derivedByDigest,
+    );
+    return {
+      assertions: [...collected.assertions].sort(compareText),
+      measurements: [...collected.measurements].sort(compareMeasurement),
+      metricContributingKinds: scenarioRecords
+        .filter(record => isMetricLaneSource(scenario, derivedByDigest.get(record.digest)))
+        .map(record => record.kind),
+      missingKinds: [...new Set(collected.missingKinds)].sort(compareText),
+      scenario,
+      subsystemReceipts: scenarioRecords.map(record => ({digest: record.digest, kind: record.kind})),
+    };
+  });
+  return {authorityManifestHash: authority.manifestHash, records: sortedRecords, scenarios};
+}
+
+function isMetricLaneSource(scenario: Threadnote5ReleaseScenario, claims: DerivedClaims | undefined): boolean {
+  if (claims === undefined) return false;
+  return (
+    claims.measurements.length > 0 ||
+    (claims.correlations !== undefined &&
+      (scenario === 'solo' || scenario === 'two-agent' || scenario === 'git-shared' || scenario === 'offline'))
+  );
 }
 
 /** Parses private local artifacts, replays shipped pure APIs, and returns content-free verification only. */
@@ -391,12 +499,53 @@ function verifyObservation(
   observation: Threadnote5ObservationV1,
   derivedByDigest: ReadonlyMap<string, DerivedClaims>,
 ): {readonly claimsMismatch: boolean; readonly verification: Threadnote5ScenarioReceiptVerificationV1} {
+  const {assertions, measurements, missingKinds, verifiedKinds} = collectScenarioClaims(
+    observation.scenario,
+    observation.attestation.subsystemReceipts,
+    derivedByDigest,
+  );
+  if (!unique(measurements.map(measurement => measurement.id))) {
+    return {
+      claimsMismatch: true,
+      verification: scenarioVerification(observation.scenario, verifiedKinds, ['duplicate-derived-metric']),
+    };
+  }
+  const incomplete = missingKinds.length > 0;
+  const expectedAssertions = observation.transcript.assertionResults
+    .filter(result => result.observed)
+    .map(result => result.id);
+  const claimsMismatch =
+    !incomplete &&
+    (observation.transcript.outcome !== 'passed' ||
+      canonicalJson([...assertions].sort(compareText)) !== canonicalJson([...expectedAssertions].sort(compareText)) ||
+      canonicalJson([...measurements].sort(compareMeasurement)) !==
+        canonicalJson([...observation.transcript.measurements].sort(compareMeasurement)));
+  return {
+    claimsMismatch,
+    verification: scenarioVerification(
+      observation.scenario,
+      verifiedKinds,
+      claimsMismatch ? ['derived-claims-mismatch'] : missingKinds,
+    ),
+  };
+}
+
+function collectScenarioClaims(
+  scenario: Threadnote5ReleaseScenario,
+  receipts: readonly {readonly digest: string; readonly kind: string}[],
+  derivedByDigest: ReadonlyMap<string, DerivedClaims>,
+): {
+  readonly assertions: ReadonlySet<string>;
+  readonly measurements: readonly Threadnote5MeasurementV1[];
+  readonly missingKinds: readonly string[];
+  readonly verifiedKinds: readonly string[];
+} {
   const verifiedKinds: string[] = [];
   const missingKinds: string[] = [];
   const assertions = new Set<string>();
   const measurements: Threadnote5MeasurementV1[] = [];
   const correlationsByKind = new Map<Threadnote5LocalSourceKindV1, Threadnote5DerivedCorrelationsV1>();
-  for (const receipt of observation.attestation.subsystemReceipts) {
+  for (const receipt of receipts) {
     if (!isSourceKind(receipt.kind)) {
       missingKinds.push(receipt.kind);
       continue;
@@ -412,61 +561,122 @@ function verifyObservation(
     measurements.push(...derived.measurements);
     missingKinds.push(...(derived.missingKinds ?? []));
   }
-  const correlated = correlateScenarioClaims(observation.scenario, correlationsByKind);
+  const correlated = correlateScenarioClaims(scenario, correlationsByKind);
   for (const assertion of correlated.assertions) assertions.add(assertion);
+  measurements.push(...correlated.measurements);
   missingKinds.push(...correlated.missingKinds);
-  if (!unique(measurements.map(measurement => measurement.id))) {
-    return {
-      claimsMismatch: true,
-      verification: scenarioVerification(observation.scenario, verifiedKinds, ['duplicate-derived-metric']),
-    };
-  }
-  const incomplete = missingKinds.length > 0;
-  const expectedAssertions = observation.transcript.assertionResults
-    .filter(result => result.observed)
-    .map(result => result.id);
-  const claimsMismatch =
-    !incomplete &&
-    (observation.transcript.outcome !== 'passed' ||
-      canonicalJson([...assertions]) !== canonicalJson(expectedAssertions) ||
-      canonicalJson(measurements) !== canonicalJson(observation.transcript.measurements));
+  const verifiedKindSet = new Set(verifiedKinds);
   return {
-    claimsMismatch,
-    verification: scenarioVerification(
-      observation.scenario,
-      verifiedKinds,
-      claimsMismatch ? ['derived-claims-mismatch'] : missingKinds,
-    ),
+    assertions,
+    measurements,
+    missingKinds: missingKinds.filter(kind => !verifiedKindSet.has(kind)),
+    verifiedKinds,
   };
 }
 
 function correlateScenarioClaims(
   scenario: Threadnote5ReleaseScenario,
   correlations: ReadonlyMap<Threadnote5LocalSourceKindV1, Threadnote5DerivedCorrelationsV1>,
-): {readonly assertions: readonly string[]; readonly missingKinds: readonly string[]} {
+): {
+  readonly assertions: readonly string[];
+  readonly measurements: readonly Threadnote5MeasurementV1[];
+  readonly missingKinds: readonly string[];
+} {
+  const feedback = correlations.get('value-report')?.feedbackTrials;
   if (scenario === 'two-agent') {
     const activation = correlations.get('activation');
     const recall = correlations.get('recall');
     const value = correlations.get('value-report');
     if (
       !sameCorrelationSet(activation?.secondSurfaceProofs, recall?.secondSurfaceProofs) ||
-      !sameCorrelationSet(activation?.activationValues, value?.activationValues)
+      !sameCorrelationSet(activation?.activationValues, value?.activationValues) ||
+      !sameLaneSet(
+        recall?.secondSurfaceProofs?.map(proof => proof.proofHash),
+        feedback,
+      )
     ) {
-      return {assertions: [], missingKinds: ['cross-record-correlation']};
+      return {assertions: [], measurements: [], missingKinds: ['cross-record-correlation']};
     }
     return {
       assertions: ['second-surface-reused-decision', 'activation-receipt-reused-by-value-report'],
+      measurements: [],
       missingKinds: [],
     };
   }
   if (scenario === 'git-shared') {
     const sharing = correlations.get('sharing')?.sharedDecisions;
-    const recall = correlations.get('recall')?.secondSurfaceProofs?.map(sharedDecisionLink);
-    return sameCorrelationSet(sharing, recall)
-      ? {assertions: ['git-shared-decision-retrieved'], missingKinds: []}
-      : {assertions: [], missingKinds: ['cross-record-correlation']};
+    const recallProofs = correlations.get('recall')?.secondSurfaceProofs;
+    const recall = recallProofs?.map(sharedDecisionLink);
+    return sameCorrelationSet(sharing, recall) &&
+      (feedback === undefined ||
+        sameLaneSet(
+          recallProofs?.map(proof => proof.proofHash),
+          feedback,
+        ))
+      ? {assertions: ['git-shared-decision-retrieved'], measurements: [], missingKinds: []}
+      : {assertions: [], measurements: [], missingKinds: ['cross-record-correlation']};
   }
-  return {assertions: [], missingKinds: []};
+  if (scenario === 'solo') {
+    const firstBriefs = correlations.get('activation')?.firstBriefs;
+    const contextBriefs = correlations.get('context-brief')?.firstBriefs;
+    if (firstBriefs === undefined || contextBriefs === undefined || feedback === undefined) {
+      return {assertions: [], measurements: [], missingKinds: []};
+    }
+    if (
+      !sameStringSet(
+        firstBriefs?.map(item => item.laneId),
+        contextBriefs?.map(item => item.laneId),
+      ) ||
+      !sameLaneSet(
+        firstBriefs?.map(item => item.laneId),
+        feedback,
+      )
+    ) {
+      return {assertions: [], measurements: [], missingKinds: ['cross-record-correlation']};
+    }
+    return {
+      assertions: [],
+      measurements: [
+        {
+          id: 'time-to-first-cited-correct-plan',
+          sampleCount: firstBriefs.length,
+          total: firstBriefs.reduce((sum, item) => sum + item.durationMilliseconds, 0),
+        },
+      ],
+      missingKinds: [],
+    };
+  }
+  if (scenario === 'offline') {
+    const firstBriefs = correlations.get('activation')?.firstBriefs;
+    if (feedback === undefined) return {assertions: [], measurements: [], missingKinds: []};
+    if (
+      !sameLaneSet(
+        firstBriefs?.map(item => item.laneId),
+        feedback,
+      ) ||
+      feedback?.some(item => !item.offlineVerified)
+    ) {
+      return {assertions: [], measurements: [], missingKinds: ['cross-record-correlation']};
+    }
+    return {assertions: [], measurements: [], missingKinds: []};
+  }
+  return {assertions: [], measurements: [], missingKinds: []};
+}
+
+function sameLaneSet(
+  lanes: readonly string[] | undefined,
+  feedback: readonly Threadnote5FeedbackTrialLinkV1[] | undefined,
+) {
+  if (lanes === undefined || feedback === undefined || lanes.length === 0 || lanes.length !== feedback.length)
+    return false;
+  return (
+    canonicalJson([...lanes].sort(compareText)) === canonicalJson(feedback.map(item => item.laneId).sort(compareText))
+  );
+}
+
+function sameStringSet(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+  if (left === undefined || right === undefined || left.length === 0 || left.length !== right.length) return false;
+  return canonicalJson([...left].sort(compareText)) === canonicalJson([...right].sort(compareText));
 }
 
 function sameCorrelationSet<T>(left: readonly T[] | undefined, right: readonly T[] | undefined): boolean {
@@ -497,7 +707,7 @@ function scenarioVerification(
 const LOCAL_RECEIPT_ADAPTERS: readonly Threadnote5LocalReceiptAdapterV1[] = [
   {
     acceptedScenarios: ['solo', 'two-agent', 'offline', 'interrupted-resumed'],
-    authorityType: record => (record.scenario === 'solo' ? undefined : 'activation-verification'),
+    authorityType: () => 'activation-verification',
     derive: (record, authority) => deriveActivation(record.scenario, record.artifact, authority),
     kind: 'activation',
     requiredAuthority: ['activation-live-verification-authority'],
@@ -510,7 +720,8 @@ const LOCAL_RECEIPT_ADAPTERS: readonly Threadnote5LocalReceiptAdapterV1[] = [
   },
   {
     acceptedScenarios: ['solo', 'output-budgets'],
-    derive: (record, authority) => deriveContextBrief(record.scenario, record.artifact, record.candidate, authority),
+    derive: (record, authority) =>
+      deriveThreadnote5ContextBriefClaims(record.scenario, record.artifact, record.candidate, authority),
     kind: 'context-brief',
     requiredAuthority: ['context-brief-plan-citation-authority'],
     authorityType: record => (record.scenario === 'solo' ? 'context-brief-plan-citation' : undefined),
@@ -554,10 +765,11 @@ const LOCAL_RECEIPT_ADAPTERS: readonly Threadnote5LocalReceiptAdapterV1[] = [
     authorityType: () => 'procedure-verification',
   },
   {
-    acceptedScenarios: ['solo', 'two-agent', 'git-shared'],
-    derive: record => deriveValueReport(record.scenario, record.artifact),
+    acceptedScenarios: ['solo', 'two-agent', 'git-shared', 'offline'],
+    authorityType: () => 'value-report-verification',
+    derive: (record, authority) => deriveThreadnote5ValueReportClaims(record.scenario, record.artifact, authority),
     kind: 'value-report',
-    requiredAuthority: [],
+    requiredAuthority: ['value-report-trial-authority'],
   },
   {
     acceptedScenarios: ['two-agent', 'git-shared'],
@@ -613,10 +825,10 @@ function deriveActivation(
   const source = exactObject(value, ['trials'], 'activation capture');
   const trialValues = boundedArray(source.trials, 'activation trials', 1, MAX_ATTEMPTS);
   const authorityTrials = authority?.type === 'activation-verification' ? authority.trials : [];
-  if (scenario !== 'solo' && authority?.type !== 'activation-verification') {
+  if (authority?.type !== 'activation-verification') {
     return {assertions: [], measurements: [], missingKinds: ['activation-live-verification-authority']};
   }
-  if (authorityTrials.length !== (scenario === 'solo' ? 0 : trialValues.length)) {
+  if (authorityTrials.length !== trialValues.length) {
     throw new Error('Activation authority must exactly cover its captured trials.');
   }
   const trials = trialValues.map(trial => {
@@ -633,6 +845,7 @@ function deriveActivation(
   if (scenario === 'solo') {
     return {
       assertions: trials.every(trial => trial.finalReceipt.firstBrief !== undefined) ? ['local-setup-complete'] : [],
+      correlations: {firstBriefs: trials.map(trial => trial.firstBriefLink!)},
       measurements: [{eligibleCount: trials.length, id: 'setup-success-rate', positiveCount: completed}],
     };
   }
@@ -653,7 +866,11 @@ function deriveActivation(
     if (trials.some(trial => !trial.offlineObserved || trial.finalReceipt.status !== 'completed')) {
       throw new Error('Offline activation trial is incomplete or lacks a zero-attempt network observer.');
     }
-    return {assertions: ['local-flow-complete', 'network-attempts-zero'], measurements: []};
+    return {
+      assertions: ['local-flow-complete', 'network-attempts-zero'],
+      correlations: {firstBriefs: trials.map(trial => trial.firstBriefLink!)},
+      measurements: [],
+    };
   }
   if (trials.some(trial => !trial.interruptionVerified)) {
     throw new Error('Interrupted activation trial lacks a retained pre-resume receipt.');
@@ -666,6 +883,7 @@ function deriveActivation(
 
 interface ParsedActivationTrialV1 {
   readonly finalReceipt: ActivationReceiptV1;
+  readonly firstBriefLink?: Threadnote5FirstBriefLinkV1;
   readonly interruptionVerified: boolean;
   readonly offlineObserved: boolean;
   readonly plan: ActivationPlanV1;
@@ -703,10 +921,9 @@ function parseActivationTrial(
   }
   verifyActivationReceiptChain(plan, chain, approvals);
   if (
-    scenario !== 'solo' &&
-    (authority === undefined ||
-      authority.finalReceiptRevision !== finalReceipt.revision ||
-      authority.activationId !== plan.activationId)
+    authority === undefined ||
+    authority.finalReceiptRevision !== finalReceipt.revision ||
+    authority.activationId !== plan.activationId
   ) {
     throw new Error('Activation trial is not covered by its independent authority.');
   }
@@ -730,7 +947,37 @@ function parseActivationTrial(
   if (scenario === 'interrupted-resumed' && !interruptionVerified) {
     throw new Error('Activation resume evidence is absent.');
   }
-  return {finalReceipt, interruptionVerified, offlineObserved, plan, secondSurfaceLink, secondSurfaceVerified};
+  const firstBriefLink = activationFirstBriefLink(plan, chain);
+  if ((scenario === 'solo' || scenario === 'offline') && firstBriefLink === undefined) {
+    throw new Error('Activation trial lacks a first Context Brief receipt.');
+  }
+  return {
+    finalReceipt,
+    ...(firstBriefLink === undefined ? {} : {firstBriefLink}),
+    interruptionVerified,
+    offlineObserved,
+    plan,
+    secondSurfaceLink,
+    secondSurfaceVerified,
+  };
+}
+
+function activationFirstBriefLink(
+  plan: ActivationPlanV1,
+  chain: readonly ActivationReceiptV1[],
+): Threadnote5FirstBriefLinkV1 | undefined {
+  const receipt = chain.find(item => item.firstBrief !== undefined);
+  if (receipt?.firstBrief === undefined) return undefined;
+  const identity = {
+    activationId: plan.activationId,
+    activationReceiptRevision: receipt.revision,
+    completedAt: receipt.firstBrief.completedAt,
+  };
+  return {
+    ...identity,
+    durationMilliseconds: receipt.firstBrief.durationMilliseconds,
+    laneId: sha256HexSync(`threadnote-5-first-brief-lane-v1\0${canonicalJson(identity)}`),
+  };
 }
 
 function verifyActivationReceiptChain(
@@ -922,56 +1169,6 @@ function secondSurfaceLink(proof: SecondSurfaceProofReceiptV1): Threadnote5Secon
     proofHash: proof.proofHash,
     publicationReceiptHash: proof.publicationReceiptHash,
   };
-}
-
-/**
- * This is intentionally a capture boundary, not an agent runner. The production request and
- * result are reparsed; the event only carries the exact candidate identity and requested budget.
- */
-function deriveContextBrief(
-  scenario: Threadnote5ReleaseScenario,
-  value: unknown,
-  candidate: Threadnote5SourceV1,
-  authority: Threadnote5LocalAuthorityEntryV1 | undefined,
-): DerivedClaims {
-  const source = exactObject(value, ['attempts'], 'Context Brief capture');
-  const attempts = boundedArray(source.attempts, 'Context Brief attempts', 1, MAX_ATTEMPTS);
-  const estimatedTokens = attempts.map(attempt => contextBriefAttemptTokens(attempt, candidate));
-  if (scenario === 'output-budgets') {
-    return {assertions: ['context-brief-800-to-1500-estimated-tokens'], measurements: []};
-  }
-  if (authority?.type !== 'context-brief-plan-citation' || !authority.assertions.includes('first-plan-source-cited')) {
-    return {assertions: [], measurements: [], missingKinds: ['context-brief-plan-citation-authority']};
-  }
-  return {
-    assertions: ['first-plan-source-cited', 'first-plan-correct'],
-    measurements: [
-      {
-        id: 'estimated-tokens-to-first-cited-correct-plan',
-        sampleCount: attempts.length,
-        total: estimatedTokens.reduce((sum, value) => sum + value, 0),
-      },
-    ],
-  };
-}
-
-function contextBriefAttemptTokens(value: unknown, candidate: Threadnote5SourceV1): number {
-  const capture = exactObject(value, ['event', 'request', 'result'], 'Context Brief attempt');
-  const request = parseContextBriefRequestV1(capture.request);
-  const result = exactObject(capture.result, ['structuredContent', 'text'], 'Context Brief result');
-  const structuredContent = parseContextBriefV1(result.structuredContent);
-  const textResult = text(result.text, 'Context Brief result text', 256 * 1024);
-  if (textResult !== renderContextBriefText(structuredContent))
-    throw new Error('Context Brief text projection does not replay.');
-  const measurement = measureAgentToolResponse({structuredContent, text: textResult});
-  const event = exactObject(capture.event, ['candidate'], 'Context Brief capture event');
-  if (
-    !sameSource(parseThreadnote5TrustedSourceV1(event.candidate, 'candidate'), candidate) ||
-    measurement.estimatedTokens > request.budgetTokens
-  ) {
-    throw new Error('Context Brief attempt candidate or budget binding is invalid.');
-  }
-  return measurement.estimatedTokens;
 }
 
 function deriveContextCheck(
@@ -1347,111 +1544,6 @@ function deriveProcedure(
   };
 }
 
-function deriveValueReport(scenario: Threadnote5ReleaseScenario, value: unknown): DerivedClaims {
-  const source = object(value, 'value-report artifact');
-  if (!allowedKeys(source, ['activationTrials', 'captures']) || !Array.isArray(source.captures)) {
-    throw new Error('Value-report artifact has unsupported fields.');
-  }
-  const reports = boundedArray(source.captures, 'value-report captures', 1, MAX_ATTEMPTS).map(parseValueReportCapture);
-  if (!unique(reports.map(report => `${report.period.from}\0${report.period.to}`))) {
-    throw new Error('Value-report capture periods must be unique.');
-  }
-  const eligibleWrong = reports.reduce((sum, report) => sum + report.feedback.total, 0);
-  const wrong = reports.reduce((sum, report) => sum + report.feedback.wrong, 0);
-  const eligibleReuse = reports.reduce((sum, report) => sum + report.setup.started, 0);
-  const reuse = reports.reduce((sum, report) => sum + report.setup.supportedAgentReuse, 0);
-  if (reports.some(report => report.setup.supportedAgentReuse > report.setup.started)) {
-    throw new Error('Value report reuse cannot exceed setup attempts.');
-  }
-  const activationLinks =
-    source.activationTrials === undefined
-      ? undefined
-      : activationValueTrials(boundedArray(source.activationTrials, 'activation value trials', 1, MAX_ATTEMPTS));
-  return {
-    assertions: [],
-    ...(activationLinks === undefined ? {} : {correlations: {activationValues: activationLinks}}),
-    measurements: [
-      {eligibleCount: eligibleWrong, id: 'wrong-memory-rate', positiveCount: wrong},
-      {eligibleCount: eligibleReuse, id: 'second-agent-reuse-rate', positiveCount: reuse},
-    ],
-    ...(scenario === 'two-agent' && activationLinks === undefined
-      ? {missingKinds: ['activation', 'activation-value-linkage']}
-      : {}),
-  };
-}
-
-function activationValueTrials(trials: readonly unknown[]): readonly Threadnote5ActivationValueLinkV1[] {
-  const links: Threadnote5ActivationValueLinkV1[] = [];
-  for (const value of trials) {
-    const trial = exactObject(value, ['events', 'input', 'report', 'state'], 'activation value trial');
-    const state = exactObject(trial.state, ['plan', 'receipt'], 'activation value state');
-    const plan = parseActivationPlanV1(state.plan);
-    const receipt = parseActivationReceiptV1(state.receipt);
-    if (
-      receipt.activationId !== plan.activationId ||
-      receipt.planHash !== plan.planHash ||
-      activationReceiptRevisionV1(receipt) !== receipt.revision
-    ) {
-      throw new Error('Activation value trial state does not match its plan.');
-    }
-    if (!Array.isArray(trial.events)) throw new Error('Activation value trial events are invalid.');
-    const events = trial.events.map(parseLocalValueEvent);
-    const expected = activationValueEventsV1(receipt);
-    if (
-      events.length !== expected.length ||
-      !unique(events.map(event => event.eventId)) ||
-      !unique(expected.map(event => event.eventId))
-    ) {
-      throw new Error('Activation value trial events are incomplete or duplicated.');
-    }
-    for (const event of expected) {
-      const actual = events.find(candidate => candidate.kind === 'activation' && candidate.eventId === event.eventId);
-      if (canonicalJson(actual) !== canonicalJson(event)) {
-        throw new Error('Activation value trial event does not match the production projection.');
-      }
-    }
-    const input = object(trial.input, 'activation value report input');
-    const report = aggregateValueReportV1({
-      ...(input as unknown as ValueReportInputV1),
-      counts: summarizeLocalValueEvents(events, {
-        from: new Date(text(object(input.period, 'activation value period').from, 'activation value period from', 64)),
-        to: new Date(text(object(input.period, 'activation value period').to, 'activation value period to', 64)),
-      }),
-    });
-    if (canonicalJson(report) !== canonicalJson(trial.report)) {
-      throw new Error('Activation value trial report does not match its raw events.');
-    }
-    links.push({activationId: plan.activationId, finalReceiptRevision: receipt.revision});
-  }
-  if (!unique(links.map(link => link.activationId))) throw new Error('Activation value trials must be unique.');
-  return links;
-}
-
-function parseLocalValueEvent(value: unknown): Extract<LocalValueEventV1, {readonly kind: 'activation'}> {
-  const event = object(value, 'local value event');
-  if (
-    event.kind !== 'activation' ||
-    event.version !== 1 ||
-    !hash(event.eventId) ||
-    !integerIn(event.durationMilliseconds, 0, 7 * 24 * 60 * 60 * 1_000) ||
-    !isoInstant(event.timestamp) ||
-    !['started', 'first-evidence', 'completed', 'second-surface-proof'].includes(event.phase as string) ||
-    !allowedKeys(event, ['durationMilliseconds', 'eventId', 'kind', 'phase', 'timestamp', 'version'])
-  ) {
-    throw new Error('Activation value event is invalid.');
-  }
-  return event as unknown as Extract<LocalValueEventV1, {readonly kind: 'activation'}>;
-}
-
-function parseValueReportCapture(value: unknown): ValueReportV1 {
-  const capture = exactObject(value, ['input', 'report'], 'value-report capture');
-  const rebuilt = aggregateValueReportV1(capture.input as ValueReportInputV1);
-  if (canonicalJson(rebuilt) !== canonicalJson(capture.report)) {
-    throw new Error('Value report does not match its source events and counts.');
-  }
-  return rebuilt;
-}
-
 function strictCandidateReview(value: unknown, candidate: Threadnote5SourceV1): CandidateReview {
   const source = object(value, 'candidate review');
   if (
@@ -1756,32 +1848,6 @@ function contentFreeRecord(record: Threadnote5LocalSubsystemReceiptRecordV1): {
   };
 }
 
-function exactObject(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
-  const source = object(value, label);
-  if (canonicalJson(Object.keys(source).sort()) !== canonicalJson([...keys].sort())) {
-    throw new Error(`${label} has unsupported or missing fields.`);
-  }
-  return source;
-}
-
-function allowedKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
-  const set = new Set(allowed);
-  return Object.keys(value).every(key => set.has(key));
-}
-
-function object(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value))
-    throw new Error(`${label} must be an object.`);
-  return value as Record<string, unknown>;
-}
-
-function boundedArray(value: unknown, label: string, minimum: number, maximum: number): readonly unknown[] {
-  if (!Array.isArray(value) || value.length < minimum || value.length > maximum) {
-    throw new Error(`${label} must contain ${minimum} to ${maximum} entries.`);
-  }
-  return value;
-}
-
 function withoutDigest(
   record: Threadnote5LocalSubsystemReceiptRecordV1,
 ): Omit<Threadnote5LocalSubsystemReceiptRecordV1, 'digest'> {
@@ -1797,33 +1863,8 @@ function encodedBytes(value: unknown): number {
   return new TextEncoder().encode(canonicalJson(value)).byteLength;
 }
 
-function unique(values: readonly string[]): boolean {
-  return new Set(values).size === values.length;
-}
-
-function hash(value: unknown): value is string {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value);
-}
-
-function nonEmptyText(value: unknown, maximum: number): value is string {
-  return typeof value === 'string' && value.trim().length > 0 && value.length <= maximum;
-}
-
-function text(value: unknown, label: string, maximum: number): string {
-  if (!nonEmptyText(value, maximum)) throw new Error(`${label} must be bounded non-empty text.`);
-  return value;
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function isoInstant(value: unknown): value is string {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
-}
-
-function integerIn(value: unknown, minimum: number, maximum: number): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= minimum && (value as number) <= maximum;
+function compareMeasurement(left: Threadnote5MeasurementV1, right: Threadnote5MeasurementV1): number {
+  return compareText(left.id, right.id);
 }
 
 function isSourceKind(value: unknown): value is Threadnote5LocalSourceKindV1 {
@@ -1831,24 +1872,7 @@ function isSourceKind(value: unknown): value is Threadnote5LocalSourceKindV1 {
 }
 
 function releaseScenario(value: unknown): Threadnote5ReleaseScenario {
-  const scenarios: readonly Threadnote5ReleaseScenario[] = [
-    'solo',
-    'two-agent',
-    'git-shared',
-    'offline',
-    'dirty-worktree',
-    'interrupted-resumed',
-    'upgrade-downgrade',
-    'provider-neutral-proposal',
-    'verified-procedures',
-    'health-maintenance',
-    'structured-closeout',
-    'stale-citation',
-    'contradiction-triage',
-    'projection-drift',
-    'output-budgets',
-  ];
-  if (!scenarios.includes(value as Threadnote5ReleaseScenario))
+  if (!THREADNOTE_5_RELEASE_SCENARIOS.includes(value as Threadnote5ReleaseScenario))
     throw new Error('Subsystem record scenario is invalid.');
   return value as Threadnote5ReleaseScenario;
 }

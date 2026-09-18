@@ -41,6 +41,9 @@ export const runCloseoutPreview = Effect.fn('memory.closeout.preview')(function*
           `  recommendation: ${item.recommendation}`,
           `  operation: ${item.mutationPreview.operation}`,
           ...(item.mutationPreview.replaceUri ? [`  replace: ${item.mutationPreview.replaceUri}`] : []),
+          ...(item.mutationPreview.replacementSafety?.warning
+            ? [`  WARNING: ${item.mutationPreview.replacementSafety.warning}`]
+            : []),
           `  reason: ${item.comparisonReason}`,
           ...item.mutationPreview.bodyText.split('\n').map(line => `  ${line}`),
         ])),

@@ -28,10 +28,10 @@ const program = Effect.gen(function* () {
     try: () => {
       const fixture = parseThreadnote5ReleaseReadinessFixtureV1(fixtureValue);
       const evidence = parseThreadnote5ReleaseEvidenceV1(evidenceValue, fixture);
-      if (evidence.baseline.state !== 'available') throw new Error('Baseline observations are unavailable.');
+      if (evidence.baseline.state !== 'available') throw new Error('Threadnote 4.7.8 observations are unavailable.');
       return threadnote5BaselineTrialLedger(evidence.baseline.source, evidence.baseline.observations);
     },
-    catch: cause => ScriptError.make({message: 'Could not capture the Threadnote 4.7 trial ledger.', cause}),
+    catch: cause => ScriptError.make({message: 'Could not capture the Threadnote 4.7.8 comparison ledger.', cause}),
   });
   const result = {ledger, ledgerHash: threadnote5BaselineTrialLedgerHash(ledger), version: 1} as const;
   yield* atomicWrite(options.outputPath, `${JSON.stringify(result, undefined, 2)}\n`);
@@ -51,7 +51,7 @@ function parseArguments(args: readonly string[]): {
     if (argument === '--evidence') evidencePath = required(args[++index], argument);
     else if (argument === '--fixture') fixturePath = required(args[++index], argument);
     else if (argument === '--output') outputPath = required(args[++index], argument);
-    else throw ScriptError.make({message: `Unknown Threadnote 4.7 trial-ledger option: ${argument}`});
+    else throw ScriptError.make({message: `Unknown Threadnote 4.7.8 comparison-ledger option: ${argument}`});
   }
   if (evidencePath === undefined || outputPath === undefined) {
     throw ScriptError.make({message: 'Baseline capture requires --evidence <json> and --output <json>.'});

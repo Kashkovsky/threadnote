@@ -164,13 +164,57 @@ describe('setup contracts', () => {
 
   it('requires fresh, complete, non-empty repository evidence', () => {
     const brief = {
-      coverage: {graph: {complete: true}},
+      coverage: {graph: {complete: true}, omissions: {graphCards: 0, graphContracts: 0}},
       graph: {cards: [{}], contracts: []},
       scope: {freshness: 'fresh', readyRepositories: 1, requestedRepositories: 1},
     } as unknown as Parameters<typeof setupBriefIsSourceVerified>[0];
     expect(setupBriefIsSourceVerified(brief)).toBe(true);
     expect(setupBriefIsSourceVerified({...brief, graph: {...brief.graph, cards: [], contracts: []}})).toBe(false);
     expect(setupBriefIsSourceVerified({...brief, scope: {...brief.scope, freshness: 'stale'}})).toBe(false);
+  });
+
+  it('accepts graph evidence omitted by the projection budget', () => {
+    const brief = {
+      coverage: {graph: {complete: true}, omissions: {graphCards: 1, graphContracts: 2}},
+      graph: {cards: [], contracts: []},
+      scope: {freshness: 'fresh', readyRepositories: 1, requestedRepositories: 1},
+    } as unknown as Parameters<typeof setupBriefIsSourceVerified>[0];
+    expect(setupBriefIsSourceVerified(brief)).toBe(true);
+    expect(
+      setupBriefIsSourceVerified({
+        ...brief,
+        coverage: {
+          ...brief.coverage,
+          omissions: {...brief.coverage.omissions, graphCards: 0, graphContracts: 0},
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it('counts returned and omitted graph evidence as one source-evidence total', () => {
+    fc.assert(
+      fc.property(
+        fc.nat({max: 4}),
+        fc.nat({max: 4}),
+        fc.nat({max: 4}),
+        fc.nat({max: 4}),
+        (cards, contracts, omittedCards, omittedContracts) => {
+          const brief = {
+            coverage: {
+              graph: {complete: true},
+              omissions: {graphCards: omittedCards, graphContracts: omittedContracts},
+            },
+            graph: {
+              cards: Array.from({length: cards}, () => ({})),
+              contracts: Array.from({length: contracts}, () => ({})),
+            },
+            scope: {freshness: 'fresh', readyRepositories: 1, requestedRepositories: 1},
+          } as unknown as Parameters<typeof setupBriefIsSourceVerified>[0];
+          expect(setupBriefIsSourceVerified(brief)).toBe(cards + contracts + omittedCards + omittedContracts > 0);
+        },
+      ),
+      {numRuns: 100},
+    );
   });
 
   it('keeps the setup verification request within the current Context Brief contract', () => {

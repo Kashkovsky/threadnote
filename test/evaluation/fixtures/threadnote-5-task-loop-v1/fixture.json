@@ -2,6 +2,22 @@
   "version": 1,
   "suite": "threadnote-5-release-readiness",
   "networkAllowed": false,
+  "baselineComparison": {
+    "id": "threadnote-4.7.x",
+    "version": "4.7.8",
+    "commit": "80ca4acdb7347a4d00b0381f3757a5ac984d9fbf",
+    "comparableMetricIds": [
+      "time-to-first-cited-correct-plan",
+      "estimated-tokens-to-first-cited-correct-plan",
+      "wrong-memory-rate"
+    ],
+    "notApplicableMetricIds": [
+      "setup-success-rate",
+      "second-agent-reuse-rate",
+      "knowledge-delta-completion-rate",
+      "health-resolution-rate"
+    ]
+  },
   "metrics": [
     {
       "id": "time-to-first-cited-correct-plan",
@@ -76,7 +92,7 @@
         {"id": "wrong-memory-rate", "minimumEligibleCount": 10}
       ],
       "requiredAssertions": ["first-plan-source-cited", "first-plan-correct", "local-setup-complete"],
-      "subsystems": ["activation", "context-brief"]
+      "subsystems": ["activation", "context-brief", "value-report"]
     },
     {
       "id": "two-agent",
@@ -97,14 +113,14 @@
       "metricIds": ["wrong-memory-rate"],
       "metricMinimums": [{"id": "wrong-memory-rate", "minimumEligibleCount": 10}],
       "requiredAssertions": ["git-shared-decision-retrieved"],
-      "subsystems": ["sharing", "recall"]
+      "subsystems": ["sharing", "recall", "value-report"]
     },
     {
       "id": "offline",
       "metricIds": ["wrong-memory-rate"],
       "metricMinimums": [{"id": "wrong-memory-rate", "minimumEligibleCount": 10}],
       "requiredAssertions": ["network-attempts-zero", "local-flow-complete"],
-      "subsystems": ["activation"]
+      "subsystems": ["activation", "value-report"]
     },
     {
       "id": "dirty-worktree",

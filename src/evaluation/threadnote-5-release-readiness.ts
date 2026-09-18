@@ -3,6 +3,7 @@ import {
   parseThreadnote5ReleaseReadinessFixtureV1,
   parseThreadnote5TrustedSourceV1,
   threadnote5ReleaseReadinessFixtureHash,
+  THREADNOTE_5_BASELINE_VERSION,
   type Threadnote5MeasurementV1,
   type Threadnote5BaselineV1,
   type Threadnote5MetricDefinitionV1,
@@ -20,6 +21,7 @@ import {
 } from './threadnote-5-release-readiness-receipts.js';
 import {
   parseThreadnote5BaselineTrialLedger,
+  threadnote5BaselineTrialLedger,
   threadnote5BaselineTrialLedgerHash,
 } from './threadnote-5-release-readiness-baseline-ledger.js';
 
@@ -38,7 +40,14 @@ export interface Threadnote5UnknownMetricV1 {
   readonly state: 'unknown';
 }
 
-export type Threadnote5MetricValueV1 = Threadnote5ObservedMetricV1 | Threadnote5UnknownMetricV1;
+export interface Threadnote5NotApplicableMetricV1 {
+  readonly reason: 'introduced-in-threadnote-5';
+  readonly sourceVersion: typeof THREADNOTE_5_BASELINE_VERSION;
+  readonly state: 'not-applicable';
+}
+
+export type Threadnote5MetricValueV1 =
+  Threadnote5NotApplicableMetricV1 | Threadnote5ObservedMetricV1 | Threadnote5UnknownMetricV1;
 
 export interface Threadnote5MetricComparisonV1 {
   readonly baseline: Threadnote5MetricValueV1;
@@ -49,7 +58,8 @@ export interface Threadnote5MetricComparisonV1 {
         readonly state: 'observed';
         readonly value: number;
       }
-    | {readonly reason: Threadnote5UnknownMetricReason; readonly state: 'unknown'};
+    | {readonly reason: Threadnote5UnknownMetricReason; readonly state: 'unknown'}
+    | {readonly reason: Threadnote5NotApplicableMetricV1['reason']; readonly state: 'not-applicable'};
   readonly direction: 'higher' | 'lower';
   readonly id: Threadnote5ReleaseMetric;
   readonly threshold: number;
@@ -164,10 +174,10 @@ export function evaluateThreadnote5ReleaseReadiness(input: {
     baselineLedgerTrusted;
   const baselineMetrics =
     evidence.baseline.state === 'unavailable'
-      ? unknownMetrics(fixture, '4.7.x', 'baseline-unavailable')
+      ? unavailableBaselineMetrics(fixture, 'baseline-unavailable')
       : captureTrusted && baselineTrusted
-        ? aggregateMetrics(fixture, evidence.baseline.source, evidence.baseline.observations)
-        : unknownMetrics(fixture, '4.7.x', captureTrusted ? 'baseline-untrusted' : 'capture-untrusted');
+        ? aggregateBaselineMetrics(fixture, evidence.baseline.source, evidence.baseline.observations)
+        : unavailableBaselineMetrics(fixture, captureTrusted ? 'baseline-untrusted' : 'capture-untrusted');
   const metrics = fixture.metrics.map(definition => {
     const candidate = candidateMetrics.get(definition.id)!;
     const baseline = baselineMetrics.get(definition.id)!;
@@ -211,12 +221,12 @@ export function evaluateThreadnote5ReleaseReadiness(input: {
     );
   }
   if (evidence.baseline.state === 'unavailable') {
-    insufficiencies.push(`4.7.x baseline is unavailable: ${evidence.baseline.reason}`);
+    insufficiencies.push(`4.7.8 baseline is unavailable: ${evidence.baseline.reason}`);
   } else if (!baselineTrusted) {
-    insufficiencies.push('4.7.x baseline does not match a trusted expected source identity');
+    insufficiencies.push('4.7.8 baseline does not match its trusted identity, executable, and ledger');
   } else {
     for (const [id, metric] of baselineMetrics) {
-      if (metric.state === 'unknown') insufficiencies.push(`4.7.x baseline metric is unknown: ${id}`);
+      if (metric.state === 'unknown') insufficiencies.push(`4.7.8 baseline metric is unknown: ${id}`);
     }
   }
   const uniqueFailures = [...new Set(qualityFailures)].sort();
@@ -344,11 +354,56 @@ function unknownMetrics(
   );
 }
 
+function aggregateBaselineMetrics(
+  fixture: Threadnote5ReleaseReadinessFixtureV1,
+  source: Threadnote5SourceV1,
+  observations: readonly Threadnote5ObservationV1[],
+): ReadonlyMap<Threadnote5ReleaseMetric, Threadnote5MetricValueV1> {
+  const comparable = new Set(fixture.baselineComparison.comparableMetricIds);
+  const aggregated = aggregateMetrics(fixture, source, observations);
+  return new Map(
+    fixture.metrics.map(definition => [
+      definition.id,
+      comparable.has(definition.id) ? aggregated.get(definition.id)! : notApplicableBaselineMetric(),
+    ]),
+  );
+}
+
+function unavailableBaselineMetrics(
+  fixture: Threadnote5ReleaseReadinessFixtureV1,
+  reason: Threadnote5UnknownMetricReason,
+): ReadonlyMap<Threadnote5ReleaseMetric, Threadnote5MetricValueV1> {
+  const comparable = new Set(fixture.baselineComparison.comparableMetricIds);
+  return new Map(
+    fixture.metrics.map(definition => [
+      definition.id,
+      comparable.has(definition.id)
+        ? ({
+            reason,
+            sourceVersion: THREADNOTE_5_BASELINE_VERSION,
+            state: 'unknown',
+          } satisfies Threadnote5UnknownMetricV1)
+        : notApplicableBaselineMetric(),
+    ]),
+  );
+}
+
+function notApplicableBaselineMetric(): Threadnote5NotApplicableMetricV1 {
+  return {
+    reason: 'introduced-in-threadnote-5',
+    sourceVersion: THREADNOTE_5_BASELINE_VERSION,
+    state: 'not-applicable',
+  };
+}
+
 function compareMetric(
   definition: Threadnote5MetricDefinitionV1,
   baseline: Threadnote5MetricValueV1,
   candidate: Threadnote5MetricValueV1,
 ): Threadnote5MetricComparisonV1['delta'] {
+  if (baseline.state === 'not-applicable' || candidate.state === 'not-applicable') {
+    return {reason: 'introduced-in-threadnote-5', state: 'not-applicable'};
+  }
   if (baseline.state === 'unknown' || candidate.state === 'unknown') {
     return {
       reason:
@@ -401,18 +456,7 @@ function canonicalBaselineLedgerMatches(
 ): boolean {
   return (
     sameSource(ledger.source, baseline.source) &&
-    canonicalJson(ledger.observations) ===
-      canonicalJson(
-        baseline.observations
-          .map(observation => ({
-            measurements: observation.transcript.measurements,
-            outcome: observation.transcript.outcome,
-            receiptHash: observation.receiptHash,
-            scenario: observation.scenario,
-            transcriptDigest: observation.attestation.transcriptDigest,
-          }))
-          .sort((left, right) => left.scenario.localeCompare(right.scenario)),
-      )
+    canonicalJson(ledger) === canonicalJson(threadnote5BaselineTrialLedger(baseline.source, baseline.observations))
   );
 }
 

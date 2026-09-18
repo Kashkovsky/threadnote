@@ -55,6 +55,36 @@ export type Threadnote5ReleaseSubsystem = (typeof THREADNOTE_5_RELEASE_SUBSYSTEM
 export type Threadnote5EvidenceClass = 'fixture-replay' | 'release-candidate';
 export type Threadnote5ObservationOutcome = 'failed' | 'passed' | 'unknown';
 
+export const THREADNOTE_5_BASELINE_COMMIT = '80ca4acdb7347a4d00b0381f3757a5ac984d9fbf' as const;
+export const THREADNOTE_5_BASELINE_VERSION = '4.7.8' as const;
+export const THREADNOTE_5_BASELINE_COMPARABLE_METRICS = [
+  'time-to-first-cited-correct-plan',
+  'estimated-tokens-to-first-cited-correct-plan',
+  'wrong-memory-rate',
+] as const satisfies readonly Threadnote5ReleaseMetric[];
+export const THREADNOTE_5_BASELINE_NOT_APPLICABLE_METRICS = [
+  'setup-success-rate',
+  'second-agent-reuse-rate',
+  'knowledge-delta-completion-rate',
+  'health-resolution-rate',
+] as const satisfies readonly Threadnote5ReleaseMetric[];
+
+export interface Threadnote5BaselineComparisonPolicyV1 {
+  readonly commit: typeof THREADNOTE_5_BASELINE_COMMIT;
+  readonly comparableMetricIds: readonly Threadnote5ReleaseMetric[];
+  readonly id: 'threadnote-4.7.x';
+  readonly notApplicableMetricIds: readonly Threadnote5ReleaseMetric[];
+  readonly version: typeof THREADNOTE_5_BASELINE_VERSION;
+}
+
+export const APPROVED_THREADNOTE_5_BASELINE_COMPARISON: Threadnote5BaselineComparisonPolicyV1 = {
+  commit: THREADNOTE_5_BASELINE_COMMIT,
+  comparableMetricIds: THREADNOTE_5_BASELINE_COMPARABLE_METRICS,
+  id: 'threadnote-4.7.x',
+  notApplicableMetricIds: THREADNOTE_5_BASELINE_NOT_APPLICABLE_METRICS,
+  version: THREADNOTE_5_BASELINE_VERSION,
+};
+
 export interface Threadnote5MetricDefinitionV1 {
   readonly direction: 'higher' | 'lower';
   readonly id: Threadnote5ReleaseMetric;
@@ -76,6 +106,7 @@ export interface Threadnote5ScenarioContractV1 {
 }
 
 export interface Threadnote5ReleaseReadinessFixtureV1 {
+  readonly baselineComparison: Threadnote5BaselineComparisonPolicyV1;
   readonly metrics: readonly Threadnote5MetricDefinitionV1[];
   readonly networkAllowed: false;
   readonly scenarios: readonly Threadnote5ScenarioContractV1[];
@@ -259,7 +290,7 @@ export const APPROVED_THREADNOTE_5_SCENARIOS: readonly Threadnote5ScenarioContra
       {id: 'wrong-memory-rate', minimumEligibleCount: 10},
     ],
     requiredAssertions: ['first-plan-source-cited', 'first-plan-correct', 'local-setup-complete'],
-    subsystems: ['activation', 'context-brief'],
+    subsystems: ['activation', 'context-brief', 'value-report'],
   },
   {
     id: 'two-agent',
@@ -280,14 +311,14 @@ export const APPROVED_THREADNOTE_5_SCENARIOS: readonly Threadnote5ScenarioContra
     metricIds: ['wrong-memory-rate'],
     metricMinimums: [{id: 'wrong-memory-rate', minimumEligibleCount: 10}],
     requiredAssertions: ['git-shared-decision-retrieved'],
-    subsystems: ['sharing', 'recall'],
+    subsystems: ['sharing', 'recall', 'value-report'],
   },
   {
     id: 'offline',
     metricIds: ['wrong-memory-rate'],
     metricMinimums: [{id: 'wrong-memory-rate', minimumEligibleCount: 10}],
     requiredAssertions: ['network-attempts-zero', 'local-flow-complete'],
-    subsystems: ['activation'],
+    subsystems: ['activation', 'value-report'],
   },
   {
     id: 'dirty-worktree',
@@ -390,11 +421,12 @@ export const APPROVED_THREADNOTE_5_SCENARIOS: readonly Threadnote5ScenarioContra
 
 export function parseThreadnote5ReleaseReadinessFixtureV1(value: unknown): Threadnote5ReleaseReadinessFixtureV1 {
   const fixture = record(value, 'release-readiness fixture');
-  exactKeys(fixture, ['metrics', 'networkAllowed', 'scenarios', 'suite', 'version']);
+  exactKeys(fixture, ['baselineComparison', 'metrics', 'networkAllowed', 'scenarios', 'suite', 'version']);
   if (fixture.version !== THREADNOTE_5_RELEASE_READINESS_VERSION) invalid('fixture version must be 1');
   if (fixture.suite !== THREADNOTE_5_RELEASE_READINESS_SUITE) invalid('fixture suite is invalid');
   if (fixture.networkAllowed !== false) invalid('release-readiness fixture must prohibit network access');
   if (!Array.isArray(fixture.metrics) || !Array.isArray(fixture.scenarios)) invalid('fixture arrays are required');
+  const baselineComparison = parseBaselineComparisonPolicy(fixture.baselineComparison);
   const metrics = fixture.metrics.map(parseMetricDefinition);
   const scenarios = fixture.scenarios.map(parseScenarioContract);
   if (canonicalJson(metrics) !== canonicalJson(APPROVED_THREADNOTE_5_METRICS)) {
@@ -403,7 +435,14 @@ export function parseThreadnote5ReleaseReadinessFixtureV1(value: unknown): Threa
   if (canonicalJson(scenarios) !== canonicalJson(APPROVED_THREADNOTE_5_SCENARIOS)) {
     invalid('fixture scenarios differ from the approved release contract');
   }
-  return {metrics, networkAllowed: false, scenarios, suite: THREADNOTE_5_RELEASE_READINESS_SUITE, version: 1};
+  return {
+    baselineComparison,
+    metrics,
+    networkAllowed: false,
+    scenarios,
+    suite: THREADNOTE_5_RELEASE_READINESS_SUITE,
+    version: 1,
+  };
 }
 
 export function threadnote5ReleaseReadinessFixtureHash(value: unknown): string {
@@ -534,6 +573,34 @@ function parseMetricDefinition(value: unknown): Threadnote5MetricDefinitionV1 {
   };
 }
 
+function parseBaselineComparisonPolicy(value: unknown): Threadnote5BaselineComparisonPolicyV1 {
+  const policy = record(value, 'baseline comparison policy');
+  exactKeys(policy, ['commit', 'comparableMetricIds', 'id', 'notApplicableMetricIds', 'version']);
+  const parsed: Threadnote5BaselineComparisonPolicyV1 = {
+    commit: matching(
+      policy.commit,
+      /^[0-9a-f]{40}$/u,
+      'baseline comparison commit',
+    ) as typeof THREADNOTE_5_BASELINE_COMMIT,
+    comparableMetricIds: stringArray(policy.comparableMetricIds, 'baseline comparable metric ids').map(id =>
+      literal(id, THREADNOTE_5_RELEASE_METRICS, 'baseline comparable metric id'),
+    ),
+    id: literal(policy.id, ['threadnote-4.7.x'] as const, 'baseline comparison source id'),
+    notApplicableMetricIds: stringArray(policy.notApplicableMetricIds, 'baseline not-applicable metric ids').map(id =>
+      literal(id, THREADNOTE_5_RELEASE_METRICS, 'baseline not-applicable metric id'),
+    ),
+    version: matching(
+      policy.version,
+      /^4\.7\.8$/u,
+      'baseline comparison version',
+    ) as typeof THREADNOTE_5_BASELINE_VERSION,
+  };
+  if (canonicalJson(parsed) !== canonicalJson(APPROVED_THREADNOTE_5_BASELINE_COMPARISON)) {
+    invalid('baseline comparison policy differs from the approved release contract');
+  }
+  return parsed;
+}
+
 function parseScenarioContract(value: unknown): Threadnote5ScenarioContractV1 {
   const scenario = record(value, 'scenario contract');
   exactKeys(scenario, ['id', 'metricIds', 'metricMinimums', 'requiredAssertions', 'subsystems']);
@@ -662,6 +729,9 @@ function parseSource(value: unknown, role: 'baseline' | 'candidate'): Threadnote
   );
   if ((role === 'candidate' && id !== 'threadnote-5.0.0') || (role === 'baseline' && id !== 'threadnote-4.7.x')) {
     invalid(`${role} source id is invalid`);
+  }
+  if (role === 'baseline' && (commit !== THREADNOTE_5_BASELINE_COMMIT || version !== THREADNOTE_5_BASELINE_VERSION)) {
+    invalid('baseline source must match the exact 4.7.8 release');
   }
   return {commit, executableSha256: hash(source.executableSha256, `${role} executable hash`), id, version};
 }

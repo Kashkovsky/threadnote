@@ -507,7 +507,11 @@ export function setupBriefIsSourceVerified(brief: ProjectedContextBriefV1['struc
     brief.scope.requestedRepositories === 1 &&
     brief.scope.readyRepositories === 1 &&
     brief.coverage.graph.complete &&
-    brief.graph.cards.length + brief.graph.contracts.length > 0
+    brief.graph.cards.length +
+      brief.graph.contracts.length +
+      brief.coverage.omissions.graphCards +
+      brief.coverage.omissions.graphContracts >
+      0
   );
 }
 
