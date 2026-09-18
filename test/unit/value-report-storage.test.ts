@@ -1,5 +1,6 @@
 import {it as effectIt} from '@effect/vitest';
 import {DateTime, Effect, FileSystem} from 'effect';
+import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {readRecallFeedbackEvents, recordRecallFeedback} from '../../src/recall/feedback.js';
@@ -24,6 +25,26 @@ describe('local value-report storage controls', () => {
     const entries = ['notes.txt', ...exports].reverse();
 
     expect(selectValueReportExportNames(entries)).toEqual(exports);
+  });
+
+  it('selects staged and complete managed artifacts independently of input order', () => {
+    fc.assert(
+      fc.property(fc.uniqueArray(fc.nat({max: 100_000}), {maxLength: 40}), ids => {
+        const expected = ids
+          .flatMap(id => {
+            const digest = id.toString(16).padStart(24, '0');
+            return [
+              `threadnote-value-pilot-report-v1-${digest}.json`,
+              `.threadnote-value-report-export-v1-${digest}.staging`,
+            ];
+          })
+          .sort();
+        const input = [...expected, 'caller-copy.json', '.unrelated.staging', 'report.json'].reverse();
+        expect(selectValueReportExportNames(input)).toEqual(expected);
+        expect(selectValueReportExportNames(selectValueReportExportNames(input))).toEqual(expected);
+      }),
+      {numRuns: 50},
+    );
   });
 
   effectIt.effect('previews retention and deletion before applying bounded content-free mutations', () =>

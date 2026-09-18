@@ -4,7 +4,8 @@ import {ResourceStore, type ResourceStoreShape} from '../effect/resource-store.j
 import type {CompactPlan, ForgetAction, KeepUpdateAction, MemoryRecord} from './hygiene.js';
 import {discardDeferredCodeAnchorIntent} from './deferred_code_anchor.js';
 import {discardMemoryRelocation} from './relocation.js';
-import {resourceStoreLocation} from './migrations.js';
+import {MemoryOperationError, resourceStoreLocation} from './migrations.js';
+import {writeMemoryFile} from '../share/index.js';
 import type {RuntimeConfig} from '../types.js';
 
 export class MemoryHygieneApplyConflict extends Schema.TaggedError<MemoryHygieneApplyConflict>()(
@@ -162,6 +163,38 @@ export const applyAtomicExactDuplicateActions = Effect.fn('memoryHygiene.applyAt
   }
 
   return {forgottenUris, updatedSurvivorUris} satisfies ExactDuplicateApplyResult;
+});
+
+/** Apply every CLI compact keep update while preserving the atomic exact-duplicate retirement boundary. */
+export const applyCliCompactKeepUpdates = Effect.fn('memoryHygiene.applyCliCompactKeepUpdates')(function* (
+  config: RuntimeConfig,
+  plan: CompactPlan,
+  records: readonly MemoryRecord[],
+) {
+  const exactDuplicateApply = yield* applyAtomicExactDuplicateActions(config, plan, records);
+  const atomicallyUpdatedUris = new Set(exactDuplicateApply.updatedSurvivorUris);
+  const fs = yield* FileSystem.FileSystem;
+  const store = yield* ResourceStore;
+  const location = resourceStoreLocation(config);
+  for (const action of plan.keepUpdates.filter(candidate => !atomicallyUpdatedUris.has(candidate.uri))) {
+    yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [action.uri],
+      Effect.gen(function* () {
+        const current = yield* store.read(location, action.uri).pipe(Effect.option);
+        if (Option.isNone(current) || current.value !== action.expectedContent) {
+          return yield* MemoryOperationError.make({
+            message: `Memory ${action.uri} changed during hygiene apply. Re-run compact.`,
+          });
+        }
+        yield* writeMemoryFile(config, 'threadnote-native', action.uri, action.content, 'replace', false, {
+          quiet: true,
+        });
+        yield* discardDeferredCodeAnchorIntent(config, action.uri);
+      }),
+    );
+  }
 });
 
 function requireExpectedContent(

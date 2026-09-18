@@ -41,7 +41,7 @@ import {
   topicForRecord,
   type MemoryRecord,
 } from './hygiene.js';
-import {applyAtomicExactDuplicateActions} from './hygiene_apply.js';
+import {applyCliCompactKeepUpdates} from './hygiene_apply.js';
 import {
   assertMemoryDocumentSchemaWritable,
   formatMemoryDocument,
@@ -109,6 +109,7 @@ import {
   type RecallSemanticScoresResult,
 } from '../recall/runtime.js';
 import {loadRecallExactMatches} from '../recall/index.js';
+import {refreshRecallDerivedIndexesAfterCanonicalMutation} from '../recall/mcp_refresh.js';
 import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../recall/memory_identity.js';
 import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../recall/eligibility.js';
 import {
@@ -173,7 +174,6 @@ import {
   sharedTeamNameForUri,
   stripPersonalProvenanceForSharedPublication,
   resourceUriToWorktreeRelative,
-  writeMemoryFile,
   writeMemoryFileChecked,
   writeSharedWorktreeFile,
 } from '../share/index.js';
@@ -892,37 +892,23 @@ export const runCompact = Effect.fn('runCompact')(function* (config: RuntimeConf
     }
   }
 
-  const fs = yield* FileSystem.FileSystem;
-  const ov = NATIVE_RESOURCE_BACKEND;
-  const exactDuplicateApply = yield* applyAtomicExactDuplicateActions(config, plan, records);
-  const atomicallyUpdatedUris = new Set(exactDuplicateApply.updatedSurvivorUris);
-  for (const action of plan.keepUpdates.filter(candidate => !atomicallyUpdatedUris.has(candidate.uri))) {
-    yield* withMemoryUriLocks(
-      fs,
-      config.agentContextHome,
-      [action.uri],
-      Effect.gen(function* () {
-        const [current] = yield* readMemoryRecordsByUri(config, [action.uri]);
-        if (current?.content !== action.expectedContent) {
-          return yield* MemoryOperationError.make({
-            message: `Memory ${action.uri} changed during hygiene apply. Re-run compact.`,
-          });
-        }
-        yield* writeMemoryFile(config, ov, action.uri, action.content, 'replace', false, {quiet: true});
-        yield* discardDeferredCodeAnchorIntent(config, action.uri);
-      }),
-    );
-  }
-
-  for (const action of plan.archives) {
-    yield* runArchive(config, action.uri, {
-      dryRun: false,
-      expectedContent: action.expectedContent,
-      kind: action.kind,
-      project: action.project,
-      topic: action.topic,
-    });
-  }
+  const invalidatedUris = plannedActions.map(action => action.uri);
+  yield* Effect.gen(function* () {
+    yield* applyCliCompactKeepUpdates(config, plan, records);
+    for (const action of plan.archives) {
+      yield* runArchive(config, action.uri, {
+        deferRecallIndexRefresh: true,
+        dryRun: false,
+        expectedContent: action.expectedContent,
+        invalidatedUris,
+        kind: action.kind,
+        project: action.project,
+        topic: action.topic,
+      });
+    }
+  }).pipe(
+    Effect.ensuring(refreshRecallDerivedIndexesAfterCanonicalMutation(config, invalidatedUris).pipe(Effect.asVoid)),
+  );
 });
 
 export const runCompactDiagnostics = Effect.fn('memory.runCompactDiagnostics')(function* (
@@ -1187,6 +1173,7 @@ export const runArchive = Effect.fn('runArchive')(function* (
     return;
   }
   const fs = yield* FileSystem.FileSystem;
+  const invalidatedUris = options.invalidatedUris ?? [uri];
   yield* withMemoryUriLocks(
     fs,
     config.agentContextHome,
@@ -1218,11 +1205,13 @@ export const runArchive = Effect.fn('runArchive')(function* (
       });
       const archiveUri = yield* storeMemory(config, {
         bodyText: memoryArchiveBody(sourceRecord.body),
+        deferRecallIndexRefresh: true,
         dryRun: false,
         metadata,
         skipMemoryIdentityLock: true,
         title: 'MEMORY',
       });
+      invalidatedUris.push(archiveUri);
       const currentSource = yield* store.read(resourceStoreLocation(config), uri).pipe(Effect.option);
       if (Option.isNone(currentSource) || currentSource.value.trim() !== originalMemory) {
         const rolledBack = yield* removeResourceWithRetry(ov, config, archiveUri);
@@ -1242,6 +1231,12 @@ export const runArchive = Effect.fn('runArchive')(function* (
         yield* Console.error(`Archive stored and the original is no longer present: ${uri}`);
       }
     }),
+  ).pipe(
+    Effect.ensuring(
+      options.deferRecallIndexRefresh
+        ? Effect.void
+        : refreshRecallDerivedIndexesAfterCanonicalMutation(config, invalidatedUris).pipe(Effect.asVoid),
+    ),
   );
 });
 
@@ -1560,6 +1555,9 @@ export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeCo
         sharedWrite,
       ),
     );
+    if (!options.deferRecallIndexRefresh) {
+      yield* refreshRecallDerivedIndexesAfterCanonicalMutation(config, [replaceUri]);
+    }
     return replaceUri;
   }
   // Two-pass formatting: assume the caller's replaceUri is a true supersede,
@@ -1685,6 +1683,9 @@ export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeCo
         ],
         write,
       );
+  if (!options.deferRecallIndexRefresh) {
+    yield* refreshRecallDerivedIndexesAfterCanonicalMutation(config, [memoryUri, ...(replaceUri ? [replaceUri] : [])]);
+  }
   return memoryUri;
 });
 
