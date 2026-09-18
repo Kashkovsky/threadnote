@@ -16,6 +16,7 @@ import {
   MEMORY_SCHEMA_VERSION,
 } from '../../src/memory/code_citation.js';
 import {
+  canonicalMemoryDocumentContent,
   formatMemoryDocument,
   MAX_MEMORY_RELATIONS,
   MEMORY_RELATION_TYPES,
@@ -284,23 +285,31 @@ describe('Threadnote MCP toolsets', () => {
         expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(640);
         expect(instructions).toContain('callerCwd');
         expect(instructions).toContain('threadnote://');
-        expect(instructions).toContain('durable');
         expect(instructions).toContain('handoff');
-        expect(instructions).toContain('`project` excludes others');
-        expect(instructions).toContain('omit it for global recall');
-        expect(instructions).toContain('Nested cwd prefers its package');
-        expect(instructions).toContain('repo-wide/sibling evidence remains eligible');
-        expect(instructions).toContain('user-approved candidates');
-        expect(instructions).toContain('Do not store');
-        expect(instructions).toContain('Results are unread `threadnote://` pointers, not evidence');
-        expect(instructions).toContain('read them via `read_context`');
-        expect(instructions).toContain('`inspect_code_graph` before broad search');
-        expect(instructions).toContain('`analyze_code_graph` for architecture');
-        expect(instructions).toContain('exact search remains useful');
-        expect(instructions).toContain('Retry indexing when advised');
+        expect(instructions).toContain(
+          'For non-trivial local repo work, call `context_brief` with task + absolute `callerCwd`',
+        );
+        expect(instructions).toContain('`recall_context` + `read_context` is the memory alternative');
+        expect(instructions.indexOf('context_brief')).toBeLessThan(instructions.indexOf('recall_context'));
+        expect(instructions).toContain('CLI fallback if unavailable');
+        expect(instructions).toContain('`threadnote://` pointers are unread, not evidence');
+        expect(instructions).toContain('Use `inspect_code_graph`/`analyze_code_graph`, then exact source');
+        expect(instructions).toContain('Close with private `remember_context(kind=handoff)`');
+        expect(instructions).toContain('Optional five-field KD: `review_session_context`');
+        expect(instructions).toContain(
+          '`apply_memory_candidates` with `approve` (optional `editedText`), `defer`, or `reject`',
+        );
+        expect(instructions).toContain('Never auto-apply/share');
+        expect(instructions).toContain('No sensitive data; confirm publishes; never publish handoffs/preferences');
+        expect(instructions).not.toContain('Start with `recall_context`');
+        expect(instructions).not.toContain(
+          'Store durable knowledge; `review_session_context` adds approved candidates',
+        );
         const reviewTool = (await client.listTools()).tools.find(tool => tool.name === 'review_session_context');
-        expect(reviewTool?.description).toContain('After routine durable and handoff writes');
-        expect(reviewTool?.description).toContain('additional reviewable');
+        expect(reviewTool?.description).toContain('five-field Knowledge Delta');
+        expect(reviewTool?.description).toContain('handoff is separate and required');
+        expect(reviewTool?.description).toContain('explicit approval is required');
+        expect(reviewTool?.description).not.toContain('After routine durable and handoff writes');
       },
       {toolset: 'core'},
     );
@@ -311,7 +320,9 @@ describe('Threadnote MCP toolsets', () => {
       async client => {
         const tools = await client.listTools();
         expect(tools.tools.map(tool => tool.name)).toEqual(CORE_TOOL_NAMES);
-        expect(Buffer.byteLength(JSON.stringify(tools.tools))).toBeLessThanOrEqual(17_500);
+        const serializedToolsBytes = Buffer.byteLength(JSON.stringify(tools.tools));
+        // Bound metadata growth without penalizing future concise descriptions.
+        expect(serializedToolsBytes).toBeLessThanOrEqual(17_650);
         expect(tools.tools.find(tool => tool.name === 'recall_context')?.description).toContain(
           'unread threadnote:// pointers, not evidence',
         );
@@ -3816,6 +3827,149 @@ describe('Threadnote MCP toolsets', () => {
           candidates: Array<{state?: string}>;
         };
         expect(conflicted.candidates[0]?.state).toBe('conflict');
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('requires explicit destructive approval before legacy cross-URI cleanup', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const topic = 'candidate-recovery-destructive';
+        const replacementUri =
+          'threadnote://user/test-user/memories/handoffs/active/threadnote/legacy-recovery-source.md';
+        const replacementPath = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'handoffs',
+          'active',
+          'threadnote',
+          'legacy-recovery-source.md',
+        );
+        const detailedBody = Array.from(
+          {length: 12},
+          (_unused, index) => `- Continuity detail ${index} remains required for release recovery.`,
+        ).join('\n');
+        await mkdir(join(replacementPath, '..'), {recursive: true});
+        await writeFile(
+          replacementPath,
+          formatMemoryDocument(
+            'HANDOFF',
+            {
+              kind: 'handoff',
+              project: 'threadnote',
+              sourceAgentClient: 'codex',
+              status: 'active',
+              timestamp: '2026-07-22T10:00:00.000Z',
+              topic,
+            },
+            `## Current state\n${detailedBody}`,
+          ),
+          'utf8',
+        );
+
+        const reviewText = await callText(client, 'review_session_context', {
+          evidence: ['test/integration/mcp.native-tools.test.ts'],
+          handoff: ['Continue after the remaining release check.'],
+          outcome: 'Prepared the next release recovery step.',
+          project: 'threadnote',
+          sourceAgentClient: 'codex',
+          task: 'Recover an interrupted cross-URI replacement',
+          topic,
+        });
+        const reviewId = /Review (review-[a-f0-9]+)/.exec(reviewText)?.[1];
+        const candidateId = /candidate: (review-[a-f0-9]+-1)/.exec(reviewText)?.[1];
+        expect(reviewId).toBeDefined();
+        expect(candidateId).toBeDefined();
+        const reviewPath = join(fixture.home, 'threadnote', 'candidates', 'v1', 'reviews', `${reviewId}.json`);
+        const review = JSON.parse(await readFile(reviewPath, 'utf8')) as {
+          candidates: Array<Record<string, unknown>>;
+        };
+        const candidate = review.candidates[0];
+        if (!candidate) {
+          throw TestError.make({message: 'Expected the replacement candidate review fixture.'});
+        }
+        expect(candidate).toMatchObject({targetUri: replacementUri});
+        const destinationUri = `threadnote://user/test-user/memories/handoffs/active/threadnote/${topic}.md`;
+        const destinationPath = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'handoffs',
+          'active',
+          'threadnote',
+          `${topic}.md`,
+        );
+        const approvedAt = '2026-07-23T10:00:00.000Z';
+        const approvedBody = String(candidate?.proposedText ?? '');
+        const destinationContent = formatMemoryDocument(
+          'HANDOFF',
+          {
+            candidateId,
+            kind: 'handoff',
+            project: 'threadnote',
+            sourceAgentClient: 'codex',
+            status: 'active',
+            timestamp: approvedAt,
+            topic,
+          },
+          approvedBody,
+        );
+        await writeFile(destinationPath, destinationContent, 'utf8');
+        review.candidates[0] = {
+          ...candidate,
+          applyApprovedAt: approvedAt,
+          applyBodyText: approvedBody,
+          applyContentHash: createHash('sha256')
+            .update(canonicalMemoryDocumentContent(destinationContent))
+            .digest('hex'),
+          applyOperation: 'replace',
+          applyReplaceUri: replacementUri,
+          applyStage: 'written',
+          applyTargetUri: destinationUri,
+          state: 'applying',
+        };
+        await writeFile(reviewPath, `${JSON.stringify(review, undefined, 2)}\n`, 'utf8');
+
+        await expect(
+          callErrorText(client, 'apply_memory_candidates', {
+            action: 'approve',
+            approved: true,
+            candidateId,
+            reviewId,
+            revision: 1,
+          }),
+        ).resolves.toContain('allowDestructiveReplacement=true');
+        expect(existsSync(replacementPath)).toBe(true);
+        expect(existsSync(destinationPath)).toBe(true);
+
+        const recovered = await client.callTool(
+          {
+            arguments: {
+              action: 'approve',
+              allowDestructiveReplacement: true,
+              approved: true,
+              candidateId,
+              reviewId,
+              revision: 1,
+            },
+            name: 'apply_memory_candidates',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(recovered.isError, JSON.stringify(recovered)).not.toBe(true);
+        expect(existsSync(replacementPath)).toBe(false);
+        expect(existsSync(destinationPath)).toBe(true);
+        const audit = await readFile(join(fixture.home, 'threadnote', 'candidates', 'v1', 'audit.jsonl'), 'utf8');
+        expect(audit).toContain('"allowDestructiveReplacement":true');
       },
       {toolset: 'core'},
     );

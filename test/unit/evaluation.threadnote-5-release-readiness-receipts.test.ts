@@ -14,6 +14,8 @@ import {
   type Threadnote5LocalAuthorityManifestV1,
 } from '../../src/evaluation/threadnote-5-release-readiness-authority.js';
 import {
+  THREADNOTE_5_BASELINE_COMMIT,
+  THREADNOTE_5_BASELINE_VERSION,
   threadnote5ObservationReceiptHash,
   threadnote5ObservationTranscriptHash,
   threadnote5SourceHash,
@@ -1076,10 +1078,10 @@ describe('Threadnote 5 source-native receipt verification', () => {
 
   it('requires external runtime execution authority for migration receipts', () => {
     const baseline = {
-      commit: '3'.repeat(40),
+      commit: THREADNOTE_5_BASELINE_COMMIT,
       executableSha256: '4'.repeat(64),
       id: 'threadnote-4.7.x',
-      version: '4.7.9',
+      version: THREADNOTE_5_BASELINE_VERSION,
     } as const;
     const execution = (from: Threadnote5SourceV1, to: Threadnote5SourceV1, outcome: 'readable' | 'safe-refusal') => ({
       afterDigest: 'a'.repeat(64),

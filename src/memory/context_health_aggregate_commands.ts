@@ -22,7 +22,7 @@ import {
   type ContextHealthAggregateSourceV1,
   type ContextHealthAggregateUnknownReasonV1,
 } from './context_health_schedule.js';
-import {parseMemoryDocument, type MemoryRecord} from './document.js';
+import {memoryHeaderValue, parseMemoryDocument, type MemoryRecord} from './document.js';
 import {memoryIdFromIdentityAlias} from './identity_alias.js';
 import {readPersonalProjectMemoryRecords} from './maintenance_records.js';
 
@@ -261,10 +261,10 @@ const readTeamRecords = Effect.fn('memory.contextHealth.readTeamRecords')(functi
       record === undefined ||
       record.metadata.kind !== 'durable' ||
       record.metadata.project !== project ||
-      record.metadata.status !== 'active' ||
-      record.metadata.topic !== parsedPath.topic ||
+      // Shared replacements keep a stable path while allowing topic metadata to evolve in place.
+      record.metadata.topic === undefined ||
       record.headerTitle !== 'MEMORY' ||
-      record.metadata.visibility !== 'shared'
+      !isCompatibleTeamVisibility(record)
     ) {
       return yield* aggregateReadError('Team snapshot contains a malformed selected memory.');
     }
@@ -278,6 +278,13 @@ const readTeamRecords = Effect.fn('memory.contextHealth.readTeamRecords')(functi
     evidenceRevision: snapshotEvidenceRevision(head, evidence),
   };
 });
+
+function isCompatibleTeamVisibility(record: MemoryRecord): boolean {
+  const normalizedContent = record.content.replace(/\r\n?/gu, '\n');
+  const header = normalizedContent.split('\n\n', 1)[0] ?? '';
+  const visibility = memoryHeaderValue(header, 'visibility');
+  return visibility === undefined || visibility === 'personal' || visibility === 'shared';
+}
 
 const observeTeamSnapshot = Effect.fn('memory.contextHealth.observeTeamSnapshot')(function* (
   worktree: string,

@@ -85,9 +85,11 @@ auto-execute, activation receipt reuse in ValueReport, provider-neutral Git prop
 read-only scheduling plus configured Git-team read-only health aggregation. Organization-hosted
 scheduling is outside this procedure. Measured lanes retain the ten-eligible-sample minimum.
 
-## Compare 4.7.x
+## Compare with the last 4.x release
 
-Capture 4.7 evidence in a separate local artifact and supply its identity outside that artifact:
+The baseline is fixed to Threadnote 4.7.8 at commit
+`80ca4acdb7347a4d00b0381f3757a5ac984d9fbf`. Capture its evidence in a separate local artifact, then independently
+record the executable hash for the exact platform binary that produced it:
 
 ```sh
 bun run capture:threadnote-5-baseline-ledger -- \
@@ -100,16 +102,25 @@ bun run eval:threadnote-5-release-readiness -- \
   --capture-manifest-sha256 <reviewed-manifest-sha256> \
   --authority-manifest reviewed-authority.json \
   --authority-manifest-sha256 <independently-reviewed-64-hex-sha256> \
-  --baseline-version 4.7.9 \
-  --baseline-commit <4.7-commit> \
-  --baseline-executable-sha256 <4.7-executable-sha256> \
+  --baseline-version 4.7.8 \
+  --baseline-commit 80ca4acdb7347a4d00b0381f3757a5ac984d9fbf \
+  --baseline-executable-sha256 <4.7.8-platform-executable-sha256> \
   --baseline-trial-ledger baseline-trial-ledger.json \
   --baseline-trial-ledger-sha256 <independently-reviewed-ledger-hash> \
   --retained-subsystem-receipts retained-receipts.json \
   --evidence candidate-evidence.json
 ```
 
-Do not treat a baseline artifact as its own authority. The evaluator accepts a comparison only
-when the independently supplied version, commit, and executable hash exactly match its retained
-baseline observations. For a downgrade, run the same fixture after restoring 4.7.x; retain a
-safe-refusal result instead of forcing a destructive downgrade.
+Do not treat the baseline artifact as its own authority. Version, commit, executable hash, ledger, and the ledger hash
+reviewed outside that ledger are one mandatory trust boundary; omitting or mismatching any part keeps the comparison
+unknown and cannot admit a release.
+
+Only measurements that both releases genuinely share are compared: time and estimated tokens to the first cited correct
+Context Brief plan, plus the raw eligible/wrong feedback counts used to calculate wrong-memory rate. Setup success,
+second-agent reuse, Knowledge Delta completion, and health resolution were introduced for the 5.0 workflow. Their
+4.7.8 values and deltas are therefore reported as `not-applicable`, never as zero, passed, improved, regressed, or
+unknown. Candidate evidence and thresholds remain independent release gates, so a candidate failure still fails the
+release even when a baseline comparison is unavailable or not applicable.
+
+For a downgrade, run the same fixture after restoring 4.7.8; retain a safe-refusal result instead of forcing a
+destructive downgrade.

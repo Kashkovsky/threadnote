@@ -1,13 +1,18 @@
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
+  APPROVED_THREADNOTE_5_BASELINE_COMPARISON,
   APPROVED_THREADNOTE_5_METRICS,
   APPROVED_THREADNOTE_5_SCENARIOS,
+  THREADNOTE_5_BASELINE_COMPARABLE_METRICS,
+  THREADNOTE_5_BASELINE_COMMIT,
+  THREADNOTE_5_BASELINE_NOT_APPLICABLE_METRICS,
   parseThreadnote5ReleaseEvidenceV1,
   parseThreadnote5ReleaseReadinessFixtureV1,
   threadnote5CaptureManifestForEvidence,
   threadnote5CaptureManifestHash,
   threadnote5ObservationReceiptHash,
   threadnote5ObservationTranscriptHash,
+  parseThreadnote5TrustedSourceV1,
   threadnote5ReleaseEvidenceHash,
   threadnote5ReleaseReadinessFixtureHash,
   threadnote5SourceHash,
@@ -40,10 +45,10 @@ const CANDIDATE: Threadnote5SourceV1 = {
   version: `5.0.0-local.g${'1'.repeat(40)}`,
 };
 const BASELINE: Threadnote5SourceV1 = {
-  commit: '3'.repeat(40),
+  commit: THREADNOTE_5_BASELINE_COMMIT,
   executableSha256: '4'.repeat(64),
   id: 'threadnote-4.7.x',
-  version: '4.7.9',
+  version: '4.7.8',
 };
 
 describe('Threadnote 5 release-readiness evidence', () => {
@@ -74,6 +79,7 @@ describe('Threadnote 5 release-readiness evidence', () => {
   });
 
   it('freezes the complete offline scenario, subsystem, and metric contract', () => {
+    expect(fixture.baselineComparison).toEqual(APPROVED_THREADNOTE_5_BASELINE_COMPARISON);
     expect(fixture.networkAllowed).toBe(false);
     expect(fixture.scenarios).toEqual(APPROVED_THREADNOTE_5_SCENARIOS);
     expect(fixture.metrics).toEqual(APPROVED_THREADNOTE_5_METRICS);
@@ -94,6 +100,15 @@ describe('Threadnote 5 release-readiness evidence', () => {
       'projection-drift',
       'output-budgets',
     ]);
+    expect(() =>
+      parseThreadnote5ReleaseReadinessFixtureV1({
+        ...fixtureJson,
+        baselineComparison: {
+          ...fixtureJson.baselineComparison,
+          comparableMetricIds: [...fixtureJson.baselineComparison.comparableMetricIds, 'setup-success-rate'],
+        },
+      }),
+    ).toThrow(/baseline comparison policy differs/u);
   });
 
   it('keeps a trusted sealed replay and absent 4.7.x baseline explicitly unknown', () => {
@@ -102,13 +117,20 @@ describe('Threadnote 5 release-readiness evidence', () => {
 
     expect(result.scenarios.every(item => item.state === 'passed')).toBe(true);
     expect(result.metrics.every(item => item.thresholdPassed === true)).toBe(true);
-    expect(result.metrics.every(item => item.baseline.state === 'unknown' && item.delta.state === 'unknown')).toBe(
-      true,
-    );
+    expect(
+      result.metrics
+        .filter(item => THREADNOTE_5_BASELINE_COMPARABLE_METRICS.includes(item.id as never))
+        .every(item => item.baseline.state === 'unknown' && item.delta.state === 'unknown'),
+    ).toBe(true);
+    expect(
+      result.metrics
+        .filter(item => THREADNOTE_5_BASELINE_NOT_APPLICABLE_METRICS.includes(item.id as never))
+        .every(item => item.baseline.state === 'not-applicable' && item.delta.state === 'not-applicable'),
+    ).toBe(true);
     expect(result.evidence.captureManifestTrusted).toBe(true);
     expect(result.gate).toEqual({
       insufficiencies: [
-        '4.7.x baseline is unavailable: not-captured',
+        '4.7.8 baseline is unavailable: not-captured',
         'sealed fixture replay is not production release evidence',
       ],
       qualityFailures: [],
@@ -116,7 +138,7 @@ describe('Threadnote 5 release-readiness evidence', () => {
     });
   });
 
-  it('compares only an exact independently supplied baseline identity', () => {
+  it('keeps a passing candidate independent from trusted not-applicable baseline lanes', () => {
     const baseline: Threadnote5BaselineV1 = {
       observations: observationsFor(BASELINE, 'baseline'),
       source: BASELINE,
@@ -139,12 +161,39 @@ describe('Threadnote 5 release-readiness evidence', () => {
     ).toEqual([
       ['time-to-first-cited-correct-plan', 'observed', 'improved'],
       ['estimated-tokens-to-first-cited-correct-plan', 'observed', 'improved'],
-      ['setup-success-rate', 'observed', 'improved'],
+      ['setup-success-rate', 'not-applicable', false],
       ['wrong-memory-rate', 'observed', 'improved'],
-      ['second-agent-reuse-rate', 'observed', 'improved'],
-      ['knowledge-delta-completion-rate', 'observed', 'improved'],
-      ['health-resolution-rate', 'observed', 'improved'],
+      ['second-agent-reuse-rate', 'not-applicable', false],
+      ['knowledge-delta-completion-rate', 'not-applicable', false],
+      ['health-resolution-rate', 'not-applicable', false],
     ]);
+    expect(result.metrics.every(item => item.thresholdPassed === true)).toBe(true);
+    expect(result.gate.qualityFailures).toEqual([]);
+  });
+
+  it('keeps candidate threshold failures dominant when trusted baseline lanes are not applicable', () => {
+    const baseline: Threadnote5BaselineV1 = {
+      observations: observationsFor(BASELINE, 'baseline'),
+      source: BASELINE,
+      state: 'available',
+    };
+    const failing = rewriteScenarioMeasurements(
+      evidenceBundle({baseline, mode: 'fixture-replay'}),
+      'solo',
+      measurement =>
+        measurement.id === 'setup-success-rate' && 'eligibleCount' in measurement
+          ? {...measurement, positiveCount: 8}
+          : measurement,
+    );
+    const result = evaluate(failing, BASELINE);
+
+    expect(result.metrics.find(item => item.id === 'setup-success-rate')).toMatchObject({
+      baseline: {state: 'not-applicable'},
+      delta: {state: 'not-applicable'},
+      thresholdPassed: false,
+    });
+    expect(result.gate.status).toBe('failed');
+    expect(result.gate.qualityFailures).toContain('candidate metric setup-success-rate misses its minimum threshold');
   });
 
   it('keeps malformed retained receipt inputs unknown', () => {
@@ -277,22 +326,31 @@ describe('Threadnote 5 release-readiness evidence', () => {
       evidenceBundle({baseline, mode: 'fixture-replay'}),
       'solo',
       measurement =>
-        measurement.id === 'setup-success-rate' && 'eligibleCount' in measurement
-          ? {...measurement, eligibleCount: 9, positiveCount: 9}
+        measurement.id === 'time-to-first-cited-correct-plan' && 'sampleCount' in measurement
+          ? {...measurement, sampleCount: 9, total: (measurement.total / measurement.sampleCount) * 9}
           : measurement,
     );
     const result = evaluate(evidence, BASELINE);
 
-    expect(result.metrics.find(item => item.id === 'setup-success-rate')).toMatchObject({
+    expect(result.metrics.find(item => item.id === 'time-to-first-cited-correct-plan')).toMatchObject({
       baseline: {reason: 'source-incomplete', state: 'unknown'},
       delta: {reason: 'source-incomplete', state: 'unknown'},
     });
     expect(
       result.metrics
-        .filter(metric => metric.id !== 'setup-success-rate')
+        .filter(
+          metric =>
+            metric.id !== 'time-to-first-cited-correct-plan' &&
+            THREADNOTE_5_BASELINE_COMPARABLE_METRICS.includes(metric.id as never),
+        )
         .every(metric => metric.baseline.state === 'observed' && metric.delta.state === 'observed'),
     ).toBe(true);
-    expect(result.gate.insufficiencies).toContain('4.7.x baseline metric is unknown: setup-success-rate');
+    expect(
+      result.metrics
+        .filter(metric => THREADNOTE_5_BASELINE_NOT_APPLICABLE_METRICS.includes(metric.id as never))
+        .every(metric => metric.baseline.state === 'not-applicable' && metric.delta.state === 'not-applicable'),
+    ).toBe(true);
+    expect(result.gate.insufficiencies).toContain('4.7.8 baseline metric is unknown: time-to-first-cited-correct-plan');
   });
 
   it('withholds every comparison when the baseline identity is absent or mismatched', () => {
@@ -302,17 +360,26 @@ describe('Threadnote 5 release-readiness evidence', () => {
       state: 'available',
     };
     const evidence = evidenceBundle({baseline, mode: 'fixture-replay'});
-    for (const expectedBaselineSource of [
-      undefined,
-      {...BASELINE, executableSha256: '9'.repeat(64)},
-      {...BASELINE, commit: '8'.repeat(40)},
-      {...BASELINE, version: '4.7.8'},
-    ]) {
+    for (const expectedBaselineSource of [undefined, {...BASELINE, executableSha256: '9'.repeat(64)}]) {
       const result = evaluate(evidence, expectedBaselineSource);
       expect(
-        result.metrics.every(metric => metric.baseline.state === 'unknown' && metric.delta.state === 'unknown'),
+        result.metrics
+          .filter(metric => THREADNOTE_5_BASELINE_COMPARABLE_METRICS.includes(metric.id as never))
+          .every(metric => metric.baseline.state === 'unknown' && metric.delta.state === 'unknown'),
       ).toBe(true);
-      expect(result.gate.insufficiencies).toContain('4.7.x baseline does not match a trusted expected source identity');
+      expect(result.gate.insufficiencies).toContain(
+        '4.7.8 baseline does not match its trusted identity, executable, and ledger',
+      );
+    }
+  });
+
+  it('rejects any baseline release other than exact Threadnote 4.7.8', () => {
+    for (const source of [
+      {...BASELINE, commit: '8'.repeat(40)},
+      {...BASELINE, version: '4.7.7'},
+      {...BASELINE, version: '4.7.9'},
+    ]) {
+      expect(() => parseThreadnote5TrustedSourceV1(source, 'baseline')).toThrow(/exact 4\.7\.8 release/u);
     }
   });
 
@@ -334,7 +401,16 @@ describe('Threadnote 5 release-readiness evidence', () => {
       expectedCaptureManifestSha256: evidence.capture.manifestHash,
       fixture,
     });
-    expect(trusted.metrics.every(metric => metric.baseline.state === 'observed')).toBe(true);
+    expect(
+      trusted.metrics
+        .filter(metric => THREADNOTE_5_BASELINE_COMPARABLE_METRICS.includes(metric.id as never))
+        .every(metric => metric.baseline.state === 'observed' && metric.delta.state === 'observed'),
+    ).toBe(true);
+    expect(
+      trusted.metrics
+        .filter(metric => THREADNOTE_5_BASELINE_NOT_APPLICABLE_METRICS.includes(metric.id as never))
+        .every(metric => metric.baseline.state === 'not-applicable' && metric.delta.state === 'not-applicable'),
+    ).toBe(true);
 
     const missing = evaluateThreadnote5ReleaseReadiness({
       evidence,
@@ -344,7 +420,11 @@ describe('Threadnote 5 release-readiness evidence', () => {
       expectedCaptureManifestSha256: evidence.capture.manifestHash,
       fixture,
     });
-    expect(missing.metrics.every(metric => metric.baseline.state === 'unknown')).toBe(true);
+    expect(
+      missing.metrics
+        .filter(metric => THREADNOTE_5_BASELINE_COMPARABLE_METRICS.includes(metric.id as never))
+        .every(metric => metric.baseline.state === 'unknown'),
+    ).toBe(true);
 
     const untrusted = evaluateThreadnote5ReleaseReadiness({
       baselineTrialLedger: ledger,
@@ -356,7 +436,73 @@ describe('Threadnote 5 release-readiness evidence', () => {
       expectedCaptureManifestSha256: evidence.capture.manifestHash,
       fixture,
     });
-    expect(untrusted.metrics.every(metric => metric.baseline.state === 'unknown')).toBe(true);
+    expect(
+      untrusted.metrics
+        .filter(metric => THREADNOTE_5_BASELINE_COMPARABLE_METRICS.includes(metric.id as never))
+        .every(metric => metric.baseline.state === 'unknown'),
+    ).toBe(true);
+  });
+
+  it('canonicalizes baseline observation and common-measurement ordering before hashing', () => {
+    const observations = observationsFor(BASELINE, 'baseline');
+    const expected = threadnote5BaselineTrialLedger(BASELINE, observations);
+    const expectedHash = threadnote5BaselineTrialLedgerHash(expected);
+    expect(
+      new Set(expected.observations.flatMap(observation => observation.measurements.map(item => item.id))),
+    ).toEqual(new Set(THREADNOTE_5_BASELINE_COMPARABLE_METRICS));
+    expect(
+      expected.observations
+        .flatMap(observation => observation.measurements)
+        .filter(measurement => measurement.id === 'wrong-memory-rate')
+        .every(measurement => 'eligibleCount' in measurement && 'positiveCount' in measurement),
+    ).toBe(true);
+
+    fc.assert(
+      fc.property(
+        fc.shuffledSubarray([...observations.keys()], {
+          minLength: observations.length,
+          maxLength: observations.length,
+        }),
+        fc.boolean(),
+        (order, reverseMeasurements) => {
+          const reordered = order.map(index => {
+            const observation = observations[index];
+            return reverseMeasurements
+              ? {
+                  ...observation,
+                  transcript: {
+                    ...observation.transcript,
+                    measurements: [...observation.transcript.measurements].reverse(),
+                  },
+                }
+              : observation;
+          });
+          const actual = threadnote5BaselineTrialLedger(BASELINE, reordered);
+          expect(actual).toEqual(expected);
+          expect(threadnote5BaselineTrialLedgerHash(actual)).toBe(expectedHash);
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
+  it('rejects Threadnote 5-only metrics from an externally supplied baseline ledger', () => {
+    const ledger = threadnote5BaselineTrialLedger(BASELINE, observationsFor(BASELINE, 'baseline'));
+    const incompatible = {
+      ...ledger,
+      observations: ledger.observations.map((observation, index) =>
+        index === 0
+          ? {
+              ...observation,
+              measurements: [{eligibleCount: 1, id: 'setup-success-rate', positiveCount: 1}],
+            }
+          : observation,
+      ),
+    };
+
+    expect(() => threadnote5BaselineTrialLedgerHash(incompatible)).toThrow(
+      /metric is not comparable with Threadnote 4\.7\.8/u,
+    );
   });
 
   it('fails closed when a candidate scenario is missing', () => {
@@ -447,8 +593,16 @@ describe('Threadnote 5 release-readiness evidence', () => {
     const result = evaluateWithManifest(relabeled, originalTrustedHash);
 
     expect(result.evidence.captureManifestTrusted).toBe(false);
+    expect(result.metrics.every(metric => metric.candidate.state === 'unknown')).toBe(true);
     expect(
-      result.metrics.every(metric => metric.candidate.state === 'unknown' && metric.delta.state === 'unknown'),
+      result.metrics
+        .filter(metric => THREADNOTE_5_BASELINE_COMPARABLE_METRICS.includes(metric.id as never))
+        .every(metric => metric.delta.state === 'unknown'),
+    ).toBe(true);
+    expect(
+      result.metrics
+        .filter(metric => THREADNOTE_5_BASELINE_NOT_APPLICABLE_METRICS.includes(metric.id as never))
+        .every(metric => metric.delta.state === 'not-applicable'),
     ).toBe(true);
     expect(result.gate.qualityFailures).toContain('capture manifest does not match the trusted expected hash');
   });

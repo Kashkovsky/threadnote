@@ -2,8 +2,8 @@ import type {DocsArticle, DocsSection} from './docsTypes.js';
 
 export const threadnote5JourneyDocsArticle: DocsArticle = {
   id: 'threadnote-5-journey',
-  title: 'The Threadnote 5 journey',
-  summary: 'Start one task with cited context, finish with a reviewed delta, and prove another agent can reuse it.',
+  title: 'How Threadnote helps on a real task',
+  summary: 'Give a coding agent useful context before it starts, then save the decisions worth keeping.',
   keywords: [
     'guided activation',
     'two agent workflow',
@@ -14,64 +14,99 @@ export const threadnote5JourneyDocsArticle: DocsArticle = {
   body: [
     {
       type: 'paragraph',
-      text: 'Threadnote 5 gives engineering teams one context lifecycle across the [agent surfaces they already use](/agents/). An agent starts with the smallest useful set of current code evidence and reviewed decisions. When the task ends, the agent proposes only what changed for a person to review. Approved knowledge can move through the team’s Git policy and be reused from another supported surface.',
+      text: 'Coding agents can read your code, but they do not automatically know why earlier decisions were made, what another agent already tried, or which notes are still current. A coding-agent environment is the editor, CLI, or hosted integration where an agent works; the catalog calls that declared integration a surface. Start with one environment: Threadnote gives it a short, cited briefing before work and lets you review the useful lessons it leaves behind.',
     },
     {
       type: 'heading',
-      text: 'The complete loop',
+      text: 'What you get',
     },
     {
       type: 'list',
       items: [
-        'Connect two catalog-supported surfaces. The catalog declares each surface’s managed capabilities and any safety limitation.',
-        'Import selected repository guidance or ADRs into review. Imported text never becomes trusted knowledge automatically.',
-        'Ask for a bounded Context Brief. It combines relevant decisions, active handoffs, verified procedures, and current code evidence with provenance and freshness.',
-        'Work from exact local files and graph evidence. The current worktree remains authoritative.',
-        'At closeout, review a Knowledge Delta: decisions and rationale, constraints, checks performed, knowledge made obsolete, and unresolved risks.',
-        'Approve, edit, defer, or reject each proposal. Publish an approved durable decision directly or materialize a provider-neutral Git proposal for normal review.',
-        'Keep the result healthy with review dates, expiry, citation checks, Context CI, and preview-first repair or retirement.',
-        'Retrieve the approved decision from the second surface and inspect local, content-free value evidence.',
+        'A faster start: the agent sees relevant decisions, current task state, and the parts of the code connected to the work.',
+        'Fewer repeated explanations: approved decisions can be reused in later sessions and in other supported coding agents.',
+        'Safer memory: Threadnote shows where information came from and when the code has changed since it was written.',
+        'Human control: imported notes, new lessons, and team sharing all stay behind an explicit review.',
       ],
     },
     {
       type: 'note',
-      text: 'The local and Git-team journey works without an organization service. Hosted identity, scheduling, dashboards, and provider automation are a separate deployment track and are not required for this workflow.',
+      text: 'A Context Brief is the short, cited briefing an agent gets before a task. A Knowledge Delta is the short, reviewable list of decisions, constraints, checks, outdated information, and open risks learned during the task.',
     },
     {
       type: 'heading',
-      text: 'Try the guided two-surface journey',
+      text: 'The everyday workflow',
+    },
+    {
+      type: 'list',
+      items: [
+        'Connect one [supported coding agent](/agents/) to the repository.',
+        'Start a task with a Context Brief. The agent gets only the decisions and current code evidence that look useful for that task.',
+        'Work normally. The repository and your current local files remain the source of truth.',
+        'At the end, review the Knowledge Delta. Approve, edit, defer, or reject each suggested lesson.',
+        'Keep approved decisions local and review their citations, dates, and contradictions as the project changes.',
+      ],
+    },
+    {
+      type: 'heading',
+      text: 'Start with one agent',
     },
     {
       type: 'paragraph',
-      text: 'Use guided activation after [installing Threadnote](installation/) and configuring a Git-backed team. It pauses at every review or publication boundary, records only bounded content-free progress, and can resume without repeating completed work.',
+      text: 'You do not need two agents or a team share to get started. [Connect your first agent](/docs/connect-an-agent/) and Threadnote will prepare the current repository, build its code map, check the installation, and produce a real Context Brief. On a new project, the first brief may contain mostly current code and repository guidance. Its value grows as you approve decisions and handoffs over time.',
+    },
+    {
+      type: 'code',
+      language: 'sh',
+      code: `threadnote agents list
+threadnote setup <surface>
+threadnote setup <surface> --apply`,
+    },
+    {
+      type: 'heading',
+      text: 'Optional: share the proof with a team',
+    },
+    {
+      type: 'list',
+      items: [
+        'Import selected repository guidance or ADRs into review; imported text never becomes trusted knowledge automatically.',
+        'Keep approved context private, publish one reviewed decision, or materialize a provider-neutral Git proposal for normal team review.',
+        'Retrieve the approved decision from a second coding-agent environment only when you want to prove portable reuse.',
+      ],
+    },
+    {
+      type: 'heading',
+      text: 'Optional: try the guided two-agent journey',
+    },
+    {
+      type: 'paragraph',
+      text: 'In Threadnote, a “surface” simply means a coding agent or agent environment. The optional two-agent journey is an end-to-end test for teams that want proof that context is portable: one agent starts with a brief and records a reviewed decision; a different agent then finds that exact shared decision. It is useful after the one-agent setup works and you have configured a Git-backed team share. It is not required for normal use.',
+    },
+    {
+      type: 'list',
+      items: [
+        'Connects two supported coding agents without relying on a product-name allowlist.',
+        'Lets you review selected repository guidance before Threadnote treats it as reusable knowledge.',
+        'Stops for approval before saving or sharing a decision.',
+        'Finishes only after the second agent retrieves the shared decision itself.',
+        'Can resume after interruption without repeating completed steps.',
+      ],
     },
     {
       type: 'code',
       language: 'sh',
       code: `cp docs/examples/threadnote-activation-request.json /tmp/threadnote-activation.json
-# Edit the two catalog surface IDs, absolute paths, project, topic, and selected guidance.
+# Add two agent IDs, the repository path, the task, and any guidance you want to review.
 threadnote activate start --request /tmp/threadnote-activation.json
 threadnote activate start --request /tmp/threadnote-activation.json --apply`,
     },
     {
       type: 'paragraph',
-      text: 'Each apply run advances to at most one approval boundary. Review the exact preview, use the emitted approval token, and continue with the same request. The final challenge must be completed from the named second surface; pasted recall output is not accepted as proof of reuse.',
-    },
-    {
-      type: 'code',
-      language: 'sh',
-      code: `threadnote activate continue \
-  --activation-id <activation-id> \
-  --request /tmp/threadnote-activation.json \
-  --approval <approval-token> \
-  --approved \
-  --apply
-
-threadnote activate status --activation-id <activation-id>`,
+      text: 'Each apply run stops at the next approval. Review the preview, approve it with the token Threadnote prints, and continue with the same request. `threadnote activate status --activation-id <activation-id>` shows where the journey paused.',
     },
     {
       type: 'warning',
-      text: 'Activation never silently publishes a decision. If you choose proposal mode, merge the materialized local proposal into the configured team branch and sync it before asking the second surface to prove retrieval.',
+      text: 'Threadnote never shares a decision automatically. If you choose Git proposal mode, review and merge the local proposal, then sync it before asking the second agent to find the decision.',
     },
   ],
 };
@@ -93,6 +128,16 @@ export const contextLifecycleConceptDocsArticle: DocsArticle = {
       rows: [
         ['Repository and worktree', 'Current implementation, tests, and local changes', 'Exact local files win'],
         [
+          'Imported guidance',
+          'Repository instructions and ADRs proposed for review',
+          'Never durable knowledge until reviewed',
+        ],
+        [
+          'Guidance projection',
+          'Approved knowledge rendered into catalog-declared agent instructions',
+          'Repository guidance remains authoritative',
+        ],
+        [
           'Durable memory',
           'Reviewed decisions, rationale, contracts, and constraints',
           'Canonical Markdown or reviewed team Git',
@@ -109,9 +154,24 @@ export const contextLifecycleConceptDocsArticle: DocsArticle = {
           'Not authoritative until explicitly reviewed and applied',
         ],
         [
+          'Git proposal',
+          'An approved Knowledge Delta prepared for normal team review',
+          'Not shared until its Git review is accepted',
+        ],
+        [
+          'Health finding',
+          'Evidence that saved context may be stale, conflicting, expired, or disconnected',
+          'A review prompt, never a silent mutation',
+        ],
+        [
           'Derived index or graph',
           'Fast retrieval and current-source relationships',
           'Disposable evidence with snapshot and coverage receipts',
+        ],
+        [
+          'Local value evidence',
+          'Content-free activation, review, reuse, feedback, and repair counts',
+          'Private aggregate signals, not source or memory content',
         ],
       ],
     },

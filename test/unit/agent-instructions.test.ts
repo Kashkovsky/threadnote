@@ -2,6 +2,8 @@ import {readFile} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from 'vitest';
 
+import {continueAdapter} from '../../src/agent_integration/adapters/continue.js';
+
 const skillNames = ['threadnote-context', 'threadnote-code-graph', 'threadnote-memory'] as const;
 const personalCursorCloudSkillNames = ['threadnote-context', 'threadnote-memory'] as const;
 
@@ -66,34 +68,34 @@ describe('agent instructions', () => {
       'authoritative',
       '`threadnote://` pointers',
       'code graph before broad source search',
-      'leave a handoff and durable detailed feature memory (when applicable)',
-      'Threadnote MCP tools',
-      'CLI only as a fallback',
+      'required handoff; optional five-field Knowledge Delta needs approval',
+      '`remember_context(kind=handoff)` is the required private direct write',
+      'For repo work, start with Context Brief',
+      'CLI fallback when unavailable',
+      'optional proposals are never auto-applied/auto-shared',
       'secrets, credentials, customer data, or raw production logs',
-      'Confirm with the user before publishing durable memory',
+      'Confirm before durable sharing',
     ]) {
       expect(normalized).toContain(requiredText);
     }
   });
 
   it('preserves detailed context, graph, memory, and code-brief contracts in progressive skills', async () => {
-    const skills = (await agentSkills()).join('\n').replace(/\s+/g, ' ');
+    const skillFiles = await agentSkills();
+    const skills = skillFiles.join('\n').replace(/\s+/g, ' ');
+    const [context, graph, memory] = skillFiles;
+    const normalizedContext = context.replace(/\s+/g, ' ');
+    expect(context.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(400);
+    expect(graph.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(300);
+    expect(memory.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(500);
     for (const requiredText of [
       '`context_brief`',
       '`codeRefs`',
-      'memory-to-code',
-      'graph-to-memory',
+      'Context Brief lifecycle',
       '`recall_context`',
-      '`memoryRefs`',
-      '`relationTypes`',
-      'pure seed-only navigation',
-      '`explicit-memory-connection`',
-      'one-hop expansion',
-      'not recursive graph discovery',
-      'truncated connection coverage is not evidence',
       'absolute `callerCwd`',
       '`read_context`',
-      'unread pointers, not evidence',
+      'Recall output is pointers, not evidence',
       '`inspect_code_graph` before broad text search',
       '`query`',
       '`node`',
@@ -105,28 +107,81 @@ describe('agent instructions', () => {
       '`kind: durable`',
       '`kind: handoff`',
       '`replaceUri`',
-      'Author `relations` only when',
-      '`depends_on`, `evidence_for`, `references`, `related_to`, and `supersedes`',
-      'Never infer a durable edge from topical similarity alone',
-      'complete intended relation set',
-      'ready exact-current graph',
+      '`relations`',
+      'replacement supplies the complete set',
+      'carry forward every still-valid relation',
+      'five-field Knowledge Delta',
+      '`decisions` + `rationale`',
+      '`constraints`',
+      '`verificationPerformed`',
+      '`knowledgeInvalidated`',
+      '`unresolvedRisks`',
+      '`review_session_context`',
+      '`apply_memory_candidates`',
+      '`approve` (optionally with `editedText`), `defer`, or `reject`',
+      '`remember_context(kind=handoff)`',
       '`citationPolicy: "defer"`',
       '`--defer-code-refs`',
       '`citationPolicy: "require-current"`',
       '`finalize_code_refs`',
       'private pending anchor',
-      'store the memory now',
-      'active, queued, or deferred',
-      'exact literals',
-      'do not repeatedly poll',
-      'Shared and inactive writes remain strict',
-      'identity-fenced relocation receipt',
-      '`canonicalUri`',
-      'Never store secrets, credentials, customer data, or raw production logs',
-      'never publish handoffs or preferences',
+      '`share_publish`',
+      '`share_propose`',
+      '`context_health`',
+      '`context_health_aggregate`',
+      '`context_health_repair_preview`',
+      '`context_health_repair_apply`',
+      '`context_health_schedule`',
+      '`context_metadata_preview`',
+      '`context_metadata_apply`',
+      '`recall_feedback`',
+      '`threadnote value report`',
+      '`procedure_publish_preview`',
+      '`procedure_publish_apply`',
+      '`threadnote procedure verify <manifest>`',
+      '`threadnote guidance import`',
+      '`threadnote guidance project`',
+      '`complete_activation_retrieval_proof`',
+      '`threadnote_guide`',
+      'follow tool-returned actions for uncommon recovery',
+      'Do not store secrets, credentials, customer data, or raw production logs',
     ]) {
       expect(skills).toContain(requiredText);
     }
+    expect(context).not.toContain('unread pointers, not evidence');
+    expect(normalizedContext).toContain('mode (`brief`, `locate`, `trace`, `impact`, or `explain`)');
+    for (const retiredDetail of [
+      '`responseFormat`',
+      '`offsetBytes`',
+      '`sourceHash`',
+      '`canonicalUri`',
+      '`recoveryAction`',
+      'identity-fenced relocation',
+      '`--fixture',
+      '`--available-manifest',
+      '`validTo`',
+      '`ttl`',
+    ]) {
+      expect(skills).not.toContain(retiredDetail);
+    }
     expect(skills).not.toContain('4.6');
+  });
+
+  it('gives non-skill Continue sessions the exact normal lifecycle tools', () => {
+    const instructions = continueAdapter.json?.instructionContent ?? '';
+    for (const tool of [
+      '`context_brief`',
+      '`recall_context`',
+      '`read_context`',
+      '`inspect_code_graph`',
+      '`analyze_code_graph`',
+      '`remember_context(kind=handoff)`',
+      '`review_session_context`',
+      '`apply_memory_candidates`',
+    ]) {
+      expect(instructions).toContain(tool);
+    }
+    expect(instructions).toContain('`approve` (optional `editedText`), `defer`, or `reject`');
+    expect(instructions).toContain('Never auto-apply or auto-share proposals');
   });
 });

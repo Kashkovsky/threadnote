@@ -75,8 +75,10 @@ Once your agent restarts, try:
 - “What can I do with Threadnote?” for the state-aware guided tour.
 
 For the complete cross-agent path, see [Threadnote 5 context workflows](./docs/context-workflows.md) and [guided
-two-agent activation](./docs/guided-activation.md). Team setup is covered by the [sharing guide](./docs/share.md), and
-existing installations can follow the [migration guide](./docs/migration.md).
+two-agent activation](./docs/guided-activation.md). Team setup is covered by the [sharing guide](./docs/share.md).
+Existing users can follow the website guides for [upgrading from Threadnote
+4](https://threadnote.io/docs/upgrade-from-4/) or [migrating from Threadnote
+3](https://threadnote.io/docs/upgrade-from-3/).
 
 ## Contributing
 
