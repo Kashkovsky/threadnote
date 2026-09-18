@@ -71,6 +71,7 @@ import {
 } from './memory.js';
 import {registerContextHealthTool} from './context_health.js';
 import {registerContextHealthRepairTools} from './context_health_repair.js';
+import {registerMaintenanceMetadataTools} from './maintenance_metadata.js';
 import {registerKnowledgeDeltaGitProposalTool} from './git_proposal.js';
 import {registerProcedurePublicationTools} from './procedure.js';
 import {
@@ -386,6 +387,7 @@ function registerTools(
     registerCompactTool(server, config);
     registerContextHealthTool(server, config);
     registerContextHealthRepairTools(server, config);
+    registerMaintenanceMetadataTools(server, config);
     registerRecallFeedbackTool(server, config);
   }
 

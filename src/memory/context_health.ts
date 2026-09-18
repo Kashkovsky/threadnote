@@ -168,10 +168,11 @@ function validityFindings(records: readonly MemoryRecord[], now: Date): readonly
 }
 
 function reviewFindings(records: readonly MemoryRecord[], now: Date): readonly ContextHealthFindingV1[] {
-  const today = now.toISOString().slice(0, 10);
+  const nowMilliseconds = now.getTime();
   return records.flatMap(record => {
     const reviewAfter = record.metadata.reviewAfter;
-    if (reviewAfter === undefined || reviewAfter > today) return [];
+    const reviewAfterMilliseconds = timestamp(reviewAfter) ?? timestamp(`${reviewAfter}T00:00:00.000Z`);
+    if (reviewAfterMilliseconds === undefined || reviewAfterMilliseconds > nowMilliseconds) return [];
     return [
       finding('review-overdue', [record.uri], `review_after ${reviewAfter} is due`, {
         confidence: 'high',

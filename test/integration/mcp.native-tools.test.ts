@@ -102,6 +102,8 @@ const ADVANCED_TOOL_NAMES = [
   'context_health',
   'context_health_repair_preview',
   'context_health_repair_apply',
+  'context_metadata_preview',
+  'context_metadata_apply',
   'recall_feedback',
   'forget',
   'add_resource',
@@ -4108,6 +4110,14 @@ describe('Threadnote MCP toolsets', () => {
         });
         expect(tools.tools.find(tool => tool.name === 'procedure_publish_apply')).toMatchObject({
           annotations: {destructiveHint: true, readOnlyHint: false},
+        });
+        expect(tools.tools.find(tool => tool.name === 'context_metadata_preview')).toMatchObject({
+          annotations: {destructiveHint: false, readOnlyHint: true},
+          inputSchema: {properties: {memoryId: {type: 'string'}, uri: {type: 'string'}}},
+        });
+        expect(tools.tools.find(tool => tool.name === 'context_metadata_apply')).toMatchObject({
+          annotations: {destructiveHint: true, idempotentHint: true, readOnlyHint: false},
+          inputSchema: {properties: {approved: {type: 'boolean'}, expectedContentHash: {type: 'string'}}},
         });
       },
       {toolset: 'full'},
