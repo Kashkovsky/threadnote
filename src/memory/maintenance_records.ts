@@ -8,7 +8,7 @@ import {scanFilesWithinBoundary} from '../effect/safe_scan.js';
 import {uriSegment} from '../manifest.js';
 import {validatePortableSegment} from '../storage/resource-id.js';
 import type {MemoryKind, MemoryStatus, RuntimeConfig} from '../types.js';
-import {parseMemoryDocument, type MemoryRecord} from './document.js';
+import {memoryHeaderValue, parseMemoryDocument, type MemoryRecord} from './document.js';
 import {localUserMemoriesRoot} from './migrations.js';
 
 const MAINTENANCE_READ_CONCURRENCY = 16;
@@ -72,7 +72,7 @@ export const readPersonalProjectMemoryRecords = Effect.fn('memory.readPersonalPr
       continue;
     }
     for (const name of before) {
-      if (!name.endsWith('.md')) continue;
+      if (!name.endsWith('.md') || name.startsWith('.')) continue;
       const nextFilesRead = admitPersonalProjectFileCount(filesRead);
       if (Result.isFailure(nextFilesRead)) return yield* personalProjectReadError(nextFilesRead.failure);
       filesRead = nextFilesRead.success;
@@ -118,7 +118,7 @@ export const readPersonalProjectMemoryRecords = Effect.fn('memory.readPersonalPr
       record.metadata.project !== project ||
       record.metadata.status !== selected.location.status ||
       !selected.location.headerTitles.includes(record.headerTitle) ||
-      record.metadata.visibility !== 'personal' ||
+      !hasPersonalVisibility(record.content) ||
       !hasCanonicalPersonalFilename(record, selected.name, selected.location.topicBoundFilename)
     ) {
       return yield* personalProjectReadError(
@@ -204,7 +204,7 @@ function personalProjectLocations(project: string): readonly PersonalProjectLoca
       topicBoundFilename: true,
     },
     {
-      headerTitles: ['HANDOFF'],
+      headerTitles: ['HANDOFF', 'MEMORY'],
       kind: 'handoff',
       relativeDirectory: ['handoffs', 'active', project],
       status: 'active',
@@ -293,11 +293,18 @@ function hasCanonicalPersonalFilename(record: MemoryRecord, filename: string, to
   const topic = record.metadata.topic;
   try {
     validatePortableSegment(basename, basename);
-    if (topic !== undefined) validatePortableSegment(topic, topic);
   } catch {
     return false;
   }
   return !topicBound || (topic !== undefined && filename === `${uriSegment(topic)}.md`);
+}
+
+function hasPersonalVisibility(content: string): boolean {
+  const normalized = content.replace(/\r\n?/gu, '\n');
+  const separatorIndex = normalized.indexOf('\n\n');
+  const header = separatorIndex === -1 ? normalized : normalized.slice(0, separatorIndex);
+  const visibility = memoryHeaderValue(header, 'visibility');
+  return visibility === undefined || visibility === 'personal';
 }
 
 function compareText(left: string, right: string): number {

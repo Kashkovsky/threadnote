@@ -7,6 +7,7 @@ import {describe, expect} from 'vitest';
 
 import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {uriSegment} from '../../src/manifest.js';
 import {
   collectContextHealthAggregate,
   collectContextHealthAggregateSources,
@@ -113,6 +114,150 @@ describe('context health aggregate runtime', () => {
         expect(snapshot).toHaveLength(fileCount);
         expect(snapshot.some(record => record.metadata.topic === 'legacy-scale')).toBe(true);
       }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('ignores product dotfiles before bounded personal snapshot admission', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture([]);
+        const directory = personalProjectDirectory(fixture, 'durable', 'threadnote');
+        yield* writePersonalRaw(fixture, 'threadnote', 'visible.md', personalMemory('visible', 'Selected evidence.'));
+        const hiddenNames = ['.abstract.md', ...Array.from({length: 10_000}, (_, index) => `.derived-${index}.md`)];
+        let hiddenFileOpens = 0;
+        let hiddenFileStats = 0;
+        const recordingFileSystem = FileSystem.FileSystem.of({
+          ...fixture.fs,
+          open: (file, options) => {
+            if (hiddenNames.some(name => file.endsWith(`/${name}`))) hiddenFileOpens += 1;
+            return fixture.fs.open(file, options);
+          },
+          readDirectory: candidate =>
+            candidate === directory
+              ? Effect.succeed([...hiddenNames, 'visible.md'])
+              : fixture.fs.readDirectory(candidate),
+          stat: file => {
+            if (hiddenNames.some(name => file.endsWith(`/${name}`))) hiddenFileStats += 1;
+            return fixture.fs.stat(file);
+          },
+        });
+
+        const records = yield* readPersonalProjectMemoryRecords(fixture.config, 'threadnote').pipe(
+          Effect.provideService(FileSystem.FileSystem, recordingFileSystem),
+        );
+
+        expect(records.map(record => record.metadata.topic)).toEqual(['visible']);
+        expect(hiddenFileOpens).toBe(0);
+        expect(hiddenFileStats).toBe(0);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('accepts writer-compatible personal topics, headers, and legacy visibility', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture([]);
+        yield* writePersonalRaw(
+          fixture,
+          'threadnote',
+          'subset-authoring-0324.md',
+          personalMemory('subset-authoring/0324', 'Normalized writer topic.'),
+        );
+        yield* writePersonalRaw(
+          fixture,
+          'threadnote',
+          'legacy-no-visibility.md',
+          personalMemory('legacy-no-visibility', 'Legacy personal evidence.').replace('visibility: personal\n', ''),
+        );
+        const handoffDirectory = personalProjectDirectory(fixture, 'handoff', 'threadnote');
+        yield* writePersonalRawAt(
+          fixture,
+          handoffDirectory,
+          'current-handoff.md',
+          handoffMemory('current-handoff', 'Current handoff.', 'HANDOFF').replace('visibility: personal\n', ''),
+        );
+        yield* writePersonalRawAt(
+          fixture,
+          handoffDirectory,
+          'legacy-handoff.md',
+          handoffMemory('legacy-handoff', 'Legacy handoff.', 'MEMORY'),
+        );
+
+        const records = yield* readPersonalProjectMemoryRecords(fixture.config, 'threadnote');
+
+        expect(records.map(record => record.metadata.topic)).toEqual([
+          'legacy-no-visibility',
+          'subset-authoring/0324',
+          'current-handoff',
+          'legacy-handoff',
+        ]);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  fcEffectProp(
+    effectIt,
+    'round-trips writer-normalized filenames for path-like personal topics',
+    {
+      segments: fc.array(
+        fc.string({maxLength: 8, minLength: 1, unit: fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789')}),
+        {maxLength: 4, minLength: 2},
+      ),
+    },
+    ({segments}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* makeFixture([]);
+          const topic = segments.join('/');
+          yield* writePersonalRaw(
+            fixture,
+            'threadnote',
+            `${uriSegment(topic)}.md`,
+            personalMemory(topic, 'Writer-normalized evidence.'),
+          );
+
+          const records = yield* readPersonalProjectMemoryRecords(fixture.config, 'threadnote');
+
+          expect(records.map(record => record.metadata.topic)).toEqual([topic]);
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    {fastCheck: {numRuns: 24}},
+  );
+
+  effectIt.effect('rejects personal filename, header, and explicit visibility mismatches', () =>
+    Effect.scoped(
+      Effect.forEach(
+        [
+          {
+            content: personalMemory('subset-authoring/0324', 'Mismatched normalized filename.'),
+            filename: 'subset-authoring-0325.md',
+            kind: 'durable' as const,
+          },
+          ...(['shared', 'external', 'unknown'] as const).map(visibility => ({
+            content: personalMemory(`visibility-${visibility}`, 'Invalid visibility.').replace(
+              'visibility: personal',
+              `visibility: ${visibility}`,
+            ),
+            filename: `visibility-${visibility}.md`,
+            kind: 'durable' as const,
+          })),
+        ],
+        ({content, filename, kind}) =>
+          Effect.gen(function* () {
+            const fixture = yield* makeFixture([]);
+            yield* writePersonalRawAt(
+              fixture,
+              personalProjectDirectory(fixture, kind, 'threadnote'),
+              filename,
+              content,
+            );
+
+            const result = yield* readPersonalProjectMemoryRecords(fixture.config, 'threadnote').pipe(Effect.result);
+
+            expect(result._tag).toBe('Failure');
+          }),
+        {discard: true},
+      ),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
@@ -460,21 +605,6 @@ describe('context health aggregate runtime', () => {
         expect(filenameMismatch.sources[0]).toMatchObject({reason: 'snapshot-unreadable', state: 'unknown'});
         yield* fixture.fs.remove(mismatchedFilename);
 
-        const unsafeTopic = fixture.path.join(durableDirectory, 'unsafe-topic.md');
-        yield* writePersonalRaw(
-          fixture,
-          'threadnote',
-          'unsafe-topic.md',
-          personalMemory('unsafe/topic', 'Topics must remain portable path segments.'),
-        );
-        const nonPortable = yield* collectContextHealthAggregate(fixture.config, {
-          callerCwd: fixture.repository,
-          project: 'threadnote',
-        }).pipe(TestClock.withLive);
-        expect(nonPortable).toMatchObject({exitCode: 2, status: 'unknown'});
-        expect(nonPortable.sources[0]).toMatchObject({reason: 'snapshot-unreadable', state: 'unknown'});
-        yield* fixture.fs.remove(unsafeTopic);
-
         const durableHeader = fixture.path.join(durableDirectory, 'durable-header.md');
         yield* writePersonalRaw(
           fixture,
@@ -495,7 +625,7 @@ describe('context health aggregate runtime', () => {
           fixture,
           handoffDirectory,
           'handoff-header.md',
-          handoffMemory('handoff-header', 'Handoffs require HANDOFF headers.', 'MEMORY'),
+          handoffMemory('handoff-header', 'Handoffs require a recognized header.').replace(/^HANDOFF/u, 'NOTE'),
         );
         const handoffHeaderMismatch = yield* collectContextHealthAggregate(fixture.config, {
           callerCwd: fixture.repository,
