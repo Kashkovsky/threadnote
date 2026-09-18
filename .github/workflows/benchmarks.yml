@@ -782,6 +782,7 @@ jobs:
           THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
         run: >-
           bun run bench:code-graph:heavy-tail --
+          --evidence-class correctness-only
           --output artifacts/code-graph-heavy-tail-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json
 
       - uses: actions/upload-artifact@v7
