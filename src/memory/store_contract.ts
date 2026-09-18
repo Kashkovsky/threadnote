@@ -14,6 +14,8 @@ export interface StoreMemoryOptions {
     readonly memoryId?: string;
     readonly uri: string;
   }[];
+  /** Composite mutations refresh once from their final state after every enclosing lock is released. */
+  readonly deferRecallIndexRefresh?: boolean;
   /** Nested lifecycle writers already hold the source lock and skip the identity fence to avoid lock inversion. */
   readonly skipMemoryIdentityLock?: boolean;
   readonly metadata: MemoryMetadata;
