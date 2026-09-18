@@ -3493,6 +3493,11 @@ describe('Threadnote MCP toolsets', () => {
           {
             arguments: {
               decisions: ['Keep the review projection compatible with candidate application.'],
+              rationale: 'Capture why the reviewed projection is safe.',
+              constraints: ['Keep writes private until explicit approval.'],
+              verificationPerformed: ['Focused MCP test passed.'],
+              knowledgeInvalidated: ['The prior unstructured draft.'],
+              unresolvedRisks: ['A later review may refine this contract.'],
               evidence: ['test/integration/mcp.native-tools.test.ts'],
               outcome: 'Projected the reviewed closeout.',
               project: 'threadnote',
@@ -3518,6 +3523,15 @@ describe('Threadnote MCP toolsets', () => {
         };
         expect(reviewStructured.knowledgeDelta).toMatchObject({
           items: [expect.objectContaining({type: 'decision-or-invariant'})],
+          structuredCloseout: {
+            type: 'structured-closeout',
+            version: 1,
+            rationale: 'Capture why the reviewed projection is safe.',
+            constraints: ['Keep writes private until explicit approval.'],
+            verificationPerformed: ['Focused MCP test passed.'],
+            knowledgeInvalidated: ['The prior unstructured draft.'],
+            unresolvedRisks: ['A later review may refine this contract.'],
+          },
           revision: 1,
           type: 'knowledge-delta',
           version: 1,
@@ -3543,6 +3557,9 @@ describe('Threadnote MCP toolsets', () => {
         expect(deferred.structuredContent).toMatchObject({
           knowledgeDelta: {
             items: [expect.objectContaining({candidateId, state: 'deferred'})],
+            structuredCloseout: expect.objectContaining({
+              rationale: 'Capture why the reviewed projection is safe.',
+            }),
             revision: 2,
             type: 'knowledge-delta',
             version: 1,
@@ -3550,6 +3567,70 @@ describe('Threadnote MCP toolsets', () => {
         });
       },
       {toolset: 'core'},
+    );
+  });
+
+  it('does not form durable candidates from empty structured closeout fields', async () => {
+    await withMcpClient(
+      async client => {
+        const result = await client.callTool(
+          {
+            arguments: {
+              constraints: [],
+              evidence: ['test/integration/mcp.native-tools.test.ts'],
+              knowledgeInvalidated: [],
+              outcome: 'No durable closeout material was found.',
+              project: 'threadnote',
+              rationale: '   ',
+              task: 'Ignore empty structured closeout fields',
+              unresolvedRisks: [],
+              verificationPerformed: ['  '],
+            },
+            name: 'review_session_context',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        expect(result.content).toEqual([
+          expect.objectContaining({text: expect.stringContaining('No additional memory candidates found')}),
+        ]);
+        expect(result.structuredContent).toMatchObject({candidates: [], noAction: true});
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('keeps structured durable fields disabled by the handoff-only candidate policy', async () => {
+    await withMcpClient(
+      async client => {
+        const result = await client.callTool(
+          {
+            arguments: {
+              constraints: ['Would otherwise form a durable candidate.'],
+              evidence: ['test/integration/mcp.native-tools.test.ts'],
+              handoff: ['Continue the scoped implementation.'],
+              outcome: 'Preserved handoff-only closeout policy.',
+              project: 'threadnote',
+              rationale: 'Would otherwise form a durable candidate.',
+              task: 'Respect handoff-only structured closeout policy',
+              unresolvedRisks: ['Would otherwise form a durable candidate.'],
+              verificationPerformed: ['Would otherwise form a durable candidate.'],
+            },
+            name: 'review_session_context',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const structured = result.structuredContent as {
+          readonly candidates?: readonly {readonly kind?: string}[];
+          readonly knowledgeDelta?: {readonly structuredCloseout?: unknown};
+        };
+        expect(structured.candidates).toEqual([expect.objectContaining({kind: 'handoff'})]);
+        expect(structured.knowledgeDelta?.structuredCloseout).toBeUndefined();
+      },
+      {environment: {THREADNOTE_CANDIDATE_POLICY: 'handoff-only'}, toolset: 'core'},
     );
   });
 

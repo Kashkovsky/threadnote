@@ -17,18 +17,35 @@ export type CandidateApplyStage = 'cleanup_pending' | 'conflict' | 'prepared' | 
 
 export interface SessionCloseoutInput {
   readonly codeCitations?: readonly MemoryCodeCitationV1[];
+  readonly constraints?: readonly string[];
   readonly decisions?: readonly string[];
   readonly evidence?: readonly string[];
   readonly handoff?: readonly string[];
   readonly invariants?: readonly string[];
+  readonly knowledgeInvalidated?: readonly string[];
   readonly outcome: string;
   readonly preferences?: readonly string[];
   readonly project: string;
+  readonly rationale?: string;
   readonly sourceAgentClient: string;
   readonly sourceCommit?: string;
   readonly sourceSessionId?: string;
   readonly task: string;
   readonly topic: string;
+  readonly unresolvedRisks?: readonly string[];
+  readonly verificationPerformed?: readonly string[];
+  readonly structuredCloseout?: StructuredCloseoutV1;
+}
+
+/** Versioned, optional closeout context carried with candidate reviews and Knowledge Deltas. */
+export interface StructuredCloseoutV1 {
+  readonly type: 'structured-closeout';
+  readonly version: 1;
+  readonly rationale: string;
+  readonly constraints: readonly string[];
+  readonly verificationPerformed: readonly string[];
+  readonly knowledgeInvalidated: readonly string[];
+  readonly unresolvedRisks: readonly string[];
 }
 
 export interface MemoryCandidate {
@@ -67,6 +84,7 @@ export interface CandidateReview {
   readonly sourceAgentClient: string;
   readonly sourceCommit?: string;
   readonly sourceSessionId?: string;
+  readonly structuredCloseout?: StructuredCloseoutV1;
   readonly task: string;
   readonly topic: string;
   readonly version: 2;
@@ -108,6 +126,7 @@ const MAX_CLOSEOUT_ITEM_CHARACTERS = 2_000;
 const MAX_CLOSEOUT_SCALAR_CHARACTERS = 4_000;
 const MAX_CLOSEOUT_EVIDENCE_POINTERS = 32;
 const MAX_CLOSEOUT_TOTAL_BYTES = 64 * 1_024;
+const MAX_STRUCTURED_CLOSEOUT_ITEMS = MAX_CLOSEOUT_ITEMS_PER_FIELD;
 const MAX_EXACT_DURABLE_CANDIDATE_BYTES = 60 * 1_024;
 const TERMINAL_REVIEW_RETENTION_MILLISECONDS = 30 * 24 * 60 * 60 * 1_000;
 const CANDIDATE_LOCK_STALE_MILLISECONDS = 5 * 60 * 1_000;
@@ -166,6 +185,7 @@ const buildCandidateReviewFromDrafts = Effect.fn('candidate.buildReviewFromDraft
           (draft, index) => compareCandidate(reviewId, index, input, draft, existing, evidence),
           {concurrency: 3},
         );
+  const structuredCloseout = structuredCloseoutFromInput(input);
   return {
     auditEvents: [
       {
@@ -185,6 +205,7 @@ const buildCandidateReviewFromDrafts = Effect.fn('candidate.buildReviewFromDraft
     sourceAgentClient: input.sourceAgentClient,
     sourceCommit: input.sourceCommit,
     sourceSessionId: input.sourceSessionId,
+    ...(structuredCloseout ? {structuredCloseout} : {}),
     task: input.task,
     topic: input.topic,
     version: 2,
@@ -282,6 +303,7 @@ export function validateSessionCloseoutInput(input: SessionCloseoutInput): strin
     ['sourceAgentClient', input.sourceAgentClient],
     ['sourceCommit', input.sourceCommit],
     ['sourceSessionId', input.sourceSessionId],
+    ['rationale', input.rationale],
   ] as const;
   for (const [name, value] of scalarFields) {
     if ((value?.length ?? 0) > MAX_CLOSEOUT_SCALAR_CHARACTERS) {
@@ -294,6 +316,10 @@ export function validateSessionCloseoutInput(input: SessionCloseoutInput): strin
     ['handoff', input.handoff, MAX_CLOSEOUT_ITEMS_PER_FIELD],
     ['invariants', input.invariants, MAX_CLOSEOUT_ITEMS_PER_FIELD],
     ['preferences', input.preferences, MAX_CLOSEOUT_ITEMS_PER_FIELD],
+    ['constraints', input.constraints, MAX_STRUCTURED_CLOSEOUT_ITEMS],
+    ['verificationPerformed', input.verificationPerformed, MAX_STRUCTURED_CLOSEOUT_ITEMS],
+    ['knowledgeInvalidated', input.knowledgeInvalidated, MAX_STRUCTURED_CLOSEOUT_ITEMS],
+    ['unresolvedRisks', input.unresolvedRisks, MAX_STRUCTURED_CLOSEOUT_ITEMS],
   ] as const;
   for (const [name, values, maximumItems] of listFields) {
     if ((values?.length ?? 0) > maximumItems) {
@@ -303,10 +329,63 @@ export function validateSessionCloseoutInput(input: SessionCloseoutInput): strin
       return `${name} contains an item exceeding ${MAX_CLOSEOUT_ITEM_CHARACTERS} characters.`;
     }
   }
+  if (input.structuredCloseout !== undefined) {
+    const structuredError = validateStructuredCloseout(input.structuredCloseout);
+    if (structuredError) return structuredError;
+  }
   const totalBytes = new TextEncoder().encode(JSON.stringify(input)).byteLength;
   return totalBytes > MAX_CLOSEOUT_TOTAL_BYTES
     ? `session closeout exceeds ${MAX_CLOSEOUT_TOTAL_BYTES} UTF-8 bytes.`
     : undefined;
+}
+
+export function structuredCloseoutFromInput(input: SessionCloseoutInput): StructuredCloseoutV1 | undefined {
+  const nested = input.structuredCloseout;
+  const hasDirectFields =
+    input.rationale !== undefined ||
+    input.constraints !== undefined ||
+    input.verificationPerformed !== undefined ||
+    input.knowledgeInvalidated !== undefined ||
+    input.unresolvedRisks !== undefined;
+  if (!nested && !hasDirectFields) return undefined;
+  const structured = {
+    type: 'structured-closeout',
+    version: 1,
+    rationale: (nested?.rationale ?? input.rationale ?? '').trim(),
+    constraints: normalizedItems(nested?.constraints ?? input.constraints),
+    verificationPerformed: normalizedItems(nested?.verificationPerformed ?? input.verificationPerformed),
+    knowledgeInvalidated: normalizedItems(nested?.knowledgeInvalidated ?? input.knowledgeInvalidated),
+    unresolvedRisks: normalizedItems(nested?.unresolvedRisks ?? input.unresolvedRisks),
+  } satisfies StructuredCloseoutV1;
+  return structured.rationale ||
+    structured.constraints.length > 0 ||
+    structured.verificationPerformed.length > 0 ||
+    structured.knowledgeInvalidated.length > 0 ||
+    structured.unresolvedRisks.length > 0
+    ? structured
+    : undefined;
+}
+
+function validateStructuredCloseout(value: StructuredCloseoutV1): string | undefined {
+  if (value.type !== 'structured-closeout' || value.version !== 1) {
+    return 'structuredCloseout has an unsupported type or version.';
+  }
+  if (value.rationale.length > MAX_CLOSEOUT_SCALAR_CHARACTERS) {
+    return `rationale exceeds ${MAX_CLOSEOUT_SCALAR_CHARACTERS} characters.`;
+  }
+  const lists = [
+    ['constraints', value.constraints],
+    ['verificationPerformed', value.verificationPerformed],
+    ['knowledgeInvalidated', value.knowledgeInvalidated],
+    ['unresolvedRisks', value.unresolvedRisks],
+  ] as const;
+  for (const [name, items] of lists) {
+    if (items.length > MAX_STRUCTURED_CLOSEOUT_ITEMS) return `${name} exceeds ${MAX_STRUCTURED_CLOSEOUT_ITEMS} items.`;
+    if (items.some(item => item.length > MAX_CLOSEOUT_ITEM_CHARACTERS)) {
+      return `${name} contains an item exceeding ${MAX_CLOSEOUT_ITEM_CHARACTERS} characters.`;
+    }
+  }
+  return undefined;
 }
 
 export function candidateReviewWithAuditEvent(review: CandidateReview, event: CandidateAuditEvent): CandidateReview {
@@ -519,17 +598,19 @@ function candidateDrafts(input: SessionCloseoutInput): readonly CandidateDraft[]
   const invariants = normalizedItems(input.invariants);
   const preferences = normalizedItems(input.preferences);
   const handoff = normalizedItems(input.handoff);
+  const structuredCloseout = structuredCloseoutFromInput(input);
   const drafts: CandidateDraft[] = [];
-  if (decisions.length > 0 || invariants.length > 0) {
+  if (decisions.length > 0 || invariants.length > 0 || structuredCloseout !== undefined) {
     drafts.push({
       categories: [
         ...(decisions.length > 0 ? (['decision'] as const) : []),
-        ...(invariants.length > 0 ? (['invariant'] as const) : []),
+        ...(invariants.length > 0 || structuredCloseout !== undefined ? (['invariant'] as const) : []),
       ],
       kind: 'durable',
       proposedText: formatSections([
         ['Decisions', decisions],
         ['Invariants', invariants],
+        ...(structuredCloseout ? structuredCloseoutSections(structuredCloseout) : []),
       ]),
     });
   }
@@ -693,6 +774,16 @@ function formatSections(sections: ReadonlyArray<readonly [string, readonly strin
     .join('\n');
 }
 
+function structuredCloseoutSections(value: StructuredCloseoutV1): ReadonlyArray<readonly [string, readonly string[]]> {
+  return [
+    ['Rationale', value.rationale ? [value.rationale] : []],
+    ['Constraints', value.constraints],
+    ['Verification performed', value.verificationPerformed],
+    ['Knowledge invalidated', value.knowledgeInvalidated],
+    ['Unresolved risks', value.unresolvedRisks],
+  ];
+}
+
 function tokens(value: string): readonly string[] {
   return [...value.toLowerCase().matchAll(/[a-z0-9][a-z0-9_.-]{2,}/g)].map(match => match[0]);
 }
@@ -834,6 +925,7 @@ function parseCandidateReview(value: unknown): CandidateReview {
   }
   const review = value as Omit<CandidateReview, 'codeCitations' | 'version'> & {
     readonly codeCitations?: readonly MemoryCodeCitationV1[];
+    readonly structuredCloseout?: unknown;
     readonly version: 1 | 2;
   };
   let codeCitations: readonly MemoryCodeCitationV1[] = [];
@@ -852,8 +944,42 @@ function parseCandidateReview(value: unknown): CandidateReview {
       ? review.auditEvents.filter(event => candidateAuditEventIsValid(event))
       : [],
     codeCitations,
+    ...(review.structuredCloseout === undefined
+      ? {}
+      : {structuredCloseout: parseStructuredCloseout(review.structuredCloseout)}),
     version: 2,
   };
+}
+
+function parseStructuredCloseout(value: unknown): StructuredCloseoutV1 {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('type' in value) ||
+    value.type !== 'structured-closeout' ||
+    !('version' in value) ||
+    value.version !== 1 ||
+    !('rationale' in value) ||
+    typeof value.rationale !== 'string' ||
+    !('constraints' in value) ||
+    !Array.isArray(value.constraints) ||
+    !value.constraints.every(item => typeof item === 'string') ||
+    !('verificationPerformed' in value) ||
+    !Array.isArray(value.verificationPerformed) ||
+    !value.verificationPerformed.every(item => typeof item === 'string') ||
+    !('knowledgeInvalidated' in value) ||
+    !Array.isArray(value.knowledgeInvalidated) ||
+    !value.knowledgeInvalidated.every(item => typeof item === 'string') ||
+    !('unresolvedRisks' in value) ||
+    !Array.isArray(value.unresolvedRisks) ||
+    !value.unresolvedRisks.every(item => typeof item === 'string')
+  ) {
+    throw CandidateMemoryError.make({message: 'invalid structured closeout'});
+  }
+  const structured = value as StructuredCloseoutV1;
+  const error = validateStructuredCloseout(structured);
+  if (error) throw CandidateMemoryError.make({message: error});
+  return structured;
 }
 
 function candidateAuditEventIsValid(value: unknown): value is CandidateAuditEvent {
