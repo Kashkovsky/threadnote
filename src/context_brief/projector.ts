@@ -969,9 +969,6 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
   const hasCodeLinkedMemory = [...logical.activeHandoffs, ...logical.durableDecisions].some(
     memory => memory.selectionBasis === 'code-citation',
   );
-  const hasPreciselyValidatedMemory = [...logical.activeHandoffs, ...logical.durableDecisions].some(
-    memory => memory.citationSummary !== undefined,
-  );
   const hasCurrentCodeLinkedMemory = [...logical.activeHandoffs, ...logical.durableDecisions].some(
     memory => memory.selectionBasis === 'code-citation' && hasCurrentCodeRelation(memory),
   );
@@ -992,15 +989,7 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
       id: card.id,
       lane: 'graph-card' as const,
       laneRank: card.rank,
-      priority: hasCodeLinkedMemory
-        ? card.rank === 0
-          ? hasCurrentCodeLinkedMemory
-            ? 1
-            : -1
-          : 2
-        : hasPreciselyValidatedMemory
-          ? 1
-          : 0,
+      priority: hasCodeLinkedMemory ? (card.rank === 0 ? (hasCurrentCodeLinkedMemory ? 1 : -1) : 2) : 0,
     })),
     ...logical.activeHandoffs.map(memory => ({
       id: memory.uri,
@@ -1016,11 +1005,7 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
                 ? -2
                 : 1
           : 2
-        : hasPreciselyValidatedMemory
-          ? memory.citationSummary === undefined
-            ? 2
-            : 0
-          : 0,
+        : 0,
     })),
     ...logical.durableDecisions.map(memory => ({
       id: memory.uri,
@@ -1036,11 +1021,7 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
                 ? -2
                 : 1
           : 2
-        : hasPreciselyValidatedMemory
-          ? memory.citationSummary === undefined
-            ? 2
-            : 0
-          : 0,
+        : 0,
     })),
     ...logical.graph.contracts.map(contract => ({
       id: contract.id,
