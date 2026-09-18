@@ -674,6 +674,12 @@ describe('context health aggregate runtime', () => {
           legacyVisibility,
           memory('legacy-visibility', 'Legacy team records may omit visibility.').replace('\nvisibility: shared', ''),
         );
+        const updatedTopic = 'provider-neutral-credentials';
+        const stableTopicPath = yield* teamMemoryPath(fixture, 'platform', 'legacy-credentials');
+        yield* fixture.fs.writeFileString(
+          stableTopicPath,
+          memory(updatedTopic, 'Shared replacements may evolve topic metadata while keeping their stable path.'),
+        );
         yield* commitTeams(fixture);
 
         const aggregate = yield* collectContextHealthAggregate(fixture.config, {
@@ -683,10 +689,47 @@ describe('context health aggregate runtime', () => {
         }).pipe(TestClock.withLive);
 
         expect(aggregate).toMatchObject({exitCode: 1, knownFindings: 1, status: 'findings'});
-        expect(aggregate.sources[1]).toMatchObject({recordsScanned: 2, state: 'complete'});
+        expect(aggregate.sources[1]).toMatchObject({recordsScanned: 3, state: 'complete'});
         expect(aggregate.findings[0]?.findingId).toMatch(/^relation-target-inactive\0/u);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  fcEffectProp(
+    effectIt,
+    'keeps stable team paths readable when replacement topics evolve',
+    {
+      segments: fc.array(
+        fc.string({maxLength: 8, minLength: 1, unit: fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789')}),
+        {maxLength: 4, minLength: 2},
+      ),
+    },
+    ({segments}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* makeFixture(['platform']);
+          const topic = segments.join('/');
+          const target = yield* teamMemoryPath(fixture, 'platform', 'stable-shared-location');
+          yield* fixture.fs.writeFileString(
+            target,
+            memory(topic, 'Replacement topic metadata evolved in place.').replace(
+              /^memory_id: .*$/mu,
+              'memory_id: tn_stable_shared_location',
+            ),
+          );
+          yield* commitTeams(fixture);
+
+          const aggregate = yield* collectContextHealthAggregate(fixture.config, {
+            callerCwd: fixture.repository,
+            project: 'threadnote',
+            teams: ['platform'],
+          }).pipe(TestClock.withLive);
+
+          expect(aggregate).toMatchObject({completeSources: 2, exitCode: 0, status: 'clean'});
+          expect(aggregate.sources[1]).toMatchObject({recordsScanned: 1, state: 'complete'});
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    {fastCheck: {numRuns: 12}},
   );
 
   effectIt.effect('rejects personal filename-topic and header mismatches', () =>

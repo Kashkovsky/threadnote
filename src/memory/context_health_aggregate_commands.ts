@@ -261,7 +261,8 @@ const readTeamRecords = Effect.fn('memory.contextHealth.readTeamRecords')(functi
       record === undefined ||
       record.metadata.kind !== 'durable' ||
       record.metadata.project !== project ||
-      record.metadata.topic !== parsedPath.topic ||
+      // Shared replacements keep a stable path while allowing topic metadata to evolve in place.
+      record.metadata.topic === undefined ||
       record.headerTitle !== 'MEMORY' ||
       !isCompatibleTeamVisibility(record)
     ) {
