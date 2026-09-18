@@ -373,6 +373,21 @@ export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(fu
             );
             return 0;
           }
+          if (command === 'ci-control') {
+            rejectOptions(options, ['input', 'receipt']);
+            if (!adapter.capabilities.available.includes('manage_context_ci') || !adapter.controlContextCi) {
+              return yield* operatorInvocationError('Hosted Context CI control is unavailable.');
+            }
+            const input = yield* readOperatorJson<unknown>(requiredOption(options, 'input'));
+            const receipt = yield* operatorPromise(() =>
+              adapter.controlContextCi!(input, environment.THREADNOTE_CONTEXT_CI_WEBHOOK_KEY),
+            );
+            yield* writeOperatorJsonExclusive(requiredOption(options, 'receipt'), receipt);
+            yield* Console.log(JSON.stringify(receipt));
+            return isJsonRecord(receipt) && ['denied', 'queue-full', 'rate-limited'].includes(String(receipt.status))
+              ? 2
+              : 0;
+          }
           if (command === 'health-schedule') {
             rejectOptions(options, ['input', 'receipt']);
             const raw = yield* readOperatorJson<unknown>(requiredOption(options, 'input'));
@@ -715,6 +730,7 @@ function operatorHelp(): string {
     '    --alias-compatibility-ends-at <ISO timestamp> --output <plan.json> [--projects <csv>] [--for-apply]',
     '  import-apply --source <git-share> --user <id> --team <team> --plan <plan.json> --receipt <json>',
     '  export --share <id> --output <new-directory>',
+    '  ci-control --input <action.json> --receipt <receipt.json>',
     '  health-schedule-plan --input <json> --output <plan.json>',
     '  health-schedule --input <json> --receipt <receipt.json>',
     '  health-run --input <immutable-evidence.json> --receipt <receipt.json>',
