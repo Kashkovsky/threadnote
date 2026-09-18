@@ -264,8 +264,9 @@ describe('organization composer attach', () => {
 vitestDescribe('organization cloud hybrid MCP', () => {
   it('uses a registered OAuth client for org and remote-hybrid cloud configurations', () => {
     expect(
-      buildOrgCloudHybridMcpConfig(profile, 'https://composer.example.test/mcp', 'engineering', 'registered-client')
-        .mcpServers[THREADNOTE_ORG_MCP_NAME],
+      buildOrgCloudHybridMcpConfig(profile, 'https://composer.example.test/mcp', 'engineering', 'registered-client', {
+        repositories: ['github.com/example/repo'],
+      }).mcpServers[THREADNOTE_ORG_MCP_NAME],
     ).toMatchObject({auth: {CLIENT_ID: 'registered-client'}});
     expect(
       buildCursorCloudRemoteHybridMcpConfig(
@@ -277,8 +278,19 @@ vitestDescribe('organization cloud hybrid MCP', () => {
     ).toMatchObject({auth: {CLIENT_ID: 'registered-client'}});
   });
   it('binds memory HTTP to the Git-backed composer with org IdP OAuth', () => {
-    const config = buildOrgCloudHybridMcpConfig(profile, 'https://composer.example.test/mcp', 'share-engineering');
-    expect(config.policy).toEqual(ORG_COMPOSER_POLICY);
+    const config = buildOrgCloudHybridMcpConfig(
+      profile,
+      'https://composer.example.test/mcp',
+      'share-engineering',
+      undefined,
+      {repositories: ['github.com/example/repo']},
+    );
+    expect(config.policy).toEqual({
+      ...ORG_COMPOSER_POLICY,
+      cursorOidc: 'required-for-writes',
+      defaultAccess: 'read-only',
+      repositoryBinding: 'sha256-header',
+    });
     expect(config.mcpServers['threadnote-local'].env.THREADNOTE_MCP_TOOLSET).toBe(CURSOR_CLOUD_LOCAL_MCP_TOOLSET);
     expect(config.mcpServers['threadnote-local'].env.THREADNOTE_CURSOR_CLOUD_MODE).toBe('org');
     expect(mcpToolCapabilities(parseMcpToolset(CURSOR_CLOUD_LOCAL_MCP_TOOLSET)).memoryPublish).toBe(false);
@@ -286,9 +298,13 @@ vitestDescribe('organization cloud hybrid MCP', () => {
     expect(config.mcpServers[THREADNOTE_ORG_MCP_NAME]).toEqual({
       auth: {
         CLIENT_ID: 'threadnote-composer',
-        scopes: COMPOSER_REQUIRED_SCOPES,
+        scopes: ['memory:read'],
       },
-      headers: {[THREADNOTE_COMPOSER_SHARE_ID_HEADER]: 'share-engineering'},
+      headers: {
+        [THREADNOTE_COMPOSER_SHARE_ID_HEADER]: 'share-engineering',
+        'threadnote-cloud-access': 'read-only',
+        'threadnote-repository-set': expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      },
       url: 'https://composer.example.test/mcp',
     });
     expect(JSON.stringify(config)).not.toMatch(/postgres|markdown_body/i);
@@ -772,7 +788,7 @@ describe('Team MCP install composer attach', () => {
 });
 
 vitestDescribe('organization cloud hybrid verify', () => {
-  effectIt.effect('reports unverified composer OAuth as warn and optional Cursor OIDC', () =>
+  effectIt.effect('reports unverified composer OAuth as warn and Cursor OIDC required for writes', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -803,7 +819,7 @@ vitestDescribe('organization cloud hybrid verify', () => {
         if (receipt.mode !== 'org') {
           throw new Error('expected organization cloud hybrid receipt');
         }
-        expect(receipt.cursorOidc).toBe('optional-attribution');
+        expect(receipt.cursorOidc).toBe('required-for-writes');
         expect(receipt.oauth).toBe('org-idp');
         expect(receipt.checks.find(check => check.name === 'composer OAuth')).toMatchObject({
           status: 'warn',

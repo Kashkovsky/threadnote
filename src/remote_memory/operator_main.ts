@@ -42,6 +42,7 @@ const Url = Schema.String.check(
 );
 const RemoteMemoryProvisioningRequestFields = {
   allowedProjects: Schema.optionalKey(Projects),
+  cloudAdmissionRequired: Schema.optionalKey(Schema.Boolean),
   cursorAttestationRequired: Schema.optionalKey(Schema.Boolean),
   cursorOwnerIds: Schema.optionalKey(Schema.Array(Identifier).check(Schema.isMaxLength(1_000))),
   cursorSubjects: Schema.optionalKey(Schema.Array(Identifier).check(Schema.isMinLength(1), Schema.isMaxLength(1_000))),

@@ -57,6 +57,16 @@ describe('remote memory provisioning boundary', () => {
 
   it('accepts one end-to-end addressable Cursor share policy', () => {
     expect(() => validateRemoteMemoryProvisioningInput(validProvisioning)).not.toThrow();
+    expect(() =>
+      validateRemoteMemoryProvisioningInput({
+        ...validProvisioning,
+        clientId: 'cloud-client',
+        cloudAdmissionRequired: true,
+      }),
+    ).not.toThrow();
+    expect(() => validateRemoteMemoryProvisioningInput({...validProvisioning, cloudAdmissionRequired: true})).toThrow(
+      'exact OAuth client id',
+    );
   });
 
   it.each([

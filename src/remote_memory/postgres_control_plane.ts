@@ -39,6 +39,7 @@ export const STORED_SHARE_POLICY_MAX_BYTES = 4 * 1024 * 1024;
 interface AuthorizationRow {
   readonly allowed_projects: string[] | null;
   readonly capabilities: string[];
+  readonly cloud_admission_required: boolean;
   readonly cursor_attestation_required: boolean;
   readonly cursor_owner_ids: string[];
   readonly cursor_subjects: string[];
@@ -94,6 +95,7 @@ export interface RemoteMemoryProvisioningInput {
   readonly allowedProjects?: readonly string[];
   readonly capabilities: readonly RemoteMemoryScope[];
   readonly clientId?: string;
+  readonly cloudAdmissionRequired?: boolean;
   readonly cursorAttestationRequired?: boolean;
   readonly cursorOwnerIds?: readonly string[];
   readonly cursorSubjects?: readonly string[];
@@ -152,6 +154,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
         SELECT
           g.allowed_projects,
           g.capabilities,
+          g.cloud_admission_required,
           g.cursor_attestation_required,
           g.cursor_owner_ids,
           g.cursor_subjects,
@@ -205,7 +208,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
           )
           AND e.tenant_id = ${tenantId}
           AND s.id = ${requestedShareId}
-        GROUP BY g.allowed_projects, g.capabilities, g.cursor_attestation_required,
+        GROUP BY g.allowed_projects, g.capabilities, g.cloud_admission_required, g.cursor_attestation_required,
           s.feature_flags,
           g.cursor_owner_ids, g.cursor_subjects, s.cursor_team_id, s.policy_version, s.policy_digest,
           g.policy_version, g.policy_digest,
@@ -238,6 +241,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
         SELECT
           g.allowed_projects,
           g.capabilities,
+          g.cloud_admission_required,
           g.cursor_attestation_required,
           g.cursor_owner_ids,
           g.cursor_subjects,
@@ -275,7 +279,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
           GROUP BY project_name
         ) b ON true
         WHERE c.id = ${challengeId} AND c.expires_at > now() AND c.consumed_at IS NULL
-        GROUP BY g.allowed_projects, g.capabilities, g.cursor_attestation_required,
+        GROUP BY g.allowed_projects, g.capabilities, g.cloud_admission_required, g.cursor_attestation_required,
           s.feature_flags,
           g.cursor_owner_ids, g.cursor_subjects, s.cursor_team_id, s.policy_version, s.policy_digest,
           g.policy_version, g.policy_digest,
@@ -683,13 +687,14 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
       await transaction`
         INSERT INTO remote_memory.share_grants(
           tenant_id, share_id, principal_id, status, capabilities, allowed_projects,
-          cursor_owner_ids, cursor_subjects, cursor_attestation_required, expires_at, policy_version, policy_digest
+          cursor_owner_ids, cursor_subjects, cloud_admission_required, cursor_attestation_required, expires_at,
+          policy_version, policy_digest
         ) VALUES (
           ${input.tenantId}, ${input.shareId}, ${input.principalId}, 'active',
           ${transaction.array([...input.capabilities])},
           ${input.allowedProjects ? transaction.array([...input.allowedProjects]) : null},
           ${transaction.array([...(input.cursorOwnerIds ?? [])])},
-          ${transaction.array([...(input.cursorSubjects ?? [])])},
+          ${transaction.array([...(input.cursorSubjects ?? [])])}, ${input.cloudAdmissionRequired ?? false},
           ${input.cursorAttestationRequired ?? true}, ${input.grantExpiresAt ?? null}, ${input.policyVersion},
           ${desiredPolicy.digest}
         ) ON CONFLICT (tenant_id, share_id, principal_id) DO UPDATE SET
@@ -698,6 +703,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
           allowed_projects = EXCLUDED.allowed_projects,
           cursor_owner_ids = EXCLUDED.cursor_owner_ids,
           cursor_subjects = EXCLUDED.cursor_subjects,
+          cloud_admission_required = EXCLUDED.cloud_admission_required,
           cursor_attestation_required = EXCLUDED.cursor_attestation_required,
           expires_at = EXCLUDED.expires_at,
           policy_version = EXCLUDED.policy_version,
@@ -706,16 +712,17 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
       await transaction`
         INSERT INTO remote_memory.share_grants(
           tenant_id, share_id, principal_id, status, capabilities, allowed_projects,
-          cursor_owner_ids, cursor_subjects, cursor_attestation_required, expires_at, policy_version, policy_digest
+          cursor_owner_ids, cursor_subjects, cloud_admission_required, cursor_attestation_required, expires_at,
+          policy_version, policy_digest
         ) VALUES (
           ${input.tenantId}, ${input.shareId}, ${retentionPrincipalId}, 'active',
           ${transaction.array(['memory:admin'])}, NULL,
-          ${transaction.array([])}, ${transaction.array([])}, false, NULL, 'retention-v1',
+          ${transaction.array([])}, ${transaction.array([])}, false, false, NULL, 'retention-v1',
           ${retentionPolicy.digest}
         ) ON CONFLICT (tenant_id, share_id, principal_id) DO UPDATE SET
           status = 'active', capabilities = EXCLUDED.capabilities, allowed_projects = NULL,
           cursor_owner_ids = EXCLUDED.cursor_owner_ids, cursor_subjects = EXCLUDED.cursor_subjects,
-          cursor_attestation_required = false, expires_at = NULL
+          cloud_admission_required = false, cursor_attestation_required = false, expires_at = NULL
       `;
       await provisionGitIngestPrincipal(transaction, input);
       if (replaceSharePolicy) {
@@ -994,6 +1001,9 @@ export function validateRemoteMemoryProvisioningInput(input: RemoteMemoryProvisi
   }
   validateProvisioningIdentity(input.issuer, input.subject);
   if (input.clientId !== undefined) validateProvisioningClientId(input.clientId);
+  if (input.cloudAdmissionRequired && input.clientId === undefined) {
+    throw remoteMemoryError('invalid_request', 'Organization Cloud provisioning requires an exact OAuth client id.');
+  }
   if (
     input.grantExpiresAt !== undefined &&
     (!Number.isFinite(Date.parse(input.grantExpiresAt)) ||
@@ -1089,6 +1099,7 @@ export function remoteMemoryProvisioningPolicy(input: RemoteMemoryProvisioningIn
     capabilities: [...new Set(input.capabilities)].sort(),
     ...(input.clientId === undefined ? {} : {clientId: input.clientId}),
     cursorAttestationRequired: input.cursorAttestationRequired ?? true,
+    ...(input.cloudAdmissionRequired ? {cloudAdmissionRequired: true} : {}),
     cursorOwnerIds: [...new Set(input.cursorOwnerIds ?? [])].sort(),
     cursorSubjects: [...new Set(input.cursorSubjects ?? [])].sort(),
     ...(input.grantExpiresAt === undefined ? {} : {grantExpiresAt: input.grantExpiresAt}),
@@ -1233,6 +1244,7 @@ function authorizedPrincipal(row: AuthorizationRow, OAuth: OAuthPrincipalClaims)
     allowedProjects: row.allowed_projects === null ? 'all' : new Set(row.allowed_projects),
     attestationRequiredForWrites: row.cursor_attestation_required || row.feature_flags.includes('cursor_oidc_required'),
     capabilities: new Set(row.capabilities.filter(isRemoteMemoryScope)),
+    cloudAdmissionRequired: row.cloud_admission_required,
     cursorOwnerIds: new Set(row.cursor_owner_ids),
     cursorSubjects: new Set(row.cursor_subjects),
     cursorTeamId: row.cursor_team_id ?? undefined,

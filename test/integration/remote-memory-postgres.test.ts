@@ -164,7 +164,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
     const before = await fixture.migratorSql<{checksum: string; version: number}[]>`
       SELECT version, checksum FROM remote_memory.schema_migrations ORDER BY version
     `;
-    expect(before).toHaveLength(6);
+    expect(before).toHaveLength(7);
     expect(before[0]?.checksum).toMatch(/^[a-f0-9]{64}$/u);
 
     await migrateRemoteMemoryDatabase(fixture.migratorSql);
@@ -1844,7 +1844,7 @@ postgresDescribe('remote memory code-link migration upgrade', () => {
 });
 
 postgresDescribe('remote memory identity binding migration upgrade', () => {
-  it('preserves existing subject-only identities and adds nullable grant expiry', async () => {
+  it('preserves existing identities and adds safe grant defaults', async () => {
     if (!TEST_DATABASE_URL)
       throw new Error('THREADNOTE_TEST_POSTGRES_URL is required for PostgreSQL integration tests.');
     const upgradeFixture = await createRemoteMemoryPostgresFixture(TEST_DATABASE_URL);
@@ -1855,10 +1855,11 @@ postgresDescribe('remote memory identity binding migration upgrade', () => {
         DROP TABLE remote_memory.provisioning_receipts;
         DROP INDEX remote_memory.share_grants_active_expiry;
         ALTER TABLE remote_memory.share_grants DROP COLUMN expires_at;
+        ALTER TABLE remote_memory.share_grants DROP COLUMN cloud_admission_required;
         ALTER TABLE remote_memory.external_identities DROP CONSTRAINT external_identities_pkey;
         ALTER TABLE remote_memory.external_identities DROP COLUMN client_id;
         ALTER TABLE remote_memory.external_identities ADD PRIMARY KEY (tenant_id, issuer, subject);
-        DELETE FROM remote_memory.schema_migrations WHERE version = 6;
+        DELETE FROM remote_memory.schema_migrations WHERE version IN (6, 7);
       `);
 
       await migrateRemoteMemoryDatabase(upgradeFixture.migratorSql);
@@ -1870,18 +1871,19 @@ postgresDescribe('remote memory identity binding migration upgrade', () => {
           WHERE tenant_id = ${TENANT_A} AND issuer = ${ISSUER}
         `,
       );
-      const expiry = await withTenant(
+      const grant = await withTenant(
         upgradeFixture.migratorSql,
         TENANT_A,
-        transaction => transaction<{expires_at: Date | null}[]>`
-          SELECT expires_at FROM remote_memory.share_grants
+        transaction => transaction<{cloud_admission_required: boolean; expires_at: Date | null}[]>`
+          SELECT cloud_admission_required, expires_at FROM remote_memory.share_grants
           WHERE tenant_id = ${TENANT_A} AND share_id = ${SHARE_A} AND principal_id = ${PRINCIPAL_A}
         `,
       );
       expect(identities).toEqual([{client_id: '', subject: 'subject-alpha'}]);
-      expect(expiry).toEqual([{expires_at: null}]);
+      expect(grant).toEqual([{cloud_admission_required: false, expires_at: null}]);
       await expect(control.provision(provisioningFixture('alpha'))).resolves.toBeUndefined();
       await expect(control.authorize(claimsFixture('subject-alpha'), SHARE_A)).resolves.toMatchObject({
+        cloudAdmissionRequired: false,
         principalId: PRINCIPAL_A,
       });
     } finally {

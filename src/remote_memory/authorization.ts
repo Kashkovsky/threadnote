@@ -31,6 +31,7 @@ export interface AuthorizedRemotePrincipal {
   readonly allowedProjects: ReadonlySet<string> | 'all';
   readonly attestationRequiredForWrites: boolean;
   readonly capabilities: ReadonlySet<RemoteMemoryScope>;
+  readonly cloudAdmissionRequired: boolean;
   readonly OAuth: OAuthPrincipalClaims;
   readonly cursorOwnerIds: ReadonlySet<string>;
   readonly cursorSubjects: ReadonlySet<string>;

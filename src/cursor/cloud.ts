@@ -1,4 +1,10 @@
 import {Console, Effect, FileSystem, Path, Schema} from 'effect';
+import {
+  ORG_CLOUD_ACCESS_HEADER,
+  ORG_CLOUD_REPOSITORY_SET_HEADER,
+  orgCloudRepositorySetDigest,
+  orgCloudScopes,
+} from '../remote_memory/cloud_admission.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import type {RuntimeConfig, ShareTeamConfig, ShareTeamsFile} from '../types.js';
 import {runShareInit, runShareSync} from '../share/index.js';
@@ -17,6 +23,13 @@ import {
   composerShareId,
   type ComposerHttpMcpEntry,
 } from '../mcp/composer_attach.js';
+
+export const ORG_CLOUD_POLICY = {
+  ...ORG_COMPOSER_POLICY,
+  cursorOidc: 'required-for-writes',
+  defaultAccess: 'read-only',
+  repositoryBinding: 'sha256-header',
+} as const;
 
 /** Legacy selector retained for Threadnote 4.2 Dashboard configurations. */
 export const CURSOR_CLOUD_MCP_TOOLSET = 'cursor-cloud' as const;
@@ -98,9 +111,14 @@ export interface CursorCloudRemoteHybridMcpConfig {
 export interface OrgCloudHybridMcpConfig {
   readonly mcpServers: Readonly<{
     'threadnote-local': CursorCloudLocalMcpConfig;
-    'threadnote-org': ComposerHttpMcpEntry;
+    'threadnote-org': ComposerHttpMcpEntry & {
+      readonly headers: ComposerHttpMcpEntry['headers'] & {
+        readonly 'threadnote-cloud-access': 'read-only' | 'contribute';
+        readonly 'threadnote-repository-set': string;
+      };
+    };
   }>;
-  readonly policy: typeof ORG_COMPOSER_POLICY;
+  readonly policy: typeof ORG_CLOUD_POLICY;
 }
 
 export interface CursorCloudShareScope {
@@ -162,7 +180,7 @@ export interface CursorCloudRemoteHybridVerifyReceiptV1 {
 export interface OrgCloudHybridVerifyReceiptV1 {
   readonly canonicalStore: 'git';
   readonly checks: readonly CursorCloudVerifyCheck[];
-  readonly cursorOidc: 'optional-attribution';
+  readonly cursorOidc: 'required-for-writes';
   readonly endpoint: string;
   readonly localMemoryFallback: 'disabled';
   readonly mode: 'org';
@@ -290,15 +308,23 @@ export function buildOrgCloudHybridMcpConfig(
   endpoint: string,
   shareId: string,
   clientId?: string,
+  options: {readonly repositories: readonly string[]; readonly contribute?: boolean} = {repositories: []},
 ): OrgCloudHybridMcpConfig {
   const url = composerMcpUrl(endpoint);
   const boundShareId = composerShareId(shareId);
+  const digest = orgCloudRepositorySetDigest(boundShareId, options.repositories);
+  const access = options.contribute === true ? 'contribute' : 'read-only';
+  const entry = buildComposerHttpMcpEntry(url, boundShareId, clientId);
   return {
     mcpServers: {
       'threadnote-local': buildCursorCloudLocalGraphMcpConfig(profile, url, boundShareId, 'org'),
-      [THREADNOTE_ORG_MCP_NAME]: buildComposerHttpMcpEntry(url, boundShareId, clientId),
+      [THREADNOTE_ORG_MCP_NAME]: {
+        ...entry,
+        auth: {...entry.auth, scopes: orgCloudScopes(access)},
+        headers: {...entry.headers, [ORG_CLOUD_ACCESS_HEADER]: access, [ORG_CLOUD_REPOSITORY_SET_HEADER]: digest},
+      },
     },
-    policy: ORG_COMPOSER_POLICY,
+    policy: ORG_CLOUD_POLICY,
   };
 }
 
@@ -467,6 +493,8 @@ export const runCursorCloudConfig = Effect.fn('cursorCloud.config')(function* (
   options: {
     readonly agentId?: string;
     readonly clientId?: string;
+    readonly contribute?: boolean;
+    readonly repositories?: readonly string[];
     readonly endpoint?: string;
     readonly mode?: CursorCloudMode;
     readonly shareId?: string;
@@ -474,6 +502,9 @@ export const runCursorCloudConfig = Effect.fn('cursorCloud.config')(function* (
     readonly user?: string;
   },
 ) {
+  if (options.mode !== 'org' && (options.contribute || options.repositories?.length)) {
+    throw CursorCloudOperationError.make({message: '--repository and --contribute require --mode org.'});
+  }
   const teams = normalizeCursorCloudTeams(options.teams);
   const profile = buildCursorCloudProfile(config, {
     ...options,
@@ -488,6 +519,7 @@ export const runCursorCloudConfig = Effect.fn('cursorCloud.config')(function* (
           requiredHybridEndpoint(options.endpoint, 'org'),
           requiredRemoteShareId(options.shareId),
           options.clientId,
+          {repositories: options.repositories ?? [], contribute: options.contribute},
         )
       : options.mode === 'remote-hybrid'
         ? buildCursorCloudRemoteHybridMcpConfig(
@@ -678,7 +710,9 @@ export const cursorCloudRemoteHybridStatus = Effect.fn('cursorCloud.remoteHybrid
     {
       detail: socketPresent
         ? 'Cursor workload identity socket is available'
-        : 'optional attestation socket not present',
+        : org
+          ? 'attestation socket not present; required for Cloud contribution'
+          : 'optional attestation socket not present',
       name: 'workload attestation',
       plane: 'local-graph',
       status: socketPresent ? 'ok' : 'warn',
@@ -742,7 +776,7 @@ export const cursorCloudRemoteHybridStatus = Effect.fn('cursorCloud.remoteHybrid
   const status = checks.some(check => check.status === 'fail') ? ('fail' as const) : ('ok' as const);
   if (org) {
     return {
-      ...ORG_COMPOSER_POLICY,
+      ...ORG_CLOUD_POLICY,
       checks,
       endpoint,
       localMemoryFallback: 'disabled',
@@ -794,7 +828,9 @@ const runCursorCloudRemoteHybridBootstrap = Effect.fn('cursorCloud.remoteHybridB
   if (options.mode === 'org') {
     yield* Console.log('Organization cloud hybrid local graph adapter is ready; indexing starts on demand.');
     yield* Console.log(`Git-backed composer memory is bound exclusively to share ${shareId}.`);
-    yield* Console.log('Cursor OIDC attribution is optional; local Git memory share was not configured.');
+    yield* Console.log(
+      'Cloud durable contribution requires Cursor workload attestation; local Git memory share was not configured.',
+    );
     return;
   }
   yield* Console.log('Cursor Cloud remote-hybrid local graph adapter is ready; indexing starts on demand.');

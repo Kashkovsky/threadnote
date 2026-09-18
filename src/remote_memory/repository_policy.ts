@@ -13,10 +13,12 @@ export interface ShareStateRow {
 export interface GrantStateRow extends ShareStateRow {
   readonly allowed_projects: string[] | null;
   readonly capabilities: string[];
+  readonly cloud_admission_required: boolean;
   readonly cursor_attestation_required: boolean;
   readonly feature_flags: string[];
   readonly grant_policy_version: string;
   readonly grant_policy_digest: string;
+  readonly grant_expires_at: Date | null;
 }
 
 export async function requireShareState(
@@ -25,7 +27,8 @@ export async function requireShareState(
 ): Promise<GrantStateRow> {
   const rows = await transaction<GrantStateRow[]>`
     SELECT s.share_generation, s.indexed_generation, s.policy_version, s.policy_digest,
-      s.feature_flags, g.capabilities, g.allowed_projects, g.cursor_attestation_required,
+      s.feature_flags, g.capabilities, g.allowed_projects, g.cloud_admission_required, g.cursor_attestation_required,
+      g.expires_at AS grant_expires_at,
       g.policy_version AS grant_policy_version,
       g.policy_digest AS grant_policy_digest
     FROM remote_memory.shares s
@@ -55,7 +58,8 @@ function validateShareState(state: GrantStateRow | undefined, principal: Authori
     state.policy_version !== principal.sharePolicyVersion ||
     state.policy_digest !== principal.sharePolicyDigest ||
     !setContains(state.capabilities, principal.capabilities) ||
-    !setContains(state.feature_flags, principal.featureFlags)
+    !setContains(state.feature_flags, principal.featureFlags) ||
+    state.cloud_admission_required !== principal.cloudAdmissionRequired
   ) {
     throw remoteMemoryError('forbidden', 'The memory share policy changed; authenticate again.');
   }
@@ -87,13 +91,22 @@ export function requireFreshAttestationPolicy(
   state: GrantStateRow,
   attestation: CursorWorkloadAttestation | undefined,
   project: string,
+  validThroughEpochMilliseconds = Date.now(),
 ): void {
-  if ((state.cursor_attestation_required || state.feature_flags.includes('cursor_oidc_required')) && !attestation) {
+  if (state.grant_expires_at !== null && state.grant_expires_at.getTime() <= validThroughEpochMilliseconds) {
+    throw remoteMemoryError('forbidden', 'The memory share grant expires before publication can complete.');
+  }
+  if (
+    (principal.attestationRequiredForWrites ||
+      state.cursor_attestation_required ||
+      state.feature_flags.includes('cursor_oidc_required')) &&
+    !attestation
+  ) {
     throw remoteMemoryError('attestation_required', 'A fresh Cursor workload attestation is required.');
   }
   if (attestation) {
     const expiresAt = Date.parse(attestation.expiresAt);
-    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    if (!Number.isFinite(expiresAt) || expiresAt <= validThroughEpochMilliseconds) {
       throw remoteMemoryError('attestation_required', 'The Cursor workload attestation is invalid or expired.');
     }
     authorizeCursorClaims(principal, attestation, project);

@@ -293,6 +293,7 @@ function retentionPrincipal(row: ExpiredHandoffRow): AuthorizedRemotePrincipal {
     allowedProjects: 'all',
     attestationRequiredForWrites: false,
     capabilities: new Set(['memory:admin']),
+    cloudAdmissionRequired: false,
     cursorOwnerIds: new Set(),
     cursorSubjects: new Set(),
     featureFlags: new Set(),
