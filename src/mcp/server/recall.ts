@@ -148,10 +148,10 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
     'review_session_context',
     {
       annotations: {readOnlyHint: false, destructiveHint: false},
-      description: 'Propose closeout candidates for review; does not publish.',
+      description: 'After routine durable and handoff writes, propose additional reviewable candidates.',
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd'),
-        codeRefs: McpInput.stringOrStrings(`Code path/cgs_/cgr_; max ${MAX_MEMORY_CODE_CITATIONS}`, {
+        codeRefs: McpInput.stringOrStrings(`Graph-indexed repository-relative path; max ${MAX_MEMORY_CODE_CITATIONS}`, {
           maximumItems: MAX_MEMORY_CODE_CITATIONS,
         }),
         rationale: McpInput.string('Why'),
@@ -160,17 +160,17 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
         knowledgeInvalidated: McpInput.stringOrStrings('Invalidated'),
         unresolvedRisks: McpInput.stringOrStrings('Risks'),
         decisions: McpInput.stringOrStrings('Decisions'),
-        evidence: McpInput.stringOrStrings('Evidence pointers'),
+        evidence: McpInput.stringOrStrings('Evidence'),
         handoff: McpInput.stringOrStrings('Handoff'),
-        invariants: McpInput.stringOrStrings('Stable contracts'),
+        invariants: McpInput.stringOrStrings('Invariants'),
         outcome: McpInput.string('Task outcome'),
         preferences: McpInput.stringOrStrings('User preferences'),
         project: McpInput.string('Project; infer from cwd'),
         sourceAgentClient: McpInput.string('Client'),
         sourceCommit: McpInput.string('Commit'),
-        sourceSessionId: McpInput.string('Session/thread'),
+        sourceSessionId: McpInput.string('Session'),
         task: McpInput.string('Task'),
-        topic: McpInput.string('Topic; defaults from task'),
+        topic: McpInput.string('Topic'),
       },
     },
     ({
