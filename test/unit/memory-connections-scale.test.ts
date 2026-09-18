@@ -1,20 +1,30 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect} from 'effect';
+import * as BunCrypto from '@effect/platform-bun/BunCrypto';
+import {Crypto, Effect} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {parseMemoryConnectionsScaleTargetArguments} from '../../scripts/benchmark-memory-connections-scale-target.js';
+import {
+  MAX_MEMORY_CONNECTIONS_SCALE_ARTIFACT_BYTES,
+  parseVerifyMemoryConnectionsScaleArtifactArguments,
+  readMemoryConnectionsScaleArtifact,
+} from '../../scripts/verify-memory-connections-scale-artifact.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   evaluateMemoryConnectionsScaleCapture,
+  memoryConnectionsScaleCandidateBinding,
   MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
   MEMORY_CONNECTIONS_SCALE_APPROVED_FIXTURE_HASH,
   MEMORY_CONNECTIONS_SCALE_RELEASE_RUNNER_CLASS,
   MEMORY_CONNECTIONS_SCALE_SCENARIOS,
   memoryConnectionsScaleExpectedIds,
   memoryConnectionsScaleFixtureHash,
+  parseMemoryConnectionsScaleArtifactV1,
+  type MemoryConnectionsScaleCandidateBinding,
   type MemoryConnectionsScaleConnectionReceiptEvidenceV1,
   type MemoryConnectionsScaleCaptureV1,
+  type MemoryConnectionsScaleIdentityV1,
   type MemoryConnectionsScaleObservationV1,
 } from '../../src/evaluation/memory-connections-scale-contract.js';
 import {runMemoryConnectionsScaleWorkload} from '../../src/evaluation/memory-connections-scale.js';
@@ -34,6 +44,14 @@ describe('memory-connections one-hop scale contract', () => {
     expect(() =>
       parseMemoryConnectionsScaleTargetArguments(['--candidate-commit', '1'.repeat(40), '--memory-candidates', '1000']),
     ).toThrow('require --development-smoke');
+    expect(
+      parseVerifyMemoryConnectionsScaleArtifactArguments([
+        '--artifact',
+        'artifact.json',
+        '--candidate-commit',
+        '1'.repeat(40),
+      ]),
+    ).toMatchObject({artifactPath: 'artifact.json', candidateCommit: '1'.repeat(40)});
   });
 
   it('derives a passing release gate from exact correctness and provenance', () => {
@@ -42,15 +60,8 @@ describe('memory-connections one-hop scale contract', () => {
       budget: MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
       capture,
       createdAt: '2026-08-31T00:00:00.000Z',
-      identity: {
-        builtArtifactSha256: '2'.repeat(64),
-        candidateCommit: '1'.repeat(40),
-        dirty: false,
-        invocationMode: 'release-scale',
-        observedCommit: '1'.repeat(40),
-        runnerClass: MEMORY_CONNECTIONS_SCALE_RELEASE_RUNNER_CLASS,
-        runtime: 'bun/test',
-      },
+      identity: releaseIdentity(),
+      candidate: releaseCandidate(),
     });
     expect(artifact.evidenceClass).toBe('release-scale');
     expect(artifact.gate).toEqual({failures: [], passed: true});
@@ -78,9 +89,190 @@ describe('memory-connections one-hop scale contract', () => {
       capture: {...capture, corpus: {...capture.corpus, materializedMemoryCount: 1_000}},
       createdAt: '2026-08-31T00:00:00.000Z',
       identity: {...artifact.identity, invocationMode: 'development-smoke'},
+      candidate: releaseCandidate(),
     });
     expect(relabeled.evidenceClass).toBe('development-smoke');
     expect(relabeled.gate.passed).toBe(false);
+  });
+
+  it('strictly parses and independently replays a completed artifact', () => {
+    const artifact = releaseArtifact(releaseCapture());
+    expect(
+      parseMemoryConnectionsScaleArtifactV1(
+        JSON.parse(JSON.stringify(artifact)) as unknown,
+        MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
+        releaseCandidate(),
+      ),
+    ).toEqual(artifact);
+
+    expect(() =>
+      parseMemoryConnectionsScaleArtifactV1(
+        {...artifact, extra: true},
+        MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
+        releaseCandidate(),
+      ),
+    ).toThrow(/unexpected keys/u);
+    expect(() =>
+      parseMemoryConnectionsScaleArtifactV1(
+        {...artifact, metrics: {...artifact.metrics, recall: 0}},
+        MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
+        releaseCandidate(),
+      ),
+    ).toThrow(/metrics do not match/u);
+    expect(() =>
+      parseMemoryConnectionsScaleArtifactV1(
+        {...artifact, gate: {failures: [], passed: false}},
+        MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
+        releaseCandidate(),
+      ),
+    ).toThrow(/gate does not match/u);
+    const changedObservation = mapObservations(artifact.capture, (observation, index) =>
+      index === 1 ? {...observation, milliseconds: observation.milliseconds + 1} : observation,
+    );
+    expect(() =>
+      parseMemoryConnectionsScaleArtifactV1(
+        {...artifact, capture: changedObservation},
+        MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
+        releaseCandidate(),
+      ),
+    ).toThrow(/metrics do not match/u);
+    expect(() =>
+      parseMemoryConnectionsScaleArtifactV1(
+        {...artifact, identity: {...artifact.identity, githubActions: false}},
+        MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
+        releaseCandidate(),
+      ),
+    ).toThrow(/evidence class is not derived/u);
+    expect(() =>
+      parseMemoryConnectionsScaleArtifactV1(
+        {
+          ...artifact,
+          capture: {
+            ...artifact.capture,
+            scenarios: artifact.capture.scenarios.map((scenario, index) =>
+              index === 0 ? {...scenario, samples: [{...scenario.samples[0], milliseconds: Number.NaN}]} : scenario,
+            ),
+          },
+        },
+        MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
+        releaseCandidate(),
+      ),
+    ).toThrow(/non-negative finite number/u);
+  });
+
+  it('fails closed when release environment or candidate provenance is relabeled', () => {
+    const baseline = releaseIdentity();
+    const keys = [
+      'architecture',
+      'candidateCommit',
+      'cpu',
+      'dirty',
+      'gitStatusObserved',
+      'githubActions',
+      'observedCommit',
+      'operatingSystem',
+      'packageManager',
+      'runnerArchitecture',
+      'runnerClass',
+      'runnerEnvironment',
+      'runnerOperatingSystem',
+      'runtime',
+      'sourceVersion',
+    ] as const satisfies readonly (keyof MemoryConnectionsScaleIdentityV1)[];
+    for (const key of keys) {
+      const identity = {
+        ...baseline,
+        [key]:
+          key === 'dirty'
+            ? true
+            : key === 'gitStatusObserved' || key === 'githubActions'
+              ? false
+              : key === 'candidateCommit' || key === 'observedCommit'
+                ? '3'.repeat(40)
+                : 'invalid',
+      } as MemoryConnectionsScaleIdentityV1;
+      expect(
+        evaluateMemoryConnectionsScaleCapture({
+          budget: MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
+          capture: releaseCapture(),
+          createdAt: '2026-08-31T00:00:00.000Z',
+          identity,
+          candidate: releaseCandidate(),
+        }).gate.passed,
+        key,
+      ).toBe(false);
+    }
+  });
+
+  it('does not self-attest release provenance when the candidate binding is omitted', () => {
+    const artifact = releaseArtifact(releaseCapture());
+    const withoutCandidate = evaluateMemoryConnectionsScaleCapture({
+      budget: MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
+      capture: artifact.capture,
+      createdAt: artifact.createdAt,
+      identity: artifact.identity,
+    });
+    expect(withoutCandidate.evidenceClass).toBe('development-smoke');
+    expect(withoutCandidate.gate).toMatchObject({passed: false});
+    expect(withoutCandidate.gate.failures).toContain(
+      'release evidence requires an independently derived candidate binding',
+    );
+    expect(() => parseMemoryConnectionsScaleArtifactV1(artifact, MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET)).toThrow(
+      /evidence class is not derived/u,
+    );
+  });
+
+  effectIt.effect('bounds retained artifact reads before JSON parsing', () =>
+    Effect.acquireUseRelease(
+      Effect.gen(function* () {
+        const crypto = yield* Crypto.Crypto;
+        const path = `${Bun.env.TMPDIR ?? '/tmp'}/memory-connections-scale-${yield* crypto.randomUUIDv4}.json`;
+        yield* Effect.tryPromise(() =>
+          Bun.write(path, new Uint8Array(MAX_MEMORY_CONNECTIONS_SCALE_ARTIFACT_BYTES + 1)),
+        );
+        return path;
+      }),
+      path =>
+        Effect.gen(function* () {
+          const error = yield* readMemoryConnectionsScaleArtifact(path).pipe(Effect.flip);
+          expect(error.message).toMatch(/exceeds/u);
+        }),
+      path => Effect.tryPromise(() => Bun.file(path).delete()).pipe(Effect.ignore),
+    ).pipe(provideTestLayer(BunCrypto.layer)),
+  );
+
+  it('round-trips every valid bounded lookup latency without changing its verdict', () => {
+    fc.assert(
+      fc.property(fc.integer({min: 1, max: 250}), milliseconds => {
+        const capture = mapObservations(releaseCapture(), observation => ({...observation, milliseconds}));
+        const artifact = releaseArtifact(capture);
+        const parsed = parseMemoryConnectionsScaleArtifactV1(
+          JSON.parse(JSON.stringify(artifact)) as unknown,
+          MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
+          releaseCandidate(),
+        );
+        expect(parsed).toEqual(artifact);
+        expect(parsed.gate).toEqual({failures: [], passed: true});
+      }),
+      {numRuns: 50},
+    );
+  });
+
+  it('binds the release candidate to the exact package version and Bun runtime', () => {
+    expect(
+      memoryConnectionsScaleCandidateBinding('1'.repeat(40), {
+        packageManager: 'bun@1.4.2',
+        version: '5.0.0',
+      }),
+    ).toEqual({
+      commit: '1'.repeat(40),
+      packageManager: 'bun@1.4.2',
+      runtime: 'bun/1.4.2',
+      sourceVersion: 'threadnote-5.0.0',
+    });
+    expect(() =>
+      memoryConnectionsScaleCandidateBinding('1'.repeat(40), {packageManager: 'bun@latest', version: '5.0.0'}),
+    ).toThrow(/explicit Bun version/u);
   });
 
   it('rejects receipt disclosure, false currentness, and excessive selector work independently', () => {
@@ -418,16 +610,57 @@ function releaseArtifact(capture: MemoryConnectionsScaleCaptureV1) {
     budget: MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
     capture,
     createdAt: '2026-08-31T00:00:00.000Z',
-    identity: {
-      builtArtifactSha256: '2'.repeat(64),
-      candidateCommit: '1'.repeat(40),
-      dirty: false,
-      invocationMode: 'release-scale',
-      observedCommit: '1'.repeat(40),
-      runnerClass: MEMORY_CONNECTIONS_SCALE_RELEASE_RUNNER_CLASS,
-      runtime: 'bun/test',
-    },
+    identity: releaseIdentity(),
+    candidate: releaseCandidate(),
   });
+}
+
+function releaseCandidate(): MemoryConnectionsScaleCandidateBinding {
+  return {
+    commit: '1'.repeat(40),
+    packageManager: 'bun@1.4.2',
+    runtime: 'bun/1.4.2',
+    sourceVersion: 'threadnote-5.0.0',
+  };
+}
+
+function releaseIdentity(): MemoryConnectionsScaleIdentityV1 {
+  return {
+    architecture: 'arm64',
+    builtArtifactSha256: '2'.repeat(64),
+    candidateCommit: '1'.repeat(40),
+    cpu: 'Apple M1 Max',
+    dirty: false,
+    githubActions: true,
+    gitStatusObserved: true,
+    invocationMode: 'release-scale',
+    observedCommit: '1'.repeat(40),
+    operatingSystem: 'macOS 15.6.1',
+    packageManager: 'bun@1.4.2',
+    runnerArchitecture: 'ARM64',
+    runnerClass: MEMORY_CONNECTIONS_SCALE_RELEASE_RUNNER_CLASS,
+    runnerEnvironment: 'github-hosted',
+    runnerOperatingSystem: 'macOS',
+    runtime: 'bun/1.4.2',
+    sourceVersion: 'threadnote-5.0.0',
+  };
+}
+
+function mapObservations(
+  capture: MemoryConnectionsScaleCaptureV1,
+  update: (observation: MemoryConnectionsScaleObservationV1, index: number) => MemoryConnectionsScaleObservationV1,
+): MemoryConnectionsScaleCaptureV1 {
+  let index = 0;
+  const map = (observation: MemoryConnectionsScaleObservationV1) => update(observation, index++);
+  return {
+    ...capture,
+    scenarios: capture.scenarios.map(scenario => ({
+      ...scenario,
+      cold: map(scenario.cold),
+      samples: scenario.samples.map(map),
+      warmups: scenario.warmups.map(map),
+    })),
+  };
 }
 
 function withColdObservation(

@@ -21,6 +21,7 @@ import {SystemInfo} from '../../src/effect/system.js';
 import {parseContextBriefCitationScaleBudgetV1} from '../../src/evaluation/context-brief-citation-scale-contract.js';
 import {prepareContextBriefCitationScaleRepositories} from '../../src/evaluation/context-brief-citation-scale-fixture.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {makeIdempotentFixtureTempDirectoryScoped} from '../helpers/fixture-temp-directory.js';
 
 const budget = parseContextBriefCitationScaleBudgetV1(
   JSON.parse(
@@ -49,7 +50,7 @@ describe('Context Brief prebuilt scale fixture admission', () => {
         const path = yield* Path.Path;
         const store = yield* CodeGraphStore;
         const packs = yield* CodeGraphLanguagePackRegistry;
-        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-scale-admission-'});
+        const root = yield* makeIdempotentFixtureTempDirectoryScoped(fs, 'threadnote-scale-admission-');
         const home = path.join(root, 'home');
         const [repository] = yield* prepareContextBriefCitationScaleRepositories(
           fs,
@@ -84,6 +85,20 @@ describe('Context Brief prebuilt scale fixture admission', () => {
         expect(yield* current()).toBe(true);
       }).pipe(provideTestLayer(fixtureLayer), TestClock.withLive),
     {fastCheck: {numRuns: 8}},
+  );
+
+  effectIt.effect('cleans up idempotently when the scale admission fixture root disappears before finalization', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* makeIdempotentFixtureTempDirectoryScoped(fs, 'threadnote-scale-admission-cleanup-');
+      const home = path.join(root, 'home');
+      yield* prepareContextBriefCitationScaleRepositories(fs, path, home, root, budget.profiles[0], 1);
+
+      yield* fs.remove(root, {force: true, recursive: true});
+
+      expect(yield* fs.exists(root)).toBe(false);
+    }).pipe(provideTestLayer(fixtureLayer), TestClock.withLive),
   );
 
   effectIt.effect('rejects admission policy changes during snapshot publication', () =>

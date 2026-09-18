@@ -13,6 +13,7 @@ import {
 } from './docsMemoryCitationReference.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
 import {optionalImageProjectionCliCommand, optionalImageProjectionDocsArticle} from './docsImageProjection.js';
+import {connectAgentDocsArticle, firstWorkflowDocsArticle} from './docsGettingStarted.js';
 import {projectGuidanceDocsArticle} from './docsGuidance.js';
 import {
   contextLifecycleConceptDocsArticle,
@@ -29,6 +30,7 @@ import {
 import {localAiDocsArticle} from './docsLocalAi.js';
 import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
 import type {CliCommandReference, DocsSection, McpToolReference} from './docsTypes.js';
+import {upgradeFromThreadnote4DocsArticle} from './docsUpgradeV5.js';
 export type {
   CliCommandReference,
   DocsArticle,
@@ -373,14 +375,14 @@ export const docsSections: DocsSection[] = [
   {
     id: 'getting-started',
     title: 'Getting started',
-    description: 'Follow the complete journey from local setup to reviewed cross-agent reuse.',
+    description:
+      'Start one task with local setup, a cited brief, exact code, and a reviewed closeout. Team reuse is optional.',
     articles: [
       threadnote5JourneyDocsArticle,
       {
         id: 'what-is-threadnote',
         title: 'What is Threadnote?',
-        summary:
-          'A source-verifiable context lifecycle shared by the coding agents your engineering team already uses.',
+        summary: 'Help coding agents start with the decisions and current code they need, then review what they learn.',
         keywords: [
           'code search',
           'polyglot code graph',
@@ -392,25 +394,25 @@ export const docsSections: DocsSection[] = [
         body: [
           {
             type: 'paragraph',
-            text: 'Threadnote gives [supported agents](/agents/) one source-verifiable context lifecycle without forcing the team into one chat product. It compiles reviewed engineering decisions, active work state, compatible procedures, and current code evidence into a bounded task brief; then it turns task closeout into a Knowledge Delta for explicit review. Personal working state and code indexes stay local. Approved durable knowledge can move through a Git-backed team store and be reused from another agent surface.',
+            text: 'Threadnote gives [supported coding-agent environments](/agents/) a shared source of project context. A coding-agent environment is the editor, CLI, or hosted integration where an agent works; the catalog calls that declared integration a surface. Before a task, Threadnote finds the reviewed decisions, unfinished work, and current code that matter. After the task, it asks which new lessons are worth keeping. Private work and code indexes stay local; Git-backed team reuse is optional.',
           },
           {
             type: 'list',
             items: [
-              'Context Brief starts a task with a bounded, cited set of relevant decisions, handoffs, procedures, and current-code evidence.',
-              'Knowledge Delta makes decisions, constraints, verification, invalidated knowledge, and unresolved risks reviewable at closeout.',
-              'Git-backed sharing and catalog-driven project guidance carry approved knowledge between agent surfaces without copying private sessions.',
-              'Context health, Context CI, and reviewed repairs keep stale, contradictory, expired, or drifted context visible.',
-              'Local value reports show activation and reuse outcomes without collecting source, memory, path, repository, or stable user identity.',
+              'A Context Brief is the short, cited briefing an agent gets before a task.',
+              'A Knowledge Delta is the reviewable list of useful decisions, checks, outdated notes, and open risks learned during the task.',
+              'Git-backed sharing lets another supported agent reuse approved decisions without copying private chats.',
+              'Health checks show when saved context may be outdated, conflicting, expired, or disconnected from the code.',
+              'Private local reports show whether the workflow helps without collecting your code, saved context, repository name, or identity.',
             ],
           },
           {
             type: 'note',
-            text: 'Repository files remain authoritative for current code, and Git remains authoritative for reviewed shared knowledge. Threadnote compiles the smallest trustworthy task context and preserves only what a person reviews.',
+            text: 'Your repository remains the source of truth for current code. Your team’s Git repository remains the source of truth for shared decisions. Threadnote brings the relevant pieces together and saves only what a person reviews.',
           },
           {
             type: 'heading',
-            text: 'Memory and current-source evidence stay separate',
+            text: 'Saved decisions and current code stay separate',
           },
           {
             type: 'paragraph',
@@ -468,46 +470,9 @@ threadnote doctor`,
           },
         ],
       },
-      {
-        id: 'connect-an-agent',
-        title: 'Connect your first agent',
-        summary: 'Preview one resumable local setup and finish with a real, source-backed Context Brief.',
-        body: [
-          {
-            type: 'code',
-            language: 'sh',
-            code: `threadnote setup <surface>
-threadnote setup <surface> --apply
-threadnote setup <surface> --undo
-threadnote setup <surface> --undo --apply`,
-          },
-          {
-            type: 'paragraph',
-            text: 'Choose a surface from `threadnote agents list`. Preview prints the complete plan without writing. Apply initializes the local core, current repository guidance seed, selected catalog adapter and declared hooks, code graph, doctor checks, and a final source-backed Context Brief. Interrupted work resumes safely and an unchanged completed apply is a no-op. Undo is also preview-first and removes only unchanged setup-created artifacts, never pre-existing user configuration. Private value reports count starts, failures, completions, and time to the verified brief without storing the task, surface, repository, or path.',
-          },
-          {
-            type: 'paragraph',
-            text: 'MCP runs as a local stdio child process. Setup registers only the selected surface and installs the artifacts declared for that surface. There is no HTTP endpoint, host, token, port, or daemon to configure. Restart the agent after changing its integration.',
-          },
-          {
-            type: 'paragraph',
-            text: 'The default core toolset includes recall, read, list, remember, candidate review, scoped code graph inspection, whole-graph analysis, selected-memory Obsidian publishing, team-memory publishing, and the guided tour. Use --toolset full only when the agent needs maintenance, conflict-resolution, artifact-sharing, or compatibility tools.',
-          },
-          {
-            type: 'code',
-            language: 'sh',
-            code: 'threadnote mcp-install claude --toolset full --apply',
-          },
-          {
-            type: 'note',
-            text: 'Ask your agent “what can I do with Threadnote?” to invoke threadnote_guide. The tour is loaded only on demand, so normal sessions do not pay its context cost.',
-          },
-          {
-            type: 'note',
-            text: 'For individual use, see [Personal Cursor Cloud setup](personal-cursor-cloud/): one personal stdio MCP can expose one or more private Git memory shares and bootstrap installs Cloud-specific Cursor skills.',
-          },
-        ],
-      },
+      upgradeFromThreadnote4DocsArticle,
+      connectAgentDocsArticle,
+      firstWorkflowDocsArticle,
       projectGuidanceDocsArticle,
       {
         id: 'agent-instructions-and-hooks',
@@ -626,55 +591,13 @@ bun run check:self-contained`,
         ],
       },
       {
-        id: 'first-workflow',
-        title: 'Work one task with evidence',
-        summary: 'Start with a Context Brief, verify exact local evidence, and close with reviewed knowledge.',
-        body: [
-          {
-            type: 'heading',
-            text: 'Start the task',
-          },
-          {
-            type: 'list',
-            items: [
-              'Ask for a Context Brief with the task, stable project, absolute callerCwd, and any known current-code anchors.',
-              'Read selected `threadnote://` pointers before relying on them; a ranked pointer is not evidence by itself.',
-              'Use exact files and `inspect_code_graph` for current-source claims. The local worktree wins over historical context.',
-              'At closeout, write the required handoff and review the Knowledge Delta before applying reusable durable knowledge.',
-            ],
-          },
-          {
-            type: 'heading',
-            text: 'A compact CLI version',
-          },
-          {
-            type: 'code',
-            language: 'sh',
-            code: `threadnote context brief \\
-  --task "Continue the mobile auth rollout" \\
-  --project mobile \\
-  --budget-tokens 1250
-threadnote graph query --query "refresh token boundary"
-threadnote handoff --project mobile --topic auth-rollout \\
-  --task "Finish refresh-token rollout" \\
-  --tests "bun test auth" \\
-  --next-step "Update the iOS caller"
-threadnote closeout preview --review-id <review-id>`,
-          },
-          {
-            type: 'note',
-            text: 'Use a stable project/topic pair and replace the existing active record. Timestamped duplicates make currentness harder to judge and should be reserved for historical records.',
-          },
-        ],
-      },
-      {
         id: 'upgrade-from-3',
         title: 'Migrate from 3.x',
         summary: 'Move a legacy OpenViking home directly into Threadnote 5 without deleting the rollback source.',
         body: [
           {
             type: 'paragraph',
-            text: 'The stable `/docs/upgrade-from-3/` route remains the migration guide for existing links. Threadnote 3 cannot cross the standalone-runtime boundary with `threadnote update`; install Threadnote 5 with the bootstrap installer, then run the one-time, non-destructive migration from the legacy ~/.openviking home. Users already on Threadnote 4 should use [Updates and channels](updates/) instead.',
+            text: 'The stable `/docs/upgrade-from-3/` route remains the migration guide for existing links. Threadnote 3 cannot cross the standalone-runtime boundary with `threadnote update`; install Threadnote 5 with the bootstrap installer, then run the one-time, non-destructive migration from the legacy ~/.openviking home. Users already on Threadnote 4 should follow [Upgrade from Threadnote 4](upgrade-from-4/) instead.',
           },
           {
             type: 'code',
@@ -1770,7 +1693,7 @@ threadnote update --check`,
           },
           {
             type: 'paragraph',
-            text: "The beta channel is an inclusive preview channel: it selects the newest immutable Threadnote release across stable and prerelease builds, so an invoked update can graduate an older beta to a fresher stable without --stable. After that graduation, ordinary updates follow stable; use --beta to re-enter preview selection. Use --stable to request stable explicitly, even when it is numerically lower than an installed prerelease. Add --json to --check for a versioned machine-readable result. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair Threadnote-owned integrations. Cursor Marketplace plugin updates remain owned by Cursor and the organization's policy.",
+            text: "The beta channel is an inclusive preview channel: it selects the newest immutable Threadnote release across stable and prerelease builds, so an invoked update can graduate an older beta to a fresher stable without --stable. After that graduation, ordinary updates follow stable; use --beta to re-enter preview selection. Use --stable to request stable explicitly, even when it is numerically lower than an installed prerelease. Add --json to --check for a versioned machine-readable result. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair Threadnote-owned integrations. Cursor Marketplace plugin updates remain owned by Cursor and the organization's policy. Existing 4.x users can follow the focused [Threadnote 5 upgrade guide](upgrade-from-4/).",
           },
           {
             type: 'paragraph',

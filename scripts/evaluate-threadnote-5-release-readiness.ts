@@ -3,6 +3,10 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect, Path} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
+import {
+  THREADNOTE_5_BASELINE_COMMIT,
+  THREADNOTE_5_BASELINE_VERSION,
+} from '../src/evaluation/threadnote-5-release-readiness-contract.js';
 import {evaluateThreadnote5ReleaseReadiness} from '../src/evaluation/threadnote-5-release-readiness.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
@@ -127,19 +131,25 @@ function parseArguments(args: readonly string[]): {
         'Release-readiness evaluation requires --candidate-commit <40-hex>, --candidate-executable-sha256 <64-hex>, --capture-manifest-sha256 <64-hex>, and --evidence <json>.',
     });
   }
-  const baselineValues = [baselineCommit, baselineExecutableSha256, baselineVersion].filter(
-    value => value !== undefined,
-  ).length;
-  if (baselineValues !== 0 && baselineValues !== 3) {
+  const baselineValues = [
+    baselineCommit,
+    baselineExecutableSha256,
+    baselineVersion,
+    baselineTrialLedgerPath,
+    baselineTrialLedgerSha256,
+  ].filter(value => value !== undefined).length;
+  if (baselineValues !== 0 && baselineValues !== 5) {
     throw ScriptError.make({
       message:
-        'Trusted baseline comparison requires --baseline-version, --baseline-commit, and --baseline-executable-sha256 together.',
+        'Trusted 4.7.8 comparison requires --baseline-version, --baseline-commit, --baseline-executable-sha256, --baseline-trial-ledger, and --baseline-trial-ledger-sha256 together.',
     });
   }
-  if ((baselineTrialLedgerPath === undefined) !== (baselineTrialLedgerSha256 === undefined)) {
+  if (
+    baselineValues === 5 &&
+    (baselineVersion !== THREADNOTE_5_BASELINE_VERSION || baselineCommit !== THREADNOTE_5_BASELINE_COMMIT)
+  ) {
     throw ScriptError.make({
-      message:
-        'Baseline trial-ledger verification requires --baseline-trial-ledger and --baseline-trial-ledger-sha256 together.',
+      message: `Trusted baseline comparison is fixed to Threadnote ${THREADNOTE_5_BASELINE_VERSION} at ${THREADNOTE_5_BASELINE_COMMIT}.`,
     });
   }
   if ((localAuthorityManifestPath === undefined) !== (localAuthorityManifestSha256 === undefined)) {
@@ -152,7 +162,7 @@ function parseArguments(args: readonly string[]): {
     candidateExecutableSha256,
     captureManifestSha256,
     evidencePath,
-    ...(baselineValues === 3
+    ...(baselineValues === 5
       ? {
           baselineSource: {
             commit: baselineCommit!,

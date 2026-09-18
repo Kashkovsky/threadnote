@@ -1,6 +1,11 @@
-import {buildCandidateReview, saveCandidateReview, type SessionCloseoutInput} from '../../src/memory/candidate.js';
+import {
+  buildCandidateReview,
+  readActiveProjectMemories,
+  saveCandidateReview,
+  type SessionCloseoutInput,
+} from '../../src/memory/candidate.js';
 import {execFile} from '../helpers/node-child-process.js';
-import {mkdtemp, readFile, rm} from '../helpers/node-fs-promises.js';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
@@ -9,6 +14,22 @@ import {promisify} from 'node:util';
 
 const execFilePromise = promisify(execFile);
 const homes: string[] = [];
+
+const detailedHandoffBody = [
+  '## Current state',
+  '- Release branch and exact head are recorded for the next agent.',
+  '- Runtime ownership and active branch coordination are recorded here.',
+  '- Pull request status still needs a fresh remote check.',
+  '',
+  '## Verification evidence',
+  '- Focused tests, typecheck, lint, and exact-head smoke passed.',
+  '- The retained safety artifact and recovery path are documented.',
+  '',
+  '## Ordered next steps',
+  '- Refresh remote checks before merging.',
+  '- Transfer runtime ownership before the next install.',
+  '- Run final admission only after every slice is complete.',
+].join('\n');
 
 const input: SessionCloseoutInput = {
   decisions: ['Keep closeout decisions explicit.'],
@@ -151,6 +172,168 @@ describe('closeout CLI', () => {
     expect(stored).toContain(editedText);
     expect(stored).not.toContain('Keep closeout decisions explicit.');
   });
+
+  it('fails closed when approval would erase most of a detailed handoff', async () => {
+    const {candidateId, home, proposedText, reviewId, targetPath, targetUri} =
+      await storedReplacementReview('destructive-handoff');
+    const before = await readFile(targetPath, 'utf8');
+
+    const preview = await runCli(['closeout', 'preview', '--review-id', reviewId, '--json'], home);
+    expect(JSON.parse(preview.stdout).items[0].mutationPreview.replacementSafety).toMatchObject({
+      classification: 'destructive-loss-risk',
+      requiresExplicitApproval: true,
+    });
+    const human = await runCli(['closeout', 'preview', '--review-id', reviewId], home);
+    expect(human.stdout).toContain('WARNING: Destructive replacement risk');
+
+    const blocked = await runCli(
+      [
+        'closeout',
+        'apply',
+        '--action',
+        'approve',
+        '--approved',
+        '--review-id',
+        reviewId,
+        '--candidate-id',
+        candidateId,
+        '--revision',
+        '1',
+        '--operation',
+        'replace',
+        '--replace-uri',
+        targetUri,
+      ],
+      home,
+    ).catch(error => error as CliFailure);
+    expect(blocked).toMatchObject({code: 1});
+    expect(blocked.stderr).toContain('allowDestructiveReplacement=true');
+    expect(await readFile(targetPath, 'utf8')).toBe(before);
+
+    const applied = await runCli(
+      [
+        'closeout',
+        'apply',
+        '--action',
+        'approve',
+        '--approved',
+        '--allow-destructive-replacement',
+        '--review-id',
+        reviewId,
+        '--candidate-id',
+        candidateId,
+        '--revision',
+        '1',
+        '--operation',
+        'replace',
+        '--replace-uri',
+        targetUri,
+      ],
+      home,
+    );
+    expect(applied.stdout).toContain('Stored memory:');
+    expect(await readFile(targetPath, 'utf8')).toContain(proposedText);
+
+    const appliedPreview = await runCli(['closeout', 'preview', '--review-id', reviewId, '--json'], home);
+    expect(JSON.parse(appliedPreview.stdout).items[0].mutationPreview.replacementSafety).toMatchObject({
+      acknowledged: true,
+      requiresExplicitApproval: false,
+    });
+  });
+
+  it('requires a fresh review before applying a legacy replacement without a safety baseline', async () => {
+    const {candidateId, home, reviewId, reviewPath, targetPath, targetUri} =
+      await storedReplacementReview('legacy-replacement-safety');
+    const before = await readFile(targetPath, 'utf8');
+    const persisted = JSON.parse(await readFile(reviewPath, 'utf8')) as {
+      candidates: Array<{replacementSafetyBaseline?: unknown}>;
+    };
+    delete persisted.candidates[0]?.replacementSafetyBaseline;
+    await writeFile(reviewPath, `${JSON.stringify(persisted, undefined, 2)}\n`, 'utf8');
+
+    const preview = await runCli(['closeout', 'preview', '--review-id', reviewId, '--json'], home);
+    expect(JSON.parse(preview.stdout).items[0].mutationPreview.replacementSafety).toMatchObject({
+      classification: 'review-required',
+      requiresExplicitApproval: true,
+      warning: expect.stringContaining('Run review_session_context again'),
+    });
+
+    const blocked = await runCli(
+      [
+        'closeout',
+        'apply',
+        '--action',
+        'approve',
+        '--approved',
+        '--allow-destructive-replacement',
+        '--review-id',
+        reviewId,
+        '--candidate-id',
+        candidateId,
+        '--revision',
+        '1',
+        '--operation',
+        'replace',
+        '--replace-uri',
+        targetUri,
+      ],
+      home,
+    ).catch(error => error as CliFailure);
+    expect(blocked).toMatchObject({code: 1});
+    expect(blocked.stderr).toContain('Run review_session_context again');
+    expect(await readFile(targetPath, 'utf8')).toBe(before);
+  });
+
+  it('allows an edited replacement that preserves the detailed handoff', async () => {
+    const {candidateId, home, reviewId, targetPath, targetUri} = await storedReplacementReview('preserving-handoff');
+    const editedText = `${detailedHandoffBody}\n- Continue coordinated release work after checks finish.`;
+
+    const preview = await runCli(
+      [
+        'closeout',
+        'preview',
+        '--review-id',
+        reviewId,
+        '--candidate-id',
+        candidateId,
+        '--revision',
+        '1',
+        '--edited-text',
+        editedText,
+        '--json',
+      ],
+      home,
+    );
+    expect(JSON.parse(preview.stdout).items[0].mutationPreview.replacementSafety).toMatchObject({
+      classification: 'preserving',
+      requiresExplicitApproval: false,
+    });
+
+    const applied = await runCli(
+      [
+        'closeout',
+        'apply',
+        '--action',
+        'approve',
+        '--approved',
+        '--review-id',
+        reviewId,
+        '--candidate-id',
+        candidateId,
+        '--revision',
+        '1',
+        '--edited-text',
+        editedText,
+        '--operation',
+        'replace',
+        '--replace-uri',
+        targetUri,
+      ],
+      home,
+    );
+    expect(applied.stdout).toContain('Stored memory:');
+    expect(await readFile(targetPath, 'utf8')).toContain(editedText);
+  });
 });
 
 interface CliFailure extends Error {
@@ -168,6 +351,64 @@ async function storedReview() {
     review,
     reviewId: review.reviewId,
     reviewPath: join(home, 'threadnote', 'candidates', 'v1', 'reviews', `${review.reviewId}.json`),
+  };
+}
+
+async function storedReplacementReview(topic: string) {
+  const home = await mkdtemp(join(tmpdir(), 'threadnote-closeout-replacement-'));
+  homes.push(home);
+  const targetPath = join(
+    home,
+    'data',
+    'local',
+    'user',
+    'local',
+    'memories',
+    'handoffs',
+    'active',
+    'threadnote',
+    `${topic}.md`,
+  );
+  const targetUri = `threadnote://user/local/memories/handoffs/active/threadnote/${topic}.md`;
+  await mkdir(join(targetPath, '..'), {recursive: true});
+  await writeFile(
+    targetPath,
+    [
+      'HANDOFF',
+      'kind: handoff',
+      'status: active',
+      'project: threadnote',
+      `topic: ${topic}`,
+      'source_agent_client: test',
+      'timestamp: 2026-09-17T09:00:00.000Z',
+      '',
+      detailedHandoffBody,
+    ].join('\n'),
+    'utf8',
+  );
+  const proposedText = '## Handoff state\n- Continue coordinated release work after checks finish.';
+  const replacementInput: SessionCloseoutInput = {
+    evidence: ['test/integration/closeout-cli.test.ts'],
+    handoff: ['Continue coordinated release work after checks finish.'],
+    outcome: 'Prepared the next release coordination step.',
+    project: 'threadnote',
+    sourceAgentClient: 'test',
+    sourceSessionId: `closeout-cli-${topic}`,
+    task: 'Update release coordination handoff',
+    topic,
+  };
+  const config = {account: 'local', agentContextHome: home, user: 'local'} as const;
+  const existing = await run(readActiveProjectMemories(config, 'threadnote'));
+  const review = await run(buildCandidateReview(replacementInput, existing, new Date('2026-09-17T10:00:00.000Z')));
+  await run(saveCandidateReview(home, review));
+  return {
+    candidateId: review.candidates[0]?.candidateId ?? '',
+    home,
+    proposedText,
+    reviewId: review.reviewId,
+    reviewPath: join(home, 'threadnote', 'candidates', 'v1', 'reviews', `${review.reviewId}.json`),
+    targetPath,
+    targetUri,
   };
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Console, Effect, Path} from 'effect';
+import {Console, Effect, Layer, Path} from 'effect';
 import {sha256HexSync} from '../src/crypto/sha256.js';
 import {runCommandEffect} from '../src/effect/command.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
@@ -37,10 +37,16 @@ import {
 import {
   CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET,
   CODE_MEMORY_LINK_SCALE_ARTIFACT_ROOT,
+  codeMemoryLinkScaleCandidateBindingV1,
   codeMemoryLinkScaleArtifactPath,
   parseCodeMemoryLinkScaleArtifactV1,
+  type CodeMemoryLinkScaleCandidateBindingV1,
 } from '../src/evaluation/code-memory-link-scale-contract.js';
 import {rebuildCodeMemoryLinkScaleTargetDigest} from './benchmark-code-memory-link-scale.js';
+import {
+  CodeMemoryLinkScaleProvenanceLive,
+  verifyCodeMemoryLinkScaleProvenance,
+} from './code-memory-link-scale-provenance.js';
 import {
   CODE_MEMORY_LINK_RELEASE_DESCRIPTOR_ROOT,
   parseCodeMemoryLinkReleaseDescriptorV1,
@@ -81,6 +87,10 @@ const program = Effect.gen(function* () {
     ],
     {concurrency: 2},
   );
+  const scaleCandidateBinding = yield* loadCodeMemoryLinkScaleCandidateBindingAtCommit(
+    sourceRoot,
+    release.descriptor.candidate.commit,
+  );
   const scale = yield* loadCodeMemoryLinkScaleArtifactAtHead(
     sourceRoot,
     governance.commit,
@@ -88,7 +98,7 @@ const program = Effect.gen(function* () {
     release.descriptor.scaleArtifact.sha256,
     release.descriptor.candidate.commit,
     rebuiltScaleTargetSha256,
-    release.descriptor.releaseTag.slice(1),
+    scaleCandidateBinding,
   );
   if (
     retained.contents.index.candidateCommit !== release.descriptor.candidate.commit ||
@@ -351,7 +361,7 @@ export const loadCodeMemoryLinkScaleArtifactAtHead = Effect.fn('codeMemoryLinkRe
     expectedArtifactSha256: string,
     expectedCandidateCommit: string,
     expectedBuiltArtifactSha256: string,
-    expectedSourceVersion: string,
+    candidateBinding: CodeMemoryLinkScaleCandidateBindingV1,
   ) {
     if (
       !/^[0-9a-f]{64}$/u.test(expectedArtifactSha256) ||
@@ -366,11 +376,18 @@ export const loadCodeMemoryLinkScaleArtifactAtHead = Effect.fn('codeMemoryLinkRe
     if (artifactHash !== expectedArtifactSha256) {
       return yield* ScriptError.make({message: 'Scale artifact bytes differ from the final release descriptor hash.'});
     }
+    const payload = yield* Effect.try({
+      try: () => json(source, 'retained inverse-selector scale artifact'),
+      catch: cause => ScriptError.make({message: 'Retained scale artifact is invalid JSON.', cause}),
+    });
+    const {runnerBinding} = yield* verifyCodeMemoryLinkScaleProvenance(payload, candidateBinding);
     const artifact = yield* Effect.try({
       try: () =>
         parseCodeMemoryLinkScaleArtifactV1(
-          json(source, 'retained inverse-selector scale artifact'),
+          payload,
           CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET,
+          candidateBinding,
+          runnerBinding,
         ),
       catch: cause => ScriptError.make({message: 'Retained inverse-selector scale artifact is invalid.', cause}),
     });
@@ -402,14 +419,25 @@ export const loadCodeMemoryLinkScaleArtifactAtHead = Effect.fn('codeMemoryLinkRe
         message: 'Retained inverse-selector scale artifact differs from the independently rebuilt target.',
       });
     }
-    if (artifact.identity.sourceVersion !== `threadnote-${expectedSourceVersion}`) {
-      return yield* ScriptError.make({
-        message: 'Retained inverse-selector scale artifact source version differs from the release version.',
-      });
-    }
     return {artifact, artifactHash, repositoryPath};
   },
 );
+
+/** Derive candidate package identity from the exact Git object before replaying retained release evidence. */
+export const loadCodeMemoryLinkScaleCandidateBindingAtCommit = Effect.fn(
+  'codeMemoryLinkRelease.loadScaleCandidateBindingAtCommit',
+)(function* (sourceRoot: string, candidateCommit: string) {
+  const manifest = yield* runCommandEffect('git', ['show', `${candidateCommit}:package.json`], {
+    cwd: sourceRoot,
+    maxOutputBytes: 128 * 1024,
+    timeoutMs: 10_000,
+  });
+  return yield* Effect.try({
+    try: () => codeMemoryLinkScaleCandidateBindingV1(candidateCommit, JSON.parse(manifest.stdout) as unknown),
+    catch: cause =>
+      ScriptError.make({message: 'Could not derive the release candidate package identity for scale evidence.', cause}),
+  });
+});
 
 export function assertRetainedBundleBindings(input: {
   readonly agentAb: ReturnType<typeof evaluateCodeMemoryLinkAgentAb>;
@@ -1000,7 +1028,11 @@ function parseArguments(args: readonly string[]): {
   if (!releaseDescriptorPath || !releaseTag) {
     throw ScriptError.make({message: 'Release verification requires --release-descriptor and --release-tag.'});
   }
-  return {printCandidateCommit, releaseDescriptorPath, releaseTag};
+  return {
+    printCandidateCommit,
+    releaseDescriptorPath,
+    releaseTag,
+  };
 }
 
 function required(value: string | undefined, option: string): string {
@@ -1008,4 +1040,7 @@ function required(value: string | undefined, option: string): string {
   return value;
 }
 
-if (import.meta.main) BunRuntime.runMain(provideScriptLayer(program, ApplicationLayer));
+if (import.meta.main)
+  BunRuntime.runMain(
+    provideScriptLayer(program, CodeMemoryLinkScaleProvenanceLive.pipe(Layer.provideMerge(ApplicationLayer))),
+  );

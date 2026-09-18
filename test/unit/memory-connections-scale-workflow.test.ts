@@ -35,8 +35,13 @@ describe('memory-connections release-scale workflow', () => {
       readonly on: {readonly workflow_dispatch?: {readonly inputs?: Readonly<Record<string, unknown>>}};
     };
     const releaseGuide = await Bun.file('docs/releasing.md').text();
+    const packageManifest = (await Bun.file('package.json').json()) as {
+      readonly scripts: Readonly<Record<string, string>>;
+    };
+    const targetSource = await Bun.file('scripts/benchmark-memory-connections-scale-target.ts').text();
     const job = workflow.jobs['memory-connections-one-hop-scale'];
     const benchmark = job.steps?.find(step => step.run?.includes('bench:memory-connections-scale'));
+    const verification = job.steps?.find(step => step.run?.includes('verify:memory-connections-scale-artifact'));
     const upload = job.steps?.find(step => step.uses === 'actions/upload-artifact@v7');
 
     expect(workflow.on.workflow_dispatch?.inputs).toHaveProperty('include_memory_connections_scale');
@@ -46,6 +51,23 @@ describe('memory-connections release-scale workflow', () => {
     expect(benchmark?.run).toContain('--candidate-commit "${{ github.sha }}"');
     expect(benchmark?.run).not.toContain('--development-smoke');
     expect(benchmark?.env?.THREADNOTE_BENCHMARK_RUNNER_CLASS).toBe(MEMORY_CONNECTIONS_SCALE_RELEASE_RUNNER_CLASS);
+    expect(verification?.run).toContain('--candidate-commit "${{ github.sha }}"');
+    expect(verification?.run).toContain(
+      '--artifact artifacts/memory-connections-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json',
+    );
+    expect(job.steps?.indexOf(verification!)).toBeGreaterThan(job.steps?.indexOf(benchmark!) ?? -1);
+    expect(job.steps?.indexOf(verification!)).toBeLessThan(job.steps?.indexOf(upload!) ?? Number.MAX_SAFE_INTEGER);
+    expect(packageManifest.scripts['verify:memory-connections-scale-artifact']).toBe(
+      'bun scripts/verify-memory-connections-scale-artifact.ts',
+    );
+    expect(targetSource).toContain("environment.GITHUB_ACTIONS === 'true'");
+    expect(targetSource).toContain('environment.RUNNER_ARCH');
+    expect(targetSource).toContain('environment.RUNNER_ENVIRONMENT');
+    expect(targetSource).toContain('environment.RUNNER_OS');
+    expect(targetSource).toContain('sourceVersion: candidate.sourceVersion');
+    expect(targetSource.indexOf('parseMemoryConnectionsScaleArtifactV1(evaluated')).toBeLessThan(
+      targetSource.indexOf('atomicWrite(options.outputPath'),
+    );
     expect(upload?.with?.['retention-days']).toBe(90);
 
     expect(releaseGuide).toContain('include_memory_connections_scale=true');
