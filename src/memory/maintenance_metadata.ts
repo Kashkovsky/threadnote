@@ -1,6 +1,13 @@
 import {sha256HexSync} from '../crypto/sha256.js';
-import {canonicalMemoryDocumentContent, isSharedMemoryUri, type MemoryRecord} from './document.js';
+import {MEMORY_SCHEMA_VERSION} from './code_citation.js';
+import {
+  canonicalMemoryDocumentContent,
+  isIsoDateOrCanonicalIsoInstant,
+  isSharedMemoryUri,
+  type MemoryRecord,
+} from './document.js';
 import {memoryIdFromIdentityAlias} from './identity_alias.js';
+import {migrateMemoryDocumentV4ToV5} from './migrations.js';
 
 export const MAINTENANCE_METADATA_VERSION = 1 as const;
 const OWNER_MAXIMUM_CHARACTERS = 128;
@@ -8,7 +15,7 @@ const OWNER_MAXIMUM_CHARACTERS = 128;
 export interface MaintenanceMetadataPatchV1 {
   /** undefined preserves; null clears. */
   readonly owner?: string | null;
-  /** undefined preserves; null clears; strings are canonical ISO instants. */
+  /** undefined preserves; null clears; strings are ISO calendar dates or canonical ISO instants. */
   readonly reviewAfter?: string | null;
   /** undefined preserves; null clears; strings are canonical ISO instants. */
   readonly validTo?: string | null;
@@ -21,6 +28,7 @@ export interface MaintenanceMetadataProposalV1 {
   readonly patch: MaintenanceMetadataPatchV1;
   readonly proposalId: string;
   readonly revision: string;
+  readonly schemaVersion: typeof MEMORY_SCHEMA_VERSION;
   readonly targetUri: string;
   readonly version: typeof MAINTENANCE_METADATA_VERSION;
 }
@@ -60,6 +68,7 @@ export function previewMaintenanceMetadataV1(
     proposalId: '',
     targetUri: target.uri,
     version: MAINTENANCE_METADATA_VERSION,
+    schemaVersion: MEMORY_SCHEMA_VERSION,
   } satisfies Omit<MaintenanceMetadataProposalV1, 'revision'>;
   const withId = {...base, proposalId: proposalId(base)};
   return {proposal: {...withId, revision: proposalRevision(withId)}, status: 'preview'};
@@ -79,6 +88,8 @@ export function applyMaintenanceMetadataV1(input: {
     return conflict('approval-required', 'Metadata apply requires approved=true after preview.');
   if (proposalId(proposal) !== proposal.proposalId || proposalRevision(proposal) !== proposal.revision)
     return conflict('invalid-proposal', 'The metadata proposal identity or revision is invalid.');
+  if (proposal.schemaVersion !== MEMORY_SCHEMA_VERSION)
+    return conflict('invalid-proposal', 'The metadata proposal does not target the current memory schema.');
   if (input.expectedRevision !== proposal.revision)
     return conflict('revision-mismatch', 'The metadata proposal revision is not the previewed revision.');
   if (input.expectedContentHash !== proposal.expectedContentHash)
@@ -109,7 +120,7 @@ export function rewriteMaintenanceMetadata(
   patch: MaintenanceMetadataPatchV1,
   updatedAt: string,
 ): string {
-  const canonical = canonicalMemoryDocumentContent(content).replace(/\r\n?/gu, '\n');
+  const canonical = migrateMemoryDocumentV4ToV5(canonicalMemoryDocumentContent(content)).replace(/\r\n?/gu, '\n');
   const separator = canonical.indexOf('\n\n');
   const header = separator === -1 ? canonical : canonical.slice(0, separator);
   const body = separator === -1 ? '' : canonical.slice(separator + 2);
@@ -168,17 +179,25 @@ function metadataDatesAreCanonical(record: MemoryRecord): boolean {
     if (values.length > 1) return false;
     const value = values[0];
     if (value === undefined) return true;
-    return key === 'owner' ? validOwner(value) : isCanonicalIsoInstant(value);
+    return key === 'owner'
+      ? validOwner(value)
+      : key === 'review_after'
+        ? isIsoDateOrCanonicalIsoInstant(value)
+        : isCanonicalIsoInstant(value);
   });
 }
 
 function validatePatch(patch: MaintenanceMetadataPatchV1): MaintenanceMetadataPreviewV1 | undefined {
   if (patch.owner !== undefined && patch.owner !== null && !validOwner(patch.owner))
     return conflict('invalid-owner', 'owner must be bounded opaque text without controls or credential-like content.');
-  for (const value of [patch.reviewAfter, patch.validTo]) {
-    if (value !== undefined && value !== null && !isCanonicalIsoInstant(value))
-      return conflict('invalid-date', 'review_after and valid_to must be canonical ISO instants.');
-  }
+  if (
+    patch.reviewAfter !== undefined &&
+    patch.reviewAfter !== null &&
+    !isIsoDateOrCanonicalIsoInstant(patch.reviewAfter)
+  )
+    return conflict('invalid-date', 'review_after must be an ISO calendar date or canonical ISO instant.');
+  if (patch.validTo !== undefined && patch.validTo !== null && !isCanonicalIsoInstant(patch.validTo))
+    return conflict('invalid-date', 'valid_to must be a canonical ISO instant.');
   return undefined;
 }
 

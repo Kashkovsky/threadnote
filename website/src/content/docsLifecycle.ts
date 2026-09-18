@@ -219,7 +219,7 @@ export const memorySchemaV5DocsArticle: DocsArticle = {
         ['owner', 'Opaque person or team label responsible for review', 'Optional; not an organization identity'],
         [
           'review_after',
-          'Canonical ISO instant after which review is due',
+          'ISO calendar date or canonical ISO instant after which review is due',
           'Overdue becomes visible; Threadnote does not renew it',
         ],
         [
@@ -244,14 +244,14 @@ export const memorySchemaV5DocsArticle: DocsArticle = {
       code: `threadnote context metadata preview \
   --uri <threadnote-uri> \
   --owner platform-team \
-  --review-after 2026-12-31T00:00:00.000Z
+  --review-after 2026-12-31
 
 # Copy content_hash, proposal_id, and revision from the preview.
 # Apply repeats the exact target and patch so Threadnote can recheck them.
 threadnote context metadata apply \
   --uri <threadnote-uri> \
   --owner platform-team \
-  --review-after 2026-12-31T00:00:00.000Z \
+  --review-after 2026-12-31 \
   --content-hash <content-hash> \
   --proposal-id <proposal-id> \
   --revision <revision> \

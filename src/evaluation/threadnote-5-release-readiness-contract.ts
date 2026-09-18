@@ -290,7 +290,7 @@ export const APPROVED_THREADNOTE_5_SCENARIOS: readonly Threadnote5ScenarioContra
       {id: 'wrong-memory-rate', minimumEligibleCount: 10},
     ],
     requiredAssertions: ['first-plan-source-cited', 'first-plan-correct', 'local-setup-complete'],
-    subsystems: ['activation', 'context-brief'],
+    subsystems: ['activation', 'context-brief', 'value-report'],
   },
   {
     id: 'two-agent',
@@ -311,14 +311,14 @@ export const APPROVED_THREADNOTE_5_SCENARIOS: readonly Threadnote5ScenarioContra
     metricIds: ['wrong-memory-rate'],
     metricMinimums: [{id: 'wrong-memory-rate', minimumEligibleCount: 10}],
     requiredAssertions: ['git-shared-decision-retrieved'],
-    subsystems: ['sharing', 'recall'],
+    subsystems: ['sharing', 'recall', 'value-report'],
   },
   {
     id: 'offline',
     metricIds: ['wrong-memory-rate'],
     metricMinimums: [{id: 'wrong-memory-rate', minimumEligibleCount: 10}],
     requiredAssertions: ['network-attempts-zero', 'local-flow-complete'],
-    subsystems: ['activation'],
+    subsystems: ['activation', 'value-report'],
   },
   {
     id: 'dirty-worktree',

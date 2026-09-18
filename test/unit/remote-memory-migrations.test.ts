@@ -85,6 +85,7 @@ describe('remote memory PostgreSQL migrations', () => {
       ...appliedMigrationCycle,
       ...appliedMigrationCycle,
       ...appliedMigrationCycle,
+      ...appliedMigrationCycle,
       'unlock',
       'release',
     ]);
@@ -139,6 +140,7 @@ describe('remote memory PostgreSQL migrations', () => {
       '005_code_link_backlinks.sql',
       '006_identity_client_grant_expiry.sql',
       '007_cloud_admission_profile.sql',
+      '008_hosted_context_health.sql',
     );
     FC.assert(
       FC.property(executableRoot, migrationName, (segments, name) => {

@@ -982,10 +982,10 @@ The body remains ordinary **Markdown**.
     expect(article).toBeDefined();
     expect(example?.type).toBe('code');
     if (!example || example.type !== 'code') throw TestError.make({message: 'Metadata example is missing.'});
-    expect(example.code).toContain('--review-after 2026-12-31T00:00:00.000Z');
+    expect(example.code).toContain('--review-after 2026-12-31');
     expect(example.code.match(/--uri <threadnote-uri>/g)).toHaveLength(2);
     expect(example.code.match(/--owner platform-team/g)).toHaveLength(2);
-    expect(example.code.match(/--review-after 2026-12-31T00:00:00\.000Z/g)).toHaveLength(2);
+    expect(example.code.match(/--review-after 2026-12-31/g)).toHaveLength(2);
     expect(example.code).toContain('--content-hash <content-hash>');
     expect(example.code).toContain('--proposal-id <proposal-id>');
     expect(example.code).toContain('--revision <revision>');

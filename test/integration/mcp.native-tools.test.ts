@@ -4354,12 +4354,48 @@ describe('Threadnote MCP toolsets', () => {
         });
         expect(tools.tools.find(tool => tool.name === 'context_metadata_preview')).toMatchObject({
           annotations: {destructiveHint: false, readOnlyHint: true},
-          inputSchema: {properties: {memoryId: {type: 'string'}, uri: {type: 'string'}}},
+          inputSchema: {
+            properties: {
+              memoryId: {type: 'string'},
+              reviewAfter: {description: 'Optional ISO calendar date or canonical ISO instant', type: 'string'},
+              uri: {type: 'string'},
+            },
+          },
         });
         expect(tools.tools.find(tool => tool.name === 'context_metadata_apply')).toMatchObject({
           annotations: {destructiveHint: true, idempotentHint: true, readOnlyHint: false},
           inputSchema: {properties: {approved: {type: 'boolean'}, expectedContentHash: {type: 'string'}}},
         });
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('preserves raw maintenance date input for validation while normalizing owner labels', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/metadata-input.md';
+        await writeCanonicalMemory(
+          fixture.home,
+          'metadata-input.md',
+          canonicalMemoryContent('metadata-input', 'Body.'),
+        );
+        const preview = await client.callTool({
+          arguments: {owner: '  maintainer  ', uri},
+          name: 'context_metadata_preview',
+        });
+        expect(preview.structuredContent).toMatchObject({
+          proposal: {patch: {owner: 'maintainer'}},
+          status: 'preview',
+        });
+        for (const arguments_ of [
+          {reviewAfter: ' 2026-12-01 ', uri},
+          {reviewAfter: '', uri},
+          {validTo: '2026-12-01T00:00:00.000+00:00', uri},
+        ]) {
+          const result = await client.callTool({arguments: arguments_, name: 'context_metadata_preview'});
+          expect(result.structuredContent).toMatchObject({code: 'invalid-date', status: 'conflict'});
+        }
       },
       {toolset: 'full'},
     );
