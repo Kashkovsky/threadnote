@@ -6,10 +6,13 @@ import {describe, expect, it} from 'vitest';
 import {getAgentAdapter} from '../../src/agent_integration/adapters.js';
 import type {AgentAdapter} from '../../src/agent_integration/adapters/contract.js';
 import {planAgentSurface} from '../../src/agent_integration/surfaces.js';
+import {parseContextBriefRequestV1} from '../../src/context_brief/types.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {sha256Hex} from '../../src/effect/digest.js';
 import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
 import {getThreadnoteVersion} from '../../src/release/runtime_version.js';
+import {recallIndexStatus} from '../../src/recall/index.js';
+import {getRuntimeConfig} from '../../src/runtime.js';
 import {runInitManifest} from '../../src/seeding.js';
 import {
   parseSetupReceiptV1,
@@ -28,8 +31,10 @@ import {withSetupMutationLock} from '../../src/setup/lock.js';
 import {
   agentSurfaceTargetMatches,
   productionSetupDependencies,
+  resolveSetupRuntimeConfig,
   seedSetupProject,
   setupBriefIsSourceVerified,
+  setupContextBriefRequest,
   setupRepositorySourceHash,
   setupSurfaceAction,
 } from '../../src/setup/runtime.js';
@@ -167,9 +172,32 @@ describe('setup contracts', () => {
     expect(setupBriefIsSourceVerified({...brief, graph: {...brief.graph, cards: [], contracts: []}})).toBe(false);
     expect(setupBriefIsSourceVerified({...brief, scope: {...brief.scope, freshness: 'stale'}})).toBe(false);
   });
+
+  it('keeps the setup verification request within the current Context Brief contract', () => {
+    expect(parseContextBriefRequestV1(setupContextBriefRequest('/repository', 'verify setup')).budgetTokens).toBe(
+      1_500,
+    );
+  });
 });
 
 describe('setup orchestration', () => {
+  effectIt.effect('uses the user manifest for setup unless a manifest override is explicit', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-setup-runtime-'});
+        const home = `${root}/home`;
+        const explicitManifest = `${root}/explicit.yaml`;
+
+        const implicit = yield* getRuntimeConfig({home});
+        expect(implicit.manifestSource).toBe('bundled-example');
+        expect((yield* resolveSetupRuntimeConfig(implicit)).manifestPath).toBe(`${home}/seed-manifest.yaml`);
+        const explicit = yield* getRuntimeConfig({home, manifest: explicitManifest});
+        expect((yield* resolveSetupRuntimeConfig(explicit)).manifestPath).toBe(explicitManifest);
+      }),
+    ).pipe(run),
+  );
+
   effectIt.effect('serializes direct manifest mutation with setup ownership inspection', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -336,6 +364,38 @@ describe('setup orchestration', () => {
           ),
         );
         expect(preview.output).toContain('after merging the repository into the manifest');
+      }),
+    ).pipe(run),
+  );
+
+  effectIt.effect('expands manifest project paths before selecting the setup project', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-setup-project-path-'});
+        const repository = `${root}/repository`;
+        const home = `${root}/threadnote-home`;
+        const manifestPath = `${home}/seed-manifest.yaml`;
+        const system = SystemInfo.of({...baseSystem, homeDirectory: root});
+        yield* fs.makeDirectory(repository, {recursive: true});
+        yield* fs.makeDirectory(home, {recursive: true});
+        yield* fs.writeFileString(
+          manifestPath,
+          'version: 1\nprojects:\n  - name: repository\n    path: ~/repository\n' +
+            '    uri: threadnote://resources/repos/repository\n    seed: []\n',
+        );
+
+        const result = yield* seedSetupProject(
+          {account: 'local', agentContextHome: home, agentId: 'threadnote', manifestPath, user: 'tester'},
+          repository,
+          true,
+        ).pipe(Effect.provideService(SystemInfo, system));
+
+        expect(result.status).toBe('applied');
+        expect(
+          (yield* recallIndexStatus({account: 'local', agentContextHome: home, user: 'tester'}, false)).ready,
+        ).toBe(true);
       }),
     ).pipe(run),
   );

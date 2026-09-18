@@ -21,7 +21,7 @@ import {
 } from './contract.js';
 import {createSetupPlan, renderSetupPlan} from './planner.js';
 import {withSetupMutationLock} from './lock.js';
-import {productionSetupDependencies, setupRepositorySourceHash} from './runtime.js';
+import {productionSetupDependencies, resolveSetupRuntimeConfig, setupRepositorySourceHash} from './runtime.js';
 
 export {SetupOperationError} from './contract.js';
 
@@ -107,7 +107,7 @@ export const runSetup = Effect.fn('setup.run')(function* (
   adapter: AgentAdapter,
   options: RunSetupOptions,
 ) {
-  return yield* runSetupWith(config, adapter, options, productionSetupDependencies);
+  return yield* runSetupWith(yield* resolveSetupRuntimeConfig(config), adapter, options, productionSetupDependencies);
 });
 
 export const runSetupWith = Effect.fn('setup.runWith')(function* <R>(

@@ -14,11 +14,19 @@ export const getRuntimeConfig = Effect.fn('runtime.getRuntimeConfig')(function* 
   manifestOverride?: string,
 ) {
   const system = yield* SystemInfo;
+  const path = yield* Path.Path;
   const environment = system.environment();
   const threadnoteHome = yield* expandPath(options.home ?? environment.THREADNOTE_HOME ?? '~/.threadnote');
   const cursorCloudProfile = yield* readCursorCloudIdentityProfile(threadnoteHome);
   const configuredManifest = manifestOverride ?? options.manifest ?? environment.THREADNOTE_MANIFEST;
-  const manifestPath = yield* expandPath(configuredManifest ?? (yield* defaultManifestPath(threadnoteHome)));
+  const selectedManifest = configuredManifest ?? (yield* defaultManifestPath(threadnoteHome));
+  const manifestPath = yield* expandPath(selectedManifest);
+  const manifestSource =
+    configuredManifest !== undefined
+      ? ('configured' as const)
+      : selectedManifest === path.join(threadnoteHome, USER_MANIFEST_NAME)
+        ? ('user' as const)
+        : ('bundled-example' as const);
   const environmentAgentId = environment.THREADNOTE_AGENT_ID;
   const environmentUser = environment.THREADNOTE_USER;
   return {
@@ -31,6 +39,7 @@ export const getRuntimeConfig = Effect.fn('runtime.getRuntimeConfig')(function* 
         ? ('cursor-cloud-profile' as const)
         : ('system' as const),
     manifestPath,
+    manifestSource,
     user: environmentUser ?? cursorCloudProfile?.user ?? system.userName,
     userSource: environmentUser
       ? ('environment' as const)

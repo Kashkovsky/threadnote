@@ -13,14 +13,19 @@ import {worktreeBuildRequestState} from '../code_graph/inventory.js';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {compileContextBrief} from '../context_brief/index.js';
 import {hasCurrentCursorHooks, hasManagedCursorHooks} from '../cursor_hooks.js';
-import {CLAUDE_SETTINGS_PATH} from '../constants.js';
-import type {ProjectedContextBriefV1} from '../context_brief/types.js';
+import {CLAUDE_SETTINGS_PATH, USER_MANIFEST_NAME} from '../constants.js';
+import {
+  CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+  type ContextBriefRequestV1,
+  type ProjectedContextBriefV1,
+} from '../context_brief/types.js';
 import {sha256Hex} from '../effect/digest.js';
 import {SystemInfo} from '../effect/system.js';
 import {hasCurrentClaudeHooks, hasManagedClaudeHooks, runHooksInstall} from '../hooks.js';
 import {collectDoctorChecks, runInstall} from '../lifecycle.js';
 import {readSeedManifest} from '../manifest.js';
 import {hasCurrentOmpHooks, hasManagedOmpHooks} from '../omp_hooks.js';
+import {refreshRecallDerivedIndexesFromSelection} from '../recall/mcp_refresh.js';
 import {runInitManifest, runSeed} from '../seeding.js';
 import type {DoctorCheck, RuntimeConfig} from '../types.js';
 import {expandPath, readFileIfExists} from '../utils.js';
@@ -63,6 +68,16 @@ export const productionSetupDependencies: SetupOrchestratorDependencies<Producti
   removeSurface: (config, adapter, projectRoot, scope) => removeSurface(config, adapter, projectRoot, scope),
   seedProject: (config, projectRoot, apply) => seedSetupProject(config, projectRoot, apply),
 };
+
+export const resolveSetupRuntimeConfig = Effect.fn('setup.resolveRuntimeConfig')(function* (config: RuntimeConfig) {
+  if (config.manifestSource !== 'bundled-example') return config;
+  const path = yield* Path.Path;
+  return {
+    ...config,
+    manifestPath: path.join(config.agentContextHome, USER_MANIFEST_NAME),
+    manifestSource: 'user' as const,
+  };
+});
 
 const inspectReversible = Effect.fn('setup.inspectReversible')(function* (
   config: RuntimeConfig,
@@ -166,7 +181,13 @@ export const seedSetupProject = Effect.fn('setup.seedProject')(function* (
     return {ownership: 'setup-created', status: 'applied'} satisfies SetupOperationOutcome;
   }
   const manifest = yield* readSeedManifest(config.manifestPath);
-  const project = manifest.projects.find(candidate => path.resolve(candidate.path) === path.resolve(projectRoot));
+  const resolvedProjectRoot = path.resolve(yield* expandPath(projectRoot));
+  let project: (typeof manifest.projects)[number] | undefined;
+  for (const candidate of manifest.projects) {
+    if (path.resolve(yield* expandPath(candidate.path)) !== resolvedProjectRoot) continue;
+    project = candidate;
+    break;
+  }
   if (!project && !apply) {
     yield* Console.log('Would seed curated project context after merging the repository into the manifest.');
     return {ownership: 'preexisting', status: 'applied'} satisfies SetupOperationOutcome;
@@ -174,6 +195,7 @@ export const seedSetupProject = Effect.fn('setup.seedProject')(function* (
   if (!project)
     return yield* SetupOperationError.make({message: 'The setup project is absent from the seed manifest.'});
   yield* runSeed(config, {dryRun: !apply, only: [project.name]});
+  if (apply) yield* refreshRecallDerivedIndexesFromSelection(config, []);
   return {ownership: 'preexisting', status: 'applied'} satisfies SetupOperationOutcome;
 });
 
@@ -402,12 +424,7 @@ const verifyContextBrief = Effect.fn('setup.verifyContextBrief')(function* (
 ) {
   const startedAt = yield* Clock.currentTimeMillis;
   const sourceHashBefore = yield* setupRepositorySourceHash(projectRoot);
-  const projected = yield* compileContextBrief(config, {
-    budgetTokens: 2_000,
-    mode: 'brief',
-    scope: {callerCwd: projectRoot, kind: 'repository'},
-    task,
-  });
+  const projected = yield* compileContextBrief(config, setupContextBriefRequest(projectRoot, task));
   const completedAt = yield* Clock.currentTimeMillis;
   const sourceHashAfter = yield* setupRepositorySourceHash(projectRoot);
   const brief = projected.structuredContent;
@@ -434,6 +451,15 @@ const verifyContextBrief = Effect.fn('setup.verifyContextBrief')(function* (
     verification,
   } satisfies SetupOperationOutcome;
 });
+
+export function setupContextBriefRequest(projectRoot: string, task: string): ContextBriefRequestV1 {
+  return {
+    budgetTokens: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+    mode: 'brief',
+    scope: {callerCwd: projectRoot, kind: 'repository'},
+    task,
+  };
+}
 
 function operationOutcome(
   ownership: 'setup-created' | 'preexisting',
