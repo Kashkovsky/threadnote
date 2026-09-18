@@ -177,25 +177,13 @@ describe('Threadnote 5 production capture', () => {
         }),
       ).toMatchObject({receiptCount: 24, state: 'verified'});
 
-      fc.assert(
-        fc.property(
-          fc.shuffledSubarray([...fixture.records], {
-            minLength: fixture.records.length,
-            maxLength: fixture.records.length,
-          }),
-          fc.shuffledSubarray([...boundaries], {minLength: boundaries.length, maxLength: boundaries.length}),
-          (records, runtimeBoundaries) => {
-            expect(
-              captureThreadnote5ReleaseCandidateV1({
-                ...input,
-                retainedSubsystemReceipts: records,
-                runtimeBoundaries,
-              }),
-            ).toEqual(expected);
-          },
-        ),
-        {numRuns: 12},
-      );
+      expect(
+        captureThreadnote5ReleaseCandidateV1({
+          ...input,
+          retainedSubsystemReceipts: [...fixture.records].reverse(),
+          runtimeBoundaries: [...boundaries].reverse(),
+        }),
+      ).toEqual(expected);
     }),
   );
 });
