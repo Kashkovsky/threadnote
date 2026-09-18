@@ -369,11 +369,59 @@ export async function assertHostedContextHealthWorkerPrivileges(sql: Sql): Promi
   await assertPrivilegeContract(sql, CONTEXT_HEALTH_WORKER_GRANTS, true, 'unsafe_context_health_worker_database_role');
 }
 
+export async function assertHostedContextCiWorkerPrivileges(sql: Sql): Promise<void> {
+  const reason = 'unsafe_context_ci_worker_database_role';
+  await assertPrivilegeContract(
+    sql,
+    [
+      {
+        privilege: 'SELECT',
+        tables: ['context_ci_targets', 'context_ci_jobs', 'context_ci_tenant_limits', 'context_ci_receipts'],
+      },
+      {privilege: 'INSERT', tables: ['context_ci_jobs', 'context_ci_receipts']},
+      {privilege: 'UPDATE', tables: ['context_ci_tenant_limits'], columns: ['window_started_at', 'request_count']},
+      {privilege: 'UPDATE', tables: ['context_ci_jobs'], columns: ['stage', 'attempts', 'available_at', 'diagnostics']},
+    ],
+    false,
+    reason,
+  );
+  const routines = await sql.begin(async transaction => {
+    await transaction`SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)`;
+    return transaction<{name: string; safe: boolean; source: string}[]>`
+    SELECT p.proname AS name, p.prosrc AS source,
+      (p.prosecdef AND p.proowner = n.nspowner AND l.lanname = 'plpgsql'
+        AND p.proconfig = ARRAY['search_path=pg_catalog']::text[]
+        AND pg_get_function_identity_arguments(p.oid) = 'requested_tenant text, requested_repository text'
+        AND pg_get_function_result(p.oid) = 'boolean'
+        AND NOT has_function_privilege(current_user, p.oid, 'EXECUTE WITH GRANT OPTION')
+        AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+          WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE')) AS safe
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang
+    WHERE n.nspname = 'remote_memory' AND p.prorettype <> 'trigger'::regtype
+      AND has_function_privilege(current_user, p.oid, 'EXECUTE')
+  `;
+  });
+  if (
+    routines.length !== 1 ||
+    routines[0].name !== 'lock_context_ci_target' ||
+    !routines[0].safe ||
+    sha256HexSync(routines[0].source.trim().replace(/\s+/gu, ' ')) !== CONTEXT_CI_LOCK_DIGEST
+  ) {
+    throw privilegeError(reason);
+  }
+}
+
+// Normalized function-body SHA-256 from migration 009; reject replacement helpers with broader authority.
+const CONTEXT_CI_LOCK_DIGEST = '6421729251fa3e89c9a54e270c3bef639c232cea79f1cadbaeaa85b25e5cb1f9';
+
 async function assertPrivilegeContract(
   sql: Sql,
   grants: readonly RuntimeGrant[],
   requiresLifecycleLock: boolean,
-  reason: 'unsafe_context_health_worker_database_role' | 'unsafe_runtime_database_role',
+  reason:
+    | 'unsafe_context_health_worker_database_role'
+    | 'unsafe_context_ci_worker_database_role'
+    | 'unsafe_runtime_database_role',
 ): Promise<void> {
   await sql.begin(async transaction => {
     await transaction`SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)`;
@@ -387,7 +435,10 @@ async function inspectPrivileges(
   sql: TransactionSql,
   grants: readonly RuntimeGrant[],
   requiresLifecycleLock: boolean,
-  reason: 'unsafe_context_health_worker_database_role' | 'unsafe_runtime_database_role',
+  reason:
+    | 'unsafe_context_health_worker_database_role'
+    | 'unsafe_context_ci_worker_database_role'
+    | 'unsafe_runtime_database_role',
 ): Promise<void> {
   const [role] = await sql<{unsafe: boolean}[]>`
     SELECT (
@@ -548,7 +599,12 @@ function routineIdentityDigest(input: {
   return sha256HexSync(canonicalJson({...input, source: input.source.trim().replace(/\s+/gu, ' ')}));
 }
 
-function privilegeError(reason: 'unsafe_context_health_worker_database_role' | 'unsafe_runtime_database_role') {
+function privilegeError(
+  reason:
+    | 'unsafe_context_health_worker_database_role'
+    | 'unsafe_context_ci_worker_database_role'
+    | 'unsafe_runtime_database_role',
+) {
   return remoteMemoryError(
     'service_unavailable',
     'The database account does not match the required privilege contract. Use the dedicated role and versioned grants.',

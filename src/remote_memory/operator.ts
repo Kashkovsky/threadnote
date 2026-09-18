@@ -42,6 +42,7 @@ export type RemoteMemoryOperatorCapability =
   | 'apply_git_beta_import'
   | 'export_records'
   | 'inspect_records'
+  | 'manage_context_ci'
   | 'manage_context_health'
   | 'migrate_schema'
   | 'provision_control_plane';
@@ -78,6 +79,7 @@ export interface GitBetaImportVerificationV1 {
 }
 
 export interface RemoteMemoryOperatorAdapter {
+  readonly controlContextCi?: (input: unknown, webhookKey?: string) => Promise<unknown>;
   readonly applyProvisioningPlan?: (
     plan: RemoteMemoryProvisioningPlanV1,
     receipt: RemoteMemoryProvisioningReceiptV1,
