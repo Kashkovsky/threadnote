@@ -1,7 +1,10 @@
 import fc from 'fast-check';
 import {Schema} from 'effect';
 import {describe, expect, it} from 'vitest';
-import {RemoteMemoryProvisioningInputSchema} from '../../src/remote_memory/operator_main.js';
+import {
+  RemoteMemoryProvisioningInputSchema,
+  RemoteMemoryProvisioningRequestSchema,
+} from '../../src/remote_memory/operator_main.js';
 import {
   decodeStoredSharePolicyDocument,
   requireNoImplicitSharePolicyChange,
@@ -41,6 +44,15 @@ describe('remote memory provisioning boundary', () => {
       decode({...validProvisioning, repositoryBindings: {threadnote: Array(1_001).fill('https://example.test')}}),
     ).toThrow();
     expect(() => decode({...validProvisioning, capabilities: []})).toThrow();
+  });
+
+  it('lets the planner own compare-and-swap fields and the read-only default', () => {
+    const decode = Schema.decodeUnknownSync(RemoteMemoryProvisioningRequestSchema, {onExcessProperty: 'error'});
+    const {capabilities: _capabilities, ...request} = validProvisioning;
+    expect(decode({...request, clientId: 'okta-client'})).not.toHaveProperty('capabilities');
+    expect(() => decode(request)).toThrow();
+    expect(() => decode({...request, expectedCurrentPolicyVersion: 'caller-controlled'})).toThrow();
+    expect(() => decode({...request, expectedCurrentSharePolicyVersion: 'caller-controlled'})).toThrow();
   });
 
   it('accepts one end-to-end addressable Cursor share policy', () => {

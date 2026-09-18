@@ -48,7 +48,7 @@ const RUNTIME_GRANTS: readonly RuntimeGrant[] = [
   {
     privilege: 'SELECT',
     tables: ['external_identities'],
-    columns: ['tenant_id', 'issuer', 'subject', 'principal_id'],
+    columns: ['tenant_id', 'issuer', 'subject', 'client_id', 'principal_id'],
   },
   {
     privilege: 'INSERT',

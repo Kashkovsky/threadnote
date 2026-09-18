@@ -32,7 +32,11 @@ export async function runRemoteMemoryService(
 ): Promise<void> {
   const config = remoteMemoryConfigFromEnvironment(environment);
   const sql = createRemoteMemorySql(config.databaseUrl);
-  const controlPlane = new PostgresRemoteControlPlane(sql);
+  const controlPlane = new PostgresRemoteControlPlane(sql, {
+    ...(config.legacyClientIdCompatibilityUntil === undefined
+      ? {}
+      : {legacyClientIdCompatibilityUntil: config.legacyClientIdCompatibilityUntil}),
+  });
   const workers = new AbortController();
   const workerHealth = createRemoteMemoryWorkerHealth(
     (name, cause) => {
@@ -81,6 +85,7 @@ export async function runRemoteMemoryService(
         }),
         oauthTokens: createOAuthTokenVerifier({
           audience: config.accessTokenAudience,
+          ...(config.accessTokenClientIdClaim === undefined ? {} : {clientIdClaim: config.accessTokenClientIdClaim}),
           issuer: config.accessTokenIssuer,
           jwksUrl: config.accessTokenJwksUrl,
         }),

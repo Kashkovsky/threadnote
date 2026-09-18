@@ -31,7 +31,7 @@ TO threadnote_remote_runtime;
 
 GRANT SELECT (id, status) ON remote_memory.tenants TO threadnote_remote_runtime;
 GRANT SELECT (tenant_id, id, status) ON remote_memory.principals TO threadnote_remote_runtime;
-GRANT SELECT (tenant_id, issuer, subject, principal_id)
+GRANT SELECT (tenant_id, issuer, subject, client_id, principal_id)
   ON remote_memory.external_identities TO threadnote_remote_runtime;
 
 GRANT INSERT ON

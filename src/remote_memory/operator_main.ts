@@ -2,14 +2,17 @@ import {Cause, Console, Crypto, Effect, FileSystem, Path, Schema} from 'effect';
 import {fromPromiseInterruptibleAwaiting} from '../effect/errors.js';
 import {createRemoteMemorySql} from './postgres_control_plane.js';
 import {
+  applyRemoteMemoryProvisioningOperator,
   applyGitBetaImportOperator,
   exportRemoteMemoryOperator,
   migrateRemoteMemoryOperator,
+  planRemoteMemoryProvisioningOperator,
   planGitBetaImportOperator,
   provisionRemoteMemoryOperator,
   RemoteMemoryOperatorError,
   type RemoteMemoryOperatorAdapter,
 } from './operator.js';
+import type {RemoteMemoryProvisioningPlanV1} from './provisioning.js';
 import {
   readGitBetaImportPlan,
   readGitBetaMemorySources,
@@ -37,25 +40,13 @@ const Url = Schema.String.check(
     }
   }),
 );
-export const RemoteMemoryProvisioningInputSchema = Schema.Struct({
+const RemoteMemoryProvisioningRequestFields = {
   allowedProjects: Schema.optionalKey(Projects),
-  capabilities: Schema.Array(
-    Schema.Literals([
-      'memory:admin',
-      'memory:propose:durable',
-      'memory:read',
-      'memory:review:durable',
-      'memory:write:durable',
-      'memory:write:handoff',
-    ]),
-  ).check(Schema.isMinLength(1), Schema.isMaxLength(6)),
   cursorAttestationRequired: Schema.optionalKey(Schema.Boolean),
   cursorOwnerIds: Schema.optionalKey(Schema.Array(Identifier).check(Schema.isMaxLength(1_000))),
   cursorSubjects: Schema.optionalKey(Schema.Array(Identifier).check(Schema.isMinLength(1), Schema.isMaxLength(1_000))),
   cursorTeamId: Schema.optionalKey(Identifier),
   displayName: Project,
-  expectedCurrentPolicyVersion: Schema.optionalKey(Identifier),
-  expectedCurrentSharePolicyVersion: Schema.optionalKey(Identifier),
   featureFlags: Schema.optionalKey(
     Schema.Array(
       Schema.Literals([
@@ -68,6 +59,7 @@ export const RemoteMemoryProvisioningInputSchema = Schema.Struct({
       ]),
     ).check(Schema.isMaxLength(6)),
   ),
+  grantExpiresAt: Schema.optionalKey(Schema.String),
   issuer: Url,
   policyVersion: Identifier,
   principalId: Identifier,
@@ -78,6 +70,96 @@ export const RemoteMemoryProvisioningInputSchema = Schema.Struct({
   sharePolicyVersion: Schema.optionalKey(Identifier),
   subject: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_024)),
   tenantId: Identifier,
+} as const;
+const RemoteMemoryCapabilities = Schema.Array(
+  Schema.Literals([
+    'memory:admin',
+    'memory:propose:durable',
+    'memory:read',
+    'memory:review:durable',
+    'memory:write:durable',
+    'memory:write:handoff',
+  ]),
+).check(Schema.isMinLength(1), Schema.isMaxLength(6));
+export const RemoteMemoryProvisioningInputSchema = Schema.Struct({
+  ...RemoteMemoryProvisioningRequestFields,
+  capabilities: RemoteMemoryCapabilities,
+  clientId: Schema.optionalKey(Identifier),
+  expectedCurrentPolicyVersion: Schema.optionalKey(Identifier),
+  expectedCurrentSharePolicyVersion: Schema.optionalKey(Identifier),
+});
+export const RemoteMemoryProvisioningRequestSchema = Schema.Struct({
+  ...RemoteMemoryProvisioningRequestFields,
+  capabilities: Schema.optionalKey(RemoteMemoryCapabilities),
+  clientId: Identifier,
+});
+const RemoteMemoryProvisioningStateSchema = Schema.Struct({
+  grant: Schema.optionalKey(
+    Schema.Struct({
+      expiresAt: Schema.optionalKey(Schema.String),
+      policyDigest: Schema.String,
+      policyVersion: Schema.String,
+      status: Schema.Literals(['active', 'revoked']),
+    }),
+  ),
+  identityPrincipalId: Schema.optionalKey(Schema.String),
+  membershipStatus: Schema.optionalKey(Schema.Literals(['active', 'revoked'])),
+  principalStatus: Schema.optionalKey(Schema.Literals(['active', 'disabled'])),
+  share: Schema.optionalKey(
+    Schema.Struct({
+      featureFlags: Schema.Array(
+        Schema.Literals([
+          'cursor_oidc_required',
+          'remote_memory_durable_write',
+          'remote_memory_ga',
+          'remote_memory_handoff_write',
+          'remote_memory_read',
+          'remote_memory_write',
+        ]),
+      ),
+      policyDigest: Schema.String,
+      policyVersion: Schema.String,
+      status: Schema.Literals(['active', 'deleted', 'revoked']),
+    }),
+  ),
+  tenant: Schema.optionalKey(
+    Schema.Struct({region: Schema.String, status: Schema.Literals(['active', 'deleted', 'disabled'])}),
+  ),
+  version: Schema.Literal(1),
+});
+export const RemoteMemoryProvisioningPlanSchema = Schema.Struct({
+  action: Schema.Literals([
+    'create_grant',
+    'create_share_and_grant',
+    'replace_grant',
+    'unchanged',
+    'update_control_plane',
+  ]),
+  changes: Schema.Array(
+    Schema.Literals([
+      'create_grant',
+      'create_identity',
+      'create_membership',
+      'create_principal',
+      'create_share',
+      'create_tenant',
+      'replace_grant',
+      'replace_share_policy',
+    ]),
+  ),
+  dryRun: Schema.Boolean,
+  input: Schema.Struct({
+    ...RemoteMemoryProvisioningRequestFields,
+    capabilities: RemoteMemoryCapabilities,
+    clientId: Identifier,
+    expectedCurrentPolicyVersion: Schema.optionalKey(Identifier),
+    expectedCurrentSharePolicyVersion: Schema.optionalKey(Identifier),
+  }),
+  observed: RemoteMemoryProvisioningStateSchema,
+  planDigest: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
+  planId: Schema.String.check(Schema.isPattern(/^tnpp_[0-9a-f]{32}$/u)),
+  plannedAt: Schema.String,
+  version: Schema.Literal(1),
 });
 
 class RemoteMemoryOperatorInvocationError extends Schema.TaggedError<RemoteMemoryOperatorInvocationError>()(
@@ -134,6 +216,46 @@ export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(fu
             })(yield* readOperatorJson<unknown>(requiredOption(options, 'input')));
             yield* Console.log(
               JSON.stringify(yield* operatorPromise(() => provisionRemoteMemoryOperator(adapter, input))),
+            );
+            return 0;
+          }
+          if (command === 'provision-plan') {
+            rejectOptions(options, ['for-apply', 'input', 'output']);
+            const request = yield* Schema.decodeUnknownEffect(RemoteMemoryProvisioningRequestSchema, {
+              onExcessProperty: 'error',
+            })(yield* readOperatorJson<unknown>(requiredOption(options, 'input')));
+            const plan = yield* operatorPromise(() =>
+              planRemoteMemoryProvisioningOperator(adapter, {apply: flag(options, 'for-apply'), request}),
+            );
+            yield* writeOperatorJsonExclusive(requiredOption(options, 'output'), plan);
+            yield* Console.log(
+              JSON.stringify({
+                action: plan.action,
+                changes: plan.changes,
+                dryRun: plan.dryRun,
+                planId: plan.planId,
+                version: plan.version,
+              }),
+            );
+            return 0;
+          }
+          if (command === 'provision-apply') {
+            rejectOptions(options, ['plan', 'receipt']);
+            const plan = yield* Schema.decodeUnknownEffect(RemoteMemoryProvisioningPlanSchema, {
+              onExcessProperty: 'error',
+            })(yield* readOperatorJson<unknown>(requiredOption(options, 'plan')));
+            const receipt = yield* operatorPromise(() =>
+              applyRemoteMemoryProvisioningOperator(adapter, plan as RemoteMemoryProvisioningPlanV1),
+            );
+            yield* writeOperatorJsonExclusive(requiredOption(options, 'receipt'), receipt);
+            yield* Console.log(
+              JSON.stringify({
+                action: receipt.action,
+                changes: receipt.changes,
+                planId: receipt.planId,
+                status: receipt.status,
+                version: 1,
+              }),
             );
             return 0;
           }
@@ -307,11 +429,15 @@ function operatorHelp(): string {
     '  migrate',
     '  capabilities',
     '  provision --input <json>',
+    '  provision-plan --input <json> --output <plan.json> [--for-apply]',
+    '  provision-apply --plan <plan.json> --receipt <receipt.json>',
     '  import-plan --source <git-share> --user <id> --team <team> --share <id>',
     '    --alias-compatibility-ends-at <ISO timestamp> --output <plan.json> [--projects <csv>] [--for-apply]',
     '  import-apply --source <git-share> --user <id> --team <team> --plan <plan.json> --receipt <json>',
     '  export --share <id> --output <new-directory>',
     '',
+    'Pilot provisioning defaults omitted capabilities to memory:read. Write grants require named projects,',
+    'an OAuth client binding, and an expiry no more than 31 days after planning.',
     'Import never deletes the Git source and never enables dual-write. A ready receipt still requires an explicit',
     'Cursor Dashboard transport switch. PostgreSQL import apply is atomic and requires the share git_beta_import flag.',
   ].join('\n');

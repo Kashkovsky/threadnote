@@ -157,7 +157,7 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
   const selectGrants = [
     {columns: ['id', 'status'], table: 'tenants'},
     {columns: ['tenant_id', 'id', 'status'], table: 'principals'},
-    {columns: ['tenant_id', 'issuer', 'subject', 'principal_id'], table: 'external_identities'},
+    {columns: ['tenant_id', 'issuer', 'subject', 'client_id', 'principal_id'], table: 'external_identities'},
   ] as const;
   for (const grant of selectGrants) {
     const columns = grant.columns.map(quoteIdentifier).join(', ');

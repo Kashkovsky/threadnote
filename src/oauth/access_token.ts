@@ -98,7 +98,7 @@ function exactAudience(audience: JWTPayload['aud'], expected: string): boolean {
 
 function configuredClientId(payload: JWTPayload, config: AccessTokenConfig): string | undefined {
   if (config.clientId === undefined && config.clientIdClaim === undefined) return undefined;
-  if (config.clientId === undefined || config.clientIdClaim === undefined) throw AccessTokenError.of('unverifiable');
+  if (config.clientIdClaim === undefined) throw AccessTokenError.of('unverifiable');
   let clientId: unknown;
   if (config.clientIdClaim === 'azp-or-client_id') {
     if (payload.azp !== undefined && payload.client_id !== undefined && payload.azp !== payload.client_id)
@@ -107,7 +107,12 @@ function configuredClientId(payload: JWTPayload, config: AccessTokenConfig): str
   } else {
     clientId = payload[config.clientIdClaim];
   }
-  if (typeof clientId !== 'string' || clientId !== config.clientId) throw AccessTokenError.of('unverifiable');
+  if (
+    typeof clientId !== 'string' ||
+    clientId.length === 0 ||
+    (config.clientId !== undefined && clientId !== config.clientId)
+  )
+    throw AccessTokenError.of('unverifiable');
   return clientId;
 }
 

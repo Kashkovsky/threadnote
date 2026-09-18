@@ -33,9 +33,10 @@ afterAll(async () => {
   await jwksServer.stop(true);
 });
 
-function verifier(issuer = ISSUER) {
+function verifier(issuer = ISSUER, clientIdClaim?: 'azp' | 'client_id' | 'cid' | 'azp-or-client_id') {
   return createOAuthTokenVerifier({
     audience: AUDIENCE,
+    ...(clientIdClaim === undefined ? {} : {clientIdClaim}),
     issuer,
     jwksUrl: new URL('/jwks', jwksServer.url),
   });
@@ -99,6 +100,13 @@ describe('remote memory OAuth access tokens', () => {
     const token = await accessToken({nbf: undefined});
 
     expect(await verifier().verify(token)).toMatchObject({issuer: ISSUER, subject: 'oauth-subject'});
+  });
+
+  it('extracts the configured Okta client claim for exact server-side identity binding', async () => {
+    const token = await accessToken({cid: 'okta-client-reader'});
+
+    expect(await verifier(ISSUER, 'cid').verify(token)).toMatchObject({clientId: 'okta-client-reader'});
+    await expect(verifier(ISSUER, 'cid').verify(await accessToken())).rejects.toMatchObject({code: 'unauthorized'});
   });
 
   it.each([false, true])('matches the exact issuer identifier with trailing slash=%s', async trailingSlash => {
